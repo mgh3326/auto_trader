@@ -9,6 +9,8 @@ from uuid import uuid4
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from app.core.timezone import KST
+
 from .protocol import (
     _SIDE_MAP,
     _US_SYMBOL_RESERVED_TOKENS,
@@ -388,6 +390,23 @@ class ExecutionMessageParser:
         if not order_id:
             order_id = None
 
+        # ROB-958: H0GSCNI0's HHMMSS field is KIS's own back-office clock (KST),
+        # not exchange-local (ET) time, despite the US venue. This WebSocket
+        # fill field has no direct prod sample (execution_ledger has 0
+        # source=websocket US rows), so the KST determination is induction from
+        # KIS's REST surfaces — which all use KST (verified prod, 2026-07-18):
+        #  - live_order_ledger.order_time for kis US orders matches order-accept
+        #    created_at within ~2s when parsed as KST (94 samples, all EDT,
+        #    Jun–Jul 2026); the ET-tagged parse is off by ~11-13h (an impossible
+        #    ~half-day gap between accept and record).
+        #  - execution_ledger reconciler ord_dt/ord_tmd KST invariant
+        #    (_parse_kis_order_timestamp, ROB-933) passes for every overseas row
+        #    (52/52, incl. the 2026-03-08 DST boundary) — KIS books ord_dt as
+        #    the KST calendar day.
+        # So the shared KST anchor from _extract_timestamp (ROB-934) is correct
+        # here too — do not add a venue-specific ET branch. (Grouping US trade
+        # days by ET session, if ever needed, is a separate concern — KIS itself
+        # books in KST.)
         filled_at = self._extract_timestamp(fields[OVERSEAS_FILL_FIELDS["filled_at"]])
         execution_status = self._classify_overseas_execution_status(
             rfus_yn=rfus_yn,
@@ -585,10 +604,28 @@ class ExecutionMessageParser:
             return cleaned
         if cleaned.isdigit():
             if len(cleaned) == 6:
-                today = datetime.now(UTC).strftime("%Y%m%d")
-                return datetime.strptime(today + cleaned, "%Y%m%d%H%M%S").isoformat()
+                # KIS domestic HHMMSS fields are KST wall-clock time with no
+                # date component; anchor "today" to the KST calendar date
+                # (not UTC) so fills near KST midnight land on the correct
+                # trade day.
+                today_kst = datetime.now(KST).strftime("%Y%m%d")
+                return (
+                    datetime.strptime(today_kst + cleaned, "%Y%m%d%H%M%S")
+                    .replace(tzinfo=KST)
+                    .isoformat()
+                )
             if len(cleaned) == 14:
-                return datetime.strptime(cleaned, "%Y%m%d%H%M%S").isoformat()
+                # KIS 14-digit YYYYMMDDHHMMSS fields are KST wall-clock
+                # time, same as the 6-digit HHMMSS fields above; return
+                # KST-aware so events.py's naive->UTC fallback doesn't
+                # misattribute. (ROB-958's prod evidence was overseas
+                # 6-digit ord_tmd, but it establishes KIS echoes KST
+                # regardless of digit width; domestic 14-digit is KST too.)
+                return (
+                    datetime.strptime(cleaned, "%Y%m%d%H%M%S")
+                    .replace(tzinfo=KST)
+                    .isoformat()
+                )
         return cleaned
 
     def _find_hhmmss_token(

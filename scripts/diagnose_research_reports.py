@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """ROB-207 diagnose CLI — print research_reports freshness, read-only."""
+
 from __future__ import annotations
 
 import argparse
@@ -15,7 +16,9 @@ from app.services.research_reports.freshness import (
 
 
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(description="Diagnose research_reports freshness (ROB-207).")
+    p = argparse.ArgumentParser(
+        description="Diagnose research_reports freshness (ROB-207)."
+    )
     p.add_argument("--source", default=None)
     p.add_argument("--max-age-hours", type=int, default=None)
     return p.parse_args(argv)
@@ -30,7 +33,9 @@ async def main_async(argv=None) -> int:
     budget = ns.max_age_hours or settings.RESEARCH_REPORTS_FRESHNESS_MAX_AGE_HOURS
     async with AsyncSessionLocal() as db:
         out = await compute_research_reports_readiness(
-            db, source=ns.source, max_age_hours=budget,
+            db,
+            source=ns.source,
+            max_age_hours=budget,
         )
     print(json.dumps(out.model_dump(mode="json"), default=str))
     return 0

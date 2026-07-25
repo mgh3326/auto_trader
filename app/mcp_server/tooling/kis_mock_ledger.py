@@ -27,6 +27,10 @@ from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
 )
 from app.services.brokers.kis.order_id import normalize_broker_order_id
 from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
+from app.services.kis_mock_reconcile_scope import (
+    normalize_kis_mock_reconcile_market,  # noqa: F401 - re-exported for back-compat
+    resolve_kis_mock_reconcile_scope,
+)
 from app.services.live_correlation import live_correlation_id
 from app.services.live_place_provenance import publish_place_time_forecast
 
@@ -666,15 +670,59 @@ async def _record_kis_mock_order(
     }
 
 
+# NOTE (ROB-1007): scope validation/normalization now lives in
+# app.services.kis_mock_reconcile_scope (imported above) so the job layer can
+# share the same chokepoint without a circular import (this module already
+# imports run_kis_mock_reconciliation from the job module). Both names are
+# re-exported as module attributes here for back-compat with existing
+# callers/tests that do `kis_mock_ledger.resolve_kis_mock_reconcile_scope(...)`
+# or monkeypatch it.
+
+
 async def kis_mock_reconciliation_run_impl(
     *,
     dry_run: bool = True,
     limit: int = 100,
+    market: str | None = None,
+    symbol: str | None = None,
+    ledger_ids: list[int] | None = None,
 ) -> dict[str, Any]:
-    """Execute KIS mock order reconciliation and return summary."""
+    """Execute KIS mock order reconciliation and return summary.
+
+    ``market``/``symbol`` (ROB-1018) narrow the open-order lookup so a
+    single-market/single-symbol reconciliation pass never proposes
+    transitions on out-of-scope rows (e.g. a US session no longer flips KR
+    resting orders to ``stale``). ``ledger_ids`` (ROB-1007) narrows further to
+    an explicit set of ledger rows — useful for re-checking specific
+    previously-"stale" rows without a full scan. All three default to
+    ``None``, preserving the prior full-scan behavior for existing callers
+    (TaskIQ periodic task, unscoped MCP calls).
+
+    Response contract (ROB-1018 fix #2/#3, ROB-1007 fix #3): every
+    success/error path returns the *effective* (canonical, alias-normalized)
+    scope under ``scope`` — e.g. a requested ``market="us"`` always echoes
+    back as ``"equity_us"``. The one exception is an invalid-selector
+    rejection, handled by :func:`resolve_kis_mock_reconcile_scope` before any
+    other work happens here: it has no ``scope`` key and instead echoes the
+    verbatim, unnormalized request under ``requested_scope``, plus a
+    ``selector`` key naming which selector (``"market"`` or ``"ledger_ids"``)
+    was rejected.
+    """
+    scope, scope_error = resolve_kis_mock_reconcile_scope(
+        market=market, symbol=symbol, ledger_ids=ledger_ids
+    )
+    if scope_error:
+        return scope_error
     try:
         async with _order_session_factory()() as db:
-            return await run_kis_mock_reconciliation(db, dry_run=dry_run, limit=limit)
+            return await run_kis_mock_reconciliation(
+                db,
+                dry_run=dry_run,
+                limit=limit,
+                market=scope["market"],
+                symbol=scope["symbol"],
+                ledger_ids=scope.get("ledger_ids"),
+            )
     except Exception as exc:
         logger.exception("Failed to run KIS mock reconciliation: %s", exc)
         return {
@@ -682,6 +730,7 @@ async def kis_mock_reconciliation_run_impl(
             "error": str(exc),
             "source": "mcp",
             "account_mode": "kis_mock",
+            "scope": scope,
         }
 
 

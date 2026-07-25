@@ -36,8 +36,10 @@ def _toss_order(**overrides):
         "status": "FILLED",
         "symbol": "005930",
         "side": "BUY",
+        "order_type": "LIMIT",
         "quantity": Decimal("1.00000000"),
         "price": Decimal("100.00"),
+        "execution": {},
         "ordered_at": NOW.isoformat(),
     }
     values.update(overrides)
@@ -60,11 +62,13 @@ def _toss_rung(**overrides):
 
 
 @pytest.mark.unit
-def test_supported_target_actions_are_live_kis_and_upbit_only():
+def test_supported_target_actions_are_live_kis_toss_and_upbit():
     assert SUPPORTED_TARGET_ACTIONS == frozenset(
         {
             ("kis_live", "equity_kr"),
             ("kis_live", "equity_us"),
+            ("toss_live", "equity_kr"),
+            ("toss_live", "equity_us"),
             ("upbit", "crypto"),
         }
     )
@@ -160,7 +164,12 @@ async def test_fetch_fails_closed_when_broker_history_reports_errors():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("account_mode", "market"),
-    [("kis_mock", "equity_kr"), ("kis_live", "crypto"), ("upbit", "equity_us")],
+    [
+        ("kis_mock", "equity_kr"),
+        ("kis_live", "crypto"),
+        ("upbit", "equity_us"),
+        ("toss_live", "crypto"),
+    ],
 )
 async def test_fetch_rejects_unsupported_target_tuple(account_mode, market):
     with pytest.raises(OrderProposalError, match="lookup unsupported"):
@@ -249,6 +258,199 @@ async def test_cancel_rejects_unsupported_target_tuple():
             account_mode="kis_live",
             cancel_fn=lambda **_kwargs: pytest.fail("cancel must not be called"),
         )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_rejects_unsupported_toss_target_tuple():
+    with pytest.raises(OrderProposalError, match="cancel unsupported"):
+        await cancel_target_order(
+            order_id="manual-1",
+            symbol="KRW-AVAX",
+            market="crypto",
+            account_mode="toss_live",
+            toss_cancel_fn=lambda **_kwargs: pytest.fail(
+                "toss cancel must not be called"
+            ),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_toss_target_order_returns_open_snapshot_for_pending():
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            assert order_id == "broker-1"
+            return _toss_order(status="PENDING", quantity=Decimal("2"))
+
+    snapshot = await fetch_target_order(
+        order_id="broker-1",
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
+    assert snapshot.status == "open"
+    assert snapshot.remaining_quantity == "2"
+    assert snapshot.broker_order_id == "broker-1"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_toss_target_order_computes_remaining_from_partial_fill():
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            return _toss_order(
+                status="PARTIAL_FILLED",
+                quantity=Decimal("5"),
+                execution={"filledQuantity": Decimal("2")},
+            )
+
+    snapshot = await fetch_target_order(
+        order_id="broker-1",
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
+    assert snapshot.status == "open"
+    assert snapshot.remaining_quantity == "3"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("broker_status", ["CANCELED", "REPLACED"])
+async def test_fetch_toss_target_order_maps_canceled_and_replaced_to_cancelled(
+    broker_status,
+):
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            return _toss_order(status=broker_status, quantity=Decimal("1"))
+
+    snapshot = await fetch_target_order(
+        order_id="broker-1",
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        now=NOW,
+        toss_client=FakeTossClient(),
+    )
+
+    assert snapshot.status == "cancelled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_toss_target_order_rejects_symbol_mismatch():
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            return _toss_order(symbol="000660")
+
+    with pytest.raises(OrderProposalError, match="symbol mismatch"):
+        await fetch_target_order(
+            order_id="broker-1",
+            symbol="005930",
+            market="equity_kr",
+            account_mode="toss_live",
+            now=NOW,
+            toss_client=FakeTossClient(),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_toss_target_order_maps_404_to_not_found():
+    from app.services.brokers.toss.errors import TossApiResponseError, TossErrorEnvelope
+
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            raise TossApiResponseError(
+                TossErrorEnvelope(
+                    request_id="req-1", code="order-not-found", message="", data=None
+                ),
+                status_code=404,
+            )
+
+    with pytest.raises(OrderProposalError, match="not found uniquely"):
+        await fetch_target_order(
+            order_id="broker-1",
+            symbol="005930",
+            market="equity_kr",
+            account_mode="toss_live",
+            now=NOW,
+            toss_client=FakeTossClient(),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fetch_toss_target_order_wraps_other_broker_errors():
+    from app.services.brokers.toss.errors import TossApiResponseError, TossErrorEnvelope
+
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            raise TossApiResponseError(
+                TossErrorEnvelope(
+                    request_id="req-1", code="internal-error", message="boom", data=None
+                ),
+                status_code=500,
+            )
+
+    with pytest.raises(OrderProposalError, match="lookup failed"):
+        await fetch_target_order(
+            order_id="broker-1",
+            symbol="005930",
+            market="equity_kr",
+            account_mode="toss_live",
+            now=NOW,
+            toss_client=FakeTossClient(),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_toss_target_order_routes_live_confirm_and_returns_broker_result():
+    captured = {}
+    broker_result = {"success": True, "original_order_id": "broker-1"}
+
+    async def fake_toss_cancel(**kwargs):
+        captured.update(kwargs)
+        return broker_result
+
+    result = await cancel_target_order(
+        order_id="broker-1",
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        toss_cancel_fn=fake_toss_cancel,
+    )
+
+    assert result == broker_result
+    assert captured == {
+        "order_id": "broker-1",
+        "dry_run": False,
+        "confirm": True,
+        "account_mode": "toss_live",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancel_toss_target_order_returns_broker_rejection():
+    async def fake_toss_cancel(**_kwargs):
+        return {"success": False, "error": "already filled"}
+
+    assert await cancel_target_order(
+        order_id="broker-1",
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        toss_cancel_fn=fake_toss_cancel,
+    ) == {"success": False, "error": "already filled"}
 
 
 def _http_status_error(status_code: int) -> httpx.HTTPStatusError:

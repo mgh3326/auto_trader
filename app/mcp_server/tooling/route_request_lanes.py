@@ -13,6 +13,9 @@ from __future__ import annotations
 from typing import Any
 
 from app.mcp_server.tooling.alpaca_paper import ALPACA_PAPER_READONLY_TOOL_NAMES
+from app.mcp_server.tooling.alpaca_paper_automated_orders import (
+    ALPACA_PAPER_AUTOMATED_TOOL_NAMES,
+)
 from app.mcp_server.tooling.alpaca_paper_orders import ALPACA_PAPER_MUTATING_TOOL_NAMES
 from app.mcp_server.tooling.alpaca_paper_preview import ALPACA_PAPER_PREVIEW_TOOL_NAMES
 from app.mcp_server.tooling.market_quote_snapshot_tools import (
@@ -91,12 +94,8 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
             "purpose": "foreign-flow gate (recovery_gate)",
         },
         {
-            "tool": "toss_place_order",
-            "purpose": "execute buy — Toss preferred (fee-free); deep limit, no chasing",
-        },
-        {
-            "tool": "kis_live_place_order",
-            "purpose": "spend down KIS deposit; dry_run preview -> live",
+            "tool": "order_proposal_create",
+            "purpose": "create place proposal; Telegram human approval is required before proposal-owned revalidation and submit",
         },
     ],
     "sell": [
@@ -109,20 +108,12 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
             "purpose": "confirm distance to resistance, RSI, upside",
         },
         {
-            "tool": "toss_cancel_order",
-            "purpose": "clear same-symbol buy pending first (Toss two-sided constraint)",
-        },
-        {
-            "tool": "toss_place_order",
-            "purpose": "sell-into-strength split ladder just under resistance (Toss holdings)",
-        },
-        {
-            "tool": "kis_live_place_order",
-            "purpose": "sell KIS holdings from the holding account; dry_run preview -> live",
-        },
-        {
             "tool": "sell_ladder_fill_preview",
             "purpose": "ROB-477 bottom-anchor rung, fill-safety",
+        },
+        {
+            "tool": "order_proposal_create",
+            "purpose": "create place/cancel/replace proposal; Telegram human approval is required before proposal-owned revalidation and submit",
         },
     ],
     "discovery": [
@@ -150,9 +141,12 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "no two-sided (buy+sell) resting orders on same Toss symbol",
         "over-concentration cap: portfolio.sector_cluster_cap_pct per sector cluster",
         "portfolio.max_symbols_per_theme per theme; add-not-cut (average down, no stop-loss)",
+        "order intent: order_proposal_create only; Telegram human approval required",
+        "accepted/resting is not a fill; broker evidence reconcile is required",
         "negative class: record each reviewed-but-rejected candidate as a "
         "decision_bucket=deferred_no_action item with confidence + rejection "
-        "reason, and leave a resolvable forecast_save (price_target, e.g. "
+        "reason, and leave a resolvable forecast_save (price_target with required "
+        "outcome_rule_version='window-touch-v1-high-gte-low-lte', e.g. "
         "'no +X% within N days') so calibration isn't censored (ROB-712)",
     ],
     "sell": [
@@ -161,8 +155,10 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "no two-sided (buy+sell) resting orders on same Toss symbol",
         "DAY order expiry at order.day_expiry_kst -> re-place next day",
         "preserve core lot; trim over-concentrated sectors first (portfolio.sector_cluster_cap_pct)",
-        "sell from holding account: Toss holdings -> toss_place_order, KIS holdings -> kis_live_place_order",
-        "same-symbol buy pending on Toss -> toss_cancel_order first (two-sided constraint)",
+        "order intent: order_proposal_create only; Telegram human approval required",
+        "sell from the holding account selected in the proposal",
+        "same-symbol buy pending -> separate cancel proposal and confirmed broker evidence before the sell proposal",
+        "accepted/resting is not a fill; broker evidence reconcile is required",
     ],
     "discovery": [
         "over-concentration cap: portfolio.sector_cluster_cap_pct per sector cluster",
@@ -171,7 +167,8 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "per-symbol sizing: buy.per_symbol_notional_krw_range",
         "negative class: record each reviewed-but-rejected candidate as a "
         "decision_bucket=deferred_no_action item with confidence + rejection "
-        "reason, and leave a resolvable forecast_save (price_target, e.g. "
+        "reason, and leave a resolvable forecast_save (price_target with required "
+        "outcome_rule_version='window-touch-v1-high-gte-low-lte', e.g. "
         "'no +X% within N days') so calibration isn't censored (ROB-712)",
     ],
     "bootstrap": [
@@ -181,8 +178,100 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
     ],
 }
 
-MUTATION_TOOLS: frozenset[str] = frozenset(
+ROUTE_CONTRACT_VERSION = "proposal-led-v1"
+PROPOSAL_TOOL = "order_proposal_create"
+PROPOSAL_LED_LANES: frozenset[str] = frozenset({"buy", "sell"})
+
+# The legacy MUTATION_TOOLS bucket intentionally remains public and broad for
+# backwards compatibility. ROB-1045 overlays explicit, disjoint action classes
+# so proposal-led lanes can fail closed on direct broker mutations without also
+# blocking pure previews, reconcile reads/writes, or read/status helpers.
+DIRECT_BROKER_MUTATION_TOOLS: frozenset[str] = frozenset(
+    {
+        "alpaca_paper_cancel_order",
+        "alpaca_paper_automated_submit_order",
+        "alpaca_paper_submit_order",
+        "binance_demo_scalping_submit_decision",
+        "cancel_order",
+        "kis_live_cancel_order",
+        "kis_live_modify_order",
+        "kis_live_place_order",
+        "kis_mock_cancel_order",
+        "kis_mock_mirror_execute_report",
+        "kis_mock_modify_order",
+        "kis_mock_place_order",
+        "kiwoom_mock_cancel_order",
+        "kiwoom_mock_modify_order",
+        "kiwoom_mock_place_order",
+        "kiwoom_mock_us_cancel_order",
+        "kiwoom_mock_us_modify_order",
+        "kiwoom_mock_us_place_order",
+        "modify_order",
+        "paper_cancel_pending_order",
+        "paper_place_limit_order",
+        "place_order",
+        "toss_cancel_order",
+        "toss_modify_order",
+        "toss_place_order",
+    }
+)
+
+PROPOSAL_LED_TOOLS: frozenset[str] = frozenset({PROPOSAL_TOOL})
+PROPOSAL_LIFECYCLE_TOOLS: frozenset[str] = frozenset(
+    {
+        "order_proposal_expire_sweep",
+        "order_proposal_void",
+    }
+)
+ORDER_PROPOSAL_READ_TOOLS: frozenset[str] = frozenset(
+    {
+        "order_proposal_get",
+        "order_proposal_list",
+        "order_proposal_list_expired_defensive",
+    }
+)
+
+PREVIEW_REVALIDATION_TOOLS: frozenset[str] = frozenset(
+    {
+        "alpaca_paper_automated_preview_order",
+        "buy_ladder_fill_preview",
+        "kiwoom_mock_preview_order",
+        "kiwoom_mock_us_preview_order",
+        "sell_ladder_fill_preview",
+        "toss_preview_order",
+    }
+)
+
+RECONCILE_TOOLS: frozenset[str] = frozenset(
+    {
+        "alpaca_paper_reconcile_orders",
+        "kis_live_reconcile_orders",
+        "kis_mock_reconciliation_run",
+        "live_reconcile_orders",
+        "paper_reconcile_orders",
+        "toss_reconcile_orders",
+    }
+)
+
+# These are read/status helpers that remain in MUTATION_TOOLS only because that
+# public legacy bucket predates the action taxonomy.
+STATUS_HELPER_TOOLS: frozenset[str] = frozenset(
+    {
+        "get_order_history",
+        "kis_live_get_order_history",
+        "kis_mock_get_order_history",
+        "kiwoom_mock_get_order_history",
+        "kiwoom_mock_get_orderable_cash",
+        "kiwoom_mock_get_positions",
+        "toss_get_order_history",
+        "toss_get_orderable_cash",
+        "toss_get_positions",
+    }
+)
+
+_LEGACY_MUTATION_TOOLS: frozenset[str] = frozenset(
     ORDER_TOOL_NAMES
+    | ALPACA_PAPER_AUTOMATED_TOOL_NAMES
     | KIS_LIVE_ORDER_TOOL_NAMES
     | KIS_MOCK_ORDER_TOOL_NAMES
     | LIVE_RECONCILE_TOOL_NAMES
@@ -190,14 +279,20 @@ MUTATION_TOOLS: frozenset[str] = frozenset(
     | KIWOOM_MOCK_TOOL_NAMES
     | KIWOOM_MOCK_US_MUTATION_TOOL_NAMES
     | MIRROR_COUNTERFACTUAL_TOOL_NAMES
-    # ROB-908: Alpaca paper confirm-gated order mutations (submit/cancel). Flag-
+    # ROB-908/ROB-953: Alpaca paper confirm-gated mutations — submit/cancel plus
+    # alpaca_paper_reconcile_orders, which reads the broker read-only but WRITES
+    # lifecycle state to review.alpaca_paper_order_ledger. Flag-
     # gated in DEFAULT (settings.alpaca_paper_default_tools_enabled, default off);
     # the read/preview/us_dual/ledger surface is read-only and lives in
-    # READ_ONLY_ADVISORY_TOOLS. The automated-submit tool is not registered in
-    # DEFAULT at all (ROB-842), so it is intentionally not classified here.
+    # READ_ONLY_ADVISORY_TOOLS. The automated preview/submit pair is US_PAPER-
+    # only (ROB-842) but is classified above because route_request is present
+    # on that profile too.
     | frozenset(ALPACA_PAPER_MUTATING_TOOL_NAMES)
     | frozenset(
         {
+            # ROB-907: default-gated Binance Demo submit can place a broker
+            # round-trip when dry_run=false + confirm=true.
+            "binance_demo_scalping_submit_decision",
             # ROB-703: paper resting-limit sim mutations (paper-table writes only,
             # no live/Upbit broker mutation). paper_list_pending_orders is read-only
             # and lives in READ_ONLY_ADVISORY_TOOLS.
@@ -208,38 +303,28 @@ MUTATION_TOOLS: frozenset[str] = frozenset(
     )
 )
 
-# Market-aware execution mutation tools (ROB-658). The LANE_SEQUENCES above are
-# KR-centric (ported from the playbook, kept in sync by the registry-diff test),
-# so their execution steps hard-code toss/kis. On crypto/US profiles those tools
-# are unregistered, so without a market-aware supplement the generic place_order
-# — the real crypto/US execution surface — falls into blocked_actions and never
-# appears in the sequence/allowed list. KR needs no supplement (its execution
-# tools already live in LANE_SEQUENCES); US/crypto route execution through the
-# generic place_order, which the playbook lanes never list.
+MUTATION_TOOLS: frozenset[str] = (
+    _LEGACY_MUTATION_TOOLS | PROPOSAL_LED_TOOLS | PROPOSAL_LIFECYCLE_TOOLS
+)
+
+# ROB-658's market-aware direct execution mapping remains only for discovery,
+# which the operator explicitly excluded from ROB-1045. Buy/sell never consult
+# this mapping and never fall back to a direct place tool.
 MARKET_EXECUTION_TOOLS: dict[str, frozenset[str]] = {
     "kr": frozenset(),
     "us": frozenset({"place_order"}),
     "crypto": frozenset({"place_order"}),
 }
 
-# Order-placement tools that mark a lane as "executing" (as opposed to a
-# fill-safety/preview or reconcile helper such as sell_ladder_fill_preview, which
-# is also mutation-classified but is not the actual place step). Used to decide
-# whether a lane warrants a market-aware execution step and whether that step's
-# KR-centric tools survived the profile intersection.
+# Direct placement tools used only to preserve discovery's ROB-658 fallback.
 _PLACE_ORDER_TOOLS: frozenset[str] = frozenset(
     {"place_order", "toss_place_order", "kis_live_place_order"}
 )
 
-# ROB-659: dry-run / approval-minting precursor tools. They send no broker
-# mutation, and under TOSS_APPROVAL_HASH_MODE=required an executing lane MUST call
-# toss_preview_order to mint the approval_hash that toss_place_order then demands.
-# toss_preview_order lives in the Toss order namespace (MUTATION_TOOLS) for registry
-# partitioning, so build_route_plan otherwise put it in blocked_actions even for the
-# lane that needs it — a self-contradiction in required mode. Executing lanes now
-# surface their preview precursor as allowed (never blocked). Bootstrap has no place
-# step, so it stays unchanged. (place_order/kis_live_place_order preview via their own
-# dry_run flag, so they need no separate entry here.)
+# Discovery keeps its direct Toss preview precursor. Proposal-led buy/sell do
+# not expose broker previews: fresh preview/revalidation is owned internally by
+# the proposal approval subsystem. sell_ladder_fill_preview remains a pure
+# pre-proposal fill-safety step because it is explicitly sequenced in sell.
 PREVIEW_TOOLS: frozenset[str] = frozenset({"toss_preview_order"})
 
 # ROB-660 / ROB-666: per-lane allowed-only helper tools. The order-status tools
@@ -259,11 +344,16 @@ LANE_EXTRA_ALLOWED: dict[str, frozenset[str]] = {
     "sell": frozenset({"kis_live_get_order_history", "toss_get_order_history"}),
 }
 
-# Purpose text for the market execution step injected into the sequence when the
-# lane's KR-centric execution tools are absent from the live profile (crypto/US).
+# Registered reconcile helpers are conditional allowed helpers for proposal-led
+# lanes. They are deliberately not ordered because route_request has no broker
+# or account_mode input with which to select one.
+LANE_RECONCILE_ALLOWED: dict[str, frozenset[str]] = {
+    "buy": RECONCILE_TOOLS,
+    "sell": RECONCILE_TOOLS,
+}
+
+# Purpose text for discovery's legacy market execution injection.
 _MARKET_EXEC_PURPOSE: dict[str, str] = {
-    "buy": "execute buy via generic place_order (crypto/US limit; dry_run preview -> live)",
-    "sell": "execute sell via generic place_order (crypto/US limit)",
     "discovery": "execute buy on ranked winners via generic place_order (crypto/US limit)",
 }
 
@@ -282,11 +372,13 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         # (ALPACA_PAPER_PREVIEW_TOOL_NAMES — no side effects, does not submit),
         # and the read-only us_dual capability/state/preview trio
         # (US_DUAL_PAPER_TOOL_NAMES, submit_enabled always False). The
-        # confirm-gated submit/cancel mutations live in MUTATION_TOOLS.
+        # confirm-gated submit/cancel mutations and the DB-writing
+        # alpaca_paper_reconcile_orders live in MUTATION_TOOLS.
         *ALPACA_PAPER_READONLY_TOOL_NAMES,
         *ALPACA_PAPER_PREVIEW_TOOL_NAMES,
         *US_DUAL_PAPER_TOOL_NAMES,
         *MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
+        *ORDER_PROPOSAL_READ_TOOLS,
         "route_request",
         "analysis_artifact_get",
         "analysis_artifact_list",
@@ -336,6 +428,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "get_investment_opinions",
         "get_investor_trends",
         "get_kimchi_premium",
+        "get_krx_session_health",
         "get_latest_market_brief",
         "get_market_index",
         "get_market_issues",
@@ -412,8 +505,91 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
 ALL_KNOWN_TOOLS: frozenset[str] = READ_ONLY_ADVISORY_TOOLS | MUTATION_TOOLS
 
 
+def ordered_lane_tool_names(lane: str) -> list[str]:
+    return [step["tool"] for step in LANE_SEQUENCES[lane]]
+
+
 def lane_tool_names(lane: str) -> set[str]:
-    return {step["tool"] for step in LANE_SEQUENCES[lane]}
+    """Compatibility set view; ordered_lane_tool_names is the contract source."""
+    return set(ordered_lane_tool_names(lane))
+
+
+def _route_contract(
+    lane: str,
+    *,
+    registered_tools: set[str] | None,
+) -> dict[str, Any]:
+    proposal_led = lane in PROPOSAL_LED_LANES
+    required_tools = sorted(PROPOSAL_LED_TOOLS) if proposal_led else []
+    missing_required_tools = (
+        required_tools
+        if registered_tools is None
+        else sorted(set(required_tools) - registered_tools)
+    )
+    execution_ready = registered_tools is not None and not missing_required_tools
+
+    if proposal_led:
+        execution_mode = "proposal_led"
+        proposal_tool: str | None = PROPOSAL_TOOL
+        approval_channel = "telegram"
+        human_approval_required = True
+        preview_owner = "proposal_revalidation"
+        reconcile_requirement = "broker_evidence"
+    elif lane == "discovery":
+        execution_mode = "legacy_direct"
+        proposal_tool = None
+        approval_channel = "not_applicable"
+        human_approval_required = False
+        preview_owner = "lane_operator"
+        reconcile_requirement = "legacy_unspecified"
+    else:
+        execution_mode = "read_only"
+        proposal_tool = None
+        approval_channel = "not_applicable"
+        human_approval_required = False
+        preview_owner = "not_applicable"
+        reconcile_requirement = "not_applicable"
+
+    return {
+        "version": ROUTE_CONTRACT_VERSION,
+        "state": "ready" if execution_ready else "degraded",
+        "execution_mode": execution_mode,
+        "execution_ready": execution_ready,
+        "proposal_tool": proposal_tool,
+        "approval_channel": approval_channel,
+        "human_approval_required": human_approval_required,
+        "preview_owner": preview_owner,
+        "reconcile_requirement": reconcile_requirement,
+        "required_tools": required_tools,
+        "missing_required_tools": missing_required_tools,
+    }
+
+
+def build_registry_unavailable_plan(
+    intent: str,
+    market: str,
+    *,
+    verdict_thresholds: dict[str, Any],
+    policy_version: dict[str, str],
+) -> dict[str, Any]:
+    """Return a stable fail-closed response when live registry state is unknown."""
+    lane = INTENT_TO_LANE[intent]
+    return {
+        "success": False,
+        "error": "registry_introspection_unavailable",
+        "degraded": True,
+        "intent": intent,
+        "lane": lane,
+        "market": market,
+        "standard_tool_sequence": [],
+        "allowed_tools": [],
+        "blocked_actions": sorted(DIRECT_BROKER_MUTATION_TOOLS),
+        "blocked_actions_basis": "static_fail_closed",
+        "route_contract": _route_contract(lane, registered_tools=None),
+        "verdict_thresholds": verdict_thresholds,
+        "policy_version": policy_version,
+        "hard_constraints": list(HARD_CONSTRAINTS[lane]),
+    }
 
 
 def build_route_plan(
@@ -428,13 +604,12 @@ def build_route_plan(
     intent/market and resolves policy before calling."""
     lane = INTENT_TO_LANE[intent]
     lane_tools = lane_tool_names(lane)
-    playbook_mutation = lane_tools & MUTATION_TOOLS
-    lane_place_tools = lane_tools & _PLACE_ORDER_TOOLS
-    # Executing lanes (buy/sell/discovery place orders) get a market-aware
-    # execution supplement; bootstrap has no place step, so it stays
-    # supplement-free and every mutation tool remains blocked. For KR the
-    # supplement is empty (its place tools already live in the sequence), so
-    # behaviour is identical to the KR-centric definition (no regression).
+    proposal_led = lane in PROPOSAL_LED_LANES
+    lane_place_tools = (
+        lane_tools & _PLACE_ORDER_TOOLS if lane == "discovery" else frozenset()
+    )
+    # Only the explicitly out-of-scope discovery lane retains ROB-658's generic
+    # crypto/US direct-place fallback.
     market_exec = (
         MARKET_EXECUTION_TOOLS.get(market, frozenset())
         if lane_place_tools
@@ -442,12 +617,11 @@ def build_route_plan(
     )
 
     seq_steps = [
-        step for step in LANE_SEQUENCES[lane] if step["tool"] in registered_tools
+        step
+        for step in LANE_SEQUENCES[lane]
+        if step["tool"] in registered_tools
+        and (not proposal_led or step["tool"] not in DIRECT_BROKER_MUTATION_TOOLS)
     ]
-    # If the lane places orders but none of its playbook place tools survived the
-    # profile intersection (crypto/US), surface the market's generic execution
-    # tool so the advisory shows + allows it instead of leaving the lane
-    # execution-less with place_order misclassified as blocked (ROB-658).
     if lane_place_tools and not (lane_place_tools & registered_tools):
         for tool in sorted(market_exec & registered_tools):
             seq_steps.append({"tool": tool, "purpose": _MARKET_EXEC_PURPOSE[lane]})
@@ -456,35 +630,45 @@ def build_route_plan(
         {"step": i, "tool": step["tool"], "purpose": step["purpose"]}
         for i, step in enumerate(seq_steps, start=1)
     ]
-    lane_own_mutation = playbook_mutation | market_exec
-    # An executing lane surfaces its dry-run/approval-minting precursor (ROB-659)
-    # so the required-mode preview->place flow isn't blocked by its own advisory.
-    lane_preview = PREVIEW_TOOLS if lane_place_tools else frozenset()
-    # ROB-660: allowed-only confirmation helpers (order-status tools) — un-blocked
-    # for the lane but never added to the ordered sequence.
+    # Discovery still surfaces its direct Toss preview precursor. Proposal-led
+    # lanes leave broker preview/revalidation to the approval subsystem.
+    lane_preview = PREVIEW_TOOLS if lane == "discovery" else frozenset()
     lane_extra = LANE_EXTRA_ALLOWED.get(lane, frozenset())
-    allowed = (
-        lane_tools
+    lane_reconcile = LANE_RECONCILE_ALLOWED.get(lane, frozenset())
+    safe_lane_tools = (
+        lane_tools - DIRECT_BROKER_MUTATION_TOOLS if proposal_led else lane_tools
+    )
+    allowed_candidates = (
+        safe_lane_tools
         | market_exec
         | lane_preview
         | lane_extra
+        | lane_reconcile
         | set(READ_ONLY_ADVISORY_TOOLS)
-    ) & registered_tools
-    blocked = (
-        MUTATION_TOOLS - lane_own_mutation - lane_preview - lane_extra
-    ) & registered_tools
-    return {
-        "success": True,
+    )
+    allowed = allowed_candidates & registered_tools
+    blocked = (MUTATION_TOOLS & registered_tools) - allowed
+    route_contract = _route_contract(lane, registered_tools=registered_tools)
+    success = route_contract["execution_ready"]
+
+    result: dict[str, Any] = {
+        "success": success,
+        "degraded": not success,
         "intent": intent,
         "lane": lane,
         "market": market,
         "standard_tool_sequence": standard_tool_sequence,
         "allowed_tools": sorted(allowed),
         "blocked_actions": sorted(blocked),
+        "blocked_actions_basis": "live_registered_surface",
+        "route_contract": route_contract,
         "verdict_thresholds": verdict_thresholds,
         "policy_version": policy_version,
         "hard_constraints": list(HARD_CONSTRAINTS[lane]),
     }
+    if not success:
+        result["error"] = "required_route_tool_unavailable"
+    return result
 
 
 __all__ = [
@@ -493,12 +677,25 @@ __all__ = [
     "LANE_TO_POLICY_LANE",
     "LANE_SEQUENCES",
     "HARD_CONSTRAINTS",
+    "ROUTE_CONTRACT_VERSION",
+    "PROPOSAL_TOOL",
+    "PROPOSAL_LED_LANES",
+    "DIRECT_BROKER_MUTATION_TOOLS",
+    "PROPOSAL_LED_TOOLS",
+    "PROPOSAL_LIFECYCLE_TOOLS",
+    "ORDER_PROPOSAL_READ_TOOLS",
+    "PREVIEW_REVALIDATION_TOOLS",
+    "RECONCILE_TOOLS",
+    "STATUS_HELPER_TOOLS",
     "MARKET_EXECUTION_TOOLS",
     "PREVIEW_TOOLS",
     "LANE_EXTRA_ALLOWED",
+    "LANE_RECONCILE_ALLOWED",
     "MUTATION_TOOLS",
     "READ_ONLY_ADVISORY_TOOLS",
     "ALL_KNOWN_TOOLS",
+    "ordered_lane_tool_names",
     "lane_tool_names",
+    "build_registry_unavailable_plan",
     "build_route_plan",
 ]

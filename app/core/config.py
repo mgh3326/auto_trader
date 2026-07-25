@@ -45,6 +45,11 @@ DEFAULT_KIS_API_RATE_LIMITS: ApiRateLimitMap = {
         "rate": 1,
         "period": 0.2,
     },
+    # ROB-951: mock-US buy preflight and the read-only probe use VTTS3007R.
+    "VTTS3007R|/uapi/overseas-stock/v1/trading/inquire-psamount": {
+        "rate": 10,
+        "period": 1.0,
+    },
     "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance": {
         "rate": 10,
         "period": 1.0,
@@ -704,14 +709,6 @@ class Settings(BaseSettings):
     # ROB-510 — Finnhub news fetch reliability (per-attempt timeout + bounded retry)
     FINNHUB_NEWS_TIMEOUT_S: float = 8.0
     FINNHUB_NEWS_MAX_ATTEMPTS: int = 3
-    # ROB-287 Phase B — operational activation gate for the
-    # ``hermes_bundle_preparation_flow`` Prefect entry. Default ``False``
-    # makes the flow a structured dry-run (no ``SnapshotBundleEnsureService``
-    # write, no side effects) so the Prefect deployment can land in a
-    # paused state and operators flip the env var separately. The
-    # production cutover is owned by ``robin-prefect-automations``;
-    # nothing in this repo schedules the flow on its own.
-    HERMES_BUNDLE_PREPARATION_ENABLED: bool = False
 
     # ROB-211 execution ledger ships inert; commit/backfill activation is a separate approval-gated ops change.
     EXECUTION_LEDGER_COMMIT_ENABLED: bool = False
@@ -745,6 +742,12 @@ class Settings(BaseSettings):
     # operator automation layer; unattended booking requires both gates.
     TOSS_LIVE_AUTO_RECONCILE_ENABLED: bool = False
     TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED: bool = False
+
+    # ROB-1050 — paused periodic auto-reconcile for US (KIS) and Crypto (Upbit) live orders.
+    # Default off and scheduleless in this repo. Operator flips and adds recurrence.
+    LIVE_AUTO_RECONCILE_ENABLED: bool = False
+    LIVE_AUTO_RECONCILE_DRY_RUN: bool = True
+
     # ROB-757 — Toss REST fill poller. Default off; read-only broker scan plus
     # evidence-gated local booking only after operator activation.
     TOSS_FILL_POLL_ENABLED: bool = False

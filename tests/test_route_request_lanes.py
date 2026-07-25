@@ -1,5 +1,8 @@
-# tests/test_route_request_lanes.py
 from __future__ import annotations
+
+from itertools import combinations
+
+import pytest
 
 from app.mcp_server.tooling import route_request_lanes as L
 
@@ -16,102 +19,213 @@ def _fake_thresholds(market: str, lane: str, *, empty: bool = False) -> dict:
 
 _VERSION = {"version": "V", "content_hash": "H"}
 _ALL = set(L.ALL_KNOWN_TOOLS)
+_PROPOSAL_FIELDS = {
+    "version",
+    "state",
+    "execution_mode",
+    "execution_ready",
+    "proposal_tool",
+    "approval_channel",
+    "human_approval_required",
+    "preview_owner",
+    "reconcile_requirement",
+    "required_tools",
+    "missing_required_tools",
+}
+_EXPECTED_LANES = {
+    "buy_analysis": ("buy", "proposal_led"),
+    "profit_taking": ("sell", "proposal_led"),
+    "discovery": ("discovery", "legacy_direct"),
+    "market_brief": ("bootstrap", "read_only"),
+}
+
+
+def _plan(intent: str, market: str, *, registered: set[str] | None = None) -> dict:
+    lane = L.INTENT_TO_LANE[intent]
+    return L.build_route_plan(
+        intent,
+        market,
+        registered_tools=_ALL if registered is None else registered,
+        verdict_thresholds=_fake_thresholds(market, lane, empty=lane == "bootstrap"),
+        policy_version=_VERSION,
+    )
+
+
+def _step_tools(plan: dict) -> list[str]:
+    return [step["tool"] for step in plan["standard_tool_sequence"]]
 
 
 def test_intent_to_lane_covers_all_four_intents():
-    assert set(L.INTENT_TO_LANE) == {
-        "buy_analysis",
-        "profit_taking",
-        "discovery",
-        "market_brief",
+    assert L.INTENT_TO_LANE == {
+        "buy_analysis": "buy",
+        "profit_taking": "sell",
+        "discovery": "discovery",
+        "market_brief": "bootstrap",
     }
-    assert L.INTENT_TO_LANE["market_brief"] == "bootstrap"
 
 
-def test_buckets_partition_and_are_disjoint():
+def test_action_taxonomy_is_disjoint_and_total():
+    action_classes = (
+        L.DIRECT_BROKER_MUTATION_TOOLS,
+        L.PROPOSAL_LED_TOOLS,
+        L.PROPOSAL_LIFECYCLE_TOOLS,
+        L.PREVIEW_REVALIDATION_TOOLS,
+        L.RECONCILE_TOOLS,
+        L.STATUS_HELPER_TOOLS,
+    )
+    for left, right in combinations(action_classes, 2):
+        assert left.isdisjoint(right)
+    assert frozenset().union(*action_classes) == L.MUTATION_TOOLS
     assert L.READ_ONLY_ADVISORY_TOOLS.isdisjoint(L.MUTATION_TOOLS)
     assert L.ALL_KNOWN_TOOLS == L.READ_ONLY_ADVISORY_TOOLS | L.MUTATION_TOOLS
-    assert "route_request" in L.READ_ONLY_ADVISORY_TOOLS
+    assert L.ORDER_PROPOSAL_READ_TOOLS <= L.READ_ONLY_ADVISORY_TOOLS
+    assert L.PROPOSAL_LED_TOOLS == {"order_proposal_create"}
 
 
-def test_build_route_plan_buy_shape_is_deterministic():
-    plan_a = L.build_route_plan(
-        "buy_analysis",
-        "kr",
-        registered_tools=_ALL,
-        verdict_thresholds=_fake_thresholds("kr", "buy"),
-        policy_version=_VERSION,
-    )
-    plan_b = L.build_route_plan(
-        "buy_analysis",
-        "kr",
-        registered_tools=_ALL,
-        verdict_thresholds=_fake_thresholds("kr", "buy"),
-        policy_version=_VERSION,
-    )
-    assert plan_a == plan_b
-    assert plan_a["success"] is True
-    assert plan_a["lane"] == "buy"
-    assert plan_a["market"] == "kr"
-    assert plan_a["policy_version"] == _VERSION
-    steps = [s["tool"] for s in plan_a["standard_tool_sequence"]]
-    assert steps[0] == "get_operating_briefing"
-    assert "toss_place_order" in steps
-    # step numbers are contiguous 1..n
-    assert [s["step"] for s in plan_a["standard_tool_sequence"]] == list(
-        range(1, len(steps) + 1)
-    )
+@pytest.mark.parametrize(
+    ("intent", "expected_lane", "execution_mode"),
+    [
+        (intent, lane, execution_mode)
+        for intent, (lane, execution_mode) in _EXPECTED_LANES.items()
+    ],
+)
+@pytest.mark.parametrize("market", ["kr", "us", "crypto"])
+def test_route_semantic_contract_matrix(
+    intent: str,
+    expected_lane: str,
+    execution_mode: str,
+    market: str,
+):
+    plan = _plan(intent, market)
+    sequence = plan["standard_tool_sequence"]
+    steps = _step_tools(plan)
+    contract = plan["route_contract"]
+
+    assert plan["success"] is True
+    assert plan["degraded"] is False
+    assert plan["intent"] == intent
+    assert plan["lane"] == expected_lane
+    assert plan["market"] == market
+    assert plan["policy_version"] == _VERSION
+    assert set(contract) == _PROPOSAL_FIELDS
+    assert contract["version"] == "proposal-led-v1"
+    assert contract["state"] == "ready"
+    assert contract["execution_mode"] == execution_mode
+    assert contract["execution_ready"] is True
+    assert [step["step"] for step in sequence] == list(range(1, len(steps) + 1))
+    assert steps == L.ordered_lane_tool_names(expected_lane)
+    assert len(steps) == len(set(steps))
+    assert set(plan["allowed_tools"]).isdisjoint(plan["blocked_actions"])
+    assert plan["blocked_actions_basis"] == "live_registered_surface"
+
+    registered_direct = L.DIRECT_BROKER_MUTATION_TOOLS & _ALL
+    if expected_lane in {"buy", "sell"}:
+        assert contract == {
+            "version": "proposal-led-v1",
+            "state": "ready",
+            "execution_mode": "proposal_led",
+            "execution_ready": True,
+            "proposal_tool": "order_proposal_create",
+            "approval_channel": "telegram",
+            "human_approval_required": True,
+            "preview_owner": "proposal_revalidation",
+            "reconcile_requirement": "broker_evidence",
+            "required_tools": ["order_proposal_create"],
+            "missing_required_tools": [],
+        }
+        assert steps.count("order_proposal_create") == 1
+        assert steps[-1] == "order_proposal_create"
+        assert "order_proposal_create" in plan["allowed_tools"]
+        assert registered_direct <= set(plan["blocked_actions"])
+        assert registered_direct.isdisjoint(plan["allowed_tools"])
+        assert registered_direct.isdisjoint(steps)
+    elif expected_lane == "discovery":
+        assert contract["proposal_tool"] is None
+        assert contract["approval_channel"] == "not_applicable"
+        assert contract["human_approval_required"] is False
+        assert contract["preview_owner"] == "lane_operator"
+        assert contract["reconcile_requirement"] == "legacy_unspecified"
+        assert contract["required_tools"] == []
+        assert contract["missing_required_tools"] == []
+        # Operator decision: discovery is explicitly out of ROB-1045 scope.
+        assert "toss_place_order" in steps
+        assert "toss_place_order" in plan["allowed_tools"]
+        assert "toss_place_order" not in plan["blocked_actions"]
+    else:
+        assert contract["proposal_tool"] is None
+        assert contract["approval_channel"] == "not_applicable"
+        assert contract["human_approval_required"] is False
+        assert contract["preview_owner"] == "not_applicable"
+        assert contract["reconcile_requirement"] == "not_applicable"
+        assert contract["required_tools"] == []
+        assert contract["missing_required_tools"] == []
+        assert set(plan["blocked_actions"]) == (L.MUTATION_TOOLS & _ALL)
 
 
-def test_blocked_actions_excludes_lanes_own_mutation_tools():
-    plan = L.build_route_plan(
-        "buy_analysis",
-        "kr",
-        registered_tools=_ALL,
-        verdict_thresholds=_fake_thresholds("kr", "buy"),
-        policy_version=_VERSION,
-    )
-    # buy lane's own place tools are allowed, not blocked
-    assert "toss_place_order" not in plan["blocked_actions"]
-    assert "kis_live_place_order" not in plan["blocked_actions"]
-    # a non-buy mutation tool is blocked
-    assert "toss_cancel_order" in plan["blocked_actions"]
-    assert "toss_place_order" in plan["allowed_tools"]
+@pytest.mark.parametrize("intent", ["buy_analysis", "profit_taking"])
+@pytest.mark.parametrize("market", ["kr", "us", "crypto"])
+def test_proposal_tool_missing_fails_closed(
+    intent: str,
+    market: str,
+):
+    registered = _ALL - {"order_proposal_create"}
+    plan = _plan(intent, market, registered=registered)
+    steps = _step_tools(plan)
+
+    assert plan["success"] is False
+    assert plan["error"] == "required_route_tool_unavailable"
+    assert plan["degraded"] is True
+    assert plan["route_contract"]["state"] == "degraded"
+    assert plan["route_contract"]["execution_ready"] is False
+    assert plan["route_contract"]["required_tools"] == ["order_proposal_create"]
+    assert plan["route_contract"]["missing_required_tools"] == ["order_proposal_create"]
+    assert "order_proposal_create" not in steps
+    assert L.DIRECT_BROKER_MUTATION_TOOLS.isdisjoint(steps)
+    assert L.DIRECT_BROKER_MUTATION_TOOLS & registered <= set(plan["blocked_actions"])
+    assert L.DIRECT_BROKER_MUTATION_TOOLS.isdisjoint(plan["allowed_tools"])
+    assert "place_order" not in steps
+    assert plan["blocked_actions_basis"] == "live_registered_surface"
 
 
-def test_market_brief_blocks_all_mutation_and_has_empty_thresholds():
-    plan = L.build_route_plan(
-        "market_brief",
-        "kr",
-        registered_tools=_ALL,
-        verdict_thresholds=_fake_thresholds("kr", "bootstrap", empty=True),
-        policy_version=_VERSION,
-    )
-    assert plan["lane"] == "bootstrap"
-    assert plan["verdict_thresholds"]["thresholds"] == {}
-    # bootstrap sequence is all read-only -> every mutation tool is blocked
-    assert set(plan["blocked_actions"]) == (L.MUTATION_TOOLS & _ALL)
+@pytest.mark.parametrize("intent", ["buy_analysis", "profit_taking"])
+def test_proposal_lane_allows_reconcile_helpers_without_sequencing(intent: str):
+    plan = _plan(intent, "kr")
+    allowed = set(plan["allowed_tools"])
+    blocked = set(plan["blocked_actions"])
+    steps = set(_step_tools(plan))
+
+    assert L.RECONCILE_TOOLS & _ALL <= allowed
+    assert (L.RECONCILE_TOOLS & _ALL).isdisjoint(blocked)
+    assert L.RECONCILE_TOOLS.isdisjoint(steps)
 
 
-def test_profile_intersection_drops_unregistered_tools():
+def test_sell_fill_safety_preview_precedes_proposal():
+    plan = _plan("profit_taking", "kr")
+    steps = _step_tools(plan)
+
+    assert steps[-2:] == ["sell_ladder_fill_preview", "order_proposal_create"]
+    assert "sell_ladder_fill_preview" in plan["allowed_tools"]
+    assert "sell_ladder_fill_preview" not in plan["blocked_actions"]
+
+
+@pytest.mark.parametrize("intent", ["buy_analysis", "profit_taking"])
+def test_broker_preview_is_not_an_operator_step_for_proposal_lanes(intent: str):
+    plan = _plan(intent, "kr")
+
+    assert "toss_preview_order" not in _step_tools(plan)
+    assert "toss_preview_order" not in plan["allowed_tools"]
+    assert "toss_preview_order" in plan["blocked_actions"]
+
+
+def test_profile_intersection_drops_unregistered_discovery_tool():
     registered = _ALL - {"toss_place_order"}
-    plan = L.build_route_plan(
-        "discovery",
-        "kr",
-        registered_tools=registered,
-        verdict_thresholds=_fake_thresholds("kr", "discovery"),
-        policy_version=_VERSION,
-    )
-    tools = [s["tool"] for s in plan["standard_tool_sequence"]]
-    assert "toss_place_order" not in tools
+    plan = _plan("discovery", "kr", registered=registered)
+
+    assert "toss_place_order" not in _step_tools(plan)
     assert "toss_place_order" not in plan["allowed_tools"]
     assert "toss_place_order" not in plan["blocked_actions"]
 
 
-# --- ROB-658: market-aware execution tool mapping -----------------------------
-
-# crypto/US profiles register the generic place_order surface but not the
-# KR-centric toss/kis execution tools.
 _CRYPTO_MUTATION = {
     "place_order",
     "modify_order",
@@ -125,195 +239,48 @@ _CRYPTO_MUTATION = {
 _CRYPTO_REGISTERED = set(L.READ_ONLY_ADVISORY_TOOLS) | _CRYPTO_MUTATION
 
 
-def test_crypto_buy_does_not_block_generic_place_order():
-    plan = L.build_route_plan(
-        "buy_analysis",
-        "crypto",
-        registered_tools=_CRYPTO_REGISTERED,
-        verdict_thresholds=_fake_thresholds("crypto", "buy"),
-        policy_version=_VERSION,
-    )
-    # the real crypto execution tool must not be advised as blocked (ROB-658)
-    assert "place_order" not in plan["blocked_actions"]
-    # ...and it is surfaced as an allowed tool + a concrete execution step
-    assert "place_order" in plan["allowed_tools"]
-    steps = [s["tool"] for s in plan["standard_tool_sequence"]]
+def test_crypto_discovery_keeps_legacy_generic_place_order_injection():
+    plan = _plan("discovery", "crypto", registered=_CRYPTO_REGISTERED)
+    steps = _step_tools(plan)
+
+    assert plan["success"] is True
+    assert plan["route_contract"]["execution_mode"] == "legacy_direct"
     assert "place_order" in steps
-    # KR execution tools are unregistered on crypto -> dropped, never injected
+    assert "place_order" in plan["allowed_tools"]
+    assert "place_order" not in plan["blocked_actions"]
     assert "toss_place_order" not in steps
-    assert "kis_live_place_order" not in steps
-    # other generic mutations remain blocked (only place is the sanctioned step)
-    assert "modify_order" in plan["blocked_actions"]
-    assert "cancel_order" in plan["blocked_actions"]
-    # step numbers stay contiguous after injection
-    assert [s["step"] for s in plan["standard_tool_sequence"]] == list(
-        range(1, len(steps) + 1)
-    )
 
 
-def test_crypto_sell_and_discovery_surface_generic_place_order():
-    for intent in ("profit_taking", "discovery"):
-        plan = L.build_route_plan(
-            intent,
-            "crypto",
-            registered_tools=_CRYPTO_REGISTERED,
-            verdict_thresholds=_fake_thresholds("crypto", L.INTENT_TO_LANE[intent]),
-            policy_version=_VERSION,
-        )
-        assert "place_order" not in plan["blocked_actions"]
-        assert "place_order" in plan["allowed_tools"]
-        assert "place_order" in [s["tool"] for s in plan["standard_tool_sequence"]]
+@pytest.mark.parametrize("intent", ["buy_analysis", "profit_taking"])
+def test_crypto_proposal_lanes_never_restore_generic_place_order(intent: str):
+    registered = _CRYPTO_REGISTERED | {"order_proposal_create"}
+    plan = _plan(intent, "crypto", registered=registered)
 
-
-def test_crypto_market_brief_still_blocks_all_mutation():
-    # bootstrap has no execution step -> even crypto's place_order stays blocked
-    plan = L.build_route_plan(
-        "market_brief",
-        "crypto",
-        registered_tools=_CRYPTO_REGISTERED,
-        verdict_thresholds=_fake_thresholds("crypto", "bootstrap", empty=True),
-        policy_version=_VERSION,
-    )
-    assert "place_order" in plan["blocked_actions"]
-    assert set(plan["blocked_actions"]) == (L.MUTATION_TOOLS & _CRYPTO_REGISTERED)
-
-
-def test_kr_buy_still_blocks_generic_place_order_no_regression():
-    # KR routes execution through toss/kis; the generic place_order stays blocked.
-    plan = L.build_route_plan(
-        "buy_analysis",
-        "kr",
-        registered_tools=_ALL,
-        verdict_thresholds=_fake_thresholds("kr", "buy"),
-        policy_version=_VERSION,
-    )
-    assert "place_order" in plan["blocked_actions"]
+    assert plan["success"] is True
+    assert "place_order" not in _step_tools(plan)
     assert "place_order" not in plan["allowed_tools"]
-    steps = [s["tool"] for s in plan["standard_tool_sequence"]]
-    assert "place_order" not in steps
-    # KR execution tools are still the sanctioned, non-blocked path
-    assert "toss_place_order" not in plan["blocked_actions"]
+    assert "place_order" in plan["blocked_actions"]
 
 
-def test_hard_constraints_reference_policy_keys_not_numbers():
-    plan = L.build_route_plan(
-        "buy_analysis",
-        "kr",
-        registered_tools=_ALL,
-        verdict_thresholds=_fake_thresholds("kr", "buy"),
-        policy_version=_VERSION,
-    )
-    joined = " ".join(plan["hard_constraints"])
-    assert "sell.loss_guard_min_multiple" in joined
-    assert "1.01" not in joined
+def test_hard_constraints_reference_policy_and_proposal_contract():
+    buy = " ".join(_plan("buy_analysis", "kr")["hard_constraints"])
+    sell = " ".join(_plan("profit_taking", "kr")["hard_constraints"])
+
+    assert "sell.loss_guard_min_multiple" in buy
+    assert "1.01" not in buy
+    for joined in (buy, sell):
+        assert "order_proposal_create" in joined
+        assert "Telegram human approval" in joined
+        assert "broker evidence" in joined
+        assert "toss_place_order" not in joined
+        assert "kis_live_place_order" not in joined
+        assert "toss_cancel_order" not in joined
 
 
 def test_buy_discovery_have_negative_class_constraint():
-    # ROB-712 — buy + discovery lanes must encode the negative-class recording
-    # convention: deferred_no_action items keep confidence + a resolvable
-    # forecast so calibration isn't censored.
     for lane in ("buy", "discovery"):
         joined = " ".join(L.HARD_CONSTRAINTS[lane]).lower()
         assert "deferred_no_action" in joined
         assert "confidence" in joined
         assert "forecast" in joined
-
-
-# --- ROB-660: sell lane account routing ---------------------------------------
-
-
-def test_sell_lane_surfaces_kis_place_and_toss_cancel_as_steps():
-    plan = L.build_route_plan(
-        "profit_taking",
-        "kr",
-        registered_tools=_ALL,
-        verdict_thresholds=_fake_thresholds("kr", "sell"),
-        policy_version=_VERSION,
-    )
-    steps = [s["tool"] for s in plan["standard_tool_sequence"]]
-    for tool in ("toss_cancel_order", "kis_live_place_order"):
-        assert tool in steps, tool
-        assert tool in plan["allowed_tools"], tool
-        assert tool not in plan["blocked_actions"], tool
-    # step numbers stay contiguous 1..n after the two inserts
-    assert [s["step"] for s in plan["standard_tool_sequence"]] == list(
-        range(1, len(steps) + 1)
-    )
-
-
-def test_sell_lane_history_helpers_allowed_but_not_sequenced():
-    plan = L.build_route_plan(
-        "profit_taking",
-        "kr",
-        registered_tools=_ALL,
-        verdict_thresholds=_fake_thresholds("kr", "sell"),
-        policy_version=_VERSION,
-    )
-    steps = [s["tool"] for s in plan["standard_tool_sequence"]]
-    for tool in ("kis_live_get_order_history", "toss_get_order_history"):
-        assert tool in plan["allowed_tools"], tool
-        assert tool not in plan["blocked_actions"], tool
-        assert tool not in steps, tool
-
-
-def test_buy_lane_history_helpers_allowed_but_not_sequenced():
-    # ROB-666: buy lane needs the order-status helpers to confirm a buy fill and
-    # to check KIS regular-session survival after 15:30 (ROB-657 rule). Symmetric
-    # to the sell-lane allowance (ROB-660): allowed, never in the ordered sequence.
-    plan = L.build_route_plan(
-        "buy_analysis",
-        "kr",
-        registered_tools=_ALL,
-        verdict_thresholds=_fake_thresholds("kr", "buy"),
-        policy_version=_VERSION,
-    )
-    steps = [s["tool"] for s in plan["standard_tool_sequence"]]
-    for tool in ("kis_live_get_order_history", "toss_get_order_history"):
-        assert tool in plan["allowed_tools"], tool
-        assert tool not in plan["blocked_actions"], tool
-        assert tool not in steps, tool
-
-
-def test_sell_lane_routing_does_not_leak_into_buy_lane():
-    buy = L.build_route_plan(
-        "buy_analysis",
-        "kr",
-        registered_tools=_ALL,
-        verdict_thresholds=_fake_thresholds("kr", "buy"),
-        policy_version=_VERSION,
-    )
-    # sell-lane-only execution tools remain blocked in the buy lane (no cross-lane
-    # leak). The order-history helpers are now allowed in both lanes (ROB-666), so
-    # they are asserted separately in test_buy_lane_history_helpers_allowed_*.
-    assert "toss_cancel_order" in buy["blocked_actions"]
-
-
-def test_sell_lane_new_kr_tools_dropped_when_unregistered_on_crypto():
-    plan = L.build_route_plan(
-        "profit_taking",
-        "crypto",
-        registered_tools=_CRYPTO_REGISTERED,
-        verdict_thresholds=_fake_thresholds("crypto", "sell"),
-        policy_version=_VERSION,
-    )
-    steps = [s["tool"] for s in plan["standard_tool_sequence"]]
-    assert "toss_cancel_order" not in steps
-    assert "kis_live_place_order" not in steps
-    assert "toss_cancel_order" not in plan["allowed_tools"]
-    # ROB-658 generic execution injection still fires on crypto sell
-    assert "place_order" in steps
-    assert "place_order" not in plan["blocked_actions"]
-
-
-def test_sell_lane_hard_constraints_document_routing_and_cancel_first():
-    plan = L.build_route_plan(
-        "profit_taking",
-        "kr",
-        registered_tools=_ALL,
-        verdict_thresholds=_fake_thresholds("kr", "sell"),
-        policy_version=_VERSION,
-    )
-    joined = " ".join(plan["hard_constraints"])
-    assert "holding account" in joined
-    assert "kis_live_place_order" in joined
-    assert "toss_cancel_order" in joined
+        assert "outcome_rule_version='window-touch-v1-high-gte-low-lte'" in joined

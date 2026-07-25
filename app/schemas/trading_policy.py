@@ -8,6 +8,7 @@ fails loudly instead of silently dropping a key.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -20,6 +21,20 @@ RuleConditionValue = int | float | str | bool | list[int | float | str | bool]
 PolicyComparison = Literal["gt", "gte", "lt", "lte", "eq"]
 
 
+class OneShareExceptionPolicy(BaseModel):
+    """ROB-956 — US shares can't be bought fractionally; if a single share's
+    price exceeds a USD notional band's ceiling, allow exactly one share
+    instead of blocking the entry outright. absolute_ceiling_usd still hard-
+    blocks ultra-high-priced symbols (BRK.A/NVR-class); max_deep_rungs caps
+    additional averaging-down exposure on exception entries."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    absolute_ceiling_usd: float
+    max_deep_rungs: int
+
+
 class PolicyThreshold(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -28,6 +43,7 @@ class PolicyThreshold(BaseModel):
     unit: str
     semantics: str
     of: int | None = None
+    one_share_exception: OneShareExceptionPolicy | None = None
 
 
 class PolicyDecisionRuleTier(BaseModel):
@@ -71,6 +87,7 @@ class PolicyRecoveryGate(BaseModel):
     of: int
     missing_or_null_threshold: str
     conditions: list[PolicyRecoveryCondition]
+    advisory_context: list[PolicyRecoveryCondition] = Field(default_factory=list)
 
 
 class PolicySupportResistanceRule(BaseModel):
@@ -186,6 +203,28 @@ class CrashDayPolicy(BaseModel):
     actions: CrashDayActions
 
 
+class UserStance(BaseModel):
+    """ROB-948 — user investment-stance advisory. Cited by session judgment
+    (upside/downside weighting) alongside other advisory context; does not
+    override fail-closed risk guards (loss-cut sizing, ladder guards) in
+    code. Same advisory-only pattern as ROB-932 crash_day."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    stance: str
+    implications: list[str]
+    risk_scenario: str
+    review_condition: str
+    review_date: str
+
+    @field_validator("review_date")
+    @classmethod
+    def validate_review_date_parses(cls, value: str) -> str:
+        date.fromisoformat(value)
+        return value
+
+
 class TradingPolicyDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -200,3 +239,4 @@ class TradingPolicyDocument(BaseModel):
     market_rules: dict[Literal["crypto"], CryptoMarketRules]
     market_overrides: dict[Market, dict[str, ThresholdValue]]
     crash_day: CrashDayPolicy
+    user_stances: list[UserStance]

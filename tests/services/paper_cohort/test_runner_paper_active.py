@@ -55,7 +55,17 @@ from tests.services.paper_validation.conftest import (
     stable_hash,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    # ROB-968: hold the investment-report cleanup advisory lock during each
+    # test. Other workers' helper-session cleanups TRUNCATE the review.* report
+    # family (AccessExclusiveLock, FK-propagated); this file's multi-table DML
+    # transactions deadlocked against them 3/3 once the ROB-963 rebalance
+    # co-scheduled the files (runs 29643108579 / 29643559556). Holding the same
+    # advisory lock removes the cross-transaction lock-order cycle by design
+    # (see tests/infra/test_schema_barrier.py Task 6).
+    pytest.mark.usefixtures("investment_reports_cleanup_lock"),
+]
 
 
 @pytest.fixture(autouse=True)

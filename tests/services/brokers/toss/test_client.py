@@ -726,3 +726,143 @@ async def test_warnings_fetches_and_parses() -> None:
     assert warnings[0].exchange == "KRX"
     assert warnings[0].start_date == "2026-06-12"
     assert warnings[0].end_date is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["place", "cancel"])
+async def test_mutation_hook_runs_after_limiter_token_and_account_resolution(
+    operation,
+) -> None:
+    """The final gate sees every pre-send await and blocks mutation HTTP=0."""
+    from app.services.brokers.kis.pre_send import PreSendFreshnessError
+
+    paths: list[str] = []
+    limiter_groups = []
+    token_calls = 0
+
+    class TokenManager(_TokenManager):
+        async def get_access_token(
+            self, *, force_reissue: bool = False, failed_token: str | None = None
+        ) -> str:
+            nonlocal token_calls
+            del force_reissue, failed_token
+            token_calls += 1
+            return "token-1"
+
+    class Limiter:
+        async def acquire(self, group) -> None:
+            limiter_groups.append(group)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/api/v1/accounts":
+            return httpx.Response(
+                200,
+                json=_json([{"accountNo": "1", "accountSeq": 7, "accountType": "B"}]),
+                request=request,
+            )
+        raise AssertionError("blocked hook must precede Toss mutation HTTP")
+
+    async def block() -> None:
+        assert token_calls == 2
+        assert paths == ["/api/v1/accounts"]
+        assert len(limiter_groups) == 2
+        raise PreSendFreshnessError(("approval_window:EXPIRED",))
+
+    client = TossReadClient(
+        token_manager=TokenManager(),
+        account_seq=None,
+        transport=httpx.MockTransport(handler),
+        rate_limiter=Limiter(),
+    )
+    try:
+        with pytest.raises(PreSendFreshnessError):
+            if operation == "place":
+                await client.place_order(
+                    {
+                        "symbol": "AAPL",
+                        "side": "BUY",
+                        "orderType": "LIMIT",
+                        "quantity": "1",
+                        "price": "150",
+                        "clientOrderId": "proposal-id",
+                    },
+                    pre_send_hook=block,
+                )
+            else:
+                await client.cancel_order(
+                    "broker-order-id",
+                    pre_send_hook=block,
+                )
+    finally:
+        await client.aclose()
+
+    assert paths == ["/api/v1/accounts"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["place", "cancel"])
+async def test_mutation_retry_rechecks_hook_before_second_http(
+    monkeypatch, operation
+) -> None:
+    """A 429-proven rejection may retry, but a closed window blocks re-send."""
+    from app.services.brokers.kis.pre_send import PreSendFreshnessError
+
+    http_calls = 0
+    hook_calls = 0
+
+    async def no_sleep(delay: float) -> None:
+        return None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal http_calls
+        http_calls += 1
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "0"},
+            json={
+                "error": {
+                    "requestId": "rate-1",
+                    "code": "too-many-requests",
+                    "message": "slow down",
+                }
+            },
+            request=request,
+        )
+
+    async def allow_then_block() -> None:
+        nonlocal hook_calls
+        hook_calls += 1
+        if hook_calls == 2:
+            raise PreSendFreshnessError(("approval_window:DEFER_SESSION_CLOSED",))
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        account_seq=999,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(PreSendFreshnessError):
+            if operation == "place":
+                await client.place_order(
+                    {
+                        "symbol": "AAPL",
+                        "side": "BUY",
+                        "orderType": "LIMIT",
+                        "quantity": "1",
+                        "price": "150",
+                        "clientOrderId": "proposal-id",
+                    },
+                    pre_send_hook=allow_then_block,
+                )
+            else:
+                await client.cancel_order(
+                    "broker-order-id",
+                    pre_send_hook=allow_then_block,
+                )
+    finally:
+        await client.aclose()
+
+    assert hook_calls == 2
+    assert http_calls == 1

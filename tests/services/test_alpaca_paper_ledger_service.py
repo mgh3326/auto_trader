@@ -47,6 +47,7 @@ def test_alpaca_paper_ledger_model_columns():
         "broker",
         "account_mode",
         "lifecycle_state",
+        "terminalized_at",
         "signal_symbol",
         "signal_venue",
         "execution_symbol",
@@ -128,6 +129,7 @@ def test_alpaca_paper_ledger_partial_unique_indexes():
     # New correlation/record_kind lookup indexes
     assert "ix_alpaca_paper_ledger_correlation_id" in index_names
     assert "ix_alpaca_paper_ledger_record_kind" in index_names
+    assert "ix_alpaca_paper_ledger_terminalized_at" in index_names
 
 
 @pytest.mark.unit
@@ -1374,6 +1376,16 @@ def test_service_is_valid_python():
 @pytest.mark.asyncio
 @pytest.mark.unit
 async def test_record_status_with_cancel_evidence_derives_canceled():
+    """ROB-953: asserts the TRANSITION, not just the SET clause.
+
+    Do not trust a green CI here on the SET value alone — the previous version of
+    this test only compiled `update_params["lifecycle_state"]` and therefore
+    stayed green while a WHERE guard silently filtered the anomaly row out,
+    blocking the legitimate anomaly -> canceled transition entirely. A false
+    green. The WHERE clause is now asserted alongside the SET clause, and
+    `test_record_status_anomaly_to_canceled_transition_actually_lands` proves the
+    same path against a real row.
+    """
     from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
 
     row = _make_row(cancel_status="canceled", lifecycle_state="anomaly")
@@ -1385,8 +1397,23 @@ async def test_record_status_with_cancel_evidence_derives_canceled():
         order={"id": "bid1", "status": "canceled", "filled_qty": "0"},
     )
     update_stmt = db.execute.call_args_list[1].args[0]
-    update_params = update_stmt.compile().params
-    assert update_params["lifecycle_state"] == "canceled"
+    compiled = update_stmt.compile()
+    assert compiled.params["lifecycle_state"] == "canceled"
+
+    # The row's CURRENT state (anomaly) must not be excluded by the write guard,
+    # or the derived "canceled" would never be applied to any row.
+    # Compile WHERE criteria separately: the terminalized_at SET expression also
+    # contains the full terminal-state set, but that CASE is not a write guard.
+    guarded_states = set()
+    for criterion in update_stmt._where_criteria:
+        where_params = criterion.compile().params
+        for key, value in where_params.items():
+            if key.startswith("lifecycle_state_") and isinstance(value, list):
+                guarded_states.update(value)
+    assert guarded_states, "expected an immutable-state guard in the WHERE clause"
+    assert "anomaly" not in guarded_states
+    assert "canceled" not in guarded_states
+    assert guarded_states == {"position_reconciled", "closed", "final_reconciled"}
 
 
 @pytest.mark.asyncio
@@ -1405,6 +1432,68 @@ async def test_record_status_without_cancel_evidence_derives_anomaly():
     update_stmt = db.execute.call_args_list[1].args[0]
     update_params = update_stmt.compile().params
     assert update_params["lifecycle_state"] == "anomaly"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_status_does_not_update_final_reconciled_row():
+    from app.models.review import AlpacaPaperOrderLedger
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(lifecycle_state="final_reconciled", record_kind="execution")
+    db = _mock_db_with_row(row)
+
+    await AlpacaPaperLedgerService(db).record_status(
+        "test-client-001",
+        order={"id": "bid1", "status": "filled", "filled_qty": "1"},
+    )
+
+    update_stmt = db.execute.call_args_list[1].args[0]
+    compiled = str(update_stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "lifecycle_state NOT IN" in compiled
+    assert "final_reconciled" in compiled
+    assert AlpacaPaperOrderLedger.__tablename__ in compiled
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_record_status_rowcount_zero_skips_raw_response_accumulation():
+    """ROB-953 LOW follow-up: a guard-rejected write (rowcount=0, e.g. a
+    concurrent write already landed a higher-lifecycle state) must not
+    accumulate raw_response evidence for a transition that never persisted.
+    The shipped code already gates `_accumulate_raw_response` on
+    `write_applied` — this was unguarded by any test, so a regression that
+    dropped the gate would have shipped silently (a prior audit found
+    `write_applied=True` mutations still left the whole test suite green)."""
+    from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
+
+    row = _make_row(lifecycle_state="submitted", record_kind="execution")
+    db = AsyncMock()
+
+    class _SelectResult:
+        def scalar_one_or_none(self):
+            return row
+
+    class _UpdateResult:
+        rowcount = 0
+
+    db.execute = AsyncMock(side_effect=[_SelectResult(), _UpdateResult()])
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    svc = AlpacaPaperLedgerService(db)
+    result = await svc.record_status(
+        "test-client-001",
+        order={"id": "bid1", "status": "filled", "filled_qty": "1"},
+        raw_response={"reconcile_order": {"status": "filled"}},
+        return_write_result=True,
+    )
+
+    assert result.applied is False
+    # Exactly 2 execute calls: the read (get_execution_by_client_order_id) and
+    # the guarded UPDATE. A 3rd call would be the raw_responses-accumulation
+    # UPDATE, which must never fire when the guard rejected the write.
+    assert db.execute.call_count == 2
 
 
 @pytest.mark.asyncio

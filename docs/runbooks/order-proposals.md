@@ -87,12 +87,34 @@ See the full design in
   callback) — so neither a stale cached message nor a duplicate callback can
   ever re-trigger approval/deny. See Troubleshooting for the two error
   strings.
+- **Approval-window defense in depth.** Dispatch checks `valid_until` and the
+  broker/market execution session before minting a nonce or publishing a
+  button. Callback handling repeats that check before nonce consumption;
+  revalidation repeats it before provider preview, and a transport hook
+  re-resolves it at the final KIS, Toss, or Upbit HTTP boundary for both
+  submit and cancel. The evidence carries the current allowed interval end,
+  so crossing the close while an awaited calendar/preview call is in flight
+  also fails closed. `now >= valid_until` is expired. Missing, malformed, or
+  timezone-naive validity, a missing/mismatched policy stamp, and
+  unknown/stale calendar or venue evidence fail closed. US DAY proposals use
+  authoritative regular-session calendars (holiday, half-day, and DST aware);
+  KR preserves KRX regular and fresh, positively confirmed NXT carry; Upbit
+  crypto is 24/7. Protective exits are deliberately validity-only at this
+  boundary: a non-null `exit_intent` (including `loss_cut` and the
+  forward-compatible `defensive_trim`) bypasses session/calendar resolution
+  and approval-window policy-stamp binding at the common evaluator entry
+  point. This keeps the confirmation and fresh broker guards reachable even
+  when calendar evidence is unavailable. Expired, missing, malformed, or
+  timezone-naive `valid_until` still fails closed, and `exit_reason` without
+  `exit_intent` does not qualify.
 - **Batch nonce is not proposal authorization.** ROB-870 atomically consumes a
-  separate batch nonce before processing its frozen member list. It then
-  consumes each member's snapshotted proposal nonce through the same single-
-  proposal approval path. Replaying the batch trigger cannot run the list
-  twice, and a stale or already-used member nonce is skipped rather than
-  bypassed.
+  separate batch nonce only after every locked member passes the approval-
+  window preflight and the exact ordered `(proposal_id, nonce snapshot)`
+  membership still matches the displayed batch. One missing, changed,
+  expired, session-closed, or calendar-unknown member blocks the exact batch
+  with zero durable batch/member nonce consumption. It then consumes each
+  member's snapshotted proposal nonce through the same single-proposal
+  approval path. Replaying the batch trigger cannot run the list twice.
 - **Chat allowlist (authz, separate from the webhook secret).**
   `handle_callback_update` rejects any callback whose `chat.id` is not in
   `settings.order_proposals_telegram_chat_allowlist`
@@ -275,6 +297,12 @@ Persists a new proposal group + its rungs. `rungs` is a list of
 "notional": str|None}`. NOT a broker mutation. Returns
 `{success, proposal_id, lifecycle_state, rungs}` on success or
 `{success: false, error}` on validation failure.
+
+When proposal persistence succeeds but approval dispatch is blocked, the
+success response additionally contains
+`approval_dispatch={status:"blocked", code, observed_at, valid_until,
+policy_stamp, session_evidence, detail}`. This is not a broker rejection:
+no Telegram approval card/nonce and no broker preview/submit/cancel occurred.
 
 If `supersedes_proposal_id` is given, the referenced proposal is marked
 `superseded` and lineage (`root_proposal_id`, `supersedes_proposal_id`) is
@@ -582,14 +610,18 @@ batch does not weaken any action-specific fresh broker checks.
 
 Clicking `전체 승인` performs these steps:
 
-1. Consume and commit the batch nonce once, freezing the ordered members.
-2. Re-read each proposal and rerun the eligibility checks at click time.
-3. Process each remaining member in its own transaction through the normal
+1. Lock and freeze the exact ordered member/nonce-snapshot set shown by the
+   batch.
+2. Re-read every proposal, rerun the approval-window checks at one common
+   instant, and fail the whole batch if a member is missing, changed, expired,
+   session-closed, or calendar-unknown.
+3. Atomically consume and commit the batch nonce only after steps 1–2 pass.
+4. Process each member in its own transaction through the normal
    single-proposal nonce, approval audit, commit lease, fresh preview, guards,
    and submit path.
-4. Continue after a skipped or failed member and edit each individual message
+5. Continue after a skipped or failed member and edit each individual message
    with its own outcome.
-5. Replace the summary with grouped `승인 완료`, `재확인 필요`,
+6. Replace the summary with grouped `승인 완료`, `재확인 필요`,
    `제외/건너뜀`, and `실패` results.
 
 The individual `✅ 승인` / `❌ 거부` messages remain available. A ROB-861
@@ -753,28 +785,38 @@ submitted blind would defeat the entire point of a human-approval gate.
    the rendered text). `_resolve_proposal_id` then matches the 8-char prefix
    against `proposed`-state candidates, failing closed (no match / multiple
    matches → unresolved) rather than guessing.
-3. **Nonce replay guard.** `consume_approval_nonce` takes a row lock
+3. **Expiry/session/policy-stamp gate.** Before any nonce is consumed, the
+   callback requires a timezone-aware, still-future `valid_until`, re-derives
+   the proposal's broker/market session capability, and compares the result
+   with the mandatory dispatch policy stamp. Expiry converges through
+   proposal- or rung-scoped expiry transitions without rewriting a sibling
+   that already has broker evidence. A still-valid closed session returns
+   `DEFER_SESSION_CLOSED` and shows the next confirmed session, without
+   scheduling or automatic resubmission. Unknown/stale evidence fails closed.
+4. **Nonce replay guard.** `consume_approval_nonce` takes a row lock
    (`for_update=True`) and marks the nonce used; a second click with the
    same already-consumed nonce raises `nonce_replay`, and a click after a
    fresh nonce has already been minted for a newer message (e.g. a
    `NEEDS_RECONFIRM` cycle) raises `nonce_mismatch` — see Troubleshooting
    for the distinction.
-4. **Loss-cut first click.** For `exit_intent="loss_cut"`, the initial `op`
+5. **Loss-cut first click.** For `exit_intent="loss_cut"`, the initial `op`
    click stops here after a fresh read-only evidence preview. It consumes and
    audits the first nonce, edits the message with order/price/loss/slip/retro
    evidence, and mints a 90-second `lc` nonce bound to proposal/rung/revision.
    It never calls `revalidate_and_submit`. A valid `lc` click consumes and
    audits the second nonce, then continues below. Non-loss-cut proposals keep
    the existing one-click flow.
-5. **Commit lease.** For a normal approve or valid loss-cut confirmation,
+6. **Commit lease.** For a normal approve or valid loss-cut confirmation,
    `acquire_commit_lease` takes a
    short-lived (`lease_seconds=10` default) in-flight lock on the group row
    — this is what prevents a double-tap on the approve button (two Telegram
    updates arriving almost simultaneously) from racing two submits. If the
    lease is already held, the second click is answered "처리 중" and does
    nothing further.
-6. **Fresh dry-run preview → broker-specific checks.** `revalidate_and_submit`
-   re-runs every `pending_approval` rung through a fresh
+7. **Fresh dry-run preview → broker-specific checks.** Before calling a
+   provider preview, `revalidate_and_submit` independently repeats the
+   expiry/session/stamp gate. It then re-runs every `pending_approval` rung
+   through a fresh
    `place_order_fn(dry_run=True, ...)` call. For `kis_live` equities and
    `upbit` crypto this delegates to `_place_order_impl`, which enforces the
    applicable ROB-800 guards and repeats final guards on live
@@ -791,27 +833,35 @@ submitted blind would defeat the entire point of a human-approval gate.
    click regardless of the create-time retrospective check. A preview guard
    rejection comes back as `guard_blocked` and the rung returns to
    `pending_approval` (retryable, not terminal).
-7. **Price/qty comparison against what the operator approved.** The fresh
+8. **Price/qty comparison against what the operator approved.** The fresh
    preview's normalized `price`/`quantity` is compared (`_norm`, which
    canonicalizes `NUMERIC(38,12)` DB values against fresh preview values so
    `Decimal("2226000.000000000000")` and `Decimal("2226000")` compare equal)
    against the rung's stored `limit_price`/`quantity`. Market-order rungs
    compare quantity only (`limit_price` is always `None` by design for
    market orders, so comparing it would always spuriously mismatch).
-8. **Unchanged → submit; changed → `NEEDS_RECONFIRM`.** If the comparison
-   matches, the rung transitions `approved → submitting` and is actually
-   submitted (`dry_run=False`) using the **freshly minted** `approval_hash`
-   from step 5's preview — never the one from the original proposal-create
-   preview. Toss receives a privately bound client ID derived only from the
-   proposal ID and rung for both preview and submit, so retries and date
-   boundaries cannot change the identity; preview must return the exact bound
-   ID or submission fails closed. The proposal correlation and rung use the
-   same private binding and are not operator-controlled MCP parameters. Toss
-   proposal numerics are converted at the adapter boundary to canonical
-   `str | int` values, never floats. After an accepted Toss send, the proposal
-   ledger records `toss_place_order`'s actual `approval_hash_digest`; it does
-   not substitute the raw approval token. If the comparison does *not* match, the
-   rung transitions to
+9. **Unchanged → submit; changed → `NEEDS_RECONFIRM`.** If the comparison
+   matches, the approval-window policy is checked before entering submission
+   and again by a pre-send hook immediately before the provider HTTP
+   submit/cancel. Only then can a mutation leave the process. An initial
+   pre-send block proves HTTP=0. A retry-time block can follow one explicit
+   429/auth rejection, but never an accepted or ambiguous mutation (Upbit
+   mutations are one-shot). On that proof the callback restores the
+   rung/lease and, when no sibling mutation occurred, the durable proposal
+   nonce to its retryable pre-click state; expiry instead converges terminally.
+   The submit uses the **freshly
+   minted** `approval_hash` from step 7's preview — never the one from the
+   original proposal-create preview. Toss receives a privately bound client
+   ID derived only from the proposal ID and rung for both preview and submit,
+   so retries and date boundaries cannot change the identity; preview must
+   return the exact bound ID or submission fails closed. The proposal
+   correlation and rung use the same private binding and are not
+   operator-controlled MCP parameters. Toss proposal numerics are converted
+   at the adapter boundary to canonical `str | int` values, never floats.
+   After an accepted Toss send, the proposal ledger records
+   `toss_place_order`'s actual `approval_hash_digest`; it does not substitute
+   the raw approval token. If the comparison does *not* match, the rung
+   transitions to
    `needs_reconfirm` and a brand-new Telegram message is sent
    (`build_approval_message(..., diff=...)`) showing an explicit
    before/after, with a freshly minted `approval_nonce` — the operator must
@@ -819,7 +869,7 @@ submitted blind would defeat the entire point of a human-approval gate.
    distinction: auto-revalidation is not the same as auto-approving a
    payload change.** The system re-checks freely; it never silently accepts
    a different price/qty on the operator's behalf.
-9. **Submit outcome classification.** `_classify_submit` records `acked`
+10. **Submit outcome classification.** `_classify_submit` records `acked`
    (market orders) or `resting` (limit orders) on explicit broker success,
    `rejected` on explicit broker/guard rejection, and `unverified` — never a
    terminal state — on anything ambiguous (submit exception, unrecognized
@@ -848,7 +898,7 @@ underneath `_default_place_order_fn` has its own `approval_hash` TTL (~300s,
 ROB-651/ROB-653) meant to bound the time between "operator saw this exact
 price/qty" and "it actually got submitted." Because `revalidate_and_submit`
 mints a **brand-new** `approval_hash` from a **fresh** preview at the moment
-of submission (step 5–7 above), that hash's age at submit time is always
+of submission (steps 7–9 above), that hash's age at submit time is always
 ~0 seconds — the underlying 300s TTL is structurally never at risk of
 tripping from a slow *human* round-trip (an operator taking 20 minutes to
 click "approve" doesn't matter; what matters is the freshness of the preview

@@ -25,8 +25,12 @@ _HOUR_MS = 3_600_000
 def _c(close, high, low, *, ts=0) -> Candle:
     d = lambda x: Decimal(str(x))  # noqa: E731
     return Candle(
-        open_time_ms=ts, open=d(close), high=d(high), low=d(low),
-        close=d(close), close_time_ms=ts,
+        open_time_ms=ts,
+        open=d(close),
+        high=d(high),
+        low=d(low),
+        close=d(close),
+        close_time_ms=ts,
     )
 
 
@@ -49,7 +53,9 @@ def test_bullish_fvg_detected() -> None:
 
 
 def test_bullish_fvg_absent_in_steady_rise() -> None:
-    candles = [_c(100 + 0.1 * i, 100 + 0.1 * i + 0.3, 100 + 0.1 * i - 0.3) for i in range(5)]
+    candles = [
+        _c(100 + 0.1 * i, 100 + 0.1 * i + 0.3, 100 + 0.1 * i - 0.3) for i in range(5)
+    ]
     assert not has_bullish_fvg(candles, lookback=3)
 
 

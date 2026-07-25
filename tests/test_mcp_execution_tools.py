@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 from app.core.timezone import now_kst
-from app.mcp_server.tooling.execution_comment_tools import format_execution_comment
 from tests._mcp_tooling_support import build_tools
 
 
@@ -93,67 +92,6 @@ def _stock_info() -> SimpleNamespace:
         name="Samsung Electronics",
         instrument_type="equity_kr",
     )
-
-
-@pytest.mark.asyncio
-async def test_execution_tools_are_registered() -> None:
-    tools = build_tools()
-
-    assert "get_trade_journal" in tools
-    assert "format_execution_comment" not in tools
-    assert "get_latest_market_brief" in tools
-    assert "get_market_reports" in tools
-
-
-@pytest.mark.asyncio
-async def test_format_execution_comment_fill_markdown() -> None:
-    result = await format_execution_comment(
-        stage="fill",
-        symbol="005930",
-        side="buy",
-        filled_qty=3,
-        filled_price=71200,
-        currency="KRW ",
-        journal_context={
-            "thesis": "Memory cycle recovery",
-            "strategy": "swing",
-            "target_price": 84000,
-            "stop_loss": 68000,
-            "min_hold_days": 5,
-        },
-        market_brief="Latest brief: buy, confidence 82.",
-    )
-
-    assert result["success"] is True
-    assert result["stage"] == "fill"
-    markdown = result["markdown"]
-    assert "005930" in markdown
-    assert "Memory cycle recovery" in markdown
-    assert "KRW 71,200.00" in markdown
-    assert "Latest brief: buy, confidence 82." in markdown
-
-
-@pytest.mark.asyncio
-async def test_format_execution_comment_follow_up_markdown() -> None:
-    result = await format_execution_comment(
-        stage="follow_up",
-        symbol="005930",
-        side="sell",
-        filled_qty=3,
-        filled_price=80000,
-        currency="KRW ",
-        journal_context={"entry_price": 70000},
-        analysis_summary="Momentum is fading near resistance.",
-        next_action="hold",
-    )
-
-    assert result["success"] is True
-    assert result["stage"] == "follow_up"
-    markdown = result["markdown"]
-    assert "후속 판단" in markdown
-    assert "+14.29%" in markdown
-    assert "Momentum is fading near resistance." in markdown
-    assert "**hold**" in markdown
 
 
 @pytest.mark.asyncio

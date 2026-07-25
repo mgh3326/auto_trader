@@ -151,7 +151,13 @@ async def _execute_order(
         if is_mock:
             raise ValueError(_MOCK_CRYPTO_ERROR)
         return await _execute_crypto_order(
-            symbol, side, order_type, quantity, price, identifier=identifier
+            symbol,
+            side,
+            order_type,
+            quantity,
+            price,
+            identifier=identifier,
+            pre_send_hook=pre_send_hook,
         )
     if market_type == "equity_kr":
         return await _execute_kr_order(
@@ -176,17 +182,26 @@ async def _execute_crypto_order(
     quantity: float | None,
     price: float | None,
     identifier: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     if side == "buy":
         if order_type == "market":
             price_str = f"{price:.0f}" if price else "0"
             return await upbit_service.place_market_buy_order(
-                symbol, price_str, identifier=identifier
+                symbol,
+                price_str,
+                identifier=identifier,
+                pre_send_hook=pre_send_hook,
             )
         volume_str = f"{quantity:.8f}"
         adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
         return await upbit_service.place_buy_order(
-            symbol, adjusted_price, volume_str, "limit", identifier=identifier
+            symbol,
+            adjusted_price,
+            volume_str,
+            "limit",
+            identifier=identifier,
+            pre_send_hook=pre_send_hook,
         )
 
     holdings = await _get_holdings_for_order(symbol, "crypto")
@@ -197,12 +212,19 @@ async def _execute_crypto_order(
     volume_str = f"{volume:.8f}"
     if order_type == "market":
         return await upbit_service.place_market_sell_order(
-            symbol, volume_str, identifier=identifier
+            symbol,
+            volume_str,
+            identifier=identifier,
+            pre_send_hook=pre_send_hook,
         )
 
     adjusted_price = upbit_service.adjust_price_to_upbit_unit(price)
     return await upbit_service.place_sell_order(
-        symbol, volume_str, f"{adjusted_price}", identifier=identifier
+        symbol,
+        volume_str,
+        f"{adjusted_price}",
+        identifier=identifier,
+        pre_send_hook=pre_send_hook,
     )
 
 
@@ -819,14 +841,21 @@ async def _execute_and_record(
                     _duplicate_order_intent_message(intent_account_scope)
                 )
 
-    async def _release_reserved_mock_mirror_intent_after_send_failure(
+    async def _release_reserved_intent_after_send_failure(
         exc: BaseException,
+        *,
+        proven_not_sent: bool = False,
     ) -> bool:
         if (
             not intent_reserved
-            or intent_account_scope != "kis_mock"
             or intent_key is None
-            or mirror_cohort != "mock_counterfactual"
+            or (
+                not proven_not_sent
+                and (
+                    intent_account_scope != "kis_mock"
+                    or mirror_cohort != "mock_counterfactual"
+                )
+            )
         ):
             return False
 
@@ -861,11 +890,10 @@ async def _execute_and_record(
         return False
 
     try:
-        # ROB-843 P1: the pre_send_hook (KIS-mock-scalping only) is threaded all
-        # the way into the transport and fired immediately before EACH real HTTP
-        # mutation (including token-refresh/retry re-sends), so a book that went
-        # stale during token/limiter/client/NXT preflight blocks the POST with
-        # zero broker calls. Live callers pass no hook → identical behavior.
+        # The optional pre_send_hook is threaded to the broker transport and
+        # fired immediately before each real mutation HTTP attempt (including
+        # eligible token/rate-limit re-sends). Callers without a hook retain
+        # the existing execution behavior.
         execution_result = await _execute_order(
             symbol=normalized_symbol,
             side=side,
@@ -883,7 +911,10 @@ async def _execute_and_record(
             # result normalizer proves accepted/rejected, the outcome is unknown.
             send_outcome.mark_unknown()
     except PreSendFreshnessError as fresh_exc:
-        await _release_reserved_mock_mirror_intent_after_send_failure(fresh_exc)
+        await _release_reserved_intent_after_send_failure(
+            fresh_exc,
+            proven_not_sent=True,
+        )
         logger.info(
             "pre-send freshness block symbol=%s side=%s reasons=%s",
             normalized_symbol,
@@ -902,9 +933,7 @@ async def _execute_and_record(
         # Preserve the transport boundary's explicit state: token/client setup
         # can raise before dispatch (NOT_CREATED), while an actual send marks
         # UNKNOWN immediately before crossing the HTTP boundary.
-        retry_allowed = await _release_reserved_mock_mirror_intent_after_send_failure(
-            send_exc
-        )
+        retry_allowed = await _release_reserved_intent_after_send_failure(send_exc)
         if (
             send_outcome is not None
             and send_outcome.disposition is OrderSendDisposition.NOT_CREATED
@@ -940,7 +969,7 @@ async def _execute_and_record(
             else None,
         ) from send_exc
     except Exception as exec_exc:
-        await _release_reserved_mock_mirror_intent_after_send_failure(exec_exc)
+        await _release_reserved_intent_after_send_failure(exec_exc)
         logger.error(
             "execute_order 실패: stage=execute_order, market_type=%s, "
             "symbol=%s, side=%s, error=%s",

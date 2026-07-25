@@ -186,14 +186,22 @@ class AlpacaPaperBrokerService:
         after: datetime | None = None,
         until: datetime | None = None,
         limit: int | None = None,
+        page_token: str | None = None,
+        page_size: int | None = None,
+        direction: str | None = None,
     ) -> list[Fill]:
         params: dict[str, str | int] = {}
         if after is not None:
             params["after"] = after.isoformat()
         if until is not None:
             params["until"] = until.isoformat()
-        if limit is not None:
-            params["limit"] = limit
+        if page_token is not None:
+            params["page_token"] = page_token
+        effective_page_size = page_size if page_size is not None else limit
+        if effective_page_size is not None:
+            params["page_size"] = effective_page_size
+        if direction is not None:
+            params["direction"] = direction
         data = await self._request("GET", "/v2/account/activities/FILL", params=params)
         if not data:
             return []

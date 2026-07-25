@@ -13,6 +13,7 @@ not to assume they're realistic). Stats read from the strat.ninja ranking/overvi
 Each candidate's signal logic is ported (no freqtrade/talib/execution import) into the
 matching ``module`` from the PUBLIC canonical source in ``source_url``.
 """
+
 from __future__ import annotations
 
 # Ordered list of candidate descriptors. ``module`` is the ported signal module created
@@ -126,7 +127,9 @@ CANDIDATES = [
 ]
 
 # ICT family is intentionally absent: already covered by ict_signal.py / strategy_ict.py.
-EXCLUDED = {"ict": "already covered by ict_signal.py / strategy_ict.py (not a new shape)"}
+EXCLUDED = {
+    "ict": "already covered by ict_signal.py / strategy_ict.py (not a new shape)"
+}
 
 
 def by_key(key: str) -> dict:

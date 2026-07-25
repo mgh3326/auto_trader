@@ -16,7 +16,10 @@ from app.services.order_proposals.approval_message import (
     _escape_markdown,
     build_callback_data,
 )
-from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalCardKind,
+    DispatchBinding,
+)
 from app.services.trading_policy_service import load_trading_policy
 
 _POLICY_MARKET = {
@@ -24,6 +27,23 @@ _POLICY_MARKET = {
     "equity_us": "us",
     "crypto": "crypto",
 }
+
+# Account/market combinations whose auto-veto Telegram button can actually
+# cancel the just-submitted order (see telegram_callback._handle_auto_veto ->
+# cancel_auto_submitted_rungs -> cancel_target_order). Deliberately NOT
+# broker_gateway.SUPPORTED_TARGET_ACTIONS: that set also gates
+# order_proposal_create's cancel/replace target-action support (ROB-972 added
+# toss_live there for that purpose only). "Can a human-created replace/cancel
+# proposal target this broker order" and "is this account mode eligible to
+# skip the Telegram click entirely via auto-approve" are different questions
+# -- widening one must never silently widen the other.
+_VETO_CAPABLE_ACCOUNT_MARKETS = frozenset(
+    {
+        ("kis_live", "equity_kr"),
+        ("kis_live", "equity_us"),
+        ("upbit", "crypto"),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -92,7 +112,7 @@ def evaluate_auto_approve_eligibility(
     if (
         getattr(group, "account_mode", None),
         getattr(group, "market", None),
-    ) not in SUPPORTED_TARGET_ACTIONS:
+    ) not in _VETO_CAPABLE_ACCOUNT_MARKETS:
         return reject("account_not_veto_capable")
     if preview.get("success") is not True:
         return reject("preview_guard_failed")
@@ -167,11 +187,21 @@ def evaluate_auto_approve_eligibility(
 
 
 def build_auto_approved_message(
-    *, group: Any, rungs: list[Any], nonce: str, policy_version: str
+    *,
+    group: Any,
+    rungs: list[Any],
+    nonce: str,
+    policy_version: str,
+    binding: DispatchBinding,
 ) -> tuple[str, dict[str, Any]]:
     """Render a compact post-submit summary with a single-use veto button."""
+    if binding.card_kind is not ApprovalCardKind.AUTO_VETO:
+        raise ValueError("auto-veto message requires an auto-veto binding")
     callback = build_callback_data(
-        action="vc", proposal_id=group.proposal_id, nonce=nonce
+        action="vc",
+        proposal_id=group.proposal_id,
+        nonce=nonce,
+        binding=binding,
     )
     lines = [
         "✅ *자동 접수됨*",

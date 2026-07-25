@@ -742,6 +742,7 @@ class AlpacaPaperOrderLedger(Base):
         Index("ix_alpaca_paper_ledger_broker_order_id", "broker_order_id"),
         Index("ix_alpaca_paper_ledger_lifecycle_state", "lifecycle_state"),
         Index("ix_alpaca_paper_ledger_created_at", "created_at"),
+        Index("ix_alpaca_paper_ledger_terminalized_at", "terminalized_at"),
         Index("ix_alpaca_paper_ledger_candidate_uuid", "candidate_uuid"),
         Index(
             "ix_alpaca_paper_ledger_briefing_run_uuid",
@@ -773,6 +774,11 @@ class AlpacaPaperOrderLedger(Base):
 
     # Application lifecycle state (ROB-90 canonical)
     lifecycle_state: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # ROB-954: first transition into a retrospective-terminal lifecycle state.
+    # Nullable for pre-migration rows and every still-open row; unlike updated_at,
+    # this has no onupdate hook and metadata-only writes must never move it.
+    terminalized_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
     # ROB-90: buy/sell leg role — separate from broker `side` (order direction).
     leg_role: Mapped[str | None] = mapped_column(Text)
@@ -1319,11 +1325,15 @@ class TradeForecast(Base):
     (LLM boundary); the record/resolve/score logic here is fully deterministic.
 
     ``forecast_id`` is the idempotency key (client-supplied to update while open,
-    or auto-generated). ``forecast_target`` is a structured JSONB claim; the
-    ``price_target`` kind resolves deterministically against loaded daily OHLCV
-    (ROB-639), non-price kinds resolve via an operator-supplied manual outcome
-    (evidence required). ``correlation_id`` aligns with trade_retrospectives
-    (ROB-647) so a postmortem can cite the forecast it graded.
+    or auto-generated). ``forecast_target`` is a structured JSONB claim. The
+    Versioned ``price_target`` claims retain their window high/low touch
+    semantics; versionless legacy rows are quarantined. The additive
+    ``terminal_close`` kind uses exactly the review-date regular-session close
+    under a versioned equality contract. Corporate-action adjustment is
+    intentionally unsupported pending ROB-1043. Other kinds resolve via an
+    operator-supplied manual outcome (evidence required).
+    ``correlation_id`` aligns with trade_retrospectives (ROB-647) so a postmortem
+    can cite the forecast it graded.
     """
 
     __tablename__ = "trade_forecasts"

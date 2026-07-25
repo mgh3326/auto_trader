@@ -24,11 +24,65 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from uuid import uuid4
 
+import asyncpg
 import pytest
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from app.core.config import settings
 from tests._db_retry import run_with_deadlock_retry
+
+
+@asynccontextmanager
+async def _throwaway_schema_db() -> AsyncIterator[AsyncEngine]:
+    """Yield an engine on a dedicated one-off database (ROB-968).
+
+    The DDL-idempotency and TRUNCATE-hammer tests below must NOT run against
+    the shared xdist test DB: apply_test_schema takes AccessExclusiveLock per
+    DDL statement and the hammer's ``TRUNCATE ... CASCADE`` both locks AND
+    empties every FK-connected table — deadlocking (and deleting rows under)
+    sibling workers whenever shard composition co-schedules review-DML files
+    (runs 29643108579 / 29643559556 / 29643876785). A throwaway database
+    preserves exactly what these tests assert while making the module inert
+    for every other worker. Pattern from paper_cohort/test_migration.py.
+    """
+    base_url = make_url(settings.DATABASE_URL)
+    if base_url.get_backend_name() != "postgresql":
+        pytest.skip("schema-barrier DDL tests require PostgreSQL")
+    database = f"rob968_barrier_{uuid4().hex}"
+    admin = await asyncpg.connect(
+        user=base_url.username,
+        password=base_url.password,
+        host=base_url.host,
+        port=base_url.port,
+        database="postgres",
+    )
+    try:
+        await admin.execute(f'CREATE DATABASE "{database}"')
+        engine = create_async_engine(
+            base_url.set(database=database).render_as_string(hide_password=False),
+            # The Task-6 hammer holds a guard connection per task while its
+            # body opens a second one (16 tasks) — outgrow the default pool.
+            pool_size=25,
+            max_overflow=25,
+        )
+        try:
+            yield engine
+        finally:
+            await engine.dispose()
+            await admin.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = $1 AND pid <> pg_backend_pid()",
+                database,
+            )
+            await admin.execute(f'DROP DATABASE "{database}"')
+    finally:
+        await admin.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -108,13 +162,16 @@ async def test_apply_test_schema_is_idempotent():
     guaranteed by the old fixtures must exist afterward."""
     from sqlalchemy import text
 
-    from app.core.db import engine
+    async with _throwaway_schema_db() as engine:
+        async with engine.begin() as conn:
+            await apply_test_schema(conn)
+        async with engine.begin() as conn:
+            await apply_test_schema(conn)  # second run: no-op, must not error
 
-    async with engine.begin() as conn:
-        await apply_test_schema(conn)
-    async with engine.begin() as conn:
-        await apply_test_schema(conn)  # second run: no-op, must not error
+        await _assert_drift_columns(engine, text)
 
+
+async def _assert_drift_columns(engine, text):
     async with engine.connect() as conn:
         got = (
             await conn.execute(
@@ -225,11 +282,22 @@ async def test_concurrent_serialized_access_no_deadlock_escape():
     """
     from sqlalchemy import text
 
-    from app.core.db import engine
     from tests._investment_reports_helpers import (
         INVESTMENT_REPORTS_TABLES,
         INVESTMENT_REPORTS_TEST_LOCK_ID,
     )
+
+    async with _throwaway_schema_db() as engine:
+        async with engine.begin() as conn:
+            await apply_test_schema(conn)
+        await _drive_hammer(
+            engine, text, INVESTMENT_REPORTS_TABLES, INVESTMENT_REPORTS_TEST_LOCK_ID
+        )
+
+
+async def _drive_hammer(
+    engine, text, INVESTMENT_REPORTS_TABLES, INVESTMENT_REPORTS_TEST_LOCK_ID
+):
 
     async def _under_advisory_lock(body):
         async def _op():

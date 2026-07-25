@@ -13,12 +13,88 @@ from app.core.timezone import KST
 from app.models.review import TossLiveOrderLedger
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals import service as service_module
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalCardKind,
+    ApprovalPublication,
+    CallbackEnvelope,
+    DispatchBinding,
+    build_proposal_dispatch_binding,
+)
 from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalInvalidStateTransition,
     OrderProposalNotFound,
+    OrderProposalUnsupportedTargetAction,
 )
 from app.services.order_proposals.service import ExpirySweepResult, RungInput
+from app.telegram_contract import TelegramMethodResult
+
+
+def _successful_publication(message_id: int) -> ApprovalPublication:
+    return ApprovalPublication.published(
+        payload_chars=100,
+        method_result=TelegramMethodResult(
+            ok=True,
+            message_id=message_id,
+            status_code=200,
+            error_code=None,
+            error_classification=None,
+            payload_chars=100,
+        ),
+    )
+
+
+async def _publish_fixture_card(
+    service: OrderProposalsService,
+    group,
+    *,
+    nonce: str,
+    card_kind: ApprovalCardKind = ApprovalCardKind.MANUAL,
+    now: datetime | None = None,
+    message_id: int = 4242,
+) -> DispatchBinding:
+    published_at = now or datetime.now(UTC)
+    attempt_id = uuid.uuid4()
+    binding = build_proposal_dispatch_binding(
+        proposal_id=group.proposal_id,
+        nonce=nonce,
+        attempt_id=attempt_id,
+        card_kind=card_kind,
+        current_membership_revision=group.approval_dispatch_membership_revision,
+    )
+    await service.start_approval_dispatch(
+        group.proposal_id,
+        attempt_id=attempt_id,
+        binding=binding,
+        now=published_at,
+        payload_chars=100,
+        context_message_count=0,
+    )
+    result = await service.finish_approval_dispatch(
+        group.proposal_id,
+        attempt_id=attempt_id,
+        publication=_successful_publication(message_id),
+        chat_id="fixture-chat",
+        now=published_at,
+    )
+    assert result.ok
+    return binding
+
+
+def _batch_callback(
+    batch,
+    *,
+    nonce: str | None = None,
+    attempt_id: uuid.UUID | None = None,
+) -> CallbackEnvelope:
+    return CallbackEnvelope(
+        action="ba",
+        subject_short=str(batch.batch_id)[:8],
+        attempt_id=attempt_id or batch.approval_dispatch_attempt_id,
+        membership_revision=batch.membership_revision,
+        membership_digest=batch.membership_digest,
+        nonce=nonce or batch.approval_nonce,
+    )
 
 
 def _target_snapshot_payload(**overrides):
@@ -181,6 +257,84 @@ async def test_target_actions_reject_unsupported_account_market_tuple(
         await OrderProposalsService(db_session).create_proposal(
             **_target_action_create_kwargs(action, account_mode="kis_mock")
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+@pytest.mark.parametrize("market", ["equity_kr", "equity_us"])
+async def test_target_actions_allow_toss_live_equities(db_session, action, market):
+    """ROB-972: toss_live x equity_kr/us must be a supported cancel/replace
+    target -- previously SUPPORTED_TARGET_ACTIONS had no toss_live entry at
+    all, so this raised 'cancel unsupported for toss_live/equity_kr' even
+    though the create-time contract message claimed it was allowed.
+    """
+    symbol = "005930" if market == "equity_kr" else "AAPL"
+    group = await OrderProposalsService(db_session).create_proposal(
+        **_target_action_create_kwargs(
+            action,
+            account_mode="toss_live",
+            market=market,
+            symbol=symbol,
+            target_order_snapshot=_target_snapshot_payload(symbol=symbol),
+        )
+    )
+    await db_session.commit()
+    assert group.account_mode == "toss_live"
+    assert group.market == market
+    assert group.action == action
+    assert group.target_broker_order_id == "manual-upbit-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+async def test_target_action_rejection_message_matches_capability_set(
+    db_session, action
+):
+    """The rejection message must be derived from the same set the action
+    actually checks membership against -- not a different action's set (the
+    ROB-972 bug: cancel/replace rejections reused place's hardcoded message
+    and falsely advertised toss_live support they didn't have).
+    """
+    with pytest.raises(OrderProposalError) as exc_info:
+        await OrderProposalsService(db_session).create_proposal(
+            **_target_action_create_kwargs(action, account_mode="kis_mock")
+        )
+    assert str(exc_info.value) == (
+        f"unsupported account_mode/market/action: kis_mock/crypto/{action} "
+        "(allowed: kis_live×equity_kr|equity_us, "
+        "toss_live×equity_kr|equity_us, upbit×crypto; "
+        "market aliases kr→equity_kr, us→equity_us)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_target_action_rejection_supported_matrix_is_action_accurate(db_session):
+    with pytest.raises(OrderProposalUnsupportedTargetAction) as exc_info:
+        await OrderProposalsService(db_session).create_proposal(
+            **_target_action_create_kwargs(
+                "cancel", account_mode="toss_live", market="crypto"
+            )
+        )
+    err = exc_info.value
+    assert err.requested == {
+        "account_mode": "toss_live",
+        "market": "crypto",
+        "action": "cancel",
+    }
+    assert {"account_mode": "toss_live", "market": "equity_kr"} in (
+        err.supported_matrix["cancel"]
+    )
+    assert {"account_mode": "toss_live", "market": "equity_us"} in (
+        err.supported_matrix["cancel"]
+    )
+    assert {"account_mode": "toss_live", "market": "crypto"} not in (
+        err.supported_matrix["cancel"]
+    )
+    # replace shares cancel's capability set today but is derived
+    # independently -- assert both explicitly so a future divergence between
+    # the two actions' capability sets is caught here.
+    assert err.supported_matrix["replace"] == err.supported_matrix["cancel"]
+    assert err.supported_matrix["place"] == err.supported_matrix["cancel"]
 
 
 @pytest.mark.asyncio
@@ -930,6 +1084,12 @@ async def test_approval_nonce_mismatch_and_reset(db_session):
 
     result = await service.set_approval_nonce(group.proposal_id, "nonce-1")
     assert result is None
+    await _publish_fixture_card(
+        service,
+        group,
+        nonce="nonce-1",
+        now=now - timedelta(seconds=1),
+    )
     await service.consume_approval_nonce(group.proposal_id, "nonce-1", now=now)
 
     with pytest.raises(OrderProposalError, match="^nonce_mismatch$"):
@@ -939,6 +1099,7 @@ async def test_approval_nonce_mismatch_and_reset(db_session):
     refreshed, _ = await service.get_proposal(group.proposal_id)
     assert refreshed.approval_nonce == "nonce-2"
     assert refreshed.approval_nonce_used_at is None
+    assert refreshed.approval_dispatch_state == "failed"
 
 
 @pytest.mark.asyncio
@@ -946,6 +1107,12 @@ async def test_approval_nonce_replay_blocked(db_session):
     service, group = await _create_single_rung(db_session)
     now = datetime(2026, 7, 10, 9, 1, tzinfo=UTC)
     await service.set_approval_nonce(group.proposal_id, "nonce-1")
+    await _publish_fixture_card(
+        service,
+        group,
+        nonce="nonce-1",
+        now=now - timedelta(seconds=1),
+    )
     await db_session.commit()
 
     consumed = await service.consume_approval_nonce(
@@ -2185,6 +2352,7 @@ async def _create_batch_candidate(
         valid_until=valid_until,
     )
     await service.set_approval_nonce(group.proposal_id, nonce)
+    await _publish_fixture_card(service, group, nonce=nonce)
     await db_session.commit()
     return group
 
@@ -2221,9 +2389,14 @@ async def test_approval_batch_registration_groups_same_chat_and_window(db_sessio
     assert one.member_count == 1 and one.summary_action == "none"
     assert two.member_count == 2 and two.summary_action == "send"
 
-    await service.record_approval_batch_summary(
-        two.batch.batch_id, message_id=2001, now=now + timedelta(minutes=1)
+    assert two.binding is not None
+    finalized = await service.finish_approval_batch_dispatch(
+        two.batch.batch_id,
+        attempt_id=two.binding.attempt_id,
+        publication=_successful_publication(2001),
+        now=now + timedelta(minutes=1),
     )
+    assert finalized.ok
     three = await service.register_approval_batch_member(
         third.proposal_id,
         chat_id=chat_id,
@@ -2231,8 +2404,8 @@ async def test_approval_batch_registration_groups_same_chat_and_window(db_sessio
         now=now + timedelta(minutes=2),
     )
     assert three is not None
-    assert three.batch.batch_id == one.batch.batch_id
-    assert three.member_count == 3 and three.summary_action == "edit"
+    assert three.batch.batch_id != one.batch.batch_id
+    assert three.member_count == 1 and three.summary_action == "none"
 
 
 @pytest.mark.asyncio
@@ -2434,39 +2607,84 @@ async def test_approval_batch_nonce_rejects_wrong_chat_nonce_and_too_small(
 ):
     now = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
     chat_id = f"batch-{uuid.uuid4().hex}"
-    group = await _create_batch_candidate(
-        db_session, symbol="AAPL", nonce="validation-member"
+    first = await _create_batch_candidate(
+        db_session, symbol="AAPL", nonce="validation-member-1"
+    )
+    second = await _create_batch_candidate(
+        db_session, symbol="MSFT", nonce="validation-member-2"
     )
     service = OrderProposalsService(db_session)
-    registration = await service.register_approval_batch_member(
-        group.proposal_id,
+    await service.register_approval_batch_member(
+        first.proposal_id,
         chat_id=chat_id,
         approval_message_id=1301,
         now=now,
     )
+    registration = await service.register_approval_batch_member(
+        second.proposal_id,
+        chat_id=chat_id,
+        approval_message_id=1302,
+        now=now + timedelta(seconds=1),
+    )
+    assert registration is not None and registration.binding is not None
+    await service.finish_approval_batch_dispatch(
+        registration.batch.batch_id,
+        attempt_id=registration.binding.attempt_id,
+        publication=_successful_publication(2301),
+        now=now + timedelta(seconds=2),
+    )
     await db_session.commit()
-    assert registration is not None
     batch_id = registration.batch.batch_id
-    batch_nonce = registration.batch.approval_nonce
-
-    for expected, supplied_chat, supplied_nonce in (
+    for expected, supplied_chat, callback in (
         (
             "approval_batch_chat_mismatch",
             "wrong-chat",
-            batch_nonce,
+            _batch_callback(registration.batch),
         ),
-        ("approval_batch_nonce_mismatch", chat_id, "wrong-nonce"),
-        ("approval_batch_too_small", chat_id, batch_nonce),
+        (
+            "nonce_mismatch",
+            chat_id,
+            _batch_callback(registration.batch, nonce="wrong-nonce"),
+        ),
     ):
         with pytest.raises(OrderProposalError, match=expected):
             await service.consume_approval_batch_nonce(
                 batch_id,
-                supplied_nonce,
+                callback=callback,
                 chat_id=supplied_chat,
                 telegram_user_id="777",
                 now=now + timedelta(minutes=1),
+                expected_members=(),
             )
         await db_session.rollback()
+
+    singleton_chat = f"batch-{uuid.uuid4().hex}"
+    singleton = await _create_batch_candidate(
+        db_session, symbol="NVDA", nonce="unpublished-member"
+    )
+    staged = await service.register_approval_batch_member(
+        singleton.proposal_id,
+        chat_id=singleton_chat,
+        approval_message_id=1303,
+        now=now,
+    )
+    assert staged is not None and staged.binding is None
+    await db_session.commit()
+    with pytest.raises(OrderProposalError, match="approval_dispatch_pending"):
+        await service.consume_approval_batch_nonce(
+            staged.batch.batch_id,
+            callback=CallbackEnvelope(
+                action="ba",
+                subject_short=str(staged.batch.batch_id)[:8],
+                attempt_id=uuid.uuid4(),
+                membership_revision=staged.batch.membership_revision,
+                membership_digest="AbCdEf0123_-",
+                nonce=staged.batch.approval_nonce,
+            ),
+            chat_id=singleton_chat,
+            telegram_user_id="777",
+            now=now + timedelta(minutes=1),
+        )
 
 
 @pytest.mark.asyncio
@@ -2480,25 +2698,37 @@ async def test_approval_batch_nonce_is_single_use_and_bound_to_chat(db_session):
         db_session, symbol="MSFT", nonce="consume-member-2"
     )
     service = OrderProposalsService(db_session)
-    registration = await service.register_approval_batch_member(
+    await service.register_approval_batch_member(
         first.proposal_id,
         chat_id=chat_id,
         approval_message_id=1001,
         now=now,
     )
-    await service.register_approval_batch_member(
+    registration = await service.register_approval_batch_member(
         second.proposal_id,
         chat_id=chat_id,
         approval_message_id=1002,
         now=now + timedelta(minutes=1),
     )
-    assert registration is not None
+    assert registration is not None and registration.binding is not None
+    await service.finish_approval_batch_dispatch(
+        registration.batch.batch_id,
+        attempt_id=registration.binding.attempt_id,
+        publication=_successful_publication(2001),
+        now=now + timedelta(minutes=1),
+    )
+    await db_session.commit()
+    callback = _batch_callback(registration.batch)
     batch, members = await service.consume_approval_batch_nonce(
         registration.batch.batch_id,
-        registration.batch.approval_nonce,
+        callback=callback,
         chat_id=chat_id,
         telegram_user_id="777",
         now=now + timedelta(minutes=2),
+        expected_members=(
+            (first.proposal_id, "consume-member-1"),
+            (second.proposal_id, "consume-member-2"),
+        ),
     )
     await db_session.commit()
     assert batch.approval_nonce_used_at == now + timedelta(minutes=2)
@@ -2507,13 +2737,17 @@ async def test_approval_batch_nonce_is_single_use_and_bound_to_chat(db_session):
         second.proposal_id,
     ]
 
-    with pytest.raises(OrderProposalError, match="approval_batch_nonce_replay"):
+    with pytest.raises(OrderProposalError, match="nonce_replay"):
         await service.consume_approval_batch_nonce(
             batch.batch_id,
-            batch.approval_nonce,
+            callback=callback,
             chat_id=chat_id,
             telegram_user_id="777",
             now=now + timedelta(minutes=3),
+            expected_members=(
+                (first.proposal_id, "consume-member-1"),
+                (second.proposal_id, "consume-member-2"),
+            ),
         )
     await db_session.rollback()
 
@@ -2529,29 +2763,40 @@ async def test_approval_batch_nonce_expires_without_consuming_members(db_session
         db_session, symbol="MSFT", nonce="expiry-member-2"
     )
     service = OrderProposalsService(db_session)
-    registration = await service.register_approval_batch_member(
+    await service.register_approval_batch_member(
         first.proposal_id,
         chat_id=chat_id,
         approval_message_id=1001,
         now=now,
     )
-    await service.register_approval_batch_member(
+    registration = await service.register_approval_batch_member(
         second.proposal_id,
         chat_id=chat_id,
         approval_message_id=1002,
         now=now + timedelta(minutes=1),
     )
-    assert registration is not None
+    assert registration is not None and registration.binding is not None
+    await service.finish_approval_batch_dispatch(
+        registration.batch.batch_id,
+        attempt_id=registration.binding.attempt_id,
+        publication=_successful_publication(2001),
+        now=now + timedelta(minutes=1),
+    )
+    await db_session.commit()
     first_id = first.proposal_id
     second_id = second.proposal_id
 
     with pytest.raises(OrderProposalError, match="approval_batch_expired"):
         await service.consume_approval_batch_nonce(
             registration.batch.batch_id,
-            registration.batch.approval_nonce,
+            callback=_batch_callback(registration.batch),
             chat_id=chat_id,
             telegram_user_id="777",
             now=registration.batch.expires_at,
+            expected_members=(
+                (first.proposal_id, "expiry-member-1"),
+                (second.proposal_id, "expiry-member-2"),
+            ),
         )
     await db_session.rollback()
     first_after, _ = await service.get_proposal(first_id)
@@ -2735,6 +2980,7 @@ async def test_list_expiry_candidates_is_read_only_preview(db_session):
 
 _HANDOFF_NOW = datetime(2026, 7, 21, 1, 0, tzinfo=UTC)
 _HANDOFF_RECENT = datetime(2026, 7, 21, 0, 30, tzinfo=UTC)  # 30min before _HANDOFF_NOW
+_HANDOFF_CREATED = datetime(2026, 7, 19, 1, 0, tzinfo=UTC)
 
 
 async def _create_defensive_rung(
@@ -2773,6 +3019,7 @@ async def _create_defensive_rung(
             exit_reason="stop_loss",
             retrospective_id=42,
             valid_until=datetime(2026, 7, 20, 0, 0, tzinfo=UTC),
+            now=_HANDOFF_CREATED,
         )
     await db_session.commit()
     return service, group

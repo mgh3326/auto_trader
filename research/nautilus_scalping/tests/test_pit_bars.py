@@ -36,15 +36,32 @@ def test_load_bars_unknown_symbol_returns_empty(tmp_path):
 
 
 def test_load_panel_aligns_close_series(tmp_path):
-    _write_csv(tmp_path, "AUSDT", "1d", "1970-01",
-               [[1 * DAY, 1, 1, 1, 100, 5, 0, 0, 0, 0, 0, 0],
-                [2 * DAY, 1, 1, 1, 110, 5, 0, 0, 0, 0, 0, 0]])
-    _write_csv(tmp_path, "BUSDT", "1d", "1970-01",
-               [[1 * DAY, 1, 1, 1, 200, 5, 0, 0, 0, 0, 0, 0],
-                [2 * DAY, 1, 1, 1, 220, 5, 0, 0, 0, 0, 0, 0]])
-    m = pit_universe.PITManifest.from_records([
-        {"symbol": "AUSDT", "listed_from": 0}, {"symbol": "BUSDT", "listed_from": 0},
-    ])
+    _write_csv(
+        tmp_path,
+        "AUSDT",
+        "1d",
+        "1970-01",
+        [
+            [1 * DAY, 1, 1, 1, 100, 5, 0, 0, 0, 0, 0, 0],
+            [2 * DAY, 1, 1, 1, 110, 5, 0, 0, 0, 0, 0, 0],
+        ],
+    )
+    _write_csv(
+        tmp_path,
+        "BUSDT",
+        "1d",
+        "1970-01",
+        [
+            [1 * DAY, 1, 1, 1, 200, 5, 0, 0, 0, 0, 0, 0],
+            [2 * DAY, 1, 1, 1, 220, 5, 0, 0, 0, 0, 0, 0],
+        ],
+    )
+    m = pit_universe.PITManifest.from_records(
+        [
+            {"symbol": "AUSDT", "listed_from": 0},
+            {"symbol": "BUSDT", "listed_from": 0},
+        ]
+    )
     panel = pit_bars.load_panel(["AUSDT", "BUSDT"], "1d", m, root=tmp_path)
     assert panel["AUSDT"] == [(1 * DAY, 100.0), (2 * DAY, 110.0)]
     assert panel["BUSDT"] == [(1 * DAY, 200.0), (2 * DAY, 220.0)]

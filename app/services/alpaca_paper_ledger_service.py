@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import and_, case, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,6 +81,42 @@ RECORD_KIND_VALIDATION_ATTEMPT = "validation_attempt"
 RECORD_KIND_EXECUTION = "execution"
 RECORD_KIND_RECONCILE = "reconcile"
 RECORD_KIND_ANOMALY = "anomaly"
+
+# ROB-954: retrospective-terminal outcomes. ``terminalized_at`` is stamped only
+# on the first transition from outside this set into it. Downstream terminal to
+# terminal transitions (for example anomaly -> canceled or filled -> closed)
+# preserve the original timestamp.
+TERMINAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {
+        LIFECYCLE_FILLED,
+        LIFECYCLE_POSITION_RECONCILED,
+        LIFECYCLE_CLOSED,
+        LIFECYCLE_FINAL_RECONCILED,
+        LIFECYCLE_CANCELED,
+        LIFECYCLE_ANOMALY,
+    }
+)
+
+# ROB-953: states a reconcile pass never re-opens as a *booking candidate*.
+# The candidate terminal set and retrospective terminal set intentionally match.
+RECONCILE_TERMINAL_LIFECYCLE_STATES = TERMINAL_LIFECYCLE_STATES
+
+# ROB-953: states from which a status write must never resurrect a row. Only
+# *completed* downstream states qualify — position/close/final bookkeeping has
+# already consumed the row, so re-deriving a state from a late broker read would
+# corrupt it.
+#
+# Deliberately EXCLUDES anomaly/canceled/filled: those are terminal outcomes but
+# remain legitimately re-transitionable (anomaly -> canceled once cancel evidence
+# lands, filled -> anomaly on contradicting evidence). An earlier revision of
+# this PR guarded on the full terminal set and silently broke anomaly -> canceled.
+RECONCILE_IMMUTABLE_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {
+        LIFECYCLE_POSITION_RECONCILED,
+        LIFECYCLE_CLOSED,
+        LIFECYCLE_FINAL_RECONCILED,
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Sensitive key patterns — redact before any JSON persistence
@@ -217,6 +253,12 @@ def _derive_lifecycle_state(
     return LIFECYCLE_ANOMALY
 
 
+# ROB-953: public handle on the canonical mapping. The reconcile service derives
+# the state it reports from this exact function, so a reported action can never
+# diverge from what ``record_status`` persists.
+derive_lifecycle_state = _derive_lifecycle_state
+
+
 # ---------------------------------------------------------------------------
 # ApprovalProvenance dataclass
 # ---------------------------------------------------------------------------
@@ -308,6 +350,14 @@ class SellReservationClaim:
     source_available: Decimal | None = None
 
 
+@dataclass(frozen=True)
+class StatusWriteResult:
+    """Fresh execution row plus the conditional UPDATE outcome."""
+
+    applied: bool
+    row: AlpacaPaperOrderLedger
+
+
 def is_inflight_execution(row: Any) -> bool:
     """True when an execution row is a claimed-but-not-yet-recorded submit.
 
@@ -330,6 +380,36 @@ def _get_attr(row: Any, key: str, default: Any = None) -> Any:
     if isinstance(row, dict):
         return row.get(key, default)
     return getattr(row, key, default)
+
+
+def _initial_terminalized_at(lifecycle_state: str) -> Any | None:
+    """Database timestamp for a row inserted directly into a terminal state."""
+    return func.now() if lifecycle_state in TERMINAL_LIFECYCLE_STATES else None
+
+
+def _terminal_transition_timestamp(lifecycle_state: str) -> Any:
+    """Stamp only a live-row non-terminal -> terminal transition.
+
+    The CASE is evaluated by PostgreSQL against the row version being updated,
+    not against a possibly stale ORM read. Checking both the current lifecycle
+    and the nullable timestamp preserves the first transition under retries and
+    concurrent terminal writes. A legacy terminal row with NULL stays NULL on a
+    repeated terminal write and continues through the scanner's stable fallback.
+    """
+    if lifecycle_state not in TERMINAL_LIFECYCLE_STATES:
+        return AlpacaPaperOrderLedger.terminalized_at
+    return case(
+        (
+            and_(
+                AlpacaPaperOrderLedger.terminalized_at.is_(None),
+                AlpacaPaperOrderLedger.lifecycle_state.not_in(
+                    TERMINAL_LIFECYCLE_STATES
+                ),
+            ),
+            func.now(),
+        ),
+        else_=AlpacaPaperOrderLedger.terminalized_at,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +474,35 @@ class AlpacaPaperLedgerService:
         if lifecycle_state is not None:
             stmt = stmt.where(AlpacaPaperOrderLedger.lifecycle_state == lifecycle_state)
         stmt = stmt.limit(limit)
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_reconcile_candidates(
+        self,
+        limit: int = 100,
+        symbol: str | None = None,
+    ) -> list[AlpacaPaperOrderLedger]:
+        """Execution rows still eligible for fill booking, newest first.
+
+        ROB-953: eligibility (``record_kind``, non-terminal lifecycle, optional
+        symbol) is filtered in SQL *before* ``limit``. Selecting the newest N rows
+        first and filtering afterwards made an older open execution unrecoverable
+        as soon as N newer preview/terminal rows existed.
+        """
+        conditions: list[Any] = [
+            AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+            AlpacaPaperOrderLedger.lifecycle_state.not_in(
+                RECONCILE_TERMINAL_LIFECYCLE_STATES
+            ),
+        ]
+        if symbol is not None:
+            conditions.append(AlpacaPaperOrderLedger.execution_symbol == symbol)
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(*conditions)
+            .order_by(AlpacaPaperOrderLedger.created_at.desc())
+            .limit(limit)
+        )
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
 
@@ -919,9 +1028,8 @@ class AlpacaPaperLedgerService:
 
         Marks the existing execution (claim) row ``anomaly`` and stamps
         ``submitted_at`` so it is no longer in-flight — a retry of the same key
-        replays this failure instead of re-POSTing. Reuses existing columns only
-        (no new schema). ``error_summary`` is redacted + length-bounded so no raw
-        broker body / token is persisted.
+        replays this failure instead of re-POSTing. ``error_summary`` is redacted
+        and length-bounded so no raw broker body / token is persisted.
         """
         target = await self._find_execution_row(client_order_id)
         if target is None:
@@ -934,6 +1042,7 @@ class AlpacaPaperLedgerService:
             .where(AlpacaPaperOrderLedger.id == target.id)
             .values(
                 lifecycle_state=LIFECYCLE_ANOMALY,
+                terminalized_at=_terminal_transition_timestamp(LIFECYCLE_ANOMALY),
                 order_status=order_status,
                 submitted_at=datetime.now(UTC),
                 confirm_flag=True,
@@ -989,11 +1098,13 @@ class AlpacaPaperLedgerService:
         client_order_id: str,
         event_key: str,
         raw_response: dict[str, Any] | None,
+        *,
+        row: AlpacaPaperOrderLedger | None = None,
     ) -> None:
         if raw_response is None:
             return
         sanitized = _redact_sensitive_keys(raw_response)
-        row = await self._require_row(client_order_id)
+        row = row or await self._require_row(client_order_id)
         existing: dict[str, Any] = dict(row.raw_responses or {})
         target_key = event_key
         suffix = 2
@@ -1139,6 +1250,7 @@ class AlpacaPaperLedgerService:
             "broker": "alpaca",
             "account_mode": "alpaca_paper",
             "lifecycle_state": lifecycle_state,
+            "terminalized_at": _initial_terminalized_at(lifecycle_state),
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
             "execution_asset_class": execution_asset_class,
@@ -1226,6 +1338,7 @@ class AlpacaPaperLedgerService:
             "broker": "alpaca",
             "account_mode": "alpaca_paper",
             "lifecycle_state": lc_state,
+            "terminalized_at": _initial_terminalized_at(lc_state),
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
             "instrument_type": instrument_type,
@@ -1321,6 +1434,7 @@ class AlpacaPaperLedgerService:
             "broker": "alpaca",
             "account_mode": "alpaca_paper",
             "lifecycle_state": lifecycle_state,
+            "terminalized_at": _initial_terminalized_at(lifecycle_state),
             "execution_symbol": source_row.execution_symbol,
             "execution_venue": source_row.execution_venue,
             "instrument_type": source_row.instrument_type,
@@ -1361,8 +1475,13 @@ class AlpacaPaperLedgerService:
         update_vals = {
             k: v
             for k, v in values.items()
-            if k not in {"client_order_id", "record_kind"} and v is not None
+            if k not in {"client_order_id", "record_kind", "terminalized_at"}
+            and v is not None
         }
+        if lifecycle_state in TERMINAL_LIFECYCLE_STATES:
+            update_vals["terminalized_at"] = _terminal_transition_timestamp(
+                lifecycle_state
+            )
         stmt = (
             pg_insert(AlpacaPaperOrderLedger)
             .values(**values)
@@ -1374,6 +1493,13 @@ class AlpacaPaperLedgerService:
         )
         await self._db.execute(stmt)
         await self._db.commit()
+        # ON CONFLICT updates bypass ORM identity-map synchronization. Refresh a
+        # pre-existing submit-claim row so callers observe the persisted state
+        # and first terminalized_at rather than the stale claimed object. A
+        # preview source has no execution identity to refresh, so re-query it.
+        if source_row.record_kind == RECORD_KIND_EXECUTION:
+            await self._db.refresh(source_row)
+            return source_row
         return await self._require_row(client_order_id)
 
     async def record_status(
@@ -1384,11 +1510,16 @@ class AlpacaPaperLedgerService:
         *,
         commit: bool = True,
         lifecycle_state_override: str | None = None,
-    ) -> AlpacaPaperOrderLedger:
+        return_write_result: bool = False,
+    ) -> AlpacaPaperOrderLedger | StatusWriteResult:
         """Update lifecycle state from a status-check response."""
         if lifecycle_state_override not in {None, LIFECYCLE_SUBMITTED}:
             raise ValueError("status lifecycle override may only retain submitted")
-        target_row = await self._require_row(client_order_id)
+        target_row = await self.get_execution_by_client_order_id(client_order_id)
+        if target_row is None:
+            raise LedgerNotFoundError(
+                f"No execution row found for client_order_id={client_order_id!r}"
+            )
 
         order_status = order.get("status")
         filled_qty_raw = order.get("filled_qty") or order.get("filled_quantity")
@@ -1424,24 +1555,58 @@ class AlpacaPaperLedgerService:
             "filled_qty": filled_qty,
             "filled_avg_price": filled_avg_price,
         }
+        if lifecycle_state in TERMINAL_LIFECYCLE_STATES:
+            update_vals["terminalized_at"] = _terminal_transition_timestamp(
+                lifecycle_state
+            )
         if lifecycle_state == LIFECYCLE_ANOMALY:
             update_vals["error_summary"] = (
                 f"anomaly: order_status={order_status!r} during status check"
             )
 
-        await self._db.execute(
+        # ROB-953 optimistic write guard, evaluated in SQL against the *live* row
+        # rather than the possibly-stale row read above.
+        guard_predicates: list[Any] = [
+            AlpacaPaperOrderLedger.lifecycle_state.not_in(
+                RECONCILE_IMMUTABLE_LIFECYCLE_STATES
+            )
+        ]
+        if filled_qty is not None:
+            # Cumulative fills are monotonic at the broker. Under concurrent
+            # partial-fill reconciles, a stale lower reading must not overwrite a
+            # higher already-persisted quantity (0.8 then 0.7 -> keep 0.8).
+            guard_predicates.append(
+                or_(
+                    AlpacaPaperOrderLedger.filled_qty.is_(None),
+                    AlpacaPaperOrderLedger.filled_qty <= filled_qty,
+                )
+            )
+
+        update_result = await self._db.execute(
             update(AlpacaPaperOrderLedger)
-            .where(AlpacaPaperOrderLedger.id == target_row.id)
+            .where(AlpacaPaperOrderLedger.id == target_row.id, *guard_predicates)
             .values(**update_vals)
         )
+        rowcount = getattr(update_result, "rowcount", None)
+        write_applied = rowcount is None or rowcount > 0
 
-        if raw_response is not None:
-            await self._accumulate_raw_response(client_order_id, "status", raw_response)
+        if raw_response is not None and write_applied:
+            await self._accumulate_raw_response(
+                client_order_id, "status", raw_response, row=target_row
+            )
 
         if commit:
             await self._db.commit()
+        else:
+            await self._db.flush()
+
+        if return_write_result:
+            # expire_on_commit=False keeps target_row stale after a competing
+            # session wins. Refresh the execution row before reporting the write.
+            await self._db.refresh(target_row)
+            return StatusWriteResult(applied=write_applied, row=target_row)
+        if commit:
             return await self._require_row(client_order_id)
-        await self._db.flush()
         return target_row
 
     async def record_cancel(
@@ -1472,6 +1637,9 @@ class AlpacaPaperLedgerService:
 
         if current_status and current_status.lower() == "canceled":
             update_vals["lifecycle_state"] = LIFECYCLE_CANCELED
+            update_vals["terminalized_at"] = _terminal_transition_timestamp(
+                LIFECYCLE_CANCELED
+            )
             err = getattr(target_row, "error_summary", None)
             if (
                 err
@@ -1531,6 +1699,9 @@ class AlpacaPaperLedgerService:
             .values(
                 position_snapshot=snapshot,
                 lifecycle_state=LIFECYCLE_POSITION_RECONCILED,
+                terminalized_at=_terminal_transition_timestamp(
+                    LIFECYCLE_POSITION_RECONCILED
+                ),
             )
         )
 
@@ -1640,6 +1811,7 @@ class AlpacaPaperLedgerService:
 
         update_vals: dict[str, Any] = {
             "lifecycle_state": LIFECYCLE_CLOSED,
+            "terminalized_at": _terminal_transition_timestamp(LIFECYCLE_CLOSED),
         }
         if qty_delta is not None:
             update_vals["qty_delta"] = qty_delta
@@ -1709,6 +1881,9 @@ class AlpacaPaperLedgerService:
 
         update_vals: dict[str, Any] = {
             "lifecycle_state": LIFECYCLE_FINAL_RECONCILED,
+            "terminalized_at": _terminal_transition_timestamp(
+                LIFECYCLE_FINAL_RECONCILED
+            ),
             "record_kind": RECORD_KIND_RECONCILE,
             "reconcile_status": reconcile_status,
             "reconciled_at": datetime.now(UTC),
@@ -1742,6 +1917,10 @@ __all__ = [
     "ApprovalProvenance",
     "CANONICAL_LIFECYCLE_STATES",
     "EXECUTED_LIFECYCLE_STATES",
+    "RECONCILE_IMMUTABLE_LIFECYCLE_STATES",
+    "RECONCILE_TERMINAL_LIFECYCLE_STATES",
+    "TERMINAL_LIFECYCLE_STATES",
+    "derive_lifecycle_state",
     "LIFECYCLE_ANOMALY",
     "LIFECYCLE_CANCELED",
     "LIFECYCLE_CLOSED",
@@ -1764,6 +1943,7 @@ __all__ = [
     "RECORD_KIND_RECONCILE",
     "RECORD_KIND_VALIDATION_ATTEMPT",
     "SellReservationClaim",
+    "StatusWriteResult",
     "SubmitClaim",
     "_derive_lifecycle_state",
     "_redact_sensitive_keys",

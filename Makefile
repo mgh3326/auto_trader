@@ -42,13 +42,13 @@ test-watch: ## Run tests in watch mode (excludes live)
 test-live: ## Run live API tests only (requires external network)
 	uv run pytest tests/ -v -m "integration and live" --run-live --no-cov
 lint: ## Run linting checks (Ruff + ty)
-	uv run ruff check app/ tests/
-	uv run ruff format --check app/ tests/
+	uv run ruff check app/ tests/ research/ scripts/
+	uv run ruff format --check app/ tests/ research/ scripts/
 	uv run ty check app/ --error-on-warning
 
 format: ## Format code with Ruff
-	uv run ruff format app/ tests/
-	uv run ruff check --fix app/ tests/
+	uv run ruff format app/ tests/ research/ scripts/
+	uv run ruff check --fix app/ tests/ research/ scripts/
 
 typecheck: ## Run ty type checking
 	uv run ty check app/ --error-on-warning

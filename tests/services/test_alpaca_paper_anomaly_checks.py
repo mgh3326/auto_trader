@@ -266,6 +266,215 @@ def test_stale_preview_blocks():
 
 
 @pytest.mark.unit
+def test_spent_stale_preview_with_final_reconciled_sibling_warns_not_blocks():
+    now = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="cleanup-sol-rob85-20260505-preview",
+                lifecycle_correlation_id="cleanup-sol-rob85-20260505",
+                side="sell",
+                lifecycle_state="previewed",
+                order_status=None,
+                execution_symbol="SOLUSD",
+                signal_symbol="SOL/USD",
+                filled_qty=None,
+                created_at=datetime(2026, 5, 4, 16, 8, 35, tzinfo=UTC),
+            ),
+            _row(
+                client_order_id="cleanup-sol-rob85-20260505",
+                lifecycle_correlation_id="cleanup-sol-rob85-20260505",
+                side="sell",
+                lifecycle_state="final_reconciled",
+                order_status="filled",
+                execution_symbol="SOLUSD",
+                signal_symbol="SOL/USD",
+            ),
+        ],
+        now=now,
+        stale_after_minutes=30,
+    )
+
+    assert report.should_block is False
+    anomaly = next(
+        a for a in report.anomalies if a.check_id == "spent_preview_without_cleanup"
+    )
+    assert anomaly.severity == PaperExecutionAnomalySeverity.warning
+    assert anomaly.details["rows"][0]["client_order_id"] == (
+        "cleanup-sol-rob85-20260505-preview"
+    )
+    assert anomaly.details["rows"][0]["terminal_sibling_lifecycle_state"] == (
+        "final_reconciled"
+    )
+
+
+@pytest.mark.unit
+def test_scoped_stale_preview_uses_unscoped_terminal_sibling_evidence():
+    now = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="stale-preview-current-candidate",
+                lifecycle_correlation_id="corr-spent",
+                candidate_uuid="candidate-current",
+                lifecycle_state="previewed",
+                order_status=None,
+                filled_qty=None,
+                created_at=now - timedelta(minutes=45),
+            ),
+            _row(
+                client_order_id="final-reconcile-prior-candidate",
+                lifecycle_correlation_id="corr-spent",
+                candidate_uuid="candidate-prior",
+                lifecycle_state="final_reconciled",
+                order_status="filled",
+            ),
+        ],
+        approval_packet={"candidate_uuid": "candidate-current"},
+        now=now,
+        stale_after_minutes=30,
+    )
+
+    assert report.should_block is False
+    assert _check_ids(report) == {"spent_preview_without_cleanup"}
+    assert report.counts["ledger_rows"] == 1
+    assert report.counts["unscoped_ledger_rows"] == 2
+
+
+@pytest.mark.unit
+def test_spent_stale_preview_fixture_for_rob_950_two_terminal_pairs_does_not_block():
+    now = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="cleanup-sol-rob85-20260505-preview",
+                lifecycle_correlation_id="cleanup-sol-rob85-20260505",
+                side="sell",
+                lifecycle_state="previewed",
+                order_status=None,
+                execution_symbol="SOLUSD",
+                signal_symbol="SOL/USD",
+                filled_qty=None,
+                created_at=datetime(2026, 5, 4, 16, 8, 35, tzinfo=UTC),
+            ),
+            _row(
+                client_order_id="cleanup-sol-rob85-20260505",
+                lifecycle_correlation_id="cleanup-sol-rob85-20260505",
+                side="sell",
+                lifecycle_state="final_reconciled",
+                order_status="filled",
+                execution_symbol="SOLUSD",
+                signal_symbol="SOL/USD",
+            ),
+            _row(
+                client_order_id="cleanup-btc-rob85-20260505-preview",
+                lifecycle_correlation_id="cleanup-btc-rob85-20260505",
+                side="sell",
+                lifecycle_state="previewed",
+                order_status=None,
+                execution_symbol="BTCUSD",
+                signal_symbol="BTC/USD",
+                filled_qty=None,
+                created_at=datetime(2026, 5, 4, 16, 8, 34, tzinfo=UTC),
+            ),
+            _row(
+                client_order_id="cleanup-btc-rob85-20260505",
+                lifecycle_correlation_id="cleanup-btc-rob85-20260505",
+                side="sell",
+                lifecycle_state="final_reconciled",
+                order_status="filled",
+                execution_symbol="BTCUSD",
+                signal_symbol="BTC/USD",
+            ),
+        ],
+        now=now,
+        stale_after_minutes=30,
+    )
+
+    assert report.status == "pass"
+    assert report.should_block is False
+    anomaly = next(
+        a for a in report.anomalies if a.check_id == "spent_preview_without_cleanup"
+    )
+    assert anomaly.severity == PaperExecutionAnomalySeverity.warning
+    assert anomaly.details["count"] == 2
+
+
+@pytest.mark.unit
+def test_stale_preview_without_terminal_sibling_still_blocks():
+    now = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="stale-preview-unspent",
+                lifecycle_correlation_id="corr-unspent",
+                lifecycle_state="previewed",
+                order_status=None,
+                filled_qty=None,
+                created_at=now - timedelta(minutes=45),
+            )
+        ],
+        now=now,
+        stale_after_minutes=30,
+    )
+
+    assert report.should_block is True
+    anomaly = next(
+        a for a in report.anomalies if a.check_id == "stale_preview_or_approval_packet"
+    )
+    assert anomaly.severity == PaperExecutionAnomalySeverity.block
+
+
+@pytest.mark.unit
+def test_stale_preview_with_nonterminal_sibling_still_blocks():
+    now = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="stale-preview-open-sibling",
+                lifecycle_correlation_id="corr-open-sibling",
+                lifecycle_state="previewed",
+                order_status=None,
+                filled_qty=None,
+                created_at=now - timedelta(minutes=45),
+            ),
+            _row(
+                client_order_id="submitted-sibling",
+                lifecycle_correlation_id="corr-open-sibling",
+                lifecycle_state="submitted",
+                order_status="accepted",
+                filled_qty=None,
+            ),
+        ],
+        now=now,
+        stale_after_minutes=30,
+    )
+
+    assert report.should_block is True
+    assert "stale_preview_or_approval_packet" in _check_ids(report)
+    assert "spent_preview_without_cleanup" not in _check_ids(report)
+
+
+@pytest.mark.unit
+def test_stale_approval_packet_still_blocks_without_ledger_sibling_matching():
+    now = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
+    report = build_paper_execution_preflight_report(
+        approval_packet={
+            "client_order_id": "stale-approval-packet",
+            "generated_at": (now - timedelta(minutes=45)).isoformat(),
+        },
+        now=now,
+        stale_after_minutes=30,
+    )
+
+    assert report.should_block is True
+    anomaly = next(
+        a for a in report.anomalies if a.check_id == "stale_preview_or_approval_packet"
+    )
+    assert anomaly.severity == PaperExecutionAnomalySeverity.block
+
+
+@pytest.mark.unit
 def test_stale_preview_can_warn_in_paper_execution_test_mode():
     now = datetime(2026, 5, 3, 12, 0, tzinfo=UTC)
     report = build_paper_execution_preflight_report(

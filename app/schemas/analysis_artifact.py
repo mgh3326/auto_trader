@@ -82,6 +82,14 @@ class AnalysisArtifactSave(BaseModel):
             raise ValueError("payload size must not exceed 100KB")
         return value
 
+    @field_validator("payload", mode="before")
+    @classmethod
+    def _clean_payload(cls, value: object) -> object:
+        # At the partial-update boundary an explicitly supplied null clears the
+        # non-null JSON object to its empty representation. Omission remains
+        # distinguishable through ``model_fields_set``.
+        return {} if value is None else value
+
     @field_validator("title", "session_label", mode="before")
     @classmethod
     def _strip_optional_text(cls, value: object) -> object:
@@ -101,7 +109,9 @@ class AnalysisArtifactSave(BaseModel):
         cleaned = [
             to_db_symbol(str(item).strip()) for item in value if str(item).strip()
         ]
-        return cleaned
+        # Symbols are set-like artifact metadata. Canonical ordering and
+        # deduplication keep equivalent retries idempotent.
+        return sorted(set(cleaned))
 
 
 class AnalysisArtifactListRequest(BaseModel):
@@ -190,8 +200,8 @@ class AnalysisArtifactRead(AnalysisArtifactMeta):
 
 class AnalysisArtifactSaveResponse(BaseModel):
     success: Literal[True] = True
-    # 'unchanged' (ROB-648): a correlation_id re-save whose payload hashed
-    # identical to the stored row — no write, version preserved.
+    # 'unchanged': an exact correlation_id retry whose payload and persisted
+    # metadata are identical — no write, version preserved (ROB-1048).
     action: Literal["created", "updated", "unchanged"] = "created"
     artifact: AnalysisArtifactRead
 

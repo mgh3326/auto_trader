@@ -73,6 +73,7 @@ ANALYSIS_READONLY_TOOL_NAMES: set[str] = {
     "get_indicators",
     "screen_stocks",
     "screen_stocks_snapshot",
+    "get_krx_session_health",
     "get_top_stocks",
     "get_news",
     "get_fx_rate",
@@ -160,7 +161,9 @@ def _register_persistence_tools(mcp: FastMCP) -> None:
         name="analysis_artifact_save",
         description=(
             "analysis_readonly: persist a structured analysis artifact. "
-            "Requires explicit created_by such as 'codex'; no implicit caller label."
+            "Requires explicit created_by such as 'codex'; no implicit caller "
+            "label. On a correlation retry, omitted optional fields preserve "
+            "stored values while explicit null clears nullable/collection fields."
         ),
     )
     async def analysis_artifact_save(

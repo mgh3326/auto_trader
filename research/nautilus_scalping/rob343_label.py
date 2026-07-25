@@ -47,10 +47,14 @@ def breakeven_taker_fee_bps_from_sums(
     return max(0.0, ref_fee_bps * (1.0 + sum_net_ref / sum_comm))
 
 
-def breakeven_taker_fee_bps(trades: list[Trade], ref_fee_bps: float = cost_model.REF_FEE_BPS) -> float:
+def breakeven_taker_fee_bps(
+    trades: list[Trade], ref_fee_bps: float = cost_model.REF_FEE_BPS
+) -> float:
     """Breakeven taker fee for a ``Trade`` list (taker-only; maker decided elsewhere)."""
     return breakeven_taker_fee_bps_from_sums(
-        sum(t.net_ref_pnl for t in trades), sum(t.commission_ref for t in trades), ref_fee_bps
+        sum(t.net_ref_pnl for t in trades),
+        sum(t.commission_ref for t in trades),
+        ref_fee_bps,
     )
 
 
@@ -75,31 +79,49 @@ def label_343_candidate(
     """Classify a survivor. See module docstring for the decision table."""
     if not oos_significant:
         return Rob343Verdict(
-            "needs_more_data", False, False, breakeven_taker_bps, maker_conservative_net,
+            "needs_more_data",
+            False,
+            False,
+            breakeven_taker_bps,
+            maker_conservative_net,
             "OOS evidence insufficient (sample/CI/FDR gate not cleared)",
         )
     if taker_net_pnl > 0:
         return Rob343Verdict(
-            "promote_to_pilot", False, maker_conservative_net > 0,
-            breakeven_taker_bps, maker_conservative_net,
+            "promote_to_pilot",
+            False,
+            maker_conservative_net > 0,
+            breakeven_taker_bps,
+            maker_conservative_net,
             "already net-viable at realistic taker fees; ROB-343 not required",
         )
     cost_binding = gross_pnl > 0 and taker_net_pnl <= 0
     if not cost_binding:
         return Rob343Verdict(
-            "reject", False, False, breakeven_taker_bps, maker_conservative_net,
+            "reject",
+            False,
+            False,
+            breakeven_taker_bps,
+            maker_conservative_net,
             "no positive gross edge; not a cost problem",
         )
     closable = maker_conservative_net > 0
     if closable:
         return Rob343Verdict(
-            "cost_binding_343_candidate", True, True,
-            breakeven_taker_bps, maker_conservative_net,
+            "cost_binding_343_candidate",
+            True,
+            True,
+            breakeven_taker_bps,
+            maker_conservative_net,
             "positive gross killed by taker fees; maker-conservative scenario is "
             "net-positive => realistic maker execution plausibly closes the gap",
         )
     return Rob343Verdict(
-        "reject", True, False, breakeven_taker_bps, maker_conservative_net,
+        "reject",
+        True,
+        False,
+        breakeven_taker_bps,
+        maker_conservative_net,
         "cost-binding but maker-conservative scenario still net-negative => no "
         "realistic execution path (Codex realistic-path stop-rule)",
     )

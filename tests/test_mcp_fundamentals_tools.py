@@ -866,11 +866,16 @@ class TestAnalyzeStockBatch:
             "resistances": [{"price": 77000, "strength": "medium"}],
             # ROB-541: include_position defaults True; not held -> null.
             "position": None,
-            # ROB-638 additive fetch-cache contract keys. The mocked
+            # ROB-1048 additive freshness/provenance contract keys. The mocked
             # _analyze_stock_impl bypasses the real pipeline, so no fetch-layer
-            # cache is consulted: cache_hit False, derived_as_of None.
+            # provider envelope is available.
+            "data_state": "degraded",
             "cache_hit": False,
             "derived_as_of": None,
+            "fetched_at": None,
+            "data_age_seconds": None,
+            "fallback_source": None,
+            "provider_provenance": [],
         }
         # Single batched holdings fetch only — never per symbol.
         assert empty_collect.await_count == 1

@@ -64,12 +64,12 @@ async def test_ohlc_check_rejects_inconsistent(db_session: AsyncSession) -> None
         text(
             "INSERT INTO crypto_instruments "
             "(venue, product, venue_symbol, base_asset, quote_asset, status) "
-            "VALUES ('upbit', 'spot', 'KRW-BTC', 'BTC', 'KRW', 'active')"
+            "VALUES ('upbit', 'spot', 'KRW-BTC-OHLC', 'BTC', 'KRW', 'active')"
         )
     )
     inst_id = (
         await db_session.execute(
-            text("SELECT id FROM crypto_instruments WHERE venue_symbol='KRW-BTC'")
+            text("SELECT id FROM crypto_instruments WHERE venue_symbol='KRW-BTC-OHLC'")
         )
     ).scalar_one()
     with pytest.raises(IntegrityError):
@@ -142,7 +142,7 @@ async def test_cross_venue_same_bucket_coexistence(db_session: AsyncSession) -> 
     )
 
     instruments = [
-        ("upbit", "spot", "KRW-BTC", "BTC", "KRW"),
+        ("upbit", "spot", "KRW-BTC-COEXIST", "BTC", "KRW"),
         ("binance", "spot", "BTCUSDT", "BTC", "USDT"),
         ("binance", "usdm_futures", "BTCUSDT", "BTC", "USDT"),
         ("alpaca", "paper", "BTC/USD", "BTC", "USD"),

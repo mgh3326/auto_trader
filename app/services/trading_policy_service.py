@@ -80,6 +80,11 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
             "unit": spec.unit,
             "semantics": spec.semantics,
             "of": spec.of,
+            "one_share_exception": (
+                spec.one_share_exception.model_dump()
+                if spec.one_share_exception is not None
+                else None
+            ),
             "source": source,
         }
     decision_rules = {
@@ -105,6 +110,9 @@ def get_policy_for(market: str, lane: str) -> dict[str, Any]:
         # ROB-932 — single global advisory trigger, not market/lane-scoped;
         # echoed unconditionally alongside the version/content_hash stamp.
         "crash_day": doc.crash_day.model_dump(),
+        # ROB-948 — global advisory stance context, not market/lane-scoped;
+        # same echo pattern as crash_day above.
+        "user_stances": [stance.model_dump() for stance in doc.user_stances],
     }
 
 

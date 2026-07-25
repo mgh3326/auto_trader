@@ -15,7 +15,9 @@ def test_summary_from_trades_gross_net_and_oos_split():
     s = campaign_specs._summary_from_trades("f1", trades, split)
     assert s.sample_count == 3
     assert round(s.gross_expectancy_bps, 6) == round((100 + 50 - 20) / 3, 6)
-    assert round(s.fee_adjusted_bps, 6) == round(((100 - 20) + (50 - 20) + (-20 - 20)) / 3, 6)
+    assert round(s.fee_adjusted_bps, 6) == round(
+        ((100 - 20) + (50 - 20) + (-20 - 20)) / 3, 6
+    )
     assert round(s.oos_gross_bps, 6) == -20.0
     assert round(s.oos_fee_adjusted_bps, 6) == -40.0
 
@@ -63,10 +65,18 @@ def test_ts_trend_spec_is_portfolio():
 
 
 def test_xs_momentum_spec_is_portfolio_pit_aware():
-    panel = {s: _ramp(0, 40, base=b) for s, b in [("AUSDT", 100), ("BUSDT", 50), ("CUSDT", 75)]}
+    panel = {
+        s: _ramp(0, 40, base=b)
+        for s, b in [("AUSDT", 100), ("BUSDT", 50), ("CUSDT", 75)]
+    }
     import pit_universe
-    m = pit_universe.PITManifest.from_records([{"symbol": s, "listed_from": 0} for s in panel])
+
+    m = pit_universe.PITManifest.from_records(
+        [{"symbol": s, "listed_from": 0} for s in panel]
+    )
     rebals = [10 * DAY, 17 * DAY, 24 * DAY, 31 * DAY]
-    spec = campaign_specs.xs_momentum_spec(panel, rebals, m, oos_split_ts=campaign_specs.OOS_SPLIT_TS)
+    spec = campaign_specs.xs_momentum_spec(
+        panel, rebals, m, oos_split_ts=campaign_specs.OOS_SPLIT_TS
+    )
     assert spec["name"] == "family3_xs_momentum"
     assert spec["kind"] == "portfolio"

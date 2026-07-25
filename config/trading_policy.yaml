@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-17.1"
-captured_as_of: "2026-07-17"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys"
+version: "2026-07-22.1"
+captured_as_of: "2026-07-22"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22"
 
 authority:
   scope: judgment_policy_only
@@ -48,8 +48,8 @@ thresholds:
     lanes: [buy]
     value: 2
     unit: count
-    of: 4
-    semantics: min recovery-gate conditions to deploy reserve (else support-conditional only)
+    of: 2
+    semantics: min countable recovery-gate conditions to deploy reserve (else support-conditional only)
   portfolio.sector_cluster_cap_pct:
     lanes: [buy, sell]
     value: 10
@@ -57,9 +57,11 @@ thresholds:
     semantics: over-concentration cap per sector cluster (~9-10%)
   portfolio.max_symbols_per_theme:
     lanes: [buy, discovery]
-    value: 1
+    value: 2
     unit: count
-    semantics: one symbol per theme
+    semantics: max symbols per theme; theme overlap is a disclosure item, not an auto-reject
+      — strong expected-value candidates may be proposed with overlap stated in thesis
+      (operator risk direction 2026-07-22; concentration backstop = portfolio.sector_cluster_cap_pct)
   order.day_expiry_kst:
     lanes: [buy, sell]
     value: "20:00"
@@ -74,7 +76,19 @@ thresholds:
     lanes: [buy, discovery]
     value: [200000, 400000]
     unit: krw
-    semantics: per-symbol order sizing for new entries (policy threshold, not account balance)
+    semantics: per-symbol order sizing for new entries (policy threshold, not account balance; KR lane only)
+  # ROB-956 — US-lane sizing decoupled from KRW/FX (KR range in FX terms
+  # priced new US entries out above ~$268/share at FX~1491). USD-denominated;
+  # not derived from the KR range.
+  buy.per_symbol_notional_usd_range:
+    lanes: [buy, discovery]
+    value: [150, 450]  # 신규 진입 1차 트란치 밴드
+    unit: usd
+    one_share_exception:
+      enabled: true
+      absolute_ceiling_usd: 700
+      max_deep_rungs: 1
+    semantics: per-symbol first-tranche sizing for US new entries; advisory (ROB-646 원칙 — 코드 강제 아님)
   sell.loss_guard_min_multiple:
     lanes: [buy, sell]
     value: 1.01
@@ -138,8 +152,20 @@ thresholds:
 decision_rules:
   sell.trim_preplace:
     lanes: [sell]
-    semantics: "Tie-break when resistance-near favors PLACE but upside-rich would otherwise allow WATCH: resistance proximity can pre-place only a small trim; upside richness limits size, not eligibility."
+    semantics: >-
+      Tiers are evaluated in declared priority order and the first match wins.
+      profit_realization is resistance-distance-independent; global exclusions
+      apply to every tier. When resistance-near favors PLACE but upside-rich
+      would otherwise allow WATCH, resistance proximity can pre-place only a
+      small trim; upside richness limits size, not eligibility.
     tiers:
+      - id: profit_realization
+        conditions:
+          # Fable governance advisory Q3-#4 Phase 1 seed; follow-up sell-policy
+          # research must recalibrate this initial threshold.
+          profit_pct_min: 8
+        action: preplace_small_trim_ladder
+        sizing: small_trim_only
       - id: rsi_confirmed_resistance
         conditions:
           rsi_min_policy_key: sell.rsi_place_min
@@ -160,6 +186,8 @@ decision_rules:
         action: register_watch
         sizing: no_preplaced_trim
     tie_breaks:
+      tier_priority: "profit_realization > rsi_confirmed_resistance > ultra_near_resistance > watch_zone"
+      multiple_tiers_matched: first_matching_tier_wins
       sell.upside_place_max_pct: size_limit_only
     exclusions:
       - single_share_position
@@ -171,18 +199,14 @@ market_rules:
     recovery_gate:
       lanes: [buy]
       advisory: true
-      semantics: reserve deployment recovery frame; otherwise support-conditional only
+      semantics: >-
+        reserve deployment recovery frame; otherwise support-conditional only.
+        advisory_context is qualitative reference only, is not part of the gate
+        count, and receives thresholds in the crypto-gate redesign round.
       min_conditions_met: 2
-      of: 4
+      of: 2
       missing_or_null_threshold: do_not_infer_or_count_as_met
       conditions:
-        - id: fear_greed
-          metric: crypto_fear_greed_index
-          sources: [alternative_me]
-          operator: null
-          threshold: null
-          unit: index
-          semantics: reports cite a recovering trend but define no pass cutoff
         - id: alt_breadth_24h
           metric: upbit_alt_breadth_24h
           sources: [upbit_open_api_ticker_derived]
@@ -197,13 +221,21 @@ market_rules:
           threshold: 1.5
           unit: ratio
           semantics: both report inputs should remain at or below the threshold
+      advisory_context:
+        - id: fear_greed
+          metric: crypto_fear_greed_index
+          sources: [alternative_me]
+          operator: null
+          threshold: null
+          unit: index
+          semantics: qualitative reference only; no pass cutoff and excluded from gate count
         - id: btc_kimchi_premium
           metric: btc_kimchi_premium
           sources: [upbit_binance_fx]
           operator: null
           threshold: null
           unit: percent
-          semantics: reports interpret discount and domestic FOMO qualitatively; no pass cutoff
+          semantics: qualitative reference only; no pass cutoff and excluded from gate count
     support_resistance:
       lanes: [buy, sell, discovery]
       advisory: true
@@ -249,3 +281,19 @@ crash_day:
     deep_rung_reprice_to_band_floor: true    # advisory: reprice deep rungs toward buy.deep_limit_pct_range floor
     profit_trim_marketable_allowed: true     # advisory: profit-side trims may use marketable band (ROB-912 -2%)
     defensive_brief_cross_check: true        # cross-check with ROB-930 preopen gap_risk verdict
+
+# ROB-948 — user investment-stance advisory. Session judgment cites this for
+# upside/downside weighting; it does not override fail-closed risk guards
+# (loss-cut sizing, ladder guards) in code. Frozen block (2026-07-17) — use
+# verbatim, no paraphrasing.
+user_stances:
+  - id: ai-demand-real-value-selective
+    stance: "AI 수요는 실사용 관점에서 실재. 단, (a)가치 포착은 가격결정력 보유 종목에 편중될 수 있고 (b)고베타 반도체는 테제가 맞아도 중간 낙폭이 크다"
+    implications:
+      - "AI/반도체 급락일: 패닉 동조 매도 금지 (보유분은 기존 리스크 규칙으로만 판단)"
+      - "눌림 신규 진입: 검토 후보 승격 가능하되 — 동시 신규 최대 1종목, 분할 진입, 섹터 클러스터 집중도 체크 엄격 적용"
+      - "테마 내 선택 시 가격결정력 보유 종목 우선. 커머디티형은 공급제약 증거 있을 때만"
+      - "3배 레버리지 ETF(SOXL류)는 눌림 보유 수단에서 기본 제외 (변동성 감쇠)"
+    risk_scenario: "효율 충격 — 저비용 고성능 모델 확산으로 프런티어 capex 지불의사 재평가. 판정 이벤트 = 하이퍼스케일러 capex 가이던스"
+    review_condition: "하이퍼스케일러 AI capex 감소 가이던스, 또는 HBM 공급과잉 실측 시 재검토"
+    review_date: "2026-10-17"

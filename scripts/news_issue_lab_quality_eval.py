@@ -173,6 +173,7 @@ def _worst_status(statuses: list[str]) -> str:
 # ROB-155 tag-precision mode
 # ---------------------------------------------------------------------------
 
+
 def _load_jsonl(path: str) -> list[dict[str, Any]]:
     """Load newline-delimited JSON fixtures; return empty list if file missing."""
     p = Path(path)
@@ -236,18 +237,28 @@ def _run_us_tag_precision(fixtures: list[dict[str, Any]]) -> dict[str, Any]:
         else:
             if expected_scope == "market_wide" and predicted_scope == "symbol_specific":
                 fn += 1
-                fn_examples.append({"title": title[:100], "expected": expected_scope, "got": predicted_scope})
+                fn_examples.append(
+                    {
+                        "title": title[:100],
+                        "expected": expected_scope,
+                        "got": predicted_scope,
+                    }
+                )
             else:
                 fp += 1
-                fp_examples.append({"title": title[:100], "expected": expected_scope, "got": predicted_scope})
+                fp_examples.append(
+                    {
+                        "title": title[:100],
+                        "expected": expected_scope,
+                        "got": predicted_scope,
+                    }
+                )
 
     total = len(fixtures)
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
 
-    demotion_accuracy = (
-        demotion_correct / demotion_labeled if demotion_labeled else 0.0
-    )
+    demotion_accuracy = demotion_correct / demotion_labeled if demotion_labeled else 0.0
 
     return {
         "sample_count": total,
@@ -286,18 +297,22 @@ def _run_crypto_tag_precision(fixtures: list[dict[str, Any]]) -> dict[str, Any]:
             tp += 1
         elif expected_include and not predicted_include:
             fn += 1
-            fn_examples.append({
-                "title": (row.get("title") or "")[:100],
-                "score": relevance.score,
-                "noise_reason": relevance.noise_reason,
-            })
+            fn_examples.append(
+                {
+                    "title": (row.get("title") or "")[:100],
+                    "score": relevance.score,
+                    "noise_reason": relevance.noise_reason,
+                }
+            )
         elif not expected_include and predicted_include:
             fp += 1
-            fp_examples.append({
-                "title": (row.get("title") or "")[:100],
-                "score": relevance.score,
-                "category": user_cat,
-            })
+            fp_examples.append(
+                {
+                    "title": (row.get("title") or "")[:100],
+                    "score": relevance.score,
+                    "category": user_cat,
+                }
+            )
         else:
             tn += 1
 
@@ -337,9 +352,14 @@ def _tag_precision_markdown(summary: dict[str, Any]) -> str:
         f"- tp/fp/fn: {us.get('tp')}/{us.get('fp')}/{us.get('fn')}",
     ]
     if us.get("fp_examples"):
-        lines += ["", "**FP examples (classified market_wide, expected symbol_specific):**"]
+        lines += [
+            "",
+            "**FP examples (classified market_wide, expected symbol_specific):**",
+        ]
         for ex in us["fp_examples"]:
-            lines.append(f"- `{ex.get('title', '')}` → got `{ex.get('got')}`, expected `{ex.get('expected')}`")
+            lines.append(
+                f"- `{ex.get('title', '')}` → got `{ex.get('got')}`, expected `{ex.get('expected')}`"
+            )
     lines += ["", "## Crypto relevance precision"]
     cr = summary.get("crypto", {})
     lines += [
@@ -383,7 +403,9 @@ async def _run_tag_precision_mode(args: argparse.Namespace) -> int:
 
     summary_json = output_dir / "summary.json"
     summary_md = output_dir / "summary.md"
-    summary_json.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary_json.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     summary_md.write_text(_tag_precision_markdown(summary), encoding="utf-8")
 
     print(f"output_dir: {output_dir}")

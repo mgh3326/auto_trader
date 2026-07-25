@@ -28,6 +28,7 @@ by the published hard stop (pHSL = -0.32) + a 24h (1440 x 1m) max-hold cap. The 
 timeframe and the 1h informative are preserved; only the exit MECHANISM is approximated, so
 ``horizon_changed_during_port`` is True.
 """
+
 from __future__ import annotations
 
 import rob382_backtest
@@ -57,7 +58,9 @@ NEEDS_INFORMATIVE_1H = True
 
 # Published pHSL = -0.32 (hard stop). Custom trailing-stop + minimal_roi {"70": 0} time-exit
 # NOT modeled -> approximated by hard stop + 24h (1440 x 1m) max-hold cap.
-EXIT_MODEL = rob382_backtest.ExitModel(type="signal", hard_sl_pct=0.32, max_hold_bars=1440)
+EXIT_MODEL = rob382_backtest.ExitModel(
+    type="signal", hard_sl_pct=0.32, max_hold_bars=1440
+)
 
 HOLD_SEMANTICS = (
     "signal exit (fisher cluster) preserved; published hard stop -32%; custom trailing-stop "
@@ -103,7 +106,9 @@ def signals(bars, bars_1h=None):
     ema_fast = I.ema(ha_close, EMA_FAST)
     ema_slow = I.ema(ha_close, EMA_SLOW)
 
-    rsi = I.rsi(closes, RSI_LEN)  # RSI on REAL close (source: ta.RSI(dataframe) -> default close,14)
+    rsi = I.rsi(
+        closes, RSI_LEN
+    )  # RSI on REAL close (source: ta.RSI(dataframe) -> default close,14)
     fisher = I.fisher_from_rsi(rsi)
 
     # --- 1h informative rocr_1h (lookahead-safe merge) ------------------------------------- #

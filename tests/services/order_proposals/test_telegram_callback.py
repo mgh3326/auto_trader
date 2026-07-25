@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import contextlib
+import functools
+import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,7 +15,20 @@ from app.core.db import AsyncSessionLocal
 from app.mcp_server.caller_identity import caller_agent_id_var, get_caller_agent_id
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals import approval_message as approval_messages
+from app.services.order_proposals import revalidation as revalidation_module
+from app.services.order_proposals import telegram_callback as callback_module
 from app.services.order_proposals.approval_message import parse_callback_data
+from app.services.order_proposals.approval_window import (
+    ApprovalWindowCode,
+    SubmissionSessionEvidence,
+    evaluate_approval_window,
+)
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalCardKind,
+    ApprovalPublication,
+    DispatchBinding,
+    build_proposal_dispatch_binding,
+)
 from app.services.order_proposals.revalidation import RungOutcome, revalidate_and_submit
 from app.services.order_proposals.service import RungInput
 from app.services.order_proposals.target_order import TargetOrderSnapshot
@@ -21,22 +37,43 @@ from app.services.order_proposals.telegram_callback import (
     _resolve_proposal_id,
     handle_callback_update,
 )
+from app.telegram_contract import TelegramMethodResult, telegram_text_length
+from tests.services.order_proposals.window_fakes import allow_known_session
 
 CHAT_ID = 42
 USER_ID = 777
 
 
+@pytest.fixture(autouse=True)
+def _known_market_session(monkeypatch):
+    monkeypatch.setattr(
+        callback_module, "evaluate_approval_window", allow_known_session
+    )
+    monkeypatch.setattr(
+        revalidation_module, "evaluate_approval_window", allow_known_session
+    )
+
+
 class _FakeNotifier:
     def __init__(self) -> None:
-        self.sent_messages: list[tuple[str, dict, str]] = []
+        self.sent_messages: list[tuple[str, dict | None, str]] = []
         self.answered: list[tuple[str, str | None]] = []
         self.edited: list[tuple[str, int, str, dict | None]] = []
         self._next_message_id = 9000
 
-    async def send_approval_message(self, text, inline_keyboard, *, chat_id):
+    async def send_approval_message(
+        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+    ):
         self._next_message_id += 1
         self.sent_messages.append((text, inline_keyboard, chat_id))
-        return self._next_message_id
+        return TelegramMethodResult(
+            ok=True,
+            message_id=self._next_message_id,
+            status_code=200,
+            error_code=None,
+            error_classification=None,
+            payload_chars=telegram_text_length(text),
+        )
 
     async def answer_callback(self, callback_query_id, text=None):
         self.answered.append((callback_query_id, text))
@@ -44,7 +81,14 @@ class _FakeNotifier:
 
     async def edit_message(self, chat_id, message_id, text, reply_markup=None):
         self.edited.append((chat_id, message_id, text, reply_markup))
-        return True
+        return TelegramMethodResult(
+            ok=True,
+            message_id=message_id,
+            status_code=200,
+            error_code=None,
+            error_classification=None,
+            payload_chars=telegram_text_length(text),
+        )
 
 
 class _EventNotifier(_FakeNotifier):
@@ -80,6 +124,86 @@ def _make_update(*, data, chat_id=CHAT_ID, user_id=USER_ID, callback_id="cbq-1")
     }
 
 
+def _successful_publication(message_id: int) -> ApprovalPublication:
+    return ApprovalPublication.published(
+        payload_chars=100,
+        method_result=TelegramMethodResult(
+            ok=True,
+            message_id=message_id,
+            status_code=200,
+            error_code=None,
+            error_classification=None,
+            payload_chars=100,
+        ),
+    )
+
+
+def _fixture_nonce(label: str) -> str:
+    """Use the production 11-character nonce shape for descriptive fixtures."""
+    if len(label) <= 11:
+        return label
+    return hashlib.sha256(label.encode()).hexdigest()[:11]
+
+
+async def _publish_fixture_card(
+    service: OrderProposalsService,
+    group,
+    *,
+    nonce: str,
+    card_kind: ApprovalCardKind,
+    message_id: int = 555,
+) -> DispatchBinding:
+    """Stage and finalize the same immutable card shape production publishes."""
+    nonce = _fixture_nonce(nonce)
+    if group.approval_nonce != nonce:
+        await service.set_approval_nonce(group.proposal_id, nonce)
+    attempt_id = uuid.uuid4()
+    now = min(
+        datetime.now(UTC),
+        group.valid_until - timedelta(microseconds=1),
+    )
+    window = await allow_known_session(group, now=now)
+    binding = build_proposal_dispatch_binding(
+        proposal_id=group.proposal_id,
+        nonce=nonce,
+        attempt_id=attempt_id,
+        card_kind=card_kind,
+        current_membership_revision=group.approval_dispatch_membership_revision,
+    )
+    await service.start_approval_dispatch(
+        group.proposal_id,
+        attempt_id=attempt_id,
+        binding=binding,
+        now=now,
+        payload_chars=100,
+        context_message_count=0,
+    )
+    result = await service.finish_approval_dispatch(
+        group.proposal_id,
+        attempt_id=attempt_id,
+        publication=_successful_publication(message_id),
+        chat_id=str(CHAT_ID),
+        now=now,
+        approval_window_policy_stamp=window.policy_stamp,
+    )
+    assert result.ok
+    return binding
+
+
+def _proposal_callback_data(group, *, action: str, nonce: str | None = None) -> str:
+    return approval_messages.build_callback_data(
+        action=action,
+        proposal_id=group.proposal_id,
+        nonce=_fixture_nonce(nonce) if nonce is not None else group.approval_nonce,
+        binding=DispatchBinding(
+            attempt_id=group.approval_dispatch_attempt_id,
+            card_kind=ApprovalCardKind(group.approval_dispatch_card_kind),
+            membership_revision=group.approval_dispatch_membership_revision,
+            membership_digest=group.approval_dispatch_membership_digest,
+        ),
+    )
+
+
 async def _seed_proposal(db_session, *, nonce="nonce-abc123", symbol="A", rungs=1):
     service = OrderProposalsService(db_session)
     rung_inputs = [
@@ -94,7 +218,22 @@ async def _seed_proposal(db_session, *, nonce="nonce-abc123", symbol="A", rungs=
         proposer="p",
         rungs=rung_inputs,
     )
+    dispatched_at = datetime.now(UTC)
+    window = await allow_known_session(group, now=dispatched_at)
+    await service.record_approval_dispatch(
+        group.proposal_id,
+        message_id=555,
+        chat_id=str(CHAT_ID),
+        now=dispatched_at,
+        approval_window_policy_stamp=window.policy_stamp,
+    )
     await service.set_approval_nonce(group.proposal_id, nonce)
+    await _publish_fixture_card(
+        service,
+        group,
+        nonce=nonce,
+        card_kind=ApprovalCardKind.MANUAL,
+    )
     await db_session.commit()
     return group
 
@@ -132,6 +271,12 @@ async def _seed_auto_resting(db_session, *, nonce="veto-nonce"):
         now=now,
     )
     await service.set_approval_nonce(group.proposal_id, nonce)
+    await _publish_fixture_card(
+        service,
+        group,
+        nonce=nonce,
+        card_kind=ApprovalCardKind.AUTO_VETO,
+    )
     await db_session.commit()
     return group
 
@@ -174,7 +319,22 @@ async def _seed_loss_cut_proposal(
         exit_reason="stop_loss",
         retrospective_id=42,
     )
+    dispatched_at = datetime.now(UTC)
+    window = await allow_known_session(group, now=dispatched_at)
+    await service.record_approval_dispatch(
+        group.proposal_id,
+        message_id=555,
+        chat_id=str(CHAT_ID),
+        now=dispatched_at,
+        approval_window_policy_stamp=window.policy_stamp,
+    )
     await service.set_approval_nonce(group.proposal_id, nonce)
+    await _publish_fixture_card(
+        service,
+        group,
+        nonce=nonce,
+        card_kind=ApprovalCardKind.MANUAL,
+    )
     await db_session.commit()
     return group
 
@@ -225,13 +385,24 @@ async def _seed_approval_batch(db_session, monkeypatch, *, member_count=2, rungs
             chat_id=str(chat_id),
             approval_message_id=7100 + index,
             now=now + timedelta(seconds=index),
+            summary_member_threshold=member_count,
         )
     await db_session.commit()
     assert registration is not None
+    assert registration.binding is not None
     batch = registration.batch
+    dispatch_result = await service.finish_approval_batch_dispatch(
+        batch.batch_id,
+        attempt_id=registration.binding.attempt_id,
+        publication=_successful_publication(7999),
+        now=now + timedelta(seconds=member_count),
+    )
+    assert dispatch_result.ok
+    await db_session.commit()
     data = approval_messages.build_batch_callback_data(
         batch_id=batch.batch_id,
         nonce=batch.approval_nonce,
+        binding=registration.binding,
     )
     return chat_id, now, groups, batch, data
 
@@ -284,7 +455,9 @@ async def test_batch_approve_consumes_each_member_nonce_and_rejects_replay(
 
 
 @pytest.mark.asyncio
-async def test_expired_batch_callback_removes_summary_button(monkeypatch, db_session):
+async def test_expired_batch_callback_has_no_preflight_external_effect(
+    monkeypatch, db_session
+):
     chat_id, _now, _groups, batch, data = await _seed_approval_batch(
         db_session, monkeypatch
     )
@@ -299,11 +472,8 @@ async def test_expired_batch_callback_removes_summary_button(monkeypatch, db_ses
     )
 
     assert result == {"handled": False, "reason": "approval_batch_expired"}
-    assert notifier.edited[-1][1:] == (
-        555,
-        "⌛ 일괄 승인 만료",
-        {"inline_keyboard": []},
-    )
+    assert notifier.answered == []
+    assert notifier.edited == []
 
 
 @pytest.mark.asyncio
@@ -385,10 +555,10 @@ async def test_batch_approve_continues_after_member_result_audit_failure(
 
 
 @pytest.mark.asyncio
-async def test_batch_click_rechecks_loss_terminal_auto_superseded_and_used_nonce(
+async def test_batch_click_atomically_rejects_changed_frozen_membership(
     monkeypatch, db_session
 ):
-    chat_id, now, groups, _batch, data = await _seed_approval_batch(
+    chat_id, now, groups, batch, data = await _seed_approval_batch(
         db_session, monkeypatch, member_count=6
     )
     groups[0].exit_intent = "loss_cut"
@@ -415,14 +585,33 @@ async def test_batch_click_rechecks_loss_terminal_auto_superseded_and_used_nonce
         revalidate_fn=fake_revalidate,
     )
 
-    assert calls == [groups[5].proposal_id]
+    assert calls == []
+    assert result["handled"] is False
+    assert result["reason"] == "BATCH_WINDOW_BLOCKED"
     assert [item["status"] for item in result["results"]] == [
         "skipped",
         "skipped",
         "skipped",
         "skipped",
         "skipped",
-        "approved",
+        "skipped",
+    ]
+    assert [item["reason"] for item in result["results"]] == [
+        "loss_cut_excluded",
+        "proposal_terminal:terminal",
+        "auto_approved_excluded",
+        "proposal_superseded_by:unknown",
+        "approval_nonce_used",
+        "batch_atomic_window_block",
+    ]
+    assert batch.approval_nonce_used_at is None
+    assert [group.approval_nonce_used_at for group in groups] == [
+        None,
+        None,
+        None,
+        None,
+        now,
+        None,
     ]
 
 
@@ -578,14 +767,18 @@ async def test_auto_veto_cancels_broker_and_rung_once(monkeypatch, db_session):
             observed_at=kwargs["now"].isoformat(),
         )
 
-    update = _make_update(data=f"vc:{str(group.proposal_id)[:8]}:veto-nonce")
+    update = _make_update(
+        data=_proposal_callback_data(group, action="vc", nonce="veto-nonce")
+    )
     wrong_action = await handle_callback_update(
-        _make_update(data=f"op:{str(group.proposal_id)[:8]}:veto-nonce"),
+        _make_update(
+            data=_proposal_callback_data(group, action="op", nonce="veto-nonce")
+        ),
         now=datetime.now(UTC),
         service_factory=_session_factory(db_session),
         notifier=notifier,
     )
-    assert wrong_action["reason"] == "auto_veto_nonce_requires_vc"
+    assert wrong_action["reason"] == "approval_card_action_mismatch"
 
     result = await handle_callback_update(
         update,
@@ -644,7 +837,9 @@ async def test_auto_veto_cancel_failure_that_is_filled_edits_filled(
         )
 
     result = await handle_callback_update(
-        _make_update(data=f"vc:{str(group.proposal_id)[:8]}:veto-nonce"),
+        _make_update(
+            data=_proposal_callback_data(group, action="vc", nonce="veto-nonce")
+        ),
         now=datetime.now(UTC),
         service_factory=_session_factory(db_session),
         notifier=notifier,
@@ -675,16 +870,85 @@ async def test_expired_approve_never_revalidates(monkeypatch, db_session):
 
     notifier = _FakeNotifier()
     result = await handle_callback_update(
-        _make_update(data=f"op:{str(group.proposal_id)[:8]}:expired-nonce"),
+        _make_update(
+            data=_proposal_callback_data(group, action="op", nonce="expired-nonce")
+        ),
         now=datetime.now(UTC),
         service_factory=_session_factory(db_session),
         notifier=notifier,
         revalidate_fn=must_not_revalidate,
     )
-    assert result["reason"] == "proposal_expired"
+    assert result["reason"] == "EXPIRED"
     assert called is False
-    assert notifier.answered[-1] == ("cbq-1", "제안이 만료되었습니다")
+    assert notifier.answered[-1] == ("cbq-1", "⌛ 제안 만료")
     assert "만료" in notifier.edited[-1][2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("known", "expected"),
+    [
+        (True, ApprovalWindowCode.DEFER_SESSION_CLOSED),
+        (False, ApprovalWindowCode.CALENDAR_UNKNOWN),
+    ],
+)
+async def test_callback_closed_or_unknown_session_consumes_no_nonce_or_broker_path(
+    monkeypatch, db_session, known, expected
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="window-blocked")
+    now = datetime(2026, 7, 23, 8, 50, tzinfo=UTC)
+    group.valid_until = now + timedelta(days=2)
+    await db_session.commit()
+    revalidate_calls = 0
+
+    async def must_not_revalidate(**kwargs):
+        nonlocal revalidate_calls
+        revalidate_calls += 1
+        raise AssertionError("window-blocked callback must not preview or submit")
+
+    async def evaluator(group, *, now):
+        async def resolver(group, *, now):
+            return SubmissionSessionEvidence(
+                known=known,
+                source="test",
+                current_session="closed" if known else "unknown",
+                allowed_sessions=("regular",),
+                allowed_now=False,
+                next_allowed_at=now + timedelta(hours=12) if known else None,
+            )
+
+        return await evaluate_approval_window(group, now=now, session_resolver=resolver)
+
+    notifier = _FakeNotifier()
+    result = await handle_callback_update(
+        _make_update(
+            data=_proposal_callback_data(
+                group,
+                action="op",
+                nonce="window-blocked",
+            )
+        ),
+        now=now,
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=must_not_revalidate,
+        window_evaluator=evaluator,
+    )
+
+    assert result["handled"] is False
+    assert result["reason"] == expected.value
+    assert revalidate_calls == 0
+    assert notifier.sent_messages == []
+    assert notifier.edited[-1][3] == {"inline_keyboard": []}
+    if known:
+        assert "다음 허용 세션" in notifier.edited[-1][2]
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert refreshed.approval_nonce_used_at is None
+    assert refreshed.approved_at is None
+    assert [rung.state for rung in rungs] == ["pending_approval"]
 
 
 @pytest.mark.asyncio
@@ -705,7 +969,7 @@ async def test_chat_not_in_allowlist_rejected(monkeypatch, db_session):
     # allowlist empty -> any chat rejected; assert no revalidation invoked.
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", "")
     group = await _seed_proposal(db_session)
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-abc123"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-abc123")
     notifier = _FakeNotifier()
 
     revalidate_calls = []
@@ -724,7 +988,7 @@ async def test_chat_not_in_allowlist_rejected(monkeypatch, db_session):
 
     assert result == {"handled": False, "reason": "chat_not_allowed"}
     assert revalidate_calls == []
-    assert notifier.answered == [("cbq-1", "처리 중")]
+    assert notifier.answered == []
     assert notifier.edited == []
 
 
@@ -735,7 +999,7 @@ async def test_approve_happy_path_submits_and_edits(monkeypatch, db_session):
     # nonce consumed, approved_by_telegram_user_id recorded.
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-happy1")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-happy1"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-happy1")
     notifier = _FakeNotifier()
 
     async def fake_revalidate(*, service, proposal_id, now):
@@ -772,6 +1036,257 @@ async def test_approve_happy_path_submits_and_edits(monkeypatch, db_session):
     assert refreshed.approved_at is not None
 
 
+def _toss_broker_order(**overrides):
+    values = {
+        "order_id": "broker-1",
+        "symbol": "005930",
+        "side": "SELL",
+        "order_type": "LIMIT",
+        "price": Decimal("70000"),
+        "quantity": Decimal("10"),
+        "execution": {},
+        "status": "PENDING",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+@pytest.mark.asyncio
+async def test_toss_live_cancel_approve_click_consumes_nonce_before_broker_cancel(
+    monkeypatch, db_session
+):
+    """ROB-972 AC3 -- the real 07-20 incident scenario, driven through the
+    actual Telegram approval boundary (nonce consumption via
+    `handle_callback_update`), not a direct `revalidate_and_submit` call.
+
+    ROB-972 round-1 finding: the previous "AC3" test called
+    `revalidate_and_submit` directly with no nonce/callback, so it could not
+    have caught a bug in the approval-boundary wiring itself (e.g. auto-
+    dispatch reaching a cancel before Telegram approval was ever consulted).
+    This test consumes a real approval nonce through `handle_callback_update`
+    -- exactly the human-click path -- and only then expects the broker
+    cancel to fire, with the *real* `revalidate_and_submit` (only the Toss
+    network boundary is faked, via a `revalidate_fn` partial bound onto the
+    real function, matching `test_toss_live_cancel_end_to_end_through_broker_gateway`'s
+    fakes).
+    """
+    from app.services.order_proposals.broker_gateway import (
+        cancel_target_order,
+        fetch_target_order,
+    )
+
+    _allow_chat(monkeypatch)
+    service = OrderProposalsService(db_session)
+    approved = TargetOrderSnapshot(
+        broker_order_id="broker-1",
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        limit_price="70000",
+        remaining_quantity="10",
+        status="open",
+        observed_at="2026-07-11T08:23:00+00:00",
+    )
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        action="cancel",
+        target_broker_order_id="broker-1",
+        target_order_snapshot=approved.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("10"), Decimal("70000"), None)],
+    )
+    await service.set_approval_nonce(group.proposal_id, "ac3-cancel-nonce")
+    await _publish_fixture_card(
+        service,
+        group,
+        nonce="ac3-cancel-nonce",
+        card_kind=ApprovalCardKind.MANUAL,
+    )
+    await db_session.commit()
+
+    toss_orders = iter(
+        [
+            _toss_broker_order(status="PENDING"),
+            _toss_broker_order(status="CANCELED"),
+        ]
+    )
+
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            assert order_id == "broker-1"
+            return next(toss_orders)
+
+    cancel_calls: list[dict] = []
+
+    async def fake_toss_cancel(**kwargs):
+        cancel_calls.append(kwargs)
+        return {"success": True, "original_order_id": kwargs["order_id"]}
+
+    real_revalidate = functools.partial(
+        revalidate_and_submit,
+        fetch_target_fn=functools.partial(
+            fetch_target_order, toss_client=FakeTossClient()
+        ),
+        cancel_target_fn=functools.partial(
+            cancel_target_order, toss_cancel_fn=fake_toss_cancel
+        ),
+    )
+
+    notifier = _FakeNotifier()
+    data = _proposal_callback_data(group, action="op", nonce="ac3-cancel-nonce")
+
+    # Before the nonce is consumed, the broker must not have been touched.
+    assert cancel_calls == []
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=real_revalidate,
+    )
+
+    assert result["handled"] is True
+    assert result["reason"] == "approved"
+    assert result["results"] == ["cancelled"]
+    # The cancel only happened after (as a direct consequence of) this
+    # single approve click -- TELEGRAM_APPROVAL_SEND already happened
+    # earlier (dispatch.py, not under test here); this asserts the click
+    # itself, not a pre-approval leak, is what triggered BROKER_CANCEL.
+    assert len(cancel_calls) == 1
+    assert cancel_calls[0]["order_id"] == "broker-1"
+
+    refreshed, rungs = await service.get_proposal(group.proposal_id)
+    assert refreshed.approval_nonce_used_at is not None
+    assert refreshed.approved_by_telegram_user_id == str(USER_ID)
+    assert rungs[0].state == "cancelled"
+    assert rungs[0].broker_order_id == "broker-1"
+
+    # Nonce replay: a second click (e.g. a duplicated Telegram webhook) must
+    # not be able to re-trigger the cancel path.
+    replay = await handle_callback_update(
+        _make_update(data=data, callback_id="cbq-replay"),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=real_revalidate,
+    )
+    assert replay["handled"] is False
+    assert len(cancel_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_toss_live_replace_approve_click_opposite_pending_blocks_before_cancel(
+    monkeypatch, db_session
+):
+    """ROB-972 round-1 -- the replace-atomicity finding, through the real
+    approval boundary. An opposite-pending order discovered by the pre-cancel
+    guard must leave the original resting order untouched even when reached
+    via a real Telegram approve click, not just a direct
+    `revalidate_and_submit` call.
+    """
+    from app.services.order_proposals.broker_gateway import (
+        cancel_target_order,
+        fetch_target_order,
+    )
+
+    _allow_chat(monkeypatch)
+    service = OrderProposalsService(db_session)
+    approved = TargetOrderSnapshot(
+        broker_order_id="broker-1",
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        limit_price="70000",
+        remaining_quantity="10",
+        status="open",
+        observed_at="2026-07-11T08:23:00+00:00",
+    )
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        action="replace",
+        target_broker_order_id="broker-1",
+        target_order_snapshot=approved.to_payload(),
+        rungs=[RungInput(0, "sell", Decimal("10"), Decimal("71000"), None)],
+    )
+    await service.set_approval_nonce(group.proposal_id, "ac3-replace-nonce")
+    await _publish_fixture_card(
+        service,
+        group,
+        nonce="ac3-replace-nonce",
+        card_kind=ApprovalCardKind.MANUAL,
+    )
+    await db_session.commit()
+
+    class FakeTossClient:
+        async def get_order(self, order_id):
+            return _toss_broker_order(status="PENDING")
+
+    cancel_calls: list[dict] = []
+
+    async def fake_toss_cancel(**kwargs):
+        cancel_calls.append(kwargs)
+        raise AssertionError(
+            "the original order must not be cancelled when the "
+            "opposite-pending pre-check rejects the replace"
+        )
+
+    async def place_order_fn(**kwargs):
+        assert kwargs.get("dry_run") is True
+        return {
+            "success": True,
+            "approval_hash": "fresh",
+            "price": "71000",
+            "quantity": "10",
+        }
+
+    async def opposite_pending_found(**kwargs):
+        return {
+            "success": False,
+            "error": "An opposite pending order exists for symbol 005930 (BUY).",
+        }
+
+    real_revalidate = functools.partial(
+        revalidate_and_submit,
+        place_order_fn=place_order_fn,
+        fetch_target_fn=functools.partial(
+            fetch_target_order, toss_client=FakeTossClient()
+        ),
+        cancel_target_fn=functools.partial(
+            cancel_target_order, toss_cancel_fn=fake_toss_cancel
+        ),
+        opposite_pending_check_fn=opposite_pending_found,
+    )
+
+    notifier = _FakeNotifier()
+    result = await handle_callback_update(
+        _make_update(
+            data=_proposal_callback_data(group, action="op", nonce="ac3-replace-nonce")
+        ),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=real_revalidate,
+    )
+
+    assert result["handled"] is True
+    assert result["results"] == ["guard_blocked"]
+    assert cancel_calls == []
+
+    refreshed, rungs = await service.get_proposal(group.proposal_id)
+    assert refreshed.target_broker_order_id == "broker-1"
+    assert rungs[0].state == "pending_approval"
+
+
 @pytest.mark.asyncio
 async def test_superseded_old_button_is_explicitly_blocked_and_replacement_approves(
     monkeypatch, db_session
@@ -791,6 +1306,12 @@ async def test_superseded_old_button_is_explicitly_blocked_and_replacement_appro
         now=datetime(2026, 7, 14, 1, 20, tzinfo=UTC),
     )
     await service.set_approval_nonce(replacement.proposal_id, "new-button-nonce")
+    await _publish_fixture_card(
+        service,
+        replacement,
+        nonce="new-button-nonce",
+        card_kind=ApprovalCardKind.MANUAL,
+    )
     await db_session.commit()
     revalidated = []
 
@@ -800,7 +1321,9 @@ async def test_superseded_old_button_is_explicitly_blocked_and_replacement_appro
 
     notifier = _FakeNotifier()
     old_result = await handle_callback_update(
-        _make_update(data=f"op:{str(old.proposal_id)[:8]}:old-button-nonce"),
+        _make_update(
+            data=_proposal_callback_data(old, action="op", nonce="old-button-nonce")
+        ),
         now=datetime(2026, 7, 14, 1, 21, tzinfo=UTC),
         service_factory=_session_factory(db_session),
         notifier=notifier,
@@ -808,7 +1331,9 @@ async def test_superseded_old_button_is_explicitly_blocked_and_replacement_appro
     )
     new_result = await handle_callback_update(
         _make_update(
-            data=f"op:{str(replacement.proposal_id)[:8]}:new-button-nonce",
+            data=_proposal_callback_data(
+                replacement, action="op", nonce="new-button-nonce"
+            ),
             callback_id="cbq-new",
         ),
         now=datetime(2026, 7, 14, 1, 22, tzinfo=UTC),
@@ -836,7 +1361,9 @@ async def test_loss_cut_second_click_is_blocked_when_superseded(
         return [RungOutcome(0, "submitted_resting", {})]
 
     first = await handle_callback_update(
-        _make_update(data=f"op:{str(old.proposal_id)[:8]}:loss-cut-first"),
+        _make_update(
+            data=_proposal_callback_data(old, action="op", nonce="loss-cut-first")
+        ),
         now=datetime(2026, 7, 14, 1, 25, tzinfo=UTC),
         service_factory=_session_factory(db_session),
         notifier=notifier,
@@ -891,7 +1418,9 @@ async def test_loss_cut_requires_second_click_before_submit(monkeypatch, db_sess
 
     issued = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
     first = await handle_callback_update(
-        _make_update(data=f"op:{str(group.proposal_id)[:8]}:loss-cut-first"),
+        _make_update(
+            data=_proposal_callback_data(group, action="op", nonce="loss-cut-first")
+        ),
         now=issued,
         service_factory=_session_factory(db_session),
         notifier=notifier,
@@ -904,13 +1433,14 @@ async def test_loss_cut_requires_second_click_before_submit(monkeypatch, db_sess
     text, keyboard = notifier.edited[-1][2], notifier.edited[-1][3]
     assert "손절 확인" in text
     callback_data = keyboard["inline_keyboard"][0][0]["callback_data"]
-    action, _short, second_nonce = parse_callback_data(callback_data)
-    assert action == "lc"
+    parsed = parse_callback_data(callback_data)
+    second_nonce = parsed.nonce
+    assert parsed.action == "lc"
     service = OrderProposalsService(db_session)
     refreshed, _ = await service.get_proposal(group.proposal_id)
     audit = refreshed.source_asof["loss_cut_confirmation"]
     assert audit["first_click"]["telegram_user_id"] == str(USER_ID)
-    assert audit["first_click"]["nonce"] == "loss-cut-first"
+    assert audit["first_click"]["nonce"] == _fixture_nonce("loss-cut-first")
     assert audit["rungs"] == [{"rung_index": 0, "approval_revision": 0}]
 
     second = await handle_callback_update(
@@ -937,7 +1467,9 @@ async def test_loss_cut_second_nonce_replay_is_rejected(monkeypatch, db_session)
     notifier = _FakeNotifier()
 
     first = await handle_callback_update(
-        _make_update(data=f"op:{str(group.proposal_id)[:8]}:loss-cut-first"),
+        _make_update(
+            data=_proposal_callback_data(group, action="op", nonce="loss-cut-first")
+        ),
         now=datetime(2026, 7, 13, 10, 0, tzinfo=UTC),
         service_factory=_session_factory(db_session),
         notifier=notifier,
@@ -974,7 +1506,9 @@ async def test_loss_cut_second_nonce_expires_after_90_seconds(monkeypatch, db_se
     notifier = _FakeNotifier()
     issued = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
     await handle_callback_update(
-        _make_update(data=f"op:{str(group.proposal_id)[:8]}:loss-cut-first"),
+        _make_update(
+            data=_proposal_callback_data(group, action="op", nonce="loss-cut-first")
+        ),
         now=issued,
         service_factory=_session_factory(db_session),
         notifier=notifier,
@@ -1004,7 +1538,9 @@ async def test_loss_cut_second_nonce_rejects_changed_rung_revision(
     notifier = _FakeNotifier()
     issued = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
     await handle_callback_update(
-        _make_update(data=f"op:{str(group.proposal_id)[:8]}:loss-cut-first"),
+        _make_update(
+            data=_proposal_callback_data(group, action="op", nonce="loss-cut-first")
+        ),
         now=issued,
         service_factory=_session_factory(db_session),
         notifier=notifier,
@@ -1048,7 +1584,9 @@ async def test_loss_cut_second_click_revalidation_blocks_stale_retro_or_slip(
     notifier = _FakeNotifier()
     issued = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
     await handle_callback_update(
-        _make_update(data=f"op:{str(group.proposal_id)[:8]}:loss-cut-first"),
+        _make_update(
+            data=_proposal_callback_data(group, action="op", nonce="loss-cut-first")
+        ),
         now=issued,
         service_factory=_session_factory(db_session),
         notifier=notifier,
@@ -1098,7 +1636,7 @@ async def test_approve_acquires_target_lock_before_revalidation(
 ):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-target-lock")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-target-lock"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-target-lock")
     events: list[str] = []
 
     async def fake_target_lock(self, proposal):
@@ -1133,7 +1671,7 @@ async def test_approve_injects_configured_submit_identity(monkeypatch, db_sessio
         settings, "ORDER_PROPOSALS_SUBMIT_AGENT_ID", "  proposal-agent  "
     )
     group = await _seed_proposal(db_session, nonce="nonce-identity")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-identity"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-identity")
 
     async def fake_revalidate(*, service, proposal_id, now):
         assert get_caller_agent_id() == "proposal-agent"
@@ -1159,7 +1697,7 @@ async def test_approve_empty_submit_identity_masks_and_restores_outer_identity(
     _allow_chat(monkeypatch)
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_SUBMIT_AGENT_ID", "   ")
     group = await _seed_proposal(db_session, nonce="nonce-empty-identity")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-empty-identity"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-empty-identity")
 
     async def fake_revalidate(*, service, proposal_id, now):
         assert get_caller_agent_id() is None
@@ -1187,7 +1725,7 @@ async def test_approve_answers_before_order_processing_and_final_edit(
 ):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-answer-first")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-answer-first"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-answer-first")
     events: list[str] = []
     notifier = _EventNotifier(events)
 
@@ -1209,7 +1747,7 @@ async def test_approve_answers_before_order_processing_and_final_edit(
     )
 
     assert result["reason"] == "approved"
-    assert events == ["answer", "db", "order", "edit"]
+    assert events == ["db", "answer", "order", "edit"]
     assert notifier.answered == [("cbq-1", "처리 중")]
 
 
@@ -1217,7 +1755,7 @@ async def test_approve_answers_before_order_processing_and_final_edit(
 async def test_cancelled_approve_commits_before_telegram_edit(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-cancelled")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-cancelled"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-cancelled")
     events: list[str] = []
     notifier = _EventNotifier(events)
     original_commit = db_session.commit
@@ -1247,7 +1785,7 @@ async def test_cancelled_approve_commits_before_telegram_edit(monkeypatch, db_se
 
     assert result["reason"] == "approved"
     assert result["results"] == ["cancelled"]
-    assert events == ["answer", "db", "order", "commit", "edit"]
+    assert events == ["db", "answer", "order", "commit", "edit"]
     assert "취소 확인" in notifier.edited[0][2]
 
 
@@ -1255,7 +1793,7 @@ async def test_cancelled_approve_commits_before_telegram_edit(monkeypatch, db_se
 async def test_order_failure_final_edit_includes_reason(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-order-failure")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-order-failure"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-order-failure")
     notifier = _FakeNotifier()
 
     async def fake_revalidate(*, service, proposal_id, now):
@@ -1279,7 +1817,7 @@ async def test_replayed_nonce_does_not_resubmit(monkeypatch, db_session):
     # second identical callback -> nonce_replay -> no second revalidate call.
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-replay1")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-replay1"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-replay1")
     notifier = _FakeNotifier()
 
     call_count = 0
@@ -1316,7 +1854,7 @@ async def test_replayed_nonce_does_not_resubmit(monkeypatch, db_session):
 async def test_nonce_mismatch_rejected(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-real")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-wrong1"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-wrong1")
     notifier = _FakeNotifier()
 
     async def fake_revalidate(**kwargs):
@@ -1332,7 +1870,7 @@ async def test_nonce_mismatch_rejected(monkeypatch, db_session):
 
     assert result["handled"] is False
     assert result["reason"] == "nonce_mismatch"
-    assert notifier.answered
+    assert notifier.answered == []
 
 
 @pytest.mark.asyncio
@@ -1341,7 +1879,7 @@ async def test_needs_reconfirm_sends_new_diff_message(monkeypatch, db_session):
     # (fresh nonce) is sent; original edited to "재확인 필요".
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-recon1")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-recon1"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-recon1")
     notifier = _FakeNotifier()
 
     diff = {
@@ -1372,14 +1910,14 @@ async def test_needs_reconfirm_sends_new_diff_message(monkeypatch, db_session):
     assert sent_chat_id == str(CHAT_ID)
     assert "재확인 변경사항" in new_text
     new_callback_data = new_keyboard["inline_keyboard"][0][0]["callback_data"]
-    new_action, new_short, new_nonce = parse_callback_data(new_callback_data)
-    assert new_action == "op"
-    assert new_short == str(group.proposal_id)[:8]
-    assert new_nonce != "nonce-recon1"
+    parsed = parse_callback_data(new_callback_data)
+    assert parsed.action == "op"
+    assert parsed.subject_short == str(group.proposal_id)[:8]
+    assert parsed.nonce != _fixture_nonce("nonce-recon1")
 
     service = OrderProposalsService(db_session)
     refreshed, _rungs = await service.get_proposal(group.proposal_id)
-    assert refreshed.approval_nonce == new_nonce
+    assert refreshed.approval_nonce == parsed.nonce
     assert refreshed.approved_by_telegram_user_id == str(USER_ID)
 
 
@@ -1389,7 +1927,7 @@ async def test_buying_power_shortfall_edits_failure_and_sends_retry_button(
 ):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-buying-power")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-buying-power"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-buying-power")
     notifier = _FakeNotifier()
     detail = {
         "reason": "insufficient_buying_power",
@@ -1419,10 +1957,10 @@ async def test_buying_power_shortfall_edits_failure_and_sends_retry_button(
     assert expected in new_text
     approve = new_keyboard["inline_keyboard"][0][0]
     assert approve["text"] == "✅ 승인"
-    action, proposal_short, nonce = parse_callback_data(approve["callback_data"])
-    assert action == "op"
-    assert proposal_short == str(group.proposal_id)[:8]
-    assert nonce != "nonce-buying-power"
+    parsed = parse_callback_data(approve["callback_data"])
+    assert parsed.action == "op"
+    assert parsed.subject_short == str(group.proposal_id)[:8]
+    assert parsed.nonce != _fixture_nonce("nonce-buying-power")
     _, rungs = await OrderProposalsService(db_session).get_proposal(group.proposal_id)
     assert rungs[0].state == "needs_reconfirm"
 
@@ -1433,7 +1971,7 @@ async def test_buying_power_multi_rung_reconfirm_shows_every_shortfall(
 ):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-buying-power-multi", rungs=2)
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-buying-power-multi"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-buying-power-multi")
     notifier = _FakeNotifier()
     details = [
         {
@@ -1478,7 +2016,7 @@ async def test_buying_power_multi_rung_reconfirm_shows_every_shortfall(
 async def test_deny_transitions_all_rungs_to_rejected(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-deny1", rungs=2)
-    data = f"dn:{str(group.proposal_id)[:8]}:nonce-deny1"
+    data = _proposal_callback_data(group, action="dn", nonce="nonce-deny1")
     notifier = _FakeNotifier()
 
     async def fake_revalidate(**kwargs):
@@ -1508,7 +2046,7 @@ async def test_deny_transitions_all_rungs_to_rejected(monkeypatch, db_session):
 async def test_lease_held_blocks_second_approval(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-lease1")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-lease1"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-lease1")
     notifier = _FakeNotifier()
 
     service = OrderProposalsService(db_session)
@@ -1547,14 +2085,25 @@ async def test_malformed_callback_data_rejected(monkeypatch, db_session):
 
     assert result["handled"] is False
     assert result["reason"] == "malformed_callback_data"
-    assert notifier.answered
+    assert notifier.answered == []
 
 
 @pytest.mark.asyncio
 async def test_proposal_not_found_for_unknown_prefix(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     notifier = _FakeNotifier()
-    data = "op:deadbeef:some-nonce-1"
+    unknown_id = uuid.UUID("deadbeef-0000-4000-8000-000000000000")
+    data = approval_messages.build_callback_data(
+        action="op",
+        proposal_id=unknown_id,
+        nonce="some-nonce-1",
+        binding=DispatchBinding(
+            attempt_id=uuid.uuid4(),
+            card_kind=ApprovalCardKind.MANUAL,
+            membership_revision=1,
+            membership_digest="AbCdEf0123_-",
+        ),
+    )
 
     result = await handle_callback_update(
         _make_update(data=data),
@@ -1565,14 +2114,14 @@ async def test_proposal_not_found_for_unknown_prefix(monkeypatch, db_session):
 
     assert result["handled"] is False
     assert result["reason"] == "proposal_not_found"
-    assert notifier.answered
+    assert notifier.answered == []
 
 
 @pytest.mark.asyncio
 async def test_never_raises_on_internal_error(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-boom1")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-boom1"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-boom1")
     notifier = _FakeNotifier()
 
     async def exploding_revalidate(**kwargs):
@@ -1598,7 +2147,7 @@ async def test_approve_restores_previous_identity_when_revalidation_raises(
     _allow_chat(monkeypatch)
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_SUBMIT_AGENT_ID", "proposal-agent")
     group = await _seed_proposal(db_session, nonce="nonce-identity-boom")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-identity-boom"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-identity-boom")
 
     async def exploding_revalidate(**kwargs):
         assert get_caller_agent_id() == "proposal-agent"
@@ -1638,7 +2187,7 @@ async def test_deny_survives_notify_failure_and_stays_committed(
 ):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-notifyfail-dn", rungs=2)
-    data = f"dn:{str(group.proposal_id)[:8]}:nonce-notifyfail-dn"
+    data = _proposal_callback_data(group, action="dn", nonce="nonce-notifyfail-dn")
     notifier = _EditRaisingNotifier()
 
     async def fake_revalidate(**kwargs):
@@ -1674,7 +2223,7 @@ async def test_approve_survives_notify_failure_and_stays_committed(
 ):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-notifyfail-op")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-notifyfail-op"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-notifyfail-op")
     notifier = _EditRaisingNotifier()
 
     async def fake_revalidate(*, service, proposal_id, now):
@@ -1736,7 +2285,7 @@ async def test_approve_survives_notify_failure_and_stays_committed(
 async def test_needs_reconfirm_multi_rung_shows_every_diff(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-multi-recon", rungs=2)
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-multi-recon"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-multi-recon")
     notifier = _FakeNotifier()
 
     diff0 = {
@@ -1781,7 +2330,7 @@ async def test_needs_reconfirm_mixed_batch_reports_other_outcome(
 ):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-mixed-recon", rungs=2)
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-mixed-recon"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-mixed-recon")
     notifier = _FakeNotifier()
 
     diff1 = {
@@ -1830,7 +2379,7 @@ async def test_reconfirm_click_transitions_rung_and_reenters_revalidation(
 ):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-cycle1")
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-cycle1"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-cycle1")
     notifier = _FakeNotifier()
 
     diff = {
@@ -1888,8 +2437,10 @@ async def test_reconfirm_click_transitions_rung_and_reenters_revalidation(
 
     _new_text, new_keyboard, _sent_chat_id = notifier.sent_messages[0]
     new_callback_data = new_keyboard["inline_keyboard"][0][0]["callback_data"]
-    _new_action, _new_short, new_nonce = parse_callback_data(new_callback_data)
-    second_data = f"op:{str(group.proposal_id)[:8]}:{new_nonce}"
+    parsed = parse_callback_data(new_callback_data)
+    assert parsed.action == "op"
+    assert parsed.subject_short == str(group.proposal_id)[:8]
+    second_data = new_callback_data
 
     # `acquire_commit_lease`'s default 10s lease was taken by the first call
     # -- advance `now` well past it so the second click isn't spuriously
@@ -1928,15 +2479,16 @@ async def test_reconfirm_resend_refreshes_approval_message_id(monkeypatch, db_se
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-msgid1")
     seed_service = OrderProposalsService(db_session)
-    await seed_service.record_approval_dispatch(
-        group.proposal_id,
+    await _publish_fixture_card(
+        seed_service,
+        group,
+        nonce="nonce-msgid1",
+        card_kind=ApprovalCardKind.MANUAL,
         message_id=111,
-        chat_id=str(CHAT_ID),
-        now=datetime.now(UTC),
     )
     await db_session.commit()
 
-    data = f"op:{str(group.proposal_id)[:8]}:nonce-msgid1"
+    data = _proposal_callback_data(group, action="op", nonce="nonce-msgid1")
     notifier = _FakeNotifier()
 
     diff = {

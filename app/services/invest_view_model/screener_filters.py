@@ -252,6 +252,7 @@ _PILOT_PRESET_SNAPSHOT: dict[str, str] = {
     # ROB-543: oversold_recovery filters over the same KIS-OHLCV snapshot
     # (read-time RSI14 from closes_window — no RSI column / no migration).
     "oversold_recovery": "invest_screener_snapshots",
+    "support_proximity": "invest_screener_snapshots",
     "high_yield_value": "market_valuation_snapshots",
     # ROB-443: crypto presets share one snapshot catalog (composing filters on top).
     **dict.fromkeys(_CRYPTO_PRESET_IDS, _CRYPTO_SNAPSHOT_KIND),

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.timezone import now_kst
 from app.models.paper_trading import PaperTrade
 from app.models.review import (
+    AlpacaPaperOrderLedger,
     KISLiveOrderLedger,
     KISMockOrderLedger,
     LiveOrderLedger,
@@ -44,6 +45,24 @@ async def _cleanup(
         KISMockOrderLedger,
     ):
         await db_session.execute(delete(model))
+    await db_session.commit()
+    # ROB-954: the pending scan now also reads the alpaca_paper ledger, a
+    # table globally shared with many other suites (see conftest's
+    # `_serialize_alpaca_paper_db_suites`). Unlike the tables above this one is
+    # NOT blind-truncated — only the two server-derived client_order_id
+    # prefixes every alpaca_paper writer actually uses are cleared. This
+    # whole file (this fixture's setup/teardown AND every test body) already
+    # runs under `_alpaca_paper_db_suite_lock()` via conftest's
+    # `_serialize_alpaca_paper_db_suites` (it matches on this file's name), so
+    # no local lock acquisition here — `fcntl.flock` is not reentrant across
+    # separate `open()` calls even within one process, and re-acquiring would
+    # deadlock against the outer fixture's held lock.
+    await db_session.execute(
+        delete(AlpacaPaperOrderLedger).where(
+            AlpacaPaperOrderLedger.client_order_id.like("rob73-%")
+            | AlpacaPaperOrderLedger.client_order_id.like("rob74-crypto-%")
+        )
+    )
     await db_session.commit()
 
 

@@ -194,7 +194,7 @@ async def test_resolve_crypto_instrument_ids_batches_symbols_in_one_select(
             quote_asset="KRW",
             status="active",
         )
-        for symbol in ("KRW-BTC", "KRW-ETH", "KRW-XRP")
+        for symbol in ("KRW-BTC-BATCH", "KRW-ETH-BATCH", "KRW-XRP-BATCH")
     ]
     db_session.add_all(instruments)
     await db_session.flush()
@@ -213,7 +213,12 @@ async def test_resolve_crypto_instrument_ids_batches_symbols_in_one_select(
         resolved = await DailyCandlesRepository(
             session=db_session
         ).resolve_crypto_instrument_ids(
-            symbols=["KRW-XRP", "KRW-BTC", "KRW-ETH", "KRW-BTC"],
+            symbols=[
+                "KRW-XRP-BATCH",
+                "KRW-BTC-BATCH",
+                "KRW-ETH-BATCH",
+                "KRW-BTC-BATCH",
+            ],
             partition="upbit_krw",
         )
     finally:

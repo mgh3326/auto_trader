@@ -298,6 +298,20 @@ async def _reconcile_one_live_row(
         base["action"] = "noop_pending"
         return base
 
+    if evidence.verdict == FillVerdict.EXPIRED:
+        base["action"] = "would_mark_expired" if dry_run else "marked_expired"
+        if not dry_run:
+            await _update_live_ledger_outcome(ledger_id=row.id, status="expired")
+            # Proposal rungs have no separate expired state; expiry is a
+            # terminal cancel-family outcome there, while the ledger preserves
+            # the more precise broker-facing ``expired`` vocabulary.
+            converged = await _converge_proposal_rung(
+                row, terminal_state="cancelled", filled_qty=None
+            )
+            if converged is not None:
+                base["proposal_rung"] = converged
+        return base
+
     if evidence.verdict == FillVerdict.NONE:
         base["action"] = "marked_cancelled"
         if not dry_run:

@@ -35,6 +35,37 @@ def test_save_strips_title_and_cleans_symbols() -> None:
 
 
 @pytest.mark.unit
+def test_save_normalizes_symbol_set_and_tracks_explicit_null() -> None:
+    entry = AnalysisArtifactSave.model_validate(
+        {
+            "market": "us",
+            "kind": "candidate_pool",
+            "title": "normalized symbols",
+            "symbols": ["MSFT", " AAPL ", "MSFT", "AAPL"],
+            "payload": None,
+            "as_of": "2026-07-02T00:00:00+00:00",
+        }
+    )
+
+    assert entry.symbols == ["AAPL", "MSFT"]
+    assert entry.payload == {}
+    assert {"symbols", "payload"} <= entry.model_fields_set
+
+    omitted = AnalysisArtifactSave.model_validate(
+        {
+            "market": "us",
+            "kind": "candidate_pool",
+            "title": "omitted fields",
+            "as_of": "2026-07-02T00:00:00+00:00",
+        }
+    )
+    assert omitted.symbols == []
+    assert omitted.payload == {}
+    assert "symbols" not in omitted.model_fields_set
+    assert "payload" not in omitted.model_fields_set
+
+
+@pytest.mark.unit
 def test_save_rejects_unknown_kind_and_extra_field() -> None:
     with pytest.raises(ValidationError) as exc_info:
         AnalysisArtifactSave.model_validate(

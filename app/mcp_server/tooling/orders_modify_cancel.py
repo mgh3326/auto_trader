@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
@@ -475,9 +476,17 @@ def _validate_cancel_inputs(
     return order_id, symbol, market_type
 
 
-async def _cancel_upbit(order_id: str) -> dict[str, Any]:
+async def _cancel_upbit(
+    order_id: str,
+    *,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
     """Cancel an Upbit (crypto) order."""
-    results = await upbit_service.cancel_orders([order_id])
+    hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
+    results = await upbit_service.cancel_orders(
+        [order_id],
+        **hook_kw,
+    )
     if results and len(results) > 0:
         result = results[0]
         if "error" in result:
@@ -619,6 +628,7 @@ async def _cancel_kis_domestic(
     symbol: str | None,
     *,
     is_mock: bool = False,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Cancel a KIS domestic (Korean equity) order."""
     if is_mock:
@@ -718,6 +728,7 @@ async def _cancel_kis_domestic(
                 break
 
         order_type_str = "buy" if side_code == "02" else "sell"
+        hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
         result = await kis.cancel_korea_order(
             order_number=order_id,
             stock_code=symbol,
@@ -726,6 +737,7 @@ async def _cancel_kis_domestic(
             order_type=order_type_str,
             krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
             is_mock=is_mock,
+            **hook_kw,
         )
         return {
             "success": True,
@@ -747,6 +759,7 @@ async def _cancel_kis_overseas(
     symbol: str | None,
     *,
     is_mock: bool = False,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Cancel a KIS overseas (US equity) order."""
     if is_mock:
@@ -861,11 +874,13 @@ async def _cancel_kis_overseas(
             quantity,
         )
 
+        hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
         result = await kis.cancel_overseas_order(
             order_number=order_id,
             symbol=symbol,
             exchange_code=exchange_code,
             quantity=quantity,
+            **hook_kw,
         )
         return {
             "success": True,
@@ -888,14 +903,23 @@ async def cancel_order_impl(
     market: str | None = None,
     *,
     is_mock: bool = False,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     order_id, symbol, market_type = _validate_cancel_inputs(order_id, symbol, market)
 
     try:
         if market_type == "crypto":
-            return await _cancel_upbit(order_id)
+            return await _cancel_upbit(
+                order_id,
+                pre_send_hook=pre_send_hook,
+            )
         if market_type == "equity_kr":
-            result = await _cancel_kis_domestic(order_id, symbol, is_mock=is_mock)
+            result = await _cancel_kis_domestic(
+                order_id,
+                symbol,
+                is_mock=is_mock,
+                pre_send_hook=pre_send_hook,
+            )
             # ROB-395: keep the live ledger truthful — a cancelled live order must
             # not stay accepted/pending (otherwise reconcile could still act on it).
             if not is_mock and result.get("success"):
@@ -906,7 +930,12 @@ async def cancel_order_impl(
                 await _mark_ledger_cancelled(order_id)
             return result
         if market_type == "equity_us":
-            return await _cancel_kis_overseas(order_id, symbol, is_mock=is_mock)
+            return await _cancel_kis_overseas(
+                order_id,
+                symbol,
+                is_mock=is_mock,
+                pre_send_hook=pre_send_hook,
+            )
         return {
             "success": False,
             "order_id": order_id,

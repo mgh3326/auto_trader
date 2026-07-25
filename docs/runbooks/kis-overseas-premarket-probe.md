@@ -74,12 +74,34 @@ uv run python -m scripts.kis_overseas_premarket_probe --symbols AAPL --json
 
 ## 실측 결과
 
-> **pending — operator 실행 후 기입.** (자동으로 "실측했다"고 기입하지 않는다 —
-> 21:00~22:25 KST 창에서 실제로 실행한 사람이 아래 표를 채운다.)
+> 2026-07-17 21:01~21:02 KST (08:01~08:02 ET, premarket) — orch 세션이 프리마켓 창에서
+> 실행 (ENV_FILE=.env.prod, read-only).
 
 | 날짜(KST) | 심볼 | us_market_session | kis.price | kis.previous_close | yahoo_prepost.price | 판정(실가격 / 전일종가 고정) |
 |-----------|------|--------------------|-----------|---------------------|----------------------|-------------------------------|
-| pending   | pending | pending | pending | pending | pending | pending |
+| 2026-07-17 21:01 | AAPL (NASD) | premarket | 333.0035 | 333.26 | 333.0035 | **실가격** — prev와 상이 + yahoo와 소수점 일치 |
+| 2026-07-17 21:02 | NVDA (NASD) | premarket | 202.309 | 207.40 | 202.309 | **실가격** — 프리마켓 −2.45% 갭 반영 + yahoo 일치 |
+| 2026-07-17 21:02 | MAN (NYSE) | premarket | 51.65 | 51.65 | 51.65 | 판정 유보 — prev와 동일하나 yahoo도 동일(저유동·해당 시각 프리마켓 체결 부재 추정). stale 단정 불가 |
+
+**결론**: KIS `HHDFS00000300`은 프리마켓 창에서 **실제 프리마켓 가격을 반환한다**
+(활성 심볼 2/2에서 yahoo prepost와 소수점 일치, NVDA는 −2.45% 갭 반영).
+`kis.quote_asof`는 3심볼 모두 `None` — KIS 응답 타임스탬프 부재는 별도 한계로 기록.
+
+### 재실행자 주의 — 프로브 크레덴셜 사전점검 한계
+
+prod env 파일(`.env.prod.native`)은 KIS live 크레덴셜을 **소문자 키**(`kis_app_key=`)로
+저장한다. pydantic Settings는 case-insensitive라 서비스는 정상이지만, 프로브의 사전
+점검은 대문자 env var를 직독하므로 false negative("미설정")가 난다. 재실행 시 소문자
+값을 대문자 env로 매핑해 실행할 것 (값 출력 금지):
+
+```bash
+export KIS_APP_KEY="$(grep '^kis_app_key=' ~/services/auto_trader/shared/.env.prod.native | head -1 | cut -d= -f2-)"
+export KIS_APP_SECRET="$(grep '^kis_app_secret=' ~/services/auto_trader/shared/.env.prod.native | head -1 | cut -d= -f2-)"
+ENV_FILE=.env.prod uv run python -m scripts.kis_overseas_premarket_probe --symbols AAPL,NVDA,MAN
+```
+
+(ROB-936과 동일 결함군 — env 직독 vs Settings 대소문자. 1회성 진단 스크립트라
+코드 수정 대신 문서화로 갈음.)
 
 ## 후속 조치
 

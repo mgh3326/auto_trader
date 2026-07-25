@@ -1,21 +1,20 @@
-"""ROB-843 P1 — pre-send freshness abort signal.
+"""Pre-send live-mutation abort signal.
 
-Dependency-free so both the KIS transport (``base.py``) and the order
-orchestrator (``order_execution.py``) can reference it without an import cycle.
-Raised by a mock-only pre-send callback invoked immediately before each real KIS
-HTTP mutation; the orchestrator converts it into a ``pre_send_blocked`` result.
+Dependency-free so broker transports and order orchestrators can share the
+same fail-closed signal. The callback runs immediately before a real mutation
+HTTP attempt and may reject freshness, validity, or market-session policy.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-# A mock-only callback invoked immediately before each real KIS HTTP mutation.
+# A callback invoked immediately before each real broker mutation.
 PreSendHook = Callable[[], Awaitable[None]]
 
 
 class PreSendFreshnessError(RuntimeError):
-    """The live book is no longer tradeable at the actual HTTP send boundary."""
+    """The live mutation is no longer allowed at its HTTP send boundary."""
 
     def __init__(self, reason_codes: tuple[str, ...]) -> None:
         self.reason_codes = tuple(reason_codes)

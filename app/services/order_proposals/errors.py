@@ -38,3 +38,26 @@ class OrderProposalNotFound(OrderProposalError):
 
 class OrderProposalDuplicate(OrderProposalError):
     """A proposal with the same proposal_id already exists."""
+
+
+class OrderProposalUnsupportedTargetAction(OrderProposalError):
+    """The requested account_mode/market/action combination is unsupported.
+
+    Carries a structured ``supported_matrix`` (per-action allowed
+    account_mode x market pairs, derived from the same capability sets the
+    message text is generated from -- see ROB-972) and the rejected
+    ``requested`` combination, so callers can render an accurate,
+    action-specific rejection instead of a place-only message reused for
+    replace/cancel.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        supported_matrix: dict[str, list[dict[str, str]]],
+        requested: dict[str, str],
+    ) -> None:
+        super().__init__(message)
+        self.supported_matrix = supported_matrix
+        self.requested = requested

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 from app.mcp_server.tooling.fundamentals._helpers import normalize_market_with_crypto
@@ -22,6 +23,90 @@ from app.mcp_server.tooling.shared import (
 from app.services import symbol_news_service
 
 _INSTRUMENT_BY_MARKET = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
+# Align the on-demand symbol-news envelope with the existing news-readiness
+# policy (180 minutes). The timestamp remains visible even after expiry.
+NEWS_FRESHNESS_MAX_AGE_SECONDS = 180 * 60
+
+
+def _aware_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _news_freshness_fields(
+    result: symbol_news_service.SymbolNewsFetchResult,
+    *,
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    observed = _aware_utc(observed_at) or datetime.now(tz=UTC)
+    fetched_at = _aware_utc(result.fetched_at)
+    if fetched_at is None:
+        fetched_values = [
+            value
+            for article in result.articles
+            if (value := _aware_utc(article.fetched_at)) is not None
+        ]
+        fetched_at = min(fetched_values) if fetched_values else None
+
+    data_age_seconds = (
+        max(0.0, (observed - fetched_at).total_seconds())
+        if fetched_at is not None
+        else None
+    )
+    cache_hit = result.cache_hit or bool(result.degraded and result.articles)
+    fallback_source = result.fallback_source
+    if fallback_source is None and result.degraded and result.articles:
+        fallback_source = "news_articles"
+
+    provenance = result.provider_provenance
+    if not provenance:
+        if result.status in {"error", "unavailable"}:
+            served_by = None
+            mode = "none"
+        elif fallback_source is not None:
+            served_by = fallback_source
+            mode = "fallback" if result.degraded else "cache"
+        else:
+            served_by = result.provider
+            mode = "live"
+        provenance = [
+            {
+                "provider": result.provider,
+                "served_by": served_by,
+                "mode": mode,
+                "status": "error" if result.degraded else result.status,
+                "error_code": result.fetch_error or result.error_code,
+            }
+        ]
+
+    if result.status in {"error", "unavailable"}:
+        data_state = "missing"
+    elif data_age_seconds is not None and (
+        data_age_seconds > NEWS_FRESHNESS_MAX_AGE_SECONDS
+    ):
+        data_state = "stale"
+    elif (
+        fetched_at is None
+        or result.degraded
+        or any(item.get("status") == "error" for item in provenance)
+    ):
+        data_state = "degraded"
+    else:
+        data_state = "fresh"
+
+    fetched_at_iso = fetched_at.isoformat() if fetched_at is not None else None
+    return {
+        "data_state": data_state,
+        "derived_as_of": fetched_at_iso,
+        "fetched_at": fetched_at_iso,
+        "data_age_seconds": data_age_seconds,
+        "cache_hit": cache_hit,
+        "fallback_source": fallback_source,
+        "provider_provenance": provenance,
+    }
 
 
 async def handle_get_news(
@@ -50,12 +135,14 @@ async def handle_get_news(
     )
 
     if result.status in ("error", "unavailable"):
-        return _error_payload(
+        payload = _error_payload(
             source=result.provider,
             message=result.error_code or "news_unavailable",
             symbol=symbol,
             instrument_type=instrument_type,
         )
+        payload.update(_news_freshness_fields(result))
+        return payload
 
     news = []
     for article in result.articles:
@@ -71,6 +158,7 @@ async def handle_get_news(
         "count": len(news),
         "excluded_count": result.excluded_count,
         "news": news,
+        **_news_freshness_fields(result),
     }
     if result.degraded:
         payload["degraded"] = True

@@ -1,3 +1,4 @@
+import functools
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -9,8 +10,22 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling import order_proposal_tools as opt
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals import dispatch as dispatch_module
+from app.services.order_proposals.approval_window import (
+    ApprovalWindowCode,
+    ApprovalWindowDecision,
+)
 from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.target_order import TargetOrderSnapshot
+from app.telegram_contract import TelegramMethodResult, telegram_text_length
+from tests.services.order_proposals.window_fakes import allow_known_session
+
+
+@pytest.fixture(autouse=True)
+def _known_market_session(monkeypatch):
+    monkeypatch.setattr(
+        dispatch_module, "evaluate_approval_window", allow_known_session
+    )
 
 
 def _unique_chat() -> str:
@@ -25,17 +40,42 @@ class _FakeNotifier:
         self.edited: list[tuple[str, int, str, object]] = []
         self._message_id = message_id
 
-    async def send_approval_message(self, text, inline_keyboard, *, chat_id):
+    async def send_approval_message(
+        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+    ):
         self.calls.append((text, inline_keyboard, chat_id))
-        return self._message_id
+        if self._message_id is None:
+            return TelegramMethodResult.failed(
+                payload_chars=telegram_text_length(text),
+                failure_code="telegram_error_400",
+                status_code=400,
+                error_code=400,
+            )
+        return TelegramMethodResult(
+            ok=True,
+            message_id=self._message_id,
+            status_code=200,
+            error_code=None,
+            error_classification=None,
+            payload_chars=telegram_text_length(text),
+        )
 
     async def edit_message(self, chat_id, message_id, text, reply_markup=None):
         self.edited.append((chat_id, message_id, text, reply_markup))
-        return True
+        return TelegramMethodResult(
+            ok=True,
+            message_id=message_id,
+            status_code=200,
+            error_code=None,
+            error_classification=None,
+            payload_chars=telegram_text_length(text),
+        )
 
 
 class _RaisingNotifier:
-    async def send_approval_message(self, text, inline_keyboard, *, chat_id):
+    async def send_approval_message(
+        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+    ):
         raise RuntimeError("telegram down")
 
 
@@ -100,6 +140,42 @@ def _target_create_kwargs(**overrides):
 
 
 @pytest.mark.asyncio
+async def test_create_surfaces_typed_approval_dispatch_block(monkeypatch):
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", _unique_chat()
+    )
+    observed_at = datetime.now(UTC)
+    deadline = observed_at - timedelta(microseconds=1)
+
+    async def blocked_dispatch(*args, **kwargs):
+        return ApprovalWindowDecision(
+            code=ApprovalWindowCode.EXPIRED,
+            observed_at=observed_at,
+            valid_until=deadline,
+            policy_stamp="order-proposal-approval-window-v1:test",
+            market="equity_kr",
+            account_mode="kis_live",
+            action="place",
+            order_type="limit",
+            detail="now_at_or_after_valid_until",
+        )
+
+    monkeypatch.setattr(opt, "dispatch_proposal", blocked_dispatch)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: _FakeNotifier(),
+    )
+
+    result = await opt.order_proposal_create(**_create_kwargs())
+
+    assert result["success"] is True
+    assert result["approval_dispatch"]["status"] == "blocked"
+    assert result["approval_dispatch"]["code"] == "EXPIRED"
+    assert result["approval_dispatch"]["detail"] == "now_at_or_after_valid_until"
+
+
+@pytest.mark.asyncio
 async def test_create_preflights_manual_target_and_returns_action_evidence(monkeypatch):
     calls = []
 
@@ -139,6 +215,203 @@ async def test_create_lookup_failure_returns_error_without_service_insert(monkey
         "success": False,
         "error": "target broker order lookup failed: offline",
     }
+
+
+def _toss_target_create_kwargs(action: str, *, market="equity_kr", **overrides):
+    symbol = "005930" if market == "equity_kr" else "AAPL"
+    return _create_kwargs(
+        symbol=symbol,
+        market=market,
+        account_mode="toss_live",
+        side="sell",
+        action=action,
+        target_broker_order_id="broker-1",
+        rungs=[
+            {
+                "rung_index": 0,
+                "side": "sell",
+                "quantity": "3.5",
+                "limit_price": "43000",
+                "notional": None,
+            }
+        ],
+        **overrides,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+@pytest.mark.parametrize("market", ["equity_kr", "equity_us"])
+async def test_create_toss_live_target_action_preflights_and_creates_proposal(
+    monkeypatch, action, market
+):
+    """ROB-972: order_proposal_create(action='cancel'|'replace') must accept
+    toss_live x equity_kr/us. Only fetch_target_order (read-only preflight) is
+    ever imported/called by this tool -- broker_gateway.cancel_target_order
+    isn't imported here at all, so there is no code path for a mutation to
+    leak into proposal creation regardless of account_mode.
+    """
+    calls = []
+    symbol = "005930" if market == "equity_kr" else "AAPL"
+
+    async def fake_fetch(**kwargs):
+        calls.append(kwargs)
+        return _target_snapshot(
+            broker_order_id="broker-1",
+            symbol=symbol,
+            side="sell",
+            limit_price="43000",
+            remaining_quantity="3.5",
+        )
+
+    monkeypatch.setattr(opt, "fetch_target_order", fake_fetch)
+
+    created = await opt.order_proposal_create(
+        **_toss_target_create_kwargs(action, market=market)
+    )
+
+    assert created["success"] is True
+    assert created["action"] == action
+    assert created["target_broker_order_id"] == "broker-1"
+    assert len(calls) == 1
+    assert calls[0]["order_id"] == "broker-1"
+    assert calls[0]["symbol"] == symbol
+    assert calls[0]["market"] == market
+    assert calls[0]["account_mode"] == "toss_live"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+async def test_create_toss_live_cancel_replace_auto_dispatch_never_mutates_before_gate(
+    monkeypatch, action
+):
+    """ROB-972 round-1 false-green fix.
+
+    `test_create_toss_live_target_action_preflights_and_creates_proposal`'s
+    docstring claims there is "no code path for a mutation to leak into
+    proposal creation" because only the read-only `fetch_target_order`
+    preflight is imported by `order_proposal_create` -- but that test never
+    exercises `order_proposal_create`'s own best-effort `dispatch_proposal`
+    call a few lines later, which IS a real code path, and which is exactly
+    where the round-1 incident happened (auto-dispatch reaching a broker
+    cancel before the eligibility gate ran). Cover that indirect path for
+    real: enable Telegram + auto-approve, let `order_proposal_create` drive
+    its own real `dispatch_proposal` -> real `revalidate_and_submit` (only
+    the broker/network edges are faked, via a `revalidate_fn` partial bound
+    onto the real functions -- not a stub that skips the gate logic), and
+    assert the broker cancel never fires.
+    """
+    from app.services.order_proposals.dispatch import (
+        dispatch_proposal as real_dispatch_proposal,
+    )
+    from app.services.order_proposals.revalidation import revalidate_and_submit
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    chat = _unique_chat()
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat)
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+
+    fake_notifier = _FakeNotifier(message_id=9977)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: fake_notifier,
+    )
+
+    target_snapshot = _target_snapshot(
+        broker_order_id="broker-1",
+        symbol="005930",
+        side="sell",
+        limit_price="43000",
+        remaining_quantity="3.5",
+    )
+
+    async def fake_fetch(**kwargs):
+        return target_snapshot
+
+    monkeypatch.setattr(opt, "fetch_target_order", fake_fetch)
+
+    cancel_calls = []
+
+    async def cancel_fn_must_not_run(**kwargs):
+        cancel_calls.append(kwargs)
+        raise AssertionError(
+            "order_proposal_create's own dispatch_proposal call must never "
+            "reach a broker cancel before the eligibility gate runs"
+        )
+
+    async def place_fn(**kwargs):
+        if kwargs.get("dry_run"):
+            return {
+                "success": True,
+                "approval_hash": "fresh",
+                "price": "43000",
+                "quantity": "3.5",
+            }
+        raise AssertionError("live submit must never fire before the gate runs")
+
+    async def no_opposite_pending(**kwargs):
+        return None
+
+    # Bind the fakes onto the REAL dispatch_proposal/revalidate_and_submit --
+    # not a stand-in that reimplements or skips the gate call -- so this
+    # test actually exercises the production gate-application code path.
+    monkeypatch.setattr(
+        opt,
+        "dispatch_proposal",
+        functools.partial(
+            real_dispatch_proposal,
+            revalidate_fn=functools.partial(
+                revalidate_and_submit,
+                fetch_target_fn=fake_fetch,
+                cancel_target_fn=cancel_fn_must_not_run,
+                place_order_fn=place_fn,
+                opposite_pending_check_fn=no_opposite_pending,
+            ),
+        ),
+    )
+
+    created = await opt.order_proposal_create(
+        **_toss_target_create_kwargs(action, market="equity_kr")
+    )
+
+    assert created["success"] is True
+    assert cancel_calls == []
+    assert len(fake_notifier.calls) == 1
+    text, _keyboard, _chat_id = fake_notifier.calls[0]
+    assert "주문 제안 승인" in text
+    assert "자동 접수됨" not in text
+
+    got = await opt.order_proposal_get(created["proposal_id"])
+    assert got["rungs"][0]["state"] == "pending_approval"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["replace", "cancel"])
+async def test_create_rejects_toss_live_crypto_target_action_with_supported_matrix(
+    monkeypatch, action
+):
+    async def fetch_must_not_run(**kwargs):
+        raise AssertionError("unsupported combo must be rejected before any fetch")
+
+    monkeypatch.setattr(opt, "fetch_target_order", fetch_must_not_run)
+
+    result = await opt.order_proposal_create(
+        **_toss_target_create_kwargs(action, market="crypto")
+    )
+
+    assert result["success"] is False
+    assert "toss_live×equity_kr|equity_us" in result["error"]
+    assert result["requested"] == {
+        "account_mode": "toss_live",
+        "market": "crypto",
+        "action": action,
+    }
+    assert {"account_mode": "toss_live", "market": "equity_kr"} in (
+        result["supported_matrix"][action]
+    )
+    assert {"account_mode": "toss_live", "market": "crypto"} not in (
+        result["supported_matrix"][action]
+    )
 
 
 @pytest.mark.asyncio
@@ -375,9 +648,36 @@ async def test_create_dispatches_telegram_when_enabled_and_allowlisted(monkeypat
     created = await opt.order_proposal_create(**_create_kwargs())
 
     assert created["success"] is True
+    assert created["approval_dispatch"]["ok"] is True
+    assert created["approval_dispatch"]["state"] == "sent"
+    assert created["approval_dispatch"]["message_id"] == 9999
     assert len(fake_notifier.calls) == 1
     _, _, chat_id = fake_notifier.calls[0]
     assert chat_id == chat
+
+
+@pytest.mark.asyncio
+async def test_create_4444_thesis_returns_visible_split_dispatch_result(monkeypatch):
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    chat = _unique_chat()
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat)
+    fake_notifier = _FakeNotifier(message_id=10001)
+    monkeypatch.setattr(
+        "app.monitoring.trade_notifier.notifier.get_trade_notifier",
+        lambda: fake_notifier,
+    )
+
+    created = await opt.order_proposal_create(
+        **_create_kwargs(thesis="가" * 4444, strategy="분할 매도")
+    )
+
+    assert created["success"] is True
+    assert created["approval_dispatch"]["ok"] is True
+    assert created["approval_dispatch"]["state"] == "sent"
+    assert created["approval_dispatch"]["payload_chars"] > 4096
+    assert len(fake_notifier.calls) == 3
+    assert all(keyboard is None for _, keyboard, _ in fake_notifier.calls[:-1])
+    assert fake_notifier.calls[-1][1]["inline_keyboard"]
 
 
 @pytest.mark.asyncio
@@ -459,6 +759,12 @@ async def test_create_does_not_dispatch_when_telegram_disabled(monkeypatch):
 
     assert created["success"] is True
     assert fake_notifier.calls == []
+    assert created["approval_dispatch"]["ok"] is False
+    assert created["approval_dispatch"]["state"] == "failed"
+    assert created["approval_dispatch"]["failure_code"] == "telegram_disabled"
+    got = await opt.order_proposal_get(created["proposal_id"])
+    assert got["proposal"]["approval_dispatch_state"] == "failed"
+    assert got["proposal"]["approval_dispatch_failure_code"] == "telegram_disabled"
 
 
 @pytest.mark.asyncio
@@ -475,6 +781,9 @@ async def test_create_does_not_dispatch_when_allowlist_empty(monkeypatch):
 
     assert created["success"] is True
     assert fake_notifier.calls == []
+    assert created["approval_dispatch"]["ok"] is False
+    assert created["approval_dispatch"]["state"] == "failed"
+    assert created["approval_dispatch"]["failure_code"] == "telegram_allowlist_empty"
 
 
 @pytest.mark.asyncio
@@ -491,6 +800,10 @@ async def test_create_succeeds_even_when_notifier_raises(monkeypatch):
 
     assert created["success"] is True
     assert "proposal_id" in created
+    assert created["approval_dispatch"]["ok"] is False
+    assert (
+        created["approval_dispatch"]["failure_code"] == "approval_card_dispatch_failed"
+    )
 
 
 @pytest.mark.asyncio
@@ -814,8 +1127,13 @@ def test_expire_sweep_registered_in_tool_names():
 
 # -- ROB-929: order_proposal_list_expired_defensive MCP tool ----------------
 
-_HANDOFF_NOW = datetime(2026, 7, 22, 1, 0, tzinfo=UTC)
-_HANDOFF_RECENT = datetime(2026, 7, 22, 0, 30, tzinfo=UTC)
+
+def _handoff_recent() -> datetime:
+    """A timestamp inside the tool's 24h handoff window.
+
+    The MCP tool stamps `now` from the real clock, so a fixed calendar date
+    silently drifts out of the window once that day passes."""
+    return datetime.now(UTC) - timedelta(minutes=30)
 
 
 def test_list_expired_defensive_registered_in_tool_names():
@@ -829,11 +1147,13 @@ async def test_list_expired_defensive_returns_expired_loss_cut_proposal(
     # exit_intent="defensive_trim" is rejected at create time (ROB-929 code
     # review: no execution-path support yet) -- loss_cut is the only
     # defensive exit_intent actually creatable today.
+    recent = _handoff_recent()
+
     async def fake_lookup(session, retrospective_id):
         return SimpleNamespace(
             symbol="MCPHANDOFF1",
             trigger_type="stop_loss",
-            created_at=_HANDOFF_RECENT,
+            created_at=recent,
         )
 
     monkeypatch.setattr(
@@ -863,10 +1183,10 @@ async def test_list_expired_defensive_returns_expired_loss_cut_proposal(
     async with AsyncSessionLocal() as session:
         service = OrderProposalsService(session)
         group, _ = await service.get_proposal(proposal_id)
-        group.valid_until = datetime(2026, 7, 21, 0, 0, tzinfo=UTC)
+        group.valid_until = recent - timedelta(days=1)
         await session.commit()
-        assert await service.expire_if_needed(proposal_id, now=_HANDOFF_RECENT)
-        group.updated_at = _HANDOFF_RECENT
+        assert await service.expire_if_needed(proposal_id, now=recent)
+        group.updated_at = recent
         await session.commit()
 
     result = await opt.order_proposal_list_expired_defensive(hours=24)
@@ -883,15 +1203,16 @@ async def test_list_expired_defensive_returns_expired_loss_cut_proposal(
 
 @pytest.mark.asyncio
 async def test_list_expired_defensive_excludes_non_defensive_proposal():
+    recent = _handoff_recent()
     created = await opt.order_proposal_create(**_create_kwargs(symbol="MCPHANDOFF2"))
     proposal_id = uuid.UUID(created["proposal_id"])
     async with AsyncSessionLocal() as session:
         service = OrderProposalsService(session)
         group, _ = await service.get_proposal(proposal_id)
-        group.valid_until = datetime(2026, 7, 21, 0, 0, tzinfo=UTC)
+        group.valid_until = recent - timedelta(days=1)
         await session.commit()
-        assert await service.expire_if_needed(proposal_id, now=_HANDOFF_RECENT)
-        group.updated_at = _HANDOFF_RECENT
+        assert await service.expire_if_needed(proposal_id, now=recent)
+        group.updated_at = recent
         await session.commit()
 
     result = await opt.order_proposal_list_expired_defensive(hours=24)
@@ -902,11 +1223,13 @@ async def test_list_expired_defensive_excludes_non_defensive_proposal():
 
 @pytest.mark.asyncio
 async def test_list_expired_defensive_filters_by_market(monkeypatch):
+    recent = _handoff_recent()
+
     async def fake_lookup(session, retrospective_id):
         return SimpleNamespace(
             symbol="MCPHANDOFF3",
             trigger_type="stop_loss",
-            created_at=_HANDOFF_RECENT,
+            created_at=recent,
         )
 
     monkeypatch.setattr(
@@ -936,10 +1259,10 @@ async def test_list_expired_defensive_filters_by_market(monkeypatch):
     async with AsyncSessionLocal() as session:
         service = OrderProposalsService(session)
         group, _ = await service.get_proposal(proposal_id)
-        group.valid_until = datetime(2026, 7, 21, 0, 0, tzinfo=UTC)
+        group.valid_until = recent - timedelta(days=1)
         await session.commit()
-        assert await service.expire_if_needed(proposal_id, now=_HANDOFF_RECENT)
-        group.updated_at = _HANDOFF_RECENT
+        assert await service.expire_if_needed(proposal_id, now=recent)
+        group.updated_at = recent
         await session.commit()
 
     result = await opt.order_proposal_list_expired_defensive(

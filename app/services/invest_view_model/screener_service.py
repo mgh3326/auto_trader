@@ -1558,6 +1558,7 @@ _METRIC_FIELD: dict[str, str] = {
     "undervalued_breakout": "new_high_age_trading_days",
     "investor_flow_momentum": "foreign_net",
     "double_buy": "change_rate",  # NEW — placeholder; Task 3 wires snapshot-first branch
+    "support_proximity": "dist_to_support_pct",
     "crypto_high_volume": "trade_amount_24h",
     "crypto_oversold": "rsi",
     "crypto_momentum": "change_rate",
@@ -1845,6 +1846,8 @@ def _metric_value_label(preset_id: str, row: dict[str, Any]) -> tuple[str, list[
     if field in ("week_change_rate", "change_rate"):
         sign = "+" if value > 0 else ""
         return f"{sign}{value:.2f}%", []
+    if field == "dist_to_support_pct":
+        return f"{float(value):.2f}%", []
     if field in ("per", "pbr", "rsi"):
         return f"{float(value):.1f}", []
     if field == "roe":
@@ -2000,6 +2003,23 @@ def _crypto_risk_context(row: dict[str, Any]) -> list[ScreenerRiskContext]:
             )
         )
     return risks
+
+
+def _support_risk_context(row: dict[str, Any]) -> list[ScreenerRiskContext]:
+    """ROB-976: surface the nearest support level's kind/strength for
+    support_proximity rows (dist_to_support_pct itself is the metric value)."""
+    kind = row.get("support_kind")
+    if not kind:
+        return []
+    strength = row.get("support_strength") or "weak"
+    price = row.get("support_price")
+    label = f"{kind} · {strength}"
+    if price is not None:
+        try:
+            label = f"{label} · {float(price):,.0f}원"
+        except (TypeError, ValueError):
+            pass
+    return [ScreenerRiskContext(kind="support_level", label=label, severity="info")]
 
 
 def _crypto_candidate_source(row: dict[str, Any]) -> str:
@@ -2435,6 +2455,25 @@ async def build_screener_results(
             _snapshot_empty_warning = (
                 "최신 수급/시세 스냅샷에서 쌍끌이 매수 조건에 맞는 종목이 없습니다."
             )
+        elif preset_id == "support_proximity":
+            from app.services.invest_view_model.support_proximity_screener import (
+                load_support_proximity_from_snapshots,
+            )
+
+            _snapshot_load_result = await load_support_proximity_from_snapshots(
+                session,
+                market=requested_market,
+                limit=int(filters.get("limit") or _SNAPSHOT_FIRST_LIMIT),
+                min_market_cap=filters.get("min_market_cap"),  # type: ignore[arg-type]
+                min_turnover=filters.get("min_turnover"),  # type: ignore[arg-type]
+                now=now,
+            )
+            if _snapshot_load_result is not None:
+                _snapshot_check_result = _snapshot_load_result.rows
+            _snapshot_empty_warning = (
+                "최신 시세 스냅샷 기준 지지선 근접 조건에 맞는 종목이 없습니다 "
+                "(품질 필터 미충족 또는 후보 전원 지지선 없음)."
+            )
         elif preset_id == "high_yield_value" and requested_market == "us":
             # ROB-427 PR3: US high_yield_value is backed by Yahoo valuation snapshots
             # (market_valuation_snapshots, market=us) — NOT the KR tvscreener snapshot
@@ -2593,6 +2632,15 @@ async def build_screener_results(
         _snapshot_check_result = []
         _snapshot_state_override = "missing"
         _snapshot_empty_warning = "수급 또는 시세 스냅샷이 아직 적재되지 않아 쌍끌이 매수 후보를 표시할 수 없습니다."
+
+    if preset_id == "support_proximity" and _snapshot_check_result is None:
+        # snapshot-only preset; the generic provider has no support/resistance
+        # filter and cannot bound the live get_support_resistance fan-out safely.
+        _snapshot_check_result = []
+        _snapshot_state_override = "missing"
+        _snapshot_empty_warning = (
+            "시세 스냅샷이 아직 적재되지 않아 지지선 근접 후보를 표시할 수 없습니다."
+        )
 
     if (
         preset_id == "oversold_recovery"
@@ -3005,7 +3053,13 @@ async def build_screener_results(
                 investorFlowChip=investor_flow_chips.get(symbol),
                 warnings=row_warnings,
                 sourceContext=source_context,
-                riskContext=_crypto_risk_context(row) if market == "crypto" else [],
+                riskContext=(
+                    _crypto_risk_context(row)
+                    if market == "crypto"
+                    else _support_risk_context(row)
+                    if preset_id == "support_proximity"
+                    else []
+                ),
                 candidateContext=_crypto_candidate_context(row, preset_id)
                 if market == "crypto"
                 else None,

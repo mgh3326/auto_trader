@@ -15,23 +15,29 @@ def _raw() -> dict:
 
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-07-17.1"
+    assert doc.version == "2026-07-22.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
     assert doc.thresholds["screen.rsi_max"].value == 45
     assert doc.thresholds["buy.deep_limit_pct_range"].value == [-12, -3]
+    assert doc.thresholds["portfolio.max_symbols_per_theme"].value == 2
     assert set(doc.market_overrides.keys()) == {"kr", "us", "crypto"}
     assert "semis_memory" in doc.sector_clusters
     assert "sell.trim_preplace" in doc.decision_rules
     trim_rule = doc.decision_rules["sell.trim_preplace"]
     assert trim_rule.lanes == ["sell"]
     assert [tier.id for tier in trim_rule.tiers] == [
+        "profit_realization",
         "rsi_confirmed_resistance",
         "ultra_near_resistance",
         "watch_zone",
     ]
-    assert trim_rule.tiers[1].conditions["resistance_near_pct_max"] == 2
+    assert trim_rule.tiers[0].conditions["profit_pct_min"] == 8
+    assert trim_rule.tiers[2].conditions["resistance_near_pct_max"] == 2
+    assert trim_rule.tie_breaks["multiple_tiers_matched"] == (
+        "first_matching_tier_wins"
+    )
     assert trim_rule.tie_breaks["sell.upside_place_max_pct"] == "size_limit_only"
 
 
@@ -52,23 +58,24 @@ def test_crypto_market_rules_preserve_report_derived_and_null_thresholds():
     gate = rules.recovery_gate
 
     assert gate.min_conditions_met == 2
-    assert gate.of == 4
+    assert gate.of == 2
     assert [condition.id for condition in gate.conditions] == [
-        "fear_greed",
         "alt_breadth_24h",
         "btc_long_short_ratio",
-        "btc_kimchi_premium",
     ]
-    assert gate.conditions[0].threshold is None
-    assert (gate.conditions[1].operator, gate.conditions[1].threshold) == (
+    assert (gate.conditions[0].operator, gate.conditions[0].threshold) == (
         "gt",
         50,
     )
-    assert (gate.conditions[2].operator, gate.conditions[2].threshold) == (
+    assert (gate.conditions[1].operator, gate.conditions[1].threshold) == (
         "lte",
         1.5,
     )
-    assert gate.conditions[3].threshold is None
+    assert [context.id for context in gate.advisory_context] == [
+        "fear_greed",
+        "btc_kimchi_premium",
+    ]
+    assert all(context.threshold is None for context in gate.advisory_context)
     assert rules.no_chasing.daily_change_pct_threshold is None
     assert rules.no_chasing.min_trade_value_24h_krw is None
     assert rules.support_resistance.source_priority == [
@@ -161,5 +168,94 @@ def test_crash_day_extra_actions_key_rejected():
 def test_crash_day_missing_block_rejected():
     raw = _raw()
     del raw["crash_day"]
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_user_stance_ai_demand_selective_parses():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    stances = {stance.id: stance for stance in doc.user_stances}
+    stance = stances["ai-demand-real-value-selective"]
+
+    assert stance.stance.startswith("AI 수요는 실사용 관점에서 실재")
+    assert len(stance.implications) == 4
+    assert (
+        "3배 레버리지 ETF(SOXL류)는 눌림 보유 수단에서 기본 제외 (변동성 감쇠)"
+        in stance.implications
+    )
+    assert stance.risk_scenario.startswith("효율 충격")
+    assert stance.review_condition.startswith("하이퍼스케일러 AI capex 감소 가이던스")
+    assert stance.review_date == "2026-10-17"
+
+
+def test_user_stance_extra_key_rejected():
+    raw = _raw()
+    raw["user_stances"][0]["bogus"] = 1
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_user_stance_missing_required_field_rejected():
+    raw = _raw()
+    del raw["user_stances"][0]["risk_scenario"]
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_user_stance_invalid_review_date_rejected():
+    raw = _raw()
+    raw["user_stances"][0]["review_date"] = "not-a-date"
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_user_stances_missing_block_rejected():
+    raw = _raw()
+    del raw["user_stances"]
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_kr_notional_range_semantics_scoped_to_kr_lane():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    kr_range = doc.thresholds["buy.per_symbol_notional_krw_range"]
+
+    assert kr_range.value == [200000, 400000]
+    assert "KR lane only" in kr_range.semantics
+
+
+def test_us_notional_usd_range_parses_with_one_share_exception():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    us_range = doc.thresholds["buy.per_symbol_notional_usd_range"]
+
+    assert us_range.lanes == ["buy", "discovery"]
+    assert us_range.value == [150, 450]
+    assert us_range.unit == "usd"
+    exception = us_range.one_share_exception
+    assert exception is not None
+    assert exception.enabled is True
+    assert exception.absolute_ceiling_usd == 700
+    assert exception.max_deep_rungs == 1
+
+
+def test_other_thresholds_default_one_share_exception_to_none():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    assert doc.thresholds["screen.rsi_max"].one_share_exception is None
+
+
+def test_us_notional_usd_range_one_share_exception_extra_key_rejected():
+    raw = _raw()
+    raw["thresholds"]["buy.per_symbol_notional_usd_range"]["one_share_exception"][
+        "bogus"
+    ] = 1
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_us_notional_usd_range_one_share_exception_missing_required_field_rejected():
+    raw = _raw()
+    del raw["thresholds"]["buy.per_symbol_notional_usd_range"]["one_share_exception"][
+        "max_deep_rungs"
+    ]
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)

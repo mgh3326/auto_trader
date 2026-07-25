@@ -15,6 +15,7 @@ Usage (research venv):
         --window-from 2026-03-01 --window-to 2026-05-14 \
         --export results/rob320/meanrev.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -36,8 +37,14 @@ from validated_gate import (
 # small, fixed param grid (param-stability check, not optimization)
 _GRID = {
     "meanrev_zscore_fade": [
-        ("z2.0/tp30/sl30", {"lookback": 20, "z_entry": "2.0", "tp_bps": 30, "sl_bps": 30}),
-        ("z2.5/tp40/sl40", {"lookback": 20, "z_entry": "2.5", "tp_bps": 40, "sl_bps": 40}),
+        (
+            "z2.0/tp30/sl30",
+            {"lookback": 20, "z_entry": "2.0", "tp_bps": 30, "sl_bps": 30},
+        ),
+        (
+            "z2.5/tp40/sl40",
+            {"lookback": 20, "z_entry": "2.5", "tp_bps": 40, "sl_bps": 40},
+        ),
     ],
 }
 
@@ -57,8 +64,12 @@ def main() -> int:
     ap.add_argument("--window-from", default="")
     ap.add_argument("--window-to", default="")
     ap.add_argument("--export", type=Path, default="results/rob320/gate.json")
-    ap.add_argument("--seed", type=int, default=42,
-                    help="seed for bootstrap / Monte-Carlo permutation")
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="seed for bootstrap / Monte-Carlo permutation",
+    )
     ap.add_argument("--bootstrap-n", type=int, default=1000)
     ap.add_argument("--mc-n", type=int, default=1000)
     args = ap.parse_args()
@@ -81,8 +92,17 @@ def main() -> int:
         per_symbol = []
         for sym in symbols:
             size = "0.002" if sym == "BTCUSDT" else args.trade_size
-            per_symbol.append(run(args.catalog, sym, args.candidate, params, size,
-                                   args.window_from, args.window_to))
+            per_symbol.append(
+                run(
+                    args.catalog,
+                    sym,
+                    args.candidate,
+                    params,
+                    size,
+                    args.window_from,
+                    args.window_to,
+                )
+            )
         candidate_runs[label] = _merge(per_symbol)
         print(f"  -> Total trades across all symbols: {len(candidate_runs[label])}")
 
@@ -91,9 +111,17 @@ def main() -> int:
     breakout_runs = []
     for sym in symbols:
         size = "0.002" if sym == "BTCUSDT" else args.trade_size
-        breakout_runs.append(run(args.catalog, sym, "micro_breakout",
-                                 get_candidate("micro_breakout").default_params, size,
-                                 args.window_from, args.window_to))
+        breakout_runs.append(
+            run(
+                args.catalog,
+                sym,
+                "micro_breakout",
+                get_candidate("micro_breakout").default_params,
+                size,
+                args.window_from,
+                args.window_to,
+            )
+        )
     breakout = _merge(breakout_runs)
     print(f"  -> Total trades: {len(breakout)}")
 
@@ -101,19 +129,35 @@ def main() -> int:
     random_runs = []
     for sym in symbols:
         size = "0.002" if sym == "BTCUSDT" else args.trade_size
-        random_runs.append(run(args.catalog, sym, "random_entry",
-                               get_candidate("random_entry").default_params, size,
-                               args.window_from, args.window_to))
+        random_runs.append(
+            run(
+                args.catalog,
+                sym,
+                "random_entry",
+                get_candidate("random_entry").default_params,
+                size,
+                args.window_from,
+                args.window_to,
+            )
+        )
     random_ctrl = _merge(random_runs)
     print(f"  -> Total trades: {len(random_ctrl)}")
 
     print("Evaluating walk-forward gate report...")
     report = evaluate_gate(
-        candidate_runs=candidate_runs, baseline_breakout=breakout, baseline_random=random_ctrl,
-        fee_bps=args.fee_bps, min_trades=args.min_trades,
-        candidate_name=cand.name, hypothesis=cand.hypothesis, symbols=symbols,
-        window={"from": args.window_from, "to": args.window_to,
-                "folds": {"train": 0.5, "val": 0.25, "oos": 0.25}},
+        candidate_runs=candidate_runs,
+        baseline_breakout=breakout,
+        baseline_random=random_ctrl,
+        fee_bps=args.fee_bps,
+        min_trades=args.min_trades,
+        candidate_name=cand.name,
+        hypothesis=cand.hypothesis,
+        symbols=symbols,
+        window={
+            "from": args.window_from,
+            "to": args.window_to,
+            "folds": {"train": 0.5, "val": 0.25, "oos": 0.25},
+        },
     )
 
     # ROB-328 (ROB-327 F1) — statistical robustness of the net-after-fee result.
@@ -124,7 +168,9 @@ def main() -> int:
     bootstrap = monte_carlo = None
     if val_best in candidate_runs:
         net_pnls = net_pnls_at_fee(candidate_runs[val_best], args.fee_bps)
-        bootstrap = bootstrap_sharpe_ci(net_pnls, n_bootstrap=args.bootstrap_n, seed=args.seed)
+        bootstrap = bootstrap_sharpe_ci(
+            net_pnls, n_bootstrap=args.bootstrap_n, seed=args.seed
+        )
         monte_carlo = monte_carlo_permutation(net_pnls, n_sim=args.mc_n, seed=args.seed)
         apply_statistical_evidence(report, bootstrap)  # folds CI evidence into verdict
 
@@ -132,16 +178,23 @@ def main() -> int:
     args.export.write_text(json.dumps(report.to_dict(), indent=2))
 
     run_card_config = {
-        "candidate": args.candidate, "symbols": symbols, "fee_bps": args.fee_bps,
-        "min_trades": args.min_trades, "grid": dict(grid),
+        "candidate": args.candidate,
+        "symbols": symbols,
+        "fee_bps": args.fee_bps,
+        "min_trades": args.min_trades,
+        "grid": dict(grid),
         "window": {"from": args.window_from, "to": args.window_to},
-        "seed": args.seed, "bootstrap_n": args.bootstrap_n, "mc_n": args.mc_n,
+        "seed": args.seed,
+        "bootstrap_n": args.bootstrap_n,
+        "mc_n": args.mc_n,
     }
     card_paths = write_run_card(
-        report, args.export.parent,
+        report,
+        args.export.parent,
         config=run_card_config,
         data_sources=[f"binance_demo_backtest:{','.join(symbols)}"],
-        bootstrap=bootstrap, monte_carlo=monte_carlo,
+        bootstrap=bootstrap,
+        monte_carlo=monte_carlo,
     )
 
     print("\n=============================================================")

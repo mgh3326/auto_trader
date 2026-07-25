@@ -57,6 +57,19 @@ class OrderProposal(Base):
             f"lifecycle_state IN ({_GROUP_STATES_SQL})",
             name="order_proposals_lifecycle_state",
         ),
+        CheckConstraint(
+            "approval_dispatch_state IS NULL OR "
+            "approval_dispatch_state IN "
+            "('pending','sent_current','sent_superseded','failed',"
+            "'partial_failed','failed_superseded')",
+            name="order_proposals_approval_dispatch_state",
+        ),
+        CheckConstraint(
+            "approval_dispatch_card_kind IS NULL OR "
+            "approval_dispatch_card_kind IN "
+            "('manual','reconfirm','auto_veto','loss_cut_confirmation')",
+            name="order_proposals_approval_dispatch_card_kind",
+        ),
         Index("ix_order_proposals_root", "root_proposal_id"),
         Index("ix_order_proposals_state", "lifecycle_state"),
         Index("ix_order_proposals_symbol", "symbol"),
@@ -108,6 +121,21 @@ class OrderProposal(Base):
     source_asof: Mapped[dict | None] = mapped_column(JSONB)
     approval_nonce: Mapped[str | None] = mapped_column(Text)
     approval_nonce_used_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    approval_dispatch_state: Mapped[str | None] = mapped_column(Text)
+    approval_dispatch_attempt_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True)
+    )
+    approval_dispatch_attempted_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    approval_dispatch_failure_code: Mapped[str | None] = mapped_column(Text)
+    approval_dispatch_payload_chars: Mapped[int | None] = mapped_column(BigInteger)
+    approval_dispatch_card_kind: Mapped[str | None] = mapped_column(Text)
+    approval_dispatch_membership_revision: Mapped[int | None] = mapped_column(Integer)
+    approval_dispatch_membership_digest: Mapped[str | None] = mapped_column(Text)
+    approval_dispatch_published_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True)
     )
     approved_by_telegram_user_id: Mapped[str | None] = mapped_column(Text)
@@ -176,6 +204,64 @@ class OrderProposalRung(Base):
     )
 
 
+class OrderProposalApprovalDispatchAttempt(Base):
+    __tablename__ = "order_proposal_approval_dispatch_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "attempt_id", name="uq_order_proposal_approval_dispatch_attempt_id"
+        ),
+        CheckConstraint(
+            "state IN ('pending','sent_current','sent_superseded','failed',"
+            "'partial_failed','failed_superseded')",
+            name="order_proposal_approval_dispatch_attempt_state",
+        ),
+        CheckConstraint(
+            "card_kind IN ('manual','reconfirm','auto_veto','loss_cut_confirmation')",
+            name="order_proposal_approval_dispatch_attempt_card_kind",
+        ),
+        Index(
+            "ix_order_proposal_approval_dispatch_attempts_proposal",
+            "proposal_pk",
+            "attempted_at",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    attempt_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    proposal_pk: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("review.order_proposals.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    attempted_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    payload_chars: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    context_message_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    message_id: Mapped[int | None] = mapped_column(BigInteger)
+    status_code: Mapped[int | None] = mapped_column(Integer)
+    telegram_error_code: Mapped[int | None] = mapped_column(Integer)
+    error_classification: Mapped[str | None] = mapped_column(Text)
+    failure_code: Mapped[str | None] = mapped_column(Text)
+    card_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    membership_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    membership_digest: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class OrderProposalApprovalBatch(Base):
     __tablename__ = "order_proposal_approval_batches"
     __table_args__ = (
@@ -185,6 +271,13 @@ class OrderProposalApprovalBatch(Base):
         CheckConstraint(
             "summary_dispatch_state IN ('idle','sending','sent')",
             name="order_proposal_approval_batches_summary_state",
+        ),
+        CheckConstraint(
+            "approval_dispatch_state IS NULL OR "
+            "approval_dispatch_state IN "
+            "('pending','sent_current','sent_superseded','failed',"
+            "'partial_failed','failed_superseded')",
+            name="order_proposal_approval_batches_dispatch_state",
         ),
         Index(
             "ix_order_proposal_approval_batches_chat_window",
@@ -217,6 +310,26 @@ class OrderProposalApprovalBatch(Base):
         Text, nullable=False, server_default="idle"
     )
     summary_dispatch_lease_until: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    approval_dispatch_state: Mapped[str | None] = mapped_column(Text)
+    approval_dispatch_attempt_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True)
+    )
+    approval_dispatch_attempted_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    approval_dispatch_published_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True)
+    )
+    approval_dispatch_failure_code: Mapped[str | None] = mapped_column(Text)
+    approval_dispatch_payload_chars: Mapped[int | None] = mapped_column(BigInteger)
+    telegram_status_code: Mapped[int | None] = mapped_column(Integer)
+    telegram_error_code: Mapped[int | None] = mapped_column(Integer)
+    error_classification: Mapped[str | None] = mapped_column(Text)
+    membership_revision: Mapped[int | None] = mapped_column(Integer)
+    membership_digest: Mapped[str | None] = mapped_column(Text)
+    membership_frozen_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True)
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -258,6 +371,13 @@ class OrderProposalApprovalBatchMember(Base):
     )
     approval_nonce_snapshot: Mapped[str] = mapped_column(Text, nullable=False)
     approval_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    membership_revision: Mapped[int | None] = mapped_column(Integer)
+    approval_dispatch_attempt_id_snapshot: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True)
+    )
+    approval_membership_revision_snapshot: Mapped[int | None] = mapped_column(Integer)
+    approval_membership_digest_snapshot: Mapped[str | None] = mapped_column(Text)
+    approval_card_kind_snapshot: Mapped[str | None] = mapped_column(Text)
     result: Mapped[str | None] = mapped_column(Text)
     result_detail: Mapped[dict | None] = mapped_column(JSONB)
     processed_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))

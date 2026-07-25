@@ -8,10 +8,11 @@ and committed, and (b) calls the Telegram notifier, which
 ``OrderProposalsService``/``OrderProposalRepository`` never do (they only
 flush -- see ``service.py``'s module docstring).
 
-The initial individual message necessarily precedes persistence of its Telegram
-message ID. For the derived batch summary, however, membership and the summary
-claim are committed before the summary is sent or edited, so an operator never
-sees a batch button whose second member exists only in an uncommitted session.
+Each individual dispatch commits its fresh nonce and pending attempt before
+Telegram I/O, then finalizes that attempt in a separate transaction. The
+Telegram message ID necessarily arrives between those transactions. Derived
+batch membership is frozen and committed before publication. Published batches
+are immutable; later proposals always stage a new card.
 """
 
 from __future__ import annotations
@@ -29,8 +30,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.services.order_proposals.approval_message import (
-    build_approval_message,
+    ApprovalDispatchMessages,
+    build_approval_dispatch_messages,
     build_batch_approval_message,
+)
+from app.services.order_proposals.approval_window import (
+    ApprovalWindowCode,
+    ApprovalWindowDecision,
+    WindowEvaluator,
+    evaluate_approval_window,
+    evaluate_approval_window_boundary,
+    recheck_approval_window_decision,
 )
 from app.services.order_proposals.auto_approve import (
     build_auto_approved_message,
@@ -47,23 +57,54 @@ from app.services.order_proposals.broker_gateway import (
     cancel_target_order,
     fetch_target_order,
 )
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalCardKind,
+    ApprovalDispatchState,
+    ApprovalPublication,
+    DispatchBinding,
+    TelegramDispatchResult,
+    build_proposal_dispatch_binding,
+)
 from app.services.order_proposals.revalidation import (
     RungOutcome,
     revalidate_and_submit,
 )
 from app.services.order_proposals.service import OrderProposalsService
+from app.telegram_contract import (
+    TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
+    TelegramErrorClassification,
+    TelegramMethodResult,
+    telegram_text_length,
+)
 
 logger = logging.getLogger(__name__)
 
 ServiceFactory = Callable[[], Any]
 RevalidateFn = Callable[..., Any]
+Clock = Callable[[], datetime]
 
 
 def _generate_nonce() -> str:
     # Duplicated from telegram_callback.py::_generate_nonce (2 lines) rather
     # than imported -- that name is `_`-prefixed/module-private, and this
     # module is a peer top-level caller, not a consumer of that module.
-    return secrets.token_urlsafe(12)
+    return secrets.token_urlsafe(8)
+
+
+def _proposal_binding(
+    *,
+    group: Any,
+    nonce: str | None,
+    attempt_id: uuid.UUID,
+    card_kind: ApprovalCardKind,
+) -> DispatchBinding:
+    return build_proposal_dispatch_binding(
+        proposal_id=group.proposal_id,
+        nonce=nonce,
+        attempt_id=attempt_id,
+        card_kind=card_kind,
+        current_membership_revision=group.approval_dispatch_membership_revision,
+    )
 
 
 async def _register_and_publish_batch_summary(
@@ -75,50 +116,123 @@ async def _register_and_publish_batch_summary(
     chat_id: str,
     now: datetime,
     notifier: Any,
+    window_evaluator: WindowEvaluator,
+    now_fn: Clock,
 ) -> None:
-    """Best-effort batch registration after the individual message succeeds."""
+    """Publish a new immutable batch card after freezing its exact members."""
     registration = await service.register_approval_batch_member(
         proposal_id,
         chat_id=chat_id,
         approval_message_id=message_id,
         now=now,
     )
-    if registration is None or registration.summary_action == "none":
+    if (
+        registration is None
+        or registration.summary_action == "none"
+        or registration.binding is None
+    ):
         return
-    batch, proposals = await service.get_approval_batch_display(
-        registration.batch.batch_id
-    )
-    text, keyboard = build_batch_approval_message(batch=batch, proposals=proposals)
     # Make the frozen membership and summary-delivery claim visible before
     # publishing a button that depends on both rows.
     await session.commit()
-    if registration.summary_action == "send":
-        try:
-            summary_id = await notifier.send_approval_message(
-                text, keyboard, chat_id=chat_id
+    batch, proposals = await service.get_approval_batch_display(
+        registration.batch.batch_id,
+        for_update=True,
+    )
+    decisions: list[tuple[Any, ApprovalWindowDecision]] = []
+    for group, _rungs in proposals:
+        expected = (group.source_asof or {}).get("approval_window_policy_stamp")
+        decision = await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=window_evaluator,
+            now_fn=now_fn,
+            expected_policy_stamp=str(expected) if expected is not None else None,
+        )
+        if not decision.allowed:
+            if decision.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    group.proposal_id,
+                    now=decision.observed_at,
+                )
+            await service.release_approval_batch_summary_claim(
+                batch.batch_id,
+                now=decision.observed_at,
             )
-        except Exception:  # noqa: BLE001 - individual dispatch remains valid
-            logger.exception("order proposal batch summary send failed")
-            await service.release_approval_batch_summary_claim(batch.batch_id, now=now)
+            await session.commit()
             return
-        if summary_id is None:
-            await service.release_approval_batch_summary_claim(batch.batch_id, now=now)
+        decisions.append((group, decision))
+
+    final_now = now_fn()
+    for group, decision in decisions:
+        final_decision = recheck_approval_window_decision(
+            group,
+            decision,
+            now=final_now,
+        )
+        if not final_decision.allowed:
+            if final_decision.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    group.proposal_id,
+                    now=final_decision.observed_at,
+                )
+            await service.release_approval_batch_summary_claim(
+                batch.batch_id,
+                now=final_decision.observed_at,
+            )
+            await session.commit()
             return
-        await service.record_approval_batch_summary(
-            batch.batch_id, message_id=summary_id, now=now
+
+    text, keyboard = build_batch_approval_message(
+        batch=batch,
+        proposals=proposals,
+        binding=registration.binding,
+    )
+    messages = ApprovalDispatchMessages(
+        context_messages=(),
+        approval_text=text,
+        inline_keyboard=keyboard,
+        payload_chars=telegram_text_length(text),
+    )
+    await service.record_approval_batch_payload(
+        batch.batch_id,
+        attempt_id=registration.binding.attempt_id,
+        payload_chars=messages.payload_chars,
+    )
+    # The immutable member set, pending owner, and exact payload are durable
+    # before publication, matching the individual dispatch attempt contract.
+    await session.commit()
+
+    publish_now = now_fn()
+    for group, decision in decisions:
+        final_decision = recheck_approval_window_decision(
+            group,
+            decision,
+            now=publish_now,
         )
-        return
-    if batch.summary_message_id is None:
-        return
-    try:
-        await notifier.edit_message(
-            chat_id,
-            batch.summary_message_id,
-            text,
-            reply_markup=keyboard,
-        )
-    except Exception:  # noqa: BLE001 - summary is a best-effort surface
-        logger.exception("order proposal batch summary edit failed")
+        if not final_decision.allowed:
+            if final_decision.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    group.proposal_id,
+                    now=final_decision.observed_at,
+                )
+            await service.release_approval_batch_summary_claim(
+                batch.batch_id,
+                now=final_decision.observed_at,
+            )
+            await session.commit()
+            return
+
+    publication = await publish_approval_messages(
+        notifier=notifier,
+        messages=messages,
+        chat_id=chat_id,
+    )
+    await service.finish_approval_batch_dispatch(
+        batch.batch_id,
+        attempt_id=registration.binding.attempt_id,
+        publication=publication,
+        now=publish_now,
+    )
 
 
 async def send_proposal_for_approval(
@@ -127,55 +241,254 @@ async def send_proposal_for_approval(
     notifier: Any,
     now: datetime,
     service_factory: ServiceFactory = AsyncSessionLocal,
-) -> int | None:
+    window_evaluator: WindowEvaluator | None = None,
+    now_fn: Clock | None = None,
+) -> TelegramDispatchResult | ApprovalWindowDecision:
     """Mint a fresh approval nonce, render the message, and send it.
 
     Sends to the FIRST entry in
-    ``settings.order_proposals_telegram_chat_allowlist`` -- the return type
-    is a single ``int | None`` message_id, which only makes sense for a
-    single-chat send, not a broadcast. An empty allowlist is a no-op (no
-    nonce mint, no send, returns ``None``) -- callers (the MCP wiring) should
-    already gate on a non-empty allowlist before calling this, but this
-    function defends independently.
+    ``settings.order_proposals_telegram_chat_allowlist``. A fail-closed
+    approval-window preflight returns its typed decision without minting a
+    nonce or publishing a card. An empty allowlist is recorded as a durable
+    typed dispatch failure without minting a nonce.
     """
     allowlist = settings.order_proposals_telegram_chat_allowlist
     if not allowlist:
-        return None
+        publication = ApprovalPublication.failed(
+            payload_chars=0,
+            failure_code="telegram_allowlist_empty",
+        )
+        return await record_approval_dispatch_failure(
+            proposal_id,
+            publication=publication,
+            now=now,
+            service_factory=service_factory,
+        )
     chat_id = allowlist[0]
+    attempt_id = uuid.uuid4()
 
     async with service_factory() as session:
         service = OrderProposalsService(session)
+        group, _rungs = await service.get_proposal(proposal_id)
+        evaluate_window = window_evaluator or evaluate_approval_window
+        clock = now_fn or (lambda: now)
+        window = await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=evaluate_window,
+            now_fn=clock,
+            require_policy_stamp=False,
+        )
+        observed_now = window.observed_at
+        if not window.allowed:
+            if window.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    proposal_id, now=observed_now
+                )
+            await session.commit()
+            return window
+
+        # Calendar resolution above may await broker/exchange evidence. Sample
+        # the clock and policy again at the actual nonce/card boundary so a
+        # validity or session edge crossed during that I/O cannot mint a
+        # nonce or publish an already-stale button.
+        window = await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=evaluate_window,
+            now_fn=clock,
+            require_policy_stamp=False,
+        )
+        publish_now = window.observed_at
+        if not window.allowed:
+            if window.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    proposal_id, now=publish_now
+                )
+            await session.commit()
+            return window
 
         fresh_nonce = _generate_nonce()
         await service.set_approval_nonce(proposal_id, fresh_nonce)
 
         group, rungs = await service.get_proposal(proposal_id)
-        text, keyboard = build_approval_message(group=group, rungs=rungs)
-
-        message_id = await notifier.send_approval_message(
-            text, keyboard, chat_id=chat_id
+        binding = _proposal_binding(
+            group=group,
+            nonce=fresh_nonce,
+            attempt_id=attempt_id,
+            card_kind=ApprovalCardKind.MANUAL,
+        )
+        messages = build_approval_dispatch_messages(
+            group=group,
+            rungs=rungs,
+            binding=binding,
         )
 
-        if message_id is not None:
-            await service.record_approval_dispatch(
-                proposal_id, message_id=message_id, chat_id=chat_id, now=now
-            )
+        send_window = await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=evaluate_window,
+            now_fn=clock,
+            expected_policy_stamp=window.policy_stamp,
+        )
+        if not send_window.allowed:
+            if send_window.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(
+                    proposal_id,
+                    now=send_window.observed_at,
+                )
+            else:
+                await service.clear_approval_nonce(
+                    proposal_id,
+                    expected_nonce=fresh_nonce,
+                )
+            await session.commit()
+            return send_window
+
+        await service.start_approval_dispatch(
+            proposal_id,
+            attempt_id=attempt_id,
+            binding=binding,
+            now=send_window.observed_at,
+            payload_chars=messages.payload_chars,
+            context_message_count=len(messages.context_messages),
+        )
+        # The nonce and pending attempt become durable before Telegram I/O.
+        await session.commit()
+
+    publication = await publish_approval_messages(
+        notifier=notifier,
+        messages=messages,
+        chat_id=chat_id,
+    )
+
+    async with service_factory() as session:
+        service = OrderProposalsService(session)
+        result = await service.finish_approval_dispatch(
+            proposal_id,
+            attempt_id=attempt_id,
+            publication=publication,
+            chat_id=chat_id,
+            now=send_window.observed_at,
+            approval_window_policy_stamp=send_window.policy_stamp,
+        )
+        await session.commit()
+        if result.approvable and result.message_id is not None:
             await _register_and_publish_batch_summary(
                 session=session,
                 service=service,
                 proposal_id=proposal_id,
-                message_id=message_id,
+                message_id=result.message_id,
                 chat_id=chat_id,
-                now=now,
+                now=send_window.observed_at,
                 notifier=notifier,
+                window_evaluator=evaluate_window,
+                now_fn=clock,
             )
+            await session.commit()
+    return result
 
-        # Commit explicitly before returning -- see module docstring. The
-        # nonce mint above is committed even when message_id is None (send
-        # failed): a fresh nonce with no message sent is not a correctness
-        # problem, it just means the operator can't approve yet.
+
+async def publish_approval_messages(
+    *,
+    notifier: Any,
+    messages: ApprovalDispatchMessages,
+    chat_id: str,
+) -> ApprovalPublication:
+    """Send every context successfully before publishing the button card."""
+    all_messages = (*messages.context_messages, messages.approval_text)
+    if any(
+        telegram_text_length(text) > TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
+        for text in all_messages
+    ):
+        return ApprovalPublication.failed(
+            payload_chars=messages.payload_chars,
+            failure_code="approval_payload_too_long",
+        )
+
+    successful_contexts = 0
+    for context_text in messages.context_messages:
+        try:
+            context_result = await notifier.send_approval_message(
+                context_text,
+                None,
+                chat_id=chat_id,
+                parse_mode=None,
+            )
+        except Exception:  # noqa: BLE001 - converted to a closed safe result
+            context_result = TelegramMethodResult.failed(
+                payload_chars=telegram_text_length(context_text),
+                failure_code="telegram_transport_error",
+                error_classification=TelegramErrorClassification.TRANSPORT_ERROR,
+            )
+        if not context_result.ok:
+            return ApprovalPublication.failed(
+                payload_chars=messages.payload_chars,
+                failure_code="approval_context_dispatch_failed",
+                partial=successful_contexts > 0,
+                method_result=context_result,
+            )
+        successful_contexts += 1
+
+    try:
+        card_result = await notifier.send_approval_message(
+            messages.approval_text,
+            messages.inline_keyboard,
+            chat_id=chat_id,
+        )
+    except Exception:  # noqa: BLE001 - converted to a closed safe result
+        card_result = TelegramMethodResult.failed(
+            payload_chars=telegram_text_length(messages.approval_text),
+            failure_code="telegram_transport_error",
+            error_classification=TelegramErrorClassification.TRANSPORT_ERROR,
+        )
+    if not card_result.ok:
+        return ApprovalPublication.failed(
+            payload_chars=messages.payload_chars,
+            failure_code="approval_card_dispatch_failed",
+            partial=successful_contexts > 0,
+            method_result=card_result,
+        )
+    return ApprovalPublication.published(
+        payload_chars=messages.payload_chars,
+        method_result=card_result,
+    )
+
+
+async def record_approval_dispatch_failure(
+    proposal_id: uuid.UUID,
+    *,
+    publication: ApprovalPublication,
+    now: datetime,
+    service_factory: ServiceFactory = AsyncSessionLocal,
+) -> TelegramDispatchResult:
+    """Ledger a local/preflight dispatch failure with no Telegram I/O."""
+    if publication.card_published:
+        raise ValueError("record_approval_dispatch_failure requires a failed receipt")
+    attempt_id = uuid.uuid4()
+    async with service_factory() as session:
+        service = OrderProposalsService(session)
+        group, _rungs = await service.get_proposal(proposal_id)
+        binding = _proposal_binding(
+            group=group,
+            nonce=group.approval_nonce,
+            attempt_id=attempt_id,
+            card_kind=ApprovalCardKind.MANUAL,
+        )
+        await service.start_approval_dispatch(
+            proposal_id,
+            attempt_id=attempt_id,
+            binding=binding,
+            now=now,
+            payload_chars=publication.payload_chars,
+            context_message_count=0,
+        )
+        result = await service.finish_approval_dispatch(
+            proposal_id,
+            attempt_id=attempt_id,
+            publication=publication,
+            chat_id=None,
+            now=now,
+        )
         await session.commit()
-        return message_id
+    return result
 
 
 async def dispatch_proposal(
@@ -187,7 +500,9 @@ async def dispatch_proposal(
     revalidate_fn: RevalidateFn = revalidate_and_submit,
     cancel_target_fn: TargetCancelFn = cancel_target_order,
     fetch_target_fn: TargetFetchFn = fetch_target_order,
-) -> int | None:
+    window_evaluator: WindowEvaluator | None = None,
+    now_fn: Clock | None = None,
+) -> TelegramDispatchResult | ApprovalWindowDecision:
     """Auto-submit an eligible resting proposal, otherwise send for approval."""
     if not settings.ORDER_PROPOSALS_AUTO_APPROVE:
         return await send_proposal_for_approval(
@@ -195,18 +510,43 @@ async def dispatch_proposal(
             notifier=notifier,
             now=now,
             service_factory=service_factory,
+            window_evaluator=window_evaluator,
+            now_fn=now_fn,
         )
 
+    clock = now_fn or (lambda: now)
     auto_submitted = False
-    message: tuple[str, dict[str, Any]] | None = None
+    messages: ApprovalDispatchMessages | None = None
+    attempt_id: uuid.UUID | None = None
     async with service_factory() as session:
         service = OrderProposalsService(session)
         await service.acquire_auto_dispatch_lock(proposal_id)
         group, initial_rungs = await service.get_proposal(proposal_id)
+        evaluate_window = window_evaluator or evaluate_approval_window
+        window = await evaluate_approval_window_boundary(
+            group,
+            window_evaluator=evaluate_window,
+            now_fn=clock,
+            require_policy_stamp=False,
+        )
+        gate_now = window.observed_at
+        if not window.allowed:
+            if window.code is ApprovalWindowCode.EXPIRED:
+                await service.expire_mutable_rungs_if_needed(proposal_id, now=gate_now)
+            await session.commit()
+            return window
         pending_count = sum(rung.state == "pending_approval" for rung in initial_rungs)
         if pending_count == 0:
             await session.commit()
-            return None
+            return TelegramDispatchResult(
+                state=ApprovalDispatchState.FAILED,
+                message_id=None,
+                status_code=None,
+                error_code=None,
+                error_classification=None,
+                payload_chars=0,
+                failure_code="proposal_not_pending_approval",
+            )
         limits = limits_for_market(group.market)
         decisions: list[dict[str, Any]] = []
         if limits is not None:
@@ -233,12 +573,19 @@ async def dispatch_proposal(
                     daily_notional = Decimal(decision.details["daily_notional_after"])
                 return decision
 
-            outcomes: list[RungOutcome] = await revalidate_fn(
-                service=service,
-                proposal_id=proposal_id,
-                now=now,
-                eligibility_gate=eligibility_gate,
-            )
+            revalidate_kwargs: dict[str, Any] = {
+                "service": service,
+                "proposal_id": proposal_id,
+                "now": gate_now,
+                "eligibility_gate": eligibility_gate,
+            }
+            if revalidate_fn is revalidate_and_submit:
+                revalidate_kwargs.update(
+                    window_evaluator=evaluate_window,
+                    expected_policy_stamp=window.policy_stamp,
+                    now_fn=clock,
+                )
+            outcomes: list[RungOutcome] = await revalidate_fn(**revalidate_kwargs)
             submitted_results = {"submitted_acked", "submitted_resting"}
             auto_submitted = (
                 bool(outcomes)
@@ -256,42 +603,77 @@ async def dispatch_proposal(
                 veto_nonce = _generate_nonce()
                 await service.set_approval_nonce(proposal_id, veto_nonce)
                 group, rungs = await service.get_proposal(proposal_id)
-                message = build_auto_approved_message(
+                attempt_id = uuid.uuid4()
+                binding = _proposal_binding(
+                    group=group,
+                    nonce=veto_nonce,
+                    attempt_id=attempt_id,
+                    card_kind=ApprovalCardKind.AUTO_VETO,
+                )
+                text, keyboard = build_auto_approved_message(
                     group=group,
                     rungs=rungs,
                     nonce=veto_nonce,
                     policy_version=limits.policy_version,
+                    binding=binding,
+                )
+                messages = ApprovalDispatchMessages(
+                    (),
+                    text,
+                    keyboard,
+                    telegram_text_length(text),
+                )
+                await service.start_approval_dispatch(
+                    proposal_id,
+                    attempt_id=attempt_id,
+                    binding=binding,
+                    now=now,
+                    payload_chars=messages.payload_chars,
+                    context_message_count=0,
                 )
         # Persist broker outcomes and the audit/nonce before Telegram I/O.
         await session.commit()
 
-    if not auto_submitted or message is None:
+    if not auto_submitted or messages is None or attempt_id is None:
         return await send_proposal_for_approval(
             proposal_id,
             notifier=notifier,
             now=now,
             service_factory=service_factory,
+            window_evaluator=window_evaluator,
+            now_fn=clock,
         )
 
     allowlist = settings.order_proposals_telegram_chat_allowlist
-    text, keyboard = message
-    notify_error = "telegram_allowlist_empty"
-    message_id = None
     chat_id = allowlist[0] if allowlist else None
-    if chat_id is not None:
-        notify_error = "telegram_message_not_sent"
-        try:
-            message_id = await notifier.send_approval_message(
-                text, keyboard, chat_id=chat_id
-            )
-        except Exception as exc:  # noqa: BLE001 - compensate live order below
-            logger.exception("auto-approved proposal veto notification failed")
-            notify_error = str(exc)
-            message_id = None
-    if message_id is None:
-        async with service_factory() as session:
-            service = OrderProposalsService(session)
-            await service.acquire_auto_dispatch_lock(proposal_id)
+    publication = (
+        await publish_approval_messages(
+            notifier=notifier,
+            messages=messages,
+            chat_id=chat_id,
+        )
+        if chat_id is not None
+        else ApprovalPublication.failed(
+            payload_chars=messages.payload_chars,
+            failure_code="telegram_allowlist_empty",
+        )
+    )
+    async with service_factory() as session:
+        service = OrderProposalsService(session)
+        # Preserve the established auto-dispatch lock order: advisory lock
+        # first, then proposal/attempt row locks inside finalization.
+        await service.acquire_auto_dispatch_lock(proposal_id)
+        result = await service.finish_approval_dispatch(
+            proposal_id,
+            attempt_id=attempt_id,
+            publication=publication,
+            chat_id=chat_id,
+            now=now,
+        )
+        if result.state in {
+            ApprovalDispatchState.FAILED,
+            ApprovalDispatchState.PARTIAL_FAILED,
+        }:
             group, rungs = await service.get_proposal(proposal_id)
             await acquire_auto_veto_locks(service=service, group=group, rungs=rungs)
             outcomes = await cancel_auto_submitted_rungs(
@@ -304,21 +686,17 @@ async def dispatch_proposal(
             )
             await service.record_auto_notification_failure(
                 proposal_id,
-                error=notify_error,
+                error=result.failure_code or "telegram_dispatch_failed",
                 outcomes=outcomes,
                 now=now,
             )
-            await session.commit()
-        return None
-    if chat_id is None:
-        raise AssertionError("a sent Telegram message requires a destination chat")
-    async with service_factory() as session:
-        service = OrderProposalsService(session)
-        await service.record_approval_dispatch(
-            proposal_id, message_id=message_id, chat_id=chat_id, now=now
-        )
         await session.commit()
-    return message_id
+    return result
 
 
-__all__ = ["dispatch_proposal", "send_proposal_for_approval"]
+__all__ = [
+    "dispatch_proposal",
+    "publish_approval_messages",
+    "record_approval_dispatch_failure",
+    "send_proposal_for_approval",
+]
