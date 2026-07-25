@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
+import pytest
+
+from app.core.timezone import KST
 from app.services.execution_ledger.normalizers import (
     MAX_SQL_INT32,
     _domestic_fill_seq,
@@ -41,6 +45,67 @@ def test_upbit_normalizer_redacts_and_maps_execution_upsert() -> None:
     assert upsert.broker_order_id == "upbit-order-1"
     assert upsert.fill_seq == 0
     assert upsert.filled_notional == Decimal("1000000.0")
+
+
+def test_kis_empty_filled_at_uses_kst_order_date_and_time() -> None:
+    upsert = to_execution_ledger_upsert(
+        {
+            "symbol": "214150",
+            "raw_symbol": "214150",
+            "instrument_type": "equity_kr",
+            "side": "sell",
+            "price": "100000",
+            "quantity": "2",
+            "total_amount": "200000",
+            "currency": "KRW",
+            "account": "kis",
+            "order_id": "rob933-empty-filled-at",
+            "filled_at": "",
+            "ord_dt": "20260716",
+            "ord_tmd": "001728",
+        }
+    )
+
+    assert upsert.filled_at == datetime(2026, 7, 16, 0, 17, 28, tzinfo=KST)
+
+
+def test_kis_filled_at_rejects_trade_day_drift_from_order_date() -> None:
+    with pytest.raises(ValueError, match="KST trade day"):
+        to_execution_ledger_upsert(
+            {
+                "symbol": "214150",
+                "raw_symbol": "214150",
+                "instrument_type": "equity_kr",
+                "side": "sell",
+                "price": "100000",
+                "quantity": "2",
+                "total_amount": "200000",
+                "currency": "KRW",
+                "account": "kis",
+                "order_id": "rob933-day-drift",
+                "filled_at": "2026-07-15T15:17:28+00:00",
+                "ord_dt": "20260715",
+            }
+        )
+
+
+def test_malformed_filled_at_fails_closed_instead_of_using_current_time() -> None:
+    with pytest.raises(ValueError, match="filled_at"):
+        to_execution_ledger_upsert(
+            {
+                "symbol": "214150",
+                "raw_symbol": "214150",
+                "instrument_type": "equity_kr",
+                "side": "sell",
+                "price": "100000",
+                "quantity": "2",
+                "total_amount": "200000",
+                "currency": "KRW",
+                "account": "kis",
+                "order_id": "rob933-malformed-filled-at",
+                "filled_at": "definitely-not-a-timestamp",
+            }
+        )
 
 
 # --- Issue 1 regression: cancel+partial fill acceptance ---

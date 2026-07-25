@@ -5,6 +5,7 @@ import datetime
 import logging
 from dataclasses import dataclass
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from pandas import DataFrame
@@ -13,6 +14,8 @@ from app.core.symbol import to_kis_symbol
 
 from . import constants
 from ._base_market_data import MarketDataBase, _empty_minute_frame
+
+_ET = ZoneInfo("America/New_York")
 
 
 @dataclass(slots=True)
@@ -255,12 +258,32 @@ class OverseasMarketDataMixin(MarketDataBase):
         return self._build_overseas_price_frame(out)
 
     @staticmethod
+    def _parse_overseas_quote_asof(out: dict[str, Any]) -> str | None:
+        date_raw = out.get("xymd") or out.get("date")
+        time_raw = out.get("xhms") or out.get("time")
+        if date_raw in (None, "") or time_raw in (None, ""):
+            return None
+
+        date_text = str(date_raw).strip()
+        time_text = str(time_raw).strip().zfill(6)
+        if len(date_text) != 8 or len(time_text) != 6:
+            return None
+
+        try:
+            parsed = datetime.datetime.strptime(
+                f"{date_text}{time_text}", "%Y%m%d%H%M%S"
+            ).replace(tzinfo=_ET)
+        except ValueError:
+            return None
+        return parsed.isoformat()
+
+    @staticmethod
     def _build_overseas_price_frame(out: dict[str, Any]) -> pd.DataFrame:
         """HHDFS00000300 output dict → 단일행 현재가 DataFrame.
 
         'last'(현재가) 없거나 <= 0 → empty frame. 위조 금지.
         """
-        empty_cols = ["close", "previous_close", "volume"]
+        empty_cols = ["close", "previous_close", "volume", "quote_asof"]
 
         def _f(value: Any) -> float | None:
             try:
@@ -283,6 +306,9 @@ class OverseasMarketDataMixin(MarketDataBase):
                     "close": close,
                     "previous_close": _f(out.get("base")),
                     "volume": _i(out.get("tvol")),
+                    "quote_asof": OverseasMarketDataMixin._parse_overseas_quote_asof(
+                        out
+                    ),
                 }
             ]
         )

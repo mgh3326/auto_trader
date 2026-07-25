@@ -16,9 +16,14 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rsi.config import BacktestConfig
-from rsi.data_loader import fetch_all_universe, load_candles, DATA_DIR
+from rsi.data_loader import DATA_DIR, fetch_all_universe, load_candles
 from rsi.metrics import compute_metrics
-from rsi.report import print_summary, export_equity_csv, export_trades_csv, export_monthly_returns
+from rsi.report import (
+    export_equity_csv,
+    export_monthly_returns,
+    export_trades_csv,
+    print_summary,
+)
 from rsi.simulator import run_backtest
 
 

@@ -6,15 +6,18 @@ This module knows about the database. It does NOT call external APIs.
 from __future__ import annotations
 
 import enum
+import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import TextClause
 
 from app.services.candles_sync_common import SyncTableConfig
+
+logger = logging.getLogger(__name__)
 
 
 class MarketKey(enum.StrEnum):
@@ -56,6 +59,52 @@ class _RowcountResult:
     rowcount: int | None
 
 
+def _recent_time_floor(count: int, *, now: datetime) -> datetime:
+    """Lower time bound for chunk exclusion on daily-candle reads.
+
+    Sized generously (>= 400 days, or count*3 calendar days) so the bounded
+    window never returns fewer rows than the unbounded LIMIT would for
+    realistic history — chunk exclusion is a speed hint, not a data filter.
+    """
+    window_days = max(400, int(count) * 3)
+    return now - timedelta(days=window_days)
+
+
+def _crypto_venue_for_partition(partition: str) -> str:
+    """Map a legacy crypto ``partition`` label to its ``crypto_instruments.venue`` value.
+
+    Today only Upbit KRW is producing crypto rows; ``partition='upbit_krw'`` maps
+    to ``venue='upbit'``. Children B/C will add Binance/Alpaca mappings via
+    additional rows in ``crypto_instruments``.
+    """
+    return "upbit" if partition == "upbit_krw" else partition.split("_")[0]
+
+
+def _build_kr_us_recent_sql(partition_col: str, adj_close_select: str) -> str:
+    return f"""
+        SELECT time, symbol, {partition_col} AS partition,
+               open, high, low, close, {adj_close_select}volume, value, source
+        FROM public.{{table_name}}
+        WHERE symbol = :symbol AND {partition_col} = :partition
+          AND time >= :time_floor
+        ORDER BY time DESC
+        LIMIT :count
+    """
+
+
+_CRYPTO_RECENT_SQL = """
+    SELECT time, :symbol AS symbol, :partition AS partition,
+           open, high, low, close,
+           NULL::numeric AS adj_close,
+           base_volume AS volume, quote_volume AS value, source
+    FROM public.crypto_candles_1d
+    WHERE instrument_id = :iid
+      AND time >= :time_floor
+    ORDER BY time DESC
+    LIMIT :count
+"""
+
+
 class DailyCandlesRepository:
     def __init__(self, *, session: AsyncSession) -> None:
         self._session = session
@@ -78,8 +127,19 @@ class DailyCandlesRepository:
         return market == MarketKey.US
 
     async def upsert_rows(
-        self, *, market: MarketKey, rows: list[DailyCandleRow]
+        self,
+        *,
+        market: MarketKey,
+        rows: list[DailyCandleRow],
+        update_adj_close: bool = True,
     ) -> int:
+        """Upsert daily candle rows.
+
+        ``update_adj_close=False`` (US only) keeps ``adj_close`` out of the
+        ON CONFLICT UPDATE SET so a frame without adjusted closes (plain
+        Yahoo/Toss write-back) does not null existing ``yahoo_fallback``
+        values. New rows still insert ``adj_close`` (as NULL).
+        """
         if not rows:
             return 0
 
@@ -91,7 +151,9 @@ class DailyCandlesRepository:
 
         cfg = self._config(market)
         upsert_sql = self._build_market_upsert(
-            cfg, with_adj_close=self._supports_adj_close(market)
+            cfg,
+            with_adj_close=self._supports_adj_close(market),
+            update_adj_close=update_adj_close,
         )
         payload: list[dict[str, object]] = []
         for row in rows:
@@ -117,51 +179,129 @@ class DailyCandlesRepository:
         )
         return max(int(result.rowcount or 0), 0)
 
-    async def _resolve_instrument_id(self, *, symbol: str, partition: str) -> int:
-        """Translate legacy (symbol, partition) -> instrument_id.
+    async def resolve_crypto_instrument_ids(
+        self, *, symbols: list[str], partition: str
+    ) -> dict[str, int]:
+        """Batch-resolve legacy ``(symbol, partition)`` -> ``instrument_id``.
 
-        Today only Upbit KRW is producing crypto rows; (partition='upbit_krw',
-        symbol='KRW-XXX') maps to (venue='upbit', product='spot',
-        venue_symbol=symbol). Children B/C will add Binance/Alpaca mappings
-        via additional rows in crypto_instruments.
+        Single ``SELECT ... WHERE venue_symbol IN (:symbols)`` so a fan-out over
+        many crypto symbols collapses to one round-trip. Unknown symbols are
+        silently absent; callers that need fail-on-unknown must look them up
+        explicitly via :meth:`_resolve_instrument_id`.
         """
-        venue = "upbit" if partition == "upbit_krw" else partition.split("_")[0]
-        sql = text(
-            "SELECT id FROM crypto_instruments "
-            "WHERE venue = :v AND product = 'spot' AND venue_symbol = :s "
-            "LIMIT 1"
+        normalized = sorted(
+            {str(symbol).strip().upper() for symbol in symbols if symbol}
         )
-        result = await self._session.execute(sql, {"v": venue, "s": symbol})
-        row = result.first()
-        if row is None:
+        if not normalized:
+            return {}
+        venue = _crypto_venue_for_partition(partition)
+        sql = text(
+            "SELECT venue_symbol, id FROM crypto_instruments "
+            "WHERE venue = :venue AND product = 'spot' "
+            "AND venue_symbol IN :symbols"
+        ).bindparams(bindparam("symbols", expanding=True))
+        result = await self._session.execute(
+            sql,
+            {
+                "venue": venue,
+                "symbols": normalized,
+            },
+        )
+        resolved_map = {str(row.venue_symbol): int(row.id) for row in result}
+        missing = [s for s in normalized if s not in resolved_map]
+        if missing:
+            logger.warning(
+                "Crypto instrument lookup returned incomplete results for venue=%r (partition=%r): "
+                "requested %d symbols, found %d, missing %d symbol(s) (e.g. %s). "
+                "Verify crypto_instruments table is seeded with venue=%r.",
+                venue,
+                partition,
+                len(normalized),
+                len(resolved_map),
+                len(missing),
+                missing[:5],
+                venue,
+            )
+        return resolved_map
+
+    async def _resolve_instrument_id(self, *, symbol: str, partition: str) -> int:
+        """Single-symbol identity resolver. Raises ``LookupError`` if not seeded."""
+        resolved = await self.resolve_crypto_instrument_ids(
+            symbols=[symbol], partition=partition
+        )
+        iid = resolved.get(str(symbol).strip().upper())
+        if iid is None:
+            venue = _crypto_venue_for_partition(partition)
             raise LookupError(
                 f"No crypto_instruments row for venue={venue!r} symbol={symbol!r}; "
                 "seed the instrument before writing candles."
             )
-        return int(row.id)
+        return iid
 
-    async def _upsert_crypto_rows(self, *, rows: list[DailyCandleRow]) -> int:
+    async def fetch_recent_crypto_by_instrument_id(
+        self,
+        *,
+        instrument_id: int,
+        symbol: str,
+        partition: str,
+        count: int,
+    ) -> list[DailyCandleRow]:
+        """Read crypto daily candles directly by instrument_id (no identity lookup)."""
+        sql = text(_CRYPTO_RECENT_SQL)
+        result = await self._session.execute(
+            sql,
+            {
+                "iid": int(instrument_id),
+                "symbol": symbol,
+                "partition": partition,
+                "count": int(count),
+                "time_floor": _recent_time_floor(int(count), now=datetime.now(UTC)),
+            },
+        )
+        out: list[DailyCandleRow] = []
+        for row in result.mappings().all():
+            out.append(
+                DailyCandleRow(
+                    time_utc=row["time"],
+                    symbol=row["symbol"],
+                    partition=row["partition"],
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    adj_close=None,
+                    volume=(float(row["volume"]) if row["volume"] is not None else 0.0),
+                    value=float(row["value"]) if row["value"] is not None else 0.0,
+                    source=row["source"],
+                )
+            )
+        return list(reversed(out))
+
+    async def upsert_crypto_rows_by_instrument_id(
+        self, *, instrument_id: int, rows: list[DailyCandleRow]
+    ) -> int:
+        """Upsert crypto daily candles directly by instrument_id.
+
+        Conflict policy preserves the original close when the existing row is
+        already closed with the same source.
+        """
         if not rows:
             return 0
-        payload: list[dict[str, object]] = []
-        for row in rows:
-            iid = await self._resolve_instrument_id(
-                symbol=row.symbol, partition=row.partition
-            )
-            payload.append(
-                {
-                    "instrument_id": iid,
-                    "time": row.time_utc,
-                    "open": row.open,
-                    "high": row.high,
-                    "low": row.low,
-                    "close": row.close,
-                    "base_volume": row.volume,
-                    "quote_volume": row.value,
-                    "is_closed": True,
-                    "source": row.source,
-                }
-            )
+        payload = [
+            {
+                "instrument_id": int(instrument_id),
+                "time": row.time_utc,
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "base_volume": row.volume,
+                "quote_volume": row.value,
+                "is_closed": True,
+                "source": row.source,
+            }
+            for row in rows
+        ]
         sql = text(
             """
             INSERT INTO public.crypto_candles_1d (
@@ -193,9 +333,36 @@ class DailyCandlesRepository:
         )
         return max(int(result.rowcount or 0), 0)
 
+    async def _upsert_crypto_rows(self, *, rows: list[DailyCandleRow]) -> int:
+        if not rows:
+            return 0
+
+        # Group rows by (symbol, partition) so unique identities resolve once,
+        # not once per row.
+        identities_by_pair: dict[tuple[str, str], int] = {}
+        for row in rows:
+            pair = (str(row.symbol).strip().upper(), str(row.partition))
+            if pair not in identities_by_pair:
+                identities_by_pair[pair] = await self._resolve_instrument_id(
+                    symbol=pair[0], partition=pair[1]
+                )
+
+        total = 0
+        for (symbol, partition), iid in identities_by_pair.items():
+            identity_rows = [
+                row
+                for row in rows
+                if str(row.symbol).strip().upper() == symbol
+                and str(row.partition) == partition
+            ]
+            total += await self.upsert_crypto_rows_by_instrument_id(
+                instrument_id=iid, rows=identity_rows
+            )
+        return total
+
     @staticmethod
     def _build_market_upsert(
-        cfg: SyncTableConfig, *, with_adj_close: bool
+        cfg: SyncTableConfig, *, with_adj_close: bool, update_adj_close: bool = True
     ) -> TextClause:
         cols = [
             "time",
@@ -213,9 +380,10 @@ class DailyCandlesRepository:
             cols.insert(7, "adj_close")
         placeholders = ", ".join(f":{c}" for c in cols)
         col_list = ", ".join(cols)
-        update_cols = [
-            c for c in cols if c not in {"time", "symbol", cfg.partition_col}
-        ]
+        excluded_from_update = {"time", "symbol", cfg.partition_col}
+        if with_adj_close and not update_adj_close:
+            excluded_from_update.add("adj_close")
+        update_cols = [c for c in cols if c not in excluded_from_update]
         update_clause = ", ".join(f"{c}=EXCLUDED.{c}" for c in update_cols)
         return text(
             f"""
@@ -239,7 +407,13 @@ class DailyCandlesRepository:
                 iid = await self._resolve_instrument_id(
                     symbol=symbol, partition=partition
                 )
-            except LookupError:
+            except LookupError as exc:
+                logger.warning(
+                    "latest_time_utc(market=CRYPTO) failed to resolve instrument_id for symbol=%r partition=%r: %s",
+                    symbol,
+                    partition,
+                    exc,
+                )
                 return None
             sql = text(
                 "SELECT MAX(time) AS latest FROM public.crypto_candles_1d "
@@ -267,6 +441,119 @@ class DailyCandlesRepository:
             return None
         return row.latest
 
+    async def fetch_range(
+        self,
+        *,
+        market: MarketKey,
+        symbol: str,
+        partition: str,
+        start: datetime,
+        end: datetime,
+    ) -> list[DailyCandleRow]:
+        """Fetch daily candles with ``start <= time <= end`` (ascending).
+
+        Read-only window query used for deterministic forecast resolution
+        (ROB-650): unlike ``fetch_recent`` (latest-N), this returns exactly the
+        rows inside the resolution window regardless of how far in the past it
+        sits, so the same forecast resolves to the same outcome whenever it is
+        run.
+        """
+        if market == MarketKey.CRYPTO:
+            try:
+                iid = await self._resolve_instrument_id(
+                    symbol=symbol, partition=partition
+                )
+            except LookupError as exc:
+                logger.warning(
+                    "fetch_range(market=CRYPTO) failed to resolve instrument_id for symbol=%r partition=%r: %s",
+                    symbol,
+                    partition,
+                    exc,
+                )
+                return []
+            sql = text(
+                """
+                SELECT time, :symbol AS symbol, :partition AS partition,
+                       open, high, low, close,
+                       NULL::numeric AS adj_close,
+                       base_volume AS volume, quote_volume AS value, source
+                FROM public.crypto_candles_1d
+                WHERE instrument_id = :iid AND time >= :start AND time <= :end
+                ORDER BY time ASC
+                """
+            )
+            result = await self._session.execute(
+                sql,
+                {
+                    "iid": iid,
+                    "symbol": symbol,
+                    "partition": partition,
+                    "start": start,
+                    "end": end,
+                },
+            )
+            out: list[DailyCandleRow] = []
+            for row in result.mappings().all():
+                out.append(
+                    DailyCandleRow(
+                        time_utc=row["time"],
+                        symbol=row["symbol"],
+                        partition=row["partition"],
+                        open=float(row["open"]),
+                        high=float(row["high"]),
+                        low=float(row["low"]),
+                        close=float(row["close"]),
+                        adj_close=None,
+                        volume=float(row["volume"])
+                        if row["volume"] is not None
+                        else 0.0,
+                        value=float(row["value"]) if row["value"] is not None else 0.0,
+                        source=row["source"],
+                    )
+                )
+            return out
+
+        cfg = self._config(market)
+        adj_close_select = (
+            "adj_close, " if self._supports_adj_close(market) else "NULL AS adj_close, "
+        )
+        sql = text(
+            f"""
+            SELECT time, symbol, {cfg.partition_col} AS partition,
+                   open, high, low, close, {adj_close_select}volume, value, source
+            FROM public.{cfg.table_name}
+            WHERE symbol = :symbol AND {cfg.partition_col} = :partition
+              AND time >= :start AND time <= :end
+            ORDER BY time ASC
+            """
+        )
+        result = await self._session.execute(
+            sql,
+            {"symbol": symbol, "partition": partition, "start": start, "end": end},
+        )
+        out = []
+        for row in result.mappings().all():
+            out.append(
+                DailyCandleRow(
+                    time_utc=row["time"],
+                    symbol=row["symbol"],
+                    partition=row["partition"],
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    adj_close=(
+                        float(row["adj_close"])
+                        if row["adj_close"] is not None
+                        else None
+                    ),
+                    volume=float(row["volume"]),
+                    value=float(row["value"]),
+                    source=row["source"],
+                )
+            )
+        return out
+
     async def fetch_recent(
         self, *, market: MarketKey, symbol: str, partition: str, count: int
     ) -> list[DailyCandleRow]:
@@ -279,18 +566,7 @@ class DailyCandlesRepository:
                 )
             except LookupError:
                 return []
-            sql = text(
-                """
-                SELECT time, :symbol AS symbol, :partition AS partition,
-                       open, high, low, close,
-                       NULL::numeric AS adj_close,
-                       base_volume AS volume, quote_volume AS value, source
-                FROM public.crypto_candles_1d
-                WHERE instrument_id = :iid
-                ORDER BY time DESC
-                LIMIT :count
-                """
-            )
+            sql = text(_CRYPTO_RECENT_SQL)
             result = await self._session.execute(
                 sql,
                 {
@@ -298,6 +574,7 @@ class DailyCandlesRepository:
                     "symbol": symbol,
                     "partition": partition,
                     "count": int(count),
+                    "time_floor": _recent_time_floor(int(count), now=datetime.now(UTC)),
                 },
             )
             out: list[DailyCandleRow] = []
@@ -326,17 +603,18 @@ class DailyCandlesRepository:
             "adj_close, " if self._supports_adj_close(market) else "NULL AS adj_close, "
         )
         sql = text(
-            f"""
-            SELECT time, symbol, {cfg.partition_col} AS partition,
-                   open, high, low, close, {adj_close_select}volume, value, source
-            FROM public.{cfg.table_name}
-            WHERE symbol = :symbol AND {cfg.partition_col} = :partition
-            ORDER BY time DESC
-            LIMIT :count
-            """
+            _build_kr_us_recent_sql(cfg.partition_col, adj_close_select).format(
+                table_name=cfg.table_name
+            )
         )
         result = await self._session.execute(
-            sql, {"symbol": symbol, "partition": partition, "count": int(count)}
+            sql,
+            {
+                "symbol": symbol,
+                "partition": partition,
+                "count": int(count),
+                "time_floor": _recent_time_floor(int(count), now=datetime.now(UTC)),
+            },
         )
         out = []
         for row in result.mappings().all():

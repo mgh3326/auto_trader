@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.research_backtest import (
     ResearchBacktestPair,
     ResearchBacktestRun,
-    ResearchPromotionCandidate,
     ResearchSyncJob,
 )
 from app.schemas.research_backtest import BacktestRunSummary
@@ -134,28 +133,29 @@ async def replace_backtest_pairs(
     await session.flush()
 
 
-async def upsert_promotion_candidate(
-    session: AsyncSession,
-    *,
-    backtest_run: ResearchBacktestRun,
-    gate_result: GateResult,
-) -> ResearchPromotionCandidate:
-    existing = await session.execute(
-        select(ResearchPromotionCandidate).where(
-            ResearchPromotionCandidate.backtest_run_id == backtest_run.id
-        )
-    )
-    row = existing.scalar_one_or_none()
-    if row is None:
-        row = ResearchPromotionCandidate(backtest_run_id=backtest_run.id)
-        session.add(row)
+def _non_promotion_outcome(gate_result: GateResult) -> dict[str, Any]:
+    """Structured, fail-closed non-promotion result for identity-less ingest.
 
-    row.status = gate_result.status
-    row.reason_code = gate_result.reason_code
-    row.thresholds = gate_result.thresholds
-    row.metrics = gate_result.metrics
-    await session.flush()
-    return row
+    ROB-846: a ``promotion_candidates`` row must reference an exact
+    experiment/config/data identity (see
+    ``strategy_experiment_registry.link_promotion_candidate``). The legacy
+    Freqtrade summary ingest has no experiment identity, so it must NOT write a
+    promotion candidate — doing so previously produced null-identity rows that
+    bypassed AC#5. Instead the deterministic gate evaluation is preserved here,
+    on the sync job, explicitly marked as not promoted.
+    """
+    return {
+        "promotion": {
+            "status": "not_promoted",
+            "reason": "no_experiment_identity",
+            "gate": {
+                "status": gate_result.status,
+                "reason_code": gate_result.reason_code,
+                "thresholds": gate_result.thresholds,
+                "metrics": gate_result.metrics,
+            },
+        }
+    }
 
 
 async def ingest_summary_payload(
@@ -198,16 +198,14 @@ async def ingest_summary_payload(
             else None,
             config=effective_gate_config,
         )
-        await upsert_promotion_candidate(
-            session,
-            backtest_run=run_row,
-            gate_result=gate_result,
-        )
+        # ROB-846: identity-less ingest never writes a promotion candidate; the
+        # gate evaluation is preserved as a structured non-promotion result.
         await update_sync_job_status(
             session,
             sync_job,
             status="completed",
             backtest_run_id=run_row.id,
+            error_payload=_non_promotion_outcome(gate_result),
         )
         await session.commit()
         return parsed.run_id

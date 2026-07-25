@@ -1,0 +1,916 @@
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+import pytest
+
+
+class DummyMCP:
+    def __init__(self) -> None:
+        self.tools: dict[str, Any] = {}
+
+    def tool(self, *, name: str, description: str = ""):
+        del description
+
+        def decorator(func):
+            self.tools[name] = func
+            return func
+
+        return decorator
+
+
+def _tools() -> dict[str, Any]:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    mcp = DummyMCP()
+    module.register(mcp)
+    return mcp.tools
+
+
+def test_registers_exact_seven_us_tools() -> None:
+    from app.mcp_server.tooling.orders_kiwoom_us_variants import (
+        KIWOOM_MOCK_US_MUTATION_TOOL_NAMES,
+        KIWOOM_MOCK_US_READ_TOOL_NAMES,
+        KIWOOM_MOCK_US_TOOL_NAMES,
+    )
+
+    assert set(_tools()) == KIWOOM_MOCK_US_TOOL_NAMES
+    assert len(KIWOOM_MOCK_US_TOOL_NAMES) == 7
+    assert KIWOOM_MOCK_US_READ_TOOL_NAMES.isdisjoint(KIWOOM_MOCK_US_MUTATION_TOOL_NAMES)
+
+
+@pytest.mark.asyncio
+async def test_registered_tools_share_one_mock_client(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    factory_calls = 0
+    clients: list[Any] = []
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            nonlocal factory_calls
+            factory_calls += 1
+            client = cls()
+            clients.append(client)
+            return client
+
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            assert client in clients
+
+        async def get_open_orders(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {"return_code": 0, "result_list": []}
+
+        async def get_positions(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {"return_code": 0, "result_list": []}
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsAccountClient", FakeAccount)
+
+    tools = _tools()
+    await tools["kiwoom_mock_us_get_order_history"](scope="open")
+    await tools["kiwoom_mock_us_get_positions"]()
+    await tools["kiwoom_mock_us_get_order_history"](scope="open")
+
+    assert factory_calls == 1
+    assert len(clients) == 1
+
+
+@pytest.mark.asyncio
+async def test_rejects_advanced_trde_tp_before_lookup_or_client(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    calls = {"lookup": 0, "client": 0}
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        calls["lookup"] += 1
+        return "NASD"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            calls["client"] += 1
+            return cls()
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+
+    result = await _tools()["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=200.0,
+        trde_tp="26",
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "unsupported_trde_tp"
+    assert result["rejected_trde_tp"] == "26"
+    assert result["supported_trde_tp"] == ["00", "03"]
+    assert calls == {"lookup": 0, "client": 0}
+
+
+@pytest.mark.asyncio
+async def test_preview_resolves_db_exchange_and_renders_payload(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        assert symbol == "NVDA"
+        return "NASDAQ"
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+
+    result = await _tools()["kiwoom_mock_us_preview_order"](
+        symbol="NVDA", side="buy", quantity=2, trde_tp="00", price=213.04
+    )
+
+    assert result["success"] is True
+    assert result["stex_tp"] == "ND"
+    assert result["request_body"] == {
+        "stex_tp": "ND",
+        "stk_cd": "NVDA",
+        "ord_qty": "2",
+        "ord_uv": "213.04",
+        "trde_tp": "00",
+    }
+    assert str(result["requested_notional"]) == "426.08"
+
+
+@pytest.mark.asyncio
+async def test_limit_requires_price_and_market_rejects_price(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    tools = _tools()
+    limit = await tools["kiwoom_mock_us_preview_order"](
+        symbol="NVDA", side="buy", quantity=1, trde_tp="00", price=None
+    )
+    market = await tools["kiwoom_mock_us_preview_order"](
+        symbol="NVDA", side="buy", quantity=1, trde_tp="03", price=1.0
+    )
+    assert limit["success"] is False
+    assert market["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_confirmed_limit_resolves_exchange_and_calls_broker(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    calls: list[dict[str, Any]] = []
+
+    async def fake_lookup(symbol: str) -> str:
+        assert symbol == "NVDA"
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            calls.append({"client": type(client).__name__})
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {"return_code": 0, "ord_no": "000000282"}
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsOrderClient", FakeOrders)
+
+    result = await _tools()["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        trde_tp="00",
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "submitted"
+    assert result["reconcile_required"] is False
+    assert result["account_mode"] == "kiwoom_mock_us"
+    assert calls[-1]["stex_tp"] == "ND"
+    assert calls[-1]["trde_tp"] == "00"
+
+
+@pytest.mark.asyncio
+async def test_tracked_mutation_client_setup_failure_is_not_acceptance_uncertain(
+    monkeypatch,
+) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FailingClient:
+        @classmethod
+        def from_app_settings(cls):
+            raise RuntimeError("credential=provider-secret-must-not-leak")
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FailingClient)
+    tools = _tools()
+
+    place_result = await tools["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        trde_tp="00",
+        dry_run=False,
+        confirm=True,
+    )
+    modify_result = await tools["kiwoom_mock_us_modify_order"](
+        order_id="000000282",
+        symbol="NVDA",
+        new_price=200.0,
+        dry_run=False,
+        confirm=True,
+    )
+
+    for result in (place_result, modify_result):
+        assert result["success"] is False
+        assert result["status"] == "not_submitted"
+        assert result["reconcile_required"] is False
+        assert result["retry_allowed"] is False
+        assert "provider-secret-must-not-leak" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_tracked_mutation_oauth_failure_is_not_submitted(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+    from app.services.brokers.kiwoom import constants
+    from app.services.brokers.kiwoom.us_client import KiwoomMockUsClient
+
+    send_calls = 0
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    def transport_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal send_calls
+        del request
+        send_calls += 1
+        return httpx.Response(200, json={"return_code": 0})
+
+    class FailingAuth:
+        async def get_token(self) -> str:
+            raise RuntimeError("credential=provider-secret-must-not-leak")
+
+    client = KiwoomMockUsClient(
+        base_url=constants.MOCK_BASE_URL,
+        app_key="US-AK",
+        app_secret="US-SK",
+        account_no="US-ACCOUNT",
+    )
+    client._auth = FailingAuth()
+    client._transport = httpx.MockTransport(transport_handler)
+
+    class ClientFactory:
+        @classmethod
+        def from_app_settings(cls):
+            return client
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", ClientFactory)
+    tools = _tools()
+
+    place_result = await tools["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        dry_run=False,
+        confirm=True,
+    )
+    modify_result = await tools["kiwoom_mock_us_modify_order"](
+        order_id="000000282",
+        symbol="NVDA",
+        new_price=200.0,
+        dry_run=False,
+        confirm=True,
+    )
+
+    for result in (place_result, modify_result):
+        assert result["status"] == "not_submitted"
+        assert result["reconcile_required"] is False
+        assert result["retry_allowed"] is False
+        assert "provider-secret-must-not-leak" not in str(result)
+    assert send_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_trusted_local_validation_messages_remain_actionable(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def unsupported_lookup(symbol: str) -> str:
+        del symbol
+        return "OTC"
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", unsupported_lookup)
+    tools = _tools()
+
+    invalid_id = await tools["kiwoom_mock_us_modify_order"](
+        order_id="not-an-order-id",
+        symbol="NVDA",
+        new_price=200.0,
+    )
+    invalid_scope = await tools["kiwoom_mock_us_get_order_history"](scope="invalid")
+    unsupported_exchange = await tools["kiwoom_mock_us_preview_order"](
+        symbol="NVDA", side="buy", quantity=1, price=200.0
+    )
+
+    assert invalid_id["error"] == (
+        "Kiwoom US order id must be 1-18 digits (documented shape is nine)"
+    )
+    assert invalid_scope["error"] == "scope must be 'open' or 'today'"
+    assert unsupported_exchange["error"] == (
+        "Kiwoom US mock rejects unsupported exchange='OTC'"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"return_code": 0},
+        {"return_code": 0, "ord_no": ""},
+        {"return_code": 0, "ord_no": "not-digits"},
+        {"return_code": 0, "ord_no": 282},
+        {"return_code": 0, "ord_no": "١٢٣٤٥٦٧٨٩"},
+        {"return_code": 0, "ord_no": "1" * 19},
+    ],
+)
+async def test_confirmed_place_without_trackable_order_id_is_accepted_untracked(
+    monkeypatch, raw: dict[str, Any]
+) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return raw
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsOrderClient", FakeOrders)
+
+    result = await _tools()["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        trde_tp="00",
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "accepted_untracked"
+    assert result["reconcile_required"] is True
+    assert result["retry_allowed"] is False
+    assert result["broker_response"] == raw
+
+
+@pytest.mark.asyncio
+async def test_confirmed_place_broker_rejection_is_not_uncertain(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {"return_code": 20, "return_msg": "rejected"}
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsOrderClient", FakeOrders)
+
+    result = await _tools()["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        trde_tp="00",
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "rejected"
+    assert result["reconcile_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_confirmed_place_transport_exception_is_uncertain(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            raise TimeoutError("provider-secret-must-not-leak")
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsOrderClient", FakeOrders)
+
+    result = await _tools()["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        trde_tp="00",
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "acceptance_uncertain"
+    assert result["reconcile_required"] is True
+    assert result["retry_allowed"] is False
+    assert result["error"] == "kiwoom_mock_us_place_order failed: TimeoutError"
+    assert "provider-secret-must-not-leak" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_live_place_without_confirm_never_constructs_client(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    calls = {"client": 0}
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            calls["client"] += 1
+            return cls()
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    result = await _tools()["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=1.0,
+        trde_tp="00",
+        dry_run=False,
+        confirm=False,
+    )
+    assert result["success"] is False
+    assert calls["client"] == 0
+
+
+@pytest.mark.asyncio
+async def test_unsupported_exchange_and_unsafe_id_stop_before_client(
+    monkeypatch,
+) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    calls = {"client": 0}
+
+    async def fake_lookup(symbol: str) -> str:
+        return "OTC" if symbol == "OTCM" else "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            calls["client"] += 1
+            return cls()
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    preview = await _tools()["kiwoom_mock_us_preview_order"](
+        symbol="OTCM", side="buy", quantity=1, price=1.0, trde_tp="00"
+    )
+    cancel = await _tools()["kiwoom_mock_us_cancel_order"](
+        order_id="../282", symbol="NVDA", dry_run=False, confirm=True
+    )
+    assert preview["success"] is False
+    assert cancel["success"] is False
+    assert calls["client"] == 0
+
+
+@pytest.mark.asyncio
+async def test_modify_and_cancel_do_not_invent_quantity(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    calls: list[dict[str, Any]] = []
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NYSE"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def modify_order(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {"return_code": 0, "ord_no": "000000284"}
+
+        async def cancel_order(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {"return_code": 0, "ord_no": "000000285"}
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsOrderClient", FakeOrders)
+    tools = _tools()
+    modified = await tools["kiwoom_mock_us_modify_order"](
+        order_id="000000282",
+        symbol="TSM",
+        new_price=100.0,
+        dry_run=False,
+        confirm=True,
+    )
+    await tools["kiwoom_mock_us_cancel_order"](
+        order_id="000000284", symbol="TSM", dry_run=False, confirm=True
+    )
+    assert modified["status"] == "submitted"
+    assert modified["order_id"] == "000000284"
+    assert all("quantity" not in call for call in calls)
+    assert calls[0]["new_price"] == 100.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "expected_status", "reconcile_required"),
+    [
+        ({"return_code": 0}, "accepted_untracked", True),
+        (TimeoutError("provider-secret-must-not-leak"), "acceptance_uncertain", True),
+        ({"return_code": 20, "return_msg": "rejected"}, "rejected", False),
+    ],
+)
+async def test_modify_acceptance_is_trackable_or_non_retryable(
+    monkeypatch,
+    outcome: dict[str, Any] | Exception,
+    expected_status: str,
+    reconcile_required: bool,
+) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def modify_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsOrderClient", FakeOrders)
+
+    result = await _tools()["kiwoom_mock_us_modify_order"](
+        order_id="000000282",
+        symbol="NVDA",
+        new_price=100.0,
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert result["success"] is False
+    assert result["status"] == expected_status
+    assert result["reconcile_required"] is reconcile_required
+    if reconcile_required:
+        assert result["retry_allowed"] is False
+    assert "provider-secret-must-not-leak" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_orderable_cash_is_labeled_as_deposit(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def get_us_deposit_detail(self) -> dict[str, Any]:
+            return {"return_code": 0, "d0_usd_fx_entr": "1234.5000"}
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsAccountClient", FakeAccount)
+
+    result = await _tools()["kiwoom_mock_us_get_orderable_cash"]()
+    assert result["cash"] == "1234.5000"
+    assert result["currency"] == "USD"
+    assert result["cash_semantics"] == "deposit_not_broker_orderable"
+    assert result["orderable_quantity_supported"] is False
+
+
+@pytest.mark.asyncio
+async def test_history_scope_selects_open_or_today(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    calls: list[str] = []
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def get_open_orders(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            calls.append("open")
+            return {"return_code": 0, "result_list": []}
+
+        async def get_today_orders(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            calls.append("today")
+            return {"return_code": 0, "result_list": []}
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsAccountClient", FakeAccount)
+
+    tools = _tools()
+    await tools["kiwoom_mock_us_get_order_history"](scope="open")
+    await tools["kiwoom_mock_us_get_order_history"](scope="today")
+    assert calls == ["open", "today"]
+
+
+@pytest.mark.asyncio
+async def test_disabled_config_reports_only_us_keys(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    monkeypatch.setattr(
+        module,
+        "validate_kiwoom_mock_us_config",
+        lambda: ["KIWOOM_MOCK_US_APP_KEY"],
+    )
+    result = await _tools()["kiwoom_mock_us_get_positions"]()
+    assert result["success"] is False
+    assert "KIWOOM_MOCK_US_APP_KEY" in result["error"]
+    assert "KIWOOM_MOCK_APP_KEY" not in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_unparseable_deposit_is_null_and_nonzero_is_failure(
+    monkeypatch,
+) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeAccount:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def get_us_deposit_detail(self) -> dict[str, Any]:
+            return {
+                "return_code": 20,
+                "return_msg": "RC9000",
+                "d0_usd_fx_entr": "invalid",
+            }
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsAccountClient", FakeAccount)
+    result = await _tools()["kiwoom_mock_us_get_orderable_cash"]()
+    assert result["success"] is False
+    assert result["cash"] is None
+    assert result["cash_source"] == "ust21160.d0_usd_fx_entr_unparsed"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_order_carries_us_mock_provenance(monkeypatch) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {"return_code": 0, "ord_no": "000000282"}
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsOrderClient", FakeOrders)
+
+    result = await _tools()["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        trde_tp="00",
+        dry_run=False,
+        confirm=True,
+    )
+
+    assert result["provenance"] == {
+        "broker": "kiwoom",
+        "environment": "mock",
+        "account_mode": "kiwoom_mock_us",
+        "host": "mockapi.kiwoom.com",
+        "api_id": "ust20000",
+    }
+
+
+@pytest.mark.asyncio
+async def test_spoofed_live_provenance_in_broker_payload_fails_closed(
+    monkeypatch,
+) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    class FakeOrders:
+        def __init__(self, client: Any) -> None:
+            del client
+
+        async def place_buy_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {
+                "return_code": 0,
+                "ord_no": "000000282",
+                "environment": "live",
+            }
+
+        async def modify_order(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {
+                "return_code": 0,
+                "ord_no": "000000283",
+                "environment": "live",
+            }
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    monkeypatch.setattr(module, "KiwoomUsOrderClient", FakeOrders)
+
+    tools = _tools()
+    place_result = await tools["kiwoom_mock_us_place_order"](
+        symbol="NVDA",
+        side="buy",
+        quantity=1,
+        price=213.04,
+        trde_tp="00",
+        dry_run=False,
+        confirm=True,
+    )
+    modify_result = await tools["kiwoom_mock_us_modify_order"](
+        order_id="000000282",
+        symbol="NVDA",
+        new_price=200.0,
+        dry_run=False,
+        confirm=True,
+    )
+
+    for result in (place_result, modify_result):
+        assert result["success"] is False
+        assert result["error_code"] == "kiwoom_mock_provenance_conflict"
+        assert result["status"] == "acceptance_uncertain"
+        assert result["reconcile_required"] is True
+        assert result["retry_allowed"] is False
+        assert "provenance" not in result
+
+
+@pytest.mark.asyncio
+async def test_nan_price_and_nan_new_price_fail_before_any_client(
+    monkeypatch,
+) -> None:
+    from app.mcp_server.tooling import orders_kiwoom_us_variants as module
+
+    calls = {"client": 0}
+
+    class FakeClient:
+        @classmethod
+        def from_app_settings(cls):
+            calls["client"] += 1
+            return cls()
+
+    async def fake_lookup(symbol: str) -> str:
+        del symbol
+        return "NASDAQ"
+
+    monkeypatch.setattr(module, "_mock_us_config_error", lambda: None)
+    monkeypatch.setattr(module, "get_us_exchange_by_symbol", fake_lookup)
+    monkeypatch.setattr(module, "KiwoomMockUsClient", FakeClient)
+    tools = _tools()
+
+    preview = await tools["kiwoom_mock_us_preview_order"](
+        symbol="NVDA", side="buy", quantity=1, trde_tp="00", price=float("nan")
+    )
+    assert preview["success"] is False
+
+    modify = await tools["kiwoom_mock_us_modify_order"](
+        order_id="000000282",
+        symbol="NVDA",
+        new_price=float("nan"),
+        dry_run=True,
+    )
+    assert modify["success"] is False
+    assert calls["client"] == 0

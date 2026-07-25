@@ -7,12 +7,26 @@ Market data functions remain in client.py.
 from __future__ import annotations
 
 import logging
+import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 
 import app.services.brokers.upbit.client as _client
+from app.services.brokers.kis.pre_send import PreSendFreshnessError
 
 logger = logging.getLogger(__name__)
+
+
+def _new_order_identifier() -> str:
+    """ROB-645: unique client idempotency key for an Upbit order.
+
+    Upbit rejects a reused ``identifier`` for the account, so a resent/duplicate
+    order fails instead of double-executing, and the key doubles as a client-side
+    handle for order lookup/reconcile. A random uuid4 per order guarantees
+    uniqueness; content-based derivation is a later follow-up (ROB-653).
+    """
+    return str(uuid.uuid4())
 
 
 async def fetch_open_orders(market: str | None = None) -> list[dict[str, Any]]:
@@ -38,7 +52,11 @@ async def fetch_open_orders(market: str | None = None) -> list[dict[str, Any]]:
     return await _client._request_with_auth("GET", url, query_params=params)
 
 
-async def cancel_orders(order_uuids: list[str]) -> list[dict[str, Any]]:
+async def cancel_orders(
+    order_uuids: list[str],
+    *,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+) -> list[dict[str, Any]]:
     """주문을 취소합니다.
 
     Parameters
@@ -58,10 +76,20 @@ async def cancel_orders(order_uuids: list[str]) -> list[dict[str, Any]]:
         params = {"uuid": order_uuid}
 
         try:
-            result = await _client._request_with_auth(
-                "DELETE", url, query_params=params
-            )
+            if pre_send_hook is None:
+                result = await _client._request_with_auth(
+                    "DELETE", url, query_params=params
+                )
+            else:
+                result = await _client._request_with_auth(
+                    "DELETE",
+                    url,
+                    query_params=params,
+                    pre_send_hook=pre_send_hook,
+                )
             results.append(result)
+        except PreSendFreshnessError:
+            raise
         except Exception as e:
             print(f"주문 {order_uuid} 취소 실패: {e}")
             results.append({"uuid": order_uuid, "error": str(e)})
@@ -69,7 +97,13 @@ async def cancel_orders(order_uuids: list[str]) -> list[dict[str, Any]]:
     return results
 
 
-async def place_sell_order(market: str, volume: str, price: str) -> dict[str, Any]:
+async def place_sell_order(
+    market: str,
+    volume: str,
+    price: str,
+    identifier: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
     """지정가 매도 주문을 넣습니다.
 
     Parameters
@@ -80,6 +114,8 @@ async def place_sell_order(market: str, volume: str, price: str) -> dict[str, An
         매도할 수량 (문자열로 전달)
     price : str
         매도 가격 (문자열로 전달)
+    identifier : str, optional
+        주문 고유 식별자
 
     Returns
     -------
@@ -94,12 +130,25 @@ async def place_sell_order(market: str, volume: str, price: str) -> dict[str, An
         "volume": volume,
         "price": price,
         "ord_type": "limit",  # 지정가 주문
+        "identifier": identifier or _new_order_identifier(),
     }
 
-    return await _client._request_with_auth("POST", url, body_params=body_params)
+    if pre_send_hook is None:
+        return await _client._request_with_auth("POST", url, body_params=body_params)
+    return await _client._request_with_auth(
+        "POST",
+        url,
+        body_params=body_params,
+        pre_send_hook=pre_send_hook,
+    )
 
 
-async def place_market_sell_order(market: str, volume: str) -> dict[str, Any]:
+async def place_market_sell_order(
+    market: str,
+    volume: str,
+    identifier: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
     """시장가 전량 매도 주문을 넣습니다.
 
     Parameters
@@ -108,6 +157,8 @@ async def place_market_sell_order(market: str, volume: str) -> dict[str, Any]:
         마켓 코드 (예: "KRW-BTC")
     volume : str
         매도할 수량 (문자열로 전달, 보유 전량)
+    identifier : str, optional
+        주문 고유 식별자
 
     Returns
     -------
@@ -121,9 +172,17 @@ async def place_market_sell_order(market: str, volume: str) -> dict[str, Any]:
         "side": "ask",  # 매도
         "volume": volume,
         "ord_type": "market",  # 시장가 주문 (즉시 체결)
+        "identifier": identifier or _new_order_identifier(),
     }
 
-    return await _client._request_with_auth("POST", url, body_params=body_params)
+    if pre_send_hook is None:
+        return await _client._request_with_auth("POST", url, body_params=body_params)
+    return await _client._request_with_auth(
+        "POST",
+        url,
+        body_params=body_params,
+        pre_send_hook=pre_send_hook,
+    )
 
 
 async def place_buy_order(
@@ -131,6 +190,8 @@ async def place_buy_order(
     price: str,
     volume: str | None = None,
     ord_type: str = "limit",
+    identifier: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """매수 주문을 넣습니다.
 
@@ -144,6 +205,8 @@ async def place_buy_order(
         매수할 수량 (지정가일 때 필요)
     ord_type : str, default "limit"
         주문 타입 ("limit": 지정가, "price": 시장가 매수)
+    identifier : str, optional
+        주문 고유 식별자
 
     Returns
     -------
@@ -156,6 +219,7 @@ async def place_buy_order(
         "market": market,
         "side": "bid",  # 매수
         "ord_type": ord_type,
+        "identifier": identifier or _new_order_identifier(),
     }
 
     if ord_type == "limit":
@@ -170,10 +234,22 @@ async def place_buy_order(
     else:
         raise ValueError("ord_type은 'limit' 또는 'price'여야 합니다")
 
-    return await _client._request_with_auth("POST", url, body_params=body_params)
+    if pre_send_hook is None:
+        return await _client._request_with_auth("POST", url, body_params=body_params)
+    return await _client._request_with_auth(
+        "POST",
+        url,
+        body_params=body_params,
+        pre_send_hook=pre_send_hook,
+    )
 
 
-async def place_market_buy_order(market: str, price: str) -> dict[str, Any]:
+async def place_market_buy_order(
+    market: str,
+    price: str,
+    identifier: str | None = None,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
     """시장가 매수 주문을 넣습니다 (지정 금액만큼 매수).
 
     Parameters
@@ -182,13 +258,21 @@ async def place_market_buy_order(market: str, price: str) -> dict[str, Any]:
         마켓 코드 (예: "KRW-BTC")
     price : str
         매수할 금액 (문자열로 전달)
+    identifier : str, optional
+        주문 고유 식별자
 
     Returns
     -------
     dict
         주문 결과 정보
     """
-    return await place_buy_order(market, price, ord_type="price")
+    return await place_buy_order(
+        market,
+        price,
+        ord_type="price",
+        identifier=identifier,
+        pre_send_hook=pre_send_hook,
+    )
 
 
 def _format_upbit_time(value: datetime | str) -> str:
@@ -252,6 +336,18 @@ async def fetch_order_detail(order_uuid: str) -> dict[str, Any]:
     params = {"uuid": order_uuid}
 
     return await _client._request_with_auth("GET", url, query_params=params)
+
+
+async def fetch_order_by_identifier(identifier: str) -> dict[str, Any]:
+    """클라이언트 식별자로 단건 주문을 조회합니다."""
+    candidate = str(identifier or "").strip()
+    if not candidate:
+        raise ValueError("identifier is required")
+    return await _client._request_with_auth(
+        "GET",
+        f"{_client.UPBIT_REST}/order",
+        query_params={"identifier": candidate},
+    )
 
 
 def adjust_price_to_upbit_unit(price: float) -> float:

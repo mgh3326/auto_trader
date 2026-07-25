@@ -1788,6 +1788,471 @@ async def test_build_screener_results_warns_and_does_not_fallback_when_latest_pa
 
 
 # ---------------------------------------------------------------------------
+# ROB-543: oversold_recovery snapshot-backed (read-time RSI14 from closes_window)
+# ---------------------------------------------------------------------------
+
+
+def _down_closes(n: int = 20) -> list[int]:
+    """Monotonically decreasing window → RSI14 ≈ 0 (passes rsi<=30)."""
+    return [100 - i for i in range(n)]
+
+
+def _up_closes(n: int = 16) -> list[int]:
+    """Choppy uptrend window → RSI14 ≈ 58.79 (> 30, filtered out)."""
+    base = [
+        100,
+        101,
+        99,
+        102,
+        100,
+        103,
+        101,
+        104,
+        102,
+        105,
+        103,
+        106,
+        104,
+        107,
+        105,
+        106,
+    ]
+    return base[:n]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_oversold_recovery_filters_high_rsi_and_drops_short_windows() -> (
+    None
+):
+    """Loader computes RSI14 per row, keeps rsi<=30 sorted ascending, and drops
+    rows whose closes_window is too short (<15) with a null RSI."""
+    from app.services.invest_view_model.screener_service import (
+        _load_oversold_recovery_from_snapshots,
+    )
+
+    snapshot_date = date(2026, 5, 13)
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snapshot_date]),  # resolve (fixture pop)
+            _FakeExecuteResult(
+                scalar_rows=[
+                    # RSI ≈ 0 → keep (deepest oversold; should sort first)
+                    _FakeSnapshot(
+                        symbol="005930",
+                        snapshot_date=snapshot_date,
+                        closes_window=_down_closes(20),
+                    ),
+                    # RSI ≈ 32.47 (mild downtrend) → just over the 30 cap → drop
+                    _FakeSnapshot(
+                        symbol="000660",
+                        snapshot_date=snapshot_date,
+                        closes_window=[
+                            100,
+                            99,
+                            101,
+                            98,
+                            97,
+                            99,
+                            96,
+                            95,
+                            97,
+                            94,
+                            93,
+                            95,
+                            92,
+                            91,
+                            93,
+                            90,
+                        ],
+                    ),
+                    # RSI ≈ 58 (uptrend) → drop
+                    _FakeSnapshot(
+                        symbol="035420",
+                        snapshot_date=snapshot_date,
+                        closes_window=_up_closes(16),
+                    ),
+                    # window too short (<15) → null RSI → drop honestly
+                    _FakeSnapshot(
+                        symbol="051910",
+                        snapshot_date=snapshot_date,
+                        closes_window=[100, 99, 98, 97, 96],
+                    ),
+                ]
+            ),
+            _FakeExecuteResult(
+                rows=[
+                    _name_row("005930", "삼성전자"),
+                    _name_row("000660", "SK하이닉스"),
+                    _name_row("035420", "NAVER"),
+                    _name_row("051910", "LG화학"),
+                ]
+            ),
+        ]
+    )
+
+    result = await _load_oversold_recovery_from_snapshots(
+        session, market="kr", limit=10
+    )
+
+    assert result is not None
+    assert [row["symbol"] for row in result.rows] == ["005930"], (
+        "only the rsi<=30 row survives; short/high-rsi rows drop"
+    )
+    assert result.rows[0]["rsi"] == 0.0
+    assert result.partition_date == snapshot_date
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_oversold_recovery_sorts_rsi_ascending() -> None:
+    """Two qualifying rows must be ordered by RSI ascending (deepest oversold first)."""
+    from app.services.invest_view_model.screener_service import (
+        _load_oversold_recovery_from_snapshots,
+    )
+
+    snapshot_date = date(2026, 5, 13)
+    # mild downtrend → ~ low-but-nonzero RSI; deep downtrend → ~0 RSI.
+    mild_down = [100, 99, 98, 97, 96, 97, 95, 94, 96, 93, 92, 94, 91, 90, 92, 89]
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snapshot_date]),
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(
+                        symbol="000660",
+                        snapshot_date=snapshot_date,
+                        closes_window=mild_down,
+                    ),
+                    _FakeSnapshot(
+                        symbol="005930",
+                        snapshot_date=snapshot_date,
+                        closes_window=_down_closes(20),
+                    ),
+                ]
+            ),
+            _FakeExecuteResult(
+                rows=[
+                    _name_row("000660", "SK하이닉스"),
+                    _name_row("005930", "삼성전자"),
+                ]
+            ),
+        ]
+    )
+
+    result = await _load_oversold_recovery_from_snapshots(
+        session, market="kr", limit=10
+    )
+
+    assert result is not None
+    rsis = [row["rsi"] for row in result.rows]
+    assert rsis == sorted(rsis), "rows must be sorted by RSI ascending"
+    assert result.rows[0]["symbol"] == "005930", "deepest oversold (rsi≈0) first"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_oversold_recovery_ranks_full_universe_not_alphabetical() -> None:
+    """ROB-543 regression: RSI ranking must run over the WHOLE partition, never an
+    alphabetical pre-slice. The two deepest-oversold rows carry alphabetically-LAST
+    symbols while two shallower (higher-RSI) rows sort first; with limit=2 the loader
+    must return the deep alphabetically-last pair and drop the shallow alphabetically-
+    first pair — proving the candidate set is ranked by RSI, not by ticker code."""
+    from app.services.invest_view_model.screener_service import (
+        _load_oversold_recovery_from_snapshots,
+    )
+
+    snapshot_date = date(2026, 5, 13)
+    # Mildly oversold (RSI in (0, 30]); deeply oversold (RSI ≈ 0).
+    mild_down = [100, 99, 98, 97, 96, 97, 95, 94, 96, 93, 92, 94, 91, 90, 92, 89]
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snapshot_date]),
+            _FakeExecuteResult(
+                scalar_rows=[
+                    # alphabetically FIRST, only mildly oversold (higher RSI)
+                    _FakeSnapshot(
+                        symbol="000111",
+                        snapshot_date=snapshot_date,
+                        closes_window=mild_down,
+                    ),
+                    _FakeSnapshot(
+                        symbol="000222",
+                        snapshot_date=snapshot_date,
+                        closes_window=mild_down,
+                    ),
+                    # alphabetically LAST, deepest oversold (RSI ≈ 0)
+                    _FakeSnapshot(
+                        symbol="999888",
+                        snapshot_date=snapshot_date,
+                        closes_window=_down_closes(20),
+                    ),
+                    _FakeSnapshot(
+                        symbol="999999",
+                        snapshot_date=snapshot_date,
+                        closes_window=_down_closes(18),
+                    ),
+                ]
+            ),
+            _FakeExecuteResult(
+                rows=[
+                    _name_row("000111", "에이"),
+                    _name_row("000222", "비"),
+                    _name_row("999888", "와이"),
+                    _name_row("999999", "제트"),
+                ]
+            ),
+        ]
+    )
+
+    result = await _load_oversold_recovery_from_snapshots(session, market="kr", limit=2)
+
+    assert result is not None
+    symbols = [row["symbol"] for row in result.rows]
+    assert symbols == ["999888", "999999"], (
+        "deepest-oversold (alphabetically-last) rows must win the limit; RSI ranking "
+        "must run over the full partition, not an alphabetical slice"
+    )
+    assert "000111" not in symbols and "000222" not in symbols, (
+        "shallower (higher-RSI) rows must be excluded despite sorting first"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_oversold_recovery_returns_none_when_no_snapshot_table_rows() -> (
+    None
+):
+    """No partition → None so the caller may decide to degrade honestly."""
+    from app.services.invest_view_model.screener_service import (
+        _load_oversold_recovery_from_snapshots,
+    )
+
+    session = _FakeSession([_FakeExecuteResult(scalar_rows=[])])  # MAX → None
+
+    result = await _load_oversold_recovery_from_snapshots(session, market="kr")
+    assert result is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_oversold_recovery_empty_partition_returns_empty_result() -> None:
+    """Healthy partition with no qualifying rows returns an empty _SnapshotLoadResult
+    (not None) carrying the partition date so freshness stays correct."""
+    from app.services.invest_view_model.screener_service import (
+        _load_oversold_recovery_from_snapshots,
+    )
+
+    snapshot_date = date(2026, 5, 13)
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snapshot_date]),
+            _FakeExecuteResult(
+                scalar_rows=[
+                    # all high-RSI uptrend rows → none survive the rsi<=30 filter
+                    _FakeSnapshot(
+                        symbol="035420",
+                        snapshot_date=snapshot_date,
+                        closes_window=_up_closes(16),
+                    ),
+                ]
+            ),
+            _FakeExecuteResult(rows=[_name_row("035420", "NAVER")]),
+        ]
+    )
+
+    result = await _load_oversold_recovery_from_snapshots(
+        session, market="kr", limit=10
+    )
+    assert result is not None
+    assert result.rows == []
+    assert result.partition_date == snapshot_date
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_load_oversold_recovery_threads_max_rsi_override() -> None:
+    """A tightened max_rsi (e.g. 10) must drop rows whose RSI exceeds it."""
+    from app.services.invest_view_model.screener_service import (
+        _load_oversold_recovery_from_snapshots,
+    )
+
+    snapshot_date = date(2026, 5, 13)
+    # mild downtrend → RSI ~30; deep downtrend → RSI ~0.
+    mild_down = [100, 99, 98, 97, 96, 95, 97, 94, 93, 95, 92, 91, 93, 90, 92, 89]
+    session = _FakeSession(
+        [
+            _FakeExecuteResult(scalar_rows=[snapshot_date]),
+            _FakeExecuteResult(
+                scalar_rows=[
+                    _FakeSnapshot(
+                        symbol="000660",
+                        snapshot_date=snapshot_date,
+                        closes_window=mild_down,
+                    ),
+                    _FakeSnapshot(
+                        symbol="005930",
+                        snapshot_date=snapshot_date,
+                        closes_window=_down_closes(20),
+                    ),
+                ]
+            ),
+            _FakeExecuteResult(
+                rows=[
+                    _name_row("000660", "SK하이닉스"),
+                    _name_row("005930", "삼성전자"),
+                ]
+            ),
+        ]
+    )
+
+    result = await _load_oversold_recovery_from_snapshots(
+        session, market="kr", limit=10, max_rsi=10.0
+    )
+    assert result is not None
+    assert [row["symbol"] for row in result.rows] == ["005930"], (
+        "max_rsi=10 keeps only the deepest-oversold row"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_uses_snapshot_for_oversold_recovery(
+    monkeypatch,
+) -> None:
+    """build_screener_results must dispatch oversold_recovery to the snapshot loader
+    and NOT fall through to list_screening."""
+    from app.services.invest_view_model import screener_service as svc
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    async def _fake_loader(session, **kwargs):  # noqa: ANN001, ANN003
+        return svc._SnapshotLoadResult(
+            rows=[
+                {
+                    "symbol": "005930",
+                    "market": "kr",
+                    "name": "삼성전자",
+                    "rsi": 12.5,
+                    "close": 80000.0,
+                    "change_rate": -1.2,
+                    "snapshot_date": date(2026, 5, 13),
+                    "computed_at": datetime(2026, 5, 13, 0, 30, tzinfo=UTC),
+                    "_screener_snapshot_state": "fresh",
+                }
+            ],
+            partition_date=date(2026, 5, 13),
+            partition_computed_at=datetime(2026, 5, 13, 0, 30, tzinfo=UTC),
+        )
+
+    monkeypatch.setattr(svc, "_load_oversold_recovery_from_snapshots", _fake_loader)
+
+    # The loader is mocked, so the only real session.execute is the post-loader
+    # KR name-hydration; serve it the master name row.
+    session = _FakeSession([_FakeExecuteResult(rows=[_name_row("005930", "삼성전자")])])
+    resp = await build_screener_results(
+        preset_id="oversold_recovery",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        session=session,
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert [r.symbol for r in resp.results] == ["005930"]
+    assert resp.results[0].metricValueLabel == "12.5"
+    assert resp.freshness.cacheHit is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_oversold_recovery_empty_partition_degrades(
+    monkeypatch,
+) -> None:
+    """Empty/thin snapshot must degrade honestly (dataState missing/stale + warning)
+    and NOT silently fall through to the live screening path."""
+    from app.services.invest_view_model import screener_service as svc
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    async def _fake_loader_none(session, **kwargs):  # noqa: ANN001, ANN003
+        # No partition at all → loader returns None.
+        return None
+
+    monkeypatch.setattr(
+        svc, "_load_oversold_recovery_from_snapshots", _fake_loader_none
+    )
+
+    resp = await build_screener_results(
+        preset_id="oversold_recovery",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        session=object(),
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert resp.results == []
+    assert resp.warnings, "must surface a degradation warning"
+    assert resp.freshness.dataState in {"missing", "stale"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_screener_results_oversold_recovery_serves_from_healthy_fallback(
+    monkeypatch,
+) -> None:
+    """When the loader served an older healthy fallback partition, the response must
+    report the degradation reason rather than hiding the outage."""
+    from app.services.invest_view_model import screener_service as svc
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    async def _fake_loader(session, **kwargs):  # noqa: ANN001, ANN003
+        return svc._SnapshotLoadResult(
+            rows=[
+                {
+                    "symbol": "005930",
+                    "market": "kr",
+                    "name": "삼성전자",
+                    "rsi": 22.0,
+                    "close": 80000.0,
+                    "change_rate": -1.2,
+                    "snapshot_date": date(2026, 5, 11),
+                    "computed_at": datetime(2026, 5, 11, 0, 30, tzinfo=UTC),
+                    "_screener_snapshot_state": "stale",
+                }
+            ],
+            partition_date=date(2026, 5, 11),
+            partition_computed_at=datetime(2026, 5, 11, 0, 30, tzinfo=UTC),
+            degradation_reason="older_fallback",
+        )
+
+    monkeypatch.setattr(svc, "_load_oversold_recovery_from_snapshots", _fake_loader)
+
+    session = _FakeSession([_FakeExecuteResult(rows=[_name_row("005930", "삼성전자")])])
+    resp = await build_screener_results(
+        preset_id="oversold_recovery",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        session=session,
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert resp.freshness.primary.degradationReason == "older_fallback"
+
+
+# ---------------------------------------------------------------------------
 # ROB-277: investor-flow rows carry snapshot_date / collected_at / classified state
 # ---------------------------------------------------------------------------
 
@@ -3644,4 +4109,159 @@ async def test_unknown_preset_error_lists_valid_presets_crypto() -> None:
         session=None,
     )
     assert "사용 가능한 프리셋(crypto)" in resp.warnings[1]
-    assert "crypto_high_volume" in resp.warnings[1]
+
+
+_SUPPORT_PROXIMITY_TEST_SYMBOLS = ["976101", "976102"]
+
+
+@pytest.mark.unit
+def test_support_proximity_in_metric_field_map() -> None:
+    from app.services.invest_view_model.screener_service import _METRIC_FIELD
+
+    assert _METRIC_FIELD["support_proximity"] == "dist_to_support_pct"
+
+
+@pytest.mark.asyncio
+async def test_support_proximity_preset_missing_snapshot_reports_missing_state() -> (
+    None
+):
+    null_scalar = MagicMock()
+    null_scalar.scalar_one_or_none.return_value = None
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=null_scalar)
+
+    fake_screening = type(
+        "ScreenerService",
+        (_FakeProductionScreening,),
+        {"__module__": "app.services.screener_service"},
+    )()
+
+    resp = await build_screener_results(
+        preset_id="support_proximity",
+        screening_service=fake_screening,
+        resolver=_FakeResolver(watched=set()),
+        session=session,
+    )
+
+    fake_screening.list_screening.assert_not_called()
+    assert resp.results == []
+    assert resp.freshness.dataState == "missing"
+    assert resp.freshness.primary is not None
+    assert resp.freshness.primary.degradationReason == "snapshot_missing"
+
+
+@pytest.mark.asyncio
+async def test_support_proximity_preset_returns_ranked_rows_with_risk_context(
+    db_session, monkeypatch
+) -> None:
+    """End-to-end persisted row -> loader -> ScreenerResultRow.
+
+    Verifies the read path performs no support recalculation, stored
+    dist_to_support_pct drives metricValueLabel, and kind/strength surfaces via
+    riskContext (ROB-976 AC1).
+    """
+    import datetime as _dt
+    import decimal as _dec
+
+    import sqlalchemy as _sa
+
+    from app.models.invest_screener_snapshot import InvestScreenerSnapshot
+    from app.models.kr_symbol_universe import KRSymbolUniverse
+    from app.models.market_valuation_snapshot import MarketValuationSnapshot
+
+    today = _dt.date(2099, 12, 29)
+
+    import app.mcp_server.tooling.fundamentals._support_resistance as sr_module
+
+    async def _must_not_recalculate(*args, **kwargs):
+        raise AssertionError("support_proximity query attempted live recalculation")
+
+    monkeypatch.setattr(sr_module, "get_support_resistance_impl", _must_not_recalculate)
+
+    async def _purge() -> None:
+        await db_session.execute(
+            _sa.delete(InvestScreenerSnapshot).where(
+                InvestScreenerSnapshot.symbol.in_(_SUPPORT_PROXIMITY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            _sa.delete(MarketValuationSnapshot).where(
+                MarketValuationSnapshot.symbol.in_(_SUPPORT_PROXIMITY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.execute(
+            _sa.delete(KRSymbolUniverse).where(
+                KRSymbolUniverse.symbol.in_(_SUPPORT_PROXIMITY_TEST_SYMBOLS)
+            )
+        )
+        await db_session.commit()
+
+    await _purge()
+    try:
+        db_session.add(
+            KRSymbolUniverse(
+                symbol="976101", name="지지선테스트", exchange="KOSPI", is_active=True
+            )
+        )
+        db_session.add(
+            InvestScreenerSnapshot(
+                market="kr",
+                symbol="976101",
+                snapshot_date=today,
+                latest_close=_dec.Decimal("50000"),
+                prev_close=_dec.Decimal("49000"),
+                change_rate=_dec.Decimal("2.0"),
+                change_amount=_dec.Decimal("1000"),
+                daily_volume=1_000_000,
+                daily_turnover=_dec.Decimal("50000000000"),
+                market_cap=_dec.Decimal("1000000000000"),
+                market_cap_source="naver_finance",
+                market_cap_snapshot_date=today,
+                support_price=_dec.Decimal("49000"),
+                support_kind="bb_lower",
+                support_strength="strong",
+                dist_to_support_pct=_dec.Decimal("2.0"),
+                support_computed_at=_dt.datetime(2099, 12, 29, 5, 0, tzinfo=_dt.UTC),
+                closes_window=[49000, 50000],
+                source="kis",
+                computed_at=_dt.datetime(2099, 12, 29, 5, 0, tzinfo=_dt.UTC),
+            )
+        )
+        db_session.add(
+            MarketValuationSnapshot(
+                market="kr",
+                symbol="976101",
+                snapshot_date=today,
+                market_cap=_dec.Decimal("1000000000000"),
+                per=_dec.Decimal("10.0"),
+                source="naver_finance",
+            )
+        )
+        await db_session.commit()
+
+        fake_screening = type(
+            "ScreenerService",
+            (_FakeProductionScreening,),
+            {"__module__": "app.services.screener_service"},
+        )()
+
+        resp = await build_screener_results(
+            preset_id="support_proximity",
+            screening_service=fake_screening,
+            resolver=_FakeResolver(watched=set()),
+            session=db_session,
+            now=lambda: datetime(2099, 12, 29, 6, 0, tzinfo=UTC),
+        )
+
+        fake_screening.list_screening.assert_not_called()
+        symbols = [row.symbol for row in resp.results]
+        assert "976101" in symbols
+        target = next(r for r in resp.results if r.symbol == "976101")
+        assert target.metricValueLabel == "2.00%"
+        assert len(target.riskContext) == 1
+        risk = target.riskContext[0]
+        assert risk.kind == "support_level"
+        assert "bb_lower" in risk.label
+        assert "strong" in risk.label
+    finally:
+        await _purge()

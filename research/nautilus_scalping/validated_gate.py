@@ -6,6 +6,7 @@ fold metrics, gross/zero-fee/net-after-cost separation, baseline comparison, and
 concrete overfit flags. Net at any fee is recomputed analytically from the
 reference-fee run (same method as fee_sweep / compare_strategies).
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -26,8 +27,8 @@ Verdict = Literal["validated", "not_validated", "insufficient_data"]
 
 @dataclass(frozen=True)
 class Trade:
-    net_ref_pnl: float      # realized pnl at REF_FEE_BPS
-    commission_ref: float   # commission paid at REF_FEE_BPS (negative)
+    net_ref_pnl: float  # realized pnl at REF_FEE_BPS
+    commission_ref: float  # commission paid at REF_FEE_BPS (negative)
     notional: float
     ts_opened: int
 
@@ -119,9 +120,13 @@ def _fold_metrics_from_nets(nets: list[float], fold: str) -> FoldMetrics:
     gross_loss = abs(sum(losses))
     pf = gross_win / gross_loss if gross_loss else (float("inf") if gross_win else 0.0)
     return FoldMetrics(
-        fold=fold, trades=n, net_pnl=sum(nets),
+        fold=fold,
+        trades=n,
+        net_pnl=sum(nets),
         win_rate_pct=100.0 * len(wins) / n,
-        max_drawdown=_equity_drawdown(nets), profit_factor=pf, expectancy=sum(nets) / n,
+        max_drawdown=_equity_drawdown(nets),
+        profit_factor=pf,
+        expectancy=sum(nets) / n,
     )
 
 
@@ -136,8 +141,10 @@ def portfolio_net_pnls_at_fee(
 ) -> list[float]:
     """Per-period net portfolio PnLs (chronological) at ``fee_bps`` per leg."""
     rows = sorted(periods, key=lambda p: p.ts)
-    return [cost_model.net_at_fee(p.gross_ref_pnl, p.commission_ref, fee_bps, REF_FEE_BPS)
-            for p in rows]
+    return [
+        cost_model.net_at_fee(p.gross_ref_pnl, p.commission_ref, fee_bps, REF_FEE_BPS)
+        for p in rows
+    ]
 
 
 def portfolio_metrics_at_fee(
@@ -156,8 +163,8 @@ def _chrono_split(rows: list, fractions: tuple[float, float, float]) -> dict[str
     n_val = int(n * fractions[1])
     return {
         "train": rows[:n_train],
-        "val": rows[n_train:n_train + n_val],
-        "oos": rows[n_train + n_val:],
+        "val": rows[n_train : n_train + n_val],
+        "oos": rows[n_train + n_val :],
     }
 
 
@@ -168,14 +175,15 @@ def walk_forward_split(
 
 
 def walk_forward_split_periods(
-    periods: list[PortfolioPeriod], fractions: tuple[float, float, float] = (0.5, 0.25, 0.25)
+    periods: list[PortfolioPeriod],
+    fractions: tuple[float, float, float] = (0.5, 0.25, 0.25),
 ) -> dict[str, list[PortfolioPeriod]]:
     return _chrono_split(sorted(periods, key=lambda p: p.ts), fractions)
 
 
 def evaluate_gate(
     *,
-    candidate_runs: dict[str, list[Trade]],   # param_label -> trades
+    candidate_runs: dict[str, list[Trade]],  # param_label -> trades
     baseline_breakout: list[Trade],
     baseline_random: list[Trade],
     fee_bps: float,
@@ -187,9 +195,14 @@ def evaluate_gate(
     window: dict | None = None,
 ) -> GateReport:
     report = GateReport(
-        candidate=candidate_name, hypothesis=hypothesis, symbols=symbols or [],
-        window=window or {}, cost_model={"fee_bps_per_leg": fee_bps,
-                                         "fee_grid_bps": [10.0, 7.5, 5.0, 2.0, 0.0]},
+        candidate=candidate_name,
+        hypothesis=hypothesis,
+        symbols=symbols or [],
+        window=window or {},
+        cost_model={
+            "fee_bps_per_leg": fee_bps,
+            "fee_grid_bps": [10.0, 7.5, 5.0, 2.0, 0.0],
+        },
     )
 
     # Rank params by validation-fold net; pick the val-best param.
@@ -213,8 +226,10 @@ def evaluate_gate(
     folds = folds_by_param[val_best]
 
     # per-fold metrics (net-after-cost) for the val-best param
-    fold_metrics = {name: metrics_at_fee(folds[name], fee_bps, name)
-                    for name in ("train", "val", "oos")}
+    fold_metrics = {
+        name: metrics_at_fee(folds[name], fee_bps, name)
+        for name in ("train", "val", "oos")
+    }
     report.per_fold = [asdict(fold_metrics[n]) for n in ("train", "val", "oos")]
 
     # gross / zero-fee / net-after-cost over ALL candidate trades (val-best)
@@ -235,33 +250,49 @@ def evaluate_gate(
     }
 
     # overfit flags
-    oos_rank = sorted(by_param_oos, key=by_param_oos.get, reverse=True).index(val_best) + 1
+    oos_rank = (
+        sorted(by_param_oos, key=by_param_oos.get, reverse=True).index(val_best) + 1
+    )
     half = max(1, (len(by_param_oos) + 1) // 2)
     param_island = oos_rank > half
     fold_nets = [fold_metrics[n].net_pnl for n in ("train", "val", "oos")]
     single_fold_edge = sum(1 for x in fold_nets if x > 0) == 1
-    low_trades = any(fold_metrics[n].trades < min_trades for n in ("train", "val", "oos"))
+    low_trades = any(
+        fold_metrics[n].trades < min_trades for n in ("train", "val", "oos")
+    )
     report.param_stability = {
-        "grid": list(candidate_runs), "val_best_param": val_best,
+        "grid": list(candidate_runs),
+        "val_best_param": val_best,
         "oos_rank_of_val_best": oos_rank,
-        "single_fold_edge": single_fold_edge, "param_island": param_island,
+        "single_fold_edge": single_fold_edge,
+        "param_island": param_island,
     }
-    report.overfit_flags = {"low_trades": low_trades,
-                            "single_fold_edge": single_fold_edge,
-                            "param_island": param_island}
+    report.overfit_flags = {
+        "low_trades": low_trades,
+        "single_fold_edge": single_fold_edge,
+        "param_island": param_island,
+    }
 
     # verdict
     oos = fold_metrics["oos"]
     reasons: list[str] = []
     if low_trades:
         report.verdict = "insufficient_data"
-        thin = [f"{n}={fold_metrics[n].trades}" for n in ("train", "val", "oos")
-                if fold_metrics[n].trades < min_trades]
+        thin = [
+            f"{n}={fold_metrics[n].trades}"
+            for n in ("train", "val", "oos")
+            if fold_metrics[n].trades < min_trades
+        ]
         reasons.append(f"folds below min_trades={min_trades}: {', '.join(thin)}")
     else:
         beats_baselines = oos.net_pnl > bk.net_pnl and oos.net_pnl > rnd.net_pnl
-        ok = (oos.net_pnl > 0 and oos.profit_factor > 1.0 and beats_baselines
-              and not single_fold_edge and not param_island)
+        ok = (
+            oos.net_pnl > 0
+            and oos.profit_factor > 1.0
+            and beats_baselines
+            and not single_fold_edge
+            and not param_island
+        )
         report.verdict = "validated" if ok else "not_validated"
         if not ok:
             if oos.net_pnl <= 0:
@@ -282,7 +313,7 @@ def evaluate_gate(
 
 def evaluate_gate_portfolio(
     *,
-    candidate_runs: dict[str, list[PortfolioPeriod]],   # param_label -> period series
+    candidate_runs: dict[str, list[PortfolioPeriod]],  # param_label -> period series
     baseline_periods: list[PortfolioPeriod],
     fee_bps: float,
     min_periods: int = 30,
@@ -300,10 +331,15 @@ def evaluate_gate_portfolio(
     portfolio drawdown, not a per-trade serial sum.
     """
     report = GateReport(
-        candidate=candidate_name, hypothesis=hypothesis, symbols=symbols or [],
+        candidate=candidate_name,
+        hypothesis=hypothesis,
+        symbols=symbols or [],
         window=window or {},
-        cost_model={"fee_bps_per_leg": fee_bps, "fee_grid_bps": [10.0, 7.5, 5.0, 2.0, 0.0],
-                    "unit": "portfolio_period"},
+        cost_model={
+            "fee_bps_per_leg": fee_bps,
+            "fee_grid_bps": [10.0, 7.5, 5.0, 2.0, 0.0],
+            "unit": "portfolio_period",
+        },
     )
     if not candidate_runs:
         report.verdict = "insufficient_data"
@@ -316,52 +352,79 @@ def evaluate_gate_portfolio(
     for label, periods in candidate_runs.items():
         folds = walk_forward_split_periods(periods, fractions)
         folds_by_param[label] = folds
-        by_param_val[label] = portfolio_metrics_at_fee(folds["val"], fee_bps, "val").net_pnl
-        by_param_oos[label] = portfolio_metrics_at_fee(folds["oos"], fee_bps, "oos").net_pnl
+        by_param_val[label] = portfolio_metrics_at_fee(
+            folds["val"], fee_bps, "val"
+        ).net_pnl
+        by_param_oos[label] = portfolio_metrics_at_fee(
+            folds["oos"], fee_bps, "oos"
+        ).net_pnl
 
     val_best = max(by_param_val, key=by_param_val.get)
     folds = folds_by_param[val_best]
-    fold_metrics = {name: portfolio_metrics_at_fee(folds[name], fee_bps, name)
-                    for name in ("train", "val", "oos")}
+    fold_metrics = {
+        name: portfolio_metrics_at_fee(folds[name], fee_bps, name)
+        for name in ("train", "val", "oos")
+    }
     report.per_fold = [asdict(fold_metrics[n]) for n in ("train", "val", "oos")]
 
     all_best = candidate_runs[val_best]
     report.results = {
         "gross": asdict(portfolio_metrics_at_fee(all_best, 0.0, "gross")),
         "zero_fee": asdict(portfolio_metrics_at_fee(all_best, 0.0, "zero_fee")),
-        "net_after_cost": asdict(portfolio_metrics_at_fee(all_best, fee_bps, "net_after_cost")),
+        "net_after_cost": asdict(
+            portfolio_metrics_at_fee(all_best, fee_bps, "net_after_cost")
+        ),
     }
     report.trade_count = len(all_best)
 
     base = portfolio_metrics_at_fee(baseline_periods, fee_bps, "baseline")
-    report.baselines = {"baseline": {"net_after_cost": base.net_pnl, "trades": base.trades}}
+    report.baselines = {
+        "baseline": {"net_after_cost": base.net_pnl, "trades": base.trades}
+    }
 
-    oos_rank = sorted(by_param_oos, key=by_param_oos.get, reverse=True).index(val_best) + 1
+    oos_rank = (
+        sorted(by_param_oos, key=by_param_oos.get, reverse=True).index(val_best) + 1
+    )
     half = max(1, (len(by_param_oos) + 1) // 2)
     param_island = oos_rank > half
     fold_nets = [fold_metrics[n].net_pnl for n in ("train", "val", "oos")]
     single_fold_edge = sum(1 for x in fold_nets if x > 0) == 1
-    low_periods = any(fold_metrics[n].trades < min_periods for n in ("train", "val", "oos"))
+    low_periods = any(
+        fold_metrics[n].trades < min_periods for n in ("train", "val", "oos")
+    )
     report.param_stability = {
-        "grid": list(candidate_runs), "val_best_param": val_best,
+        "grid": list(candidate_runs),
+        "val_best_param": val_best,
         "oos_rank_of_val_best": oos_rank,
-        "single_fold_edge": single_fold_edge, "param_island": param_island,
+        "single_fold_edge": single_fold_edge,
+        "param_island": param_island,
         "unit": "portfolio_period",
     }
-    report.overfit_flags = {"low_trades": low_periods, "single_fold_edge": single_fold_edge,
-                            "param_island": param_island}
+    report.overfit_flags = {
+        "low_trades": low_periods,
+        "single_fold_edge": single_fold_edge,
+        "param_island": param_island,
+    }
 
     oos = fold_metrics["oos"]
     reasons: list[str] = []
     if low_periods:
         report.verdict = "insufficient_data"
-        thin = [f"{n}={fold_metrics[n].trades}" for n in ("train", "val", "oos")
-                if fold_metrics[n].trades < min_periods]
+        thin = [
+            f"{n}={fold_metrics[n].trades}"
+            for n in ("train", "val", "oos")
+            if fold_metrics[n].trades < min_periods
+        ]
         reasons.append(f"folds below min_periods={min_periods}: {', '.join(thin)}")
     else:
         beats_baseline = oos.net_pnl > base.net_pnl
-        ok = (oos.net_pnl > 0 and oos.profit_factor > 1.0 and beats_baseline
-              and not single_fold_edge and not param_island)
+        ok = (
+            oos.net_pnl > 0
+            and oos.profit_factor > 1.0
+            and beats_baseline
+            and not single_fold_edge
+            and not param_island
+        )
         report.verdict = "validated" if ok else "not_validated"
         if not ok:
             if oos.net_pnl <= 0:
@@ -458,8 +521,13 @@ def bootstrap_sharpe_ci(
     """
     n = len(net_pnls)
     if n < 2:
-        return {"error": "insufficient_data", "n": n,
-                "n_bootstrap": n_bootstrap, "confidence": confidence, "seed": seed}
+        return {
+            "error": "insufficient_data",
+            "n": n,
+            "n_bootstrap": n_bootstrap,
+            "confidence": confidence,
+            "seed": seed,
+        }
     rng = random.Random(seed)
     observed = _sharpe(net_pnls)
     sharpes: list[float] = []
@@ -565,8 +633,14 @@ def block_bootstrap_sharpe_ci(
     """
     n = len(net_pnls)
     if n < 2:
-        return {"error": "insufficient_data", "n": n, "block_size": block_size,
-                "n_bootstrap": n_bootstrap, "confidence": confidence, "seed": seed}
+        return {
+            "error": "insufficient_data",
+            "n": n,
+            "block_size": block_size,
+            "n_bootstrap": n_bootstrap,
+            "confidence": confidence,
+            "seed": seed,
+        }
     block_size = max(1, min(block_size, n))
     n_blocks = math.ceil(n / block_size)
     max_start = n - block_size
@@ -577,7 +651,7 @@ def block_bootstrap_sharpe_ci(
         sample: list[float] = []
         for _ in range(n_blocks):
             start = rng.randint(0, max_start) if max_start > 0 else 0
-            sample.extend(net_pnls[start:start + block_size])
+            sample.extend(net_pnls[start : start + block_size])
         sharpes.append(_sharpe(sample[:n]))
     sharpes.sort()
     alpha = (1.0 - confidence) / 2.0
@@ -587,8 +661,11 @@ def block_bootstrap_sharpe_ci(
         "ci_upper": _percentile(sharpes, 1.0 - alpha),
         "median_sharpe": _percentile(sharpes, 0.5),
         "prob_positive": sum(1 for s in sharpes if s > 0) / n_bootstrap,
-        "confidence": confidence, "n_bootstrap": n_bootstrap, "seed": seed,
-        "block_size": block_size, "method": "moving_block",
+        "confidence": confidence,
+        "n_bootstrap": n_bootstrap,
+        "seed": seed,
+        "block_size": block_size,
+        "method": "moving_block",
     }
 
 
@@ -667,8 +744,11 @@ def run_card_hashes(
             artifacts.append(
                 {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
             )
-    return {"config_hash": config_hash, "strategy_hash": strategy_hash,
-            "artifacts": artifacts}
+    return {
+        "config_hash": config_hash,
+        "strategy_hash": strategy_hash,
+        "artifacts": artifacts,
+    }
 
 
 def apply_statistical_evidence(report: GateReport, bootstrap: dict) -> GateReport:

@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from app.services.brokers.kiwoom import constants
+from app.services.brokers.kiwoom.validation import normalize_krx_symbol
 
 ACCOUNT_PATH = "/api/dostk/acnt"
 
@@ -37,19 +38,63 @@ class KiwoomDomesticAccountClient:
         self,
         *,
         symbol: str,
+        side: str | None = None,
+        price: int | None = None,
         cont_yn: str | None = None,
         next_key: str | None = None,
     ) -> dict[str, Any]:
+        # ROB-891 — Official kt00010 body fields: stk_cd, trde_tp, uv.
+        # Both side and price are required (trde_tp + uv are mandatory).
+        # dmst_stex_tp is NOT in the official kt00010 docs.
+        #
+        # ROB-904 — kt00010 (주문인출가능금액) is unsupported by
+        # mockapi.kiwoom.com: a 2026-07-16 wire-body smoke sent this exact
+        # official-contract body across 4 field variants and got
+        # return_code=20 ("[2000](RC7006:모의투자 조회실패)") every time (same
+        # class of gap as US ust31490). No caller in this codebase invokes
+        # this method anymore — buy preflight and the orderable-cash MCP tool
+        # both fall back to kt00001 (get_deposit/normalize_deposit) instead.
+        # This method is kept, unmodified, as the correct implementation
+        # against Kiwoom's official contract for when/if live trading (or a
+        # future mock fix) needs it. Do NOT "fix" it by tweaking body fields —
+        # the contract is already correct; the gap is server-side.
+        canonical_symbol = normalize_krx_symbol(symbol)
+        if side not in ("buy", "sell"):
+            raise ValueError(
+                f"kt00010 symbol path requires side='buy'|'sell'; got {side!r}"
+            )
+        if price is None or type(price) is not int or price <= 0:
+            raise ValueError(
+                f"kt00010 symbol path requires a positive int price; got {price!r}"
+            )
+        body: dict[str, Any] = {
+            "stk_cd": canonical_symbol,
+            "trde_tp": (
+                constants.TRADE_TYPE_BUY if side == "buy" else constants.TRADE_TYPE_SELL
+            ),
+            "uv": str(price),
+        }
         return await self._client.post_api(
             api_id=constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID,
             path=ACCOUNT_PATH,
-            # ROB-460 — kt00010 (get_orderable_cash symbol path) requires
-            # dmst_stex_tp (국내거래소구분), like its sibling kt00018; value "KRX" is
-            # proven by the order endpoints. Mock is KRX-only.
-            body={
-                "dmst_stex_tp": constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
-                "stk_cd": str(symbol).strip(),
-            },
+            body=body,
+            cont_yn=cont_yn,
+            next_key=next_key,
+        )
+
+    async def get_deposit(
+        self,
+        *,
+        cont_yn: str | None = None,
+        next_key: str | None = None,
+    ) -> dict[str, Any]:
+        # ROB-891 — Official kt00001 body is exactly {"qry_tp": "2"}.
+        # "2" = 일반조회 (current orderable cash). dmst_stex_tp is NOT in
+        # the official kt00001 docs.
+        return await self._client.post_api(
+            api_id=constants.ACCOUNT_DEPOSIT_API_ID,
+            path=ACCOUNT_PATH,
+            body={"qry_tp": constants.ACCOUNT_DEPOSIT_QRY_TP_DEFAULT},
             cont_yn=cont_yn,
             next_key=next_key,
         )

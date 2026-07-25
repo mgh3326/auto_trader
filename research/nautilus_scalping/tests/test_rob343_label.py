@@ -25,17 +25,25 @@ def test_breakeven_no_commission_dependence():
 
 
 def test_already_net_viable_is_promote_to_pilot():
-    v = r.label_343_candidate(taker_net_pnl=4.0, gross_pnl=6.0,
-                              maker_conservative_net=5.0, oos_significant=True,
-                              breakeven_taker_bps=8.0)
+    v = r.label_343_candidate(
+        taker_net_pnl=4.0,
+        gross_pnl=6.0,
+        maker_conservative_net=5.0,
+        oos_significant=True,
+        breakeven_taker_bps=8.0,
+    )
     assert v.label == "promote_to_pilot"
     assert v.cost_binding is False
 
 
 def test_cost_binding_and_closable_is_343_candidate():
-    v = r.label_343_candidate(taker_net_pnl=-2.0, gross_pnl=6.0,
-                              maker_conservative_net=1.5, oos_significant=True,
-                              breakeven_taker_bps=3.0)
+    v = r.label_343_candidate(
+        taker_net_pnl=-2.0,
+        gross_pnl=6.0,
+        maker_conservative_net=1.5,
+        oos_significant=True,
+        breakeven_taker_bps=3.0,
+    )
     assert v.label == "cost_binding_343_candidate"
     assert v.cost_binding is True
     assert v.closable is True
@@ -43,24 +51,36 @@ def test_cost_binding_and_closable_is_343_candidate():
 
 def test_cost_binding_but_not_closable_is_reject():
     # gross positive, killed by taker fees, but maker-conservative STILL negative
-    v = r.label_343_candidate(taker_net_pnl=-2.0, gross_pnl=6.0,
-                              maker_conservative_net=-0.5, oos_significant=True,
-                              breakeven_taker_bps=3.0)
+    v = r.label_343_candidate(
+        taker_net_pnl=-2.0,
+        gross_pnl=6.0,
+        maker_conservative_net=-0.5,
+        oos_significant=True,
+        breakeven_taker_bps=3.0,
+    )
     assert v.label == "reject"
     assert v.cost_binding is True
     assert v.closable is False
 
 
 def test_no_gross_edge_is_reject():
-    v = r.label_343_candidate(taker_net_pnl=-3.0, gross_pnl=-1.0,
-                              maker_conservative_net=-2.0, oos_significant=True,
-                              breakeven_taker_bps=0.0)
+    v = r.label_343_candidate(
+        taker_net_pnl=-3.0,
+        gross_pnl=-1.0,
+        maker_conservative_net=-2.0,
+        oos_significant=True,
+        breakeven_taker_bps=0.0,
+    )
     assert v.label == "reject"
     assert v.cost_binding is False
 
 
 def test_not_significant_is_needs_more_data():
-    v = r.label_343_candidate(taker_net_pnl=-2.0, gross_pnl=6.0,
-                              maker_conservative_net=1.5, oos_significant=False,
-                              breakeven_taker_bps=3.0)
+    v = r.label_343_candidate(
+        taker_net_pnl=-2.0,
+        gross_pnl=6.0,
+        maker_conservative_net=1.5,
+        oos_significant=False,
+        breakeven_taker_bps=3.0,
+    )
     assert v.label == "needs_more_data"

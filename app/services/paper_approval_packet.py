@@ -33,7 +33,7 @@ Usage pattern (pre-submit caller):
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -58,6 +58,7 @@ _SELL_QTY_SOURCES: frozenset[str] = frozenset(
         "ledger_position_snapshot",
         "reconcile_filled_qty",
         "reconcile_position_snapshot",
+        "verified_native_buy",
     }
 )
 
@@ -74,6 +75,12 @@ _RECONCILED_BUY_STATES: frozenset[str] = frozenset(
         "filled",
     }
 )
+
+# Exact native BUY authority is reusable only while the position is still
+# represented by that BUY. Round-trip terminal states have already closed that
+# authority and must not back a new sell. Legacy/manual correlation lookup keeps
+# its historical state contract above.
+_EXACT_SOURCE_BUY_STATES: frozenset[str] = frozenset({"position_reconciled", "filled"})
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +99,25 @@ class PaperApprovalPacketError(ValueError):
         wrong_symbol              — execution_symbol doesn't match buy source row
         qty_exceeds_source        — sell max_qty > source buy filled_qty
         invalid_qty_source        — sell qty_source not in allowed ledger values
+        missing_source_timestamp  — market_data_asof absent on an automated packet
+        naive_source_timestamp    — market_data_asof is tz-naive
+        future_source_timestamp   — market_data_asof is in the future relative to now
+        missing_market_data_source — market_data_source label absent
+        stale_quote               — market_data_asof older than the allowed max age
+        account_mode_mismatch     — packet.account_mode != expected (alpaca_paper)
+        missing_preview_hash      — preview_payload_hash absent when a submit hash is checked
+        preview_hash_mismatch     — submit canonical hash != packet.preview_payload_hash
+        server_key_mismatch       — client_order_id != server-derived key for the canonical intent
+        caller_id_mismatch        — caller-supplied client_order_id != server-derived key
+        order_symbol_mismatch     — submit symbol != packet.execution_symbol
+        order_side_mismatch       — submit side != packet.side
+        order_asset_class_mismatch — submit asset_class != packet.execution_asset_class
+        order_type_mismatch       — submit order type != packet.execution_order_type
+        order_tif_mismatch        — submit TIF != packet.execution_time_in_force
+        order_missing_size        — submit has neither qty nor notional
+        notional_exceeds_max      — submit notional (or qty*limit) > packet.max_notional
+        qty_exceeds_max           — submit qty > packet.max_qty
+        source_filled_qty_unknown — sell source filled_qty missing/unparseable/non-positive
     """
 
     def __init__(self, code: str, message: str) -> None:
@@ -118,7 +144,7 @@ class PaperApprovalPacket(BaseModel):
     signal_source: str
     artifact_id: uuid.UUID
     signal_symbol: str
-    signal_venue: Literal["upbit"]
+    signal_venue: Literal["upbit", "binance_public_spot"]
     execution_symbol: str
     execution_venue: Literal["alpaca_paper"]
     execution_asset_class: Literal["crypto", "us_equity"]
@@ -130,6 +156,28 @@ class PaperApprovalPacket(BaseModel):
     lifecycle_correlation_id: str
     client_order_id: str
     expires_at: datetime
+
+    # ROB-842: Alpaca-complete boundary fields. Optional so ROB-91 producers stay
+    # valid; the Alpaca submit coordinator requires the market-data + hash fields
+    # via its verifiers (missing values fail-close with a stable reason code).
+    account_mode: str = "alpaca_paper"
+    origin: Literal["manual", "automated"] = "manual"
+    market_data_asof: datetime | None = None
+    market_data_source: str | None = None
+    preview_payload_hash: str | None = None
+    # ROB-842 blocker 4: server-owned snapshot identity folded into the
+    # idempotency key so distinct decisions never collide on economics alone.
+    snapshot_id: str | None = None
+    execution_order_type: Literal["limit", "market"] | None = None
+    execution_time_in_force: str | None = None
+    # ROB-842: trusted reference price (from the server-observed market snapshot),
+    # used to bound notional for qty/market orders that carry no limit price.
+    reference_price: Decimal | None = None
+    # ROB-845: exact native BUY authority for experiment-origin sells. Optional
+    # for legacy/manual packets; the coordinator requires both fields before a
+    # new automated SELL can claim or reach the broker.
+    source_client_order_id: str | None = None
+    decision_identity_hash: str | None = None
 
     @field_validator("expires_at")
     @classmethod
@@ -163,17 +211,23 @@ class PaperApprovalPacket(BaseModel):
 
     @model_validator(mode="after")
     def _validate_crypto_symbol_mapping(self) -> PaperApprovalPacket:
-        if self.signal_venue == "upbit" and self.execution_asset_class == "crypto":
+        if self.execution_asset_class == "crypto":
             from app.services.crypto_execution_mapping import (
                 CryptoExecutionMappingError,
+                map_binance_public_spot_to_alpaca_paper,
                 map_upbit_to_alpaca_paper,
             )
 
             try:
-                mapping = map_upbit_to_alpaca_paper(self.signal_symbol)
+                mapping = (
+                    map_upbit_to_alpaca_paper(self.signal_symbol)
+                    if self.signal_venue == "upbit"
+                    else map_binance_public_spot_to_alpaca_paper(self.signal_symbol)
+                )
             except CryptoExecutionMappingError as exc:
                 raise ValueError(
-                    f"signal_symbol {self.signal_symbol!r} is not supported for Upbit→Alpaca Paper mapping: {exc}"
+                    f"signal_symbol {self.signal_symbol!r} is not supported for "
+                    f"{self.signal_venue}→Alpaca Paper mapping: {exc}"
                 ) from exc
             if mapping.execution_symbol != self.execution_symbol:
                 raise ValueError(
@@ -252,6 +306,7 @@ async def verify_sell_packet_source(
     packet: PaperApprovalPacket,
     *,
     ledger: AlpacaPaperLedgerService,
+    requested_qty: Decimal | None = None,
 ) -> None:
     """For sell packets, verify exactly one prior reconciled buy source exists.
 
@@ -259,16 +314,20 @@ async def verify_sell_packet_source(
 
     For sell packets:
     - qty_source must be a ledger/reconcile-derived value.
-    - Calls ledger.list_by_correlation_id to retrieve the correlation scope.
-    - Exactly one buy execution row must exist.
+    - source_client_order_id selects one exact native buy execution when present;
+      legacy packets fall back to ledger.list_by_correlation_id.
+    - Exactly one eligible buy execution row must exist.
     - That buy row must be in a reconciled state (position_reconciled / filled / closed / final_reconciled).
-    - execution_symbol must match between packet and source row.
-    - packet.max_qty (if set) must not exceed the source buy filled_qty.
+    - account, venue, asset class, instrument type, and execution symbol must match.
+    - requested_qty (or packet.max_qty for legacy callers) must not exceed the
+      source buy filled_qty.
 
     Raises:
         PaperApprovalPacketError with one of the stable codes:
             invalid_qty_source, missing_source_order, multiple_source_orders,
-            source_not_reconciled, wrong_symbol, qty_exceeds_source.
+            source_not_reconciled, wrong_account_mode, wrong_execution_venue,
+            wrong_asset_class, wrong_instrument_type, wrong_symbol,
+            source_filled_qty_unknown, qty_exceeds_source.
     """
     if packet.side == "buy":
         return
@@ -283,15 +342,73 @@ async def verify_sell_packet_source(
             ),
         )
 
-    rows = await ledger.list_by_correlation_id(packet.lifecycle_correlation_id)
+    exact_source_id = (packet.source_client_order_id or "").strip()
+    if exact_source_id:
+        source = await ledger.get_execution_by_client_order_id(exact_source_id)
+        if (
+            source is None
+            or str(_get_attr(source, "record_kind") or "") != "execution"
+            or str(_get_attr(source, "side") or "").lower() != "buy"
+        ):
+            raise PaperApprovalPacketError(
+                code="missing_source_order",
+                message=f"no native buy execution found for {exact_source_id!r}",
+            )
+        source_account_mode = str(_get_attr(source, "account_mode") or "")
+        if source_account_mode != packet.account_mode:
+            raise PaperApprovalPacketError(
+                code="wrong_account_mode",
+                message=(
+                    f"buy source account_mode {source_account_mode!r} does not match "
+                    f"packet {packet.account_mode!r}"
+                ),
+            )
+        source_venue = str(_get_attr(source, "execution_venue") or "")
+        if source_venue != packet.execution_venue:
+            raise PaperApprovalPacketError(
+                code="wrong_execution_venue",
+                message=(
+                    f"buy source execution_venue {source_venue!r} does not match "
+                    f"packet {packet.execution_venue!r}"
+                ),
+            )
+        source_asset_class = str(_get_attr(source, "execution_asset_class") or "")
+        if source_asset_class != packet.execution_asset_class:
+            raise PaperApprovalPacketError(
+                code="wrong_asset_class",
+                message=(
+                    f"buy source execution_asset_class {source_asset_class!r} does "
+                    f"not match packet {packet.execution_asset_class!r}"
+                ),
+            )
+        raw_instrument_type = _get_attr(source, "instrument_type")
+        source_instrument_type = str(
+            getattr(raw_instrument_type, "value", raw_instrument_type) or ""
+        )
+        expected_instrument_type = (
+            "crypto" if packet.execution_asset_class == "crypto" else "equity_us"
+        )
+        if source_instrument_type != expected_instrument_type:
+            raise PaperApprovalPacketError(
+                code="wrong_instrument_type",
+                message=(
+                    f"buy source instrument_type {source_instrument_type!r} does not "
+                    f"match expected {expected_instrument_type!r}"
+                ),
+            )
+        buy_exec_rows = [source]
+        allowed_source_states = _EXACT_SOURCE_BUY_STATES
+    else:
+        rows = await ledger.list_by_correlation_id(packet.lifecycle_correlation_id)
 
-    # Filter to buy execution rows
-    buy_exec_rows = [
-        row
-        for row in rows
-        if str(_get_attr(row, "side") or "").lower() == "buy"
-        and str(_get_attr(row, "record_kind") or "") == "execution"
-    ]
+        # Legacy/manual correlation-scoped source lookup.
+        buy_exec_rows = [
+            row
+            for row in rows
+            if str(_get_attr(row, "side") or "").lower() == "buy"
+            and str(_get_attr(row, "record_kind") or "") == "execution"
+        ]
+        allowed_source_states = _RECONCILED_BUY_STATES
 
     if not buy_exec_rows:
         raise PaperApprovalPacketError(
@@ -313,12 +430,12 @@ async def verify_sell_packet_source(
 
     source = buy_exec_rows[0]
     source_state = str(_get_attr(source, "lifecycle_state") or "")
-    if source_state not in _RECONCILED_BUY_STATES:
+    if source_state not in allowed_source_states:
         raise PaperApprovalPacketError(
             code="source_not_reconciled",
             message=(
                 f"buy source lifecycle_state is {source_state!r}; "
-                f"must be in {sorted(_RECONCILED_BUY_STATES)}"
+                f"must be in {sorted(allowed_source_states)}"
             ),
         )
 
@@ -332,27 +449,317 @@ async def verify_sell_packet_source(
             ),
         )
 
+    # ROB-842 blocker 5: only a confirmed real holding may back a sell. A source
+    # with missing / unparseable / non-positive filled_qty fails closed.
+    source_filled_qty_raw = _get_attr(source, "filled_qty")
+    if source_filled_qty_raw is None:
+        raise PaperApprovalPacketError(
+            code="source_filled_qty_unknown",
+            message=(
+                "sell source has no filled_qty; a confirmed holding is required "
+                "before selling"
+            ),
+        )
+    try:
+        source_filled_qty = Decimal(str(source_filled_qty_raw))
+    except Exception as exc:
+        raise PaperApprovalPacketError(
+            code="source_filled_qty_unknown",
+            message=f"sell source filled_qty is unparseable: {source_filled_qty_raw!r}",
+        ) from exc
+    if not source_filled_qty.is_finite() or source_filled_qty <= 0:
+        raise PaperApprovalPacketError(
+            code="source_filled_qty_unknown",
+            message=f"sell source filled_qty is non-positive: {source_filled_qty}",
+        )
+    bounded_qty = requested_qty if requested_qty is not None else packet.max_qty
+    if bounded_qty is not None and bounded_qty > source_filled_qty:
+        raise PaperApprovalPacketError(
+            code="qty_exceeds_source",
+            message=(
+                f"sell qty {bounded_qty} exceeds buy source filled_qty "
+                f"{source_filled_qty}"
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Verifier: market-data source freshness (ROB-842)
+# ---------------------------------------------------------------------------
+def verify_packet_market_data(
+    packet: PaperApprovalPacket,
+    *,
+    now: datetime,
+    max_age: timedelta,
+) -> None:
+    """Reject packets whose market-data source timestamp is missing or stale.
+
+    Distinct from ``verify_packet_freshness`` (which bounds ``expires_at``): this
+    guards the *as-of* time of the quote the decision was made against, so an
+    otherwise-unexpired packet built on a stale quote is fail-closed.
+
+    Raises:
+        PaperApprovalPacketError(code='naive_now')                if now is tz-naive.
+        PaperApprovalPacketError(code='missing_source_timestamp') if asof is None.
+        PaperApprovalPacketError(code='naive_source_timestamp')   if asof is tz-naive.
+        PaperApprovalPacketError(code='stale_quote')              if now - asof > max_age.
+    """
+    if now.tzinfo is None or now.tzinfo.utcoffset(now) is None:
+        raise PaperApprovalPacketError(
+            code="naive_now",
+            message="now must be timezone-aware; use a caller-supplied UTC clock",
+        )
+    asof = packet.market_data_asof
+    if asof is None:
+        raise PaperApprovalPacketError(
+            code="missing_source_timestamp",
+            message="market_data_asof is required for an automated submit packet",
+        )
+    if asof.tzinfo is None or asof.tzinfo.utcoffset(asof) is None:
+        raise PaperApprovalPacketError(
+            code="naive_source_timestamp",
+            message="market_data_asof must be timezone-aware",
+        )
+    if not (packet.market_data_source or "").strip():
+        raise PaperApprovalPacketError(
+            code="missing_market_data_source",
+            message="market_data_source label is required for an automated packet",
+        )
+    if asof > now:
+        raise PaperApprovalPacketError(
+            code="future_source_timestamp",
+            message=(
+                f"market_data_asof is in the future: asof={asof.isoformat()}, "
+                f"now={now.isoformat()}"
+            ),
+        )
+    if now - asof > max_age:
+        raise PaperApprovalPacketError(
+            code="stale_quote",
+            message=(
+                f"market data is stale: asof={asof.isoformat()}, now={now.isoformat()}, "
+                f"max_age={max_age}"
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Verifier: account mode (ROB-842)
+# ---------------------------------------------------------------------------
+def verify_packet_account_mode(
+    packet: PaperApprovalPacket,
+    *,
+    expected: str = "alpaca_paper",
+) -> None:
+    """Raise if the packet account_mode does not match the expected paper mode.
+
+    Raises:
+        PaperApprovalPacketError(code='account_mode_mismatch').
+    """
+    if packet.account_mode != expected:
+        raise PaperApprovalPacketError(
+            code="account_mode_mismatch",
+            message=(
+                f"packet account_mode {packet.account_mode!r} does not match "
+                f"expected {expected!r}"
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Verifier: preview↔submit payload hash (ROB-842)
+# ---------------------------------------------------------------------------
+def verify_preview_submit_hash(
+    packet: PaperApprovalPacket,
+    *,
+    submit_hash: str,
+) -> None:
+    """Raise if the submit canonical hash differs from the packet's preview hash.
+
+    Raises:
+        PaperApprovalPacketError(code='missing_preview_hash')  if packet has no hash.
+        PaperApprovalPacketError(code='preview_hash_mismatch') if hashes differ.
+    """
+    if not packet.preview_payload_hash:
+        raise PaperApprovalPacketError(
+            code="missing_preview_hash",
+            message="packet has no preview_payload_hash to verify against",
+        )
+    if packet.preview_payload_hash != submit_hash:
+        raise PaperApprovalPacketError(
+            code="preview_hash_mismatch",
+            message=(
+                "submit payload hash does not match the previewed payload hash: "
+                f"preview={packet.preview_payload_hash!r}, submit={submit_hash!r}"
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Verifier: server-derived client_order_id / caller-id bypass guard (ROB-842)
+# ---------------------------------------------------------------------------
+def verify_server_derived_key(
+    packet: PaperApprovalPacket,
+    *,
+    server_key: str,
+    caller_client_order_id: str | None = None,
+) -> None:
+    """Enforce the server-derived idempotency key for the canonical intent.
+
+    The packet's ``client_order_id`` must equal the server-derived key for the
+    canonical submit payload, and any caller-supplied client_order_id must equal
+    that same server-derived value — an automated request cannot inject an id that
+    bypasses the server-derived claim key.
+
+    Raises:
+        PaperApprovalPacketError(code='server_key_mismatch') if packet id != server key.
+        PaperApprovalPacketError(code='caller_id_mismatch')  if caller id != server key.
+    """
+    if packet.client_order_id != server_key:
+        raise PaperApprovalPacketError(
+            code="server_key_mismatch",
+            message=(
+                f"packet client_order_id {packet.client_order_id!r} is not the "
+                f"server-derived key {server_key!r} for this canonical intent"
+            ),
+        )
+    if caller_client_order_id is not None and caller_client_order_id != server_key:
+        raise PaperApprovalPacketError(
+            code="caller_id_mismatch",
+            message=(
+                f"caller-supplied client_order_id {caller_client_order_id!r} does not "
+                f"match the server-derived key {server_key!r}"
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Verifier: order-within-packet authority binding (ROB-842 blocker 3)
+# ---------------------------------------------------------------------------
+def _canonical_decimal(canonical: dict[str, Any], key: str) -> Decimal | None:
+    raw = canonical.get(key)
+    if raw is None:
+        return None
+    try:
+        return Decimal(str(raw))
+    except Exception as exc:
+        raise PaperApprovalPacketError(
+            code="order_size_unverifiable",
+            message=f"canonical {key!r} is not a parseable number: {raw!r}",
+        ) from exc
+
+
+def verify_order_within_packet(
+    packet: PaperApprovalPacket,
+    canonical: dict[str, Any],
+) -> None:
+    """Bind the submit order to the server-owned packet's authority.
+
+    Every economic field of the submit (symbol, side, asset class, order type,
+    TIF, qty/notional, limit price) must match the packet, and the order size must
+    fall within the packet's approved ceiling (``max_notional``/``max_qty``). This
+    is what stops a self-consistent caller-fabricated canonical (hash-matches
+    itself) from executing beyond the server-approved decision.
+
+    Raises PaperApprovalPacketError with one of the order_* / *_exceeds_max codes.
+    """
+    if str(canonical.get("symbol") or "") != packet.execution_symbol:
+        raise PaperApprovalPacketError(
+            code="order_symbol_mismatch",
+            message=(
+                f"submit symbol {canonical.get('symbol')!r} != packet "
+                f"execution_symbol {packet.execution_symbol!r}"
+            ),
+        )
+    if str(canonical.get("side") or "") != packet.side:
+        raise PaperApprovalPacketError(
+            code="order_side_mismatch",
+            message=f"submit side {canonical.get('side')!r} != packet side {packet.side!r}",
+        )
+    if str(canonical.get("asset_class") or "") != packet.execution_asset_class:
+        raise PaperApprovalPacketError(
+            code="order_asset_class_mismatch",
+            message=(
+                f"submit asset_class {canonical.get('asset_class')!r} != packet "
+                f"execution_asset_class {packet.execution_asset_class!r}"
+            ),
+        )
+    if (
+        packet.execution_order_type is not None
+        and str(canonical.get("type") or "") != packet.execution_order_type
+    ):
+        raise PaperApprovalPacketError(
+            code="order_type_mismatch",
+            message=(
+                f"submit order type {canonical.get('type')!r} != packet "
+                f"execution_order_type {packet.execution_order_type!r}"
+            ),
+        )
+    if (
+        packet.execution_time_in_force is not None
+        and str(canonical.get("time_in_force") or "") != packet.execution_time_in_force
+    ):
+        raise PaperApprovalPacketError(
+            code="order_tif_mismatch",
+            message=(
+                f"submit time_in_force {canonical.get('time_in_force')!r} != packet "
+                f"execution_time_in_force {packet.execution_time_in_force!r}"
+            ),
+        )
+
+    qty = _canonical_decimal(canonical, "qty")
+    notional = _canonical_decimal(canonical, "notional")
+    limit_price = _canonical_decimal(canonical, "limit_price")
+    if qty is None and notional is None:
+        raise PaperApprovalPacketError(
+            code="order_missing_size",
+            message="submit canonical has neither qty nor notional",
+        )
+
+    if packet.max_notional is not None:
+        effective_notional = notional
+        if effective_notional is None and qty is not None:
+            # Prefer the order's own limit price; fall back to the packet's trusted
+            # reference price so a market/qty order is still bounded by notional.
+            px = limit_price if limit_price is not None else packet.reference_price
+            if px is not None:
+                effective_notional = qty * px
+        if effective_notional is None:
+            raise PaperApprovalPacketError(
+                code="order_size_unverifiable",
+                message="cannot bound order notional against packet.max_notional",
+            )
+        if effective_notional > packet.max_notional:
+            raise PaperApprovalPacketError(
+                code="notional_exceeds_max",
+                message=(
+                    f"submit notional {effective_notional} exceeds packet "
+                    f"max_notional {packet.max_notional}"
+                ),
+            )
+
     if packet.max_qty is not None:
-        source_filled_qty_raw = _get_attr(source, "filled_qty")
-        if source_filled_qty_raw is not None:
-            try:
-                source_filled_qty = Decimal(str(source_filled_qty_raw))
-            except Exception:
-                source_filled_qty = None
-            if source_filled_qty is not None and packet.max_qty > source_filled_qty:
-                raise PaperApprovalPacketError(
-                    code="qty_exceeds_source",
-                    message=(
-                        f"sell max_qty {packet.max_qty} exceeds buy source filled_qty "
-                        f"{source_filled_qty}"
-                    ),
-                )
+        if qty is None:
+            raise PaperApprovalPacketError(
+                code="order_size_unverifiable",
+                message="packet has a qty ceiling but submit provided no qty",
+            )
+        if qty > packet.max_qty:
+            raise PaperApprovalPacketError(
+                code="qty_exceeds_max",
+                message=f"submit qty {qty} exceeds packet max_qty {packet.max_qty}",
+            )
 
 
 __all__ = [
     "PaperApprovalPacket",
     "PaperApprovalPacketError",
+    "verify_order_within_packet",
+    "verify_packet_account_mode",
     "verify_packet_freshness",
     "verify_packet_idempotency",
+    "verify_packet_market_data",
+    "verify_preview_submit_hash",
     "verify_sell_packet_source",
+    "verify_server_derived_key",
 ]

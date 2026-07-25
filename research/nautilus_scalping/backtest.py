@@ -132,20 +132,30 @@ def _report(engine, instrument, symbol: str, export_path: Path | None) -> None:
     print(f"BACKTEST RESULTS — {symbol} (spot, tick-level)")
     print("=" * 48)
     print(f"trades:            {len(rows)}")
-    print(f"win_rate:          {len(wins) / len(rows) * 100:.1f}%  ({len(wins)}/{len(rows)})")
+    print(
+        f"win_rate:          {len(wins) / len(rows) * 100:.1f}%  ({len(wins)}/{len(rows)})"
+    )
     print(f"gross_pnl_usdt:    {sum(gross):+.4f}")
     print(f"total_fees_usdt:   {sum(fees):.4f}")
     print(f"NET_pnl_usdt:      {sum(net):+.4f}")
-    print(f"profit_factor:     {(gross_win / gross_loss) if gross_loss else float('inf'):.2f}")
+    print(
+        f"profit_factor:     {(gross_win / gross_loss) if gross_loss else float('inf'):.2f}"
+    )
     print(f"avg_net_per_trade: {statistics.mean(net):+.4f} usdt")
-    print(f"avg_net_return:    {statistics.mean([r['net_return_bps'] for r in rows]):+.2f} bps")
-    print(f"avg_win / avg_loss:{(statistics.mean(wins) if wins else 0):+.4f} / "
-          f"{(statistics.mean(losses) if losses else 0):+.4f} usdt")
+    print(
+        f"avg_net_return:    {statistics.mean([r['net_return_bps'] for r in rows]):+.2f} bps"
+    )
+    print(
+        f"avg_win / avg_loss:{(statistics.mean(wins) if wins else 0):+.4f} / "
+        f"{(statistics.mean(losses) if losses else 0):+.4f} usdt"
+    )
     print(f"max_drawdown_usdt: {_max_drawdown(net):.4f}")
     print(f"avg_holding_sec:   {statistics.mean(holds):.0f}")
     print("=" * 48)
-    print("NOTE: gross vs net separated; net is after taker fees. "
-          "30/20bps TP/SL means fees dominate — read NET only.")
+    print(
+        "NOTE: gross vs net separated; net is after taker fees. "
+        "30/20bps TP/SL means fees dominate — read NET only."
+    )
 
     if export_path:
         export_path.parent.mkdir(parents=True, exist_ok=True)

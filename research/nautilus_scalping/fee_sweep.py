@@ -107,14 +107,28 @@ def _net_at_fee(trades, fee_bps: float) -> tuple[float, int, int]:
 
 def _worker_trades(catalog: Path, symbol: str, tp: int, sl: int, size: str):
     proc = subprocess.run(
-        [sys.executable, os.path.abspath(__file__), "--single", "--tp", str(tp),
-         "--sl", str(sl), "--catalog", str(catalog), "--symbol", symbol,
-         "--trade-size", size],
-        capture_output=True, text=True, env=os.environ,
+        [
+            sys.executable,
+            os.path.abspath(__file__),
+            "--single",
+            "--tp",
+            str(tp),
+            "--sl",
+            str(sl),
+            "--catalog",
+            str(catalog),
+            "--symbol",
+            symbol,
+            "--trade-size",
+            size,
+        ],
+        capture_output=True,
+        text=True,
+        env=os.environ,
     )
     for line in proc.stdout.splitlines():
         if line.startswith(_SENTINEL):
-            return json.loads(line[len(_SENTINEL):])["trades"]
+            return json.loads(line[len(_SENTINEL) :])["trades"]
     raise RuntimeError(
         f"worker {tp}/{sl} produced no result.\nstderr tail:\n{proc.stderr[-600:]}"
     )
@@ -149,19 +163,29 @@ def main() -> int:
         for fee in FEE_GRID_BPS:
             net, n, wins = _net_at_fee(trades, fee)
             cells.append(f"{net:>+8.1f}")
-            rows.append({
-                "tp_bps": tp, "sl_bps": sl, "fee_bps_per_leg": fee, "trades": n,
-                "net_wins": wins,
-                "win_rate_pct": round(100 * wins / n, 1) if n else 0.0,
-                "net_pnl_usdt": round(net, 2),
-            })
+            rows.append(
+                {
+                    "tp_bps": tp,
+                    "sl_bps": sl,
+                    "fee_bps_per_leg": fee,
+                    "trades": n,
+                    "net_wins": wins,
+                    "win_rate_pct": round(100 * wins / n, 1) if n else 0.0,
+                    "net_pnl_usdt": round(net, 2),
+                }
+            )
         print(f"{f'{tp}/{sl}':>9} {len(trades):>7} " + " ".join(cells))
 
     print("\nbreak-even frontier (max per-leg fee bps with NET > 0):")
     for tp, sl in TP_SL_GRID:
-        positive = [r["fee_bps_per_leg"] for r in rows
-                    if r["tp_bps"] == tp and r["sl_bps"] == sl and r["net_pnl_usdt"] > 0]
-        verdict = f"fee <= {max(positive):.1f} bps" if positive else "NEVER net-positive"
+        positive = [
+            r["fee_bps_per_leg"]
+            for r in rows
+            if r["tp_bps"] == tp and r["sl_bps"] == sl and r["net_pnl_usdt"] > 0
+        ]
+        verdict = (
+            f"fee <= {max(positive):.1f} bps" if positive else "NEVER net-positive"
+        )
         print(f"  TP/SL {tp}/{sl}: {verdict}")
 
     args.export.parent.mkdir(parents=True, exist_ok=True)

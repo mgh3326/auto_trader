@@ -73,10 +73,10 @@ jobs:
       - setup-deps
       - run:
           name: Run Ruff linter
-          command: uv run ruff check app/ tests/
+          command: uv run ruff check app/ tests/ research/ scripts/
       - run:
           name: Run Ruff formatter check
-          command: uv run ruff format --check app/ tests/
+          command: uv run ruff format --check app/ tests/ research/ scripts/
       - run:
           name: Run ty type checker
           command: uv run ty check app/ --error-on-warning

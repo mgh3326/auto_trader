@@ -87,6 +87,52 @@ async def get_us_rankings_impl(
     return rankings, "yfinance"
 
 
+def _as_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _with_crypto_relative_strength(coins: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    btc_rate = None
+    for coin in coins:
+        if str(coin.get("market") or "").upper() == "KRW-BTC":
+            btc_rate = _as_float(coin.get("signed_change_rate"))
+            break
+    if btc_rate is None:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for coin in coins:
+        market = str(coin.get("market") or "").upper()
+        if market == "KRW-BTC":
+            continue
+        rate = _as_float(coin.get("signed_change_rate"))
+        if rate is None:
+            continue
+        relative = rate - btc_rate
+        rows.append(
+            {
+                **coin,
+                "relative_strength_vs_btc_24h": round(relative, 8),
+                "relative_strength_pct_vs_btc_24h": round(relative * 100, 4),
+                "btc_change_rate_24h": btc_rate,
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            row["relative_strength_vs_btc_24h"],
+            _as_float(row.get("acc_trade_price_24h")) or 0.0,
+            str(row.get("market") or ""),
+        ),
+        reverse=True,
+    )
+    return rows
+
+
 async def get_crypto_rankings_impl(
     ranking_type: str,
     limit: int,
@@ -105,6 +151,8 @@ async def get_crypto_rankings_impl(
         sorted_coins = sorted(
             negative_coins, key=lambda x: float(x.get("signed_change_rate", 0))
         )
+    elif ranking_type == "relative_strength":
+        sorted_coins = _with_crypto_relative_strength(coins)
     else:
         sorted_coins = coins
 

@@ -20,6 +20,7 @@ from app.core.db import AsyncSessionLocal
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
     AddReportItemsRequest,
+    CreateInvestmentWatchRequest,
     IngestReportItem,
     IngestReportRequest,
     InvestmentReportActivateWatchResponse,
@@ -30,6 +31,7 @@ from app.schemas.investment_reports import (
     InvestmentReportItemResponse,
     InvestmentReportResponse,
     InvestmentWatchAlertResponse,
+    InvestmentWatchCreateResponse,
     InvestmentWatchEventResponse,
     PreviousReportContextResponse,
     RecordDecisionRequest,
@@ -54,6 +56,7 @@ from app.services.investment_reports.query_service import (
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_activation import WatchActivationService
+from app.services.investment_reports.watch_create import DirectWatchCreateService
 from app.services.investment_reports.watch_recommendation_policy import (
     ATR_PERIOD,
     LOOKBACK_DAYS,
@@ -77,6 +80,8 @@ INVESTMENT_REPORT_TOOL_NAMES: set[str] = {
     "investment_report_set_status",
     "investment_report_add_items",
     "investment_report_update",
+    # ROB-768 — direct watch create (independent of report flow).
+    "investment_watch_create",
 }
 
 # ROB-352 — mirror of the generator's canonical market/account_scope pairs.
@@ -165,7 +170,29 @@ CREATE_DESCRIPTION = (
     "order_no, odno, ledger_id, report_item_uuid, raw}]. These are advisory "
     "report fields only; they do not submit broker orders. Live audit linkage "
     "for new orders should still pass report_item_uuid to the order tool "
-    "(ROB-473). Unknown item keys are rejected; put extension data under "
+    "(ROB-473). "
+    "ROB-690 - when entry_plan + stop_loss + target_price are all present, the "
+    "server deterministically computes risk_pct/reward_pct/rr_ratio and attaches "
+    "it under the read-only evidence_snapshot.trade_setup key (per entry_plan "
+    "leg plus a headline). Direction defaults to long (inferred from side/intent); "
+    "pass position_direction='short' to opt into short arithmetic explicitly — "
+    "there is no other short signal. Pure sell-exits (side='sell' or "
+    "intent='sell_review') and ambiguous items skip R:R entirely (realized P/L "
+    "framing is a separate concern). An inconsistent or degenerate price "
+    "triangle also fails closed (no trade_setup key) rather than showing a "
+    "misleading card. Callers must NOT set evidence_snapshot.trade_setup "
+    "directly — it is rejected as a reserved-key conflict; the server is the "
+    "sole source of this value. "
+    "ROB-693 - invalidation_triggers is an optional advisory list[str] per "
+    "item: narrative bullets describing what would invalidate this thesis "
+    "(e.g. 'guidance cut below X', 'RSI holds under 30'). It is Hermes/"
+    "caller-authored narrative text, NOT the scanner-executable "
+    "WatchInvalidation/watch_condition trigger -- auto_trader only persists "
+    "it (merged into evidence_snapshot.invalidation_triggers) and renders "
+    "it; it never generates the content. Do not also set "
+    "evidence_snapshot.invalidation_triggers directly when the typed field "
+    "is populated -- that is rejected as a reserved-key conflict. "
+    "Unknown item keys are rejected; put extension data under "
     "metadata or evidence_snapshot explicitly. "
     "For prior-report chaining set created_by_profile='CLAUDE_ADVISOR' so the "
     "draft is admitted by investment_report_context_get(draft_policy="
@@ -229,9 +256,16 @@ def _serialise_bundle(bundle: dict) -> InvestmentReportBundle:
         decisions_by_item_uuid[str(item.item_uuid)] = [
             InvestmentReportItemDecisionResponse.model_validate(d) for d in rows
         ]
+    # ROB-554 — attach reverse-looked-up linked orders (parity with web serializer).
+    linked_by_uuid = bundle.get("linked_orders_by_item_uuid", {})
+    item_responses = []
+    for it in items:
+        resp = InvestmentReportItemResponse.model_validate(it)
+        resp.linked_orders = linked_by_uuid.get(str(it.item_uuid))
+        item_responses.append(resp)
     return InvestmentReportBundle(
         report=InvestmentReportResponse.model_validate(bundle["report"]),
-        items=[InvestmentReportItemResponse.model_validate(it) for it in items],
+        items=item_responses,
         decisions_by_item_uuid=decisions_by_item_uuid,
         alerts=[
             InvestmentWatchAlertResponse.model_validate(a) for a in bundle["alerts"]
@@ -399,6 +433,29 @@ def _maybe_attach_lite_quality(
     )
 
 
+def _negative_class_warnings(validated_items: list[Any]) -> list[str]:
+    """Advisory (never blocks): flag deferred_no_action items missing confidence
+    so the negative class stays calibratable (ROB-712). Fail-open — any error
+    yields no warnings rather than failing report creation. NOTE: forecast
+    presence is NOT checked here (forecast_save is a separate subsystem, unknown
+    at create time); the message reminds the caller to also leave a forecast."""
+    try:
+        out: list[str] = []
+        for item in validated_items or []:
+            bucket = getattr(item, "decision_bucket", None)
+            confidence = getattr(item, "confidence", None)
+            if bucket == "deferred_no_action" and confidence is None:
+                key = getattr(item, "client_item_key", "?")
+                out.append(
+                    f"deferred_no_action item {key!r}: confidence missing — record "
+                    "confidence + a resolvable forecast_save so the negative class "
+                    "stays calibratable (ROB-712)."
+                )
+        return out
+    except Exception:  # noqa: BLE001 — advisory must never break create
+        return []
+
+
 # ---------------------------------------------------------------------------
 # investment_report_create
 # ---------------------------------------------------------------------------
@@ -431,6 +488,10 @@ async def investment_report_create_impl(
     validated_items, item_error = _validate_report_items(items)
     if item_error is not None:
         return item_error
+    # ROB-712 — fail-open advisory: flag deferred_no_action items missing
+    # confidence so the negative class stays calibratable. The helper never
+    # raises; an empty list is the no-op default.
+    warnings = _negative_class_warnings(validated_items)
 
     payload: dict[str, Any] = {
         "report_type": report_type,
@@ -486,7 +547,9 @@ async def investment_report_create_impl(
         response = InvestmentReportCreateResponse(
             idempotent=not is_new,
             report=InvestmentReportResponse.model_validate(report),
+            warnings=warnings,
         )
+
     return response.model_dump(mode="json", by_alias=True)
 
 
@@ -924,6 +987,54 @@ async def investment_watch_recommend_impl(
 
 
 # ---------------------------------------------------------------------------
+# investment_watch_create (ROB-768)
+# ---------------------------------------------------------------------------
+async def investment_watch_create_impl(
+    created_by: str,
+    market: str,
+    symbol: str,
+    intent: str,
+    rationale: str,
+    watch_condition: dict,
+    valid_until: str,
+    trigger_checklist: list[str] | None = None,
+    max_action: dict | None = None,
+    metadata: dict | None = None,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    """ROB-768 — create an active watch alert directly, bypassing the
+    investment_report_create / investment_report_activate_watch flow.
+
+    Requires explicit ``created_by`` provenance; ``valid_until`` must be a
+    future timezone-aware ISO8601 string. The persisted alert is a
+    notify/approval watch only — never an automatic order instruction.
+    """
+    request = CreateInvestmentWatchRequest.model_validate(
+        {
+            "created_by": created_by,
+            "market": market,
+            "symbol": symbol,
+            "intent": intent,
+            "rationale": rationale,
+            "watch_condition": watch_condition,
+            "valid_until": valid_until,
+            "trigger_checklist": trigger_checklist or [],
+            "max_action": max_action or {},
+            "metadata": metadata or {},
+            "idempotency_key": idempotency_key,
+        }
+    )
+    async with AsyncSessionLocal() as db:
+        alert, idempotent = await DirectWatchCreateService(db).create(request)
+        await db.commit()
+        response = InvestmentWatchCreateResponse(
+            idempotent=idempotent,
+            alert=InvestmentWatchAlertResponse.model_validate(alert),
+        )
+    return response.model_dump(mode="json", by_alias=True)
+
+
+# ---------------------------------------------------------------------------
 # investment_report_context_get
 # ---------------------------------------------------------------------------
 async def investment_report_context_get_impl(
@@ -1232,6 +1343,52 @@ async def investment_report_generate_from_bundle_impl(
 
 
 # ---------------------------------------------------------------------------
+# investment_watch_events_list_recent (ROB-602 Task 3)
+# ---------------------------------------------------------------------------
+async def investment_watch_events_list_recent_impl(
+    market: str | None = None,
+    since_timestamp: str | None = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """최근 DELIVERED watch 트리거 이벤트 조회(운영자 poller/수동용, read-only).
+
+    delivery_status='delivered' 이벤트만, delivered_at>=since_timestamp, delivered_at 오름차순.
+    디듀프는 event_uuid. 브로커/주문/감시 mutation 없음.
+    """
+    parsed_since = None
+    if since_timestamp:
+        try:
+            parsed_since = datetime.fromisoformat(
+                since_timestamp.replace("Z", "+00:00")
+            )
+        except (ValueError, AttributeError):
+            return {
+                "success": False,
+                "error": "invalid_timestamp",
+                "hint": "ISO8601, e.g. 2026-06-20T12:34:56Z",
+            }
+    capped = max(1, min(int(limit), 500))
+    async with AsyncSessionLocal() as db:
+        repo = InvestmentReportsRepository(db)
+        events = await repo.list_events_by_delivery_status(
+            delivery_status="delivered",
+            delivered_since=parsed_since,
+            market=market,
+            limit=capped,
+        )
+    return {
+        "success": True,
+        "count": len(events),
+        "events": [
+            InvestmentWatchEventResponse.model_validate(e).model_dump(
+                mode="json", by_alias=True
+            )
+            for e in events
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 def register_investment_report_tools(
@@ -1344,6 +1501,25 @@ def register_investment_report_tools(
             "No broker / order / watch mutation."
         ),
     )(investment_report_set_status_impl)
+    mcp.tool(
+        name="investment_watch_events_list_recent",
+        description=(
+            "최근 DELIVERED watch 트리거 이벤트 목록(운영자 poller/수동 조회용). "
+            "market 필터 + since_timestamp(ISO8601, delivered_at>=) + limit(1..500). "
+            "delivered만 노출(skipped/failed 제외). 디듀프=event_uuid. "
+            "Read-only. 브로커/주문/감시 mutation 없음."
+        ),
+    )(investment_watch_events_list_recent_impl)
+    mcp.tool(
+        name="investment_watch_create",
+        description=(
+            "Create an active investment watch alert directly, without "
+            "investment_report_create or investment_report_activate_watch. "
+            "Requires explicit created_by provenance; valid_until must be "
+            "future timezone-aware ISO8601. This registers a notify/approval "
+            "watch only and never submits orders."
+        ),
+    )(investment_watch_create_impl)
 
 
 __all__ = [
@@ -1359,6 +1535,8 @@ __all__ = [
     "investment_report_list_impl",
     "investment_report_set_status_impl",
     "investment_report_update_impl",
+    "investment_watch_create_impl",
+    "investment_watch_events_list_recent_impl",
     "investment_watch_recommend_impl",
     "register_investment_report_tools",
 ]

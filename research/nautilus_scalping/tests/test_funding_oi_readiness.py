@@ -9,10 +9,9 @@ the builder must stop rather than hand off to a backtest.
 import json
 import types
 
-import pytest
-
 import build_funding_oi_features as b
 import pit_universe as pu
+import pytest
 
 
 def _ready_inputs(**over):

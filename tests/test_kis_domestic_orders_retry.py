@@ -2,9 +2,35 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+_NXT_ELIGIBLE_PATH = "app.services.brokers.kis.domestic_orders.is_nxt_eligible"
+
+
+def _token_error(error_code: str) -> dict[str, str]:
+    return {"rt_cd": "1", "msg_cd": error_code, "msg1": "token expired"}
+
+
+def _make_domestic_orders():
+    from app.services.brokers.kis.domestic_orders import DomesticOrderClient
+
+    parent = MagicMock()
+    parent._hdr_base = {"content-type": "application/json"}
+    parent._ensure_token = AsyncMock()
+    parent._kis_url = lambda path: f"https://host{path}"
+
+    token_manager = MagicMock()
+    token_manager.clear_token = AsyncMock()
+    parent._token_manager = token_manager
+
+    settings = MagicMock()
+    settings.kis_account_no = "1234567890"
+    settings.kis_access_token = "test-token"
+    parent._settings = settings
+
+    return DomesticOrderClient(parent), parent
 
 
 @pytest.mark.unit
@@ -13,20 +39,8 @@ class TestDomesticOrdersTransientRetry:
 
     @pytest.fixture
     def _mock_domestic_orders(self):
-        """Create DomesticOrders instance with mocked parent."""
-        from app.services.brokers.kis.domestic_orders import DomesticOrderClient
-
-        parent = MagicMock()
-        parent._hdr_base = {"content-type": "application/json"}
-        parent._ensure_token = AsyncMock()
-
-        settings = MagicMock()
-        settings.kis_account_no = "1234567890"
-        settings.kis_access_token = "test-token"
-        parent._settings = settings
-
-        instance = DomesticOrderClient(parent)
-        return instance, parent
+        """Create DomesticOrderClient with mocked parent."""
+        return _make_domestic_orders()
 
     @pytest.mark.asyncio
     async def test_retries_on_sydb0050_then_succeeds(self, _mock_domestic_orders):
@@ -122,3 +136,70 @@ class TestDomesticOrdersTransientRetry:
                 end_date="20260208",
                 max_pages=2,
             )
+
+
+@pytest.mark.unit
+class TestDomesticOrdersTokenExpiryMutationGuards:
+    """ROB-739: token-expiry mutation resubmits are bounded fail-closed."""
+
+    @pytest.mark.parametrize("error_code", ["EGW00123", "EGW00121"])
+    @pytest.mark.asyncio
+    async def test_order_token_expiry_repeated_is_bounded_fail_closed(self, error_code):
+        instance, parent = _make_domestic_orders()
+        parent._request_with_rate_limit = AsyncMock(
+            return_value=_token_error(error_code)
+        )
+
+        with patch(_NXT_ELIGIBLE_PATH, AsyncMock(return_value=False)):
+            with pytest.raises(RuntimeError, match=error_code):
+                await instance.order_korea_stock("005930", "buy", 1, 70000)
+
+        assert parent._request_with_rate_limit.call_count == 2
+        assert parent._token_manager.clear_token.await_count == 1
+
+    @pytest.mark.parametrize("error_code", ["EGW00123", "EGW00121"])
+    @pytest.mark.asyncio
+    async def test_cancel_token_expiry_repeated_is_bounded_fail_closed(
+        self, error_code
+    ):
+        instance, parent = _make_domestic_orders()
+        parent._request_with_rate_limit = AsyncMock(
+            return_value=_token_error(error_code)
+        )
+
+        with patch(_NXT_ELIGIBLE_PATH, AsyncMock(return_value=False)):
+            with pytest.raises(RuntimeError, match=error_code):
+                await instance.cancel_korea_order(
+                    order_number="0001",
+                    stock_code="005930",
+                    quantity=1,
+                    price=70000,
+                    order_type="buy",
+                    krx_fwdg_ord_orgno="00091",
+                )
+
+        assert parent._request_with_rate_limit.call_count == 2
+        assert parent._token_manager.clear_token.await_count == 1
+
+    @pytest.mark.parametrize("error_code", ["EGW00123", "EGW00121"])
+    @pytest.mark.asyncio
+    async def test_modify_token_expiry_repeated_is_bounded_fail_closed(
+        self, error_code
+    ):
+        instance, parent = _make_domestic_orders()
+        parent._request_with_rate_limit = AsyncMock(
+            return_value=_token_error(error_code)
+        )
+
+        with patch(_NXT_ELIGIBLE_PATH, AsyncMock(return_value=False)):
+            with pytest.raises(RuntimeError, match=error_code):
+                await instance.modify_korea_order(
+                    order_number="0001",
+                    stock_code="005930",
+                    quantity=1,
+                    new_price=71000,
+                    krx_fwdg_ord_orgno="00091",
+                )
+
+        assert parent._request_with_rate_limit.call_count == 2
+        assert parent._token_manager.clear_token.await_count == 1

@@ -1,13 +1,13 @@
-"""Tests for fill notification normalization and formatting."""
+from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
-from app.core.config import settings
 from app.services.fill_notification import (
     FillOrder,
     coerce_fill_order,
-    format_fill_message,
     normalize_kis_fill,
+    normalize_toss_fill,
     normalize_upbit_fill,
 )
 
@@ -51,6 +51,22 @@ class TestNormalizeUpbitFill:
         assert order.order_type == "limit"
         assert order.order_price == 3_001_500
         assert order.filled_at == "2026-02-14T18:15:22"
+
+    def test_myorder_trade_uses_trade_volume_before_cumulative_volume(self) -> None:
+        raw = {
+            "code": "KRW-BTC",
+            "ask_bid": "BID",
+            "state": "trade",
+            "price": 50_000_000,
+            "volume": "0.1",
+            "executed_volume": "0.3",
+            "trade_uuid": "trade-third-partial",
+        }
+
+        order = normalize_upbit_fill(raw)
+
+        assert order.filled_qty == pytest.approx(0.1)
+        assert order.filled_amount == pytest.approx(5_000_000)
 
 
 class TestNormalizeKisFill:
@@ -336,159 +352,174 @@ class TestNormalizeKisFill:
         assert order.filled_at
 
 
-class TestFormatFillMessage:
-    """체결 알림 메시지 포맷 테스트"""
+# TestFormatFillMessage class removed as part of redesign
 
-    def test_format_case1_basic_required_fields_only(self) -> None:
-        order = FillOrder(
-            symbol="KRW-BTC",
+
+@pytest.mark.unit
+class TestFillHelpers:
+    def test_currency_aware_threshold(self):
+        from app.services.fill_notification import (
+            is_fill_notifiable,
+        )
+
+        krw = FillOrder(
+            symbol="005930",
             side="bid",
-            filled_price=100_020_000,
-            filled_qty=0.015,
-            filled_amount=1_500_300,
-            filled_at="2026-02-14T17:30:45",
-            account="upbit",
+            filled_price=1000,
+            filled_qty=49,
+            filled_amount=49_000,
+            filled_at="t",
+            account="kis",
+            market_type="kr",
+            currency="KRW",
         )
-        message = format_fill_message(order)
-
-        base_url = settings.public_base_url.rstrip("/")
-        expected = (
-            "🟢 체결 알림\n\n"
-            "종목: KRW-BTC\n"
-            "구분: 매수 체결\n"
-            "체결가: 100,020,000원\n"
-            "수량: 0.015\n"
-            "금액: 1,500,300원\n"
-            "시간: 2026-02-14T17:30:45\n\n"
-            "계좌: upbit\n"
-            f"상세: {base_url}/portfolio/positions/crypto/KRW-BTC"
-        )
-        assert message == expected
-
-    def test_format_case2_with_order_price_and_order_id(self) -> None:
-        order = FillOrder(
-            symbol="KRW-BTC",
+        assert is_fill_notifiable(krw) is False
+        krw2 = FillOrder(
+            symbol="005930",
             side="bid",
-            filled_price=100_020_000,
-            filled_qty=0.015,
-            filled_amount=1_500_300,
-            filled_at="2026-02-14T17:30:45",
-            account="upbit",
-            order_price=100_000_000,
-            order_id="a3f5d2e1-aaaa-bbbb-cccc",
-            order_type="limit",
+            filled_price=1000,
+            filled_qty=50,
+            filled_amount=50_000,
+            filled_at="t",
+            account="kis",
+            market_type="kr",
+            currency="KRW",
         )
-        message = format_fill_message(order)
-
-        base_url = settings.public_base_url.rstrip("/")
-        expected = (
-            "🟢 체결 알림\n\n"
-            "종목: KRW-BTC\n"
-            "구분: 매수 체결\n"
-            "체결가: 100,020,000원 (+0.02%)\n"
-            "수량: 0.015\n"
-            "금액: 1,500,300원\n"
-            "시간: 2026-02-14T17:30:45\n\n"
-            "계좌: upbit\n"
-            "주문: a3f5d2e1...\n"
-            f"상세: {base_url}/portfolio/positions/crypto/KRW-BTC"
-        )
-        assert message == expected
-
-    def test_format_case3_sell_with_negative_diff(self) -> None:
-        message = format_fill_message(
-            {
-                "symbol": "KRW-ETH",
-                "side": "ask",
-                "filled_price": 3_010_000,
-                "filled_qty": 0.5,
-                "filled_amount": 1_505_000,
-                "filled_at": "2026-02-14T18:15:22",
-                "account": "upbit",
-                "order_price": 3_011_500,
-            }
-        )
-
-        base_url = settings.public_base_url.rstrip("/")
-        expected = (
-            "🔴 체결 알림\n\n"
-            "종목: KRW-ETH\n"
-            "구분: 매도 체결\n"
-            "체결가: 3,010,000원 (-0.05%)\n"
-            "수량: 0.5\n"
-            "금액: 1,505,000원\n"
-            "시간: 2026-02-14T18:15:22\n\n"
-            "계좌: upbit\n"
-            f"상세: {base_url}/portfolio/positions/crypto/KRW-ETH"
-        )
-        assert message == expected
-
-    def test_format_partial_fill_displays_partial_status_text(self) -> None:
-        order = FillOrder(
+        assert is_fill_notifiable(krw2) is True
+        usd = FillOrder(
             symbol="AAPL",
             side="bid",
-            filled_price=195.5,
-            filled_qty=2,
-            filled_amount=391,
-            filled_at="2026-02-14T09:30:00-05:00",
-            account="kis",
-            fill_status="partial",
-        )
-
-        message = format_fill_message(order)
-
-        assert "🟢 체결 알림" in message
-        assert "구분: 매수 부분체결" in message
-
-    def test_format_us_fill_uses_usd_currency_output(self) -> None:
-        order = FillOrder(
-            symbol="BAC",
-            side="bid",
-            filled_price=47.9,
-            filled_qty=23,
-            filled_amount=1101.7,
-            filled_at="2026-02-14T09:30:00-05:00",
+            filled_price=10,
+            filled_qty=6,
+            filled_amount=60,
+            filled_at="t",
             account="kis",
             market_type="us",
             currency="USD",
         )
+        assert is_fill_notifiable(usd) is True
 
-        message = format_fill_message(order)
-
-        assert "체결가: $47.90" in message
-        assert "금액: $1,101.70" in message
-
-    def test_format_us_fill_normalizes_lowercase_currency_on_fill_order_input(
-        self,
-    ) -> None:
-        order = FillOrder(
-            symbol="BAC",
-            side="bid",
-            filled_price=47.9,
-            filled_qty=23,
-            filled_amount=1101.7,
-            filled_at="2026-02-14T09:30:00-05:00",
-            account="kis",
-            market_type="us",
-            currency="usd",
+    def test_resolve_display_name_crypto(self):
+        from app.services.fill_notification import (
+            resolve_fill_display_name,
         )
 
-        message = format_fill_message(order)
-
-        assert "체결가: $47.90" in message
-        assert "금액: $1,101.70" in message
-
-    def test_format_fill_message_appends_position_detail_url(self) -> None:
         order = FillOrder(
+            symbol="KRW-BTC",
+            side="bid",
+            filled_price=1,
+            filled_qty=1,
+            filled_amount=1,
+            filled_at="t",
+            account="upbit",
+            market_type="crypto",
+        )
+        assert resolve_fill_display_name(order) == "BTC"
+
+    def test_money_and_qty_fmt(self):
+        from app.services.fill_notification import (
+            format_fill_money,
+            format_fill_quantity,
+        )
+
+        assert format_fill_money(68500, is_usd=False) == "68,500원"
+        assert format_fill_money(12.5, is_usd=True) == "$12.50"
+        assert format_fill_quantity(10.0) == "10"
+
+    def test_enrichment_defaults(self):
+        from app.services.fill_notification import FillEnrichment
+
+        enr = FillEnrichment()
+        assert enr.position_qty is None
+        assert enr.is_approximate is True
+
+    def test_resolve_symbol_display_name(self):
+        from app.services.fill_notification import resolve_symbol_display_name
+
+        assert resolve_symbol_display_name("crypto", "KRW-BTC") == "BTC"
+        assert resolve_symbol_display_name("us", "AAPL") == "AAPL"
+        assert resolve_symbol_display_name("kr", "005930") in (
+            "삼성전자",
+            "005930",
+        )  # KR_SYMBOLS 의존
+
+
+class TestNormalizeTossFill:
+    def test_normalize_kr_buy_fill_from_ledger_row(self) -> None:
+        row = SimpleNamespace(
+            market="kr",
+            symbol="005930",
+            side="buy",
+            currency=None,
+            broker_order_id="toss-kr-order-123456",
+            order_type="limit",
+            price=Decimal("70100"),
+        )
+
+        order = normalize_toss_fill(
+            row,
+            delta=Decimal("2"),
+            avg_price=Decimal("70000"),
+            fill_status="partial",
+        )
+
+        assert order.symbol == "005930"
+        assert order.side == "bid"
+        assert order.filled_price == 70000
+        assert order.filled_qty == 2
+        assert order.filled_amount == 140000
+        assert order.account == "toss"
+        assert order.order_price == 70100
+        assert order.order_id == "toss-kr-order-123456"
+        assert order.order_type == "limit"
+        assert order.fill_status == "partial"
+        assert order.market_type == "kr"
+        assert order.currency == "KRW"
+
+    def test_normalize_us_sell_fill_preserves_usd(self) -> None:
+        row = SimpleNamespace(
+            market="us",
             symbol="AAPL",
-            side="bid",
-            filled_price=150.0,
-            filled_qty=10,
-            filled_amount=1500.0,
-            filled_at="2026-04-03T10:00:00",
-            account="kis",
-            market_type="us",
+            side="sell",
+            currency="USD",
+            broker_order_id="toss-us-order-123456",
+            order_type="market",
+            price=None,
         )
-        message = format_fill_message(order)
-        base_url = settings.public_base_url.rstrip("/")
-        assert f"상세: {base_url}/portfolio/positions/us/AAPL" in message
+
+        order = normalize_toss_fill(
+            row,
+            delta=Decimal("3"),
+            avg_price=Decimal("195.50"),
+            fill_status="filled",
+        )
+
+        assert order.symbol == "AAPL"
+        assert order.side == "ask"
+        assert order.filled_price == 195.5
+        assert order.filled_qty == 3
+        assert order.filled_amount == 586.5
+        assert order.market_type == "us"
+        assert order.currency == "USD"
+
+    def test_normalize_fill_from_mapping_source(self) -> None:
+        order = normalize_toss_fill(
+            {
+                "market": "kr",
+                "symbol": "000660",
+                "side": "buy",
+                "currency": None,
+                "broker_order_id": "toss-map-order-123456",
+                "order_type": "limit",
+                "price": Decimal("180000"),
+            },
+            delta=Decimal("1"),
+            avg_price=Decimal("179500"),
+            fill_status="filled",
+        )
+
+        assert order.symbol == "000660"
+        assert order.side == "bid"
+        assert order.order_id == "toss-map-order-123456"
+        assert order.order_price == 180000
+        assert order.currency == "KRW"

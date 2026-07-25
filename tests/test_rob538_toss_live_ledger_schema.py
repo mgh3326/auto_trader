@@ -41,6 +41,17 @@ def test_toss_live_order_ledger_model_shape():
         "trade_id",
         "journal_id",
         "reconciled_at",
+        "buy_fx_rate",
+        "sell_fx_rate",
+        "fx_pnl_krw",
+        "security_pnl_usd",
+        "security_pnl_krw",
+        "total_pnl_krw",
+        "fx_rate_source",
+        "fx_pnl_accuracy",
+        "requires_manual_review",
+        "manual_review_reason",
+        "last_reconcile_error",
     ):
         assert col in cols, f"missing column {col}"
 
@@ -49,3 +60,24 @@ def test_toss_live_order_ledger_is_exported():
     import app.models as models
 
     assert hasattr(models, "TossLiveOrderLedger")
+
+
+def test_toss_live_order_ledger_has_approval_hash_column():
+    from app.models.review import TossLiveOrderLedger
+
+    col = TossLiveOrderLedger.__table__.columns["approval_hash"]
+    assert col.nullable is True
+
+
+def test_toss_fill_poll_state_model_shape():
+    from app.models.review import TossFillPollState
+
+    assert TossFillPollState.__tablename__ == "toss_fill_poll_state"
+    columns = {column.name for column in TossFillPollState.__table__.columns}
+    assert {
+        "scope",
+        "last_success_at",
+        "last_error",
+        "created_at",
+        "updated_at",
+    } <= columns

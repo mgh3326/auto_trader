@@ -1,0 +1,908 @@
+"""Authoritative, fail-closed evidence assembly for ROB-850 evaluations.
+
+The reader starts at the ROB-849 assignment and exact run-order links.  It
+never discovers broker rows by a broad cohort/correlation query and never
+uses caller supplied lineage or gate timestamps.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
+from typing import Literal, Never
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
+from app.models.crypto_instruments import CryptoInstrument
+from app.models.paper_cohort import (
+    CanonicalMarketSnapshot,
+    PaperCohortDecision,
+    PaperCohortVenueIntent,
+    PaperRunOrderLink,
+    PaperValidationCohort,
+    PaperValidationCohortAssignment,
+)
+from app.models.paper_evaluation import EvaluationConfig as EvaluationConfigRow
+from app.models.paper_evaluation import EvaluationEpoch as EvaluationEpochRow
+from app.models.paper_validation import PaperValidationStateTransition
+from app.models.review import AlpacaPaperOrderLedger
+from app.services.paper_cohort.market_snapshot import CanonicalSnapshotPayload
+from app.services.paper_cohort.signals import (
+    CanonicalTargetSignal,
+    SignalComputationInput,
+    VenueQuote,
+    build_would_order_evidence,
+    compute_target_signal,
+)
+from app.services.paper_evaluation.contracts import (
+    EpochIdentity,
+    EvaluationConfig,
+    EvaluationConfigError,
+)
+from app.services.research_canonical_hash import canonical_sha256
+
+Venue = Literal["binance", "alpaca"]
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationWindow:
+    start: datetime
+    end: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class NativeFill:
+    venue: Venue
+    native_row_id: int
+    symbol: str
+    side: Literal["buy", "sell"]
+    quantity: Decimal
+    price: Decimal
+    fee: Decimal
+    partial: bool
+    filled_at: datetime
+    client_order_id: str
+    broker_order_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class NativeMark:
+    venue: Venue
+    symbol: str
+    price: Decimal
+    marked_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowObservation:
+    snapshot_id: str
+    snapshot_hash: str
+    observed_at: datetime
+    candle_open_at: datetime
+    candle_close_at: datetime
+    closes: tuple[tuple[str, Decimal], ...]
+    opens: tuple[tuple[str, Decimal], ...]
+    target_weights: tuple[tuple[str, Decimal], ...]
+    signal_hashes: tuple[str, ...]
+    candle_bars: tuple[
+        tuple[
+            datetime,
+            datetime,
+            tuple[tuple[str, Decimal], ...],
+            tuple[tuple[str, Decimal], ...],
+        ],
+        ...,
+    ] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationEvidence:
+    epoch: EpochIdentity
+    config: EvaluationConfig
+    shadow_window: EvaluationWindow
+    paper_window: EvaluationWindow
+    shadow_observations: tuple[ShadowObservation, ...]
+    binance_fills: tuple[NativeFill, ...]
+    alpaca_fills: tuple[NativeFill, ...]
+    binance_marks: tuple[NativeMark, ...]
+    alpaca_marks: tuple[NativeMark, ...]
+    manifest_hash: str
+
+
+def _fail(reason: str, detail: str = "") -> Never:
+    raise EvaluationConfigError(reason, detail or reason)
+
+
+def _aware_utc(value: datetime, context: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        _fail("malformed_evidence", f"{context} is not timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _positive_decimal(value: object, context: str) -> Decimal:
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        _fail("malformed_evidence", f"{context} is not decimal")
+    if not result.is_finite() or result <= 0:
+        _fail("malformed_evidence", f"{context} must be positive and finite")
+    return result
+
+
+def _nonnegative_decimal(value: object | None, context: str) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        _fail("malformed_evidence", f"{context} is not decimal")
+    if not result.is_finite() or result < 0:
+        _fail("malformed_evidence", f"{context} must be non-negative and finite")
+    return result
+
+
+def _binance_fill_values(
+    row: BinanceDemoOrderLedger,
+) -> tuple[Decimal, Decimal, Decimal, bool]:
+    """Read only native actuals persisted at the immutable ``filled`` edge.
+
+    Planned quantity/price and a synthetic zero fee are not fill evidence.
+    Missing native economics therefore fail closed instead of changing P&L.
+    """
+    metadata = row.extra_metadata or {}
+    required = ("filled_qty", "filled_avg_price", "fee_usdt")
+    if any(key not in metadata for key in required):
+        _fail("missing_evidence", f"Binance row {row.id} lacks native fill actuals")
+    quantity = _positive_decimal(metadata["filled_qty"], "filled quantity")
+    price = _positive_decimal(metadata["filled_avg_price"], "fill price")
+    fee = _nonnegative_decimal(metadata["fee_usdt"], "fill fee")
+    requested_quantity = _positive_decimal(row.qty, "requested quantity")
+    if quantity > requested_quantity:
+        _fail("malformed_evidence", "filled quantity exceeds requested quantity")
+    return quantity, price, fee, quantity < requested_quantity
+
+
+def _alpaca_filled_at(payload: object) -> datetime | None:
+    """Find a broker-provided fill timestamp without lifecycle-time fallback."""
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key in {"filled_at", "filledAt", "fill_timestamp"} and isinstance(
+                value, str
+            ):
+                try:
+                    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError:
+                    return None
+                if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                    return parsed.astimezone(UTC)
+            nested = _alpaca_filled_at(value)
+            if nested is not None:
+                return nested
+    elif isinstance(payload, list):
+        for value in payload:
+            nested = _alpaca_filled_at(value)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _quote_mark(intent: PaperCohortVenueIntent) -> NativeMark:
+    quote = intent.venue_quote_evidence
+    try:
+        venue = str(quote["venue"])
+        symbol = str(quote["symbol"])
+        bid = _positive_decimal(quote["bid_price"], "quote bid")
+        ask = _positive_decimal(quote["ask_price"], "quote ask")
+        marked_at = datetime.fromisoformat(
+            str(quote["fetched_at"]).replace("Z", "+00:00")
+        )
+    except (KeyError, ValueError):
+        _fail("malformed_evidence", "invalid venue quote")
+    if venue != intent.venue or bid >= ask:
+        _fail("cross_wired_evidence", "venue quote identity or spread mismatch")
+    return NativeMark(
+        venue=intent.venue,  # type: ignore[arg-type]
+        symbol=symbol,
+        price=(bid + ask) / 2,
+        marked_at=_aware_utc(marked_at, "quote fetched_at"),
+    )
+
+
+def _snapshot_matches_row(
+    payload: CanonicalSnapshotPayload, row: CanonicalMarketSnapshot
+) -> bool:
+    """Bind every immutable canonical payload identity to its ORM lineage row."""
+    return all(
+        (
+            payload.recomputed_content_hash() == row.content_hash,
+            payload.content_hash == row.content_hash,
+            payload.snapshot_id == row.snapshot_id,
+            payload.cohort_id == row.cohort_id,
+            payload.run_id == row.run_id,
+            payload.round_decision_id == row.round_decision_id,
+            payload.schema_id == row.schema_id,
+            payload.source == row.source,
+            payload.host == row.host,
+            payload.interval == row.interval,
+            payload.required_lookback == row.required_lookback,
+            payload.max_capture_skew_ms == row.max_capture_skew_ms,
+            payload.max_ticker_age_ms == row.max_ticker_age_ms,
+            _aware_utc(payload.capture_started_at, "capture_started_at")
+            == _aware_utc(row.capture_started_at, "capture_started_at"),
+            _aware_utc(payload.capture_completed_at, "capture_completed_at")
+            == _aware_utc(row.capture_completed_at, "capture_completed_at"),
+        )
+    )
+
+
+def _recompute_signal(
+    *,
+    payload: CanonicalSnapshotPayload,
+    decision: PaperCohortDecision,
+    assignment: PaperValidationCohortAssignment,
+    cohort: PaperValidationCohort,
+) -> CanonicalTargetSignal:
+    return compute_target_signal(
+        payload,
+        SignalComputationInput(
+            cohort_id=cohort.cohort_id,
+            assignment_id=assignment.assignment_id,
+            experiment_id=assignment.experiment_id,
+            strategy_version_id=assignment.strategy_version_id,
+            strategy_hash=assignment.strategy_hash,
+            config_hash=assignment.config_hash,
+            policy_hash=assignment.policy_hash,
+            symbol=decision.symbol,  # type: ignore[arg-type]
+            target_weight=Decimal(assignment.target_weights[decision.symbol]),
+            capital_notional_usd=cohort.capital_notional_usd,
+        ),
+    )
+
+
+class AuthoritativeEvidenceReader:
+    """Load one assignment's canonical and exact linked native evidence."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def load(
+        self,
+        *,
+        evaluated_at: datetime,
+        validation_id: str | None = None,
+        cohort_id: str | None = None,
+        assignment_id: str | None = None,
+    ) -> EvaluationEvidence:
+        evaluated_at = _aware_utc(evaluated_at, "evaluated_at")
+        assignment = await self._load_assignment(
+            validation_id=validation_id,
+            cohort_id=cohort_id,
+            assignment_id=assignment_id,
+        )
+        cohort = await self._session.scalar(
+            select(PaperValidationCohort).where(
+                PaperValidationCohort.cohort_id == assignment.cohort_id
+            )
+        )
+        if cohort is None:
+            _fail("missing_evidence", "cohort missing")
+        if assignment.experiment_hash != assignment.experiment_id:
+            _fail("lineage_mismatch", "assignment experiment identity mismatch")
+
+        transitions = tuple(
+            (
+                await self._session.scalars(
+                    select(PaperValidationStateTransition)
+                    .where(
+                        PaperValidationStateTransition.validation_id
+                        == assignment.validation_id
+                    )
+                    .order_by(PaperValidationStateTransition.sequence)
+                )
+            ).all()
+        )
+        expected = (
+            assignment.experiment_hash,
+            cohort.cohort_hash,
+            assignment.config_hash,
+            assignment.cohort_id,
+        )
+        if not transitions or any(
+            (
+                item.experiment_hash,
+                item.cohort_hash,
+                item.config_hash,
+                item.cohort_id,
+            )
+            != expected
+            for item in transitions
+        ):
+            _fail("transition_lineage_mismatch")
+        shadow_start = self._transition_at(transitions, "shadow_soak")
+        paper_start = self._transition_at(transitions, "paper_active")
+        if not shadow_start < paper_start <= evaluated_at:
+            _fail("invalid_evaluation_window")
+
+        epoch_row = await self._session.scalar(
+            select(EvaluationEpochRow)
+            .where(
+                EvaluationEpochRow.cohort_id == assignment.cohort_id,
+                EvaluationEpochRow.assignment_id == assignment.assignment_id,
+                EvaluationEpochRow.validation_id == assignment.validation_id,
+                EvaluationEpochRow.config_hash == assignment.config_hash,
+                EvaluationEpochRow.experiment_hash == assignment.experiment_hash,
+                EvaluationEpochRow.cohort_hash == cohort.cohort_hash,
+            )
+            .order_by(EvaluationEpochRow.started_at.desc())
+        )
+        if epoch_row is None:
+            _fail("missing_evidence", "evaluation epoch missing")
+        config_row = await self._session.scalar(
+            select(EvaluationConfigRow).where(
+                EvaluationConfigRow.config_hash == epoch_row.config_hash
+            )
+        )
+        if config_row is None:
+            _fail("missing_evidence", "evaluation config missing")
+        config = EvaluationConfig.model_validate(config_row.payload)
+        if config.config_hash() != config_row.config_hash:
+            _fail("config_hash_mismatch")
+        epoch = EpochIdentity(
+            epoch_id=epoch_row.epoch_id,
+            assignment_id=epoch_row.assignment_id,
+            validation_id=epoch_row.validation_id,
+            cohort_id=epoch_row.cohort_id,
+            config_hash=epoch_row.config_hash,
+            experiment_hash=epoch_row.experiment_hash,
+            cohort_hash=epoch_row.cohort_hash,
+            initial_equity=epoch_row.initial_equity,
+            started_at=epoch_row.started_at,
+            reset_reason=epoch_row.reset_reason,
+            prior_epoch_id=epoch_row.prior_epoch_id,
+        )
+        if _aware_utc(epoch.started_at, "epoch started_at") != paper_start:
+            _fail("epoch_transition_mismatch")
+        if dict(epoch.initial_equity) != dict(config.initial_equity):
+            _fail("initial_equity_mismatch")
+
+        shadow = await self._load_shadow(
+            assignment=assignment,
+            cohort=cohort,
+            start=shadow_start,
+            end=paper_start,
+        )
+        (
+            binance_fills,
+            alpaca_fills,
+            binance_marks,
+            alpaca_marks,
+            resolved_evaluated_at,
+        ) = await self._load_native(
+            assignment=assignment,
+            cohort=cohort,
+            start=paper_start,
+            end=evaluated_at,
+        )
+        manifest = canonical_sha256(
+            {
+                "identity": {
+                    "epoch_id": epoch.epoch_id,
+                    "assignment_id": epoch.assignment_id,
+                    "validation_id": epoch.validation_id,
+                    "cohort_id": epoch.cohort_id,
+                    "config_hash": epoch.config_hash,
+                    "experiment_hash": epoch.experiment_hash,
+                    "cohort_hash": epoch.cohort_hash,
+                },
+                "windows": {
+                    "shadow": [shadow_start, paper_start],
+                    "paper": [paper_start, resolved_evaluated_at],
+                },
+                "shadow": [
+                    [
+                        item.snapshot_id,
+                        item.snapshot_hash,
+                        item.observed_at,
+                        item.candle_open_at,
+                        item.candle_close_at,
+                        item.closes,
+                        item.opens,
+                        item.target_weights,
+                        item.signal_hashes,
+                    ]
+                    for item in shadow
+                ],
+                "fills": [
+                    [
+                        item.venue,
+                        item.native_row_id,
+                        item.symbol,
+                        item.side,
+                        str(item.quantity),
+                        str(item.price),
+                        str(item.fee),
+                        item.partial,
+                        item.filled_at,
+                        item.client_order_id,
+                        item.broker_order_id,
+                    ]
+                    for item in (*binance_fills, *alpaca_fills)
+                ],
+                "marks": [
+                    [item.venue, item.symbol, str(item.price), item.marked_at]
+                    for item in (*binance_marks, *alpaca_marks)
+                ],
+            }
+        )
+        return EvaluationEvidence(
+            epoch=epoch,
+            config=config,
+            shadow_window=EvaluationWindow(shadow_start, paper_start),
+            paper_window=EvaluationWindow(paper_start, resolved_evaluated_at),
+            shadow_observations=shadow,
+            binance_fills=binance_fills,
+            alpaca_fills=alpaca_fills,
+            binance_marks=binance_marks,
+            alpaca_marks=alpaca_marks,
+            manifest_hash=manifest,
+        )
+
+    async def _load_assignment(
+        self,
+        *,
+        validation_id: str | None,
+        cohort_id: str | None,
+        assignment_id: str | None,
+    ) -> PaperValidationCohortAssignment:
+        if validation_id is not None and (
+            cohort_id is not None or assignment_id is not None
+        ):
+            _fail("invalid_evaluation_identity")
+        if validation_id is None and (cohort_id is None or assignment_id is None):
+            _fail("invalid_evaluation_identity")
+        query = select(PaperValidationCohortAssignment)
+        if validation_id is not None:
+            query = query.where(
+                PaperValidationCohortAssignment.validation_id == validation_id
+            )
+        else:
+            query = query.where(
+                PaperValidationCohortAssignment.cohort_id == cohort_id,
+                PaperValidationCohortAssignment.assignment_id == assignment_id,
+            )
+        rows = tuple((await self._session.scalars(query)).all())
+        if len(rows) != 1:
+            _fail("missing_evidence", "assignment identity is not unique")
+        return rows[0]
+
+    @staticmethod
+    def _transition_at(
+        transitions: tuple[PaperValidationStateTransition, ...], state: str
+    ) -> datetime:
+        matches = [item.created_at for item in transitions if item.new_state == state]
+        if len(matches) != 1:
+            _fail("missing_evidence", f"{state} transition missing or duplicated")
+        return _aware_utc(matches[0], f"{state} transition")
+
+    async def _load_shadow(
+        self,
+        *,
+        assignment: PaperValidationCohortAssignment,
+        cohort: PaperValidationCohort,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[ShadowObservation, ...]:
+        rows = (
+            await self._session.execute(
+                select(PaperCohortDecision, CanonicalMarketSnapshot)
+                .join(
+                    CanonicalMarketSnapshot,
+                    CanonicalMarketSnapshot.snapshot_id
+                    == PaperCohortDecision.snapshot_id,
+                )
+                .where(
+                    PaperCohortDecision.cohort_id == assignment.cohort_id,
+                    PaperCohortDecision.assignment_id == assignment.assignment_id,
+                    PaperCohortDecision.mode == "shadow",
+                    CanonicalMarketSnapshot.capture_completed_at >= start,
+                    CanonicalMarketSnapshot.capture_completed_at < end,
+                )
+                .order_by(CanonicalMarketSnapshot.capture_completed_at)
+            )
+        ).all()
+        grouped: dict[
+            str, list[tuple[PaperCohortDecision, CanonicalMarketSnapshot]]
+        ] = defaultdict(list)
+        for decision, snapshot in rows:
+            grouped[snapshot.snapshot_id].append((decision, snapshot))
+        observations: list[ShadowObservation] = []
+        for pairs in grouped.values():
+            snapshot = pairs[0][1]
+            payload = CanonicalSnapshotPayload.model_validate(snapshot.payload)
+            if not _snapshot_matches_row(payload, snapshot):
+                _fail("snapshot_hash_mismatch")
+            if any(
+                decision.snapshot_hash != snapshot.content_hash
+                or decision.cohort_id != snapshot.cohort_id
+                or decision.run_id != snapshot.run_id
+                or decision.round_decision_id != snapshot.round_decision_id
+                for decision, _ in pairs
+            ):
+                _fail("cross_wired_evidence")
+            signals: list[CanonicalTargetSignal] = []
+            for decision, _ in pairs:
+                signal = CanonicalTargetSignal.model_validate(decision.signal_payload)
+                try:
+                    recomputed = _recompute_signal(
+                        payload=payload,
+                        decision=decision,
+                        assignment=assignment,
+                        cohort=cohort,
+                    )
+                except (ArithmeticError, KeyError, TypeError, ValueError):
+                    _fail("malformed_evidence")
+                if signal != recomputed or signal.signal_hash != decision.signal_hash:
+                    _fail("signal_hash_mismatch")
+                signals.append(signal)
+            if len(signals) != 2 or {item.symbol for item in signals} != {
+                "BTCUSDT",
+                "ETHUSDT",
+            }:
+                _fail("malformed_evidence", "shadow snapshot needs both symbols")
+            closes: list[tuple[str, Decimal]] = []
+            opens: list[tuple[str, Decimal]] = []
+            candle_window: tuple[datetime, datetime] | None = None
+            bars: dict[
+                tuple[datetime, datetime],
+                tuple[list[tuple[str, Decimal]], list[tuple[str, Decimal]]],
+            ] = {}
+            for symbol_payload in payload.symbols:
+                candle = symbol_payload.candles[-1]
+                current_window = (
+                    _aware_utc(candle.open_time, "candle open"),
+                    _aware_utc(candle.close_time, "candle close"),
+                )
+                if candle_window is not None and current_window != candle_window:
+                    _fail("cross_wired_evidence", "shadow candle windows differ")
+                candle_window = current_window
+                closes.append(
+                    (symbol_payload.symbol, _positive_decimal(candle.close, "close"))
+                )
+                opens.append(
+                    (symbol_payload.symbol, _positive_decimal(candle.open, "open"))
+                )
+                for item in symbol_payload.candles:
+                    key = (
+                        _aware_utc(item.open_time, "candle open"),
+                        _aware_utc(item.close_time, "candle close"),
+                    )
+                    bar_opens, bar_closes = bars.setdefault(key, ([], []))
+                    bar_opens.append(
+                        (symbol_payload.symbol, _positive_decimal(item.open, "open"))
+                    )
+                    bar_closes.append(
+                        (symbol_payload.symbol, _positive_decimal(item.close, "close"))
+                    )
+            if candle_window is None:
+                _fail("malformed_evidence", "shadow snapshot has no candles")
+            if any(
+                len(bar_opens) != 2
+                or len(bar_closes) != 2
+                or {symbol for symbol, _ in bar_opens} != {"BTCUSDT", "ETHUSDT"}
+                for bar_opens, bar_closes in bars.values()
+            ):
+                _fail("cross_wired_evidence", "shadow candle timelines differ")
+            observations.append(
+                ShadowObservation(
+                    snapshot_id=snapshot.snapshot_id,
+                    snapshot_hash=snapshot.content_hash,
+                    observed_at=_aware_utc(
+                        snapshot.capture_completed_at, "snapshot time"
+                    ),
+                    candle_open_at=candle_window[0],
+                    candle_close_at=candle_window[1],
+                    closes=tuple(sorted(closes)),
+                    opens=tuple(sorted(opens)),
+                    target_weights=tuple(
+                        sorted(
+                            (item.symbol, Decimal(item.target_weight))
+                            for item in signals
+                        )
+                    ),
+                    signal_hashes=tuple(sorted(item.signal_hash for item in signals)),
+                    candle_bars=tuple(
+                        (
+                            opened_at,
+                            closed_at,
+                            tuple(sorted(bar_opens)),
+                            tuple(sorted(bar_closes)),
+                        )
+                        for (opened_at, closed_at), (bar_opens, bar_closes) in sorted(
+                            bars.items()
+                        )
+                    ),
+                )
+            )
+        if any(
+            a.observed_at >= b.observed_at
+            for a, b in zip(observations, observations[1:], strict=False)
+        ):
+            _fail("out_of_order_evidence")
+        return tuple(observations)
+
+    async def _load_native(
+        self,
+        *,
+        assignment: PaperValidationCohortAssignment,
+        cohort: PaperValidationCohort,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[
+        tuple[NativeFill, ...],
+        tuple[NativeFill, ...],
+        tuple[NativeMark, ...],
+        tuple[NativeMark, ...],
+        datetime,
+    ]:
+        rows = (
+            await self._session.execute(
+                select(
+                    PaperRunOrderLink,
+                    PaperCohortVenueIntent,
+                    PaperCohortDecision,
+                    CanonicalMarketSnapshot,
+                )
+                .join(
+                    PaperCohortVenueIntent,
+                    PaperCohortVenueIntent.intent_id == PaperRunOrderLink.intent_id,
+                )
+                .join(
+                    PaperCohortDecision,
+                    PaperCohortDecision.decision_id == PaperRunOrderLink.decision_id,
+                )
+                .join(
+                    CanonicalMarketSnapshot,
+                    CanonicalMarketSnapshot.snapshot_id
+                    == PaperRunOrderLink.snapshot_id,
+                )
+                .where(
+                    PaperRunOrderLink.cohort_id == assignment.cohort_id,
+                    PaperRunOrderLink.assignment_id == assignment.assignment_id,
+                    PaperRunOrderLink.created_at <= end,
+                )
+            )
+        ).all()
+        fills: dict[str, list[NativeFill]] = {"binance": [], "alpaca": []}
+        marks: dict[str, list[NativeMark]] = {"binance": [], "alpaca": []}
+        native_keys: set[tuple[str, int]] = set()
+        for link, intent, decision, snapshot in rows:
+            if link.venue == "binance":
+                row = await self._session.get(
+                    BinanceDemoOrderLedger, link.native_ledger_row_id
+                )
+                filled_at = None if row is None else row.filled_at
+            else:
+                row = await self._session.get(
+                    AlpacaPaperOrderLedger, link.native_ledger_row_id
+                )
+                filled_at = (
+                    None if row is None else _alpaca_filled_at(row.raw_responses)
+                )
+            fill_in_window = False
+            if filled_at is not None:
+                filled_at = _aware_utc(filled_at, "fill timestamp")
+                fill_in_window = start <= filled_at <= end
+            try:
+                mark = _quote_mark(intent)
+            except (ArithmeticError, KeyError, TypeError, ValueError):
+                if fill_in_window or link.created_at >= start:
+                    _fail("malformed_evidence", "native quote malformed")
+                continue
+            quote_in_window = start <= mark.marked_at <= end
+            if filled_at is None:
+                if link.created_at < start and not quote_in_window:
+                    continue
+                _fail("missing_evidence", f"{link.venue} fill timestamp missing")
+            if not quote_in_window and not fill_in_window:
+                continue
+
+            exact = (
+                link.intent_id == intent.intent_id,
+                link.decision_id == intent.decision_id == decision.decision_id,
+                link.assignment_id == intent.assignment_id == decision.assignment_id,
+                link.cohort_id
+                == intent.cohort_id
+                == decision.cohort_id
+                == snapshot.cohort_id,
+                link.snapshot_id
+                == intent.snapshot_id
+                == decision.snapshot_id
+                == snapshot.snapshot_id,
+                link.snapshot_hash
+                == intent.snapshot_hash
+                == decision.snapshot_hash
+                == snapshot.content_hash,
+                link.symbol == intent.symbol == decision.symbol,
+                link.venue == intent.venue,
+            )
+            if not all(exact):
+                _fail("cross_wired_evidence")
+            try:
+                snapshot_payload = CanonicalSnapshotPayload.model_validate(
+                    snapshot.payload
+                )
+                signal = CanonicalTargetSignal.model_validate(decision.signal_payload)
+                recomputed_signal = _recompute_signal(
+                    payload=snapshot_payload,
+                    decision=decision,
+                    assignment=assignment,
+                    cohort=cohort,
+                )
+                quote_payload = intent.venue_quote_evidence
+
+                def optional_decimal(
+                    name: str, payload: dict[str, object] = quote_payload
+                ) -> Decimal | None:
+                    value = payload.get(name)
+                    return (
+                        None
+                        if value in (None, "not_applicable")
+                        else Decimal(str(value))
+                    )
+
+                quote = VenueQuote(
+                    venue=str(quote_payload["venue"]),  # type: ignore[arg-type]
+                    symbol=str(quote_payload["symbol"]),
+                    bid_price=Decimal(str(quote_payload["bid_price"])),
+                    ask_price=Decimal(str(quote_payload["ask_price"])),
+                    bid_qty=Decimal(str(quote_payload["bid_qty"])),
+                    ask_qty=Decimal(str(quote_payload["ask_qty"])),
+                    fetched_at=datetime.fromisoformat(
+                        str(quote_payload["fetched_at"]).replace("Z", "+00:00")
+                    ),
+                    qty_increment=optional_decimal("qty_increment"),
+                    min_qty=optional_decimal("min_qty"),
+                    min_notional=optional_decimal("min_notional"),
+                )
+                recomputed_would_order = build_would_order_evidence(
+                    recomputed_signal, quote
+                )
+            except (ArithmeticError, KeyError, TypeError, ValueError):
+                _fail("malformed_evidence")
+            if (
+                not _snapshot_matches_row(snapshot_payload, snapshot)
+                or signal.recomputed_signal_hash() != decision.signal_hash
+                or signal.signal_hash != decision.signal_hash
+                or signal.assignment_id != assignment.assignment_id
+                or signal.cohort_id != assignment.cohort_id
+                or signal.config_hash != assignment.config_hash
+                or signal.experiment_id != assignment.experiment_id
+                or Decimal(signal.target_weight)
+                != Decimal(assignment.target_weights[signal.symbol])
+                or canonical_sha256(intent.request_payload) != intent.request_hash
+                or signal != recomputed_signal
+                or intent.venue_quote_evidence != recomputed_would_order.quote_evidence
+                or intent.would_order_evidence.get("reason_code")
+                != recomputed_would_order.reason_code
+                or intent.would_order_evidence.get("order")
+                != recomputed_would_order.order
+                or intent.request_payload.get("order") != recomputed_would_order.order
+                or snapshot_payload.snapshot_id != snapshot.snapshot_id
+                or snapshot_payload.run_id != snapshot.run_id
+                or snapshot_payload.round_decision_id != snapshot.round_decision_id
+            ):
+                _fail("lineage_hash_mismatch")
+            key = (link.native_ledger_kind, link.native_ledger_row_id)
+            if key in native_keys:
+                _fail("duplicate_evidence")
+            native_keys.add(key)
+            if quote_in_window:
+                marks[link.venue].append(mark)
+            if link.venue == "binance":
+                instrument = (
+                    None
+                    if row is None
+                    else await self._session.get(CryptoInstrument, row.instrument_id)
+                )
+                if (
+                    row is None
+                    or instrument is None
+                    or instrument.symbol != link.symbol
+                    or row.client_order_id != link.client_order_id
+                    or str(row.broker_order_id) != link.broker_order_id
+                    or row.lifecycle_state not in {"filled", "closed", "reconciled"}
+                ):
+                    _fail("cross_wired_evidence", "linked Binance row mismatch")
+                qty, price, fee, partial = _binance_fill_values(row)
+                side = row.side.lower()
+            else:
+                if (
+                    row is None
+                    or row.client_order_id != link.client_order_id
+                    or str(row.broker_order_id) != link.broker_order_id
+                    or row.execution_symbol != mark.symbol
+                    or row.record_kind != "execution"
+                    or row.lifecycle_state
+                    not in {
+                        "filled",
+                        "position_reconciled",
+                        "closed",
+                        "final_reconciled",
+                    }
+                ):
+                    _fail("cross_wired_evidence", "linked Alpaca row mismatch")
+                qty, price, fee, side = (
+                    row.filled_qty,
+                    row.filled_avg_price,
+                    row.fee_amount,
+                    row.side,
+                )
+                partial = (
+                    row.requested_qty is not None
+                    and row.filled_qty is not None
+                    and Decimal(str(row.filled_qty)) < Decimal(str(row.requested_qty))
+                )
+                if row.currency != "USD" or row.fee_currency not in {None, "USD"}:
+                    _fail("currency_mismatch")
+            if not fill_in_window:
+                continue
+            if side not in {"buy", "sell"}:
+                _fail("malformed_evidence", "invalid fill side")
+            fills[link.venue].append(
+                NativeFill(
+                    venue=link.venue,  # type: ignore[arg-type]
+                    native_row_id=link.native_ledger_row_id,
+                    symbol=mark.symbol,
+                    side=side,  # type: ignore[arg-type]
+                    quantity=_positive_decimal(qty, "filled quantity"),
+                    price=_positive_decimal(price, "fill price"),
+                    fee=_nonnegative_decimal(fee, "fill fee"),
+                    partial=partial,
+                    filled_at=filled_at,
+                    client_order_id=link.client_order_id,
+                    broker_order_id=link.broker_order_id,
+                )
+            )
+        expected_symbols = {
+            "binance": {"BTCUSDT", "ETHUSDT"},
+            "alpaca": {"BTC/USD", "ETH/USD"},
+        }
+        latest_by_series: list[datetime] = []
+        for venue in ("binance", "alpaca"):
+            fills[venue].sort(key=lambda item: (item.filled_at, item.native_row_id))
+            marks[venue].sort(key=lambda item: (item.marked_at, item.symbol))
+            for symbol in expected_symbols[venue]:
+                series = [
+                    item.marked_at for item in marks[venue] if item.symbol == symbol
+                ]
+                if not series:
+                    _fail(
+                        "missing_evidence", f"missing native mark for {venue}:{symbol}"
+                    )
+                latest_by_series.append(series[-1])
+        resolved_end = min(latest_by_series)
+        if resolved_end < start:
+            _fail("invalid_evaluation_window")
+        for venue in ("binance", "alpaca"):
+            fills[venue] = [
+                item for item in fills[venue] if item.filled_at <= resolved_end
+            ]
+            marks[venue] = [
+                item for item in marks[venue] if item.marked_at <= resolved_end
+            ]
+            if any(
+                not any(item.symbol == symbol for item in marks[venue])
+                for symbol in expected_symbols[venue]
+            ):
+                _fail("missing_evidence", f"missing as-of native mark for {venue}")
+        return (
+            tuple(fills["binance"]),
+            tuple(fills["alpaca"]),
+            tuple(marks["binance"]),
+            tuple(marks["alpaca"]),
+            resolved_end,
+        )

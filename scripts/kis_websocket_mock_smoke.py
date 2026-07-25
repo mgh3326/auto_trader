@@ -47,9 +47,7 @@ async def run_smoke() -> int:
     Returns exit code (see module docstring).
     """
     if not str(settings.kis_ws_hts_id or "").strip():
-        logger.error(
-            "KIS_WS_HTS_ID is not configured; cannot run mock smoke handshake"
-        )
+        logger.error("KIS_WS_HTS_ID is not configured; cannot run mock smoke handshake")
         return 4
 
     client = KISExecutionWebSocket(
@@ -88,9 +86,7 @@ async def run_smoke() -> int:
         except Exception:
             logger.exception("Failed to stop KIS mock smoke client cleanly")
 
-    logger.info(
-        "KIS mock smoke OK: handshake complete (no orders, no callback wiring)"
-    )
+    logger.info("KIS mock smoke OK: handshake complete (no orders, no callback wiring)")
     return 0
 
 

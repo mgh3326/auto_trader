@@ -208,6 +208,9 @@ async def load_double_buy_from_snapshots(
         from app.services.invest_screener_snapshots.partition_health import (
             resolve_healthy_partition as _resolve_val_hp,
         )
+        from app.services.market_valuation_snapshots.repository import (
+            metric_rich_filter,
+        )
 
         val_hp = await _resolve_val_hp(
             session,
@@ -216,6 +219,7 @@ async def load_double_buy_from_snapshots(
             market_col=MarketValuationSnapshot.market,
             market="kr",
             universe_count=universe_count,
+            row_filter=metric_rich_filter(),  # ROB-551: skip toss-only partitions
         )
         if val_hp is not None:
             market_cap_source = "fallback" if val_hp.is_fallback else "primary"

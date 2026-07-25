@@ -16,6 +16,7 @@ from app.services.analyst_normalizer import (
     normalize_rating_label,
     rating_to_bucket,
 )
+from app.services.naver_finance.detail_cache_port import DetailCachePort
 from app.services.naver_finance.news import _parse_news_soup
 from app.services.naver_finance.parser import (
     NAVER_FINANCE_BASE,
@@ -28,15 +29,21 @@ from app.services.naver_finance.parser import (
 from app.services.naver_finance.valuation import _parse_valuation_from_soups
 
 
-def _parse_report_detail_soup(soup: BeautifulSoup) -> dict[str, Any]:
+def _parse_report_detail_soup(soup: BeautifulSoup) -> dict[str, Any] | None:
+    info_div = soup.select_one("div.view_info_1")
+    if not info_div:
+        # ROB-814: the parse anchor itself is missing — a page-shape anomaly
+        # (anti-bot interstitial, deleted-post notice, Naver selector rot),
+        # NOT a report with a legitimately-absent target. Return None so the
+        # assembly treats it like a fetch failure: shown as no-detail but
+        # NEVER written to the insert-once ROB-811 cache, which would freeze
+        # the anomaly permanently (no update path) even after a parser fix.
+        return None
+
     result: dict[str, Any] = {
         "target_price": None,
         "rating": None,
     }
-
-    info_div = soup.select_one("div.view_info_1")
-    if not info_div:
-        return result
 
     target_elem = info_div.select_one("em.money strong")
     if target_elem:
@@ -111,6 +118,7 @@ async def _build_investment_opinions_from_company_list_soup(
     current_price: int | None,
     detail_fetcher: Callable[[str], Awaitable[dict[str, Any] | None]],
     window_months: int = 12,
+    detail_cache: DetailCachePort | None = None,
 ) -> dict[str, Any]:
     opinions: dict[str, Any] = {
         "symbol": code,
@@ -120,8 +128,26 @@ async def _build_investment_opinions_from_company_list_soup(
     }
     report_infos = _collect_opinion_report_infos(company_list_soup, limit)
     if report_infos:
-        detail_tasks = [detail_fetcher(info["nid"]) for info in report_infos]
-        details = await asyncio.gather(*detail_tasks, return_exceptions=True)
+        nids = [info["nid"] for info in report_infos]
+        cached: dict[str, Any] = {}
+        if detail_cache is not None:
+            cached = await detail_cache.get_many(nids)
+
+        miss_indexes = [i for i, nid in enumerate(nids) if nid not in cached]
+        miss_results = await asyncio.gather(
+            *(detail_fetcher(nids[i]) for i in miss_indexes),
+            return_exceptions=True,
+        )
+
+        details: list[Any] = [cached.get(nid) for nid in nids]
+        to_write: dict[str, Any] = {}
+        for i, result in zip(miss_indexes, miss_results, strict=True):
+            details[i] = result
+            if isinstance(result, dict):
+                to_write[nids[i]] = result
+
+        if detail_cache is not None and to_write:
+            await detail_cache.put_many(to_write)
 
         for info, detail in zip(report_infos, details, strict=True):
             raw_rating = None
@@ -302,7 +328,11 @@ async def _fetch_current_price(code: str) -> int | None:
 
 
 async def fetch_investment_opinions(
-    code: str, limit: int = 10, *, window_months: int = 12
+    code: str,
+    limit: int = 10,
+    *,
+    window_months: int = 12,
+    detail_cache: DetailCachePort | None = None,
 ) -> dict[str, Any]:
     """Fetch securities firm investment opinions and target prices.
 
@@ -338,6 +368,7 @@ async def fetch_investment_opinions(
         current_price=current_price,
         detail_fetcher=_fetch_report_detail,
         window_months=window_months,
+        detail_cache=detail_cache,
     )
 
 
@@ -346,6 +377,7 @@ async def _fetch_kr_snapshot(
     *,
     news_limit: int = 5,
     opinion_limit: int = 10,
+    detail_cache: DetailCachePort | None = None,
 ) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         main_url = f"{NAVER_FINANCE_ITEM}/main.naver"
@@ -410,6 +442,7 @@ async def _fetch_kr_snapshot(
                 detail_fetcher=lambda nid: _fetch_report_detail_with_client(
                     client, nid
                 ),
+                detail_cache=detail_cache,
             )
 
         return snapshot

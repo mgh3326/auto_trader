@@ -16,15 +16,28 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
 from app.models.crypto_instruments import CryptoInstrument
-from app.services.brokers.binance.demo_scalping.contract import ScalpingRiskLimits
+from app.services.brokers.binance.demo_scalping.contract import (
+    MarketConditions,
+    ScalpingRiskLimits,
+)
 from app.services.brokers.binance.demo_scalping.order_intent import OrderIntent
 from app.services.brokers.binance.demo_scalping_exec.executor import (
+    DemoExecutionIdentity,
     DemoScalpingExecutor,
 )
 from app.services.brokers.binance.demo_scalping_exec.reference import SymbolReference
 
 _NOW = dt.datetime(2026, 5, 24, 12, 0, 0, tzinfo=dt.UTC)
+# ROB-841: the executor now fails closed without a server-derived market
+# snapshot, so every execute()/execute_monitored() call supplies a fresh,
+# tight one (spread/age well within the gates) unless it is testing the gates.
+_FRESH_MARKET = MarketConditions(
+    spread_bps=Decimal("2"),
+    data_age_seconds=5.0,
+    spot_free_base_qty=Decimal("0"),
+)
 
 
 # The shared db_session is never rolled back, so the 3 real allowlisted
@@ -71,11 +84,26 @@ class _FakeReference:
 
 
 class _Order:
-    def __init__(self, status, coid, broker_id="b1", executed_qty=Decimal("7.3")):
+    def __init__(
+        self,
+        status,
+        coid,
+        broker_id=None,
+        executed_qty=Decimal("7.3"),
+        avg_price=Decimal("1.36"),
+        fee_usdt=Decimal("0.004964"),
+    ):
         self.status = status
         self.client_order_id = coid
-        self.broker_order_id = broker_id
+        # ROB-844: distinct orders get distinct broker ids (Binance never
+        # replays an orderId). Derive from the unique per-leg coid so the
+        # open + close legs of one round trip do not collide on the new
+        # (product, venue_host, broker_order_id) ack-uniqueness index.
+        self.broker_order_id = broker_id if broker_id is not None else f"bk-{coid}"
         self.executed_qty = executed_qty
+        self.cummulative_quote_qty = executed_qty * avg_price
+        self.avg_price = avg_price
+        self.fee_usdt = fee_usdt
 
 
 class _OpenOrders:
@@ -140,6 +168,47 @@ class _FakeSpotClient:
 
     async def get_asset_balance(self, *, asset):
         return _Balance(self._free)
+
+
+class _FakePollingSpotClient(_FakeSpotClient):
+    """Open submit is partial; read-side order truth later proves full fill."""
+
+    async def submit_order(
+        self,
+        *,
+        symbol,
+        side,
+        order_type,
+        qty,
+        client_order_id=None,
+        price=None,
+        time_in_force=None,
+        confirm=False,
+    ):
+        self.submits.append({"side": side, "qty": qty, "confirm": confirm})
+        if side == "BUY":
+            self._free = self._free_after_buy
+            return _Order(
+                "PARTIALLY_FILLED",
+                client_order_id,
+                executed_qty=Decimal("1"),
+                fee_usdt=Decimal("0.00136"),
+            )
+        self._free = Decimal("0")
+        return _Order("FILLED", client_order_id, executed_qty=qty)
+
+    async def get_order_status(self, *, symbol, client_order_id):
+        return {
+            "clientOrderId": client_order_id,
+            "symbol": symbol,
+            "side": "BUY",
+            "type": "MARKET",
+            "status": "FILLED",
+            "orderId": 123456,
+            "origQty": "7.3",
+            "executedQty": "7.3",
+            "cummulativeQuoteQty": "9.928",
+        }
 
 
 class _FakeFuturesClient:
@@ -245,13 +314,65 @@ async def test_spot_happy_path_reconciles_flat(db_session) -> None:
         now=_NOW,
         limits=_limits_for("EXESPOTAUSDT"),
     )
-    result = await executor.execute(_intent("spot", "EXESPOTAUSDT"), confirm=True)
+    result = await executor.execute(
+        _intent("spot", "EXESPOTAUSDT"), confirm=True, market=_FRESH_MARKET
+    )
     assert result.status == "reconciled"
     assert result.final_open_orders == 0
     # A BUY then a SELL were submitted with confirm=True.
     sides = [s["side"] for s in client.submits]
     assert sides == ["BUY", "SELL"]
     assert all(s["confirm"] for s in client.submits)
+    rows = list(
+        (
+            await db_session.scalars(
+                select(BinanceDemoOrderLedger)
+                .join(CryptoInstrument)
+                .where(CryptoInstrument.venue_symbol == "EXESPOTAUSDT")
+                .order_by(BinanceDemoOrderLedger.id)
+            )
+        ).all()
+    )
+    assert len(rows) == 2
+    for row in rows:
+        assert row.extra_metadata["filled_qty"] == "7.3"
+        assert row.extra_metadata["filled_avg_price"] == "1.36"
+        assert row.extra_metadata["fee_usdt"] == "0.004964"
+
+
+@pytest.mark.asyncio
+async def test_spot_polled_fill_never_mixes_stale_submit_actuals(db_session) -> None:
+    client = _FakePollingSpotClient(free_after_buy=Decimal("7.3"))
+    executor = DemoScalpingExecutor(
+        product="spot",
+        client=client,
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW,
+        poll_delay_seconds=0.0,
+        limits=_limits_for("EXESPOTPOLLEDUSDT"),
+    )
+    result = await executor.execute(
+        _intent("spot", "EXESPOTPOLLEDUSDT"),
+        confirm=True,
+        market=_FRESH_MARKET,
+    )
+    assert result.status == "reconciled"
+    assert client.submits[1]["qty"] == Decimal("7.3")
+    rows = list(
+        (
+            await db_session.scalars(
+                select(BinanceDemoOrderLedger)
+                .join(CryptoInstrument)
+                .where(CryptoInstrument.venue_symbol == "EXESPOTPOLLEDUSDT")
+                .order_by(BinanceDemoOrderLedger.id)
+            )
+        ).all()
+    )
+    open_metadata = rows[0].extra_metadata
+    assert open_metadata["filled_qty"] == "7.3"
+    assert open_metadata["filled_avg_price"] == "1.36"
+    assert "fee_usdt" not in open_metadata
 
 
 @pytest.mark.asyncio
@@ -265,7 +386,9 @@ async def test_dry_run_places_no_order(db_session) -> None:
         now=_NOW,
         limits=_limits_for("EXESPOTBUSDT"),
     )
-    result = await executor.execute(_intent("spot", "EXESPOTBUSDT"), confirm=False)
+    result = await executor.execute(
+        _intent("spot", "EXESPOTBUSDT"), confirm=False, market=_FRESH_MARKET
+    )
     assert result.status == "dry_run"
     assert client.submits == []  # zero broker mutation
 
@@ -281,7 +404,9 @@ async def test_risk_block_aborts_without_broker_call(db_session) -> None:
         reference=_FakeReference(_SPOT_REF),
         now=_NOW,
     )
-    result = await executor.execute(_intent("spot", "ETHUSDT"), confirm=True)
+    result = await executor.execute(
+        _intent("spot", "ETHUSDT"), confirm=True, market=_FRESH_MARKET
+    )
     assert result.status == "blocked"
     assert "symbol_not_allowlisted" in result.reason_codes
     assert client.submits == []
@@ -299,7 +424,7 @@ async def test_futures_happy_path_pins_leverage_and_reconciles_flat(db_session) 
         limits=_limits_for("EXEFUTAUSDT"),
     )
     result = await executor.execute(
-        _intent("usdm_futures", "EXEFUTAUSDT"), confirm=True
+        _intent("usdm_futures", "EXEFUTAUSDT"), confirm=True, market=_FRESH_MARKET
     )
     assert result.status == "reconciled"
     assert result.final_flat is True
@@ -321,7 +446,156 @@ async def test_futures_new_status_polls_to_filled(db_session) -> None:
         limits=_limits_for("EXEFUTBUSDT"),
     )
     result = await executor.execute(
-        _intent("usdm_futures", "EXEFUTBUSDT"), confirm=True
+        _intent("usdm_futures", "EXEFUTBUSDT"), confirm=True, market=_FRESH_MARKET
     )
     assert result.status == "reconciled"
     assert result.final_flat is True
+
+
+def _execution_identity(*, intent_hash: str = "a" * 64) -> DemoExecutionIdentity:
+    return DemoExecutionIdentity.from_verified_metadata(
+        decision_id="decision-rob845-binance",
+        idempotency_key="paper-binance-" + "1" * 32,
+        immutable_metadata={
+            "experiment_id": "experiment-1",
+            "run_id": "run-1",
+            "cohort_id": "cohort-1",
+            "strategy_version_id": "strategy-v1",
+            "intent_hash": intent_hash,
+            "strategy_hash": "b" * 64,
+            "config_hash": "c" * 64,
+            "policy_hash": "d" * 64,
+            "market_snapshot_id": "snapshot-1",
+            "market_snapshot_hash": "e" * 64,
+            "market_snapshot_as_of": "2026-07-13T01:00:00+00:00",
+            "market_snapshot_source": "binance_public_spot",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_verified_identity_uses_deterministic_native_ids_and_metadata(
+    db_session,
+) -> None:
+    symbol = "ROB845EXECUSDT"
+    identity = _execution_identity()
+    same = _execution_identity()
+    assert identity == same
+    assert identity.root_client_order_id.startswith("rob845r-")
+    assert identity.close_client_order_id.startswith("rob845c-")
+    assert len(identity.root_client_order_id) <= 36
+    assert len(identity.close_client_order_id) <= 36
+
+    client = _FakeSpotClient(free_after_buy=Decimal("7.3"))
+    executor = DemoScalpingExecutor(
+        product="spot",
+        client=client,
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW,
+        limits=_limits_for(symbol),
+        execution_identity=identity,
+    )
+    result = await executor.execute(
+        _intent("spot", symbol), confirm=True, market=_FRESH_MARKET
+    )
+
+    assert result.status == "reconciled"
+    assert result.open_client_order_id == identity.root_client_order_id
+    assert result.close_client_order_id == identity.close_client_order_id
+    rows = list(
+        (
+            await db_session.scalars(
+                select(BinanceDemoOrderLedger).where(
+                    BinanceDemoOrderLedger.client_order_id.in_(
+                        [identity.root_client_order_id, identity.close_client_order_id]
+                    )
+                )
+            )
+        ).all()
+    )
+    assert len(rows) == 2
+    for row in rows:
+        metadata = row.extra_metadata["paper_execution_identity"]
+        assert metadata["decision_id"] == "decision-rob845-binance"
+        assert metadata["root_client_order_id"] == identity.root_client_order_id
+        assert metadata["close_client_order_id"] == identity.close_client_order_id
+        assert metadata["native_intent"]["symbol"] == symbol
+
+
+@pytest.mark.asyncio
+async def test_terminal_verified_identity_replays_before_market_preflight(
+    db_session,
+) -> None:
+    symbol = "ROB845REPLAYUSDT"
+    identity = _execution_identity()
+    first_client = _FakeSpotClient(free_after_buy=Decimal("7.3"))
+    first = DemoScalpingExecutor(
+        product="spot",
+        client=first_client,
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW,
+        limits=_limits_for(symbol),
+        execution_identity=identity,
+    )
+    initial = await first.execute(
+        _intent("spot", symbol), confirm=True, market=_FRESH_MARKET
+    )
+    assert initial.status == "reconciled"
+    await db_session.commit()
+
+    replay_client = _FakeSpotClient()
+    replay_executor = DemoScalpingExecutor(
+        product="spot",
+        client=replay_client,
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW + dt.timedelta(hours=1),
+        limits=_limits_for(symbol),
+        execution_identity=identity,
+    )
+    replay = await replay_executor.execute(
+        _intent("spot", symbol), confirm=True, market=None
+    )
+
+    assert replay.status == "reconciled"
+    assert replay.replayed is True
+    assert replay.open_client_order_id == identity.root_client_order_id
+    assert replay.close_client_order_id == identity.close_client_order_id
+    assert replay_client.submits == []
+
+
+@pytest.mark.asyncio
+async def test_verified_identity_collision_blocks_before_market_preflight(
+    db_session,
+) -> None:
+    symbol = "ROB845COLLIDEUSDT"
+    first_identity = _execution_identity()
+    first = DemoScalpingExecutor(
+        product="spot",
+        client=_FakeSpotClient(free_after_buy=Decimal("7.3")),
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW,
+        limits=_limits_for(symbol),
+        execution_identity=first_identity,
+    )
+    await first.execute(_intent("spot", symbol), confirm=True, market=_FRESH_MARKET)
+    await db_session.commit()
+
+    collision_client = _FakeSpotClient()
+    collision = DemoScalpingExecutor(
+        product="spot",
+        client=collision_client,
+        session=db_session,
+        reference=_FakeReference(_SPOT_REF),
+        now=_NOW,
+        limits=_limits_for(symbol),
+        execution_identity=_execution_identity(intent_hash="f" * 64),
+    )
+    result = await collision.execute(_intent("spot", symbol), confirm=True, market=None)
+
+    assert result.status == "blocked"
+    assert result.reason_codes == ("idempotency_collision",)
+    assert collision_client.submits == []

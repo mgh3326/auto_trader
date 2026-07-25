@@ -13,6 +13,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.market_valuation_snapshot import MarketValuationSnapshot
 
+# asyncpg caps bound arguments per statement at 32767 (signed int16 wire
+# field). Toss symbol-master commits can produce thousands of market_cap rows;
+# with 13 inserted columns, one KR/US all-symbol upsert can exceed the ceiling.
+# Keep a margin for future column growth and derive chunk rows from the actual
+# payload width.
+_MAX_BIND_PARAMS = 30_000
+
+
+def _chunk_rows_for_columns(column_count: int) -> int:
+    """Rows per upsert statement that keep bind params under the asyncpg ceiling."""
+    return max(1, _MAX_BIND_PARAMS // max(1, column_count))
+
+
+def metric_rich_filter() -> sa.ColumnElement[bool]:
+    """ROB-551: a valuation row is "metric-rich" when it carries at least one
+    fundamentals metric (per/pbr/roe/dividend_yield). A market_cap-only row
+    (e.g. ``source='toss_openapi'`` gap-fill) is metric-sparse.
+
+    Use this as ``row_filter`` for ``resolve_healthy_partition`` on
+    MarketValuationSnapshot so a toss-only partition (0 metric-rich rows) is not
+    selected as the screener val_date and then emptied by the per>0/pbr>0
+    candidate filters downstream.
+    """
+    return sa.or_(
+        MarketValuationSnapshot.per.isnot(None),
+        MarketValuationSnapshot.pbr.isnot(None),
+        MarketValuationSnapshot.roe.isnot(None),
+        MarketValuationSnapshot.dividend_yield.isnot(None),
+    )
+
 
 class MarketValuationSnapshotUpsert(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -57,7 +87,14 @@ class MarketValuationSnapshotsRepository:
         payload = [_normalize_payload(row) for row in rows]
         if not payload:
             return 0
-        stmt = insert(MarketValuationSnapshot).values(payload)
+        chunk_rows = _chunk_rows_for_columns(len(payload[0]))
+        total = 0
+        for start in range(0, len(payload), chunk_rows):
+            total += await self._upsert_chunk(payload[start : start + chunk_rows])
+        return total
+
+    async def _upsert_chunk(self, chunk: list[dict]) -> int:
+        stmt = insert(MarketValuationSnapshot).values(chunk)
         stmt = stmt.on_conflict_do_update(
             constraint="uq_market_valuation_snapshots_market_symbol_date_source",
             set_={
@@ -189,18 +226,7 @@ class MarketValuationSnapshotsRepository:
         # metric-sparse market_cap-only row (e.g. toss_openapi, per/pbr/roe NULL)
         # on a newer snapshot_date does not shadow a metric-rich row. Falls back
         # to the sparse row only when it is the symbol's sole source.
-        metric_sparse = sa.case(
-            (
-                sa.or_(
-                    MarketValuationSnapshot.per.isnot(None),
-                    MarketValuationSnapshot.pbr.isnot(None),
-                    MarketValuationSnapshot.roe.isnot(None),
-                    MarketValuationSnapshot.dividend_yield.isnot(None),
-                ),
-                0,
-            ),
-            else_=1,
-        )
+        metric_sparse = sa.case((metric_rich_filter(), 0), else_=1)
         stmt = (
             select(MarketValuationSnapshot)
             .where(

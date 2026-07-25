@@ -1,32 +1,20 @@
 """Tests for unified WebSocket monitor."""
 
 import asyncio
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.core.config import settings
 from app.services.fill_notification import FillOrder
-from app.services.openclaw_client import FillNotificationDeliveryResult
-
-
-def _success_result(request_id: str = "req-123") -> FillNotificationDeliveryResult:
-    return FillNotificationDeliveryResult(status="success", request_id=request_id)
-
-
-def _skipped_result(reason: str) -> FillNotificationDeliveryResult:
-    return FillNotificationDeliveryResult(status="skipped", reason=reason)
-
-
-def _failed_result(reason: str = "request_failed") -> FillNotificationDeliveryResult:
-    return FillNotificationDeliveryResult(status="failed", reason=reason)
 
 
 @pytest.fixture
 def mock_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "OPENCLAW_ENABLED", True)
-    monkeypatch.setattr(settings, "OPENCLAW_WEBHOOK_URL", "http://openclaw/hooks/agent")
-    monkeypatch.setattr(settings, "OPENCLAW_TOKEN", "test-token")
+    monkeypatch.setattr(settings, "AGENT_GATEWAY_ENABLED", True)
+    monkeypatch.setattr(settings, "AGENT_GATEWAY_URL", "http://agent/hooks/agent")
+    monkeypatch.setattr(settings, "AGENT_GATEWAY_TOKEN", "test-token")
     monkeypatch.setattr(settings, "kis_ws_is_mock", True)
 
 
@@ -38,8 +26,8 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value=_success_result())
-        monitor.openclaw_client.send_fill_notification = send_mock
+        send_mock = AsyncMock()
+        monitor._send_fill_notification = send_mock
 
         await monitor._on_upbit_order(
             {
@@ -63,8 +51,8 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value=_success_result())
-        monitor.openclaw_client.send_fill_notification = send_mock
+        send_mock = AsyncMock()
+        monitor._send_fill_notification = send_mock
 
         await monitor._on_upbit_order(
             {
@@ -85,8 +73,8 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value=_success_result("req-456"))
-        monitor.openclaw_client.send_fill_notification = send_mock
+        send_mock = AsyncMock()
+        monitor._send_fill_notification = send_mock
 
         await monitor._on_kis_execution(
             {
@@ -122,12 +110,11 @@ class TestUnifiedWebSocketMonitor:
 
         async def send_side_effect(*args, **kwargs):
             call_order.append("notify")
-            return _success_result("req-ledger-first")
 
         record_mock = AsyncMock(side_effect=record_side_effect)
         send_mock = AsyncMock(side_effect=send_side_effect)
         monitor._record_execution_ledger_fill = record_mock
-        monitor.openclaw_client.send_fill_notification = send_mock
+        monitor._send_fill_notification = send_mock
 
         event = {
             "symbol": "005930",
@@ -164,12 +151,11 @@ class TestUnifiedWebSocketMonitor:
 
         async def send_side_effect(*args, **kwargs):
             call_order.append("notify")
-            return _success_result("req-upbit-ledger-first")
 
         record_mock = AsyncMock(side_effect=record_side_effect)
         send_mock = AsyncMock(side_effect=send_side_effect)
         monitor._record_execution_ledger_fill = record_mock
-        monitor.openclaw_client.send_fill_notification = send_mock
+        monitor._send_fill_notification = send_mock
 
         event = {
             "code": "KRW-BTC",
@@ -192,6 +178,206 @@ class TestUnifiedWebSocketMonitor:
         assert call_order == ["ledger", "notify"]
 
     @pytest.mark.asyncio
+    async def test_on_upbit_trade_projects_committed_fill_before_notification(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        call_order: list[str] = []
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+
+        async def record_side_effect(*args, **kwargs):
+            call_order.append("ledger")
+            return "inserted"
+
+        async def project_side_effect(*args, **kwargs):
+            call_order.append("projection")
+            return True
+
+        async def send_side_effect(*args, **kwargs):
+            call_order.append("notify")
+
+        monitor._record_execution_ledger_fill = AsyncMock(
+            side_effect=record_side_effect
+        )
+        monitor._project_upbit_proposal_fill = AsyncMock(
+            side_effect=project_side_effect
+        )
+        monitor._send_fill_notification = AsyncMock(side_effect=send_side_effect)
+
+        event = {
+            "code": "KRW-BTC",
+            "uuid": "upbit-order-rob868",
+            "identifier": "rob868-proposal-rung",
+            "ask_bid": "BID",
+            "trade_price": 92_800_000,
+            "trade_volume": 0.0003,
+            "executed_volume": "0.0003",
+            "state": "trade",
+            "trade_timestamp": 1_752_409_595_000,
+        }
+
+        await monitor._on_upbit_order(event)
+
+        monitor._project_upbit_proposal_fill.assert_awaited_once_with(event)
+        assert monitor._send_fill_notification.await_args is not None
+        assert monitor._send_fill_notification.await_args.kwargs == {
+            "proposal_rung_fill": True
+        }
+        assert call_order == ["ledger", "projection", "notify"]
+
+    @pytest.mark.asyncio
+    async def test_on_upbit_done_projects_terminal_fill(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        monitor._record_execution_ledger_fill = AsyncMock(return_value="inserted")
+        monitor._has_committed_upbit_execution_fill = AsyncMock(return_value=True)
+        monitor._project_upbit_proposal_fill = AsyncMock(return_value=True)
+        monitor._send_fill_notification = AsyncMock()
+        event = {
+            "code": "KRW-BTC",
+            "uuid": "upbit-order-done",
+            "identifier": "rob868-proposal-done",
+            "ask_bid": "BID",
+            "price": "92800000",
+            "executed_volume": "0.0003",
+            "state": "done",
+            "timestamp": 1_752_409_596_000,
+        }
+
+        await monitor._on_upbit_order(event)
+
+        monitor._record_execution_ledger_fill.assert_not_awaited()
+        monitor._has_committed_upbit_execution_fill.assert_awaited_once_with(event)
+        monitor._project_upbit_proposal_fill.assert_awaited_once_with(event)
+        monitor._send_fill_notification.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_on_upbit_done_without_committed_fill_skips_terminal_projection(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        monitor._record_execution_ledger_fill = AsyncMock()
+        monitor._has_committed_upbit_execution_fill = AsyncMock(return_value=False)
+        monitor._project_upbit_proposal_fill = AsyncMock()
+        event = {
+            "code": "KRW-BTC",
+            "uuid": "upbit-order-no-ledger",
+            "identifier": "rob868-proposal-no-ledger",
+            "state": "done",
+            "executed_volume": "0.0003",
+        }
+
+        await monitor._on_upbit_order(event)
+
+        monitor._record_execution_ledger_fill.assert_not_awaited()
+        monitor._project_upbit_proposal_fill.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_on_upbit_duplicate_projects_idempotently_and_notifies_once(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        monitor._record_execution_ledger_fill = AsyncMock(
+            side_effect=["inserted", "unchanged"]
+        )
+        monitor._project_upbit_proposal_fill = AsyncMock(side_effect=[True, False])
+        monitor._send_fill_notification = AsyncMock()
+        event = {
+            "code": "KRW-BTC",
+            "uuid": "upbit-order-duplicate-proposal",
+            "identifier": "rob868-proposal-duplicate",
+            "ask_bid": "BID",
+            "trade_price": 92_800_000,
+            "executed_volume": "0.0003",
+            "state": "trade",
+            "trade_timestamp": 1_752_409_595_000,
+        }
+
+        await monitor._on_upbit_order(event)
+        await monitor._on_upbit_order(event)
+
+        assert monitor._project_upbit_proposal_fill.await_count == 2
+        monitor._send_fill_notification.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_on_upbit_duplicate_recovers_projection_and_small_alert(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        monitor._record_execution_ledger_fill = AsyncMock(
+            side_effect=["inserted", "unchanged"]
+        )
+        monitor._project_upbit_proposal_fill = AsyncMock(side_effect=[False, True])
+        notification_attempts: list[bool] = []
+
+        async def capture_notification(*args, **kwargs) -> None:
+            notification_attempts.append(bool(kwargs.get("proposal_rung_fill")))
+
+        monitor._send_fill_notification = AsyncMock(side_effect=capture_notification)
+        event = {
+            "code": "KRW-BTC",
+            "uuid": "upbit-order-projection-retry",
+            "identifier": "rob868-proposal-projection-retry",
+            "ask_bid": "BID",
+            "trade_price": 92_800_000,
+            "volume": "0.0003",
+            "executed_volume": "0.0003",
+            "state": "trade",
+            "trade_uuid": "upbit-trade-projection-retry",
+            "trade_timestamp": 1_752_409_595_000,
+        }
+
+        await monitor._on_upbit_order(event)
+        await monitor._on_upbit_order(event)
+
+        assert notification_attempts == [False, True]
+
+    @pytest.mark.asyncio
+    async def test_on_upbit_projection_recovery_does_not_repeat_large_fill_alert(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        monitor._record_execution_ledger_fill = AsyncMock(
+            side_effect=["inserted", "unchanged"]
+        )
+        monitor._project_upbit_proposal_fill = AsyncMock(side_effect=[False, True])
+        notification_attempts: list[bool] = []
+
+        async def capture_notification(*args, **kwargs) -> None:
+            notification_attempts.append(bool(kwargs.get("proposal_rung_fill")))
+
+        monitor._send_fill_notification = AsyncMock(side_effect=capture_notification)
+        event = {
+            "code": "KRW-BTC",
+            "uuid": "upbit-order-large-projection-retry",
+            "identifier": "rob868-proposal-large-projection-retry",
+            "ask_bid": "BID",
+            "trade_price": 92_800_000,
+            "volume": "0.001",
+            "executed_volume": "0.001",
+            "state": "trade",
+            "trade_uuid": "upbit-trade-large-projection-retry",
+            "trade_timestamp": 1_752_409_595_000,
+        }
+
+        await monitor._on_upbit_order(event)
+        await monitor._on_upbit_order(event)
+
+        assert notification_attempts == [False]
+
+    @pytest.mark.asyncio
     async def test_on_kis_execution_skips_notification_for_unchanged_ledger_row(
         self, mock_settings: None
     ) -> None:
@@ -199,9 +385,9 @@ class TestUnifiedWebSocketMonitor:
 
         monitor = UnifiedWebSocketMonitor()
         record_mock = AsyncMock(return_value="unchanged")
-        send_mock = AsyncMock(return_value=_success_result("req-duplicate-kis"))
+        send_mock = AsyncMock()
         monitor._record_execution_ledger_fill = record_mock
-        monitor.openclaw_client.send_fill_notification = send_mock
+        monitor._send_fill_notification = send_mock
 
         event = {
             "symbol": "005930",
@@ -226,9 +412,10 @@ class TestUnifiedWebSocketMonitor:
 
         monitor = UnifiedWebSocketMonitor()
         record_mock = AsyncMock(return_value="unchanged")
-        send_mock = AsyncMock(return_value=_success_result("req-duplicate-upbit"))
+        send_mock = AsyncMock()
         monitor._record_execution_ledger_fill = record_mock
-        monitor.openclaw_client.send_fill_notification = send_mock
+        monitor._project_upbit_proposal_fill = AsyncMock(return_value=False)
+        monitor._send_fill_notification = send_mock
 
         event = {
             "code": "KRW-BTC",
@@ -357,14 +544,237 @@ class TestUnifiedWebSocketMonitor:
         assert fill.raw_payload_json["token"] == "[REDACTED]"
 
     @pytest.mark.asyncio
+    async def test_has_committed_upbit_execution_fill_uses_exact_scope(
+        self,
+        mock_settings: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import websocket_monitor as mod
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        captured: dict[str, object] = {}
+
+        class FakeSession:
+            async def __aenter__(self) -> object:
+                captured["session"] = self
+                return self
+
+            async def __aexit__(
+                self, exc_type: object, exc: object, tb: object
+            ) -> None:
+                return None
+
+        class FakeRepository:
+            def __init__(self, db: object) -> None:
+                assert db is captured["session"]
+
+            async def has_fill_for_order(self, **kwargs: object) -> bool:
+                captured["lookup"] = kwargs
+                return True
+
+        monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: FakeSession())
+        monkeypatch.setattr(mod, "ExecutionLedgerRepository", FakeRepository)
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+
+        exists = await monitor._has_committed_upbit_execution_fill(
+            {"uuid": "upbit-order-durable", "venue": "upbit_krw"}
+        )
+
+        assert exists is True
+        assert captured["lookup"] == {
+            "broker": "upbit",
+            "account_mode": "live",
+            "venue": "upbit_krw",
+            "broker_order_id": "upbit-order-durable",
+        }
+
+        unused_session_factory = MagicMock()
+        monkeypatch.setattr(mod, "AsyncSessionLocal", unused_session_factory)
+        assert not await monitor._has_committed_upbit_execution_fill({"uuid": ""})
+        unused_session_factory.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("state", "terminal_state"),
+        [("trade", "partially_filled"), ("done", "filled")],
+    )
+    async def test_project_upbit_proposal_fill_uses_independent_committed_session(
+        self,
+        mock_settings: None,
+        monkeypatch: pytest.MonkeyPatch,
+        state: str,
+        terminal_state: str,
+    ) -> None:
+        import websocket_monitor as mod
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        captured: dict[str, object] = {}
+
+        class FakeSession:
+            async def __aenter__(self) -> object:
+                captured["session"] = self
+                return self
+
+            async def __aexit__(
+                self, exc_type: object, exc: object, tb: object
+            ) -> None:
+                return None
+
+            async def commit(self) -> None:
+                captured["committed"] = True
+
+        class FakeService:
+            def __init__(self, db: object) -> None:
+                assert db is captured["session"]
+
+            async def record_fill_evidence(self, **kwargs: object) -> object:
+                captured["evidence"] = kwargs
+                return MagicMock(state=terminal_state)
+
+        monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: FakeSession())
+        monkeypatch.setattr(mod, "OrderProposalsService", FakeService, raising=False)
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+
+        matched = await monitor._project_upbit_proposal_fill(
+            {
+                "state": state,
+                "uuid": "upbit-order-id",
+                "identifier": "proposal-client-id",
+                "executed_volume": "0.0003",
+            }
+        )
+
+        evidence = captured["evidence"]
+        assert matched is True
+        assert captured["committed"] is True
+        assert evidence["idempotency_key"] == "proposal-client-id"
+        assert evidence["broker_order_id"] == "upbit-order-id"
+        assert evidence["filled_qty"] == Decimal("0.0003")
+        assert evidence["terminal_state"] == terminal_state
+        assert evidence["account_mode"] == "upbit"
+
+    @pytest.mark.asyncio
+    async def test_project_upbit_proposal_fill_logs_missing_match(
+        self,
+        mock_settings: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import websocket_monitor as mod
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        class FakeSession:
+            async def __aenter__(self) -> object:
+                return self
+
+            async def __aexit__(
+                self, exc_type: object, exc: object, tb: object
+            ) -> None:
+                return None
+
+            async def commit(self) -> None:
+                return None
+
+        fake_service = MagicMock()
+        fake_service.record_fill_evidence = AsyncMock(return_value=None)
+        monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: FakeSession())
+        monkeypatch.setattr(
+            mod,
+            "OrderProposalsService",
+            lambda _db: fake_service,
+            raising=False,
+        )
+        caplog.set_level("INFO")
+
+        matched = await UnifiedWebSocketMonitor(
+            mode="upbit"
+        )._project_upbit_proposal_fill(
+            {
+                "state": "trade",
+                "uuid": "missing-order",
+                "identifier": "missing-identifier",
+                "executed_volume": "0.1",
+            }
+        )
+
+        assert matched is False
+        assert "no matching proposal rung" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_project_upbit_proposal_fill_skips_non_positive_cumulative_quantity(
+        self,
+        mock_settings: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import websocket_monitor as mod
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        session_factory = MagicMock()
+        monkeypatch.setattr(mod, "AsyncSessionLocal", session_factory)
+        caplog.set_level("INFO")
+
+        matched = await UnifiedWebSocketMonitor(
+            mode="upbit"
+        )._project_upbit_proposal_fill(
+            {
+                "state": "done",
+                "uuid": "upbit-order-zero",
+                "identifier": "proposal-zero",
+                "executed_volume": "0",
+            }
+        )
+
+        assert matched is False
+        session_factory.assert_not_called()
+        assert "missing cumulative fill" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_project_upbit_proposal_fill_logs_and_swallows_db_error(
+        self,
+        mock_settings: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import websocket_monitor as mod
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        class FailingSession:
+            async def __aenter__(self) -> object:
+                raise RuntimeError("proposal db unavailable")
+
+            async def __aexit__(
+                self, exc_type: object, exc: object, tb: object
+            ) -> None:
+                return None
+
+        monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: FailingSession())
+        caplog.set_level("ERROR")
+
+        matched = await UnifiedWebSocketMonitor(
+            mode="upbit"
+        )._project_upbit_proposal_fill(
+            {
+                "state": "trade",
+                "uuid": "upbit-order-error",
+                "identifier": "proposal-error",
+                "executed_volume": "0.1",
+            }
+        )
+
+        assert matched is False
+        assert "Upbit proposal rung projection failed" in caplog.text
+        assert "proposal db unavailable" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_on_kis_execution_forwards_us_currency_for_overseas_fill(
         self, mock_settings: None
     ) -> None:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value=_success_result("req-789"))
-        monitor.openclaw_client.send_fill_notification = send_mock
+        send_mock = AsyncMock()
+        monitor._send_fill_notification = send_mock
 
         await monitor._on_kis_execution(
             {
@@ -396,8 +806,8 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value=_success_result("req-456"))
-        monitor.openclaw_client.send_fill_notification = send_mock
+        send_mock = AsyncMock()
+        monitor._send_fill_notification = send_mock
 
         await monitor._on_kis_execution(
             {
@@ -418,8 +828,8 @@ class TestUnifiedWebSocketMonitor:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value=_success_result("req-456"))
-        monitor.openclaw_client.send_fill_notification = send_mock
+        send_mock = AsyncMock()
+        monitor._send_fill_notification = send_mock
 
         await monitor._on_kis_execution(
             {
@@ -546,252 +956,133 @@ class TestUnifiedWebSocketMonitor:
         assert monitor.is_running is False
 
     @pytest.mark.asyncio
-    async def test_send_fill_notification_disabled_still_routes_through_client(
+    async def test_send_fill_notification_calls_notify_fill(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(settings, "OPENCLAW_ENABLED", False)
         from websocket_monitor import UnifiedWebSocketMonitor
 
-        monitor = UnifiedWebSocketMonitor()
-        monitor.openclaw_client.send_fill_notification = AsyncMock(
-            return_value=_success_result()
+        monitor = UnifiedWebSocketMonitor(mode="kis")
+        fake_notifier = AsyncMock()
+        fake_notifier.notify_fill = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            "websocket_monitor.get_trade_notifier", lambda: fake_notifier
+        )
+        monkeypatch.setattr(
+            "websocket_monitor.fetch_fill_enrichment", AsyncMock(return_value=None)
         )
 
         await monitor._send_fill_notification(
             FillOrder(
-                symbol="KRW-BTC",
+                symbol="005930",
                 side="bid",
-                filled_price=50_000_000,
-                filled_qty=0.1,
-                filled_amount=5_000_000,
-                filled_at="2024-01-01T00:00:00Z",
-                account="upbit",
+                filled_price=68500.0,
+                filled_qty=10.0,
+                filled_amount=685000.0,
+                filled_at="2026-06-14T09:31:02",
+                account="kis",
+                market_type="kr",
+                currency="KRW",
             )
         )
-
-        monitor.openclaw_client.send_fill_notification.assert_awaited_once()
+        fake_notifier.notify_fill.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_send_fill_notification_always_routes_to_client(
-        self, mock_settings: None
-    ) -> None:
-        """모니터는 모든 fill을 client로 라우팅 (필터링은 client에서 수행)."""
-        from websocket_monitor import UnifiedWebSocketMonitor
-
-        monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value=_success_result())
-        monitor.openclaw_client.send_fill_notification = send_mock
-
-        # Low amount order (previously filtered for upbit only)
-        await monitor._send_fill_notification(
-            FillOrder(
-                symbol="KRW-BTC",
-                side="bid",
-                filled_price=10_000,
-                filled_qty=1,
-                filled_amount=10_000,
-                filled_at="2024-01-01T00:00:00Z",
-                account="upbit",
-            )
-        )
-
-        send_mock.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_send_fill_notification_counts_success_for_stats(
-        self, mock_settings: None
-    ) -> None:
-        """fills_forwarded는 result.status == 'success'일 때만 증가."""
-        from websocket_monitor import UnifiedWebSocketMonitor
-
-        monitor = UnifiedWebSocketMonitor()
-
-        # Success case
-        monitor.openclaw_client.send_fill_notification = AsyncMock(
-            return_value=_success_result("req-1")
-        )
-        await monitor._send_fill_notification(
-            FillOrder(
-                symbol="KRW-BTC",
-                side="bid",
-                filled_price=50_000_000,
-                filled_qty=0.1,
-                filled_amount=5_000_000,
-                filled_at="2024-01-01T00:00:00Z",
-                account="upbit",
-            )
-        )
-        assert monitor.fills_forwarded == 1
-
-        # Skipped case
-        monitor.openclaw_client.send_fill_notification = AsyncMock(
-            return_value=_skipped_result("below_minimum")
-        )
-        await monitor._send_fill_notification(
-            FillOrder(
-                symbol="KRW-ETH",
-                side="bid",
-                filled_price=3_000_000,
-                filled_qty=0.01,
-                filled_amount=30_000,
-                filled_at="2024-01-01T00:00:00Z",
-                account="upbit",
-            )
-        )
-        # Should not increment
-        assert monitor.fills_forwarded == 1
-
-    @pytest.mark.asyncio
-    async def test_send_fill_notification_continues_on_failure(
-        self, mock_settings: None
-    ) -> None:
-        from websocket_monitor import UnifiedWebSocketMonitor
-
-        monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(return_value=_failed_result())
-        monitor.openclaw_client.send_fill_notification = send_mock
-
-        await monitor._send_fill_notification(
-            FillOrder(
-                symbol="KRW-BTC",
-                side="bid",
-                filled_price=50_000_000,
-                filled_qty=0.1,
-                filled_amount=5_000_000,
-                filled_at="2024-01-01T00:00:00Z",
-                account="upbit",
-            )
-        )
-
-        send_mock.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_send_fill_notification_does_not_retry_client_on_exception(
-        self, mock_settings: None
-    ) -> None:
-        from websocket_monitor import UnifiedWebSocketMonitor
-
-        monitor = UnifiedWebSocketMonitor()
-        send_mock = AsyncMock(side_effect=Exception("boom"))
-        monitor.openclaw_client.send_fill_notification = send_mock
-
-        await monitor._send_fill_notification(
-            FillOrder(
-                symbol="KRW-BTC",
-                side="bid",
-                filled_price=50_000_000,
-                filled_qty=0.1,
-                filled_amount=5_000_000,
-                filled_at="2024-01-01T00:00:00Z",
-                account="upbit",
-            )
-        )
-
-        send_mock.assert_awaited_once()
-        assert monitor.fills_forwarded == 0
-        assert monitor.last_openclaw_success_at is None
-
-    @pytest.mark.asyncio
-    async def test_send_fill_notification_logs_openclaw_result_states(
-        self, mock_settings: None, caplog: pytest.LogCaptureFixture
+    async def test_send_fill_notification_skips_below_threshold(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor(mode="kis")
-        order = FillOrder(
-            symbol="005930",
-            side="ask",
-            filled_price=70_000,
-            filled_qty=10,
-            filled_amount=700_000,
-            filled_at="2024-01-01T00:00:00Z",
-            account="kis",
+        fake_notifier = AsyncMock()
+        fake_notifier.notify_fill = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            "websocket_monitor.get_trade_notifier", lambda: fake_notifier
+        )
+        monkeypatch.setattr(
+            "websocket_monitor.fetch_fill_enrichment", AsyncMock(return_value=None)
         )
 
-        caplog.set_level("INFO")
-
-        monitor.openclaw_client.send_fill_notification = AsyncMock(
-            return_value=_success_result()
+        await monitor._send_fill_notification(
+            FillOrder(
+                symbol="005930",
+                side="bid",
+                filled_price=68500.0,
+                filled_qty=0.1,
+                filled_amount=6850.0,  # below 50,000 KRW
+                filled_at="2026-06-14T09:31:02",
+                account="kis",
+                market_type="kr",
+                currency="KRW",
+            )
         )
-        await monitor._send_fill_notification(order, correlation_id="corr-success")
-        assert monitor.fills_forwarded == 1
-        assert monitor.last_openclaw_success_at is not None
-        success_timestamp = monitor.last_openclaw_success_at
-        assert "correlation_id=corr-success" in caplog.text
-        assert "Fill notification send start" in caplog.text
-        assert "Fill notification send result" in caplog.text
-        assert "result=success" in caplog.text
-        assert "Notification pipeline result" not in caplog.text
+        fake_notifier.notify_fill.assert_not_awaited()
 
-        caplog.clear()
-        monitor.openclaw_client.send_fill_notification = AsyncMock(
-            return_value=_failed_result()
-        )
-        await monitor._send_fill_notification(order, correlation_id="corr-failed")
-        assert "correlation_id=corr-failed" in caplog.text
-        assert "Fill notification send result" in caplog.text
-        assert "result=failed" in caplog.text
-        assert "reason=request_failed" in caplog.text
-        assert monitor.fills_forwarded == 1
-        assert monitor.last_openclaw_success_at == success_timestamp
+    @pytest.mark.asyncio
+    async def test_send_fill_notification_sends_small_proposal_rung_fill(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
 
-        caplog.clear()
-        monitor.openclaw_client.send_fill_notification = AsyncMock(
-            return_value=_skipped_result("below_minimum")
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        fake_notifier = AsyncMock()
+        fake_notifier.notify_fill = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            "websocket_monitor.get_trade_notifier", lambda: fake_notifier
         )
-        monitor.mode = "upbit"
+        monkeypatch.setattr(
+            "websocket_monitor.fetch_fill_enrichment", AsyncMock(return_value=None)
+        )
+
         await monitor._send_fill_notification(
             FillOrder(
                 symbol="KRW-BTC",
                 side="bid",
-                filled_price=10_000,
-                filled_qty=1,
-                filled_amount=10_000,
-                filled_at="2024-01-01T00:00:00Z",
+                filled_price=92_800_000.0,
+                filled_qty=0.0003,
+                filled_amount=27_840.0,
+                filled_at="2026-07-13T21:39:55+09:00",
                 account="upbit",
+                order_id="upbit-small-rung",
+                market_type="crypto",
+                currency="KRW",
             ),
-            correlation_id="corr-skipped",
+            proposal_rung_fill=True,
         )
-        assert "correlation_id=corr-skipped" in caplog.text
-        assert "Fill notification send result" in caplog.text
-        assert "result=skipped" in caplog.text
-        # fills_forwarded should NOT increment when skipped
+
+        fake_notifier.notify_fill.assert_awaited_once()
         assert monitor.fills_forwarded == 1
-        assert monitor.last_openclaw_success_at == success_timestamp
 
     @pytest.mark.asyncio
-    async def test_send_fill_notification_logs_client_skip_reason(
-        self, mock_settings: None, caplog: pytest.LogCaptureFixture
+    async def test_enrichment_failure_does_not_block(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from websocket_monitor import UnifiedWebSocketMonitor
 
         monitor = UnifiedWebSocketMonitor(mode="kis")
-        order = FillOrder(
-            symbol="AAPL",
-            side="bid",
-            filled_price=195.5,
-            filled_qty=2,
-            filled_amount=391,
-            filled_at="2024-01-01T00:00:00Z",
-            account="kis",
-            market_type="us",
+        fake_notifier = AsyncMock()
+        fake_notifier.notify_fill = AsyncMock(return_value=True)
+        monkeypatch.setattr(
+            "websocket_monitor.get_trade_notifier", lambda: fake_notifier
         )
-
-        caplog.set_level("INFO")
-        monitor.openclaw_client.send_fill_notification = AsyncMock(
-            return_value=_skipped_result("missing_analysis_thread")
+        monkeypatch.setattr(
+            "websocket_monitor.fetch_fill_enrichment",
+            AsyncMock(side_effect=RuntimeError("boom")),
         )
 
         await monitor._send_fill_notification(
-            order, correlation_id="corr-missing-thread"
+            FillOrder(
+                symbol="005930",
+                side="bid",
+                filled_price=68500.0,
+                filled_qty=10.0,
+                filled_amount=685000.0,
+                filled_at="2026-06-14T09:31:02",
+                account="kis",
+                market_type="kr",
+                currency="KRW",
+            )
         )
-
-        assert "correlation_id=corr-missing-thread" in caplog.text
-        assert "result=skipped" in caplog.text
-        assert "reason=missing_analysis_thread" in caplog.text
-        assert "result=failed" not in caplog.text
-        assert monitor.fills_forwarded == 0
-        assert monitor.last_openclaw_success_at is None
+        fake_notifier.notify_fill.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_log_health_status_uses_kis_state_fields(
@@ -807,7 +1098,7 @@ class TestUnifiedWebSocketMonitor:
         monitor.is_running = True
         monitor._started_at_monotonic = asyncio.get_running_loop().time() - 42
         monitor.fills_forwarded = 3
-        monitor.last_openclaw_success_at = "2026-03-09T14:00:00+00:00"
+        monitor.last_agent_success_at = "2026-03-09T14:00:00+00:00"
         monitor.kis_ws = MagicMock(
             is_connected=True,
             messages_received=11,
@@ -828,7 +1119,59 @@ class TestUnifiedWebSocketMonitor:
         assert "execution_events_received=4" in caplog.text
         assert "fills_forwarded=3" in caplog.text
         assert "last_pingpong_at=2026-03-09T14:01:10+00:00" in caplog.text
-        assert "last_openclaw_success_at=2026-03-09T14:00:00+00:00" in caplog.text
+        assert "last_agent_success_at=2026-03-09T14:00:00+00:00" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_upbit_consumer_updates_health_counters(
+        self, mock_settings: None
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        monitor._record_execution_ledger_fill = AsyncMock(return_value="unchanged")
+        monitor._project_upbit_proposal_fill = AsyncMock(return_value=False)
+        monitor._send_fill_notification = AsyncMock()
+
+        await monitor._on_upbit_order({"state": "wait", "code": "KRW-BTC"})
+        await monitor._on_upbit_order(
+            {
+                "state": "trade",
+                "code": "KRW-BTC",
+                "uuid": "upbit-health-order",
+                "trade_price": 92_800_000,
+                "executed_volume": "0.0003",
+            }
+        )
+
+        assert monitor.upbit_messages_received == 2
+        assert monitor.upbit_execution_events_received == 1
+        assert monitor.upbit_last_message_at is not None
+        assert monitor.upbit_last_execution_at is not None
+
+    @pytest.mark.asyncio
+    async def test_log_health_status_uses_upbit_consumer_counters(
+        self,
+        mock_settings: None,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from websocket_monitor import UnifiedWebSocketMonitor
+
+        monitor = UnifiedWebSocketMonitor(mode="upbit")
+        monitor.is_running = True
+        monitor._started_at_monotonic = asyncio.get_running_loop().time() - 5
+        monitor.upbit_ws = MagicMock(is_connected=True)
+        monitor.upbit_messages_received = 7
+        monitor.upbit_execution_events_received = 3
+        monitor.upbit_last_message_at = "2026-07-13T12:39:55+00:00"
+        monitor.upbit_last_execution_at = "2026-07-13T12:39:56+00:00"
+
+        caplog.set_level("INFO")
+        monitor._log_health_status(force=True)
+
+        assert "messages_received=7" in caplog.text
+        assert "execution_events_received=3" in caplog.text
+        assert "last_message_at=2026-07-13T12:39:55+00:00" in caplog.text
+        assert "last_execution_at=2026-07-13T12:39:56+00:00" in caplog.text
 
     @pytest.mark.asyncio
     async def test_log_health_status_reports_mixed_backend_states_in_both_mode(

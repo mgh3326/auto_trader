@@ -20,7 +20,6 @@ export type NaverEndpointStatus =
   | "unsupported"
   | "error";
 export type OrderSide = "buy" | "sell" | string;
-export type AnalysisDecision = "buy" | "hold" | "sell";
 export type FxSensitivityStatus =
   | "available"
   | "not_applicable"
@@ -178,6 +177,10 @@ export interface StockDetailNaverEnrichment {
 
 export interface StockDetailHolding {
   totalQuantity: number;
+  tradeableQuantity: number;
+  sellableQuantity: number;
+  pendingSellQuantity: number;
+  referenceQuantity: number;
   averageCost: number | null;
   costBasis: number | null;
   valueNative: number | null;
@@ -207,15 +210,49 @@ export interface StockDetailFxSensitivity {
   caution: string;
 }
 
-export interface StockDetailLatestAnalysis {
-  id: number;
-  modelName: string | null;
-  decision: AnalysisDecision | null;
+export interface StockDetailDecisionHistoryPriorDecision {
+  date: string | null;
+  intent: string | null;
+  side: string | null;
+  decisionBucket: string | null;
   confidence: number | null;
-  appropriateBuyRange: [number | null, number | null] | null;
-  appropriateSellRange: [number | null, number | null] | null;
-  reasonsTop3: string[];
-  createdAt: string | null;
+  rationale: string | null;
+}
+
+export interface StockDetailDecisionHistoryOutcome {
+  date: string | null;
+  side: string | null;
+  outcome: string | null;
+  triggerType: string | null;
+  pnlPct: number | null;
+  realizedPnl: number | null;
+}
+
+export interface StockDetailDecisionHistoryOpenClaim {
+  probability: number | null;
+  horizon: string | null;
+  reviewDate: string | null;
+  direction: string | null;
+  targetPrice: number | null;
+}
+
+export interface StockDetailDecisionHistoryBrier {
+  n: number;
+  meanBrier: number | null;
+  flag: "ok" | "insufficient_sample";
+}
+
+export interface StockDetailDecisionHistory {
+  symbol: string;
+  market: string;
+  linkQuality: string;
+  priorDecisions: StockDetailDecisionHistoryPriorDecision[];
+  priorLessons: string[];
+  realizedOutcomes: StockDetailDecisionHistoryOutcome[];
+  openClaims: StockDetailDecisionHistoryOpenClaim[];
+  runningBrierSymbol: StockDetailDecisionHistoryBrier;
+  runningBrierGlobal: StockDetailDecisionHistoryBrier;
+  cautionLabel: string;
 }
 
 export interface StockDetailOrderbookLevel {
@@ -313,7 +350,7 @@ export interface StockDetailResponse {
   investorFlow: StockDetailInvestorFlow | null;
   holding: StockDetailHolding | null;
   fxSensitivity: StockDetailFxSensitivity | null;
-  latestAnalysis: StockDetailLatestAnalysis | null;
+  decisionHistory: StockDetailDecisionHistory | null;
   orderbookSupport: StockDetailOrderbookSupport;
   orderbook: StockDetailOrderbook | null;
   capabilities: StockDetailCapabilities;
@@ -383,6 +420,39 @@ export interface StockDetailResearchConsensusResponse {
   consensus: StockDetailAnalystConsensus | null;
   citations: StockDetailResearchCitation[];
   freshness: StockDetailResearchFreshness;
+}
+
+export interface RecoZone {
+  price: number;
+  type: string;
+  reasoning: string;
+}
+
+export interface RecoTradeSetup {
+  direction: "long" | "short";
+  entry: string;
+  stop: string;
+  target: string;
+  risk_pct: string;
+  reward_pct: string;
+  rr_ratio: string;
+}
+
+export interface StockDetailRecommendationResponse {
+  market: "kr" | "us";
+  symbol: string;
+  name: string | null;
+  as_of: string;
+  current_price: number | null;
+  action: "buy" | "hold" | "sell";
+  confidence: "high" | "medium" | "low";
+  rsi14: number | null;
+  reasoning: string;
+  insufficient_inputs: string[];
+  buy_zones: RecoZone[];
+  sell_targets: RecoZone[];
+  stop_loss: number | null;
+  trade_setup: RecoTradeSetup | null;
 }
 
 export interface StockDetailCandlesResponse {

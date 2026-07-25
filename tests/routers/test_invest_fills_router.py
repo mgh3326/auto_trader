@@ -137,6 +137,7 @@ def test_recent_fills_returns_200_with_items():
     assert data["count"] == 1
     assert data["items"][0]["symbol"] == "005930"
     assert data["items"][0]["source"] == "reconciler"
+    assert data["items"][0]["trade_day_kst"] == "20260510"
     # K2: enriched fields
     assert "data_state" in data
     assert "source_breakdown" in data
@@ -174,9 +175,16 @@ def test_recent_fills_source_breakdown_websocket():
 
 
 @pytest.mark.unit
-def test_recent_fills_no_duplicate_rows():
-    """Each DB row produces exactly one item — unique constraint enforced at DB level."""
-    rows = [_ledger_row(id=1, broker_order_id="ord-001", fill_seq=0)]
+def test_recent_fills_supersedes_websocket_duplicate():
+    """A reconciler + websocket row for the same order collapse to the reconciler row."""
+    rows = [
+        _ledger_row(
+            id=1, broker_order_id="0006366300", fill_seq=1511940115, source="reconciler"
+        ),
+        _ledger_row(
+            id=2, broker_order_id="0006366300", fill_seq=654241537, source="websocket"
+        ),
+    ]
     run = _reconcile_run_row("kis")
     db = _make_db(rows, [run])
     client = TestClient(_make_app(db))
@@ -184,9 +192,78 @@ def test_recent_fills_no_duplicate_rows():
     resp = client.get("/trading/api/invest/fills/recent")
     assert resp.status_code == 200
     data = resp.json()
-    # exactly one row — deduplication guarantee is at the DB level
     assert data["count"] == 1
     assert len(data["items"]) == 1
+    assert data["items"][0]["source"] == "reconciler"
+    assert data["source_breakdown"]["websocket"] == 0
+    assert data["source_breakdown"]["reconciler"] == 1
+
+
+@pytest.mark.unit
+def test_recent_fills_accepts_side_filter():
+    buy = _ledger_row(id=1, side="buy", broker_order_id="buy-1")
+    run = _reconcile_run_row("kis")
+    db = _make_db([buy], [run])
+    client = TestClient(_make_app(db))
+
+    resp = client.get("/trading/api/invest/fills/recent?side=buy")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["count"] == 1
+    assert data["items"][0]["side"] == "buy"
+    assert data["items"][0]["broker_order_id"] == "buy-1"
+
+
+@pytest.mark.unit
+def test_recent_fills_rejects_unknown_side():
+    db = _make_db([], [])
+    client = TestClient(_make_app(db))
+
+    resp = client.get("/trading/api/invest/fills/recent?side=hold")
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recent_fills_side_filter_is_applied_before_limit():
+    older_buy = _ledger_row(
+        id=2,
+        side="buy",
+        broker_order_id="buy-old",
+        filled_at=datetime(2026, 5, 10, 9, 0, tzinfo=UTC),
+    )
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self._rows
+
+    executed = []
+
+    async def _execute(stmt):
+        executed.append(str(stmt.compile(compile_kwargs={"literal_binds": True})))
+        if len(executed) == 1:
+            return _Result([older_buy])
+        return _Result([_reconcile_run_row("kis")])
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=_execute)
+
+    from app.services.execution_ledger.query_service import ExecutionLedgerQueryService
+
+    response = await ExecutionLedgerQueryService(db).list_recent(limit=1, side="buy")
+
+    assert response.count == 1
+    assert response.items[0].broker_order_id == "buy-old"
+    assert "execution_ledger.side = 'buy'" in executed[0]
+    assert "LIMIT 3" in executed[0]
 
 
 # ---------------------------------------------------------------------------
@@ -407,3 +484,60 @@ def test_freshness_missing_when_no_reconcile_runs():
     data = resp.json()
     for item in data["items"]:
         assert item["dataState"] == "missing"
+
+
+@pytest.mark.unit
+def test_sell_history_dedups_before_limit_and_reports_true_total():
+    """De-dup runs over the full window before trimming: the websocket dup never
+    leaks at the page boundary, and count is the true de-duped window total."""
+    base = datetime(2026, 6, 1, 9, 0, tzinfo=UTC)
+    rows = [
+        _ledger_row(
+            id=2,
+            side="sell",
+            broker_order_id="0006366300",
+            fill_seq=222,
+            source="websocket",
+            filled_at=base + timedelta(minutes=2),
+            filled_notional=Decimal("2510000"),
+        ),
+        _ledger_row(
+            id=1,
+            side="sell",
+            broker_order_id="0006366300",
+            fill_seq=111,
+            source="reconciler",
+            filled_at=base,
+            filled_notional=Decimal("2510000"),
+        ),
+        _ledger_row(
+            id=3,
+            side="sell",
+            broker_order_id="0000342400",
+            fill_seq=333,
+            source="reconciler",
+            filled_at=base - timedelta(days=1),
+            filled_notional=Decimal("7800000"),
+        ),
+        _ledger_row(
+            id=4,
+            side="sell",
+            broker_order_id="0019990600",
+            fill_seq=444,
+            source="reconciler",
+            filled_at=base - timedelta(days=2),
+            filled_notional=Decimal("262500"),
+        ),
+    ]
+    run = _reconcile_run_row("kis")
+    db = _make_db(rows, [run], history_rows=rows)
+    client = TestClient(_make_app(db))
+
+    resp = client.get("/trading/api/invest/fills/sell-history?limit=2")
+    assert resp.status_code == 200
+    data = resp.json()
+    # 4 raw rows -> 3 distinct sells after supersede; count is the true total.
+    assert data["count"] == 3
+    assert len(data["items"]) == 2  # trimmed page
+    assert all(item["source"] == "reconciler" for item in data["items"])
+    assert data["source_breakdown"]["websocket"] == 0

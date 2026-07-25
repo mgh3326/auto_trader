@@ -1,0 +1,70 @@
+"""ROB-713 — read-only MCP surface for setup-tagged trade-journal aggregates."""
+
+from __future__ import annotations
+
+import logging
+from datetime import date
+from typing import Any, cast
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.core.db import AsyncSessionLocal
+from app.services.trade_journal.aggregates import (
+    build_counterfactual_delta_scoreboard,
+    build_trading_scoreboard,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _session_factory() -> async_sessionmaker[AsyncSession]:
+    return cast(async_sessionmaker[AsyncSession], cast(object, AsyncSessionLocal))
+
+
+def _parse_date(value: str | None) -> date | None:
+    return date.fromisoformat(value) if value else None
+
+
+async def get_trading_scoreboard(
+    market: str | None = None,
+    account_mode: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    setup_tag: str | None = None,
+    min_sample: int = 1,
+    cohort: str = "live_gated",
+    min_pair_threshold: int = 20,
+    include_counterfactual_delta: bool = False,
+) -> dict[str, Any]:
+    try:
+        async with _session_factory()() as db:
+            if include_counterfactual_delta:
+                return await build_counterfactual_delta_scoreboard(
+                    db,
+                    market=market,
+                    account_mode=account_mode,
+                    date_from=_parse_date(date_from),
+                    date_to=_parse_date(date_to),
+                    setup_tag=setup_tag,
+                    min_sample=min_sample,
+                    min_pair_threshold=max(1, int(min_pair_threshold)),
+                )
+            return await build_trading_scoreboard(
+                db,
+                market=market,
+                account_mode=account_mode,
+                date_from=_parse_date(date_from),
+                date_to=_parse_date(date_to),
+                setup_tag=setup_tag,
+                min_sample=min_sample,
+                cohort=cohort,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("get_trading_scoreboard failed")
+        return {
+            "count": 0,
+            "groups": [],
+            "overall": None,
+            "as_of": None,
+            "error": str(exc),
+        }

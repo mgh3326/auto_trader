@@ -27,12 +27,27 @@ async def test_upsert_inserts_then_updates(db_session):
         week_change_rate=Decimal("2.15"),
         closes_window=[77000, 77400, 77900, 78500],
         daily_volume=14_500_000,
+        daily_turnover=Decimal("1138250000000"),
+        market_cap=Decimal("400000000000000"),
+        market_cap_source="naver_finance",
+        market_cap_snapshot_date=dt.date(2026, 5, 9),
+        support_price=Decimal("77000"),
+        support_kind="bb_lower",
+        support_strength="strong",
+        dist_to_support_pct=Decimal("1.9108"),
+        support_computed_at=dt.datetime(2026, 5, 9, 12, 0, tzinfo=dt.UTC),
         source="kis",
     )
     await repo.upsert(payload)
     await db_session.commit()
 
-    payload2 = payload.model_copy(update={"consecutive_up_days": 4})
+    payload2 = payload.model_copy(
+        update={
+            "consecutive_up_days": 4,
+            "support_price": Decimal("77500"),
+            "dist_to_support_pct": Decimal("1.2739"),
+        }
+    )
     await repo.upsert(payload2)
     await db_session.commit()
 
@@ -41,6 +56,39 @@ async def test_upsert_inserts_then_updates(db_session):
     )
     assert len(rows) == 1
     assert rows[0].consecutive_up_days == 4
+    assert rows[0].support_price == Decimal("77500")
+    assert rows[0].dist_to_support_pct == Decimal("1.2739")
+    assert rows[0].support_computed_at == dt.datetime(2026, 5, 9, 12, 0, tzinfo=dt.UTC)
+
+    # A later ordinary price refresh carries no support bundle. The repository
+    # must clear every support/valuation field together instead of mixing the new
+    # price with yesterday's support distance.
+    await repo.upsert(
+        SnapshotUpsert(
+            market="kr",
+            symbol=symbol,
+            snapshot_date=dt.date(2026, 5, 9),
+            latest_close=Decimal("79000"),
+            prev_close=Decimal("78500"),
+            closes_window=[77400, 77900, 78500, 79000],
+            daily_volume=15_000_000,
+            daily_turnover=Decimal("1185000000000"),
+            source="kis",
+        )
+    )
+    await db_session.commit()
+    db_session.expire_all()
+
+    refreshed = (
+        await repo.get_fresh(
+            market="kr", symbols=[symbol], on_or_after=dt.date(2026, 5, 9)
+        )
+    )[0]
+    assert refreshed.latest_close == Decimal("79000")
+    assert refreshed.market_cap is None
+    assert refreshed.support_price is None
+    assert refreshed.dist_to_support_pct is None
+    assert refreshed.support_computed_at is None
 
 
 @pytest.mark.asyncio

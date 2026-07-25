@@ -18,13 +18,19 @@ def test_block_bootstrap_is_deterministic_and_well_formed():
     a = vg.block_bootstrap_sharpe_ci(pnls, block_size=5, n_bootstrap=200, seed=7)
     b = vg.block_bootstrap_sharpe_ci(pnls, block_size=5, n_bootstrap=200, seed=7)
     assert a == b  # reproducible
-    assert a["ci_lower"] <= a["observed_sharpe"] <= a["ci_upper"] or a["ci_lower"] <= a["ci_upper"]
+    assert (
+        a["ci_lower"] <= a["observed_sharpe"] <= a["ci_upper"]
+        or a["ci_lower"] <= a["ci_upper"]
+    )
     assert a["block_size"] == 5
     assert 0.0 <= a["prob_positive"] <= 1.0
 
 
 def test_block_bootstrap_insufficient_data():
-    assert vg.block_bootstrap_sharpe_ci([1.0], block_size=5)["error"] == "insufficient_data"
+    assert (
+        vg.block_bootstrap_sharpe_ci([1.0], block_size=5)["error"]
+        == "insufficient_data"
+    )
 
 
 def test_benjamini_hochberg_controls_fdr():
@@ -43,13 +49,16 @@ def test_effect_size_aware_min_trades_monotonic():
     n1 = vg.effect_size_aware_min_trades(observed_sharpe=0.1, n_configs_tried=1)
     n10 = vg.effect_size_aware_min_trades(observed_sharpe=0.1, n_configs_tried=10)
     big = vg.effect_size_aware_min_trades(observed_sharpe=0.3, n_configs_tried=1)
-    assert n10 > n1            # more shots tried -> need more evidence
-    assert big < n1            # bigger effect -> need fewer trades
-    assert n1 == 400           # (2.0 / 0.1)^2 at m=1
+    assert n10 > n1  # more shots tried -> need more evidence
+    assert big < n1  # bigger effect -> need fewer trades
+    assert n1 == 400  # (2.0 / 0.1)^2 at m=1
 
 
 def test_effect_size_aware_min_trades_zero_effect_is_infinite():
-    assert vg.effect_size_aware_min_trades(observed_sharpe=0.0, n_configs_tried=1) == math.inf
+    assert (
+        vg.effect_size_aware_min_trades(observed_sharpe=0.0, n_configs_tried=1)
+        == math.inf
+    )
 
 
 def test_turnover_matched_random_baseline_matches_count_and_is_deterministic():

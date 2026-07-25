@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
@@ -1542,6 +1543,7 @@ class TestFetchSectorPeers:
         async def fake_fetch_integration(
             code: str,
             _client: Any,
+            request_timeout: float | None = None,
         ) -> dict[str, Any]:
             if code == "000001":
                 return {
@@ -1581,3 +1583,299 @@ class TestFetchSectorPeers:
         assert result["sector"] == "반도체"
         assert result["peers"][0]["symbol"] == "000002"
         assert len(sector_gets) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestFetchSectorPeersConcurrency:
+    async def test_peer_fanout_is_bounded_by_semaphore(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "naver_peer_fetch_concurrency", 3)
+
+        # Target returns 8 integration peers so, pre-trim, 8 peer fetches queue.
+        peers_raw = [{"itemCode": f"00000{i}"} for i in range(1, 9)]
+
+        in_flight = 0
+        peak = 0
+
+        async def fake_fetch_integration(
+            code: str, _client: Any, *args: Any, **kwargs: Any
+        ) -> dict[str, Any]:
+            nonlocal in_flight, peak
+            if code == "000100":  # target
+                return {
+                    "symbol": code,
+                    "name": "Target",
+                    "per": 10,
+                    "pbr": 1.1,
+                    "market_cap": 1000,
+                    "current_price": 50000,
+                    "change_pct": 1.0,
+                    "industry_code": "123",
+                    "peers_raw": peers_raw,
+                }
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)  # hold the slot so overlap is observable
+            in_flight -= 1
+            return {
+                "symbol": code,
+                "name": "Peer",
+                "per": 11,
+                "pbr": 1.2,
+                "market_cap": 900,
+                "current_price": 40000,
+                "change_pct": 0.5,
+                "industry_code": "123",
+                "peers_raw": [],
+            }
+
+        class FakeResponse:
+            content = b"<html><head><title>x : Npay</title></head></html>"
+
+        class FakeClient:
+            async def __aenter__(self) -> FakeClient:
+                return self
+
+            async def __aexit__(self, *_a: Any) -> None:
+                return None
+
+            async def get(self, url: str, params: Any = None) -> FakeResponse:
+                return FakeResponse()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **_k: FakeClient())
+        monkeypatch.setattr(
+            naver_finance.valuation, "_fetch_integration", fake_fetch_integration
+        )
+
+        result = await naver_finance.fetch_sector_peers("000100", limit=8)
+
+        assert peak <= 3, f"peak in-flight {peak} exceeded semaphore cap 3"
+        assert len(result["peers"]) == 8
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestFetchSectorPeersPeerTimeout:
+    async def test_peers_use_short_request_timeout_target_uses_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "naver_peer_fetch_timeout_seconds", 5.0)
+        monkeypatch.setattr(settings, "naver_peer_fetch_concurrency", 5)
+
+        # Record the request_timeout each _fetch_integration call receives.
+        seen: dict[str, float | None] = {}
+
+        async def fake_fetch_integration(
+            code: str, _client: Any, request_timeout: float | None = None
+        ) -> dict[str, Any]:
+            seen[code] = request_timeout
+            base = {
+                "symbol": code,
+                "name": code,
+                "per": 10,
+                "pbr": 1.0,
+                "market_cap": 100,
+                "current_price": 1,
+                "change_pct": 0.0,
+                "industry_code": "123",
+                "peers_raw": [],
+            }
+            if code == "000100":
+                base["peers_raw"] = [{"itemCode": "000200"}]
+            return base
+
+        class FakeResponse:
+            content = b"<html><head><title>x : Npay</title></head></html>"
+
+        class FakeClient:
+            async def __aenter__(self) -> FakeClient:
+                return self
+
+            async def __aexit__(self, *_a: Any) -> None:
+                return None
+
+            async def get(self, url: str, params: Any = None) -> FakeResponse:
+                return FakeResponse()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **_k: FakeClient())
+        monkeypatch.setattr(
+            naver_finance.valuation, "_fetch_integration", fake_fetch_integration
+        )
+
+        await naver_finance.fetch_sector_peers("000100", limit=1)
+
+        assert seen["000100"] is None, "target must keep the client-level 10s timeout"
+        assert seen["000200"] == 5.0, "peer must use the short per-request timeout"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestFetchSectorPeersTrim:
+    async def test_no_overfetch_when_integration_has_enough_peers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "naver_peer_fetch_concurrency", 10)
+
+        # Integration returns 8 peers; limit=5 -> should fetch exactly 5, not 10.
+        peers_raw = [{"itemCode": f"90000{i}"} for i in range(1, 9)]
+        fetched_peer_codes: list[str] = []
+
+        async def fake_fetch_integration(
+            code: str, _client: Any, request_timeout: float | None = None
+        ) -> dict[str, Any]:
+            if code != "000100":
+                fetched_peer_codes.append(code)
+            base = {
+                "symbol": code,
+                "name": code,
+                "per": 10,
+                "pbr": 1.0,
+                "market_cap": 100,
+                "current_price": 1,
+                "change_pct": 0.0,
+                "industry_code": "123",
+                "peers_raw": [],
+            }
+            if code == "000100":
+                base["peers_raw"] = peers_raw
+            return base
+
+        sector_gets: list[Any] = []
+
+        class FakeResponse:
+            content = (
+                "<html><head><title>반도체 : Npay 증권</title></head>"
+                "<body><table class='type_5'>"
+                "<tr><td><a href='/item/main.naver?code=777777'>P</a></td></tr>"
+                "</table></body></html>"
+            ).encode("euc-kr")
+
+        class FakeClient:
+            async def __aenter__(self) -> FakeClient:
+                return self
+
+            async def __aexit__(self, *_a: Any) -> None:
+                return None
+
+            async def get(self, url: str, params: Any = None) -> FakeResponse:
+                sector_gets.append((url, params))
+                return FakeResponse()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **_k: FakeClient())
+        monkeypatch.setattr(
+            naver_finance.valuation, "_fetch_integration", fake_fetch_integration
+        )
+
+        result = await naver_finance.fetch_sector_peers("000100", limit=5)
+
+        assert len(fetched_peer_codes) == 5, (
+            f"expected 5 peer fetches, got {len(fetched_peer_codes)}"
+        )
+        # sector name still resolved from the scrape (dual-purpose page)
+        assert result["sector"] == "반도체"
+        # sector page still fetched exactly once (never skipped)
+        assert len(sector_gets) == 1
+        # scrape-derived extra (777777) must NOT appear — integration peers sufficed
+        assert "777777" not in fetched_peer_codes
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+class TestFetchSectorPeersCache:
+    async def test_target_served_from_integration_cache(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import json
+
+        from app.core.config import settings
+        from app.services.naver_finance import peer_cache
+
+        monkeypatch.setattr(settings, "naver_peer_cache_enabled", True)
+        monkeypatch.setattr(settings, "naver_peer_fetch_concurrency", 5)
+
+        class _FakeRedis:
+            def __init__(self) -> None:
+                self.store: dict[str, str] = {}
+
+            async def get(self, key: str) -> str | None:
+                return self.store.get(key)
+
+            async def set(self, key: str, value: str, ex: int | None = None) -> None:
+                self.store[key] = value
+
+        fake = _FakeRedis()
+        fake.store["naver_peer:integ:000100"] = json.dumps(
+            {
+                "symbol": "000100",
+                "name": "CachedTarget",
+                "per": 7,
+                "pbr": 0.9,
+                "market_cap": 500,
+                "current_price": 12345,
+                "change_pct": 2.0,
+                "industry_code": "123",
+                "peers_raw": [{"itemCode": "000200"}],
+            }
+        )
+
+        async def fake_get_client() -> Any:
+            return fake
+
+        monkeypatch.setattr(peer_cache, "_get_redis_client", fake_get_client)
+
+        async def fake_fetch_integration(
+            code: str, _client: Any, request_timeout: float | None = None
+        ) -> dict[str, Any]:
+            if code == "000100":
+                raise AssertionError("target must be served from cache, not fetched")
+            return {
+                "symbol": code,
+                "name": "Peer",
+                "per": 11,
+                "pbr": 1.2,
+                "market_cap": 900,
+                "current_price": 40000,
+                "change_pct": 0.5,
+                "industry_code": "123",
+                "peers_raw": [],
+            }
+
+        class FakeResponse:
+            content = b"<html><head><title>x : Npay</title></head></html>"
+
+        class FakeClient:
+            async def __aenter__(self) -> FakeClient:
+                return self
+
+            async def __aexit__(self, *_a: Any) -> None:
+                return None
+
+            async def get(self, url: str, params: Any = None) -> FakeResponse:
+                return FakeResponse()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **_k: FakeClient())
+        monkeypatch.setattr(
+            naver_finance.valuation, "_fetch_integration", fake_fetch_integration
+        )
+
+        result = await naver_finance.fetch_sector_peers("000100", limit=1)
+
+        assert result["name"] == "CachedTarget"
+        assert result["current_price"] == 12345
+        assert result["peers"][0]["symbol"] == "000200"

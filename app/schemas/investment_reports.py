@@ -54,6 +54,10 @@ ItemIntentLiteral = Literal[
     "rebalance_review",
 ]
 TargetKindLiteral = Literal["asset", "index", "fx"]
+# ROB-690 — explicit position-direction opt-in for R:R computation. Input-only:
+# the resolved direction is echoed back on evidence_snapshot["trade_setup"]["direction"],
+# so no DB column is needed for this field.
+TradeDirectionLiteral = Literal["long", "short"]
 # ROB-459 P1 — freshness of one structured evidence row / the item overall.
 ItemEvidenceFreshnessLiteral = Literal["fresh", "soft_stale", "stale", "unknown"]
 ItemStatusLiteral = Literal[
@@ -61,7 +65,8 @@ ItemStatusLiteral = Literal[
 ]
 
 WatchMetricLiteral = Literal["price", "rsi", "trade_value"]
-WatchOperatorLiteral = Literal["above", "below"]
+WatchOperatorLiteral = Literal["above", "below", "between"]
+WatchFlatOperatorLiteral = Literal["above", "below"]
 WatchClauseOpLiteral = Literal["above", "below", "between"]
 WatchCombineLiteral = Literal["and"]
 WatchActionModeLiteral = Literal[
@@ -136,7 +141,7 @@ class WatchConditionPayload(BaseModel):
 
     # legacy flat (optional)
     metric: WatchMetricLiteral | None = None
-    operator: WatchOperatorLiteral | None = None
+    operator: WatchFlatOperatorLiteral | None = None
     threshold: Decimal | None = None
     threshold_key: str | None = None
     target_kind: TargetKindLiteral = "asset"
@@ -326,9 +331,21 @@ class IngestReportItem(BaseModel):
     entry_plan: list[ReportItemPriceLevelPayload] = Field(default_factory=list)
     stop_loss: ReportItemPriceLevelPayload | None = None
     target_price: ReportItemPriceLevelPayload | None = None
+    # ROB-690 — explicit short opt-in for R:R computation (long is the
+    # inferred default from side/intent; short requires this field).
+    position_direction: TradeDirectionLiteral | None = None
     linked_order_ids: list[LinkedOrderRefPayload] = Field(default_factory=list)
     watch_condition: WatchConditionPayload | None = None
     trigger_checklist: list[str] = Field(default_factory=list)
+    # ROB-693 — advisory narrative bullets: "what would invalidate this
+    # thesis". Hermes-authored, list[str] like reasons/warnings/
+    # trigger_checklist (no typed block — that would overlap the
+    # scanner-executable WatchInvalidation/WatchConditionPayload). auto_trader
+    # only persists (evidence_snapshot["invalidation_triggers"]) + renders;
+    # it must never self-populate this field (ROB-501 spirit; see the static
+    # boundary scan in
+    # tests/services/action_report/snapshot_backed/test_no_self_authored_invalidation.py).
+    invalidation_triggers: list[str] = Field(default_factory=list)
     max_action: dict[str, Any] = Field(default_factory=dict)
     valid_until: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -372,6 +389,21 @@ class IngestReportItem(BaseModel):
             conflicts.append("target_price")
         if self.linked_order_ids and "linked_order_ids" in self.evidence_snapshot:
             conflicts.append("linked_order_ids")
+        # ROB-693 — invalidation_triggers is caller(Hermes)-authored, like
+        # structured_evidence/entry_plan above: reject only when the caller
+        # ALSO stuffs the same key into evidence_snapshot directly (duplicate
+        # source of truth), not unconditionally like trade_setup below (which
+        # is server-computed and never caller-suppliable).
+        if (
+            self.invalidation_triggers
+            and "invalidation_triggers" in self.evidence_snapshot
+        ):
+            conflicts.append("invalidation_triggers")
+        # ROB-690 — trade_setup is server-computed R:R only; callers must not
+        # inject it directly (trust boundary: server arithmetic is the sole
+        # source of trade_setup, never caller-supplied evidence_snapshot).
+        if "trade_setup" in self.evidence_snapshot:
+            conflicts.append("trade_setup")
         if conflicts:
             raise ValueError(
                 "typed item fields must not duplicate reserved evidence_snapshot keys: "
@@ -678,6 +710,47 @@ class ActivateWatchRequest(BaseModel):
     attach_recommendation: bool = False
 
 
+class CreateInvestmentWatchRequest(BaseModel):
+    """Create an active watch alert without an investment_report/item source."""
+
+    market: MarketLiteral
+    symbol: str = Field(min_length=1)
+    intent: ItemIntentLiteral
+    watch_condition: WatchConditionPayload
+    rationale: str = Field(min_length=1)
+    valid_until: datetime
+    created_by: str = Field(min_length=1)
+    trigger_checklist: list[str] = Field(default_factory=list)
+    max_action: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("created_by", "symbol", "rationale")
+    @classmethod
+    def _strip_non_empty(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("value must not be blank")
+        return cleaned
+
+    @field_validator("valid_until")
+    @classmethod
+    def _valid_until_must_be_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("valid_until must be timezone-aware")
+        return value
+
+
+class InvestmentWatchCreateResponse(BaseModel):
+    """``investment_watch_create`` MCP return shape."""
+
+    success: bool = True
+    idempotent: bool
+    alert: InvestmentWatchAlertResponse
+
+
 # ---------------------------------------------------------------------------
 # Response models (Plan 3 — HTTP / MCP read surface)
 # ---------------------------------------------------------------------------
@@ -732,6 +805,76 @@ class InvestmentReportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
+class LinkedOrderView(BaseModel):
+    """ROB-554 — read-side view of a live order linked to a report item.
+
+    Sourced from review.live_order_ledger (US/crypto) and
+    review.kis_live_order_ledger (KR) by report_item_uuid (ROB-473). Carries
+    the reconcile-written fill rollup so the decision-log card can show
+    "rationale → order → fill status" without joining the fills table.
+    """
+
+    broker: str | None = None
+    account_scope: str | None = None
+    market: str | None = None
+    order_no: str | None = None
+    ledger_id: int
+    symbol: str | None = None
+    side: str | None = None
+    status: str | None = None
+    filled_qty: Decimal | None = None
+    avg_fill_price: Decimal | None = None
+    order_time: str | None = None
+    reconciled_at: datetime | None = None
+    exit_reason: str | None = None
+    thesis: str | None = None
+    report_item_uuid: UUID | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ForecastLinkResponse(BaseModel):
+    """ROB-715 — an item's own forecast, projected for the audit surface."""
+
+    forecast_id: str
+    status: str
+    outcome: bool | None = None
+    review_date: str | None = None
+    direction: str | None = None
+    target_price: float | None = None
+    probability: float
+    brier_score: float | None = None
+    resolution_source: str | None = None
+    correlation_id: str | None = None
+
+
+class RetrospectiveLinkResponse(BaseModel):
+    """ROB-715 — an item's own retrospective, projected for the audit surface."""
+
+    retrospective_id: int
+    outcome: str
+    lesson: str | None = None
+    result_summary: str | None = None
+    root_cause_class: str | None = None
+    trigger_type: str | None = None
+    pnl_pct: float | None = None
+    created_at: str | None = None
+    correlation_id: str | None = None
+
+
+class StockDetailOrderLedgerResponse(BaseModel):
+    """ROB-559 — per-symbol live order history for the stock-detail page.
+
+    Reuses ``LinkedOrderView`` (status + rationale + fill rollup), keyed by
+    symbol instead of report_item_uuid. Live-only; most-recent-first.
+    """
+
+    count: int
+    items: list[LinkedOrderView]
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class InvestmentReportItemResponse(BaseModel):
     """Single ``investment_report_items`` row."""
 
@@ -770,6 +913,14 @@ class InvestmentReportItemResponse(BaseModel):
     cited_symbol_report_uuid: UUID | None = None
     cited_dimension_report_uuids: list[UUID] = Field(default_factory=list)
     cited_snapshot_uuids: list[UUID] = Field(default_factory=list)
+
+    # ROB-554 — live orders linked to this item via report_item_uuid (ROB-473),
+    # with reconcile-written fill rollup. None when the item has no linked orders;
+    # set post-validation by the bundle serializers, not read from the ORM row.
+    linked_orders: list[LinkedOrderView] | None = None
+    # ROB-715 — backend-derived one-line summary of evidence_snapshot's
+    # structured_evidence (frontend never parses the nested structure).
+    structured_evidence_summary: str | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -1026,6 +1177,13 @@ class InvestmentReportBundle(BaseModel):
     news_citations: list[InvestmentReportNewsCitationResponse] = Field(
         default_factory=list
     )
+    # ROB-715 — item→forecast/retrospective exact-join maps keyed by item UUID.
+    forecasts_by_item_uuid: dict[str, list[ForecastLinkResponse]] = Field(
+        default_factory=dict
+    )
+    retrospectives_by_item_uuid: dict[str, list[RetrospectiveLinkResponse]] = Field(
+        default_factory=dict
+    )
 
 
 class InvestmentReportListResponse(BaseModel):
@@ -1072,6 +1230,14 @@ class OperatingBriefingResponse(BaseModel):
     active_watches: dict[str, Any]
     latest_report: dict[str, Any] | None
     session_context: dict[str, Any]
+    # ROB-637 — metadata-only recent analysis artifacts; defaulted so
+    # pre-existing constructors of this shape keep validating.
+    analysis_artifacts: dict[str, Any] = Field(default_factory=dict)
+    # ROB-646 — lightweight policy version pin ({version, content_hash}) so a
+    # session records which policy it ran under. Defaulted for back-compat.
+    policy_version: dict[str, Any] | None = None
+    # ROB-734 — realized trading scoreboards/delta. Defaulted for back-compat.
+    trading_scoreboards: dict[str, Any] | None = None
 
 
 class InvestmentReportCreateResponse(BaseModel):
@@ -1080,6 +1246,9 @@ class InvestmentReportCreateResponse(BaseModel):
     success: bool = True
     idempotent: bool
     report: InvestmentReportResponse
+    # ROB-712 — advisory, fail-open. Non-empty when a deferred_no_action item
+    # omits confidence (negative-class calibration needs confidence + forecast).
+    warnings: list[str] = Field(default_factory=list)
 
 
 class InvestmentReportDecideItemResponse(BaseModel):

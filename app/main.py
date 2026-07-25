@@ -21,16 +21,26 @@ from app.core.taskiq_broker import broker
 from app.middleware.auth import AuthMiddleware
 from app.middleware.csrf import TemplateFormCSRFMiddleware
 from app.monitoring.sentry import capture_exception, init_sentry
-from app.monitoring.trade_notifier import get_trade_notifier
+from app.monitoring.trade_notifier.runtime import (
+    configure_trade_notifier_from_settings,
+    shutdown_trade_notifier,
+)
 from app.routers import (
+    agent_callback,
     alpaca_paper_ledger,
     candidate_discovery,
     deprecated_pages,
     health,
     invest_api,
     invest_app_spa,
+    invest_artifacts,
     invest_fills,
+    invest_forecasts,
+    invest_open_orders,
+    invest_retrospectives,
     invest_scalping,
+    invest_session_context,
+    invest_watches,
     invest_web_spa,
     investment_dimension_reports,
     investment_hermes_http,
@@ -39,13 +49,10 @@ from app.routers import (
     investment_stage_runs,
     kospi200,
     market_events,
-    n8n,
-    n8n_scan,
     news_analysis,
     news_issues,
     news_radar,
     news_relevance,
-    openclaw_callback,
     order_estimation,
     order_previews,
     portfolio_actions,
@@ -57,6 +64,7 @@ from app.routers import (
     screener,
     strategy_events,
     symbol_settings,
+    telegram_callback,
     test,
     trade_journals,
     user_defaults,
@@ -170,9 +178,7 @@ def create_app() -> FastAPI:
     app.include_router(screener.router)
     app.include_router(health.router)
     app.include_router(news_analysis.router)
-    app.include_router(n8n.router)
-    app.include_router(n8n_scan.router)
-    app.include_router(openclaw_callback.router)
+    app.include_router(agent_callback.router)
     app.include_router(user_defaults.router)
     app.include_router(order_estimation.router)
     app.include_router(order_previews.router)
@@ -190,6 +196,12 @@ def create_app() -> FastAPI:
     app.include_router(invest_api.router)
     app.include_router(invest_scalping.router)
     app.include_router(invest_fills.router)
+    app.include_router(invest_open_orders.router)
+    app.include_router(invest_watches.router)
+    app.include_router(invest_retrospectives.router)
+    app.include_router(invest_forecasts.router)
+    app.include_router(invest_artifacts.router)
+    app.include_router(invest_session_context.router)
     app.include_router(invest_app_spa.router)
     app.include_router(invest_web_spa.router)
     app.include_router(trade_journals.router)
@@ -206,6 +218,19 @@ def create_app() -> FastAPI:
     app.include_router(research_reports.router)
     app.include_router(strategy_events.router)
     app.include_router(kospi200.router)
+    # ROB-816 PR 2 — flag-gated, same rationale as investment_snapshots
+    # above. The PRIMARY rejection layer for unauthenticated probes against
+    # the Telegram webhook path prefix is AuthMiddleware's
+    # TELEGRAM_CALLBACK_PATH_PREFIX branch (app/middleware/auth.py), which
+    # fires on the path prefix alone and fails closed (403 when the shared
+    # token isn't configured, 401 on a wrong token) independent of this flag
+    # -- middleware runs before routing, so that branch fires whether or not
+    # the router below is mounted. Keeping the router itself absent when the
+    # flag is off is a secondary, defense-in-depth layer (a 404 at FastAPI's
+    # routing layer if middleware were ever bypassed/misconfigured), not the
+    # reason probes are rejected today.
+    if settings.ORDER_PROPOSALS_TELEGRAM_ENABLED:
+        app.include_router(telegram_callback.router)
     app.include_router(websocket.router)
     if settings.EXPOSE_MONITORING_TEST_ROUTES:
         app.include_router(test.router)
@@ -221,8 +246,8 @@ def create_app() -> FastAPI:
             re.compile(r"^/api/"),
             re.compile(r"^/auth/"),
             re.compile(r"^/admin/"),
-            re.compile(r"^/n8n/"),
             re.compile(r"^/openclaw/"),
+            re.compile(r"^/agent/"),
             re.compile(r"^/ws/"),
             re.compile(r"^/kis/"),
             re.compile(r"^/upbit/"),
@@ -245,74 +270,20 @@ def create_app() -> FastAPI:
 
 
 async def setup_monitoring() -> None:
-    """
-    Setup monitoring and observability for the application.
+    """Initialize monitoring services.
 
-    This includes:
+    Includes:
     - Discord webhook trade notifier (primary)
     - Telegram trade notifier (fallback)
     """
-    # Check if any notification system is configured
-    has_discord = any(
-        [
-            settings.discord_webhook_us,
-            settings.discord_webhook_kr,
-            settings.discord_webhook_crypto,
-            settings.discord_webhook_alerts,
-        ]
-    )
-    has_telegram = settings.telegram_token and settings.telegram_chat_id
-
-    if not has_discord and not has_telegram:
-        logger.info("Trade notifier is disabled (no Discord or Telegram configured)")
-        return
-
-    try:
-        # Configure trade notifier with Discord and/or Telegram
-        trade_notifier = get_trade_notifier()
-
-        # Telegram is optional - use empty string if not configured
-        bot_token = settings.telegram_token or ""
-        chat_ids = settings.telegram_chat_ids if has_telegram else []
-
-        trade_notifier.configure(
-            bot_token=bot_token,
-            chat_ids=chat_ids,
-            enabled=True,
-            discord_webhook_us=settings.discord_webhook_us,
-            discord_webhook_kr=settings.discord_webhook_kr,
-            discord_webhook_crypto=settings.discord_webhook_crypto,
-            discord_webhook_alerts=settings.discord_webhook_alerts,
-        )
-
-        # Log what was configured
-        configured_systems = []
-        if has_discord:
-            webhook_count = sum(
-                [
-                    bool(settings.discord_webhook_us),
-                    bool(settings.discord_webhook_kr),
-                    bool(settings.discord_webhook_crypto),
-                    bool(settings.discord_webhook_alerts),
-                ]
-            )
-            configured_systems.append(f"Discord ({webhook_count} webhook(s))")
-        if has_telegram:
-            configured_systems.append(f"Telegram (chat_id={settings.telegram_chat_id})")
-
-        logger.info(f"Trade notifier initialized: {', '.join(configured_systems)}")
-
-    except Exception as e:
-        logger.error(f"Failed to initialize trade notifier: {e}", exc_info=True)
+    configure_trade_notifier_from_settings(log_context="Trade notifier")
 
 
 async def cleanup_monitoring() -> None:
     """Cleanup monitoring resources."""
     # Shutdown trade notifier
     try:
-        trade_notifier = get_trade_notifier()
-        await trade_notifier.shutdown()
-        logger.info("Trade notifier shutdown complete")
+        await shutdown_trade_notifier(log_context="Trade notifier")
     except Exception as e:
         logger.error(f"Error during trade notifier shutdown: {e}", exc_info=True)
 

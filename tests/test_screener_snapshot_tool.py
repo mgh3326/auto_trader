@@ -95,6 +95,26 @@ async def test_unwired_preset_with_filters_warns(patched) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_support_proximity_preset_dispatches_and_warns_on_filters(
+    patched,
+) -> None:
+    """ROB-976: preset='support_proximity' reaches build_screener_results (MCP
+    exposure, AC2/AC4) and — although its persisted base snapshot is identified,
+    its adjustable-filter catalog is not wired — filters= produces the honest
+    '필터 미적용' warning
+    rather than silently dropping them."""
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="support_proximity",
+        market="kr",
+        filters=[{"field": "per", "operator": "lte", "value": 8}],
+    )
+    assert patched["preset_id"] == "support_proximity"
+    assert out["snapshotKind"] == "invest_screener_snapshots"
+    assert any("배선되지 않" in w for w in out["warnings"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_high_yield_value_with_filters_warns(patched) -> None:
     # ROB-445: high_yield_value HAS a snapshot_kind (market_valuation_snapshots) but
     # build_screener_results does NOT thread its filters → it must still warn (the old
@@ -201,7 +221,11 @@ async def test_enriches_only_returned_page(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
     async def _fake_enrich_page(
-        *, rows: list[dict[str, Any]], market: str, session_factory
+        *,
+        rows: list[dict[str, Any]],
+        market: str,
+        session_factory,
+        opinion_provider=None,
     ):
         captured["symbols"] = [row["symbol"] for row in rows]
         captured["market"] = market
@@ -690,6 +714,53 @@ async def test_snapshot_tool_filters_exclude_watched_held(monkeypatch) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_snapshot_tool_reports_excluded_held_count(monkeypatch) -> None:
+    """ROB-543 Slice B: the count of rows dropped by exclude_held is surfaced as
+    excluded_held_count (0 when exclude_held is off)."""
+
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {"symbol": "S1", "isWatched": False, "isHeld": True},
+                    {"symbol": "S2", "isWatched": False, "isHeld": True},
+                    {"symbol": "S3", "isWatched": False, "isHeld": False},
+                ],
+                "warnings": [],
+            }
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+
+    async def _fake_build_async(**kwargs: Any) -> _Resp:
+        return _Resp()
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build_async,
+    )
+
+    # exclude_held=True drops the two held rows → count == 2
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr", exclude_held=True
+    )
+    assert [r["symbol"] for r in out["results"]] == ["S3"]
+    assert out["excluded_held_count"] == 2
+    assert out["discoveryFilters"]["exclude_held"] is True
+
+    # exclude_held=False (default) → no rows dropped → count == 0
+    out2 = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers", market="kr"
+    )
+    assert out2["excluded_held_count"] == 0
+    assert len(out2["results"]) == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_snapshot_tool_exclude_watched_warns_unsupported_in_mcp(
     monkeypatch,
 ) -> None:
@@ -815,6 +886,20 @@ async def test_snapshot_tool_filters_market_cap_and_analyst(monkeypatch) -> None
         preset="consecutive_gainers", market="kr", min_market_cap_eok=3000
     )
     assert [r["symbol"] for r in out["results"]] == ["S1"]
+
+    # ROB-686: min_analyst_* now resolves counts via the cache-aside resolver
+    # BEFORE enrichment, so stub resolve_consensus_counts directly (the
+    # _fake_enrich_page consensus stub above is no longer the filter input).
+    async def _fake_counts(*, symbols, market, redis_client=None, memo=None, **kw):
+        return {
+            "S1": {"totalCount": 2, "buyCount": 2},
+            "S2": {"totalCount": 1, "buyCount": 0},
+        }
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.analyst_consensus_cache.resolve_consensus_counts",
+        _fake_counts,
+    )
 
     # Min analyst buy 1 -> S2 gone
     out = await tool.screen_stocks_snapshot_impl(
@@ -970,3 +1055,54 @@ async def test_snapshot_tool_analyst_filter_rejects_large_unpaged_enrichment(
     assert "error" in out
     assert "analyst enrichment row cap" in out["error"]
     assert out["results"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_min_analyst_filters_via_counts_and_enriches_only_page(
+    monkeypatch,
+) -> None:
+    _patch_build_with_n_results(monkeypatch, 5)  # symbols S0..S4
+
+    async def _fake_counts(*, symbols, market, redis_client=None, memo=None, **kw):
+        # S0,S1,S2 qualify (>=3), S3,S4 do not
+        return {
+            s: {"totalCount": (3 if i < 3 else 1), "buyCount": (2 if i < 3 else 0)}
+            for i, s in enumerate(symbols)
+        }
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.analyst_consensus_cache.resolve_consensus_counts",
+        _fake_counts,
+    )
+
+    enriched_symbols: list[list[str]] = []
+
+    async def _fake_enrich_page(
+        *, rows, market, session_factory, opinion_provider=None
+    ):
+        enriched_symbols.append([r["symbol"] for r in rows])
+        return {
+            "results": [
+                {**r, "analystLabel": "x", "analysisContext": {}} for r in rows
+            ],
+            "summary": {"attempted": len(rows), "warnings": []},
+        }
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_analysis_enrichment.enrich_snapshot_page",
+        _fake_enrich_page,
+    )
+
+    out = await tool.screen_stocks_snapshot_impl(
+        preset="consecutive_gainers",
+        market="kr",
+        min_analyst_count=3,
+        limit=2,
+        offset=0,
+    )
+    # 3 qualified, page of 2
+    assert out["pagination"]["total_available"] == 3
+    assert len(out["results"]) == 2
+    # enrichment saw ONLY the 2 returned page rows, not all matched/qualified rows
+    assert enriched_symbols == [["S0", "S1"]]

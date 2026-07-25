@@ -484,14 +484,14 @@ def _analyze_stock_ignored(symbol: str) -> dict:
     return {
         "status": "ignored",
         "symbol": symbol,
-        "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+        "message": "Gemini analyzer removed. Agent-based analysis coming soon.",
     }
 
 
 async def run_analysis_for_my_domestic_stocks() -> dict:
     return {
         "status": "ignored",
-        "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+        "message": "Gemini analyzer removed. Agent-based analysis coming soon.",
         "results": [],
     }
 
@@ -499,7 +499,7 @@ async def run_analysis_for_my_domestic_stocks() -> dict:
 async def run_analysis_for_my_overseas_stocks() -> dict:
     return {
         "status": "ignored",
-        "message": "Gemini analyzer removed. OpenClaw-based analysis coming soon.",
+        "message": "Gemini analyzer removed. Agent-based analysis coming soon.",
         "results": [],
     }
 

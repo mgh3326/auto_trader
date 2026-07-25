@@ -61,6 +61,31 @@ def test_main_returns_one_when_tick_has_errors(
     assert out["error_count"] == 1
 
 
+def test_main_prints_entered_reason_codes_when_present(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ROB-907: the CLI is a thin JSON passthrough — a blocked entry's
+    reason_codes (produced upstream by run_scalping_tick's TickSummary) must
+    reach stdout unmodified so Prefect logs carry the diagnosis."""
+
+    async def _fake_tick() -> dict:
+        return {
+            "status": "ran",
+            "error_count": 0,
+            "entered_count": 1,
+            "entered": [["usdm_futures", "XRPUSDT", "blocked", ["spread_too_wide"]]],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(cli, "run_demo_scalping_tick", _fake_tick)
+    rc = cli.main([])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["entered"] == [
+        ["usdm_futures", "XRPUSDT", "blocked", ["spread_too_wide"]]
+    ]
+
+
 def test_main_returns_one_and_emits_error_json_on_exception(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

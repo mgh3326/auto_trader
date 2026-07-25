@@ -13,6 +13,7 @@ import re
 from typing import Any, Protocol
 
 from app.services.brokers.kiwoom import constants
+from app.services.brokers.kiwoom.validation import normalize_krx_symbol
 
 _SAFE_ORDER_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
@@ -63,6 +64,13 @@ def _ensure_positive_int(name: str, value: int) -> int:
     return candidate
 
 
+def _ensure_symbol(value: str) -> str:
+    try:
+        return normalize_krx_symbol(value)
+    except ValueError as exc:
+        raise KiwoomOrderRejected(str(exc)) from exc
+
+
 class KiwoomDomesticOrderClient:
     def __init__(self, client: _SupportsPostApi) -> None:
         self._client = client
@@ -79,7 +87,7 @@ class KiwoomDomesticOrderClient:
         order_price = _ensure_positive_int("price", price)
         body = {
             "dmst_stex_tp": _ensure_krx(exchange),
-            "stk_cd": str(symbol).strip(),
+            "stk_cd": _ensure_symbol(symbol),
             "ord_qty": str(order_quantity),
             "ord_uv": str(order_price),
             "trde_tp": "0",  # 보통가 — limit
@@ -102,7 +110,7 @@ class KiwoomDomesticOrderClient:
         order_price = _ensure_positive_int("price", price)
         body = {
             "dmst_stex_tp": _ensure_krx(exchange),
-            "stk_cd": str(symbol).strip(),
+            "stk_cd": _ensure_symbol(symbol),
             "ord_qty": str(order_quantity),
             "ord_uv": str(order_price),
             "trde_tp": "0",
@@ -127,7 +135,7 @@ class KiwoomDomesticOrderClient:
         body = {
             "dmst_stex_tp": _ensure_krx(exchange),
             "orig_ord_no": _ensure_order_id(original_order_no),
-            "stk_cd": str(symbol).strip(),
+            "stk_cd": _ensure_symbol(symbol),
             "mdfy_qty": str(order_quantity),
             "mdfy_uv": str(order_price),
         }
@@ -149,7 +157,7 @@ class KiwoomDomesticOrderClient:
         body = {
             "dmst_stex_tp": _ensure_krx(exchange),
             "orig_ord_no": _ensure_order_id(original_order_no),
-            "stk_cd": str(symbol).strip(),
+            "stk_cd": _ensure_symbol(symbol),
             "cncl_qty": str(order_quantity),
         }
         return await self._client.post_api(

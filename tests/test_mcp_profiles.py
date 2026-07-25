@@ -12,16 +12,36 @@ from typing import Any, cast
 
 import pytest
 
+from app.core.config import settings
 from app.mcp_server.profiles import McpProfile, resolve_mcp_profile
+from app.mcp_server.tooling import tradingcodex_execution_registration
+from app.mcp_server.tooling.account_read_registration import (
+    ACCOUNT_READ_FORBIDDEN_TOOL_NAMES,
+    ACCOUNT_READ_TOOL_NAMES,
+)
 from app.mcp_server.tooling.alpaca_paper import ALPACA_PAPER_READONLY_TOOL_NAMES
+from app.mcp_server.tooling.alpaca_paper_automated_orders import (
+    ALPACA_PAPER_AUTOMATED_TOOL_NAMES,
+)
 from app.mcp_server.tooling.alpaca_paper_orders import (
     ALPACA_PAPER_MUTATING_TOOL_NAMES,
 )
 from app.mcp_server.tooling.alpaca_paper_preview import ALPACA_PAPER_PREVIEW_TOOL_NAMES
+from app.mcp_server.tooling.analysis_readonly_registration import (
+    ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES,
+    ANALYSIS_READONLY_TOOL_NAMES,
+)
+from app.mcp_server.tooling.market_quote_snapshot_tools import (
+    MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
+)
+from app.mcp_server.tooling.order_proposal_tools import ORDER_PROPOSAL_TOOL_NAMES
 from app.mcp_server.tooling.orders_kis_variants import (
     KIS_LIVE_ORDER_TOOL_NAMES,
     KIS_MOCK_ORDER_TOOL_NAMES,
     LIVE_RECONCILE_TOOL_NAMES,
+)
+from app.mcp_server.tooling.orders_kiwoom_us_variants import (
+    KIWOOM_MOCK_US_TOOL_NAMES,
 )
 from app.mcp_server.tooling.orders_kiwoom_variants import KIWOOM_MOCK_TOOL_NAMES
 from app.mcp_server.tooling.orders_registration import ORDER_TOOL_NAMES
@@ -32,8 +52,18 @@ from app.mcp_server.tooling.paper_account_registration import PAPER_ACCOUNT_TOOL
 from app.mcp_server.tooling.paper_analytics_registration import (
     PAPER_ANALYTICS_TOOL_NAMES,
 )
+from app.mcp_server.tooling.paper_execution_registration import (
+    PAPER_EXECUTION_TOOL_NAMES,
+)
 from app.mcp_server.tooling.paper_journal_registration import PAPER_JOURNAL_TOOL_NAMES
+from app.mcp_server.tooling.paper_limit_order_handler import (
+    PAPER_LIMIT_ORDER_TOOL_NAMES,
+)
 from app.mcp_server.tooling.registry import register_all_tools
+from app.mcp_server.tooling.tradingcodex_execution_registration import (
+    TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES,
+    TRADINGCODEX_EXECUTION_TOOL_NAMES,
+)
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
 from tests._mcp_tooling_support import DummyMCP
 
@@ -42,6 +72,7 @@ _ALPACA_PAPER_TOOL_NAMES = (
     ALPACA_PAPER_READONLY_TOOL_NAMES
     | ALPACA_PAPER_PREVIEW_TOOL_NAMES
     | ALPACA_PAPER_MUTATING_TOOL_NAMES
+    | MARKET_QUOTE_SNAPSHOT_TOOL_NAMES
 )
 _US_PAPER_TOOL_NAMES = _ALPACA_PAPER_TOOL_NAMES | US_DUAL_PAPER_TOOL_NAMES
 _DB_PAPER_TOOL_NAMES = (
@@ -60,7 +91,9 @@ _CRYPTO_RESEARCH_TOOL_NAMES = {
     "get_upbit_index",
     "get_upbit_altseason",
     "get_crypto_fear_greed",
+    "get_crypto_top_movers",
 }
+
 # ROB-503: generic 이름은 제거됨 (crypto-only 구현인데 이름이 시장 비특정).
 # get_fear_greed_index는 ROB-488에서 get_crypto_fear_greed로 리네임.
 _REMOVED_GENERIC_TOOL_NAMES = {
@@ -68,6 +101,16 @@ _REMOVED_GENERIC_TOOL_NAMES = {
     "get_funding_rate",
     "get_open_interest",
     "get_long_short_ratio",
+}
+
+_EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES = {
+    "kiwoom_mock_preview_order",
+    "kiwoom_mock_place_order",
+    "kiwoom_mock_cancel_order",
+    "kiwoom_mock_modify_order",
+    "kiwoom_mock_get_order_history",
+    "kiwoom_mock_get_positions",
+    "kiwoom_mock_get_orderable_cash",
 }
 
 
@@ -95,10 +138,11 @@ class TestDefaultProfile:
         assert TOSS_LIVE_ORDER_TOOL_NAMES <= mcp.tools.keys()
 
     def test_does_not_register_split_profile_tools(self) -> None:
+        # US/DB paper surfaces are profile-isolated and never appear in DEFAULT.
+        # kiwoom_mock_* is flag-gated in DEFAULT (ROB-601) — its presence/absence
+        # is owned by ``TestKiwoomDefaultProfileGate``, not this assertion.
         mcp = _build_mcp(McpProfile.DEFAULT)
-        split_only = (
-            _US_PAPER_TOOL_NAMES | _DB_PAPER_TOOL_NAMES | KIWOOM_MOCK_TOOL_NAMES
-        )
+        split_only = _US_PAPER_TOOL_NAMES | _DB_PAPER_TOOL_NAMES
         assert split_only.isdisjoint(mcp.tools.keys())
 
 
@@ -166,6 +210,10 @@ class TestCryptoProfile:
         mcp = _build_mcp(McpProfile.CRYPTO)
         assert {"get_quote", "screen_stocks", "get_holdings"} <= mcp.tools.keys()
 
+    def test_keeps_crypto_discovery_tool(self) -> None:
+        mcp = _build_mcp(McpProfile.CRYPTO)
+        assert "get_crypto_top_movers" in mcp.tools
+
     def test_registers_crypto_trading_surface(self) -> None:
         # A crypto session must be able to trade and settle: generic
         # account_mode order tools are the only Upbit entry point and
@@ -185,6 +233,51 @@ class TestKiwoomProfile:
         mcp = _build_mcp(McpProfile.KIWOOM)
         assert KIWOOM_MOCK_TOOL_NAMES <= mcp.tools.keys()
 
+    def test_registers_kiwoom_mock_us_tools(self) -> None:
+        # ROB-867: KIWOOM profile registers both KR and US namespaces.
+        mcp = _build_mcp(McpProfile.KIWOOM)
+        assert KIWOOM_MOCK_US_TOOL_NAMES <= mcp.tools.keys()
+
+
+class TestKiwoomUsDefaultProfileGate:
+    def test_registers_us_namespace_when_enabled(self, monkeypatch) -> None:
+        monkeypatch.setattr(settings, "kiwoom_mock_us_enabled", True)
+        mcp = _build_mcp(McpProfile.DEFAULT)
+        assert KIWOOM_MOCK_US_TOOL_NAMES <= mcp.tools.keys()
+
+    def test_omits_us_namespace_when_disabled(self, monkeypatch) -> None:
+        monkeypatch.setattr(settings, "kiwoom_mock_us_enabled", False)
+        mcp = _build_mcp(McpProfile.DEFAULT)
+        assert KIWOOM_MOCK_US_TOOL_NAMES.isdisjoint(mcp.tools.keys())
+
+
+class TestKiwoomDefaultProfileGate:
+    """ROB-601: kiwoom_mock_* tools surface in the operator DEFAULT profile when
+    ``settings.kiwoom_mock_enabled`` is true, so analyze→approval→order can run
+    through kiwoom mock in the everyday session (the isolated KIWOOM profile
+    drops every other broker's order surface and cannot substitute it).
+
+    The flag defaults to ``False`` so the out-of-box DEFAULT surface is
+    unchanged (pinned by ``TestOrderSurfaceMatrix``); fail-closed runtime config
+    validation still blocks any tool call without real credentials.
+    """
+
+    def test_registers_kiwoom_mock_in_default_when_flag_enabled(
+        self, monkeypatch
+    ) -> None:
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "kiwoom_mock_enabled", True)
+        mcp = _build_mcp(McpProfile.DEFAULT)
+        assert KIWOOM_MOCK_TOOL_NAMES <= mcp.tools.keys()
+
+    def test_omits_kiwoom_mock_in_default_when_flag_disabled(self, monkeypatch) -> None:
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "kiwoom_mock_enabled", False)
+        mcp = _build_mcp(McpProfile.DEFAULT)
+        assert KIWOOM_MOCK_TOOL_NAMES.isdisjoint(mcp.tools.keys())
+
 
 _ALPACA_MUTATING = ALPACA_PAPER_MUTATING_TOOL_NAMES
 _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
@@ -194,12 +287,51 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
         | KIS_MOCK_ORDER_TOOL_NAMES
         | LIVE_RECONCILE_TOOL_NAMES
         | TOSS_LIVE_ORDER_TOOL_NAMES
+        | PAPER_LIMIT_ORDER_TOOL_NAMES
     ),
     McpProfile.HERMES_PAPER_KIS: set(KIS_MOCK_ORDER_TOOL_NAMES),
     McpProfile.CRYPTO: _LEGACY_ORDER_TOOL_NAMES | LIVE_RECONCILE_TOOL_NAMES,
-    McpProfile.US_PAPER: set(_ALPACA_MUTATING),
+    McpProfile.US_PAPER: set(_ALPACA_MUTATING) | ALPACA_PAPER_AUTOMATED_TOOL_NAMES,
     McpProfile.DB_PAPER: set(),
-    McpProfile.KIWOOM: set(KIWOOM_MOCK_TOOL_NAMES),
+    McpProfile.KIWOOM: KIWOOM_MOCK_TOOL_NAMES | KIWOOM_MOCK_US_TOOL_NAMES,
+    # ROB-697 M1 — shadow-replay registers zero order/mutation tools by design
+    # (frozen-context read + policy + route_request only, early-return).
+    McpProfile.SHADOW_REPLAY: set(),
+    McpProfile.ANALYSIS_READONLY: {"toss_get_positions"},
+    # ROB-760 — account_read exposes read-only order-history tools (they are
+    # in _ALL_ORDER_TOOL_NAMES via ORDER/KIS_LIVE/TOSS_LIVE sets), so they must
+    # be listed here; separate forbidden-surface tests below prove the
+    # mutation/write tools stay absent.
+    McpProfile.ACCOUNT_READ: {
+        "get_order_history",
+        "kis_live_get_order_history",
+        "kiwoom_mock_get_order_history",
+        "kiwoom_mock_get_positions",
+        "kiwoom_mock_get_orderable_cash",
+        "toss_get_order_history",
+        "toss_get_positions",
+        "toss_get_orderable_cash",
+    },
+    McpProfile.TRADINGCODEX_EXECUTION: {
+        "place_order",
+        "cancel_order",
+        "get_order_history",
+        "sell_ladder_fill_preview",
+        "buy_ladder_fill_preview",
+        "kis_live_place_order",
+        "kis_live_cancel_order",
+        "kis_live_get_order_history",
+        *KIWOOM_MOCK_TOOL_NAMES,
+        "toss_preview_order",
+        "toss_place_order",
+        "toss_cancel_order",
+        "toss_get_order_history",
+        "toss_get_positions",
+        "toss_get_orderable_cash",
+    },
+    # Default-off profile: the direct registry exposes zero tools until the
+    # dedicated feature flag is explicitly enabled.
+    McpProfile.PAPER_EXECUTION: set(),
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -207,8 +339,12 @@ _ALL_ORDER_TOOL_NAMES = (
     | KIS_MOCK_ORDER_TOOL_NAMES
     | LIVE_RECONCILE_TOOL_NAMES
     | KIWOOM_MOCK_TOOL_NAMES
+    | KIWOOM_MOCK_US_TOOL_NAMES
     | _ALPACA_MUTATING
+    | ALPACA_PAPER_AUTOMATED_TOOL_NAMES
     | TOSS_LIVE_ORDER_TOOL_NAMES
+    | PAPER_LIMIT_ORDER_TOOL_NAMES
+    | PAPER_EXECUTION_TOOL_NAMES
 )
 
 
@@ -231,15 +367,37 @@ class TestOrderSurfaceMatrix:
         )
 
 
+# ROB-697 M1 — shadow-replay is a deliberate exception to the "every profile
+# has the full read-only research surface" invariant below: it early-returns
+# before the "Always" research-registration block, so it carries NO live-fetch
+# tool (crypto research included). ``TestShadowReplayIsResearchSurfaceException``
+# pins that omission explicitly.
+_PROFILES_WITH_RESEARCH_SURFACE = [
+    p
+    for p in McpProfile
+    if p
+    not in (
+        McpProfile.SHADOW_REPLAY,
+        McpProfile.ANALYSIS_READONLY,
+        McpProfile.ACCOUNT_READ,
+        McpProfile.TRADINGCODEX_EXECUTION,
+        McpProfile.PAPER_EXECUTION,
+    )
+]
+
+
 class TestCryptoResearchToolsAllProfiles:
-    """ROB-503: crypto read-only research tools register on EVERY profile.
+    """ROB-503: crypto read-only research tools register on EVERY profile
+    that reaches the "Always" research block.
 
     ROB-488 had gated them to MCP_PROFILE=crypto, which broke single-server
     operation (crypto live trading runs on the DEFAULT server). Read-only
-    tools carry no order-surface risk, so profile isolation buys nothing.
+    tools carry no order-surface risk, so profile isolation buys nothing —
+    except for shadow-replay (ROB-697), whose validity guard is that it
+    carries NO live-fetch tool at all; see _PROFILES_WITH_RESEARCH_SURFACE.
     """
 
-    @pytest.mark.parametrize("profile", list(McpProfile))
+    @pytest.mark.parametrize("profile", _PROFILES_WITH_RESEARCH_SURFACE)
     def test_crypto_research_tools_registered(self, profile: McpProfile) -> None:
         mcp = _build_mcp(profile)
         missing = _CRYPTO_RESEARCH_TOOL_NAMES - mcp.tools.keys()
@@ -250,6 +408,447 @@ class TestCryptoResearchToolsAllProfiles:
         mcp = _build_mcp(profile)
         leaked = _REMOVED_GENERIC_TOOL_NAMES & mcp.tools.keys()
         assert not leaked, f"profile={profile.value} leaked old names: {sorted(leaked)}"
+
+
+class TestShadowReplayIsResearchSurfaceException:
+    """ROB-697 M1 — pin that shadow-replay is the ONE profile without the
+    default research surface (the load-bearing validity guard: a headless
+    replay must not be able to reach live market data)."""
+
+    def test_shadow_replay_has_no_crypto_research_tools(self) -> None:
+        mcp = _build_mcp(McpProfile.SHADOW_REPLAY)
+        assert _CRYPTO_RESEARCH_TOOL_NAMES.isdisjoint(mcp.tools.keys())
+
+
+class TestAnalysisReadonlyProfile:
+    def test_registers_exact_analysis_readonly_allowlist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            settings, "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED", True, raising=False
+        )
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        assert set(mcp.tools) == ANALYSIS_READONLY_TOOL_NAMES
+
+    def test_bundle_gate_registers_get_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            settings, "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED", True, raising=False
+        )
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        assert "analysis_bundle_get" in mcp.tools
+        assert "analysis_bundle_create" not in mcp.tools
+
+    def test_does_not_register_forbidden_surfaces(self) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        leaked = ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES & mcp.tools.keys()
+        assert not leaked, f"analysis_readonly leaked forbidden tools: {sorted(leaked)}"
+
+    def test_keeps_route_request_inside_registered_surface(self) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        assert "route_request" in mcp.tools
+        assert "get_trading_policy" in mcp.tools
+        assert "get_quote" in mcp.tools
+        assert "place_order" not in mcp.tools
+        assert "toss_place_order" not in mcp.tools
+        assert "toss_get_positions" in mcp.tools
+
+    @pytest.mark.asyncio
+    async def test_analysis_artifact_save_requires_explicit_created_by(self) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        tool = mcp.tools["analysis_artifact_save"]
+
+        result = await tool(
+            market="kr",
+            kind="session_summary",
+            title="missing label",
+            payload={},
+        )
+
+        assert result == {
+            "success": False,
+            "error": "created_by_required",
+            "tool": "analysis_artifact_save",
+            "detail": "analysis_readonly persistence calls must pass an explicit created_by label such as 'codex'.",
+        }
+
+    @pytest.mark.asyncio
+    async def test_session_context_append_requires_created_by_per_entry(self) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        tool = mcp.tools["session_context_append"]
+
+        result = await tool(
+            entries=[
+                {
+                    "market": "kr",
+                    "entry_type": "handoff_note",
+                    "title": "missing label",
+                    "body": "body",
+                }
+            ]
+        )
+
+        assert result["success"] is False
+        assert result["error"] == "created_by_required"
+        assert result["tool"] == "session_context_append"
+        assert result["entry_indexes"] == [0]
+
+    @pytest.mark.asyncio
+    async def test_session_context_append_preserves_validation_for_non_dict_entry(
+        self,
+    ) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        tool = mcp.tools["session_context_append"]
+
+        result = await tool(entries=["not-a-dict"])
+
+        assert result["success"] is False
+        assert result["error"] == "invalid_request"
+
+    def test_persistence_tools_are_registered_but_list_resolve_are_not(self) -> None:
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+        assert {
+            "analysis_artifact_save",
+            "analysis_artifact_get",
+            "forecast_save",
+        } <= mcp.tools.keys()
+        assert "analysis_artifact_list" not in mcp.tools
+        assert "forecast_resolve" not in mcp.tools
+        assert "get_forecasts" not in mcp.tools
+        assert "get_forecast_calibration" not in mcp.tools
+
+
+class TestAccountReadProfile:
+    def test_registers_exact_account_read_allowlist(self) -> None:
+        mcp = _build_mcp(McpProfile.ACCOUNT_READ)
+        assert set(mcp.tools) == ACCOUNT_READ_TOOL_NAMES
+
+    def test_does_not_register_forbidden_surfaces(self) -> None:
+        mcp = _build_mcp(McpProfile.ACCOUNT_READ)
+        leaked = ACCOUNT_READ_FORBIDDEN_TOOL_NAMES & mcp.tools.keys()
+        assert not leaked, f"account_read leaked forbidden tools: {sorted(leaked)}"
+
+    def test_has_no_write_or_persistence_tools(self) -> None:
+        mcp = _build_mcp(McpProfile.ACCOUNT_READ)
+        write_or_persistence = {
+            "place_order",
+            "cancel_order",
+            "modify_order",
+            "kis_live_place_order",
+            "kis_live_cancel_order",
+            "kis_live_modify_order",
+            "kis_live_reconcile_orders",
+            "kis_mock_place_order",
+            "kis_mock_cancel_order",
+            "kis_mock_modify_order",
+            "kiwoom_mock_preview_order",
+            "kiwoom_mock_place_order",
+            "kiwoom_mock_cancel_order",
+            "kiwoom_mock_modify_order",
+            "live_reconcile_orders",
+            "toss_preview_order",
+            "toss_place_order",
+            "toss_modify_order",
+            "toss_cancel_order",
+            "toss_reconcile_orders",
+            "update_manual_holdings",
+            "get_available_capital",
+            "get_position",
+            "analysis_artifact_save",
+            "analysis_artifact_get",
+            "forecast_save",
+            "session_context_append",
+            "session_context_get_recent",
+            "get_user_setting",
+            "list_active_watches",
+        }
+        leaked = write_or_persistence & mcp.tools.keys()
+        assert not leaked, (
+            f"account_read leaked write/persistence tools: {sorted(leaked)}"
+        )
+
+    def test_registers_only_three_kiwoom_mock_reads(self) -> None:
+        mcp = _build_mcp(McpProfile.ACCOUNT_READ)
+        assert KIWOOM_MOCK_TOOL_NAMES & mcp.tools.keys() == {
+            "kiwoom_mock_get_positions",
+            "kiwoom_mock_get_orderable_cash",
+            "kiwoom_mock_get_order_history",
+        }
+
+    def test_expected_account_read_tools_are_present(self) -> None:
+        mcp = _build_mcp(McpProfile.ACCOUNT_READ)
+        assert {
+            "get_holdings",
+            "toss_get_positions",
+            "get_cash_balance",
+            "toss_get_orderable_cash",
+            "get_order_history",
+            "kis_live_get_order_history",
+            "kiwoom_mock_get_positions",
+            "kiwoom_mock_get_orderable_cash",
+            "kiwoom_mock_get_order_history",
+            "toss_get_order_history",
+        } <= mcp.tools.keys()
+
+
+class TestTradingCodexExecutionProfile:
+    def test_kiwoom_execution_allowlist_is_explicit_exact_seven(self) -> None:
+        explicit_allowlist = getattr(
+            tradingcodex_execution_registration,
+            "KIWOOM_MOCK_EXECUTION_TOOL_NAMES",
+            None,
+        )
+
+        assert explicit_allowlist is not None
+        assert set(explicit_allowlist) == _EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES
+        assert (
+            TRADINGCODEX_EXECUTION_TOOL_NAMES & KIWOOM_MOCK_TOOL_NAMES
+            == _EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES
+        )
+
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        registered = {name for name in mcp.tools if name.startswith("kiwoom_mock_")}
+        assert registered == _EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES
+
+    def test_registers_exact_tradingcodex_execution_allowlist(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        # ROB-816: order_proposal_* tools are additionally gated by
+        # settings.ORDER_PROPOSALS_ENABLED (default off), unlike every other
+        # tool group in this allowlist which registers unconditionally. They
+        # are only present in the actually-registered surface when the flag
+        # is flipped on.
+        expected = TRADINGCODEX_EXECUTION_TOOL_NAMES
+        if not settings.ORDER_PROPOSALS_ENABLED:
+            expected = expected - ORDER_PROPOSAL_TOOL_NAMES
+        assert set(mcp.tools) == expected
+
+    def test_does_not_register_forbidden_execution_surfaces(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        leaked = TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES & mcp.tools.keys()
+        assert not leaked, (
+            f"tradingcodex_execution leaked forbidden tools: {sorted(leaked)}"
+        )
+
+    def test_expected_execution_tools_are_present(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        assert {
+            "get_holdings",
+            "get_cash_balance",
+            "get_order_history",
+            "kis_live_get_order_history",
+            "toss_get_order_history",
+            "place_order",
+            "cancel_order",
+            "kis_live_place_order",
+            "kis_live_cancel_order",
+            *_EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES,
+            "toss_preview_order",
+            "toss_place_order",
+            "toss_cancel_order",
+            "sell_ladder_fill_preview",
+            "buy_ladder_fill_preview",
+            "suggest_order_account",
+            "get_fx_rate",
+            "route_request",
+            "get_trading_policy",
+            "list_active_watches",
+            "investment_watch_events_list_recent",
+            "investment_watch_create",
+            "forecast_save",
+            "get_forecasts",
+            "save_trade_retrospective",
+            "get_trade_retrospectives",
+            "trade_retrospective_pending",
+        } <= mcp.tools.keys()
+
+    def test_registers_exact_typed_kiwoom_mock_surface(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        assert KIWOOM_MOCK_TOOL_NAMES & mcp.tools.keys() == (
+            _EXPECTED_KIWOOM_EXECUTION_TOOL_NAMES
+        )
+        assert {
+            "kiwoom_place_order",
+            "kiwoom_live_place_order",
+            "kiwoom_live_cancel_order",
+            "kiwoom_live_modify_order",
+            "kiwoom_live_get_order_history",
+        }.isdisjoint(mcp.tools.keys())
+
+    def test_does_not_register_modify_reconcile_or_unsafe_persistence_tools(
+        self,
+    ) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        forbidden = {
+            "modify_order",
+            "kis_live_modify_order",
+            "kis_live_reconcile_orders",
+            "live_reconcile_orders",
+            "toss_modify_order",
+            "toss_reconcile_orders",
+            "analysis_artifact_save",
+            "analysis_artifact_get",
+            "analysis_artifact_list",
+            "forecast_resolve",
+            "get_forecast_calibration",
+            "get_retrospective_aggregate",
+            "session_context_append",
+            "session_context_get_recent",
+            "update_manual_holdings",
+            "get_user_setting",
+            "set_user_setting",
+            "investment_report_create",
+            "investment_report_add_items",
+            "investment_report_update",
+            "investment_report_decide_item",
+            "investment_report_activate_watch",
+            "investment_report_set_status",
+            "investment_watch_recommend",
+        }
+        leaked = forbidden & mcp.tools.keys()
+        assert not leaked, (
+            f"tradingcodex_execution leaked unsafe tools: {sorted(leaked)}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_forecast_save_requires_explicit_created_by(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        tool = mcp.tools["forecast_save"]
+
+        result = await tool(
+            created_by=" ",
+            symbol="005930",
+            instrument_type="equity_kr",
+            forecast_target={
+                "kind": "price_target",
+                "direction": "at_or_above",
+                "target_price": 75000.0,
+            },
+            probability=0.55,
+            review_date="2026-07-15",
+        )
+
+        assert result == {
+            "success": False,
+            "error": "created_by_required",
+            "tool": "forecast_save",
+            "detail": "tradingcodex_execution write calls must pass explicit created_by such as 'tradingcodex'.",
+        }
+
+    @pytest.mark.asyncio
+    async def test_save_trade_retrospective_requires_created_by_profile(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        tool = mcp.tools["save_trade_retrospective"]
+
+        result = await tool(
+            symbol="005930",
+            instrument_type="equity_kr",
+            account_mode="kis_live",
+            outcome="filled",
+            created_by_profile=" ",
+        )
+
+        assert result == {
+            "success": False,
+            "error": "created_by_required",
+            "tool": "save_trade_retrospective",
+            "detail": "tradingcodex_execution write calls must pass explicit created_by_profile such as 'tradingcodex'.",
+        }
+
+    # ROB-768 Task 2 — direct watch create needs explicit created_by on the
+    # tradingcodex_execution profile. Blank/missing must fail closed BEFORE
+    # touching the DB.
+    @pytest.mark.asyncio
+    async def test_investment_watch_create_requires_explicit_created_by(self) -> None:
+        mcp = _build_mcp(McpProfile.TRADINGCODEX_EXECUTION)
+        tool = mcp.tools["investment_watch_create"]
+
+        result = await tool(
+            created_by=" ",
+            market="kr",
+            symbol="005930",
+            intent="trend_recovery_review",
+            rationale="missing provenance",
+            watch_condition={
+                "metric": "price",
+                "operator": "above",
+                "threshold": 70000,
+            },
+            valid_until="2026-07-15T09:00:00+09:00",
+        )
+
+        assert result == {
+            "success": False,
+            "error": "created_by_required",
+            "tool": "investment_watch_create",
+            "detail": "tradingcodex_execution write calls must pass explicit created_by such as 'tradingcodex'.",
+        }
+
+
+class TestRouteProposalReadinessByProfile:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "profile",
+        [McpProfile.DEFAULT, McpProfile.TRADINGCODEX_EXECUTION],
+    )
+    async def test_proposal_gate_on_is_ready(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        profile: McpProfile,
+    ) -> None:
+        monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", True)
+        mcp = _build_mcp(profile)
+
+        result = await mcp.tools["route_request"](
+            intent="buy_analysis",
+            market="kr",
+        )
+
+        assert "order_proposal_create" in mcp.tools
+        assert result["success"] is True
+        assert result["route_contract"]["execution_ready"] is True
+        assert result["standard_tool_sequence"][-1]["tool"] == ("order_proposal_create")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "profile",
+        [McpProfile.DEFAULT, McpProfile.TRADINGCODEX_EXECUTION],
+    )
+    async def test_proposal_gate_off_fails_closed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        profile: McpProfile,
+    ) -> None:
+        monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", False)
+        mcp = _build_mcp(profile)
+
+        result = await mcp.tools["route_request"](
+            intent="profit_taking",
+            market="kr",
+        )
+
+        assert "order_proposal_create" not in mcp.tools
+        assert result["success"] is False
+        assert result["error"] == "required_route_tool_unavailable"
+        assert result["route_contract"]["execution_ready"] is False
+
+    @pytest.mark.asyncio
+    async def test_analysis_readonly_fails_closed_even_with_gate_on(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", True)
+        mcp = _build_mcp(McpProfile.ANALYSIS_READONLY)
+
+        result = await mcp.tools["route_request"](
+            intent="buy_analysis",
+            market="kr",
+        )
+
+        assert "order_proposal_create" not in mcp.tools
+        assert result["success"] is False
+        assert result["error"] == "required_route_tool_unavailable"
+        assert result["route_contract"]["execution_ready"] is False
 
 
 class TestResolveMcpProfile:
@@ -279,6 +878,24 @@ class TestResolveMcpProfile:
 
     def test_kiwoom(self) -> None:
         assert resolve_mcp_profile("kiwoom") is McpProfile.KIWOOM
+
+    def test_shadow_replay(self) -> None:
+        assert resolve_mcp_profile("shadow-replay") is McpProfile.SHADOW_REPLAY
+
+    def test_analysis_readonly(self) -> None:
+        assert resolve_mcp_profile("analysis_readonly") is McpProfile.ANALYSIS_READONLY
+
+    def test_account_read(self) -> None:
+        assert resolve_mcp_profile("account_read") is McpProfile.ACCOUNT_READ
+
+    def test_tradingcodex_execution(self) -> None:
+        assert (
+            resolve_mcp_profile("tradingcodex_execution")
+            is McpProfile.TRADINGCODEX_EXECUTION
+        )
+
+    def test_paper_execution(self) -> None:
+        assert resolve_mcp_profile("paper_execution") is McpProfile.PAPER_EXECUTION
 
     def test_invalid_string_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):

@@ -13,12 +13,17 @@ No signing, no credentials, no order endpoints reachable from this module.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 
 import httpx
 
-from app.services.brokers.binance.demo_scalping.contract import Product
+from app.services.brokers.binance.demo_scalping.contract import (
+    MarketConditions,
+    Product,
+)
 from app.services.brokers.binance.demo_scalping.signal import Candle
 
 DEMO_DATA_HOSTS: frozenset[str] = frozenset(
@@ -43,6 +48,20 @@ _BPS = Decimal("10000")
 
 class DemoDataHostBlocked(RuntimeError):
     """Raised when a request targets a host outside ``DEMO_DATA_HOSTS``."""
+
+
+class MarketConditionsUnavailable(RuntimeError):
+    """The server could not derive a trustworthy market snapshot.
+
+    Raised on provider failure, an empty/malformed kline, a missing/invalid
+    kline timestamp, or an invalid bid/ask quote. Callers MUST fail closed —
+    no broker submit, no ledger read/write — rather than synthesize a 0/0
+    snapshot that would silently disarm the spread/staleness gates (ROB-841).
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 def assert_demo_data_host(host: str) -> None:
@@ -74,6 +93,123 @@ def data_age_seconds(latest: Candle, *, now_ms: int) -> float:
     skew so the age is never negative.
     """
     return max(0.0, (now_ms - latest.open_time_ms) / 1000.0)
+
+
+def _default_clock_ms() -> int:
+    """Wall-clock epoch milliseconds. Injectable so tests can drive
+    fetch-latency scenarios deterministically."""
+    return int(time.time() * 1000)
+
+
+def _validate_candle(candle: Candle) -> None:
+    """Semantic sanity of the latest kline (ROB-841). A row can carry the right
+    number of fields yet hold NaN/±Inf, non-positive, or self-contradictory
+    OHLC (e.g. ``high < low``) — ``open_time``-only validation would pass such a
+    poisoned candle as healthy. Reject it as unavailable instead.
+
+    Finiteness is checked FIRST so a ``Decimal('NaN')`` never reaches a ``<``/
+    ``max``/``min`` comparison (which would raise ``InvalidOperation`` and leak
+    as a generic error). No new field (e.g. volume) is consulted."""
+    ohlc = (candle.open, candle.high, candle.low, candle.close)
+    if not all(v.is_finite() for v in ohlc):
+        raise MarketConditionsUnavailable(
+            "non_finite_kline: "
+            f"o={candle.open} h={candle.high} l={candle.low} c={candle.close}"
+        )
+    if any(v <= 0 for v in ohlc):
+        raise MarketConditionsUnavailable(
+            "non_positive_kline: "
+            f"o={candle.open} h={candle.high} l={candle.low} c={candle.close}"
+        )
+    if (
+        candle.high < candle.low
+        or candle.high < max(candle.open, candle.close)
+        or candle.low > min(candle.open, candle.close)
+    ):
+        raise MarketConditionsUnavailable(
+            "inconsistent_kline_ohlc: "
+            f"o={candle.open} h={candle.high} l={candle.low} c={candle.close}"
+        )
+    if candle.close_time_ms < candle.open_time_ms:
+        raise MarketConditionsUnavailable(
+            "kline_time_disorder: "
+            f"open={candle.open_time_ms} close={candle.close_time_ms}"
+        )
+
+
+def _validate_quote(book: BookTicker) -> None:
+    """Reject non-finite (NaN / ±Inf), non-positive, or crossed (ask < bid)
+    quotes as unavailable. The finiteness check runs first: comparing a
+    ``Decimal('NaN')`` with ``<=`` raises ``InvalidOperation`` (which would
+    otherwise leak as a generic error), and a ``Decimal('Infinity')`` ask
+    slips past ``ask < bid`` yet poisons ``spread_bps`` with ``NaN`` — so a
+    non-finite value must never reach the risk gates."""
+    if not (book.bid.is_finite() and book.ask.is_finite()):
+        raise MarketConditionsUnavailable(
+            f"non_finite_quote: bid={book.bid} ask={book.ask}"
+        )
+    if book.bid <= 0 or book.ask <= 0 or book.ask < book.bid:
+        raise MarketConditionsUnavailable(
+            f"invalid_quote: bid={book.bid} ask={book.ask}"
+        )
+
+
+async def build_market_conditions(
+    market_data: DemoScalpingMarketData,
+    *,
+    product: Product,
+    symbol: str,
+    clock_ms: Callable[[], int] = _default_clock_ms,
+    spot_free_base_qty: Decimal = Decimal("0"),
+) -> MarketConditions:
+    """Derive a *server-observed* :class:`MarketConditions` from the Demo-host
+    bookTicker + latest 1m kline (ROB-841).
+
+    The ``spread_bps`` and ``data_age_seconds`` fields are always measured from
+    the exchange's own quote/kline — never supplied or influenced by the caller.
+    Fails closed via :class:`MarketConditionsUnavailable` on any provider error,
+    empty kline, missing/invalid timestamp, a semantically invalid kline
+    (non-finite / non-positive / inconsistent OHLC or disordered timestamps),
+    or an invalid/non-finite quote — so the caller can reject the order without
+    touching broker or ledger.
+
+    Data age is measured from a clock sampled **after both observations
+    complete** (``clock_ms``, injectable), so real bookTicker + kline fetch
+    latency is counted toward staleness — a pre-fetch clock could under-count
+    the age by seconds and slip a stale feed past the ``stale_data`` gate.
+
+    ``spot_free_base_qty`` is passed through for the spot long-only SELL gate;
+    it is irrelevant to (and unused by) the futures path.
+    """
+    try:
+        book = await market_data.fetch_book_ticker(product, symbol)
+        candles = await market_data.fetch_klines(
+            product, symbol, interval="1m", limit=1
+        )
+    except MarketConditionsUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 — any provider/parse error fails closed
+        raise MarketConditionsUnavailable(
+            f"provider_error: {type(exc).__name__}: {exc}"
+        ) from exc
+
+    # Sample the clock only after BOTH observations complete so fetch latency
+    # is counted toward the kline's age (see docstring).
+    observed_ms = clock_ms()
+
+    if not candles:
+        raise MarketConditionsUnavailable("empty_kline")
+    latest = candles[-1]
+    if latest.open_time_ms is None or latest.open_time_ms <= 0:
+        raise MarketConditionsUnavailable("missing_kline_timestamp")
+    _validate_candle(latest)
+    _validate_quote(book)
+
+    return MarketConditions(
+        spread_bps=spread_bps(book),
+        data_age_seconds=data_age_seconds(latest, now_ms=observed_ms),
+        spot_free_base_qty=spot_free_base_qty,
+    )
 
 
 async def _enforce_demo_host(request: httpx.Request) -> None:

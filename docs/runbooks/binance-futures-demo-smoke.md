@@ -245,7 +245,7 @@ the full lifecycle:
    (`POST /fapi/v1/leverage` → server echoes `leverage=1`).
 3. Resolve / create the `crypto_instruments` row for
    `(binance, usdm_futures, symbol)`.
-4. Generate a `client_order_id` (`rob298f-<uuid4hex[:23]>`).
+4. Generate a `client_order_id` (`rob-298-fut-<uuid4hex[:16]>`).
 5. Write `planned` row to `binance_demo_order_ledger` with
    `product='usdm_futures'`.
 6. Local preview → write `previewed`.
@@ -345,6 +345,23 @@ export BINANCE_FUTURES_DEMO_API_SECRET="…"  # ditto; never commit
 # export BINANCE_FUTURES_DEMO_BASE_URL=https://demo-fapi.binance.com
 ```
 
+> **Loading a deployed env file:** do **not** `source` a production env
+> file such as `shared/.env.prod.native` — it holds JSON/list values
+> (e.g. `PUBLIC_API_PATHS=["…"]`) and values with spaces (cron strings)
+> that a shell mangles (quotes stripped → pydantic Settings fails; `*`
+> glob-expanded). The app reads it via pydantic's `env_file`, not the
+> shell. To run this CLI against a deployed env, point Settings at the
+> file and export only the keys the client reads with `os.getenv`:
+>
+> ```bash
+> EF=~/services/auto_trader/shared/.env.prod.native
+> env -i HOME="$HOME" PATH="$PATH" ENV_FILE="$EF" \
+>   BINANCE_FUTURES_DEMO_ENABLED=true \
+>   BINANCE_DEMO_API_KEY="$(grep -E '^BINANCE_DEMO_API_KEY=' "$EF" | head -1 | cut -d= -f2-)" \
+>   BINANCE_DEMO_API_SECRET="$(grep -E '^BINANCE_DEMO_API_SECRET=' "$EF" | head -1 | cut -d= -f2-)" \
+>   uv run python -m scripts.binance_futures_demo_smoke --preflight
+> ```
+
 ### 5.3 Verify intent (no HTTP)
 
 ```bash
@@ -407,7 +424,7 @@ SELECT
   reconciled_at
 FROM binance_demo_order_ledger
 WHERE product = 'usdm_futures'
-  AND client_order_id LIKE 'rob298f-%'
+  AND client_order_id LIKE 'rob-298-fut-%'
 ORDER BY created_at DESC
 LIMIT 4;
 ```
@@ -434,22 +451,22 @@ in order (UUIDs vary; secrets never appear):
 ```
 [rob-298-fut] position_mode is_hedge=false
 [rob-298-fut] leverage_set symbol=XRPUSDT leverage=1
-[rob-298-fut] planned cid=rob298f-<uuid> product=usdm_futures symbol=XRPUSDT side=BUY qty=<qty> venue=demo-fapi.binance.com
-[rob-298-fut] previewed cid=rob298f-<uuid>
+[rob-298-fut] planned cid=rob-298-fut-<uuid> product=usdm_futures symbol=XRPUSDT side=BUY qty=<qty> venue=demo-fapi.binance.com
+[rob-298-fut] previewed cid=rob-298-fut-<uuid>
 [rob-298-fut] order_test_ok symbol=XRPUSDT
-[rob-298-fut] validated cid=rob298f-<uuid>
-[rob-298-fut] submitted cid=rob298f-<uuid> broker_order_id=<id> status=FILLED reduce_only=false
-[rob-298-fut] filled cid=rob298f-<uuid>
+[rob-298-fut] validated cid=rob-298-fut-<uuid>
+[rob-298-fut] submitted cid=rob-298-fut-<uuid> broker_order_id=<id> status=FILLED reduce_only=false
+[rob-298-fut] filled cid=rob-298-fut-<uuid>
 [rob-298-fut] position_check symbol=XRPUSDT amt=<qty>
-[rob-298-fut] planned cid=rob298f-<close-uuid> product=usdm_futures symbol=XRPUSDT side=SELL qty=<qty> venue=demo-fapi.binance.com
-[rob-298-fut] previewed cid=rob298f-<close-uuid>
-[rob-298-fut] validated cid=rob298f-<close-uuid>
-[rob-298-fut] submitted cid=rob298f-<close-uuid> broker_order_id=<close-id> status=FILLED reduce_only=true
-[rob-298-fut] filled cid=rob298f-<close-uuid>
-[rob-298-fut] closed cid=rob298f-<uuid>
+[rob-298-fut] planned cid=rob-298-fut-<close-uuid> product=usdm_futures symbol=XRPUSDT side=SELL qty=<qty> venue=demo-fapi.binance.com
+[rob-298-fut] previewed cid=rob-298-fut-<close-uuid>
+[rob-298-fut] validated cid=rob-298-fut-<close-uuid>
+[rob-298-fut] submitted cid=rob-298-fut-<close-uuid> broker_order_id=<close-id> status=FILLED reduce_only=true
+[rob-298-fut] filled cid=rob-298-fut-<close-uuid>
+[rob-298-fut] closed cid=rob-298-fut-<uuid>
 [rob-298-fut] open_orders_check empty=true
 [rob-298-fut] position_check symbol=XRPUSDT amt=0
-[rob-298-fut] reconciled cid=rob298f-<uuid>
+[rob-298-fut] reconciled cid=rob-298-fut-<uuid>
 ```
 
 Anomalies print `anomaly cid=... reason=...` and the CLI exits 2.
@@ -501,7 +518,7 @@ If `open_orders` is non-empty and includes your stranded
 ```python
 await client.cancel_order(
     symbol="XRPUSDT",
-    client_order_id="rob298f-<your-cid>",
+    client_order_id="rob-298-fut-<your-cid>",
     confirm=True,
 )
 ```
@@ -546,7 +563,7 @@ from app.services.brokers.binance.demo.ledger.service import (
 
 # If you cleanly cancelled the stranded order:
 await ledger.record_cancelled(
-    client_order_id="rob298f-<your-cid>",
+    client_order_id="rob-298-fut-<your-cid>",
     broker_status="CANCELED",
     now=...,
 )
@@ -554,7 +571,7 @@ await ledger.record_cancelled(
 # Or, if the order/position is unaccounted for after manual
 # intervention:
 await ledger.record_anomaly(
-    client_order_id="rob298f-<your-cid>",
+    client_order_id="rob-298-fut-<your-cid>",
     reason="manual reconciliation: <what happened>",
     now=...,
 )

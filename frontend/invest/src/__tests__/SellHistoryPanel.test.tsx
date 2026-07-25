@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import { SellHistoryPanel } from "../components/my/SellHistoryPanel";
 
 const fetchMock = vi.fn();
@@ -19,6 +20,7 @@ const baseResponse = {
       instrument_type: "equity_kr",
       symbol: "000660",
       raw_symbol: "000660",
+      symbol_name: "SK하이닉스",
       side: "sell",
       broker_order_id: "0006421200",
       fill_seq: 733331392,
@@ -51,8 +53,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+function renderSellHistoryPanel(compact = false) {
+  return render(
+    <MemoryRouter basename="/invest" initialEntries={["/invest/my?tab=sellHistory"]}>
+      <SellHistoryPanel compact={compact} />
+    </MemoryRouter>,
+  );
+}
+
 test("SellHistoryPanel renders sell ledger rows and uses include credentials", async () => {
-  render(<SellHistoryPanel />);
+  renderSellHistoryPanel();
 
   expect(await screen.findByText("SK하이닉스")).toBeInTheDocument();
   expect(screen.getByText(/000660/)).toBeInTheDocument();
@@ -73,7 +83,7 @@ test("SellHistoryPanel renders sell ledger rows and uses include credentials", a
 });
 
 test("SellHistoryPanel refetches with market filter", async () => {
-  render(<SellHistoryPanel />);
+  renderSellHistoryPanel();
   await screen.findByText("SK하이닉스");
 
   await userEvent.click(screen.getByRole("button", { name: "국내" }));
@@ -82,3 +92,46 @@ test("SellHistoryPanel refetches with market filter", async () => {
   const [url] = fetchMock.mock.calls[1] as [string, RequestInit];
   expect(url).toContain("market=kr");
 });
+
+test("renders backend symbol_name instead of the code", async () => {
+  const customResponse = {
+    ...baseResponse,
+    items: [
+      {
+        ...baseResponse.items[0],
+        symbol: "035420",
+        symbol_name: "NAVER",
+      },
+    ],
+  };
+  fetchMock.mockResolvedValue({ ok: true, json: async () => customResponse });
+  renderSellHistoryPanel();
+  expect(await screen.findByText("NAVER")).toBeInTheDocument();
+  // the code still appears in the secondary line
+  expect(screen.getByText(/035420/)).toBeInTheDocument();
+});
+
+test("falls back to the code when symbol_name is absent", async () => {
+  const customResponse = {
+    ...baseResponse,
+    items: [
+      {
+        ...baseResponse.items[0],
+        symbol: "035420",
+        symbol_name: null,
+      },
+    ],
+  };
+  fetchMock.mockResolvedValue({ ok: true, json: async () => customResponse });
+  renderSellHistoryPanel();
+  const elements = await screen.findAllByText(/035420/);
+  expect(elements.length).toBeGreaterThan(0);
+});
+
+test("SellHistoryPanel links rows to stock detail", async () => {
+  renderSellHistoryPanel();
+
+  const link = await screen.findByRole("link", { name: /SK하이닉스/ });
+  expect(link).toHaveAttribute("href", "/invest/stocks/kr/000660");
+});
+

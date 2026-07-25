@@ -17,7 +17,7 @@
 // /invest/my?tab=signals    — AI analysis signals within MY.
 // /invest/calendar          — Earnings/events calendar.
 // /invest/coverage          — Data coverage dashboard.
-// /invest/insights          — Read-only market insight cards.
+// /invest/insights          — Read-only market insight cards (responsive).
 // /invest/screener          — Stock screener (골라보기).
 // /invest/reports                 — Investment report list (ROB-265).
 // /invest/reports/:reportUuid     — Single investment report bundle.
@@ -33,7 +33,7 @@ import { CalendarRoute } from "./pages/desktop/DesktopCalendarPage";
 import { CoverageRoute } from "./pages/desktop/DesktopCoveragePage";
 import { DesktopScreenerPage } from "./pages/desktop/DesktopScreenerPage";
 import { DesktopMarketPage } from "./pages/desktop/DesktopMarketPage";
-import { DesktopInsightsPage } from "./pages/desktop/DesktopInsightsPage";
+import { InvestInsightsRoute } from "./pages/InsightsRoute";
 import { FxMacroRoute } from "./pages/desktop/FxMacroPage";
 import { DesktopCryptoPage } from "./pages/desktop/DesktopCryptoPage";
 import { ScalpingRoute } from "./pages/desktop/DesktopScalpingPage";
@@ -83,7 +83,7 @@ export const router = createBrowserRouter(
     { path: "/calendar", element: <CalendarRoute /> },
     { path: "/coverage", element: <CoverageRoute /> },
     { path: "/market", element: <DesktopMarketPage /> },
-    { path: "/insights", element: <DesktopInsightsPage /> },
+    { path: "/insights", element: <InvestInsightsRoute /> },
     { path: "/market/fx", element: <FxMacroRoute /> },
     { path: "/crypto", element: <DesktopCryptoPage /> },
     { path: "/crypto/:pair", element: <CryptoPairRedirect /> },

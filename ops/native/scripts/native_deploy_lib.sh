@@ -75,6 +75,22 @@ sync_release_to_color_symlink() {
 }
 
 # bootstrap_color <service> <color>
+#
+# Retry/path-bootout semantics mirror restart_single_active_services() in
+# scripts/deploy-native.sh: macOS launchd can keep a failed/disabled
+# plist-PATH registration around after a label bootout (and tears jobs down
+# asynchronously), so an immediate bootstrap can return EIO
+# ("Bootstrap failed: 5: Input/output error") even though the label is no
+# longer visible. Boot out the installed plist PATH too, then retry the
+# bootstrap a few times to ride out the teardown before giving up. Without
+# this a single transient EIO aborts the whole blue/green deploy (observed in
+# GitHub Actions run 28408243128). The two implementations are kept separate
+# on purpose: restart_single_active_services() must run even when the deploy
+# rollback fires before native_deploy_lib.sh is sourced.
+#
+# Tunables (defaults match the single-active path: 5 attempts, 1s backoff):
+#   AUTO_TRADER_BOOTSTRAP_ATTEMPTS        (default 5)
+#   AUTO_TRADER_BOOTSTRAP_RETRY_SECONDS   (default 1)
 bootstrap_color() {
   local service="$1" color="$2"
   _bg_validate_service "$service" || return $?
@@ -88,7 +104,26 @@ bootstrap_color() {
   mkdir -p "$(dirname "$target")"
   install -m 0644 "$plist" "$target"
   launchctl bootout "gui/$uid/$label" 2>/dev/null || true
-  launchctl bootstrap "gui/$uid" "$target"
+  launchctl bootout "gui/$uid" "$target" 2>/dev/null || true
+
+  local attempts="${AUTO_TRADER_BOOTSTRAP_ATTEMPTS:-5}"
+  local interval="${AUTO_TRADER_BOOTSTRAP_RETRY_SECONDS:-1}"
+  # Clamp a misconfigured (non-numeric or <1) attempt count back to the default
+  # so the loop always runs at least once; otherwise execution would fall
+  # through to enable/kickstart against a label that was never bootstrapped.
+  [[ "$attempts" =~ ^[0-9]+$ ]] && (( attempts >= 1 )) || attempts=5
+  local attempt
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if launchctl bootstrap "gui/$uid" "$target"; then
+      break
+    fi
+    if (( attempt == attempts )); then
+      echo "bootstrap_color: $label failed to bootstrap after $attempt attempts" >&2
+      return 5
+    fi
+    sleep "$interval"
+  done
+
   launchctl enable "gui/$uid/$label"
   launchctl kickstart -k "gui/$uid/$label"
 }
@@ -98,11 +133,17 @@ drain_color() {
   local service="$1" color="$2"
   _bg_validate_service "$service" || return $?
   _bg_validate_color "$color" || return $?
-  local label uid
+  local label uid target
   label="$(color_label "$service" "$color")"
   uid="$(_ndl_uid)"
+  target="$HOME/Library/LaunchAgents/$label.plist"
   launchctl bootout "gui/$uid/$label" 2>/dev/null || true
-  # Leave plist on disk so re-bootstrap works on next deploy.
+  # Also boot out by plist PATH. macOS launchd can keep a stale plist-path
+  # registration after a label-only bootout; left to accumulate these surface
+  # later as a bootstrap EIO ("5: Input/output error"). Path-bootout keeps the
+  # domain clean so the next bootstrap_color starts from a clean slate. Best
+  # effort, like the label bootout. Plist stays on disk for re-bootstrap.
+  launchctl bootout "gui/$uid" "$target" 2>/dev/null || true
 }
 
 # probe_color_direct <color>

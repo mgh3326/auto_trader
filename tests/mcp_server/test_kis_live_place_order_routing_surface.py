@@ -6,18 +6,45 @@ import pytest
 
 from app.mcp_server.tooling import kis_live_ledger as mod
 from app.mcp_server.tooling.kis_live_ledger import (
+    _build_kr_routing_note,
     _expected_day_order_expiry,
     _extract_broker_exchange,
+)
+from app.services.brokers.kis.live_order_expiry import (
+    REASON_NXT_CARRY,
+    REASON_REGULAR_BUY_CONSERVATIVE,
+    SESSION_REGULAR,
 )
 
 KST = datetime.timezone(datetime.timedelta(hours=9))
 
 
-def test_expected_day_order_expiry_is_2000_kst_of_send_date():
-    # ROB-487: SOR day order는 NXT 마감(20:00 KST)까지 유효 — 15:31 NXT 세션
-    # 주문이 과거 시각(15:30)의 expected_expiry를 받던 모순 해소.
-    now = datetime.datetime(2026, 6, 9, 15, 31, 25, tzinfo=KST)
-    assert _expected_day_order_expiry(now) == "2026-06-09T20:00:00+09:00"
+def test_expected_day_order_expiry_regular_buy_conservative_2000():
+    # ROB-671: regular-session BUY keeps 20:00 by conservative default, but the
+    # reason flags the 15:30 death uncertainty.
+    now = datetime.datetime(2026, 6, 9, 9, 43, 25, tzinfo=KST)
+    iso, reason = _expected_day_order_expiry(now, side="buy")
+    assert iso == "2026-06-09T20:00:00+09:00"
+    assert reason == REASON_REGULAR_BUY_CONSERVATIVE
+
+
+def test_expected_day_order_expiry_regular_sell_nxt_carry():
+    now = datetime.datetime(2026, 6, 9, 9, 43, 25, tzinfo=KST)
+    iso, reason = _expected_day_order_expiry(now, side="sell")
+    assert iso == "2026-06-09T20:00:00+09:00"
+    assert reason == REASON_NXT_CARRY
+
+
+def test_routing_note_regular_buy_warns_death_risk():
+    note = _build_kr_routing_note(side="buy", accept_session=SESSION_REGULAR)
+    assert "15:30" in note
+    assert "remaining_qty" in note
+
+
+def test_routing_note_sell_mentions_nxt_carry():
+    note = _build_kr_routing_note(side="sell", accept_session=SESSION_REGULAR)
+    assert "NXT" in note
+    assert "20:00" in note
 
 
 def test_extract_broker_exchange_present():
@@ -31,7 +58,7 @@ def test_extract_broker_exchange_absent_is_none():
 
 
 @pytest.mark.asyncio
-async def test_place_order_response_surfaces_routing_fields():
+async def test_place_order_response_surfaces_routing_and_reason():
     execution_result = {
         "odno": "0011001100",
         "ord_tmd": "094300",
@@ -40,7 +67,11 @@ async def test_place_order_response_surfaces_routing_fields():
         "output": {"EXCG_ID_DVSN_CD": "KRX"},
     }
     dry_run_result = {"price": 209000, "quantity": 2, "estimated_value": 418000}
-    with patch.object(mod, "_save_kis_live_order_ledger", AsyncMock(return_value=42)):
+    fixed_now = datetime.datetime(2026, 6, 9, 9, 43, 0, tzinfo=KST)
+    with (
+        patch.object(mod, "_save_kis_live_order_ledger", AsyncMock(return_value=42)),
+        patch.object(mod, "now_kst", lambda: fixed_now),
+    ):
         resp = await mod._record_kis_live_order(
             normalized_symbol="005930",
             market_type="equity_kr",
@@ -61,4 +92,6 @@ async def test_place_order_response_surfaces_routing_fields():
     assert resp["order_validity"] == "day"
     assert resp["routing"]["requested_venue"] == "auto"
     assert resp["broker_exchange"] == "KRX"
-    assert resp["expected_expiry"].endswith("20:00:00+09:00")
+    assert resp["expected_expiry"] == "2026-06-09T20:00:00+09:00"
+    assert resp["expiry_reason"] == REASON_REGULAR_BUY_CONSERVATIVE
+    assert "15:30" in resp["routing"]["note"]

@@ -44,6 +44,7 @@ from app.services.action_report.snapshot_backed.collectors._base import (
     unavailable_result,
     utcnow,
 )
+from app.services.brokers.kis.live_order_expiry import kr_day_order_expiry
 from app.services.investment_snapshots.collectors import (
     CollectorRequest,
     SnapshotCollectResult,
@@ -246,12 +247,19 @@ _KIS_SIDE_BUY = {"02", "buy", "b", "매수"}
 _KIS_SIDE_SELL = {"01", "sell", "s", "매도"}
 
 
-def _kis_expected_expiry(placed_at: dt.datetime | None, *, market: str) -> str | None:
+def _kis_expected_expiry(
+    placed_at: dt.datetime | None, *, market: str, side: str
+) -> tuple[str | None, str | None]:
+    """(ISO expiry, categorical reason) for a KR pending order via the shared helper.
+
+    ROB-671: delegates to the single stdlib-only computer so the collector and
+    the send-path (kis_live_ledger) agree. US/crypto have no NXT session → None.
+    The downgrade flag is left off here (the collector is a read surface, not a
+    live TTL decision); by conservative default the value stays 20:00 KST.
+    """
     if market != "kr" or placed_at is None:
-        return None
-    local = placed_at.astimezone(_KST)
-    expiry = local.replace(hour=20, minute=0, second=0, microsecond=0)
-    return expiry.isoformat()
+        return None, None
+    return kr_day_order_expiry(accepted_at=placed_at, side=side)
 
 
 def _normalize_kis_order(row: dict[str, Any], *, market: str) -> dict[str, Any]:
@@ -271,6 +279,10 @@ def _normalize_kis_order(row: dict[str, Any], *, market: str) -> dict[str, Any]:
     if remaining_raw is None:
         remaining_raw = quantity
     placed_at = _kis_placed_at(row)
+    side = _normalize_kis_side(row)
+    expiry_iso, expiry_reason = _kis_expected_expiry(
+        placed_at, market=market, side=side
+    )
     return {
         "target_ref": {
             "type": "broker_order",
@@ -279,12 +291,13 @@ def _normalize_kis_order(row: dict[str, Any], *, market: str) -> dict[str, Any]:
             "raw": dict(row),
         },
         "symbol": symbol,
-        "side": _normalize_kis_side(row),
+        "side": side,
         "price": price,
         "quantity": quantity,
         "remaining_quantity": remaining_raw,
         "placed_at": placed_at.isoformat() if placed_at is not None else None,
-        "expected_expiry": _kis_expected_expiry(placed_at, market=market),
+        "expected_expiry": expiry_iso,
+        "expiry_reason": expiry_reason,
         # KR/US use session expiry handled by the broker; classifier handles
         # session-based gating, so the collector never flags stale here.
         "stale": False,
@@ -353,6 +366,7 @@ def _normalize_upbit_order(row: dict[str, Any], *, now: dt.datetime) -> dict[str
         "remaining_quantity": _stringify_optional(row.get("remaining_volume")),
         "placed_at": placed_at.isoformat() if placed_at is not None else None,
         "expected_expiry": None,
+        "expiry_reason": None,
         "stale": stale,
         "market": "crypto",
     }

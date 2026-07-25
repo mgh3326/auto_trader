@@ -9,6 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_API = REPO_ROOT / "ops" / "native" / "scripts" / "run-api.sh"
 RUN_MCP = REPO_ROOT / "ops" / "native" / "scripts" / "run-mcp.sh"
+RUN_MCP_PROFILE = REPO_ROOT / "ops" / "native" / "scripts" / "run-mcp-profile.sh"
 
 
 def _build_base(tmp_path: Path, color: str) -> Path:
@@ -55,8 +56,11 @@ def _uv_stub_dir(tmp_path: Path) -> Path:
         "#!/usr/bin/env bash\n"
         'echo "argv=$*"\n'
         'echo "MCP_PORT=${MCP_PORT:-unset}"\n'
+        'echo "MCP_PROFILE=${MCP_PROFILE:-unset}"\n'
+        'echo "MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN:-unset}"\n'
         'echo "AUTO_TRADER_CURRENT=${AUTO_TRADER_CURRENT:-unset}"\n'
         'echo "PWD=$(pwd)"\n'
+        "env\n"
     )
     stub.chmod(0o755)
     return bin_dir
@@ -145,3 +149,102 @@ def test_run_mcp_cds_into_color_current(tmp_path: Path) -> None:
     proc = _run(RUN_MCP, "green", {}, tmp_path)
     assert proc.returncode == 0
     assert "current-green" in proc.stdout
+
+
+def test_run_mcp_exports_binance_env_vars(tmp_path: Path) -> None:
+    color = "blue"
+    base = _build_base(tmp_path, color)
+    env_file = base / "shared" / ".env.prod.native"
+    env_file.write_text(
+        "MCP_SOME_VAR=mcp_val\n"
+        "BINANCE_FUTURES_DEMO_ENABLED=true\n"
+        "BINANCE_SOME_OTHER=binance_val\n"
+        "OTHER_VAR=should_not_export\n"
+    )
+    bin_dir = _uv_stub_dir(tmp_path)
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "AUTO_TRADER_BASE": str(base),
+        "AUTO_TRADER_COLOR": color,
+    }
+    proc = subprocess.run(
+        ["bash", str(RUN_MCP)], check=False, capture_output=True, text=True, env=env
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "MCP_SOME_VAR=mcp_val" in proc.stdout
+    assert "BINANCE_FUTURES_DEMO_ENABLED=true" in proc.stdout
+    assert "BINANCE_SOME_OTHER=binance_val" in proc.stdout
+    assert "OTHER_VAR" not in proc.stdout
+
+
+# ----- run-mcp-profile -------------------------------------------------------
+
+
+def _run_profile(
+    script: Path, env_overrides: dict[str, str], tmp_path: Path
+) -> subprocess.CompletedProcess:
+    """run-mcp-profile.sh uses a fixed `current` dir, not color-specific."""
+    base = _build_base(tmp_path, "blue")
+    (base / "current").mkdir(exist_ok=True)
+    bin_dir = _uv_stub_dir(tmp_path)
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "AUTO_TRADER_BASE": str(base),
+        **env_overrides,
+    }
+    return subprocess.run(
+        ["bash", str(script)], check=False, capture_output=True, text=True, env=env
+    )
+
+
+def test_run_mcp_profile_exports_fixed_profile_port_and_token(tmp_path: Path) -> None:
+    proc = _run_profile(
+        RUN_MCP_PROFILE,
+        {
+            "AUTO_TRADER_MCP_PROFILE": "account_read",
+            "AUTO_TRADER_MCP_PORT": "8769",
+            "AUTO_TRADER_MCP_AUTH_TOKEN_ENV": "MCP_ACCOUNT_READ_AUTH_TOKEN",
+            "MCP_ACCOUNT_READ_AUTH_TOKEN": "account-read-token",
+        },
+        tmp_path,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "MCP_PROFILE=account_read" in proc.stdout
+    assert "MCP_PORT=8769" in proc.stdout
+    assert "MCP_AUTH_TOKEN=account-read-token" in proc.stdout
+    assert "current" in proc.stdout
+
+
+def test_run_mcp_profile_fails_without_dedicated_token(tmp_path: Path) -> None:
+    proc = _run_profile(
+        RUN_MCP_PROFILE,
+        {
+            "AUTO_TRADER_MCP_PROFILE": "account_read",
+            "AUTO_TRADER_MCP_PORT": "8769",
+            "AUTO_TRADER_MCP_AUTH_TOKEN_ENV": "MCP_ACCOUNT_READ_AUTH_TOKEN",
+        },
+        tmp_path,
+    )
+    assert proc.returncode == 78
+    assert "MCP_ACCOUNT_READ_AUTH_TOKEN is required" in proc.stderr
+
+
+def test_run_mcp_profile_exports_tradingcodex_execution_profile(tmp_path: Path) -> None:
+    proc = _run_profile(
+        RUN_MCP_PROFILE,
+        {
+            "AUTO_TRADER_MCP_PROFILE": "tradingcodex_execution",
+            "AUTO_TRADER_MCP_PORT": "8770",
+            "AUTO_TRADER_MCP_AUTH_TOKEN_ENV": "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN",
+            "MCP_TRADINGCODEX_EXECUTION_AUTH_TOKEN": "execution-token",
+            "ORDER_APPROVAL_HASH_MODE": "required",
+            "TOSS_APPROVAL_HASH_MODE": "required",
+        },
+        tmp_path,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "MCP_PROFILE=tradingcodex_execution" in proc.stdout
+    assert "MCP_PORT=8770" in proc.stdout
+    assert "MCP_AUTH_TOKEN=execution-token" in proc.stdout

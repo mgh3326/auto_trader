@@ -2,6 +2,7 @@ import type {
   FillListResponse,
   FillMarket,
   FillFreshnessReport,
+  FillSide,
 } from "../types/fills";
 
 const BASE = "/trading/api/invest/fills";
@@ -9,9 +10,11 @@ const BASE = "/trading/api/invest/fills";
 export async function fetchRecentFills(
   limit = 50,
   market?: FillMarket,
+  side?: FillSide,
 ): Promise<FillListResponse> {
   const q = new URLSearchParams({ limit: String(limit) });
   if (market) q.set("market", market);
+  if (side) q.set("side", side);
   const res = await fetch(`${BASE}/recent?${q}`, { credentials: "include" });
   if (!res.ok) throw new Error(`fills/recent ${res.status}`);
   return res.json();

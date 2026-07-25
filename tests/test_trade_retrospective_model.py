@@ -58,3 +58,96 @@ async def test_insert_and_read_back(db_session: AsyncSession):
     assert got.realized_pnl == Decimal("12345.6700")
     assert got.fill_evidence_available is True  # server_default
     assert got.created_at is not None
+
+
+def test_trade_retrospective_us_fx_columns_present():
+    cols = set(TradeRetrospective.__table__.columns.keys())
+    for col in (
+        "buy_fx_rate",
+        "sell_fx_rate",
+        "fx_pnl_krw",
+        "security_pnl_usd",
+        "security_pnl_krw",
+        "total_pnl_krw",
+        "fx_rate_source",
+        "fx_pnl_accuracy",
+    ):
+        assert col in cols, f"missing column {col}"
+
+
+def test_trade_retrospective_account_mode_constraint_matches_migration():
+    constraint_names = {c.name for c in TradeRetrospective.__table__.constraints}
+    assert "ck_trade_retrospectives_account_mode" in constraint_names
+
+
+# ---------------------------------------------------------------------------
+# ROB-647 — postmortem columns + CHECK constraints
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_postmortem_columns_round_trip(db_session: AsyncSession):
+    row = TradeRetrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        outcome="rejected",
+        correlation_id="cid-pm-1",
+        trigger_type="rejected_order",
+        root_cause_class="execution",
+        intended_vs_happened={"summary": "bounced"},
+        next_actions=[{"action": "retry"}],
+        guardrail_fired="opposite_pending",
+        policy_version="p5-v1",
+    )
+    db_session.add(row)
+    await db_session.commit()
+    got = (
+        await db_session.execute(
+            select(TradeRetrospective).where(
+                TradeRetrospective.correlation_id == "cid-pm-1"
+            )
+        )
+    ).scalar_one()
+    assert got.trigger_type == "rejected_order"
+    assert got.root_cause_class == "execution"
+    assert got.intended_vs_happened == {"summary": "bounced"}
+    assert got.next_actions == [{"action": "retry"}]
+    assert got.guardrail_fired == "opposite_pending"
+    assert got.policy_version == "p5-v1"
+
+
+@pytest.mark.asyncio
+async def test_invalid_trigger_type_rejected_by_db(db_session: AsyncSession):
+    from sqlalchemy.exc import IntegrityError
+
+    row = TradeRetrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        outcome="filled",
+        correlation_id="cid-bad-trigger",
+        trigger_type="not_a_real_trigger",
+    )
+    db_session.add(row)
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_invalid_root_cause_rejected_by_db(db_session: AsyncSession):
+    from sqlalchemy.exc import IntegrityError
+
+    row = TradeRetrospective(
+        symbol="005930",
+        instrument_type="equity_kr",
+        account_mode="kis_live",
+        outcome="filled",
+        correlation_id="cid-bad-rc",
+        root_cause_class="not_a_class",
+    )
+    db_session.add(row)
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()

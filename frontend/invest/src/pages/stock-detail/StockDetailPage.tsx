@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useParams } from "react-router-dom";
 import { DesktopShell } from "../../desktop/DesktopShell";
 import { Button, Card, Hairline, Krw, PL, Pill, Sparkline, Usd } from "../../ds";
@@ -6,19 +6,34 @@ import {
   fetchStockDetail,
   fetchStockDetailCandles,
   fetchStockDetailNews,
+  fetchStockDetailOrderLedger,
   fetchStockDetailOrders,
+  fetchStockDetailRecommendation,
   fetchStockDetailResearchConsensus,
 } from "../../api/stockDetail";
+import { fetchWatches } from "../../api/watches";
+import { fetchRetrospectives } from "../../api/retrospectives";
 import { InvestorFlowCard } from "../../desktop/stock-detail/InvestorFlowCard";
+import { OrderLedgerCard } from "../../desktop/stock-detail/OrderLedgerCard";
+import { RecommendationCard } from "../../desktop/stock-detail/RecommendationCard";
+import { WatchCard } from "../../desktop/stock-detail/WatchCard";
+import { RetrospectiveCard } from "../../desktop/stock-detail/RetrospectiveCard";
+import { accountSourceMeta } from "../../desktop/AccountSourceMeta";
+import type { LinkedOrder } from "../../types/investmentReports";
 import type {
+  OrderSide,
   StockDetailCandlesResponse,
   StockDetailFxSensitivity,
   StockDetailMarket,
   StockDetailNewsResponse,
   StockDetailOrdersResponse,
+  StockDetailRecommendationResponse,
   StockDetailResearchConsensusResponse,
   StockDetailResponse,
+  StockDetailHolding,
 } from "../../types/stockDetail";
+import type { WatchAlertRow } from "../../types/watches";
+import type { RetrospectiveRow } from "../../types/retrospectives";
 
 function fmtPct(v: number | null | undefined): string {
   if (v == null) return "−";
@@ -106,19 +121,40 @@ function TradeGuardrail({ data }: { data: StockDetailResponse }) {
   );
 }
 
+function sourceChips(sources: StockDetailHolding["includedSources"] | undefined) {
+  return (sources ?? []).map((source) => {
+    const meta = accountSourceMeta(source);
+    return (
+      <Pill key={source} tone={meta.tone} size="sm">
+        {meta.shortLabel}
+      </Pill>
+    );
+  });
+}
+
 function HoldingCard({ data }: { data: StockDetailResponse }) {
   const holding = data.holding;
   return (
     <Card data-testid="stock-detail-holding">
       <h2 style={{ margin: "0 0 12px", fontSize: 16 }}>내 보유</h2>
       {holding ? (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
-          <Metric label="수량" value={fmtQty(holding.totalQuantity)} />
-          <Metric label="평단" value={data.currency === "USD" ? `$${holding.averageCost?.toFixed(2) ?? "−"}` : `₩${holding.averageCost?.toLocaleString("ko-KR") ?? "−"}`} />
-          <Metric label="평가금액" value={holding.valueKrw == null ? "−" : `₩${Math.round(holding.valueKrw).toLocaleString("ko-KR")}`} />
-          <div>
-            <div style={{ color: "var(--fg-3)", fontSize: 12 }}>손익</div>
-            <PL value={holding.pnlKrw ?? 0} pct={holding.pnlRate ?? 0} />
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {sourceChips(holding.includedSources)}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
+            <Metric label="수량" value={fmtQty(holding.totalQuantity)} />
+            <Metric label="평단" value={data.currency === "USD" ? `$${holding.averageCost?.toFixed(2) ?? "−"}` : `₩${holding.averageCost?.toLocaleString("ko-KR") ?? "−"}`} />
+            <Metric label="평가금액" value={holding.valueKrw == null ? "−" : `₩${Math.round(holding.valueKrw).toLocaleString("ko-KR")}`} />
+            <div>
+              <div style={{ color: "var(--fg-3)", fontSize: 12 }}>손익</div>
+              <PL value={holding.pnlKrw ?? 0} pct={(holding.pnlRate ?? 0) * 100} />
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", color: "var(--fg-3)", fontSize: 12 }}>
+            <span>매매가능 {fmtQty(holding.tradeableQuantity)}</span>
+            <span>매도가능 {fmtQty(holding.sellableQuantity)}</span>
+            {holding.referenceQuantity > 0 ? <span>참고 {fmtQty(holding.referenceQuantity)}</span> : null}
           </div>
         </div>
       ) : (
@@ -196,14 +232,100 @@ function OrderbookCard({ data }: { data: StockDetailResponse }) {
   );
 }
 
-function OrdersCard({ orders }: { orders: StockDetailOrdersResponse | undefined }) {
+const ORDER_SOURCE_LABELS: Record<string, string> = {
+  websocket: "실시간",
+  reconciler: "보정",
+  manual_import: "수동",
+};
+
+function fmtOrderMoney(value: number | null | undefined, market: StockDetailMarket): string {
+  if (value == null || !Number.isFinite(value)) return "−";
+  if (market === "us") {
+    return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;
+  }
+  // kr + crypto (Upbit pairs are KRW-quoted)
+  return `₩${Math.round(value).toLocaleString("ko-KR")}`;
+}
+
+function fmtOrderTime(value: string | null): string {
+  if (!value) return "−";
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return value;
+  return new Intl.DateTimeFormat("ko-KR", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Seoul",
+  }).format(dt);
+}
+
+function orderSideMeta(side: OrderSide): { label: string; tone: "gain" | "loss" | "paper" } {
+  if (side === "buy") return { label: "매수", tone: "gain" };
+  if (side === "sell") return { label: "매도", tone: "loss" };
+  return { label: String(side), tone: "paper" };
+}
+
+const ordersTh: CSSProperties = {
+  padding: "8px 12px",
+  borderTop: "1px solid var(--divider)",
+  borderBottom: "1px solid var(--divider)",
+  color: "var(--fg-3)",
+  fontSize: 11,
+  textAlign: "left",
+  whiteSpace: "nowrap",
+};
+
+const ordersTd: CSSProperties = {
+  padding: "10px 12px",
+  borderBottom: "1px solid var(--divider)",
+  fontSize: 13,
+  whiteSpace: "nowrap",
+};
+
+function OrdersCard({ orders, market }: { orders: StockDetailOrdersResponse | undefined; market: StockDetailMarket }) {
   const empty = orders?.meta.emptyState === "no_filled_orders" || orders?.items.length === 0;
   return (
     <Card data-testid="stock-detail-orders">
-      <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>체결 내역</h2>
+      <h2 style={{ margin: "0 0 4px", fontSize: 16 }}>체결 내역</h2>
+      <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--fg-3)" }}>매수 · 매도 체결 (일시 · 단가 · 총액)</p>
       {!orders ? <p style={{ margin: 0, color: "var(--fg-3)" }}>불러오는 중입니다…</p> : null}
       {orders && empty ? <p style={{ margin: 0, color: "var(--fg-3)" }}>체결 내역이 없습니다.</p> : null}
-      {orders && !empty ? <ul>{orders.items.map((o) => <li key={o.orderId ?? `${o.side}-${o.filledAt}`}>{o.side} {o.quantity}</li>)}</ul> : null}
+      {orders && !empty ? (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={ordersTh}>일시</th>
+                <th style={ordersTh}>구분</th>
+                <th style={{ ...ordersTh, textAlign: "right" }}>수량</th>
+                <th style={{ ...ordersTh, textAlign: "right" }}>단가</th>
+                <th style={{ ...ordersTh, textAlign: "right" }}>총액</th>
+                <th style={ordersTh}>출처</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.items.map((o, idx) => {
+                const side = orderSideMeta(o.side);
+                const notional = o.price != null ? o.price * o.quantity : null;
+                return (
+                  <tr key={o.orderId ?? `${o.side}-${o.filledAt}-${o.quantity}-${idx}`}>
+                    <td style={{ ...ordersTd, color: "var(--fg-2)", fontSize: 12 }}>{fmtOrderTime(o.filledAt)}</td>
+                    <td style={ordersTd}>
+                      <Pill tone={side.tone} size="sm">{side.label}</Pill>
+                    </td>
+                    <td style={{ ...ordersTd, textAlign: "right", fontFeatureSettings: '"tnum"' }}>{fmtQty(o.quantity)}</td>
+                    <td style={{ ...ordersTd, textAlign: "right", fontFeatureSettings: '"tnum"' }}>{fmtOrderMoney(o.price, market)}</td>
+                    <td style={{ ...ordersTd, textAlign: "right", fontWeight: 800, fontFeatureSettings: '"tnum"' }}>{fmtOrderMoney(notional, market)}</td>
+                    <td style={{ ...ordersTd, color: "var(--fg-3)", fontSize: 12 }}>{ORDER_SOURCE_LABELS[o.source ?? ""] ?? o.source ?? "−"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
     </Card>
   );
 }
@@ -300,20 +422,82 @@ function ResearchConsensusCard({ data, error }: { data: StockDetailResearchConse
   );
 }
 
-function AnalysisCard({ data }: { data: StockDetailResponse }) {
-  const analysis = data.latestAnalysis;
+function DecisionHistoryCard({ data }: { data: StockDetailResponse }) {
+  const dh = data.decisionHistory;
   return (
-    <Card data-testid="stock-detail-analysis">
-      <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>최근 분석</h2>
-      {analysis ? (
-        <>
-          <Pill tone={analysis.decision === "buy" ? "gain" : analysis.decision === "sell" ? "loss" : "paper"}>{analysis.decision ?? "hold"}</Pill>
-          <ul style={{ margin: "12px 0 0", paddingLeft: 18, color: "var(--fg-2)" }}>
-            {analysis.reasonsTop3.map((reason) => <li key={reason}>{reason}</li>)}
-          </ul>
-        </>
+    <Card data-testid="stock-detail-decision-history">
+      <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>판단 이력</h2>
+      {!dh ? (
+        <p style={{ margin: 0, color: "var(--fg-3)" }}>이 종목의 과거 판단 기록이 없습니다.</p>
       ) : (
-        <p style={{ margin: 0, color: "var(--fg-3)" }}>최근 분석이 없습니다.</p>
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <span style={{ fontWeight: 700 }}>
+              종목 Brier {dh.runningBrierSymbol.meanBrier == null ? "−" : dh.runningBrierSymbol.meanBrier.toFixed(2)}
+            </span>
+            <span style={{ color: "var(--fg-3)", fontSize: 12 }}>n={dh.runningBrierSymbol.n}</span>
+            {dh.runningBrierSymbol.flag === "insufficient_sample" ? (
+              <Pill tone="paper">표본 부족</Pill>
+            ) : null}
+          </div>
+
+          {dh.priorDecisions.length > 0 ? (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 4 }}>과거 판단</div>
+              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+                {dh.priorDecisions.map((d, i) => (
+                  <li key={`pd-${i}`} style={{ fontSize: 13 }}>
+                    <Pill tone={d.side === "buy" ? "gain" : d.side === "sell" ? "loss" : "paper"}>{d.side ?? d.intent ?? "판단"}</Pill>
+                    <span style={{ color: "var(--fg-3)", margin: "0 6px" }}>{d.date ?? "-"}</span>
+                    {d.confidence != null ? <span style={{ color: "var(--fg-3)" }}>conf {d.confidence.toFixed(2)}</span> : null}
+                    {d.rationale ? <div style={{ color: "var(--fg-2)" }}>{d.rationale}</div> : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {dh.realizedOutcomes.length > 0 ? (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 4 }}>실현된 결과</div>
+              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+                {dh.realizedOutcomes.map((o, i) => (
+                  <li key={`ro-${i}`} style={{ fontSize: 13, color: "var(--fg-2)" }}>
+                    {o.date ?? "-"} · {o.side ?? "-"} · {o.outcome ?? "-"}
+                    {o.pnlPct != null ? ` · ${o.pnlPct.toFixed(1)}%` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {dh.openClaims.length > 0 ? (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 4 }}>진행중 예측</div>
+              <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+                {dh.openClaims.map((c, i) => (
+                  <li key={`oc-${i}`} style={{ fontSize: 13, color: "var(--fg-2)" }}>
+                    {c.direction ?? "-"}
+                    {c.probability != null ? ` P${c.probability.toFixed(2)}` : ""}
+                    {c.targetPrice != null ? ` · 목표 ${Math.round(c.targetPrice).toLocaleString("ko-KR")}` : ""}
+                    {c.reviewDate ? ` · ${c.reviewDate} 해소` : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {dh.priorLessons.length > 0 ? (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 12, color: "var(--fg-3)", marginBottom: 4 }}>교훈</div>
+              <ul style={{ margin: 0, paddingLeft: 18, color: "var(--fg-2)", fontSize: 13 }}>
+                {dh.priorLessons.map((l, i) => <li key={`pl-${i}`}>{l}</li>)}
+              </ul>
+            </div>
+          ) : null}
+
+          <p style={{ margin: "6px 0 0", color: "var(--fg-3)", fontSize: 11 }}>{dh.cautionLabel}</p>
+        </>
       )}
     </Card>
   );
@@ -382,9 +566,15 @@ export function StockDetailPage() {
   const [data, setData] = useState<StockDetailResponse | undefined>();
   const [candles, setCandles] = useState<StockDetailCandlesResponse | undefined>();
   const [orders, setOrders] = useState<StockDetailOrdersResponse | undefined>();
+  const [orderLedger, setOrderLedger] = useState<LinkedOrder[] | undefined>();
+  const [watches, setWatches] = useState<WatchAlertRow[] | undefined>();
+  const [retrospectives, setRetrospectives] = useState<RetrospectiveRow[] | undefined>();
   const [news, setNews] = useState<StockDetailNewsResponse | undefined>();
   const [researchConsensus, setResearchConsensus] = useState<StockDetailResearchConsensusResponse | undefined>();
   const [researchErr, setResearchErr] = useState<string | undefined>();
+  const [recommendation, setRecommendation] = useState<StockDetailRecommendationResponse | undefined>();
+  const [recoLoading, setRecoLoading] = useState(false);
+  const [recoErr, setRecoErr] = useState<string | undefined>();
   const [err, setErr] = useState<string | undefined>();
 
   useEffect(() => {
@@ -392,9 +582,15 @@ export function StockDetailPage() {
     setData(undefined);
     setCandles(undefined);
     setOrders(undefined);
+    setOrderLedger(undefined);
+    setWatches(undefined);
+    setRetrospectives(undefined);
     setNews(undefined);
     setResearchConsensus(undefined);
     setResearchErr(undefined);
+    setRecommendation(undefined);
+    setRecoLoading(false);
+    setRecoErr(undefined);
     setErr(undefined);
 
     fetchStockDetail({ market, symbol })
@@ -411,6 +607,15 @@ export function StockDetailPage() {
     fetchStockDetailOrders({ market, symbol })
       .then((r) => !cancel && setOrders(r))
       .catch(() => undefined);
+    fetchStockDetailOrderLedger({ market, symbol, days: 90 })
+      .then((r) => !cancel && setOrderLedger(r))
+      .catch(() => !cancel && setOrderLedger([]));
+    fetchWatches(market, "all", symbol)
+      .then((r) => !cancel && setWatches(r.items))
+      .catch(() => !cancel && setWatches([]));
+    fetchRetrospectives({ market, symbol, limit: 20 })
+      .then((r) => !cancel && setRetrospectives(r.items))
+      .catch(() => !cancel && setRetrospectives([]));
     fetchStockDetailNews({ market, symbol, limit: 5 })
       .then((r) => !cancel && setNews(r))
       .catch(() => undefined);
@@ -419,6 +624,24 @@ export function StockDetailPage() {
       cancel = true;
     };
   }, [market, symbol]);
+
+  // ROB-692 — on-demand only (never in the eager load effect above):
+  // analyze_stock_impl is the heaviest fetch on this page.
+  const loadRecommendation = () => {
+    if (market === "crypto") return;
+    setRecoLoading(true);
+    setRecoErr(undefined);
+    fetchStockDetailRecommendation({ market, symbol })
+      .then((r) => {
+        setRecommendation(r);
+      })
+      .catch((e) => {
+        setRecoErr(String(e?.message ?? e));
+      })
+      .finally(() => {
+        setRecoLoading(false);
+      });
+  };
 
   const sideDetails = useMemo(() => {
     if (!data) {
@@ -436,7 +659,7 @@ export function StockDetailPage() {
         <ProfileCard data={data} />
         {market !== "crypto" ? <ResearchConsensusCard data={researchConsensus} error={researchErr} /> : null}
         {market === "crypto" ? <CryptoDetailCard data={data} /> : null}
-        <AnalysisCard data={data} />
+        <DecisionHistoryCard data={data} />
         <NaverPocCard data={data} />
         <MemoCard />
       </div>
@@ -453,13 +676,25 @@ export function StockDetailPage() {
             <>
               <HeaderCard data={data} />
               <TradeGuardrail data={data} />
+              {market !== "crypto" ? (
+                <RecommendationCard
+                  market={market}
+                  data={recommendation}
+                  loading={recoLoading}
+                  error={recoErr}
+                  onLoad={loadRecommendation}
+                />
+              ) : null}
               <HoldingCard data={data} />
               <FxSensitivityCard data={data.fxSensitivity} />
               <ChartCard candles={candles} />
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                 <OrderbookCard data={data} />
-                <OrdersCard orders={orders} />
+                <OrdersCard orders={orders} market={market} />
               </div>
+              <OrderLedgerCard orders={orderLedger} />
+              <WatchCard watches={watches} />
+              <RetrospectiveCard retrospectives={retrospectives} />
               <NewsCard news={news} />
               {data.market === "kr" && data.investorFlow ? (
                 <InvestorFlowCard data={data.investorFlow} />

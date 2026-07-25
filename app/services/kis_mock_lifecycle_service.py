@@ -46,6 +46,7 @@ class KISMockLifecycleService:
         symbol: str | None = None,
         instrument_type: str | None = None,
         side: str | None = None,
+        ledger_ids: list[int] | None = None,
     ) -> list[KISMockOrderLedger]:
         if limit < 1:
             raise ValueError("limit must be >= 1")
@@ -58,12 +59,27 @@ class KISMockLifecycleService:
             stmt = stmt.where(KISMockOrderLedger.instrument_type == instrument_type)
         if side:
             stmt = stmt.where(KISMockOrderLedger.side == side)
+        if ledger_ids:
+            stmt = stmt.where(KISMockOrderLedger.id.in_(ledger_ids))
         stmt = stmt.order_by(
             KISMockOrderLedger.trade_date.asc(),
             KISMockOrderLedger.id.asc(),
         ).limit(limit)
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
+
+    async def existing_ledger_ids(self, ledger_ids: list[int]) -> set[int]:
+        """Return the subset of ``ledger_ids`` that exist in the ledger at
+        all (any lifecycle state) — used to explicitly reject a
+        reconciliation scope naming a nonexistent id rather than silently
+        processing whatever subset does exist (ROB-1007)."""
+        if not ledger_ids:
+            return set()
+        stmt = select(KISMockOrderLedger.id).where(
+            KISMockOrderLedger.id.in_(ledger_ids)
+        )
+        result = await self._db.execute(stmt)
+        return set(result.scalars().all())
 
     async def get_by_order_no(self, *, order_no: str) -> KISMockOrderLedger | None:
         """Look up a single ledger row by broker order number.

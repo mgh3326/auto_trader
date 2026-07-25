@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { fetchSellHistory } from "../../api/fills";
+import { stockDetailPath } from "../../stockDetailPath";
 import type { FillListResponse, FillMarket, FillRow } from "../../types/fills";
 
 const MARKET_OPTIONS: { key: FillMarket | "all"; label: string }[] = [
@@ -8,22 +10,6 @@ const MARKET_OPTIONS: { key: FillMarket | "all"; label: string }[] = [
   { key: "us", label: "미국" },
   { key: "crypto", label: "코인" },
 ];
-
-const FALLBACK_SYMBOL_NAMES: Record<string, string> = {
-  "000660": "SK하이닉스",
-  "005930": "삼성전자",
-  "000270": "기아",
-  "000660.KS": "SK하이닉스",
-  "004020": "현대제철",
-  "034220": "LG디스플레이",
-  "064350": "현대로템",
-  "096770": "SK이노베이션",
-  QQQ: "Invesco QQQ Trust",
-  QQQM: "Invesco NASDAQ 100 ETF",
-  TSLA: "Tesla",
-  CONL: "GraniteShares 2x Long COIN ETF",
-  CTSH: "Cognizant Technology Solutions",
-};
 
 function toNumber(value: string | number | null | undefined): number | null {
   if (value == null || value === "") return null;
@@ -103,7 +89,7 @@ function sourceBreakdownLabel(data: FillListResponse): string | null {
 }
 
 function symbolDisplayName(row: FillRow): string | null {
-  const name = row.symbol_name ?? row.symbolName ?? FALLBACK_SYMBOL_NAMES[row.symbol] ?? FALLBACK_SYMBOL_NAMES[row.raw_symbol];
+  const name = row.symbol_name ?? row.symbolName;
   if (!name || name === row.symbol) return null;
   return name;
 }
@@ -135,6 +121,13 @@ function profitByCurrency(rows: FillRow[]): { currency: string; profit: number; 
     costBasis: value.costBasis,
     rate: value.costBasis > 0 ? (value.profit / value.costBasis) * 100 : null,
   }));
+}
+
+function routeMarket(row: FillRow): "kr" | "us" | "crypto" | null {
+  if (row.instrument_type === "equity_kr") return "kr";
+  if (row.instrument_type === "equity_us") return "us";
+  if (row.instrument_type === "crypto") return "crypto";
+  return null;
 }
 
 export function SellHistoryPanel({ compact = false }: { compact?: boolean }) {
@@ -326,18 +319,32 @@ export function SellHistoryPanel({ compact = false }: { compact?: boolean }) {
             <tbody>
               {rows.map((row) => {
                 const displayName = symbolDisplayName(row);
-                return (
-                <tr key={`${row.broker}-${row.account_mode}-${row.venue}-${row.broker_order_id}-${row.fill_seq}`}>
-                  <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 12, color: "var(--fg-2)", whiteSpace: "nowrap" }}>
-                    {formatDateTime(row.filled_at)}
-                  </td>
-                  <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)" }}>
+                const market = routeMarket(row);
+                const href = market ? stockDetailPath(market, row.symbol) : null;
+                const symbolBlock = (
+                  <>
                     <div style={{ fontSize: 13, fontWeight: 800 }}>{displayName ?? row.symbol}</div>
                     <div style={{ marginTop: 2, fontSize: 11, color: "var(--fg-3)" }}>
                       {compact
                         ? `${row.symbol} · ${formatQty(row)}`
                         : `${row.symbol} · ${row.broker.toUpperCase()} · ${row.venue}`}
                     </div>
+                  </>
+                );
+
+                return (
+                <tr key={`${row.broker}-${row.account_mode}-${row.venue}-${row.broker_order_id}-${row.fill_seq}`}>
+                  <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 12, color: "var(--fg-2)", whiteSpace: "nowrap" }}>
+                    {formatDateTime(row.filled_at)}
+                  </td>
+                  <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)" }}>
+                    {href ? (
+                      <Link to={href} style={{ color: "inherit", textDecoration: "none" }}>
+                        {symbolBlock}
+                      </Link>
+                    ) : (
+                      symbolBlock
+                    )}
                   </td>
                   {!compact && <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 13 }}>{formatQty(row)}</td>}
                   <td style={{ padding: "10px 14px", borderBottom: "1px solid var(--divider)", fontSize: 13, textAlign: "right", fontFeatureSettings: '"tnum"' }}>

@@ -8,19 +8,24 @@ import { Link, useLocation, useParams } from "react-router-dom";
 
 import { Card, Pill } from "../../ds";
 import { useInvestmentReportBundle } from "../../hooks/useInvestmentReportBundle";
+import { LinkedOrderRow, linkedOrderKey } from "../orders/LinkedOrderRow";
 import type {
   DeliveryStatus,
+  ForecastLink,
   InvestmentReportItem,
   InvestmentReportItemDecision,
   InvestmentWatchAlert,
   InvestmentWatchEvent,
   NoActionSummary,
+  Market,
   ReportReviewSections,
+  RetrospectiveLink,
   SnapshotFreshnessSummary,
   SnapshotReportDiagnostics,
 } from "../../types/investmentReports";
 import { ActionPacketView } from "./ActionPacketView";
 import { IntermediateAnalysisPanel } from "./IntermediateAnalysisPanel";
+import ItemArtifactLinks from "./ItemArtifactLinks";
 import { ProposalDiffPanel } from "./ProposalDiffPanel";
 import { ReportDiagnosticsPanel } from "./ReportDiagnosticsPanel";
 import { ReportSnapshotEvidencePanel } from "./ReportSnapshotEvidencePanel";
@@ -202,12 +207,98 @@ function formatConfidence(
   return typeof raw === "string" ? raw : null;
 }
 
+// ROB-690 — server-computed risk/reward, read from
+// evidenceSnapshot.trade_setup (migration-0 JSONB reserved key; see
+// app/services/investment_reports/risk_reward.py). Fail-closed writes omit
+// the key entirely, so its mere presence implies a valid computed setup —
+// but we still defensively re-validate shape/finiteness before rendering,
+// since evidenceSnapshot is untyped `Record<string, unknown>` on the wire.
+interface TradeSetupHeadlineView {
+  entry: string;
+  riskPct: string;
+  rewardPct: string;
+  rrRatio: string;
+}
+
+interface TradeSetupView {
+  direction: "long" | "short";
+  headline: TradeSetupHeadlineView;
+}
+
+function parseTradeSetup(
+  evidenceSnapshot: Record<string, unknown> | null | undefined,
+): TradeSetupView | null {
+  const raw = evidenceSnapshot?.trade_setup;
+  if (!raw || typeof raw !== "object") return null;
+  const setup = raw as Record<string, unknown>;
+
+  const direction = setup.direction;
+  if (direction !== "long" && direction !== "short") return null;
+
+  const headlineRaw = setup.headline;
+  if (!headlineRaw || typeof headlineRaw !== "object") return null;
+  const headline = headlineRaw as Record<string, unknown>;
+
+  const entry = headline.entry;
+  const riskPct = headline.risk_pct;
+  const rewardPct = headline.reward_pct;
+  const rrRatio = headline.rr_ratio;
+  if (
+    typeof entry !== "string" ||
+    typeof riskPct !== "string" ||
+    typeof rewardPct !== "string" ||
+    typeof rrRatio !== "string"
+  ) {
+    return null;
+  }
+  if (
+    ![entry, riskPct, rewardPct, rrRatio].every((v) => Number.isFinite(Number(v)))
+  ) {
+    return null;
+  }
+
+  return { direction, headline: { entry, riskPct, rewardPct, rrRatio } };
+}
+
+// ROB-693 — Hermes-authored advisory narrative ("what would invalidate this
+// thesis"), read from evidenceSnapshot.invalidation_triggers (migration-0
+// JSONB reserved key; see app/services/investment_reports/ingestion.py).
+// auto_trader only persists + renders this list verbatim — it never
+// generates the bullet content itself. Distinct from the scanner-executable
+// WatchInvalidation (item.watchCondition) — this is narrative-only and does
+// not drive the watch scanner. Defensive parse since evidenceSnapshot is
+// untyped `Record<string, unknown>` on the wire (mirrors parseTradeSetup).
+function parseInvalidationTriggers(
+  evidenceSnapshot: Record<string, unknown> | null | undefined,
+): string[] | null {
+  const raw = evidenceSnapshot?.invalidation_triggers;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  if (!raw.every((v) => typeof v === "string")) return null;
+  return raw as string[];
+}
+
+function formatMaxAction(a: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (a.side) parts.push(String(a.side));
+  if (a.quantity != null) parts.push(`${a.quantity}\uc8fc`);
+  if (a.notional != null) parts.push(`${a.notional}`);
+  if (a.limit_price != null) parts.push(`@${a.limit_price}`);
+  if (a.ladder_level != null) parts.push(`ladder ${a.ladder_level}`);
+  return parts.join(" · ");
+}
+
 function ItemRow({
   item,
   decisions,
+  forecastLinks,
+  retrospectiveLinks,
+  market,
 }: {
   item: InvestmentReportItem;
   decisions: InvestmentReportItemDecision[];
+  forecastLinks?: ForecastLink[];
+  retrospectiveLinks?: RetrospectiveLink[];
+  market: Market;
 }) {
   const kindLabel = ITEM_KIND_LABELS[item.itemKind] ?? item.itemKind;
   const statusLabel = ITEM_STATUS_LABELS[item.status] ?? item.status;
@@ -215,6 +306,8 @@ function ItemRow({
   const dimensionCitations = item.citedDimensionReportUuids?.length ?? 0;
   const hasChips =
     !!confidenceLabel || !!item.citedSymbolReportUuid || dimensionCitations > 0;
+  const tradeSetup = parseTradeSetup(item.evidenceSnapshot);
+  const invalidationTriggers = parseInvalidationTriggers(item.evidenceSnapshot);
   return (
     <section
       id={`watch-item-${item.itemUuid}`}
@@ -272,6 +365,192 @@ function ItemRow({
       <div style={{ color: "var(--fg-2)", fontSize: 13, lineHeight: 1.55 }}>
         {item.rationale}
       </div>
+      {item.decisionBucket ? (
+        <span
+          className="item-decision-bucket-badge"
+          data-testid="item-decision-bucket-badge"
+          style={{
+            fontSize: 12,
+            fontWeight: 800,
+            color: "var(--fg-2)",
+            padding: "2px 8px",
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+          }}
+        >
+          {item.decisionBucket}
+        </span>
+      ) : null}
+      {item.triggerChecklist && item.triggerChecklist.length > 0 ? (
+        <ul
+          className="item-trigger-checklist"
+          style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "var(--fg-2)" }}
+        >
+          {item.triggerChecklist.map((t: unknown, i: number) => (
+            <li key={i}>{String(t)}</li>
+          ))}
+        </ul>
+      ) : null}
+      {item.maxAction &&
+      Object.keys(item.maxAction).length > 0 ? (
+        <div
+          className="item-max-action"
+          data-testid="item-max-action"
+          style={{ fontSize: 12, color: "var(--fg-2)" }}
+        >
+          {formatMaxAction(item.maxAction as Record<string, unknown>)}
+        </div>
+      ) : null}
+      {item.structuredEvidenceSummary ? (
+        <div
+          className="item-structured-evidence"
+          style={{ fontSize: 12, color: "var(--fg-3)" }}
+        >
+          {item.structuredEvidenceSummary}
+        </div>
+      ) : null}
+      {tradeSetup ? (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          <Pill tone={tradeSetup.direction === "long" ? "gain" : "warn"} size="sm">
+            {tradeSetup.direction === "long" ? "롱" : "숏"}
+          </Pill>
+          <span style={{ fontSize: 12, color: "var(--fg-2)" }}>
+            손익비 R:R {tradeSetup.headline.rrRatio} · 리스크{" "}
+            {tradeSetup.headline.riskPct}% · 리워드 {tradeSetup.headline.rewardPct}%
+          </span>
+        </div>
+      ) : null}
+      {tradeSetup && item.itemKind === "action" ? (
+        <div
+          className="item-plan-vs-actual"
+          data-testid="item-plan-vs-actual"
+          style={{ fontSize: 12, color: "var(--fg-2)" }}
+        >
+          {/* R:R (손절/목표 %) is already shown in the pill above; this row
+              adds the plan→actual juxtaposition the pill can't: planned entry
+              vs the actual fill price. */}
+          <span>계획 진입 {tradeSetup.headline.entry}</span>
+          {(() => {
+            const filled = (item.linkedOrders ?? []).find(
+              (o) =>
+                o.avgFillPrice != null &&
+                o.avgFillPrice !== "" &&
+                String(o.avgFillPrice) !== "0",
+            );
+            return filled ? (
+              <span> → 실제 체결 {String(filled.avgFillPrice)}</span>
+            ) : (
+              <span style={{ color: "var(--fg-3)" }}> → 체결 대기</span>
+            );
+          })()}
+        </div>
+      ) : null}
+      {invalidationTriggers ? (
+        <div style={{ display: "grid", gap: 4 }}>
+          <div style={{ fontSize: 12, color: "var(--fg-2)", fontWeight: 800 }}>
+            무효화 조건
+          </div>
+          <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 2 }}>
+            {invalidationTriggers.map((trigger, idx) => (
+              <li
+                key={`${idx}-${trigger}`}
+                style={{ fontSize: 12, color: "var(--fg-2)" }}
+              >
+                {trigger}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {item.linkedOrders && item.linkedOrders.length > 0 ? (
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontSize: 12, color: "var(--fg-2)", fontWeight: 800 }}>
+            주문 · 체결
+          </div>
+          {item.linkedOrders.map((order) => (
+            <LinkedOrderRow key={linkedOrderKey(order)} order={order} />
+          ))}
+        </div>
+      ) : null}
+      {/* ROB-715 — forecast → fill → retrospective learning loop. The
+          "not yet linked" placeholder is shown only for action items — watch/
+          risk rows rarely carry a forecast, so blanketing every row with it
+          would be noise. Rows with actual loop data render regardless of kind. */}
+      {(forecastLinks ?? []).length === 0 &&
+      (retrospectiveLinks ?? []).length === 0 &&
+      item.itemKind !== "action" ? null : (
+        <div data-testid={`item-loop-${item.itemUuid}`}>
+          {(forecastLinks ?? []).length === 0 &&
+          (retrospectiveLinks ?? []).length === 0 ? (
+            <span
+              className="item-loop-empty muted"
+              style={{ fontSize: 12, color: "var(--fg-3)" }}
+            >
+              해소 대기 / 미연결
+            </span>
+          ) : (
+            <div
+            style={{
+              display: "grid",
+              gap: 4,
+              padding: 10,
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              background: "var(--surface-2)",
+            }}
+          >
+            <div
+              style={{ fontSize: 12, color: "var(--fg-2)", fontWeight: 800 }}
+            >
+              학습 루프
+            </div>
+            {(forecastLinks ?? []).map((f) => (
+              <div
+                key={f.forecastId}
+                data-testid={`item-loop-forecast-${f.forecastId}`}
+                style={{ fontSize: 12, color: "var(--fg-2)" }}
+              >
+                <span>
+                  {f.status === "closed"
+                    ? f.outcome == null
+                      ? "결과 미기록"
+                      : f.outcome
+                        ? "적중"
+                        : "빗나감"
+                    : "해소 대기"}
+                </span>
+                {f.brierScore != null ? (
+                  <span> · Brier {f.brierScore.toFixed(2)}</span>
+                ) : null}
+                {f.reviewDate ? <span> · {f.reviewDate}</span> : null}
+              </div>
+            ))}
+            {(retrospectiveLinks ?? []).map((r) => (
+              <div
+                key={r.retrospectiveId}
+                data-testid={`item-loop-retro-${r.retrospectiveId}`}
+                style={{ fontSize: 12, color: "var(--fg-2)" }}
+              >
+                <span>회고: {r.outcome}</span>
+                {r.lesson ? <span> — {r.lesson}</span> : null}
+              </div>
+            ))}
+          </div>
+          )}
+        </div>
+      )}
+      <ItemArtifactLinks
+        symbol={item.symbol}
+        market={market}
+        correlationIds={Array.from(
+          new Set(
+            [
+              ...(forecastLinks ?? []).map((f) => f.correlationId),
+              ...(retrospectiveLinks ?? []).map((r) => r.correlationId),
+            ].filter((c): c is string => !!c),
+          ),
+        )}
+      />
       {item.watchCondition ? (
         <div
           style={{
@@ -491,10 +770,16 @@ function ReviewSectionsView({
   review,
   items,
   decisionsByItemUuid,
+  forecastsByItemUuid,
+  retrospectivesByItemUuid,
+  market,
 }: {
   review: ReportReviewSections;
   items: InvestmentReportItem[];
   decisionsByItemUuid: Record<string, InvestmentReportItemDecision[]>;
+  forecastsByItemUuid: Record<string, ForecastLink[]>;
+  retrospectivesByItemUuid: Record<string, RetrospectiveLink[]>;
+  market: Market;
 }) {
   const projectedUuids = new Set(
     review.sections.flatMap((section) => section.items.map((it) => it.itemUuid)),
@@ -519,6 +804,11 @@ function ReviewSectionsView({
                   key={item.itemUuid}
                   item={item}
                   decisions={decisionsByItemUuid[item.itemUuid] ?? []}
+                  forecastLinks={forecastsByItemUuid[item.itemUuid] ?? []}
+                  retrospectiveLinks={
+                    retrospectivesByItemUuid[item.itemUuid] ?? []
+                  }
+                  market={market}
                 />
               ))
             ) : (
@@ -537,6 +827,11 @@ function ReviewSectionsView({
               key={item.itemUuid}
               item={item}
               decisions={decisionsByItemUuid[item.itemUuid] ?? []}
+              forecastLinks={forecastsByItemUuid[item.itemUuid] ?? []}
+              retrospectiveLinks={
+                retrospectivesByItemUuid[item.itemUuid] ?? []
+              }
+              market={market}
             />
           ))}
         </section>
@@ -668,6 +963,9 @@ export function InvestmentReportBundleContent({
           review={review}
           items={bundle.items}
           decisionsByItemUuid={bundle.decisionsByItemUuid}
+          forecastsByItemUuid={bundle.forecastsByItemUuid ?? {}}
+          retrospectivesByItemUuid={bundle.retrospectivesByItemUuid ?? {}}
+          market={bundle.report.market}
         />
       ) : (
         (["action", "watch", "risk"] as const).map((kind) =>
@@ -681,6 +979,13 @@ export function InvestmentReportBundleContent({
                   key={item.itemUuid}
                   item={item}
                   decisions={bundle.decisionsByItemUuid[item.itemUuid] ?? []}
+                  forecastLinks={
+                    bundle.forecastsByItemUuid?.[item.itemUuid] ?? []
+                  }
+                  retrospectiveLinks={
+                    bundle.retrospectivesByItemUuid?.[item.itemUuid] ?? []
+                  }
+                  market={bundle.report.market}
                 />
               ))}
             </section>

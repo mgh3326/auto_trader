@@ -44,6 +44,7 @@ from app.mcp_server.tooling import (
     order_validation,
     orders_history,
     orders_modify_cancel,
+    portfolio_allocation,
     portfolio_cash,
     portfolio_holdings,
     trade_journal_tools,
@@ -87,6 +88,10 @@ class DummyMCP:
             return func
 
         return decorator
+
+    def list_tools(self):
+        """Mirror FastMCP.list_tools() — objects exposing a ``.name``."""
+        return [SimpleNamespace(name=name) for name in self.tools]
 
 
 class DummySessionManager:
@@ -187,6 +192,7 @@ _PATCH_MODULES = (
     order_validation,
     orders_history,
     orders_modify_cancel,
+    portfolio_allocation,
     portfolio_cash,
     portfolio_holdings,
     trade_journal_tools,

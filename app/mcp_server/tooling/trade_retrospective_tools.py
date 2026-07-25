@@ -4,21 +4,39 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.mcp_server.caller_identity import get_caller_argument_names
+from app.mcp_server.env_utils import _env
+from app.mcp_server.profiles import resolve_mcp_profile
+from app.services.trade_journal.retrospective_action_repository import (
+    RetrospectiveActionRepository,
+)
 from app.services.trade_journal.trade_retrospective_service import (
     RetrospectiveValidationError,
     build_retrospective_aggregate,
+    build_retrospective_pending,
     get_retrospectives,
     save_retrospective,
     serialize_retrospective,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _mcp_argument_was_provided(name: str, value: Any) -> bool:
+    """Preserve omitted-vs-explicit-null at the FastMCP function boundary."""
+    argument_names = get_caller_argument_names()
+    if argument_names is None:
+        # Direct Python callers have no middleware context; retain the existing
+        # convention that None means omitted for those callers.
+        return value is not None
+    return name in argument_names
 
 
 def _session_factory() -> async_sessionmaker[AsyncSession]:
@@ -48,43 +66,104 @@ async def save_trade_retrospective(
     next_strategy: str | None = None,
     evidence_snapshot: dict | None = None,
     created_by_profile: str | None = None,
+    buy_fx_rate: float | None = None,
+    sell_fx_rate: float | None = None,
+    fx_pnl_krw: float | None = None,
+    security_pnl_usd: float | None = None,
+    security_pnl_krw: float | None = None,
+    total_pnl_krw: float | None = None,
+    fx_rate_source: str | None = None,
+    fx_pnl_accuracy: str | None = None,
+    trigger_type: str | None = None,
+    root_cause_class: str | None = None,
+    intended_vs_happened: dict | None = None,
+    next_actions: list | None = None,
+    guardrail_fired: str | None = None,
+    policy_version: str | None = None,
 ) -> dict[str, Any]:
+    """Store a structured trade retrospective.
+
+    Args:
+        outcome: One of filled, partially_filled, unfilled, rejected, cancelled.
+    """
     symbol = (symbol or "").strip()
     if not symbol:
         return {"success": False, "error": "symbol is required"}
+    # ROB-647 — forward postmortem fields only when the caller supplied them, so
+    # an idempotent re-save that omits them preserves prior values (the service
+    # distinguishes omitted from explicit-None via a sentinel).
+    postmortem: dict[str, Any] = {}
+    if _mcp_argument_was_provided("trigger_type", trigger_type):
+        postmortem["trigger_type"] = trigger_type
+    if _mcp_argument_was_provided("root_cause_class", root_cause_class):
+        postmortem["root_cause_class"] = root_cause_class
+    if _mcp_argument_was_provided("intended_vs_happened", intended_vs_happened):
+        postmortem["intended_vs_happened"] = intended_vs_happened
+    if _mcp_argument_was_provided("next_actions", next_actions):
+        postmortem["next_actions"] = next_actions
+    if _mcp_argument_was_provided("guardrail_fired", guardrail_fired):
+        postmortem["guardrail_fired"] = guardrail_fired
+    if _mcp_argument_was_provided("policy_version", policy_version):
+        postmortem["policy_version"] = policy_version
+    save_kwargs: dict[str, Any] = {
+        "symbol": symbol,
+        "instrument_type": instrument_type,
+        "account_mode": account_mode,
+        "outcome": outcome,
+        "actor": f"mcp:{resolve_mcp_profile(_env('MCP_PROFILE')).value}",
+    }
+    optional_values = {
+        "side": side,
+        "market": market,
+        "strategy_key": strategy_key,
+        "correlation_id": correlation_id,
+        "journal_id": journal_id,
+        "report_uuid": report_uuid,
+        "report_item_uuid": report_item_uuid,
+        "plan_price": plan_price,
+        "fill_price": fill_price,
+        "realized_pnl": realized_pnl,
+        "realized_pnl_currency": realized_pnl_currency,
+        "pnl_pct": pnl_pct,
+        "rationale": rationale,
+        "result_summary": result_summary,
+        "lesson": lesson,
+        "next_strategy": next_strategy,
+        "evidence_snapshot": evidence_snapshot,
+        "created_by_profile": created_by_profile,
+        "buy_fx_rate": buy_fx_rate,
+        "sell_fx_rate": sell_fx_rate,
+        "fx_pnl_krw": fx_pnl_krw,
+        "security_pnl_usd": security_pnl_usd,
+        "security_pnl_krw": security_pnl_krw,
+        "total_pnl_krw": total_pnl_krw,
+        "fx_rate_source": fx_rate_source,
+        "fx_pnl_accuracy": fx_pnl_accuracy,
+    }
+    save_kwargs.update(
+        {
+            key: value
+            for key, value in optional_values.items()
+            if _mcp_argument_was_provided(key, value)
+        }
+    )
+    save_kwargs.update(postmortem)
     try:
         async with _session_factory()() as db:
-            action, row = await save_retrospective(
-                db,
-                symbol=symbol,
-                instrument_type=instrument_type,
-                account_mode=account_mode,
-                outcome=outcome,
-                side=side,
-                market=market,
-                strategy_key=strategy_key,
-                correlation_id=correlation_id,
-                journal_id=journal_id,
-                report_uuid=report_uuid,
-                report_item_uuid=report_item_uuid,
-                plan_price=plan_price,
-                fill_price=fill_price,
-                realized_pnl=realized_pnl,
-                realized_pnl_currency=realized_pnl_currency,
-                pnl_pct=pnl_pct,
-                rationale=rationale,
-                result_summary=result_summary,
-                lesson=lesson,
-                next_strategy=next_strategy,
-                evidence_snapshot=evidence_snapshot,
-                created_by_profile=created_by_profile,
+            action, row = await save_retrospective(db, **save_kwargs)
+            await db.refresh(row)
+            next_actions_data = await RetrospectiveActionRepository(db).read_actions(
+                row.id
+            )
+            data = serialize_retrospective(
+                row,
+                next_actions_override=next_actions_data,
             )
             await db.commit()
-            await db.refresh(row)
             return {
                 "success": True,
                 "action": action,
-                "data": serialize_retrospective(row),
+                "data": data,
             }
     except RetrospectiveValidationError as exc:
         return {"success": False, "error": str(exc)}
@@ -151,3 +230,30 @@ async def get_retrospective_aggregate(
     except Exception as exc:  # noqa: BLE001
         logger.exception("get_retrospective_aggregate failed")
         return {"success": False, "error": f"get_retrospective_aggregate failed: {exc}"}
+
+
+async def trade_retrospective_pending(
+    kst_date_from: str | None = None,
+    kst_date_to: str | None = None,
+    account_mode: str | None = None,
+    limit: int = 100,
+    include_cancelled: bool = False,
+) -> dict[str, Any]:
+    today = now_kst().date().isoformat()
+    date_to = kst_date_to or today
+    # Default lookback window: 14 KST days ending today.
+    date_from = kst_date_from or (now_kst().date() - timedelta(days=14)).isoformat()
+    try:
+        async with _session_factory()() as db:
+            result = await build_retrospective_pending(
+                db,
+                kst_date_from=date_from,
+                kst_date_to=date_to,
+                account_mode=account_mode,
+                limit=limit,
+                include_cancelled=include_cancelled,
+            )
+        return {"success": True, **result}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("trade_retrospective_pending failed")
+        return {"success": False, "error": f"trade_retrospective_pending failed: {exc}"}

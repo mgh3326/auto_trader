@@ -79,26 +79,33 @@ def _classify_cost_blind(
     """
     if s.sample_count < min_samples:
         return ClassifiedHypothesis(
-            s, "needs_more_data",
+            s,
+            "needs_more_data",
             f"sample_count {s.sample_count} < min_samples {min_samples}",
         )
     if s.gross_expectancy_bps <= min_gross_bps:
         return ClassifiedHypothesis(
-            s, "screened_out",
+            s,
+            "screened_out",
             f"gross expectancy {s.gross_expectancy_bps:.2f}bps <= triviality floor "
             f"{min_gross_bps:.2f}bps (no economically meaningful gross edge)",
         )
     if s.oos_gross_bps is not None and s.oos_gross_bps <= 0:
         return ClassifiedHypothesis(
-            s, "screened_out",
+            s,
+            "screened_out",
             f"OOS gross expectancy {s.oos_gross_bps:.2f}bps <= 0 "
             "(in-sample gross edge does not hold out of sample)",
         )
     cost_binding = s.fee_adjusted_bps <= 0
-    note = ("positive gross, killed by fees -> cost_binding 343 signal"
-            if cost_binding else "positive gross AND net-viable after fees")
+    note = (
+        "positive gross, killed by fees -> cost_binding 343 signal"
+        if cost_binding
+        else "positive gross AND net-viable after fees"
+    )
     return ClassifiedHypothesis(
-        s, "promote_to_full_validation",
+        s,
+        "promote_to_full_validation",
         f"cost-blind: gross {s.gross_expectancy_bps:.2f}bps > floor "
         f"{min_gross_bps:.2f}bps with {s.sample_count} samples; {note}",
         in_sample_only=True,
@@ -122,7 +129,9 @@ def classify(
     """
     s = summary
     if cost_blind:
-        return _classify_cost_blind(s, min_samples=min_samples, min_gross_bps=min_gross_bps)
+        return _classify_cost_blind(
+            s, min_samples=min_samples, min_gross_bps=min_gross_bps
+        )
     if s.sample_count < min_samples:
         return ClassifiedHypothesis(
             s,

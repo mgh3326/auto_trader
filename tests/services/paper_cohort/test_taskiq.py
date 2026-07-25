@@ -1,0 +1,355 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from app.core.config import Settings, settings
+from app.core.scheduler import sched
+from app.core.taskiq_broker import broker, retry_schedule_source
+from app.jobs import paper_cohort as paper_cohort_job
+from app.jobs.paper_cohort import run_active_paper_cohorts
+from app.services.paper_cohort.contracts import PaperCohortError, RunMode
+from app.services.paper_cohort.runner import (
+    CohortRunInvocation,
+    CohortRunResult,
+    PaperCohortRunner,
+)
+from app.tasks import TASKIQ_TASK_MODULES, paper_cohort_tasks
+
+pytestmark = pytest.mark.unit
+
+
+def test_paper_cohort_flag_is_default_off() -> None:
+    assert Settings.model_fields["PAPER_COHORT_ENABLED"].default is False
+    assert settings.PAPER_COHORT_ENABLED is False
+
+
+def test_paper_cohort_task_is_discovered_from_package() -> None:
+    assert paper_cohort_tasks in TASKIQ_TASK_MODULES
+
+
+@pytest.mark.asyncio
+async def test_disabled_direct_runner_stops_before_database_or_capture(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", False)
+    session = AsyncMock()
+    capture = AsyncMock()
+    quotes = AsyncMock()
+    runner = PaperCohortRunner(
+        session,
+        capture=capture,
+        quote_provider=quotes,
+    )
+
+    with pytest.raises(PaperCohortError) as exc_info:
+        await runner.run(
+            CohortRunInvocation(
+                cohort_id="cohort-disabled",
+                run_id="run-disabled",
+                round_decision_id="round-disabled",
+                mode=RunMode.SHADOW,
+            )
+        )
+
+    assert exc_info.value.reason_code == "paper_cohort_disabled"
+    session.scalar.assert_not_awaited()
+    session.execute.assert_not_awaited()
+    capture.capture.assert_not_awaited()
+    quotes.get_quote.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_injected_enablement_cannot_bypass_server_owned_default_off(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", False)
+    session = AsyncMock()
+    capture = AsyncMock()
+    quotes = AsyncMock()
+
+    with pytest.raises(PaperCohortError, match="paper_cohort_disabled"):
+        await PaperCohortRunner(
+            session,
+            capture=capture,
+            quote_provider=quotes,
+            enablement=lambda _mode: True,
+        ).run(
+            CohortRunInvocation(
+                cohort_id="cohort-disabled",
+                run_id="run-disabled",
+                round_decision_id="round-disabled",
+                mode=RunMode.PAPER_ACTIVE,
+            )
+        )
+
+    session.scalar.assert_not_awaited()
+    capture.capture.assert_not_awaited()
+
+
+def test_schedule_labels_are_empty_while_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", False)
+    assert paper_cohort_tasks._scheduled_paper_cohort_labels() == []
+
+
+def test_schedule_labels_use_configured_utc_cron_only_when_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", True)
+    monkeypatch.setattr(settings, "PAPER_COHORT_CRON", "*/5 * * * *")
+    assert paper_cohort_tasks._scheduled_paper_cohort_labels() == [
+        {"cron": "*/5 * * * *", "cron_offset": "UTC"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_disabled_task_runs_recovery_audit_without_new_intents(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", False)
+    job = AsyncMock(return_value={"status": "disabled", "cohorts": []})
+    monkeypatch.setattr(paper_cohort_tasks, "run_active_paper_cohorts", job)
+
+    result = await paper_cohort_tasks.run_paper_cohorts()
+
+    assert result == {"status": "disabled", "cohorts": []}
+    job.assert_awaited_once()
+
+
+def test_taskiq_retry_policy_uses_durable_delayed_schedule_source() -> None:
+    labels = paper_cohort_tasks.run_paper_cohorts.labels
+    assert labels["retry_on_error"] is True
+    assert labels["max_retries"] == 3
+    assert labels["delay"] == 5
+    retry = next(
+        middleware
+        for middleware in broker.middlewares
+        if type(middleware).__name__ == "SmartRetryMiddleware"
+    )
+    assert retry.default_retry_label is False
+    assert retry.use_delay_exponent is True
+    assert retry.schedule_source is retry_schedule_source
+    assert retry_schedule_source in sched.sources
+
+
+def test_paper_active_invocation_is_one_shot_for_cohort_hash() -> None:
+    first = paper_cohort_job._invocation(
+        "cohort-one-shot",
+        "a" * 64,
+        RunMode.PAPER_ACTIVE,
+        datetime(2026, 7, 14, 1, 1, tzinfo=UTC),
+    )
+    later = paper_cohort_job._invocation(
+        "cohort-one-shot",
+        "a" * 64,
+        RunMode.PAPER_ACTIVE,
+        datetime(2026, 7, 14, 1, 2, tzinfo=UTC),
+    )
+    changed_cohort = paper_cohort_job._invocation(
+        "cohort-one-shot",
+        "b" * 64,
+        RunMode.PAPER_ACTIVE,
+        datetime(2026, 7, 14, 1, 2, tzinfo=UTC),
+    )
+
+    assert later == first
+    assert changed_cohort.run_id != first.run_id
+    assert changed_cohort.round_decision_id != first.round_decision_id
+
+
+def test_shadow_invocation_remains_a_minute_observation() -> None:
+    now = datetime(2026, 7, 14, 1, 1, tzinfo=UTC)
+
+    first = paper_cohort_job._invocation("cohort-shadow", "c" * 64, RunMode.SHADOW, now)
+    same_minute = paper_cohort_job._invocation(
+        "cohort-shadow",
+        "c" * 64,
+        RunMode.SHADOW,
+        now + timedelta(seconds=30),
+    )
+    next_minute = paper_cohort_job._invocation(
+        "cohort-shadow", "c" * 64, RunMode.SHADOW, now + timedelta(minutes=1)
+    )
+
+    assert same_minute == first
+    assert next_minute.run_id != first.run_id
+    assert next_minute.round_decision_id != first.round_decision_id
+
+
+@pytest.mark.asyncio
+async def test_retryable_job_failure_is_propagated_to_taskiq(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", True)
+    job = AsyncMock(
+        return_value={
+            "status": "completed",
+            "cohorts": [
+                {
+                    "cohort_id": "cohort-1",
+                    "status": "failed",
+                    "reason": "venue_quote_provider_error",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(paper_cohort_tasks, "run_active_paper_cohorts", job)
+
+    with pytest.raises(PaperCohortError, match="paper_cohort_retryable_failure"):
+        await paper_cohort_tasks.run_paper_cohorts()
+    job.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_disabled_job_only_audits_recoverable_claims(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", False)
+    session = AsyncMock()
+
+    @asynccontextmanager
+    async def session_factory():
+        yield session
+
+    recoverable = AsyncMock(return_value=[])
+    monkeypatch.setattr("app.jobs.paper_cohort._recoverable_invocations", recoverable)
+
+    result = await run_active_paper_cohorts(session_factory=session_factory)
+
+    assert result == {"status": "disabled", "cohorts": []}
+    recoverable.assert_awaited_once_with(session)
+
+
+@pytest.mark.asyncio
+async def test_job_resumes_active_prepared_claim_instead_of_terminal_recovery(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", True)
+    monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", True)
+    monkeypatch.setattr(
+        settings, "PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID", "paper-cohort-runner"
+    )
+    invocation = CohortRunInvocation(
+        cohort_id="cohort-active-retry",
+        run_id="run-active-retry",
+        round_decision_id="round-active-retry",
+        mode=RunMode.PAPER_ACTIVE,
+    )
+    monkeypatch.setattr(
+        paper_cohort_job,
+        "_recoverable_invocations",
+        AsyncMock(return_value=[invocation]),
+    )
+    monkeypatch.setattr(
+        paper_cohort_job,
+        "_runtime_mode",
+        AsyncMock(return_value=RunMode.PAPER_ACTIVE),
+    )
+    session = AsyncMock()
+    session.scalar.side_effect = [SimpleNamespace(stop_at=None), None]
+    session.scalars.return_value = SimpleNamespace(all=lambda: [])
+
+    @asynccontextmanager
+    async def session_factory():
+        yield session
+
+    calls: list[str] = []
+    runner_clocks: list[object] = []
+
+    def runtime_clock() -> datetime:
+        return datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
+
+    class FakeRunner:
+        def __init__(self, *args, **kwargs) -> None:
+            del args
+            runner_clocks.append(kwargs["clock"])
+
+        async def run(self, received):
+            assert received == invocation
+            calls.append("run")
+            return CohortRunResult(
+                cohort_id=invocation.cohort_id,
+                run_id=invocation.run_id,
+                round_decision_id=invocation.round_decision_id,
+                snapshot_id="snapshot-active-retry",
+                snapshot_hash="a" * 64,
+                decision_count=2,
+                intent_count=4,
+            )
+
+        async def recover(self, received):
+            del received
+            calls.append("recover")
+            raise AssertionError("active claim must use normal resume")
+
+    monkeypatch.setattr(paper_cohort_job, "PaperCohortRunner", FakeRunner)
+    result = await run_active_paper_cohorts(
+        session_factory=session_factory,
+        clock=runtime_clock,
+    )
+
+    assert calls == ["run"]
+    assert runner_clocks == [runtime_clock]
+    assert result["cohorts"][0]["status"] == "resumed"  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_job_uses_recovery_only_for_a_terminally_fenced_claim(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(settings, "PAPER_COHORT_ENABLED", True)
+    monkeypatch.setattr(settings, "PAPER_EXECUTION_ENABLED", True)
+    monkeypatch.setattr(
+        settings, "PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID", "paper-cohort-runner"
+    )
+    invocation = CohortRunInvocation(
+        cohort_id="cohort-fenced-recovery",
+        run_id="run-fenced-recovery",
+        round_decision_id="round-fenced-recovery",
+        mode=RunMode.PAPER_ACTIVE,
+    )
+    monkeypatch.setattr(
+        paper_cohort_job,
+        "_recoverable_invocations",
+        AsyncMock(return_value=[invocation]),
+    )
+    monkeypatch.setattr(
+        paper_cohort_job,
+        "_runtime_mode",
+        AsyncMock(return_value=RunMode.PAPER_ACTIVE),
+    )
+    session = AsyncMock()
+    session.scalar.side_effect = [SimpleNamespace(stop_at=None), 1]
+    session.scalars.return_value = SimpleNamespace(all=lambda: [])
+
+    @asynccontextmanager
+    async def session_factory():
+        yield session
+
+    calls: list[str] = []
+
+    class FakeRunner:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        async def run(self, received):
+            del received
+            raise AssertionError("fenced claim must not use fresh resume")
+
+        async def recover(self, received):
+            assert received == invocation
+            calls.append("recover")
+            return CohortRunResult(
+                cohort_id=invocation.cohort_id,
+                run_id=invocation.run_id,
+                round_decision_id=invocation.round_decision_id,
+                snapshot_id="snapshot-fenced-recovery",
+                snapshot_hash="b" * 64,
+                decision_count=2,
+                intent_count=4,
+            )
+
+    monkeypatch.setattr(paper_cohort_job, "PaperCohortRunner", FakeRunner)
+
+    result = await run_active_paper_cohorts(session_factory=session_factory)
+
+    assert calls == ["recover"]
+    assert result["cohorts"][0]["status"] == "recovered"  # type: ignore[index]

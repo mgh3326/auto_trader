@@ -44,21 +44,25 @@ def test_portfolio_drawdown_beats_serial_trade_drawdown():
         PortfolioPeriod(ts=4, gross_ref_pnl=11.0, commission_ref=0.0),
     ]
     pf = validated_gate.portfolio_metrics_at_fee(periods, 0.0)
-    assert pf.max_drawdown == -30.0          # correct, severe
-    assert pf.net_pnl == 3.0                 # same total as the flat trades
+    assert pf.max_drawdown == -30.0  # correct, severe
+    assert pf.net_pnl == 3.0  # same total as the flat trades
     assert pf.max_drawdown < serial.max_drawdown  # portfolio path is the honest one
 
 
 def test_evaluate_gate_portfolio_returns_report_with_portfolio_dd():
     # enough periods to split walk-forward and exceed a small min_trades
     periods = [
-        PortfolioPeriod(ts=i, gross_ref_pnl=(1.0 if i % 2 else -0.5), commission_ref=0.1)
+        PortfolioPeriod(
+            ts=i, gross_ref_pnl=(1.0 if i % 2 else -0.5), commission_ref=0.1
+        )
         for i in range(1, 41)
     ]
     rep = validated_gate.evaluate_gate_portfolio(
         candidate_runs={"p": periods},
-        baseline_periods=[PortfolioPeriod(ts=i, gross_ref_pnl=0.0, commission_ref=0.1)
-                          for i in range(1, 41)],
+        baseline_periods=[
+            PortfolioPeriod(ts=i, gross_ref_pnl=0.0, commission_ref=0.1)
+            for i in range(1, 41)
+        ],
         fee_bps=2.0,
         min_periods=5,
         candidate_name="basket-test",

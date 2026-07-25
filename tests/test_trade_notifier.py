@@ -876,7 +876,7 @@ async def test_notify_sell_order_disabled(trade_notifier):
         ("crypto", "https://discord.com/api/webhooks/crypto"),
     ],
 )
-async def test_notify_openclaw_message_fill_uses_market_specific_webhook(
+async def test_notify_agent_message_fill_uses_market_specific_webhook(
     trade_notifier,
     market_type: str,
     expected_webhook: str,
@@ -903,7 +903,7 @@ async def test_notify_openclaw_message_fill_uses_market_specific_webhook(
             new=AsyncMock(return_value=True),
         ) as mock_telegram,
     ):
-        result = await trade_notifier.notify_openclaw_message(
+        result = await trade_notifier.notify_agent_message(
             "fill message",
             correlation_id=f"corr-fill-{market_type}",
             market_type=market_type,
@@ -916,7 +916,7 @@ async def test_notify_openclaw_message_fill_uses_market_specific_webhook(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_skip_discord_only_tries_telegram(
+async def test_notify_agent_message_skip_discord_only_tries_telegram(
     trade_notifier,
 ):
     """skip_discord=True이면 Discord를 건너뛰고 Telegram만 시도한다."""
@@ -942,7 +942,7 @@ async def test_notify_openclaw_message_skip_discord_only_tries_telegram(
             new=AsyncMock(return_value=True),
         ) as mock_telegram,
     ):
-        result = await trade_notifier.notify_openclaw_message(
+        result = await trade_notifier.notify_agent_message(
             "fill message",
             correlation_id="corr-skip-discord",
             market_type="crypto",
@@ -956,7 +956,7 @@ async def test_notify_openclaw_message_skip_discord_only_tries_telegram(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_fill_skips_alerts_when_market_webhook_missing(
+async def test_notify_agent_message_fill_skips_alerts_when_market_webhook_missing(
     trade_notifier,
 ):
     trade_notifier.configure(
@@ -978,7 +978,7 @@ async def test_notify_openclaw_message_fill_skips_alerts_when_market_webhook_mis
             new=AsyncMock(return_value=True),
         ) as mock_telegram,
     ):
-        result = await trade_notifier.notify_openclaw_message(
+        result = await trade_notifier.notify_agent_message(
             "fill message",
             correlation_id="corr-fill-no-market-webhook",
             market_type="kr",
@@ -991,7 +991,7 @@ async def test_notify_openclaw_message_fill_skips_alerts_when_market_webhook_mis
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_fill_discord_failure_falls_back_to_telegram(
+async def test_notify_agent_message_fill_discord_failure_falls_back_to_telegram(
     trade_notifier,
 ):
     trade_notifier.configure(
@@ -1014,7 +1014,7 @@ async def test_notify_openclaw_message_fill_discord_failure_falls_back_to_telegr
             new=AsyncMock(return_value=True),
         ) as mock_telegram,
     ):
-        result = await trade_notifier.notify_openclaw_message(
+        result = await trade_notifier.notify_agent_message(
             "fill message",
             correlation_id="corr-fill-discord-failed",
             market_type="kr",
@@ -1029,8 +1029,77 @@ async def test_notify_openclaw_message_fill_discord_failure_falls_back_to_telegr
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_success(trade_notifier):
-    """Test successful OpenClaw message forwarding."""
+async def test_notify_agent_message_mirror_telegram_sends_both_on_discord_success(
+    trade_notifier,
+):
+    trade_notifier.configure(
+        bot_token="t",
+        chat_ids=["1"],
+        enabled=True,
+        discord_webhook_crypto="https://discord.com/api/webhooks/crypto",
+    )
+
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_content_single",
+            new=AsyncMock(return_value=True),
+        ) as md,
+        patch.object(
+            trade_notifier,
+            "_send_to_telegram",
+            new=AsyncMock(return_value=True),
+        ) as mt,
+    ):
+        ok = await trade_notifier.notify_agent_message(
+            "알림 요약\n제안 verdict\n결정 필요",
+            correlation_id="event-1",
+            market_type="crypto",
+            mirror_telegram=True,
+        )
+
+    assert ok is True
+    md.assert_awaited_once_with(
+        "알림 요약\n제안 verdict\n결정 필요",
+        "https://discord.com/api/webhooks/crypto",
+    )
+    mt.assert_awaited_once_with(
+        "알림 요약\n제안 verdict\n결정 필요", parse_mode="Markdown"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_agent_message_mirror_returns_true_when_telegram_unconfigured(
+    trade_notifier,
+):
+    trade_notifier.configure(
+        bot_token="",
+        chat_ids=[],
+        enabled=True,
+        discord_webhook_crypto="https://discord.com/api/webhooks/crypto",
+    )
+
+    with patch.object(
+        trade_notifier,
+        "_send_to_discord_content_single",
+        new=AsyncMock(return_value=True),
+    ) as md:
+        ok = await trade_notifier.notify_agent_message(
+            "triage text",
+            correlation_id="event-2",
+            market_type="crypto",
+            mirror_telegram=True,
+        )
+
+    assert ok is True
+    md.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_agent_message_success(trade_notifier):
+    """Test successful Agent message forwarding."""
     trade_notifier.configure(
         bot_token="test_token",
         chat_ids=["123456"],
@@ -1046,7 +1115,7 @@ async def test_notify_openclaw_message_success(trade_notifier):
         new_callable=AsyncMock,
         return_value=mock_response,
     ) as mock_post:
-        result = await trade_notifier.notify_openclaw_message("scan message")
+        result = await trade_notifier.notify_agent_message("scan message")
 
         assert result is True
         mock_post.assert_called_once()
@@ -1056,7 +1125,7 @@ async def test_notify_openclaw_message_success(trade_notifier):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_generic_scan_uses_alerts_webhook(trade_notifier):
+async def test_notify_agent_message_generic_scan_uses_alerts_webhook(trade_notifier):
     trade_notifier.configure(
         bot_token="test_token",
         chat_ids=["123456"],
@@ -1079,7 +1148,7 @@ async def test_notify_openclaw_message_generic_scan_uses_alerts_webhook(trade_no
             new=AsyncMock(return_value=True),
         ) as mock_telegram,
     ):
-        result = await trade_notifier.notify_openclaw_message("scan message")
+        result = await trade_notifier.notify_agent_message("scan message")
 
     assert result is True
     mock_discord.assert_awaited_once_with(
@@ -1090,22 +1159,22 @@ async def test_notify_openclaw_message_generic_scan_uses_alerts_webhook(trade_no
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_disabled(trade_notifier):
-    """Test OpenClaw forwarding when notifications are disabled."""
+async def test_notify_agent_message_disabled(trade_notifier):
+    """Test agent message forwarding when notifications are disabled."""
     trade_notifier.configure(
         bot_token="test_token",
         chat_ids=["123456"],
         enabled=False,
     )
 
-    result = await trade_notifier.notify_openclaw_message("scan message")
+    result = await trade_notifier.notify_agent_message("scan message")
 
     assert result is False
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_logs_notifier_disabled(trade_notifier, caplog):
+async def test_notify_agent_message_logs_notifier_disabled(trade_notifier, caplog):
     trade_notifier.configure(
         bot_token="test_token",
         chat_ids=["123456"],
@@ -1113,7 +1182,7 @@ async def test_notify_openclaw_message_logs_notifier_disabled(trade_notifier, ca
     )
 
     with caplog.at_level("INFO"):
-        result = await trade_notifier.notify_openclaw_message(
+        result = await trade_notifier.notify_agent_message(
             "scan message", correlation_id="corr-disabled"
         )
 
@@ -1311,14 +1380,14 @@ async def test_telegram_fallback(trade_notifier):
 
 
 # =============================================================================
-# Discord-first tests for notify_openclaw_message and notify_automation_summary
+# Discord-first tests for notify_agent_message and notify_automation_summary
 # =============================================================================
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_discord_first(trade_notifier):
-    """Test OpenClaw message sends to Discord alerts webhook first."""
+async def test_notify_agent_message_discord_first(trade_notifier):
+    """Test Agent message sends to Discord alerts webhook first."""
     webhook_url = "https://discord.com/api/webhooks/alerts"
     trade_notifier.configure(
         bot_token="test_token",
@@ -1336,7 +1405,7 @@ async def test_notify_openclaw_message_discord_first(trade_notifier):
         new_callable=AsyncMock,
         return_value=mock_response,
     ) as mock_post:
-        result = await trade_notifier.notify_openclaw_message("OpenClaw message")
+        result = await trade_notifier.notify_agent_message("Agent message")
 
         assert result is True
         mock_post.assert_called_once()
@@ -1344,13 +1413,13 @@ async def test_notify_openclaw_message_discord_first(trade_notifier):
         # Verify Discord webhook was called with content (not embeds)
         call_args = mock_post.call_args
         assert call_args.args[0] == webhook_url
-        assert call_args.kwargs["json"]["content"] == "OpenClaw message"
+        assert call_args.kwargs["json"]["content"] == "Agent message"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_discord_fallback_to_telegram(trade_notifier):
-    """Test OpenClaw message falls back to Telegram when Discord fails."""
+async def test_notify_agent_message_discord_fallback_to_telegram(trade_notifier):
+    """Test Agent message falls back to Telegram when Discord fails."""
     webhook_url = "https://discord.com/api/webhooks/alerts"
     trade_notifier.configure(
         bot_token="test_token",
@@ -1373,8 +1442,8 @@ async def test_notify_openclaw_message_discord_fallback_to_telegram(trade_notifi
         new_callable=AsyncMock,
         side_effect=[mock_discord_response, mock_telegram_response],
     ) as mock_post:
-        result = await trade_notifier.notify_openclaw_message(
-            "OpenClaw message", parse_mode="HTML"
+        result = await trade_notifier.notify_agent_message(
+            "Agent message", parse_mode="HTML"
         )
 
         assert result is True
@@ -1388,14 +1457,14 @@ async def test_notify_openclaw_message_discord_fallback_to_telegram(trade_notifi
         # Second call was to Telegram
         telegram_call = mock_post.call_args_list[1]
         assert "api.telegram.org" in telegram_call.args[0]
-        assert telegram_call.kwargs["json"]["text"] == "OpenClaw message"
+        assert telegram_call.kwargs["json"]["text"] == "Agent message"
         assert telegram_call.kwargs["json"]["parse_mode"] == "HTML"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_telegram_only(trade_notifier):
-    """Test OpenClaw message uses Telegram when no Discord webhook configured."""
+async def test_notify_agent_message_telegram_only(trade_notifier):
+    """Test Agent message uses Telegram when no Discord webhook configured."""
     trade_notifier.configure(
         bot_token="test_token",
         chat_ids=["123456"],
@@ -1412,7 +1481,7 @@ async def test_notify_openclaw_message_telegram_only(trade_notifier):
         new_callable=AsyncMock,
         return_value=mock_response,
     ) as mock_post:
-        result = await trade_notifier.notify_openclaw_message("OpenClaw message")
+        result = await trade_notifier.notify_agent_message("Agent message")
 
         assert result is True
         mock_post.assert_called_once()
@@ -1424,7 +1493,7 @@ async def test_notify_openclaw_message_telegram_only(trade_notifier):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_logs_telegram_only_result(
+async def test_notify_agent_message_logs_telegram_only_result(
     trade_notifier, caplog: pytest.LogCaptureFixture
 ):
     trade_notifier.configure(
@@ -1441,12 +1510,12 @@ async def test_notify_openclaw_message_logs_telegram_only_result(
         ) as mock_telegram,
         caplog.at_level("INFO"),
     ):
-        result = await trade_notifier.notify_openclaw_message(
-            "OpenClaw message", correlation_id="corr-telegram-only"
+        result = await trade_notifier.notify_agent_message(
+            "Agent message", correlation_id="corr-telegram-only"
         )
 
     assert result is True
-    mock_telegram.assert_awaited_once_with("OpenClaw message", parse_mode="Markdown")
+    mock_telegram.assert_awaited_once_with("Agent message", parse_mode="Markdown")
     assert "correlation_id=corr-telegram-only" in caplog.text
     assert "discord=skipped(no_discord_webhook)" in caplog.text
     assert "telegram=success" in caplog.text
@@ -1454,7 +1523,7 @@ async def test_notify_openclaw_message_logs_telegram_only_result(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_logs_no_telegram_config(
+async def test_notify_agent_message_logs_no_telegram_config(
     trade_notifier, caplog: pytest.LogCaptureFixture
 ):
     trade_notifier.configure(
@@ -1472,8 +1541,8 @@ async def test_notify_openclaw_message_logs_no_telegram_config(
         ) as mock_telegram,
         caplog.at_level("INFO"),
     ):
-        result = await trade_notifier.notify_openclaw_message(
-            "OpenClaw message", correlation_id="corr-no-telegram"
+        result = await trade_notifier.notify_agent_message(
+            "Agent message", correlation_id="corr-no-telegram"
         )
 
     assert result is False
@@ -1485,7 +1554,7 @@ async def test_notify_openclaw_message_logs_no_telegram_config(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_logs_discord_success_and_telegram_skipped(
+async def test_notify_agent_message_logs_discord_success_and_telegram_skipped(
     trade_notifier, caplog: pytest.LogCaptureFixture
 ):
     trade_notifier.configure(
@@ -1508,13 +1577,13 @@ async def test_notify_openclaw_message_logs_discord_success_and_telegram_skipped
         ) as mock_telegram,
         caplog.at_level("INFO"),
     ):
-        result = await trade_notifier.notify_openclaw_message(
-            "OpenClaw message", correlation_id="corr-discord-success"
+        result = await trade_notifier.notify_agent_message(
+            "Agent message", correlation_id="corr-discord-success"
         )
 
     assert result is True
     mock_discord.assert_awaited_once_with(
-        "OpenClaw message", "https://discord.com/api/webhooks/alerts"
+        "Agent message", "https://discord.com/api/webhooks/alerts"
     )
     mock_telegram.assert_not_awaited()
     assert "correlation_id=corr-discord-success" in caplog.text
@@ -1524,7 +1593,7 @@ async def test_notify_openclaw_message_logs_discord_success_and_telegram_skipped
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_logs_fallback_success(
+async def test_notify_agent_message_logs_fallback_success(
     trade_notifier, caplog: pytest.LogCaptureFixture
 ):
     trade_notifier.configure(
@@ -1547,13 +1616,13 @@ async def test_notify_openclaw_message_logs_fallback_success(
         ) as mock_telegram,
         caplog.at_level("INFO"),
     ):
-        result = await trade_notifier.notify_openclaw_message(
-            "OpenClaw message", correlation_id="corr-fallback-success"
+        result = await trade_notifier.notify_agent_message(
+            "Agent message", correlation_id="corr-fallback-success"
         )
 
     assert result is True
     mock_discord.assert_awaited_once()
-    mock_telegram.assert_awaited_once_with("OpenClaw message", parse_mode="Markdown")
+    mock_telegram.assert_awaited_once_with("Agent message", parse_mode="Markdown")
     assert "correlation_id=corr-fallback-success" in caplog.text
     assert "discord=failed" in caplog.text
     assert "telegram=success" in caplog.text
@@ -1561,7 +1630,7 @@ async def test_notify_openclaw_message_logs_fallback_success(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_openclaw_message_logs_fallback_failure(
+async def test_notify_agent_message_logs_fallback_failure(
     trade_notifier, caplog: pytest.LogCaptureFixture
 ):
     trade_notifier.configure(
@@ -1584,13 +1653,13 @@ async def test_notify_openclaw_message_logs_fallback_failure(
         ) as mock_telegram,
         caplog.at_level("INFO"),
     ):
-        result = await trade_notifier.notify_openclaw_message(
-            "OpenClaw message", correlation_id="corr-fallback-failed"
+        result = await trade_notifier.notify_agent_message(
+            "Agent message", correlation_id="corr-fallback-failed"
         )
 
     assert result is False
     mock_discord.assert_awaited_once()
-    mock_telegram.assert_awaited_once_with("OpenClaw message", parse_mode="Markdown")
+    mock_telegram.assert_awaited_once_with("Agent message", parse_mode="Markdown")
     assert "correlation_id=corr-fallback-failed" in caplog.text
     assert "discord=failed" in caplog.text
     assert "telegram=failed" in caplog.text
@@ -1973,3 +2042,212 @@ async def test_notify_toss_price_recommendation_requires_market_webhook(trade_no
 
     assert result is False
     mock_send.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_fill_routes_to_kr_webhook(trade_notifier):
+    from app.services.fill_notification import FillEnrichment, FillOrder
+
+    trade_notifier.configure(
+        bot_token="t",
+        chat_ids=["1"],
+        enabled=True,
+        discord_webhook_kr="https://discord.com/api/webhooks/kr",
+    )
+    order = FillOrder(
+        symbol="035420",
+        side="bid",
+        filled_price=68500.0,
+        filled_qty=10.0,
+        filled_amount=685000.0,
+        filled_at="t",
+        account="kis",
+        order_price=68300.0,
+        order_id="0001234567",
+        market_type="kr",
+        currency="KRW",
+    )
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_embed_single",
+            new=AsyncMock(return_value=True),
+        ) as mock_discord,
+        patch.object(
+            trade_notifier, "_send_to_telegram", new=AsyncMock(return_value=True)
+        ) as mock_tg,
+    ):
+        ok = await trade_notifier.notify_fill(
+            order,
+            enrichment=FillEnrichment(position_qty=30.0, position_avg_price=68100.0),
+            detail_url="https://x.test/invest/stocks/kr/035420",
+        )
+    assert ok is True
+    mock_discord.assert_awaited_once()
+    mock_tg.assert_not_awaited()
+    embed_arg = mock_discord.await_args.args[0]
+    assert embed_arg["title"] == "🟢 체결 · NAVER (035420)"
+    assert embed_arg["url"] == "https://x.test/invest/stocks/kr/035420"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_fill_telegram_fallback_when_discord_fails(trade_notifier):
+    from app.services.fill_notification import FillOrder
+
+    trade_notifier.configure(
+        bot_token="t",
+        chat_ids=["1"],
+        enabled=True,
+        discord_webhook_kr="https://discord.com/api/webhooks/kr",
+    )
+    order = FillOrder(
+        symbol="005930",
+        side="bid",
+        filled_price=68500.0,
+        filled_qty=10.0,
+        filled_amount=685000.0,
+        filled_at="t",
+        account="kis",
+        order_price=68300.0,
+        order_id="0001234567",
+        market_type="kr",
+        currency="KRW",
+    )
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_embed_single",
+            new=AsyncMock(return_value=False),
+        ),
+        patch.object(
+            trade_notifier, "_send_to_telegram", new=AsyncMock(return_value=True)
+        ) as mock_tg,
+    ):
+        ok = await trade_notifier.notify_fill(order, enrichment=None, detail_url=None)
+    assert ok is True
+    mock_tg.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_investment_watch_routes_by_market(trade_notifier):
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from app.services.hermes_client import (
+        InvestLinks,
+        OperatorActionGuidance,
+        ReviewTriggerPayload,
+    )
+
+    payload = ReviewTriggerPayload(
+        event_uuid=uuid4(),
+        alert_uuid=uuid4(),
+        source_report_uuid=uuid4(),
+        source_item_uuid=uuid4(),
+        correlation_id="c1",
+        kst_date="2026-06-15",
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price",
+        operator="below",
+        threshold=Decimal("68000"),
+        threshold_key="k",
+        intent="buy_review",
+        action_mode="notify_only",
+        current_value=Decimal("67500"),
+        scanner_snapshot={},
+        outcome="notified",
+        invest_links=InvestLinks(
+            report_path="/invest/reports/r1", stock_path="/invest/stocks/kr/005930"
+        ),
+        operator_action_guidance=OperatorActionGuidance(
+            headline="알림 전용", requires_operator_review=False, order_behavior="none"
+        ),
+        price_guidance=None,
+        planned_action=None,
+        trigger_checklist=None,
+    )
+
+    trade_notifier.configure(
+        bot_token="t",
+        chat_ids=["1"],
+        enabled=True,
+        discord_webhook_kr="https://discord.com/api/webhooks/kr",
+    )
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_embed_single",
+            new=AsyncMock(return_value=True),
+        ) as md,
+        patch.object(
+            trade_notifier, "_send_to_telegram", new=AsyncMock(return_value=True)
+        ) as mt,
+    ):
+        ok = await trade_notifier.notify_investment_watch(payload)
+    assert ok is True
+    md.assert_awaited_once()
+    mt.assert_awaited_once()
+    assert md.await_args.args[0]["title"].startswith("🔔 워치 트리거")
+    assert "워치 트리거" in mt.await_args.args[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_investment_watch_delivers_to_telegram_without_discord_webhook(
+    trade_notifier,
+):
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from app.services.hermes_client import ReviewTriggerPayload
+
+    payload = ReviewTriggerPayload(
+        event_uuid=uuid4(),
+        alert_uuid=uuid4(),
+        source_report_uuid=uuid4(),
+        source_item_uuid=uuid4(),
+        correlation_id="c-telegram-only",
+        kst_date="2026-07-07",
+        market="kr",
+        target_kind="asset",
+        symbol="005930",
+        metric="price",
+        operator="below",
+        threshold=Decimal("68000"),
+        threshold_key="k",
+        intent="buy_review",
+        action_mode="notify_only",
+        current_value=Decimal("67500"),
+        scanner_snapshot={},
+        outcome="notified",
+        invest_links=None,
+        operator_action_guidance=None,
+        price_guidance=None,
+        planned_action=None,
+        trigger_checklist=None,
+    )
+
+    trade_notifier.configure(bot_token="t", chat_ids=["1"], enabled=True)
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_embed_single",
+            new=AsyncMock(return_value=True),
+        ) as md,
+        patch.object(
+            trade_notifier,
+            "_send_to_telegram",
+            new=AsyncMock(return_value=True),
+        ) as mt,
+    ):
+        ok = await trade_notifier.notify_investment_watch(payload)
+
+    assert ok is True
+    md.assert_not_awaited()
+    mt.assert_awaited_once()
+    assert "005930" in mt.await_args.args[0]

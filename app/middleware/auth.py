@@ -48,6 +48,9 @@ class AuthMiddleware:
 
     # Public API paths (explicit whitelist)
     PUBLIC_API_PATHS: ClassVar[list[str]] = [
+        "/api/v1/agent/callback",
+        # Retired callback alias: allow the missing router to return 404 instead
+        # of masking removal behind auth middleware.
         "/api/v1/openclaw/callback",
         "/api/screener/callback",
     ]
@@ -57,6 +60,7 @@ class AuthMiddleware:
     )
     HERMES_INGEST_PATH_PREFIX: ClassVar[str] = "/trading/api/investment-reports/hermes/"
     NEWS_RELEVANCE_PATH_PREFIX: ClassVar[str] = "/trading/api/news-relevance/"
+    TELEGRAM_CALLBACK_PATH_PREFIX: ClassVar[str] = "/trading/api/telegram/"
     LEGACY_DEPRECATED_PREFIXES: ClassVar[tuple[str, ...]] = LEGACY_PREFIXES
 
     def __init__(self, app: ASGIApp):
@@ -132,21 +136,6 @@ class AuthMiddleware:
 
         # Legacy paths must always pass through to deprecated router handlers.
         if self._is_legacy_deprecated_path(path):
-            return None
-
-        # n8n API: dedicated API key authentication
-        if path.startswith("/api/n8n/"):
-            if not settings.N8N_API_KEY:
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "N8N_API_KEY not configured"},
-                )
-            api_key = request.headers.get("X-N8N-API-KEY", "")
-            if not hmac.compare_digest(api_key, settings.N8N_API_KEY):
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Invalid N8N API key"},
-                )
             return None
 
         # news-ingestor bulk ingest API: dedicated machine-to-machine token auth.
@@ -249,6 +238,33 @@ class AuthMiddleware:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "Invalid news relevance ingest token"},
+                )
+            return None
+
+        # ROB-816 PR 2 — Telegram webhook secret-token auth for the
+        # order-proposals approval callback. Same prefix-token shape as the
+        # Hermes / news-relevance branches above: Telegram's webhook
+        # "secret token" mechanism supplies this header on every request,
+        # so an unconfigured token or header name must fail closed (403)
+        # rather than silently accept unauthenticated webhook traffic.
+        if path.startswith(self.TELEGRAM_CALLBACK_PATH_PREFIX):
+            expected_token = settings.ORDER_PROPOSALS_TELEGRAM_TOKEN
+            if not expected_token:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Telegram callback token not configured"},
+                )
+            header_name = settings.ORDER_PROPOSALS_TELEGRAM_TOKEN_HEADER.strip()
+            if not header_name:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Telegram callback token header not configured"},
+                )
+            supplied_token = request.headers.get(header_name, "")
+            if not hmac.compare_digest(supplied_token, expected_token):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid Telegram callback token"},
                 )
             return None
 

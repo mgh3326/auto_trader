@@ -93,6 +93,11 @@ async def _fetch_index_kr_current(naver_code: str, name: str) -> dict[str, Any]:
         "high": _parse_naver_num(latest.get("highPrice")),
         "low": _parse_naver_num(latest.get("lowPrice")),
         "volume": _parse_naver_int(latest.get("accumulatedTradingVolume")),
+        # ROB-731: the Naver basic payload timestamps the quote it derives the
+        # signed change_pct from (minute-granular, tz-aware ISO). Surface it so
+        # callers can detect intraday lag — near flat, a stale quote inverts the
+        # sign of change_pct vs live (KOSDAQ +0.18 vs −0.46 at 09:10 KST).
+        "quote_asof": basic.get("localTradedAt"),
         "source": "naver",
     }
 

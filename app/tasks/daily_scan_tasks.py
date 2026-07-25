@@ -3,10 +3,9 @@ from __future__ import annotations
 from app.core.taskiq_broker import broker
 from app.jobs.daily_scan import DailyScanner
 
-# NOTE: TaskIQ schedules removed — scanning is now driven by n8n workflows:
-#   - Crypto Strategy Scan (every :30) → GET /api/n8n/scan/strategy
-#   - Crash Detection Scan (every :00) → GET /api/n8n/scan/crash
-# Tasks are kept as manual entry points (e.g. taskiq kick) but no longer auto-scheduled.
+# NOTE: TaskIQ schedules removed. These scan tasks are kept as manual entry
+# points (e.g. taskiq kick) but are no longer auto-scheduled. (The former n8n
+# HTTP scan surface that triggered them has been retired.)
 
 
 @broker.task(task_name="scan.strategy")

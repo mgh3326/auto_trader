@@ -26,6 +26,12 @@ from app.services.brokers.binance.demo_scalping.ledger_state import (
     load_ledger_snapshot,
 )
 
+# ROB-844: some assertions read the table-wide open-root / orders-today counts.
+# Serialize against the open-root-committing executor family (which now commits
+# planned roots via reserve_root_planned) so those table-wide deltas are stable
+# under --dist=loadfile (ROB-842).
+pytestmark = pytest.mark.usefixtures("binance_demo_reservation_lock")
+
 _NOW = dt.datetime(2026, 5, 24, 12, 0, 0, tzinfo=dt.UTC)
 
 
@@ -158,7 +164,12 @@ async def test_orders_today_counts_lifecycles_since_midnight(
     before = (
         await load_ledger_snapshot(service, product="spot", symbol="DDDUSDT", now=_NOW)
     ).orders_today
+    # Two *sequential* lifecycles for one symbol (open → close → re-open): the
+    # first must reach a terminal state before the second opens, which the
+    # ROB-844 one-open-root invariant now enforces. Both still count toward
+    # orders_today (planned_at since midnight).
     await _plan(service, instrument_id=iid, coid="ls-cnt-ddd-1")
+    await _drive_to_closed(service, coid="ls-cnt-ddd-1", closed_at=_NOW)
     await _plan(service, instrument_id=iid, coid="ls-cnt-ddd-2")
     after = (
         await load_ledger_snapshot(service, product="spot", symbol="DDDUSDT", now=_NOW)

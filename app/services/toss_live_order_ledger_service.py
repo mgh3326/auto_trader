@@ -5,10 +5,44 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.review import TossLiveOrderLedger
+from app.models.order_proposals import OrderProposal, OrderProposalRung
+from app.models.review import TossFillPollState, TossLiveOrderLedger
+
+_PROPOSAL_EVIDENCE_ACCEPTING_STATES = (
+    "acked",
+    "resting",
+    "partially_filled",
+    "unverified",
+)
+
+
+def _external_order_raw(order: Any) -> dict[str, Any]:
+    execution = dict(getattr(order, "execution", {}) or {})
+    return {
+        "orderId": getattr(order, "order_id", None),
+        "symbol": getattr(order, "symbol", None),
+        "side": getattr(order, "side", None),
+        "orderType": getattr(order, "order_type", None),
+        "timeInForce": getattr(order, "time_in_force", None),
+        "status": getattr(order, "status", None),
+        "price": str(getattr(order, "price", None))
+        if getattr(order, "price", None) is not None
+        else None,
+        "quantity": str(getattr(order, "quantity", None))
+        if getattr(order, "quantity", None) is not None
+        else None,
+        "orderAmount": str(getattr(order, "order_amount", None))
+        if getattr(order, "order_amount", None) is not None
+        else None,
+        "currency": getattr(order, "currency", None),
+        "orderedAt": getattr(order, "ordered_at", None),
+        "canceledAt": getattr(order, "canceled_at", None),
+        "execution": {key: str(value) for key, value in execution.items()},
+        "discoveredBy": "ROB-757 toss fill poller",
+    }
 
 
 def parse_report_item_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
@@ -91,10 +125,16 @@ class TossLiveOrderLedgerService:
         stop_loss: Decimal | None = None,
         min_hold_days: int | None = None,
         notes: str | None = None,
+        exit_intent: str | None = None,
         exit_reason: str | None = None,
+        retrospective_id: int | None = None,
+        approval_issue_id: str | None = None,
         indicators_snapshot: dict[str, Any] | None = None,
         report_item_uuid: str | uuid.UUID | None = None,
+        approval_hash: str | None = None,
+        correlation_id: str | None = None,
     ) -> TossLiveOrderLedger:
+
         # ROB-545 B2 — idempotent on client_order_id. A live POST retried with
         # the same clientOrderId (the smoke's idempotency check) must not raise a
         # UNIQUE IntegrityError: query first, replay the existing row when the
@@ -144,9 +184,14 @@ class TossLiveOrderLedgerService:
             stop_loss=stop_loss,
             min_hold_days=min_hold_days,
             notes=notes,
+            exit_intent=exit_intent,
             exit_reason=exit_reason,
+            retrospective_id=retrospective_id,
+            approval_issue_id=approval_issue_id,
             indicators_snapshot=indicators_snapshot,
             report_item_uuid=parse_report_item_uuid(report_item_uuid),
+            approval_hash=approval_hash,
+            correlation_id=correlation_id,
         )
         self._db.add(row)
         await self._db.flush()
@@ -194,7 +239,7 @@ class TossLiveOrderLedgerService:
         order_id: str | None = None,
         market: str | None = None,
         limit: int = 100,
-    ) -> list[TossLiveOrderLedger]:
+    ) -> tuple[list[TossLiveOrderLedger], dict[str, int]]:
         stmt = select(TossLiveOrderLedger).where(
             TossLiveOrderLedger.status.in_(("accepted", "pending", "partial"))
         )
@@ -215,6 +260,143 @@ class TossLiveOrderLedgerService:
             self._db.expunge(row)
         return rows
 
+    async def list_terminal_projection_candidates(
+        self,
+        *,
+        symbol: str | None = None,
+        order_id: str | None = None,
+        market: str | None = None,
+        limit: int = 100,
+    ) -> list[TossLiveOrderLedger]:
+        """Find terminal Toss rows whose proposal rung still needs projection."""
+        evidence_match = or_(
+            and_(
+                TossLiveOrderLedger.correlation_id.is_not(None),
+                TossLiveOrderLedger.correlation_id == OrderProposalRung.correlation_id,
+            ),
+            and_(
+                TossLiveOrderLedger.broker_order_id.is_not(None),
+                TossLiveOrderLedger.broker_order_id
+                == OrderProposalRung.broker_order_id,
+            ),
+        )
+        stmt = (
+            select(TossLiveOrderLedger)
+            .join(OrderProposalRung, evidence_match)
+            .join(
+                OrderProposal,
+                OrderProposalRung.proposal_pk == OrderProposal.id,
+            )
+            .where(
+                TossLiveOrderLedger.operation_kind == "place",
+                TossLiveOrderLedger.status.in_(("filled", "cancelled", "rejected")),
+                OrderProposal.account_mode == "toss_live",
+                OrderProposal.symbol == TossLiveOrderLedger.symbol,
+                or_(
+                    and_(
+                        TossLiveOrderLedger.market == "kr",
+                        OrderProposal.market == "equity_kr",
+                    ),
+                    and_(
+                        TossLiveOrderLedger.market == "us",
+                        OrderProposal.market == "equity_us",
+                    ),
+                ),
+            )
+        )
+        if symbol:
+            stmt = stmt.where(TossLiveOrderLedger.symbol == symbol)
+        if order_id:
+            stmt = stmt.where(TossLiveOrderLedger.broker_order_id == order_id)
+        if market:
+            stmt = stmt.where(TossLiveOrderLedger.market == market)
+        stmt = stmt.order_by(TossLiveOrderLedger.id.asc()).limit(limit)
+        rows = list((await self._db.execute(stmt)).unique().scalars().all())
+        candidates: list[TossLiveOrderLedger] = []
+        anomalies: dict[str, int] = {}
+        for row in rows:
+            accepted, reason = await self._terminal_projection_match(row)
+            if accepted:
+                candidates.append(row)
+            elif reason is not None:
+                anomalies[reason] = anomalies.get(reason, 0) + 1
+        for row in candidates:
+            self._db.expunge(row)
+        return candidates, anomalies
+
+    async def _terminal_projection_match(
+        self, row: TossLiveOrderLedger
+    ) -> tuple[bool, str | None]:
+        """Accept only one broker/correlation-consistent rung for repair.
+
+        A terminal ledger row may be linked to legacy duplicated correlations.
+        Projection repair must never pick an arbitrary rung: a present evidence
+        key must identify exactly one eligible rung, and when both keys resolve
+        they must resolve to the same rung.
+        """
+        broker_match = (
+            OrderProposalRung.broker_order_id == row.broker_order_id
+            if row.broker_order_id is not None
+            else literal(False)
+        )
+        correlation_match = (
+            OrderProposalRung.correlation_id == row.correlation_id
+            if row.correlation_id is not None
+            else literal(False)
+        )
+        idempotency_match = (
+            OrderProposalRung.idempotency_key == row.client_order_id
+            if row.client_order_id is not None
+            else literal(False)
+        )
+        if (
+            row.broker_order_id is None
+            and row.correlation_id is None
+            and row.client_order_id is None
+        ):
+            return False, None
+        stmt = (
+            select(
+                OrderProposalRung.id,
+                OrderProposalRung.state,
+                broker_match.label("broker_match"),
+                correlation_match.label("correlation_match"),
+                idempotency_match.label("idempotency_match"),
+            )
+            .join(OrderProposal, OrderProposalRung.proposal_pk == OrderProposal.id)
+            .where(
+                or_(broker_match, correlation_match, idempotency_match),
+                OrderProposal.account_mode == "toss_live",
+                OrderProposal.symbol == row.symbol,
+                or_(
+                    and_(row.market == "kr", OrderProposal.market == "equity_kr"),
+                    and_(row.market == "us", OrderProposal.market == "equity_us"),
+                ),
+            )
+        )
+        matches = list((await self._db.execute(stmt)).all())
+        broker_ids = {match.id for match in matches if match.broker_match}
+        correlation_ids = {match.id for match in matches if match.correlation_match}
+        idempotency_ids = {match.id for match in matches if match.idempotency_match}
+        evidence_sets = [
+            ids for ids in (broker_ids, correlation_ids, idempotency_ids) if ids
+        ]
+        if not evidence_sets:
+            return False, None
+        intersection = set.intersection(*evidence_sets)
+        if not intersection:
+            return False, "proposal_evidence_conflict"
+        if len(broker_ids) > 1:
+            return False, "broker_id_duplicate"
+        if not broker_ids and not idempotency_ids and len(correlation_ids) > 1:
+            return False, "content_hash_only_ambiguous"
+        if len(intersection) > 1:
+            return False, "proposal_evidence_ambiguous"
+        rung_id = next(iter(intersection))
+        return next(match.state for match in matches if match.id == rung_id) in (
+            _PROPOSAL_EVIDENCE_ACCEPTING_STATES
+        ), None
+
     async def update_reconcile_outcome(
         self,
         *,
@@ -228,6 +410,14 @@ class TossLiveOrderLedgerService:
         settlement_date: date | None = None,
         trade_id: int | None = None,
         journal_id: int | None = None,
+        buy_fx_rate: Decimal | None = None,
+        sell_fx_rate: Decimal | None = None,
+        fx_pnl_krw: Decimal | None = None,
+        security_pnl_usd: Decimal | None = None,
+        security_pnl_krw: Decimal | None = None,
+        total_pnl_krw: Decimal | None = None,
+        fx_rate_source: str | None = None,
+        fx_pnl_accuracy: str | None = None,
         raw_response: dict[str, Any] | None = None,
     ) -> None:
         row = await self._db.get(TossLiveOrderLedger, ledger_id)
@@ -249,7 +439,233 @@ class TossLiveOrderLedgerService:
             row.trade_id = trade_id
         if journal_id is not None:
             row.journal_id = journal_id
+
+        if buy_fx_rate is not None:
+            row.buy_fx_rate = buy_fx_rate
+        if sell_fx_rate is not None:
+            row.sell_fx_rate = sell_fx_rate
+        if fx_pnl_krw is not None:
+            row.fx_pnl_krw = fx_pnl_krw
+        if security_pnl_usd is not None:
+            row.security_pnl_usd = security_pnl_usd
+        if security_pnl_krw is not None:
+            row.security_pnl_krw = security_pnl_krw
+        if total_pnl_krw is not None:
+            row.total_pnl_krw = total_pnl_krw
+        if fx_rate_source is not None:
+            row.fx_rate_source = fx_rate_source
+        if fx_pnl_accuracy is not None:
+            row.fx_pnl_accuracy = fx_pnl_accuracy
+
         if raw_response is not None:
             row.raw_response = raw_response
         row.reconciled_at = datetime.now(UTC)
         await self._db.commit()
+
+    async def mark_manual_review(
+        self,
+        *,
+        ledger_id: int,
+        reason: str,
+        error: dict[str, Any],
+        broker_status: str | None = None,
+    ) -> None:
+        row = await self._db.get(TossLiveOrderLedger, ledger_id)
+        if row is None:
+            return
+        row.status = "anomaly"
+        row.broker_status = broker_status
+        row.requires_manual_review = True
+        row.manual_review_reason = reason
+        row.last_reconcile_error = error
+        row.reconciled_at = datetime.now(UTC)
+        await self._db.commit()
+
+    async def record_transient_reconcile_error(
+        self,
+        *,
+        ledger_id: int,
+        error: dict[str, Any],
+    ) -> None:
+        """ROB-669 — a transient reconcile failure (rate-limit/5xx/token/network).
+
+        Record the error for observability WITHOUT closing the row: status,
+        requires_manual_review, manual_review_reason, and reconciled_at are left
+        untouched so ``list_open`` re-selects the row and the next pass retries.
+        This is the opposite of ``mark_manual_review`` (broker-confirmed anomaly).
+        """
+        row = await self._db.get(TossLiveOrderLedger, ledger_id)
+        if row is None:
+            return
+        row.last_reconcile_error = error
+        await self._db.commit()
+
+    async def reopen_anomalies_for_reconcile(
+        self,
+        *,
+        dry_run: bool = True,
+        market: str | None = None,
+        symbol: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """ROB-669 R2 — reopen recoverable anomaly rows for another reconcile.
+
+        Guards (all required): status='anomaly', requires_manual_review, NO fill
+        evidence (filled_qty NULL/0 AND trade_id NULL), and a reopenable
+        last_reconcile_error signature. Reopened rows go back to 'accepted' so the
+        next reconcile pass re-selects them via list_open; re-booking is idempotent
+        (review.trades ON CONFLICT DO NOTHING; buy journal gated on journal_id IS
+        NULL). Never reopens 403/404/idempotency-conflict anomalies.
+        """
+        stmt = select(TossLiveOrderLedger).where(
+            TossLiveOrderLedger.status == "anomaly",
+            TossLiveOrderLedger.requires_manual_review.is_(True),
+            TossLiveOrderLedger.trade_id.is_(None),
+            or_(
+                TossLiveOrderLedger.filled_qty.is_(None),
+                TossLiveOrderLedger.filled_qty == 0,
+            ),
+        )
+        if market:
+            stmt = stmt.where(TossLiveOrderLedger.market == market)
+        if symbol:
+            stmt = stmt.where(TossLiveOrderLedger.symbol == symbol)
+        stmt = stmt.order_by(TossLiveOrderLedger.created_at.asc()).limit(limit)
+        rows = list((await self._db.execute(stmt)).scalars().all())
+
+        candidates = [
+            r for r in rows if _anomaly_error_is_reopenable(r.last_reconcile_error)
+        ]
+        reopened = 0
+        candidate_meta = [
+            {
+                "ledger_id": r.id,
+                "symbol": r.symbol,
+                "market": r.market,
+                "broker_order_id": r.broker_order_id,
+                "error_type": (r.last_reconcile_error or {}).get("type"),
+                "error_message": (r.last_reconcile_error or {}).get("message"),
+            }
+            for r in candidates
+        ]  # snapshot BEFORE mutation so the echo still shows the original error
+        if not dry_run and candidates:
+            for r in candidates:
+                r.status = "accepted"
+                r.requires_manual_review = False
+                r.manual_review_reason = None
+                r.last_reconcile_error = None
+                reopened += 1
+            await self._db.commit()
+            # Re-load so the caller can still read attributes when it merges these
+            # rows into the reconcile work-list within the same session block.
+            for r in candidates:
+                await self._db.refresh(r)
+
+        return {
+            "dry_run": dry_run,
+            "reopened": reopened,
+            "rows": candidates,  # ORM rows folded into the reconcile work-list
+            "candidates": candidate_meta,
+        }
+
+    async def existing_broker_order_ids(self, order_ids: set[str]) -> set[str]:
+        if not order_ids:
+            return set()
+        result = await self._db.execute(
+            select(TossLiveOrderLedger.broker_order_id).where(
+                TossLiveOrderLedger.broker_order_id.in_(order_ids)
+            )
+        )
+        return {str(value) for value in result.scalars().all() if value}
+
+    async def record_external_order(
+        self, order: Any, *, market: str
+    ) -> TossLiveOrderLedger:
+        client_order_id = f"toss-external:{order.order_id}"
+        return await self.record_send(
+            operation_kind="place",
+            market=market,
+            symbol=order.symbol,
+            side=str(order.side).lower(),
+            order_type=str(order.order_type).lower(),
+            time_in_force=order.time_in_force,
+            quantity=order.quantity,
+            price=order.price,
+            order_amount=order.order_amount,
+            currency=order.currency,
+            client_order_id=client_order_id,
+            broker_order_id=order.order_id,
+            original_order_id=None,
+            status="accepted",
+            broker_status=order.status,
+            response_code="external",
+            response_message="discovered from Toss GET /orders",
+            raw_response=_external_order_raw(order),
+            notes="ROB-757 app-direct Toss order discovered by fill poller",
+        )
+
+    async def get_poll_state(self, scope: str) -> TossFillPollState | None:
+        return await self._db.get(TossFillPollState, scope)
+
+    async def mark_poll_success(self, scope: str, *, at: datetime) -> None:
+        row = await self._db.get(TossFillPollState, scope)
+        if row is None:
+            self._db.add(
+                TossFillPollState(scope=scope, last_success_at=at, last_error=None)
+            )
+        else:
+            row.last_success_at = at
+            row.last_error = None
+        await self._db.commit()
+
+    async def mark_poll_error(self, scope: str, *, error: dict[str, Any]) -> None:
+        row = await self._db.get(TossFillPollState, scope)
+        if row is None:
+            self._db.add(
+                TossFillPollState(scope=scope, last_success_at=None, last_error=error)
+            )
+        else:
+            row.last_error = error
+        await self._db.commit()
+
+
+# ROB-669 — anomaly rows are only auto-reopenable when the recorded error is a
+# known-safe signature: the pre-ROB-631 invalid-InstrumentType code fault, or a
+# transient (rate-limit / 5xx / token / network) failure. 403/404/idempotency
+# contradictions are NEVER auto-reopened (operator must verify broker detail).
+_REOPENABLE_TRANSIENT_CODES = frozenset(
+    {
+        "rate-limit-exceeded",
+        "edge-rate-limit-exceeded",
+        "internal-error",
+        "maintenance",
+        "expired-token",
+        "invalid-token",
+    }
+)
+_REOPENABLE_TRANSIENT_HTTP = frozenset({429, 500, 502, 503, 504})
+_REOPENABLE_TRANSIENT_TYPES = frozenset(
+    {
+        "ReadTimeout",
+        "ConnectTimeout",
+        "TimeoutException",
+        "ConnectError",
+        "TransportError",
+        "TossRateLimitError",
+    }
+)
+
+
+def _anomaly_error_is_reopenable(err: dict[str, Any] | None) -> bool:
+    if not err:
+        return False
+    message = str(err.get("message") or "")
+    if "is not a valid InstrumentType" in message:
+        return True
+    code = str(err.get("code") or "")
+    if code in _REOPENABLE_TRANSIENT_CODES:
+        return True
+    status = err.get("status_code")
+    if isinstance(status, int) and status in _REOPENABLE_TRANSIENT_HTTP:
+        return True
+    return str(err.get("type") or "") in _REOPENABLE_TRANSIENT_TYPES

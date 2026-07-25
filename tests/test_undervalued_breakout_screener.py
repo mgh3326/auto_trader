@@ -31,6 +31,7 @@ _TEST_SYMBOLS = [
     "907023",
     "907024",
     "907031",
+    "ZZUSHI",
 ]
 
 
@@ -454,10 +455,11 @@ async def test_loader_dedups_symbol_across_multiple_sources(db_session):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_rows_carry_close_alias_for_price_label(db_session) -> None:
+async def test_rows_carry_close_alias_for_price_label(db_session, monkeypatch) -> None:
     """ROB-508: priceLabel은 row['close']를 읽으므로 latest_close와 동일 값의
     close 키가 있어야 한다."""
     val_date = dt.date(2026, 6, 2)
+    price_date = dt.date(2099, 12, 31)
     db_session.add_all(
         [
             MarketValuationSnapshot(
@@ -474,14 +476,34 @@ async def test_rows_carry_close_alias_for_price_label(db_session) -> None:
             InvestScreenerSnapshot(
                 market="us",
                 symbol="ZZUSHI",
-                snapshot_date=val_date,
+                snapshot_date=price_date,
                 latest_close=Decimal("99"),
                 closes_window=[99],
                 source="yahoo",
             ),
         ]
     )
-    await db_session.commit()
+
+    from app.services.invest_screener_snapshots import partition_health
+    from app.services.invest_screener_snapshots.partition_health import (
+        HealthyPartition,
+    )
+
+    async def _resolve_test_partition(*_args, **_kwargs):
+        return HealthyPartition(
+            partition_date=val_date,
+            row_count=1,
+            coverage_ratio=1.0,
+            is_fallback=False,
+            healthy=True,
+        )
+
+    monkeypatch.setattr(
+        partition_health,
+        "resolve_healthy_partition",
+        _resolve_test_partition,
+    )
+
     rows = await load_undervalued_breakout_from_snapshots(
         db_session, market="us", limit=20, today_market_date=val_date
     )

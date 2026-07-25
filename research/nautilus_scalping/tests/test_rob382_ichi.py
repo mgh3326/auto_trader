@@ -7,14 +7,17 @@ Covers:
       the non-warmup region (small warmup-tail tolerance);
   (c) the module runs on a small real slice without error.
 """
+
 from __future__ import annotations
 
 import rob382_bars as rb
 import rob382_signal_ichi as m
 
 
-def _bar(ts, o, h, l, c, v=100.0):
-    return rb.OHLCVBar(ts=ts, open=o, high=h, low=l, close=c, volume=v, close_ts=ts + 299_999)
+def _bar(ts, o, h, l, c, v=100.0):  # noqa: E741
+    return rb.OHLCVBar(
+        ts=ts, open=o, high=h, low=l, close=c, volume=v, close_ts=ts + 299_999
+    )
 
 
 def _uptrend_bars(n, start=100.0, base=0.003, accel=0.0002):
@@ -41,9 +44,13 @@ def test_entry_fires_on_documented_uptrend():
     entry, exit_sig = m.signals(bars)
     assert len(entry) == len(bars) == len(exit_sig)
     # On a clean sustained uptrend, the entry must fire somewhere in the mature region.
-    assert any(entry[200:]), "expected entry to fire in the mature region of a clean uptrend"
+    assert any(entry[200:]), (
+        "expected entry to fire in the mature region of a clean uptrend"
+    )
     # The exit signal (close x-under EMA24) must NOT fire on a strictly rising series.
-    assert not any(exit_sig), "exit (cross-below) should never fire on a monotone uptrend"
+    assert not any(exit_sig), (
+        "exit (cross-below) should never fire on a monotone uptrend"
+    )
 
 
 def test_entry_blocked_when_below_cloud():
@@ -62,7 +69,9 @@ def test_entry_blocked_when_below_cloud():
         price = c
     entry, _ = m.signals(bars)
     # In the downtrend tail, every above-cloud + fan-rising condition is broken.
-    assert not any(entry[300:]), "entry must not fire while price is in a downtrend below the cloud"
+    assert not any(entry[300:]), (
+        "entry must not fire while price is in a downtrend below the cloud"
+    )
 
 
 def test_entry_blocked_when_fan_not_rising():
@@ -92,8 +101,12 @@ def test_no_lookahead_truncation_invariance():
     warmup = 256
     tail_tol = 3
     hi = k - tail_tol
-    assert full_entry[warmup:hi] == pre_entry[warmup:hi], "entry differs under truncation (lookahead?)"
-    assert full_exit[warmup:hi] == pre_exit[warmup:hi], "exit differs under truncation (lookahead?)"
+    assert full_entry[warmup:hi] == pre_entry[warmup:hi], (
+        "entry differs under truncation (lookahead?)"
+    )
+    assert full_exit[warmup:hi] == pre_exit[warmup:hi], (
+        "exit differs under truncation (lookahead?)"
+    )
 
 
 def test_runs_on_real_slice():

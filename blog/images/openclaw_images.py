@@ -7,7 +7,7 @@ Infra-5편: OpenClaw + FastAPI 콜백으로 비동기 LLM 파이프라인 만들
 
 from typing import override
 
-from blog.tools.components.base import FONT_FAMILY, SVGComponent
+from blog.tools.components.base import SVGComponent
 from blog.tools.components.flow_diagram import FlowDiagram
 from blog.tools.components.thumbnail import ThumbnailTemplate
 from blog.tools.image_generator import BlogImageGenerator

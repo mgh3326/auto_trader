@@ -116,7 +116,10 @@ async def test_latest_partition_returns_max_date(db_session):
 async def test_coverage_counts_latest_and_stale(db_session):
     await _cleanup(db_session)
     repo = InvestKrFundamentalsSnapshotsRepository(db_session)
-    today = dt.date(2026, 6, 4)
+    # coverage() is table-wide. Keep this partition ahead of other committed
+    # fixture rows that may exist in a parallel xdist worker, but leave these
+    # rows uncommitted so this test does not leak its own latest partition.
+    today = dt.date(2099, 1, 1)
     await repo.upsert(
         KrFundamentalsSnapshotUpsert(
             symbol=_SYM_A,
@@ -134,17 +137,16 @@ async def test_coverage_counts_latest_and_stale(db_session):
     await repo.upsert(
         KrFundamentalsSnapshotUpsert(
             symbol=_SYM_OLD,
-            snapshot_date=dt.date(2026, 6, 1),
+            snapshot_date=dt.date(2098, 12, 31),
             price=Decimal("100"),
         )
     )
-    await db_session.commit()
 
     coverage = await repo.coverage(today=today)
     assert coverage.latest_partition_date is not None
     assert coverage.latest_partition_date >= today
     # The two today rows are in the latest partition.
     assert coverage.latest_partition_count >= 2
-    # The 2026-06-01 row is strictly before today → stale.
+    # The 2098-12-31 row is strictly before today → stale.
     assert coverage.stale_count >= 1
     assert coverage.last_computed_at is not None

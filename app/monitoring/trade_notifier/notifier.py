@@ -3,17 +3,30 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.services.hermes_client import ReviewTriggerPayload
 
 import httpx
 
 from app.core.timezone import format_datetime
+from app.services.fill_notification import FillEnrichment, FillOrder
+from app.telegram_contract import (
+    TelegramErrorClassification,
+    TelegramMethodResult,
+    telegram_text_length,
+)
 
 from . import formatters_discord as fmt_discord
 from . import formatters_telegram as fmt_telegram
 from .transports import (
+    answer_callback_query,
+    edit_message_text,
     send_discord_content_single,
     send_discord_embed_single,
     send_telegram,
+    send_telegram_message,
 )
 from .types import DiscordEmbed
 
@@ -162,6 +175,66 @@ class TradeNotifier:
             parse_mode=parse_mode,
         )
 
+    async def send_approval_message(
+        self,
+        text: str,
+        inline_keyboard: dict[str, Any] | None,
+        *,
+        chat_id: str,
+        parse_mode: str | None = "Markdown",
+    ) -> TelegramMethodResult:
+        """Send a Telegram approval message using the singleton HTTP client."""
+        if not self._http_client or not self._bot_token:
+            return TelegramMethodResult.failed(
+                payload_chars=telegram_text_length(text),
+                failure_code="telegram_notifier_unconfigured",
+                error_classification=TelegramErrorClassification.NOT_CONFIGURED,
+            )
+        return await send_telegram_message(
+            http_client=self._http_client,
+            bot_token=self._bot_token,
+            chat_id=chat_id,
+            text=text,
+            parse_mode=parse_mode,
+            reply_markup=inline_keyboard,
+        )
+
+    async def answer_callback(
+        self, callback_query_id: str, text: str | None = None
+    ) -> bool:
+        """Acknowledge a Telegram callback using the singleton HTTP client."""
+        if not self._http_client or not self._bot_token:
+            return False
+        return await answer_callback_query(
+            http_client=self._http_client,
+            bot_token=self._bot_token,
+            callback_query_id=callback_query_id,
+            text=text,
+        )
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> TelegramMethodResult:
+        """Edit a Telegram message using the singleton HTTP client."""
+        if not self._http_client or not self._bot_token:
+            return TelegramMethodResult.failed(
+                payload_chars=telegram_text_length(text),
+                failure_code="telegram_notifier_unconfigured",
+                error_classification=TelegramErrorClassification.NOT_CONFIGURED,
+            )
+        return await edit_message_text(
+            http_client=self._http_client,
+            bot_token=self._bot_token,
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=reply_markup,
+        )
+
     async def _send_to_discord_embed_single(
         self, embed: DiscordEmbed, webhook_url: str
     ) -> bool:
@@ -222,6 +295,69 @@ class TradeNotifier:
             logger.exception("Notification dispatch failed")
             return False
 
+    async def _dispatch_mirror(
+        self,
+        discord_embed: DiscordEmbed | None,
+        telegram_message: str,
+        market_type: str | None = None,
+        *,
+        context: str,
+    ) -> bool:
+        """Attempt Discord and Telegram independently for mirror notifications."""
+        if not self._enabled:
+            logger.info(
+                "Notification mirror result: context=%s market_type=%s discord=%s telegram=%s",
+                context,
+                market_type,
+                "skipped(notifier_disabled)",
+                "skipped(notifier_disabled)",
+            )
+            return False
+
+        delivered = False
+        discord_result = "skipped(no_discord_webhook)"
+        telegram_result = "skipped(no_telegram_config)"
+
+        if market_type and discord_embed:
+            webhook_url = self._get_webhook_for_market_type(market_type)
+            if webhook_url:
+                try:
+                    discord_success = await self._send_to_discord_embed_single(
+                        discord_embed, webhook_url
+                    )
+                    discord_result = "success" if discord_success else "failed"
+                    delivered = delivered or discord_success
+                except Exception:
+                    discord_result = "failed(exception)"
+                    logger.exception(
+                        "Notification mirror Discord send failed: context=%s market_type=%s",
+                        context,
+                        market_type,
+                    )
+
+        if telegram_message:
+            if self._has_telegram_delivery_config():
+                try:
+                    telegram_success = await self._send_to_telegram(telegram_message)
+                    telegram_result = "success" if telegram_success else "failed"
+                    delivered = delivered or telegram_success
+                except Exception:
+                    telegram_result = "failed(exception)"
+                    logger.exception(
+                        "Notification mirror Telegram send failed: context=%s market_type=%s",
+                        context,
+                        market_type,
+                    )
+
+        logger.info(
+            "Notification mirror result: context=%s market_type=%s discord=%s telegram=%s",
+            context,
+            market_type,
+            discord_result,
+            telegram_result,
+        )
+        return delivered
+
     # ── public notify methods ──────────────────────────────────────────
 
     async def notify_buy_order(
@@ -254,6 +390,51 @@ class TradeNotifier:
             market_type=market_type,
         )
         return await self._dispatch(embed, telegram_msg, market_type)
+
+    async def notify_fill(
+        self,
+        order: FillOrder,
+        *,
+        enrichment: FillEnrichment | None = None,
+        detail_url: str | None = None,
+    ) -> bool:
+        """체결(fill) 알림. Discord 우선, Telegram fallback."""
+        from app.services.fill_notification import resolve_display_name_db
+
+        display_name = await resolve_display_name_db(order.market_type, order.symbol)
+        embed = fmt_discord.format_fill_notification(
+            order,
+            display_name=display_name,
+            detail_url=detail_url,
+            enrichment=enrichment,
+        )
+        telegram_msg = fmt_telegram.format_fill_notification_telegram(
+            order,
+            display_name=display_name,
+            detail_url=detail_url,
+            enrichment=enrichment,
+        )
+        return await self._dispatch(embed, telegram_msg, order.market_type)
+
+    async def notify_investment_watch(
+        self,
+        payload: ReviewTriggerPayload,
+    ) -> bool:
+        """watch 트리거 알림 (ROB-566). Discord 우선, Telegram fallback."""
+        from app.core.config import settings as _settings
+        from app.services.fill_notification import resolve_display_name_db
+
+        display_name = await resolve_display_name_db(payload.market, payload.symbol)
+        base_url = _settings.public_base_url.rstrip("/")
+        embed = fmt_discord.format_investment_watch_trigger(
+            payload, display_name=display_name, base_url=base_url
+        )
+        telegram_msg = fmt_telegram.format_investment_watch_trigger_telegram(
+            payload, display_name=display_name, base_url=base_url
+        )
+        return await self._dispatch_mirror(
+            embed, telegram_msg, payload.market, context="investment_watch"
+        )
 
     async def notify_sell_order(
         self,
@@ -528,7 +709,7 @@ class TradeNotifier:
         )
         return await self._dispatch(embed, "", market_type)
 
-    async def notify_openclaw_message(
+    async def notify_agent_message(
         self,
         message: str,
         parse_mode: str = "Markdown",
@@ -536,8 +717,9 @@ class TradeNotifier:
         correlation_id: str | None = None,
         market_type: str | None = None,
         skip_discord: bool = False,
+        mirror_telegram: bool = False,
     ) -> bool:
-        """Forward an OpenClaw outbound message to Discord or Telegram."""
+        """Forward an agent-gateway outbound message to Discord or Telegram."""
         discord_result = "skipped(no_discord_webhook)"
         telegram_result = "skipped(not_attempted)"
 
@@ -546,7 +728,7 @@ class TradeNotifier:
                 discord_result = "skipped(notifier_disabled)"
                 telegram_result = "skipped(notifier_disabled)"
                 logger.info(
-                    "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                    "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
                     correlation_id,
                     discord_result,
                     telegram_result,
@@ -569,42 +751,44 @@ class TradeNotifier:
                 )
                 if discord_success:
                     discord_result = "success"
-                    telegram_result = "skipped(fallback_not_needed)"
-                    logger.info(
-                        "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
-                        correlation_id,
-                        discord_result,
-                        telegram_result,
-                    )
-                    return True
-                discord_result = "failed"
+                    if not mirror_telegram:
+                        telegram_result = "skipped(fallback_not_needed)"
+                        logger.info(
+                            "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
+                            correlation_id,
+                            discord_result,
+                            telegram_result,
+                        )
+                        return True
+                else:
+                    discord_result = "failed"
 
             # Fall back to Telegram
             if not self._has_telegram_delivery_config():
                 telegram_result = "skipped(no_telegram_config)"
                 logger.info(
-                    "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                    "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
                     correlation_id,
                     discord_result,
                     telegram_result,
                 )
-                return False
+                return discord_result == "success"
 
             telegram_success = await self._send_to_telegram(
                 message, parse_mode=parse_mode
             )
             telegram_result = "success" if telegram_success else "failed"
             logger.info(
-                "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
                 correlation_id,
                 discord_result,
                 telegram_result,
             )
-            return telegram_success
+            return telegram_success or discord_result == "success"
         except Exception as e:
-            logger.error(f"Failed to forward OpenClaw message: {e}")
+            logger.error(f"Failed to forward agent-gateway message: {e}")
             logger.info(
-                "OpenClaw mirror result: correlation_id=%s discord=%s telegram=%s",
+                "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
                 correlation_id,
                 discord_result,
                 telegram_result,

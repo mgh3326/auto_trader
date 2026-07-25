@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { StockDetailPage } from "../pages/stock-detail/StockDetailPage";
 import * as stockApi from "../api/stockDetail";
+import * as watchApi from "../api/watches";
 import { AccountPanelProvider } from "../desktop/AccountPanelProvider";
 import { mockRightRail } from "../test/mockRightRail";
 import type {
@@ -84,13 +85,17 @@ const aboveFold: StockDetailResponse = {
   },
   holding: {
     totalQuantity: 2,
+    tradeableQuantity: 1,
+    sellableQuantity: 1,
+    pendingSellQuantity: 0,
+    referenceQuantity: 1,
     averageCost: 200,
     costBasis: 400,
     valueNative: 422.68,
     valueKrw: 575000,
     pnlKrw: 30000,
-    pnlRate: 5.5,
-    includedSources: ["kis"],
+    pnlRate: 0.055,
+    includedSources: ["kis", "toss_manual"],
     priceState: "live",
   },
   fxSensitivity: {
@@ -117,15 +122,23 @@ const aboveFold: StockDetailResponse = {
     ],
     caution: "환율 민감도는 USD/KRW 1% 변동을 보유 평가액에 단순 적용한 가정치입니다.",
   },
-  latestAnalysis: {
-    id: 11,
-    modelName: "committee",
-    decision: "hold",
-    confidence: 0.72,
-    appropriateBuyRange: [195, 205],
-    appropriateSellRange: [220, 230],
-    reasonsTop3: ["나스닥100 분산", "최근 5일 상승", "밸류에이션은 중립"],
-    createdAt: "2026-05-09T12:00:00Z",
+  decisionHistory: {
+    symbol: "000660",
+    market: "kr",
+    linkQuality: "symbol_window",
+    priorDecisions: [
+      { date: "2026-06-28", intent: "buy_review", side: "buy", decisionBucket: "new_buy_candidate", confidence: 0.7, rationale: "HBM 수요 지속" },
+    ],
+    priorLessons: ["과열 구간 추격 금지"],
+    realizedOutcomes: [
+      { date: "2026-06-20", side: "sell", outcome: "stop_loss", triggerType: "stop", pnlPct: -3.1, realizedPnl: -31000 },
+    ],
+    openClaims: [
+      { probability: 0.7, horizon: "1w", reviewDate: "2026-07-10", direction: "up", targetPrice: 82000 },
+    ],
+    runningBrierSymbol: { n: 12, meanBrier: 0.18, flag: "ok" },
+    runningBrierGlobal: { n: 4, meanBrier: null, flag: "insufficient_sample" },
+    cautionLabel: "종목 기준 집계이며 특정 판단과 특정 결과의 직접 연결이 아닙니다.",
   },
   orderbookSupport: { supported: false, reason: "us_unsupported" },
   orderbook: null,
@@ -256,6 +269,16 @@ beforeEach(() => {
   vi.spyOn(stockApi, "fetchStockDetailOrders").mockResolvedValue(orders);
   vi.spyOn(stockApi, "fetchStockDetailNews").mockResolvedValue(news);
   vi.spyOn(stockApi, "fetchStockDetailResearchConsensus").mockResolvedValue(researchConsensus);
+  vi.spyOn(watchApi, "fetchWatches").mockResolvedValue({
+    market: "us",
+    status: "all",
+    count: 0,
+    data_state: "ok",
+    as_of: "2026-05-10T09:31:00Z",
+    items: [],
+    warnings: [],
+    empty_reason: null,
+  });
 });
 
 afterEach(() => {
@@ -271,11 +294,17 @@ test("renders the QQQM stock detail shell from the read-only backend contract", 
   expect(screen.getByText("$211.34")).toBeInTheDocument();
   expect(screen.getByText("+1.06%")).toBeInTheDocument();
   expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("2주");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("KIS");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("Toss");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("매매가능 1주");
+  expect(screen.getByTestId("stock-detail-holding")).toHaveTextContent("참고 1주");
   expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("환율 민감도");
   expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("USD/KRW");
   expect(screen.getByTestId("stock-detail-fx-sensitivity")).toHaveTextContent("+₩5,748");
   expect(screen.getByTestId("stock-detail-profile")).toHaveTextContent("ETF");
-  expect(screen.getByTestId("stock-detail-analysis")).toHaveTextContent("hold");
+  expect(screen.getByTestId("stock-detail-decision-history")).toBeInTheDocument();
+  expect(screen.getByText("판단 이력")).toBeInTheDocument();
+  expect(screen.getByText("HBM 수요 지속")).toBeInTheDocument();
   expect(screen.getByTestId("stock-detail-naver-poc")).toHaveTextContent("Naver 원천 데이터 PoC");
   expect(screen.getByTestId("stock-detail-naver-poc")).toHaveTextContent("live fetch off");
 
@@ -375,6 +404,73 @@ test("keeps buy/sell controls disabled and shows explicit orderbook plus empty o
   expect(screen.getByTestId("stock-detail-trade-guardrail")).toHaveTextContent("read_only_mvp");
   expect(screen.getByTestId("stock-detail-orderbook")).toHaveTextContent("US 호가는 아직 지원하지 않습니다");
   expect(await screen.findByTestId("stock-detail-orders")).toHaveTextContent("체결 내역이 없습니다");
+});
+
+test("renders the upgraded fill table (buy/sell · price · notional) and the per-symbol watch card", async () => {
+  vi.mocked(stockApi.fetchStockDetailOrders).mockResolvedValue({
+    symbol: "QQQM",
+    market: "us",
+    items: [
+      { orderId: "o1", symbol: "QQQM", market: "us", side: "buy", quantity: 2, price: 200, filledAt: "2026-05-09T13:30:00Z", account: "kis", source: "reconciler" },
+      { orderId: "o2", symbol: "QQQM", market: "us", side: "sell", quantity: 3, price: 210, filledAt: "2026-05-10T13:30:00Z", account: "kis", source: "websocket" },
+    ],
+    nextCursor: null,
+    meta: { emptyState: null, warnings: [] },
+  });
+  vi.mocked(watchApi.fetchWatches).mockResolvedValue({
+    market: "us",
+    status: "all",
+    count: 1,
+    data_state: "ok",
+    as_of: "2026-05-10T09:31:00Z",
+    items: [
+      {
+        alert_uuid: "a1",
+        source_report_uuid: "r1",
+        market: "us",
+        symbol: "QQQM",
+        symbol_name: "Invesco NASDAQ 100 ETF",
+        target_kind: "asset",
+        metric: "price_above",
+        operator: "above",
+        threshold: "230",
+        threshold_high: null,
+        status: "active",
+        valid_until: "2026-05-20T00:00:00Z",
+        intent: "sell_review",
+        action_mode: "notify_only",
+        rationale: "목표가 근접 시 분할 매도 검토",
+        trigger_checklist: [],
+        max_action: {},
+        current_price: "211.34",
+        proximity_band: "within_1_pct",
+        last_event: null,
+        near_expiry: false,
+      },
+    ],
+    warnings: [],
+    empty_reason: null,
+  });
+
+  renderPage();
+
+  const ordersCard = within(await screen.findByTestId("stock-detail-orders"));
+  expect(ordersCard.getByText("일시")).toBeInTheDocument();
+  expect(ordersCard.getByText("구분")).toBeInTheDocument();
+  expect(ordersCard.getByText("총액")).toBeInTheDocument();
+  expect(ordersCard.getByText("매수")).toBeInTheDocument();
+  expect(ordersCard.getByText("매도")).toBeInTheDocument();
+  // notional = price × quantity, formatted for USD (buy 2×200, sell 3×210)
+  expect(ordersCard.getByText("$400.00")).toBeInTheDocument();
+  expect(ordersCard.getByText("$630.00")).toBeInTheDocument();
+  expect(ordersCard.getByText("보정")).toBeInTheDocument();
+  expect(ordersCard.getByText("실시간")).toBeInTheDocument();
+
+  const watchCard = within(await screen.findByTestId("stock-detail-watch"));
+  expect(watchCard.getByText("감시중")).toBeInTheDocument();
+  expect(watchCard.getByText(/가격 \$230.00 이상/)).toBeInTheDocument();
+  expect(watchCard.getByText("목표가 근접 시 분할 매도 검토")).toBeInTheDocument();
+  await waitFor(() => expect(watchApi.fetchWatches).toHaveBeenCalledWith("us", "all", "QQQM"));
 });
 
 test("omits external community clone and uses a local memo placeholder", async () => {

@@ -26,6 +26,7 @@ __all__ = [
     "watch_activation_key",
     "watch_event_key",
     "canonical_watch_condition_hash",
+    "direct_watch_key",
 ]
 
 _NONE_SLOT = "_"
@@ -138,3 +139,26 @@ def canonical_watch_condition_hash(payload: dict) -> str:
     """
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def direct_watch_key(
+    *,
+    created_by: str,
+    market: str,
+    symbol: str,
+    intent: str,
+    valid_until: str,
+    watch_condition: dict,
+) -> str:
+    """Stable key for direct, report-flow-independent watch creation."""
+    return ":".join(
+        [
+            "direct-watch",
+            _slot(created_by),
+            _slot(market),
+            _slot(symbol),
+            _slot(intent),
+            _slot(valid_until),
+            canonical_watch_condition_hash(watch_condition),
+        ]
+    )

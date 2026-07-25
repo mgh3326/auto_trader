@@ -7,7 +7,16 @@ from decimal import Decimal
 
 import pytest
 
+from app.services.brokers.kis.mock_scalping.contract import (
+    LedgerSnapshot,
+    MarketConditions,
+    ScalpingRiskLimits,
+)
 from app.services.brokers.kis.mock_scalping.signal import SignalDecision
+from app.services.brokers.kis.mock_scalping_exec.executor import (
+    MockScalpingExecutor,
+    RiskInputs,
+)
 from app.services.brokers.kis.mock_scalping_exec.ws_bridge import WsExecutionBridge
 from app.services.brokers.kis.mock_scalping_ws.supervisor import TriggerEvent
 
@@ -98,3 +107,104 @@ async def test_bridge_per_symbol_in_flight_guard() -> None:
     await first
 
     assert len(ex.calls) == 1
+
+
+# --- ROB-843 AC6: WS bridge cannot bypass the executor-owned risk gate --------
+
+
+class _RecordingBroker:
+    def __init__(self):
+        self.submitted: list[str] = []
+
+    async def submit_buy(self, **kw):
+        self.submitted.append("buy")
+        return {"kind": "buy"}
+
+    async def submit_exit_sell(self, **kw):
+        self.submitted.append("sell")
+        return {"kind": "sell"}
+
+    async def confirm_fill(self, submit_result):
+        return None
+
+    def quote(self, symbol):
+        return None
+
+
+class _NullLedger:
+    async def record_entry(self, **kw):
+        return None
+
+    async def record_exit_reconciled(self, **kw):
+        return None
+
+    async def record_anomaly(self, **kw):
+        return None
+
+
+class _StubRiskGate:
+    def __init__(self, *, inputs):
+        self._inputs = inputs
+        self.calls = 0
+
+    async def load(self, *, symbol, side):
+        self.calls += 1
+        return self._inputs
+
+
+def _inputs(*, spread_bps=Decimal("10"), data_age=1.0) -> RiskInputs:
+    return RiskInputs(
+        ledger=LedgerSnapshot(
+            has_open_position_for_symbol=False,
+            open_position_count=0,
+            orders_today=0,
+            realized_loss_today_krw=Decimal("0"),
+            seconds_since_last_close_for_symbol=None,
+        ),
+        market=MarketConditions(spread_bps=spread_bps, data_age_seconds=data_age),
+    )
+
+
+def _real_executor(broker, *, inputs):
+    async def _no_sleep(_s):
+        return None
+
+    gate = _StubRiskGate(inputs=inputs)
+    ex = MockScalpingExecutor(
+        broker=broker,
+        ledger=_NullLedger(),
+        sleep=_no_sleep,
+        clock=lambda: 0.0,
+        risk=gate,
+        limits=ScalpingRiskLimits(),
+    )
+    return ex, gate
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ws_bridge_delegates_to_executor_risk_gate_and_blocks() -> None:
+    """A BUY trigger the caller deemed fine is still refused when the executor's
+    own fresh snapshot denies it — proving the bridge cannot bypass the gate."""
+    broker = _RecordingBroker()
+    # Wide spread from the executor's OWN snapshot -> deny, zero broker calls.
+    executor, gate = _real_executor(broker, inputs=_inputs(spread_bps=Decimal("99")))
+    bridge = WsExecutionBridge(executor=executor, confirm=True)
+
+    await bridge.on_trigger(_trigger())
+
+    assert gate.calls == 1  # executor reloaded its own snapshot
+    assert broker.submitted == []  # no order despite a "clean" trigger
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ws_bridge_allows_when_executor_snapshot_clears() -> None:
+    broker = _RecordingBroker()
+    executor, gate = _real_executor(broker, inputs=_inputs())
+    bridge = WsExecutionBridge(executor=executor, confirm=True)
+
+    await bridge.on_trigger(_trigger())
+
+    assert gate.calls == 1
+    assert broker.submitted == ["buy"]  # proceeds past the gate to submit

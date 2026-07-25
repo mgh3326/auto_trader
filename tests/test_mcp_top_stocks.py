@@ -32,6 +32,28 @@ def build_tools() -> dict[str, Callable[..., Any]]:
 
 @pytest.mark.asyncio
 class TestMCPTopStocks:
+    @pytest.fixture(autouse=True)
+    def _neutralize_foreigners_market_cap_fetch(self, monkeypatch):
+        # ROB-629 B2: the foreigners backfill block calls a DB reader
+        # (_fetch_market_cap_maps). Keep these routing/mapping tests hermetic and
+        # fast — only TestForeignersLiquidity exercises real caps.
+        async def _no_op_fetch(*args, **kwargs):
+            return {}, {}
+
+        monkeypatch.setattr(
+            "app.mcp_server.tooling.foreigners_liquidity._fetch_market_cap_maps",
+            _no_op_fetch,
+        )
+
+        async def _no_normalized_caps(*args, **kwargs):
+            return {}
+
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "fetch_normalized_kr_market_caps",
+            _no_normalized_caps,
+        )
+
     async def test_get_top_stocks_us_uses_analysis_screening_rankings_alias(
         self, monkeypatch
     ):
@@ -222,20 +244,22 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def foreign_buying_rank(self, market, limit):
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
                 return [
                     {
                         "mksc_shrn_iscd": "900210",
                         "hts_kor_isnm": "KODEX 200",
                         "stck_prpr": "35000",
                         "prdy_ctrt": "1.0",
-                        "acml_vol": "20000000",
-                        "hts_avls": "5000000000000",
-                        "acml_tr_pbmn": "700000000000000",
+                        "frgn_ntby_qty": "20000000",
+                        "frgn_ntby_tr_pbmn": "700000000000",
                     }
                 ]
 
         monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
 
@@ -243,6 +267,7 @@ class TestMCPTopStocks:
         assert len(result["rankings"]) == 1
         assert result["rankings"][0]["symbol"] == "900210"
         assert result["rankings"][0]["name"] == "KODEX 200"
+        assert result["source"] == "kis"
 
     async def test_kr_gainers_routing(self, monkeypatch):
         tools = build_tools()
@@ -328,20 +353,22 @@ class TestMCPTopStocks:
         tools = build_tools()
 
         class MockKISClient:
-            async def foreign_buying_rank(self, market, limit):
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
                 return [
                     {
                         "stck_shrn_iscd": "005930",
                         "hts_kor_isnm": "삼성전자",
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
-                        "acml_vol": "10000000",
-                        "hts_avls": "100000000000000",
-                        "acml_tr_pbmn": "800000000000000",
+                        "frgn_ntby_qty": "10000000",
+                        "frgn_ntby_tr_pbmn": "800000000000",
                     }
                 ]
 
         monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
 
@@ -756,6 +783,93 @@ class TestMCPTopStocks:
         assert result["rankings"][0]["symbol"] == "KRW-BTC"
         assert result["rankings"][0]["change_rate"] == pytest.approx(-1.0)
 
+    async def test_crypto_rankings_relative_strength_sort_excludes_btc(
+        self, monkeypatch
+    ):
+        tools = build_tools()
+
+        async def mock_fetch_top_traded_coins():
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "trade_price": "100000000",
+                    "signed_change_rate": "0.03",
+                    "acc_trade_volume_24h": "100",
+                    "acc_trade_price_24h": "10000000000",
+                },
+                {
+                    "market": "KRW-ETH",
+                    "trade_price": "5000000",
+                    "signed_change_rate": "0.05",
+                    "acc_trade_volume_24h": "80",
+                    "acc_trade_price_24h": "20000000000",
+                },
+                {
+                    "market": "KRW-XRP",
+                    "trade_price": "900",
+                    "signed_change_rate": "0.04",
+                    "acc_trade_volume_24h": "200",
+                    "acc_trade_price_24h": "30000000000",
+                },
+            ]
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        result = await tools["get_top_stocks"](
+            market="crypto",
+            ranking_type="relative_strength",
+            limit=5,
+        )
+
+        assert result["ranking_type"] == "relative_strength"
+        assert [row["symbol"] for row in result["rankings"]] == ["KRW-ETH", "KRW-XRP"]
+        assert result["rankings"][0]["relative_strength_vs_btc_24h"] == pytest.approx(
+            0.02
+        )
+        assert result["rankings"][0][
+            "relative_strength_pct_vs_btc_24h"
+        ] == pytest.approx(2.0)
+
+    async def test_get_crypto_top_movers_defaults_to_relative_strength(
+        self, monkeypatch
+    ):
+        tools = build_tools()
+        assert "get_crypto_top_movers" in tools
+
+        async def mock_fetch_top_traded_coins():
+            return [
+                {
+                    "market": "KRW-BTC",
+                    "trade_price": "100000000",
+                    "signed_change_rate": "0.01",
+                    "acc_trade_volume_24h": "100",
+                    "acc_trade_price_24h": "10000000000",
+                },
+                {
+                    "market": "KRW-SOL",
+                    "trade_price": "220000",
+                    "signed_change_rate": "0.04",
+                    "acc_trade_volume_24h": "90",
+                    "acc_trade_price_24h": "9000000000",
+                },
+            ]
+
+        monkeypatch.setattr(
+            upbit_service,
+            "fetch_top_traded_coins",
+            mock_fetch_top_traded_coins,
+        )
+
+        result = await tools["get_crypto_top_movers"](limit=10)
+
+        assert result["market"] == "crypto"
+        assert result["ranking_type"] == "relative_strength"
+        assert result["rankings"][0]["symbol"] == "KRW-SOL"
+
     async def test_crypto_ratio_to_percent_conversion(self, monkeypatch):
         tools = build_tools()
 
@@ -818,11 +932,14 @@ class TestMCPTopStocks:
         assert "Upbit API error" in result["error"]
 
     async def test_kr_foreigners_ranking_foreign_specific_fields(self, monkeypatch):
-        """foreigners 랭킹에서 외국인 전용 필드(frgn_ntby_qty, frgn_ntby_tr_pbmn) 사용 테스트"""
+        """ROB-629: foreigners ranking surfaces foreign net flow as NAMED fields
+        (foreign_net_qty / foreign_net_amount) and no longer stuffs them into the
+        generic volume / trade_amount slots. hts_avls is NOT fabricated — the real
+        KIS foreign ranking does not return it, so market_cap is honestly null."""
         tools = build_tools()
 
         class MockKISClient:
-            async def foreign_buying_rank(self, market, limit):
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
                 return [
                     {
                         "stck_shrn_iscd": "005930",
@@ -830,7 +947,6 @@ class TestMCPTopStocks:
                         "stck_prpr": "80000",
                         "prdy_ctrt": "1.0",
                         "frgn_ntby_qty": "5000000",
-                        "hts_avls": "100000000000000",
                         "frgn_ntby_tr_pbmn": "400000000000",
                     },
                     {
@@ -839,27 +955,83 @@ class TestMCPTopStocks:
                         "stck_prpr": "120000",
                         "prdy_ctrt": "1.5",
                         "frgn_ntby_qty": "3000000",
-                        "hts_avls": "50000000000000",
                         "frgn_ntby_tr_pbmn": "360000000000",
                     },
                 ]
 
         monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
 
         result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
 
         assert result["ranking_type"] == "foreigners"
         assert len(result["rankings"]) == 2
 
-        assert result["rankings"][0]["symbol"] == "005930"
-        assert result["rankings"][0]["name"] == "삼성전자"
-        assert result["rankings"][0]["volume"] == 5000000
-        assert result["rankings"][0]["trade_amount"] == pytest.approx(400000000000.0)
+        first = result["rankings"][0]
+        assert first["symbol"] == "005930"
+        assert first["name"] == "삼성전자"
+        # Named foreign fields — the whole point of ROB-629.
+        assert first["foreign_net_qty"] == 5000000
+        assert first["foreign_net_amount"] == pytest.approx(400000000000.0)
+        # Generic slots are NO LONGER stuffed with the foreign values.
+        assert first["volume"] is None
+        assert first["trade_amount"] is None
+        # market_cap honestly null (hts_avls not returned by the foreign ranking).
+        assert first["market_cap"] is None
 
-        assert result["rankings"][1]["symbol"] == "005380"
-        assert result["rankings"][1]["name"] == "LG전자"
-        assert result["rankings"][1]["volume"] == 3000000
-        assert result["rankings"][1]["trade_amount"] == pytest.approx(360000000000.0)
+        second = result["rankings"][1]
+        assert second["symbol"] == "005380"
+        assert second["name"] == "LG전자"
+        assert second["foreign_net_qty"] == 3000000
+        assert second["foreign_net_amount"] == pytest.approx(360000000000.0)
+        assert second["volume"] is None
+        assert second["trade_amount"] is None
+
+    async def test_kr_foreign_net_buy_and_sell_split_dispatch(self, monkeypatch):
+        """ROB-629: foreign_net_buy passes FID rank_sort '0' (net buy),
+        foreign_net_sell passes '1' (net sell); 'foreigners' aliases
+        foreign_net_buy. Response echoes the caller's original ranking_type."""
+        tools = build_tools()
+
+        captured: list[str] = []
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                captured.append(rank_sort)
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "frgn_ntby_qty": "5000000",
+                        "frgn_ntby_tr_pbmn": "400000000000",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        buy = await tools["get_top_stocks"](market="kr", ranking_type="foreign_net_buy")
+        assert buy["ranking_type"] == "foreign_net_buy"
+        assert len(buy["rankings"]) == 1
+
+        sell = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreign_net_sell"
+        )
+        assert sell["ranking_type"] == "foreign_net_sell"
+        assert len(sell["rankings"]) == 1
+
+        alias = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+        assert alias["ranking_type"] == "foreigners"
+        assert len(alias["rankings"]) == 1
+
+        # net buy -> "0", net sell -> "1", foreigners alias -> "0".
+        assert captured == ["0", "1", "0"]
 
 
 @pytest.mark.asyncio
@@ -902,6 +1074,324 @@ class TestMCPLosers:
         assert all(float(r["change_rate"]) < 0 for r in result["rankings"])
         assert float(result["rankings"][0]["change_rate"]) == pytest.approx(-3.0)
         assert float(result["rankings"][1]["change_rate"]) == pytest.approx(-2.0)
+
+    async def test_min_market_cap_is_fail_closed_on_normalized_snapshot(
+        self, monkeypatch
+    ):
+        """A requested quality floor accepts only normalized snapshot coverage."""
+        import datetime as _dt
+        from decimal import Decimal as _D
+
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
+
+        async def fake_caps(symbols):
+            return {
+                "005930": NormalizedMarketCap(
+                    _D("200000000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                ),
+                "900001": NormalizedMarketCap(
+                    _D("5000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                ),
+            }
+
+        monkeypatch.setattr(
+            analysis_tool_handlers, "fetch_normalized_kr_market_caps", fake_caps
+        )
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {  # big-cap loser — kept
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-2.0",
+                        "acml_vol": "2000000",
+                        "hts_avls": "200000000000000",
+                    },
+                    {  # junk-cap loser — excluded
+                        "stck_shrn_iscd": "900001",
+                        "hts_kor_isnm": "잡주",
+                        "stck_prpr": "500",
+                        "prdy_ctrt": "-9.0",
+                        "acml_vol": "1000000",
+                        "hts_avls": "5000000000",
+                    },
+                    {  # normalized snapshot omitted — fail-closed
+                        "stck_shrn_iscd": "900002",
+                        "hts_kor_isnm": "미확인",
+                        "stck_prpr": "1000",
+                        "prdy_ctrt": "-1.0",
+                        "acml_vol": "500000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            limit=5,
+            min_market_cap=30_000_000_000.0,
+        )
+
+        symbols = [r["symbol"] for r in result["rankings"]]
+        assert symbols == ["005930"]
+        assert result["market_cap_filter"] == {
+            "min_market_cap": 30_000_000_000.0,
+            "excluded_count": 2,
+        }
+
+    async def test_min_market_cap_omitted_keeps_prior_behavior(self, monkeypatch):
+        """No min_market_cap -> no filter key in the response, behavior unchanged."""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-2.0",
+                        "acml_vol": "2000000",
+                        "hts_avls": "1000000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="losers", limit=5
+        )
+
+        assert "market_cap_filter" not in result
+        assert len(result["rankings"]) == 1
+
+    async def test_min_market_cap_backfills_when_kis_omits_hts_avls(self, monkeypatch):
+        """ROB-976 verify R1 [BLOCKER]: real KIS losers responses reproduced in
+        the 07-20 verify report omit hts_avls entirely, making the bare filter
+        a no-op. market_cap must come from the normalized Naver valuation
+        snapshot before the floor is applied."""
+        import datetime as _dt
+        from decimal import Decimal as _D
+
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
+
+        async def fake_fetch(symbols):
+            return {
+                "900001": NormalizedMarketCap(
+                    _D("5000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                ),
+                "900002": NormalizedMarketCap(
+                    _D("400000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                ),
+            }
+
+        monkeypatch.setattr(
+            analysis_tool_handlers, "fetch_normalized_kr_market_caps", fake_fetch
+        )
+
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {  # junk cap once backfilled (50억) — excluded
+                        "stck_shrn_iscd": "900001",
+                        "hts_kor_isnm": "좋은사람들",
+                        "stck_prpr": "500",
+                        "prdy_ctrt": "-9.0",
+                        "acml_vol": "1000000",
+                        # no hts_avls, matches the real KIS losers payload
+                    },
+                    {  # blue-chip cap once backfilled (4000억) — kept
+                        "stck_shrn_iscd": "900002",
+                        "hts_kor_isnm": "대형주",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-2.0",
+                        "acml_vol": "2000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            limit=5,
+            min_market_cap=30_000_000_000.0,
+        )
+
+        symbols = [r["symbol"] for r in result["rankings"]]
+        assert symbols == ["900002"]
+        assert result["rankings"][0]["market_cap"] == pytest.approx(4e11)
+        assert result["market_cap_filter"]["excluded_count"] == 1
+
+    async def test_min_market_cap_keeps_real_large_cap_with_r2_payload_shape(
+        self, monkeypatch
+    ):
+        """R2 regression: 삼성생명 must use 60.3조 KRW, not the ~399억
+        provider-unit value that previously caused a false exclusion."""
+        import datetime as _dt
+        from decimal import Decimal as _D
+
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
+
+        async def fake_caps(symbols):
+            return {
+                "032830": NormalizedMarketCap(
+                    _D("60300000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                )
+            }
+
+        monkeypatch.setattr(
+            analysis_tool_handlers, "fetch_normalized_kr_market_caps", fake_caps
+        )
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "032830",
+                        "hts_kor_isnm": "삼성생명",
+                        "stck_prpr": "301500",
+                        "prdy_ctrt": "-1.2",
+                        "acml_vol": "1000000",
+                        # Reproduce the unnormalized R2 value; it must be ignored.
+                        "hts_avls": "39943178204",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            min_market_cap=300_000_000_000.0,
+        )
+
+        assert [row["symbol"] for row in result["rankings"]] == ["032830"]
+        assert result["rankings"][0]["market_cap"] == pytest.approx(60.3e12)
+        assert result["rankings"][0]["market_cap_source"].endswith("naver_finance")
+
+    async def test_min_turnover_uses_trade_amount_then_price_times_volume(
+        self, monkeypatch
+    ):
+        """ROB-976: min_turnover checks trade_amount (acml_tr_pbmn) first, and
+        falls back to price*volume when KIS omits trade_amount; rows with neither
+        value fail the requested quality gate."""
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {  # trade_amount present, below the 10억 floor -> excluded
+                        "stck_shrn_iscd": "900001",
+                        "hts_kor_isnm": "저유동성",
+                        "stck_prpr": "1000",
+                        "prdy_ctrt": "-3.0",
+                        "acml_vol": "100000",
+                        "acml_tr_pbmn": "100000000",  # 1억
+                    },
+                    {  # no trade_amount; price*volume = 80000*2000000 = 1600억 -> kept
+                        "stck_shrn_iscd": "900002",
+                        "hts_kor_isnm": "대형주",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "-1.0",
+                        "acml_vol": "2000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            limit=5,
+            min_turnover=1_000_000_000.0,
+        )
+
+        symbols = [r["symbol"] for r in result["rankings"]]
+        assert symbols == ["900002"]
+        assert result["turnover_filter"] == {
+            "min_turnover": 1_000_000_000.0,
+            "excluded_count": 1,
+        }
+
+    async def test_quality_filter_emptying_losers_is_degraded_not_bullish_message(
+        self, monkeypatch
+    ):
+        """ROB-976 verify R1 [BLOCKER]: when the quality floor removes every
+        real loser, the response must say so (status=degraded) — not the
+        generic 'market may be entirely bullish' message, which would hide
+        that a filter (not market conditions) produced the empty page."""
+        import datetime as _dt
+        from decimal import Decimal as _D
+
+        from app.services.market_valuation_snapshots.normalized_market_cap import (
+            NormalizedMarketCap,
+        )
+
+        async def fake_fetch(symbols):
+            return {
+                symbol: NormalizedMarketCap(
+                    _D("5000000000"), _dt.date(2026, 7, 20), "naver_finance"
+                )
+                for symbol in symbols
+            }
+
+        monkeypatch.setattr(
+            analysis_tool_handlers, "fetch_normalized_kr_market_caps", fake_fetch
+        )
+
+        tools = build_tools()
+
+        class MockKISClient:
+            async def fluctuation_rank(self, market, direction, limit):
+                return [
+                    {
+                        "stck_shrn_iscd": "900001",
+                        "hts_kor_isnm": "잡주",
+                        "stck_prpr": "500",
+                        "prdy_ctrt": "-9.0",
+                        "acml_vol": "1000000",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers, "kr_market_data_state", lambda *a, **k: "fresh"
+        )
+
+        result = await tools["get_top_stocks"](
+            market="kr",
+            ranking_type="losers",
+            limit=5,
+            min_market_cap=30_000_000_000.0,
+        )
+
+        assert result["rankings"] == []
+        assert result["status"] == "degraded"
+        assert "degraded_reason" in result
+        assert "error" not in result
 
     async def test_get_top_stocks_kr_gainers_returns_positives(self, monkeypatch):
         tools = build_tools()
@@ -1216,3 +1706,200 @@ class TestMCPRegressionTests:
         assert result["rankings"][1]["change_rate"] == pytest.approx(
             -1.0
         )  # -0.01 * 100
+
+
+@pytest.mark.asyncio
+class TestForeignersLiquidity:
+    async def _patch_fetch(self, monkeypatch, snapshot_caps=None, shares=None):
+        from decimal import Decimal as _D
+
+        from app.mcp_server.tooling import foreigners_liquidity
+
+        async def fake_fetch(symbols, *, session_factory=None):
+            return (
+                {k: _D(str(v)) for k, v in (snapshot_caps or {}).items()},
+                {k: _D(str(v)) for k, v in (shares or {}).items()},
+            )
+
+        monkeypatch.setattr(foreigners_liquidity, "_fetch_market_cap_maps", fake_fetch)
+
+    async def test_backfill_wired_from_snapshot(self, monkeypatch):
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch, snapshot_caps={"005930": 4e14})
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "frgn_ntby_qty": "5000000",
+                        "frgn_ntby_tr_pbmn": "400000000000",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+        row = result["rankings"][0]
+        assert row["market_cap"] == 4e14
+        assert row["market_cap_source"] == "fundamentals_snapshot"
+        assert result["liquidity_filter"]["include_illiquid"] is False
+        assert result["liquidity_filter"]["excluded_count"] == 0
+
+    async def test_filter_excludes_junk_default_on(self, monkeypatch):
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)  # no caps -> null
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "frgn_ntby_qty": "5000000",
+                        "frgn_ntby_tr_pbmn": "400000000000",
+                    },
+                    {
+                        "stck_shrn_iscd": "900111",
+                        "hts_kor_isnm": "잡주",
+                        "stck_prpr": "300",
+                        "frgn_ntby_qty": "1000",
+                        "frgn_ntby_tr_pbmn": "300000",  # 30만 KRW — junk
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+        assert [r["symbol"] for r in result["rankings"]] == ["005930"]
+        assert result["rankings"][0]["rank"] == 1
+        assert result["liquidity_filter"]["excluded_count"] == 1
+
+    async def test_include_illiquid_keeps_all(self, monkeypatch):
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "900111",
+                        "hts_kor_isnm": "잡주",
+                        "stck_prpr": "300",
+                        "frgn_ntby_tr_pbmn": "300000",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        result = await tools["get_top_stocks"](
+            market="kr", ranking_type="foreigners", include_illiquid=True
+        )
+        assert len(result["rankings"]) == 1
+        assert result["liquidity_filter"]["include_illiquid"] is True
+        assert result["liquidity_filter"]["excluded_count"] == 0
+
+    async def test_filter_empties_sets_degraded(self, monkeypatch):
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "900111",
+                        "hts_kor_isnm": "잡주",
+                        "stck_prpr": "300",
+                        "frgn_ntby_tr_pbmn": "300000",  # below threshold
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+        assert result["rankings"] == []
+        assert result["total_count"] == 0
+        assert result["status"] == "degraded"
+        assert "liquidity threshold" in result["degraded_reason"]
+        assert result["liquidity_filter"]["excluded_count"] == 1
+
+    async def test_foreigners_offsession_fake_zero_flow_suppressed(self, monkeypatch):
+        """T1: off-session the KIS foreign-buying-rank returns fake-0 가집계 rows
+        (no real net flow). When data_state is NON-fresh and no row carries real
+        foreign flow, the guard suppresses the fake-0 rows and tags data_state —
+        never presenting 가집계 zeros as live foreign flow."""
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "0.00",
+                        "frgn_ntby_qty": "0",
+                        "frgn_ntby_tr_pbmn": "0",
+                    },
+                    {
+                        "stck_shrn_iscd": "000660",
+                        "hts_kor_isnm": "SK하이닉스",
+                        "stck_prpr": "180000",
+                        "prdy_ctrt": "0.00",
+                        "frgn_ntby_qty": "0",
+                        "frgn_ntby_tr_pbmn": "0",
+                    },
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "kr_market_data_state",
+            lambda *a, **k: "premarket_unavailable",
+        )
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+
+        assert result["data_state"] == "premarket_unavailable"
+        assert result["rankings"] == []
+        assert result["total_count"] == 0
+        assert result.get("note")
+        # Suppressed BEFORE the liquidity filter ran — no liquidity meta attached.
+        assert "liquidity_filter" not in result
+
+    async def test_foreigners_offsession_real_flow_not_suppressed(self, monkeypatch):
+        """T1 positive counterpart: NON-fresh data_state but a row carries real
+        foreign net flow (has_real_flow=True) must NOT be suppressed — the guard
+        only drops the all-fake-0 case."""
+        tools = build_tools()
+        await self._patch_fetch(monkeypatch)
+
+        class MockKISClient:
+            async def foreign_buying_rank(self, market, limit, rank_sort="0"):
+                return [
+                    {
+                        "stck_shrn_iscd": "005930",
+                        "hts_kor_isnm": "삼성전자",
+                        "stck_prpr": "80000",
+                        "prdy_ctrt": "1.0",
+                        "frgn_ntby_qty": "5000000",
+                        "frgn_ntby_tr_pbmn": "400000000000",
+                    }
+                ]
+
+        monkeypatch.setattr(analysis_tool_handlers, "KISClient", MockKISClient)
+        monkeypatch.setattr(
+            analysis_tool_handlers,
+            "kr_market_data_state",
+            lambda *a, **k: "premarket_unavailable",
+        )
+
+        result = await tools["get_top_stocks"](market="kr", ranking_type="foreigners")
+
+        # Real flow survives; data_state is still tagged honestly as non-fresh.
+        assert result["data_state"] == "premarket_unavailable"
+        assert len(result["rankings"]) == 1
+        assert result["rankings"][0]["symbol"] == "005930"
+        assert result["rankings"][0]["foreign_net_amount"] == pytest.approx(4e11)
+        assert "note" not in result

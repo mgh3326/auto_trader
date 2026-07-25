@@ -85,3 +85,4 @@ class MarketIssuesResponse(BaseModel):
     status: IssuesStatus = "ok"
     degraded_reason: str | None = None
     quality_gate: IssueQualityGate | None = None
+    truncated_for_size: bool = False

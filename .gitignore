@@ -297,5 +297,8 @@ frontend/**/.vite/
 # ROB-178 smoke scratch — runtime payload/evidence; never commit.
 .smoke-out/
 .gstack/
+
+.omo/
+
 # ROB-371 US earnings coverage probe artifacts (counts-only, never committed).
 research/event_coverage/results/

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol
 
+import sentry_sdk
+
 from app.services.brokers.toss.client import TossReadClient
+from app.services.brokers.toss.dto import TossSellableQuantity
+from app.services.toss_sellable_cache import TossSellableCache
 
 
 class TossPortfolioClient(Protocol):
@@ -79,11 +84,24 @@ async def fetch_toss_cash_snapshot(
     active_client: TossPortfolioClient = client or TossReadClient.from_settings()
 
     try:
-        buying_power_results = await asyncio.gather(
-            active_client.buying_power(currency="KRW"),
-            active_client.buying_power(currency="USD"),
-            return_exceptions=True,
-        )
+        with sentry_sdk.start_span(
+            op="invest.home.toss_api.phase",
+            name="invest.home.toss_api.buying_power",
+        ) as span:
+            span.set_data("currency_count", 2)
+            buying_power_results = await asyncio.gather(
+                active_client.buying_power(currency="KRW"),
+                active_client.buying_power(currency="USD"),
+                return_exceptions=True,
+            )
+            span.set_data(
+                "error_count",
+                sum(
+                    1
+                    for result in buying_power_results
+                    if isinstance(result, BaseException)
+                ),
+            )
         cash_krw: Decimal | None = None
         cash_usd: Decimal | None = None
         errors: list[dict[str, Any]] = []
@@ -115,25 +133,116 @@ async def fetch_toss_cash_snapshot(
 
 async def fetch_toss_portfolio_snapshot(
     *,
+    need_sellable: bool = True,
+    need_cash: bool = True,
+    sellable_cache: TossSellableCache | None = None,
     client: TossPortfolioClient | None = None,
 ) -> TossPortfolioSnapshot:
     created_client = client is None
     active_client: TossPortfolioClient = client or TossReadClient.from_settings()
 
+    # ROB-707: the cash (buying-power) snapshot is independent of holdings, so
+    # kick it off concurrently with the holdings/sellable chain instead of
+    # awaiting it serially after the position loop. Output is unchanged; only
+    # the wall-clock overlap changes. Drained/cancelled in the finally if the
+    # holdings chain raises before we await it.
+    # ROB-810: callers that discard cash (MCP get_holdings) pass need_cash=False
+    # so the ACCOUNT 1-TPS buying_power fanout (~3.1s) is skipped entirely.
+    cash_task: asyncio.Future | None = (
+        asyncio.ensure_future(fetch_toss_cash_snapshot(client=active_client))
+        if need_cash
+        else None
+    )
+
     try:
-        holdings = await active_client.holdings()
+        with sentry_sdk.start_span(
+            op="invest.home.toss_api.phase",
+            name="invest.home.toss_api.holdings",
+        ) as span:
+            holdings = await active_client.holdings()
+            span.set_data("position_count", len(holdings.items))
+
         errors: list[dict[str, Any]] = []
 
-        sellable_results = await asyncio.gather(
-            *[
-                active_client.sellable_quantity(symbol=item.symbol)
-                for item in holdings.items
-            ],
-            return_exceptions=True,
-        )
+        if need_sellable and sellable_cache is not None:
+            # ROB-701: only cache-MISS symbols hit the ORDER_INFO (6 TPS)
+            # /sellable-quantity endpoint; hits reuse the cached value. Re-wrap
+            # hits as TossSellableQuantity so the position-build loop below is
+            # unchanged.
+            cache_read = await sellable_cache.read_many(
+                [item.symbol for item in holdings.items]
+            )
+            hits = cache_read.values
+            miss_indices = [i for i, hit in enumerate(hits) if hit is None]
+            with sentry_sdk.start_span(
+                op="invest.home.toss_api.phase",
+                name="invest.home.toss_api.sellable_quantity",
+            ) as span:
+                span.set_data("position_count", len(holdings.items))
+                span.set_data("cache_miss_count", len(miss_indices))
+                fetched = await asyncio.gather(
+                    *[
+                        active_client.sellable_quantity(symbol=holdings.items[i].symbol)
+                        for i in miss_indices
+                    ],
+                    return_exceptions=True,
+                )
+                span.set_data(
+                    "error_count",
+                    sum(1 for result in fetched if isinstance(result, BaseException)),
+                )
+            fetched_by_index: dict[int, Any] = dict(
+                zip(miss_indices, fetched, strict=True)
+            )
+            successful_values = {
+                holdings.items[index].symbol: result.sellable_quantity
+                for index, result in fetched_by_index.items()
+                if not isinstance(result, BaseException)
+            }
+            # Cache ONLY successful fetches — a transient error must not poison
+            # the cache (next load retries). One pipeline avoids a Redis N+1.
+            await sellable_cache.put_many(
+                successful_values,
+                expected_generations=cache_read.generations,
+            )
+            paired: list[tuple[Any, Any]] = []
+            for index, item in enumerate(holdings.items):
+                if index in fetched_by_index:
+                    paired.append((item, fetched_by_index[index]))
+                else:
+                    paired.append(
+                        (item, TossSellableQuantity(sellable_quantity=hits[index]))
+                    )
+        elif need_sellable:
+            with sentry_sdk.start_span(
+                op="invest.home.toss_api.phase",
+                name="invest.home.toss_api.sellable_quantity",
+            ) as span:
+                span.set_data("position_count", len(holdings.items))
+                sellable_results = await asyncio.gather(
+                    *[
+                        active_client.sellable_quantity(symbol=item.symbol)
+                        for item in holdings.items
+                    ],
+                    return_exceptions=True,
+                )
+                span.set_data(
+                    "error_count",
+                    sum(
+                        1
+                        for result in sellable_results
+                        if isinstance(result, BaseException)
+                    ),
+                )
+            paired = list(zip(holdings.items, sellable_results, strict=True))
+        else:
+            # ROB-685: caller does not consume sellable_quantity — skip the
+            # per-holding GET /sellable-quantity (ORDER_INFO, 6 TPS) fanout that
+            # otherwise serializes to ~6/sec and dominates wall time.
+            paired = [(item, None) for item in holdings.items]
 
         positions: list[TossPortfolioPosition] = []
-        for item, sellable_result in zip(holdings.items, sellable_results, strict=True):
+        for item, sellable_result in paired:
             sellable_quantity: Decimal | None = None
             if isinstance(sellable_result, BaseException):
                 errors.append(
@@ -144,7 +253,7 @@ async def fetch_toss_portfolio_snapshot(
                         "error": str(sellable_result),
                     }
                 )
-            else:
+            elif sellable_result is not None:
                 sellable_quantity = sellable_result.sellable_quantity
 
             instrument_type = _instrument_type_for_market_country(item.market_country)
@@ -168,15 +277,30 @@ async def fetch_toss_portfolio_snapshot(
                 )
             )
 
-        cash_snapshot = await fetch_toss_cash_snapshot(client=active_client)
-        errors.extend(cash_snapshot.errors)
+        if cash_task is not None:
+            cash_snapshot = await cash_task
+            errors.extend(cash_snapshot.errors)
+            cash_krw = cash_snapshot.cash_krw
+            cash_usd = cash_snapshot.cash_usd
+        else:
+            cash_krw = None
+            cash_usd = None
 
         return TossPortfolioSnapshot(
             positions=positions,
-            cash_krw=cash_snapshot.cash_krw,
-            cash_usd=cash_snapshot.cash_usd,
+            cash_krw=cash_krw,
+            cash_usd=cash_usd,
             errors=errors,
         )
     finally:
+        # ROB-707: if the holdings/sellable chain raised before we awaited the
+        # cash task, cancel and drain it so it never touches a closed client
+        # (and never leaks a pending task). fetch_toss_cash_snapshot swallows
+        # per-currency errors internally, so this only fires on holdings-chain
+        # failure.
+        if cash_task is not None and not cash_task.done():
+            cash_task.cancel()
+            with contextlib.suppress(BaseException):
+                await cash_task
         if created_client:
             await active_client.aclose()

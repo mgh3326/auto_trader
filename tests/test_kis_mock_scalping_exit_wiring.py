@@ -83,6 +83,7 @@ async def test_mock_scalping_exit_bypasses_sell_floor(monkeypatch) -> None:
     err = result.get("error", "")
     assert "below minimum" not in err
     assert "below current price" not in err
+    assert "below marketable band floor" not in err
 
 
 @pytest.mark.unit
@@ -93,5 +94,6 @@ async def test_live_sell_below_floor_still_blocked(monkeypatch) -> None:
     result = await _place(is_mock=False)
     assert result["success"] is False
     assert (
-        "below minimum" in result["error"] or "below current price" in result["error"]
+        "below minimum" in result["error"]
+        or "below marketable band floor" in result["error"]
     )

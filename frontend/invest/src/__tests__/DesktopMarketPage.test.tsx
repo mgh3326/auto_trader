@@ -85,7 +85,11 @@ const MARKET_PAYLOAD = {
           source: "naver",
           symbol: "KOSPI",
           href: null,
-          stale: false,
+          stale: true,
+          dataState: "stale",
+          dataStateReason: "kr_index_quote_lagging",
+          quoteAsOf: "2026-07-06T09:05:00+09:00",
+          quoteLagSeconds: 300,
           warning: null,
         },
       ],
@@ -143,6 +147,7 @@ test("renders market dashboard sections and read-only copy", async () => {
 
   await waitFor(() => expect(screen.getByText("코스피")).toBeInTheDocument());
   expect(screen.getByRole("heading", { name: "시장" })).toBeInTheDocument();
+  expect(screen.getAllByText("stale").length).toBe(2);
   expect(screen.getByText("2,875.25")).toBeInTheDocument();
   expect(screen.getByText("가상자산 시장")).toBeInTheDocument();
   expect(screen.getByText("보통주/우선주 괴리")).toBeInTheDocument();

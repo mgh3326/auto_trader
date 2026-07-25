@@ -30,7 +30,12 @@ import datetime as dt
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+)
 
 from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
 from app.services.brokers.binance.demo.errors import (
@@ -39,9 +44,13 @@ from app.services.brokers.binance.demo.errors import (
 )
 from app.services.brokers.binance.demo.ledger.repository import (
     BinanceDemoLedgerRepository,
+    RootReservationResult,
 )
 
 _ALLOWED_PRODUCTS = frozenset({"spot", "usdm_futures"})
+_IMMUTABLE_FILL_METADATA_KEYS = frozenset(
+    {"filled_qty", "filled_avg_price", "fee_usdt"}
+)
 
 # Locked transition table — single source of truth for legal moves.
 _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -60,8 +69,80 @@ _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 class BinanceDemoLedgerService:
     """Service-only write surface for ``binance_demo_order_ledger``."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        reservation_session_factory: async_sessionmaker[AsyncSession] | None = None,
+    ) -> None:
         self._repo = BinanceDemoLedgerRepository(session)
+        self._owner_session = session
+        self._reservation_session_factory = reservation_session_factory
+
+    @staticmethod
+    def _reject_premature_fill_metadata(
+        metadata: dict[str, Any] | None,
+    ) -> None:
+        if metadata and _IMMUTABLE_FILL_METADATA_KEYS.intersection(metadata):
+            raise BinanceDemoInvalidStateTransition(
+                "immutable fill actuals may only be written at the filled transition"
+            )
+
+    @staticmethod
+    def _validate_fill_metadata_merge(
+        row: BinanceDemoOrderLedger,
+        *,
+        new_state: str,
+        metadata: dict[str, Any] | None,
+    ) -> None:
+        if not metadata:
+            return
+        incoming_keys = _IMMUTABLE_FILL_METADATA_KEYS.intersection(metadata)
+        if not incoming_keys:
+            return
+        existing = row.extra_metadata or {}
+        for key in incoming_keys:
+            if new_state == "filled":
+                if key in existing and existing[key] != metadata[key]:
+                    raise BinanceDemoInvalidStateTransition(
+                        f"immutable fill actual {key!r} conflicts with existing value"
+                    )
+                continue
+            if key not in existing or existing[key] != metadata[key]:
+                raise BinanceDemoInvalidStateTransition(
+                    f"immutable fill actual {key!r} cannot be changed or backfilled"
+                )
+
+    def _get_reservation_session_factory(
+        self,
+    ) -> async_sessionmaker[AsyncSession]:
+        """Resolve the independent transaction factory only when it is needed."""
+        if self._reservation_session_factory is not None:
+            return self._reservation_session_factory
+        bind = getattr(self._owner_session, "bind", None)
+        if isinstance(bind, AsyncConnection):
+            # A session bound to a connection would otherwise reuse the caller's
+            # transaction. Use its owning engine to obtain a new connection.
+            bind = bind.engine
+        if not isinstance(bind, AsyncEngine):
+            raise TypeError(
+                "root reservation requires an AsyncEngine-bound session or an "
+                "explicit reservation_session_factory"
+            )
+        self._reservation_session_factory = async_sessionmaker(
+            bind, expire_on_commit=False
+        )
+        return self._reservation_session_factory
+
+    def independent_session_factory(self) -> async_sessionmaker[AsyncSession]:
+        """Factory for short DB work that must not pin the owner connection.
+
+        The executor uses this for its read-only risk snapshot before identity
+        creation and reservation. Closing that read session before the next
+        step prevents N concurrent owner sessions from each holding one pooled
+        connection while waiting for a second connection (ROB-844 review).
+        """
+        return self._get_reservation_session_factory()
 
     async def get_by_client_order_id(
         self, client_order_id: str
@@ -79,6 +160,33 @@ class BinanceDemoLedgerService:
         return await self._repo.resolve_instrument_id(
             venue=venue, product=product, venue_symbol=venue_symbol
         )
+
+    async def resolve_or_create_instrument(
+        self,
+        *,
+        venue: str,
+        product: str,
+        venue_symbol: str,
+        base_asset: str,
+        quote_asset: str,
+    ) -> int:
+        """Durably resolve/create identity without owning the caller transaction."""
+        if product not in _ALLOWED_PRODUCTS:
+            raise BinanceDemoInvalidProduct(
+                f"product={product!r} not in {sorted(_ALLOWED_PRODUCTS)}"
+            )
+        factory = self._get_reservation_session_factory()
+        async with factory() as identity_session:
+            async with identity_session.begin():
+                return await BinanceDemoLedgerRepository(
+                    identity_session
+                ).resolve_or_create_instrument(
+                    venue=venue,
+                    product=product,
+                    venue_symbol=venue_symbol,
+                    base_asset=base_asset,
+                    quote_asset=quote_asset,
+                )
 
     async def count_open_lifecycles(self) -> int:
         return await self._repo.count_open_lifecycles()
@@ -104,6 +212,28 @@ class BinanceDemoLedgerService:
         self, *, since: dt.datetime
     ) -> list[BinanceDemoOrderLedger]:
         return await self._repo.closed_rows_since(since=since)
+
+    # ------------------------------------------------------------------
+    # Read-only observability surface (ROB-907 — binance_demo_ledger_status).
+    # ------------------------------------------------------------------
+
+    async def status_distribution(self) -> dict[str, int]:
+        return await self._repo.status_distribution()
+
+    async def list_recent(
+        self, *, limit: int, lifecycle_state: str | None = None
+    ) -> list[BinanceDemoOrderLedger]:
+        return await self._repo.list_recent(
+            limit=limit, lifecycle_state=lifecycle_state
+        )
+
+    async def stale_open_roots(
+        self, *, older_than: dt.datetime, limit: int
+    ) -> list[BinanceDemoOrderLedger]:
+        return await self._repo.stale_open_roots(older_than=older_than, limit=limit)
+
+    async def latest_activity_at(self) -> dt.datetime | None:
+        return await self._repo.latest_activity_at()
 
     async def record_planned(
         self,
@@ -134,6 +264,7 @@ class BinanceDemoLedgerService:
             raise BinanceDemoInvalidProduct(
                 f"product={product!r} not in {sorted(_ALLOWED_PRODUCTS)}"
             )
+        self._reject_premature_fill_metadata(extra_metadata)
         return await self._repo.insert_planned(
             instrument_id=instrument_id,
             product=product,
@@ -152,6 +283,68 @@ class BinanceDemoLedgerService:
             now=now,
         )
 
+    async def reserve_root_planned(
+        self,
+        *,
+        instrument_id: int,
+        product: str,
+        venue_host: str,
+        client_order_id: str,
+        side: str,
+        order_type: str,
+        qty: Decimal,
+        price: Decimal | None,
+        tp_price: Decimal | None = None,
+        sl_price: Decimal | None = None,
+        notional_usdt: Decimal | None = None,
+        notional_override_reason: str | None = None,
+        extra_metadata: dict[str, Any] | None = None,
+        idempotency_metadata: dict[str, Any] | None = None,
+        global_open_root_cap: int,
+        now: dt.datetime,
+    ) -> RootReservationResult:
+        """Atomically reserve a root exposure slot + insert its planned row.
+
+        The single authoritative claim for a new root lifecycle (ROB-844): it
+        re-checks the global open-root cap and the per-instrument open root
+        *inside one advisory-locked transaction* and inserts the planned root,
+        so concurrent TaskIQ / MCP / websocket submits cannot both pass. Returns
+        a stable :class:`RootReservationResult`. Deterministic callers may also
+        receive ``replayed`` / ``idempotency_in_progress`` /
+        ``idempotency_collision`` before cap checks; the caller submits to the
+        broker only when the status is ``reserved``.
+
+        Validates ``product`` first; an unknown product raises
+        ``BinanceDemoInvalidProduct`` before any lock/DB work.
+        """
+        if product not in _ALLOWED_PRODUCTS:
+            raise BinanceDemoInvalidProduct(
+                f"product={product!r} not in {sorted(_ALLOWED_PRODUCTS)}"
+            )
+        self._reject_premature_fill_metadata(extra_metadata)
+        factory = self._get_reservation_session_factory()
+        async with factory() as reservation_session:
+            async with reservation_session.begin():
+                reservation_repo = BinanceDemoLedgerRepository(reservation_session)
+                return await reservation_repo.reserve_root_planned(
+                    instrument_id=instrument_id,
+                    product=product,
+                    venue_host=venue_host,
+                    client_order_id=client_order_id,
+                    side=side,
+                    order_type=order_type,
+                    qty=qty,
+                    price=price,
+                    tp_price=tp_price,
+                    sl_price=sl_price,
+                    notional_usdt=notional_usdt,
+                    notional_override_reason=notional_override_reason,
+                    extra_metadata=extra_metadata,
+                    idempotency_metadata=idempotency_metadata,
+                    global_open_root_cap=global_open_root_cap,
+                    now=now,
+                )
+
     async def _transition(
         self,
         *,
@@ -162,7 +355,10 @@ class BinanceDemoLedgerService:
         anomaly_reason: str | None = None,
         extra_metadata_merge: dict[str, Any] | None = None,
     ) -> BinanceDemoOrderLedger:
-        row = await self._repo.get_by_client_order_id(client_order_id)
+        # Lock before validating the transition. This prevents a stale ORM read
+        # from overwriting a concurrent reconciler's terminal release after it
+        # drops its row lock.
+        row = await self._repo.get_by_client_order_id(client_order_id, for_update=True)
         if row is None:
             raise BinanceDemoInvalidStateTransition(
                 f"no ledger row for client_order_id={client_order_id!r}"
@@ -173,6 +369,11 @@ class BinanceDemoLedgerService:
                 f"{row.lifecycle_state!r} → {new_state!r} not allowed "
                 f"(allowed from {row.lifecycle_state!r}: {sorted(allowed)})"
             )
+        self._validate_fill_metadata_merge(
+            row,
+            new_state=new_state,
+            metadata=extra_metadata_merge,
+        )
         return await self._repo.update_state(
             row,
             new_state=new_state,

@@ -18,6 +18,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Literal
 
 from sqlalchemy import select
 
@@ -37,6 +38,7 @@ from app.services.news_entity_matcher import (
     SymbolMatch,
     match_symbols_for_article,
 )
+from app.services.news_text import NEWS_SUMMARY_MAX_CHARS, truncate_text
 
 # ROB-502 meaningfulness gate: official/primary feeds whose items are market
 # signals even as single-article clusters.
@@ -276,6 +278,22 @@ def _signals(
     )
 
 
+def _article_summary_for_detail(
+    raw_summary: str | None,
+    detail: Literal["headline_only", "summary", "full"],
+) -> str | None:
+    """Shape a member-article summary by requested verbosity (ROB-628).
+
+    headline_only -> drop; summary -> HTML-strip + <=NEWS_SUMMARY_MAX_CHARS;
+    full -> verbatim (preserves the pre-ROB-628 contract).
+    """
+    if detail == "headline_only":
+        return None
+    if detail == "full":
+        return raw_summary
+    return truncate_text(raw_summary, NEWS_SUMMARY_MAX_CHARS)
+
+
 def _to_market_issue(
     *,
     cluster: _Cluster,
@@ -283,6 +301,7 @@ def _to_market_issue(
     market: str,
     window_hours: int,
     rank: int,
+    detail: Literal["headline_only", "summary", "full"] = "summary",
 ) -> MarketIssue:
     indexes = cluster.article_indexes
     cluster_articles = [articles[i] for i in indexes]
@@ -318,7 +337,7 @@ def _to_market_issue(
             source=a.source,
             feed_source=a.feed_source,
             published_at=a.article_published_at,
-            summary=getattr(a, "summary", None),
+            summary=_article_summary_for_detail(getattr(a, "summary", None), detail),
             matched_terms=[
                 m.matched_term
                 for m in match_symbols_for_article(
@@ -426,13 +445,14 @@ async def build_market_issues(
     window_hours: int = 24,
     limit: int = 20,
     max_rows: int = 500,
+    detail: Literal["headline_only", "summary", "full"] = "summary",
 ) -> MarketIssuesResponse:
     """Build a ranked list of `MarketIssue` for a given market window.
 
-    ROB-502: the output is meaningfulness-gated — noise-classified articles
-    never enter clustering, near-duplicate syndicated stories merge, and thin
-    (single-article, single-source, non-official) clusters are withheld.
-    Degraded states are explicit instead of silently empty.
+    ROB-502: the output is meaningfulness-gated. ROB-628: `detail` controls
+    member-article summary verbosity (headline_only/summary/full); default
+    "summary" truncates each member summary to NEWS_SUMMARY_MAX_CHARS to keep
+    MCP responses within the token budget.
     """
     response_market = market if market in ("kr", "us", "crypto", "all") else "all"
     loaded = await _load_recent_articles(
@@ -464,6 +484,7 @@ async def build_market_issues(
             market=market,
             window_hours=window_hours,
             rank=0,
+            detail=detail,
         )
         for c in clusters
         if c.article_indexes

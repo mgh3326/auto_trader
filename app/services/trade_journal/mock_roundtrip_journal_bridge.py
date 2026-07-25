@@ -18,6 +18,7 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.models.review import KISMockOrderLedger
 from app.models.trade_journal import TradeJournal
+from app.services.brokers.kis.mock_scalping_exec.ledger_state import real_order_filter
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,8 @@ async def sync_mock_roundtrip_journals(db, *, force: bool = False) -> dict[str, 
                     KISMockOrderLedger.account_mode == "kis_mock",
                     KISMockOrderLedger.correlation_id.is_not(None),
                     KISMockOrderLedger.lifecycle_state.in_(_RECONCILED_STATES),
+                    # ROB-843 P2: never journal a control/reservation row.
+                    real_order_filter(),
                 )
                 .order_by(
                     KISMockOrderLedger.trade_date.asc(), KISMockOrderLedger.id.asc()

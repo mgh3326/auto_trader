@@ -130,8 +130,12 @@ def _get(url: str, timeout: int = 60) -> bytes:
 def list_data_types(granularity: str) -> list[str]:
     """CommonPrefixes (data types) under ``futures/um/<granularity>/``."""
     prefix = f"data/futures/um/{granularity}/"
-    xml = _get(S3 + "?" + urllib.parse.urlencode({"delimiter": "/", "prefix": prefix})).decode()
-    return sorted(re.findall(r"<Prefix>" + re.escape(prefix) + r"([^/<]+)/</Prefix>", xml))
+    xml = _get(
+        S3 + "?" + urllib.parse.urlencode({"delimiter": "/", "prefix": prefix})
+    ).decode()
+    return sorted(
+        re.findall(r"<Prefix>" + re.escape(prefix) + r"([^/<]+)/</Prefix>", xml)
+    )
 
 
 def list_periods(prefix: str, pat: str) -> list[str]:
@@ -222,10 +226,14 @@ def probe(symbols: tuple[tuple[str, str | None], ...] = PROBE_SYMBOLS) -> dict:
 
     # deterministic verdicts (raw_evidence flags: funding/OI raw; liquidation none here)
     fund_dead_ok = all(
-        v["survivorship_ok"] for s, v in summary["funding"].items() if dict(symbols).get(s)
+        v["survivorship_ok"]
+        for s, v in summary["funding"].items()
+        if dict(symbols).get(s)
     )
     oi_dead_ok = all(
-        v["survivorship_ok"] for s, v in summary["open_interest"].items() if dict(symbols).get(s)
+        v["survivorship_ok"]
+        for s, v in summary["open_interest"].items()
+        if dict(symbols).get(s)
     )
     summary["verdicts"] = {
         "funding_only_baseline": classify_verdict(
@@ -236,14 +244,18 @@ def probe(symbols: tuple[tuple[str, str | None], ...] = PROBE_SYMBOLS) -> dict:
         ),
         "liquidation": classify_verdict(FamilySignals(liq_present, True, False)),
         "liquidity_sweep": classify_verdict(
-            FamilySignals(True, False, False)  # trade/banded-depth present but not raw L2
+            FamilySignals(
+                True, False, False
+            )  # trade/banded-depth present but not raw L2
         ),
     }
     return summary
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="ROB-355 derivatives data feasibility probe (read-only).")
+    parser = argparse.ArgumentParser(
+        description="ROB-355 derivatives data feasibility probe (read-only)."
+    )
     parser.add_argument(
         "--out",
         action="store_true",
@@ -257,12 +269,12 @@ def main(argv: list[str] | None = None) -> int:
     print("\nfunding (monthly) / open_interest (daily metrics) coverage:")
     for sym, _ in PROBE_SYMBOLS:
         fr, oi = s["funding"][sym]["range"], s["open_interest"][sym]["range"]
-        frs = f'{fr["first"]}..{fr["last"]} ({fr["count"]}mo)' if fr else "NONE"
-        ois = f'{oi["first"]}..{oi["last"]} ({oi["count"]}d)' if oi else "NONE"
+        frs = f"{fr['first']}..{fr['last']} ({fr['count']}mo)" if fr else "NONE"
+        ois = f"{oi['first']}..{oi['last']} ({oi['count']}d)" if oi else "NONE"
         print(
-            f'  {sym:14} funding={frs:24} oi={ois:26}'
-            f' surv(f/oi)={int(s["funding"][sym]["survivorship_ok"])}/'
-            f'{int(s["open_interest"][sym]["survivorship_ok"])}'
+            f"  {sym:14} funding={frs:24} oi={ois:26}"
+            f" surv(f/oi)={int(s['funding'][sym]['survivorship_ok'])}/"
+            f"{int(s['open_interest'][sym]['survivorship_ok'])}"
         )
     print("\nsamples:", json.dumps(s["samples"]))
     print("verdicts:", json.dumps(s["verdicts"], indent=2))
@@ -270,7 +282,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.out:
         from artifact_paths import resolve_artifact_path
 
-        out = resolve_artifact_path("discovery", "rob355", "derivatives_feasibility.v1.json")
+        out = resolve_artifact_path(
+            "discovery", "rob355", "derivatives_feasibility.v1.json"
+        )
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(s, indent=2))
         print(f"\nsummary written (gitignored): {out}")

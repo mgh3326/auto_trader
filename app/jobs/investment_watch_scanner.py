@@ -9,7 +9,8 @@ review-trigger notifications.
 Locked semantics:
 * Watch is a **review trigger**, never an automatic order instruction.
 * No broker / live order mutation from this path.
-* Notification target is **Hermes**, never OpenClaw.
+* Notification target is **Hermes**, never the agent gateway (the legacy
+  agent-gateway watch-alert path has been removed).
 * The alert only transitions to ``triggered`` after Hermes confirms
   delivery. ``skipped`` (HERMES_ENABLED=False) and ``failed`` deliveries
   leave the alert ``active`` so the next scan loop can re-attempt

@@ -8,9 +8,11 @@
 #
 # Why this template exists:
 #   ST-3 (ROB-212) switches MCP caller identity from tool-arg self-assertion
-#   to middleware-extracted HTTP header. Every caller MUST send the
-#   `x-paperclip-agent-id` header; otherwise defensive_trim and future
-#   caller-identity-gated tools reject the call.
+#   to a middleware-extracted HTTP header. `PAPERCLIP_AGENT_ID` and
+#   `x-paperclip-agent-id` are canonical legacy Paperclip-named compatibility
+#   surfaces and MUST NOT be renamed. Every caller MUST send the header;
+#   otherwise defensive_trim and future caller-identity-gated tools reject the
+#   call.
 #   Do NOT set MCP_CALLER_AGENT_ID for this HTTP bridge. That env fallback is
 #   DEV/stdio only and MUST NOT be used in production HTTP deployments.
 #
@@ -18,7 +20,7 @@
 #   1. Export the three env vars below (values differ per host / session):
 #        export MCP_ENDPOINT="http://127.0.0.1:8765/mcp"
 #        export MCP_AUTH_TOKEN="<bearer token from env.MCP_AUTH_TOKEN>"
-#        export PAPERCLIP_AGENT_ID="<calling agent's Paperclip agent id>"
+#        export PAPERCLIP_AGENT_ID="<calling agent id>"
 #      Optional:
 #        export MCP_SESSION_ID="<MCP session id from session/init handshake>"
 #   2. Regenerate `/tmp/mcp_call.sh` from this template (pass an explicit

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     TIMESTAMP,
@@ -10,6 +11,7 @@ from sqlalchemy import (
     Date,
     Index,
     Integer,
+    Numeric,
     String,
     UniqueConstraint,
     func,
@@ -75,6 +77,18 @@ class InvestorFlowSnapshot(Base):
 
     double_buy: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     double_sell: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # ROB-575 market fields (wired in ROB-640):
+    close: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
+    # change_rate is stored as a percent (e.g. 1.5 for 1.5%)
+    change_rate: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+    volume: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    foreign_holding_shares: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    foreign_holding_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
 
     foreign_consecutive_buy_days: Mapped[int | None] = mapped_column(
         Integer, nullable=True

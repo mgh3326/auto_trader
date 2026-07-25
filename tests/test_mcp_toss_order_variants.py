@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import fakeredis.aioredis
 import pytest
 
 from app.mcp_server.tooling.orders_toss_variants import (
     TOSS_LIVE_ORDER_TOOL_NAMES,
+    _high_value_uncheckable,
     register_toss_live_order_tools,
     toss_cancel_order,
     toss_get_order_history,
@@ -17,7 +21,23 @@ from app.mcp_server.tooling.orders_toss_variants import (
     toss_place_order,
     toss_preview_order,
 )
+from app.services.toss_sellable_cache import TossSellableCache
 from tests._mcp_tooling_support import DummyMCP
+
+
+def test_high_value_uncheckable_true_for_kr_market_order() -> None:
+    """ROB-547: a KR market order has no price -> notional cannot be estimated,
+    so the local 1억 gate cannot evaluate it (must be surfaced, not silently skipped)."""
+    assert _high_value_uncheckable("kr", Decimal("10"), None, None) is True
+
+
+def test_high_value_uncheckable_false_for_kr_limit_order() -> None:
+    assert _high_value_uncheckable("kr", Decimal("10"), Decimal("70000"), None) is False
+
+
+def test_high_value_uncheckable_false_for_us_market_order() -> None:
+    # US notional is in USD; the KRW 1억 gate does not apply (broker-side check).
+    assert _high_value_uncheckable("us", Decimal("10"), None, None) is False
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +69,11 @@ def test_toss_tool_descriptions_document_live_gates():
     mcp = RecordingMCP()
     register_toss_live_order_tools(mcp)  # type: ignore[arg-type]
 
+    preview_desc = mcp.descriptions["toss_preview_order"]
+    assert "current_price" in preview_desc
+    assert "fill_distance/order_warnings" in preview_desc
+    assert "fee/FX full-conversion costs" in preview_desc
+
     place_desc = mcp.descriptions["toss_place_order"]
     assert "account_mode='toss_live'" in place_desc
     assert "market='kr'|'us'" in place_desc
@@ -68,6 +93,8 @@ def test_toss_tool_descriptions_document_live_gates():
     assert "Reconcile Toss Securities live KR/US orders" in reconcile_desc
     assert "dry_run=True" in reconcile_desc
     assert "delta-idempotent" in reconcile_desc
+    assert "US FX PnL" in reconcile_desc
+    assert "fx_pnl_accuracy" in reconcile_desc
 
 
 @pytest.mark.asyncio
@@ -201,9 +228,47 @@ class MockTossClient:
         return SimpleNamespace(order_id="can-ord-789")
 
     async def buying_power(self, *, currency):
-        from types import SimpleNamespace
-
         return SimpleNamespace(currency=currency, cash_buying_power=Decimal("10000.0"))
+
+
+def _enable_toss_preview(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    return otv
+
+
+def _stub_toss_costs(commission_bps: float = 10.0, fx_spread_bps: float = 1.7):
+    return {
+        "version": 1,
+        "accounts": {
+            "toss": {
+                "broker": "toss",
+                "markets": {
+                    "kr": {"commission_bps": 0.0, "fx_spread_bps": 0.0},
+                    "us": {
+                        "commission_bps": commission_bps,
+                        "fx_spread_bps": fx_spread_bps,
+                    },
+                },
+            }
+        },
+    }
+
+
+def _stub_usd_krw_quote(rate: float = 1360.0):
+    return SimpleNamespace(
+        rate=rate,
+        mid_rate=rate,
+        default_rate=rate,
+        source="toss",
+        valid_from=None,
+        valid_until=None,
+        basis_point=None,
+        rate_change_type=None,
+    )
 
 
 @pytest.mark.asyncio
@@ -946,6 +1011,155 @@ async def test_preview_order_shapes_payload_and_rejects_invalid_inputs(monkeypat
             quantity="not-a-number",
             account_mode="toss_live",
         )
+
+
+@pytest.mark.asyncio
+async def test_toss_preview_buy_limit_above_market_returns_price_distance_and_costs(
+    monkeypatch,
+):
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "AVGO", "last_price": Decimal("390"), "currency": "USD"}
+    ]
+    monkeypatch.setattr(
+        otv,
+        "get_account_costs_setting",
+        AsyncMock(return_value=_stub_toss_costs()),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        otv,
+        "get_usd_krw_rate_details",
+        AsyncMock(return_value=_stub_usd_krw_quote()),
+        raising=False,
+    )
+
+    res = await toss_preview_order(
+        symbol="AVGO",
+        side="buy",
+        order_type="limit",
+        quantity="1",
+        price="394",
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is True
+    assert res["current_price"] == "390"
+    assert res["current_price_currency"] == "USD"
+    assert res["order_warnings"] == ["buy_limit_above_market"]
+    assert res["fill_distance"] == {
+        "distance_usd": "4",
+        "distance_pct": "1.0256",
+        "currency": "USD",
+        "marketable": True,
+        "direction": "above_market",
+    }
+    assert res["estimated_value"] == "394"
+    assert res["estimated_value_currency"] == "USD"
+    assert res["fee"] == "0.394"
+    assert res["fee_currency"] == "USD"
+    assert res["fx_cost_full_conversion"] == "91.0928"
+    assert res["fx_cost_full_conversion_currency"] == "KRW"
+    assert res["estimated_costs"] == {
+        "notional": "394",
+        "notional_currency": "USD",
+        "fee": "0.394",
+        "fee_currency": "USD",
+        "commission_bps": 10.0,
+        "fx_spread_bps": 1.7,
+        "fx_cost_full_conversion": "91.0928",
+        "fx_cost_full_conversion_currency": "KRW",
+        "fx_rate_usd_krw": "1360",
+        "fx_rate_source": "toss",
+        "fx_assumption": "full_notional_krw_conversion",
+        "cost_profile_source": "user_setting",
+        "cost_profile_review_required": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_toss_preview_sell_limit_below_market_returns_marketable_warning(
+    monkeypatch,
+):
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "AVGO", "last_price": Decimal("390"), "currency": "USD"}
+    ]
+    monkeypatch.setattr(
+        otv,
+        "get_account_costs_setting",
+        AsyncMock(return_value=_stub_toss_costs()),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        otv,
+        "get_usd_krw_rate_details",
+        AsyncMock(return_value=_stub_usd_krw_quote()),
+        raising=False,
+    )
+
+    res = await toss_preview_order(
+        symbol="AVGO",
+        side="sell",
+        order_type="limit",
+        quantity="1",
+        price="380",
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is True
+    assert res["current_price"] == "390"
+    assert res["order_warnings"] == ["sell_limit_below_market"]
+    assert res["fill_distance"] == {
+        "distance_usd": "10",
+        "distance_pct": "2.5641",
+        "currency": "USD",
+        "marketable": True,
+        "direction": "below_market",
+    }
+
+
+@pytest.mark.asyncio
+async def test_toss_preview_order_degrades_when_price_context_unavailable(monkeypatch):
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = []
+    monkeypatch.setattr(
+        otv,
+        "get_account_costs_setting",
+        AsyncMock(return_value=_stub_toss_costs()),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        otv,
+        "get_usd_krw_rate_details",
+        AsyncMock(return_value=_stub_usd_krw_quote()),
+        raising=False,
+    )
+
+    res = await toss_preview_order(
+        symbol="AVGO",
+        side="buy",
+        order_type="limit",
+        quantity="1",
+        price="394",
+        account_mode="toss_live",
+    )
+
+    assert res["success"] is True
+    assert res["current_price"] is None
+    assert res["current_price_currency"] is None
+    assert "price_context_unavailable" in res["order_warnings"]
+    assert (
+        "Could not resolve latest price for symbol: AVGO"
+        in res["price_context_message"]
+    )
+    assert "fill_distance" not in res
+    assert res["estimated_value"] == "394"
+    assert res["fee"] == "0.394"
+    assert res["warnings"] == []
 
 
 @pytest.mark.asyncio
@@ -1774,6 +1988,184 @@ async def test_cancel_order_records_audit_replacement_chain(monkeypatch):
     assert call["side"] == "sell"
 
 
+async def _warm_sellable_cache(monkeypatch, otv, symbol: str) -> TossSellableCache:
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache = TossSellableCache(ttl_seconds=600, redis_client=redis_client)
+    await cache.put(symbol, Decimal("10"))
+    monkeypatch.setattr(
+        otv,
+        "get_shared_sellable_cache",
+        lambda: cache,
+        raising=False,
+    )
+    return cache
+
+
+def _sell_order(order_id: str, symbol: str = "AAPL") -> dict:
+    return {
+        "order_id": order_id,
+        "symbol": symbol,
+        "side": "SELL",
+        "status": "OPEN",
+        "order_type": "LIMIT",
+        "time_in_force": "DAY",
+        "price": Decimal("150"),
+        "quantity": Decimal("10"),
+        "order_amount": None,
+        "currency": "USD",
+        "ordered_at": "2026-06-12T00:00:00Z",
+        "canceled_at": None,
+        "execution": {},
+    }
+
+
+@pytest.mark.asyncio
+async def test_sellable_cache_invalidated_after_sell_place_even_if_ledger_fails(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    client = MockTossClient(monkeypatch)
+    client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("190"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    cache = await _warm_sellable_cache(monkeypatch, otv, "AAPL")
+
+    async def fail_ledger(**kwargs):
+        raise RuntimeError("ledger unavailable")
+
+    monkeypatch.setattr(otv, "record_toss_place_order", fail_ledger)
+
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="sell",
+        quantity="1",
+        price="190",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is False
+    assert result["order_id"] == "new-ord-123"
+    assert await cache.get("AAPL") is None
+
+
+@pytest.mark.asyncio
+async def test_sellable_cache_not_invalidated_after_buy_place(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    MockTossClient(monkeypatch)
+    cache = await _warm_sellable_cache(monkeypatch, otv, "AAPL")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_place_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="buy",
+        quantity="1",
+        price="190",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert await cache.get("AAPL") == Decimal("10")
+
+
+@pytest.mark.asyncio
+async def test_sellable_cache_invalidated_after_sell_modify(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    client = MockTossClient(monkeypatch)
+    client.orders_list = [_sell_order("orig-ord-123")]
+    client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("155"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    cache = await _warm_sellable_cache(monkeypatch, otv, "AAPL")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_replacement_order",
+        AsyncMock(return_value={"ledger_id": 2}),
+    )
+
+    result = await toss_modify_order(
+        order_id="orig-ord-123",
+        new_price="155",
+        market="us",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert await cache.get("AAPL") is None
+
+
+@pytest.mark.asyncio
+async def test_sellable_cache_invalidated_after_sell_cancel(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    client = MockTossClient(monkeypatch)
+    client.orders_list = [_sell_order("orig-ord-789")]
+    cache = await _warm_sellable_cache(monkeypatch, otv, "AAPL")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_replacement_order",
+        AsyncMock(return_value={"ledger_id": 3}),
+    )
+
+    result = await toss_cancel_order(
+        order_id="orig-ord-789",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is True
+    assert await cache.get("AAPL") is None
+
+
 @pytest.mark.asyncio
 async def test_private_place_impl_accepts_client_order_id_override(monkeypatch):
     import app.mcp_server.tooling.orders_toss_variants as otv
@@ -1830,6 +2222,124 @@ async def test_private_place_impl_accepts_client_order_id_override(monkeypatch):
         == "abc123def456abc123def456abc123de"
     )
     assert recorded["client_order_id"] == "abc123def456abc123def456abc123de"
+    assert result["approval_hash_digest"] == recorded["approval_hash"]
+
+
+@pytest.mark.asyncio
+async def test_public_place_order_uses_private_proposal_binding(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    seen: dict[str, object] = {}
+
+    async def fake_impl(**kwargs):
+        seen.update(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(otv, "_toss_place_order_impl", fake_impl)
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-0123456789abcdef",
+        correlation_id="proposal-correlation-r1",
+        rung=1,
+    ):
+        result = await otv.toss_place_order(
+            symbol="005930",
+            side="buy",
+            quantity=1,
+            price=50000,
+            market="kr",
+        )
+
+    assert result["success"] is True
+    assert seen["client_order_id_override"] == "tosprop-0123456789abcdef"
+    assert otv._order_proposal_context.get() is None
+
+
+def test_public_place_order_does_not_expose_client_order_id_override():
+    assert (
+        "client_order_id_override" not in inspect.signature(toss_place_order).parameters
+    )
+
+
+def test_private_proposal_binding_restores_nested_contexts():
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-outer",
+        correlation_id="corr-outer",
+        rung=0,
+    ):
+        assert otv._order_proposal_context.get().client_order_id == "tosprop-outer"
+        with otv._bind_order_proposal_context(
+            client_order_id="tosprop-inner",
+            correlation_id="corr-inner",
+            rung=1,
+        ):
+            assert otv._order_proposal_context.get().client_order_id == (
+                "tosprop-inner"
+            )
+        assert otv._order_proposal_context.get().client_order_id == "tosprop-outer"
+    assert otv._order_proposal_context.get() is None
+
+
+def test_private_proposal_binding_restores_after_exception():
+    import app.mcp_server.tooling.orders_toss_variants as otv
+
+    with pytest.raises(RuntimeError, match="binding failure"):
+        with otv._bind_order_proposal_context(
+            client_order_id="tosprop-exception",
+            correlation_id="corr-exception",
+            rung=2,
+        ):
+            raise RuntimeError("binding failure")
+    assert otv._order_proposal_context.get() is None
+
+
+@pytest.mark.asyncio
+async def test_private_proposal_binding_reaches_toss_ledger_for_rung_one(monkeypatch):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(settings, "toss_live_order_mutations_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+    mock_client = MockTossClient(monkeypatch)
+    recorded: dict[str, object] = {}
+
+    async def fake_record_toss_place_order(**kwargs):
+        recorded.update(kwargs)
+        return {
+            "ledger_id": 778,
+            "broker_status": "accepted",
+            "fill_recorded": False,
+            "journal_created": False,
+            "correlation_id": kwargs["correlation_id_override"],
+        }
+
+    monkeypatch.setattr(otv, "record_toss_place_order", fake_record_toss_place_order)
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-fedcba9876543210",
+        correlation_id="proposal-correlation-r1",
+        rung=1,
+    ):
+        result = await otv.toss_place_order(
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            quantity="1",
+            price="50000",
+            market="kr",
+            dry_run=False,
+            confirm=True,
+            account_mode="toss_live",
+        )
+
+    assert result["success"] is True
+    assert result["correlation_id"] == "proposal-correlation-r1"
+    assert recorded["correlation_id_override"] == "proposal-correlation-r1"
+    assert recorded["rung"] == 1
+    assert mock_client.placed_payloads[0]["clientOrderId"] == (
+        "tosprop-fedcba9876543210"
+    )
 
 
 @pytest.mark.asyncio
@@ -1918,3 +2428,400 @@ async def test_private_place_impl_rejects_whitespace_padded_client_order_id_over
     assert result["success"] is False
     assert "Unsafe client order id rejected" in result["error"]
     assert not mock_client.placed_payloads
+
+
+@pytest.mark.asyncio
+async def test_preview_emits_approval_hash_and_deterministic_client_order_id(
+    monkeypatch,
+):
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    fixed = datetime(2026, 7, 2, 10, 0, tzinfo=KST)
+    monkeypatch.setattr(otv, "now_kst", lambda: fixed)
+
+    res1 = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        account_mode="toss_live",
+    )
+    res2 = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        account_mode="toss_live",
+    )
+    assert res1["success"] is True
+    assert res1["approval_hash"].startswith("p6a1.")
+    assert res1["approval_expires_at"]  # ISO string
+    cid = res1["payload_preview"]["clientOrderId"]
+    assert cid.startswith("tossp6-")
+    # deterministic: identical params + same trading day -> identical id + token payload
+    assert res2["payload_preview"]["clientOrderId"] == cid
+
+
+@pytest.mark.asyncio
+async def test_preview_uses_private_proposal_client_order_id(monkeypatch):
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-0011223344556677",
+        correlation_id=None,
+        rung=1,
+    ):
+        result = await otv.toss_preview_order(
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            quantity="10",
+            price="70000",
+            market="kr",
+            account_mode="toss_live",
+            rung=1,
+        )
+
+    assert result["payload_preview"]["clientOrderId"] == ("tosprop-0011223344556677")
+
+
+@pytest.mark.asyncio
+async def test_preview_rung_discriminator_changes_client_order_id(monkeypatch):
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 10, 0, tzinfo=KST))
+
+    base = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        account_mode="toss_live",
+    )
+    r2 = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        rung=2,
+        account_mode="toss_live",
+    )
+    assert (
+        base["payload_preview"]["clientOrderId"]
+        != r2["payload_preview"]["clientOrderId"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_place_dry_run_matching_hash_passes(monkeypatch):
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 10, 0, tzinfo=KST))
+
+    prev = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        account_mode="toss_live",
+    )
+    res = await otv.toss_place_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        dry_run=True,
+        approval_hash=prev["approval_hash"],
+        account_mode="toss_live",
+    )
+    assert res["success"] is True
+    # placed clientOrderId matches previewed (idempotent)
+    assert res["client_order_id"] == prev["payload_preview"]["clientOrderId"]
+
+
+@pytest.mark.asyncio
+async def test_place_mismatched_hash_fails_closed_with_diff(monkeypatch):
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 10, 0, tzinfo=KST))
+
+    prev = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        account_mode="toss_live",
+    )
+    res = await otv.toss_place_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70100",
+        market="kr",  # price differs
+        dry_run=True,
+        approval_hash=prev["approval_hash"],
+        account_mode="toss_live",
+    )
+    assert res["success"] is False
+    assert res["error_code"] == "approval_hash_mismatch"
+    assert "price" in res["diff"]
+
+
+@pytest.mark.asyncio
+async def test_place_expired_hash_requires_repreview(monkeypatch):
+    from datetime import datetime, timedelta
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    issued = datetime(2026, 7, 2, 10, 0, tzinfo=KST)
+    monkeypatch.setattr(otv, "now_kst", lambda: issued)
+    prev = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        account_mode="toss_live",
+    )
+    monkeypatch.setattr(otv, "now_kst", lambda: issued + timedelta(seconds=301))
+    res = await otv.toss_place_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        dry_run=True,
+        approval_hash=prev["approval_hash"],
+        account_mode="toss_live",
+    )
+    assert res["success"] is False
+    assert res["error_code"] == "approval_expired"
+
+
+@pytest.mark.asyncio
+async def test_place_optional_mode_without_hash_passes(monkeypatch):
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 10, 0, tzinfo=KST))
+    monkeypatch.setattr(
+        otv.settings, "toss_approval_hash_mode", "optional", raising=False
+    )
+    res = await otv.toss_place_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        dry_run=True,
+        account_mode="toss_live",
+    )
+    assert res["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_place_required_mode_without_hash_fails_closed(monkeypatch):
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 10, 0, tzinfo=KST))
+    monkeypatch.setattr(
+        otv.settings, "toss_approval_hash_mode", "required", raising=False
+    )
+    res = await otv.toss_place_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        dry_run=True,
+        account_mode="toss_live",
+    )
+    assert res["success"] is False
+    assert res["error_code"] == "approval_hash_required"
+
+
+@pytest.mark.asyncio
+async def test_place_warn_mode_without_hash_passes_and_logs(monkeypatch, caplog):
+    import logging
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 10, 0, tzinfo=KST))
+    monkeypatch.setattr(otv.settings, "toss_approval_hash_mode", "warn", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger=otv.logger.name):
+        res = await otv.toss_place_order(
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            quantity="10",
+            price="70000",
+            market="kr",
+            dry_run=True,
+            account_mode="toss_live",
+        )
+    assert res["success"] is True
+    assert any("without approval_hash" in rec.getMessage() for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_place_off_mode_ignores_mismatched_hash(monkeypatch):
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 10, 0, tzinfo=KST))
+
+    # Preview under any mode to mint a valid token bound to price=70000.
+    prev = await otv.toss_preview_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70000",
+        market="kr",
+        account_mode="toss_live",
+    )
+
+    # off mode: verification is skipped entirely, so a token bound to a
+    # *different* order must NOT fail-close.
+    monkeypatch.setattr(otv.settings, "toss_approval_hash_mode", "off", raising=False)
+    res = await otv.toss_place_order(
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity="10",
+        price="70100",  # differs from the previewed 70000
+        market="kr",
+        dry_run=True,
+        approval_hash=prev["approval_hash"],
+        account_mode="toss_live",
+    )
+    assert res["success"] is True
+    assert "error_code" not in res
+
+
+@pytest.mark.asyncio
+async def test_client_order_id_same_day_stable_next_day_new(monkeypatch):
+    from datetime import datetime
+
+    from app.core.timezone import KST
+
+    otv = _enable_toss_preview(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.prices_list = [
+        {"symbol": "005930", "last_price": Decimal("70000"), "currency": "KRW"}
+    ]
+
+    def _prev():
+        return otv.toss_preview_order(
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            quantity="10",
+            price="70000",
+            market="kr",
+            account_mode="toss_live",
+        )
+
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 10, 0, tzinfo=KST))
+    day1_a = await _prev()
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 2, 15, 0, tzinfo=KST))
+    day1_b = await _prev()
+    monkeypatch.setattr(otv, "now_kst", lambda: datetime(2026, 7, 3, 10, 0, tzinfo=KST))
+    day2 = await _prev()
+
+    cid1a = day1_a["payload_preview"]["clientOrderId"]
+    cid1b = day1_b["payload_preview"]["clientOrderId"]
+    cid2 = day2["payload_preview"]["clientOrderId"]
+    assert cid1a == cid1b  # same trading day -> broker/ledger dedupe key
+    assert cid1a != cid2  # next trading day -> new order allowed

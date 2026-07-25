@@ -16,19 +16,26 @@ from app.services.investment_snapshots.repository import InvestmentSnapshotsRepo
 from app.services.investment_stages.hermes_context import HermesContextExporter
 
 
-async def _clear(db_session):
+async def _clear(db_session, symbol: str) -> None:
     from sqlalchemy import text
 
-    await db_session.execute(text("DELETE FROM investor_flow_snapshots"))
-    await db_session.execute(text("DELETE FROM stock_info WHERE symbol = '005930'"))
+    await db_session.execute(
+        text("DELETE FROM investor_flow_snapshots WHERE symbol = :symbol"),
+        {"symbol": symbol},
+    )
+    await db_session.execute(
+        text("DELETE FROM stock_info WHERE symbol = :symbol"),
+        {"symbol": symbol},
+    )
     await db_session.commit()
 
 
 @pytest.mark.asyncio
 async def test_exporter_attaches_sentiment_evidence_bundle_kr(db_session) -> None:
-    await _clear(db_session)
+    symbol = f"TST{uuid.uuid4().hex[:8].upper()}"
+    await _clear(db_session, symbol)
 
-    # 1. Seed InvestmentSnapshotBundle + Snapshot + BundleItem (holding 005930)
+    # 1. Seed InvestmentSnapshotBundle + Snapshot + BundleItem (holding symbol)
     snapshots_repo = InvestmentSnapshotsRepository(db_session)
     now = dt.datetime.now(tz=dt.UTC)
 
@@ -53,7 +60,7 @@ async def test_exporter_attaches_sentiment_evidence_bundle_kr(db_session) -> Non
                 "primary_source": "kis",
                 "holdings": [
                     {
-                        "ticker": "005930",
+                        "ticker": symbol,
                         "quantity": 10,
                         "sellable_quantity": 10,
                         "source": "kis",
@@ -87,11 +94,11 @@ async def test_exporter_attaches_sentiment_evidence_bundle_kr(db_session) -> Non
         ),
     )
 
-    # 2. Seed an InvestorFlowSnapshot for 005930
+    # 2. Seed an InvestorFlowSnapshot for the held symbol
     db_session.add(
         InvestorFlowSnapshot(
             market="kr",
-            symbol="005930",
+            symbol=symbol,
             snapshot_date=now.date(),
             foreign_net=120000,
             institution_net=5000,
@@ -103,11 +110,11 @@ async def test_exporter_attaches_sentiment_evidence_bundle_kr(db_session) -> Non
         )
     )
 
-    # 3. Seed StockInfo for 005930
+    # 3. Seed StockInfo for the held symbol
     db_session.add(
         StockInfo(
-            symbol="005930",
-            name="Samsung Electronics",
+            symbol=symbol,
+            name="Sentiment Test Equity",
             instrument_type="equity_kr",
             sector="Technology",
             is_active=True,
@@ -140,10 +147,10 @@ async def test_exporter_attaches_sentiment_evidence_bundle_kr(db_session) -> Non
     assert sent["data_health"]["covered"] >= 1
     assert sent["covered_count"] >= 1
 
-    samsung_row = next(r for r in sent["per_symbol"] if r["symbol"] == "005930")
-    assert samsung_row["foreign_net"] == 120000
-    assert samsung_row["double_buy"] is True
-    assert samsung_row["foreign_consecutive_buy_days"] == 3
+    symbol_row = next(r for r in sent["per_symbol"] if r["symbol"] == symbol)
+    assert symbol_row["foreign_net"] == 120000
+    assert symbol_row["double_buy"] is True
+    assert symbol_row["foreign_consecutive_buy_days"] == 3
     assert sent["freshness"]["status"] == "fresh"
 
 
@@ -151,9 +158,10 @@ async def test_exporter_attaches_sentiment_evidence_bundle_kr(db_session) -> Non
 async def test_exporter_attaches_sentiment_evidence_bundle_us_unavailable(
     db_session,
 ) -> None:
-    await _clear(db_session)
+    symbol = f"TUS{uuid.uuid4().hex[:8].upper()}"
+    await _clear(db_session, symbol)
 
-    # 1. Seed InvestmentSnapshotBundle + Snapshot + BundleItem (holding AAPL)
+    # 1. Seed InvestmentSnapshotBundle + Snapshot + BundleItem (holding symbol)
     snapshots_repo = InvestmentSnapshotsRepository(db_session)
     now = dt.datetime.now(tz=dt.UTC)
 
@@ -178,7 +186,7 @@ async def test_exporter_attaches_sentiment_evidence_bundle_us_unavailable(
                 "primary_source": "kis",
                 "holdings": [
                     {
-                        "ticker": "AAPL",
+                        "ticker": symbol,
                         "quantity": 10,
                         "sellable_quantity": 10,
                         "source": "kis",
@@ -247,7 +255,8 @@ async def test_exporter_crypto_bundle_gets_dimensions_sentiment_unavailable(
     synthesis runs: all four dimension keys are present, and sentiment is
     honestly ``unavailable`` (investor-flow is KR-only) — never fabricated or
     KR-leaking."""
-    await _clear(db_session)
+    symbol = f"TCR{uuid.uuid4().hex[:8].upper()}"
+    await _clear(db_session, symbol)
     snapshots_repo = InvestmentSnapshotsRepository(db_session)
     now = dt.datetime.now(tz=dt.UTC)
 
@@ -269,7 +278,7 @@ async def test_exporter_crypto_bundle_gets_dimensions_sentiment_unavailable(
             source_kind="auto_trader_mcp",
             payload_json={
                 "primary_source": "upbit",
-                "holdings": [{"ticker": "BTC", "source": "upbit", "market": "CRYPTO"}],
+                "holdings": [{"ticker": symbol, "source": "upbit", "market": "CRYPTO"}],
                 "reference_holdings": [],
                 "count": 1,
                 "market": "crypto",

@@ -34,6 +34,9 @@ const STATUS_LABEL: Record<string, string> = {
   locked: "잠김",
 };
 
+const SESSION_TAG_LABEL: Record<string, string> = { "": "규칙", llm: "LLM" };
+const sessionTagLabel = (tag: string): string => SESSION_TAG_LABEL[tag] ?? tag;
+
 const ACTION_STATUS_LABEL: Record<string, string> = {
   open: "열림",
   applied: "적용됨",
@@ -78,6 +81,7 @@ export function ScalpingRoute() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [building, setBuilding] = useState(false);
+  const [reviewList, setReviewList] = useState<ScalpingReview[]>([]);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -87,6 +91,7 @@ export function ScalpingRoute() {
         fetchScalpingReviews({ date, product, signal }),
         fetchScalpingTrades({ date, product, signal }),
       ]);
+      setReviewList(reviews.items);
       const found = reviews.items[0] ?? null;
       setReview(found);
       setTrades(tradesResp.items);
@@ -206,13 +211,31 @@ export function ScalpingRoute() {
                 </Card>
               )}
 
+              {/* 1.5 Per-session_tag comparison (LLM vs rule baseline) */}
+              {reviewList.length > 1 && (
+                <Card>
+                  <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>세션별 비교 (LLM vs 규칙)</h2>
+                  <div data-testid="scalping-session-comparison" style={{ display: "grid", gap: 6 }}>
+                    {reviewList.map((r) => (
+                      <div key={r.id} style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 13 }}>
+                        <strong style={{ minWidth: 48 }}>{sessionTagLabel(r.sessionTag)}</strong>
+                        <span style={{ color: "var(--fg-3)" }}>{r.metrics.tradeCount}건</span>
+                        <span style={{ color: "var(--fg-3)" }}>승/패 {r.metrics.winCount}/{r.metrics.lossCount}</span>
+                        <span>net {na(r.metrics.netReturnBps)} bps</span>
+                        <span>순손익 {na(r.metrics.netPnlUsdt)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              )}
+
               {/* 2. Daily loop card */}
               {review && (
                 <Card>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                     <h2 style={{ margin: 0, fontSize: 16 }}>실행 → 관측 → 원인 → 개선 → 다음 실행</h2>
                     <span style={{ color: "var(--fg-3)", fontSize: 12 }}>
-                      {STATUS_LABEL[review.status] ?? review.status}
+                      [{sessionTagLabel(review.sessionTag)}] {STATUS_LABEL[review.status] ?? review.status}
                       {exitReasonSummary ? ` · 종료사유: ${exitReasonSummary}` : ""}
                     </span>
                   </div>

@@ -21,6 +21,7 @@ class Position(BaseModel):
     asset_id: str
     symbol: str
     qty: Decimal
+    qty_available: Decimal | None = None
     avg_entry_price: Decimal
     current_price: Decimal | None = None
     market_value: Decimal | None = None

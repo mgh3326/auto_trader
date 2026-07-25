@@ -14,6 +14,10 @@ export type MarketDashboardMetric = {
   href?: string | null;
   stale: boolean;
   warning?: string | null;
+  dataState?: string | null;
+  dataStateReason?: string | null;
+  quoteAsOf?: string | null;
+  quoteLagSeconds?: number | null;
 };
 
 export type MarketDashboardSection = {

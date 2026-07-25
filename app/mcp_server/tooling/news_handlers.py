@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import json
+from typing import TYPE_CHECKING, Any, Literal
 
 from app.models.news import NewsArticle
 from app.services.crypto_news_relevance_service import (
@@ -13,6 +14,11 @@ from app.services.market_news_briefing_formatter import (
     format_market_news_briefing,
 )
 from app.services.market_news_noise import classify_title_noise, noise_reason
+from app.services.news_text import (
+    NEWS_RESPONSE_MAX_CHARS,
+    NEWS_SUMMARY_MAX_CHARS,
+    truncate_text,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -23,17 +29,17 @@ NEWS_TOOL_NAMES = ["get_market_news", "get_market_issues"]
 def _article_to_dict(
     article: NewsArticle,
     *,
+    detail: str = "summary",
     include_crypto_relevance: bool = False,
     briefing_relevance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    item = {
+    item: dict[str, Any] = {
         "id": article.id,
         "title": article.title,
         "url": article.url,
         "source": article.source,
         "feed_source": article.feed_source,
         "market": article.market,
-        "summary": article.summary,
         "published_at": article.article_published_at.isoformat()
         if article.article_published_at
         else None,
@@ -41,6 +47,14 @@ def _article_to_dict(
         "stock_symbol": article.stock_symbol,
         "stock_name": article.stock_name,
     }
+    # detail controls the body field: headline_only omits it entirely; full keeps
+    # the raw summary; summary (default) HTML-strips + caps to NEWS_SUMMARY_MAX_CHARS.
+    if detail == "headline_only":
+        pass
+    elif detail == "full":
+        item["summary"] = article.summary
+    else:  # "summary" (default / unknown -> safe default)
+        item["summary"] = truncate_text(article.summary, NEWS_SUMMARY_MAX_CHARS)
     if include_crypto_relevance:
         item["crypto_relevance"] = score_crypto_news_article(article).as_dict()
     if briefing_relevance is not None:
@@ -50,22 +64,17 @@ def _article_to_dict(
 
 def _briefing_sections_to_dict(
     sections: list[BriefingSection],
-    *,
-    include_crypto_relevance: bool = False,
 ) -> list[dict[str, Any]]:
+    # ROB-628: sections carry only article ids + per-article relevance. The full
+    # article bodies are emitted exactly once, in news[]. This stops the response
+    # from re-embedding every article dict per section.
     return [
         {
             "section_id": section.section_id,
             "title": section.title,
             "count": len(section.items),
-            "items": [
-                _article_to_dict(
-                    item.article,
-                    include_crypto_relevance=include_crypto_relevance,
-                    briefing_relevance=item.relevance.as_dict(),
-                )
-                for item in section.items
-            ],
+            "article_ids": [item.article.id for item in section.items],
+            "relevance": [item.relevance.as_dict() for item in section.items],
         }
         for section in sections
     ]
@@ -79,6 +88,7 @@ async def _get_market_news_impl(
     keyword: str | None = None,
     limit: int | None = 20,
     briefing_filter: bool = False,
+    detail: str = "summary",
 ) -> dict[str, Any]:
     hours = hours or 24
     limit = limit or 20
@@ -105,7 +115,7 @@ async def _get_market_news_impl(
     for article in articles:
         noise = classify_title_noise(article.title or "")
         if noise:
-            item = _article_to_dict(article)
+            item = _article_to_dict(article, detail=detail)
             item["excluded_reason"] = noise_reason(noise)
             noise_excluded.append(item)
         else:
@@ -119,23 +129,26 @@ async def _get_market_news_impl(
         if briefing_filter:
             ranking = rank_crypto_news_for_briefing(list(articles), limit=limit)
             news_list = [
-                _article_to_dict(item.article, include_crypto_relevance=True)
+                _article_to_dict(
+                    item.article, detail=detail, include_crypto_relevance=True
+                )
                 for item in ranking.included
             ]
             excluded_news = [
-                _article_to_dict(item.article, include_crypto_relevance=True)
+                _article_to_dict(
+                    item.article, detail=detail, include_crypto_relevance=True
+                )
                 for item in ranking.excluded
             ]
             briefing_summary = ranking.summary
             briefing = format_market_news_briefing(
                 list(articles), market=market, limit=limit
             )
-            briefing_sections = _briefing_sections_to_dict(
-                briefing.sections, include_crypto_relevance=True
-            )
+            briefing_sections = _briefing_sections_to_dict(briefing.sections)
         else:
             news_list = [
-                _article_to_dict(a, include_crypto_relevance=True) for a in articles
+                _article_to_dict(a, detail=detail, include_crypto_relevance=True)
+                for a in articles
             ]
     elif briefing_filter and market in {"us", "kr"}:
         briefing = format_market_news_briefing(
@@ -144,6 +157,7 @@ async def _get_market_news_impl(
         news_list = [
             _article_to_dict(
                 item.article,
+                detail=detail,
                 briefing_relevance=item.relevance.as_dict(),
             )
             for section in briefing.sections
@@ -152,6 +166,7 @@ async def _get_market_news_impl(
         excluded_news = [
             _article_to_dict(
                 item.article,
+                detail=detail,
                 briefing_relevance=item.relevance.as_dict(),
             )
             for item in briefing.excluded
@@ -159,8 +174,11 @@ async def _get_market_news_impl(
         briefing_summary = briefing.summary
         briefing_sections = _briefing_sections_to_dict(briefing.sections)
     else:
-        news_list = [_article_to_dict(a) for a in articles]
+        news_list = [_article_to_dict(a, detail=detail) for a in articles]
     excluded_news = noise_excluded + excluded_news
+    # ROB-628: cap excluded_news to `limit`; excluded_total keeps the true count.
+    excluded_total = len(excluded_news)
+    excluded_news = excluded_news[:limit]
     source_names = list({a.get("source") for a in news_list if a.get("source")})
     feed_source_names = list(
         {a.get("feed_source") for a in news_list if a.get("feed_source")}
@@ -179,17 +197,18 @@ async def _get_market_news_impl(
         status = "no_meaningful_items"
         degraded_reason = (
             f"{total} article(s) in window, but none passed the quality gate "
-            f"({len(excluded_news)} excluded — see excluded_news reasons); "
+            f"({excluded_total} excluded — see excluded_news reasons); "
             "no filler is generated"
         )
 
-    return {
+    payload: dict[str, Any] = {
         "surface": "quality_gated_market_briefing",
         "advisory": (
             "Quality-gated broad-market DB-backed surface for briefing only; "
-            "NOT investment-decision evidence. Use get_news for symbol-level "
-            "decisions. Noise-classified items appear in excluded_news with "
-            "reasons instead of the main list."
+            "NOT investment-decision evidence. Use get_news for one symbol's "
+            "catalysts, or get_holdings_news to sweep your holdings' catalysts "
+            "in one call (ROB-628). Noise-classified items appear in "
+            "excluded_news with reasons instead of the main list."
         ),
         "market": market,
         "status": status,
@@ -203,7 +222,157 @@ async def _get_market_news_impl(
         "briefing_summary": briefing_summary,
         "briefing_sections": briefing_sections,
         "excluded_news": excluded_news,
+        "excluded_total": excluded_total,
+        "truncated_for_size": False,
     }
+
+    return _apply_size_cap(payload)
+
+
+def _prune_briefing_sections(payload: dict[str, Any], removed_id: Any) -> None:
+    # ROB-628 (F5): keep briefing_sections[*].article_ids consistent with news[]
+    # after a size-cap drop, so a section never references an id no longer present.
+    if removed_id is None:
+        return
+    for section in payload.get("briefing_sections") or []:
+        ids = section.get("article_ids")
+        if not ids or removed_id not in ids:
+            continue
+        idx = ids.index(removed_id)
+        ids.pop(idx)
+        relevance = section.get("relevance")
+        if isinstance(relevance, list) and idx < len(relevance):
+            relevance.pop(idx)
+        section["count"] = len(ids)
+
+
+def _apply_size_cap(payload: dict[str, Any]) -> dict[str, Any]:
+    # ROB-628: hard size cap. Measure on the decoded (ensure_ascii=False) basis so
+    # the budget tracks the delivered/token size and Korean isn't over-measured as
+    # \\uXXXX (F2); this matches the sibling _enforce_market_issues_size_cap. Drop
+    # excluded_news first (least decision-critical), then trailing news[] items
+    # (pruning their briefing_sections refs, F5), until the FULLY-SIGNALED payload
+    # fits — the signaling metadata is attached before measuring so the cap can't be
+    # exceeded by it (F3). Never silently: set truncated_for_size, append to
+    # degraded_reason, and report counts.
+    def _measure() -> int:
+        return len(json.dumps(payload, ensure_ascii=False, default=str))
+
+    if _measure() <= NEWS_RESPONSE_MAX_CHARS:
+        return payload
+
+    base_reason = payload.get("degraded_reason")
+    dropped_excluded = len(payload["excluded_news"])
+    payload["excluded_news"] = []
+    dropped_news = 0
+
+    def _attach() -> None:
+        payload["count"] = len(payload["news"])
+        payload["truncated_for_size"] = True
+        reason = (
+            f"response exceeded {NEWS_RESPONSE_MAX_CHARS} chars — dropped "
+            f"{dropped_excluded} excluded and {dropped_news} trailing news item(s) "
+            "to fit (use detail='headline_only' or a smaller limit for the full set)"
+        )
+        payload["degraded_reason"] = (
+            f"{base_reason}; {reason}" if base_reason else reason
+        )
+        payload["size_truncation"] = {
+            "dropped_news": dropped_news,
+            "dropped_excluded": dropped_excluded,
+            "max_chars": NEWS_RESPONSE_MAX_CHARS,
+        }
+        if payload.get("status") == "ok":
+            payload["status"] = "truncated_for_size"
+
+    _attach()
+    while _measure() > NEWS_RESPONSE_MAX_CHARS and payload["news"]:
+        removed = payload["news"].pop()
+        dropped_news += 1
+        _prune_briefing_sections(payload, removed.get("id"))
+        _attach()
+    return payload
+
+
+async def _get_market_issues_impl(
+    market: str = "all",
+    window_hours: int = 24,
+    limit: int = 20,
+    detail: Literal["headline_only", "summary", "full"] = "summary",
+) -> dict[str, Any]:
+    from app.services.news_issue_clustering_service import build_market_issues
+
+    response = await build_market_issues(
+        market=market, window_hours=window_hours, limit=limit, detail=detail
+    )
+    payload = response.model_dump(mode="json")
+    return _enforce_market_issues_size_cap(payload)
+
+
+def _enforce_market_issues_size_cap(payload: dict[str, Any]) -> dict[str, Any]:
+    """Hard cap the serialized response at NEWS_RESPONSE_MAX_CHARS (ROB-628).
+
+    Trims in three deterministic passes — (1) collapse trailing issues to a
+    single anchor article, (2) drop whole trailing issues (always keep >=1),
+    (3) collapse the survivors' articles as a last resort — then flips
+    truncated_for_size and appends a counted degraded_reason. Never silently
+    drops or fabricates: every removal is reflected in the flag + reason.
+    """
+
+    def _encoded_len() -> int:
+        return len(json.dumps(payload, ensure_ascii=False))
+
+    if _encoded_len() <= NEWS_RESPONSE_MAX_CHARS:
+        return payload
+
+    items = payload.get("items") or []
+    original_issue_count = len(items)
+    original_article_count = sum(len(it.get("articles") or []) for it in items)
+    existing = payload.get("degraded_reason")
+
+    def _set_signaling(dropped_issues: int, dropped_articles: int) -> None:
+        payload["truncated_for_size"] = True
+        reason = (
+            f"response exceeded the {NEWS_RESPONSE_MAX_CHARS}-char size cap; trimmed "
+            f"{dropped_issues} issue(s) and {dropped_articles} member article(s) to "
+            "fit — re-query with a narrower market/window or detail='headline_only' "
+            "for the full set"
+        )
+        payload["degraded_reason"] = f"{existing}; {reason}" if existing else reason
+
+    # Attach worst-case-width signaling up front so the trim passes measure the
+    # FULLY-SIGNALED payload (F3): the actual dropped counts are <= the originals,
+    # so their rendered width is <= this — the final payload is guaranteed to fit.
+    _set_signaling(original_issue_count, original_article_count)
+
+    # Pass 1: trim trailing member articles down to a single anchor article.
+    for item in reversed(items):
+        if _encoded_len() <= NEWS_RESPONSE_MAX_CHARS:
+            break
+        arts = item.get("articles") or []
+        if len(arts) > 1:
+            item["articles"] = arts[:1]
+
+    # Pass 2: drop whole trailing issues (keep at least one) until under cap.
+    while len(items) > 1 and _encoded_len() > NEWS_RESPONSE_MAX_CHARS:
+        items.pop()
+
+    # Pass 3: last resort — collapse any remaining multi-article survivors.
+    if _encoded_len() > NEWS_RESPONSE_MAX_CHARS:
+        for item in items:
+            arts = item.get("articles") or []
+            if len(arts) > 1:
+                item["articles"] = arts[:1]
+
+    payload["items"] = items
+    kept_issue_count = len(items)
+    kept_article_count = sum(len(it.get("articles") or []) for it in items)
+    dropped_issues = original_issue_count - kept_issue_count
+    dropped_articles = original_article_count - kept_article_count
+
+    # Replace worst-case signaling with the exact counts (width <= worst-case).
+    _set_signaling(dropped_issues, dropped_articles)
+    return payload
 
 
 def _register_news_tools_impl(mcp: FastMCP) -> None:
@@ -215,9 +384,15 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
             "Get recent market news with a noise gate always on (ROB-502): "
             "personal-finance/lifestyle/sponsored/price-prediction/broad-tech items "
             "move to excluded_news with an excluded_reason instead of the main list. "
-            "status is 'ok' | 'no_meaningful_items' | 'no_recent_articles' with "
-            "degraded_reason — no filler is generated. Supports filtering by market, "
-            "publisher (source), collection path (feed_source), and keyword. "
+            "status is 'ok' | 'no_meaningful_items' | 'no_recent_articles' | "
+            "'truncated_for_size' with degraded_reason — no filler is generated. "
+            "detail controls per-article body: 'headline_only' (no summary), "
+            "'summary' (default, HTML-stripped + capped to 240 chars), or 'full' "
+            "(raw untruncated). briefing_sections carry only article_ids + relevance; "
+            "bodies live once in news[]. excluded_news is capped to limit "
+            "(excluded_total = true count). Oversized responses set truncated_for_size "
+            "and drop trailing items rather than overflow. Supports filtering by "
+            "market, publisher (source), collection path (feed_source), and keyword. "
             "briefing_filter=True additionally formats market-specific sections for "
             "kr/us and ranks crypto-relevant items."
         ),
@@ -230,6 +405,7 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
         keyword: str | None = None,
         limit: int = 20,
         briefing_filter: bool = False,
+        detail: Literal["headline_only", "summary", "full"] = "summary",
     ) -> dict[str, Any]:
         return await _get_market_news_impl(
             market=market,
@@ -239,6 +415,7 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
             keyword=keyword,
             limit=limit,
             briefing_filter=briefing_filter,
+            detail=detail,
         )
 
     @mcp.tool(
@@ -251,17 +428,20 @@ def _register_news_tools_impl(mcp: FastMCP) -> None:
             "never enter clustering, and thin clusters (single article AND single "
             "source, non-official feed) are withheld. status/degraded_reason/"
             "quality_gate report what the gate did; empty results are explicit "
-            "(no_meaningful_items), never filler."
+            "(no_meaningful_items), never filler. detail controls member-article "
+            "summary verbosity: 'headline_only' drops summaries, 'summary' "
+            "(default) truncates each to 240 chars, 'full' keeps them verbatim. "
+            "The response is hard-capped at 8000 chars; if exceeded, trailing "
+            "issues/articles are trimmed and truncated_for_size + degraded_reason "
+            "are set (never a silent drop)."
         ),
     )
     async def get_market_issues(
         market: str = "all",
         window_hours: int = 24,
         limit: int = 20,
+        detail: Literal["headline_only", "summary", "full"] = "summary",
     ) -> dict[str, Any]:
-        from app.services.news_issue_clustering_service import build_market_issues
-
-        response = await build_market_issues(
-            market=market, window_hours=window_hours, limit=limit
+        return await _get_market_issues_impl(
+            market=market, window_hours=window_hours, limit=limit, detail=detail
         )
-        return response.model_dump(mode="json")

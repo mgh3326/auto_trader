@@ -19,6 +19,7 @@ Safety: research/backtest only. No freqtrade/talib runtime import; no broker/ord
 order-intent/approval/trade-journal mutation; no scheduler/TaskIQ/Prefect/cron; no prod DB
 write; no secrets; no raw bars or leaderboard dumps committed (counts-only).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -44,9 +45,17 @@ def _self_test() -> dict:
     minute = 60_000
     for i in range(400):
         price *= 1.001 if i % 10 else 0.98  # drift up, dip every 10 bars
-        bars.append(OHLCVBar(ts=i * minute, open=price, high=price * 1.002,
-                             low=price * 0.998, close=price, volume=1000.0,
-                             close_ts=i * minute + minute - 1))
+        bars.append(
+            OHLCVBar(
+                ts=i * minute,
+                open=price,
+                high=price * 1.002,
+                low=price * 0.998,
+                close=price,
+                volume=1000.0,
+                close_ts=i * minute + minute - 1,
+            )
+        )
 
     def signals(bs, bars_1h=None):
         # trivial: buy the dip (close < prior close), exit never (roi/sl/max-hold governs)
@@ -54,19 +63,28 @@ def _self_test() -> dict:
         return entry, [False] * len(bs)
 
     module = SimpleNamespace(
-        NATIVE_INTERVAL="1m", NEEDS_INFORMATIVE_1H=False,
-        EXIT_MODEL=bt.ExitModel(type="roi_sl", roi_pct=0.02, hard_sl_pct=0.15, max_hold_bars=20),
-        HOLD_SEMANTICS="self-test trivial", signals=signals,
+        NATIVE_INTERVAL="1m",
+        NEEDS_INFORMATIVE_1H=False,
+        EXIT_MODEL=bt.ExitModel(
+            type="roi_sl", roi_pct=0.02, hard_sl_pct=0.15, max_hold_bars=20
+        ),
+        HOLD_SEMANTICS="self-test trivial",
+        signals=signals,
     )
     trades = bt.simulate(bars, *module.signals(bars), module.EXIT_MODEL)
     spec = {
-        "name": "selftest_dip", "kind": "trade", "data": trades,
+        "name": "selftest_dip",
+        "kind": "trade",
+        "data": trades,
         "summary": cs._summary_from_trades("selftest_dip", trades, cs.OOS_SPLIT_TS),
         "maker_conservative_net": None,
     }
     table = campaign.run_campaign([spec], config=FROZEN_CONFIG, min_trades=5)
-    return {"trade_count": len(trades), "verdict_table": table,
-            "config_hash": table["config_hash"]}
+    return {
+        "trade_count": len(trades),
+        "verdict_table": table,
+        "config_hash": table["config_hash"],
+    }
 
 
 def _real_run(args) -> int:
@@ -81,13 +99,25 @@ def _real_run(args) -> int:
         try:
             module = importlib.import_module(cand["module"])
         except ModuleNotFoundError:
-            skipped.append({"key": cand["key"], "module": cand["module"],
-                            "reason": "ported signal module not present yet"})
-            print(f"  SKIP {cand['key']}: module {cand['module']} not found", flush=True)
+            skipped.append(
+                {
+                    "key": cand["key"],
+                    "module": cand["module"],
+                    "reason": "ported signal module not present yet",
+                }
+            )
+            print(
+                f"  SKIP {cand['key']}: module {cand['module']} not found", flush=True
+            )
             continue
         print(f"  running {cand['key']} ({cand['display_name']}) ...", flush=True)
-        row = runner.run_candidate(module, name=cand["key"], contrast=cand["contrast"],
-                                   symbols=symbols, min_trades=args.min_trades)
+        row = runner.run_candidate(
+            module,
+            name=cand["key"],
+            contrast=cand["contrast"],
+            symbols=symbols,
+            min_trades=args.min_trades,
+        )
         row["display_name"] = cand["display_name"]
         row["strat_ninja_name"] = cand["strat_ninja_name"]
         row["family_shape"] = cand["family_shape"]
@@ -95,10 +125,13 @@ def _real_run(args) -> int:
         row["source_url"] = cand["source_url"]
         row["source_note"] = cand["source_note"]
         rows.append(row)
-        print(f"    -> verdict={row['our_verdict']} gross={row['our_gross_bps']}bps "
-              f"oos_gross={row['our_oos_gross_bps']}bps oos_net@taker={row['our_oos_net_bps_frozen_taker']}bps "
-              f"t_oos={row['our_t_stat_oos_gross']} gate={row['gate_verdict']} "
-              f"survivor={row['meets_decisive_survivor_bar']} trades={row['trade_count']}", flush=True)
+        print(
+            f"    -> verdict={row['our_verdict']} gross={row['our_gross_bps']}bps "
+            f"oos_gross={row['our_oos_gross_bps']}bps oos_net@taker={row['our_oos_net_bps_frozen_taker']}bps "
+            f"t_oos={row['our_t_stat_oos_gross']} gate={row['gate_verdict']} "
+            f"survivor={row['meets_decisive_survivor_bar']} trades={row['trade_count']}",
+            flush=True,
+        )
 
     verdicts = {r["our_verdict"] for r in rows}
     decisive = [r["name"] for r in rows if r.get("meets_decisive_survivor_bar")]
@@ -111,7 +144,9 @@ def _real_run(args) -> int:
             "separate bounded backtest issue (explicit later decision, not auto-created)"
         )
     elif verdicts <= {"screened_out", "needs_more_data"}:
-        overall = "all_screened_out_or_insufficient — close line, open NO backtest issue"
+        overall = (
+            "all_screened_out_or_insufficient — close line, open NO backtest issue"
+        )
     else:
         overall = (
             "no_decisive_survivor — some candidates show positive GROSS at their native timeframe "
@@ -125,7 +160,11 @@ def _real_run(args) -> int:
         "schema_version": SCHEMA_VERSION,
         "config_hash": FROZEN_CONFIG.config_hash(),
         "config": FROZEN_CONFIG.to_dict(),
-        "data": {"symbols": list(symbols), "window": f"{args.window}", "venue": "binance_usdm_futures"},
+        "data": {
+            "symbols": list(symbols),
+            "window": f"{args.window}",
+            "venue": "binance_usdm_futures",
+        },
         "candidates": rows,
         "skipped": skipped,
         "overall_verdict": overall,
@@ -144,7 +183,9 @@ def _real_run(args) -> int:
             "leaderboard_access": "read-only via gstack /browse + read-only WebFetch",
         },
     }
-    assert artifact["config_hash"] == FROZEN_CONFIG.config_hash(), "frozen config drift!"
+    assert artifact["config_hash"] == FROZEN_CONFIG.config_hash(), (
+        "frozen config drift!"
+    )
 
     out_dir = "results/rob382"
     os.makedirs(out_dir, exist_ok=True)
@@ -153,16 +194,27 @@ def _real_run(args) -> int:
         json.dump(artifact, fh, indent=2, default=str)
     print(json.dumps(artifact, indent=2, default=str))
     print(f"\noverall: {overall}")
-    print(f"wrote {out_path} (gitignored). Author docs/runbooks/rob-382-strat-ninja-falsification.md from this.")
+    print(
+        f"wrote {out_path} (gitignored). Author docs/runbooks/rob-382-strat-ninja-falsification.md from this."
+    )
     return 0
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="ROB-382 strat.ninja falsification spike (research only)")
-    ap.add_argument("--self-test", action="store_true",
-                    help="synthetic wiring proof (no network/data/modules); prints verdict table")
+    ap = argparse.ArgumentParser(
+        description="ROB-382 strat.ninja falsification spike (research only)"
+    )
+    ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="synthetic wiring proof (no network/data/modules); prints verdict table",
+    )
     ap.add_argument("--symbols", default="BTCUSDT,ETHUSDT,XRPUSDT,SOLUSDT")
-    ap.add_argument("--window", default="2024-01..2025-12", help="recorded in artifact (fetch is separate)")
+    ap.add_argument(
+        "--window",
+        default="2024-01..2025-12",
+        help="recorded in artifact (fetch is separate)",
+    )
     ap.add_argument("--min-trades", type=int, default=100)
     args = ap.parse_args(argv)
 
@@ -170,7 +222,10 @@ def main(argv=None) -> int:
         result = _self_test()
         print(json.dumps(result, indent=2, default=str))
         from frozen_config import FROZEN_CONFIG
-        assert result["config_hash"] == FROZEN_CONFIG.config_hash(), "frozen config drift!"
+
+        assert result["config_hash"] == FROZEN_CONFIG.config_hash(), (
+            "frozen config drift!"
+        )
         return 0
     return _real_run(args)
 

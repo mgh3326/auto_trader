@@ -20,7 +20,7 @@ class _FakeScreenerService:
 
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(settings, "OPENCLAW_CALLBACK_TOKEN", "callback-secret")
+    monkeypatch.setattr(settings, "AGENT_GATEWAY_CALLBACK_TOKEN", "callback-secret")
 
     app = FastAPI()
     app.add_middleware(AuthMiddleware)
@@ -75,10 +75,10 @@ def test_screener_callback_accepts_valid_bearer_token(client: TestClient) -> Non
     assert response.json()["status"] == "ok"
 
 
-def test_screener_callback_accepts_x_openclaw_token(client: TestClient) -> None:
+def test_screener_callback_accepts_x_agent_callback_token(client: TestClient) -> None:
     response = client.post(
         "/api/screener/callback",
-        headers={"X-OpenClaw-Token": "callback-secret"},
+        headers={"X-Agent-Callback-Token": "callback-secret"},
         json=_payload(),
     )
     assert response.status_code == 200
