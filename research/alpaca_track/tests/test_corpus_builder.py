@@ -201,6 +201,49 @@ def test_source_is_distinguished_never_conflated_across_tiers():
         )
 
 
+def test_missing_checksum_sidecar_fails_closed_not_silently_downgraded_to_rest():
+    # AC1 remediation: the archive bytes are present but its mandatory
+    # ".CHECKSUM" sidecar is ABSENT. This must raise ChecksumMissingError and
+    # propagate -- the builder's `except af.ArchiveMissingError:` fallback
+    # clause must NOT also catch ChecksumMissingError (a mutation that widened
+    # that except clause to catch it too would silently downgrade to an
+    # unchecksummed REST backfill instead of failing closed, exactly what AC1
+    # forbids). No prior test in this suite ever exercised "archive present,
+    # checksum sidecar absent" -- every existing fixture always sets both
+    # keys together.
+    fake = _FakeUniverse("ETCUSDC", 2024, 6).with_monthly_archive()
+    checksum_key = next(k for k in fake.archive_table if k.endswith(".CHECKSUM"))
+    del fake.archive_table[checksum_key]  # archive bytes present, sidecar absent
+    start, end = _window(2024, 6, 10)
+    with pytest.raises(af.ChecksumMissingError):
+        cb.build_symbol_corpus(
+            "ETCUSDC",
+            "USDC",
+            start,
+            end,
+            archive_opener=fake.archive_opener,
+            rest_opener=fake.rest_opener,
+        )
+
+
+def test_daily_fallback_missing_checksum_sidecar_also_fails_closed():
+    # same guard, but on the daily-archive fallback path (_fill_via_daily_
+    # then_rest) rather than the monthly path.
+    fake = _FakeUniverse("ADAUSDC", 2024, 6).with_daily_archive_for_day1()
+    checksum_key = next(k for k in fake.archive_table if k.endswith(".CHECKSUM"))
+    del fake.archive_table[checksum_key]
+    start, end = _window(2024, 6, 10)
+    with pytest.raises(af.ChecksumMissingError):
+        cb.build_symbol_corpus(
+            "ADAUSDC",
+            "USDC",
+            start,
+            end,
+            archive_opener=fake.archive_opener,
+            rest_opener=fake.rest_opener,
+        )
+
+
 def test_checksum_mismatch_fails_closed():
     fake = _FakeUniverse("SOLUSDC", 2024, 6).with_monthly_archive()
     checksum_key = next(k for k in fake.archive_table if k.endswith(".CHECKSUM"))

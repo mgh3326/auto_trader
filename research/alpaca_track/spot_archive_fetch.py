@@ -106,6 +106,18 @@ def rest_urllib_opener(url: str, timeout: int = 30) -> bytes | None:
         raise
 
 
+_INTERVAL_STEP_MS = {"1m": 60_000}
+
+
+def _interval_step_ms(interval: str) -> int:
+    try:
+        return _INTERVAL_STEP_MS[interval]
+    except KeyError:
+        raise ValueError(
+            f"unsupported interval for REST pagination step: {interval!r}"
+        ) from None
+
+
 def fetch_rest_klines(
     symbol: str,
     interval: str,
@@ -118,32 +130,67 @@ def fetch_rest_klines(
     (no archive sidecar exists for this path) — callers must record the
     distinct ``"backfill_rest"`` source so this is never confused with a
     checksum-verified archive row downstream (§14.1/AC1/AC3).
+
+    S4 remediation: a single REST call is capped at ``REST_MAX_LIMIT`` (1000)
+    rows, but a full calendar day is 1440 minutes -- the old single-call
+    implementation silently returned an incomplete page (440 minutes/day
+    missing) whenever a requested range exceeded one page. This paginates:
+    each call requests ``REST_MAX_LIMIT`` rows starting at the current
+    cursor; the cursor advances past the LAST row actually returned by that
+    call (using the raw, unclipped response so window-edge clipping can never
+    stall the cursor); pagination stops when a call returns nothing, or
+    returns fewer than a full page (no more data exists beyond that point).
     """
-    url = rest_klines_url(symbol, interval, start_ms, end_ms)
-    raw = opener(url)
-    if raw is None:
-        raise ArchiveMissingError(f"REST klines endpoint returned 404: {url}")
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise MalformedRestResponseError(
-            f"REST klines response is not JSON: {exc}"
-        ) from exc
-    if not isinstance(payload, list):
-        raise MalformedRestResponseError(
-            f"REST klines response must be a JSON array, got {type(payload).__name__}"
-        )
+    step_ms = _interval_step_ms(interval)
     rows: list[ks.NormalizedKline] = []
-    for entry in payload:
-        if not isinstance(entry, list) or len(entry) < 11:
+    seen_open_times: set[int] = set()
+    cursor = start_ms
+    while cursor < end_ms:
+        url = rest_klines_url(symbol, interval, cursor, end_ms)
+        raw = opener(url)
+        if raw is None:
+            raise ArchiveMissingError(f"REST klines endpoint returned 404: {url}")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
             raise MalformedRestResponseError(
-                f"REST klines entry must be an array of >=11 fields, got {entry!r}"
+                f"REST klines response is not JSON: {exc}"
+            ) from exc
+        if not isinstance(payload, list):
+            raise MalformedRestResponseError(
+                f"REST klines response must be a JSON array, got "
+                f"{type(payload).__name__}"
             )
-        fields = [str(v) for v in entry]
-        row = ks.parse_kline_row(symbol, fields)
-        if not (start_ms <= row.open_time_ms < end_ms):
-            continue
-        rows.append(row)
+        if not payload:
+            break  # no more rows in [cursor, end_ms)
+
+        raw_open_times: list[int] = []
+        for entry in payload:
+            if not isinstance(entry, list) or len(entry) < 11:
+                raise MalformedRestResponseError(
+                    f"REST klines entry must be an array of >=11 fields, got {entry!r}"
+                )
+            fields = [str(v) for v in entry]
+            row = ks.parse_kline_row(symbol, fields)
+            raw_open_times.append(row.open_time_ms)
+            if start_ms <= row.open_time_ms < end_ms and row.open_time_ms not in (
+                seen_open_times
+            ):
+                seen_open_times.add(row.open_time_ms)
+                rows.append(row)
+
+        # Advance past the LAST row of the RAW (unclipped) response, never
+        # the filtered page -- if window-edge clipping dropped trailing
+        # entries, advancing by the filtered page's last row would re-request
+        # the same already-seen-but-clipped range forever.
+        next_cursor = max(raw_open_times) + step_ms
+        if next_cursor <= cursor:
+            raise MalformedRestResponseError(
+                f"REST klines pagination made no forward progress at cursor={cursor}"
+            )
+        cursor = next_cursor
+        if len(payload) < REST_MAX_LIMIT:
+            break  # fewer than a full page -> no more data available
     return rows
 
 

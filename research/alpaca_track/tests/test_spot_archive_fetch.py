@@ -3,6 +3,7 @@ parsing, network-0 (fake in-memory openers only).
 """
 
 import json
+import re
 
 import pytest
 import rob941_archive_fetch as af
@@ -91,6 +92,60 @@ def test_fetch_rest_klines_raises_when_response_is_not_a_json_array():
 
     with pytest.raises(saf.MalformedRestResponseError):
         saf.fetch_rest_klines("BTCUSDC", "1m", 0, 60_000, opener)
+
+
+# --------------------------------------------------------------------------- #
+# S4 remediation: a single REST call caps at REST_MAX_LIMIT (1000) rows, but a
+# full day is 1440 minutes -- the old un-paginated implementation silently
+# returned only the first page (440 minutes/day missing). This must paginate.
+# --------------------------------------------------------------------------- #
+def test_fetch_rest_klines_paginates_across_a_full_day_exceeding_rest_max_limit():
+    start = 0
+    end = 1440 * 60_000  # a full day: 1440 minutes > REST_MAX_LIMIT (1000)
+    all_entries = {m * 60_000: _rest_entry(m * 60_000) for m in range(1440)}
+    calls = []
+
+    def opener(url):
+        calls.append(url)
+        cursor = int(re.search(r"startTime=(\d+)", url).group(1))
+        limit = int(re.search(r"limit=(\d+)", url).group(1))
+        page_ts = sorted(t for t in all_entries if t >= cursor)[:limit]
+        return json.dumps([all_entries[t] for t in page_ts]).encode()
+
+    rows = saf.fetch_rest_klines("BTCUSDC", "1m", start, end, opener)
+    assert [r.open_time_ms for r in rows] == [m * 60_000 for m in range(1440)]
+    assert len(rows) == 1440
+    # a single un-paginated call could never have covered 1440 rows (capped at
+    # REST_MAX_LIMIT=1000) -- more than one call is required.
+    assert len(calls) >= 2
+
+
+def test_fetch_rest_klines_pagination_stops_cleanly_at_an_exact_page_boundary():
+    # exactly REST_MAX_LIMIT rows available, aligned so the first page fully
+    # exhausts the data -- the next page must return empty and pagination
+    # must terminate (not loop forever, not re-request the same page).
+    start = 0
+    end = saf.REST_MAX_LIMIT * 60_000
+    all_entries = {
+        m * 60_000: _rest_entry(m * 60_000) for m in range(saf.REST_MAX_LIMIT)
+    }
+
+    def opener(url):
+        cursor = int(re.search(r"startTime=(\d+)", url).group(1))
+        limit = int(re.search(r"limit=(\d+)", url).group(1))
+        page_ts = sorted(t for t in all_entries if t >= cursor)[:limit]
+        return json.dumps([all_entries[t] for t in page_ts]).encode()
+
+    rows = saf.fetch_rest_klines("BTCUSDC", "1m", start, end, opener)
+    assert len(rows) == saf.REST_MAX_LIMIT
+
+
+def test_fetch_rest_klines_unsupported_interval_rejected():
+    def opener(url):
+        return json.dumps([]).encode()
+
+    with pytest.raises(ValueError):
+        saf.fetch_rest_klines("BTCUSDC", "5m", 0, 60_000, opener)
 
 
 def test_fetch_rest_klines_raises_on_short_entry():
