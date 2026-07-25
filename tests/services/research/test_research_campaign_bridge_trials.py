@@ -295,8 +295,15 @@ def _diagnostic(**overrides) -> ChildFailureDiagnostic:
     return ChildFailureDiagnostic(**base)
 
 
-async def _trial_row_count(session) -> int:
-    count = await session.scalar(select(func.count()).select_from(ResearchBacktestRun))
+async def _trial_row_count(
+    session, *, strategy_experiment_id: int | None = None
+) -> int:
+    statement = select(func.count()).select_from(ResearchBacktestRun)
+    if strategy_experiment_id is not None:
+        statement = statement.where(
+            ResearchBacktestRun.strategy_experiment_id == strategy_experiment_id
+        )
+    count = await session.scalar(statement)
     assert type(count) is int
     return count
 
@@ -935,7 +942,9 @@ async def test_replay_with_different_diagnostic_evidence_still_replays_not_misma
         guard_policy=_POLICY,
     )
     original_bytes = bridge._canonical_raw_payload_bytes(first)
-    original_count = await _trial_row_count(session)
+    original_count = await _trial_row_count(
+        session, strategy_experiment_id=first.strategy_experiment_id
+    )
     capsys.readouterr()  # drain anything from the first (non-replay) call
     replay_with_diag = evidence.model_copy(
         update={"diagnostic_evidence": (_diagnostic(),)}
@@ -956,7 +965,12 @@ async def test_replay_with_different_diagnostic_evidence_still_replays_not_misma
     # original wins.
     assert second.raw_payload["diagnostic_evidence"] == []
     assert bridge._canonical_raw_payload_bytes(second) == original_bytes
-    assert await _trial_row_count(session) == original_count
+    assert (
+        await _trial_row_count(
+            session, strategy_experiment_id=first.strategy_experiment_id
+        )
+        == original_count
+    )
 
     captured = capsys.readouterr()
     payload = json.loads(captured.err.strip())
@@ -1101,7 +1115,9 @@ async def test_each_diagnostic_divergence_dimension_emits_exactly_one_observatio
     # via the same canonical-bytes authority BEFORE the divergent replay --
     # dict equality is insufficient.
     original_bytes = bridge._canonical_raw_payload_bytes(original)
-    original_count = await _trial_row_count(session)
+    original_count = await _trial_row_count(
+        session, strategy_experiment_id=original.strategy_experiment_id
+    )
     capsys.readouterr()
 
     divergent = evidence.model_copy(
@@ -1123,7 +1139,12 @@ async def test_each_diagnostic_divergence_dimension_emits_exactly_one_observatio
     assert json.loads(lines[0])["event"] == "diagnostic_replay_divergence"
     assert replayed.id == original.id
     assert bridge._canonical_raw_payload_bytes(replayed) == original_bytes
-    assert await _trial_row_count(session) == original_count
+    assert (
+        await _trial_row_count(
+            session, strategy_experiment_id=original.strategy_experiment_id
+        )
+        == original_count
+    )
 
 
 @pytest.mark.integration
