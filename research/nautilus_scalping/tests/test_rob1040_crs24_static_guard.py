@@ -563,6 +563,8 @@ def test_documented_static_scope_has_no_external_state_primitive() -> None:
             "import builtins as b\nif flag:\n    action = b.open\n"
             "else:\n    action = b.open\naction('x')"
         ),
+        "import os",
+        "import requests",
     ),
 )
 def test_alias_and_variable_composed_dynamic_primitives_are_rejected(

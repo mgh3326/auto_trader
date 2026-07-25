@@ -120,9 +120,35 @@ fold-minor order. Every cell contains sealed authorities and hashes plus:
 scheduled, horizon-eligible, valid-input, each point-in-time gate, joint gate,
 directional and simultaneous candidates, arbitration winners, occupancy,
 entry-reference missing, exit-presence missing, static filter closes,
-fold-horizon closes, planned count, movement-capacity summary, symbol
-concentration, and LONG/SHORT counts.
+fold-horizon closes, planned count, movement-capacity distribution, symbol
+concentration, and LONG/SHORT counts. The movement-capacity distribution is
+the per-cell five-number summary plus the sorted list of every planned
+trade's individual `A_i` value (`values_bp`), so a pooled statistic across
+cells (e.g. the primary-config pooled median gated by fail-closed #3) can be
+computed from the emitted evidence without access to any un-emitted source.
+The campaign totals additionally emit the primary-config (`CRS-A0`) pooled
+movement-capacity median as a diagnostic value only — this repository does
+not auto-enforce fail-closed #3/#4; the human judgment step remains external.
 
 Every scheduled cutoff has exactly one terminal classification: one closed
 reason or planned. The closed-reason histogram plus planned count must equal
 scheduled count. All subtotals and the campaign hash are deterministic.
+
+## Stage-3 code-seal procedure
+
+Static guards forbid file I/O inside the CRS-24 modules (`pathlib`/`open` are
+denied), so no module can hash its own source at runtime. The emitted
+authority hashes therefore cover spec/contract/filter-manifest/fold-schedule/
+causal-data only; they cannot include a code hash. Before arming stage 4, the
+stage-3 hash-seal report must additionally record, as an external
+(non-code) procedure:
+
+1. The merge commit SHA on `main` that carries this implementation.
+2. `shasum -a 256` for each of the seven CRS-24 implementation files:
+   `rob1040_crs24_contracts.py`, `rob1040_crs24_features.py`,
+   `rob1040_crs24_feasibility.py`, `rob1040_crs24_evidence.py`,
+   `rob1040_crs24_synthetic.py`, `rob1040_crs24_cli.py`,
+   `run_rob1040_crs24.py`.
+
+That merge-commit SHA plus the seven-file digest list together constitute
+the code seal referenced by the output contract's authority-hash list.

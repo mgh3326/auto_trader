@@ -294,7 +294,7 @@ def test_same_identity_cell_state_mutation_cannot_be_sealed() -> None:
 def test_synthetic_evidence_hash_is_byte_stable_and_tamper_evident(evidence) -> None:
     assert (
         evidence.evidence_sha256
-        == "599ebc83f87170cd56ccc7761e14d08a5f05b12400018f8fc8714fe96be8ecd4"
+        == "ef9b0b819bef5e4cb0a63a9f88b5df0a7a65832d103d4ed379ba460fa3232bab"
     )
     assert evidence.to_payload()["evidence_sha256"] == evidence.evidence_sha256
     rendered = render_evidence_bytes()

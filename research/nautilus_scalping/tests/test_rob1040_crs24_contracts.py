@@ -43,7 +43,7 @@ def test_canonical_preregistration_bytes_are_exactly_sealed() -> None:
         / "rob1040_crs24_corr1_preregistration.md"
     )
     raw = path.read_bytes()
-    assert len(raw) == contract.PREREGISTRATION_SIZE == 5_391
+    assert len(raw) == contract.PREREGISTRATION_SIZE == 6_883
     assert hashlib.sha256(raw).hexdigest() == contract.PREREGISTRATION_SHA256
     assert contract.canonical_preregistration_bytes(raw) is raw
     assert raw.endswith(b"\n")

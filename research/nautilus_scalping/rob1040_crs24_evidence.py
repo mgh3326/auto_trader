@@ -57,7 +57,7 @@ from research_contracts.canonical_hash import canonical_sha256
 
 EVIDENCE_SCHEMA_VERSION = "rob1040.crs24.corr1.feasibility_evidence.v3"
 FROZEN_SYNTHETIC_EVIDENCE_SHA256 = (
-    "599ebc83f87170cd56ccc7761e14d08a5f05b12400018f8fc8714fe96be8ecd4"
+    "ef9b0b819bef5e4cb0a63a9f88b5df0a7a65832d103d4ed379ba460fa3232bab"
 )
 
 
@@ -81,6 +81,14 @@ def _symbol_counts(values: object) -> dict[str, int]:
     return {item.symbol: item.count for item in values}
 
 
+def _movement_capacity_values_bp(cell: CellFeasibility) -> list[float]:
+    return sorted(
+        event.movement_capacity_bp
+        for event in cell.events
+        if event.movement_capacity_bp is not None
+    )
+
+
 def _movement_payload(cell: CellFeasibility) -> dict[str, object]:
     summary = cell.movement_capacity
     return {
@@ -90,6 +98,7 @@ def _movement_payload(cell: CellFeasibility) -> dict[str, object]:
         "median": summary.median_bp,
         "mean": summary.mean_bp,
         "maximum": summary.maximum_bp,
+        "values_bp": _movement_capacity_values_bp(cell),
         "posture": "trailing_only_diagnostic",
     }
 
@@ -251,6 +260,7 @@ def _event_numeric_derivation(
     horizon_eligible = sum(
         event.closed_reason != FOLD_HORIZON_CLOSED for event in events
     )
+    movement_sorted = sorted(movement)
     minimum = None if not movement else min(movement)
     median = None if not movement else nearest_rank(tuple(movement), 0.50)
     mean = None if not movement else math.fsum(movement) / len(movement)
@@ -288,6 +298,8 @@ def _event_numeric_derivation(
         "reconciliation.planned": planned,
         "reconciliation.scheduled": len(events),
     }
+    for index, value in enumerate(movement_sorted):
+        answer[f"movement_capacity.values_bp.{index}"] = value
     for symbol in UNIVERSE:
         answer[f"symbol_candidates.by_symbol.{symbol}"] = candidates[symbol]
         answer[f"arbitration.by_symbol.{symbol}"] = winners[symbol]
@@ -434,6 +446,35 @@ def _campaign_totals(cells: tuple[CellFeasibility, ...]) -> CampaignTotals:
     )
 
 
+def _primary_config_id() -> str:
+    primary_ids = [
+        config.config_id for config in ACTIVE_CONFIGS if config.posture == "primary"
+    ]
+    if len(primary_ids) != 1:
+        raise ValueError("expected exactly one primary CRS config")
+    return primary_ids[0]
+
+
+def _movement_capacity_pooled_payload(
+    cells: tuple[CellFeasibility, ...],
+) -> dict[str, object]:
+    primary_id = _primary_config_id()
+    values = sorted(
+        event.movement_capacity_bp
+        for cell in cells
+        if cell.config_id == primary_id
+        for event in cell.events
+        if event.movement_capacity_bp is not None
+    )
+    return {
+        "unit": "bp",
+        "config_id": primary_id,
+        "count": len(values),
+        "pooled_median": None if not values else nearest_rank(tuple(values), 0.50),
+        "posture": "trailing_only_diagnostic",
+    }
+
+
 def _totals_payload(
     cells: tuple[CellFeasibility, ...],
     totals: CampaignTotals,
@@ -452,6 +493,7 @@ def _totals_payload(
         "order_filter_closed": totals.order_filter_closed,
         "fold_horizon_closed": totals.fold_horizon_closed,
         "planned": totals.planned,
+        "movement_capacity_pooled": _movement_capacity_pooled_payload(cells),
         "directions": {
             "long": totals.long_count,
             "short": totals.short_count,
@@ -504,6 +546,18 @@ def _assert_campaign_numeric_derivation(
     }
     for reason in CLOSED_REASON_ORDER:
         expected[f"closed_histogram.{reason}"] = total(f"closed_histogram.{reason}")
+    primary_id = _primary_config_id()
+    pooled_movement = sorted(
+        event.movement_capacity_bp
+        for cell in cells
+        if cell.config_id == primary_id
+        for event in cell.events
+        if event.movement_capacity_bp is not None
+    )
+    expected["movement_capacity_pooled.count"] = len(pooled_movement)
+    expected["movement_capacity_pooled.pooled_median"] = (
+        None if not pooled_movement else nearest_rank(tuple(pooled_movement), 0.50)
+    )
     emitted = _walk_numeric_or_null(payload)
     if emitted != expected:
         missing = sorted(set(emitted) ^ set(expected))

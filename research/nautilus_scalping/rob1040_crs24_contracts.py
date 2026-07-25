@@ -21,9 +21,9 @@ BASE_HEAD = "bd169ec3bfed9ae0c281fbc18b14d710ccdc45d9"
 PREREGISTRATION_RELATIVE_PATH = (
     "research/nautilus_scalping/contracts/rob1040_crs24_corr1_preregistration.md"
 )
-PREREGISTRATION_SIZE = 5_391
+PREREGISTRATION_SIZE = 6_883
 PREREGISTRATION_SHA256 = (
-    "c4aa97ac57e79cf379a4de1c7b234fb333069b83f69d735673f4444d72c2b576"
+    "28f07e7379768a17d3fa64305fed2a2f42a1cbee3dabf6c2e48d4033fb70dcc5"
 )
 
 UNIVERSE: tuple[str, ...] = _ROB974_SYMBOLS
@@ -306,7 +306,7 @@ def contract_payload() -> dict[str, object]:
     }
 
 
-CONTRACT_SHA256 = "49cb26e9a93d3b1f2cace52913346b086c647c68fdf4e4264277d795a7f98ade"
+CONTRACT_SHA256 = "5964e47f6a7635379f5ae57e13a99f750a24fa2c95307e8326198ec6cd3014ad"
 
 
 def canonical_preregistration_bytes(value: bytes) -> bytes:
