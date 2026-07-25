@@ -154,7 +154,12 @@ class DownsideWatchService:
         )
 
     def _build_request(
-        self, level: DownsideWatchLevel, *, valid_until, already_breached: bool = False
+        self,
+        level: DownsideWatchLevel,
+        *,
+        valid_until,
+        already_breached: bool = False,
+        current_price: Decimal | None = None,
     ) -> CreateInvestmentWatchRequest:
         rationale = (
             f"ROB-928 하방 워치 자동등록 (source={level.source}): "
@@ -169,18 +174,28 @@ class DownsideWatchService:
         trigger_checklist: list[str] = []
         if already_breached:
             # ROB-971: registered while current_price was already past the
-            # below threshold. Tagged (metadata + a leading trigger_checklist
-            # entry, which is copied into the watch trigger notification —
-            # see investment_report_add_items contract) so the first scanner
-            # fire reads as "already breached at registration" instead of
-            # routine below-watch noise.
+            # below threshold. The tag states only the registration-time
+            # fact (timestamp, price, threshold) — it deliberately does not
+            # interpret what a later scanner fire means. already_breached is
+            # computed once at registration and fixed on the row for its
+            # 14-day validity window, so an interpretive claim like "this
+            # fire is not a new breach" would go stale the moment price
+            # recovers and re-breaches later (a genuinely new breach would
+            # then read as old news). A registration-time-only fact stays
+            # true regardless of what happens between registration and fire.
+            registered_at = now_kst()
             metadata["rob971_already_breached"] = {
                 "reason": "already_breached",
-                "at": now_kst().isoformat(),
+                "at": registered_at.isoformat(),
+                "current_price_at_registration": str(current_price),
+                "threshold": str(level.threshold),
             }
             trigger_checklist.append(
-                "ROB-971 already_breached: 등록 시점에 이미 손절선 이탈 상태 — "
-                "첫 발화는 신규 이탈이 아니라 기존 이탈의 보고임"
+                "ROB-971 already_breached: 등록 시점 "
+                f"{registered_at.strftime('%Y-%m-%d %H:%M')} KST 현재가 "
+                f"{current_price} < 손절선 {level.threshold} "
+                "(등록 당시 이미 손절선 이탈 상태였음 — 이후 발화 시점의 "
+                "이탈 여부는 별도 확인 필요)"
             )
         return CreateInvestmentWatchRequest.model_validate(
             {
@@ -213,8 +228,11 @@ class DownsideWatchService:
         ``current_price`` has already crossed the threshold, using the same
         strict ``<`` the below-scanner uses in
         ``app.jobs.watch_market_data.is_triggered``) is tagged onto the
-        alert's metadata and trigger_checklist so the resulting first-fire
-        notification reads as a backlog report, not fresh noise.
+        alert's metadata and trigger_checklist as a registration-time-only
+        fact (timestamp, price, threshold) — it does not claim anything
+        about what a later scanner fire means, since the tag is fixed for
+        the row's full validity window and would go stale if price recovers
+        and re-breaches before the row actually fires.
         ``skipped_already_triggered`` is kept only for response-shape
         backward compatibility and is expected to stay empty; genuine
         registration-time price failures are reported separately in
@@ -276,7 +294,10 @@ class DownsideWatchService:
                 continue
 
             request = self._build_request(
-                level, valid_until=valid_until, already_breached=already_breached
+                level,
+                valid_until=valid_until,
+                already_breached=already_breached,
+                current_price=current_price,
             )
             alert, idempotent = await DirectWatchCreateService(
                 self._session, self._watch_repo

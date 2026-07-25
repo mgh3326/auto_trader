@@ -256,7 +256,8 @@ async def test_register_sweep_registers_and_tags_already_breached_watch(
     """ROB-971 HIGH-1 fix: a below watch whose price has already crossed its
     threshold must still be registered (never silently dropped — that was
     the one case where the most at-risk holding lost monitoring). It's
-    tagged instead so the first fire reads as a backlog report."""
+    tagged instead with the registration-time price/threshold as a fact,
+    not an interpretation of what the eventual fire means."""
     symbol = _symbol()
     await _seed_journal(session, symbol=symbol, stop_loss="48000")
     await session.commit()
@@ -281,10 +282,20 @@ async def test_register_sweep_registers_and_tags_already_breached_watch(
     )
     assert alert is not None
     assert alert.status == "active"
-    assert alert.alert_metadata["rob971_already_breached"]["reason"] == (
-        "already_breached"
+    tag_metadata = alert.alert_metadata["rob971_already_breached"]
+    assert tag_metadata["reason"] == "already_breached"
+    assert Decimal(tag_metadata["current_price_at_registration"]) == Decimal("47999")
+    assert Decimal(tag_metadata["threshold"]) == Decimal("48000")
+
+    checklist_entry = next(
+        entry for entry in alert.trigger_checklist if "already_breached" in entry
     )
-    assert any("already_breached" in entry for entry in alert.trigger_checklist)
+    # Must carry the registration-time price and threshold as facts, not
+    # just the bare "already_breached" marker (a truncated tag phrase would
+    # still say "already_breached" but drop the evidence an operator needs
+    # to judge the alert — this must fail if that evidence is dropped).
+    assert "47999" in checklist_entry
+    assert "48000" in checklist_entry
 
 
 @pytest.mark.asyncio
