@@ -24,6 +24,7 @@ SCHEMA_VERSION = "rob1059_corpus_manifest.v1"
 GENERATOR_VERSION = "rob1059_h1_corpus_builder.v1"
 
 SourceLiteral = Literal["archive_monthly", "archive_daily", "backfill_rest"]
+_VALID_SOURCES = ("archive_monthly", "archive_daily", "backfill_rest")
 
 __all__ = [
     "GENERATOR_VERSION",
@@ -78,6 +79,16 @@ class ShardSource:
         )
 
     def __post_init__(self) -> None:
+        # CodeRabbit fix: `source` itself was never validated against the
+        # literal set -- a typo'd/tampered `source` (e.g. loaded via
+        # `from_dict`) satisfied NEITHER checksum branch below and was
+        # silently accepted with no checksum constraint enforced at all,
+        # defeating this module's fail-closed identity guarantee.
+        if self.source not in _VALID_SOURCES:
+            raise ValueError(
+                f"unknown ShardSource.source: {self.source!r} (must be one of "
+                f"{_VALID_SOURCES})"
+            )
         if self.source in ("archive_monthly", "archive_daily") and (
             self.checksum_sha256 is None
         ):
@@ -110,6 +121,17 @@ class SymbolCorpusManifest:
             raise ValueError("row_count/expected_count must be non-negative")
         for t in self.missing_open_times_ms:
             _int(t, "missing_open_times_ms element")
+        # CodeRabbit fix: this manifest is the canonical, hashed identity
+        # `persistence.load_symbol_shard`'s `expected_row_count` relies on --
+        # a hand-crafted/corrupted manifest with an inconsistent row
+        # accounting (e.g. `expected_count` bumped without a matching
+        # `missing_open_times_ms` entry) must never construct silently.
+        if self.row_count + len(self.missing_open_times_ms) != self.expected_count:
+            raise ValueError(
+                "row_count + len(missing_open_times_ms) must equal "
+                f"expected_count (got {self.row_count} + "
+                f"{len(self.missing_open_times_ms)} != {self.expected_count})"
+            )
         dates = [d for d, _flag in self.usdcusdt_basis_drift_flags]
         if len(dates) != len(set(dates)) or dates != sorted(dates):
             raise ValueError(

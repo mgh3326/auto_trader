@@ -145,8 +145,17 @@ def build_quote_mode_aware_corpus(
       - ``USDC``:        fetch ``{base}USDC`` directly.
       - ``SYNTH_USDC``:  fetch ``{base}USDT`` and ``USDCUSDT``, divide
                          per-minute (``quote_mode.synth_usdc_price``); a
-                         missing USDCUSDT minute makes THAT minute missing in
-                         the synthesized series -- never forward-filled.
+                         missing USDCUSDT minute, OR any one of the six
+                         per-minute legs (``open``/``high``/``low``/``close``/
+                         ``quote_volume``/``taker_buy_quote_volume``) landing
+                         on a non-finite quotient, makes THAT minute missing
+                         in the synthesized series -- never forward-filled.
+                         ``quote_volume``/``taker_buy_quote_volume`` are
+                         divided by the SAME per-minute basis as the OHLC legs
+                         so the resulting row is uniformly USDC-denominated
+                         (never a silent USDT/USDC unit mix); ``base_volume``/
+                         ``taker_buy_volume`` are base-denominated and pass
+                         through unconverted.
       - ``USDT_PROXY``:  fetch ``{base}USDT`` directly; ALSO fetch USDCUSDT
                          over the same window purely to compute+record the
                          per-UTC-day basis-drift flag onto the manifest
@@ -196,25 +205,61 @@ def build_quote_mode_aware_corpus(
         for row in usdt_rows:
             basis = usdcusdt_by_ts.get(row.open_time_ms)
             basis_close = basis.close if basis is not None else None
+            # CodeRabbit S1-followup fix: convert ALL FOUR price legs (not
+            # just `close`) through the SAME `basis_close` before deciding
+            # whether to keep the minute. `qm.synth_usdc_price` returns
+            # `float | None` per leg -- a leg can independently come back
+            # `None` even when `basis_close` is present, if THAT leg's own
+            # division overflows to a non-finite result (e.g. a corrupted/
+            # extreme archive OHLC value), a case the previous close-only
+            # check could never observe. Any `None` leg means AC6's "never
+            # forward-fill" rule applies to the WHOLE minute, not just to
+            # whichever field happened to be checked.
+            #
+            # `quote_volume`/`taker_buy_quote_volume` are quote-denominated
+            # (USDT) on the source `{base}USDT` row; a `SYNTH_USDC` row must
+            # be uniformly USDC-denominated or downstream dollar-volume/ADV
+            # filters silently read USDT numbers as if they were USDC. The
+            # SYNTH_USDC methodology already accepts ONE basis-rate
+            # approximation per minute for the OHLC legs (single `basis_close`
+            # for the whole minute, not per-trade), so applying that same
+            # division to the quote-denominated notionals is the same
+            # approximation, not a new one -- `base_volume`/`taker_buy_volume`
+            # are base-denominated and stay untouched.
+            open_ = qm.synth_usdc_price(row.open, basis_close)
+            high = qm.synth_usdc_price(row.high, basis_close)
+            low = qm.synth_usdc_price(row.low, basis_close)
             close = qm.synth_usdc_price(row.close, basis_close)
-            if close is None:
-                # missing USDCUSDT minute -> this minute is missing in the
-                # synthesized series, never forward-filled (AC6).
+            quote_volume = qm.synth_usdc_price(row.quote_volume, basis_close)
+            taker_buy_quote_volume = qm.synth_usdc_price(
+                row.taker_buy_quote_volume, basis_close
+            )
+            if (
+                open_ is None
+                or high is None
+                or low is None
+                or close is None
+                or quote_volume is None
+                or taker_buy_quote_volume is None
+            ):
+                # missing USDCUSDT minute (or a non-finite per-leg quotient)
+                # -> this minute is missing in the synthesized series, never
+                # forward-filled (AC6).
                 continue
             synth_rows.append(
                 ks.NormalizedKline(
                     symbol=f"{base}USDC",
                     open_time_ms=row.open_time_ms,
-                    open=qm.synth_usdc_price(row.open, basis_close),
-                    high=qm.synth_usdc_price(row.high, basis_close),
-                    low=qm.synth_usdc_price(row.low, basis_close),
+                    open=open_,
+                    high=high,
+                    low=low,
                     close=close,
                     base_volume=row.base_volume,
                     close_time_ms=row.close_time_ms,
-                    quote_volume=row.quote_volume,
+                    quote_volume=quote_volume,
                     trade_count=row.trade_count,
                     taker_buy_volume=row.taker_buy_volume,
-                    taker_buy_quote_volume=row.taker_buy_quote_volume,
+                    taker_buy_quote_volume=taker_buy_quote_volume,
                 )
             )
 

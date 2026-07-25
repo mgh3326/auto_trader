@@ -50,6 +50,29 @@ def _monthly_archive_entry(
     return {url: zb, url + ".CHECKSUM": chk}
 
 
+def _monthly_archive_entry_custom_ohlc(
+    symbol: str,
+    year: int,
+    month: int,
+    ts: int,
+    o: float,
+    h: float,
+    low: float,
+    c: float,
+) -> dict[str, bytes]:
+    # like _monthly_archive_entry, but lets a single minute's open/high/low/
+    # close diverge from each other (needed to reproduce a defect where ONLY
+    # one non-close leg's basis division overflows to non-finite).
+    line = (
+        f"{ts},{o},{h},{low},{c},10.0,{ts + 59_999},1000.0,5,4.0,400.0,0\n"
+    )
+    text = HEADER + line
+    name = f"{symbol}-1m-{year:04d}-{month:02d}.csv"
+    zb, chk = _zip_and_checksum(name, text)
+    url = saf.spot_kline_monthly_url(symbol, "1m", year, month)
+    return {url: zb, url + ".CHECKSUM": chk}
+
+
 def _fake_sealed(
     base: str,
     quote_mode: str,
@@ -201,7 +224,7 @@ def test_synth_usdc_dispatch_synthesizes_price_and_drops_missing_basis_minute():
     # both underlying fetches' provenance must be preserved (AC3) -- a synth
     # corpus is built from TWO real tickers, not fabricated from nothing.
     assert len(manifest.sources) == 2
-    assert {s.checksum_sha256 for s in manifest.sources} != {None}
+    assert all(s.checksum_sha256 for s in manifest.sources)
 
 
 def test_synth_usdc_price_wiring_removed_regression_guard():
@@ -233,6 +256,89 @@ def test_synth_usdc_price_wiring_removed_regression_guard():
     assert len(rows) == 1
     assert rows[0].close != 100.0  # NOT the raw USDT close -- actually divided
     assert rows[0].close == pytest.approx(100.0 / 1.01)
+
+
+def test_synth_usdc_drops_the_whole_minute_when_only_a_non_close_leg_overflows():
+    # CodeRabbit A: only `close`'s conversion was ever None-checked; `open`/
+    # `high`/`low` were assigned an unnarrowed `qm.synth_usdc_price(...)`
+    # result directly. Here `close` (and open/low) divide cleanly but `high`
+    # is a corrupted/extreme value whose OWN division overflows to a
+    # non-finite quotient -- the pre-fix code would silently construct a
+    # NormalizedKline with `high=None` in a `float` field instead of dropping
+    # the minute (AC6: never forward-fill/partially-fabricate a minute).
+    base = "OVF"
+    sealed = _fake_sealed(
+        base, "SYNTH_USDC", usdc_first=date(2024, 9, 1), usdt_first=date(2020, 1, 1)
+    )
+    window_start = MONTH_START_MS
+    window_end = MONTH_START_MS + 1 * MIN_MS
+    huge_high = 1.79e308  # near float max: huge_high / 0.5 overflows to inf
+    table = {
+        **_monthly_archive_entry_custom_ohlc(
+            f"{base}USDT", 2024, 6, window_start, 100.0, huge_high, 100.0, 100.0
+        ),
+        **_monthly_archive_entry("USDCUSDT", 2024, 6, {window_start: 0.5}),
+    }
+    rows, manifest = qmp.build_quote_mode_aware_corpus(
+        base=base,
+        computed_quote_mode="SYNTH_USDC",
+        computed_usdc_first_1m=date(2024, 9, 1),
+        computed_usdt_first_1m=date(2020, 1, 1),
+        sealed=sealed,
+        window_start_ms=window_start,
+        window_end_ms=window_end,
+        archive_opener=lambda url: table.get(url),
+        rest_opener=lambda url: None,
+    )
+    # the minute must be DROPPED entirely -- never a row with `high=None`.
+    assert rows == []
+    assert manifest.row_count == 0
+    assert manifest.expected_count == 1
+    assert manifest.missing_open_times_ms == (window_start,)
+
+
+def test_synth_usdc_converts_quote_denominated_volumes_by_the_same_basis():
+    # CodeRabbit B: `quote_volume`/`taker_buy_quote_volume` come from the
+    # source `{base}USDT` row and are USDT-denominated; a `SYNTH_USDC` row
+    # must divide them by the SAME per-minute basis as the OHLC legs, or the
+    # corpus silently mixes USDT notionals into a series labeled SYNTH_USDC.
+    # `base_volume`/`taker_buy_volume` (base-denominated) and `trade_count`
+    # must stay untouched.
+    base = "VOL"
+    sealed = _fake_sealed(
+        base, "SYNTH_USDC", usdc_first=date(2024, 9, 1), usdt_first=date(2020, 1, 1)
+    )
+    window_start = MONTH_START_MS
+    window_end = MONTH_START_MS + 1 * MIN_MS
+    basis = 1.0002
+    table = {
+        **_monthly_archive_entry(f"{base}USDT", 2024, 6, {window_start: 100.0}),
+        **_monthly_archive_entry("USDCUSDT", 2024, 6, {window_start: basis}),
+    }
+    rows, _ = qmp.build_quote_mode_aware_corpus(
+        base=base,
+        computed_quote_mode="SYNTH_USDC",
+        computed_usdc_first_1m=date(2024, 9, 1),
+        computed_usdt_first_1m=date(2020, 1, 1),
+        sealed=sealed,
+        window_start_ms=window_start,
+        window_end_ms=window_end,
+        archive_opener=lambda url: table.get(url),
+        rest_opener=lambda url: None,
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    # base-denominated fields pass through UNCONVERTED.
+    assert row.base_volume == 10.0
+    assert row.taker_buy_volume == 4.0
+    assert row.trade_count == 5
+    # quote-denominated (USDT) notionals ARE converted by the same basis as
+    # the OHLC legs -- a regression to raw passthrough would leave these at
+    # the source USDT values (1000.0 / 400.0) instead.
+    assert row.quote_volume == pytest.approx(1000.0 / basis)
+    assert row.taker_buy_quote_volume == pytest.approx(400.0 / basis)
+    assert row.quote_volume != 1000.0
+    assert row.taker_buy_quote_volume != 400.0
 
 
 # --------------------------------------------------------------------------- #

@@ -105,6 +105,23 @@ def test_archive_source_must_carry_checksum():
         )
 
 
+def test_shard_source_rejects_a_source_value_outside_the_literal_set():
+    # CodeRabbit fix: previously `source` itself was never validated -- any
+    # string outside ("archive_monthly", "archive_daily") and outside
+    # "backfill_rest" satisfied NEITHER checksum branch and was silently
+    # accepted with NO checksum constraint enforced at all (fail-open), even
+    # WITH a checksum present (so the old branches alone can't catch this).
+    with pytest.raises(ValueError, match="unknown ShardSource.source"):
+        cm.ShardSource(
+            source="totally_bogus_source",  # not in SourceLiteral
+            year=2024,
+            month=6,
+            day=1,
+            url="https://data.binance.vision/",
+            checksum_sha256="a" * 64,  # present -- old code had NO check to fail
+        )
+
+
 def test_save_load_round_trip_preserves_content_hash(tmp_path):
     m = _manifest()
     path = tmp_path / "manifest.json"
@@ -178,6 +195,25 @@ def test_corpus_manifest_rejects_bool_window_start_ms():
             window_end_ms=600_000,
             symbols=("BTCUSDC",),
             per_symbol=(_symbol_manifest("BTCUSDC", "b" * 64),),
+        )
+
+
+def test_symbol_corpus_manifest_rejects_inconsistent_row_and_missing_counts():
+    # CodeRabbit fix: this manifest is the canonical, hashed identity
+    # `persistence.load_symbol_shard`'s `expected_row_count` relies on -- a
+    # hand-crafted/corrupted manifest whose `row_count` + missing-minute count
+    # doesn't add up to `expected_count` must never construct silently.
+    with pytest.raises(
+        ValueError, match=r"row_count \+ len\(missing_open_times_ms\)"
+    ):
+        cm.SymbolCorpusManifest(
+            symbol="BTCUSDC",
+            quote_mode="USDC",
+            sources=(),
+            row_count=8,
+            expected_count=10,
+            missing_open_times_ms=(),  # should carry 2 entries, has 0
+            normalized_content_sha256="a" * 64,
         )
 
 

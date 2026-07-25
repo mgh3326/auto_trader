@@ -129,6 +129,20 @@ class SymbolCandidate:
     no_gap_in_last_60min: bool
 
     def __post_init__(self) -> None:
+        # CodeRabbit fix: these five §6-rule inputs were accepted unvalidated
+        # (any truthy value, e.g. the STRING "false" or an int `1`, silently
+        # passed rules 1/5/6) -- the same fail-open shape S2 remediated for
+        # `binance_quote_mode` below. `daily_bars.DailyBar` already enforces
+        # `type(...) is bool` for its own boolean fields; match that here.
+        for name in (
+            "alpaca_active",
+            "alpaca_tradable",
+            "is_usd_pair",
+            "all_valid_daily_bars_in_lookback",
+            "no_gap_in_last_60min",
+        ):
+            if type(getattr(self, name)) is not bool:
+                raise TypeError(f"{self.symbol}: {name} must be built-in bool")
         if self.alpaca_first_daily_ms is not None:
             _int(self.alpaca_first_daily_ms, "alpaca_first_daily_ms")
         if self.binance_quote_mode not in VALID_BINANCE_QUOTE_MODES:

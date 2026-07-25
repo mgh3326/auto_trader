@@ -355,3 +355,51 @@ def test_matic_and_pol_are_independent_symbols_never_stitched():
     assert pol_result.eligible is False
     assert pol_result.fail_reason == "insufficient_pit_history"
     assert pol_result.pit_history_days == 50
+
+
+# --------------------------------------------------------------------------- #
+# CodeRabbit fix: the five §6-rule boolean inputs must be built-in `bool`, the
+# same fail-closed discipline `binance_quote_mode` already had -- a truthy
+# non-bool (e.g. the STRING "false", which IS truthy in Python) must never
+# silently pass rule 1/5/6 instead of being rejected at construction.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "field",
+    [
+        "alpaca_active",
+        "alpaca_tradable",
+        "is_usd_pair",
+        "all_valid_daily_bars_in_lookback",
+        "no_gap_in_last_60min",
+    ],
+)
+def test_symbol_candidate_rejects_non_bool_string_false_for_bool_fields(field):
+    kwargs = dict(
+        symbol="AAA/USD",
+        base="AAA",
+        alpaca_active=True,
+        alpaca_tradable=True,
+        is_usd_pair=True,
+        binance_quote_mode="USDC",
+        alpaca_first_daily_ms=0,
+        all_valid_daily_bars_in_lookback=True,
+        no_gap_in_last_60min=True,
+    )
+    kwargs[field] = "false"  # truthy in Python -- must NOT silently pass
+    with pytest.raises(TypeError, match=f"{field} must be built-in bool"):
+        pu.SymbolCandidate(**kwargs)
+
+
+def test_symbol_candidate_rejects_int_one_for_bool_field():
+    with pytest.raises(TypeError, match="alpaca_active must be built-in bool"):
+        pu.SymbolCandidate(
+            symbol="AAA/USD",
+            base="AAA",
+            alpaca_active=1,  # int, not bool
+            alpaca_tradable=True,
+            is_usd_pair=True,
+            binance_quote_mode="USDC",
+            alpaca_first_daily_ms=0,
+            all_valid_daily_bars_in_lookback=True,
+            no_gap_in_last_60min=True,
+        )

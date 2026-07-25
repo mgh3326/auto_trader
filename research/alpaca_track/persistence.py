@@ -16,9 +16,11 @@ failure mode raises a distinct ``ShardLoadError`` subclass, mirroring the
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import canonical_hash
+import pyarrow as pa
 import pyarrow.parquet as pq
 import rob941_kline_schema as ks
 import rob941_persistence as rp
@@ -82,14 +84,22 @@ def load_symbol_shard(
     if not path.is_file():
         raise ShardFileMissingError(f"shard file missing at {path}")
 
-    actual_file_sha256 = rp.sha256_file(path)
+    # CodeRabbit fix: hash and parse the SAME in-memory bytes. `rp.sha256_file`
+    # opens+streams the file once, then `pq.read_table(path)` used to open it
+    # a SECOND time -- if the file changed between those two independent
+    # reads (e.g. a concurrent overwrite), bytes that never matched
+    # `expected_file_sha256` could still be parsed and pass every later
+    # schema/content-hash check. Reading once and verifying+parsing that
+    # exact buffer closes the gap.
+    data = path.read_bytes()
+    actual_file_sha256 = hashlib.sha256(data).hexdigest()
     if actual_file_sha256 != expected_file_sha256:
         raise ShardFileTamperedError(
             f"shard file SHA-256 mismatch (expected {expected_file_sha256}, "
             f"got {actual_file_sha256})"
         )
 
-    table = pq.read_table(path)
+    table = pq.read_table(pa.BufferReader(data))
     if not table.schema.equals(rp.KLINE_SCHEMA, check_metadata=False):
         raise ShardSchemaMismatchError(
             f"shard schema {table.schema} != expected {rp.KLINE_SCHEMA}"

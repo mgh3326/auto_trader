@@ -94,3 +94,54 @@ def test_row_count_mismatch_raises(tmp_path):
             expected_content_sha256=content_sha256,
             expected_row_count=999,  # wrong on purpose
         )
+
+
+# --------------------------------------------------------------------------- #
+# CodeRabbit fix: hash and parse the SAME in-memory bytes -- `load_symbol_shard`
+# used to hash the file once (via `rp.sha256_file`) and then have
+# `pq.read_table(path)` re-open+re-read the SAME path a second time. If the
+# on-disk file changed between those two independent reads, bytes that never
+# matched `expected_file_sha256` could still be parsed and returned.
+# --------------------------------------------------------------------------- #
+def test_load_returns_hash_verified_bytes_even_if_the_file_is_swapped_mid_load(
+    tmp_path, monkeypatch
+):
+    rows = _rows("RACEUSDC")
+    rel_path, file_sha256 = p.write_symbol_shard(tmp_path, "RACEUSDC", rows)
+    content_sha256 = canonical_hash.canonical_sha256([r.__dict__ for r in rows])
+
+    other_rel_path, _ = p.write_symbol_shard(
+        tmp_path, "OTHERUSDC", _rows("OTHERUSDC", n=1)
+    )
+    swapped_bytes = (tmp_path / other_rel_path).read_bytes()
+    shard_path = (tmp_path / rel_path).resolve()
+
+    real_sha256_file = p.rp.sha256_file
+    calls = {"n": 0}
+
+    def racing_sha256_file(path):
+        # Compute the hash over the file's CURRENT (pre-swap) content, exactly
+        # like the pre-fix code did, then simulate a concurrent overwrite that
+        # lands in the window between the hash check and the (old code's)
+        # SECOND, independent `pq.read_table(path)` disk read.
+        digest = real_sha256_file(path)
+        calls["n"] += 1
+        if path == shard_path:
+            path.write_bytes(swapped_bytes)
+        return digest
+
+    monkeypatch.setattr(p.rp, "sha256_file", racing_sha256_file)
+
+    loaded = p.load_symbol_shard(
+        tmp_path,
+        rel_path,
+        expected_file_sha256=file_sha256,
+        expected_content_sha256=content_sha256,
+        expected_row_count=len(rows),
+    )
+    # The fixed code never calls `rp.sha256_file` at all (it hashes its own
+    # single `path.read_bytes()` read), so the race window above is never
+    # entered and the swap has zero effect -- the ORIGINAL, hash-verified
+    # rows must come back, never the swapped-in `OTHERUSDC` content.
+    assert loaded == rows
+    assert calls["n"] == 0

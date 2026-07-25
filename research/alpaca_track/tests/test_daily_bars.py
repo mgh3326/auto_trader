@@ -25,7 +25,9 @@ def _row(open_time_ms, close=100.0, o=None, h=None, low=None, v=1.0):
     return db.SpotMinute(open_time_ms, o, h, low, close, v)
 
 
-def _full_day_rows(day_start=DAY0, skip: set[int] = frozenset(), close_fn=None):
+def _full_day_rows(
+    day_start=DAY0, skip: frozenset[int] | set[int] = frozenset(), close_fn=None
+):
     rows = []
     for m in range(1440):
         if m in skip:

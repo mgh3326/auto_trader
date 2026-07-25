@@ -297,11 +297,15 @@ jobs:
     # out-of-scope research/nautilus_scalping CI gap.
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     env:
       PYTHON_VERSION: "3.13"
 
     steps:
     - uses: actions/checkout@v5
+      with:
+        persist-credentials: false
 
     - name: Set up Python ${{ env.PYTHON_VERSION }}
       uses: actions/setup-python@v6
