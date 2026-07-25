@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import uuid
 
 import pytest
 from sqlalchemy import text
@@ -93,22 +94,23 @@ async def test_crypto_instrument_id_resolution_warning_when_venue_is_krw(
 async def test_crypto_forecast_resolution_exits_unresolved_no_data(
     db_session: AsyncSession,
 ) -> None:
-    """Fixture-based test verifying crypto forecast resolution succeeds when venue='upbit'."""
+    """Verify forecast resolution yields unresolved_no_data on venue='KRW' and resolves cleanly when normalized to venue='upbit'."""
+    unique_symbol = f"KRW-ROBFORECAST-{uuid.uuid4().hex[:8].upper()}"
     inst = CryptoInstrument(
         venue="upbit",
         product="spot",
-        venue_symbol="KRW-ROBBTC",
-        base_asset="ROBBTC",
+        venue_symbol=unique_symbol,
+        base_asset=unique_symbol.replace("KRW-", ""),
         quote_asset="KRW",
         status="active",
     )
     db_session.add(inst)
-    await db_session.flush()
+    await db_session.commit()
 
     repo = DailyCandlesRepository(session=db_session)
     candle = DailyCandleRow(
         time_utc=dt.datetime(2026, 6, 2, 0, 0, tzinfo=dt.UTC),
-        symbol="KRW-ROBBTC",
+        symbol=unique_symbol,
         partition="upbit_krw",
         open=90000000.0,
         high=105000000.0,
@@ -124,13 +126,14 @@ async def test_crypto_forecast_resolution_exits_unresolved_no_data(
 
     target = {
         "kind": "price_target",
-        "target": 100000000.0,
+        "target_price": 100000000.0,
         "direction": "at_or_above",
+        "outcome_rule_version": "window-touch-v1-high-gte-low-lte",
     }
     _, row = await svc.save_forecast(
         db_session,
         created_by="claude",
-        symbol="KRW-ROBBTC",
+        symbol=unique_symbol,
         instrument_type="crypto",
         forecast_target=target,
         probability=0.7,
@@ -139,11 +142,25 @@ async def test_crypto_forecast_resolution_exits_unresolved_no_data(
     )
     await db_session.commit()
 
-    result = await svc.resolve_forecast(
+    # 1. Mutate venue to legacy mis-normalized 'KRW' -> DailyCandlesRepository fails to map instrument -> unresolved_no_data
+    inst.venue = "KRW"
+    await db_session.commit()
+
+    unresolved_result = await svc.resolve_forecast(
         db_session, forecast_id=str(row.forecast_id), persist=True
     )
-    assert result["status"] == "closed_hit"
-    assert result["changed"] is True
+    assert unresolved_result["status"] == "unresolved_no_data"
+
+    # 2. Normalize venue to "upbit" -> resolution succeeds with resolved status and closed_hit forecast status
+    inst.venue = "upbit"
+    await db_session.commit()
+
+    resolved_result = await svc.resolve_forecast(
+        db_session, forecast_id=str(row.forecast_id), persist=True
+    )
+    assert resolved_result["status"] == "resolved"
+    assert resolved_result["changed"] is True
+    assert resolved_result["forecast"]["status"] == "closed"
 
 
 @pytest.mark.asyncio
