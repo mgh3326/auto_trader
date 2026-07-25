@@ -5,10 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.core.config import settings
+
 ACCOUNT_MODE_DB_SIMULATED = "db_simulated"
 ACCOUNT_MODE_KIS_MOCK = "kis_mock"
 ACCOUNT_MODE_KIS_LIVE = "kis_live"
 ACCOUNT_MODE_TOSS_LIVE = "toss_live"
+
+
+def toss_live_mutations_enabled(settings_obj: Any = settings) -> bool:
+    """ROB-549: single source of truth for whether Toss live order mutations are
+    armed. Gates toss_api holdings' order-routability / orderable cash /
+    tradeability so they no longer contradict the registered toss_live order
+    tools once the operator flips ``TOSS_LIVE_ORDER_MUTATIONS_ENABLED``."""
+    return bool(getattr(settings_obj, "toss_live_order_mutations_enabled", False))
+
 
 _ACCOUNT_MODE_ALIASES = {
     "db_simulated": (ACCOUNT_MODE_DB_SIMULATED, False),

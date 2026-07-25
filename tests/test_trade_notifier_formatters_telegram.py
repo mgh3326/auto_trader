@@ -236,12 +236,95 @@ class TestFormatTossPriceRecommendationHtml:
             confidence=85.0,
             currency="원",
             market_type="국내주식",
-            detail_url="https://mgh3326.duckdns.org/portfolio/positions/kr/005930",
+            detail_url="https://mgh3326.duckdns.org/invest/stocks/kr/005930",
         )
         assert (
-            "<b>상세:</b> https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
+            "<b>상세:</b> https://mgh3326.duckdns.org/invest/stocks/kr/005930"
             in html_msg
         )
+
+
+@pytest.mark.unit
+class TestFormatFillTelegram:
+    def test_sell_with_pnl_and_link(self):
+        from app.monitoring.trade_notifier.formatters_telegram import (
+            format_fill_notification_telegram,
+        )
+        from app.services.fill_notification import FillEnrichment, FillOrder
+
+        order = FillOrder(
+            symbol="005930",
+            side="ask",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+        )
+        enr = FillEnrichment(realized_pnl_amount=12000.0, realized_pnl_rate=1.8)
+        msg = format_fill_notification_telegram(
+            order,
+            display_name="삼성전자",
+            detail_url="https://x.test/invest/stocks/kr/005930",
+            enrichment=enr,
+        )
+        assert "매도 체결" in msg
+        assert "삼성전자" in msg and "005930" in msg
+        assert "+12,000원" in msg and "~추정" in msg
+        assert "[종목 상세 보기](https://x.test/invest/stocks/kr/005930)" in msg
+
+    def test_no_link_when_none(self):
+        from app.monitoring.trade_notifier.formatters_telegram import (
+            format_fill_notification_telegram,
+        )
+        from app.services.fill_notification import FillOrder
+
+        order = FillOrder(
+            symbol="005930",
+            side="ask",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+        )
+        msg = format_fill_notification_telegram(
+            order, display_name="삼성전자", detail_url=None, enrichment=None
+        )
+        assert "종목 상세 보기" not in msg
+
+    def test_partial_label(self):
+        from app.monitoring.trade_notifier.formatters_telegram import (
+            format_fill_notification_telegram,
+        )
+        from app.services.fill_notification import FillOrder
+
+        order = FillOrder(
+            symbol="005930",
+            side="bid",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+            fill_status="partial",
+        )
+        msg = format_fill_notification_telegram(
+            order, display_name="삼성전자", detail_url=None, enrichment=None
+        )
+        assert "매수 부분체결" in msg
 
     def test_usd_currency(self):
         html_msg = format_toss_price_recommendation_html(
@@ -291,3 +374,95 @@ class TestFormatTossPriceRecommendationHtml:
         )
         assert "<script>" not in html_msg
         assert "&lt;script&gt;" in html_msg
+
+
+def _watch_payload(**kw):
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from app.services.hermes_client import (
+        InvestLinks,
+        OperatorActionGuidance,
+        ReviewTriggerPayload,
+    )
+
+    base = {
+        "event_uuid": uuid4(),
+        "alert_uuid": uuid4(),
+        "source_report_uuid": uuid4(),
+        "source_item_uuid": uuid4(),
+        "correlation_id": "c1",
+        "kst_date": "2026-06-15",
+        "market": "kr",
+        "target_kind": "asset",
+        "symbol": "005930",
+        "metric": "price",
+        "operator": "below",
+        "threshold": Decimal("68000"),
+        "threshold_key": "k",
+        "intent": "buy_review",
+        "action_mode": "notify_only",
+        "current_value": Decimal("67500"),
+        "scanner_snapshot": {},
+        "outcome": "notified",
+        "invest_links": InvestLinks(
+            report_path="/invest/reports/r1", stock_path="/invest/stocks/kr/005930"
+        ),
+        "operator_action_guidance": OperatorActionGuidance(
+            headline="알림 전용", requires_operator_review=False, order_behavior="none"
+        ),
+        "price_guidance": None,
+        "planned_action": None,
+        "trigger_checklist": None,
+    }
+    base.update(kw)
+    return ReviewTriggerPayload(**base)
+
+
+@pytest.mark.unit
+class TestFormatWatchTriggerTelegram:
+    def test_basic_telegram(self):
+        from app.monitoring.trade_notifier.formatters_telegram import (
+            format_investment_watch_trigger_telegram,
+        )
+
+        msg = format_investment_watch_trigger_telegram(
+            _watch_payload(), display_name="삼성전자", base_url="https://x.test"
+        )
+        assert "워치 트리거" in msg and "삼성전자" in msg
+        assert "price" in msg and "below" in msg and "68000" in msg
+        assert "67500" in msg
+        assert "[종목 상세](https://x.test/invest/stocks/kr/005930)" in msg
+
+    def test_price_guidance_and_checklist_rendered_telegram(self):
+        from decimal import Decimal
+
+        from app.monitoring.trade_notifier.formatters_telegram import (
+            format_investment_watch_trigger_telegram,
+        )
+        from app.services.hermes_client import PriceGuidance
+
+        pg = PriceGuidance(
+            entry_review_below_price=Decimal("66000"),
+            max_chase_price=Decimal("69000"),
+            suggested_limit_price_range=None,
+            invalidation=None,
+        )
+        msg = format_investment_watch_trigger_telegram(
+            _watch_payload(price_guidance=pg, trigger_checklist=["수급 확인"]),
+            display_name="삼성전자",
+            base_url="https://x.test",
+        )
+        assert "가격 가이드" in msg and "체크리스트" in msg
+
+    def test_no_link_when_invest_links_none_telegram(self):
+        from app.monitoring.trade_notifier.formatters_telegram import (
+            format_investment_watch_trigger_telegram,
+        )
+
+        msg = format_investment_watch_trigger_telegram(
+            _watch_payload(invest_links=None),
+            display_name="삼성전자",
+            base_url="https://x.test",
+        )
+        assert "종목 상세" not in msg

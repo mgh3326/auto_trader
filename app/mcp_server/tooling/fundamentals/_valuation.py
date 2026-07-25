@@ -10,6 +10,12 @@ from collections import defaultdict
 from typing import Any
 
 from app.mcp_server.tooling.fundamentals._helpers import normalize_equity_market
+from app.mcp_server.tooling.fundamentals._investor_flow_common import (
+    holding_rate_change as _holding_rate_change,
+)
+from app.mcp_server.tooling.fundamentals._investor_flow_common import (
+    ownership_summary as _ownership_summary,
+)
 from app.mcp_server.tooling.fundamentals_sources_naver import (
     _fetch_investment_opinions_naver,
     _fetch_investor_trends_naver,
@@ -164,20 +170,9 @@ async def handle_get_investor_trends(
     capped_days = min(max(days, 1), 60)
     result["data"] = result["data"][:capped_days]
     result["days"] = len(result["data"])
+    if period == "day":
+        result.update(_ownership_summary(result["data"]))
     return result
-
-
-def _holding_rate_change(rows_sorted: list[dict[str, Any]]) -> float | None:
-    """ROB-448: bucket's foreign holding-rate delta in pp (newest − oldest).
-
-    ``rows_sorted`` is newest-first. Positive = foreigners accumulated over the bucket.
-    None when either endpoint's rate is missing (legacy 7-cell rows).
-    """
-    newest = rows_sorted[0].get("foreign_holding_rate")
-    oldest = rows_sorted[-1].get("foreign_holding_rate")
-    if newest is None or oldest is None:
-        return None
-    return round(newest - oldest, 2)
 
 
 def _aggregate_investor_data(

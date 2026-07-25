@@ -23,6 +23,7 @@ from typing import Any
 # report판 MCP tools were dead (shadowed by the brief판). The report판 SERVICE
 # (app/services/market_report_service.py) stays for the n8n write path + weekly_summary.
 __all__ = [
+    "ANALYSIS_BUNDLE_TOOL_NAMES",
     "INVESTMENT_HERMES_TOOL_NAMES",
     "INVESTMENT_SNAPSHOTS_TOOL_NAMES",
     "NEWS_TOOL_NAMES",
@@ -32,10 +33,20 @@ __all__ = [
     "register_investment_snapshots_tools",
     "register_trade_journal_tools",
     "register_news_tools",
+    "register_analysis_artifact_tools",
+    "register_analysis_bundle_tools",
     "register_session_context_tools",
 ]
 
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "ANALYSIS_BUNDLE_TOOL_NAMES": (
+        "app.mcp_server.tooling.analysis_bundle_handlers",
+        "ANALYSIS_BUNDLE_TOOL_NAMES",
+    ),
+    "register_analysis_bundle_tools": (
+        "app.mcp_server.tooling.analysis_bundle_handlers",
+        "register_analysis_bundle_tools",
+    ),
     "INVESTMENT_HERMES_TOOL_NAMES": (
         "app.mcp_server.tooling.investment_hermes_handlers",
         "INVESTMENT_HERMES_TOOL_NAMES",
@@ -75,6 +86,10 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "register_session_context_tools": (
         "app.mcp_server.tooling.session_context_registration",
         "register_session_context_tools",
+    ),
+    "register_analysis_artifact_tools": (
+        "app.mcp_server.tooling.analysis_artifact_registration",
+        "register_analysis_artifact_tools",
     ),
 }
 

@@ -27,7 +27,11 @@ logger = logging.getLogger(__name__)
 
 _SUPPORTED_PERIODS = {"day", "1h"}
 _DAY_COLUMNS = ["date", "open", "high", "low", "close", "volume", "value"]
-_KRX_DAILY_CACHE_CUTOFF = time(15, 35)
+# Public name (ROB-639): ``daily_candles.read_service`` reuses this cutoff so
+# the DB-first gate and the Redis daily cache share one KRX finalization
+# boundary (the 15:30 close plus a settling buffer). Do not fork the value.
+KRX_DAILY_CACHE_CUTOFF = time(15, 35)
+_KRX_DAILY_CACHE_CUTOFF = KRX_DAILY_CACHE_CUTOFF
 _HOURLY_COLUMNS = [
     "datetime",
     "date",

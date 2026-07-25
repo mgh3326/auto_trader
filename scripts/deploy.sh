@@ -24,7 +24,6 @@ Use the MacBook native deployment path instead:
 
 If you are cleaning up an old Raspberry Pi host, stop the legacy stack manually:
   docker compose --env-file .env.prod -f docker-compose.prod.yml down --remove-orphans
-  docker compose --env-file .env.prod -f docker-compose.n8n.yml down --remove-orphans
 EOF
 
 exit 1

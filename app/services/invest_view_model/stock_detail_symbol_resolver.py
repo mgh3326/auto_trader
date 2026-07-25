@@ -39,6 +39,8 @@ def _normalize_crypto_market(raw_symbol: str) -> str:
     if symbol.endswith("-KRW"):
         base = symbol.removesuffix("-KRW")
         return f"KRW-{base}"
+    if "-" not in symbol:
+        return f"KRW-{symbol}"
     return symbol
 
 

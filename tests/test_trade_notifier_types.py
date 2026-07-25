@@ -78,3 +78,13 @@ class TestTypedDicts:
             "fields": [],
         }
         assert embed["color"] == 0x00FF00
+
+    def test_discord_embed_accepts_optional_url(self):
+        embed: DiscordEmbed = {
+            "title": "t",
+            "description": "d",
+            "color": 0x00FF00,
+            "fields": [],
+            "url": "https://example.com/invest/stocks/kr/005930",
+        }
+        assert embed["url"].endswith("/invest/stocks/kr/005930")

@@ -255,6 +255,7 @@ class TestAllThumbnailsNoTechStack:
 
     def test_all_thumbnails_no_tech_stack(self) -> None:
         import tempfile
+
         from blog.images.kis_trading_images import KISTradingImages
         from blog.images.mcp_server_images import MCPServerImages
         from blog.images.openclaw_images import OpenClawImages

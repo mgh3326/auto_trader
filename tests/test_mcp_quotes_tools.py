@@ -420,6 +420,174 @@ def _nxt_quote_book(
 
 
 @pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_applies_in_premarket(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    async def fake_overlay(symbol, *, session):
+        return {
+            "price": 173500.0,
+            "session": session,
+            "venue": "nxt",
+            "price_source": "nxt_expected_price",
+        }
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
+
+    quote = {"symbol": "192820", "price": 168300.0, "source": "kis"}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "192820", quote, data_state="premarket_unavailable"
+    )
+
+    assert applied is True
+    assert quote["price"] == 173500.0
+    assert quote["price_source"] == "nxt_expected_price"
+    assert quote["session"] == "nxt_premarket"
+    assert quote["data_state"] == "fresh"
+    assert quote["regular_session_data_state"] == "premarket_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_surfaces_self_describing_fields(monkeypatch):
+    """ROB-888: premarket overlay exposes krx_prev_close / change_pct /
+    session_state so consumers judge the real gap without scraping CDP naver."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    async def fake_overlay(symbol, *, session):
+        return {
+            "price": 2082500.0,  # NXT premarket realtime
+            "session": session,
+            "venue": "nxt",
+            "price_source": "nxt_mid",
+        }
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
+
+    # Pre-overlay price is the most recent completed KRX regular close (prev day).
+    quote = {"symbol": "000660", "price": 1913000.0, "source": "kis"}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "000660", quote, data_state="premarket_unavailable"
+    )
+
+    assert applied is True
+    assert quote["price"] == 2082500.0
+    assert quote["price_source"] == "nxt_mid"
+    assert quote["session_state"] == "premarket"
+    assert quote["krx_prev_close"] == 1913000.0
+    # (2082500 - 1913000) / 1913000 * 100 = 8.86%
+    assert quote["change_pct"] == pytest.approx(8.86, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_after_hours_session_state(monkeypatch):
+    """ROB-888: nxt_after overlay tags session_state=nxt_after; krx_prev_close is
+    the just-closed KRX regular close."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_after"
+
+    async def fake_overlay(symbol, *, session):
+        return {
+            "price": 68500.0,
+            "session": session,
+            "venue": "nxt",
+            "price_source": "nxt_mid",
+        }
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
+
+    quote = {"symbol": "005930", "price": 70000.0, "source": "kis"}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "005930", quote, data_state="fresh"
+    )
+
+    assert applied is True
+    assert quote["session_state"] == "nxt_after"
+    assert quote["krx_prev_close"] == 70000.0
+    assert quote["change_pct"] == pytest.approx(-2.14, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_change_pct_null_when_no_prev_close(monkeypatch):
+    """ROB-888: no fake 0 / no raise when the pre-overlay KRX price is missing or
+    non-positive — krx_prev_close and change_pct honestly report null."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    async def fake_overlay(symbol, *, session):
+        return {
+            "price": 2082500.0,
+            "session": session,
+            "venue": "nxt",
+            "price_source": "nxt_mid",
+        }
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
+
+    quote = {"symbol": "000660", "price": None, "source": "kis"}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "000660", quote, data_state="premarket_unavailable"
+    )
+
+    assert applied is True
+    assert quote["session_state"] == "premarket"
+    assert quote["krx_prev_close"] is None
+    assert quote["change_pct"] is None
+
+
+@pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_noop_outside_session(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return None
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+
+    quote = {"symbol": "192820", "price": 168300.0, "source": "kis"}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "192820", quote, data_state="fresh"
+    )
+
+    assert applied is False
+    assert quote == {"symbol": "192820", "price": 168300.0, "source": "kis"}
+
+
+@pytest.mark.asyncio
+async def test_apply_nxt_quote_overlay_noop_on_empty_book(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def fake_session(data_state, *, now=None):
+        return "nxt_premarket"
+
+    async def fake_overlay(symbol, *, session):
+        return None  # empty orderbook → _fetch_nxt_quote_overlay returns None
+
+    monkeypatch.setattr(market_data_quotes, "_nxt_quote_session", fake_session)
+    monkeypatch.setattr(market_data_quotes, "_fetch_nxt_quote_overlay", fake_overlay)
+
+    quote = {"symbol": "192820", "price": 168300.0}
+    applied = await market_data_quotes._apply_nxt_quote_overlay(
+        "192820", quote, data_state="premarket_unavailable"
+    )
+
+    assert applied is False
+    assert quote == {"symbol": "192820", "price": 168300.0}
+
+
+@pytest.mark.asyncio
 async def test_get_quote_korean_equity_premarket_routes_to_nxt_expected_price(
     monkeypatch,
 ):
@@ -987,6 +1155,337 @@ async def test_get_quote_us_flag_off_yahoo_no_price_is_unavailable(monkeypatch):
         await tools["get_quote"]("AAPL")
 
 
+@pytest.mark.asyncio
+async def test_get_quote_us_kis_tags_premarket_session_and_quote_asof(monkeypatch):
+    tools = build_tools()
+
+    _patch_runtime_attr(
+        monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NASD")
+    )
+    _patch_runtime_attr(monkeypatch, "us_market_session", lambda *a, **k: "premarket")
+
+    price_df = pd.DataFrame(
+        [
+            {
+                "close": 195.29,
+                "previous_close": 194.83,
+                "volume": 123456,
+                "quote_asof": "2026-07-06T08:45:12-04:00",
+            }
+        ]
+    )
+
+    class DummyKISClient:
+        async def inquire_overseas_price(self, symbol, exchange_code="NASD"):
+            return price_df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_fast_info",
+        AsyncMock(side_effect=AssertionError("Yahoo should not be called")),
+    )
+
+    result = await tools["get_quote"]("NVDA", market="us")
+
+    assert result["source"] == "kis_overseas"
+    assert result["price"] == pytest.approx(195.29)
+    assert result["session"] == "premarket"
+    assert result["data_state"] == "fresh"
+    assert result["quote_asof"] == "2026-07-06T08:45:12-04:00"
+    assert result["price_source"] == "kis_overseas_last"
+    assert result["venue"] == "NASD"
+    assert result["delayed"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_closed_session_is_stale(monkeypatch):
+    tools = build_tools()
+
+    _patch_runtime_attr(
+        monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NYSE")
+    )
+    _patch_runtime_attr(monkeypatch, "us_market_session", lambda *a, **k: "closed")
+
+    class DummyKISClient:
+        async def inquire_overseas_price(self, symbol, exchange_code="NASD"):
+            return pd.DataFrame(
+                [{"close": 205.0, "previous_close": 201.5, "volume": 100}]
+            )
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+
+    result = await tools["get_quote"]("AAPL", market="us")
+
+    assert result["session"] == "closed"
+    assert result["data_state"] == "stale"
+    assert result["data_state_reason"] == "us_market_closed"
+    assert result["price_source"] == "kis_overseas_last"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_yahoo_fallback_tags_session_and_price_source(monkeypatch):
+    tools = build_tools()
+
+    _patch_runtime_attr(
+        monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NASD")
+    )
+    _patch_runtime_attr(monkeypatch, "us_market_session", lambda *a, **k: "regular")
+
+    class DummyKISClient:
+        async def inquire_overseas_price(self, symbol, exchange_code="NASD"):
+            return pd.DataFrame(
+                columns=["close", "previous_close", "volume", "quote_asof"]
+            )
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_fast_info",
+        AsyncMock(
+            return_value={
+                "close": 205.0,
+                "previous_close": 201.5,
+                "open": 202.0,
+                "high": 206.2,
+                "low": 200.8,
+                "volume": 123456789,
+            }
+        ),
+    )
+
+    result = await tools["get_quote"]("AAPL", market="us")
+
+    assert result["source"] == "yahoo"
+    assert result["session"] == "regular"
+    assert result["data_state"] == "fresh"
+    assert result["price_source"] == "yahoo_fast_info_close"
+    assert "quote_asof" not in result
+
+
+# ---------------------------------------------------------------------------
+# get_quote Tests - US Equity include_extended_hours (ROB-922)
+# ---------------------------------------------------------------------------
+
+
+def _setup_us_kis_premarket_quote(monkeypatch, session: str) -> None:
+    """Shared fixture: KIS overseas quote in the given (non-regular) session."""
+    _patch_runtime_attr(
+        monkeypatch, "get_us_exchange_by_symbol", AsyncMock(return_value="NASD")
+    )
+    _patch_runtime_attr(monkeypatch, "us_market_session", lambda *a, **k: session)
+
+    price_df = pd.DataFrame(
+        [
+            {
+                "close": 195.29,
+                "previous_close": 194.83,
+                "volume": 123456,
+                "quote_asof": "2026-07-06T08:45:12-04:00",
+            }
+        ]
+    )
+
+    class DummyKISClient:
+        async def inquire_overseas_price(self, symbol, exchange_code="NASD"):
+            return price_df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_include_extended_hours_default_false_is_noop(monkeypatch):
+    """Unspecified include_extended_hours must never call the Yahoo prepost
+    path — default result stays byte-identical to the pre-ROB-922 payload."""
+    tools = build_tools()
+    _setup_us_kis_premarket_quote(monkeypatch, "premarket")
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(side_effect=AssertionError("prepost must not be called")),
+    )
+
+    result = await tools["get_quote"]("NVDA", market="us")
+
+    assert result["price"] == pytest.approx(195.29)
+    assert result["price_source"] == "kis_overseas_last"
+    assert result["session"] == "premarket"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_include_extended_hours_premarket_overlays_yahoo_prepost(
+    monkeypatch,
+):
+    tools = build_tools()
+    _setup_us_kis_premarket_quote(monkeypatch, "premarket")
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(
+            return_value={
+                "symbol": "NVDA",
+                "price": 210.5,
+                "quote_asof": "2026-07-16T12:01:00+00:00",
+                "volume": 5000,
+            }
+        ),
+    )
+
+    result = await tools["get_quote"]("NVDA", market="us", include_extended_hours=True)
+
+    assert result["price"] == pytest.approx(210.5)
+    assert result["price_source"] == "yahoo_prepost_last"
+    assert result["quote_asof"] == "2026-07-16T12:01:00+00:00"
+    assert result["session"] == "premarket"
+    assert result["data_state"] == "fresh"
+    # previous_close must be preserved from the base source for gap math.
+    assert result["previous_close"] == pytest.approx(194.83)
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_include_extended_hours_afterhours_overlays_yahoo_prepost(
+    monkeypatch,
+):
+    tools = build_tools()
+    _setup_us_kis_premarket_quote(monkeypatch, "afterhours")
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(
+            return_value={
+                "symbol": "NVDA",
+                "price": 208.1,
+                "quote_asof": "2026-07-16T21:15:00+00:00",
+                "volume": 900,
+            }
+        ),
+    )
+
+    result = await tools["get_quote"]("NVDA", market="us", include_extended_hours=True)
+
+    assert result["price"] == pytest.approx(208.1)
+    assert result["price_source"] == "yahoo_prepost_last"
+    assert result["session"] == "afterhours"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_include_extended_hours_prepost_none_keeps_honest_label(
+    monkeypatch,
+):
+    """When Yahoo has no prepost data, the existing (honest) quote/labels are
+    kept — never lie about the price_source."""
+    tools = build_tools()
+    _setup_us_kis_premarket_quote(monkeypatch, "premarket")
+    monkeypatch.setattr(
+        yahoo_service, "fetch_prepost_quote", AsyncMock(return_value=None)
+    )
+
+    result = await tools["get_quote"]("NVDA", market="us", include_extended_hours=True)
+
+    assert result["price"] == pytest.approx(195.29)
+    assert result["price_source"] == "kis_overseas_last"
+    assert result["session"] == "premarket"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_include_extended_hours_prepost_exception_keeps_honest_label(
+    monkeypatch,
+):
+    """A Yahoo transport failure during the opt-in overlay must not break the
+    base quote — degrade gracefully to the existing result."""
+    tools = build_tools()
+    _setup_us_kis_premarket_quote(monkeypatch, "premarket")
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(side_effect=RuntimeError("yahoo down")),
+    )
+
+    result = await tools["get_quote"]("NVDA", market="us", include_extended_hours=True)
+
+    assert result["price"] == pytest.approx(195.29)
+    assert result["price_source"] == "kis_overseas_last"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_include_extended_hours_regular_session_is_noop(
+    monkeypatch,
+):
+    tools = build_tools()
+    _setup_us_kis_premarket_quote(monkeypatch, "regular")
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(side_effect=AssertionError("prepost must not be called")),
+    )
+
+    result = await tools["get_quote"]("NVDA", market="us", include_extended_hours=True)
+
+    assert result["price"] == pytest.approx(195.29)
+    assert result["price_source"] == "kis_overseas_last"
+    assert result["session"] == "regular"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_include_extended_hours_closed_session_is_noop(
+    monkeypatch,
+):
+    tools = build_tools()
+    _setup_us_kis_premarket_quote(monkeypatch, "closed")
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(side_effect=AssertionError("prepost must not be called")),
+    )
+
+    result = await tools["get_quote"]("NVDA", market="us", include_extended_hours=True)
+
+    assert result["session"] == "closed"
+    assert result["data_state"] == "stale"
+    assert result["price_source"] == "kis_overseas_last"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_kr_include_extended_hours_is_noop(monkeypatch):
+    """KR market ignores include_extended_hours entirely — no-op."""
+    tools = build_tools()
+
+    df = _single_row_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(side_effect=AssertionError("prepost must not be called for KR")),
+    )
+
+    result = await tools["get_quote"]("005930", include_extended_hours=True)
+
+    assert result["instrument_type"] == "equity_kr"
+
+
+@pytest.mark.asyncio
+async def test_get_quote_crypto_include_extended_hours_is_noop(monkeypatch):
+    """Crypto market ignores include_extended_hours entirely — no-op."""
+    tools = build_tools()
+
+    mock_fetch = AsyncMock(return_value={"KRW-BTC": 123.4})
+    monkeypatch.setattr(upbit_service, "fetch_multiple_current_prices", mock_fetch)
+    monkeypatch.setattr(
+        yahoo_service,
+        "fetch_prepost_quote",
+        AsyncMock(side_effect=AssertionError("prepost must not be called for crypto")),
+    )
+
+    result = await tools["get_quote"]("krw-btc", include_extended_hours=True)
+
+    assert result["instrument_type"] == "crypto"
+
+
 # ---------------------------------------------------------------------------
 # get_quote Tests - Error Handling
 # ---------------------------------------------------------------------------
@@ -1097,3 +1596,51 @@ async def test_get_dividends_uses_session_and_keeps_payload(monkeypatch):
     )
     assert captured["symbol"] == "AAPL"
     assert captured["session"] is not None
+
+
+@pytest.mark.asyncio
+async def test_get_quote_kr_exposes_nxt_tradable(monkeypatch):
+    import datetime as dt
+
+    from app.mcp_server.tooling import market_data_quotes
+    from app.services.nxt_preflight import NxtTradability
+
+    tools = build_tools()
+    df = _single_row_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+
+    async def fake_tradability(symbols, db=None):
+        return {
+            symbols[0]: NxtTradability(
+                nxt_eligible=True,
+                nxt_trading_suspended=False,
+                asof=dt.datetime(2026, 7, 3, 6, 0, tzinfo=dt.UTC),
+            )
+        }
+
+    monkeypatch.setattr(market_data_quotes, "get_kr_nxt_tradability", fake_tradability)
+
+    result = await tools["get_quote"]("005930")
+    assert result["nxt_tradable"] is None
+    assert result["nxt_tradable_observed"] is True
+    assert result["nxt_tradable_stale"] is True
+    assert result["nxt_tradable_reason"] == "stale_asof"
+    assert result["nxt_tradable_source"] == "kr_symbol_universe"
+    assert result["nxt_tradable_asof"] is not None
+
+
+@pytest.mark.asyncio
+async def test_get_quote_us_has_no_nxt_fields(monkeypatch):
+    tools = build_tools()
+
+    async def fake_fast_info(_symbol):
+        return {"close": 100.0, "previous_close": 99.0}
+
+    monkeypatch.setattr(yahoo_service, "fetch_fast_info", fake_fast_info)
+    result = await tools["get_quote"]("AAPL", "us")
+    assert "nxt_tradable" not in result

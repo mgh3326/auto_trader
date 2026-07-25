@@ -306,6 +306,54 @@ async def get_us_common_stock_flags(
         return await _run(session)
 
 
+async def get_us_names_by_symbols(
+    symbols: list[str],
+    db: AsyncSession | None = None,
+) -> dict[str, str]:
+    """Return ``{input_symbol: display_name}`` for active US symbols.
+
+    Name precedence mirrors ``search_us_symbols``: ``name_kr`` then ``name_en``.
+    The dict is keyed by the caller's original symbol string. Symbols absent from
+    the active universe (or with no usable name) are omitted, so callers keep
+    showing the raw ticker on a miss.
+    """
+    canon_to_original: dict[str, str] = {}
+    for raw in symbols:
+        if not raw:
+            continue
+        canon = to_db_symbol(_normalize_symbol(raw))
+        if canon:
+            canon_to_original.setdefault(canon, raw)
+    if not canon_to_original:
+        return {}
+
+    async def _run(session: AsyncSession) -> dict[str, str]:
+        stmt = select(
+            USSymbolUniverse.symbol,
+            USSymbolUniverse.name_kr,
+            USSymbolUniverse.name_en,
+        ).where(
+            USSymbolUniverse.symbol.in_(list(canon_to_original)),
+            USSymbolUniverse.is_active.is_(True),
+        )
+        result = await session.execute(stmt)
+        names: dict[str, str] = {}
+        for canon_symbol, name_kr, name_en in result.all():
+            original = canon_to_original.get(canon_symbol)
+            if original is None:
+                continue
+            display = (name_kr or "").strip() or (name_en or "").strip()
+            if display:
+                names[original] = display
+        return names
+
+    if db is not None:
+        return await _run(db)
+
+    async with AsyncSessionLocal() as session:  # pyright: ignore[reportGeneralTypeIssues]
+        return await _run(session)
+
+
 async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
     normalized_name = normalize_name(name)
     if not normalized_name:

@@ -27,6 +27,7 @@ from app.schemas.research_run_decision_session import (
 from app.services import (
     nxt_classifier_service,
     pending_reconciliation_service,
+    research_run_new_candidates,
     research_run_service,
     trading_decision_service,
 )
@@ -571,10 +572,19 @@ async def create_decision_session_from_research_run(
         proposals=proposals,
     )
 
+    # ROB-918: advisory-only shadow section (new-candidate observations, no
+    # proposal rows). Reads via its own DB session, so a failure here can
+    # never poison this function's write transaction.
+    new_candidates = await research_run_new_candidates.build_new_candidate_section(
+        market_scope=research_run.market_scope,
+        stage=research_run.stage,
+    )
+
     session.market_brief = _json_safe(
         {
             "advisory_only": True,
             "execution_allowed": False,
+            "new_candidates": new_candidates,
             "research_run_uuid": str(research_run.run_uuid),
             "refreshed_at": snapshot.refreshed_at,
             "counts": {

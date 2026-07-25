@@ -6,9 +6,7 @@ Read-only. No DB writes. No broker calls. No mutation.
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
-from html import unescape
 from typing import Any
 
 from app.schemas.news import NewsReadinessResponse, NewsSourceCoverage
@@ -35,6 +33,7 @@ from app.services.news_radar_classifier import (
     NewsRadarItemClassification,
     classify_news_radar_item,
 )
+from app.services.news_text import truncate_text
 
 _SECTION_TITLES: dict[NewsRadarRiskCategory, str] = {
     "geopolitical_oil": "Geopolitical / Oil shock",
@@ -53,21 +52,10 @@ _SECTION_ORDER: tuple[NewsRadarRiskCategory, ...] = (
 _BRIEFING_INCLUDE_THRESHOLD = 40
 _AGGREGATE_MARKETS = ("kr", "us", "crypto")
 _MAX_INTERNAL_FETCH_LIMIT = 500
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
-_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _plain_text(value: Any, *, max_length: int | None = None) -> str | None:
-    if value is None:
-        return None
-    text = unescape(str(value))
-    text = _HTML_TAG_RE.sub(" ", text)
-    text = _WHITESPACE_RE.sub(" ", text).strip()
-    if not text:
-        return None
-    if max_length is not None and len(text) > max_length:
-        return text[: max_length - 1].rstrip() + "…"
-    return text
+    return truncate_text(value, max_length)
 
 
 def _field(article: Any, name: str) -> Any:

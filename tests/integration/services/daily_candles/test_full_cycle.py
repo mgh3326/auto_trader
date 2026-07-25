@@ -187,3 +187,70 @@ class TestFullCycle:
                 {"symbol": _SYMBOL_US, "exchange": "NASD", "t": t},
             )
             await dev_session.commit()
+
+    @pytest.mark.asyncio
+    async def test_fetch_recent_bounded_window_matches_unbounded(self, dev_session):
+        """ROB-812: the bounded time predicate must not drop rows vs an
+        unbounded LIMIT.  Insert 250 daily rows (>2 chunks of 90 days), then
+        assert fetch_recent(count=200) returns exactly the newest 200 rows."""
+        from datetime import UTC, datetime, timedelta
+
+        repo = DailyCandlesRepository(session=dev_session)
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        rows = [
+            DailyCandleRow(
+                time_utc=base + timedelta(days=i),
+                symbol=_SYMBOL_KR,
+                partition="KRX",
+                open=1.0,
+                high=2.0,
+                low=0.5,
+                close=1.5,
+                adj_close=None,
+                volume=10.0,
+                value=15.0,
+                source="test",
+            )
+            for i in range(250)  # 250 days => spans >2 chunks (90d each)
+        ]
+        try:
+            await repo.upsert_rows(market=MarketKey.KR, rows=rows)
+            await dev_session.commit()
+
+            fetched = await repo.fetch_recent(
+                market=MarketKey.KR,
+                symbol=_SYMBOL_KR,
+                partition="KRX",
+                count=200,
+            )
+
+            # Unbounded reference (no time predicate) — the source of truth.
+            ref = (
+                (
+                    await dev_session.execute(
+                        text(
+                            "SELECT time FROM public.kr_candles_1d "
+                            "WHERE symbol=:s AND venue='KRX' "
+                            "ORDER BY time DESC LIMIT 200"
+                        ),
+                        {"s": _SYMBOL_KR},
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            assert len(fetched) == 200
+            # fetch_recent returns ascending (reversed); compare newest set.
+            fetched_times = {r.time_utc for r in fetched}
+            assert fetched_times == set(ref)
+        except Exception:
+            await dev_session.rollback()
+            raise
+        finally:
+            await dev_session.rollback()
+            await dev_session.execute(
+                text("DELETE FROM public.kr_candles_1d WHERE symbol = :symbol"),
+                {"symbol": _SYMBOL_KR},
+            )
+            await dev_session.commit()

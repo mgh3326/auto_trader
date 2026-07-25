@@ -28,15 +28,6 @@ _EXPORT_MODULES = {
     "ReferencePricesResponse": "app.schemas.manual_holdings",
     "MergedHoldingResponse": "app.schemas.manual_holdings",
     "MergedPortfolioResponse": "app.schemas.manual_holdings",
-    # Portfolio Decision
-    "PortfolioDecisionSlateResponse": "app.schemas.portfolio_decision",
-    # Portfolio Position Detail
-    "PositionDetailComponentResponse": "app.schemas.portfolio_position_detail",
-    "PositionDetailSummaryResponse": "app.schemas.portfolio_position_detail",
-    "PositionDetailPageResponse": "app.schemas.portfolio_position_detail",
-    "PositionIndicatorsResponse": "app.schemas.portfolio_position_detail",
-    "PositionNewsResponse": "app.schemas.portfolio_position_detail",
-    "PositionOpinionsResponse": "app.schemas.portfolio_position_detail",
     # Trading
     "BuyOrderRequest": "app.schemas.manual_holdings",
     "SellOrderRequest": "app.schemas.manual_holdings",

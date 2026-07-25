@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select, text, update
+from sqlalchemy import and_, case, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +40,7 @@ LIFECYCLE_CLOSED = "closed"
 LIFECYCLE_FINAL_RECONCILED = "final_reconciled"
 LIFECYCLE_ANOMALY = "anomaly"
 LIFECYCLE_STALE_PREVIEW_CLEANUP_REQUIRED = "stale_preview_cleanup_required"
+LIFECYCLE_CANCELED = "canceled"
 
 CANONICAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
     {
@@ -54,11 +55,13 @@ CANONICAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
         LIFECYCLE_FINAL_RECONCILED,
         LIFECYCLE_ANOMALY,
         LIFECYCLE_STALE_PREVIEW_CLEANUP_REQUIRED,
+        LIFECYCLE_CANCELED,
     }
 )
 
 # ROB-91: post-submit executed states used for idempotency checks.
 # Excludes pre-submit (planned/previewed/validated) and anomaly.
+# ROB-920: Include canceled.
 EXECUTED_LIFECYCLE_STATES: frozenset[str] = frozenset(
     {
         LIFECYCLE_SUBMITTED,
@@ -67,6 +70,7 @@ EXECUTED_LIFECYCLE_STATES: frozenset[str] = frozenset(
         LIFECYCLE_SELL_VALIDATED,
         LIFECYCLE_CLOSED,
         LIFECYCLE_FINAL_RECONCILED,
+        LIFECYCLE_CANCELED,
     }
 )
 
@@ -77,6 +81,42 @@ RECORD_KIND_VALIDATION_ATTEMPT = "validation_attempt"
 RECORD_KIND_EXECUTION = "execution"
 RECORD_KIND_RECONCILE = "reconcile"
 RECORD_KIND_ANOMALY = "anomaly"
+
+# ROB-954: retrospective-terminal outcomes. ``terminalized_at`` is stamped only
+# on the first transition from outside this set into it. Downstream terminal to
+# terminal transitions (for example anomaly -> canceled or filled -> closed)
+# preserve the original timestamp.
+TERMINAL_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {
+        LIFECYCLE_FILLED,
+        LIFECYCLE_POSITION_RECONCILED,
+        LIFECYCLE_CLOSED,
+        LIFECYCLE_FINAL_RECONCILED,
+        LIFECYCLE_CANCELED,
+        LIFECYCLE_ANOMALY,
+    }
+)
+
+# ROB-953: states a reconcile pass never re-opens as a *booking candidate*.
+# The candidate terminal set and retrospective terminal set intentionally match.
+RECONCILE_TERMINAL_LIFECYCLE_STATES = TERMINAL_LIFECYCLE_STATES
+
+# ROB-953: states from which a status write must never resurrect a row. Only
+# *completed* downstream states qualify — position/close/final bookkeeping has
+# already consumed the row, so re-deriving a state from a late broker read would
+# corrupt it.
+#
+# Deliberately EXCLUDES anomaly/canceled/filled: those are terminal outcomes but
+# remain legitimately re-transitionable (anomaly -> canceled once cancel evidence
+# lands, filled -> anomaly on contradicting evidence). An earlier revision of
+# this PR guarded on the full terminal set and silently broke anomaly -> canceled.
+RECONCILE_IMMUTABLE_LIFECYCLE_STATES: frozenset[str] = frozenset(
+    {
+        LIFECYCLE_POSITION_RECONCILED,
+        LIFECYCLE_CLOSED,
+        LIFECYCLE_FINAL_RECONCILED,
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Sensitive key patterns — redact before any JSON persistence
@@ -97,8 +137,16 @@ _SENSITIVE_TEXT_VALUE_RE = re.compile(
     re.IGNORECASE,
 )
 _AUTHORIZATION_TEXT_VALUE_RE = re.compile(
-    r"(?P<prefix>\bauthorization\b\s*[:=]\s*)"
-    r"(?P<value>[^,;]+?)(?=\s+\w+(?:[_-]?\w+)*\s*[:=]|$|[,;])",
+    r"(?P<prefix>\b(authorization|bearer)\b\s*[:=]?\s*)"
+    r"(?P<value>(?:bearer\s+)?\S+)",
+    re.IGNORECASE,
+)
+_JSON_SENSITIVE_RE = re.compile(
+    r"(?P<prefix>\"(?:api[_-]?key|secret|token|account[_-]?no|"
+    r"account[_-]?number|account[_-]?id|account[_-]?identifier|"
+    r"email|passwd|password|credential)\"\s*:\s*\")"
+    r"(?P<value>[^\"]*)"
+    r"(?P<suffix>\")",
     re.IGNORECASE,
 )
 
@@ -124,6 +172,7 @@ def _redact_sensitive_text(text: str | None) -> str | None:
     if text is None:
         return None
     redacted = _AUTHORIZATION_TEXT_VALUE_RE.sub(r"\g<prefix>[REDACTED]", text)
+    redacted = _JSON_SENSITIVE_RE.sub(r"\g<prefix>[REDACTED]\g<suffix>", redacted)
     return _SENSITIVE_TEXT_VALUE_RE.sub(r"\g<prefix>[REDACTED]", redacted)
 
 
@@ -146,11 +195,27 @@ _OPEN_STATUSES = frozenset(
     }
 )
 _ANOMALY_STATUSES = frozenset({"rejected", "expired", "suspended"})
+KNOWN_OPEN_BROKER_STATUSES = frozenset({*_OPEN_STATUSES, "partially_filled"})
+KNOWN_TERMINAL_BROKER_STATUSES = frozenset({*_ANOMALY_STATUSES, "filled", "canceled"})
+_KNOWN_BROKER_STATUSES = KNOWN_OPEN_BROKER_STATUSES | KNOWN_TERMINAL_BROKER_STATUSES
+
+
+def normalize_known_broker_order_status(value: Any) -> str | None:
+    """Return a normalized Alpaca status only when its semantics are known.
+
+    Unknown, blank, and non-string provider values are not terminal evidence and
+    must never release an open sell reservation.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized if normalized in _KNOWN_BROKER_STATUSES else None
 
 
 def _derive_lifecycle_state(
-    order_status: str | None,
+    order_status: Any,
     filled_qty: Decimal | float | None = None,
+    has_cancel_evidence: bool = False,
 ) -> str:
     """Map broker order_status to ROB-90 canonical lifecycle state.
 
@@ -159,10 +224,11 @@ def _derive_lifecycle_state(
     - partially_filled → submitted (broker status preserved in order_status)
     - open statuses (new/accepted/…) → submitted
     - open status with filled_qty > 0 → anomaly
-    - canceled → anomaly (ROB-90: no benign cancel state)
+    - canceled with cancel evidence → canceled (ROB-920)
+    - canceled without cancel evidence → anomaly
     - rejected/expired/suspended/unknown → anomaly
     """
-    if order_status is None:
+    if not isinstance(order_status, str):
         return LIFECYCLE_ANOMALY
     status = order_status.lower()
     if status == "filled":
@@ -178,9 +244,19 @@ def _derive_lifecycle_state(
             if qty > 0:
                 return LIFECYCLE_ANOMALY
         return LIFECYCLE_SUBMITTED
-    if status in _ANOMALY_STATUSES or status == "canceled":
+    if status == "canceled":
+        if has_cancel_evidence:
+            return LIFECYCLE_CANCELED
+        return LIFECYCLE_ANOMALY
+    if status in _ANOMALY_STATUSES:
         return LIFECYCLE_ANOMALY
     return LIFECYCLE_ANOMALY
+
+
+# ROB-953: public handle on the canonical mapping. The reconcile service derives
+# the state it reports from this exact function, so a reported action can never
+# diverge from what ``record_status`` persists.
+derive_lifecycle_state = _derive_lifecycle_state
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +310,109 @@ def from_approval_bridge(
 
 
 # ---------------------------------------------------------------------------
+# ROB-842: atomic submit-claim support
+# ---------------------------------------------------------------------------
+@dataclass
+class SubmitClaim:
+    """Result of an atomic submit claim on the existing execution unique slot.
+
+    won:  True if this caller inserted the execution claim row (owns the broker
+          POST); False if a concurrent/sequential caller already claimed it.
+    row:  the execution/lifecycle row for the client_order_id (winner's fresh claim
+          row, or the row a losing caller must inspect for replay vs in-flight).
+    """
+
+    won: bool
+    row: AlpacaPaperOrderLedger | None
+
+
+@dataclass
+class SellReservationClaim:
+    """Result of an advisory-locked sell reservation + atomic claim.
+
+    won:          True if this caller inserted the execution claim row.
+    insufficient: True if the requested qty exceeds the reservation-adjusted
+                  available position (no claim attempted); ``available`` is set.
+    available:    conservative min of broker qty_available and position qty minus
+                  already-reserved open sell qty (Decimal).
+    row:          the execution row for the client_order_id (for replay lookups).
+    source_reason_code: Stable source-authority rejection, when the exact BUY
+                  cannot back this claim. ``None`` means source authority passed
+                  (or this is a legacy/manual claim without an exact source).
+    source_available: Remaining quantity attributable to the exact source BUY.
+    """
+
+    won: bool
+    insufficient: bool
+    available: Decimal | None
+    row: AlpacaPaperOrderLedger | None
+    source_reason_code: str | None = None
+    source_available: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class StatusWriteResult:
+    """Fresh execution row plus the conditional UPDATE outcome."""
+
+    applied: bool
+    row: AlpacaPaperOrderLedger
+
+
+def is_inflight_execution(row: Any) -> bool:
+    """True when an execution row is a claimed-but-not-yet-recorded submit.
+
+    The winner inserts an execution row with ``submitted_at``/``broker_order_id``
+    NULL, then fills them in ``record_submit`` after the broker responds. An
+    execution row still missing both markers therefore denotes an in-flight (or
+    crashed-mid-flight) submit that must not be re-POSTed.
+    """
+    if row is None:
+        return False
+    if str(_get_attr(row, "record_kind") or "") != RECORD_KIND_EXECUTION:
+        return False
+    return (
+        _get_attr(row, "submitted_at") is None
+        and _get_attr(row, "broker_order_id") is None
+    )
+
+
+def _get_attr(row: Any, key: str, default: Any = None) -> Any:
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
+def _initial_terminalized_at(lifecycle_state: str) -> Any | None:
+    """Database timestamp for a row inserted directly into a terminal state."""
+    return func.now() if lifecycle_state in TERMINAL_LIFECYCLE_STATES else None
+
+
+def _terminal_transition_timestamp(lifecycle_state: str) -> Any:
+    """Stamp only a live-row non-terminal -> terminal transition.
+
+    The CASE is evaluated by PostgreSQL against the row version being updated,
+    not against a possibly stale ORM read. Checking both the current lifecycle
+    and the nullable timestamp preserves the first transition under retries and
+    concurrent terminal writes. A legacy terminal row with NULL stays NULL on a
+    repeated terminal write and continues through the scanner's stable fallback.
+    """
+    if lifecycle_state not in TERMINAL_LIFECYCLE_STATES:
+        return AlpacaPaperOrderLedger.terminalized_at
+    return case(
+        (
+            and_(
+                AlpacaPaperOrderLedger.terminalized_at.is_(None),
+                AlpacaPaperOrderLedger.lifecycle_state.not_in(
+                    TERMINAL_LIFECYCLE_STATES
+                ),
+            ),
+            func.now(),
+        ),
+        else_=AlpacaPaperOrderLedger.terminalized_at,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 class LedgerNotFoundError(Exception):
@@ -252,6 +431,11 @@ class AlpacaPaperLedgerService:
 
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
+
+    @property
+    def session(self) -> AsyncSession:
+        """Underlying async session (used to force a fresh READ COMMITTED snapshot)."""
+        return self._db
 
     # ------------------------------------------------------------------
     # Read helpers
@@ -290,6 +474,35 @@ class AlpacaPaperLedgerService:
         if lifecycle_state is not None:
             stmt = stmt.where(AlpacaPaperOrderLedger.lifecycle_state == lifecycle_state)
         stmt = stmt.limit(limit)
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_reconcile_candidates(
+        self,
+        limit: int = 100,
+        symbol: str | None = None,
+    ) -> list[AlpacaPaperOrderLedger]:
+        """Execution rows still eligible for fill booking, newest first.
+
+        ROB-953: eligibility (``record_kind``, non-terminal lifecycle, optional
+        symbol) is filtered in SQL *before* ``limit``. Selecting the newest N rows
+        first and filtering afterwards made an older open execution unrecoverable
+        as soon as N newer preview/terminal rows existed.
+        """
+        conditions: list[Any] = [
+            AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+            AlpacaPaperOrderLedger.lifecycle_state.not_in(
+                RECONCILE_TERMINAL_LIFECYCLE_STATES
+            ),
+        ]
+        if symbol is not None:
+            conditions.append(AlpacaPaperOrderLedger.execution_symbol == symbol)
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(*conditions)
+            .order_by(AlpacaPaperOrderLedger.created_at.desc())
+            .limit(limit)
+        )
         result = await self._db.execute(stmt)
         return list(result.scalars().all())
 
@@ -375,6 +588,500 @@ class AlpacaPaperLedgerService:
         return result.scalar_one_or_none()
 
     # ------------------------------------------------------------------
+    # ROB-842: atomic submit claim
+    # ------------------------------------------------------------------
+
+    async def claim_submit(
+        self,
+        *,
+        client_order_id: str,
+        lifecycle_correlation_id: str | None = None,
+        execution_symbol: str,
+        execution_venue: str,
+        execution_asset_class: str | None = None,
+        instrument_type: InstrumentType,
+        side: str,
+        order_type: str = "limit",
+        time_in_force: str | None = None,
+        requested_qty: Decimal | float | None = None,
+        requested_notional: Decimal | float | None = None,
+        requested_price: Decimal | float | None = None,
+        currency: str = "USD",
+        preview_payload: dict[str, Any] | None = None,
+        provenance: ApprovalProvenance | None = None,
+    ) -> SubmitClaim:
+        """Atomically claim submit ownership for ``client_order_id``.
+
+        Inserts the single execution row for this order (record_kind='execution',
+        lifecycle_state='submitted', broker_order_id/submitted_at NULL) using
+        ``INSERT ... ON CONFLICT DO NOTHING RETURNING id`` against the existing
+        partial-unique execution slot. The winner is whichever caller inserts the
+        row; every other concurrent/sequential caller conflicts and observes
+        ``won=False``. No new table/column/index is introduced — this reuses the
+        ROB-90 ``(client_order_id, record_kind)`` unique slot that
+        ``record_submit`` later updates in place.
+        """
+        if not client_order_id or not client_order_id.strip():
+            raise ValueError("client_order_id must not be empty")
+
+        prov = provenance or ApprovalProvenance()
+        correlation_id = lifecycle_correlation_id or client_order_id
+        sanitized_preview = (
+            _redact_sensitive_keys(preview_payload) if preview_payload else None
+        )
+
+        values: dict[str, Any] = {
+            "client_order_id": client_order_id,
+            "lifecycle_correlation_id": correlation_id,
+            "record_kind": RECORD_KIND_EXECUTION,
+            "broker": "alpaca",
+            "account_mode": "alpaca_paper",
+            "lifecycle_state": LIFECYCLE_SUBMITTED,
+            "execution_symbol": execution_symbol,
+            "execution_venue": execution_venue,
+            "execution_asset_class": execution_asset_class,
+            "instrument_type": instrument_type,
+            "side": side,
+            "order_type": order_type,
+            "time_in_force": time_in_force,
+            "requested_qty": requested_qty,
+            "requested_notional": requested_notional,
+            "requested_price": requested_price,
+            "currency": currency,
+            "preview_payload": sanitized_preview,
+            # In-flight markers: intentionally NULL until record_submit fills them.
+            "broker_order_id": None,
+            "submitted_at": None,
+            "confirm_flag": True,
+            **self._build_provenance_values(prov),
+        }
+
+        stmt = (
+            pg_insert(AlpacaPaperOrderLedger)
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=["client_order_id", "record_kind"],
+                index_where=text("validation_attempt_no IS NULL"),
+            )
+            .returning(AlpacaPaperOrderLedger.id)
+        )
+        result = await self._db.execute(stmt)
+        inserted_id = result.scalar_one_or_none()
+        await self._db.commit()
+
+        # Re-read from the committed state so a losing caller sees the winner's row.
+        self._db.expire_all()
+        row = await self._find_execution_row(client_order_id)
+        return SubmitClaim(won=inserted_id is not None, row=row)
+
+    async def reserve_sell_and_claim(
+        self,
+        *,
+        client_order_id: str,
+        lifecycle_correlation_id: str | None = None,
+        execution_symbol: str,
+        execution_venue: str,
+        execution_asset_class: str | None = None,
+        instrument_type: InstrumentType,
+        account_mode: str = "alpaca_paper",
+        requested_qty: Decimal,
+        position_qty: Decimal,
+        position_available: Decimal,
+        order_type: str = "limit",
+        time_in_force: str | None = None,
+        requested_price: Decimal | float | None = None,
+        currency: str = "USD",
+        preview_payload: dict[str, Any] | None = None,
+        source_client_order_id: str | None = None,
+        provenance: ApprovalProvenance | None = None,
+    ) -> SellReservationClaim:
+        """Atomically reserve sellable qty and claim the submit under one lock.
+
+        Serializes concurrent sells for the same ``(account_mode, execution_symbol)``
+        across sessions/processes via a transaction-scoped PostgreSQL advisory lock,
+        so two *different* sell intents cannot each read the full position and both
+        POST. Within the lock: available = position_qty − Σ(open sell requested_qty
+        already reserved for this symbol/account), bounded again by the broker's
+        qty_available, and only if the request fits inserts the execution claim row
+        (ON CONFLICT DO NOTHING). The claim stores its position baseline in the
+        existing position_snapshot JSONB and counts as a reservation for the next
+        caller. No new schema.
+        """
+        if not client_order_id or not client_order_id.strip():
+            raise ValueError("client_order_id must not be empty")
+
+        prov = provenance or ApprovalProvenance()
+        correlation_id = lifecycle_correlation_id or client_order_id
+        exact_source_id = (source_client_order_id or "").strip() or None
+        await self.acquire_sell_reservation_lock(
+            account_mode=account_mode, execution_symbol=execution_symbol
+        )
+
+        source_available: Decimal | None = None
+        if exact_source_id is not None:
+            source = await self._find_execution_row(exact_source_id, for_update=True)
+            source_filled = self._validated_source_filled_qty(
+                source,
+                account_mode=account_mode,
+                execution_symbol=execution_symbol,
+                execution_venue=execution_venue,
+                execution_asset_class=execution_asset_class,
+                instrument_type=instrument_type,
+            )
+            if source_filled is None:
+                return await self._reject_source_claim(
+                    client_order_id,
+                    reason_code="source_authority_unavailable",
+                    source_available=None,
+                )
+
+            source_sells_stmt = select(AlpacaPaperOrderLedger).where(
+                AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+                AlpacaPaperOrderLedger.side == "sell",
+                AlpacaPaperOrderLedger.account_mode == account_mode,
+                AlpacaPaperOrderLedger.execution_symbol == execution_symbol,
+                AlpacaPaperOrderLedger.client_order_id != client_order_id,
+                AlpacaPaperOrderLedger.preview_payload[
+                    "source_buy_client_order_id"
+                ].astext
+                == exact_source_id,
+            )
+            source_sells = list(
+                (await self._db.execute(source_sells_stmt)).scalars().all()
+            )
+            source_consumed = sum(
+                (
+                    self._source_consumption_qty(row, source_filled=source_filled)
+                    for row in source_sells
+                ),
+                start=Decimal("0"),
+            )
+            source_available = max(source_filled - source_consumed, Decimal("0"))
+            if requested_qty > source_available:
+                return await self._reject_source_claim(
+                    client_order_id,
+                    reason_code="qty_exceeds_source_available",
+                    source_available=source_available,
+                )
+
+        # Only OPEN sells still consume sellable qty: a `filled` sell has already
+        # reduced the live position, and a canceled (`cancel_status` set) or
+        # `anomaly`/terminal sell releases its hold. Subtracting a filled sell would
+        # double-count it against the (already-reduced) live position.
+        reserved_stmt = select(
+            func.coalesce(func.sum(AlpacaPaperOrderLedger.requested_qty), 0)
+        ).where(
+            AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+            AlpacaPaperOrderLedger.side == "sell",
+            AlpacaPaperOrderLedger.execution_symbol == execution_symbol,
+            AlpacaPaperOrderLedger.account_mode == account_mode,
+            AlpacaPaperOrderLedger.lifecycle_state == LIFECYCLE_SUBMITTED,
+            AlpacaPaperOrderLedger.cancel_status.is_(None),
+            AlpacaPaperOrderLedger.client_order_id != client_order_id,
+        )
+        reserved_raw = (await self._db.execute(reserved_stmt)).scalar_one()
+        reserved = Decimal(str(reserved_raw or 0))
+        available = min(
+            Decimal(str(position_qty)) - reserved,
+            Decimal(str(position_available)),
+        )
+
+        if requested_qty > available:
+            # No write yet — end the txn to release the advisory lock immediately.
+            await self._db.rollback()
+            self._db.expire_all()
+            existing = await self._find_execution_row(client_order_id)
+            return SellReservationClaim(
+                won=False, insufficient=True, available=available, row=existing
+            )
+
+        persisted_preview = dict(preview_payload or {})
+        if exact_source_id is not None:
+            persisted_preview["source_buy_client_order_id"] = exact_source_id
+        else:
+            # Only the trusted argument may create source-allocation evidence;
+            # never let an arbitrary preview field consume another BUY authority.
+            persisted_preview.pop("source_buy_client_order_id", None)
+
+        values: dict[str, Any] = {
+            "client_order_id": client_order_id,
+            "lifecycle_correlation_id": correlation_id,
+            "record_kind": RECORD_KIND_EXECUTION,
+            "broker": "alpaca",
+            "account_mode": account_mode,
+            "lifecycle_state": LIFECYCLE_SUBMITTED,
+            "execution_symbol": execution_symbol,
+            "execution_venue": execution_venue,
+            "execution_asset_class": execution_asset_class,
+            "instrument_type": instrument_type,
+            "side": "sell",
+            "order_type": order_type,
+            "time_in_force": time_in_force,
+            "requested_qty": requested_qty,
+            "requested_price": requested_price,
+            "currency": currency,
+            "preview_payload": _redact_sensitive_keys(persisted_preview)
+            if persisted_preview
+            else None,
+            "position_snapshot": {
+                "snapshot_kind": "sell_claim_baseline",
+                "qty": str(position_qty),
+                "qty_available": str(position_available),
+                "fetched_at": datetime.now(UTC).isoformat(),
+            },
+            "broker_order_id": None,
+            "submitted_at": None,
+            "confirm_flag": True,
+            **self._build_provenance_values(prov),
+        }
+        stmt = (
+            pg_insert(AlpacaPaperOrderLedger)
+            .values(**values)
+            .on_conflict_do_nothing(
+                index_elements=["client_order_id", "record_kind"],
+                index_where=text("validation_attempt_no IS NULL"),
+            )
+            .returning(AlpacaPaperOrderLedger.id)
+        )
+        inserted_id = (await self._db.execute(stmt)).scalar_one_or_none()
+        await self._db.commit()  # releases the advisory lock
+        self._db.expire_all()
+        row = await self._find_execution_row(client_order_id)
+        return SellReservationClaim(
+            won=inserted_id is not None,
+            insufficient=False,
+            available=available,
+            row=row,
+            source_available=source_available,
+        )
+
+    async def _reject_source_claim(
+        self,
+        client_order_id: str,
+        *,
+        reason_code: str,
+        source_available: Decimal | None,
+    ) -> SellReservationClaim:
+        """Release the xact lock and return a fail-closed source claim result."""
+        await self._db.rollback()
+        self._db.expire_all()
+        existing = await self._find_execution_row(client_order_id)
+        return SellReservationClaim(
+            won=False,
+            insufficient=False,
+            available=None,
+            row=existing,
+            source_reason_code=reason_code,
+            source_available=source_available,
+        )
+
+    @staticmethod
+    def _validated_source_filled_qty(
+        source: AlpacaPaperOrderLedger | None,
+        *,
+        account_mode: str,
+        execution_symbol: str,
+        execution_venue: str,
+        execution_asset_class: str | None,
+        instrument_type: InstrumentType,
+    ) -> Decimal | None:
+        """Return exact BUY capacity only while its authority remains reusable."""
+        if source is None:
+            return None
+        if (
+            source.record_kind != RECORD_KIND_EXECUTION
+            or source.side != "buy"
+            or source.account_mode != account_mode
+            or source.execution_symbol != execution_symbol
+            or source.execution_venue != execution_venue
+            or source.execution_asset_class != execution_asset_class
+            or source.instrument_type != instrument_type
+            or source.lifecycle_state
+            not in {LIFECYCLE_FILLED, LIFECYCLE_POSITION_RECONCILED}
+        ):
+            return None
+        try:
+            filled = Decimal(str(source.filled_qty))
+        except Exception:
+            return None
+        if not filled.is_finite() or filled <= 0:
+            return None
+        return filled
+
+    @staticmethod
+    def _source_consumption_qty(
+        row: AlpacaPaperOrderLedger, *, source_filled: Decimal
+    ) -> Decimal:
+        """Conservatively attribute one sell execution to its exact source BUY."""
+        try:
+            requested = Decimal(str(row.requested_qty))
+        except Exception:
+            return source_filled
+        if not requested.is_finite() or requested <= 0:
+            return source_filled
+
+        filled: Decimal | None = None
+        if row.filled_qty is not None:
+            try:
+                candidate = Decimal(str(row.filled_qty))
+            except Exception:
+                candidate = Decimal("NaN")
+            if candidate.is_finite() and candidate >= 0:
+                filled = candidate
+
+        order_status = normalize_known_broker_order_status(row.order_status)
+        cancel_status = normalize_known_broker_order_status(row.cancel_status)
+        released_terminal = (
+            order_status
+            in {
+                "canceled",
+                "rejected",
+                "expired",
+                "suspended",
+            }
+            or cancel_status == "canceled"
+        )
+        if released_terminal:
+            # A known terminal status releases only quantity proven unfilled.
+            # Missing/malformed fill evidence remains conservatively reserved.
+            return filled if filled is not None else requested
+        if order_status == "filled" or row.lifecycle_state == LIFECYCLE_FILLED:
+            return filled if filled is not None and filled > 0 else requested
+        # Open, partial-open, unknown, and in-flight outcomes reserve the full
+        # request because the final broker fill is not yet bounded.
+        return requested
+
+    async def acquire_sell_reservation_lock(
+        self, *, account_mode: str, execution_symbol: str
+    ) -> None:
+        """Hold the account+symbol sell lock until the current transaction ends."""
+        lock_key = f"alpaca_paper_sell:{account_mode}:{execution_symbol}"
+        await self._db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": lock_key}
+        )
+
+    async def list_open_sells(
+        self, *, account_mode: str, execution_symbol: str
+    ) -> list[AlpacaPaperOrderLedger]:
+        """Return OPEN sell execution rows (lifecycle='submitted', not canceled).
+
+        These are the rows the reservation sum treats as still consuming sellable
+        position. Callers reconcile them against broker truth before computing
+        availability so a stale ``submitted`` row (actually filled/canceled at the
+        broker) is not double-counted.
+        """
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(
+                AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+                AlpacaPaperOrderLedger.side == "sell",
+                AlpacaPaperOrderLedger.execution_symbol == execution_symbol,
+                AlpacaPaperOrderLedger.account_mode == account_mode,
+                AlpacaPaperOrderLedger.lifecycle_state == LIFECYCLE_SUBMITTED,
+                AlpacaPaperOrderLedger.cancel_status.is_(None),
+            )
+            .order_by(AlpacaPaperOrderLedger.id.asc())
+        )
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def _find_execution_row(
+        self, client_order_id: str, *, for_update: bool = False
+    ) -> AlpacaPaperOrderLedger | None:
+        """Return the execution row for client_order_id regardless of lifecycle state."""
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(
+                AlpacaPaperOrderLedger.client_order_id == client_order_id,
+                AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
+            )
+            .order_by(
+                AlpacaPaperOrderLedger.created_at.desc(),
+                AlpacaPaperOrderLedger.id.desc(),
+            )
+            .limit(1)
+        )
+        if for_update:
+            stmt = stmt.with_for_update()
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_execution_by_client_order_id(
+        self, client_order_id: str
+    ) -> AlpacaPaperOrderLedger | None:
+        """Public: the execution row for a client_order_id in ANY lifecycle state.
+
+        Includes terminal ``anomaly`` rows (unlike ``find_executed_by_client_order_id``
+        which is scoped to executed states) so a deterministic broker failure is
+        replayed instead of re-attempted.
+        """
+        return await self._find_execution_row(client_order_id)
+
+    async def record_submit_failure(
+        self,
+        client_order_id: str,
+        *,
+        order_status: str = "rejected",
+        error_summary: str,
+    ) -> AlpacaPaperOrderLedger:
+        """Book a deterministic broker rejection as a terminal execution outcome.
+
+        Marks the existing execution (claim) row ``anomaly`` and stamps
+        ``submitted_at`` so it is no longer in-flight — a retry of the same key
+        replays this failure instead of re-POSTing. ``error_summary`` is redacted
+        and length-bounded so no raw broker body / token is persisted.
+        """
+        target = await self._find_execution_row(client_order_id)
+        if target is None:
+            raise LedgerNotFoundError(
+                f"No execution row to fail for client_order_id={client_order_id!r}"
+            )
+        safe_summary = (_redact_sensitive_text(error_summary) or "")[:300]
+        await self._db.execute(
+            update(AlpacaPaperOrderLedger)
+            .where(AlpacaPaperOrderLedger.id == target.id)
+            .values(
+                lifecycle_state=LIFECYCLE_ANOMALY,
+                terminalized_at=_terminal_transition_timestamp(LIFECYCLE_ANOMALY),
+                order_status=order_status,
+                submitted_at=datetime.now(UTC),
+                confirm_flag=True,
+                error_summary=safe_summary,
+            )
+        )
+        await self._db.commit()
+        self._db.expire_all()
+        row = await self._find_execution_row(client_order_id)
+        if row is None:
+            raise LedgerNotFoundError(
+                f"No execution row for client_order_id={client_order_id!r}"
+            )
+        return row
+
+    async def get_preview_by_client_order_id(
+        self, client_order_id: str
+    ) -> AlpacaPaperOrderLedger | None:
+        """Return the persisted preview row for a client_order_id, if any.
+
+        Used by the automated submit path to bind the submit to the server-owned
+        packet built and persisted at preview time.
+        """
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(
+                AlpacaPaperOrderLedger.client_order_id == client_order_id,
+                AlpacaPaperOrderLedger.record_kind == RECORD_KIND_PREVIEW,
+            )
+            .order_by(
+                AlpacaPaperOrderLedger.created_at.desc(),
+                AlpacaPaperOrderLedger.id.desc(),
+            )
+            .limit(1)
+        )
+        result = await self._db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -391,11 +1098,13 @@ class AlpacaPaperLedgerService:
         client_order_id: str,
         event_key: str,
         raw_response: dict[str, Any] | None,
+        *,
+        row: AlpacaPaperOrderLedger | None = None,
     ) -> None:
         if raw_response is None:
             return
         sanitized = _redact_sensitive_keys(raw_response)
-        row = await self._require_row(client_order_id)
+        row = row or await self._require_row(client_order_id)
         existing: dict[str, Any] = dict(row.raw_responses or {})
         target_key = event_key
         suffix = 2
@@ -502,6 +1211,7 @@ class AlpacaPaperLedgerService:
         lifecycle_correlation_id: str | None = None,
         execution_symbol: str,
         execution_venue: str,
+        execution_asset_class: str | None = None,
         instrument_type: InstrumentType,
         side: str,
         order_type: str = "limit",
@@ -540,8 +1250,10 @@ class AlpacaPaperLedgerService:
             "broker": "alpaca",
             "account_mode": "alpaca_paper",
             "lifecycle_state": lifecycle_state,
+            "terminalized_at": _initial_terminalized_at(lifecycle_state),
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
+            "execution_asset_class": execution_asset_class,
             "instrument_type": instrument_type,
             "side": side,
             "order_type": order_type,
@@ -626,6 +1338,7 @@ class AlpacaPaperLedgerService:
             "broker": "alpaca",
             "account_mode": "alpaca_paper",
             "lifecycle_state": lc_state,
+            "terminalized_at": _initial_terminalized_at(lc_state),
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
             "instrument_type": instrument_type,
@@ -672,6 +1385,8 @@ class AlpacaPaperLedgerService:
         client_order_id: str,
         order: dict[str, Any],
         raw_response: dict[str, Any] | None = None,
+        *,
+        lifecycle_state_override: str | None = None,
     ) -> AlpacaPaperOrderLedger:
         """Record a confirmed submit as a distinct execution row."""
         source_row = await self._require_row(client_order_id)
@@ -679,7 +1394,8 @@ class AlpacaPaperLedgerService:
         broker_order_id = (
             order.get("id") or order.get("order_id") or order.get("broker_order_id")
         )
-        order_status = order.get("status")
+        raw_order_status = order.get("status")
+        order_status = raw_order_status if isinstance(raw_order_status, str) else None
         filled_qty_raw = order.get("filled_qty") or order.get("filled_quantity")
         filled_avg_price_raw = order.get("filled_avg_price") or order.get(
             "avg_fill_price"
@@ -699,7 +1415,13 @@ class AlpacaPaperLedgerService:
             except Exception:
                 filled_avg_price = None
 
-        lifecycle_state = _derive_lifecycle_state(order_status, filled_qty)
+        has_cancel_evidence = (
+            getattr(source_row, "cancel_status", None) is not None
+            or getattr(source_row, "canceled_at", None) is not None
+        )
+        lifecycle_state = lifecycle_state_override or _derive_lifecycle_state(
+            raw_order_status, filled_qty, has_cancel_evidence=has_cancel_evidence
+        )
         raw_responses = None
         if raw_response is not None:
             raw_responses = {"submit": _redact_sensitive_keys(raw_response)}
@@ -712,6 +1434,7 @@ class AlpacaPaperLedgerService:
             "broker": "alpaca",
             "account_mode": "alpaca_paper",
             "lifecycle_state": lifecycle_state,
+            "terminalized_at": _initial_terminalized_at(lifecycle_state),
             "execution_symbol": source_row.execution_symbol,
             "execution_venue": source_row.execution_venue,
             "instrument_type": source_row.instrument_type,
@@ -752,8 +1475,13 @@ class AlpacaPaperLedgerService:
         update_vals = {
             k: v
             for k, v in values.items()
-            if k not in {"client_order_id", "record_kind"} and v is not None
+            if k not in {"client_order_id", "record_kind", "terminalized_at"}
+            and v is not None
         }
+        if lifecycle_state in TERMINAL_LIFECYCLE_STATES:
+            update_vals["terminalized_at"] = _terminal_transition_timestamp(
+                lifecycle_state
+            )
         stmt = (
             pg_insert(AlpacaPaperOrderLedger)
             .values(**values)
@@ -765,6 +1493,13 @@ class AlpacaPaperLedgerService:
         )
         await self._db.execute(stmt)
         await self._db.commit()
+        # ON CONFLICT updates bypass ORM identity-map synchronization. Refresh a
+        # pre-existing submit-claim row so callers observe the persisted state
+        # and first terminalized_at rather than the stale claimed object. A
+        # preview source has no execution identity to refresh, so re-query it.
+        if source_row.record_kind == RECORD_KIND_EXECUTION:
+            await self._db.refresh(source_row)
+            return source_row
         return await self._require_row(client_order_id)
 
     async def record_status(
@@ -772,9 +1507,19 @@ class AlpacaPaperLedgerService:
         client_order_id: str,
         order: dict[str, Any],
         raw_response: dict[str, Any] | None = None,
-    ) -> AlpacaPaperOrderLedger:
+        *,
+        commit: bool = True,
+        lifecycle_state_override: str | None = None,
+        return_write_result: bool = False,
+    ) -> AlpacaPaperOrderLedger | StatusWriteResult:
         """Update lifecycle state from a status-check response."""
-        target_row = await self._require_row(client_order_id)
+        if lifecycle_state_override not in {None, LIFECYCLE_SUBMITTED}:
+            raise ValueError("status lifecycle override may only retain submitted")
+        target_row = await self.get_execution_by_client_order_id(client_order_id)
+        if target_row is None:
+            raise LedgerNotFoundError(
+                f"No execution row found for client_order_id={client_order_id!r}"
+            )
 
         order_status = order.get("status")
         filled_qty_raw = order.get("filled_qty") or order.get("filled_quantity")
@@ -796,7 +1541,13 @@ class AlpacaPaperLedgerService:
             except Exception:
                 filled_avg_price = None
 
-        lifecycle_state = _derive_lifecycle_state(order_status, filled_qty)
+        has_cancel_evidence = (
+            getattr(target_row, "cancel_status", None) is not None
+            or getattr(target_row, "canceled_at", None) is not None
+        )
+        lifecycle_state = lifecycle_state_override or _derive_lifecycle_state(
+            order_status, filled_qty, has_cancel_evidence=has_cancel_evidence
+        )
 
         update_vals: dict[str, Any] = {
             "lifecycle_state": lifecycle_state,
@@ -804,22 +1555,59 @@ class AlpacaPaperLedgerService:
             "filled_qty": filled_qty,
             "filled_avg_price": filled_avg_price,
         }
+        if lifecycle_state in TERMINAL_LIFECYCLE_STATES:
+            update_vals["terminalized_at"] = _terminal_transition_timestamp(
+                lifecycle_state
+            )
         if lifecycle_state == LIFECYCLE_ANOMALY:
             update_vals["error_summary"] = (
                 f"anomaly: order_status={order_status!r} during status check"
             )
 
-        await self._db.execute(
+        # ROB-953 optimistic write guard, evaluated in SQL against the *live* row
+        # rather than the possibly-stale row read above.
+        guard_predicates: list[Any] = [
+            AlpacaPaperOrderLedger.lifecycle_state.not_in(
+                RECONCILE_IMMUTABLE_LIFECYCLE_STATES
+            )
+        ]
+        if filled_qty is not None:
+            # Cumulative fills are monotonic at the broker. Under concurrent
+            # partial-fill reconciles, a stale lower reading must not overwrite a
+            # higher already-persisted quantity (0.8 then 0.7 -> keep 0.8).
+            guard_predicates.append(
+                or_(
+                    AlpacaPaperOrderLedger.filled_qty.is_(None),
+                    AlpacaPaperOrderLedger.filled_qty <= filled_qty,
+                )
+            )
+
+        update_result = await self._db.execute(
             update(AlpacaPaperOrderLedger)
-            .where(AlpacaPaperOrderLedger.id == target_row.id)
+            .where(AlpacaPaperOrderLedger.id == target_row.id, *guard_predicates)
             .values(**update_vals)
         )
+        rowcount = getattr(update_result, "rowcount", None)
+        write_applied = rowcount is None or rowcount > 0
 
-        if raw_response is not None:
-            await self._accumulate_raw_response(client_order_id, "status", raw_response)
+        if raw_response is not None and write_applied:
+            await self._accumulate_raw_response(
+                client_order_id, "status", raw_response, row=target_row
+            )
 
-        await self._db.commit()
-        return await self._require_row(client_order_id)
+        if commit:
+            await self._db.commit()
+        else:
+            await self._db.flush()
+
+        if return_write_result:
+            # expire_on_commit=False keeps target_row stale after a competing
+            # session wins. Refresh the execution row before reporting the write.
+            await self._db.refresh(target_row)
+            return StatusWriteResult(applied=write_applied, row=target_row)
+        if commit:
+            return await self._require_row(client_order_id)
+        return target_row
 
     async def record_cancel(
         self,
@@ -828,7 +1616,7 @@ class AlpacaPaperLedgerService:
         raw_response: dict[str, Any] | None = None,
         error_summary: str | None = None,
     ) -> AlpacaPaperOrderLedger:
-        """Record cancel metadata. Lifecycle state is set by record_status, not here."""
+        """Record cancel metadata. Updates lifecycle state to canceled if status matches."""
         target_row = await self._require_row(client_order_id)
 
         update_vals: dict[str, Any] = {
@@ -837,6 +1625,28 @@ class AlpacaPaperLedgerService:
         }
         if error_summary is not None:
             update_vals["error_summary"] = _redact_sensitive_text(error_summary)
+
+        # ROB-920: If broker order status is already canceled (either on the row or in
+        # the incoming raw response), we transition lifecycle_state to 'canceled' and
+        # clear any temporary status check anomaly error summary.
+        current_status = getattr(target_row, "order_status", None)
+        if raw_response and isinstance(raw_response, dict):
+            incoming_status = raw_response.get("status")
+            if isinstance(incoming_status, str):
+                current_status = incoming_status
+
+        if current_status and current_status.lower() == "canceled":
+            update_vals["lifecycle_state"] = LIFECYCLE_CANCELED
+            update_vals["terminalized_at"] = _terminal_transition_timestamp(
+                LIFECYCLE_CANCELED
+            )
+            err = getattr(target_row, "error_summary", None)
+            if (
+                err
+                and err.lower().startswith("anomaly: order_status=")
+                and "canceled" in err.lower()
+            ):
+                update_vals["error_summary"] = None
 
         await self._db.execute(
             update(AlpacaPaperOrderLedger)
@@ -889,6 +1699,9 @@ class AlpacaPaperLedgerService:
             .values(
                 position_snapshot=snapshot,
                 lifecycle_state=LIFECYCLE_POSITION_RECONCILED,
+                terminalized_at=_terminal_transition_timestamp(
+                    LIFECYCLE_POSITION_RECONCILED
+                ),
             )
         )
 
@@ -998,6 +1811,7 @@ class AlpacaPaperLedgerService:
 
         update_vals: dict[str, Any] = {
             "lifecycle_state": LIFECYCLE_CLOSED,
+            "terminalized_at": _terminal_transition_timestamp(LIFECYCLE_CLOSED),
         }
         if qty_delta is not None:
             update_vals["qty_delta"] = qty_delta
@@ -1067,6 +1881,9 @@ class AlpacaPaperLedgerService:
 
         update_vals: dict[str, Any] = {
             "lifecycle_state": LIFECYCLE_FINAL_RECONCILED,
+            "terminalized_at": _terminal_transition_timestamp(
+                LIFECYCLE_FINAL_RECONCILED
+            ),
             "record_kind": RECORD_KIND_RECONCILE,
             "reconcile_status": reconcile_status,
             "reconciled_at": datetime.now(UTC),
@@ -1100,7 +1917,12 @@ __all__ = [
     "ApprovalProvenance",
     "CANONICAL_LIFECYCLE_STATES",
     "EXECUTED_LIFECYCLE_STATES",
+    "RECONCILE_IMMUTABLE_LIFECYCLE_STATES",
+    "RECONCILE_TERMINAL_LIFECYCLE_STATES",
+    "TERMINAL_LIFECYCLE_STATES",
+    "derive_lifecycle_state",
     "LIFECYCLE_ANOMALY",
+    "LIFECYCLE_CANCELED",
     "LIFECYCLE_CLOSED",
     "LIFECYCLE_FILLED",
     "LIFECYCLE_FINAL_RECONCILED",
@@ -1111,6 +1933,8 @@ __all__ = [
     "LIFECYCLE_STALE_PREVIEW_CLEANUP_REQUIRED",
     "LIFECYCLE_SUBMITTED",
     "LIFECYCLE_VALIDATED",
+    "KNOWN_OPEN_BROKER_STATUSES",
+    "KNOWN_TERMINAL_BROKER_STATUSES",
     "LedgerNotFoundError",
     "RECORD_KIND_ANOMALY",
     "RECORD_KIND_EXECUTION",
@@ -1118,8 +1942,13 @@ __all__ = [
     "RECORD_KIND_PREVIEW",
     "RECORD_KIND_RECONCILE",
     "RECORD_KIND_VALIDATION_ATTEMPT",
+    "SellReservationClaim",
+    "StatusWriteResult",
+    "SubmitClaim",
     "_derive_lifecycle_state",
     "_redact_sensitive_keys",
     "_redact_sensitive_text",
     "from_approval_bridge",
+    "is_inflight_execution",
+    "normalize_known_broker_order_status",
 ]

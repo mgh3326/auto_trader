@@ -30,7 +30,24 @@ def test_account_api_ids():
     assert k.ACCOUNT_ORDER_DETAIL_API_ID == "kt00007"
     assert k.ACCOUNT_ORDER_STATUS_API_ID == "kt00009"
     assert k.ACCOUNT_ORDERABLE_AMOUNT_API_ID == "kt00010"
+    assert k.ACCOUNT_DEPOSIT_API_ID == "kt00001"
     assert k.ACCOUNT_BALANCE_API_ID == "kt00018"
+
+
+def test_kt00001_deposit_qry_tp_is_general_query_two():
+    # ROB-891 — Official kt00001 (예수금상세현황) body is exactly {"qry_tp": "2"}.
+    # "2" is 일반조회, used for current orderable cash. Must NOT reuse
+    # kt00018's ACCOUNT_BALANCE_QRY_TP_DEFAULT="1".
+    assert k.ACCOUNT_DEPOSIT_QRY_TP_DEFAULT == "2"
+    assert k.ACCOUNT_DEPOSIT_QRY_TP_DEFAULT != k.ACCOUNT_BALANCE_QRY_TP_DEFAULT
+
+
+def test_kt00010_trade_type_buy_is_two_sell_is_one():
+    # ROB-891 — Official kt00010 (주문가능금액) trde_tp:
+    #   매도(sell) = "1", 매수(buy) = "2".
+    # Previous code had this reversed.
+    assert k.TRADE_TYPE_BUY == "2"  # 매수
+    assert k.TRADE_TYPE_SELL == "1"  # 매도
 
 
 def test_chart_api_ids_present_but_deferred():

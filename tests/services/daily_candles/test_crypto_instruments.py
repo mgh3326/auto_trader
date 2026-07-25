@@ -45,7 +45,7 @@ async def test_crypto_instruments_unique_constraint(db_session: AsyncSession) ->
         text(
             "INSERT INTO crypto_instruments "
             "(venue, product, venue_symbol, base_asset, quote_asset, status) "
-            "VALUES ('upbit', 'spot', 'KRW-BTC', 'BTC', 'KRW', 'active')"
+            "VALUES ('upbit', 'spot', 'KRW-BTC-UNIQ', 'BTC', 'KRW', 'active')"
         )
     )
     await db_session.flush()
@@ -54,7 +54,7 @@ async def test_crypto_instruments_unique_constraint(db_session: AsyncSession) ->
             text(
                 "INSERT INTO crypto_instruments "
                 "(venue, product, venue_symbol, base_asset, quote_asset, status) "
-                "VALUES ('upbit', 'spot', 'KRW-BTC', 'BTC', 'KRW', 'active')"
+                "VALUES ('upbit', 'spot', 'KRW-BTC-UNIQ', 'BTC', 'KRW', 'active')"
             )
         )
         await db_session.flush()

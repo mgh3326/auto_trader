@@ -12,6 +12,7 @@ under-fills); the maker/taker per-leg fees are NOT charged here — the re-sim r
 on a ZERO-FEE instrument and ``maker_fill`` applies real fees to the gross P&L
 (maker on entry + the TP leg, taker on the SL leg) plus the conservative overlay.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -30,16 +31,16 @@ class MeanRevScalperConfig(StrategyConfig, frozen=True):
     bar_type: BarType
     trade_size: str = "100"
     lookback: int = 20
-    z_entry: str = "2.0"           # Decimal-as-string (msgspec-safe)
+    z_entry: str = "2.0"  # Decimal-as-string (msgspec-safe)
     tp_bps: int = 30
     sl_bps: int = 30
     atr_period: int = 14
     atr_min_bps: int = 8
     require_vol: bool = True
     allow_short: bool = False
-    execution_mode: str = "taker"   # "taker" (default, unchanged) | "maker"
-    entry_offset_bps: int = 5       # maker: passive entry distance below/above close
-    fill_timeout_bars: int = 1      # maker: cancel an unfilled entry after N closed bars
+    execution_mode: str = "taker"  # "taker" (default, unchanged) | "maker"
+    entry_offset_bps: int = 5  # maker: passive entry distance below/above close
+    fill_timeout_bars: int = 1  # maker: cancel an unfilled entry after N closed bars
 
 
 class MeanRevScalper(Strategy):
@@ -67,10 +68,12 @@ class MeanRevScalper(Strategy):
         self._entry_submitted_bar: int | None = None
         self._bar_count = 0
         self._entry_px: Decimal | None = None
-        self._adverse_px: Decimal | None = None    # worst price vs entry while in position
-        self._exit_px: Decimal | None = None       # price that triggered the exit
-        self._tp_hit = False                       # last exit was the TP leg (vs SL)
-        self.records: list[dict] = []              # maker: completed trade records
+        self._adverse_px: Decimal | None = (
+            None  # worst price vs entry while in position
+        )
+        self._exit_px: Decimal | None = None  # price that triggered the exit
+        self._tp_hit = False  # last exit was the TP leg (vs SL)
+        self.records: list[dict] = []  # maker: completed trade records
         self.entries_attempted = 0
         self.entries_filled = 0
 
@@ -84,9 +87,13 @@ class MeanRevScalper(Strategy):
         self._candles.append(bar_to_candle(bar))
 
         # maker: cancel a stale unfilled entry limit (missed fill)
-        if (self.config.execution_mode == "maker" and self._entry_order is not None
-                and self._entry_submitted_bar is not None
-                and self._bar_count - self._entry_submitted_bar >= self.config.fill_timeout_bars):
+        if (
+            self.config.execution_mode == "maker"
+            and self._entry_order is not None
+            and self._entry_submitted_bar is not None
+            and self._bar_count - self._entry_submitted_bar
+            >= self.config.fill_timeout_bars
+        ):
             self.cancel_order(self._entry_order)
             self._entry_order = None
             self._entry_submitted_bar = None
@@ -95,7 +102,7 @@ class MeanRevScalper(Strategy):
             return
         if not self.portfolio.is_flat(self.config.instrument_id):
             return
-        if self._entry_order is not None:   # maker: a limit is still working
+        if self._entry_order is not None:  # maker: a limit is still working
             return
         d = evaluate_meanrev(list(self._candles), self._cfg)
         if d.has_entry and d.side == "BUY":
@@ -103,23 +110,33 @@ class MeanRevScalper(Strategy):
         elif d.has_entry and d.side == "SELL":
             self._enter(OrderSide.SELL, d.entry_price, d.tp_price, d.sl_price)
 
-    def _enter(self, side: OrderSide, entry: Decimal, tp: Decimal | None, sl: Decimal | None) -> None:
+    def _enter(
+        self, side: OrderSide, entry: Decimal, tp: Decimal | None, sl: Decimal | None
+    ) -> None:
         self._tp, self._sl, self._side = tp, sl, side
         if self.config.execution_mode == "taker":
             order = self.order_factory.market(
-                instrument_id=self.config.instrument_id, order_side=side,
-                quantity=self._instrument.make_qty(Decimal(self.config.trade_size)))
+                instrument_id=self.config.instrument_id,
+                order_side=side,
+                quantity=self._instrument.make_qty(Decimal(self.config.trade_size)),
+            )
             self.submit_order(order)
             return
         # maker: passive limit OFFSET from the close (below for BUY, above for SELL) so
         # immediate reversions are missed and continued moves fill (entry adverse selection).
         self.entries_attempted += 1
         off = Decimal(self.config.entry_offset_bps) / Decimal("10000")
-        limit_px = entry * (Decimal("1") - off) if side == OrderSide.BUY else entry * (Decimal("1") + off)
+        limit_px = (
+            entry * (Decimal("1") - off)
+            if side == OrderSide.BUY
+            else entry * (Decimal("1") + off)
+        )
         order = self.order_factory.limit(
-            instrument_id=self.config.instrument_id, order_side=side,
+            instrument_id=self.config.instrument_id,
+            order_side=side,
             quantity=self._instrument.make_qty(Decimal(self.config.trade_size)),
-            price=self._instrument.make_price(limit_px))
+            price=self._instrument.make_price(limit_px),
+        )
         self._entry_order = order
         self._entry_submitted_bar = self._bar_count
         self.submit_order(order)
@@ -183,23 +200,33 @@ class MeanRevScalper(Strategy):
         if self.config.execution_mode != "maker":
             return
         pos = self.cache.position(event.position_id)
-        entry = self._entry_px if self._entry_px is not None else Decimal(str(pos.avg_px_open))
-        exit_px = self._exit_px if self._exit_px is not None else Decimal(str(pos.avg_px_open))
+        entry = (
+            self._entry_px
+            if self._entry_px is not None
+            else Decimal(str(pos.avg_px_open))
+        )
+        exit_px = (
+            self._exit_px
+            if self._exit_px is not None
+            else Decimal(str(pos.avg_px_open))
+        )
         qty = float(pos.peak_qty)
         if self._side == OrderSide.SELL:
             adverse = ((self._adverse_px or entry) - entry) / entry * Decimal("10000")
         else:
             adverse = (entry - (self._adverse_px or entry)) / entry * Decimal("10000")
-        self.records.append({
-            "gross": pos.realized_pnl.as_double(),       # zero-fee instrument => pure price P&L
-            "entry_notional": float(entry) * qty,
-            "exit_notional": float(exit_px) * qty,
-            "ts": int(pos.ts_opened),
-            "ts_closed": int(pos.ts_closed),
-            "filled": True,
-            "tp_hit": bool(self._tp_hit),
-            "adverse_bps": float(max(Decimal("0"), adverse)),
-        })
+        self.records.append(
+            {
+                "gross": pos.realized_pnl.as_double(),  # zero-fee instrument => pure price P&L
+                "entry_notional": float(entry) * qty,
+                "exit_notional": float(exit_px) * qty,
+                "ts": int(pos.ts_opened),
+                "ts_closed": int(pos.ts_closed),
+                "filled": True,
+                "tp_hit": bool(self._tp_hit),
+                "adverse_bps": float(max(Decimal("0"), adverse)),
+            }
+        )
         self._entry_px = self._adverse_px = self._exit_px = None
         self._tp = self._sl = self._side = None
         self._tp_hit = False

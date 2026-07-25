@@ -49,12 +49,21 @@ class ReasonCode:
     # Market-condition gates
     SPREAD_TOO_WIDE = "spread_too_wide"
     STALE_DATA = "stale_data"
+    # Fail-close when no trustworthy server-observed market snapshot exists
+    # (provider failure / empty|malformed kline / missing timestamp / bad quote).
+    # ROB-841: replaces the old 0/0 synthesis that silently disarmed the gates.
+    MARKET_CONDITIONS_UNAVAILABLE = "market_conditions_unavailable"
     # Sizing / notional
     NOTIONAL_ABOVE_CAP = "notional_above_cap"
     NOTIONAL_BELOW_MIN = "notional_below_min"
     # Lifecycle / durable-state caps (§4 + §5)
     OPEN_LIFECYCLE_EXISTS = "open_lifecycle_exists"
     GLOBAL_LIFECYCLE_CAP_REACHED = "global_lifecycle_cap_reached"
+    # ROB-844: the authoritative atomic root reservation lost the race — another
+    # process (TaskIQ / MCP / websocket) claimed the exposure slot first. Blocks
+    # the open with ZERO broker submit. Distinct from the advisory read-side
+    # gates above (which fire pre-reservation on a possibly-stale snapshot).
+    EXPOSURE_SLOT_TAKEN = "exposure_slot_taken"
     DAILY_ORDER_CAP_REACHED = "daily_order_cap_reached"
     DAILY_LOSS_BUDGET_EXHAUSTED = "daily_loss_budget_exhausted"
     COOLDOWN_ACTIVE = "cooldown_active"

@@ -34,6 +34,60 @@ from app.mcp_server.tooling.shared import (
 from app.services.market_events.query_service import MarketEventsQueryService
 
 
+def _has_financial_values(payload: dict[str, Any]) -> bool:
+    """Return true only when a provider supplied at least one real metric value."""
+
+    def _has_value(value: Any) -> bool:
+        if isinstance(value, dict):
+            return any(_has_value(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(_has_value(item) for item in value)
+        return value is not None
+
+    metrics = payload.get("metrics")
+    if isinstance(metrics, dict) and _has_value(metrics):
+        return True
+
+    reports = payload.get("reports")
+    if isinstance(reports, (list, tuple)):
+        return any(
+            isinstance(report, dict) and _has_value(report.get("data"))
+            for report in reports
+        )
+
+    data = payload.get("data")
+    return isinstance(data, dict) and _has_value(data)
+
+
+def _financial_period_count(payload: dict[str, Any]) -> int:
+    for key in ("periods", "reports", "data"):
+        value = payload.get(key)
+        if isinstance(value, (dict, list, tuple)):
+            return len(value)
+    return 0
+
+
+def _annotate_financial_availability(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload)
+    if _has_financial_values(result):
+        result["status"] = "available"
+        result["scoreable"] = True
+        result.pop("reason", None)
+        result.pop("evidence", None)
+        return result
+
+    result["status"] = "unavailable"
+    result["scoreable"] = False
+    result["reason"] = "financial_metrics_unavailable"
+    result["evidence"] = {
+        "source": result.get("source"),
+        "statement": result.get("statement"),
+        "freq": result.get("freq"),
+        "period_count": _financial_period_count(result),
+    }
+    return result
+
+
 async def handle_get_financials(
     symbol: str,
     statement: str = "income",
@@ -65,11 +119,13 @@ async def handle_get_financials(
 
     try:
         if normalized_market == "kr":
-            return await _fetch_financials_naver(symbol, statement, freq)
+            payload = await _fetch_financials_naver(symbol, statement, freq)
+            return _annotate_financial_availability(payload)
         try:
-            return await _fetch_financials_finnhub(symbol, statement, freq)
+            payload = await _fetch_financials_finnhub(symbol, statement, freq)
         except (ValueError, Exception):
-            return await _fetch_financials_yfinance(symbol, statement, freq)
+            payload = await _fetch_financials_yfinance(symbol, statement, freq)
+        return _annotate_financial_availability(payload)
     except Exception as exc:
         source = "naver" if normalized_market == "kr" else "yfinance"
         instrument_type = "equity_kr" if normalized_market == "kr" else "equity_us"

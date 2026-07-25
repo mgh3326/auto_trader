@@ -4,13 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트 개요
 
-AI 기반 자동 거래 분석 시스템으로, 다양한 금융 데이터를 수집하고 Google Gemini AI를 활용하여 투자 분석을 제공합니다.
+AI 기반 자동 거래 분석 시스템으로, 다양한 금융 데이터를 수집하고 out-of-process MCP consumer(claude 세션 등)를 통해 투자 분석을 제공합니다.
 
 **주요 특징:**
 - 다중 시장 지원: 국내주식(KIS), 해외주식(KIS/Yahoo Finance), 암호화폐(Upbit)
 - 다중 시간대 분석: 일봉 200개 + 분봉(60분/5분/1분)
-- AI 분석: Google Gemini API를 통한 구조화된 JSON 분석
-- Redis 기반 API 키별 모델 제한 시스템
+- AI 분석: out-of-process MCP consumer(claude 세션 등)가 담당 (런타임은 in-process LLM provider 미탑재 — ROB-501 가드)
 
 ## 개발 환경 설정
 
@@ -89,32 +88,11 @@ python upbit_websocket_monitor.py           # Upbit WebSocket 모니터링
 
 ## 아키텍처
 
-### 분석 시스템 아키텍처
-
-**핵심 설계 원칙: 공통 로직 분리 + 서비스별 특화**
-
-```
-app/analysis/
-├── analyzer.py              # 핵심 Analyzer 클래스 (공통 로직)
-│   ├── Analyzer             # 프롬프트 생성, AI 호출, DB 저장, 재시도 로직
-│   └── DataProcessor        # 데이터 전처리 유틸리티
-└── service_analyzers.py     # 서비스별 분석기 (상속)
-    ├── UpbitAnalyzer        # 암호화폐 (분봉 지원)
-    ├── YahooAnalyzer        # 미국 주식 (분봉 미지원)
-    └── KISAnalyzer          # 국내/해외 주식 (분봉 지원)
-```
-
-**각 서비스 분석기는:**
-- `Analyzer`를 상속하여 공통 기능 재사용
-- 데이터 수집 로직만 서비스별로 구현 (`_collect_*_data` 메서드)
-- 보유 자산 정보가 있으면 `position_info`로 전달
-- 분봉 데이터가 있으면 `minute_candles`로 전달
-
 ### Runtime LLM ownership boundary
 
 auto_trader runtime code must not import or instantiate in-process LLM providers
-(Gemini/OpenAI/Grok/etc.). LLM judgment belongs to MCP consumers or Hermes
-out-of-process flows. The static guard in
+(Gemini/OpenAI/Grok/etc.). LLM judgment belongs to out-of-process MCP consumers
+(claude sessions, etc.). The static guard in
 `tests/services/action_report/snapshot_backed/test_no_internal_llm_imports.py`
 scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 
@@ -169,8 +147,43 @@ scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 - **Symbol allowlist**: `XRPUSDT` (default), `DOGEUSDT`, `SOLUSDT` (fallback). `BTCUSDT` 제외 (MIN_NOTIONAL=50 > cap=10). operator `--allow-symbol` override 시도해도 excluded list 우선
 - **Reconcile gate**: 클로즈 후 open orders empty AND position flat 둘 다 만족해야 `reconciled`. 둘 중 하나라도 dirty면 `anomaly` 기록
 - **`status=NEW` reconcile (ROB-305 §4)**: MARKET submit이 `NEW`를 반환해도 즉시 성공/실패로 단정하지 않음. `submitted → closed` 직행 금지(상태머신이 차단). fill 증거는 submit status → bounded `GET /fapi/v1/order` poll(`_FILL_RECONCILE_MAX_POLLS`, 무한 루프 없음) → non-flat positionRisk 순으로 확인 후에만 `filled` 기록. fill 증명 불가인데 account가 flat + open orders 0이면 close row를 `anomaly`로 기록하고 exit 2 (clean success로 위장 금지). 단일주문 status 조회는 `BinanceFuturesDemoExecutionClient.get_order`
+- **계정 전체 조회 (ROB-993 R3 추가)**: `get_all_positions()`/`get_all_open_orders()` — `symbol` 파라미터 생략 시 Binance가 전종목 데이터 반환하는 것을 그대로 노출(additive, 기존 `get_position(symbol=...)`/`get_open_orders(symbol=...)` 동작 불변). 공유 Demo 계정에서 신호 symbol이 아닌 다른 symbol의 기존 포지션/미체결도 감지해야 하는 소비자(ROB-993 strategy loop)용
 - **CLI**: `scripts/binance_futures_demo_smoke.py` (default-disabled, 5 modes)
 - **런북**: `docs/runbooks/binance-futures-demo-smoke.md`
+
+### Binance Demo 라이브 실행 루프 — 전략 플러그형 (ROB-993)
+
+실시간 1m→4h bar 집계(H1 오프라인 builder `research/nautilus_scalping/rob974_features.py`의
+`build_complete_4h`를 그대로 재사용 — UTC 경계·결측=NO_SIGNAL·forward-fill 금지 동일 시맨틱) +
+플러그형 전략 인터페이스(`evaluate(bars_4h_multi_symbol) -> Signal|None`) + kill switch +
+`BinanceFuturesDemoExecutionClient`(ROB-298) 배선. 전략 무관 인프라 — S3 신호엔진 어댑터(ROB-980)는
+별도 커밋(미포함), 기본 플러그인 `NullStrategy`는 항상 `None`.
+
+- **패키지**: `app/services/brokers/binance/demo_strategy_loop/` — `bars.py`(H1 재사용 + 1m fetch),
+  `strategy.py`(`Signal`/`StrategyPlugin`/`NullStrategy`), `kill_switch.py`(최대동시포지션1 +
+  연속 SL/UTC일), `sizing.py`, `execution.py`(open MARKET + reduceOnly close round-trip, ROB-298
+  smoke CLI와 동일 lifecycle), `correlation.py`, `orchestrator.py`(`run_tick`)
+- **CLI**: `scripts/binance_demo_strategy_loop.py` (default-disabled, `--once`/`--loop`/
+  `--paper-signal`/`--readiness`) — `--paper-signal`이 ROB-993 e2e 스모크 경로(주문 1건 데모 왕복)
+- **env**: `BINANCE_DEMO_STRATEGY_LOOP_ENABLED`(기본 false) — 기존 `BINANCE_FUTURES_DEMO_*`
+  자격증명/호스트 allowlist 그대로 상속, 신규 자격증명 표면 없음
+- **kill switch**: env 게이트 + 동시 포지션 1 상한(`count_open_lifecycles` 재사용) + 연속 SL 2회/UTC일
+  정지(자체 `strategy_loop_tag`로 스코프, closed root의 `extra_metadata.exit_reason` 워크)
+- **하드 인바리언트(R2/R3 적대검증 경화)**: leg notional `[6,10]` USDT·동시포지션 1·연속SL 2는 CLI로
+  덮어쓸 수 없는 상수(`sizing.LEG_NOTIONAL_CAP_*`/`kill_switch.LOCKED_LIMITS`), `run_tick`이 네트워크/DB
+  전에 자체 검증 — **R3**: cap 입력값뿐 아니라 LOT_SIZE floor 이후 **실현 notional**도 재검증(캡 안이어도
+  floor로 $6 밑으로 내려갈 수 있음, 키우지 않고 `sizing_blocked`). `execute_signal_round_trip`은
+  reservation 직후 broker-flat pre-submit gate(공유 Demo 계정) + 자기 fill delta 귀속 close 수량 +
+  submit/poll 응답 전부 symbol/side/qty/reduceOnly echo 검증(`BrokerEchoMismatch`) + open root를
+  reconcile 전부 통과 전까지 `filled`(blocking) 유지(조기 `closed` 전이 금지) 적용 — **R3**: flat gate가
+  신호 symbol 하나가 아니라 **계정 전체**(`BinanceFuturesDemoExecutionClient.get_all_positions`/
+  `get_all_open_orders`, symbol 파라미터 생략 시 전종목 반환 — 신규 추가)를 보고, reservation 직후 +
+  order-test 이후 submit 직전 **두 번** 재확인(완전한 TOCTOU 제거는 아님, 런북 §5). multi-symbol
+  decision bucket도 전종목 동일 `close_ts` 아니면 전략 미호출. 상세=런북 §8(R2)·§9(R3)
+- **학습루프 척추**: `correlation_id`(`binance-demo-strategy-loop:<tag>:<hash>`) → ledger → `forecast_save`
+- **런북**: `docs/runbooks/binance-demo-strategy-loop.md` (§5 — 공유 Demo 계정 간섭 주의: 프로덕션
+  demo-scalping 봇과 동일 자격증명 공유 시 계정단 상태 충돌 가능)
+- **스케줄러 등록 없음** — CLI 수동 가동만, `--loop`도 operator 소유 foreground 프로세스
 
 ### KIS WebSocket Mock Smoke (ROB-104)
 
@@ -192,6 +205,30 @@ booked only by `kis_live_reconcile_orders` from order-id-keyed
 - **MCP 도구**: `kis_live_reconcile_orders` (dry_run-default)
 - **런북**: `docs/runbooks/kis-live-order-reconcile.md`
 - **스코프**: KR live only; US/crypto live unchanged (follow-up)
+
+### KIS Day-Order Expiry by Accept-Session × Side (ROB-671)
+
+`kis_live_place_order` 응답의 `expected_expiry`/`expiry_reason` 및
+`kis_live_get_order_history` 행의 `expiry_reason` 은 **접수 세션 × 매매구분**으로
+결정된다. 순수 offline 분류기(`app/services/brokers/kis/live_order_expiry.py` —
+stdlib only, 브로커/DB/네트워크/캘린더 import 없음, 주문 hot path 무네트워크 보장):
+
+- 세션 창(KST, 마감 배타): premarket 08:00–08:50 / regular 09:00–15:30 /
+  nxt_after 16:00–20:00 / 그 외 off.
+- **정규장 SELL 은 NXT 로 연장**되어 20:00 KST 까지 유효(SOR 현금매도 NXT carry).
+  → "내 매도주문이 죽었나?" 오판 금지. reason=`nxt_carry`.
+- 정규장 BUY 는 **보수적 기본값 20:00 KST** (오늘 동작 유지), reason=
+  `regular_buy_conservative_20_00`. ROB-657 이 관측한 정규장 매수 15:30 사멸은
+  세션 만료가 아니라 **D+2 미결제(현금) 취소**(ROB-625 KRW variant)일 수 있어
+  **원인 미확정**. 공격적 `15:30` 다운그레이드(reason=`regular_buy_unsettled_15_30`)
+  는 구현되어 있으나 `KIS_REGULAR_BUY_UNSETTLED_EXPIRY_1530=true` (기본 off)
+  게이트 뒤에 있으며, **라이브 측정으로 원인 확정 후에만** 활성화한다.
+- premarket/nxt_after → 20:00(`nxt_carry`). off 창 접수 → 20:00(`unknown_session`).
+- US(해외) 주문 history 행의 `expiry_reason` 은 `us_day_order` placeholder(NXT 없음).
+
+reconcile 종료 분류(`classify_day_order_expiry`)는 변경 없음 — 여전히
+evidence-first / fail-closed.
+
 
 ### US & Crypto Live Order Fill-Evidence Gate (ROB-407)
 ...
@@ -215,7 +252,7 @@ KR Naver 업종과 US Yahoo Finance Industry/Sector를 `symbol_sectors` 테이�
 
 ### Kiwoom Mock Account Lifecycle (ROB-97 / ROB-319)
 
-Kiwoom **모의투자** 전용 MCP order/account lifecycle. 7개 도구 모두 `account_mode="kiwoom_mock"`, KRX only.
+Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `account_mode="kiwoom_mock"`(KRX). **US는 ROB-867로 확장** — `kiwoom_mock_us_*` 변형(account_mode="kiwoom_mock_us", US 전용 앱키 4종 env, order-id 9자리 — 07-20 full 스모크 실측 확정).
 
 - **MCP 도구**: `app/mcp_server/tooling/orders_kiwoom_variants.py` — `kiwoom_mock_preview_order`, `kiwoom_mock_place_order`, `kiwoom_mock_modify_order`, `kiwoom_mock_cancel_order`, `kiwoom_mock_get_order_history`, `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`
 - **클라이언트**: `app/services/brokers/kiwoom/` — `client.KiwoomMockClient` (transport, host allowlist), `domestic_orders.KiwoomDomesticOrderClient` (buy/sell/modify/cancel), `domestic_account.KiwoomDomesticAccountClient` (orderable-amount/balance/order-status/order-detail)
@@ -231,9 +268,29 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. 7개 도구 모두 `
 - **Mock 호스트 only**: `mockapi.kiwoom.com`만 허용 (`KiwoomMockClient` base-URL 거부 + build 후 host 재검증); live `api.kiwoom.com`은 선택 불가 방어 상수
 - **Default-disabled**: `KIWOOM_MOCK_ENABLED=true` + `KIWOOM_MOCK_APP_KEY/APP_SECRET/ACCOUNT_NO` 미설정 시 fail-closed
 - **`dry_run=False` requires `confirm=True`**: 모든 주문 mutation 도구
-- **KRX only**: `NXT`/`SOR`/비-KRX 거부 (네트워크 호출 전)
+- **KR 도구는 KRX only**: `NXT`/`SOR`/비-KRX 거부 (네트워크 호출 전). US 도구는 별도 `kiwoom_mock_us_*` 경로만 사용
 - **No secrets printed**: CLI는 missing env key **이름만** 보고, 값 출력 없음
 - **Cancel-before-submit**: `full` 모드는 cancel이 wired이기에만 실주문 제출; finally-block에서 항상 cancel 시도 후 reconcile
+
+### 토스증권 Open API (ROB-529)
+
+토스증권 Open API(`https://openapi.tossinvest.com`, OAuth2 Client Credentials, REST-only) 기반 KR/US **live** 브로커 + 시세·종목마스터·환율·캘린더 데이터 소스. 모의투자 없음(live 단일).
+
+- **클라이언트**: `app/services/brokers/toss/` — `transport.py`(host allowlist `openapi.tossinvest.com` + **https 강제**, 3xx 거부), `auth.TossOAuthTokenManager`(OAuth, **client당 유효 토큰 1개**라 Redis 공유+단일비행+failed-token double-check, ROB-262 패턴), `rate_limiter`(프로세스 전역 싱글톤 `get_shared_rate_limiter`, 그룹별 per-group lock TPS, 09:00–09:10 ORDER 3TPS), `errors.parse_toss_response`(envelope + non-json typed), `client.TossReadClient`(read + place/modify/cancel)
+- **주문 MCP 도구**: `app/mcp_server/tooling/orders_toss_variants.py` — `toss_preview/place/modify/cancel_order`, `toss_get_order_history/positions/orderable_cash` (account_mode `toss_live`). dry_run+confirm 이중 게이트, 손실매도 가드, opposite-pending 사전검사, `clientOrderId` 멱등
+- **레저**: `review.toss_live_order_ledger` (`app/services/toss_live_order_ledger_service.py`, accepted-only + `record_send` 멱등 replay) + `toss_reconcile_orders`(단건 상세 fill-evidence, ROB-395/407 패턴)
+- **데이터 소스**: 환율 `exchange_rate_service`(토스 primary+폴백, midRate), 종목 마스터+시총 `toss_symbol_master_service`(gap-fill only — 기존 source 있으면 skip), warnings 가드 `warnings_guard`(LIQUIDATION 매수만 차단·매도 면제), 캔들 `market_data/toss_ohlcv`(1m/5m/15m/30m toss-first 페이지네이션, 1h는 DB hourly), 캘린더 `brokers/toss/market_calendar`(NXT/데이마켓)
+- **CLI/런북**: `scripts/toss_live_smoke.py`(preflight/order-test/confirm), `docs/runbooks/toss-live-smoke.md`, `toss-live-order-reconcile.md`, `toss-symbol-master-sync.md`
+- **ROB-651 (P6-A)**: `toss_preview_order`가 정규화(tick-snap) 이후 `approval_hash`(self-contained 토큰, TTL 5분) + `approval_expires_at`를 반환. `toss_place_order(approval_hash=...)`는 자기 파라미터로 canonical을 재계산해 불일치/만료 시 fail-closed(`error_code` + `diff`). 롤아웃 `TOSS_APPROVAL_HASH_MODE ∈ {off,optional,warn,required}`(기본 `optional`, 백컴팻). `clientOrderId`는 uuid4 → 결정적 `tossp6-<sha16>(canonical|거래일salt|rung)` 멱등키(KR=KST/US=ET 거래일; 같은 거래일 동일주문 dedupe, 익일 신규). 같은 날 진짜 동일 두 번째 주문은 `rung` discriminator로 분리. 컬럼: `review.toss_live_order_ledger.approval_hash`(digest). 공유경로(KIS/Upbit)는 ROB-653 P6-B.
+- **ROB-653 (P6-B)**: `place_order` (KIS/Upbit 공통) 및 `kis_live_place_order` 에 `approval_hash` + `rung` 가드를 적용. KIS 주문은 실서버 전송 전 `review.order_send_intents` 테이블에 `idempotency_key`를 선점(reserve)하여 로컬 double-send 중복을 fail-closed로 차단(crypto/Upbit은 Upbit `identifier` 파라미터로 broker-side 멱등 처리). 롤아웃 `ORDER_APPROVAL_HASH_MODE ∈ {off,optional,warn,required}` (기본 `optional`). 컬럼: `review.kis_live_order_ledger` 및 `review.live_order_ledger` 에 `approval_hash` 및 `idempotency_key` 추가.
+
+**안전 경계 / env 게이트 (모두 default off)**:
+- `TOSS_API_ENABLED` — 마스터 게이트. 미설정 시 read 클라이언트도 `TossApiDisabled`
+- `TOSS_API_CLIENT_ID` / `TOSS_API_CLIENT_SECRET` — 운영 secret(repo commit 금지)
+- `TOSS_LIVE_ORDER_MUTATIONS_ENABLED` — 실주문(place/modify/cancel) **및** 보유 routable/orderable/isTradeable 표면(ROB-549)을 함께 arm. live-smoke 클리어 전까지 false
+- **KR 주문은 계좌 "투자자지시 거래소 = 통합(SOR)" 설정 필수** (아니면 422 `investor-exchange-not-integrated`)
+- ⚠️ `opposite-pending-order-exists`: 동일 종목 반대방향 대기주문 거부 → 매수+매도 래더 동시 거치 불가
+- warnings TaskIQ task(`warnings.toss.sync`)는 **scheduleless** 출고(operator/Prefect 등록); disabled 시 graceful skip
 
 ### Market Events Ingestion Foundation (ROB-128)
 
@@ -285,17 +342,17 @@ US `consecutive_gainers` 스크리너는 `invest_screener_snapshots`를 통해 �
 - **HTTP routes**: `app/routers/investment_hermes_http.py` — prefix `/trading/api/investment-reports/hermes/`
 - **AuthMiddleware token branch**: `app/middleware/auth.py` — `HERMES_INGEST_PATH_PREFIX` 라인. 토큰 미설정 → 403, 잘못된 토큰 → 401.
 - **서비스**: `app/services/investment_stages/{hermes_context,hermes_ingest}.py`
-- **Prefect flow**: `app/flows/hermes_bundle_preparation_flow.py` — `SnapshotBundleEnsureService.ensure(...)` 호출하여 Hermes가 pull할 신선한 bundle 보장. Default disabled.
 - **런북**: `docs/runbooks/hermes-report-generation.md`
 
+(ROB-986: `app/flows/hermes_bundle_preparation_flow.py` — 미배포·미호출 확인 후 제거됨. bundle 준비는 MCP/HTTP `prepare-bundle` 호출 시점에 ad hoc로 이루어짐, 별도 스케줄 없음.)
+
 **Env / config 게이트 (모두 default off)**:
-- `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` — MCP tools + HTTP endpoints + prep flow 공통 게이트
+- `SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED` — MCP tools + HTTP endpoints 공통 게이트
 - `HERMES_INGEST_TOKEN` / `HERMES_INGEST_TOKEN_HEADER` — HTTP transport shared secret (header default `X-Hermes-Ingest-Token`). 운영 secret manager에 배치, repo에 commit 금지.
-- `HERMES_BUNDLE_PREPARATION_ENABLED` — Prefect flow operational gate. False면 `{"status": "disabled", ...}` 로 dry-run 종료.
 
 **안전 경계**: 모든 endpoint는 service-layer를 통해서만 쓰기. 어떤 경로도 broker/order/watch/order-intent mutation 도달 안 함. PR #898 static import guard가 `app/services/action_report/snapshot_backed/` + `app/services/investment_stages/` 전체에서 in-process LLM provider 재도입 차단.
 
-**운영 활성화 절차**: `docs/runbooks/hermes-report-generation.md` §3 (non-prod) / §4 (prod cutover). Prefect 배포 등록은 `robin-prefect-automations`, paused-by-default. 실 Hermes JSON-over-wire round-trip 검증 후 ROB-287 Done.
+**운영 활성화 절차**: `docs/runbooks/hermes-report-generation.md` §3 (non-prod) / §4 (prod cutover). 실 Hermes JSON-over-wire round-trip 검증 후 ROB-287 Done.
 
 ### investment_report_create item 계약 (ROB-458)
 
@@ -379,9 +436,9 @@ app/core/symbol.py              # 심볼 변환 유틸리티
 ```
 
 **적용된 파일:**
-- `app/services/kis.py` - KIS API 호출 시 자동 변환
-- `app/services/yahoo.py` - Yahoo Finance 호출 시 자동 변환
-- `app/tasks/kis.py` - 심볼 비교 시 정규화
+- `app/services/brokers/kis/` - KIS API 호출 시 자동 변환
+- `app/services/brokers/yahoo/client.py` - Yahoo Finance 호출 시 자동 변환
+- `app/jobs/` - 심볼 비교 시 정규화 (주요 브로커/job 호출부에 배선)
 - `app/services/kis_holdings_service.py` - 보유주식 조회 시 정규화
 - `app/services/kis_trading_service.py` - 매도 주문 시 정규화
 
@@ -407,16 +464,17 @@ uv run pytest tests/test_symbol_conversion.py -v
 ### API 서비스 클라이언트
 
 ```
+app/services/brokers/
+├── upbit/       # Upbit API (암호화폐) — client.py, orders.py, public_trades.py
+├── yahoo/       # Yahoo Finance API — client.py
+├── kis/         # 한국투자증권 API — client.py, account.py, domestic/overseas_orders.py, market_data 등 (파일 분할)
+└── toss/ · kiwoom/ · alpaca/ · binance/   # 기타 브로커
 app/services/
-├── upbit.py                 # Upbit API (암호화폐)
-├── yahoo.py                 # Yahoo Finance API
-├── kis.py                   # 한국투자증권 API (30,000+ 라인)
 ├── upbit_websocket.py       # Upbit 실시간 시세
 └── redis_token_manager.py   # Redis 기반 토큰 관리
 ```
 
 **주의사항:**
-- `kis.py`는 매우 큰 파일(30,000+ 라인)이므로 읽을 때 offset/limit 사용
 - KIS 분봉 API는 `time_unit` 파라미터가 제대로 작동하지 않는 알려진 이슈 있음
 - Upbit은 실시간 WebSocket과 REST API 모두 지원
 
@@ -464,7 +522,7 @@ chore/<설명>                 # 유지보수
 
 ### 워크플로우
 1. `main` 브랜치에서 feature branch 생성
-2. 코드 변경 후 커밋 (`Co-Authored-By: Paperclip <noreply@paperclip.ing>`)
+2. 코드 변경 후 커밋
 3. PR 생성 (base: `main`)
 4. 리뷰 후 머지
 5. 배포 시 `main` → `production` 머지
@@ -509,49 +567,7 @@ git branch -D <branch-name>
 
 ## 주요 워크플로우
 
-### 1. 새로운 서비스 분석기 추가
-
-```python
-# app/analysis/service_analyzers.py에 추가
-class NewServiceAnalyzer(Analyzer):
-    """새로운 서비스 분석기"""
-
-    async def _collect_data(self, symbol: str):
-        """데이터 수집 로직 구현"""
-        # 1. 일봉/현재가/기본정보 수집
-        df_historical = await new_service.fetch_ohlcv(symbol)
-        df_current = await new_service.fetch_price(symbol)
-        fundamental_info = await new_service.fetch_fundamental_info(symbol)
-
-        # 2. 분봉 수집 (있는 경우)
-        minute_candles = await new_service.fetch_minute_candles(symbol)
-
-        # 3. 데이터 병합
-        df_merged = DataProcessor.merge_historical_and_current(
-            df_historical, df_current
-        )
-
-        return df_merged, fundamental_info, minute_candles
-
-    async def analyze_symbols(self, symbols: List[str]):
-        """심볼 분석"""
-        for symbol in symbols:
-            df, info, candles = await self._collect_data(symbol)
-
-            # 공통 Analyzer의 analyze_and_save 사용
-            result, model = await self.analyze_and_save(
-                df=df,
-                symbol=symbol,
-                name=symbol,
-                instrument_type="new_type",
-                currency="$",
-                unit_shares="주",
-                fundamental_info=info,
-                minute_candles=candles,
-            )
-```
-
-### 2. 데이터베이스 모델 변경
+### 1. 데이터베이스 모델 변경
 
 ```bash
 # 1. app/models/에서 모델 수정
@@ -567,40 +583,6 @@ uv run alembic downgrade -1
 ```
 
 **중요:** Alembic은 async 엔진 사용 - `alembic/env.py` 참고
-
-### 3. JSON 분석 결과 사용
-
-```python
-from app.analysis.service_analyzers import UpbitAnalyzer
-
-analyzer = UpbitAnalyzer()
-
-# JSON 형식으로 분석 (StockAnalysisResult 테이블에 저장)
-result, model = await analyzer.analyze_coins_json(["비트코인"])
-
-if hasattr(result, 'decision'):
-    # 구조화된 JSON 응답
-    print(f"결정: {result.decision}")  # buy/hold/sell
-    print(f"신뢰도: {result.confidence}%")  # 0-100
-    print(f"근거: {result.reasons}")  # 최대 3개
-    print(f"매수 범위: {result.price_analysis.appropriate_buy_range}")
-else:
-    # fallback 텍스트 응답 (PromptResult 테이블에 저장)
-    print(f"텍스트 응답: {result}")
-```
-
-### 4. Redis 모델 제한 관리
-
-```bash
-# Redis 연결 확인
-docker compose exec redis redis-cli ping
-
-# 제한 키 조회
-docker compose exec redis redis-cli --scan --pattern "model_rate_limit:*"
-
-# 특정 제한 키 TTL 확인
-docker compose exec redis redis-cli ttl "model_rate_limit:<model>:<masked_api_key>"
-```
 
 ## 환경 변수
 
@@ -677,16 +659,15 @@ pytest tests/ -v -m "not slow"               # 느린 테스트 제외
 
 ## 웹 대시보드
 
-### JSON 분석 대시보드
-- URL: `http://localhost:8000/analysis-json/`
-- 기능: 필터링, 페이지네이션, 상세 모달
-- 통계: 투자 결정 분포, 평균 신뢰도
+### Trading Policy YAML 단일 소스 (ROB-646)
 
-### 최신 종목 정보 대시보드
-- URL: `http://localhost:8000/stock-latest/`
-- 기능: 종목별 최신 분석 결과 조회
+`config/trading_policy.yaml` = 매매 판단 임계값/decision rule 단일 소스 (ROB-643 플레이북 policy_keys에서 시드). **operator PR로만 편집 — 쓰기 도구 없음.**
 
-
+- **스키마/로더**: `app/schemas/trading_policy.py`, `app/services/trading_policy_service.py`
+- **MCP 도구**: `get_trading_policy(market, lane)` — market×lane 임계값 + lane-scoped `decision_rules` + `{version, content_hash}` echo; 없는 키는 `success=false, error=unknown_key`
+- **버전 스탬핑 계약**: 판정 기록(evidence_snapshot·trade_retrospectives·forecast)은 `{version, content_hash}` 인용. `get_operating_briefing`가 run-start에 `policy_version` echo.
+- **강제 범위**: 섹터 클러스터 집중도 cap만 매수 프리뷰에서 코드 검사 (`sector_concentration` 필드, **fail-open** — 경고만, 차단 안 함). 나머지 임계값은 advisory.
+- **관할**: 판단 임계값/decision rule 전용. fail-closed 코드 가드(손실매도/ladder/RSI 스코어링)·`symbol_trade_settings`(라이브 사이징)·`trade_profile`(dead)와 분리. migration 0.
 
 ## 문제 해결
 
@@ -717,15 +698,10 @@ uv run alembic history
 
 프로젝트 루트의 다음 문서들을 참고하세요:
 
-- `docs/archive/JSON_ANALYSIS_README.md` - JSON 분석 시스템 상세 가이드
-- `docs/archive/ANALYSIS_REFACTOR_README.md` - 분석 시스템 아키텍처 및 Redis 모델 제한
+- `docs/archive/JSON_ANALYSIS_README.md` — (아카이브·과거) 삭제된 Gemini analyzer 시절 JSON 분석 문서, 현행 아님
+- `docs/archive/ANALYSIS_REFACTOR_README.md` — (아카이브·과거) 삭제된 analyzer/Redis 모델제한 시절 문서, 현행 아님
 - `STOCK_INFO_GUIDE.md` - 데이터베이스 정규화 구조 및 SQL 쿼리 패턴
 - `UPBIT_WEBSOCKET_README.md` - Upbit WebSocket 실시간 시세
 - `DEPLOYMENT.md` - 배포 가이드
 - `DOCKER_USAGE.md` - Docker 사용법
 
-## gstack
-
-Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
-
-Available gstack skills: `/office-hours`, `/plan-ceo-review`, `/plan-eng-review`, `/plan-design-review`, `/design-consultation`, `/design-shotgun`, `/design-html`, `/review`, `/ship`, `/land-and-deploy`, `/canary`, `/benchmark`, `/browse`, `/connect-chrome`, `/qa`, `/qa-only`, `/design-review`, `/setup-browser-cookies`, `/setup-deploy`, `/setup-gbrain`, `/retro`, `/investigate`, `/document-release`, `/document-generate`, `/codex`, `/cso`, `/autoplan`, `/plan-devex-review`, `/devex-review`, `/careful`, `/freeze`, `/guard`, `/unfreeze`, `/gstack-upgrade`, `/learn`.

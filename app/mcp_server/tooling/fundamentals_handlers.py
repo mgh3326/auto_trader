@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.mcp_server.tooling.fundamentals._analyst_consensus import (
+    handle_get_analyst_consensus,
+)
 from app.mcp_server.tooling.fundamentals._cost_basis_distribution import (
     _DEFAULT_GET_COST_BASIS_DISTRIBUTION_IMPL,
 )
@@ -29,13 +32,17 @@ from app.mcp_server.tooling.fundamentals._financials import (
     handle_get_financials,
     handle_get_insider_transactions,
 )
+from app.mcp_server.tooling.fundamentals._fx_rates import handle_get_fx_rate
 from app.mcp_server.tooling.fundamentals._intraday_investor_flow import (
     handle_get_intraday_investor_flow,
 )
 from app.mcp_server.tooling.fundamentals._market_index import (
     handle_get_market_index,
 )
-from app.mcp_server.tooling.fundamentals._news import handle_get_news
+from app.mcp_server.tooling.fundamentals._news import (
+    _get_holdings_news_impl,
+    handle_get_news,
+)
 from app.mcp_server.tooling.fundamentals._profiles import (
     handle_get_company_profile,
     handle_get_crypto_profile,
@@ -51,6 +58,10 @@ from app.mcp_server.tooling.fundamentals._support_resistance import (
 )
 from app.mcp_server.tooling.fundamentals._support_resistance import (
     get_support_resistance_impl as _get_support_resistance_impl,
+)
+from app.mcp_server.tooling.fundamentals._toss_signals import (
+    handle_get_toss_ai_signal,
+    handle_get_toss_buy_balance,
 )
 from app.mcp_server.tooling.fundamentals._upbit_index import (
     handle_get_upbit_altseason,
@@ -70,6 +81,7 @@ if TYPE_CHECKING:
 # profile (ROB-503 restored them from the ROB-488 crypto-profile gate).
 FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_news",
+    "get_holdings_news",
     "get_company_profile",
     "get_crypto_profile",
     "get_financials",
@@ -78,6 +90,7 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_investor_trends",
     "get_intraday_investor_flow",
     "get_investment_opinions",
+    "get_analyst_consensus",
     "get_valuation",
     "get_short_interest",
     "get_kimchi_premium",
@@ -89,6 +102,9 @@ FUNDAMENTALS_TOOL_NAMES: set[str] = {
     "get_crypto_order_flow",
     "get_crypto_social",
     "get_retail_sentiment",
+    "get_toss_buy_balance",
+    "get_toss_ai_signal",
+    "get_fx_rate",
     "get_market_index",
     "get_upbit_index",
     "get_upbit_altseason",
@@ -120,8 +136,10 @@ def _register_fundamentals_tools_impl(
     @mcp.tool(
         name="get_news",
         description=(
-            "Get recent news for a stock or cryptocurrency. Supports US stocks "
-            "(Finnhub), Korean stocks (Naver Finance), and crypto (Finnhub)."
+            "Get recent catalyst news for ONE stock or cryptocurrency "
+            "(per-symbol headlines + relevance). Supports US stocks (Finnhub), "
+            "Korean stocks (Naver Finance), and crypto (Finnhub). For many "
+            "symbols / your current holdings in one call, use get_holdings_news."
         ),
     )
     async def get_news(
@@ -130,6 +148,29 @@ def _register_fundamentals_tools_impl(
         limit: int = 10,
     ) -> dict[str, Any]:
         return await handle_get_news(symbol, market, limit)
+
+    @mcp.tool(
+        name="get_holdings_news",
+        description=(
+            "Sweep recent catalyst headlines for a basket of symbols in ONE "
+            "call. Pass symbols=[...] (cross-market: KR 6-digit codes, US "
+            "tickers, KRW-/USDT- crypto) or OMIT symbols to sweep your CURRENT "
+            "holdings across all accounts (KIS/Toss/manual/Upbit). Each symbol "
+            "returns up to limit_per_symbol lean items "
+            "{title,url,source,published_at,relevance}. Symbols are capped at "
+            "30 (top-level degraded_reason notes the cap). A per-symbol fetch "
+            "failure is isolated to that row (status + degraded_reason) and "
+            "never aborts the sweep. Use get_news for one symbol's full envelope."
+        ),
+    )
+    async def get_holdings_news(
+        symbols: list[str] | None = None,
+        limit_per_symbol: int = 5,
+    ) -> dict[str, Any]:
+        return await _get_holdings_news_impl(
+            symbols=symbols,
+            limit_per_symbol=limit_per_symbol,
+        )
 
     @mcp.tool(
         name="get_company_profile",
@@ -219,9 +260,28 @@ def _register_fundamentals_tools_impl(
         name="get_intraday_investor_flow",
         description=(
             "Get same-day intraday provisional foreign/institution net-buy "
-            "quantity estimates for a Korean stock. Returns KIS "
-            "investor-trend-estimate rows with provisional/as_of metadata. "
-            "Korean stocks only."
+            "quantity estimates for a Korean stock, PLUS an embedded confirmed "
+            "multi-day series. Korean stocks only. The KIS intraday payload "
+            "carries no date, so session attribution is deterministic and "
+            "conservative via these ADDITIVE fields: `confidence` ('observed' = "
+            "KRX session live before 14:30 and the rows are positively today's; "
+            "'inferred' = today's confirmed daily row already exists; "
+            "'carry_over' = future slot or non-session day, rows belong to a "
+            "prior session; 'provisional_unconfirmed' = could be today OR a prior "
+            "session and today could NOT be positively confirmed — e.g. live "
+            "after 14:30, or after close before the confirmed daily is posted), "
+            "`today_available` (bool — true only when today's data is positively "
+            "confirmed), `as_of_date` (ISO DATE; null for provisional_unconfirmed; "
+            "prior XKRX session DATE for carry_over — never a fabricated time), "
+            "`is_prior_session` (bool), `warning` ({code, message} when carry_over, "
+            "else null), and `last_confirmed_session_date` (most recent confirmed "
+            "session). `as_of` is a full ISO datetime only for observed/inferred "
+            "and is null for carry_over/provisional_unconfirmed — never silently "
+            "upgraded. The `confirmed` object (source 'naver') carries "
+            "`foreign_ownership_pct` (외인소진율), `foreign_ownership_trend` "
+            "(up/down/flat), and `history` (last 5 confirmed days of foreign/"
+            "institution/individual net-buy + close). Existing `as_of`/`note` keys "
+            "are unchanged for back-compat."
         ),
     )
     async def get_intraday_investor_flow(
@@ -259,6 +319,18 @@ def _register_fundamentals_tools_impl(
         return await handle_get_investment_opinions(
             symbol, limit, market, opinion_window_months
         )
+
+    @mcp.tool(
+        name="get_analyst_consensus",
+        description=(
+            "Analyst consensus from Naver: recommendation mean (1-5 scale) and price target mean. "
+            "Distinct from get_investment_opinions (report-level)."
+        ),
+    )
+    async def get_analyst_consensus(
+        symbol: str,
+    ) -> dict[str, Any]:
+        return await handle_get_analyst_consensus(symbol)
 
     @mcp.tool(
         name="get_valuation",
@@ -382,10 +454,10 @@ def _register_fundamentals_tools_impl(
         name="get_crypto_order_flow",
         description=(
             "Get Upbit recent-trade taker order-flow for a KRW crypto market "
-            "(retail buy/sell pressure proxy): volume-weighted taker_buy_ratio, "
-            "taker_sell_ratio, and net (buy-sell, in [-1,1]; >0 = net buying). "
-            "Read-only public Upbit /v1/trades/ticks. count in [1,500]. None "
-            "when no usable ticks."
+            "(retail buy/sell pressure proxy). Returns multi-window (50/200/500) "
+            "ratios and a 'consensus' verdict (direction, trend, confidence, note). "
+            "Prefer 'consensus' over bare 'net' to filter transient noise. "
+            "Read-only public Upbit data; count in [1,500] controls 'default_window'."
         ),
     )
     async def get_crypto_order_flow(symbol: str, count: int = 200) -> dict[str, Any]:
@@ -421,13 +493,56 @@ def _register_fundamentals_tools_impl(
         return await handle_get_retail_sentiment(symbol, market, window)
 
     @mcp.tool(
+        name="get_toss_buy_balance",
+        description=(
+            "Toss orderbook balance rate (buyBalanceRate/sellBalanceRate) and foreigner holding ratio — "
+            "NOT user buy ratio. Live per-call, operator-gated."
+        ),
+    )
+    async def get_toss_buy_balance(
+        symbol: str,
+    ) -> dict[str, Any]:
+        return await handle_get_toss_buy_balance(symbol)
+
+    @mcp.tool(
+        name="get_toss_ai_signal",
+        description=(
+            "Toss AI signal (direction + reasoning). Live per-call, operator-gated."
+        ),
+    )
+    async def get_toss_ai_signal(
+        symbol: str,
+    ) -> dict[str, Any]:
+        return await handle_get_toss_ai_signal(symbol)
+
+    @mcp.tool(
+        name="get_fx_rate",
+        description=(
+            "Get the current USD/KRW FX spot quote for exchange-timing and "
+            "US-market cash conversion decisions. P1 supports only USDKRW "
+            "spot lookup through the existing exchange-rate service; use "
+            "ROB-565/follow-ups for account-routing total cost, trend, bank, "
+            "or preferential effective-rate modeling."
+        ),
+    )
+    async def get_fx_rate(
+        pair: str = "USDKRW",
+    ) -> dict[str, Any]:
+        return await handle_get_fx_rate(pair)
+
+    @mcp.tool(
         name="get_market_index",
         description=(
             "Get market index data. Supports KOSPI/KOSDAQ, major US indices "
             "(SPX/NASDAQ/DJI/VIX), and crypto market regime "
             "(CRYPTO=total market cap, BTC.D=BTC dominance via CoinGecko). "
             "Without symbol returns current major equity indices, with symbol "
-            "adds OHLCV history (crypto has no history)."
+            "adds OHLCV history (crypto has no history). KR (KOSPI/KOSDAQ) rows "
+            "carry `quote_asof` (Naver quote timestamp) and a `data_state`; when "
+            "the quote lags real time during the open session it is tagged "
+            "data_state='stale' (reason kr_index_quote_lagging, with "
+            "quote_lag_seconds) — near flat, a lagging quote can invert the sign "
+            "of change_pct vs live, so do not trust a 'stale' change_pct sign."
         ),
     )
     async def get_market_index(
@@ -460,11 +575,19 @@ def _register_fundamentals_tools_impl(
             "vs market index) and 24h breadth (fraction of KRW-quoted alts beating "
             "BTC over 24h, derived from the official Upbit ticker). Higher ratio + "
             "higher breadth lean altseason. Read-only public data. Note: breadth is "
-            "24h only (multi-period breadth is a separate follow-up)."
+            "24h only (multi-period breadth is a separate follow-up). With constituents "
+            "enabled, breadth.constituents lists KRW alts beating BTC with 24h change, "
+            "vs-BTC relative strength, volume, and traded value."
         ),
     )
-    async def get_upbit_altseason() -> dict[str, Any]:
-        return await handle_get_upbit_altseason()
+    async def get_upbit_altseason(
+        include_constituents: bool = False,
+        constituents_limit: int = 50,
+    ) -> dict[str, Any]:
+        return await handle_get_upbit_altseason(
+            include_constituents=include_constituents,
+            constituents_limit=constituents_limit,
+        )
 
     @mcp.tool(
         name="get_support_resistance",

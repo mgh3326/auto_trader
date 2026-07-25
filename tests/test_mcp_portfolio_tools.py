@@ -394,82 +394,39 @@ async def test_get_cash_balance_kis_domestic_skips_zero_priority_orderables(
 
 
 @pytest.mark.asyncio
-async def test_get_cash_balance_kis_domestic_deducts_pending_buy_orders(monkeypatch):
-    tools = build_tools()
-
-    class MockKISClient:
-        async def inquire_integrated_margin(self):
-            return {
-                "dnca_tot_amt": "4300000.0",
-                "stck_cash_objt_amt": "4300000.0",
-                "stck_cash_ord_psbl_amt": "4300000.0",
-            }
-
-        async def inquire_korea_orders(self):
-            return [
-                {"sll_buy_dvsn_cd": "02", "ord_unpr": "250000", "nccs_qty": "1"},
-                {"sll_buy_dvsn_cd": "02", "ord_unpr": "800000", "nccs_qty": "1"},
-                {"sll_buy_dvsn_cd": "02", "ord_unpr": "2270000", "nccs_qty": "1"},
-                {"sll_buy_dvsn_cd": "01", "ord_unpr": "999999", "nccs_qty": "9"},
-            ]
-
-        async def inquire_overseas_margin(self):
-            return []
-
-    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
-
-    result = await tools["get_cash_balance"](account="kis_domestic")
-
-    assert result["accounts"][0]["balance"] == pytest.approx(4300000.0)
-    assert result["accounts"][0]["orderable"] == pytest.approx(980000.0)
-
-
-@pytest.mark.asyncio
-async def test_get_cash_balance_kis_domestic_pending_lookup_failure_keeps_raw_orderable(
+async def test_get_cash_balance_kis_domestic_orderable_ignores_pending_buys_rob596(
     monkeypatch,
 ):
+    """ROB-596: 브로커 주문가능금액(stck_cash100_max_ord_psbl_amt)은 이미 접수된
+    미체결 매수를 netting한 실시간 값이다. 로컬에서 미체결 매수를 또 차감하면
+    double-count가 되어, 미정산 매도대금으로 settled < orderable 인 상황에서
+    회전매수를 못 하고 0으로 막힌다(현실 재현). orderable 은 브로커 값 그대로여야 한다."""
     tools = build_tools()
 
     class MockKISClient:
         async def inquire_integrated_margin(self):
             return {
-                "dnca_tot_amt": "4300000.0",
-                "stck_cash_objt_amt": "4300000.0",
-                "stck_cash_ord_psbl_amt": "4300000.0",
+                "stck_cash_objt_amt": "348992.0",  # settled 예수금
+                # 미정산 D+2 매도대금 포함 주문가능 — 브로커가 이미 net 계산한 값
+                "stck_cash100_max_ord_psbl_amt": "2786548.0",
+                "stck_cash_ord_psbl_amt": "348992.0",
             }
 
         async def inquire_korea_orders(self):
-            raise RuntimeError("order inquiry failed")
-
-    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
-
-    result = await tools["get_cash_balance"](account="kis_domestic")
-
-    assert result["accounts"][0]["orderable"] == pytest.approx(4300000.0)
-
-
-@pytest.mark.asyncio
-async def test_get_cash_balance_kis_domestic_clamps_orderable_at_zero(monkeypatch):
-    tools = build_tools()
-
-    class MockKISClient:
-        async def inquire_integrated_margin(self):
-            return {
-                "dnca_tot_amt": "1000000.0",
-                "stck_cash_objt_amt": "1000000.0",
-                "stck_cash_ord_psbl_amt": "1000000.0",
-            }
-
-        async def inquire_korea_orders(self):
+            # 한전 10@40,000 + 15@38,600 = 979,000 미체결 매수.
+            # 브로커는 이 주문을 받을 때 이미 주문가능에서 차감했다.
             return [
-                {"sll_buy_dvsn_cd": "02", "ord_unpr": "600000", "nccs_qty": "2"},
+                {"sll_buy_dvsn_cd": "02", "ord_unpr": "40000", "nccs_qty": "10"},
+                {"sll_buy_dvsn_cd": "02", "ord_unpr": "38600", "nccs_qty": "15"},
             ]
 
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_cash_balance"](account="kis_domestic")
 
-    assert result["accounts"][0]["orderable"] == pytest.approx(0.0)
+    assert result["accounts"][0]["balance"] == pytest.approx(348992.0)
+    # 미체결 매수를 추가 차감하지 않는다 (double-count 금지) — 브로커 주문가능 그대로.
+    assert result["accounts"][0]["orderable"] == pytest.approx(2786548.0)
 
 
 @pytest.mark.asyncio
@@ -675,9 +632,11 @@ async def test_get_cash_balance_uses_new_kis_field_names(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_cash_balance_kis_overseas_avoids_duplicate_deduction_from_us_exchanges(
+async def test_get_cash_balance_kis_overseas_orderable_ignores_pending_buys_rob596(
     monkeypatch,
 ):
+    """ROB-596 (US): 해외 주문가능금액(frcr_gnrl_ord_psbl_amt)도 이미 net 이므로
+    미체결 매수를 추가 차감하지 않는다 (KR 과 동일 double-count 방지)."""
     tools = build_tools()
 
     class MockKISClient:
@@ -686,65 +645,22 @@ async def test_get_cash_balance_kis_overseas_avoids_duplicate_deduction_from_us_
                 {
                     "natn_name": "미국",
                     "crcy_cd": "USD",
-                    "frcr_dncl_amt1": "1000.0",
-                    "frcr_gnrl_ord_psbl_amt": "1000.0",
+                    "frcr_dncl_amt1": "5500.0",
+                    "frcr_gnrl_ord_psbl_amt": "5000.0",
                 }
             ]
 
         async def inquire_overseas_orders(self, exchange_code):
-            payload = {
-                "NASD": [
-                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "100.0", "nccs_qty": "2"},
-                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "50.0", "nccs_qty": "2"},
-                    {"sll_buy_dvsn_cd": "01", "ft_ord_unpr3": "999.0", "nccs_qty": "9"},
-                ],
-                # KIS NASD query is documented as a US-wide lookup, so these rows
-                # represent duplicates that must not be counted again.
-                "NYSE": [
-                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "100.0", "nccs_qty": "2"},
-                ],
-                "AMEX": [
-                    {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "50.0", "nccs_qty": "2"},
-                ],
-            }
-            return payload[exchange_code]
+            return [
+                {"sll_buy_dvsn_cd": "02", "ft_ord_unpr3": "100.0", "nccs_qty": "5"},
+            ]
 
     _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
 
     result = await tools["get_cash_balance"](account="kis_overseas")
 
-    assert result["accounts"][0]["balance"] == pytest.approx(1000.0)
-    assert result["accounts"][0]["orderable"] == pytest.approx(700.0)
-
-
-@pytest.mark.asyncio
-async def test_get_cash_balance_kis_overseas_pending_lookup_failure_keeps_raw_orderable(
-    monkeypatch,
-    caplog,
-):
-    tools = build_tools()
-
-    class MockKISClient:
-        async def inquire_overseas_margin(self):
-            return [
-                {
-                    "natn_name": "미국",
-                    "crcy_cd": "USD",
-                    "frcr_dncl_amt1": "1000.0",
-                    "frcr_gnrl_ord_psbl_amt": "1000.0",
-                }
-            ]
-
-        async def inquire_overseas_orders(self, exchange_code):
-            raise RuntimeError("NASD failed")
-
-    _patch_runtime_attr(monkeypatch, "KISClient", MockKISClient)
-
-    with caplog.at_level("WARNING"):
-        result = await tools["get_cash_balance"](account="kis_overseas")
-
-    assert result["accounts"][0]["orderable"] == pytest.approx(1000.0)
-    assert "USD pending order deduction failed" in caplog.text
+    # 미체결 매수 500 USD 가 있어도 차감하지 않는다.
+    assert result["accounts"][0]["orderable"] == pytest.approx(5000.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1036,10 +952,15 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
     kis_kr = next(
         item for item in kis_account["positions"] if item["symbol"] == "005930"
     )
-    assert kis_kr["current_price"] == pytest.approx(71000.0)
-    assert kis_kr["evaluation_amount"] == pytest.approx(142000.0)
-    assert kis_kr["profit_loss"] == pytest.approx(2000.0)
-    assert kis_kr["profit_rate"] == pytest.approx(1.43)
+    # ROB-902: a KIS-account KR holding keeps its bulk balance snapshot
+    # (prpr / evlu_amt / evlu_pfls_amt / evlu_pfls_rt) instead of firing the
+    # per-symbol itemchartprice refresh — mirroring the US snapshot exemption
+    # asserted below. The 71000 KR refresh mock only serves the manual/Toss
+    # 005930 holding (source != kis_api), not this KIS-account one.
+    assert kis_kr["current_price"] == pytest.approx(70500.0)
+    assert kis_kr["evaluation_amount"] == pytest.approx(141000.0)
+    assert kis_kr["profit_loss"] == pytest.approx(1000.0)
+    assert kis_kr["profit_rate"] == pytest.approx(0.71)
 
     kis_us = next(item for item in kis_account["positions"] if item["symbol"] == "AAPL")
     assert kis_us["current_price"] == pytest.approx(210.0)
@@ -2541,6 +2462,55 @@ async def test_get_position_returns_positions_and_not_holding_status(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_get_position_kis_mock_stamps_per_position_account_mode(monkeypatch):
+    """ROB-541 — get_position(account_mode='kis_mock') must label each position
+    with account_mode='kis_mock', mirroring the GROUP-level provenance that
+    get_holdings stamps. Without stamping routing_mode the per-position
+    account_mode (added by position_to_output) silently defaults to kis_live.
+    """
+    tools = build_tools()
+
+    mocked_positions = [
+        {
+            "account": "kis",
+            "account_name": "기본 계좌",
+            "broker": "kis",
+            "source": "kis_api",
+            "instrument_type": "equity_kr",
+            "market": "kr",
+            "symbol": "005930",
+            "name": "삼성전자",
+            "quantity": 2.0,
+            "avg_buy_price": 70000.0,
+            "current_price": 71000.0,
+            "evaluation_amount": 142000.0,
+            "profit_loss": 2000.0,
+            "profit_rate": 1.43,
+        },
+    ]
+
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_portfolio_positions",
+        AsyncMock(return_value=(mocked_positions, [], "equity_kr", None)),
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings.validate_kis_mock_config",
+        lambda: [],
+    )
+
+    result = await tools["get_position"]("005930", market="kr", account_mode="kis_mock")
+
+    assert result["has_position"] is True
+    assert result["account_mode"] == "kis_mock"
+    assert result["position_count"] == 1
+    position = result["positions"][0]
+    assert position["account_mode"] == "kis_mock"
+    # order_routable must remain correct for a routable broker source.
+    assert position["order_routable"] is True
+
+
+@pytest.mark.asyncio
 async def test_get_position_crypto_accepts_symbol_without_prefix(monkeypatch):
     tools = build_tools()
 
@@ -2610,6 +2580,11 @@ async def test_get_holdings_crypto_stop_loss_signal(monkeypatch):
     )
     _patch_runtime_attr(
         monkeypatch,
+        "_resolve_crypto_instrument_ids_for_holdings",
+        AsyncMock(return_value={"KRW-BTC": 101}),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
         "_get_indicators_impl",
         AsyncMock(
             return_value={"symbol": "KRW-BTC", "indicators": {"rsi": {"14": 35.0}}}
@@ -2652,6 +2627,11 @@ async def test_get_holdings_crypto_mean_reversion_signal(monkeypatch):
         monkeypatch,
         "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_resolve_crypto_instrument_ids_for_holdings",
+        AsyncMock(return_value={"KRW-BTC": 101}),
     )
     _patch_runtime_attr(
         monkeypatch,
@@ -2815,6 +2795,11 @@ async def test_get_holdings_strategy_signal_reuses_portfolio_snapshot_price(
         "_fetch_ohlcv_for_indicators",
         AsyncMock(return_value=df),
     )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_resolve_crypto_instrument_ids_for_holdings",
+        AsyncMock(return_value={"KRW-BTC": 101}),
+    )
 
     result = await tools["get_holdings"](account="upbit", market="crypto")
     btc_position = result["accounts"][0]["positions"][0]
@@ -2851,6 +2836,11 @@ async def test_get_holdings_crypto_strategy_signal_includes_voting(monkeypatch):
         monkeypatch,
         "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_resolve_crypto_instrument_ids_for_holdings",
+        AsyncMock(return_value={"KRW-BTC": 101}),
     )
     _patch_runtime_attr(
         monkeypatch,
@@ -2922,6 +2912,11 @@ async def test_get_holdings_crypto_strategy_signal_native_types(monkeypatch):
         monkeypatch,
         "_collect_portfolio_positions",
         AsyncMock(return_value=(mocked_positions, [], "crypto", None)),
+    )
+    _patch_runtime_attr(
+        monkeypatch,
+        "_resolve_crypto_instrument_ids_for_holdings",
+        AsyncMock(return_value={"KRW-BTC": 101}),
     )
     _patch_runtime_attr(
         monkeypatch,
@@ -3324,7 +3319,7 @@ async def test_get_available_capital_paper(monkeypatch):
 def _us_refresh_position(symbol: str = "AAPL") -> dict:
     """A US position whose KIS snapshot is incomplete, so the refresh path fires.
 
-    source != "kis_api" makes _has_valid_kis_equity_us_snapshot() return False.
+    source != "kis_api" makes _has_valid_kis_equity_snapshot() return False.
     """
     return {
         "instrument_type": "equity_us",
@@ -3459,7 +3454,7 @@ async def test_get_holdings_toss_api_enabled_adds_read_only_toss_account(monkeyp
     async def fake_collect_manual_positions(*args, **kwargs):
         return [], []
 
-    async def fake_fetch_toss_snapshot():
+    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True, **_):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -3526,7 +3521,7 @@ async def test_get_holdings_toss_api_market_filter_keeps_us_position(monkeypatch
     async def fake_collect_manual_positions(*args, **kwargs):
         return [], []
 
-    async def fake_fetch_toss_snapshot():
+    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True, **_):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -3606,7 +3601,7 @@ async def test_get_holdings_toss_api_success_hides_duplicate_toss_manual(monkeyp
             }
         ], []
 
-    async def fake_fetch_toss_snapshot():
+    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True, **_):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -3681,7 +3676,7 @@ async def test_get_holdings_toss_api_failure_keeps_manual_fallback(monkeypatch):
             }
         ], []
 
-    async def fake_fetch_toss_snapshot():
+    async def fake_fetch_toss_snapshot(*, need_sellable: bool = True, **_):
         raise RuntimeError("toss unavailable")
 
     monkeypatch.setattr(portfolio_holdings.settings, "toss_api_enabled", True)
@@ -3702,7 +3697,11 @@ async def test_get_holdings_toss_api_failure_keeps_manual_fallback(monkeypatch):
 
     assert result["accounts"][0]["order_routable"] is False
     assert result["accounts"][0]["positions"][0]["source"] == "manual"
-    assert {"source": "toss_api", "error": "toss unavailable"} in result["errors"]
+    assert {
+        "source": "toss_api",
+        "error": "toss unavailable",
+        "degraded": True,
+    } in result["errors"]
 
 
 # ---------------------------------------------------------------------------
@@ -3757,7 +3756,11 @@ async def test_get_cash_balance_toss_api_enabled_adds_krw_and_usd(monkeypatch):
             "formatted": "789.01 USD",
         },
     ]
-    assert result["summary"] == {"total_krw": 123456.0, "total_usd": 789.01}
+    assert result["summary"] == {
+        "total_krw": 123456.0,
+        "total_usd": 789.01,
+        "unavailable_sources": {},
+    }
     assert result["errors"] == []
 
 

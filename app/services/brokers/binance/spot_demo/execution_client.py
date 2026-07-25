@@ -39,8 +39,14 @@ import uuid
 from decimal import Decimal
 from typing import Any, Final
 
+from app.services.brokers.binance.demo.credential_identity import (
+    demo_credential_fingerprint,
+)
 from app.services.brokers.binance.demo.credentials import resolve_demo_credentials
-from app.services.brokers.binance.demo.errors import BinanceDemoCredentialError
+from app.services.brokers.binance.demo.errors import (
+    BinanceDemoCredentialError,
+    BinanceDemoOrderNotFound,
+)
 from app.services.brokers.binance.spot_demo.dto import (
     SpotDemoAssetBalance,
     SpotDemoCancelResult,
@@ -157,6 +163,11 @@ class BinanceSpotDemoExecutionClient:
         self._api_key = api_key
         self._base_url = base_url
 
+    @property
+    def credential_fingerprint(self) -> str:
+        """Opaque identity used to bind reconciliation to this credential."""
+        return demo_credential_fingerprint(self._api_key)
+
     @classmethod
     def from_env(cls) -> BinanceSpotDemoExecutionClient:
         """Construct from environment variables with full fail-closed checks.
@@ -192,16 +203,11 @@ class BinanceSpotDemoExecutionClient:
         )
 
     def __repr__(self) -> str:
-        # Never reference _api_secret in repr/str. api_key half is
-        # fingerprinted to avoid log exposure of credentials.
-        api_key_fp = (
-            f"{self._api_key[:4]}…{self._api_key[-2:]}"
-            if len(self._api_key) >= 6
-            else "***"
-        )
+        # Use only the one-way identity; raw key substrings and the secret must
+        # never cross the logging boundary.
         return (
             f"<BinanceSpotDemoExecutionClient base_url={self._base_url!r} "
-            f"api_key={api_key_fp!r}>"
+            f"credential_fingerprint={self.credential_fingerprint!r}>"
         )
 
     async def aclose(self) -> None:
@@ -350,6 +356,7 @@ class BinanceSpotDemoExecutionClient:
             qty=Decimal(str(body.get("origQty", qty))),
             executed_qty=Decimal(str(body.get("executedQty", "0"))),
             cummulative_quote_qty=Decimal(str(body.get("cummulativeQuoteQty", "0"))),
+            fee_usdt=_spot_fee_usdt(body, symbol=str(body.get("symbol", symbol))),
             status=body.get("status", "UNKNOWN"),
             raw_response_redacted=_redact(body),
         )
@@ -482,6 +489,15 @@ class BinanceSpotDemoExecutionClient:
         }
         signed = _sign_request_params(params=params, api_secret=self._api_secret)
         resp = await self._client.get(_ORDER_PATH, params=signed)
+        if resp.status_code == 400:
+            try:
+                broker_code = resp.json().get("code")
+            except (AttributeError, TypeError, ValueError):
+                broker_code = None
+            if broker_code == -2013:
+                raise BinanceDemoOrderNotFound(
+                    f"Spot Demo order not found for client_order_id={client_order_id!r}"
+                )
         resp.raise_for_status()
         return _redact(resp.json())
 
@@ -526,3 +542,43 @@ def _redact(payload: Any) -> dict[str, Any]:
         else:
             redacted[key] = value
     return redacted
+
+
+def _spot_fee_usdt(payload: Any, *, symbol: str) -> Decimal | None:
+    """Normalize native Spot fill commissions into the order's USDT quote.
+
+    Base commission is exactly convertible with that fill's native price;
+    quote commission is already USDT. Third-asset commission needs separate
+    market evidence, so this boundary returns ``None`` instead of inventing a
+    conversion.
+    """
+    if not isinstance(payload, dict) or not symbol.endswith("USDT"):
+        return None
+    fills = payload.get("fills")
+    if not isinstance(fills, list) or not fills:
+        return None
+    base_asset = symbol.removesuffix("USDT")
+    total = Decimal("0")
+    for fill in fills:
+        if not isinstance(fill, dict):
+            return None
+        try:
+            commission = Decimal(str(fill["commission"]))
+            price = Decimal(str(fill["price"]))
+        except (KeyError, ArithmeticError, ValueError):
+            return None
+        if (
+            not commission.is_finite()
+            or commission < 0
+            or not price.is_finite()
+            or price <= 0
+        ):
+            return None
+        commission_asset = fill.get("commissionAsset")
+        if commission_asset == "USDT":
+            total += commission
+        elif commission_asset == base_asset:
+            total += commission * price
+        else:
+            return None
+    return total

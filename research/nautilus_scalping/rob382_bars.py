@@ -7,9 +7,9 @@ gitignored CSVs ``pit_klines_fetcher`` writes, into a full ``OHLCVBar``.
 
 PUBLIC data only; no network here (the fetch is ``fetch_rob382_data.py``). No secrets.
 """
+
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 

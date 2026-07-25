@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 from app.mcp_server.tooling.fundamentals._helpers import normalize_market_with_crypto
@@ -21,6 +23,90 @@ from app.mcp_server.tooling.shared import (
 from app.services import symbol_news_service
 
 _INSTRUMENT_BY_MARKET = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
+# Align the on-demand symbol-news envelope with the existing news-readiness
+# policy (180 minutes). The timestamp remains visible even after expiry.
+NEWS_FRESHNESS_MAX_AGE_SECONDS = 180 * 60
+
+
+def _aware_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _news_freshness_fields(
+    result: symbol_news_service.SymbolNewsFetchResult,
+    *,
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    observed = _aware_utc(observed_at) or datetime.now(tz=UTC)
+    fetched_at = _aware_utc(result.fetched_at)
+    if fetched_at is None:
+        fetched_values = [
+            value
+            for article in result.articles
+            if (value := _aware_utc(article.fetched_at)) is not None
+        ]
+        fetched_at = min(fetched_values) if fetched_values else None
+
+    data_age_seconds = (
+        max(0.0, (observed - fetched_at).total_seconds())
+        if fetched_at is not None
+        else None
+    )
+    cache_hit = result.cache_hit or bool(result.degraded and result.articles)
+    fallback_source = result.fallback_source
+    if fallback_source is None and result.degraded and result.articles:
+        fallback_source = "news_articles"
+
+    provenance = result.provider_provenance
+    if not provenance:
+        if result.status in {"error", "unavailable"}:
+            served_by = None
+            mode = "none"
+        elif fallback_source is not None:
+            served_by = fallback_source
+            mode = "fallback" if result.degraded else "cache"
+        else:
+            served_by = result.provider
+            mode = "live"
+        provenance = [
+            {
+                "provider": result.provider,
+                "served_by": served_by,
+                "mode": mode,
+                "status": "error" if result.degraded else result.status,
+                "error_code": result.fetch_error or result.error_code,
+            }
+        ]
+
+    if result.status in {"error", "unavailable"}:
+        data_state = "missing"
+    elif data_age_seconds is not None and (
+        data_age_seconds > NEWS_FRESHNESS_MAX_AGE_SECONDS
+    ):
+        data_state = "stale"
+    elif (
+        fetched_at is None
+        or result.degraded
+        or any(item.get("status") == "error" for item in provenance)
+    ):
+        data_state = "degraded"
+    else:
+        data_state = "fresh"
+
+    fetched_at_iso = fetched_at.isoformat() if fetched_at is not None else None
+    return {
+        "data_state": data_state,
+        "derived_as_of": fetched_at_iso,
+        "fetched_at": fetched_at_iso,
+        "data_age_seconds": data_age_seconds,
+        "cache_hit": cache_hit,
+        "fallback_source": fallback_source,
+        "provider_provenance": provenance,
+    }
 
 
 async def handle_get_news(
@@ -49,12 +135,14 @@ async def handle_get_news(
     )
 
     if result.status in ("error", "unavailable"):
-        return _error_payload(
+        payload = _error_payload(
             source=result.provider,
             message=result.error_code or "news_unavailable",
             symbol=symbol,
             instrument_type=instrument_type,
         )
+        payload.update(_news_freshness_fields(result))
+        return payload
 
     news = []
     for article in result.articles:
@@ -70,8 +158,220 @@ async def handle_get_news(
         "count": len(news),
         "excluded_count": result.excluded_count,
         "news": news,
+        **_news_freshness_fields(result),
     }
     if result.degraded:
         payload["degraded"] = True
         payload["fetch_error"] = result.fetch_error
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# get_holdings_news — cross-market catalyst-headline sweep (ROB-628 P2)
+# ---------------------------------------------------------------------------
+
+# Bound the basket so a large portfolio can't explode the fan-out, and bound
+# concurrency so the per-symbol fetches don't stall the MCP event loop.
+HOLDINGS_NEWS_MAX_SYMBOLS = 30
+HOLDINGS_NEWS_CONCURRENCY = 4
+
+
+def _lean_holdings_news_item(
+    article: symbol_news_service.SymbolNewsArticle,
+) -> dict[str, Any]:
+    """Project a normalized article down to the lean sweep shape."""
+    published_at = article.published_at
+    return {
+        "title": article.title,
+        "url": article.canonical_url,
+        "source": article.source_name,
+        "published_at": published_at.isoformat() if published_at else None,
+        "relevance": article.provider_metadata.get("relevance"),
+    }
+
+
+def _infer_holdings_news_market(symbol: str) -> str:
+    """Infer 'kr'|'us'|'crypto' for a passed-through symbol (mirrors get_news)."""
+    if _is_korean_equity_code(symbol):
+        return "kr"
+    if _is_crypto_market(symbol):
+        return "crypto"
+    return "us"
+
+
+def _safe_float(value: Any) -> float:
+    """Best-effort float; unknown/None/garbage -> 0.0 (sorts last, never raises)."""
+    try:
+        if value is None:
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _holding_priority_key(entry: dict[str, Any]) -> tuple[float, int, str]:
+    """ROB-889: sort key for holdings-mode candidates before the 30-cap.
+
+    Orders by cost-basis weight (``quantity * avg_buy_price``) descending so the
+    biggest exposures' catalysts survive, with ``order_routable`` breaking ties
+    (actionable holdings first) and ``symbol`` as a final deterministic tiebreak.
+    Replaces the old arbitrary alphabetical (account, market, symbol) order that
+    let front-of-alphabet ETFs crowd out watched names. Cost-basis is used (not
+    live market value) so the sweep stays a cheap no-price read."""
+    weight = _safe_float(entry.get("_weight"))
+    routable_rank = 0 if entry.get("_order_routable") else 1
+    return (-weight, routable_rank, str(entry.get("symbol") or ""))
+
+
+async def _resolve_holdings_news_candidates(
+    symbols: list[str] | None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Resolve the (symbol, market, name) candidates to sweep.
+
+    Explicit ``symbols`` are normalized and passed through (market inferred per
+    symbol, name unknown -> None). When ``symbols`` is omitted, current
+    cross-market holdings are resolved through the canonical aggregation entry
+    point ``_collect_portfolio_positions`` (KIS KR/US, Upbit, manual, Toss).
+    De-dupes on (symbol, market) preserving first occurrence. Never raises.
+    Returns ``(candidates, degraded_reason)``.
+    """
+    seen: set[tuple[str, str]] = set()
+    candidates: list[dict[str, Any]] = []
+
+    if symbols is not None:
+        for raw in symbols:
+            symbol = _normalize_symbol_input(raw, None)
+            if not symbol:
+                continue
+            market = normalize_market_with_crypto(_infer_holdings_news_market(symbol))
+            key = (symbol, market)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append({"symbol": symbol, "market": market, "name": None})
+        return candidates, None
+
+    # Holdings mode. Lazy import keeps the portfolio_holdings dependency (and its
+    # broker clients) out of the plain fundamentals import path and avoids any
+    # import cycle — mirrors _collect_portfolio_positions' own lazy imports.
+    from app.mcp_server.tooling.portfolio_holdings import (
+        _account_order_routable,
+        _collect_portfolio_positions,
+    )
+
+    try:
+        positions, errors, _, _ = await _collect_portfolio_positions(
+            account=None,
+            market=None,
+            include_current_price=False,
+        )
+    except Exception as exc:  # noqa: BLE001 — sweep must stay fail-soft
+        return [], f"holdings_resolution_failed: {type(exc).__name__}"
+
+    degraded_reason = (
+        f"holdings resolution partial ({len(errors)} source error(s))"
+        if errors
+        else None
+    )
+
+    for position in positions:
+        symbol = str(position.get("symbol") or "").strip()
+        market = str(position.get("market") or "").strip().lower()
+        if not symbol or market not in _INSTRUMENT_BY_MARKET:
+            continue
+        key = (symbol, market)
+        if key in seen:
+            continue
+        seen.add(key)
+        # ROB-889: carry cost-basis weight + routability so the cap keeps the
+        # biggest/actionable positions (not the alphabetical front). include_
+        # current_price=False nulls live value, but quantity/avg_buy_price
+        # survive — a free cost-basis proxy needing no extra price fetch.
+        candidates.append(
+            {
+                "symbol": symbol,
+                "market": market,
+                "name": position.get("name"),
+                "_weight": _safe_float(position.get("quantity"))
+                * _safe_float(position.get("avg_buy_price")),
+                "_order_routable": _account_order_routable(
+                    source=position.get("source"),
+                    broker=position.get("broker"),
+                ),
+            }
+        )
+
+    candidates.sort(key=_holding_priority_key)
+    return candidates, degraded_reason
+
+
+async def _get_holdings_news_impl(
+    symbols: list[str] | None = None,
+    limit_per_symbol: int = 5,
+) -> dict[str, Any]:
+    """Sweep recent catalyst headlines for a basket of symbols in one call.
+
+    ``symbols`` passed -> swept as-is (cross-market, market inferred per symbol);
+    omitted -> current cross-market holdings are resolved and swept. Capped at
+    HOLDINGS_NEWS_MAX_SYMBOLS; per-symbol fetch failures are isolated to that
+    row (never abort the sweep). Lean rows mirror get_news but trimmed.
+    """
+    capped_limit = min(max(int(limit_per_symbol), 1), 50)
+
+    candidates, resolution_degraded = await _resolve_holdings_news_candidates(symbols)
+
+    symbols_requested = [entry["symbol"] for entry in candidates]
+    degraded_reasons: list[str] = []
+    if resolution_degraded:
+        degraded_reasons.append(resolution_degraded)
+
+    if len(candidates) > HOLDINGS_NEWS_MAX_SYMBOLS:
+        degraded_reasons.append(
+            f"resolved {len(candidates)} symbols; swept the top "
+            f"{HOLDINGS_NEWS_MAX_SYMBOLS} by holding size (routable first) — "
+            f"pass a narrower symbols list to sweep specific names"
+        )
+        candidates = candidates[:HOLDINGS_NEWS_MAX_SYMBOLS]
+
+    symbols_resolved = [entry["symbol"] for entry in candidates]
+
+    semaphore = asyncio.Semaphore(HOLDINGS_NEWS_CONCURRENCY)
+
+    async def _fetch_one(entry: dict[str, Any]) -> dict[str, Any]:
+        symbol = entry["symbol"]
+        market = entry["market"]
+        instrument_type = _INSTRUMENT_BY_MARKET.get(market, "equity_us")
+        row: dict[str, Any] = {
+            "symbol": symbol,
+            "name": entry["name"],
+            "market": market,
+            "status": "error",
+            "news": [],
+        }
+        async with semaphore:
+            try:
+                result = await symbol_news_service.fetch_symbol_news(
+                    symbol, market, instrument_type, limit=capped_limit
+                )
+            except Exception as exc:  # noqa: BLE001 — one bad symbol mustn't kill the sweep
+                row["degraded_reason"] = type(exc).__name__
+                return row
+        row["status"] = result.status
+        row["news"] = [_lean_holdings_news_item(a) for a in result.articles]
+        if result.status in ("error", "unavailable"):
+            row["degraded_reason"] = result.error_code or "news_unavailable"
+        elif result.degraded:
+            row["degraded_reason"] = result.fetch_error or "degraded"
+        return row
+
+    results = await asyncio.gather(*[_fetch_one(entry) for entry in candidates])
+
+    payload: dict[str, Any] = {
+        "symbols_requested": symbols_requested,
+        "symbols_resolved": symbols_resolved,
+        "count": len(results),
+        "results": list(results),
+    }
+    if degraded_reasons:
+        payload["degraded_reason"] = "; ".join(degraded_reasons)
     return payload

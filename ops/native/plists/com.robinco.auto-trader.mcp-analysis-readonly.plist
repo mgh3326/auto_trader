@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList.1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.robinco.auto-trader.mcp-analysis-readonly</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/mgh3326/services/auto_trader/scripts/run-mcp-profile.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/mgh3326/services/auto_trader/current</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/mgh3326</string>
+    <key>PATH</key>
+    <string>/Users/mgh3326/.local/bin:/Users/mgh3326/.hermes/node/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>AUTO_TRADER_BASE</key>
+    <string>/Users/mgh3326/services/auto_trader</string>
+    <key>AUTO_TRADER_ENV_FILE</key>
+    <string>/Users/mgh3326/services/auto_trader/shared/.env.prod.native</string>
+    <key>AUTO_TRADER_MCP_PROFILE</key>
+    <string>analysis_readonly</string>
+    <key>AUTO_TRADER_MCP_PORT</key>
+    <string>8768</string>
+    <key>AUTO_TRADER_MCP_AUTH_TOKEN_ENV</key>
+    <string>MCP_ANALYSIS_READONLY_AUTH_TOKEN</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/mgh3326/services/auto_trader/logs/com.robinco.auto-trader.mcp-analysis-readonly.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mgh3326/services/auto_trader/logs/com.robinco.auto-trader.mcp-analysis-readonly.err.log</string>
+</dict>
+</plist>

@@ -209,13 +209,161 @@ class TestFormatTossBuyRecommendation:
             recommended_quantity=5,
             currency="원",
             market_type="국내주식",
-            detail_url="https://mgh3326.duckdns.org/portfolio/positions/kr/005930",
+            detail_url="https://mgh3326.duckdns.org/invest/stocks/kr/005930",
         )
         fields = {f["name"]: f["value"] for f in embed["fields"]}
-        assert (
-            fields["상세"]
-            == "https://mgh3326.duckdns.org/portfolio/positions/kr/005930"
+        assert fields["상세"] == "https://mgh3326.duckdns.org/invest/stocks/kr/005930"
+
+
+@pytest.mark.unit
+class TestFormatFillNotification:
+    def test_buy_basic_with_link_and_slippage(self):
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_fill_notification,
         )
+        from app.services.fill_notification import FillOrder
+
+        order = FillOrder(
+            symbol="005930",
+            side="bid",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+        )
+        embed = format_fill_notification(
+            order,
+            display_name="삼성전자",
+            detail_url="https://x.test/invest/stocks/kr/005930",
+            enrichment=None,
+        )
+        assert embed["title"] == "🟢 체결 · 삼성전자 (005930)"
+        assert embed["color"] == 0x00FF00
+        assert embed["url"] == "https://x.test/invest/stocks/kr/005930"
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert fields["구분"] == "매수 체결"
+        assert "68,500원" in fields["체결가"]
+        assert "+0.29%" in fields["체결가"] or "+0.30%" in fields["체결가"]  # vs 68,300
+        assert fields["수량"] == "10"
+        assert fields["금액"] == "685,000원"
+
+    def test_sell_shows_realized_pnl(self):
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_fill_notification,
+        )
+        from app.services.fill_notification import FillEnrichment, FillOrder
+
+        order = FillOrder(
+            symbol="005930",
+            side="ask",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+        )
+        enr = FillEnrichment(
+            realized_pnl_amount=12000.0, realized_pnl_rate=1.8, is_approximate=True
+        )
+        embed = format_fill_notification(
+            order, display_name="삼성전자", detail_url=None, enrichment=enr
+        )
+        assert embed["color"] == 0xFF0000
+        assert "url" not in embed
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert fields["구분"] == "매도 체결"
+        assert "실현손익" in fields
+        assert "+12,000원" in fields["실현손익"]
+        assert "~추정" in fields["실현손익"]
+
+    def test_buy_shows_position_when_enriched(self):
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_fill_notification,
+        )
+        from app.services.fill_notification import FillEnrichment, FillOrder
+
+        order = FillOrder(
+            symbol="005930",
+            side="bid",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+        )
+        enr = FillEnrichment(
+            position_qty=30.0, position_avg_price=68100.0, is_approximate=True
+        )
+        embed = format_fill_notification(
+            order, display_name="삼성전자", detail_url=None, enrichment=enr
+        )
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert "보유" in fields
+        assert "30" in fields["보유"] and "68,100원" in fields["보유"]
+
+    def test_partial_label(self):
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_fill_notification,
+        )
+        from app.services.fill_notification import FillOrder
+
+        order = FillOrder(
+            symbol="005930",
+            side="bid",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=68300.0,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+            fill_status="partial",
+        )
+        embed = format_fill_notification(
+            order, display_name="삼성전자", detail_url=None, enrichment=None
+        )
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert fields["구분"] == "매수 부분체결"
+
+    def test_no_slippage_when_no_order_price(self):
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_fill_notification,
+        )
+        from app.services.fill_notification import FillOrder
+
+        order = FillOrder(
+            symbol="005930",
+            side="bid",
+            filled_price=68500.0,
+            filled_qty=10.0,
+            filled_amount=685000.0,
+            filled_at="2026-06-14T09:31:02",
+            account="kis",
+            order_price=None,
+            order_id="0001234567",
+            market_type="kr",
+            currency="KRW",
+        )
+        embed = format_fill_notification(
+            order, display_name="삼성전자", detail_url=None, enrichment=None
+        )
+        fields = {f["name"]: f["value"] for f in embed["fields"]}
+        assert "vs 주문가" not in fields["체결가"]
 
     def test_with_kis(self):
         embed = format_toss_buy_recommendation(
@@ -276,3 +424,101 @@ class TestFormatTossSellRecommendation:
         )
         fields = {f["name"]: f["value"] for f in embed["fields"]}
         assert "-4.6%" in fields["💡 추천 매도가"]
+
+
+def _watch_payload(**kw):
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from app.services.hermes_client import (
+        InvestLinks,
+        OperatorActionGuidance,
+        ReviewTriggerPayload,
+    )
+
+    base = {
+        "event_uuid": uuid4(),
+        "alert_uuid": uuid4(),
+        "source_report_uuid": uuid4(),
+        "source_item_uuid": uuid4(),
+        "correlation_id": "c1",
+        "kst_date": "2026-06-15",
+        "market": "kr",
+        "target_kind": "asset",
+        "symbol": "005930",
+        "metric": "price",
+        "operator": "below",
+        "threshold": Decimal("68000"),
+        "threshold_key": "k",
+        "intent": "buy_review",
+        "action_mode": "notify_only",
+        "current_value": Decimal("67500"),
+        "scanner_snapshot": {},
+        "outcome": "notified",
+        "invest_links": InvestLinks(
+            report_path="/invest/reports/r1", stock_path="/invest/stocks/kr/005930"
+        ),
+        "operator_action_guidance": OperatorActionGuidance(
+            headline="알림 전용", requires_operator_review=False, order_behavior="none"
+        ),
+        "price_guidance": None,
+        "planned_action": None,
+        "trigger_checklist": None,
+    }
+    base.update(kw)
+    return ReviewTriggerPayload(**base)
+
+
+@pytest.mark.unit
+class TestFormatWatchTrigger:
+    def test_basic_with_link_and_fields(self):
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_investment_watch_trigger,
+        )
+
+        emb = format_investment_watch_trigger(
+            _watch_payload(), display_name="삼성전자", base_url="https://x.test"
+        )
+        assert "삼성전자" in emb["title"] and "005930" in emb["title"]
+        assert emb["url"] == "https://x.test/invest/stocks/kr/005930"
+        fields = {f["name"]: f["value"] for f in emb["fields"]}
+        assert (
+            "price" in fields["조건"]
+            and "below" in fields["조건"]
+            and "68000" in fields["조건"]
+        )
+        assert "67500" in fields["현재값"]
+
+    def test_price_guidance_and_checklist_rendered(self):
+        from decimal import Decimal
+
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_investment_watch_trigger,
+        )
+        from app.services.hermes_client import PriceGuidance
+
+        pg = PriceGuidance(
+            entry_review_below_price=Decimal("66000"),
+            max_chase_price=Decimal("69000"),
+            suggested_limit_price_range=None,
+            invalidation=None,
+        )
+        emb = format_investment_watch_trigger(
+            _watch_payload(price_guidance=pg, trigger_checklist=["수급 확인"]),
+            display_name="삼성전자",
+            base_url="https://x.test",
+        )
+        names = {f["name"] for f in emb["fields"]}
+        assert "가격 가이드" in names and "체크리스트" in names
+
+    def test_no_link_when_invest_links_none(self):
+        from app.monitoring.trade_notifier.formatters_discord import (
+            format_investment_watch_trigger,
+        )
+
+        emb = format_investment_watch_trigger(
+            _watch_payload(invest_links=None),
+            display_name="삼성전자",
+            base_url="https://x.test",
+        )
+        assert "url" not in emb

@@ -18,7 +18,6 @@ async def test_us_live_routes_to_accepted_only(monkeypatch):
 
     with (
         patch.object(oe, "_execute_order", new=AsyncMock(return_value=exec_result)),
-        patch.object(oe, "_check_daily_order_limit", new=AsyncMock(return_value=True)),
         patch.object(oe, "_record_order_history", new=AsyncMock()),
         patch.object(oe, "_record_fill_and_journals", new=AsyncMock()) as m_legacy,
         patch(
@@ -64,7 +63,6 @@ async def test_kr_live_still_routes_to_kis_ledger():
     exec_result = {"rt_cd": "0", "odno": "KR-1", "output": {}}
     with (
         patch.object(oe, "_execute_order", new=AsyncMock(return_value=exec_result)),
-        patch.object(oe, "_check_daily_order_limit", new=AsyncMock(return_value=True)),
         patch.object(oe, "_record_order_history", new=AsyncMock()),
         patch(
             "app.mcp_server.tooling.kis_live_ledger._record_kis_live_order",

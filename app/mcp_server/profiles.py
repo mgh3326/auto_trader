@@ -16,6 +16,11 @@ class McpProfile(StrEnum):
     US_PAPER = "us-paper"
     DB_PAPER = "db-paper"
     KIWOOM = "kiwoom"
+    SHADOW_REPLAY = "shadow-replay"
+    ANALYSIS_READONLY = "analysis_readonly"
+    ACCOUNT_READ = "account_read"
+    TRADINGCODEX_EXECUTION = "tradingcodex_execution"
+    PAPER_EXECUTION = "paper_execution"
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:

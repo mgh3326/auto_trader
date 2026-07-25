@@ -17,6 +17,12 @@ from app.services.brokers.upbit.client import fetch_multiple_current_prices
 from app.services.brokers.upbit.client import fetch_ohlcv as fetch_upbit_ohlcv
 from app.services.brokers.yahoo.client import fetch_fast_info
 from app.services.brokers.yahoo.client import fetch_ohlcv as fetch_yahoo_ohlcv
+from app.services.daily_candles.read_service import (
+    cache_first_kr,
+    cache_first_us,
+    write_back_kr,
+    write_back_us,
+)
 from app.services.domain_errors import (
     RateLimitError,
     SymbolNotFoundError,
@@ -625,8 +631,19 @@ async def get_ohlcv(
                     source="kis",
                     period=resolved_period,
                 )
-            # day/week/month use Yahoo Finance with Toss day-only fallback
+            # ROB-639: day → DB-first read-through (kr/us_candles_1d). Falls
+            # back to Yahoo → Toss on miss/stale. week/month stay live (v1).
             capped_count = min(count, 200)
+            if resolved_period == "day":
+                db_frame = await cache_first_us(resolved_symbol, capped_count, end)
+                if db_frame is not None and not db_frame.empty:
+                    return _to_candle_rows(
+                        db_frame,
+                        symbol=resolved_symbol,
+                        market=resolved_market,
+                        source="db",
+                        period=resolved_period,
+                    )
             try:
                 frame = await fetch_yahoo_ohlcv(
                     ticker=resolved_symbol,
@@ -644,6 +661,8 @@ async def get_ohlcv(
                     end_date=end,
                 )
                 source = "toss"
+            if resolved_period == "day":
+                await write_back_us(frame, symbol=resolved_symbol, source=source)
             return _to_candle_rows(
                 frame,
                 symbol=resolved_symbol,
@@ -655,50 +674,104 @@ async def get_ohlcv(
         kis = KISClient()
         if resolved_period in {"day", "week", "month"}:
             period_map = {"day": "D", "week": "W", "month": "M"}
-            frame = await kis.inquire_daily_itemchartprice(
-                code=resolved_symbol,
-                market="J",
-                n=min(count, 200),
-                period=period_map[resolved_period],
-                end_date=(pd.Timestamp(end.date()) if end is not None else None),
-            )
+            capped_count = min(count, 200)
+            # ROB-639: day → DB-first read-through (kr_candles_1d). week/month
+            # stay on the live path (v1 scope).
+            if resolved_period == "day":
+                db_frame = await cache_first_kr(resolved_symbol, capped_count, end)
+                if db_frame is not None and not db_frame.empty:
+                    return _to_candle_rows(
+                        db_frame,
+                        symbol=resolved_symbol,
+                        market=resolved_market,
+                        source="db",
+                        period=resolved_period,
+                    )
+            try:
+                frame = await kis.inquire_daily_itemchartprice(
+                    code=resolved_symbol,
+                    market="J",
+                    n=capped_count,
+                    period=period_map[resolved_period],
+                    end_date=(pd.Timestamp(end.date()) if end is not None else None),
+                )
+                source = "kis"
+            except Exception as kis_exc:
+                # ROB-706: KIS is the authoritative adjusted KR daily source but a
+                # single point of failure on cache miss (2026-07-04 maintenance
+                # blanked /invest). Only `day` has a Toss 1d equivalent; week/month
+                # re-raise (same UpstreamUnavailableError as today). Toss 1d is
+                # adjusted=True — matches KIS adj=True already stored as source="kis".
+                if resolved_period != "day":
+                    raise
+                logger.warning(
+                    "KIS KR daily failed symbol=%s; Toss 1d fallback: %s",
+                    safe_log_value(resolved_symbol),
+                    kis_exc,
+                )
+                frame = await fetch_daily_toss_frame(
+                    symbol=resolved_symbol,
+                    count=capped_count,
+                    end_date=end,
+                )
+                source = "toss"
+            if resolved_period == "day":
+                if source == "toss":
+                    await write_back_kr(frame, symbol=resolved_symbol, source="toss")
+                else:
+                    await write_back_kr(frame, symbol=resolved_symbol)
             return _to_candle_rows(
                 frame,
                 symbol=resolved_symbol,
                 market=resolved_market,
-                source="kis",
+                source=source,
                 period=resolved_period,
             )
 
         if resolved_period in KR_INTRADAY_OHLCV_PERIODS:
             capped_count = min(count, 200)
-            try:
-                frame = await fetch_kr_intraday_toss_frame(
-                    symbol=resolved_symbol,
-                    period=resolved_period,
-                    count=capped_count,
-                    end_date=end,
-                )
-                return _to_candle_rows(
-                    frame,
-                    symbol=resolved_symbol,
-                    market=resolved_market,
-                    source="toss",
-                    period=resolved_period,
-                )
-            except Exception as toss_exc:
-                logger.info(
-                    "Toss KR intraday OHLCV fallback to KIS symbol=%s period=%s error=%s",
-                    safe_log_value(resolved_symbol),
-                    resolved_period,
-                    toss_exc,
-                )
+            if resolved_period == "1h":
+                # ROB-548: 1h uses the DB hourly aggregate (matches the MCP
+                # get_ohlcv surface). Aggregating 1h from 60x Toss 1m candles is
+                # heavy (many pages) and shallow, so 1h is not Toss-routed.
                 frame = await read_kr_intraday_candles(
                     symbol=resolved_symbol,
                     period=resolved_period,
                     count=capped_count,
                     end_date=end,
                 )
+            else:
+                try:
+                    frame = await fetch_kr_intraday_toss_frame(
+                        symbol=resolved_symbol,
+                        period=resolved_period,
+                        count=capped_count,
+                        end_date=end,
+                    )
+                    # ROB-548: an empty Toss frame must fall through to the
+                    # KIS/DB reader, not be returned as an empty source="toss".
+                    if frame is None or len(frame) == 0:
+                        raise ValueError("Toss returned an empty intraday frame")
+                    return _to_candle_rows(
+                        frame,
+                        symbol=resolved_symbol,
+                        market=resolved_market,
+                        source="toss",
+                        period=resolved_period,
+                    )
+                except Exception as toss_exc:
+                    logger.info(
+                        "Toss KR intraday OHLCV fallback to KIS symbol=%s period=%s error=%s",
+                        safe_log_value(resolved_symbol),
+                        resolved_period,
+                        toss_exc,
+                    )
+                    frame = await read_kr_intraday_candles(
+                        symbol=resolved_symbol,
+                        period=resolved_period,
+                        count=capped_count,
+                        end_date=end,
+                    )
         else:
             frame = await kis.inquire_minute_chart(
                 code=resolved_symbol,

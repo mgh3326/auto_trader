@@ -15,8 +15,13 @@ from typing import Any, Literal
 import httpx
 import yfinance as yf
 
-from app.mcp_server.tooling import analysis_screening
+from app.mcp_server.tooling import analysis_screening, foreigners_liquidity
 from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
+from app.mcp_server.tooling.earnings_context import (
+    _kr_ingestion_freshness,
+    build_earnings_context,
+    normalize_earnings_market,
+)
 from app.mcp_server.tooling.market_data_indicators import (
     _fetch_ohlcv_for_indicators,
 )
@@ -32,8 +37,17 @@ from app.mcp_server.tooling.shared import (
 )
 from app.monitoring import yfinance_tracing_session
 from app.services.brokers.kis.client import KISClient
+from app.services.decision_history import build_decision_context
+from app.services.market_valuation_snapshots.normalized_market_cap import (
+    fetch_normalized_kr_market_caps,
+)
 
 logger = logging.getLogger(__name__)
+
+# ROB-629: the legacy "foreigners" ranking is split into directional foreign
+# net-flow rankings. "foreigners" is kept as a back-compat alias for
+# "foreign_net_buy".
+_FOREIGN_RANKING_TYPES = frozenset({"foreign_net_buy", "foreign_net_sell"})
 
 _CORRELATION_COMPANY_NAME_ERROR = (
     "get_correlation does not support company-name inputs because it has no "
@@ -81,10 +95,21 @@ async def get_top_stocks_impl(
     market: str = "kr",
     ranking_type: str = "volume",
     limit: int = 20,
+    include_illiquid: bool = False,
+    min_market_cap: float | None = None,
+    min_turnover: float | None = None,
 ) -> dict[str, Any]:
     market = (market or "").strip().lower()
     ranking_type = (ranking_type or "").strip().lower()
     limit_clamped = max(1, min(limit, 50))
+
+    # ROB-629: "foreigners" is the back-compat alias for the net-buy ranking.
+    # Resolve the alias for dispatch + guard logic, but echo the caller's
+    # ORIGINAL ranking_type in the response so existing callers keep seeing
+    # "foreigners".
+    resolved_ranking_type = (
+        "foreign_net_buy" if ranking_type == "foreigners" else ranking_type
+    )
 
     supported_combinations = {
         ("kr", "volume"),
@@ -92,6 +117,8 @@ async def get_top_stocks_impl(
         ("kr", "gainers"),
         ("kr", "losers"),
         ("kr", "foreigners"),
+        ("kr", "foreign_net_buy"),
+        ("kr", "foreign_net_sell"),
         ("us", "volume"),
         ("us", "market_cap"),
         ("us", "gainers"),
@@ -99,6 +126,7 @@ async def get_top_stocks_impl(
         ("crypto", "volume"),
         ("crypto", "gainers"),
         ("crypto", "losers"),
+        ("crypto", "relative_strength"),
     }
 
     key = (market, ranking_type)
@@ -109,8 +137,16 @@ async def get_top_stocks_impl(
             query=f"market={market}, ranking_type={ranking_type}",
         )
 
-    fetch_limit = limit_clamped
-    rankings: list[dict[str, Any]] = []
+    # ROB-976: over-fetch when a quality filter will drop rows post-hoc, so the
+    # caller still gets up to limit_clamped quality rows (KR ranking endpoints
+    # already fetch their full page in one call — see fluctuation_rank/
+    # volume_rank/market_cap_rank — so a larger client-side slice is free).
+    _quality_filter_requested = min_market_cap is not None or min_turnover is not None
+    fetch_limit = (
+        min(limit_clamped * 4, 100) if _quality_filter_requested else limit_clamped
+    )
+    excluded_by_market_cap = 0
+    excluded_by_turnover = 0
     source = {"kr": "kis", "us": "yfinance", "crypto": "upbit"}.get(
         market,
         "",
@@ -132,24 +168,75 @@ async def get_top_stocks_impl(
                     market="J", direction=direction, limit=fetch_limit
                 )
                 source = "kis"
-            elif ranking_type == "foreigners":
-                data = await kis.foreign_buying_rank(market="J", limit=fetch_limit)
+            elif resolved_ranking_type in _FOREIGN_RANKING_TYPES:
+                rank_sort = "1" if resolved_ranking_type == "foreign_net_sell" else "0"
+                data = await kis.foreign_buying_rank(
+                    market="J", limit=fetch_limit, rank_sort=rank_sort
+                )
                 source = "kis"
             else:
                 data = []
 
-            filtered_rank = 1
+            mapped_rows: list[dict[str, Any]] = []
             for row in data[:fetch_limit]:
                 if ranking_type == "losers":
                     change_rate = analysis_screening._to_float(row.get("prdy_ctrt"))
                     if change_rate is None or change_rate >= 0:
                         continue
 
-                mapped = analysis_screening._map_kr_row(row, filtered_rank)
+                if resolved_ranking_type in _FOREIGN_RANKING_TYPES:
+                    mapped = analysis_screening._map_kr_foreign_row(
+                        row, len(mapped_rows) + 1
+                    )
+                else:
+                    mapped = analysis_screening._map_kr_row(row, len(mapped_rows) + 1)
+                mapped_rows.append(mapped)
+
+            # ROB-976 R3: a hard KRW market-cap threshold may only use the
+            # normalized Naver-backed market_valuation_snapshots value.  The
+            # foreigners helper's TradingView fundamentals value has a different
+            # unit and caused real blue chips to be rejected as sub-3천억.
+            if min_market_cap is not None:
+                normalized_caps = await fetch_normalized_kr_market_caps(
+                    row["symbol"] for row in mapped_rows
+                )
+                for mapped in mapped_rows:
+                    cap = normalized_caps.get(mapped["symbol"])
+                    mapped["market_cap"] = float(cap.value) if cap is not None else None
+                    mapped["market_cap_source"] = (
+                        f"market_valuation_snapshots:{cap.source}"
+                        if cap is not None
+                        else None
+                    )
+                    mapped["market_cap_snapshot_date"] = (
+                        cap.snapshot_date.isoformat() if cap is not None else None
+                    )
+
+            rankings = []
+            for mapped in mapped_rows:
+                if min_market_cap is not None:
+                    mc = mapped.get("market_cap")
+                    # A requested quality floor is fail-closed: unknown normalized
+                    # cap coverage cannot establish that the row passes.
+                    if mc is None or mc < min_market_cap:
+                        excluded_by_market_cap += 1
+                        continue
+                if min_turnover is not None:
+                    turnover = mapped.get("trade_amount")
+                    if turnover is None:
+                        price = mapped.get("price")
+                        volume = mapped.get("volume")
+                        if price is not None and volume is not None:
+                            turnover = price * volume
+                            mapped["trade_amount"] = turnover
+                    if turnover is None or turnover < min_turnover:
+                        excluded_by_turnover += 1
+                        continue
                 rankings.append(mapped)
-                filtered_rank += 1
                 if len(rankings) >= limit_clamped:
                     break
+            for new_rank, row in enumerate(rankings, start=1):
+                row["rank"] = new_rank
 
         elif market == "us":
             rankings, source = await analysis_screening._get_us_rankings(
@@ -176,10 +263,10 @@ async def get_top_stocks_impl(
 
     kst_tz = datetime.timezone(datetime.timedelta(hours=9))
 
-    # ROB-464: outside the KRX regular session the gainers/losers rankings come
-    # back with every change rate at 0, alphabetically ordered — not a real
-    # ranking. Suppress that fake-0 garbage and tag the session instead of
-    # presenting it as live data.
+    # ROB-464 / ROB-629: outside the KRX regular session the directional KR
+    # rankings come back as fake-0 가집계 garbage — gainers/losers with every
+    # change rate at 0, and the foreign net-flow ranking with no real net flow.
+    # Suppress that and tag the session instead of presenting it as live data.
     data_state: str | None = None
     if market == "kr":
         data_state = kr_market_data_state()
@@ -201,6 +288,114 @@ async def get_top_stocks_impl(
                         "hours (09:00–15:30 KST)."
                     ),
                 }
+        elif resolved_ranking_type in _FOREIGN_RANKING_TYPES:
+            has_real_flow = any(
+                r.get("foreign_net_qty") or r.get("foreign_net_amount")
+                for r in rankings
+            )
+            if data_state != DATA_STATE_FRESH and not has_real_flow:
+                return {
+                    "rankings": [],
+                    "total_count": 0,
+                    "market": market,
+                    "ranking_type": ranking_type,
+                    "timestamp": datetime.datetime.now(kst_tz).isoformat(),
+                    "source": source,
+                    "data_state": data_state,
+                    "note": (
+                        "KRX is not in regular session; the foreign net-trade "
+                        "ranking comes back with no real net flow (가집계 fake-0). "
+                        "Returning no rows instead of fake-0 entries — retry "
+                        "during market hours (09:00–15:30 KST)."
+                    ),
+                }
+
+    # ROB-629 B2: foreigners liquidity backfill + default-ON liquidity filter.
+    liquidity_filter_meta: dict[str, Any] | None = None
+    if market == "kr" and foreigners_liquidity.is_foreigners_ranking(ranking_type):
+        await foreigners_liquidity.backfill_foreigners_market_cap(rankings)
+        kept, excluded = foreigners_liquidity.filter_illiquid_foreigners(
+            rankings, include_illiquid=include_illiquid
+        )
+        liquidity_filter_meta = {
+            "include_illiquid": include_illiquid,
+            "min_foreign_net_amount_krw": (
+                foreigners_liquidity.MIN_FOREIGN_NET_AMOUNT_KRW
+            ),
+            "min_market_cap_krw": foreigners_liquidity.MIN_MARKET_CAP_KRW,
+            "excluded_count": excluded,
+        }
+        if not include_illiquid and rankings and not kept:
+            # Filter emptied a non-empty list (e.g. off-hours / all-junk).
+            # Honest degraded signal — never fabricate rows.
+            return {
+                "rankings": [],
+                "total_count": 0,
+                "market": market,
+                "ranking_type": ranking_type,
+                "timestamp": datetime.datetime.now(kst_tz).isoformat(),
+                "source": source,
+                **({"data_state": data_state} if data_state is not None else {}),
+                "status": "degraded",
+                "degraded_reason": (
+                    f"all {excluded} foreign-flow row(s) fell below the liquidity "
+                    f"threshold (foreign_net_amount >= "
+                    f"{foreigners_liquidity.MIN_FOREIGN_NET_AMOUNT_KRW:.0f} KRW); "
+                    "pass include_illiquid=true to bypass, or retry during market "
+                    "hours when foreign net flow is non-trivial"
+                ),
+                "liquidity_filter": liquidity_filter_meta,
+            }
+        rankings = kept
+        for new_rank, row in enumerate(rankings, start=1):
+            row["rank"] = new_rank
+
+    # ROB-976 verify R1: don't let the quality filter's honest 0-rows collapse
+    # into the misleading "market may be entirely bullish" message below — that
+    # message means "KIS returned no losers at all", not "the quality filter
+    # removed everyone". Surface the real reason instead (never fabricate rows).
+    if (
+        len(rankings) == 0
+        and market == "kr"
+        and (excluded_by_market_cap or excluded_by_turnover)
+    ):
+        return {
+            "rankings": [],
+            "total_count": 0,
+            "market": market,
+            "ranking_type": ranking_type,
+            "timestamp": datetime.datetime.now(kst_tz).isoformat(),
+            "source": source,
+            **({"data_state": data_state} if data_state is not None else {}),
+            "status": "degraded",
+            "degraded_reason": (
+                f"all {excluded_by_market_cap + excluded_by_turnover} matching "
+                f"row(s) fell below the requested quality floor or lacked "
+                f"trusted normalized coverage "
+                f"(min_market_cap={min_market_cap}, min_turnover={min_turnover}); "
+                "refresh normalized valuation snapshots or retry with a lower floor"
+            ),
+            **(
+                {
+                    "market_cap_filter": {
+                        "min_market_cap": min_market_cap,
+                        "excluded_count": excluded_by_market_cap,
+                    }
+                }
+                if min_market_cap is not None
+                else {}
+            ),
+            **(
+                {
+                    "turnover_filter": {
+                        "min_turnover": min_turnover,
+                        "excluded_count": excluded_by_turnover,
+                    }
+                }
+                if min_turnover is not None
+                else {}
+            ),
+        }
 
     if len(rankings) == 0 and market == "kr" and ranking_type == "losers":
         return analysis_screening._error_payload(
@@ -226,7 +421,48 @@ async def get_top_stocks_impl(
     }
     if data_state is not None:
         response["data_state"] = data_state
+    if liquidity_filter_meta is not None:
+        response["liquidity_filter"] = liquidity_filter_meta
+    if min_market_cap is not None:
+        response["market_cap_filter"] = {
+            "min_market_cap": min_market_cap,
+            "excluded_count": excluded_by_market_cap,
+        }
+    if min_turnover is not None:
+        response["turnover_filter"] = {
+            "min_turnover": min_turnover,
+            "excluded_count": excluded_by_turnover,
+        }
     return response
+
+
+async def get_crypto_top_movers_impl(
+    ranking_type: str = "relative_strength",
+    limit: int = 20,
+) -> dict[str, Any]:
+    normalized = (ranking_type or "relative_strength").strip().lower()
+    aliases = {
+        "relative": "relative_strength",
+        "relative_strength_vs_btc": "relative_strength",
+        "rs": "relative_strength",
+        "value": "volume",
+        "trade_amount": "volume",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in {"relative_strength", "volume", "gainers", "losers"}:
+        return analysis_screening._error_payload(
+            source="validation",
+            message=(
+                "Unsupported crypto ranking_type: "
+                f"{ranking_type}; allowed: relative_strength, volume, gainers, losers"
+            ),
+            query=f"ranking_type={ranking_type}",
+        )
+    return await get_top_stocks_impl(
+        market="crypto",
+        ranking_type=normalized,
+        limit=limit,
+    )
 
 
 async def get_disclosures_impl(
@@ -408,7 +644,9 @@ async def _run_batch_analysis(
     *,
     market: str | None,
     include_peers: bool,
-    formatter: Callable[[str, dict[str, Any]], dict[str, Any]],
+    formatter: Callable[..., dict[str, Any]],
+    include_position: bool = False,
+    refresh: bool = False,
 ) -> dict[str, Any]:
     """Shared batch analysis executor for portfolio and stock batch analysis.
 
@@ -416,7 +654,14 @@ async def _run_batch_analysis(
         symbols: List of symbol inputs (1-10 entries)
         market: Optional market override
         include_peers: Whether to include peer analysis
-        formatter: Callable that receives (normalized_symbol, analysis_result) and returns formatted result
+        formatter: Callable that receives (normalized_symbol, analysis_result)
+            and an optional ``position_index`` keyword, returning the formatted
+            result.
+        include_position: When True (ROB-541), make ONE batched holdings fetch
+            for the whole batch and pass the in-memory position index to the
+            formatter. Never fans out per symbol.
+        refresh: When True (ROB-638), bypass the fetch-layer provider cache
+            READ for every symbol (fresh values are still written back).
 
     Returns:
         Dict with 'results' (symbol -> formatted_result) and 'summary' keys
@@ -437,18 +682,45 @@ async def _run_batch_analysis(
     errors: list[str] = []
     sem = asyncio.Semaphore(5)
 
+    position_index: dict[str, list[dict[str, Any]]] | None = None
+    if include_position:
+        # ONE batched holdings fetch for the WHOLE batch — never per symbol.
+        position_index, position_error = await _build_batch_position_index(market)
+        if position_error:
+            errors.append(position_error)
+
     async def _analyze_one(sym: str) -> dict[str, Any]:
         async with sem:
             try:
-                result = analysis_screening._analyze_stock_impl(
-                    sym, market, include_peers
-                )
+                # ROB-638: caching happens at the FETCH layer inside the analyze
+                # pipeline (analysis_analyze.py) — never at the whole-response
+                # level, so quote/RSI/S&R/recommendation recompute every call.
+                # ``refresh`` is passed as a keyword ONLY when set so legacy
+                # 3-arg test stubs of _analyze_stock_impl keep working.
+                if refresh:
+                    result = analysis_screening._analyze_stock_impl(
+                        sym, market, include_peers, refresh=True
+                    )
+                else:
+                    result = analysis_screening._analyze_stock_impl(
+                        sym, market, include_peers
+                    )
                 if asyncio.iscoroutine(result):
-                    return await result
+                    result = await result
                 return result
             except Exception as exc:
                 errors.append(f"{sym}: {str(exc)}")
-                return {"symbol": sym, "error": str(exc)}
+                return {
+                    "symbol": sym,
+                    "error": str(exc),
+                    "data_state": "missing",
+                    "cache_hit": False,
+                    "derived_as_of": None,
+                    "fetched_at": None,
+                    "data_age_seconds": None,
+                    "fallback_source": None,
+                    "provider_provenance": [],
+                }
 
     analyze_results = await asyncio.gather(
         *[_analyze_one(s) for s in normalized_symbols]
@@ -457,7 +729,27 @@ async def _run_batch_analysis(
     success_count = 0
     fail_count = 0
     for sym, result in zip(normalized_symbols, analyze_results, strict=True):
-        formatted_result = formatter(sym, result)
+        if position_index is not None:
+            formatted_result = formatter(sym, result, position_index=position_index)
+        else:
+            formatted_result = formatter(sym, result)
+        # ROB-1048 authoritative evidence freshness/provenance envelope. Compact
+        # summaries historically surfaced quote.data_state at the same level;
+        # retain it under price_data_state before applying aggregate evidence
+        # semantics.
+        if "data_state" in formatted_result:
+            formatted_result["price_data_state"] = formatted_result["data_state"]
+        formatted_result.update(
+            {
+                "data_state": result.get("data_state") or "degraded",
+                "derived_as_of": result.get("derived_as_of"),
+                "fetched_at": result.get("fetched_at"),
+                "data_age_seconds": result.get("data_age_seconds"),
+                "cache_hit": bool(result.get("cache_hit")),
+                "fallback_source": result.get("fallback_source"),
+                "provider_provenance": result.get("provider_provenance") or [],
+            }
+        )
         results[sym] = formatted_result
         if "error" not in result:
             success_count += 1
@@ -475,11 +767,126 @@ async def _run_batch_analysis(
     }
 
 
+def _position_index_key(symbol: str, instrument_type: str) -> str:
+    """Normalized lookup key for the in-memory position index (ROB-541)."""
+    from app.mcp_server.tooling.shared import normalize_position_symbol
+
+    inst = instrument_type or ""
+    if inst in {"crypto", "equity_us", "equity_kr"}:
+        return normalize_position_symbol(symbol, inst).upper()
+    return symbol.strip().upper()
+
+
+async def _build_batch_position_index(
+    market: str | None,
+) -> tuple[dict[str, list[dict[str, Any]]], str | None]:
+    """Fetch holdings ONCE for the batch and index them by normalized symbol.
+
+    ROB-541: fail-open — any holdings failure returns an empty index plus a
+    warning string so analysis never breaks on a holdings outage. ``position``
+    is then ``null`` for every symbol (not-held semantics), never fabricated.
+    """
+    from app.mcp_server.tooling.portfolio_holdings import (
+        _account_order_routable,
+        _collect_portfolio_positions,
+        _provenance_account_mode,
+    )
+
+    index: dict[str, list[dict[str, Any]]] = {}
+    try:
+        positions, _errors, _market, _account = await _collect_portfolio_positions(
+            account=None,
+            market=market,
+            include_current_price=False,
+            need_sellable=False,
+        )
+    except Exception as exc:
+        detail = str(exc).strip() or exc.__class__.__name__
+        logger.warning("analyze_stock_batch holdings lookup failed: %s", detail)
+        return index, f"보유 종목 조회 실패: {detail}"
+
+    for position in positions:
+        symbol = str(position.get("symbol") or "")
+        instrument_type = str(position.get("instrument_type") or "")
+        if not symbol:
+            continue
+        source = position.get("source")
+        entry = {
+            "account": position.get("account"),
+            "account_mode": _provenance_account_mode(
+                broker=position.get("broker"),
+                source=source,
+                routing_mode="kis_live",
+            ),
+            "qty": position.get("quantity"),
+            "avg_buy_price": position.get("avg_buy_price"),
+            "pnl_pct": position.get("profit_rate"),
+            "order_routable": _account_order_routable(
+                source=source, broker=position.get("broker")
+            ),
+            # Internal-only fields for symbol matching — stripped before output.
+            "_symbol": symbol,
+            "_instrument_type": instrument_type,
+        }
+        index.setdefault(_position_index_key(symbol, instrument_type), []).append(entry)
+    return index, None
+
+
+def _lookup_position_for_symbol(
+    *,
+    symbol: str,
+    market_type: str,
+    position_index: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]] | None:
+    """Resolve held positions for ``symbol`` from the prebuilt index (ROB-541).
+
+    Uses ``is_position_symbol_match`` (equity_us dot/slash + crypto-base aware)
+    rather than naive upper() so we never join the wrong position. Returns a
+    LIST (one entry per holding account) or ``None`` when not held; never
+    OR-collapses routability across accounts.
+    """
+    from app.mcp_server.tooling.portfolio_helpers import is_position_symbol_match
+
+    matched: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    # Fast path: direct normalized-key hit.
+    candidates = list(position_index.get(_position_index_key(symbol, market_type), []))
+    # Fallback: scan all entries so equity_us dot/slash variants still match even
+    # when the index key normalization differs from the query normalization.
+    if not candidates:
+        for entries in position_index.values():
+            candidates.extend(entries)
+    for entry in candidates:
+        pos_symbol = str(entry.get("_symbol") or "")
+        pos_inst = str(entry.get("_instrument_type") or market_type)
+        if not pos_symbol:
+            continue
+        dedupe_key = f"{entry.get('account')}|{pos_symbol}"
+        if dedupe_key in seen:
+            continue
+        if is_position_symbol_match(
+            position_symbol=pos_symbol,
+            query_symbol=symbol,
+            instrument_type=pos_inst or market_type,
+        ):
+            seen.add(dedupe_key)
+            matched.append({k: v for k, v in entry.items() if not k.startswith("_")})
+    return matched or None
+
+
 def _summarize_analysis_result(
     symbol: str,
     analysis: dict[str, Any],
+    *,
+    position_index: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    """Convert full analysis into compact summary for batch responses."""
+    """Convert full analysis into compact summary for batch responses.
+
+    ROB-541: when ``position_index`` is provided (include_position=True), the
+    compact summary carries a ``position`` field — a LIST (one entry per holding
+    account, because a symbol may be held in multiple accounts e.g. toss+samsung)
+    or ``None`` when not held.
+    """
     # If result is an error, pass through unchanged
     if "error" in analysis:
         return analysis
@@ -495,7 +902,7 @@ def _summarize_analysis_result(
     rsi = (indicators.get("rsi") or {}).get("14")
     sr = analysis.get("support_resistance") or {}
 
-    return {
+    summary: dict[str, Any] = {
         "symbol": symbol,
         "market_type": analysis.get("market_type"),
         "source": analysis.get("source"),
@@ -507,6 +914,175 @@ def _summarize_analysis_result(
         "supports": (sr.get("supports") or [])[:3],  # NOSONAR
         "resistances": (sr.get("resistances") or [])[:3],  # NOSONAR
     }
+    for _nxt_key in (
+        "nxt_tradable",
+        "nxt_tradable_source",
+        "nxt_tradable_asof",
+        "nxt_tradable_stale",
+    ):
+        if _nxt_key in quote:
+            summary[_nxt_key] = quote[_nxt_key]
+
+    # ROB-725: surface NXT price provenance so the agent knows current_price is
+    # an NXT-derived quote (not the stale KRX regular-session close).
+    # ROB-888: also carry the self-describing premarket fields (session_state /
+    # krx_prev_close / change_pct) so consumers judge the real gap from the MCP
+    # summary alone instead of scraping CDP naver's two-block premarket dump.
+    for _px_key in (
+        "price_source",
+        "session",
+        "session_state",
+        "krx_prev_close",
+        "change_pct",
+        "data_state",
+        "data_state_reason",
+        "venue",
+        "quote_asof",
+        "delayed",
+    ):
+        if _px_key in quote:
+            summary[_px_key] = quote[_px_key]
+
+    if position_index is not None:
+        summary["position"] = _lookup_position_for_symbol(
+            symbol=symbol,
+            market_type=str(analysis.get("market_type") or ""),
+            position_index=position_index,
+        )
+    return summary
+
+
+async def _attach_fresh_artifact_hints(
+    results: dict[str, Any],
+    *,
+    market: str | None,
+) -> None:
+    """Annotate each successful per-symbol result with a fresh-artifact hint.
+
+    ROB-648 soft-gate: when a non-stale analysis_artifact already covers a
+    symbol, attach ``fresh_artifact_exists`` ({artifact_uuid, as_of, kind}) so
+    the caller can choose to reuse it. Purely advisory — never short-circuits
+    the analysis. Complementary to the ROB-638 fetch-layer cache (cross-call);
+    this surfaces cross-session persisted artifacts. Fail-open: any DB/lookup
+    error leaves results untouched.
+    """
+    symbols = [
+        sym
+        for sym, row in results.items()
+        if isinstance(row, dict) and "error" not in row
+    ]
+    if not symbols:
+        return
+    try:
+        from app.core.db import AsyncSessionLocal
+        from app.core.symbol import to_db_symbol
+        from app.services.analysis_artifact import AnalysisArtifactService
+
+        market_filter = market if market in {"kr", "us", "crypto"} else None
+        async with AsyncSessionLocal() as db:
+            service = AnalysisArtifactService(db)
+            rows = await service.fresh_artifacts_for_symbols(
+                symbols=symbols,
+                market=market_filter,  # type: ignore[arg-type]
+            )
+        # rows are newest-first; keep the first (most recent) hit per symbol.
+        by_symbol: dict[str, Any] = {}
+        for row in rows:
+            for artifact_symbol in row.symbols:
+                by_symbol.setdefault(artifact_symbol, row)
+        for sym, result in results.items():
+            if not isinstance(result, dict) or "error" in result:
+                continue
+            hit = by_symbol.get(to_db_symbol(str(sym).strip())) or by_symbol.get(sym)
+            if hit is not None:
+                result["fresh_artifact_exists"] = {
+                    "artifact_uuid": str(hit.artifact_uuid),
+                    "as_of": hit.as_of.isoformat(),
+                    "kind": hit.kind,
+                }
+    except Exception as exc:  # fail-open: hints are advisory-only
+        logger.debug("fresh_artifact_exists hint lookup skipped: %s", exc)
+
+
+async def _attach_decision_history(
+    results: dict[str, Any],
+    *,
+    market: str | None,
+    decision_history_account_mode: str | None = None,
+) -> None:
+    """ROB-711: inject per-symbol decision_history (past judgment→outcome).
+
+    Batched (one session for all symbols), fail-open — any DB/lookup error
+    leaves results untouched. Only the compact contract calls this. Error rows
+    (dicts carrying "error") are skipped.
+    """
+    if not any(
+        isinstance(row, dict) and "error" not in row for row in results.values()
+    ):
+        return
+    try:
+        from app.core.db import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            for sym, result in results.items():
+                if not isinstance(result, dict) or "error" in result:
+                    continue
+                mkt = result.get("market_type") or market
+                ctx = await build_decision_context(
+                    db,
+                    symbol=str(sym),
+                    market=str(mkt or ""),
+                    account_mode=decision_history_account_mode,
+                )
+                if ctx is not None:
+                    result["decision_history"] = ctx
+    except Exception as exc:  # fail-open: advisory-only
+        logger.debug("decision_history injection skipped: %s", exc)
+
+
+async def _attach_earnings(
+    results: dict[str, Any],
+    *,
+    market: str | None,
+) -> None:
+    """ROB-722: inject per-symbol upcoming-earnings context (US live / KR DB).
+
+    Batched (one session), symbol-level fail-open. No-earnings is an explicit
+    signal (has_upcoming=False), so US/KR equity rows always receive an
+    ``earnings`` field; crypto/error rows are skipped. KR ingestion freshness is
+    computed at most once per batch and threaded into each build call.
+    """
+    if not any(
+        isinstance(row, dict) and "error" not in row for row in results.values()
+    ):
+        return
+    try:
+        from app.core.db import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as db:
+            kr_freshness: tuple[str, str | None] | None = None
+            for sym, result in results.items():
+                if not isinstance(result, dict) or "error" in result:
+                    continue
+                mkt = result.get("market_type") or market
+                if normalize_earnings_market(str(mkt or "")) == "kr" and (
+                    kr_freshness is None
+                ):
+                    try:
+                        kr_freshness = await _kr_ingestion_freshness(db)
+                    except Exception:  # fail-open: freshness is advisory
+                        kr_freshness = ("unknown", None)
+                try:
+                    ctx = await build_earnings_context(
+                        str(sym), str(mkt or ""), kr_freshness=kr_freshness
+                    )
+                except Exception as exc:  # symbol-level fail-open (e.g. 429)
+                    logger.debug("earnings injection skipped for %s: %s", sym, exc)
+                    continue
+                if ctx is not None:
+                    result["earnings"] = ctx
+    except Exception as exc:  # fail-open: advisory-only
+        logger.debug("earnings injection skipped: %s", exc)
 
 
 async def analyze_stock_batch_impl(
@@ -514,6 +1090,9 @@ async def analyze_stock_batch_impl(
     market: str | None = None,
     include_peers: bool = False,
     quick: bool = True,
+    include_position: bool = True,
+    refresh: bool = False,
+    decision_history_account_mode: str | None = None,
 ) -> dict[str, Any]:
     """Analyze multiple symbols and return compact per-symbol summaries.
     Args:
@@ -521,16 +1100,61 @@ async def analyze_stock_batch_impl(
         market: Optional market override
         include_peers: Whether to include peer analysis
         quick: If True, return compact summary; if False, return full analysis
+        include_position: ROB-541 — when True (default) and quick=True, attach a
+            per-account holdings 'position' array (or null) to each compact
+            summary via a SINGLE batched holdings fetch.
+        refresh: ROB-638 — when True, bypass the fetch-layer provider cache
+            read (consensus/valuation/profile are re-fetched fresh and the
+            fresh values are written back to the cache).
+        decision_history_account_mode: switches the advisory decision_history
+            block to the explicit mock/counterfactual branch.
     Returns:
         Dict with 'results' (symbol -> summary) and 'summary' keys
     """
-    formatter = _summarize_analysis_result if quick else (lambda _sym, result: result)
-    return await _run_batch_analysis(
+    # Position attach only applies to the compact summary contract. The full
+    # payload (quick=False) is returned verbatim and never carries 'position'.
+    attach_position = include_position and quick
+
+    if quick:
+
+        def formatter(
+            _sym: str,
+            result: dict[str, Any],
+            *,
+            position_index: dict[str, list[dict[str, Any]]] | None = None,
+        ) -> dict[str, Any]:
+            return _summarize_analysis_result(
+                _sym, result, position_index=position_index
+            )
+    else:
+
+        def formatter(
+            _sym: str,
+            result: dict[str, Any],
+            *,
+            position_index: dict[str, list[dict[str, Any]]] | None = None,
+        ) -> dict[str, Any]:
+            return result
+
+    response = await _run_batch_analysis(
         symbols,
         market=market,
         include_peers=include_peers,
         formatter=formatter,
+        include_position=attach_position,
+        refresh=refresh,
     )
+    # ROB-648: annotate each symbol that already has a fresh persisted artifact
+    # (soft reuse hint, fail-open). Only for the compact contract.
+    if quick:
+        await _attach_fresh_artifact_hints(response.get("results", {}), market=market)
+        await _attach_decision_history(
+            response.get("results", {}),
+            market=market,
+            decision_history_account_mode=decision_history_account_mode,
+        )
+        await _attach_earnings(response.get("results", {}), market=market)
+    return response
 
 
 async def analyze_portfolio_impl(

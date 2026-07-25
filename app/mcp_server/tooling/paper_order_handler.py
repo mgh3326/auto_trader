@@ -69,6 +69,7 @@ async def _activate_paper_journal(
     *,
     symbol: str,
     account_name: str,
+    journal_id: int | None = None,
 ) -> None:
     """Activate the most recent draft paper journal for a symbol.
 
@@ -78,22 +79,34 @@ async def _activate_paper_journal(
     """
     try:
         async with _order_session_factory()() as db:
-            stmt = (
-                select(TradeJournal)
-                .where(
-                    TradeJournal.symbol == symbol,
-                    TradeJournal.status == JournalStatus.draft,
-                    TradeJournal.account_type == "paper",
-                    TradeJournal.account == account_name,
+            if journal_id is not None:
+                # ROB-705: activate THIS order's own journal by id. The
+                # symbol+newest-draft heuristic below would activate the wrong
+                # journal when concurrent same-symbol ladder rungs are open
+                # (a lower-limit unfilled rung's draft is newer).
+                journal = await db.get(TradeJournal, journal_id)
+                if (
+                    journal is None
+                    or journal.status != JournalStatus.draft
+                    or journal.account_type != "paper"
+                ):
+                    return
+            else:
+                stmt = (
+                    select(TradeJournal)
+                    .where(
+                        TradeJournal.symbol == symbol,
+                        TradeJournal.status == JournalStatus.draft,
+                        TradeJournal.account_type == "paper",
+                        TradeJournal.account == account_name,
+                    )
+                    .order_by(desc(TradeJournal.created_at))
+                    .limit(1)
                 )
-                .order_by(desc(TradeJournal.created_at))
-                .limit(1)
-            )
-            result = await db.execute(stmt)
-            journal = result.scalars().first()
-
-            if journal is None:
-                return
+                result = await db.execute(stmt)
+                journal = result.scalars().first()
+                if journal is None:
+                    return
 
             journal.status = JournalStatus.active
             # trade_id stays None — no real trade to link

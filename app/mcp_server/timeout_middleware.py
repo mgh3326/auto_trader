@@ -36,6 +36,7 @@ DEFAULT_TOOL_TIMEOUT_S = DEFAULT_MCP_TOOL_TIMEOUT_S
 # purpose. Names verified against the registered tool surface. A budget of 0 means
 # "exempt" (no timeout).
 ELEVATED_TOOL_TIMEOUTS_S: dict[str, float] = {
+    "analysis_bundle_create": 240.0,
     # Report generation (snapshot collectors + Hermes composition) — heaviest.
     "investment_report_generate_from_bundle": 240.0,
     "investment_report_prepare_bundle": 240.0,
@@ -62,19 +63,23 @@ ELEVATED_TOOL_TIMEOUTS_S: dict[str, float] = {
     # OHLCV + indicator compute; news fetch.
     "get_indicators": 75.0,
     "get_news": 75.0,
-    # Order reconcile fan-out over daily order history.
+    # Order reconcile fan-out over daily order history (KIS/live). Toss reconcile
+    # is now batched (GET /orders?status=OPEN + windowed CLOSED pagination, ROB-669
+    # absorbing ROB-632) so a KR pass is 2-4 list calls, well under budget; the 90s
+    # budget stays as headroom for large windows + single-fetch fallbacks.
     "kis_live_reconcile_orders": 90.0,
     "live_reconcile_orders": 90.0,
+    "toss_reconcile_orders": 90.0,
 }
 
 
 class ToolTimeoutMiddleware(Middleware):
     """Bound each ``tools/call`` with a per-tool time budget.
 
-    Registered LAST in main.py so it is the innermost middleware (wraps the tool)
-    while the Sentry middleware stays outermost and captures the raised ``ToolError``
-    with the tool-call context (fastmcp 3.2.0 reverses the middleware list, so
-    first-added = outermost).
+    Registered LAST in main.py so it is the innermost middleware (wraps the tool).
+    Caller identity is outermost and Sentry sits immediately inside it, so timeout
+    ``ToolError`` exceptions retain both caller and tool-call context (fastmcp 3.2.0
+    reverses the middleware list, so first-added = outermost).
     """
 
     def __init__(

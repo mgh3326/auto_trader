@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.operator.fill-event-triage-toss</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>/Users/mgh3326/ops/fill-event-triage/poller.sh</string></array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/Users/mgh3326/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>AUTO_TRADER_REPO</key><string>/Users/mgh3326/work/auto_trader</string>
+    <key>OPERATOR_WS</key><string>/Users/mgh3326/services/auto_trader-operator</string>
+    <key>ENV_FILE</key><string>.env.prod</string>
+    <key>FILL_TRIAGE_SOURCE</key><string>reconciler</string>
+    <key>FILL_TRIAGE_BROKER</key><string>toss</string>
+    <key>FILL_TRIAGE_ACCOUNT_MODE</key><string>live</string>
+    <key>FILL_TRIAGE_STATE_DIR</key><string>/Users/mgh3326/.local/state/fill-event-triage-toss</string>
+  </dict>
+  <key>WorkingDirectory</key><string>/Users/mgh3326/work/auto_trader</string>
+  <key>StartInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>/Users/mgh3326/.local/state/fill-event-triage-toss/stdout.log</string>
+  <key>StandardErrorPath</key><string>/Users/mgh3326/.local/state/fill-event-triage-toss/stderr.log</string>
+</dict></plist>

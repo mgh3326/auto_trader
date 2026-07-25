@@ -86,3 +86,136 @@ async def test_us_adapter_not_found_is_pending():
     ):
         evidence = await ev.UsOverseasEvidenceAdapter().fetch_evidence(_Row())
     assert evidence.verdict == FillVerdict.PENDING  # fail-closed, no booking
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("order_no", "symbol", "ordered_price"),
+    [
+        ("0031116724", "GOOGL", "380.1"),
+        ("0031117219", "AMZN", "262"),
+    ],
+)
+async def test_us_adapter_classifies_expired_day_order_from_broker_terminal_shape(
+    order_no: str, symbol: str, ordered_price: str
+) -> None:
+    """ROB-952: KIS overseas DAY expiry must not become a phantom pending order."""
+    from app.mcp_server.tooling import live_order_evidence as ev
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import FillVerdict
+
+    class _Row:
+        exchange = "NASD"
+
+        def __init__(self, order_no: str, symbol: str) -> None:
+            self.order_no = order_no
+            self.symbol = symbol
+
+    broker_order = _row(
+        odno=order_no,
+        pdno=symbol,
+        ft_ord_qty="1",
+        ft_ccld_qty="0",
+        nccs_qty="0",
+        ft_ord_unpr3=ordered_price,
+        ord_dt="20260716",
+        ord_tmd="224201",
+    )
+    with (
+        patch.object(ev, "_create_live_kis_client", return_value=object()),
+        patch.object(
+            ev, "_build_us_exchange_candidates", new=AsyncMock(return_value=["NASD"])
+        ),
+        patch.object(
+            ev,
+            "_find_us_order_in_recent_history",
+            new=AsyncMock(return_value=(broker_order, "NASD")),
+        ),
+    ):
+        evidence = await ev.UsOverseasEvidenceAdapter().fetch_evidence(
+            _Row(order_no, symbol)
+        )
+
+    assert evidence.verdict == FillVerdict.EXPIRED
+    assert evidence.filled_qty == Decimal("0")
+    assert evidence.reason_code == "expired"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_us_adapter_keeps_actual_open_order_pending() -> None:
+    from app.mcp_server.tooling import live_order_evidence as ev
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import FillVerdict
+
+    class _Row:
+        symbol = "GOOGL"
+        exchange = "NASD"
+        order_no = "US-OPEN-1"
+
+    with (
+        patch.object(ev, "_create_live_kis_client", return_value=object()),
+        patch.object(
+            ev, "_build_us_exchange_candidates", new=AsyncMock(return_value=["NASD"])
+        ),
+        patch.object(
+            ev,
+            "_find_us_order_in_recent_history",
+            new=AsyncMock(
+                return_value=(
+                    _row(
+                        odno="US-OPEN-1",
+                        pdno="GOOGL",
+                        ft_ord_qty="1",
+                        ft_ccld_qty="0",
+                        nccs_qty="1",
+                    ),
+                    "NASD",
+                )
+            ),
+        ),
+    ):
+        evidence = await ev.UsOverseasEvidenceAdapter().fetch_evidence(_Row())
+
+    assert evidence.verdict == FillVerdict.PENDING
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_us_adapter_preserves_partial_fill_when_expired_row_has_fill_evidence() -> (
+    None
+):
+    from app.mcp_server.tooling import live_order_evidence as ev
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import FillVerdict
+
+    class _Row:
+        symbol = "GOOGL"
+        exchange = "NASD"
+        order_no = "US-PARTIAL-EXPIRED"
+
+    with (
+        patch.object(ev, "_create_live_kis_client", return_value=object()),
+        patch.object(
+            ev, "_build_us_exchange_candidates", new=AsyncMock(return_value=["NASD"])
+        ),
+        patch.object(
+            ev,
+            "_find_us_order_in_recent_history",
+            new=AsyncMock(
+                return_value=(
+                    _row(
+                        odno="US-PARTIAL-EXPIRED",
+                        pdno="GOOGL",
+                        ft_ord_qty="2",
+                        ft_ccld_qty="1",
+                        nccs_qty="0",
+                        ft_ccld_unpr3="380.1",
+                    ),
+                    "NASD",
+                )
+            ),
+        ),
+    ):
+        evidence = await ev.UsOverseasEvidenceAdapter().fetch_evidence(_Row())
+
+    assert evidence.verdict == FillVerdict.PARTIAL
+    assert evidence.filled_qty == Decimal("1")

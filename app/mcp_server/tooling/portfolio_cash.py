@@ -8,7 +8,9 @@ from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
+from app.core.exceptions import describe_exception
 from app.core.timezone import now_kst
+from app.mcp_server.tooling.account_modes import toss_live_mutations_enabled
 from app.mcp_server.tooling.shared import (
     logger,
     to_float,
@@ -16,13 +18,31 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     normalize_account_filter as _normalize_account_filter,
 )
-from app.mcp_server.tooling.user_settings_tools import get_manual_cash_setting
+from app.mcp_server.tooling.user_settings_tools import (
+    get_manual_cash_setting,
+    get_user_setting,
+)
+from app.services.account_routing import compact_cost_profile
 from app.services.brokers.kis import (
     KISClient,
     extract_domestic_cash_summary_from_integrated_margin,
 )
 from app.services.exchange_rate_service import get_usd_krw_rate as _get_usd_krw_rate
 from app.services.toss_portfolio_service import fetch_toss_cash_snapshot
+
+_KIS_MOCK_CASH_ACCOUNTS = frozenset({"kis", "kis_domestic", "kis_overseas"})
+
+
+def _validate_kis_mock_cash_account(account_filter: str | None) -> None:
+    if account_filter is not None and account_filter not in _KIS_MOCK_CASH_ACCOUNTS:
+        raise ValueError(
+            f"account={account_filter!r} is incompatible with account_mode='kis_mock'"
+        )
+
+
+async def get_account_costs_setting() -> dict[str, Any] | None:
+    value = await get_user_setting("account_costs")
+    return value if isinstance(value, dict) else None
 
 
 def _create_kis_client(*, is_mock: bool) -> KISClient:
@@ -35,50 +55,6 @@ async def _call_kis(method: Any, *args: Any, is_mock: bool, **kwargs: Any) -> An
     if is_mock:
         return await method(*args, **kwargs, is_mock=True)
     return await method(*args, **kwargs)
-
-
-async def _get_kis_domestic_pending_buy_amount(
-    kis: KISClient,
-    *,
-    is_mock: bool = False,
-) -> float:
-    total = 0.0
-    open_orders = await _call_kis(kis.inquire_korea_orders, is_mock=is_mock)
-    for order in open_orders:
-        if str(order.get("sll_buy_dvsn_cd", "")).strip() != "02":
-            continue
-        price = to_float(order.get("ord_unpr"), default=0.0)
-        qty = to_float(
-            order.get("nccs_qty") or order.get("ord_qty"),
-            default=0.0,
-        )
-        total += price * qty
-    return total
-
-
-async def _get_kis_overseas_pending_buy_amount_usd(
-    kis: KISClient,
-    *,
-    is_mock: bool = False,
-) -> float:
-    total = 0.0
-    # KIS documents NASD as a US-wide open-order lookup. Querying NYSE/AMEX as
-    # well can double-count the same locked cash when orders are mirrored there.
-    open_orders = await _call_kis(
-        kis.inquire_overseas_orders,
-        "NASD",
-        is_mock=is_mock,
-    )
-    for order in open_orders:
-        if str(order.get("sll_buy_dvsn_cd", "")).strip() != "02":
-            continue
-        price = to_float(order.get("ft_ord_unpr3"), default=0.0)
-        qty = to_float(
-            order.get("nccs_qty") or order.get("ft_ord_qty"),
-            default=0.0,
-        )
-        total += price * qty
-    return total
 
 
 def is_us_nation_name(value: Any) -> bool:
@@ -140,6 +116,10 @@ async def get_cash_balance_impl(
         parse_paper_account_token,
     )
 
+    account_filter = _normalize_account_filter(account)
+    if is_mock:
+        _validate_kis_mock_cash_account(account_filter)
+
     if is_paper_account_token(account):
         selector = parse_paper_account_token(account)
         rows, errors = await collect_paper_cash_balances(selector=selector)
@@ -151,21 +131,29 @@ async def get_cash_balance_impl(
         )
         return {
             "accounts": rows,
-            "summary": {"total_krw": total_krw, "total_usd": total_usd},
+            "summary": {
+                "total_krw": total_krw,
+                "total_usd": total_usd,
+                "unavailable_sources": {},
+            },
             "errors": errors,
         }
 
     accounts: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    unavailable_sources: dict[str, str] = {}
     total_krw = 0.0
     total_usd = 0.0
 
-    account_filter = _normalize_account_filter(account)
     strict_mode = account_filter is not None
 
-    if account_filter is None or account_filter == "toss":
+    if not is_mock and (account_filter is None or account_filter == "toss"):
         if bool(getattr(settings, "toss_api_enabled", False)):
             try:
+                # ROB-549: surface buying power as orderable only once Toss live
+                # mutations are armed; otherwise keep it reference-only (0.0) so
+                # the cash signal matches the holdings sellability gate.
+                toss_orderable_enabled = toss_live_mutations_enabled()
                 toss_snapshot = await fetch_toss_cash_snapshot()
                 toss_krw = _decimal_to_float(toss_snapshot.cash_krw)
                 toss_usd = _decimal_to_float(toss_snapshot.cash_usd)
@@ -177,7 +165,7 @@ async def get_cash_balance_impl(
                             "broker": "toss",
                             "currency": "KRW",
                             "balance": toss_krw,
-                            "orderable": 0.0,
+                            "orderable": toss_krw if toss_orderable_enabled else 0.0,
                             "formatted": _format_cash_amount(toss_krw, "KRW"),
                         }
                     )
@@ -190,7 +178,7 @@ async def get_cash_balance_impl(
                             "broker": "toss",
                             "currency": "USD",
                             "balance": toss_usd,
-                            "orderable": 0.0,
+                            "orderable": toss_usd if toss_orderable_enabled else 0.0,
                             "formatted": _format_cash_amount(toss_usd, "USD"),
                         }
                     )
@@ -201,11 +189,11 @@ async def get_cash_balance_impl(
                     raise RuntimeError(
                         f"Toss cash balance query failed: {exc}"
                     ) from exc
-                errors.append(
-                    {"source": "toss_api", "market": "cash", "error": str(exc)}
-                )
+                reason = describe_exception(exc)
+                errors.append({"source": "toss_api", "market": "cash", "error": reason})
+                unavailable_sources["toss"] = reason
 
-    if account_filter is None or account_filter in ("upbit",):
+    if not is_mock and (account_filter is None or account_filter == "upbit"):
         try:
             summary = await upbit_service.fetch_krw_cash_summary()
             krw_balance = float(summary.get("balance", 0.0))
@@ -223,7 +211,9 @@ async def get_cash_balance_impl(
             )
             total_krw += krw_balance
         except Exception as exc:
-            errors.append({"source": "upbit", "market": "crypto", "error": str(exc)})
+            reason = describe_exception(exc)
+            errors.append({"source": "upbit", "market": "crypto", "error": reason})
+            unavailable_sources["upbit"] = reason
 
     if account_filter is None or account_filter in (
         "kis",
@@ -255,31 +245,12 @@ async def get_cash_balance_impl(
                     )
                     dncl_amt = float(domestic_cash.get("balance", 0) or 0)
                     raw_orderable = float(domestic_cash.get("orderable", 0) or 0)
+                # ROB-596: 브로커 주문가능금액(stck_cash100_max_ord_psbl_amt)은 이미 접수된
+                # 미체결 매수를 netting한 실시간 값이다. 여기서 inquire_korea_orders 의
+                # 미체결 매수를 또 차감하면 double-count가 되어, 미정산 매도대금으로
+                # settled < orderable 인 상황에서 브로커가 받아줄 회전매수를 0으로 막는다.
+                # 브로커의 권위 있는 실시간 주문가능 값을 그대로 신뢰한다.
                 orderable = raw_orderable
-
-                try:
-                    pending_buy_amount = await _get_kis_domestic_pending_buy_amount(
-                        kis,
-                        is_mock=is_mock,
-                    )
-                    orderable = max(0.0, raw_orderable - pending_buy_amount)
-                except Exception as exc:
-                    msg = str(exc)
-                    is_mock_unsupported = is_mock and "mock" in msg.lower()
-                    logger.warning(
-                        "KR pending order deduction failed, using raw orderable: %s",
-                        msg,
-                    )
-                    if is_mock_unsupported:
-                        errors.append(
-                            {
-                                "source": "kis",
-                                "market": "kr",
-                                "error": "mock_unsupported: KIS domestic pending-orders "
-                                "inquiry is not available in mock mode",
-                                "mock_unsupported": True,
-                            }
-                        )
 
                 accounts.append(
                     {
@@ -290,6 +261,7 @@ async def get_cash_balance_impl(
                         "balance": dncl_amt,
                         "orderable": orderable,
                         "formatted": f"{int(dncl_amt):,} KRW",
+                        **({"account_mode": "kis_mock"} if is_mock else {}),
                     }
                 )
                 total_krw += dncl_amt
@@ -298,17 +270,29 @@ async def get_cash_balance_impl(
                     raise RuntimeError(
                         f"KIS domestic cash balance query failed: {exc}"
                     ) from exc
-                errors.append({"source": "kis", "market": "kr", "error": str(exc)})
+                reason = describe_exception(exc)
+                errors.append(
+                    {
+                        "source": "kis",
+                        "market": "kr",
+                        "error": reason,
+                        **({"account_mode": "kis_mock"} if is_mock else {}),
+                    }
+                )
+                unavailable_sources["kis_domestic"] = reason
 
         if account_filter is None or account_filter in ("kis", "kis_overseas"):
             if is_mock:
+                reason = "mock_unsupported: KIS overseas margin is not available in mock mode"
                 errors.append(
                     {
                         "source": "kis",
                         "market": "us",
-                        "error": "mock_unsupported: KIS overseas margin is not available in mock mode",
+                        "error": reason,
+                        "account_mode": "kis_mock",
                     }
                 )
+                unavailable_sources["kis_overseas"] = reason
             else:
                 try:
                     overseas_margin_data = await _call_kis(
@@ -327,19 +311,9 @@ async def get_cash_balance_impl(
                         default=0.0,
                     )
                     raw_orderable = extract_usd_orderable_from_row(usd_margin)
+                    # ROB-596: 해외 주문가능금액(frcr_gnrl_ord_psbl_amt)도 이미 net 이므로
+                    # 미체결 매수를 추가 차감하지 않는다 (KR 과 동일 double-count 방지).
                     orderable = raw_orderable
-
-                    try:
-                        pending_usd = await _get_kis_overseas_pending_buy_amount_usd(
-                            kis,
-                            is_mock=is_mock,
-                        )
-                        orderable = max(0.0, raw_orderable - pending_usd)
-                    except Exception as exc:
-                        logger.warning(
-                            "USD pending order deduction failed, using raw orderable: %s",
-                            exc,
-                        )
 
                     accounts.append(
                         {
@@ -359,13 +333,16 @@ async def get_cash_balance_impl(
                         raise RuntimeError(
                             f"KIS overseas cash balance query failed: {exc}"
                         ) from exc
-                    errors.append({"source": "kis", "market": "us", "error": str(exc)})
+                    reason = describe_exception(exc)
+                    errors.append({"source": "kis", "market": "us", "error": reason})
+                    unavailable_sources["kis_overseas"] = reason
 
     return {
         "accounts": accounts,
         "summary": {
             "total_krw": total_krw,
             "total_usd": total_usd,
+            "unavailable_sources": unavailable_sources,
         },
         "errors": errors,
     }
@@ -447,7 +424,7 @@ async def get_available_capital_impl(
     )
 
     manual_cash_result: dict[str, Any] | None = None
-    if include_manual and not is_paper_account_token(account):
+    if include_manual and not is_mock and not is_paper_account_token(account):
         try:
             manual_setting = await get_manual_cash_setting()
             if manual_setting is not None:
@@ -476,6 +453,19 @@ async def get_available_capital_impl(
             logger.warning("Failed to get manual cash setting: %s", exc)
             errors.append({"source": "manual_cash", "error": str(exc)})
 
+    try:
+        account_costs = await get_account_costs_setting()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to get account cost setting: %s", exc)
+        errors.append({"source": "account_costs", "error": str(exc)})
+        account_costs = None
+    for processed_acc in processed_accounts:
+        account_id = str(processed_acc.get("account") or "")
+        market = "us" if processed_acc.get("currency") == "USD" else "kr"
+        profile = compact_cost_profile(account_id, market, account_costs)
+        if profile is not None:
+            processed_acc["cost_profile"] = profile
+
     return {
         "accounts": processed_accounts,
         "manual_cash": manual_cash_result,
@@ -484,6 +474,11 @@ async def get_available_capital_impl(
             "manual_cash_excluded_krw": manual_cash_excluded_krw,
             "exchange_rate_usd_krw": exchange_rate,
             "as_of": now_kst().isoformat(),
+            # ROB-600: propagate per-source lookup failures so a failed KIS read is
+            # not mistaken for 0 orderable cash.
+            "unavailable_sources": cash_result.get("summary", {}).get(
+                "unavailable_sources", {}
+            ),
         },
         "errors": errors,
     }
@@ -493,6 +488,7 @@ __all__ = [
     "get_cash_balance_impl",
     "get_available_capital_impl",
     "get_usd_krw_rate",
+    "get_account_costs_setting",
     "is_us_nation_name",
     "extract_usd_orderable_from_row",
     "select_usd_row_for_us_order",

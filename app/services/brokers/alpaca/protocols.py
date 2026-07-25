@@ -45,4 +45,7 @@ class AlpacaPaperBrokerProtocol(Protocol):
         after: datetime | None = None,
         until: datetime | None = None,
         limit: int | None = None,
+        page_token: str | None = None,
+        page_size: int | None = None,
+        direction: str | None = None,
     ) -> list[Fill]: ...

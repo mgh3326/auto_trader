@@ -13,6 +13,8 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.core.timezone import now_kst
+from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
 from app.mcp_server.tooling.kis_live_ledger import _order_session_factory, _to_float
 from app.mcp_server.tooling.live_order_evidence import get_evidence_adapter
 from app.mcp_server.tooling.order_journal import (
@@ -25,6 +27,10 @@ from app.models.review import LiveOrderLedger
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillVerdict,
 )
+from app.services.live_correlation import live_correlation_id
+from app.services.live_place_provenance import publish_place_time_forecast
+
+_LIVE_MARKET_TO_INSTRUMENT = {"us": "equity_us", "crypto": "crypto"}
 
 logger = logging.getLogger(__name__)
 
@@ -66,12 +72,17 @@ async def _save_live_order_ledger(
     min_hold_days: int | None,
     notes: str | None,
     exit_reason: str | None,
+    exit_intent: str | None = None,
     indicators_snapshot: dict[str, Any] | None,
     dt_approval_issue_id: str | None = None,
     dt_requester_agent_id: str | None = None,
     dt_caller_source: str | None = None,
     report_item_uuid: uuid.UUID | None = None,
+    approval_hash: str | None = None,
+    idempotency_key: str | None = None,
+    correlation_id: str | None = None,
 ) -> int:
+
     async with _order_session_factory()() as db:
         row = LiveOrderLedger(
             trade_date=datetime.now(UTC),
@@ -102,11 +113,15 @@ async def _save_live_order_ledger(
             min_hold_days=min_hold_days,
             notes=notes,
             exit_reason=exit_reason,
+            exit_intent=exit_intent,
             indicators_snapshot=indicators_snapshot,
             dt_approval_issue_id=dt_approval_issue_id,
             dt_requester_agent_id=dt_requester_agent_id,
             dt_caller_source=dt_caller_source,
             report_item_uuid=report_item_uuid,
+            approval_hash=approval_hash,
+            idempotency_key=idempotency_key,
+            correlation_id=correlation_id,
         )
         db.add(row)
         # flush assigns the PK inside the transaction; read it before commit so
@@ -170,6 +185,14 @@ async def _update_live_ledger_outcome(
     avg_fill_price: Decimal | None = None,
     trade_id: int | None = None,
     journal_id: int | None = None,
+    buy_fx_rate: Decimal | None = None,
+    sell_fx_rate: Decimal | None = None,
+    fx_pnl_krw: Decimal | None = None,
+    security_pnl_usd: Decimal | None = None,
+    security_pnl_krw: Decimal | None = None,
+    total_pnl_krw: Decimal | None = None,
+    fx_rate_source: str | None = None,
+    fx_pnl_accuracy: str | None = None,
 ) -> None:
     async with _order_session_factory()() as db:
         row = await db.get(LiveOrderLedger, ledger_id)
@@ -186,8 +209,75 @@ async def _update_live_ledger_outcome(
             row.trade_id = trade_id
         if journal_id is not None:
             row.journal_id = journal_id
+
+        if buy_fx_rate is not None:
+            row.buy_fx_rate = buy_fx_rate
+        if sell_fx_rate is not None:
+            row.sell_fx_rate = sell_fx_rate
+        if fx_pnl_krw is not None:
+            row.fx_pnl_krw = fx_pnl_krw
+        if security_pnl_usd is not None:
+            row.security_pnl_usd = security_pnl_usd
+        if security_pnl_krw is not None:
+            row.security_pnl_krw = security_pnl_krw
+        if total_pnl_krw is not None:
+            row.total_pnl_krw = total_pnl_krw
+        if fx_rate_source is not None:
+            row.fx_rate_source = fx_rate_source
+        if fx_pnl_accuracy is not None:
+            row.fx_pnl_accuracy = fx_pnl_accuracy
+
         row.reconciled_at = datetime.now(UTC)
         await db.commit()
+
+
+async def _converge_proposal_rung(
+    row: LiveOrderLedger,
+    *,
+    terminal_state: str,
+    filled_qty: Decimal | None,
+) -> dict[str, Any] | None:
+    """Project reconciled broker evidence onto the order_proposal rung (ROB-816).
+
+    The live ledger row is the booking source of truth; the proposal rung is a
+    downstream projection, so any failure here is logged and swallowed — it must
+    never turn a successful reconcile into an anomaly, nor block the ledger from
+    booking. Runs in its own committed session (mirrors the other reconcile
+    helpers). Returns a small summary for the reconcile outcome dict, or ``None``
+    when no matching open rung exists.
+
+    Caveat: once a full-fill / cancel flips the ledger row to a terminal status
+    it drops out of ``_list_open_live_ledger_rows``, so a *swallowed* failure
+    here is not retried by a later reconcile pass. That is why the failure is
+    logged at ERROR with the ledger id (alertable) rather than silently. A
+    guaranteed-convergence proposal-rung reconcile sweep is tracked as follow-up.
+    """
+    from app.services.order_proposals import OrderProposalsService
+
+    try:
+        async with _order_session_factory()() as db:
+            service = OrderProposalsService(db)
+            rung = await service.record_fill_evidence(
+                correlation_id=getattr(row, "correlation_id", None),
+                broker_order_id=row.order_no,
+                filled_qty=filled_qty,
+                terminal_state=terminal_state,
+                now=datetime.now(UTC),
+            )
+            await db.commit()
+    except Exception as exc:  # noqa: BLE001 - projection is best-effort
+        logger.error(
+            "proposal rung convergence failed ledger_id=%s order_no=%s "
+            "terminal_state=%s: %s",
+            row.id,
+            row.order_no,
+            terminal_state,
+            exc,
+        )
+        return {"converged": False, "error": str(exc) or exc.__class__.__name__}
+    if rung is None:
+        return None
+    return {"converged": True, "proposal_rung_state": rung.state}
 
 
 async def _reconcile_one_live_row(
@@ -208,10 +298,29 @@ async def _reconcile_one_live_row(
         base["action"] = "noop_pending"
         return base
 
+    if evidence.verdict == FillVerdict.EXPIRED:
+        base["action"] = "would_mark_expired" if dry_run else "marked_expired"
+        if not dry_run:
+            await _update_live_ledger_outcome(ledger_id=row.id, status="expired")
+            # Proposal rungs have no separate expired state; expiry is a
+            # terminal cancel-family outcome there, while the ledger preserves
+            # the more precise broker-facing ``expired`` vocabulary.
+            converged = await _converge_proposal_rung(
+                row, terminal_state="cancelled", filled_qty=None
+            )
+            if converged is not None:
+                base["proposal_rung"] = converged
+        return base
+
     if evidence.verdict == FillVerdict.NONE:
         base["action"] = "marked_cancelled"
         if not dry_run:
             await _update_live_ledger_outcome(ledger_id=row.id, status="cancelled")
+            converged = await _converge_proposal_rung(
+                row, terminal_state="cancelled", filled_qty=None
+            )
+            if converged is not None:
+                base["proposal_rung"] = converged
         return base
 
     # FILLED / PARTIAL — broker 확정값. 델타 멱등 booking.
@@ -224,6 +333,8 @@ async def _reconcile_one_live_row(
     base["avg_price"] = float(avg_price)
     base["delta_qty"] = float(delta)
 
+    rung_terminal = "filled" if new_status == "filled" else "partially_filled"
+
     if delta <= 0:
         base["action"] = "noop_already_booked"
         if not dry_run:
@@ -233,11 +344,21 @@ async def _reconcile_one_live_row(
                 filled_qty=broker_cum,
                 avg_fill_price=avg_price,
             )
+            converged = await _converge_proposal_rung(
+                row, terminal_state=rung_terminal, filled_qty=broker_cum
+            )
+            if converged is not None:
+                base["proposal_rung"] = converged
         return base
 
     if dry_run:
         base["action"] = "would_book"
         return base
+
+    # ROB-568 — US FX spot capture
+    fx_capture = None
+    if row.market == "us":
+        fx_capture = await capture_reconcile_spot_fx()
 
     trade_id = await _save_order_fill(
         symbol=row.symbol,
@@ -252,6 +373,7 @@ async def _reconcile_one_live_row(
         order_id=row.order_no,
     )
     journal_id = row.journal_id
+    fx_summary = None
     if row.side == "buy" and row.journal_id is None:
         jr = await _create_trade_journal_for_buy(
             symbol=row.symbol,
@@ -270,6 +392,12 @@ async def _reconcile_one_live_row(
             indicators_snapshot=row.indicators_snapshot,
             account_type="live",
             account=row.broker,
+            correlation_id=getattr(row, "correlation_id", None),
+            buy_fx_rate=float(fx_capture.rate)
+            if fx_capture and fx_capture.rate
+            else None,
+            fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
+            fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
         )
         journal_id = jr.get("journal_id")
         if trade_id and journal_id:
@@ -293,7 +421,7 @@ async def _reconcile_one_live_row(
                 requester_agent_id=row.dt_requester_agent_id,
                 approval_verified_at=row.trade_date or datetime.now(UTC),
             )
-        await _close_journals_on_sell(
+        fx_summary = await _close_journals_on_sell(
             symbol=row.symbol,
             sell_quantity=float(delta),
             sell_price=float(avg_price),
@@ -301,19 +429,80 @@ async def _reconcile_one_live_row(
             account_type="live",
             account=row.broker,
             defensive_trim_ctx=dt_ctx,
+            sell_fx_rate=float(fx_capture.rate)
+            if fx_capture and fx_capture.rate
+            else None,
+            fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
+            fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
         )
+        # ROB-544: surface the labeled close result for parity with
+        # kis_live_reconcile_orders. realized_pnl_pct is the FIFO lot /
+        # journal-entry basis (per-lot entry_price), NOT the account-average.
+        base["journals_closed"] = fx_summary["journals_closed"]
+        base["closed_journal_ids"] = fx_summary["closed_ids"]
+        base["realized_pnl_pct"] = fx_summary["total_pnl_pct"]
+        base["realized_pnl_basis"] = fx_summary.get(
+            "realized_pnl_basis", "journal_entry"
+        )
+        base["journal_pnl_pct"] = fx_summary["total_pnl_pct"]
 
-    await _update_live_ledger_outcome(
-        ledger_id=row.id,
-        status=new_status,
-        filled_qty=broker_cum,
-        avg_fill_price=avg_price,
-        trade_id=trade_id,
-        journal_id=journal_id,
-    )
+    if fx_summary:
+        await _update_live_ledger_outcome(
+            ledger_id=row.id,
+            status=new_status,
+            filled_qty=broker_cum,
+            avg_fill_price=avg_price,
+            trade_id=trade_id,
+            journal_id=journal_id,
+            buy_fx_rate=Decimal(str(fx_summary["buy_fx_rate"]))
+            if fx_summary.get("buy_fx_rate") is not None
+            else None,
+            sell_fx_rate=Decimal(str(fx_summary["sell_fx_rate"]))
+            if fx_summary.get("sell_fx_rate") is not None
+            else None,
+            fx_pnl_krw=Decimal(str(fx_summary["fx_pnl_krw"]))
+            if fx_summary.get("fx_pnl_krw") is not None
+            else None,
+            security_pnl_usd=Decimal(str(fx_summary["security_pnl_usd"]))
+            if fx_summary.get("security_pnl_usd") is not None
+            else None,
+            security_pnl_krw=Decimal(str(fx_summary["security_pnl_krw"]))
+            if fx_summary.get("security_pnl_krw") is not None
+            else None,
+            total_pnl_krw=Decimal(str(fx_summary["total_pnl_krw"]))
+            if fx_summary.get("total_pnl_krw") is not None
+            else None,
+            fx_rate_source=fx_summary.get("fx_rate_source"),
+            fx_pnl_accuracy=fx_summary.get("fx_pnl_accuracy"),
+        )
+        base.update(fx_summary)
+    else:
+        await _update_live_ledger_outcome(
+            ledger_id=row.id,
+            status=new_status,
+            filled_qty=broker_cum,
+            avg_fill_price=avg_price,
+            trade_id=trade_id,
+            journal_id=journal_id,
+            buy_fx_rate=Decimal(str(fx_capture.rate))
+            if fx_capture and fx_capture.rate
+            else None,
+            fx_rate_source=fx_capture.fx_rate_source if fx_capture else None,
+            fx_pnl_accuracy=fx_capture.fx_pnl_accuracy if fx_capture else None,
+        )
+        if fx_capture:
+            base["buy_fx_rate"] = float(fx_capture.rate) if fx_capture.rate else None
+            base["fx_rate_source"] = fx_capture.fx_rate_source
+            base["fx_pnl_accuracy"] = fx_capture.fx_pnl_accuracy
+
     base["action"] = "booked"
     base["trade_id"] = trade_id
     base["journal_id"] = journal_id
+    converged = await _converge_proposal_rung(
+        row, terminal_state=rung_terminal, filled_qty=broker_cum
+    )
+    if converged is not None:
+        base["proposal_rung"] = converged
     return base
 
 
@@ -379,6 +568,7 @@ async def _record_live_order(
     execution_result: dict[str, Any],
     reason: str | None,
     exit_reason: str | None,
+    exit_intent: str | None = None,
     thesis: str | None,
     strategy: str | None,
     target_price: float | None,
@@ -391,12 +581,23 @@ async def _record_live_order(
     dt_requester_agent_id: str | None = None,
     dt_caller_source: str | None = None,
     report_item_uuid: uuid.UUID | None = None,
+    approval_hash: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
     qty_val = _to_float(dry_run_result.get("quantity"), default=0.0)
     amt_val = _to_float(dry_run_result.get("estimated_value"), default=0.0)
     status = _derive_live_send_status(
         rt_cd=rt_cd, order_no=str(order_no) if order_no else None
+    )
+    correlation_id = live_correlation_id(
+        account_scope=account_scope,
+        symbol=normalized_symbol,
+        side=side,
+        price=Decimal(str(price_val)),
+        quantity=Decimal(str(qty_val)),
+        kst_trade_day=now_kst().strftime("%Y-%m-%d"),
+        rung=0,
     )
     ledger_id = await _save_live_order_ledger(
         broker=broker,
@@ -425,14 +626,33 @@ async def _record_live_order(
         min_hold_days=min_hold_days,
         notes=notes,
         exit_reason=exit_reason,
+        exit_intent=exit_intent,
         indicators_snapshot=indicators_snapshot,
         dt_approval_issue_id=dt_approval_issue_id,
         dt_requester_agent_id=dt_requester_agent_id,
         dt_caller_source=dt_caller_source,
         report_item_uuid=report_item_uuid,
+        approval_hash=approval_hash,
+        idempotency_key=idempotency_key,
+        correlation_id=correlation_id,
     )
+
+    if status == "accepted":
+        await publish_place_time_forecast(
+            correlation_id=correlation_id,
+            symbol=normalized_symbol,
+            instrument_type=_LIVE_MARKET_TO_INSTRUMENT.get(market, market),
+            side=side,
+            target_price=target_price,
+            min_hold_days=min_hold_days,
+            session_label="live_place",
+            created_by="auto_place_live",
+            report_item_uuid=str(report_item_uuid) if report_item_uuid else None,
+        )
+
     fill_recorded = False
     inline_outcome: dict[str, Any] | None = None
+
     if inline_confirm and status == "accepted":
         row = await _load_live_ledger_row(ledger_id)
         if row is not None:
@@ -447,6 +667,7 @@ async def _record_live_order(
         "account_scope": account_scope,
         "market": market,
         "ledger_id": ledger_id,
+        "correlation_id": correlation_id,
         "order_id": str(order_no) if order_no else None,
         "broker_status": status,
         "fill_recorded": fill_recorded,
@@ -467,7 +688,13 @@ async def _record_live_order(
 async def list_live_orders_by_report_item_uuid(
     report_item_uuid: uuid.UUID,
 ) -> list[dict[str, Any]]:
-    """ROB-473 — return live US/crypto orders linked to a report item (audit)."""
+    """ROB-473 — live US/crypto orders linked to a report item (audit).
+
+    ROB-554 — projects via the shared LinkedOrderView so this audit helper,
+    the web bundle, and the MCP bundle share one field mapping.
+    """
+    from app.services.investment_reports.linked_orders import project_live_order
+
     async with _order_session_factory()() as db:
         rows = (
             (
@@ -480,16 +707,4 @@ async def list_live_orders_by_report_item_uuid(
             .scalars()
             .all()
         )
-    return [
-        {
-            "ledger_id": r.id,
-            "order_no": r.order_no,
-            "symbol": r.symbol,
-            "side": r.side,
-            "status": r.status,
-            "account_scope": r.account_scope,
-            "market": r.market,
-            "report_item_uuid": str(r.report_item_uuid) if r.report_item_uuid else None,
-        }
-        for r in rows
-    ]
+    return [project_live_order(r).model_dump(mode="json") for r in rows]

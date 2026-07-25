@@ -121,9 +121,7 @@ async def _run(args: argparse.Namespace) -> int:
         log.error(f"WS FAIL: {exc}")
         return 4
 
-    log.info(
-        f"smoke OK (dry_run={args.dry_run}; received {received} WS events)"
-    )
+    log.info(f"smoke OK (dry_run={args.dry_run}; received {received} WS events)")
     return 0
 
 

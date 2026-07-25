@@ -15,6 +15,7 @@ from app.mcp_server.tooling.kis_live_ledger import _create_live_kis_client
 from app.mcp_server.tooling.orders_modify_cancel import (
     _build_us_exchange_candidates,
     _find_us_order_in_recent_history,
+    _normalize_kis_overseas_order,
 )
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillEvidence,
@@ -70,6 +71,42 @@ class UsOverseasEvidenceAdapter:
                 "not_found",
                 f"order {row.order_no} not in recent overseas history",
             )
+
+        # Reuse the same normalizer as order-history / proposal target
+        # preflight.  It consumes KIS ``nccs_qty`` and direct cancellation
+        # evidence, unlike the fill-only canonical row below.  Without this,
+        # a DAY order with zero remaining and zero fills was always reduced to
+        # ``PENDING`` by ``classify_fill_evidence``.
+        normalized_order = _normalize_kis_overseas_order(order)
+        filled_qty = _to_decimal(normalized_order["filled_qty"]) or Decimal("0")
+        remaining_qty = _to_decimal(normalized_order["remaining_qty"]) or Decimal("0")
+        normalized_status = str(normalized_order["status"])
+        if filled_qty == 0 and remaining_qty == 0:
+            if normalized_status == "expired":
+                return FillEvidence(
+                    FillVerdict.EXPIRED,
+                    Decimal("0"),
+                    None,
+                    None,
+                    "expired",
+                    f"KIS overseas order {row.order_no} expired with no fills",
+                )
+            if normalized_status == "cancelled":
+                return FillEvidence(
+                    FillVerdict.NONE,
+                    Decimal("0"),
+                    None,
+                    None,
+                    "cancelled",
+                    f"KIS overseas order {row.order_no} cancelled with no fills",
+                )
+            if normalized_status != "pending":
+                # This invariant must never silently regress into pending: an
+                # unfilled order with zero remaining is terminal broker evidence.
+                raise RuntimeError(
+                    "unexpected terminal KIS overseas order state "
+                    f"status={normalized_status!r} order_no={row.order_no}"
+                )
         normalized = _normalize_overseas_for_classify(order)
         return classify_fill_evidence(order_no=str(row.order_no), rows=[normalized])
 

@@ -2,21 +2,48 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from decimal import Decimal
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
+from app.services.brokers.toss import rate_limiter as rate_limiter_module
 from app.services.brokers.toss.auth import TossOAuthTokenManager
 from app.services.brokers.toss.client import TossReadClient
+from app.services.brokers.toss.errors import TossApiResponseError
+
+
+@dataclass
+class _ClientSettings:
+    toss_api_enabled: bool = True
+    toss_api_client_id: str | None = "client-id"
+    toss_api_client_secret: SecretStr | None = SecretStr("client-secret")
+    toss_api_base_url: str | None = "https://openapi.tossinvest.com"
+    toss_api_account_seq: int | None = 1
+
+
+def test_from_settings_shares_process_global_rate_limiter() -> None:
+    """ROB-547: client and its token manager must share the one process-global
+    limiter so group TPS holds across concurrent call sites."""
+    rate_limiter_module.reset_shared_rate_limiter()
+    shared = rate_limiter_module.get_shared_rate_limiter()
+
+    client = TossReadClient.from_settings(_ClientSettings())
+
+    assert client._rate_limiter is shared
+    assert client._token_manager._rate_limiter is shared
 
 
 class _TokenManager(TossOAuthTokenManager):
     def __init__(self) -> None:
         pass
 
-    async def get_access_token(self, *, force_reissue: bool = False) -> str:
-        del force_reissue
+    async def get_access_token(
+        self, *, force_reissue: bool = False, failed_token: str | None = None
+    ) -> str:
+        del force_reissue, failed_token
         return "token-1"
 
 
@@ -95,6 +122,90 @@ async def test_holdings_auto_resolves_single_account_header() -> None:
 
 
 @pytest.mark.asyncio
+async def test_account_seq_resolved_once_then_cached_across_calls() -> None:
+    accounts_hits = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal accounts_hits
+        if request.url.path == "/api/v1/accounts":
+            accounts_hits += 1
+            return httpx.Response(
+                200,
+                json=_json([{"accountNo": "1", "accountSeq": 7, "accountType": "B"}]),
+                request=request,
+            )
+        # `/api/v1/orders/{id}` (single-order detail) is parsed by `parse_order`,
+        # which requires a FULL flat order row (orderId/symbol/side/orderType/
+        # timeInForce/status/quantity/currency/orderedAt). Returning the list shape
+        # `{"orders": []}` here would raise KeyError('orderId') inside parse_order
+        # (parse_order delegates to parse_orders([raw])) — so branch on the path and
+        # return a valid single-order body. The `/api/v1/orders` LIST path still
+        # returns the `{"orders": []}` page shape parse_orders expects.
+        if request.url.path.startswith("/api/v1/orders/"):
+            return httpx.Response(
+                200,
+                json=_json(
+                    {
+                        "orderId": "ord-1",
+                        "symbol": "034020",
+                        "side": "BUY",
+                        "orderType": "LIMIT",
+                        "timeInForce": "DAY",
+                        "status": "PENDING",
+                        "quantity": "3",
+                        "currency": "KRW",
+                        "orderedAt": "2026-07-01T00:00:00Z",
+                    }
+                ),
+                request=request,
+            )
+        return httpx.Response(200, json=_json({"orders": []}), request=request)
+
+    # account_seq=None → resolution goes through /accounts; the instance caches it.
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        account_seq=None,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        await client.list_orders(status="OPEN")
+        await client.list_orders(status="CLOSED")
+        await client.get_order("ord-1")
+    finally:
+        await client.aclose()
+
+    assert accounts_hits == 1  # ROB-687: one /accounts for the whole client lifetime
+
+
+@pytest.mark.asyncio
+async def test_account_seq_guard_rejects_multiple_accounts() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/accounts":
+            return httpx.Response(
+                200,
+                json=_json(
+                    [
+                        {"accountNo": "1", "accountSeq": 7, "accountType": "B"},
+                        {"accountNo": "2", "accountSeq": 8, "accountType": "B"},
+                    ]
+                ),
+                request=request,
+            )
+        return httpx.Response(200, json=_json({"orders": []}), request=request)
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        account_seq=None,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(ValueError, match="exactly one account"):
+            await client.list_orders(status="OPEN")
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_prices_rejects_more_than_200_symbols() -> None:
     client = TossReadClient(
         token_manager=_TokenManager(),
@@ -113,10 +224,14 @@ async def test_prices_rejects_more_than_200_symbols() -> None:
 async def test_get_order_retries_once_after_invalid_token() -> None:
     calls = 0
     token_calls: list[bool] = []
+    failed_tokens: list[str | None] = []
 
     class TokenManager(_TokenManager):
-        async def get_access_token(self, *, force_reissue: bool = False) -> str:
+        async def get_access_token(
+            self, *, force_reissue: bool = False, failed_token: str | None = None
+        ) -> str:
             token_calls.append(force_reissue)
+            failed_tokens.append(failed_token)
             return "token-2" if force_reissue else "token-1"
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -169,6 +284,121 @@ async def test_get_order_retries_once_after_invalid_token() -> None:
 
     assert order.order_id == "ord-1"
     assert token_calls == [False, True]
+    # ROB-547: the reissue must carry the failed token so a peer's fresher
+    # token can be reused instead of force-churning a new one.
+    assert failed_tokens == [None, "token-1"]
+
+
+@pytest.mark.asyncio
+async def test_get_order_retries_once_after_403_non_json_with_reissued_token() -> None:
+    calls = 0
+    token_calls: list[bool] = []
+    failed_tokens: list[str | None] = []
+    seen_authorizations: list[str] = []
+
+    class TokenManager(_TokenManager):
+        async def get_access_token(
+            self, *, force_reissue: bool = False, failed_token: str | None = None
+        ) -> str:
+            token_calls.append(force_reissue)
+            failed_tokens.append(failed_token)
+            return "token-2" if force_reissue else "token-1"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        seen_authorizations.append(request.headers["Authorization"])
+        if calls == 1:
+            return httpx.Response(
+                403,
+                text="<html><body>Forbidden stale token</body></html>",
+                headers={"cf-ray": "ray-403"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json=_json(
+                {
+                    "orderId": "ord-403",
+                    "symbol": "AAPL",
+                    "side": "BUY",
+                    "orderType": "LIMIT",
+                    "timeInForce": "DAY",
+                    "status": "FILLED",
+                    "price": "190",
+                    "quantity": "1",
+                    "orderAmount": None,
+                    "currency": "USD",
+                    "orderedAt": "2026-06-15T00:00:00Z",
+                    "canceledAt": None,
+                    "execution": {"filledQuantity": "1"},
+                }
+            ),
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=TokenManager(),
+        account_seq=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        order = await client.get_order("ord-403")
+    finally:
+        await client.aclose()
+
+    assert order.order_id == "ord-403"
+    assert calls == 2
+    assert token_calls == [False, True]
+    assert failed_tokens == [None, "token-1"]
+    assert seen_authorizations == ["Bearer token-1", "Bearer token-2"]
+
+
+@pytest.mark.asyncio
+async def test_place_order_does_not_retry_403_non_json_for_mutation() -> None:
+    calls = 0
+    token_calls: list[bool] = []
+
+    class TokenManager(_TokenManager):
+        async def get_access_token(
+            self, *, force_reissue: bool = False, failed_token: str | None = None
+        ) -> str:
+            token_calls.append(force_reissue)
+            return "token-2" if force_reissue else "token-1"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            403,
+            text="<html><body>Forbidden mutation</body></html>",
+            headers={"cf-ray": "ray-post-403"},
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=TokenManager(),
+        account_seq=999,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(TossApiResponseError) as exc_info:
+            await client.place_order(
+                {
+                    "symbol": "AAPL",
+                    "side": "BUY",
+                    "orderType": "LIMIT",
+                    "quantity": "1",
+                    "price": "150.0",
+                    "clientOrderId": "cid-post-403",
+                }
+            )
+    finally:
+        await client.aclose()
+
+    assert calls == 1
+    assert token_calls == [False]
+    assert "status=403 code='non-json-response'" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -225,6 +455,77 @@ async def test_prices_retries_once_after_429_retry_after(monkeypatch) -> None:
     assert calls == 2
     assert sleeps == [2.0]
     assert prices[0].last_price == Decimal("190.12")
+
+
+@pytest.mark.asyncio
+async def test_get_order_429_non_json_backs_off_without_token_reissue(
+    monkeypatch,
+) -> None:
+    calls = 0
+    sleeps: list[float] = []
+    token_calls: list[bool] = []
+    seen_authorizations: list[str] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    class TokenManager(_TokenManager):
+        async def get_access_token(
+            self, *, force_reissue: bool = False, failed_token: str | None = None
+        ) -> str:
+            token_calls.append(force_reissue)
+            return "token-2" if force_reissue else "token-1"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        seen_authorizations.append(request.headers["Authorization"])
+        if calls == 1:
+            return httpx.Response(
+                429,
+                text="<html><body>Too Many Requests</body></html>",
+                headers={"Retry-After": "2"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json=_json(
+                {
+                    "orderId": "ord-rate",
+                    "symbol": "AAPL",
+                    "side": "BUY",
+                    "orderType": "LIMIT",
+                    "timeInForce": "DAY",
+                    "status": "PENDING",
+                    "price": "190",
+                    "quantity": "1",
+                    "orderAmount": None,
+                    "currency": "USD",
+                    "orderedAt": "2026-06-15T00:00:00Z",
+                    "canceledAt": None,
+                    "execution": {"filledQuantity": "0"},
+                }
+            ),
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=TokenManager(),
+        account_seq=1,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        order = await client.get_order("ord-rate")
+    finally:
+        await client.aclose()
+
+    assert order.order_id == "ord-rate"
+    assert calls == 2
+    assert sleeps == [2.0]
+    assert token_calls == [False]
+    assert seen_authorizations == ["Bearer token-1", "Bearer token-1"]
 
 
 @pytest.mark.asyncio
@@ -425,3 +726,143 @@ async def test_warnings_fetches_and_parses() -> None:
     assert warnings[0].exchange == "KRX"
     assert warnings[0].start_date == "2026-06-12"
     assert warnings[0].end_date is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["place", "cancel"])
+async def test_mutation_hook_runs_after_limiter_token_and_account_resolution(
+    operation,
+) -> None:
+    """The final gate sees every pre-send await and blocks mutation HTTP=0."""
+    from app.services.brokers.kis.pre_send import PreSendFreshnessError
+
+    paths: list[str] = []
+    limiter_groups = []
+    token_calls = 0
+
+    class TokenManager(_TokenManager):
+        async def get_access_token(
+            self, *, force_reissue: bool = False, failed_token: str | None = None
+        ) -> str:
+            nonlocal token_calls
+            del force_reissue, failed_token
+            token_calls += 1
+            return "token-1"
+
+    class Limiter:
+        async def acquire(self, group) -> None:
+            limiter_groups.append(group)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/api/v1/accounts":
+            return httpx.Response(
+                200,
+                json=_json([{"accountNo": "1", "accountSeq": 7, "accountType": "B"}]),
+                request=request,
+            )
+        raise AssertionError("blocked hook must precede Toss mutation HTTP")
+
+    async def block() -> None:
+        assert token_calls == 2
+        assert paths == ["/api/v1/accounts"]
+        assert len(limiter_groups) == 2
+        raise PreSendFreshnessError(("approval_window:EXPIRED",))
+
+    client = TossReadClient(
+        token_manager=TokenManager(),
+        account_seq=None,
+        transport=httpx.MockTransport(handler),
+        rate_limiter=Limiter(),
+    )
+    try:
+        with pytest.raises(PreSendFreshnessError):
+            if operation == "place":
+                await client.place_order(
+                    {
+                        "symbol": "AAPL",
+                        "side": "BUY",
+                        "orderType": "LIMIT",
+                        "quantity": "1",
+                        "price": "150",
+                        "clientOrderId": "proposal-id",
+                    },
+                    pre_send_hook=block,
+                )
+            else:
+                await client.cancel_order(
+                    "broker-order-id",
+                    pre_send_hook=block,
+                )
+    finally:
+        await client.aclose()
+
+    assert paths == ["/api/v1/accounts"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["place", "cancel"])
+async def test_mutation_retry_rechecks_hook_before_second_http(
+    monkeypatch, operation
+) -> None:
+    """A 429-proven rejection may retry, but a closed window blocks re-send."""
+    from app.services.brokers.kis.pre_send import PreSendFreshnessError
+
+    http_calls = 0
+    hook_calls = 0
+
+    async def no_sleep(delay: float) -> None:
+        return None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal http_calls
+        http_calls += 1
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "0"},
+            json={
+                "error": {
+                    "requestId": "rate-1",
+                    "code": "too-many-requests",
+                    "message": "slow down",
+                }
+            },
+            request=request,
+        )
+
+    async def allow_then_block() -> None:
+        nonlocal hook_calls
+        hook_calls += 1
+        if hook_calls == 2:
+            raise PreSendFreshnessError(("approval_window:DEFER_SESSION_CLOSED",))
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        account_seq=999,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(PreSendFreshnessError):
+            if operation == "place":
+                await client.place_order(
+                    {
+                        "symbol": "AAPL",
+                        "side": "BUY",
+                        "orderType": "LIMIT",
+                        "quantity": "1",
+                        "price": "150",
+                        "clientOrderId": "proposal-id",
+                    },
+                    pre_send_hook=allow_then_block,
+                )
+            else:
+                await client.cancel_order(
+                    "broker-order-id",
+                    pre_send_hook=allow_then_block,
+                )
+    finally:
+        await client.aclose()
+
+    assert hook_calls == 2
+    assert http_calls == 1

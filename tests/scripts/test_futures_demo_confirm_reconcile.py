@@ -18,12 +18,14 @@ so the assertions are about real ledger transitions, not mock calls.
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from typing import Any
 
 import pytest
 
 import scripts.binance_futures_demo_smoke as smoke
+from app.core.db import AsyncSessionLocal
 from app.services.brokers.binance.demo.ledger import BinanceDemoLedgerService
 from app.services.brokers.binance.futures_demo.dto import (
     FuturesDemoLeverageResult,
@@ -40,6 +42,8 @@ from app.services.brokers.binance.futures_demo.execution_client import (
 
 _QTY = Decimal("30")
 _PRICE = Decimal("0.5")
+
+pytestmark = pytest.mark.usefixtures("binance_demo_smoke_ledger_isolation")
 
 
 class _FakeFuturesExecution:
@@ -79,6 +83,8 @@ class _FakeFuturesExecution:
         self._close_submitted = False
         self.get_order_calls: list[str] = []
         self.submit_calls: list[dict[str, Any]] = []
+
+    credential_fingerprint = "sha256:" + "52" * 32
 
     async def get_position_mode(self) -> FuturesDemoPositionModeResult:
         return FuturesDemoPositionModeResult(is_hedge_mode=False)
@@ -213,7 +219,13 @@ async def _run_lifecycle(
     db_session: Any,
 ) -> tuple[int, BinanceDemoLedgerService, str, str]:
     ledger = BinanceDemoLedgerService(db_session)
-    instrument_id = await smoke._get_or_create_instrument(db_session, "XRPUSDT")
+    instrument_id = await ledger.resolve_or_create_instrument(
+        venue="binance",
+        product="usdm_futures",
+        venue_symbol="XRPUSDT",
+        base_asset="XRP",
+        quote_asset="USDT",
+    )
     open_cid = smoke._new_cid()
     close_cid = smoke._new_cid()
     exit_code = await smoke._execute_confirm_lifecycle(
@@ -267,6 +279,90 @@ async def test_open_new_resolved_filled_via_get_order(db_session: Any) -> None:
     close_row = await ledger.get_by_client_order_id(close_cid)
     assert close_row is not None
     assert close_row.lifecycle_state == "reconciled"
+
+
+@pytest.mark.asyncio
+async def test_futures_confirm_cross_symbol_global_cap_loser_has_zero_broker_calls() -> (
+    None
+):
+    """Reservation happens before position/leverage/order calls in the handler."""
+    winner_at_position_mode = asyncio.Event()
+    release_winner = asyncio.Event()
+
+    class _GatedWinner(_FakeFuturesExecution):
+        async def get_position_mode(self):
+            winner_at_position_mode.set()
+            await release_winner.wait()
+            return await super().get_position_mode()
+
+    class _ExplodingLoser(_FakeFuturesExecution):
+        broker_calls = 0
+
+        async def get_position_mode(self):
+            self.broker_calls += 1
+            raise AssertionError("reservation loser must dispatch zero broker reads")
+
+        async def set_leverage(self, **kwargs):
+            self.broker_calls += 1
+            raise AssertionError("reservation loser must dispatch zero mutation")
+
+        def preview_submit(self, **kwargs):
+            self.broker_calls += 1
+            raise AssertionError("reservation loser must stop before preview")
+
+        async def order_test(self, **kwargs):
+            self.broker_calls += 1
+            raise AssertionError("reservation loser must stop before order_test")
+
+        async def submit_order(self, **kwargs):
+            self.broker_calls += 1
+            raise AssertionError("reservation loser must dispatch zero POST")
+
+    def _execution(cls):
+        return cls(open_submit_status="FILLED", close_submit_status="FILLED")
+
+    async def _run(symbol: str, execution: _FakeFuturesExecution) -> int:
+        async with AsyncSessionLocal() as session:
+            ledger = BinanceDemoLedgerService(session)
+            instrument_id = await ledger.resolve_or_create_instrument(
+                venue="binance",
+                product="usdm_futures",
+                venue_symbol=symbol,
+                base_asset=symbol.removesuffix("USDT"),
+                quote_asset="USDT",
+            )
+            return await smoke._execute_confirm_lifecycle(
+                execution=execution,
+                ledger=ledger,
+                session=session,
+                venue_host="demo-fapi.binance.com",
+                instrument_id=instrument_id,
+                open_cid=smoke._new_cid(),
+                close_cid=smoke._new_cid(),
+                symbol=symbol,
+                side="BUY",
+                order_type="MARKET",
+                price=None,
+                qty=_QTY,
+                notional=_QTY * _PRICE,
+                leverage=1,
+                close_with="SELL",
+                close_step_size=Decimal("1"),
+                quantity_precision=0,
+            )
+
+    winner = _execution(_GatedWinner)
+    loser = _execution(_ExplodingLoser)
+    winner_task = asyncio.create_task(_run("R844FSMOKEAUSDT", winner))
+    await winner_at_position_mode.wait()
+    loser_result = await _run("R844FSMOKEBUSDT", loser)
+    release_winner.set()
+    winner_result = await winner_task
+
+    assert winner_result == 0
+    assert loser_result == 1
+    assert loser.broker_calls == 0
+    assert loser.submit_calls == []
 
 
 @pytest.mark.asyncio

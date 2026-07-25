@@ -91,7 +91,11 @@ def boundary_active(
         return (None, None)
     z = zipfile.ZipFile(io.BytesIO(raw))
     data = z.read(z.namelist()[0]).decode()
-    rows = [r.split(",") for r in data.splitlines() if r and not r.lower().startswith("open_time")]
+    rows = [
+        r.split(",")
+        for r in data.splitlines()
+        if r and not r.lower().startswith("open_time")
+    ]
     days: list[tuple[str, float]] = []
     for r in rows:
         try:
@@ -202,7 +206,9 @@ def write_outputs(rows: list[dict], out_json: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build ROB-353 PIT Binance USD-M universe index.")
+    parser = argparse.ArgumentParser(
+        description="Build ROB-353 PIT Binance USD-M universe index."
+    )
     parser.add_argument(
         "--exchange-info",
         default="/tmp/pit_audit_exchangeinfo.json",
@@ -237,7 +243,9 @@ def main(argv: list[str] | None = None) -> int:
     cf = Counter(r["confidence"] for r in rows)
     print("status :", dict(c))
     print("conf   :", dict(cf))
-    print("with funding:", sum(1 for r in rows if r["funding_months"] > 0), "/", len(rows))
+    print(
+        "with funding:", sum(1 for r in rows if r["funding_months"] > 0), "/", len(rows)
+    )
     print(
         "freeze-tail detected:",
         sum(1 for r in rows if "delisting_freeze_tail" in r["missing_data_reason"]),
@@ -254,10 +262,10 @@ def main(argv: list[str] | None = None) -> int:
             and "BUSD" not in r["symbol"]
         ):
             print(
-                f'  {r["symbol"]:14} {r["first_seen"]}..{r["last_seen"]}'
-                f'  active {r["active_from"]}..{r["active_to"]}'
-                f'  kcov={r["kline_coverage"]} fcov={r["funding_coverage"]}'
-                f'  conf={r["confidence"]} [{r["missing_data_reason"]}]'
+                f"  {r['symbol']:14} {r['first_seen']}..{r['last_seen']}"
+                f"  active {r['active_from']}..{r['active_to']}"
+                f"  kcov={r['kline_coverage']} fcov={r['funding_coverage']}"
+                f"  conf={r['confidence']} [{r['missing_data_reason']}]"
             )
     return 0
 

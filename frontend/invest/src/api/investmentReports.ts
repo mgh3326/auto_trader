@@ -15,6 +15,9 @@ import type {
   InvestmentReportBundle,
   InvestmentReportItem,
   InvestmentReportItemDecision,
+  ForecastLink,
+  RetrospectiveLink,
+  LinkedOrder,
   InvestmentReportListResponse,
   InvestmentWatchAlert,
   InvestmentWatchEvent,
@@ -150,6 +153,63 @@ function asOptionalList(value: unknown): unknown[] | null {
   return Array.isArray(value) ? value : null;
 }
 
+export function normalizeLinkedOrder(raw: ApiItem): LinkedOrder {
+  return {
+    broker: asOptionalString(raw.broker),
+    accountScope: asOptionalString(raw.account_scope),
+    market: asOptionalString(raw.market),
+    orderNo: asOptionalString(raw.order_no),
+    ledgerId: asNumber(raw.ledger_id, 0),
+    symbol: asOptionalString(raw.symbol),
+    side: asOptionalString(raw.side),
+    status: asOptionalString(raw.status),
+    filledQty: (raw.filled_qty as number | string | null | undefined) ?? null,
+    avgFillPrice:
+      (raw.avg_fill_price as number | string | null | undefined) ?? null,
+    orderTime: asOptionalString(raw.order_time),
+    reconciledAt: asOptionalString(raw.reconciled_at),
+    exitReason: asOptionalString(raw.exit_reason),
+    thesis: asOptionalString(raw.thesis),
+    reportItemUuid: asOptionalString(raw.report_item_uuid),
+  };
+}
+
+export function normalizeForecastLink(raw: ApiItem): ForecastLink {
+  return {
+    forecastId: String(raw.forecast_id ?? ""),
+    status: String(raw.status ?? ""),
+    outcome:
+      raw.outcome === null || raw.outcome === undefined
+        ? null
+        : Boolean(raw.outcome),
+    reviewDate: asOptionalString(raw.review_date) ?? null,
+    direction: asOptionalString(raw.direction) ?? null,
+    targetPrice:
+      raw.target_price == null ? null : Number(raw.target_price),
+    probability: Number(raw.probability ?? 0),
+    brierScore:
+      raw.brier_score == null ? null : Number(raw.brier_score),
+    resolutionSource: asOptionalString(raw.resolution_source) ?? null,
+    correlationId: asOptionalString(raw.correlation_id) ?? null,
+  };
+}
+
+export function normalizeRetrospectiveLink(
+  raw: ApiItem,
+): RetrospectiveLink {
+  return {
+    retrospectiveId: Number(raw.retrospective_id ?? 0),
+    outcome: String(raw.outcome ?? ""),
+    lesson: asOptionalString(raw.lesson) ?? null,
+    resultSummary: asOptionalString(raw.result_summary) ?? null,
+    rootCauseClass: asOptionalString(raw.root_cause_class) ?? null,
+    triggerType: asOptionalString(raw.trigger_type) ?? null,
+    pnlPct: raw.pnl_pct == null ? null : Number(raw.pnl_pct),
+    createdAt: asOptionalString(raw.created_at) ?? null,
+    correlationId: asOptionalString(raw.correlation_id) ?? null,
+  };
+}
+
 function normalizeItem(raw: ApiItem): InvestmentReportItem {
   return {
     itemUuid: asString(raw.item_uuid),
@@ -186,6 +246,15 @@ function normalizeItem(raw: ApiItem): InvestmentReportItem {
     decisionBucket: asOptionalString(raw.decision_bucket),
     citedSymbolReportUuid: asOptionalString(raw.cited_symbol_report_uuid),
     citedDimensionReportUuids: asArray<string>(raw.cited_dimension_report_uuids),
+    // ROB-554 — linked live orders (null when the backend omits / item has none).
+    linkedOrders:
+      raw.linked_orders === null || raw.linked_orders === undefined
+        ? null
+        : asArray<ApiItem>(raw.linked_orders).map(normalizeLinkedOrder),
+    // ROB-715 — backend-derived summary (frontend never parses the nested
+    // structured_evidence structure).
+    structuredEvidenceSummary:
+      asOptionalString(raw.structured_evidence_summary) ?? null,
   };
 }
 
@@ -373,6 +442,8 @@ export async function fetchInvestmentReportBundle(
     events?: ApiEvent[];
     review_sections?: unknown;
     action_packet?: unknown;
+    forecasts_by_item_uuid?: Record<string, ApiItem[]>;
+    retrospectives_by_item_uuid?: Record<string, ApiItem[]>;
   }>(BUNDLE_ENDPOINT(reportUuid), signal);
 
   const decisionsRaw = raw.decisions_by_item_uuid ?? {};
@@ -380,6 +451,20 @@ export async function fetchInvestmentReportBundle(
   for (const [itemUuid, decisions] of Object.entries(decisionsRaw)) {
     decisionsByItemUuid[itemUuid] = asArray<ApiDecision>(decisions).map(
       normalizeDecision,
+    );
+  }
+
+  // ROB-715 — item→forecast/retrospective exact-join maps keyed by item UUID.
+  const forecastsRaw = raw.forecasts_by_item_uuid ?? {};
+  const forecastsByItemUuid: Record<string, ForecastLink[]> = {};
+  for (const [k, v] of Object.entries(forecastsRaw)) {
+    forecastsByItemUuid[k] = asArray<ApiItem>(v).map(normalizeForecastLink);
+  }
+  const retrospectivesRaw = raw.retrospectives_by_item_uuid ?? {};
+  const retrospectivesByItemUuid: Record<string, RetrospectiveLink[]> = {};
+  for (const [k, v] of Object.entries(retrospectivesRaw)) {
+    retrospectivesByItemUuid[k] = asArray<ApiItem>(v).map(
+      normalizeRetrospectiveLink,
     );
   }
 
@@ -391,6 +476,8 @@ export async function fetchInvestmentReportBundle(
     events: asArray<ApiEvent>(raw.events).map(normalizeEvent),
     reviewSections: normalizeReviewSections(raw.review_sections),
     actionPacket: normalizeActionPacket(raw.action_packet),
+    forecastsByItemUuid,
+    retrospectivesByItemUuid,
   };
 }
 

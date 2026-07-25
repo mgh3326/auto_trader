@@ -30,12 +30,60 @@ _TEST_SYMBOLS = [
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean_double_buy_test_rows(db_session):
+async def _clean_double_buy_test_rows(db_session, monkeypatch):
     """Wipe just the rows this test owns before and after each test.
 
     The persistent test DB is shared with other suites, so we never TRUNCATE —
     we only delete rows scoped to the synthetic symbols below.
     """
+    from app.services.invest_screener_snapshots import partition_health
+    from app.services.invest_screener_snapshots.partition_health import (
+        HealthyPartition,
+    )
+
+    async def _resolve_raw_latest_partition(
+        session,
+        *,
+        model,
+        date_col,
+        market_col,
+        market,
+        **_kwargs,
+    ):
+        # These loader tests assert double-buy filtering/join behavior. Partition
+        # health fallback is covered separately; using the raw latest partition
+        # keeps this file stable when other xdist workers seed an older healthy
+        # shared-DB partition.
+        newest = (
+            await session.execute(
+                sa.select(sa.func.max(date_col)).where(market_col == market)
+            )
+        ).scalar_one_or_none()
+        if newest is None:
+            return None
+        row_count = int(
+            (
+                await session.execute(
+                    sa.select(sa.func.count())
+                    .select_from(model)
+                    .where(market_col == market, date_col == newest)
+                )
+            ).scalar()
+            or 0
+        )
+        return HealthyPartition(
+            partition_date=newest,
+            row_count=row_count,
+            coverage_ratio=1.0,
+            is_fallback=False,
+            healthy=True,
+        )
+
+    monkeypatch.setattr(
+        partition_health,
+        "resolve_healthy_partition",
+        _resolve_raw_latest_partition,
+    )
 
     async def _purge() -> None:
         await db_session.execute(

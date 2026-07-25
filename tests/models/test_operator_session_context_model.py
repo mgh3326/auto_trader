@@ -54,3 +54,10 @@ def test_operator_session_context_model_contract() -> None:
         and index.dialect_options["postgresql"]["using"] == "gin"
         for index in indexes
     )
+
+    created_by_constraint = next(
+        constraint
+        for constraint in OperatorSessionContext.__table__.constraints
+        if constraint.name == "ck_operator_session_context_created_by"
+    )
+    assert "codex" in str(created_by_constraint.sqltext)

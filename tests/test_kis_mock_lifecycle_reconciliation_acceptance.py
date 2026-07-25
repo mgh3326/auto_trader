@@ -35,9 +35,6 @@ async def test_full_reconciliation_cycle_acceptance(monkeypatch):
         "_check_balance_and_warn",
         AsyncMock(return_value=(None, None)),
     )
-    monkeypatch.setattr(
-        order_execution, "_check_daily_order_limit", AsyncMock(return_value=True)
-    )
     monkeypatch.setattr(order_execution, "_record_order_history", AsyncMock())
 
     # ROB-102: pre-order baseline lookup → simulate "no prior position".

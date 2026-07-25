@@ -49,7 +49,9 @@ async def run(args: argparse.Namespace) -> int:
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     if not args.commit:
-        print("\n--dry-run: no rows written. Pass --commit only with operator approval.")
+        print(
+            "\n--dry-run: no rows written. Pass --commit only with operator approval."
+        )
     return 0
 
 

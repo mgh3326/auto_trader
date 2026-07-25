@@ -13,6 +13,7 @@ Semantics matched (good enough for a GROSS sign screen; not bit-exact to talib):
   * ichimoku — senkou spans forward-displaced (causal: span at t derives from t-displacement)
   * informative merge — last FULLY-CLOSED higher-tf bar as of base ts (lookahead-safe)
 """
+
 from __future__ import annotations
 
 import math
@@ -117,7 +118,9 @@ def rsi(xs: Sequence[float], n: int = 14) -> list[float]:
     return out
 
 
-def atr(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], n: int = 14) -> list[float]:
+def atr(
+    highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], n: int = 14
+) -> list[float]:
     m = len(closes)
     out = [NAN] * m
     if m <= n:
@@ -125,7 +128,11 @@ def atr(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], 
     tr = [NAN] * m
     tr[0] = highs[0] - lows[0]
     for i in range(1, m):
-        tr[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+        tr[i] = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
     prev = sum(tr[1 : n + 1]) / n
     out[n] = prev
     for i in range(n + 1, m):
@@ -207,8 +214,14 @@ def bollinger(xs: Sequence[float], n: int, num_std: float, ddof: int = 1):
     """Return (mid, lower, upper). mid=SMA(n); bands = mid ± num_std*rolling_std."""
     mid = sma(xs, n)
     sd = rolling_std(xs, n, ddof=ddof)
-    lower = [m - num_std * s if (_valid(m) and _valid(s)) else NAN for m, s in zip(mid, sd, strict=True)]
-    upper = [m + num_std * s if (_valid(m) and _valid(s)) else NAN for m, s in zip(mid, sd, strict=True)]
+    lower = [
+        m - num_std * s if (_valid(m) and _valid(s)) else NAN
+        for m, s in zip(mid, sd, strict=True)
+    ]
+    upper = [
+        m + num_std * s if (_valid(m) and _valid(s)) else NAN
+        for m, s in zip(mid, sd, strict=True)
+    ]
     return mid, lower, upper
 
 
@@ -236,7 +249,9 @@ def rolling_vwap(
     return out
 
 
-def top_percent_change(opens: Sequence[float], closes: Sequence[float], length: int) -> list[float]:
+def top_percent_change(
+    opens: Sequence[float], closes: Sequence[float], length: int
+) -> list[float]:
     """(rolling-max open over `length` - close) / close. length==0 → (open-close)/close."""
     out = [NAN] * len(closes)
     for i in range(len(closes)):
@@ -278,7 +293,9 @@ def heikin_ashi(
 # --------------------------------------------------------------------------- #
 # Ichimoku (technical.indicators.ichimoku semantics, forward-displaced spans)
 # --------------------------------------------------------------------------- #
-def _midpoint_window(highs: Sequence[float], lows: Sequence[float], n: int) -> list[float]:
+def _midpoint_window(
+    highs: Sequence[float], lows: Sequence[float], n: int
+) -> list[float]:
     """(rolling-max high + rolling-min low) / 2, O(len) via monotonic deques."""
     from collections import deque
 

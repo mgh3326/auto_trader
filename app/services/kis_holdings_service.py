@@ -30,7 +30,7 @@ async def get_kis_holding_for_ticker(
                         "current_price": float(stock.get("prpr", 0)),
                     }
         else:
-            stocks = await kis_client.fetch_overseas_stocks()
+            stocks = await kis_client.fetch_my_overseas_stocks()
             for stock in stocks:
                 # KIS API 응답의 심볼도 정규화하여 비교
                 if to_db_symbol(stock.get("ovrs_pdno", "")) == normalized_ticker:

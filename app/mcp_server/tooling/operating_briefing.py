@@ -10,19 +10,24 @@ from app.mcp_server.tooling.pending_orders_snapshot import (
     DEFAULT_PENDING_ORDERS_ACCOUNT_SCOPE,
     collect_pending_orders_snapshot,
 )
+from app.mcp_server.tooling.portfolio_cash import get_account_costs_setting
 from app.mcp_server.tooling.portfolio_holdings import _get_holdings_impl
+from app.schemas.analysis_artifact import AnalysisArtifactMeta
 from app.schemas.investment_reports import (
     ActiveWatchesListResponse,
     InvestmentWatchAlertResponse,
     OperatingBriefingResponse,
 )
 from app.schemas.session_context import SessionContextResponse
+from app.services.account_routing import compact_cost_profile
+from app.services.analysis_artifact import AnalysisArtifactService
 from app.services.investment_reports.query_service import (
     InvestmentReportQueryService,
     _advisory_draft_profiles,
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.session_context import SessionContextService
+from app.services.trading_policy_service import policy_version_stamp
 
 
 def _normalize_watch_symbol(symbol: str | None, market: str | None) -> str | None:
@@ -105,6 +110,39 @@ def _flatten_positions(holdings: dict[str, Any]) -> list[dict[str, Any]]:
             row.setdefault("account", account_name)
             positions.append(row)
     return positions
+
+
+def _account_routability(
+    holdings: dict[str, Any],
+    *,
+    market: str,
+    account_costs: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Compact per-account routability summary for the briefing (ROB-541).
+
+    Surfaces ``account_mode`` (ROB-357 provenance label) and the authoritative
+    ``order_routable`` flag per account so a toss-held (reference-only) symbol is
+    distinguishable from a kis_live-sellable one without dumping full positions.
+    """
+    accounts: list[dict[str, Any]] = []
+    for account in holdings.get("accounts") or []:
+        row = {
+            "account": account.get("account"),
+            "account_name": account.get("account_name"),
+            "account_mode": account.get("account_mode"),
+            "order_routable": account.get("order_routable"),
+            "position_count": len(account.get("positions") or []),
+        }
+        if market in {"kr", "us"}:
+            profile = compact_cost_profile(
+                str(account.get("account") or ""),
+                market,  # type: ignore[arg-type]
+                account_costs,
+            )
+            if profile is not None:
+                row["cost_profile"] = profile
+        accounts.append(row)
+    return accounts
 
 
 def _top_movers(holdings: dict[str, Any], *, limit: int = 5) -> list[dict[str, Any]]:
@@ -200,6 +238,32 @@ async def _recent_session_context(
     }
 
 
+async def _recent_analysis_artifacts(
+    db: Any,
+    *,
+    market: str,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Metadata-only recent valid artifacts (ROB-637 briefing surfacing).
+
+    Payloads are intentionally excluded — a new session learns what analysis
+    already exists and fetches bodies via analysis_artifact_get on demand.
+    """
+    service = AnalysisArtifactService(db)
+    rows = await service.list_artifacts(
+        market=market,  # type: ignore[arg-type]
+        include_stale=False,
+        limit=max(1, min(int(limit), 20)),
+    )
+    return {
+        "count": len(rows),
+        "artifacts": [
+            AnalysisArtifactMeta.model_validate(row).model_dump(mode="json")
+            for row in rows
+        ],
+    }
+
+
 def _section_unavailable_reason(section: str, exc: Exception) -> str:
     return f"{section}_failed:{type(exc).__name__}:{exc}"
 
@@ -209,6 +273,8 @@ async def get_operating_briefing_impl(
     account_scope: str | None = None,
     session_context_limit: int = 10,
     include_current_price: bool = True,
+    cohort: str = "live_gated",
+    include_counterfactual_delta: bool = False,
 ) -> dict[str, Any]:
     as_of = now_kst()
     effective_scope = _default_account_scope(market, account_scope)
@@ -260,6 +326,47 @@ async def get_operating_briefing_impl(
                 "unavailable_reason": reason,
             }
 
+        try:
+            analysis_artifacts = await _recent_analysis_artifacts(
+                db,
+                market=market,
+                limit=10,
+            )
+            analysis_artifacts_staleness = {
+                "freshness_status": "db_read",
+            }
+        except Exception as exc:  # noqa: BLE001
+            reason = _section_unavailable_reason("analysis_artifacts", exc)
+            analysis_artifacts = {
+                "count": 0,
+                "artifacts": [],
+                "unavailable_reason": reason,
+            }
+            analysis_artifacts_staleness = {
+                "freshness_status": "unavailable",
+                "unavailable_reason": reason,
+            }
+
+        try:
+            from app.services.trade_journal.aggregates import (
+                build_counterfactual_delta_scoreboard,
+                build_trading_scoreboard,
+            )
+
+            if include_counterfactual_delta:
+                trading_scoreboards = await build_counterfactual_delta_scoreboard(
+                    db,
+                    market=market,
+                )
+            else:
+                trading_scoreboards = await build_trading_scoreboard(
+                    db,
+                    market=market,
+                    cohort=cohort,
+                )
+        except Exception as exc:  # noqa: BLE001
+            trading_scoreboards = {"error": str(exc)}
+
     try:
         active_watches = await list_active_watches_impl(market=market)
         active_watches_staleness = {
@@ -280,6 +387,19 @@ async def get_operating_briefing_impl(
         }
 
     active_watches_unavailable_reason = active_watches.get("unavailable_reason")
+    try:
+        account_costs = await get_account_costs_setting()
+    except Exception as exc:  # noqa: BLE001
+        account_costs = None
+        holdings.setdefault("errors", []).append(
+            {"source": "account_costs", "error": str(exc)}
+        )
+
+    try:
+        policy_version = policy_version_stamp()
+    except Exception as exc:  # noqa: BLE001 — fail-open, briefing must still return
+        policy_version = {"error": str(exc)}
+
     response = {
         "success": True,
         "market": market,
@@ -299,6 +419,7 @@ async def get_operating_briefing_impl(
             "active_watches": active_watches_staleness,
             "latest_report": latest_report_staleness,
             "session_context": session_context_staleness,
+            "analysis_artifacts": analysis_artifacts_staleness,
         },
         "holdings": {
             "filters": holdings.get("filters"),
@@ -306,6 +427,13 @@ async def get_operating_briefing_impl(
             "total_positions": holdings.get("total_positions"),
             "summary": holdings.get("summary"),
             "top_movers": _top_movers(holdings),
+            # ROB-541 — per-account routable/account_mode so a reference-only
+            # (toss/manual) holding is distinguishable from a kis_live-sellable one.
+            "accounts": _account_routability(
+                holdings,
+                market=market,
+                account_costs=account_costs,
+            ),
             "errors": holdings.get("errors") or [],
         },
         "pending_orders": {
@@ -324,6 +452,9 @@ async def get_operating_briefing_impl(
         },
         "latest_report": latest_report,
         "session_context": session_context,
+        "analysis_artifacts": analysis_artifacts,
+        "policy_version": policy_version,
+        "trading_scoreboards": trading_scoreboards,
     }
     return OperatingBriefingResponse.model_validate(response).model_dump(mode="json")
 

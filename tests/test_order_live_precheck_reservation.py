@@ -1,4 +1,10 @@
-"""ROB-419 — live buy precheck uses reservation-aware orderable (== get_available_capital)."""
+"""live buy precheck uses the shared broker orderable (== get_available_capital).
+
+ROB-419 introduced the single-source precheck; ROB-596 then removed the extra
+pending-buy subtraction (the broker orderable field is already net), so the
+precheck reads the raw broker orderable. These tests assert the precheck reads
+that shared ``orderable`` field — the "reservation" names are historical.
+"""
 
 from __future__ import annotations
 
@@ -67,7 +73,7 @@ async def test_live_us_buy_blocked_when_orderable_reserved_to_zero(monkeypatch):
 
     monkeypatch.setattr(order_validation, "get_cash_balance_impl", fake_cash)
 
-    # dry_run: insufficient warning (no error, preview still returned upstream).
+    # ROB-625: dry_run도 잔액부족이면 차단(error 반환)한다. 이전엔 (warning, None).
     warning, error = await _check_balance_and_warn(
         market_type="equity_us",
         normalized_symbol="MSFT",
@@ -77,8 +83,11 @@ async def test_live_us_buy_blocked_when_orderable_reserved_to_zero(monkeypatch):
         order_error_fn=_order_error,
         is_mock=False,
     )
-    assert error is None
-    assert warning is not None and "Insufficient" in warning
+    assert warning is None
+    assert error is not None
+    assert error["success"] is False
+    assert error["insufficient_balance"] is True
+    assert "Insufficient" in error["error"]
 
     # non-dry_run: hard error.
     warning2, error2 = await _check_balance_and_warn(

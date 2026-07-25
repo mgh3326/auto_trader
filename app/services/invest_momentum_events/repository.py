@@ -349,6 +349,7 @@ class InvestMomentumEventSnapshotsRepository:
         trading_date: dt.date | None = None,
         event_kind: str | None = None,
         sort_type: str | None = None,
+        at: dt.datetime | None = None,
         limit: int = 50,
     ) -> list[InvestThemeEventSnapshot]:
         conditions = [InvestThemeEventSnapshot.market == "kr"]
@@ -358,6 +359,8 @@ class InvestMomentumEventSnapshotsRepository:
             conditions.append(InvestThemeEventSnapshot.event_kind == event_kind)
         if sort_type:
             conditions.append(InvestThemeEventSnapshot.sort_type == sort_type)
+        if at is not None:
+            conditions.append(InvestThemeEventSnapshot.snapshot_at <= at)
 
         latest_result = await self._session.execute(
             select(func.max(InvestThemeEventSnapshot.snapshot_at)).where(*conditions)
@@ -379,6 +382,27 @@ class InvestMomentumEventSnapshotsRepository:
         )
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_theme_event_stocks(
+        self, theme_snapshot_ids: list[int]
+    ) -> dict[int, list[InvestThemeEventSnapshotStock]]:
+        """Fetch child leader-stock rows for the given theme snapshot ids, grouped by parent."""
+        if not theme_snapshot_ids:
+            return {}
+        result = await self._session.execute(
+            select(InvestThemeEventSnapshotStock)
+            .where(
+                InvestThemeEventSnapshotStock.theme_snapshot_id.in_(theme_snapshot_ids)
+            )
+            .order_by(
+                InvestThemeEventSnapshotStock.theme_snapshot_id.asc(),
+                InvestThemeEventSnapshotStock.rank.asc().nulls_last(),
+            )
+        )
+        grouped: dict[int, list[InvestThemeEventSnapshotStock]] = {}
+        for row in result.scalars().all():
+            grouped.setdefault(row.theme_snapshot_id, []).append(row)
+        return grouped
 
     async def coverage(self, *, as_of: dt.date) -> SnapshotCoverage:
         momentum_result = await self._session.execute(

@@ -133,7 +133,10 @@ async def _check_toss_warnings_for_kis_buy(symbol: str) -> WarningsGuardResult:
     client = None
     try:
         client = TossReadClient.from_settings()
-        return await check_warnings_guard(client, symbol, market="kr")
+        # ROB-550: market=None lets the guard auto-detect KR by the 6-digit
+        # symbol pattern, so a US KIS buy (e.g. AAPL) skips the Toss warnings
+        # fetch instead of issuing a wasted lookup.
+        return await check_warnings_guard(client, symbol, market=None)
     except Exception as exc:
         logger.warning(
             "Failed to check Toss warnings for KIS live order symbol=%s; proceeding fail-open: %s",
@@ -259,9 +262,13 @@ async def _place_order_variant(
     indicators_snapshot: dict[str, Any] | None,
     defensive_trim: bool,
     approval_issue_id: str | None,
+    exit_intent: str | None = None,
+    retrospective_id: int | None = None,
     account_mode: str | None,
     account_type: str | None,
     report_item_uuid: str | None = None,
+    approval_hash: str | None = None,
+    rung: str | int | None = None,
 ) -> dict[str, Any]:  # NOSONAR - mirrors the public MCP order contract.
     routing, early_response = _prepare_variant_call(
         tool_name, pinned_mode, account_mode, account_type
@@ -306,8 +313,12 @@ async def _place_order_variant(
             indicators_snapshot=indicators_snapshot,
             defensive_trim=defensive_trim,
             approval_issue_id=approval_issue_id,
+            exit_intent=exit_intent,
+            retrospective_id=retrospective_id,
             is_mock=_is_mock_mode(pinned_mode),
             report_item_uuid=report_item_uuid,
+            approval_hash=approval_hash,
+            rung=rung,
         ),
         routing,
     )
@@ -381,7 +392,7 @@ async def _get_order_history_variant(
     tool_name: str,
     pinned_mode: str,
     symbol: str | None,
-    status: Literal["all", "pending", "filled", "cancelled"],
+    status: Literal["all", "pending", "filled", "cancelled", "expired"],
     order_id: str | None,
     market: str | None,
     side: str | None,
@@ -452,12 +463,9 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "is_mock is hard-pinned to False. "
             "dry_run=True by default for safety. "
             "For buy orders (dry_run=False), thesis and strategy are required. "
-            "Safety limit: max 20 orders/day. "
             "Normal weight-management trims do NOT need defensive_trim — leave "
-            "it False. defensive_trim=True only bypasses the sell-side price "
-            "floor and requires side='sell', order_type='limit', and an "
-            "approval_issue_id (e.g. 'ROB-164'); approval_issue_id is mandatory "
-            "whenever defensive_trim=True, including dry_run (ROB-164 audit gate). "
+            "it False. defensive_trim=True is disabled on this direct tool; use "
+            "order_proposal_create for the human-confirmed proposal path. "
             "Orders auto-route via SOR (NXT-eligible) / KRX as day orders. "
             "venue (krx|nxt|unified), order_validity (day|예약|gtc), and "
             "reserved_time are accepted but NOT yet enabled — NXT/TIF/예약주문 "
@@ -473,9 +481,20 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "get_available_capital. "
             "For multi-rung limit ladders, run sell_ladder_fill_preview "
             "(sells, ROB-477) or buy_ladder_fill_preview (buys, ROB-507) "
-            "first to check zero-fill risk. "
+            "first to check zero-fill risk. Pass rung (ladder level) so sibling "
+            "ladder orders on the same trading day stay distinct. "
+            "Approval-hash binding (ORDER_APPROVAL_HASH_MODE, default optional): the "
+            "dry_run=True preview mints approval_hash (self-contained token, 5-minute "
+            "TTL) + idempotency_key; pass approval_hash back (same rung) so live send "
+            "re-derives the canonical order and fail-closes on mismatch/expiry. "
+            "off=ignored; optional=verified only when supplied; warn=logs a hash-less "
+            "live send; required=mandatory (this live tool must supply a hash). "
             "account_mode='kis_live' is accepted but redundant; "
             "any other account_mode value is rejected."
+            ' ROB-864 exit_intent="loss_cut" is disabled on this direct tool. Use '
+            "order_proposal_create; Telegram performs two-click confirmation with a "
+            "single-use nonce and second-click full revalidation. approval_issue_id "
+            "is only an optional audit note."
         ),
     )
     async def kis_live_place_order(  # NOSONAR - public MCP order schema mirrors legacy tool.
@@ -497,12 +516,16 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
         indicators_snapshot: dict[str, Any] | None = None,
         defensive_trim: bool = False,
         approval_issue_id: str | None = None,
+        exit_intent: str | None = None,
+        retrospective_id: int | None = None,
         venue: str | None = None,
         order_validity: str | None = None,
         reserved_time: str | None = None,
         account_mode: str | None = None,
         account_type: str | None = None,
         report_item_uuid: str | None = None,
+        approval_hash: str | None = None,
+        rung: str | int | None = None,
     ) -> dict[str, Any]:
         gate = _venue_tif_gate(
             "kis_live_place_order",
@@ -534,9 +557,13 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             indicators_snapshot=indicators_snapshot,
             defensive_trim=defensive_trim,
             approval_issue_id=approval_issue_id,
+            exit_intent=exit_intent,
+            retrospective_id=retrospective_id,
             account_mode=account_mode,
             account_type=account_type,
             report_item_uuid=report_item_uuid,
+            approval_hash=approval_hash,
+            rung=rung,
         )
 
     @mcp.tool(
@@ -604,13 +631,17 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
         description=(
             "Get order history on KIS live (real-money) account. "
             "is_mock is hard-pinned to False. "
+            "status='expired' returns dead day orders (nothing filled, nothing "
+            "left to modify/cancel — EOD expiry/reject), distinct from an "
+            "operator cancel (status='cancelled'). Each order carries is_live "
+            "(true only for pending/partial). "
             "account_mode='kis_live' is accepted but redundant; "
             "any other account_mode value is rejected."
         ),
     )
     async def kis_live_get_order_history(
         symbol: str | None = None,
-        status: Literal["all", "pending", "filled", "cancelled"] = "all",
+        status: Literal["all", "pending", "filled", "cancelled", "expired"] = "all",
         order_id: str | None = None,
         market: str | None = None,
         side: str | None = None,
@@ -647,6 +678,11 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "from each order's send date through today (90-day cap), so "
             "next-day reconciles still book prior-day fills. "
             "dry_run=True by default for safety. KR domestic only. "
+            "realized_pnl_pct (alias journal_pnl_pct, labeled "
+            "realized_pnl_basis='journal_entry') is the per-lot / journal-entry "
+            "(FIFO oldest-first) basis, NOT the account-average; "
+            "place_order preview / get_holdings / get_available_capital remain "
+            "the account-average (pchs_avg_pric) truth. "
             "This is the LOCAL bookkeeping layer (trade/journal/"
             "realized_pnl); the live-account truth is get_holdings / "
             "get_available_capital. An operator-gated periodic auto-"
@@ -686,6 +722,12 @@ def register_live_reconcile_tools(mcp: FastMCP) -> None:
             "against broker fill evidence (overseas daily-order / Upbit order-state). "
             "Books fills/journals/realized_pnl ONLY from confirmed fills (delta-idempotent); "
             "marks unfilled/cancelled without journal side-effects. dry_run=True by default. "
+            "ROB-568: Surfaces US FX PnL split (security_pnl_krw, fx_pnl_krw) "
+            "for overseas equity fills. "
+            "realized_pnl_pct (alias journal_pnl_pct, labeled "
+            "realized_pnl_basis='journal_entry') is the per-lot / journal-entry "
+            "(FIFO oldest-first) basis, NOT the account-average; get_holdings / "
+            "get_available_capital remain the account-average truth. "
             "KR domestic uses kis_live_reconcile_orders instead."
         ),
     )
@@ -845,6 +887,10 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
         description=(
             "Get order history on KIS official mock (paper) account. "
             "is_mock is hard-pinned to True. Fails closed if KIS mock config is missing. "
+            "status='expired' returns dead day orders (nothing filled, nothing "
+            "left to modify/cancel), distinct from an operator cancel "
+            "(status='cancelled'). Each order carries is_live (true only for "
+            "pending/partial). "
             "Note: some KR order history endpoints (e.g. TTTC8036R) are unsupported "
             "in KIS mock and return mock_unsupported-tagged errors. "
             "account_mode='kis_mock' is accepted but redundant; "
@@ -853,7 +899,7 @@ def register_kis_mock_order_tools(mcp: FastMCP) -> None:
     )
     async def kis_mock_get_order_history(
         symbol: str | None = None,
-        status: Literal["all", "pending", "filled", "cancelled"] = "all",
+        status: Literal["all", "pending", "filled", "cancelled", "expired"] = "all",
         order_id: str | None = None,
         market: str | None = None,
         side: str | None = None,

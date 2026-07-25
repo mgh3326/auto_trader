@@ -8,12 +8,14 @@ from decimal import Decimal
 
 from sqlalchemy import (
     TIMESTAMP,
+    VARCHAR,
     BigInteger,
     Boolean,
     CheckConstraint,
     Date,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -202,6 +204,28 @@ class KISMockOrderLedger(Base):
         Index("ix_kis_mock_ledger_symbol", "symbol"),
         Index("ix_kis_mock_ledger_lifecycle_state", "lifecycle_state"),
         Index("ix_kis_mock_ledger_correlation_id", "correlation_id"),
+        Index("ix_kis_mock_ledger_report_item_uuid", "report_item_uuid"),
+        Index(
+            "ix_kis_mock_ledger_mirror_cohort_created", "mirror_cohort", "created_at"
+        ),
+        Index(
+            "ux_kis_mock_mirror_report_item_once",
+            "mirror_cohort",
+            "report_item_uuid",
+            unique=True,
+            postgresql_where=text(
+                "mirror_cohort = 'mock_counterfactual' AND report_item_uuid IS NOT NULL"
+            ),
+        ),
+        CheckConstraint(
+            "mirror_cohort IS NULL OR mirror_cohort IN ('mock_counterfactual')",
+            name="ck_kis_mock_ledger_mirror_cohort",
+        ),
+        CheckConstraint(
+            "mirror_source_bucket IS NULL OR mirror_source_bucket IN "
+            "('place_original','watch_trigger','deferred_min_rung')",
+            name="ck_kis_mock_ledger_mirror_source_bucket",
+        ),
         {"schema": "review"},
     )
 
@@ -259,6 +283,10 @@ class KISMockOrderLedger(Base):
     gross_pnl: Mapped[float | None] = mapped_column(Numeric(20, 4))
     net_pnl: Mapped[float | None] = mapped_column(Numeric(20, 4))
 
+    report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    mirror_cohort: Mapped[str | None] = mapped_column(Text)
+    mirror_source_bucket: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
@@ -280,6 +308,8 @@ class KISLiveOrderLedger(Base):
         Index("ix_kis_live_ledger_status", "status"),
         Index("ix_kis_live_ledger_symbol", "symbol"),
         Index("ix_kis_live_ledger_report_item_uuid", "report_item_uuid"),
+        # ROB-714 — learning-loop provenance spine join index.
+        Index("ix_kis_live_ledger_correlation_id", "correlation_id"),
         {"schema": "review"},
     )
 
@@ -320,12 +350,21 @@ class KISLiveOrderLedger(Base):
     min_hold_days: Mapped[int | None] = mapped_column(SmallInteger)
     notes: Mapped[str | None] = mapped_column(Text)
     exit_reason: Mapped[str | None] = mapped_column(Text)
+    exit_intent: Mapped[str | None] = mapped_column(Text)  # ROB-800: 'loss_cut'
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
 
     # ROB-473 — audit linkage to the report item that drove this order.
     # send-time, immutable through reconcile; NO FK (mirrors
     # AlpacaPaperOrderLedger.candidate_uuid). nullable: legacy/unlinked → NULL.
     report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+
+    # ROB-653 P6-B — content approval-hash + local idempotency key (additive).
+    approval_hash: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str | None] = mapped_column(Text)
+    # ROB-714 — learning-loop provenance spine (send-time mint, immutable).
+    # Links this order to its place-time forecast + reconcile-time journal +
+    # retrospective. NULL for legacy rows. See app.services.live_correlation.
+    correlation_id: Mapped[str | None] = mapped_column(Text)
 
     # reconcile outcomes
     filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
@@ -362,6 +401,8 @@ class LiveOrderLedger(Base):
         Index("ix_live_ledger_status", "status"),
         Index("ix_live_ledger_market_symbol", "market", "symbol"),
         Index("ix_live_ledger_report_item_uuid", "report_item_uuid"),
+        # ROB-714 — learning-loop provenance spine join index.
+        Index("ix_live_ledger_correlation_id", "correlation_id"),
         {"schema": "review"},
     )
 
@@ -407,11 +448,20 @@ class LiveOrderLedger(Base):
     min_hold_days: Mapped[int | None] = mapped_column(SmallInteger)
     notes: Mapped[str | None] = mapped_column(Text)
     exit_reason: Mapped[str | None] = mapped_column(Text)
+    exit_intent: Mapped[str | None] = mapped_column(Text)  # ROB-800: 'loss_cut'
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
 
     # ROB-473 — audit linkage to the report item that drove this order (see
     # KISLiveOrderLedger.report_item_uuid). send-time, immutable, no FK.
     report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+
+    # ROB-653 P6-B — content approval-hash + local idempotency key (additive).
+    approval_hash: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str | None] = mapped_column(Text)
+    # ROB-714 — learning-loop provenance spine (send-time mint, immutable).
+    # Links this order to its place-time forecast + reconcile-time journal +
+    # retrospective. NULL for legacy rows. See app.services.live_correlation.
+    correlation_id: Mapped[str | None] = mapped_column(Text)
 
     # ROB-164 defensive-trim approval audit, captured at send so the
     # evidence-gated journal close (reconcile) can still append the
@@ -427,6 +477,15 @@ class LiveOrderLedger(Base):
     journal_id: Mapped[int | None] = mapped_column(BigInteger)
     reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
+    buy_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    sell_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    fx_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    total_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    fx_rate_source: Mapped[str | None] = mapped_column(Text)
+    fx_pnl_accuracy: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
@@ -435,6 +494,35 @@ class LiveOrderLedger(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+
+class OrderSendIntent(Base):
+    """ROB-653 P6-B — KIS pre-send reservation for local double-send protection.
+
+    KIS has no broker idempotency field, so a UNIQUE (account_scope,
+    idempotency_key) row is inserted immediately before the order POST. A
+    same-key insert the same trading day raises IntegrityError → fail-closed.
+    Never read by reconcile; purely a send-time guard.
+    """
+
+    __tablename__ = "order_send_intents"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_scope",
+            "idempotency_key",
+            name="uq_order_send_intent_scope_key",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    account_scope: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str | None] = mapped_column(Text)
+    side: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
 
 
@@ -476,6 +564,8 @@ class TossLiveOrderLedger(Base):
         Index("ix_toss_live_ledger_broker_status", "broker_status"),
         Index("ix_toss_live_ledger_report_item_uuid", "report_item_uuid"),
         Index("ix_toss_live_ledger_replaced_by", "replaced_by_order_id"),
+        # ROB-714 — learning-loop provenance spine join index.
+        Index("ix_toss_live_ledger_correlation_id", "correlation_id"),
         {"schema": "review"},
     )
 
@@ -508,6 +598,11 @@ class TossLiveOrderLedger(Base):
     response_code: Mapped[str | None] = mapped_column(Text)
     response_message: Mapped[str | None] = mapped_column(Text)
     raw_response: Mapped[dict | None] = mapped_column(JSONB)
+    requires_manual_review: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+    manual_review_reason: Mapped[str | None] = mapped_column(Text)
+    last_reconcile_error: Mapped[dict | None] = mapped_column(JSONB)
 
     reason: Mapped[str | None] = mapped_column(Text)
     thesis: Mapped[str | None] = mapped_column(Text)
@@ -516,9 +611,17 @@ class TossLiveOrderLedger(Base):
     stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     min_hold_days: Mapped[int | None] = mapped_column(SmallInteger)
     notes: Mapped[str | None] = mapped_column(Text)
+    exit_intent: Mapped[str | None] = mapped_column(Text)
     exit_reason: Mapped[str | None] = mapped_column(Text)
+    retrospective_id: Mapped[int | None] = mapped_column(BigInteger)
+    approval_issue_id: Mapped[str | None] = mapped_column(Text)
     indicators_snapshot: Mapped[dict | None] = mapped_column(JSONB)
     report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    approval_hash: Mapped[str | None] = mapped_column(Text)
+    # ROB-714 — learning-loop provenance spine (send-time mint, immutable).
+    # Links this order to its place-time forecast + reconcile-time journal +
+    # retrospective. NULL for legacy rows. See app.services.live_correlation.
+    correlation_id: Mapped[str | None] = mapped_column(Text)
 
     filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
@@ -529,6 +632,40 @@ class TossLiveOrderLedger(Base):
     journal_id: Mapped[int | None] = mapped_column(BigInteger)
     reconciled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
+    buy_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    sell_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    fx_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    total_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    fx_rate_source: Mapped[str | None] = mapped_column(Text)
+    fx_pnl_accuracy: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class TossFillPollState(Base):
+    """ROB-757 state for Toss REST fill polling.
+
+    One row per scan scope. The cursor is intentionally a timestamp, not Toss's
+    opaque page cursor, because Toss cursors are page-local and not stable across
+    scheduled runs.
+    """
+
+    __tablename__ = "toss_fill_poll_state"
+    __table_args__ = ({"schema": "review"},)
+
+    scope: Mapped[str] = mapped_column(Text, primary_key=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    last_error: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
@@ -575,7 +712,7 @@ class AlpacaPaperOrderLedger(Base):
             "lifecycle_state IN ("
             "'planned','previewed','validated','submitted','filled',"
             "'position_reconciled','sell_validated','closed','final_reconciled','anomaly',"
-            "'stale_preview_cleanup_required'"
+            "'stale_preview_cleanup_required','canceled'"
             ")",
             name="alpaca_paper_ledger_lifecycle_state",
         ),
@@ -605,6 +742,7 @@ class AlpacaPaperOrderLedger(Base):
         Index("ix_alpaca_paper_ledger_broker_order_id", "broker_order_id"),
         Index("ix_alpaca_paper_ledger_lifecycle_state", "lifecycle_state"),
         Index("ix_alpaca_paper_ledger_created_at", "created_at"),
+        Index("ix_alpaca_paper_ledger_terminalized_at", "terminalized_at"),
         Index("ix_alpaca_paper_ledger_candidate_uuid", "candidate_uuid"),
         Index(
             "ix_alpaca_paper_ledger_briefing_run_uuid",
@@ -636,6 +774,11 @@ class AlpacaPaperOrderLedger(Base):
 
     # Application lifecycle state (ROB-90 canonical)
     lifecycle_state: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # ROB-954: first transition into a retrospective-terminal lifecycle state.
+    # Nullable for pre-migration rows and every still-open row; unlike updated_at,
+    # this has no onupdate hook and metadata-only writes must never move it.
+    terminalized_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
     # ROB-90: buy/sell leg role — separate from broker `side` (order direction).
     leg_role: Mapped[str | None] = mapped_column(Text)
@@ -900,11 +1043,13 @@ class TradeRetrospective(Base):
     __tablename__ = "trade_retrospectives"
     __table_args__ = (
         UniqueConstraint(
-            "correlation_id", name="uq_trade_retrospectives_correlation_id"
+            "correlation_id",
+            "account_mode",
+            name="uq_trade_retrospectives_correlation_account",
         ),
         CheckConstraint(
-            "account_mode IN ('kis_mock','kiwoom_mock','kis_live','alpaca_paper','upbit_live')",
-            name="ck_trade_retrospectives_account_mode",
+            "account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live','paper')",
+            name="account_mode",
         ),
         CheckConstraint(
             "outcome IN ('filled','partially_filled','unfilled','rejected','cancelled')",
@@ -923,11 +1068,29 @@ class TradeRetrospective(Base):
             "realized_pnl_source IN ('caller_supplied','derived_from_journal')",
             name="ck_trade_retrospectives_pnl_source",
         ),
+        # ROB-647 — postmortem structuring. trigger_type is deliberately
+        # separate from outcome (expired collapses to cancelled at the outcome
+        # layer; see kis_live_ledger.py). Kept in lock-step with
+        # app/schemas/trade_retrospective.py VALID_TRIGGER_TYPES.
+        CheckConstraint(
+            "trigger_type IS NULL OR trigger_type IN ("
+            "'fill','partial_fill','rejected_order','cancelled','expired',"
+            "'thesis_change','policy_violation','stale_evidence','guardrail_block','stop_loss'"
+            ")",
+            name="ck_trade_retrospectives_trigger_type",
+        ),
+        CheckConstraint(
+            "root_cause_class IS NULL OR root_cause_class IN ("
+            "'user_input','analysis','policy','execution','harness'"
+            ")",
+            name="ck_trade_retrospectives_root_cause_class",
+        ),
         Index("ix_trade_retrospectives_correlation_id", "correlation_id"),
         Index("ix_trade_retrospectives_journal_id", "journal_id"),
         Index("ix_trade_retrospectives_strategy_key", "strategy_key"),
         Index("ix_trade_retrospectives_symbol", "symbol"),
         Index("ix_trade_retrospectives_report_uuid", "report_uuid"),
+        Index("ix_trade_retrospectives_report_item_uuid", "report_item_uuid"),
         Index(
             "ix_trade_retrospectives_account_mode_created",
             "account_mode",
@@ -959,6 +1122,16 @@ class TradeRetrospective(Base):
     realized_pnl_currency: Mapped[str | None] = mapped_column(Text)
     realized_pnl_source: Mapped[str | None] = mapped_column(Text)
     pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4))
+
+    buy_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    sell_fx_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 4))
+    fx_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    security_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    total_pnl_krw: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    fx_rate_source: Mapped[str | None] = mapped_column(Text)
+    fx_pnl_accuracy: Mapped[str | None] = mapped_column(Text)
+
     fill_evidence_available: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
     )
@@ -968,6 +1141,16 @@ class TradeRetrospective(Base):
     next_strategy: Mapped[str | None] = mapped_column(Text)
     evidence_snapshot: Mapped[dict | None] = mapped_column(JSONB)
     created_by_profile: Mapped[str | None] = mapped_column(Text)
+
+    # ROB-647 — postmortem structuring (all additive nullable). JSONB fields are
+    # validated through app/schemas/trade_retrospective.py before write.
+    trigger_type: Mapped[str | None] = mapped_column(Text)
+    root_cause_class: Mapped[str | None] = mapped_column(Text)
+    intended_vs_happened: Mapped[dict | None] = mapped_column(JSONB)
+    next_actions: Mapped[list | None] = mapped_column(JSONB)
+    guardrail_fired: Mapped[str | None] = mapped_column(Text)
+    policy_version: Mapped[str | None] = mapped_column(Text)
+
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )
@@ -976,4 +1159,303 @@ class TradeRetrospective(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# review.trade_retrospective_actions — canonical action lifecycle (ROB-878)
+# ---------------------------------------------------------------------------
+class TradeRetrospectiveAction(Base):
+    """ROB-878 — canonical retrospective action with stable identity and lifecycle.
+
+    Shadow mode: rows are backfilled from parent JSONB but not exposed to any
+    reader. Canonical mode: all reads/writes move here; parent JSONB becomes a
+    compatibility projection.
+    """
+
+    __tablename__ = "trade_retrospective_actions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["retrospective_id"],
+            ["review.trade_retrospectives.id"],
+            ondelete="CASCADE",
+            name="fk_trade_retrospective_actions_retrospective",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        UniqueConstraint(
+            "retrospective_id",
+            "position",
+            name="uq_trade_retrospective_actions_position",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "status IN ('open','in_progress','done','obsolete','expired')",
+            name="status",
+        ),
+        CheckConstraint(
+            "status_source IN ('migration','retrospective_save','web','mcp','triage','reconciler')",
+            name="status_source",
+        ),
+        CheckConstraint("version >= 1", name="version"),
+        CheckConstraint("position >= 0", name="position_col"),
+        CheckConstraint(
+            "(status IN ('done','obsolete','expired') AND resolved_at IS NOT NULL) "
+            "OR (status IN ('open','in_progress') AND resolved_at IS NULL)",
+            name="resolved_terminal",
+        ),
+        CheckConstraint(
+            "(status NOT IN ('obsolete','expired')) "
+            "OR (status_reason IS NOT NULL AND btrim(status_reason) <> '' "
+            "AND length(status_reason) <= 2000)",
+            name="reason_required",
+        ),
+        CheckConstraint(
+            "(status <> 'expired') "
+            "OR (status_evidence IS NOT NULL "
+            "AND jsonb_typeof(status_evidence) = 'object')",
+            name="evidence_required",
+        ),
+        Index(
+            "ix_trade_retrospective_actions_parent_position",
+            "retrospective_id",
+            "position",
+            "id",
+        ),
+        Index(
+            "ix_trade_retrospective_actions_due_active",
+            "due_kst_date",
+            "id",
+            postgresql_where=text("status IN ('open', 'in_progress')"),
+        ),
+        Index(
+            "uq_trade_retrospective_actions_creation_key",
+            "retrospective_id",
+            "creation_key",
+            unique=True,
+            postgresql_where=text("creation_key IS NOT NULL"),
+        ),
+        Index(
+            "ix_trade_retrospective_actions_issue_id",
+            "issue_id",
+            postgresql_where=text("issue_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_trade_retrospective_actions_status_updated",
+            "status",
+            "updated_at",
+            "id",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    retrospective_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    creation_key: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    owner: Mapped[str | None] = mapped_column(Text)
+    issue_id: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'open'")
+    )
+    due_kst_date: Mapped[date | None] = mapped_column(Date)
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
+    status_changed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    status_actor: Mapped[str] = mapped_column(VARCHAR(128), nullable=False)
+    status_source: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    status_reason: Mapped[str | None] = mapped_column(Text)
+    status_evidence: Mapped[dict | None] = mapped_column(JSONB)
+    legacy_payload: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class TradeRetrospectiveActionControl(Base):
+    """ROB-878 — singleton lifecycle control row (shadow/canonical mode)."""
+
+    __tablename__ = "trade_retrospective_action_control"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="singleton"),
+        CheckConstraint("mode IN ('shadow','canonical')", name="mode"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    cutover_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    cutover_action_count: Mapped[int | None] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# review.trade_forecasts — resolvable probabilistic forecasts (ROB-650)
+# ---------------------------------------------------------------------------
+class TradeForecast(Base):
+    """ROB-650 — resolvable prediction ledger with deterministic scoring.
+
+    A forecast records a probabilistic, resolvable claim made when composing a
+    buy thesis or a profit-taking (WATCH→PLACE) verdict — e.g. "P(005930 touches
+    129,600 support by 2026-07-15) = 0.65". Composition is a Claude session
+    (LLM boundary); the record/resolve/score logic here is fully deterministic.
+
+    ``forecast_id`` is the idempotency key (client-supplied to update while open,
+    or auto-generated). ``forecast_target`` is a structured JSONB claim. The
+    Versioned ``price_target`` claims retain their window high/low touch
+    semantics; versionless legacy rows are quarantined. The additive
+    ``terminal_close`` kind uses exactly the review-date regular-session close
+    under a versioned equality contract. Corporate-action adjustment is
+    intentionally unsupported pending ROB-1043. Other kinds resolve via an
+    operator-supplied manual outcome (evidence required).
+    ``correlation_id`` aligns with trade_retrospectives (ROB-647) so a postmortem
+    can cite the forecast it graded.
+    """
+
+    __tablename__ = "trade_forecasts"
+    __table_args__ = (
+        UniqueConstraint("forecast_id", name="uq_trade_forecasts_forecast_id"),
+        CheckConstraint(
+            "status IN ('open','closed','closed_no_claim')",
+            name="ck_trade_forecasts_status",
+        ),
+        CheckConstraint(
+            "probability >= 0 AND probability <= 1",
+            name="ck_trade_forecasts_probability",
+        ),
+        CheckConstraint(
+            "(probability_range_low IS NULL AND probability_range_high IS NULL) OR "
+            "(probability_range_low IS NOT NULL "
+            "AND probability_range_high IS NOT NULL "
+            "AND probability_range_low <= probability_range_high "
+            "AND probability >= probability_range_low "
+            "AND probability <= probability_range_high)",
+            name="ck_trade_forecasts_probability_range",
+        ),
+        CheckConstraint(
+            "brier_score IS NULL OR (brier_score >= 0 AND brier_score <= 1)",
+            name="ck_trade_forecasts_brier_score",
+        ),
+        Index("ix_trade_forecasts_status_review_date", "status", "review_date"),
+        Index("ix_trade_forecasts_symbol", "symbol"),
+        Index("ix_trade_forecasts_created_by", "created_by"),
+        Index("ix_trade_forecasts_correlation_id", "correlation_id"),
+        Index("ix_trade_forecasts_report_item_uuid", "report_item_uuid"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    forecast_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=False,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+
+    # Loose reference links (no FK — a forecast is a durable learning record
+    # that outlives the artifact/journal/report it was born from).
+    artifact_uuid: Mapped[str | None] = mapped_column(Text)
+    journal_id: Mapped[int | None] = mapped_column(BigInteger)
+    report_uuid: Mapped[str | None] = mapped_column(Text)
+    report_item_uuid: Mapped[str | None] = mapped_column(Text)
+    correlation_id: Mapped[str | None] = mapped_column(Text)
+
+    # Attribution (calibration groups by these labels).
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    session_label: Mapped[str | None] = mapped_column(Text)
+    model_label: Mapped[str | None] = mapped_column(Text)
+    policy_version: Mapped[str | None] = mapped_column(Text)
+
+    # The claim.
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    instrument_type: Mapped[InstrumentType] = mapped_column(
+        Enum(InstrumentType, name="instrument_type", create_type=False),
+        nullable=False,
+    )
+    forecast_target: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    horizon: Mapped[str | None] = mapped_column(Text)
+    probability: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
+    probability_range_low: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    probability_range_high: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    evidence_ids: Mapped[list | None] = mapped_column(JSONB)
+    contrary_evidence: Mapped[str | None] = mapped_column(Text)
+    resolution_source: Mapped[str | None] = mapped_column(Text)
+    forecast_start_date: Mapped[date | None] = mapped_column(Date)
+    review_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'open'")
+    )
+
+    # Deterministic resolution outputs (populated at resolve time).
+    outcome: Mapped[bool | None] = mapped_column(Boolean)
+    observed_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    resolved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    brier_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 5))
+    resolution_detail: Mapped[dict | None] = mapped_column(JSONB)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# review.toss_manual_activity_alerts — ROB-866 idempotency marker
+# ---------------------------------------------------------------------------
+class TossManualActivityAlert(Base):
+    """ROB-866 — records Toss manual (unbooked) orders that have been alerted.
+
+    Toss has no execution websocket, so operator app-side trades are invisible to
+    the system until reported. The manual-activity sweep diffs GET /orders against
+    ``review.toss_live_order_ledger`` + proposal rungs to surface unbooked orders,
+    then alerts Telegram + session_context. This table is the alert-idempotency
+    marker only — it is NOT a fill/bookkeeping ledger (that is stage 2). Presence
+    of a ``broker_order_id`` here means "already alerted; do not re-alert".
+    """
+
+    __tablename__ = "toss_manual_activity_alerts"
+    __table_args__ = (
+        Index("ix_toss_manual_activity_alerts_alerted_at", "alerted_at"),
+        {"schema": "review"},
+    )
+
+    broker_order_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    symbol: Mapped[str | None] = mapped_column(Text)
+    side: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str | None] = mapped_column(Text)
+    market: Mapped[str | None] = mapped_column(Text)
+    is_open: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"), default=False
+    )
+    alerted_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
     )

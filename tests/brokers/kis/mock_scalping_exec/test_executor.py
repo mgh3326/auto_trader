@@ -7,15 +7,36 @@ from typing import Any
 
 import pytest
 
+from app.services.brokers.kis.mock_scalping.contract import (
+    LedgerSnapshot,
+    MarketConditions,
+)
 from app.services.brokers.kis.mock_scalping.order_intent import OrderIntent
 from app.services.brokers.kis.mock_scalping_exec.executor import (
     ExecutorConfig,
     Fill,
     MockScalpingExecutor,
     Quote,
+    RiskInputs,
 )
 
 SYMBOL = "005930"
+
+
+class _PassRiskGate:
+    """Permissive executor-owned risk gate (all guards clear)."""
+
+    async def load(self, *, symbol: str, side: str) -> RiskInputs:
+        return RiskInputs(
+            ledger=LedgerSnapshot(
+                has_open_position_for_symbol=False,
+                open_position_count=0,
+                orders_today=0,
+                realized_loss_today_krw=Decimal("0"),
+                seconds_since_last_close_for_symbol=None,
+            ),
+            market=MarketConditions(spread_bps=Decimal("10"), data_age_seconds=1.0),
+        )
 
 
 def _intent(entry: Decimal | None = Decimal("70000")) -> OrderIntent:
@@ -78,7 +99,7 @@ class FakeLedger:
         return [c[0] for c in self.calls]
 
 
-def _executor(broker, ledger, **cfg):
+def _executor(broker, ledger, *, risk=_PassRiskGate(), **cfg):
     async def _no_sleep(_s: float) -> None:
         return None
 
@@ -88,6 +109,7 @@ def _executor(broker, ledger, **cfg):
         config=ExecutorConfig(**cfg) if cfg else ExecutorConfig(),
         sleep=_no_sleep,
         clock=lambda: 0.0,  # frozen clock -> no time-stop unless max_hold=0
+        risk=risk,
     )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -105,6 +106,56 @@ async def test_kis_reader_excludes_cash_from_value_and_converts_usd(
     assert us_holding.sellableQuantity == 1
     assert us_holding.pendingSellQuantity == 1
     assert us_holding.referenceQuantity == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_kis_reader_emits_provider_phase_spans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[tuple[str, str, dict[str, Any]]] = []
+
+    class _Span:
+        def __init__(self) -> None:
+            self.data: dict[str, Any] = {}
+
+        def set_data(self, key: str, value: Any) -> None:
+            self.data[key] = value
+
+        def set_tag(self, key: str, value: Any) -> None:
+            self.data[key] = value
+
+    class _SpanContext:
+        def __init__(self, op: str, name: str) -> None:
+            self.op = op
+            self.name = name
+            self.span = _Span()
+
+        def __enter__(self) -> _Span:
+            started.append((self.op, self.name, self.span.data))
+            return self.span
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def _start_span(*, op: str, name: str, **kwargs: Any) -> _SpanContext:
+        return _SpanContext(op, name)
+
+    monkeypatch.setattr(readers.sentry_sdk, "start_span", _start_span)
+    monkeypatch.setattr(readers, "SafeKISClient", _FakeKISClient)
+
+    async def _fx() -> float:
+        return 1_300.0
+
+    monkeypatch.setattr(readers, "get_usd_krw_rate", _fx)
+
+    await readers.KISHomeReader(db=None).fetch(user_id=1)  # type: ignore[arg-type]
+
+    names = [name for _, name, _ in started]
+    assert "invest.home.kis.domestic_balance" in names
+    assert "invest.home.kis.integrated_margin" in names
+    assert "invest.home.kis.overseas_balance" in names
+    assert "invest.home.kis.fx" in names
 
 
 @pytest.mark.asyncio
@@ -539,6 +590,162 @@ async def test_manual_reader_does_not_fabricate_value_from_cost_basis(
     assert result.holdings[0].assetCategory == "kr_stock"
     assert result.holdings[0].priceState == "missing"
     assert result.warning is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_manual_reader_emits_load_quote_and_fx_spans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[str] = []
+
+    class _Span:
+        def set_data(self, key: str, value: Any) -> None:
+            return None
+
+        def set_tag(self, key: str, value: Any) -> None:
+            return None
+
+    class _SpanContext:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __enter__(self) -> _Span:
+            started.append(self.name)
+            return _Span()
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def _start_span(*, op: str, name: str, **kwargs: Any) -> _SpanContext:
+        return _SpanContext(name)
+
+    class _BrokerAccount:
+        broker_type = "toss"
+
+    class _ManualHolding:
+        id = 1
+        broker_account_id = 10
+        broker_account = _BrokerAccount()
+        ticker = "005930"
+        display_name = "삼성전자"
+        market_type = MarketType.KR
+        quantity = 2
+        avg_price = 70_000
+
+    class _ManualHoldingsService:
+        def __init__(self, db: object) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[_ManualHolding]:
+            assert user_id == 1
+            return [_ManualHolding()]
+
+    class _QuoteService:
+        async def fetch_kr_prices(self, tickers: list[str]) -> dict[str, float | None]:
+            assert tickers == ["005930"]
+            return {"005930": 72_000.0}
+
+        async def fetch_us_prices(self, tickers: list[str]) -> dict[str, float | None]:
+            assert tickers == []
+            return {}
+
+    monkeypatch.setattr(readers.sentry_sdk, "start_span", _start_span)
+    monkeypatch.setattr(readers, "ManualHoldingsService", _ManualHoldingsService)
+
+    result = await readers.ManualHomeReader(
+        db=object(), quote_service=_QuoteService()
+    ).fetch(user_id=1)  # type: ignore[arg-type]
+
+    assert result.warning is None
+    assert "invest.home.manual.load_holdings" in started
+    assert "invest.home.manual.fetch_kr_prices" in started
+    assert "invest.home.manual.fetch_us_prices" in started
+
+
+@pytest.mark.asyncio
+async def test_manual_reader_fetches_kr_and_us_prices_concurrently(monkeypatch):
+    """ROB-702: KR and US price fetches must run concurrently, not sequentially.
+
+    Each fake fetch signals it has started, then waits for the other to start.
+    Under the concurrent ``asyncio.gather`` both events fire and both proceed;
+    a sequential kr-then-us implementation would deadlock (us never starts while
+    kr awaits it) and time out — so a passing result proves concurrency.
+    """
+
+    class _Span:
+        def set_data(self, key: str, value: Any) -> None:
+            return None
+
+        def set_tag(self, key: str, value: Any) -> None:
+            return None
+
+    class _SpanContext:
+        def __enter__(self) -> _Span:
+            return _Span()
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def _start_span(*, op: str, name: str, **kwargs: Any) -> _SpanContext:
+        return _SpanContext()
+
+    class _BrokerAccount:
+        broker_type = "toss"
+
+    class _KRHolding:
+        id = 1
+        broker_account_id = 10
+        broker_account = _BrokerAccount()
+        ticker = "005930"
+        display_name = "삼성전자"
+        market_type = MarketType.KR
+        quantity = 2
+        avg_price = 70_000
+
+    class _USHolding:
+        id = 2
+        broker_account_id = 10
+        broker_account = _BrokerAccount()
+        ticker = "AAPL"
+        display_name = "Apple"
+        market_type = MarketType.US
+        quantity = 1
+        avg_price = 100
+
+    class _ManualHoldingsService:
+        def __init__(self, db: object) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            return [_KRHolding(), _USHolding()]
+
+    kr_started = asyncio.Event()
+    us_started = asyncio.Event()
+
+    class _QuoteService:
+        async def fetch_kr_prices(self, tickers: list[str]) -> dict[str, float | None]:
+            kr_started.set()
+            await asyncio.wait_for(us_started.wait(), timeout=1.0)
+            return dict.fromkeys(tickers, 72000.0)
+
+        async def fetch_us_prices(self, tickers: list[str]) -> dict[str, float | None]:
+            us_started.set()
+            await asyncio.wait_for(kr_started.wait(), timeout=1.0)
+            return dict.fromkeys(tickers, 190.0)
+
+    monkeypatch.setattr(readers.sentry_sdk, "start_span", _start_span)
+    monkeypatch.setattr(readers, "ManualHoldingsService", _ManualHoldingsService)
+    monkeypatch.setattr(readers, "get_usd_krw_rate", AsyncMock(return_value=1_350.0))
+
+    result = await readers.ManualHomeReader(
+        db=object(), quote_service=_QuoteService()
+    ).fetch(user_id=1)  # type: ignore[arg-type]
+
+    # Sequential fetches would deadlock on the cross-waits above; a clean result
+    # with both events set proves the two fetches were in flight simultaneously.
+    assert result.warning is None
+    assert kr_started.is_set() and us_started.is_set()
 
 
 # ---------------------------------------------------------------------------
@@ -1399,7 +1606,9 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
         TossPortfolioSnapshot,
     )
 
-    async def fake_fetch_toss_snapshot():
+    async def fake_fetch_toss_snapshot(
+        *, need_sellable: bool = True, sellable_cache=None
+    ):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -1427,6 +1636,10 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
     monkeypatch.setattr(
         readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
     )
+    # ROB-549: mutations disabled (default) -> reference-only.
+    from app.core.config import settings as _cfg
+
+    monkeypatch.setattr(_cfg, "toss_live_order_mutations_enabled", False, raising=False)
 
     result = await readers.TossApiHomeReader().fetch(user_id=1)
 
@@ -1435,8 +1648,8 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
     assert result.accounts[0].accountKind == "live"
     assert result.accounts[0].cashBalances.krw == 123456.0
     assert result.accounts[0].cashBalances.usd == 789.01
-    assert result.accounts[0].buyingPower.krw is None
-    assert result.accounts[0].buyingPower.usd is None
+    assert result.accounts[0].buyingPower.krw == 123456.0
+    assert result.accounts[0].buyingPower.usd == 789.01
     holding = result.holdings[0]
     assert holding.source == "toss_api"
     assert holding.sourceOfTruth is True
@@ -1444,6 +1657,131 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
     assert holding.manualOnly is False
     assert holding.sellableQuantity == 0.0
     assert holding.referenceQuantity == 1.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_api_home_reader_populates_buying_power_card(monkeypatch):
+    from decimal import Decimal
+
+    from app.core.config import settings as _cfg
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+
+    async def fake_fetch_toss_snapshot(*, need_sellable=True, sellable_cache=None):
+        return TossPortfolioSnapshot(
+            positions=[],
+            cash_krw=Decimal("500000"),
+            cash_usd=Decimal("42.5"),
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(_cfg, "toss_live_order_mutations_enabled", False, raising=False)
+
+    result = await readers.TossApiHomeReader().fetch(user_id=1)
+    account = result.accounts[0]
+    # buyingPower is wired from the Toss cashBuyingPower fetch...
+    assert account.buyingPower.krw == 500000.0
+    assert account.buyingPower.usd == 42.5
+    # ...and cashBalances is left exactly as before (additive, no regression).
+    assert account.cashBalances.krw == 500000.0
+    assert account.cashBalances.usd == 42.5
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_api_home_reader_buying_power_fail_open_when_cash_missing(
+    monkeypatch,
+):
+    from app.core.config import settings as _cfg
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+
+    async def fake_fetch_toss_snapshot(*, need_sellable=True, sellable_cache=None):
+        # buying_power fetch failed for both currencies -> None + error rows.
+        return TossPortfolioSnapshot(
+            positions=[],
+            cash_krw=None,
+            cash_usd=None,
+            errors=[
+                {
+                    "source": "toss_api",
+                    "stage": "buying_power",
+                    "currency": "KRW",
+                    "error": "boom",
+                },
+            ],
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(_cfg, "toss_live_order_mutations_enabled", False, raising=False)
+
+    result = await readers.TossApiHomeReader().fetch(user_id=1)
+    account = result.accounts[0]
+    assert account.buyingPower.krw is None
+    assert account.buyingPower.usd is None
+    assert account.cashBalances.krw is None
+    assert account.cashBalances.usd is None
+    # Fail-open: still returns an account, error surfaced as a warning.
+    assert result.warning is not None
+    assert "boom" in result.warning.message
+
+
+@pytest.mark.asyncio
+async def test_toss_api_home_reader_tradeable_when_mutations_enabled(monkeypatch):
+    """ROB-549: with Toss live mutations armed, toss_api holdings become tradeable
+    and surface the API-provided sellable_quantity instead of discarding it."""
+    from decimal import Decimal
+
+    from app.core.config import settings as _cfg
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import (
+        TossPortfolioPosition,
+        TossPortfolioSnapshot,
+    )
+
+    async def fake_fetch_toss_snapshot(
+        *, need_sellable: bool = True, sellable_cache=None
+    ):
+        return TossPortfolioSnapshot(
+            positions=[
+                TossPortfolioPosition(
+                    account="toss",
+                    account_name="Toss",
+                    broker="toss",
+                    source="toss_api",
+                    instrument_type="equity_us",
+                    market="us",
+                    symbol="BRK.B",
+                    name="Berkshire Hathaway B",
+                    quantity=Decimal("1.5"),
+                    avg_buy_price=Decimal("400"),
+                    current_price=Decimal("430.12"),
+                    evaluation_amount=Decimal("645.18"),
+                    profit_loss=Decimal("45.18"),
+                    profit_rate=Decimal("0.0753"),
+                    sellable_quantity=Decimal("1.25"),
+                )
+            ],
+            cash_krw=Decimal("123456"),
+            cash_usd=Decimal("789.01"),
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(_cfg, "toss_live_order_mutations_enabled", True, raising=False)
+
+    result = await readers.TossApiHomeReader().fetch(user_id=1)
+
+    holding = result.holdings[0]
+    assert holding.isTradeable is True
+    assert holding.sellableQuantity == 1.25
+    assert holding.pendingSellQuantity == pytest.approx(0.25)  # qty 1.5 - sellable 1.25
 
 
 @pytest.mark.asyncio
@@ -1456,7 +1794,9 @@ async def test_toss_api_home_reader_converts_us_holdings_to_krw(monkeypatch):
         TossPortfolioSnapshot,
     )
 
-    async def fake_fetch_toss_snapshot():
+    async def fake_fetch_toss_snapshot(
+        *, need_sellable: bool = True, sellable_cache=None
+    ):
         return TossPortfolioSnapshot(
             positions=[
                 TossPortfolioPosition(
@@ -1497,3 +1837,239 @@ async def test_toss_api_home_reader_converts_us_holdings_to_krw(monkeypatch):
     assert result.accounts[0].valueKrw == pytest.approx(645.18 * 1300.0)
     assert result.accounts[0].costBasisKrw == pytest.approx(600.0 * 1300.0)
     assert result.accounts[0].pnlKrw == pytest.approx(45.18 * 1300.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutations,expected_need", [(False, False), (True, True)])
+async def test_toss_api_home_reader_gates_sellable_fetch_on_mutations(
+    monkeypatch, mutations, expected_need
+):
+    from decimal import Decimal
+
+    from app.core.config import settings as _cfg
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+
+    captured: dict[str, bool] = {}
+
+    async def fake_fetch_toss_snapshot(
+        *, need_sellable: bool = True, sellable_cache=None
+    ):
+        captured["need_sellable"] = need_sellable
+        return TossPortfolioSnapshot(
+            positions=[], cash_krw=Decimal("1"), cash_usd=Decimal("1")
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(
+        _cfg, "toss_live_order_mutations_enabled", mutations, raising=False
+    )
+
+    await readers.TossApiHomeReader().fetch(user_id=1)
+
+    # ROB-685: mutations off (default) => reader discards sellable anyway => skip fetch.
+    assert captured["need_sellable"] is expected_need
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("mutations", [False, True])
+async def test_toss_api_home_reader_passes_sellable_cache_when_mutations_on(
+    monkeypatch, mutations
+):
+    from decimal import Decimal
+
+    from app.core.config import settings as _cfg
+    from app.services import invest_home_readers as readers
+    from app.services.toss_portfolio_service import TossPortfolioSnapshot
+    from app.services.toss_sellable_cache import TossSellableCache
+
+    captured: dict[str, object] = {}
+
+    async def fake_fetch_toss_snapshot(*, need_sellable=True, sellable_cache=None):
+        captured["need_sellable"] = need_sellable
+        captured["sellable_cache"] = sellable_cache
+        return TossPortfolioSnapshot(
+            positions=[], cash_krw=Decimal("1"), cash_usd=Decimal("1")
+        )
+
+    monkeypatch.setattr(
+        readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
+    )
+    monkeypatch.setattr(
+        _cfg, "toss_live_order_mutations_enabled", mutations, raising=False
+    )
+
+    await readers.TossApiHomeReader().fetch(user_id=1)
+
+    if mutations:
+        # mutations armed => cache is threaded so repeated loads reuse it.
+        assert isinstance(captured["sellable_cache"], TossSellableCache)
+        assert captured["need_sellable"] is True
+    else:
+        # mutations off => ROB-685 skip, no cache needed.
+        assert captured["sellable_cache"] is None
+        assert captured["need_sellable"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_portfolio_snapshot_emits_phase_spans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from decimal import Decimal
+
+    from app.services import toss_portfolio_service as toss_service
+
+    started: list[str] = []
+
+    class _Span:
+        def set_data(self, key: str, value: Any) -> None:
+            return None
+
+        def set_tag(self, key: str, value: Any) -> None:
+            return None
+
+    class _SpanContext:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __enter__(self) -> _Span:
+            started.append(self.name)
+            return _Span()
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def _start_span(*, op: str, name: str, **kwargs: Any) -> _SpanContext:
+        return _SpanContext(name)
+
+    class _Client:
+        async def holdings(self) -> SimpleNamespace:
+            return SimpleNamespace(
+                items=[
+                    SimpleNamespace(
+                        symbol="005930",
+                        name="삼성전자",
+                        market_country="KR",
+                        quantity=Decimal("2"),
+                        average_purchase_price=Decimal("70000"),
+                        last_price=Decimal("72000"),
+                        market_value={"amount": Decimal("144000")},
+                        profit_loss={
+                            "amount": Decimal("4000"),
+                            "rate": Decimal("0.0285"),
+                        },
+                    )
+                ]
+            )
+
+        async def sellable_quantity(self, *, symbol: str) -> SimpleNamespace:
+            assert symbol == "005930"
+            return SimpleNamespace(sellable_quantity=Decimal("1"))
+
+        async def buying_power(self, *, currency: str) -> SimpleNamespace:
+            return SimpleNamespace(currency=currency, cash_buying_power=Decimal("1000"))
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(toss_service.sentry_sdk, "start_span", _start_span)
+
+    snapshot = await toss_service.fetch_toss_portfolio_snapshot(client=_Client())
+
+    assert snapshot.positions[0].symbol == "005930"
+    assert "invest.home.toss_api.holdings" in started
+    assert "invest.home.toss_api.sellable_quantity" in started
+    assert "invest.home.toss_api.buying_power" in started
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_cash_snapshot_runs_concurrently_with_holdings(monkeypatch):
+    """ROB-707: fetch_toss_cash_snapshot overlaps the holdings fetch. The fake's
+    holdings() only completes once buying_power() has started, so a serial
+    (holdings-then-cash) ordering deadlocks and this test times out."""
+    import asyncio
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from app.services import toss_portfolio_service as svc
+
+    bp_started = asyncio.Event()
+
+    class _Client:
+        async def holdings(self):
+            # Completes ONLY if the cash fetch is already in flight.
+            await asyncio.wait_for(bp_started.wait(), timeout=1.0)
+            return SimpleNamespace(items=[])
+
+        async def sellable_quantity(self, *, symbol):  # unused: no items
+            raise AssertionError("no holdings -> no sellable fanout")
+
+        async def buying_power(self, *, currency):
+            bp_started.set()
+            return SimpleNamespace(currency=currency, cash_buying_power=Decimal("10"))
+
+        async def aclose(self):
+            return None
+
+    snap = await asyncio.wait_for(
+        svc.fetch_toss_portfolio_snapshot(need_sellable=False, client=_Client()),
+        timeout=2.0,
+    )
+    assert snap.positions == []
+    assert snap.cash_krw == Decimal("10")
+    assert snap.cash_usd == Decimal("10")
+    assert snap.errors == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_toss_cash_snapshot_drained_when_holdings_chain_raises(monkeypatch):
+    """ROB-707: when the holdings/sellable chain raises before the cash task
+    is awaited, the finally block must cancel and drain the pending cash task
+    so it never touches a closed client and never leaks a pending coroutine."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.services import toss_portfolio_service as svc
+
+    aclose_calls = 0
+    bp_started = asyncio.Event()
+    bp_cancelled = asyncio.Event()
+
+    class _Client:
+        async def holdings(self):
+            # Raise AFTER the cash fetch has started so the cash task is
+            # genuinely pending when the finally block runs.
+            await asyncio.wait_for(bp_started.wait(), timeout=1.0)
+            raise RuntimeError("holdings boom")
+
+        async def sellable_quantity(self, *, symbol):
+            raise AssertionError("no fanout on raise")
+
+        async def buying_power(self, *, currency):
+            bp_started.set()
+            # Block forever until cancelled — proves drain works.
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                bp_cancelled.set()
+                raise
+            return SimpleNamespace(currency=currency, cash_buying_power=0)
+
+        async def aclose(self):
+            nonlocal aclose_calls
+            aclose_calls += 1
+
+    with pytest.raises(RuntimeError, match="holdings boom"):
+        await svc.fetch_toss_portfolio_snapshot(need_sellable=False, client=_Client())
+
+    # The pending cash task must have been cancelled and drained (the buying
+    # power coroutine observed CancelledError). The shared client (created
+    # client=False here) must NOT be closed — caller owns it.
+    assert bp_cancelled.is_set(), "pending cash task was not cancelled"
+    assert aclose_calls == 0, "client must not be closed when caller owns it"

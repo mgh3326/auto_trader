@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -30,11 +31,24 @@ from app.services.brokers.toss.errors import TossApiResponseError, parse_toss_re
 from app.services.brokers.toss.rate_limiter import (
     TossApiGroup,
     TossRateLimiter,
+    get_shared_rate_limiter,
     retry_delay_seconds,
 )
 from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL, build_toss_client
 
 _TOKEN_CODES = {"invalid-token", "expired-token"}
+_GET_REISSUABLE_NON_JSON_STATUSES = {403}
+PreSendHook = Callable[[], Awaitable[None]]
+
+
+def _should_retry_get_non_json_auth_error(
+    method: str, exc: TossApiResponseError
+) -> bool:
+    return (
+        method.upper() == "GET"
+        and exc.status_code in _GET_REISSUABLE_NON_JSON_STATUSES
+        and exc.envelope.code == "non-json-response"
+    )
 
 
 class TossReadClient:
@@ -57,10 +71,14 @@ class TossReadClient:
         base_url = (
             getattr(settings_obj, "toss_api_base_url", None) or DEFAULT_TOSS_BASE_URL
         )
+        limiter = get_shared_rate_limiter()
         return cls(
-            token_manager=TossOAuthTokenManager.from_settings(settings_obj),
+            token_manager=TossOAuthTokenManager.from_settings(
+                settings_obj, rate_limiter=limiter
+            ),
             account_seq=getattr(settings_obj, "toss_api_account_seq", None),
             base_url=str(base_url),
+            rate_limiter=limiter,
         )
 
     async def aclose(self) -> None:
@@ -75,31 +93,39 @@ class TossReadClient:
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
         account_required: bool = False,
+        pre_send_hook: PreSendHook | None = None,
     ) -> Any:
         await self._rate_limiter.acquire(group)
         token = await self._token_manager.get_access_token()
         headers = {"Authorization": f"Bearer {token}"}
         if account_required:
             headers["X-Tossinvest-Account"] = str(await self._resolve_account_seq())
-        response = await self._client.request(
-            method, path, params=params, json=json, headers=headers
-        )
+
+        async def send() -> httpx.Response:
+            if pre_send_hook is not None:
+                await pre_send_hook()
+            return await self._client.request(
+                method, path, params=params, json=json, headers=headers
+            )
+
+        response = await send()
         if response.status_code == 429:
             await asyncio.sleep(
                 retry_delay_seconds(response.headers.get("Retry-After"), attempt=0)
             )
-            response = await self._client.request(
-                method, path, params=params, json=json, headers=headers
-            )
+            response = await send()
         try:
             return parse_toss_response(response)
         except TossApiResponseError as exc:
-            if exc.envelope.code in _TOKEN_CODES:
-                token = await self._token_manager.get_access_token(force_reissue=True)
-                headers["Authorization"] = f"Bearer {token}"
-                retry = await self._client.request(
-                    method, path, params=params, json=json, headers=headers
+            if (
+                exc.envelope.code in _TOKEN_CODES
+                or _should_retry_get_non_json_auth_error(method, exc)
+            ):
+                token = await self._token_manager.get_access_token(
+                    force_reissue=True, failed_token=token
                 )
+                headers["Authorization"] = f"Bearer {token}"
+                retry = await send()
                 return parse_toss_response(retry)
             raise
 
@@ -307,7 +333,12 @@ class TossReadClient:
             )
         )
 
-    async def place_order(self, payload: dict[str, Any]) -> TossOrderPlacementResult:
+    async def place_order(
+        self,
+        payload: dict[str, Any],
+        *,
+        pre_send_hook: PreSendHook | None = None,
+    ) -> TossOrderPlacementResult:
         return parse_order_placement_result(
             await self._request(
                 "POST",
@@ -315,6 +346,7 @@ class TossReadClient:
                 group=TossApiGroup.ORDER,
                 json=payload,
                 account_required=True,
+                pre_send_hook=pre_send_hook,
             )
         )
 
@@ -331,7 +363,12 @@ class TossReadClient:
             )
         )
 
-    async def cancel_order(self, order_id: str) -> TossOrderOperationResult:
+    async def cancel_order(
+        self,
+        order_id: str,
+        *,
+        pre_send_hook: PreSendHook | None = None,
+    ) -> TossOrderOperationResult:
         return parse_order_operation_result(
             await self._request(
                 "POST",
@@ -339,5 +376,6 @@ class TossReadClient:
                 group=TossApiGroup.ORDER,
                 json={},
                 account_required=True,
+                pre_send_hook=pre_send_hook,
             )
         )

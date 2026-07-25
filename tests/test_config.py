@@ -27,6 +27,20 @@ EXPECTED_KIS_API_RATE_LIMITS = {
         "rate": 20,
         "period": 1.0,
     },
+    # ROB-753: current-price endpoints reject bursty same-endpoint fanout.
+    # Keep them serialized by default; operators can loosen via KIS_API_RATE_LIMITS.
+    "FHKST01010100|/uapi/domestic-stock/v1/quotations/inquire-price": {
+        "rate": 1,
+        "period": 0.2,
+    },
+    "HHDFS00000300|/uapi/overseas-price/v1/quotations/price": {
+        "rate": 1,
+        "period": 0.2,
+    },
+    "VTTS3007R|/uapi/overseas-stock/v1/trading/inquire-psamount": {
+        "rate": 10,
+        "period": 1.0,
+    },
     "TTTC8434R|/uapi/domestic-stock/v1/trading/inquire-balance": {
         "rate": 10,
         "period": 1.0,
@@ -37,6 +51,33 @@ EXPECTED_KIS_API_RATE_LIMITS = {
     },
     "TTTC8036R|/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl": {
         "rate": 10,
+        "period": 1.0,
+    },
+    # ROB-585 (absorbed by ROB-645): pre-send throttle for order TRs (8/s) so
+    # batch orders stay under the KIS ledger limit without any retry re-POST.
+    "TTTC0012U|/uapi/domestic-stock/v1/trading/order-cash": {"rate": 8, "period": 1.0},
+    "VTTC0012U|/uapi/domestic-stock/v1/trading/order-cash": {"rate": 8, "period": 1.0},
+    "TTTC0011U|/uapi/domestic-stock/v1/trading/order-cash": {"rate": 8, "period": 1.0},
+    "VTTC0011U|/uapi/domestic-stock/v1/trading/order-cash": {"rate": 8, "period": 1.0},
+    "TTTC0013U|/uapi/domestic-stock/v1/trading/order-rvsecncl": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "VTTC0013U|/uapi/domestic-stock/v1/trading/order-rvsecncl": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "TTTT1002U|/uapi/overseas-stock/v1/trading/order": {"rate": 8, "period": 1.0},
+    "VTTT1002U|/uapi/overseas-stock/v1/trading/order": {"rate": 8, "period": 1.0},
+    "TTTT1006U|/uapi/overseas-stock/v1/trading/order": {"rate": 8, "period": 1.0},
+    "VTTT1006U|/uapi/overseas-stock/v1/trading/order": {"rate": 8, "period": 1.0},
+    "VTTT1001U|/uapi/overseas-stock/v1/trading/order": {"rate": 8, "period": 1.0},
+    "TTTT1004U|/uapi/overseas-stock/v1/trading/order-rvsecncl": {
+        "rate": 8,
+        "period": 1.0,
+    },
+    "VTTT1004U|/uapi/overseas-stock/v1/trading/order-rvsecncl": {
+        "rate": 8,
         "period": 1.0,
     },
 }
@@ -175,18 +216,18 @@ class TestConfigLoading:
         ] == {"rate": 10, "period": 1.0}
 
     def test_public_api_paths_supports_csv_env_string(self, monkeypatch):
-        monkeypatch.setenv("PUBLIC_API_PATHS", "/healthz,/api/n8n/scan")
+        monkeypatch.setenv("PUBLIC_API_PATHS", "/healthz,/api/scan")
 
         cfg = _new_settings()
 
-        assert cfg.PUBLIC_API_PATHS == ["/healthz", "/api/n8n/scan"]
+        assert cfg.PUBLIC_API_PATHS == ["/healthz", "/api/scan"]
 
     def test_public_api_paths_supports_json_env_string(self, monkeypatch):
-        monkeypatch.setenv("PUBLIC_API_PATHS", '["/healthz", "/api/n8n/scan"]')
+        monkeypatch.setenv("PUBLIC_API_PATHS", '["/healthz", "/api/scan"]')
 
         cfg = _new_settings()
 
-        assert cfg.PUBLIC_API_PATHS == ["/healthz", "/api/n8n/scan"]
+        assert cfg.PUBLIC_API_PATHS == ["/healthz", "/api/scan"]
 
     def test_public_api_paths_supports_empty_string_env(self, monkeypatch):
         monkeypatch.setenv("PUBLIC_API_PATHS", "")
@@ -249,6 +290,33 @@ class TestConfigLoading:
 
         assert cfg.kis_api_rate_limits == custom_limits
 
+    def test_telegram_chat_ids_str_splits_multiple_ids(self):
+        cfg = Settings(
+            telegram_token="token",
+            telegram_chat_id="legacy",
+            telegram_chat_ids_str="111, 222,,333 ",
+        )
+
+        assert cfg.telegram_chat_ids == ["111", "222", "333"]
+
+    def test_telegram_chat_ids_falls_back_to_single_chat_id(self):
+        # conftest가 TELEGRAM_CHAT_IDS_STR 전역 기본값을 심으므로 명시적으로
+        # 비워야 legacy 폴백 경로가 검증된다 (env/dotenv 무관 밀폐형).
+        cfg = Settings(
+            telegram_token="token",
+            telegram_chat_id="legacy",
+            telegram_chat_ids_str=None,
+        )
+
+        assert cfg.telegram_chat_ids == ["legacy"]
+
 
 def test_runbook_exists() -> None:
     assert Path("docs/runbooks/freqtrade-research-pipeline.md").exists()
+
+
+@pytest.mark.unit
+def test_watch_notify_transport_defaults_to_hermes_webhook():
+    from app.core.config import settings
+
+    assert settings.WATCH_NOTIFY_TRANSPORT in ("hermes_webhook", "python_direct")

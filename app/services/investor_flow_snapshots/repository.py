@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Iterable
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
@@ -26,6 +27,13 @@ class InvestorFlowSnapshotUpsert(BaseModel):
     institution_net_sell_rank: int | None = None
     double_buy: bool | None = None
     double_sell: bool | None = None
+    # ROB-575 market fields (wired in ROB-640):
+    close: Decimal | None = None
+    # change_rate is stored as a percent (e.g. 1.5 for 1.5%)
+    change_rate: Decimal | None = None
+    volume: int | None = None
+    foreign_holding_shares: int | None = None
+    foreign_holding_rate: Decimal | None = None
     foreign_consecutive_buy_days: int | None = None
     foreign_consecutive_sell_days: int | None = None
     institution_consecutive_buy_days: int | None = None

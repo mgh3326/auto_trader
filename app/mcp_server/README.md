@@ -21,6 +21,25 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Sensitive values (`token`, `secret`, `password`, `authorization`, `cookie`) are masked to `[Filtered]`
   - Large arguments are truncated (strings: 1024 chars, lists/dicts: 25 items) with a visible `[truncated]` marker
   - The middleware never calls `capture_exception` directly; exception capture is handled by Sentry's `MCPIntegration`
+- Semantic/operator observations are attached to the active `mcp.server` span and the `mcp_tool_observability` context:
+  - `mcp.semantic_success=false` and span status `failed_precondition` are used for controlled failure envelopes (`success=false`), invalid supplied CP0 fields, and supplied CP0 observations whose `data_state` is not `fresh`. Tools outside the CP0 scope keep the existing success/error fallback when all CP0 fields are absent. Raised exceptions retain an exception-specific non-success span status.
+  - `mcp.error_code` prefers the stable envelope `error_code`, a machine-readable `error`, or a provider-provenance error code; free-form exception/error text is never promoted to a tag.
+  - Caller and lineage tags are `mcp.consumer`, `mcp.operator_session`, `mcp.analysis_run_id`, `mcp.correlation_id`, `mcp.lane`, `mcp.verdict`, `mcp.report_uuid`, `mcp.artifact_uuid`, and `mcp.proposal_uuid` when present. Current UUID-valued `artifact_id` and `proposal_id` surfaces are consumed as their observability `*_uuid` compatibility values.
+  - Operator session resolution prefers an explicit `operator_session`, then the transport MCP session id. `session_label` remains ROB-1048 artifact-renewal metadata and is not reused as operator identity. `mcp.operator_session.source` records which source won.
+- Freshness/provenance fields are read-only observations of the ROB-1048 CP0 contract. ROB-1048 owns `data_state`, `derived_as_of`, `fetched_at`, `data_age_seconds`, `cache_hit`, `fallback_source`, and `provider_provenance`; this middleware does not define or mutate them.
+  - Complete, type-valid fields are copied to matching `mcp.*` span data. Query tags include `mcp.data_state`, `mcp.cache_hit`, `mcp.fallback_source`, `mcp.freshness.contract`, and the bounded `mcp.data_age.bucket`.
+  - An absent/invalid `data_state` is observed as `mcp.data_state=unknown`, never `fresh`; absent `cache_hit` is `unknown`, never `false`. The `unknown` value is an observability sentinel, not an extension of the ROB-1048 envelope enum. A wholly absent CP0 contract does not itself change semantic success for unrelated tools, while supplied invalid or non-fresh CP0 fields cannot produce semantic success.
+- Raw symbols are never Sentry span tags. Sentry SDK request/result span attributes have symbol-bearing values replaced with a fixed marker; queryable attributes are limited to `mcp.symbol.mode`, exact `mcp.symbol.count`, and bounded `mcp.symbol.count_bucket`. The sanitized, size-bounded `mcp_tool_call` debug context retains the original argument value.
+- Funnel spans use the bounded `mcp.funnel.stage` tag:
+  - `bootstrap`: `get_operating_briefing`
+  - `lane`: `route_request`, `get_trading_policy`
+  - `evidence`: the registered quote/news/screen/analyze/bundle evidence tools
+  - `verdict`: investment-report create/decide/status tools
+  - `artifact`: analysis/stage artifact persistence
+  - `proposal`: `order_proposal_create`
+  - `fill`: reconcile/fill-evidence tools
+  - `retrospective`: `save_trade_retrospective`
+  - Other calls use `other`; join stages with caller/session/run/correlation and report/artifact/proposal identifiers rather than raw symbols.
 
 ## Tools
 
@@ -28,13 +47,28 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 
 - `get_news(symbol, market=None, limit=10)`
   - Fetch symbol-level recent news for decision diagnostics (`kr`: Naver Finance, `us`/`crypto`: Finnhub)
-  - KR: fetched articles are persisted (`news_articles` + `symbol_news_relevance`) and the response is served from DB state. Each item carries a `relevance` block (`status`: `pending`/`confirmed`, judged fields, non-authoritative `hints`). `excluded` articles (judged unrelated/low by the external judgment job) are omitted; `excluded_count` reports how many. No deterministic blacklist — auto_trader never excludes on its own.
-  - `degraded: true` + `fetch_error` appear when the Naver fetch failed and the response was served from DB cache only.
+  - KR/US/crypto: fetched articles are persisted (`news_articles` + `symbol_news_relevance`) and the response is served from DB state. Each item carries a `relevance` block (`status`: `pending`/`confirmed`, judged fields, non-authoritative `hints`). `excluded` articles (judged unrelated/low by the external judgment job) are omitted; `excluded_count` reports how many. No deterministic blacklist — auto_trader never excludes on its own.
+  - When `NEWS_RELEVANCE_ASYNC_JUDGMENT_ENABLED=true`, visible `pending` rows in the canonical DB response enqueue `news_relevance.judge_pending`, including rows created during an earlier worker/webhook outage. Duplicate enqueue is acceptable because the worker re-queries pending rows.
+  - `degraded: true` + `fetch_error` appear when provider fetch failed and the response was served from DB cache only.
+  - ROB-1048 freshness/provenance fields are always present:
+    `data_state` (`fresh|stale|degraded|missing`), `derived_as_of`,
+    `fetched_at`, `data_age_seconds`, `cache_hit`, `fallback_source`, and
+    `provider_provenance`. Nullable timestamps/age/fallback remain explicit
+    `null`; error responses use `data_state="missing"` and never synthesize a
+    timestamp.
+  - `fetched_at` is the original upstream acquisition time. DB-only fallback
+    rows preserve `news_articles.scraped_at`; a failed retry is never stamped
+    as newly fetched. Aggregate timestamp/age uses the oldest returned evidence
+    and the existing 180-minute news-readiness budget.
+  - DB fallback sets `cache_hit=true`,
+    `fallback_source="news_articles"`, and provenance keeps the failed primary
+    provider while using `served_by="news_articles"` / `mode="fallback"`.
+    Expired fallback reports `stale` rather than `degraded`.
   - `pending` means "not yet judged" — treat as unverified recall, not confirmed evidence.
   - Returns: `symbol`, `market`, `source`, `count`, `excluded_count`, `news`
 
 - `get_market_news(market=None, hours=24, feed_source=None, source=None, keyword=None, limit=20, briefing_filter=False)` [LEGACY — briefing only, not decision evidence]
-  - Fetch recent market news for OpenClaw pre-market briefing
+  - Fetch recent market news for agent pre-market briefing
   - `market`: Optional market scope (`kr`, `us`, `crypto`) for market-separated briefing inputs
   - `feed_source`: Collection path key (e.g., `browser_naver_mainnews`, `browser_naver_research`, `rss_cointelegraph`, `rss_cnbc_earnings`, `rss_cnbc_finance`)
   - `source`: Publisher label (e.g., `연합뉴스`, `매일경제`, `CNBC`, `Cointelegraph`)
@@ -54,14 +88,42 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - A successful NXT overlay returns `data_state: "fresh"`, `regular_session_data_state` with the KRX classifier value, and venue diagnostics (`venue`, `venue_label`, `kis_market_code`, `source_endpoint`, `source_tr_id`) when KIS supplies them.
   - If the NXT orderbook is empty or unavailable, `get_quote` keeps the ROB-464 stale-session behavior: KRX daily `price`, `data_state` from `kr_market_data_state()`, and no NXT diagnostic fields.
   - KR NXT overlay honors Toss market-calendar partial-session closures when the Toss API is enabled; otherwise it falls back to XKRX session days and the corrected NXT windows.
+- `get_fx_rate(pair="USDKRW")`
+  - Read-only spot FX quote for exchange-timing and US-market cash conversion decisions.
+  - P1 supports USD/KRW only. Accepted spellings: `USDKRW`, `USD/KRW`, `USD_KRW`, `USD-KRW`.
+  - Source is `app.services.exchange_rate_service.get_usd_krw_rate_details()`, which uses Toss when enabled and open.er-api as fallback.
+  - Response fields: `pair`, `base_currency`, `quote_currency`, `rate`, `mid_rate`, `default_rate`, `source`, `valid_from`, `valid_until`, `basis_point`, `rate_change_type`.
+  - `default_rate` mirrors the scalar exchange-rate behavior used by existing portfolio and cash consumers.
+  - Unsupported pairs raise a tool argument error. FX pairs are not market indices; `get_market_index("USDKRW")` remains unsupported.
+  - Trends, bank-specific quotes, preferential effective rates, exchange execution, and US-order total-cost routing are outside ROB-567 P1.
+- `suggest_order_account(symbol, market=None, side="buy", quantity, price=None, usd_krw=None)`
+  - Read-only advisory tool. It never submits, previews, routes, modifies, or cancels an order.
+  - Supports KR/US buys only. Crypto, Upbit, manual cash, paper accounts, and sells are out of scope.
+  - Compares KIS/Toss using orderable cash, commission bps, FX spread bps, optional Toss notional limit, and existing-position consolidation.
+  - If a symbol is already held in one candidate account, that account wins unless the cheaper alternative saves at least `position_consolidation_threshold_bps` of order notional.
+  - Default thresholds: KR 25 bps, US 40 bps. US is stricter because FX basis and overseas tax lots split by account.
+  - Always returns `cost_comparison` for both candidate accounts and `position_consolidation` with either `foregone_savings_krw` or `distribution_warning`.
 - `get_orderbook(symbol, market="kr")`
-- US equity quote price resolution uses KIS overseas current price first when `settings.us_quote_kis_primary` is enabled, then falls back to Yahoo `fast_info`
-  - US quote response keeps `source: "kis_overseas"` or `source: "yahoo"` and includes `previous_close/open/high/low/volume` when the provider supplies them
-  - US quote failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts
-  - Explicit provider not-found errors remain `Symbol '<ticker>' not found`; successful Yahoo `fast_info` responses with no usable price are reported as temporarily unavailable instead of symbol-not-found
+- KR quote responses expose `price_as_of`, `price_freshness`
+  (`fresh|stale|unavailable`), `price_usable`, and a stable
+  `price_unavailable_reason` when unusable. Missing timestamps and epoch-zero
+  values are unavailable; prior-date timestamps are stale. NXT tradability
+  similarly returns `nxt_tradable=null` plus the observed value and reason when
+  its as-of is missing or stale.
+- US equity quote price resolution uses KIS overseas current price first when `settings.us_quote_kis_primary` is enabled, then falls back to Yahoo `fast_info`.
+  - US quote response keeps `source: "kis_overseas"` or `source: "yahoo"` and includes `previous_close/open/high/low/volume` when the provider supplies them.
+  - US quote response includes `session` (`premarket`, `regular`, `afterhours`, `closed`), `data_state` (`fresh` during the extended-hours envelope, `stale` when closed), `price_source` (`kis_overseas_last` or `yahoo_fast_info_close`), `delayed: true`, and optional `quote_asof` when KIS supplies parseable quote date/time fields.
+  - KIS-backed US quote response includes `venue` with the DB-resolved KIS exchange code (`NASD`, `NYSE`, `AMEX`) used for the upstream request.
+  - US quote failures are propagated as tool-level errors (exceptions), not returned as in-band error payload dicts.
 - `get_holdings(account=None, market=None, include_current_price=True, minimum_value=None, account_mode=None)`
   - Crypto positions may include optional `strategy_signal` field when Phase 2 exit logic triggers (4.5% stop-loss or RSI > 46 mean-reversion on profitable positions)
 - `get_position(symbol, market=None, account_mode=None)`
+- `get_financials(symbol, statement="income", freq="annual", market=None)`
+  - Provider payloads with no numeric financial values return
+    `status="unavailable"`, `scoreable=false`, the stable reason
+    `financial_metrics_unavailable`, and source/statement/frequency/period-count
+    evidence. The tool preserves the empty provider payload and does not invent
+    metrics.
 - `get_ohlcv(symbol, count=100, period="day", end_date=None, market=None, include_indicators=False)`
   - period: `day`, `week`, `month`, `1m`, `5m`, `15m`, `30m`, `4h`, `1h`
   - `include_indicators=True` adds `indicators_included` at the payload top level and appends `rsi_14`, `ema_20`, `bb_upper`, `bb_mid`, `bb_lower`, `vwap` to each row
@@ -78,8 +140,8 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - US intraday `end_date="YYYY-MM-DD"` is interpreted as ET `20:00:00` for that market date; timestamp inputs use the exact provided instant
 - KR OHLCV behavior:
   - KR `day` keeps the existing Redis-backed `kis_ohlcv_cache` path when `end_date` is omitted
-  - KR intraday (`1m/5m/15m/30m/1h`) uses Toss candles first when `TOSS_API_ENABLED` is configured, then falls back to the existing DB/KIS reader
-  - Toss only provides `1m`; `5m/15m/30m/1h` are aggregated from Toss `1m` using the same bucket rules as the KIS path
+  - KR intraday `1m/5m/15m/30m` use Toss candles first when `TOSS_API_ENABLED` is configured, then fall back to the existing DB/KIS reader. `1h` uses the DB hourly aggregate directly (ROB-548: 60x Toss `1m` aggregation is heavy and shallow) — same on the `get_ohlcv` service and MCP surfaces
+  - Toss only provides `1m`; `5m/15m/30m` are aggregated from Toss `1m` (paginated to the requested depth) using the same bucket rules as the KIS path; an empty Toss frame falls back to the DB/KIS reader
   - When Toss is unavailable or disabled, KR `1m` falls back to DB-first reads from raw `public.kr_candles_1m` with venue merge (`KRX` price priority, `volume/value` sum)
   - When Toss is unavailable or disabled, KR `5m/15m/30m/1h` fall back to DB-first reads from Timescale continuous aggregates (`public.kr_candles_5m`, `public.kr_candles_15m`, `public.kr_candles_30m`, `public.kr_candles_1h`)
   - On Toss fallback, KR intraday overlays the most recent 30 minutes from `public.kr_candles_1m` + KIS minute API to cover the unchanged 10-minute sync cadence
@@ -95,7 +157,15 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - KR intraday degrades to DB-backed partial data when recent KIS minute overlay calls fail
   - KR intraday response rows add `session` and `venues` fields
 - `get_indicators(symbol, indicators, market=None)`
+- `get_market_index(symbol=None, period="day", count=20)`
+  - KR indices (`KOSPI`/`KOSDAQ`) are tagged with `data_state` from the KRX
+    session clock. If the clock is live but the Naver payload is self-inconsistent
+    (`change == 0`, `change_pct == 0`, and `open != current`), the original
+    numeric fields are preserved and `data_state` is downgraded to `"stale"`
+    with `data_state_reason: "kr_index_fresh_clock_payload_lagging"` and `as_of`.
 - `get_investment_opinions(symbol, limit=10, market=None)`
+- `get_analyst_consensus(symbol)`
+  - Get analyst consensus (recommendation mean and price target mean) for a Korean stock from Naver mobile integration API. Distinct from `get_investment_opinions` (report-level). Korean stocks only.
 - `get_short_interest(symbol, days=20)`
   - 6자리 KR 종목코드만 지원 (예: `005930`)
   - US ticker (`AAPL`, `SMCI`) 와 crypto symbol (`KRW-BTC`) 은 지원하지 않음
@@ -105,16 +175,23 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Source: KIS `investor-trend-estimate` (`/uapi/domestic-stock/v1/quotations/investor-trend-estimate`, TR `HHPTJ04160200`).
   - Returns quantity estimates only: `foreign_net_qty`, `institution_net_qty`, `combined_net_qty`.
   - The response always marks successful data as `provisional: true` and `data_state: "intraday_provisional"`.
-  - `as_of` is inferred from the latest returned KIS slot (`bsop_hour_gb`: 09:30, 10:00, 11:20, 13:20, 14:30) on the KST request date because the KIS payload does not include a date field.
-  - When the date attribution would be dishonest — the slot time is in the future (after-midnight/pre-market calls) or the request date is not an XKRX session day (weekend/holiday) — `as_of` is `null` and the `note` flags that rows likely belong to the previous trading session.
+  - `as_of` is inferred deterministically from the latest returned KIS slot (`bsop_hour_gb`: 09:30, 10:00, 11:20, 13:20, 14:30) on the KST request date because the KIS payload does not include a date field. Session attribution is a pure function of a single captured `now`, the market state, and the Naver-confirmed latest date, so identical inputs always yield an identical label and a stale prior-session payload is never labeled `observed`.
+  - `confidence` is one of: `observed` (KRX session live before 14:30 and the rows are positively today's), `inferred` (today's confirmed daily row already exists), `carry_over` (future slot or non-session day — rows belong to a prior session), or `provisional_unconfirmed` (could be today OR a prior session and today could NOT be positively confirmed — e.g. live after 14:30, or after close before the confirmed daily is posted). `as_of` is a full ISO datetime only for `observed`/`inferred` and is `null` for `carry_over`/`provisional_unconfirmed` — it is never silently upgraded.
+  - `today_available` (bool): true only when today's data is positively confirmed (`observed`/`inferred`). `is_prior_session` (bool) and `warning` ({code, message} when `carry_over`, else null) flag prior-session leftovers. `as_of_date` is null for `provisional_unconfirmed` and the prior XKRX session DATE for `carry_over` — never a fabricated time.
+  - `last_confirmed_session_date`: most recent confirmed session (Naver-recent when available, else the previous XKRX session).
+  - `confirmed`: embedded confirmed multi-day series (source `naver`) carrying `foreign_ownership_pct` (외인소진율), `foreign_ownership_trend` (up/down/flat), `foreign_ownership_rate_change` (pp), and `history` (last 5 confirmed days of foreign/institution/individual net-buy + close). Best-effort: on Naver failure the KIS block stays intact and `confirmed.error` is set.
   - This is not a confirmed daily close figure and should not be mixed with `get_investor_trends` day/week/month history.
+- `get_toss_buy_balance(symbol)`
+  - Toss orderbook balance rate (buyBalanceRate/sellBalanceRate) and foreigner holding ratio — NOT user buy ratio. Live per-call, operator-gated. Disabled by default (returns `status='disabled'` unless `TOSS_CONSUMER_SIGNALS_ENABLED=true` is set). Korean stocks only.
+- `get_toss_ai_signal(symbol)`
+  - Toss AI signal (direction + reasoning). Live per-call, operator-gated. Disabled by default (returns `status='disabled'` unless `TOSS_CONSUMER_SIGNALS_ENABLED=true` is set). Korean stocks only.
 - `get_volume_profile(symbol, market=None, period=60, bins=20)`
 - `get_order_history(symbol=None, status="all", order_id=None, limit=50, account_mode=None)`
   - `status="pending"` 만 symbol 없이 호출 가능
   - `status in {"all", "filled", "cancelled"}` 는 symbol 필요
   - filled/cancelled 조회는 시장별 historical endpoint 제약 때문에 symbol fan-out을 자동 수행하지 않음
-- `save_trade_journal(symbol, thesis, ..., paperclip_issue_id=None)` - Save the thesis, strategy, account context, and optional Paperclip issue link for a trade.
-- `get_trade_journal(symbol=None, status=None, ..., paperclip_issue_id=None)` - Query active journal entries by symbol/account or reverse-lookup a journal from a Paperclip issue ID.
+- `save_trade_journal(symbol, thesis, ..., paperclip_issue_id=None)` - Save the thesis, strategy, account context, and optional external issue key (legacy Paperclip name; current Linear ROB key) for a trade.
+- `get_trade_journal(symbol=None, status=None, ..., paperclip_issue_id=None)` - Query active journal entries by symbol/account or reverse-lookup an external issue key (legacy Paperclip name; current Linear ROB key).
 - `update_trade_journal(journal_id=None, symbol=None, ...)` - Activate, close, stop, or adjust the latest matching journal entry.
 - `get_latest_market_brief(symbols=None, market=None, limit=10)` - Return concise latest AI analysis context for recent or selected symbols.
 - `get_market_reports(symbol, days=7, limit=10)` - Return detailed AI analysis report history and decision trend for one symbol.
@@ -124,7 +201,7 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - 실매도 성공 시 동일 symbol의 active journal을 FIFO 기준으로 auto-close 시도
   - 부분 매도는 quantity를 수정하지 않고, fully-consumed journal만 close한다
   - journal close 실패는 주문 성공을 되돌리지 않고 `journal_warning` 으로 응답한다
-  - `defensive_trim=True` 는 ROB-164/ROB-166 승인 기반 제한 경로이며 `(a) side="sell"`, `(b) order_type="limit"`, `(c) `approval_issue_id` 가 Paperclip `done` 상태, `(d) middleware-extracted caller identity 가 Trader agent 와 일치할 때만 평균단가 1% 매도 floor 를 우회한다
+  - 직접 `defensive_trim=True` 및 `exit_intent="loss_cut"` 경로는 fail-close하며 `order_proposal_create`를 안내한다. proposal loss-cut만 Telegram 2단계 확인 후 평균단가 1% floor를 우회할 수 있다
 - `modify_order(order_id, symbol, market=None, new_price=None, new_quantity=None, dry_run=True, account_mode=None)`
 - `cancel_order(order_id, symbol=None, market=None, account_mode=None)`
   - US equities: resolves exchange from symbol DB, open orders, and recent history before cancel
@@ -133,6 +210,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - `modify_order` Discord button flow example:
   - `modify_order(order_id="...", symbol="...", market="...", new_price=123.45, dry_run=false)`
 - `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters. **Single candidate-discovery entrypoint.**
+  - If the response has `meta.reason="krx_session_expired"`, KRX re-authentication was attempted once and did not recover the session. Use `screen_stocks_snapshot(market="kr")` for persisted-preset discovery, or `get_momentum_candidates(market="kr")` for intraday momentum candidates.
+- `get_krx_session_health()`
+  - Read-only authenticated KRX-session probe. It uses the normal KRX login/re-authentication path and reports `status`, `reason`, `retryable`, and `authenticated`; no market, broker, or order state is changed.
 - `screen_stocks_snapshot(preset=None, presets=None, market="kr", filters=None, exclude_watched=false, exclude_held=false, exclude_symbols=None, min_analyst_count=None, min_analyst_buy_count=None, min_market_cap=None, min_market_cap_eok=None, max_market_cap_eok=None, sort=None, limit=40, offset=0)`
   - Snapshot-backed discovery workflow. Pass either `preset="consecutive_gainers"` or `presets=["consecutive_gainers", "double_buy"]`; `preset` also accepts a comma-separated list for compatibility.
   - Returns symbols that matched the preset(s) from the persisted daily snapshots.
@@ -147,11 +227,20 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `sort="matched_presets_desc"`: ranks intersections (stocks in multiple presets) first.
   - `filters` list: tune preset thresholds (threaded for `consecutive_gainers` and `crypto`).
   - Returned rows include `analysisContext` (consensus, RSI) and `isHeld` status.
+  - `preset="support_proximity"` is KR-only and reads persisted price/support/distance plus Naver-normalized KRW market cap. It performs no query-time OHLCV fetch or support recalculation; revalidate only the returned top symbols with `get_support_resistance`/`get_quote` when acting.
   - Results are capped (default 40) and paginated. Check `pagination` in payload.
   - Preset sweeps are capped at 5 presets. Analyst filters are capped at 200 merged rows before enrichment; narrow with preset, market cap, or explicit symbols first.
   - Minimum market-cap filters exclude rows with missing `marketCapValue` and report the excluded count in `warnings`.
+  - Crypto snapshot examples:
+    - `screen_stocks_snapshot(preset="crypto_high_volume", market="crypto", limit=40)`
+    - `screen_stocks_snapshot(preset="crypto_momentum", market="crypto", filters=[{"field":"trade_amount_24h","operator":"gte","value":10000000000}], limit=40)`
+  - Use `get_crypto_top_movers` for live Upbit top movers; use `screen_stocks_snapshot(..., market="crypto")` for persisted snapshot-backed filtering.
+- `get_top_stocks(market="kr", ranking_type="volume", limit=20, min_market_cap=None, min_turnover=None)` - Cross-market rankings. KR quality floors are raw KRW and fail closed; `min_market_cap` uses normalized Naver-backed valuation snapshots, while turnover uses trade amount or price × volume. Crypto supports `volume`, `gainers`, `losers`, and `relative_strength`.
+- `get_crypto_top_movers(ranking_type="relative_strength", limit=20)` - Crypto-only Upbit KRW discovery wrapper. Default ranking sorts non-BTC coins by 24h outperformance vs KRW-BTC.
+- `get_upbit_altseason(include_constituents=false, constituents_limit=50)` - Upbit altseason ratio and 24h breadth. With constituents enabled, `breadth.constituents` lists KRW alts beating BTC with 24h change, vs-BTC relative strength, volume, and traded value.
 - ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
-- `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True)`
+
+- `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True, decision_history_account_mode=None)`
   - Legacy/deep-dive batch analysis for up to 10 symbols.
   - Do not use it as the routine follow-up after `screen_stocks_snapshot`; snapshot
     rows now expose consensus and RSI context directly.
@@ -159,6 +248,46 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
     for symbols outside the snapshot result path.
   - Default `quick=True` returns compact summary with: symbol, current_price,
     rsi_14, consensus, recommendation, supports (top 3), resistances (top 3).
+  - Every full and compact result carries the ROB-1048 freshness/provenance
+    envelope: `data_state` (`fresh|stale|degraded|missing`),
+    `derived_as_of`, `fetched_at`, `data_age_seconds`, `cache_hit`,
+    `fallback_source`, and `provider_provenance`. Aggregate timestamps use the
+    oldest included provider evidence. A swallowed provider exception produces
+    `degraded` (or `missing` when no usable evidence remains) with null
+    timestamps; response-time `now` is never substituted.
+  - A valid provider-cache hit may remain `fresh` and sets
+    `fallback_source="analyze_fetch_cache"`. Compact rows that also carry
+    quote-session freshness retain that quote classification as
+    `price_data_state` when aggregate evidence `data_state` is applied.
+  - When a non-stale `analysis_artifact` already covers a symbol, that symbol's
+    compact summary also carries a `fresh_artifact_exists` hint
+    (`{artifact_uuid, as_of, kind}`) so you can choose to reuse the persisted
+    artifact via `analysis_artifact_get` instead of re-deriving. This is a soft
+    hint only — the analysis still runs and is returned.
+  - `decision_history_account_mode="kis_mock"` switches only the advisory
+    `decision_history` block to the explicit mock/counterfactual branch. Leave it
+    unset for default live/default lesson context.
+  - The `decision_history` block includes `open_actions` (ROB-884): a bounded
+    list of at most five active retrospective actions (`open`/`in_progress`
+    only; terminal `done`/`obsolete`/`expired` actions are always excluded).
+    Each compact item carries `action_id`, `action`, `status`, `owner`,
+    `issue_id`, `due_kst_date`, and `overdue` — nothing else. Action text is
+    capped at 220 characters, owner at 80, issue ID at 32, and the total
+    `open_actions` JSON is capped at 3 KiB (UTF-8). `open_actions_meta` carries
+    `authority="historical_advisory"`, `executable=false`, the returned `count`,
+    and a `truncated` flag. **This is historical advisory context only — it is
+    not an order instruction, tool execution authorization, or auto-approval.**
+    Action text alone must never trigger tool or order auto-execution.
+    Visibility uses the same retrospective predicate as lessons/outcomes:
+    `kis_mock` is exact-only when that account mode is requested; the default
+    path excludes the mock-counterfactual cohort. Stock-detail's separate
+    decision-history schema is not extended (it already has retrospective cards).
+    `open_actions` is injected only on the `quick=True` compact path; the
+    `quick=False` full-analysis path does not carry compact decision-history
+    injection. Frozen analysis bundles capture the same `open_actions`/meta in
+    their `decision_history` section, and frozen reads return the stored values
+    without re-querying.
+  - Compact US rows carry the same quote provenance fields as `get_quote` when present: `session`, `data_state`, `data_state_reason`, `price_source`, `venue`, `quote_asof`, and `delayed`.
 
 ### Snapshot-backed report generation
 
@@ -173,6 +302,86 @@ disabled no-op payloads:
 - `investment_report_create_from_hermes_composition`
 - `investment_stage_artifacts_ingest_from_hermes`
 - `investment_report_prepare_intraday_context`
+
+### Frozen analysis snapshot bundles (ROB-838)
+
+The `analysis_bundle_create` and `analysis_bundle_get` tools are gated by
+`ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED`, whose default is `false`. When the gate
+is false, both tools are physically absent from the default MCP surface.
+
+`analysis_bundle_create(market, account_scope, symbols, user_id=None,
+market_session=None)` captures a fixed, append-only input document. `market` is
+`kr`, `us`, or `crypto`; `account_scope` is optional and, when present, is
+`kis_live`, `kis_mock`, `alpaca_paper`, or `upbit_live`; `symbols` contains 1–10
+symbols; and `user_id` and `market_session` are optional capture context. A
+successful call returns `success`, `bundle_id`, the canonical SHA-256
+`content_hash`, `captured_at`, and completeness fields: `status` (`complete` or
+`partial`), `unavailable_sections`, and `partial_sections`. Capture has no order
+or proposal mutation side effect.
+
+`analysis_bundle_get(bundle_id, sections=None)` accepts the bundle UUID and an
+optional list drawn from `portfolio`, `quotes_orderbooks`,
+`indicators_support_resistance`, `market_gate_inputs`, `investor_flow`, and
+`decision_history`. Omitting `sections` returns the complete stored document.
+Supplying it only projects the named stored sections; it does not recapture,
+recompute, refresh, backfill, or otherwise change any stored value. The result
+includes `success`, `bundle_id`, `content_hash`, `integrity_verified`, creation,
+capture, and read timestamps, bundle `age_seconds`, `status`, `completeness`,
+`stale_warning`, per-section `section_freshness`, and the stored `document`.
+
+Bundles are write-once evidence. To correct or update input, create a new bundle
+and hand off its new `bundle_id`; never patch an old bundle. Every get recomputes
+the canonical SHA-256 hash and compares it with the stored hash before returning
+the document. A mismatch, malformed frozen document, wrong bundle purpose/kind,
+or invalid item cardinality returns `error="analysis_bundle_integrity_error"`
+instead of unverified evidence.
+
+Freshness is read-time metadata only. `age_seconds`, `stale_warning`, and each
+section's `as_of`, age, and freshness status describe the frozen evidence
+without refreshing it. Likewise, a provider failure captured as an unavailable
+section retains its original error and remains unavailable; get never calls a
+provider to fill it.
+
+### Paper execution validation boundary (ROB-848)
+
+The default-off `paper_execution` profile is one exact union under
+`PAPER_EXECUTION_ENABLED`: the unchanged six names in
+`PAPER_EXECUTION_TOOL_NAMES` plus the independent names in
+`PAPER_VALIDATION_TOOL_NAMES` and the operator-only
+`PAPER_COHORT_CONTROL_TOOL_NAMES`. The three registrars meet only in the
+profile registry composition branch.
+
+Validation caller identity is bound server-side to the authenticated profile
+token through `PAPER_VALIDATION_AUTHENTICATED_ACTOR_ID`; caller headers are not
+trusted for validation authorization. `PAPER_VALIDATION_ACTOR_ROLES` maps that
+server-derived ID to `researcher`, `reviewer`, `operator`, or `system`; both
+settings default empty and every absent, unmapped, or invalid role fails closed.
+Actor ID and role are absent from all tool payloads.
+Frozen-input and policy providers are injected contracts. Until their production
+composition is supplied by their owning follow-ups, evidence-requiring mutations
+return `evidence_stamp_unavailable` and never reach a broker, adapter, or ledger.
+
+Researchers may append only fixed-shape hypothesis drafts, reviewers may append
+only narrative postmortems, and operators/systems own registration, state
+transitions, order-submit authorization, promotion, rejection, and abort. Order
+authorization returns an exact-bound frozen contract; it does not submit an
+order. Promotion requires a separate explicit confirmation against the current
+experiment/cohort/strategy/config/policy/input hashes.
+
+For an active ROB-849 cohort, use `paper_cohort_kill_switch` before disabling
+the profile. It commits an immutable terminal fence, recovery-links any
+prepared native order without POST, then performs cohort-owned cleanup. See
+[`docs/runbooks/paper-cohort-kill-switch.md`](../../docs/runbooks/paper-cohort-kill-switch.md).
+Disabling `PAPER_EXECUTION_ENABLED` physically removes all three registrars;
+existing audit/fence rows remain immutable.
+
+The `analysis_readonly` Codex/headless profile exposes
+`analysis_bundle_get` only when the gate is enabled. It never exposes
+`analysis_bundle_create`, preserving the consumer's get-only boundary.
+
+The ROB-833 runner handoff is exactly:
+
+`watch/fill event → bundle create → same bundle_id into claude -p sessions → bundle get only`.
 
 ### Session Context Tools
 
@@ -194,7 +403,8 @@ Each entry accepts:
 - `body` required markdown body.
 - `refs` optional object: `report_uuid`, `item_uuid`, `alert_uuid`, `order_id`,
   `journal_id`, `symbols`.
-- `created_by` optional: `claude`, `operator`, `system`; defaults to `claude`.
+- `created_by` optional: `claude`, `operator`, `system`, `codex`; defaults to
+  `claude`.
 - `session_label` optional grouping label.
 
 `session_context_get_recent(market?, account_scope?, kst_date_from?, entry_type?, limit)`
@@ -202,10 +412,81 @@ returns recent entries newest first. `limit` is clamped to 1..100 and defaults
 to 20. New trading sessions should call this before comparing yesterday's plan
 with today's candidate tournament.
 
+### Analysis Artifact Tools
+
+`analysis_artifact_save(market, kind, title, symbols?, payload?, as_of?, valid_until?, created_by?, session_label?, correlation_id?, account_scope?, readiness_label?)`
+persists a structured analysis artifact for cross-session reuse. It is for the
+durable outputs of analysis runs — screening rankings, profit-taking verdicts,
+support/resistance maps, flow assessments, candidate pools, session summaries,
+and briefings — so a later session can reuse them instead of recomputing. Save is
+explicit only; `analyze_stock_batch` and other analysis runs do not auto-persist.
+This is the cross-session artifact store; it is complementary to (not a duplicate
+of) the ROB-638 fetch-layer Redis cache, which dedupes slowly-changing provider
+fetches across calls within a run.
+
+Each artifact accepts:
+
+- `market` required: `kr`, `us`, or `crypto`.
+- `kind` required: `screening_ranking`, `profit_taking_verdicts`,
+  `support_resistance_map`, `flow_assessment`, `candidate_pool`,
+  `session_summary`, `briefing`.
+- `title` required short title.
+- `symbols` optional string list; defaults to empty on create and is normalized
+  by sorting and deduplication.
+- `payload` optional JSON object; defaults to empty on create.
+- `as_of` optional ISO datetime; defaults to now (UTC) for a new row. On a
+  `correlation_id` retry, omission reuses the stored `as_of`, so an exact retry
+  cannot renew freshness to request-time now. Supply an explicit new `as_of`
+  to renew the artifact.
+- `valid_until` optional ISO datetime; when in the past the artifact is stale
+  and excluded from `analysis_artifact_list` unless `include_stale=true`. **When
+  omitted on create or an evidence-time renewal, the server assigns a per-kind
+  default TTL** (price/screen kinds expire at the end of the `as_of` KST day;
+  `session_summary`/`briefing` at the end of the next KST day), so every new
+  artifact has a concrete expiry. An exact/partial retry preserves the stored
+  expiry. Explicit `valid_until=null` means unknown expiry and is stale, not
+  permanently fresh. An omitted legacy null is healed on the next save.
+- `created_by` optional: `claude`, `operator`, `system`; defaults to `claude`.
+- `session_label` optional grouping label.
+- `correlation_id` optional idempotency key. Re-saving the same `correlation_id`
+  updates the row in place (omit to append a new row).
+- `account_scope` optional grouping/filter label.
+- `readiness_label` optional advisory (caller-declared, not a gate):
+  `screen_grade`, `not_decision_ready`, `ready_for_order_review`, `blocked`.
+
+On a `correlation_id` retry, omitted optional fields preserve their stored
+values. This includes `symbols`, `payload`, `valid_until`, `created_by`,
+`session_label`, `account_scope`, and `readiness_label`; omission is not a
+metadata change. Explicit null clears nullable fields and resets `symbols` /
+`payload` to their empty representations. (`as_of` is required evidence time:
+omission preserves it on retry, while explicit null is invalid.)
+
+The response includes `action` and the saved artifact. `action` is `created`
+(new row), `updated` (correlation_id re-save whose payload or persisted metadata
+changed — `version` is bumped in place), or `unchanged` (an exact retry whose
+canonical payload and normalized persisted metadata are identical — no write,
+`version` preserved). Renewal-sensitive metadata includes `as_of`, resolved
+`valid_until`, and `readiness_label`; changing any of them updates the row even
+when `content_hash` remains the same. Each artifact carries a server-computed
+`content_hash` (over the canonical payload JSON) and an integer `version`.
+
+`analysis_artifact_list(market?, kind?, symbol?, since?, include_stale?, limit, correlation_id?, account_scope?)`
+returns matching artifacts newest `as_of` first. `symbol` does a containment
+match on the `symbols` array. `limit` is clamped to 1..100 and defaults to 20.
+Stale rows (`valid_until` in the past or null) are excluded unless
+`include_stale=true`.
+`correlation_id` and `account_scope` are optional exact-match filters (the same
+labels set on `analysis_artifact_save`).
+
+`analysis_artifact_get(artifact_id)` returns a single artifact including the
+full payload, by numeric `id` or `artifact_uuid` string. Missing ids return
+`success=false` with `error="not_found"`.
+
 ### Investment Report Tools
 
 - `investment_report_add_items(report_uuid, items, actor=None)` - Append new proposal items to an existing draft investment report. The item payload contract matches `investment_report_create`. Duplicate `client_item_key` rows are returned as existing items and are not rewritten. Non-draft reports return `error="not_draft"`. No broker, order, or watch mutation is performed.
 - `investment_report_update(report_uuid, title=None, summary=None, risk_summary=None, thesis_text=None, no_action_note=None, market_snapshot=None, portfolio_snapshot=None, metadata=None, valid_until=None, actor=None, reason=None)` - Update draft report header fields without changing report identity, lifecycle status, predecessor chain, account scope, generator version, or items. Each successful update appends an audit entry to `report.metadata.draft_updates`. Non-draft reports return `error="not_draft"`.
+- `kis_mock_mirror_execute_report(report_uuid, dry_run=True, min_rung_quantity=1.0, confirm=False)` - Execute ROB-734 mirror counterfactual orders through KIS mock only. `dry_run=True` returns per-item `plan` previews including symbol, side, quantity/amount, limit price, target/stop, correlation id, source bucket, and WATCH approximation notes. `dry_run=False` requires `confirm=True`; otherwise the tool fails closed with `error_code="mirror_confirm_required"`. The planner mirrors only KR report items with `target_kind="asset"` and a six-digit numeric symbol. Non-KR, US, crypto, index, and FX items are skipped with `reason="non_kr_equity_out_of_mirror_scope"` and counted in `plan_skipped_count`; they are never submitted to `place_order`. WATCH thresholds are used as prices only when `watch_condition.metric == "price"`; non-price metrics such as RSI are skipped with `reason="unsupported_watch_metric_for_limit_price"`. Breakout/above WATCH conditions are labeled as `watch_approximation=limit_at_threshold`. If a KIS mock mirror send fails before a ledger row is written, the scoped mock mirror pre-send intent is released so the same report item can be retried. If a duplicate mock mirror intent is still present, the tool fails closed with mock-specific duplicate wording and operators should inspect `kis_mock_order_ledger.report_item_uuid` / `mirror_cohort` before manual cleanup.
 
 ### Alpaca paper read-only smoke tools
 
@@ -223,6 +504,33 @@ not part of the default or `hermes-paper-kis` surfaces.
 - `alpaca_paper_ledger_list_recent(limit=50, lifecycle_state=None)`
 - `alpaca_paper_ledger_get(client_order_id)`
 - `alpaca_paper_execution_preflight_check(...)`
+
+### Alpaca paper fill reconcile (DB-writing mutation, ROB-953)
+
+`alpaca_paper_reconcile_orders(symbol=None, client_order_id=None, dry_run=True,
+confirm=False, limit=100)` is **not** part of the read-only surface above. It is
+a **DB-writing mutation** classified in `MUTATION_TOOLS`, denied by the
+read-only settings profile, and exposed on the **DEFAULT** profile behind
+`settings.alpaca_paper_default_tools_enabled` (default off) — not `us-paper`
+only. Broker access is read-only (it never submits, replaces, or cancels), but
+it writes lifecycle state to `review.alpaca_paper_order_ledger`.
+
+It is the confirm-gated, evidence-first fill-booking tool for manually
+submitted Alpaca paper orders. It queries the broker by the ledger
+`client_order_id`, normalizes the order/fill evidence through the shared fill
+classifier, and only books confirmed cumulative fills. `dry_run=True` returns
+transition plans without ledger writes; `dry_run=False` requires `confirm=True`.
+
+Evidence handling is fail-closed. For `status=filled`, the tool always walks the
+complete FILL activity feed with Alpaca `page_token` pagination, even when the
+order already includes `filled_qty` and `filled_avg_price`. The row is left
+unchanged and returned with `requires_manual_review=true` when the broker read
+fails, the order is missing, or the observed fills are empty, incomplete, or do
+not sum to the order's cumulative `filled_qty`. The reported `action` and the
+persisted `lifecycle_state` are derived from the confirmed write result, so they
+cannot disagree. The tool books to `filled` / `partial` / `anomaly` / `canceled`
+only; it deliberately does not infer position or final reconciliation without
+independent evidence.
 
 `alpaca_paper_execution_preflight_check` is a read-only runner gate for the
 later automated paper cycle. It reads recent ledger rows and accepts optional
@@ -271,10 +579,99 @@ estimated cost.
 There is still no Alpaca paper `place_order`, `replace_order`, `modify_order`,
 `cancel_all`, close-position/liquidate, or generic Alpaca order-routing surface.
 
+#### Unified submit boundary (ROB-842)
+
+Every real Alpaca Paper broker POST — manual and automated — passes through a
+single server-side boundary: **server-owned approval packet → existing
+`review.alpaca_paper_order_ledger` atomic claim → broker POST → stored-result
+replay**. There is no direct-POST fallback, and this holds for `us-paper` only.
+
+- **Roles.** `alpaca_paper_submit_order` is the **manual operator** tool
+  (confirm-gated $10-scale smoke). `alpaca_paper_automated_preview_order` +
+  `alpaca_paper_automated_submit_order` are the **automated cohort** tools —
+  registered only under `MCP_PROFILE=us-paper` and **default-off** behind
+  `ALPACA_PAPER_AUTOMATED_SUBMIT_ENABLED` (fail-closed when unset).
+- **Server-observed market evidence for every submit.** Both tools require an
+  opaque, server-issued `quote_snapshot_id` (a trusted `market_quote_snapshots`
+  row) at `confirm=True` — there is no origin-based bypass of market/freshness
+  checks. The caller never supplies correlation, snapshot, market-data as-of/
+  source, ceiling, `origin`, or `client_order_id`: the server loads identity,
+  market provenance and the trusted reference price from that row, and the ceiling
+  is the server **hard-cap** policy ($1,000 equity / $50 crypto). A market/qty
+  order's implied notional (trusted price × qty) is bounded by the same cap. A
+  missing / stale / symbol-mismatched / non-finite-priced snapshot fails closed
+  before any packet is built. Packet + policy hashes are recorded in the ledger
+  preview evidence.
+- **Snapshot retrieval & build lever (ROB-913).** Two MCP tools are provided to manage market quote evidence:
+  - `market_quote_snapshot_latest(market: "kr"|"us"|"crypto", symbol: str)` reads the latest snapshot row and exposes its metadata along with `age_seconds`, `is_fresh` (within 5 minutes: `0 <= age <= 300`), and `submit_ready` (indicating whether it passes the server-side submit gates).
+  - `market_quote_snapshot_ensure(market: "kr"|"us"|"crypto", symbol: str)` ensures a fresh snapshot exists. If the latest row is fresh and submit-ready, it reuses it (`reused: true`). Otherwise, it builds a new snapshot for the symbol (`reused: false`) and validates it. Price injection is strictly forbidden; price is only fetched from the trusted server-side quote sources.
+- **Replay before freshness.** Immutable token/key/hash/account binding is checked
+  first; a completed or terminally-failed order then replays its original result
+  even after the packet's freshness window has elapsed. Freshness / market-data /
+  live-position checks apply only to a not-yet-claimed new submit.
+- **Exactly once.** Duplicate intents (sequential or concurrent) produce exactly
+  one broker HTTP submit; every other caller replays the winner's result.
+- **Live sell eligibility + no oversell.** A sell is verified against the
+  **current** Alpaca paper position re-read right before the POST, with
+  `qty_available` required as a broker-owned upper bound. Position evidence,
+  lifecycle reconciliation, local reservations, and the atomic claim are bound
+  under one account+symbol advisory lock. Every sell claim stores its `qty` /
+  `qty_available` baseline in the existing `position_snapshot` JSONB; a later
+  immediate or crash-recovered open/partial, `filled`, and unknown/unparseable
+  statuses retain `submitted`; a `filled` status releases the hold only after the
+  position response proves the fill is reflected. Unknown statuses retain their
+  reservation, and ambiguous/stale fill evidence returns
+  `position_reconciliation_pending`, so two *different* sell intents cannot consume
+  the same shares. Cancel read-back syncs known broker truth while retaining the
+  hold for open/partial/filled. Automated sell is **explicitly disabled**
+  (reason `automated_sell_disabled`) until ROB-845 wires an opaque buy/position
+  source; manual sell is supported.
+- **Public success contract.** `success` is true only for
+  `submitted` / `replayed` / `recovered`; `failed`, `rejected` and
+  `idempotency_in_progress` are `success=false`.
+- **Deterministic failure vs uncertainty.** An HTTP 4xx/422 rejection is booked
+  as a terminal outcome and replayed on retry (no re-POST). A 5xx/timeout/
+  crash-after-send is reconciled via `get_order_by_client_order_id` — recovered
+  if the order exists, otherwise left in-flight — never re-POSTed.
+- **Paper only.** The only broker built is `AlpacaPaperBrokerService`
+  (paper-host-pinned); no live endpoint or live-credential path is imported.
+
 Read-only operator runbook: [`docs/runbooks/alpaca-paper-readonly-smoke.md`](../../docs/runbooks/alpaca-paper-readonly-smoke.md)
 Read-only smoke helper: `scripts/smoke/alpaca_paper_readonly_smoke.py` (argumentless, read-only, exits non-zero on failure)
 Dev submit/cancel smoke runbook: [`docs/runbooks/alpaca-paper-dev-smoke.md`](../../docs/runbooks/alpaca-paper-dev-smoke.md)
 Dev submit/cancel smoke helper: `scripts/smoke/alpaca_paper_dev_smoke.py` (preview-only by default, side effects require dual explicit gates)
+
+### Execution Ledger Fill Event Tools (ROB-755)
+
+ROB-755 exposes the same fill-event triage surface that powers the operator-host
+alert poller (`scripts/list_recent_fill_events.py`) over MCP. Read-only; no broker
+mutation; no order mutation; no watch mutation. Registered in the "Always" block
+of `register_all_tools` (default, crypto, hermes-paper-kis, us-paper, db-paper,
+kiwoom profiles). Not on `analysis_readonly`, which uses its own curated
+allowlist.
+
+- `execution_ledger_fill_events_list_recent(after_id=None, market=None, side=None, source="websocket", broker=None, account_mode=None, limit=50)`
+  - Read-only. Returns recent fills from `execution_ledger` rows newer than
+    `after_id`, optionally filtered by `market` (`kr`|`us`|`crypto`),
+    `side` (`buy`|`sell`), `source` (`websocket`|`reconciler`|`manual_import`),
+    `broker`, and `account_mode` (`live`|`mock`).
+  - `source` defaults to `websocket` so triagers don't accidentally ingest
+    reconciler/manual_import backfills; pass `source=None` to read every source.
+  - `limit` is clamped to `1..500` by the repo.
+  - Response: `{"success": True, "count": int, "fills": [sanitized_fill, ...]}`
+    on success; `{"success": False, "error": str}` on failure.
+  - **No broker mutation.** No order mutation. No DB write.
+
+**Sanitized fill shape (21 keys, identical to the CLI output):**
+`ledger_id`, `event_key`, `broker`, `account_mode`, `venue`, `instrument_type`,
+`market`, `symbol`, `raw_symbol`, `side`, `filled_qty`, `filled_price`,
+`filled_notional`, `currency`, `broker_order_id`, `fill_seq`, `correlation_id`,
+`source`, `filled_at`, `trade_day_kst`, `created_at`. **`raw_payload_json` is never emitted**
+(security constraint — same as the CLI).
+
+**Validation errors:**
+- `source="invalid"` (or any string outside `websocket`/`reconciler`/`manual_import`/`None`)
+  → `{"success": False, "error": "invalid_source"}` immediately, no DB call.
 
 ### Alpaca paper order preview
 
@@ -345,6 +742,204 @@ The endpoint guard applies: if `ALPACA_PAPER_BASE_URL` is ever set to the live
 endpoint, the service constructor rejects it and the tool raises
 `AlpacaPaperEndpointError` (fail closed).
 
+### Order proposal approval tools (ROB-816)
+
+When `ORDER_PROPOSALS_ENABLED=true`, the default and
+`tradingcodex_execution` profiles expose the proposal-ledger tools below. A
+proposal describes a possible order; creating or voiding one is not a broker
+order mutation.
+
+- `order_proposal_create(...)`
+  - `market` uses canonical `equity_kr`, `equity_us`, or `crypto`; the tool
+    accepts `kr` and `us` aliases and normalizes them before validation,
+    payload hashing, and persistence.
+  - Supported place combinations are `kis_live` or `toss_live` with
+    `equity_kr`/`equity_us`, and `upbit` with `crypto`.
+  - `action="place"` is the default and `target_broker_order_id=None` is the
+    default.
+  - `place`: `target_broker_order_id` must be absent; one or more proposal
+    rungs are allowed.
+  - `replace`: `target_broker_order_id` is required; exactly one rung is the
+    proposed new order. Creation reads and snapshots the open target order but
+    does not mutate the broker. Telegram approval cancels the target, confirms
+    cancellation from fresh broker evidence, and only then submits the new
+    order.
+  - `cancel`: `target_broker_order_id` is required; exactly one rung must be
+    an exact snapshot of the target order (side, remaining quantity, and limit
+    price). It performs no new-order submit.
+  - Target-action tuples are supported only for
+    `kis_live/equity_kr`, `kis_live/equity_us`, and `upbit/crypto`.
+  - When `valid_until` is omitted, it defaults to the next `00:00 KST`.
+  - Before an approval card/nonce is published, dispatch enforces
+    timezone-aware `valid_until` and the proposal's broker/market submission
+    session. Missing, naive, malformed, or expired validity fails closed.
+    US DAY proposals are regular-session only and use the existing XNYS or
+    Toss broker calendar; KR keeps KRX regular plus positively confirmed,
+    fresh NXT eligibility; Upbit crypto remains 24/7. Unknown calendar or
+    capability evidence also fails closed. A proposal with a non-null
+    `exit_intent` is a protective exit and bypasses only session/calendar
+    resolution and approval-window policy-stamp binding, so calendar
+    uncertainty cannot preempt its confirmation flow. Its `valid_until`
+    remains mandatory and fail-closed; `exit_reason` alone grants no
+    exemption.
+  - A dispatch block does not fail proposal persistence. The create response
+    adds `approval_dispatch={status:"blocked", code, ...}` with typed
+    `EXPIRED`, `INVALID_VALID_UNTIL`, `DEFER_SESSION_CLOSED`,
+    `CALENDAR_UNKNOWN`, or `NO_EXECUTABLE_WINDOW` evidence. No Telegram card
+    or approval nonce is published for that dispatch attempt.
+  - When `supersedes_proposal_id` is present, the old group's
+    `pending_approval`/`needs_reconfirm` rungs become `superseded`, its
+    approval nonce is consumed, and its recorded Telegram message is edited
+    best-effort to remove the old buttons. Submitted/resting/terminal rungs
+    are left unchanged because broker cancellation/replacement owns them.
+  - It accepts nullable `exit_intent`, `exit_reason`, `retrospective_id`, and
+    `approval_issue_id` fields. For `exit_intent="loss_cut"`, `exit_reason`
+    and `retrospective_id` are required. `approval_issue_id` is optional
+    free-text audit metadata.
+  - The referenced retrospective is checked at create time for existence,
+    matching symbol, an eligible loss-cut trigger type (`stop_loss` or
+    `thesis_change`), and freshness within 72 hours.
+    This create-time check does not replace approval-time checks.
+  - No external issue tracker is queried. A loss-cut first approval click
+    submits nothing: it edits the message with order/current-price/loss/slip
+    and retrospective evidence and issues `⚠️ 손절 확인`. That second button
+    has a 90-second single-use nonce bound to proposal/rung/revision. Only the
+    second click reruns full preview, <=72h retrospective, slip-band, price
+    diff, and approval-hash checks and may submit.
+  - ROB-871 adds a separate default-off
+    `ORDER_PROPOSALS_AUTO_APPROVE` gate. When enabled, only `limit` + `place`
+    proposals with no `exit_intent` may auto-submit. The fresh preview price,
+    configured minimum resting distance, per-order cap, and account/KST-day
+    cumulative cap are checked immediately before the existing submit path.
+    Market orders, loss cuts, replace/cancel actions, guard failures, 861
+    buying-power reconfirmations, and policy misses fall back to the normal
+    Telegram approval message without being discarded. Account/market pairs
+    without the existing cancel adapter and multi-rung ladders also remain
+    human-gated so veto and all-or-human fallback are enforceable.
+  - The response always includes `approval_dispatch`. Proposal persistence can
+    still succeed while Telegram fails, but those outcomes are distinct:
+    `approval_dispatch.ok`, `state`, `message_id`, HTTP `status_code`, Telegram
+    numeric `error_code`, allowlisted `error_classification`, `failure_code`,
+    and conservative `payload_chars` are returned to the caller. Telegram's
+    remote `description` is discarded at the HTTP boundary and is never
+    returned, logged, or persisted; a present description that is not an exact
+    allowlisted constant is reduced to `unknown_telegram_error`.
+  - Every dispatch attempt is committed as `pending` before Telegram I/O and
+    finalized into the closed
+    `sent_current`/`sent_superseded`/`failed`/`partial_failed` state set only
+    after the current-owner fence. Caller `ok=true` is derived only from
+    `sent_current`; a physically sent stale attempt returns
+    `state="superseded"` and `failure_code="approval_dispatch_superseded"`.
+    Proposal summary fields
+    (`approval_dispatch_state`, `approval_dispatch_attempted_at`,
+    `approval_dispatch_failure_code`, `approval_dispatch_payload_chars`) and
+    the per-attempt ledger row remain durable. A failed attempt invalidates
+    its nonce; a retry mints a new nonce.
+  - Telegram `sendMessage` payloads are checked against a conservative 4,096
+    UTF-16-unit ceiling. When the full rendered card is too long, the complete
+    thesis/strategy is split losslessly into plain-text context messages. The
+    short inline-button card is sent only after every context message succeeds;
+    a context failure publishes no approval button.
+  - Callback data binds the current attempt ID, card kind, membership revision,
+    membership digest, and nonce. Manual approval/deny, batch approval,
+    auto-veto, and loss-cut confirmation all cross the same fail-closed gate;
+    only `sent_current` may consume a nonce or reach broker submit/cancel.
+  - Batch cards are immutable published snapshots. The second eligible member
+    freezes a staged batch before publication; later proposals create a new
+    batch instead of editing the published card. Batch callbacks recompute and
+    verify the exact ordered membership digest, so a row not shown on the card
+    cannot be approved.
+- `order_proposal_void(proposal_id, reason)`
+  - Requires a non-blank operator reason.
+  - Pre-submit rungs retain the existing local `voided` path. An `unverified`
+    rung is eligible only after a five-minute broker settlement grace and a
+    fresh account-scoped lookup prove the order absent; it then becomes
+    `voided_local_stale`, with the lookup scope and result appended to
+    `void_reason`.
+  - A found broker order, incomplete lookup, timeout, provider error, or local
+    accepted-only Toss ledger row rejects the whole request without partial
+    mutation. Timeout-to-`unverified` is never auto-voided.
+  - For a Toss rung without a broker order ID, absence requires both zero
+    accepted-only `toss_live_order_ledger` rows and a complete OPEN+CLOSED scan
+    with no order matching the normalized symbol, side, quantity, and price.
+    Quantity and price use finite Decimal comparison rather than string equality.
+    The per-rung attempt window is inclusive from `created_at - 24h` through
+    `max(valid_until, updated_at) + 24h`; the broker scan covers the union of
+    those windows' KST dates. Provider errors, timeouts, malformed potential
+    matches, invalid pagination, and CLOSED page-cap exhaustion make the scan
+    incomplete and fail closed instead of proving absence. KIS and Upbit
+    operator-void behavior is unchanged, including inconclusive KIS US empty
+    history when the shared adapter cannot prove every exchange inquiry finished.
+  - After a successful void, the recorded Telegram approval message is edited
+    without an inline keyboard so stale approval buttons no longer remain live.
+
+Telegram approval rechecks the persisted dispatch policy stamp, proposal
+validity, and authoritative market session before consuming a nonce, then
+repeats the same window policy inside revalidation and through a pre-send hook
+at the final KIS, Toss, or Upbit HTTP boundary for submit and cancel. The
+session evidence includes the allowed interval end, so a close crossed while
+an awaited check is running is rejected at the transport boundary. A missing
+or mismatched policy stamp and unknown/stale evidence fail closed. An expired
+proposal converges through the existing proposal/rung expiry transitions
+without rolling back a sibling that already has broker evidence. A still-valid
+closed-session proposal returns
+`DEFER_SESSION_CLOSED` with the next confirmed session; it is never scheduled
+or automatically resubmitted. An initial late pre-send block proves provider
+HTTP=0; a retry-time block may follow one explicit 429/auth rejection but never
+an accepted or ambiguous mutation. With that proof and no sibling mutation,
+the callback restores the rung, lease, and durable proposal nonce instead of
+stranding a consumed approval.
+Batch approval locks and verifies the exact ordered proposal/nonce-snapshot
+membership before consuming its own nonce; one missing, changed, expired, or
+closed member blocks the whole displayed batch. KIS/Upbit then rerun their
+applicable ROB-800 checks through `_place_order_impl`.
+Successful automatic submissions retain `approved_by_telegram_user_id=NULL`
+and write policy/version/eligibility evidence under
+`source_asof.auto_approved`. Their Telegram summary carries a single-use
+`취소` veto button; the callback uses the existing broker cancel adapter and a
+fresh status lookup to converge the rung to `cancelled` or report `체결됨`.
+Failure to deliver that post-submit summary triggers the same immediate
+cancel-and-confirm compensation and is audited in `source_asof`.
+`ORDER_PROPOSALS_SUBMIT_AGENT_ID` has no default identity (`""`) and is used
+only while the Telegram callback revalidates and submits the approved proposal.
+Operators must set it explicitly and add the exact same trimmed identity to
+`LOSS_CUT_ALLOWED_AGENT_IDS`; missing or whitespace-only values bind no caller
+identity, so `loss_cut` validation fails closed. Do not use a hardcoded UUID as
+a fallback for this setting.
+
+Loss-cut proposal binding supports `kis_live` and `toss_live` equities
+(`equity_kr`/`equity_us`) plus `upbit`/`crypto`. KIS/Upbit proposals use the shared
+`_place_order_impl` fallback; Toss proposals never use that path and instead
+route through `toss_preview_order` and `toss_place_order`. Toss preview owns the
+wire price/quantity used for revalidation, including KR tick normalization, and
+provides its read-only warning, price/cost, NXT-context, and advisory sector
+concentration checks. For `loss_cut`, preview and submit both reuse the shared
+ROB-800 validator (caller allowlist and matching fresh retrospective), exempt
+only the validated request from the average-cost floor, and enforce the
+configured current-price slip band. No external approval backend is queried.
+`toss_place_order` runs the confirmation/activation, high-value, warnings,
+opposite-pending-order, sell-loss, and configured NXT guards immediately before
+POST. A Toss loss-cut live send requires the exact supplied preview approval
+token even when `TOSS_APPROVAL_HASH_MODE=off`; sell-loss and required mutation
+gates fail closed, while sector
+concentration remains advisory. Proposal `Decimal` values cross the Toss
+boundary as exact `str | int` values, never floats. Proposal revalidation binds
+a private client ID derived only from `proposal_id + rung` around both preview
+and submit, verifies the preview returned that exact ID, and privately carries
+the rung correlation into the Toss ledger. Neither value is operator-controlled
+through the MCP tool schema. The rung ledger stores the actual
+`approval_hash_digest` returned by `toss_place_order`, not the raw token.
+
+An accepted send is still not a fill. `toss_reconcile_orders(dry_run=False)`
+books confirmed cumulative evidence and projects partial/fill/broker-confirmed
+cancel onto `order_proposal_rungs`. Cancellation preserves an already projected
+partial quantity. A non-dry reconcile also sweeps terminal Toss ledger rows
+still joined to non-terminal proposal rungs, so a transient projection failure
+does not become permanent drift. Dry runs never write either ledger.
+Any post-send timeout or ledger ambiguity remains `unverified`. Telegram result
+messages surface a bounded rejection or guard reason: at most 240 characters,
+followed by an ellipsis when truncated.
+
 ### Account Routing
 
 MCP account-facing tools use `account_mode` to avoid mixing DB simulation,
@@ -359,11 +954,28 @@ official KIS mock, and KIS live account paths:
   `KIS_MOCK_APP_SECRET`, or `KIS_MOCK_ACCOUNT_NO` are missing. HTTP requests
   use `KIS_MOCK_BASE_URL`, which defaults to the official KIS mock host
   `https://openapivts.koreainvestment.com:29443`.
+  KIS mock is a KIS venue only. It does not simulate Upbit crypto orders:
+  symbols that resolve to crypto, such as `KRW-BTC`, fail closed with
+  `error: "crypto has no mock venue"` before Upbit balance reads or order
+  mutation calls.
+  For US buys only, preflight reads mock `VTTS3007R` and validates its
+  `ord_psbl_frcr_amt` USD buying power. A missing or failed response remains
+  fail-closed; this does not change KIS live US routing or mock pending-order
+  support.
 - `account_mode="kis_live"` or omitted: existing live KIS behavior. For
   `place_order`, `dry_run=True` remains the default. KR live buy paths query
   Toss stock warnings before order submission; active `LIQUIDATION_TRADING`
   blocks non-dry-run buys before KIS POST, while lookup failures are fail-open
   and surfaced in the response metadata.
+- **Buy balance pre-check (ROB-625/951)**: For `side="buy"`, both `dry_run=True`
+  and `dry_run=False` apply the same orderable-cash pre-check. KIS mock US uses
+  `VTTS3007R.ord_psbl_frcr_amt`; all existing live routing remains on its shared
+  `get_cash_balance` source. Insufficient balance returns `success=false` with an
+  `insufficient_balance: true` flag and an `insufficient_balance_detail` block
+  (`balance`, `order_amount`, `currency`, `shortfall`, and — for US — a KIS field
+  `breakdown` exposing `frcr_dncl_amt1`/`frcr_gnrl_ord_psbl_amt`). On `dry_run=True`
+  the preview body (estimated value, fee) is still returned so the operator can
+  size a deposit. This closes the prior "dry_run passes → live rejects" gap.
 - `account_mode="toss_live"`: official Toss Securities live KR/US account. Uses Toss credentials, maps to `toss_live` routing, and fails closed when `TOSS_API_ENABLED=false` or credentials are missing. Actual Toss order mutation POSTs also require `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true`; keep this false until the accepted-order ledger and operator live-smoke hold are cleared.
 
 Do not use `account_type="paper"` for official KIS mock. It is always DB
@@ -437,10 +1049,17 @@ Operator activation and the one-share live smoke are documented in
 - **API Enablement**: Toss live tools are default-disabled. They fail closed unless `TOSS_API_ENABLED=true` and `validate_toss_api_config()` returns no missing keys.
 - **Account Mode Routing**: All Toss tools require `account_mode="toss_live"` (or `account_type="toss_live"`) and reject any mismatched account parameters.
 - **Mutation Safety (Dry-Run, Confirm, and Activation Gate)**: All mutation tools (`toss_place_order`, `toss_modify_order`, `toss_cancel_order`) default to `dry_run=True`. They perform actual HTTP requests (POSTs) to Toss Securities only when `dry_run=False`, `confirm=True`, and `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true` are explicitly set. Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until the accepted-order ledger and operator live-smoke hold are cleared.
-- **Accepted-only ledger and reconcile**: Real `toss_place_order` writes only an accepted/rejected row to `review.toss_live_order_ledger`. It does not create fills, journals, or realized PnL at send time. `toss_reconcile_orders(dry_run=True)` previews broker evidence from `GET /orders/{orderId}`; `dry_run=False` books only confirmed execution deltas.
+- **Accepted-only ledger and reconcile**: Real `toss_place_order` writes only an accepted/rejected row to `review.toss_live_order_ledger`. It does not create fills, journals, or realized PnL at send time. `toss_reconcile_orders(dry_run=True)` previews broker evidence from `GET /orders/{orderId}`; `dry_run=False` books only confirmed execution deltas. GET order-detail `403 non-json-response` failures are retried once after token reissue; unresolved failures are persisted as `requires_manual_review=true`. Mutation POSTs are not implicitly retried on that error.
+- **Loss-cut authorization**: Direct `toss_preview_order`/`toss_place_order` loss-cut calls fail closed and point callers to `order_proposal_create`. A loss-cut proposal requires a live limit sell, eligible `exit_reason`, matching <=72h retrospective, allowed submit identity, slip-band compliance, and a valid approval hash. Telegram's first approval click only renders evidence and issues a proposal/rung/revision-bound 90-second `⚠️ 손절 확인` nonce; the second click reruns every guard and may submit. `approval_issue_id` is optional audit text and is never externally queried. Toss ledger rows retain `exit_intent`, `retrospective_id`, and `approval_issue_id` for audit.
+- **Loss-cut polling SLA**: Toss has no fill push in this path and both automatic polling paths are default-off. Before enabling Toss loss-cut, either enable and operationally verify `TOSS_FILL_POLL_ENABLED` with an approved `TOSS_FILL_POLL_CRON`, or require a targeted `toss_reconcile_orders(order_id=<broker-order-id>, dry_run=False)` immediately after execution. Non-dry reconcile projects broker evidence to proposal rungs and idempotently repairs terminal-ledger projection misses.
+- **Proposal identity handoff**: Order-proposal flows privately bind a stable client ID derived from `proposal_id + rung` around both `toss_preview_order` and `toss_place_order`, then require preview to return that exact ID. The proposal correlation and rung are carried through the same internal binding into the Toss ledger. These values are not exposed as operator-controlled MCP parameters. Accepted responses expose `approval_hash_digest`, the canonical ledger digest; the raw approval token is used only as the `approval_hash` submit input.
+- **US FX PnL split**: Toss order detail does not provide fill-time FX. For US rows only, `toss_reconcile_orders(dry_run=False)` captures USD/KRW through `exchange_rate_service` at reconcile time. Buy rows persist `buy_fx_rate`; sell rows persist `sell_fx_rate`, FIFO-attributed `fx_pnl_krw`, `security_pnl_usd`, `security_pnl_krw`, and `total_pnl_krw`. Automatic values are labelled `fx_rate_source="reconcile_spot"` and `fx_pnl_accuracy="approximate"`. Legacy lots with no buy FX keep FX PnL fields null until an operator backfills exact values through `modify_journal_entry`.
+- **Fill Notifications (ROB-576)**: `toss_reconcile_orders(dry_run=False)` sends a Discord/Telegram fill notification only when `TOSS_FILL_NOTIFY_ENABLED=true`, the reconcile pass books a new fill delta, and the shared `TradeNotifier` has a KR/US webhook or Telegram fallback configured. Notifications reuse the existing fill card format and route by `market='kr'|'us'`; Toss fill enrichment is intentionally disabled (`enrichment=None`) until Toss account PnL/position enrichment exists. The optional paused TaskIQ task `toss_live.reconcile_periodic` calls `toss_reconcile_orders_impl(dry_run=False)` only when both `TOSS_LIVE_AUTO_RECONCILE_ENABLED=true` and `TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED=true`. It has no in-repo schedule; operator automation must register/unpause the cadence externally.
+- **Toss fill poller (ROB-757)**: `toss_live.poll_fills_periodic` is default-off behind `TOSS_FILL_POLL_ENABLED`. It scans Toss `GET /orders` read-only, records app-direct orders missing from `review.toss_live_order_ledger`, and reuses `toss_reconcile_orders` to book confirmed deltas. New Toss fill deltas are also upserted into `review.execution_ledger` with `broker='toss'`, `account_mode='live'`, and `source='reconciler'`; ROB-755 triage should read them with `source='reconciler', broker='toss'`. For Toss loss-cut proposals, this poller/cadence or the targeted reconcile above is mandatory support infrastructure.
 - **High-Value Orders**: KR orders with a computable notional value >= 100,000,000 KRW fail locally unless `confirm_high_value_order=True` is supplied.
 - **KR Stock Warnings**: KR order previews include active Toss warning rows. Confirmed non-dry-run KR orders call the same warnings guard before mutation and block active `LIQUIDATION_TRADING`; Toss warning lookup failures are fail-open and reported as `warnings_check_message`.
-- **Sell Loss-Sell Guard**: For sell orders and sell reprices, holdings cost basis is validated. Sells block locally if the execution price (limit) or current market proxy price (market) is below `average_purchase_price * 1.01`. If the holding/cost basis cannot be resolved, the sell fails closed.
+- **Preview Market And Cost Context**: `toss_preview_order` is read-only but enriches the payload preview with Toss quote and cost context. It returns `current_price`, `current_price_currency`, `fill_distance` for off-market limit prices, `order_warnings` for marketability/fill-risk strings, `estimated_value`, `fee`, `fee_currency`, `fx_cost_full_conversion`, `fx_cost_full_conversion_currency`, and `estimated_costs`. The existing `warnings` field remains reserved for Toss stock-warning rows; string order warnings are not mixed into it. US `fx_cost_full_conversion` assumes the full order notional is converted KRW->USD and is labelled `fx_assumption="full_notional_krw_conversion"`; use `suggest_order_account` for cash-aware routing cost comparison.
+- **Sell Loss-Sell Guard**: For ordinary sell orders and all sell reprices, holdings cost basis is validated. They block locally if the execution price (limit) or current market proxy price (market) is below `average_purchase_price * 1.01`. Only a fully validated `loss_cut` limit sell bypasses that floor, and it remains bounded by `current_price * (1 - loss_cut_max_slip)`. If holdings, cost basis, or the loss-cut current price cannot be resolved, the sell fails closed.
 - **Opposite Pending Orders**: Before placing a non-dry-run order, the tool queries all paginated `OPEN` order pages for the symbol and blocks the order if an opposite-side pending order already exists. Pagination anomalies fail closed.
 - **Modify Semantics**:
   - KR modify requires both `new_price` and `new_quantity`.
@@ -598,6 +1217,10 @@ Parameters:
 Response notes:
 - Equity responses (KR/US markets) include `recommendation.rsi14` when RSI(14) is available from the indicator payload
 - This field provides a convenient summary; callers should continue to use `get_indicators` when they need the full indicator set rather than the summarized recommendation field
+- Responses include the same ROB-1048 seven-field freshness/provenance envelope
+  documented under `analyze_stock_batch`. `derived_as_of`/`fetched_at` are null
+  when provider evidence failed or has no trustworthy acquisition timestamp;
+  response construction time is never substituted.
 
 ### `get_correlation` spec
 Parameters:
@@ -738,6 +1361,34 @@ Parameters:
 
 Response includes `active_watches[]` with `symbol`, `operator`, `threshold`, `valid_until`, `rationale`, `source_report_uuid`, and `source_item_uuid`.
 
+### `investment_watch_create`
+
+Creates an active row in `review.investment_watch_alerts` without creating an
+investment report or report item.
+
+Parameters:
+- `created_by`: required provenance label. Use `tradingcodex` from the
+  `tradingcodex_execution` profile.
+- `market`: `kr`, `us`, or `crypto`.
+- `symbol`: exact symbol. US and crypto symbols are normalized uppercase.
+- `intent`: one of the investment report item intents, for scanner/event context.
+- `rationale`: operator-readable reason for the watch.
+- `watch_condition`: same normalized watch condition payload used by report items.
+  Flat `{metric, operator, threshold}` and v2 `conditions[]` are accepted.
+- `valid_until`: future timezone-aware ISO8601 timestamp.
+- `trigger_checklist`: optional list of operator checks.
+- `max_action`: optional planned-action envelope for downstream approval context.
+- `metadata`: optional audit metadata merged into alert `metadata`.
+- `idempotency_key`: optional caller key. Omit to use the deterministic direct-watch key.
+
+Response:
+- `success`
+- `idempotent`
+- `alert`, the created or existing `InvestmentWatchAlertResponse`.
+
+This tool never creates reports/items and never submits, previews, modifies,
+cancels, or reconciles broker orders.
+
 ### `get_operating_briefing`
 
 Read-only one-call bootstrap for a new operating session.
@@ -747,6 +1398,8 @@ Parameters:
 - `account_scope`: optional. Defaults are `kr/us -> kis_live`, `crypto -> upbit_live`.
 - `session_context_limit`: default `10`, clamped by the session context service.
 - `include_current_price`: default `true`.
+- `cohort`: optional, default `live_gated`. Realized trade-journal cohort to load (e.g., `live_gated`, `mock_counterfactual`).
+- `include_counterfactual_delta`: default `false`. When `true`, returns aggregates delta scoreboard comparing `live_gated` and `mock_counterfactual` cohorts.
 
 Response sections:
 - `holdings`: summary and top movers derived from `get_holdings`.
@@ -755,8 +1408,34 @@ Response sections:
 - `latest_report`: latest report summary and item status counts, or `null`.
 - `session_context`: recent ROB-516 handoff entries.
 - `staleness`: per-section `as_of`, freshness, and unavailable reason where available. If an optional DB-backed section (`active_watches`, `latest_report`, or `session_context`) raises, the tool still returns `success=true`; that section is returned as an empty or null fallback and `staleness.<section>.freshness_status` is `unavailable` with `unavailable_reason`.
+- `trading_scoreboards`: trading scoreboard or counterfactual delta metrics, depending on `include_counterfactual_delta` parameter.
 
 The tool never submits, modifies, cancels, reconciles, activates, expires, or mutates orders/watches/session context.
+
+
+### `get_trading_scoreboard`
+
+Query setup-tagged trade-journal aggregates over closed round-trips reconstructed from fills.
+
+Parameters:
+- `market`: optional `kr`, `us`, or `crypto`.
+- `account_mode`: optional.
+- `date_from`: optional date (YYYY-MM-DD).
+- `date_to`: optional date (YYYY-MM-DD).
+- `setup_tag`: optional tag filter.
+- `min_sample`: default `1`.
+- `cohort`: default `live_gated`. Realized trade-journal cohort to load (e.g., `live_gated`, `mock_counterfactual`).
+- `include_counterfactual_delta`: default `false`. When `true`, returns aggregates delta scoreboard comparing `live_gated` and `mock_counterfactual` paired by shared `report_item_uuid` where available. `correlation_id` is still considered for legacy rows, but live place-time IDs are account-scoped and should not be expected to equal `mirror:{item_uuid}`.
+- `min_pair_threshold`: default `20`. Only affects `pairing_health`; it does not filter rows.
+- When `include_counterfactual_delta=True`, `market`, `account_mode`, `date_from`, `date_to`, `setup_tag`, `min_sample`, and `min_pair_threshold` are passed into the delta builder and echoed under `filters`.
+
+Returns Win-rate, expectancy (% and R-multiple), profit factor, average/worst MAE and MFE.
+
+When `include_counterfactual_delta=true`, the response additionally carries:
+- `pairing_diagnostics`: closed-trade and key-coverage counts used to explain why pairs did or did not form.
+- `pairing_health`: `ok`, `warming_up`, or `needs_design_review` based on `paired_count`, closed sample availability, and `min_pair_threshold`.
+
+**Order linkage note**: For report-originated live orders, passing `report_item_uuid` is required for counterfactual pairing; without it, `paired_count` can remain zero even when both live and mock cohorts have closed trades.
 
 
 ### `screen_stocks` spec
@@ -1107,16 +1786,19 @@ Parameters:
 - `account`: optional account filter (`upbit`, `kis`, `kis_domestic`, `kis_overseas`)
 
 Broker-specific contract:
+- With `account_mode="kis_mock"`, this tool is a KIS-only data plane. It never
+  reads Upbit or Toss live cash, rejects non-KIS account selectors, and marks
+  KIS rows/errors with `account_mode="kis_mock"`.
 - **Upbit (`account="upbit"`)**
   - `balance`: total KRW (`balance + locked`)
   - `orderable`: orderable KRW (`balance`)
   - `formatted`: formatted total KRW string (e.g. `"700,000 KRW"`)
 - **KIS domestic (`account="kis_domestic"`)**
   - `balance`: `stck_cash_objt_amt` (`intgr-margin`)
-  - `orderable`: domestic integrated-margin orderable minus pending KR buy-order notional; if pending-order lookup fails, raw KIS orderable is returned; result is clamped at `0.0`
+  - `orderable`: domestic integrated-margin orderable (`stck_cash100_max_ord_psbl_amt`). ROB-596: this KIS field already nets accepted-but-unfilled buy orders in real time, so pending buys are **not** subtracted again (no double-count). It is the single source shared by `get_available_capital` and the `place_order` KRW buy pre-check.
 - **KIS overseas (`account="kis_overseas"`)**
   - `balance`: USD cash balance (`frcr_dncl_amt1` fallback `frcr_dncl_amt_2`)
-  - `orderable`: USD orderable cash minus pending US buy-order notional; if pending-order lookup fails, raw KIS orderable is returned; result is clamped at `0.0`
+  - `orderable`: USD orderable cash (`frcr_gnrl_ord_psbl_amt`). ROB-596: this KIS field already nets accepted-but-unfilled buy orders in real time, so pending buys are **not** subtracted again (no double-count). It is the single source shared by `get_available_capital` and the `place_order` USD buy pre-check.
 - **Toss (`account="toss"`, only when `TOSS_API_ENABLED=true`)**
   - `balance`: Toss buying power for the row currency
   - `orderable`: `0.0`; Toss portfolio integration is read-only in ROB-532, while order mutation tools are delivered separately
@@ -1139,6 +1821,8 @@ Behavior:
 - Converts USD orderable amounts to KRW equivalents using current exchange rate
 - Includes manual cash (Toss/non-API cash) when `include_manual=True`
 - Marks manual cash as stale when older than 3 days
+- With `account_mode="kis_mock"`, manual cash is not read or aggregated; the
+  result is derived only from the KIS mock cash response.
 
 Response shape:
 - `accounts`: per-account cash entries with `krw_equivalent` added for USD accounts
@@ -1156,6 +1840,9 @@ Parameters:
 - `minimum_value`: optional numeric threshold. When `None` (default), per-currency thresholds apply: KRW=5000, USD=10. Explicit number uses uniform threshold. Positions below threshold are excluded only when `include_current_price=True`
 
 Filtering rules:
+- With `account_mode="kis_mock"`, holdings collection is KIS-only. Upbit,
+  Toss API, and manual collectors are not called, and non-KIS account or crypto
+  selectors fail closed instead of returning a mixed-provenance response.
 - If `include_current_price=False`, `minimum_value` filtering is skipped
 - When `minimum_value=None`, per-currency thresholds are automatically applied based on `instrument_type`: `equity_kr` and `crypto` use 5000, `equity_us` uses 10
 - When `minimum_value` is a number, that uniform threshold is applied to all positions
@@ -1173,7 +1860,8 @@ Response contract additions:
 - `filter_reason`: filter status string, e.g. `minimum_value < 1000` or `equity_kr < 5000, equity_us < 10, crypto < 5000`
 - `errors`: includes per-symbol price lookup failures for holdings price refresh (example fields: `source`, `market`, `symbol`, `stage`, `error`)
 - `filters.minimum_value`: when `minimum_value=None` in the request, this field contains the per-currency threshold dict that was applied
-- When `TOSS_API_ENABLED=true`, Toss Open API holdings are emitted with `broker="toss"`, `source="toss_api"`, and `order_routable=false` until Toss live-order tools exist. The per-position `sellable_quantity` field comes from Toss `/api/v1/sellable-quantity` and is informational in ROB-532.
+- When `TOSS_API_ENABLED=true`, Toss Open API holdings are emitted with `broker="toss"`, `source="toss_api"`. `order_routable` (and `get_cash_balance` `orderable`, `/invest` home `isTradeable`/`sellableQuantity`) are gated on `TOSS_LIVE_ORDER_MUTATIONS_ENABLED` (ROB-549): reference-only (`order_routable=false`, `orderable=0`, `isTradeable=false`, `sellableQuantity=0`) while disabled, and routable with the API-provided `sellable_quantity` (Toss `/api/v1/sellable-quantity`) once the operator arms live mutations.
+- Toss sellable quantities use a successful-values-only Redis cache shared by `/invest` home and MCP processes (600-second default, controlled by `TOSS_SELLABLE_CACHE_TTL_SECONDS`; `TOSS_SELLABLE_CACHE_ENABLED=false` disables it). Reads use one batched `MGET`; confirmed fills and successful sell place/cancel/modify mutations delete only the affected symbol. `fresh_sellable=true` bypasses the cache, while `need_sellable=false` paths skip Redis and Toss sellable reads entirely.
 - When Toss API holdings succeed, duplicate Toss `manual_holdings` rows for the same market/symbol are hidden from normal output. KIS and Toss holdings for the same symbol are not deduplicated because they are separate broker subaccounts.
 - When Toss API holdings fail, existing Toss `manual_holdings` rows remain visible as fallback and the response includes a partial `source="toss_api"` error.
 
@@ -1181,6 +1869,116 @@ Market routing:
 - `market` can override routing: `crypto|upbit`, `kr|kis|krx|kospi|kosdaq`, `us|yahoo|nasdaq|nyse`
 - If `market` is omitted, routing is heuristic: KRW-/USDT- prefix -> crypto, 6-digit code -> KR equity, otherwise -> US equity
 - Crypto symbols must include `KRW-` or `USDT-` prefix
+
+### `get_portfolio_allocation` spec
+
+Parameters:
+- `account`: optional account filter matching `get_holdings` and `get_cash_balance` (`kis`, `upbit`, `toss`, `samsung_pension`, `isa`, `paper`, `paper:<name>`)
+- `market`: optional holdings market filter (`kr`, `us`, `crypto`); cash is still included when `include_cash=true` unless `account` excludes the cash account
+- `include_cash`: include cash balances in the allocation denominator, default `true`
+- `include_positions`: include per-position normalized rows, default `false`
+- `target_weights`: optional mapping from asset class to target percent; when omitted, no over/underweight flags are emitted
+- `drift_threshold_pct`: threshold for `overweight` / `underweight` labels when `target_weights` is provided, default `5.0`
+- `account_mode`: same routing selector as `get_holdings` (`db_simulated`, `kis_mock`, `kis_live`)
+
+Behavior:
+- Read-only only. The tool performs no order preview, order placement, mutation, reconciliation, or live approval action.
+- Converts USD holdings and USD cash to KRW using the same exchange-rate service used by portfolio cash tools.
+- Aggregates direct US equity as `us_equity`, KR equity as `kr_equity`, Upbit holdings as `crypto`, and cash as `cash`.
+- Looks through KR-listed ETFs when KRX ETF metadata is available. KR ETFs classified as `미국주식` by `app.services.krx.classify_etf_category()` are counted as effective `us_equity`, while their surface account remains KR/KIS/Toss.
+- Non-US foreign, commodity, bond, and unclear ETF categories are counted as `other` rather than Korean equity.
+- If KRX ETF metadata lookup fails, the tool records a degraded `krx_etf` error and keeps KR ETF positions in their surface `kr_equity` bucket.
+- Positions whose valuation is unavailable are excluded from the denominator and listed in `warnings` with `reason="position_value_unavailable"`.
+
+Response shape:
+- `summary`: KRW total, invested value, cash value, valued/unvalued position counts
+- `asset_classes`: value, weight, direct/look-through split, target/drift fields, and optional weight status
+- `accounts`: account-level KRW roll-up with asset-class children and `profit_loss_krw` (cash sub-accounts carry 0)
+- `lookthrough`: KR ETF rows whose effective exposure differs from surface exposure
+- `positions`: returned only when `include_positions=true`
+- `cash`: normalized cash rows when `include_cash=true`
+- `errors`: broker, cash, exchange-rate, or KRX ETF partial failures
+- `warnings`: non-fatal valuation omissions
+
+### `get_trading_policy` spec
+
+- `get_trading_policy(market, lane)`
+  - Query trading policy judgment thresholds and lane-scoped decision rules.
+  - Read-only, single source `config/trading_policy.yaml`, operator-PR-edited (no write tool).
+  - Args `market ∈ {kr,us,crypto}` × `lane ∈ {buy,sell,discovery}`.
+  - An unknown key maps to `success=false, error=unknown_key`.
+  - `market_rules` contains market-specific advisory judgment rules filtered by
+    lane. Crypto includes the recovery gate, support/resistance source priority,
+    and no-chasing criteria. A `null` threshold is intentional and callers must
+    not replace it with an inferred number. These rules do not replace
+    code-owned fail-closed order guards.
+  - Success returns
+    `{market, lane, version, content_hash, thresholds, decision_rules, market_rules}`.
+    `decision_rules` is lane-filtered and empty when no rule applies. For sell,
+    `decision_rules["sell.trim_preplace"]` encodes the ROB-751 resistance-near
+    vs upside-rich tie-break: RSI-confirmed resistance or ultra-near resistance
+    permits only a small pre-placed trim ladder; RSI-neutral 2-6% resistance is
+    a watch; `sell.upside_place_max_pct` limits size rather than blocking
+    pre-placement eligibility.
+  - **Version-stamping contract**: consumers cite `{version, content_hash}` (from `get_trading_policy` or the `policy_version` field of `get_operating_briefing`) in `report_item.evidence_snapshot`, `trade_retrospectives`, and forecast records so the judging criteria are recoverable.
+  - The buy-preview `sector_concentration` field is **fail-open** advisory (never blocks).
+
+### route_request — advisory lane router (ROB-649)
+
+`route_request(intent, market)` maps a coarse intent
+(`buy_analysis`/`profit_taking`/`discovery`/`market_brief`) to the standard tool
+sequence, advisory allowed/blocked tools, `get_trading_policy` thresholds +
+version stamp, and hard constraints for that lane. Deterministic; registered on
+every profile; read-only.
+
+**Divergence from tradingcodex:** the original has no route MCP tool — it
+injects lane guidance via a hook and maps lane→role→tool indirectly. auto_trader
+exposes a **direct lane→tool advisory** tool with **no enforcement**. Blocking
+middleware (mutation tools only, reads unrestricted, caller-header-keyed because
+MCP session state resets on reconnect — ROB-469) is a separate follow-up issue.
+In particular, the contract below cannot physically prevent an enabled
+auto-approval path.
+
+Lane definitions come from the machine-readable `lanes:` blocks in
+`docs/playbooks/trading-decision-playbook.md`; `route_request_lanes.LANE_SEQUENCES`
+is kept in exact order by `tests/test_route_request_registry_diff.py`. Every
+proposal-enabled DEFAULT tool must be classified into the read/advisory or
+explicit mutation taxonomy or CI fails.
+
+**Buy/sell proposal contract (ROB-1045):**
+
+- `order_proposal_create` is the only order-intent surface in buy/sell
+  `standard_tool_sequence`. Registered direct broker place/cancel/modify tools
+  are excluded from `allowed_tools` and included in `blocked_actions`.
+- The route contract requires a human Telegram approval click. Fresh broker
+  preview/revalidation and submit are owned by the proposal approval subsystem;
+  accepted/resting is not a fill, and broker-evidence reconciliation remains
+  required. Registered reconcile tools are conditional helpers rather than an
+  ordered step because `route_request` has no broker/account-mode input.
+- `route_contract` is machine-readable and carries
+  `version="proposal-led-v1"`, `state`, `execution_mode`, `execution_ready`,
+  `proposal_tool`, `approval_channel`, `human_approval_required`,
+  `preview_owner`, `reconcile_requirement`, `required_tools`, and
+  `missing_required_tools`.
+- `execution_ready=true` means only that the required route tool is present in
+  the live MCP registry. It does not assert Telegram publication, configuration,
+  or approval-window readiness. The actual `order_proposal_create`
+  `approval_dispatch` result remains authoritative; see
+  [Order proposal approval tools](#order-proposal-approval-tools-rob-816).
+- If the live registry is valid but `order_proposal_create` is absent, buy/sell
+  return `success=false`, `error="required_route_tool_unavailable"`, and
+  `execution_ready=false`, with no direct-place fallback.
+- If registry introspection is missing, raises, is malformed, or is empty, the
+  route returns `success=false`, `error="registry_introspection_unavailable"`,
+  empty sequence/allowed lists, and the static direct-mutation deny list with
+  `blocked_actions_basis="static_fail_closed"`. It never substitutes
+  `ALL_KNOWN_TOOLS`.
+
+**Discovery non-regression:** discovery is outside ROB-1045 and retains its
+existing `toss_place_order` step and ROB-658 crypto/US generic `place_order`
+injection. Aligning discovery with proposal-led approval requires a separate
+issue. Bootstrap remains read-only.
+
 
 ### User Settings Tools
 
@@ -1191,6 +1989,45 @@ These tools provide a generic key-value storage for user preferences and setting
 
 Common settings:
 - `manual_cash`: Stores manually-managed cash amounts (e.g., `{"amount": 15000000}`) for accounts not backed by APIs (Toss, etc.)
+- `account_costs`: Stores broker fee/cost profiles and thresholds used for routing suggestions.
+
+### `account_costs` user setting
+
+`set_user_setting(key="account_costs", value={...})` stores operator-maintained
+broker cost metadata used by `suggest_order_account`, `get_available_capital`,
+and `get_operating_briefing`.
+
+Required shape:
+
+```json
+{
+  "version": 1,
+  "routing": {
+    "position_consolidation_threshold_bps": {"kr": 25, "us": 40}
+  },
+  "accounts": {
+    "kis_domestic": {
+      "broker": "kis",
+      "markets": {"kr": {"commission_bps": 14.7, "fx_spread_bps": 0}}
+    },
+    "kis_overseas": {
+      "broker": "kis",
+      "markets": {"us": {"commission_bps": 25, "fx_spread_bps": 20}}
+    },
+    "toss": {
+      "broker": "toss",
+      "limits": {"max_order_notional_krw": 1000000},
+      "markets": {
+        "kr": {"commission_bps": 0, "fx_spread_bps": 0},
+        "us": {"commission_bps": 10, "fx_spread_bps": 1.7}
+      }
+    }
+  }
+}
+```
+
+Values are basis points. `25` means 0.25%. If the setting is missing or invalid,
+the system uses default seed values and marks the result `review_required`.
 
 ### `update_manual_holdings` spec
 
@@ -1298,9 +2135,10 @@ Behavior:
 ## Caller Identity Header (required)
 
 All MCP callers (Scout, Trader, CIO bridges, and any future client) MUST send
-`x-paperclip-agent-id: <calling agent's Paperclip agent id>` on every
-`tools/call` request. The value is the caller's Paperclip agent id, not the
-target trader agent id.
+`x-paperclip-agent-id: <calling agent id>` on every `tools/call` request. The
+header is a canonical legacy Paperclip-named compatibility surface and MUST NOT
+be renamed; its value is the current caller agent id, not the target trader
+agent id.
 
 - The `CallerIdentityMiddleware` added in ROB-214 (ST-3.1) reads this header,
   stores it in a request-scoped contextvar, and records the extraction source
@@ -1327,7 +2165,7 @@ their local `/tmp/mcp_call.sh` from that template so the header is present.
 export MCP_ENDPOINT="http://127.0.0.1:8765/mcp"
 export MCP_AUTH_TOKEN="<value from env.MCP_AUTH_TOKEN>"
 export MCP_SESSION_ID="<MCP session id>"
-export PAPERCLIP_AGENT_ID="<calling agent's Paperclip agent id>"
+export PAPERCLIP_AGENT_ID="<calling agent id>"
 envsubst '$MCP_ENDPOINT $MCP_AUTH_TOKEN $MCP_SESSION_ID $PAPERCLIP_AGENT_ID' \
   < scripts/templates/mcp_call.sh.tmpl > /tmp/mcp_call.sh
 # 0700 — owner-only. The rendered script bakes MCP_AUTH_TOKEN in plaintext,
@@ -1340,7 +2178,7 @@ chmod 700 /tmp/mcp_call.sh
 
 The rendered bridge intentionally calls curl with `-N --max-time 15` and sends
 `Connection: close`. It only consumes the first SSE `data:` line, so no-buffer
-mode and the timeout keep the helper from holding a completed Paperclip run open
+mode and the timeout keep the helper from holding a completed agent run open
 if the server keeps the stream alive.
 
 If the Trader adapter is later migrated to an in-process MCP client (for
@@ -1357,6 +2195,13 @@ Environment variables:
 - `MCP_GRACEFUL_SHUTDOWN_TIMEOUT` : `10` (seconds, HTTP transports only: `sse` / `streamable-http`)
 - `MCP_USER_ID` : `1` (manual holdings 조회에 사용할 기본 사용자 ID)
 - `MCP_CALLER_AGENT_ID` : DEV/stdio only — MUST NOT be set in production HTTP deployments (re-opens caller spoofing vector)
+
+For `streamable-http` and `sse`, startup fails before FastMCP construction when
+`MCP_PROFILE=kiwoom` has no non-empty `MCP_AUTH_TOKEN`. The same fail-closed
+rule applies to the default profile when `KIWOOM_MOCK_US_ENABLED=true` exposes
+the Kiwoom US mutation tools. An explicitly selected local `stdio` development
+transport may remain tokenless; changing that process to a network transport
+re-runs the auth check and cannot bypass this boundary.
 
 Example:
 ```bash
@@ -1375,12 +2220,61 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 
 | Profile | Value | Order surface |
 |---|---|---|
-| Default | `default` (or unset) | Legacy `place_order`/`cancel_order`/`modify_order`/`get_order_history` + typed `kis_live_*` + typed `kis_mock_*`; crypto-only, Alpaca/us-dual paper, and Kiwoom tools are absent |
+| Default | `default` (or unset) | Legacy `place_order`/`cancel_order`/`modify_order`/`get_order_history` + typed `kis_live_*` + typed `kis_mock_*`; typed `kiwoom_mock_*` is added only by the existing `KIWOOM_MOCK_ENABLED=true` ROB-601 gate; Alpaca/us-dual paper tools are absent |
 | Paper/mock-only | `hermes-paper-kis` | Typed `kis_mock_*` only — live surface **physically absent** |
 | Crypto | `crypto` | Default read-only/research surface plus crypto-only tools (`get_crypto_fear_greed`, `get_crypto_market_regime`, `get_upbit_index`, ...) **plus** the generic `place_order`/`cancel_order`/`modify_order`/`get_order_history` (crypto live entry point) and `live_reconcile_orders`; typed `kis_live_*`/`kis_mock_*` are absent |
 | US paper | `us-paper` | Default read-only/research surface plus Alpaca paper and `us_dual_paper_*` tools; no KIS/generic order tools |
 | DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools; no KIS/generic order tools |
 | Kiwoom mock | `kiwoom` | Default read-only/research surface plus typed `kiwoom_mock_*` variants only (no KIS/generic order tools) |
+| Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
+| Account read | `account_read` | TradingCodex account adapter allowlist only: existing KIS/Toss account reads plus `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`, and `kiwoom_mock_get_order_history`. Kiwoom and all other mutations remain physically absent. |
+| TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
+| Canonical paper execution | `paper_execution` | ROB-845 façade + ROB-848 validation + ROB-849 operator kill switch. Default-off and auth-required; no generic, venue-native, or live tools. |
+
+### Profile: `paper_execution` (ROB-845)
+
+This isolated profile is the canonical experiment-to-paper-broker boundary. It
+must be enabled explicitly with all of:
+
+- `MCP_PROFILE=paper_execution`
+- `PAPER_EXECUTION_ENABLED=true`
+- a non-empty `MCP_AUTH_TOKEN`
+
+The process fails before FastMCP registration when either the feature flag or
+authentication is missing. A direct registry call with the feature flag off
+registers zero tools.
+
+Exact tool allowlist:
+
+- `paper_execution_get_capabilities`
+- `paper_execution_preview_order`
+- `paper_execution_submit_order`
+- `paper_execution_cancel_order`
+- `paper_execution_get_order`
+- `paper_execution_reconcile`
+- `paper_cohort_kill_switch` (server-bound operator/system identity only)
+
+The request DTO contains the claimed experiment/run/cohort/strategy identity,
+canonical snapshot evidence, and order intent. It does not accept caller-owned
+`origin`, `idempotency_key`, broker `client_order_id`, or native order ID. Those
+identities are derived and verified server-side.
+
+V1 capability scope is deliberately narrow:
+
+- Binance Spot Demo: `BTCUSDT`/`ETHUSDT`, BUY MARKET, notional sizing; the
+  guarded native executor performs one open/close round trip. External cancel
+  and reconcile are unsupported.
+- Alpaca Crypto Paper: `BTC/USD`/`ETH/USD`, BUY/SELL LIMIT, quantity sizing,
+  GTC/IOC, through the approval-packet/coordinator boundary.
+
+No KIS, Kiwoom, Toss, Upbit, live broker, legacy order, or venue-native mutation
+tool is registered. Broker-native ledgers remain the lifecycle/fill/P&L source;
+the façade adds no common order ledger or migration.
+
+ROB-849 will provide the concrete immutable cohort/snapshot provenance verifier.
+Until that composition is installed, capability reads work but every experiment
+operation fails closed with `provenance_verifier_unavailable` before adapter,
+native-ledger, client, or broker activity.
 
 ### Profile: `hermes-paper-kis`
 
@@ -1392,6 +2286,289 @@ Set `MCP_PROFILE=hermes-paper-kis` on paper-only deployments (e.g., where `KIS_M
 - Shared read-only research and portfolio tools remain available; split-profile-only tools such as Alpaca paper, crypto-only, and Kiwoom are absent.
 
 **Operator validation:** after deploying with `hermes-paper-kis`, check the MCP `/mcp` listing and confirm that none of `kis_live_*` or the legacy ambiguous order tools appear.
+
+### Profile: `analysis_readonly` (ROB-745)
+
+Use `MCP_PROFILE=analysis_readonly` for Codex/headless consumers that need market analysis tools but must not see the operator's full order-capable MCP surface.
+
+Allowed tools:
+- `get_operating_briefing`
+- `route_request`
+- `get_trading_policy`
+- `get_market_index`
+- `get_quote`
+- `analyze_stock_batch`
+- `get_support_resistance`
+- `get_indicators`
+- `screen_stocks`
+- `screen_stocks_snapshot`
+- `get_krx_session_health`
+- `get_top_stocks`
+- `get_news`
+- `get_fx_rate`
+- `suggest_order_account`
+- `get_holdings`
+- `toss_get_positions`
+- `get_intraday_investor_flow`
+- `analysis_artifact_save`
+- `analysis_artifact_get`
+- `analysis_bundle_get` (only when `ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED=true`)
+- `forecast_save`
+- `session_context_append`
+- `session_context_get_recent`
+
+Forbidden by physical non-registration:
+- order placement, cancel, modify, history, reconcile, and preview tools
+- KIS live/mock order variants
+- Kiwoom order variants
+- Alpaca/DB paper order surfaces
+- Toss place/modify/cancel/history/orderable-cash/reconcile/preview
+- manual holdings mutation
+- user settings tools
+- watch/admin/report-writing surfaces
+
+Persistence tools on this profile require explicit provenance:
+- pass `created_by="codex"` for `analysis_artifact_save`
+- pass `created_by="codex"` in every `session_context_append` entry
+- pass `created_by="codex"` to `forecast_save`
+
+### Codex Config Example
+
+Here is an example Codex config file to connect to the analysis-readonly MCP server with relaxed approval:
+
+```toml
+# ~/.codex/config.toml
+# Relaxed approval is scoped to the analysis-readonly MCP server only.
+[mcp_servers.auto_trader_analysis_readonly]
+url = "http://127.0.0.1:8768/mcp"
+bearer_token_env_var = "MCP_ANALYSIS_READONLY_AUTH_TOKEN"
+default_tools_approval_mode = "auto"
+
+http_headers = { "x-paperclip-agent-id" = "codex-analysis-readonly" }
+```
+
+### Profile: `account_read` (ROB-760)
+
+Use `MCP_PROFILE=account_read` for TradingCodex or other account-sync consumers that need broker account reads without any trading or persistence surface.
+
+Allowed tools:
+- `get_holdings`
+- `toss_get_positions`
+- `get_cash_balance`
+- `toss_get_orderable_cash`
+- `get_order_history`
+- `kis_live_get_order_history`
+- `toss_get_order_history`
+- `kiwoom_mock_get_positions`
+- `kiwoom_mock_get_orderable_cash`
+- `kiwoom_mock_get_order_history`
+
+Forbidden by physical non-registration:
+- order placement, cancel, modify, preview, and reconcile tools
+- KIS mock order variants
+- Kiwoom mock preview/place/cancel/modify variants
+- Alpaca/DB paper order surfaces
+- manual holdings mutation
+- user settings tools
+- watch/admin/report-writing surfaces
+- analysis persistence and session context write/read tools
+
+Authentication is mandatory for this profile. `MCP_PROFILE=account_read` fails at startup unless `MCP_AUTH_TOKEN` is non-empty. Deployment wrappers must source that value from `MCP_ACCOUNT_READ_AUTH_TOKEN`; do not fall back to the operator `MCP_AUTH_TOKEN`.
+
+TradingCodex config example:
+
+```toml
+[mcp_servers.auto_trader_account_read]
+url = "http://127.0.0.1:8769/mcp"
+bearer_token_env_var = "MCP_ACCOUNT_READ_AUTH_TOKEN"
+default_tools_approval_mode = "auto"
+
+http_headers = { "x-paperclip-agent-id" = "tradingcodex-account-read" }
+```
+
+### Profile: `tradingcodex_execution` (ROB-768, ROB-778)
+
+Use `MCP_PROFILE=tradingcodex_execution` for the reviewed TradingCodex BrokerAdapter surface. This profile is order-capable, but still allowlist-only and narrower than `default`.
+
+Allowed read/advisory tools:
+- `get_holdings`
+- `toss_get_positions`
+- `get_cash_balance`
+- `toss_get_orderable_cash`
+- `get_order_history`
+- `kis_live_get_order_history`
+- `toss_get_order_history`
+- `kiwoom_mock_get_positions`
+- `kiwoom_mock_get_orderable_cash`
+- `kiwoom_mock_get_order_history`
+- `suggest_order_account`
+- `get_fx_rate`
+- `route_request`
+- `get_trading_policy`
+- `list_active_watches`
+- `investment_watch_events_list_recent`
+- `get_forecasts`
+- `get_trade_retrospectives`
+- `trade_retrospective_pending`
+
+Allowed write/order tools:
+- `place_order`
+- `cancel_order`
+- `kis_live_place_order`
+- `kis_live_cancel_order`
+- `toss_preview_order`
+- `toss_place_order`
+- `toss_cancel_order`
+- `sell_ladder_fill_preview`
+- `buy_ladder_fill_preview`
+- `kiwoom_mock_preview_order`
+- `kiwoom_mock_place_order`
+- `kiwoom_mock_cancel_order`
+- `kiwoom_mock_modify_order`
+- `forecast_save`
+- `save_trade_retrospective`
+- `investment_watch_create`
+
+Kiwoom safety boundaries are unchanged on both restricted profiles:
+
+- `KIWOOM_MOCK_ENABLED` remains default-off. While disabled, the typed tools
+  fail closed and name the missing configuration keys without returning values.
+- If Kiwoom mock is enabled, restricted-profile startup requires all mock
+  credentials and the exact `https://mockapi.kiwoom.com` base URL.
+- Kiwoom mock tools remain KRX-only. A broker mutation still requires both
+  `dry_run=false` and `confirm=true`.
+- Caller-supplied Kiwoom symbols are canonicalized after trimming and must be
+  exactly six ASCII digits (for example, `005930`). Provider evidence may use
+  the documented `A`/`J`/`Q` prefix, which read normalization removes; callers
+  cannot use those provider-only aliases for mutations.
+- No `kiwoom_live_*`, generic `kiwoom_*`, or live-host routing is registered.
+
+#### Kiwoom mock order preflight (ROB-893)
+
+`kiwoom_mock_preview_order` and `kiwoom_mock_place_order` share the same
+fail-closed preflight. A confirmed place builds **one** request-scoped
+`KiwoomMockClient` and reuses it across the **single** preflight (run
+immediately before the broker POST) and the POST itself, so preflight and
+dispatch share one auth client and mint at most one cold-cache token. Preview
+and dry-run paths run the preflight once and never call the order mutation
+client.
+
+The preflight requires a fresh KR quote, a KRX-valid `get_tick_size_kr` price,
+and an order price within 30% of the quote (the 30% boundary is inclusive).
+Sell orders use the kt00018 `rmnd_qty` position evidence; buys use the kt00010
+`ord_alowa` result for the requested symbol, side, and price. Account evidence
+is accepted only with canonical broker success (`0` or `"0"`); missing,
+malformed, boolean, floating-point, or nonzero return codes fail closed.
+
+Responses expose `preflight_checks`, `estimated_evidence`, and
+`preflight_warnings`. No reviewed Kiwoom cost profile is configured, so fee and
+tax are explicitly `null` with `status="unavailable"` and
+`review_required=true`; the preflight never invents a rate. Sell P&L based on
+the candidate order price is labelled `estimated_gross_pnl`, while net P&L is
+also unavailable. Successful preflights surface `estimated_costs_unavailable`;
+a gross-before-cost loss additionally emits `estimated_loss_sell` without
+universally blocking the sell. Broker payloads remain recursively redacted.
+
+A failure that provably occurs before HTTP dispatch (token resolution,
+pre-dispatch hook, request build, or host validation) raises a structured
+`KiwoomPreDispatchError` carrying redacted fields only — `stage`, `api_id`
+(the TR code), and `cause_type` (the exception class name); the chained
+`__cause__` is retained for internal tracebacks only and never surfaces in the
+response. Both the preflight account-evidence read and the order POST propagate
+this error, and the confirmed-place / preview responses render it as
+`status="not_submitted"`, `dispatch_started=false`, and
+`reconcile_required=false` (the request provably never reached the broker, so
+no order HTTP dispatch occurs and no reconciliation is needed). A generic
+post-dispatch failure (the request may already have been transmitted) is the
+distinct `status="acceptance_uncertain"`, `reconcile_required=true`,
+`retry_allowed=false` outcome.
+
+#### Kiwoom mock stable read envelopes (ROB-824)
+
+`kiwoom_mock_get_positions` adds a normalized `positions` list whose rows have
+exactly `symbol`, `quantity`, `average_price`, and `currency`. The source is the
+official kt00018 `acnt_evlt_remn_indv_tot` array; KR symbols such as `A005930`
+are returned as `005930`, numeric fields are JSON integers, and currency is
+`KRW`.
+
+`kiwoom_mock_get_order_history` adds a normalized `orders` list whose rows have
+exactly `order_id`, `symbol`, `status`, `ordered_price`, `filled_quantity`,
+`average_price`, and `remaining_quantity`. The source is the official kt00009
+`acnt_ord_cntr_prst_array` array. Status is normalized to `open`,
+`partially_filled`, `filled`, or `cancelled` from the broker cancellation marker
+and ordered/filled quantities. `ord_no` must be an all-digit broker string;
+length is not fixed because the official seven-digit contract and existing
+ten-digit broker fixtures both occur in this repository.
+
+All three account reads add fixed `provenance` for broker `kiwoom`, environment
+`mock`, account mode `kiwoom_mock`, host `mockapi.kiwoom.com`, and their expected
+API ID. Cash uses kt00010 when `symbol` is provided and kt00001 otherwise, and
+validates raw provenance before deriving broker success or returning cash.
+Only a canonical integer `0` or exact string `"0"` broker return code is
+successful. Missing, malformed, boolean, or floating-point return codes fail
+closed. Successful broker evidence without a parseable non-negative cash field
+also fails closed with `cash=null` and a stable `*_unavailable` source.
+
+The responses retain the broker payload as `broker_response`. Recursive
+redaction covers authorization/token/cookie/credential/password/approval,
+API/app key and secret, and account-identifier key aliases across case and
+separator variations. Top-level passthrough fields are copied only from this
+redacted payload. Missing/malformed fields or explicit non-mock provenance
+changes the response to `success=false`; cash becomes `null`, and positions or
+orders become `[]`. Config, transport, broker, provenance, and normalization
+failures use stable `kiwoom_mock_*` error codes while retaining canonical mock
+provenance.
+
+Write provenance requirements:
+- pass `created_by="tradingcodex"` to `forecast_save`
+- pass `created_by_profile="tradingcodex"` to `save_trade_retrospective`
+- pass `created_by="tradingcodex"` to `investment_watch_create`
+- missing or blank labels return `{"success": false, "error": "created_by_required", ...}` before any database write
+
+Forbidden by physical non-registration:
+- modify and reconcile tools
+- KIS mock order variants
+- Kiwoom live/general unscoped order variants
+- Alpaca/DB paper order surfaces
+- manual holdings mutation
+- user settings tools
+- analysis artifact and session context persistence
+- forecast resolution/calibration
+- retrospective aggregate
+- watch activation/mutation
+- report-writing and report-decision tools
+
+Authentication is mandatory for this profile. `MCP_PROFILE=tradingcodex_execution` fails at startup unless `MCP_AUTH_TOKEN` is non-empty, and the runtime also requires the TradingCodex approval-hash modes configured in `app/mcp_server/main.py`.
+
+### Forecast resolution semantics
+
+`forecast_resolve` auto-closes a due placeholder whose
+`forecast_target.kind` is `no_resolvable_forecast`. A dry run reports
+`would_close_no_claim`; a persisted run assigns `closed_no_claim`. These rows
+keep `outcome` and `brier_score` null and are excluded from calibration
+aggregates. Other non-price forecast kinds continue to require an explicit
+manual outcome and evidence.
+
+New `price_target` rows must stamp
+`outcome_rule_version="window-touch-v1-high-gte-low-lte"` and keep the original
+window-touch contract: `at_or_above` uses the window `max(high)` and
+`at_or_below` uses `min(low)`. Versionless legacy rows are quarantined before
+candle lookup/backfill and are selected separately so they do not consume the
+normal due limit. The additive `terminal_close` kind is different. It accepts
+`direction="up"|"down"` with
+`outcome_rule_version="terminal-close-v1-up-gte-down-lt"` and uses exactly one
+allowlisted review-date daily `close` after the exchange-calendar final-session
+gate: equality is `up`, while `down` is strictly below. It never reads window
+high/low, extended-hours prices, or `adj_close`. Missing, stale, duplicate,
+non-final-session, untrusted-source, or invalid-close data leaves the forecast
+open with a typed status.
+
+Corporate-action adjustment fields are rejected pending ROB-1043. Legacy rows
+are never automatically reinterpreted or superseded; create a new typed
+terminal forecast ID and retain the old row in quarantine. See
+[`docs/runbooks/forecast-terminal-close.md`](../../docs/runbooks/forecast-terminal-close.md)
+for source-basis limits, the legacy-row procedure, read-only dry-run settings,
+and the ROB-1041/1042/1043 split.
 
 ### Typed KIS order tools
 
@@ -1426,3 +2603,148 @@ Each typed tool rejects any `account_mode` value other than its own pinned mode.
 ```
 
 With all mock vars missing, the `hermes-paper-kis` profile is effectively read-only KIS — the safe state for a misconfigured paper deployment.
+
+### Binance Demo scalping — server-derived market conditions (ROB-841)
+
+`binance_demo_scalping_submit_decision` (registered only when
+`settings.binance_demo_scalping_enabled` is true) accepts an LLM/MCP decision
+but **never** accepts caller-supplied spread or data-age. Before any risk check,
+the handler derives a `MarketConditions` snapshot **server-side** from the
+Demo-host bookTicker + latest 1m kline (`build_market_conditions`), and only that
+server-observed snapshot feeds the existing risk gates.
+
+- **Fail-closed**: if the bookTicker/kline provider fails, the kline is
+  empty/malformed, its timestamp is missing, or the quote is invalid (crossed or
+  non-positive), the tool returns `status="market_conditions_unavailable"` and
+  places **no order** — zero broker submit and zero ledger read/write. The
+  executor preflight also fails closed (`market_conditions_unavailable`) if a
+  caller omits the snapshot; the old `spread_bps=0`/`data_age_seconds=0`
+  synthesis (which silently disarmed the gates) is removed.
+- **Existing threshold reason codes are unchanged**: an over-threshold snapshot
+  is rejected as `stale_data` (`data_age_seconds > max_data_age_seconds`) or
+  `spread_too_wide` (`spread_bps > max_spread_bps`).
+- **Dry-run parity**: `dry_run=True` runs the same server-derived market/risk
+  preflight and returns the same judgment (`planned` / `blocked` /
+  `market_conditions_unavailable`, plus the observed `market_conditions`), but
+  performs no broker mutation and inserts no ledger row. A real Demo order still
+  requires `dry_run=false` **and** `confirm=true`.
+- Demo-host allowlist, notional/daily-loss/cooldown caps, and the broker-native
+  ledger/reconcile contract are unchanged.
+
+### Kiwoom mock US-equity order tools (ROB-867)
+
+Seven typed MCP tools for the dedicated `kiwoom_mock_us` account mode. These are
+**US-only** (NASDAQ/NYSE/AMEX) and completely independent from the KR
+`kiwoom_mock` namespace — separate app key, app secret, and account number. The
+US namespace never reads or falls back to `KIWOOM_MOCK_APP_KEY` /
+`KIWOOM_MOCK_APP_SECRET` / `KIWOOM_MOCK_ACCOUNT_NO`.
+
+Tool names (all under `account_mode="kiwoom_mock_us"`):
+
+- `kiwoom_mock_us_preview_order` — DB-resolved request body + requested-notional preview (no broker POST)
+- `kiwoom_mock_us_place_order` — submit buy/sell limit or market order (`dry_run` default)
+- `kiwoom_mock_us_cancel_order` — cancel by order id
+- `kiwoom_mock_us_modify_order` — modify original order number + new price
+- `kiwoom_mock_us_get_order_history(scope="open"|"today")` — open (default) or today's orders/fills
+- `kiwoom_mock_us_get_positions` — US positions (`ust21070`)
+- `kiwoom_mock_us_get_orderable_cash` — USD deposit detail (`ust21160`)
+
+Every mutation defaults to `dry_run=true`. Broker I/O requires both
+`dry_run=false` and `confirm=true`. Mock host is fixed to
+`https://mockapi.kiwoom.com` (transport-layer fail-closed); the live host cannot
+be selected.
+
+A confirmed place or modify is `status="submitted"` only when the broker
+response has a strict success code (`return_code` is integer `0` or string
+`"0"`) and a single non-conflicting canonical 1-18 digit order ID across the
+documented ID fields. Missing, invalid, or conflicting ID evidence returns
+`success=false`, `status="accepted_untracked"`,
+`reconcile_required=true`, and `retry_allowed=false`, while retaining redacted
+broker evidence. Callers must reconcile broker history and must not retry the
+tracked mutation automatically. A well-formed, non-zero broker code is the distinct
+`status="rejected"` case. Missing or malformed acceptance evidence returns
+`status="acceptance_uncertain"`, `reconcile_required=true`, and
+`retry_allowed=false`; it must not be treated as an explicit rejection or
+retried automatically. An uncertain modify may have created an unknown
+replacement ID, so smoke cleanup remains failed until an operator reconciles
+broker history. Client/configuration, OAuth, or other failure proven to occur
+before HTTP dispatch is the distinct `status="not_submitted"`,
+`reconcile_required=false` outcome. Trusted
+local validation failures retain actionable messages; provider exception text
+is withheld. Read and cancel response shaping is otherwise unchanged. All seven tools
+registered in one MCP process share one mock-host-pinned client and its locked
+OAuth token cache; bounded pagination and cleanup polling therefore do not
+issue a token request per page. That shared client enforces Kiwoom's stricter
+mock-account limit of one dispatch per `api-id` per second while allowing
+different TRs to proceed independently. The limiter is process-local; operators
+must not run another MCP or smoke process against the same mock US account.
+
+#### Exchange mapping
+
+MCP resolves active symbols through `us_symbol_universe` before any network call
+and maps the universe exchange to the Kiwoom `stex_tp` code:
+
+| Universe exchange | Kiwoom `stex_tp` |
+|---|---|
+| `NASDAQ` or `NASD` | `ND` |
+| `NYSE` | `NY` |
+| `AMEX` | `NA` |
+
+Missing, inactive, or unsupported exchanges fail closed. The DB-standard dot
+symbol is passed to Kiwoom unchanged initially. Class-share symbols such as
+`BRK.B` are marked **unverified** in the runbook until smoke evidence exists.
+
+#### trde_tp allowlist (order types)
+
+MCP exposes only the initial consumer-required order types. Broker support is
+recorded separately by the smoke runbook; documentation alone is not proof.
+All other codes are rejected **before symbol lookup, client construction, or
+network I/O** with a stable envelope:
+
+| MCP order type | `trde_tp` | Price rule |
+|---|---:|---|
+| `limit` | `00` | Positive price required; USD decimal string |
+| `market` | `03` | Price omitted; sent as empty string |
+
+Unsupported-code rejection:
+```json
+{
+  "success": false,
+  "error_code": "unsupported_trde_tp",
+  "rejected_trde_tp": "<code>",
+  "supported_trde_tp": ["00", "03"]
+}
+```
+
+Known mock capability refusal (`return_code=20` + `RC9000`) is classified as
+`error_code="capability_unsupported"` and never converted to success.
+
+#### Deposit cash semantics
+
+`kiwoom_mock_us_get_orderable_cash` does **not** call the documented
+`ust31490` orderable-quantity TR, which returned `RC9000` (mock-unsupported) on
+the 2026-07-13 read-only smoke. Instead it parses `ust21160.d0_usd_fx_entr` as a
+decimal USD deposit and returns:
+
+- `cash`: normalized decimal value, or `null` when parsing is not proven
+- `currency="USD"`
+- `cash_source="ust21160.d0_usd_fx_entr"` or an explicit `*_unparsed` source
+- `cash_semantics="deposit_not_broker_orderable"`
+- `orderable_quantity_supported=false`
+
+Preview calculates only the requested notional. It does not synthesize margin,
+orderable quantity, or a success claim based on the deposit value.
+
+#### KR `kiwoom_mock` vs US `kiwoom_mock_us`
+
+| | KR (`kiwoom_mock`) | US (`kiwoom_mock_us`) |
+|---|---|---|
+| Market | KRX only | NASDAQ/NYSE/AMEX |
+| Credentials | `KIWOOM_MOCK_*` | `KIWOOM_MOCK_US_*` (no fallback) |
+| Account mode | `kiwoom_mock` | `kiwoom_mock_us` |
+| Tick | KRX price-banded table | decimal USD (no tick table) |
+| Order history TR | `kt00009`/`kt00007` | `ust21050`/`ust21510` |
+| Orderable cash | `kt00010`/`kt00001` | `ust21160` deposit (ust31490 unsupported) |
+
+Operator smoke runbook: [`docs/runbooks/kiwoom-mock-us-smoke.md`](../../docs/runbooks/kiwoom-mock-us-smoke.md)
+Smoke CLI: `scripts/kiwoom_mock_us_smoke.py` (preflight / preview / full / probe modes)

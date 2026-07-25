@@ -8,6 +8,44 @@
 
 **Write path:** Operator-driven CLI or manually enqueued TaskIQ task only (no recurring scheduler — see §5). Both default to dry-run/no writes; persistence requires an explicit commit flag.
 
+### `oversold_recovery` snapshot-backing (ROB-543)
+
+`oversold_recovery` now reads the **same** `invest_screener_snapshots` partition as
+`consecutive_gainers` (no new table, no migration). The loader
+`_load_oversold_recovery_from_snapshots`
+(`app/services/invest_view_model/screener_service.py`) resolves the latest *healthy*
+partition (`resolve_healthy_partition`), then computes **RSI14 at read-time** from each
+row's persisted `closes_window` (`build_rsi14_from_closes`, needs ≥15 closes) and keeps
+rows with `RSI ≤ max_rsi` (default `30`, from `_SCREENING_FILTERS['oversold_recovery']`),
+sorted **RSI ascending** (deepest oversold first). Rows whose `closes_window` is shorter
+than 15 closes yield a null RSI and **drop honestly** (never surfaced without an RSI).
+
+- **Full-partition ranking (not an alphabetical slice):** RSI is not a snapshot column,
+  so the loader reads the **entire** latest partition (one thin row per active symbol —
+  no `raw_payload`), ranks every row by read-time RSI, and only then truncates to the
+  candidate set. It deliberately issues **no SQL `ORDER BY`/`LIMIT`** on the snapshot
+  select; ordering by `symbol` before the Python RSI rank would bias results toward
+  low ticker codes and silently drop the genuinely-deepest-oversold names.
+- **No migration:** RSI is derived from the existing `closes_window` column — the build
+  job/builder is reused unchanged. The same operator build that fills
+  `consecutive_gainers` also powers `oversold_recovery`.
+- **⚠️ Requires a `_LOOKBACK ≥ 15` partition (operator gate):** partitions built before
+  ROB-512 raised `_LOOKBACK` 10→30 persist only 10 closes, so every row yields a null
+  RSI and `oversold_recovery` returns **0 rows by design** until the operator **rebuilds**
+  the KR partition (`scripts/build_invest_screener_snapshots --market kr ...`). When a
+  partition exists but *no* row produced a usable RSI, the loader logs a distinct
+  `partition … has N rows but none produced a usable RSI14 … must be rebuilt` warning so
+  this "needs rebuild" state is distinguishable from a genuine "no oversold matches".
+- **Honest degradation:** on an empty/thin/missing partition the response sets
+  `dataState` to `missing`/`stale` with a warning. When a DB session is present, the
+  preset does **NOT** silently fall through to the live `screening_service` path (which
+  returned 0 rows on a KRX session-expiry — the outage ROB-543 fixes). With no session
+  at all, the live path remains available.
+- **MCP filter-threading:** `oversold_recovery` is registered in
+  `_PILOT_PRESET_SNAPSHOT` → `invest_screener_snapshots`, with an `rsi` (`lte`)
+  `ScreenerFilterDefinition` in `SNAPSHOT_FILTER_FIELDS`, so a `screen_stocks_snapshot`
+  `rsi <= N` override tightens `max_rsi` (fail-closed on unknown fields).
+
 ---
 
 ## 2. Operator Workflow
@@ -36,6 +74,29 @@ uv run python -m scripts.build_invest_screener_snapshots \
 via `INSERT ON CONFLICT DO UPDATE`. `--all` iterates the full active universe in
 `--batch-size` chunks (default 200), committing per batch when `--commit` is set.
 `--all` is mutually exclusive with `--symbol` and `--limit`.
+
+### Build `support_proximity` payloads (ROB-976)
+
+Run this only after the ordinary full KR partition exists. The dedicated builder
+uses that partition for cheap candidate preselection, then recalculates each
+bounded candidate's price and support from one completed-OHLCV frame and stores
+the normalized KRW market cap, turnover, support, and distance on the same row.
+`support_computed_at` marks every evaluated row, including honest no-support
+results, so an empty newer build cannot fall back to older matching candidates.
+
+```bash
+# Bounded preview; default is dry-run/no writes
+uv run python -m scripts.build_support_proximity_snapshot \
+    --market kr --candidate-pool-limit 30
+
+# Persist after reviewing the preview
+uv run python -m scripts.build_support_proximity_snapshot \
+    --market kr --candidate-pool-limit 30 --commit
+```
+
+The manual TaskIQ task name is `build_support_proximity_snapshots`. It has no
+schedule label and also defaults to `commit=false`. Both CLI and task persist
+only through `InvestScreenerSnapshotsRepository.upsert`.
 
 **Operator approval gating:** never run `--all --commit` against production
 without explicit human approval citing dry-run evidence. The recommended
@@ -121,7 +182,8 @@ scheduler activation can be reviewed against a known-stable manual baseline.
 
 - **Read/model/UI/data-layer only.** No broker, order, watch, or order-intent mutations.
 - The CLI defaults to `--dry-run`. Accidental invocation without `--commit` is a no-op.
-- Migration is table-create only — no `ALTER` of existing tables.
+- ROB-976 adds nullable support/quality columns and a partial ranking index; it
+  does not rewrite existing rows.
 - The repository's `upsert` is the only write path; direct `INSERT/UPDATE/DELETE` is forbidden.
 
 ---

@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Files in scope. Order doesn't matter; we read each and run the checks.
 _SCOPED_FILES: list[str] = [
+    "app/services/analysis_snapshot_bundle/capture.py",
     "app/services/investment_snapshots/repository.py",
     "app/services/investment_snapshots/collectors.py",
     "app/services/investment_snapshots/freshness.py",
@@ -60,6 +61,16 @@ _SCOPED_FILES: list[str] = [
     # service; safety guarantees flow through automatically.
     "app/flows/investment_snapshots_refresh_flow.py",
 ]
+
+_ANALYSIS_CAPTURE_FORBIDDEN_IMPORT_NAMES = {
+    "place_order",
+    "cancel_order",
+    "modify_order",
+    "order_proposal",
+    "investment_report_create",
+    "watch_create",
+    "execution_service",
+}
 
 # Lines containing this marker are exempted from boundary checks.
 _BYPASS_MARKER = "rob-269-boundary"
@@ -161,3 +172,14 @@ def test_scoped_file_list_is_non_empty_and_all_exist() -> None:
     missing = [f for f in _SCOPED_FILES if not (REPO_ROOT / f).exists()]
     assert missing == [], f"Scoped files missing: {missing}"
     assert len(_SCOPED_FILES) >= 10, "Boundary scope shrunk — investigate."
+
+
+def test_analysis_capture_has_no_mutation_boundary_imports() -> None:
+    lines = _read("app/services/analysis_snapshot_bundle/capture.py")
+    imports = [line for line in lines if line.lstrip().startswith(("import ", "from "))]
+    violations = [
+        line
+        for line in imports
+        if any(name in line for name in _ANALYSIS_CAPTURE_FORBIDDEN_IMPORT_NAMES)
+    ]
+    assert violations == []

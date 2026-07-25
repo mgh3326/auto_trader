@@ -7,6 +7,8 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+import sentry_sdk
+
 from app.mcp_server.tooling.analysis_tool_handlers import get_fear_greed_index_impl
 from app.mcp_server.tooling.fundamentals._crypto import handle_get_kimchi_premium
 from app.mcp_server.tooling.fundamentals._market_index import handle_get_market_index
@@ -65,12 +67,37 @@ def _format_number(value: Any, *, digits: int = 2) -> str | None:
     return f"{num:.{digits}f}"
 
 
+def _as_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
 def _metric_from_index(
     row: dict[str, Any], *, href: str | None = None
 ) -> MarketDashboardMetric:
     warning = str(row.get("error")) if row.get("error") else None
     change_pct = _as_float(row.get("change_pct"))
     change = _as_float(row.get("change"))
+    data_state = str(row.get("data_state")) if row.get("data_state") else None
+    is_stale_state = data_state == "stale"
     return MarketDashboardMetric(
         label=str(row.get("name") or row.get("symbol") or "지수"),
         value=_format_number(row.get("current")),
@@ -80,8 +107,14 @@ def _metric_from_index(
         source=str(row.get("source") or "market_index"),
         symbol=str(row.get("symbol")) if row.get("symbol") else None,
         href=href,
-        stale=warning is not None or row.get("current") is None,
+        stale=warning is not None or row.get("current") is None or is_stale_state,
         warning=warning,
+        dataState=data_state,
+        dataStateReason=(
+            str(row.get("data_state_reason")) if row.get("data_state_reason") else None
+        ),
+        quoteAsOf=_parse_datetime(row.get("quote_asof")),
+        quoteLagSeconds=_as_int(row.get("quote_lag_seconds")),
     )
 
 
@@ -100,7 +133,7 @@ def _section_state(
     if not metrics:
         return "missing"
     usable = [m for m in metrics if m.value is not None and not m.warning]
-    if warnings or len(usable) < len(metrics):
+    if warnings or any(m.stale for m in metrics) or len(usable) < len(metrics):
         return "partial" if usable else "error"
     return "fresh"
 
@@ -109,7 +142,17 @@ async def _capture(
     label: str, call: Callable[[], Awaitable[Any]]
 ) -> tuple[Any | None, str | None]:
     try:
-        return await asyncio.wait_for(call(), timeout=6), None
+        with sentry_sdk.start_span(
+            op="invest.market.provider",
+            name=f"invest.market.{label}",
+        ) as span:
+            span.set_tag("provider", label)
+            result = await asyncio.wait_for(call(), timeout=6)
+            if isinstance(result, dict):
+                span.set_data("payload_keys", sorted(str(key) for key in result.keys()))
+            elif isinstance(result, list):
+                span.set_data("payload_length", len(result))
+            return result, None
     except Exception as exc:  # provider failures should not break /invest shell
         return None, f"{label}: {exc}"
 
@@ -303,12 +346,14 @@ async def build_market_dashboard(
 ) -> MarketDashboardResponse:
     provider = provider or DefaultMarketDashboardProvider()
     as_of = _now()
-    indices, index_warning = await _capture("market_index", provider.get_indices)
-    fear_greed, fear_greed_warning = await _capture(
-        "fear_greed", provider.get_fear_greed
-    )
-    kimchi, kimchi_warning = await _capture(
-        "kimchi_premium", provider.get_kimchi_premium
+    (
+        (indices, index_warning),
+        (fear_greed, fear_greed_warning),
+        (kimchi, kimchi_warning),
+    ) = await asyncio.gather(
+        _capture("market_index", provider.get_indices),
+        _capture("fear_greed", provider.get_fear_greed),
+        _capture("kimchi_premium", provider.get_kimchi_premium),
     )
 
     sections, warnings = _build_index_sections(indices, index_warning, as_of)

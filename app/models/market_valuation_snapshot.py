@@ -33,7 +33,7 @@ class MarketValuationSnapshot(Base):
             name="ck_market_valuation_snapshots_market",
         ),
         CheckConstraint(
-            "source IN ('naver_finance', 'yahoo', 'toss_openapi')",
+            "source IN ('naver_finance', 'yahoo', 'toss_openapi', 'tvscreener')",
             name="ck_market_valuation_snapshots_source",
         ),
         Index(

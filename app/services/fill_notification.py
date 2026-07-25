@@ -9,7 +9,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from app.core.portfolio_links import build_position_detail_url
+from app.core.kr_symbols import KR_SYMBOLS
+from app.services.kr_symbol_universe_service import get_kr_names_by_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,17 @@ class FillOrder:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class FillEnrichment:
+    """Best-effort 보강 데이터. 항상 근사치(~추정). 조회 실패 시 None 필드."""
+
+    position_qty: float | None = None
+    position_avg_price: float | None = None
+    realized_pnl_amount: float | None = None
+    realized_pnl_rate: float | None = None
+    is_approximate: bool = True
 
 
 FillOrderLike = FillOrder | Mapping[str, Any]
@@ -298,8 +310,10 @@ def normalize_upbit_fill(raw: Mapping[str, Any]) -> FillOrder:
     symbol = str(_pick_first(raw, ["code", "market", "symbol"]) or "UNKNOWN")
     side = _normalize_side(str(_pick_first(raw, ["ask_bid", "side"]) or ""))
     filled_price = _safe_float(_pick_first(raw, ["trade_price", "price", "avg_price"]))
+    # Upbit myOrder uses ``volume`` for the current fill when state=trade;
+    # ``executed_volume`` is cumulative order evidence used by rung projection.
     filled_qty = _safe_float(
-        _pick_first(raw, ["trade_volume", "executed_volume", "volume"])
+        _pick_first(raw, ["trade_volume", "volume", "executed_volume"])
     )
     filled_amount = _safe_float(_pick_first(raw, ["trade_amount", "executed_amount"]))
     if filled_amount <= 0 and filled_price > 0 and filled_qty > 0:
@@ -384,6 +398,47 @@ def normalize_kis_fill(raw: Mapping[str, Any]) -> FillOrder:
     )
 
 
+def _get_fill_source_value(source: Any, key: str, default: Any = None) -> Any:
+    if isinstance(source, Mapping):
+        return source.get(key, default)
+    return getattr(source, key, default)
+
+
+def normalize_toss_fill(
+    row: Any,
+    *,
+    delta: Decimal | float | int,
+    avg_price: Decimal | float | int,
+    fill_status: str | None = None,
+    filled_at: Any | None = None,
+) -> FillOrder:
+    """Normalize a Toss live ledger fill delta into the shared FillOrder shape."""
+    symbol = str(_get_fill_source_value(row, "symbol") or "UNKNOWN")
+    market_type = _normalize_market_type(_get_fill_source_value(row, "market"))
+    currency = _normalize_currency(
+        _get_fill_source_value(row, "currency")
+    ) or _default_currency_for_market(market_type, account="toss")
+    filled_price = _safe_float(avg_price)
+    filled_qty = _safe_float(delta)
+    filled_amount = filled_price * filled_qty
+
+    return FillOrder(
+        symbol=symbol,
+        side=_normalize_side(str(_get_fill_source_value(row, "side") or "")),
+        filled_price=filled_price,
+        filled_qty=filled_qty,
+        filled_amount=filled_amount,
+        filled_at=_parse_timestamp(filled_at),
+        account="toss",
+        order_price=_safe_float_or_none(_get_fill_source_value(row, "price")),
+        order_id=_safe_text_or_none(_get_fill_source_value(row, "broker_order_id")),
+        order_type=_safe_text_or_none(_get_fill_source_value(row, "order_type")),
+        fill_status=_normalize_fill_status(fill_status),
+        market_type=market_type,
+        currency=currency,
+    )
+
+
 def _format_side_emoji(side: str) -> str:
     if side == "bid":
         return "🟢"
@@ -425,35 +480,68 @@ def _format_quantity(value: float) -> str:
     return f"{value:.12f}".rstrip("0").rstrip(".")
 
 
-def format_fill_message(order: FillOrderLike) -> str:
-    normalized = coerce_fill_order(order)
-    side_emoji = _format_side_emoji(normalized.side)
-    side_text = _format_side_text(normalized.side)
-    is_partial = normalized.fill_status == "partial"
-    fill_label = "부분체결" if is_partial else "체결"
+# Removed format_fill_message function as part of redesign
 
-    price_diff = ""
-    if normalized.order_price and normalized.order_price != 0:
-        diff_pct = (
-            (normalized.filled_price - normalized.order_price) / normalized.order_price
-        ) * 100
-        price_diff = f" ({diff_pct:+.2f}%)"
 
-    message = (
-        f"{side_emoji} 체결 알림\n\n"
-        f"종목: {normalized.symbol}\n"
-        f"구분: {side_text} {fill_label}\n"
-        f"체결가: {_format_money(normalized.filled_price, normalized.currency)}{price_diff}\n"
-        f"수량: {_format_quantity(normalized.filled_qty)}\n"
-        f"금액: {_format_money(normalized.filled_amount, normalized.currency)}\n"
-        f"시간: {normalized.filled_at}\n\n"
-        f"계좌: {normalized.account}"
-    )
-    if normalized.order_id:
-        message += f"\n주문: {normalized.order_id[:8]}..."
+_KR_SYMBOLS_REVERSE: dict[str, str] | None = None
 
-    detail_url = build_position_detail_url(normalized.symbol, normalized.market_type)
-    if detail_url:
-        message += f"\n상세: {detail_url}"
 
-    return message
+def _get_kr_symbol_reverse() -> dict[str, str]:
+    global _KR_SYMBOLS_REVERSE
+    if _KR_SYMBOLS_REVERSE is None:
+        _KR_SYMBOLS_REVERSE = {v: k for k, v in KR_SYMBOLS.items()}
+    return _KR_SYMBOLS_REVERSE
+
+
+def resolve_symbol_display_name(market_type: str | None, symbol: str) -> str:
+    """KR: KR_SYMBOLS 역매핑(미존재 시 코드). US: 심볼. Crypto: KRW-BTC->BTC."""
+    if market_type == "kr":
+        return _get_kr_symbol_reverse().get(symbol, symbol)
+    if market_type == "crypto" and "-" in symbol:
+        return symbol.split("-")[-1]
+    return symbol
+
+
+def resolve_fill_display_name(order: FillOrder) -> str:
+    """Delegate to resolve_symbol_display_name using order properties."""
+    return resolve_symbol_display_name(order.market_type, order.symbol)
+
+
+async def resolve_display_name_db(market_type: str | None, symbol: str) -> str:
+    """DB(kr_symbol_universe) 기반 KR 종목명 해석 (ROB-571).
+
+    KR 코드는 전체 유니버스에서 이름을 조회(011200→HMM). 조회 실패/이름 없음/
+    타 시장은 sync ``resolve_symbol_display_name``으로 fail-open(US=심볼, crypto=split).
+    """
+    if market_type == "kr":
+        try:
+            names = await get_kr_names_by_symbols([symbol])
+            name = names.get(symbol)
+            if name:
+                return name
+        except Exception:
+            logger.debug(
+                "DB display-name resolution failed: %s/%s",
+                market_type,
+                symbol,
+                exc_info=True,
+            )
+    return resolve_symbol_display_name(market_type, symbol)
+
+
+_MIN_NOTIFY_AMOUNT: dict[str, float] = {"KRW": 50_000.0, "USD": 50.0}
+
+
+def is_fill_notifiable(order: FillOrder) -> bool:
+    """통화별 최소 체결금액 이상이면 True (구버전 통화-무시 50,000 버그 수정)."""
+    currency = (order.currency or "KRW").upper()
+    threshold = _MIN_NOTIFY_AMOUNT.get(currency, 50_000.0)
+    return order.filled_amount >= threshold
+
+
+def format_fill_money(value: float, *, is_usd: bool) -> str:
+    return _format_usd(value) if is_usd else _format_krw(value)
+
+
+def format_fill_quantity(value: float) -> str:
+    return _format_quantity(value)

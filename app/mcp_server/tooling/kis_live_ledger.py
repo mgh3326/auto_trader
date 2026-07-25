@@ -17,6 +17,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import KST, now_kst
 from app.mcp_server.tooling.order_journal import (
@@ -29,13 +30,19 @@ from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.models.review import KISLiveOrderLedger
 from app.services.brokers.kis.live_order_expiry import (
+    SESSION_REGULAR,
     classify_day_order_expiry,
+    classify_kr_accept_session,
+    kr_day_order_expiry,
     nxt_session_closed,
 )
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
     FillVerdict,
     classify_fill_evidence,
 )
+from app.services.kis_live_order_ledger_service import KISLiveOrderLedgerService
+from app.services.live_correlation import live_correlation_id
+from app.services.live_place_provenance import publish_place_time_forecast
 
 # lifecycle_state mirrors status for live (no separate mock shadow semantics)
 _STATUS_TO_LIFECYCLE: dict[str, str] = {
@@ -107,9 +114,13 @@ async def _save_kis_live_order_ledger(
     min_hold_days: int | None,
     notes: str | None,
     exit_reason: str | None,
+    exit_intent: str | None = None,
     indicators_snapshot: dict[str, Any] | None,
     fee: float = 0.0,
     report_item_uuid: uuid.UUID | None = None,
+    approval_hash: str | None = None,
+    idempotency_key: str | None = None,
+    correlation_id: str | None = None,
 ) -> int | None:
     """Insert one accepted/rejected live order row. Returns new id or None."""
     try:
@@ -145,8 +156,12 @@ async def _save_kis_live_order_ledger(
                     min_hold_days=min_hold_days,
                     notes=notes,
                     exit_reason=exit_reason,
+                    exit_intent=exit_intent,
                     indicators_snapshot=indicators_snapshot,
                     report_item_uuid=report_item_uuid,
+                    approval_hash=approval_hash,
+                    idempotency_key=idempotency_key,
+                    correlation_id=correlation_id,
                 )
                 .on_conflict_do_nothing(constraint="uq_kis_live_ledger_order_no")
             )
@@ -163,19 +178,44 @@ async def _save_kis_live_order_ledger(
 _BROKER_EXCHANGE_KEYS = ("EXCG_ID_DVSN_CD", "excg_id_dvsn_cd", "exg_id_dvsn_cd")
 
 
-def _expected_day_order_expiry(now: datetime.datetime) -> str | None:
-    """Day-order expiry = NXT close 20:00 KST of the send date (ISO 8601), or None.
+def _expected_day_order_expiry(
+    now: datetime.datetime,
+    *,
+    side: str,
+    accept_session: str | None = None,
+    unsettled_regular_buy_downgrade: bool = False,
+) -> tuple[str | None, str]:
+    """(ISO expiry, categorical reason) for a KR day order by accept-session × side.
 
-    ROB-487: SOR day orders stay alive in the NXT session until 20:00 KST. The
-    old KRX 15:30 stamp gave a 15:31 NXT-session order an expected_expiry that
-    was already in the past at send time.
+    ROB-671: delegates to the stdlib-only classifier. Regular-session BUY stays
+    20:00 KST by conservative default (the historical 15:30 death may be a D+2
+    unsettled-cash cancel, not session expiry); the downgrade is gated by
+    ``settings.kis_regular_buy_unsettled_expiry_1530``. Regular SELL / premarket /
+    nxt_after carry to the NXT close (20:00).
     """
     try:
-        local = now.astimezone(KST)
-        close = local.replace(hour=20, minute=0, second=0, microsecond=0)
-        return close.isoformat()
+        return kr_day_order_expiry(
+            accepted_at=now.astimezone(KST),
+            side=side,
+            accept_session=accept_session,
+            unsettled_regular_buy_downgrade=unsettled_regular_buy_downgrade,
+        )
     except (ValueError, OverflowError):
-        return None
+        return None, "unknown_session"
+
+
+def _build_kr_routing_note(*, side: str, accept_session: str) -> str:
+    """Dynamic SOR routing note that warns about session × side death risk."""
+    base = "SOR auto-route (KRX; NXT-eligible)"
+    normalized_side = (side or "").strip().lower()
+    if accept_session == SESSION_REGULAR and normalized_side == "buy":
+        return (
+            f"{base}. 정규장 매수: 미수/미결제(현금 미결제) 자금이면 15:30 소멸 위험 — "
+            "체결/생존 여부는 remaining_qty(잔량)로 확인하세요."
+        )
+    if normalized_side == "sell":
+        return f"{base}. NXT carry: SOR 현금매도는 NXT 마감(20:00 KST)까지 유효합니다."
+    return f"{base}. NXT-eligible: 20:00 KST까지 유효합니다."
 
 
 def _extract_broker_exchange(execution_result: dict[str, Any]) -> str | None:
@@ -199,6 +239,7 @@ async def _record_kis_live_order(
     execution_result: dict[str, Any],
     reason: str | None,
     exit_reason: str | None,
+    exit_intent: str | None = None,
     thesis: str | None,
     strategy: str | None,
     target_price: float | None,
@@ -207,9 +248,21 @@ async def _record_kis_live_order(
     notes: str | None,
     indicators_snapshot: dict[str, Any] | None,
     report_item_uuid: uuid.UUID | None = None,
+    approval_hash: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Record a live KR order as accepted/rejected. No fill/journal/pnl booked."""
+    now = now_kst()
+    accept_session = classify_kr_accept_session(now)
+    expiry_iso, expiry_reason = _expected_day_order_expiry(
+        now,
+        side=side,
+        accept_session=accept_session,
+        unsettled_regular_buy_downgrade=settings.kis_regular_buy_unsettled_expiry_1530,
+    )
+
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
+
     qty_val = _to_float(dry_run_result.get("quantity"), default=0.0)
     amt_val = _to_float(dry_run_result.get("estimated_value"), default=0.0)
     currency = "KRW" if market_type != "equity_us" else "USD"
@@ -227,6 +280,15 @@ async def _record_kis_live_order(
         rt_cd=rt_cd, order_no=str(order_no) if order_no else None
     )
 
+    correlation_id = live_correlation_id(
+        account_scope="kis_live",
+        symbol=normalized_symbol,
+        side=side,
+        price=Decimal(str(price_val)),
+        quantity=Decimal(str(qty_val)),
+        kst_trade_day=now.strftime("%Y-%m-%d"),
+        rung=0,
+    )
     ledger_id = await _save_kis_live_order_ledger(
         symbol=normalized_symbol,
         instrument_type=market_type,
@@ -251,9 +313,26 @@ async def _record_kis_live_order(
         min_hold_days=min_hold_days,
         notes=notes,
         exit_reason=exit_reason,
+        exit_intent=exit_intent,
         indicators_snapshot=indicators_snapshot,
         report_item_uuid=report_item_uuid,
+        approval_hash=approval_hash,
+        idempotency_key=idempotency_key,
+        correlation_id=correlation_id,
     )
+
+    if status == "accepted":
+        await publish_place_time_forecast(
+            correlation_id=correlation_id,
+            symbol=normalized_symbol,
+            instrument_type=market_type,
+            side=side,
+            target_price=target_price,
+            min_hold_days=min_hold_days,
+            session_label="kis_live_place",
+            created_by="auto_place_live",
+            report_item_uuid=str(report_item_uuid) if report_item_uuid else None,
+        )
 
     return {
         "success": True,
@@ -275,10 +354,12 @@ async def _record_kis_live_order(
         "order_validity": "day",
         "routing": {
             "requested_venue": "auto",
-            "note": "SOR auto-route (KRX; NXT-eligible)",
+            "note": _build_kr_routing_note(side=side, accept_session=accept_session),
         },
-        "expected_expiry": _expected_day_order_expiry(now_kst()),
+        "expected_expiry": expiry_iso,
+        "expiry_reason": expiry_reason,
         "broker_exchange": _extract_broker_exchange(execution_result),
+        "correlation_id": correlation_id,
         "message": (
             "KIS live order accepted (pending fill); run kis_live_reconcile_orders "
             "to record fill/journal once the broker confirms execution"
@@ -539,6 +620,95 @@ async def _list_open_ledger_rows(
         return rows
 
 
+async def _converge_kis_proposal_rung(
+    row: KISLiveOrderLedger,
+    *,
+    ledger_status: str,
+    filled_qty: Decimal | None,
+) -> dict[str, Any] | None:
+    """Project committed KIS terminal evidence in an independent session."""
+    from app.services.order_proposals import OrderProposalsService
+
+    terminal_state = {
+        "filled": "filled",
+        "cancelled": "cancelled",
+        "expired": "expired",
+        # A broker rejection observed after submission is expiry evidence for a
+        # resting DAY rung; do not force the submit-time `rejected` transition.
+        "rejected": "expired",
+    }.get(ledger_status)
+    if terminal_state is None:
+        return None
+    try:
+        async with _order_session_factory()() as db:
+            service = OrderProposalsService(db)
+            rung_id = await service.find_unambiguous_evidence_rung_id(
+                correlation_id=row.correlation_id,
+                broker_order_id=row.order_no,
+                idempotency_key=row.idempotency_key,
+                account_mode="kis_live",
+                symbol=row.symbol,
+                market=row.instrument_type,
+            )
+            if rung_id is None:
+                return None
+            rung = await service.record_fill_evidence_for_rung(
+                rung_id=rung_id,
+                correlation_id=row.correlation_id,
+                broker_order_id=row.order_no,
+                idempotency_key=row.idempotency_key,
+                filled_qty=(
+                    None if terminal_state in {"cancelled", "expired"} else filled_qty
+                ),
+                terminal_state=terminal_state,
+                now=datetime.datetime.now(datetime.UTC),
+                account_mode="kis_live",
+                symbol=row.symbol,
+                market=row.instrument_type,
+            )
+            await db.commit()
+    except Exception as exc:  # noqa: BLE001 - ledger booking remains authoritative
+        logger.error(
+            "KIS proposal rung convergence failed ledger_id=%s order_no=%s "
+            "ledger_status=%s: %s",
+            row.id,
+            row.order_no,
+            ledger_status,
+            exc,
+        )
+        return {"converged": False, "error": str(exc) or exc.__class__.__name__}
+    if rung is None:
+        return None
+    return {"converged": True, "proposal_rung_state": rung.state}
+
+
+async def _repair_terminal_kis_proposal_projections(
+    *, symbol: str | None, order_id: str | None, limit: int
+) -> dict[str, int]:
+    """Idempotently repair KIS terminal ledger rows skipped by the open scan."""
+    async with _order_session_factory()() as db:
+        rows, anomalies = await KISLiveOrderLedgerService(
+            db
+        ).list_terminal_projection_candidates(
+            symbol=symbol, order_id=order_id, limit=limit
+        )
+    report = {
+        "candidates": len(rows),
+        "converged": 0,
+        "failed": 0,
+        "anomalies": anomalies,
+    }
+    for row in rows:
+        result = await _converge_kis_proposal_rung(
+            row, ledger_status=row.status, filled_qty=row.filled_qty
+        )
+        if result is not None and result.get("converged") is False:
+            report["failed"] += 1
+        else:
+            report["converged"] += 1
+    return report
+
+
 async def _reconcile_one_ledger_row(
     row: KISLiveOrderLedger, *, dry_run: bool
 ) -> dict[str, Any]:
@@ -667,6 +837,7 @@ async def _reconcile_one_ledger_row(
             indicators_snapshot=row.indicators_snapshot,
             account_type="live",
             account="kis",
+            correlation_id=getattr(row, "correlation_id", None),
         )
         journal_id = journal_result.get("journal_id")
         if trade_id and journal_id:
@@ -685,6 +856,15 @@ async def _reconcile_one_ledger_row(
         base["journals_closed"] = close_result["journals_closed"]
         base["closed_journal_ids"] = close_result["closed_ids"]
         base["realized_pnl_pct"] = close_result["total_pnl_pct"]
+        # ROB-544: label the basis. realized_pnl_pct is the FIFO lot /
+        # journal-entry basis (per-lot entry_price), NOT the account-average
+        # pchs_avg_pric shown in place_order preview / get_holdings.
+        base["realized_pnl_basis"] = close_result.get(
+            "realized_pnl_basis", "journal_entry"
+        )
+        # Explicit alias so the journal-entry semantics are unambiguous to
+        # consumers that already read realized_pnl_pct for back-compat.
+        base["journal_pnl_pct"] = close_result["total_pnl_pct"]
 
     await _update_ledger_outcome(
         ledger_id=row.id,
@@ -694,6 +874,15 @@ async def _reconcile_one_ledger_row(
         trade_id=trade_id,
         journal_id=journal_id,
     )
+    # Historical terminal rows are handled by the repair pre-pass. A fill
+    # booked during this scan must project immediately in the same reconcile.
+    converged = await _converge_kis_proposal_rung(
+        row,
+        ledger_status=new_status,
+        filled_qty=broker_cum,
+    )
+    if converged is not None:
+        base["proposal_rung"] = converged
     base["action"] = f"booked_{new_status}"
     base["trade_id"] = trade_id
     base["journal_id"] = journal_id
@@ -708,6 +897,11 @@ async def kis_live_reconcile_orders_impl(
     limit: int = 100,
 ) -> dict[str, Any]:
     """Reconcile accepted/pending live KR orders against broker fill evidence."""
+    projection_repair = {"candidates": 0, "converged": 0, "failed": 0, "anomalies": {}}
+    if not dry_run:
+        projection_repair = await _repair_terminal_kis_proposal_projections(
+            symbol=symbol, order_id=order_id, limit=limit
+        )
     try:
         rows = await _list_open_ledger_rows(
             symbol=symbol, order_no=order_id, limit=limit
@@ -753,6 +947,7 @@ async def kis_live_reconcile_orders_impl(
         "dry_run": dry_run,
         "counts": counts,
         "reconciled": reconciled,
+        "proposal_projection_repair": projection_repair,
         "message": message,
     }
 
@@ -760,7 +955,15 @@ async def kis_live_reconcile_orders_impl(
 async def list_kis_live_orders_by_report_item_uuid(
     report_item_uuid: uuid.UUID,
 ) -> list[dict[str, Any]]:
-    """ROB-473 — return live KR orders linked to a report item (audit)."""
+    """ROB-473 — live KR orders linked to a report item (audit).
+
+    ROB-554 — projects via the shared LinkedOrderView (account_mode ->
+    account_scope, market="kr") so KR and US/crypto share one field mapping.
+    """
+    from app.services.investment_reports.linked_orders import (
+        project_kis_live_order,
+    )
+
     async with _order_session_factory()() as db:
         rows = (
             (
@@ -773,14 +976,4 @@ async def list_kis_live_orders_by_report_item_uuid(
             .scalars()
             .all()
         )
-    return [
-        {
-            "ledger_id": r.id,
-            "order_no": r.order_no,
-            "symbol": r.symbol,
-            "side": r.side,
-            "status": r.status,
-            "report_item_uuid": str(r.report_item_uuid) if r.report_item_uuid else None,
-        }
-        for r in rows
-    ]
+    return [project_kis_live_order(r).model_dump(mode="json") for r in rows]

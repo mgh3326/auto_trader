@@ -1,0 +1,144 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { SessionContextTimelinePanel } from "../components/insights/SessionContextTimelinePanel";
+
+afterEach(() => vi.unstubAllGlobals());
+
+const body = {
+  success: true as const,
+  count: 2,
+  filters: {
+    market: null,
+    account_scope: null,
+    kst_date_from: null,
+    entry_type: null,
+    limit: 15,
+  },
+  entries: [
+    {
+      entry_uuid: "e-1",
+      kst_date: "2026-07-03",
+      market: "kr",
+      account_scope: null,
+      entry_type: "handoff_note",
+      title: "다음 세션 인계",
+      body: "삼성전자 매수 래더 절반 남음",
+      refs: { symbols: ["005930"], order_id: "ORD-1", report_uuid: "rep-abcdef1234" },
+      created_by: "claude",
+      session_label: null,
+      created_at: "2026-07-03T09:00:00+00:00",
+    },
+    {
+      entry_uuid: "e-2",
+      kst_date: "2026-07-02",
+      market: "us",
+      account_scope: null,
+      entry_type: "decision",
+      title: "AAPL 관망 결정",
+      body: "실적 발표 전까지 대기",
+      refs: {},
+      created_by: "claude",
+      session_label: null,
+      created_at: "2026-07-02T22:00:00+00:00",
+    },
+  ],
+};
+
+describe("SessionContextTimelinePanel", () => {
+  it("renders recent handoff entries with entry_type chip", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => body,
+      })) as unknown as typeof fetch,
+    );
+
+    render(
+      <MemoryRouter>
+        <SessionContextTimelinePanel />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => screen.getByText("다음 세션 인계"));
+    expect(screen.getByTestId("session-context-timeline-panel")).toBeTruthy();
+    expect(screen.getByText("handoff_note")).toBeTruthy();
+
+    // ROB-673: refs crosslinks — symbol links to stock detail, provenance surfaced
+    const symLink = screen.getByRole("link", { name: "005930" });
+    expect(symLink).toHaveAttribute("href", "/stocks/kr/005930");
+    expect(screen.getByText(/주문 ORD-1/)).toBeInTheDocument();
+
+    // ROB-676: entry_type → Pill tone mapping (decision=gain, handoff_note=paper)
+    expect(screen.getByText("decision")).toHaveAttribute("data-tone", "gain");
+    expect(screen.getByText("handoff_note")).toHaveAttribute("data-tone", "paper");
+
+    // ROB-676: rows grouped under per-kst_date headers (newest date first)
+    expect(screen.getByText("2026-07-03")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-02")).toBeInTheDocument();
+    expect(screen.getByText("AAPL 관망 결정")).toBeInTheDocument();
+
+    // ROB-679: row shows time only (HH:MM); the date is not repeated from the group header
+    expect(screen.getByText("09:00")).toBeInTheDocument();
+    expect(screen.getByText("22:00")).toBeInTheDocument();
+    expect(screen.queryByText(/2026-07-03 09:00/)).not.toBeInTheDocument();
+
+    // ROB-680: short bodies stay unclamped — no 더보기/접기 toggle rendered
+    expect(screen.queryAllByTestId("session-row-toggle")).toHaveLength(0);
+  });
+
+  it("clamps long bodies behind a 더보기 toggle", async () => {
+    const longBody = {
+      ...body,
+      count: 3,
+      entries: [
+        ...body.entries,
+        {
+          entry_uuid: "e-3",
+          kst_date: "2026-07-03",
+          market: "kr",
+          account_scope: null,
+          entry_type: "decision" as const,
+          title: "장문 결정 메모",
+          body: "a\nb\nc\nd\ne\nf",
+          refs: {},
+          created_by: "claude",
+          session_label: null,
+          created_at: "2026-07-03T10:00:00+00:00",
+        },
+      ],
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => longBody,
+      })) as unknown as typeof fetch,
+    );
+
+    render(
+      <MemoryRouter>
+        <SessionContextTimelinePanel />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => screen.getByText("장문 결정 메모"));
+
+    const toggle = screen.getByTestId("session-row-toggle");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveTextContent("더보기");
+
+    // jsdom does not compute CSS clamping, so the full body text is always in
+    // the DOM regardless of collapsed/expanded state — no accessibility regression.
+    expect(screen.getByText((_, node) => node?.textContent === "a\nb\nc\nd\ne\nf")).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveTextContent("접기");
+  });
+});

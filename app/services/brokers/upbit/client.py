@@ -4,6 +4,7 @@ import logging
 import random
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -17,6 +18,7 @@ from app.core.config import settings
 from app.services.upbit_symbol_universe_service import get_active_upbit_markets
 
 logger = logging.getLogger(__name__)
+PreSendHook = Callable[[], Awaitable[None]]
 
 UPBIT_REST = "https://api.upbit.com/v1"
 UPBIT_CANDLES_RATE_LIMIT_KEY = "GET /v1/candles/*"
@@ -100,6 +102,8 @@ async def _retry_with_backoff(
     url: str,
     max_retries: int | None = None,
     base_delay: float | None = None,
+    retry_request_errors: bool = True,
+    pre_send_hook: PreSendHook | None = None,
 ) -> Any:
     """Common retry-with-backoff loop for Upbit API requests.
 
@@ -114,6 +118,14 @@ async def _retry_with_backoff(
     max_retries / base_delay
         Override ``settings.api_rate_limit_retry_429_max`` /
         ``settings.api_rate_limit_retry_429_base_delay``.
+    retry_request_errors
+        Whether to retry on ``httpx.RequestError`` (timeouts/network). ROB-645:
+        order-creation POSTs pass ``False`` so a timed-out order is never re-sent
+        (ROB-837 also gives order creation a zero retry budget, including 429).
+    pre_send_hook
+        Optional live-mutation policy recheck. It runs after each rate-limiter
+        admission and immediately before that attempt's HTTP send, including
+        retries.
     """
     if max_retries is None:
         max_retries = settings.api_rate_limit_retry_429_max
@@ -128,6 +140,8 @@ async def _retry_with_backoff(
         )
 
         try:
+            if pre_send_hook is not None:
+                await pre_send_hook()
             response = await send_fn()
 
             if response.status_code == 429:
@@ -166,7 +180,7 @@ async def _retry_with_backoff(
                 continue
             raise
         except httpx.RequestError as e:
-            if attempt < max_retries:
+            if retry_request_errors and attempt < max_retries:
                 wait_time = base_delay * (2**attempt) + random.uniform(0, 0.1)
                 logger.warning(
                     "[upbit] Request error: %s, attempt %d/%d, retrying in %.3fs (url=%s)",
@@ -835,6 +849,8 @@ async def _request_with_auth(
     url: str,
     query_params: dict[str, Any] | None = None,
     body_params: dict[str, Any] | None = None,
+    *,
+    pre_send_hook: PreSendHook | None = None,
 ) -> Any:
     import hashlib
     from urllib.parse import unquote, urlencode, urlparse
@@ -878,7 +894,27 @@ async def _request_with_auth(
             else:
                 raise ValueError(f"지원하지 않는 HTTP 메서드: {method}")
 
-    return await _retry_with_backoff(limiter, send, url=url)
+    # Live order mutations must not retry transport errors or 429 responses.
+    # A POST may have created an order and a DELETE may have cancelled one even
+    # when the response is lost; retrying also makes a later approval-window
+    # hook unable to distinguish HTTP=0 from an earlier ambiguous attempt.
+    # Read paths keep the existing retry behavior.
+    #
+    # ROB-659 constraint note: mutation detection is deliberately limited to
+    # POST /v1/orders (create) and DELETE /v1/order (cancel). If Upbit adds
+    # another endpoint with either suffix, revisit this predicate.
+    normalized_path = api_path.rstrip("/")
+    is_order_mutation = (
+        method.upper() == "POST" and normalized_path.endswith("/orders")
+    ) or (method.upper() == "DELETE" and normalized_path.endswith("/order"))
+    return await _retry_with_backoff(
+        limiter,
+        send,
+        url=url,
+        max_retries=0 if is_order_mutation else None,
+        retry_request_errors=not is_order_mutation,
+        pre_send_hook=pre_send_hook,
+    )
 
 
 # Re-export order functions for backward compatibility using lazy loading to avoid circular imports.
@@ -889,6 +925,7 @@ def __getattr__(name: str) -> Any:
         "cancel_orders",
         "fetch_closed_orders",
         "fetch_open_orders",
+        "fetch_order_by_identifier",
         "fetch_order_detail",
         "place_buy_order",
         "place_market_buy_order",

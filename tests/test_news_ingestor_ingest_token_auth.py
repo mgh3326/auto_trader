@@ -39,7 +39,6 @@ def client_with_ingest_value() -> TestClient:
     with patch("app.middleware.auth.settings") as mock_settings:
         mock_settings.DOCS_ENABLED = False
         mock_settings.PUBLIC_API_PATHS = []
-        mock_settings.N8N_API_KEY = ""
         mock_settings.NEWS_INGESTOR_INGEST_TOKEN = _EXPECTED_VALUE
         mock_settings.NEWS_INGESTOR_INGEST_TOKEN_HEADER = _HEADER_NAME
         yield TestClient(_build_app())
@@ -50,7 +49,6 @@ def client_without_ingest_value() -> TestClient:
     with patch("app.middleware.auth.settings") as mock_settings:
         mock_settings.DOCS_ENABLED = False
         mock_settings.PUBLIC_API_PATHS = []
-        mock_settings.N8N_API_KEY = ""
         mock_settings.NEWS_INGESTOR_INGEST_TOKEN = ""
         mock_settings.NEWS_INGESTOR_INGEST_TOKEN_HEADER = _HEADER_NAME
         yield TestClient(_build_app())

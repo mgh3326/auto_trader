@@ -144,10 +144,15 @@ class InvestmentSnapshotsRepository:
     # ------------------------------------------------------------------
     async def insert_bundle(self, payload: BundleCreate) -> InvestmentSnapshotBundle:
         # Bundle idempotency_key default: deterministic over identity tuple.
+        discriminator = (
+            f":{payload.idempotency_discriminator}"
+            if payload.idempotency_discriminator is not None
+            else ""
+        )
         idempotency_key = (
             f"bundle:{payload.purpose}:{payload.market}:"
             f"{payload.account_scope or '_'}:{payload.policy_version}:"
-            f"{payload.as_of.isoformat()}"
+            f"{payload.as_of.isoformat()}{discriminator}"
         )
         existing = await self._session.scalar(
             sa.select(InvestmentSnapshotBundle).where(
@@ -156,7 +161,7 @@ class InvestmentSnapshotsRepository:
         )
         if existing is not None:
             return existing
-        data = payload.model_dump()
+        data = payload.model_dump(exclude={"idempotency_discriminator"})
         row = InvestmentSnapshotBundle(idempotency_key=idempotency_key, **data)
         self._session.add(row)
         await self._session.flush()

@@ -32,6 +32,21 @@ def test_build_toss_client_rejects_subdomain_spoof() -> None:
         build_toss_client(base_url="https://openapi.tossinvest.com.evil.example")
 
 
+def test_build_toss_client_rejects_http_scheme() -> None:
+    """ROB-547: an http:// base URL would send the Bearer token and client
+    secret in cleartext even to the right host. Refuse non-https."""
+    with pytest.raises(TossHostBlocked):
+        build_toss_client(base_url="http://openapi.tossinvest.com")
+
+
+@pytest.mark.asyncio
+async def test_on_request_rejects_http_scheme_to_toss_host() -> None:
+    request = httpx.Request("GET", "http://openapi.tossinvest.com/api/v1/accounts")
+
+    with pytest.raises(TossHostBlocked):
+        await _on_request(request)
+
+
 @pytest.mark.asyncio
 async def test_on_request_rejects_absolute_url_to_other_host() -> None:
     request = httpx.Request("GET", "https://evil.example.com/api/v1/accounts")

@@ -6,6 +6,7 @@ import pytest
 
 from app.services.news_entity_matcher import (
     SymbolMatch,
+    match_kr_universe_symbols,
     match_symbols,
     match_symbols_for_article,
 )
@@ -205,3 +206,82 @@ def test_match_for_article_with_market_none_finds_us_alias_in_korean_text():
     assert by_symbol["NVDA"].market == "us"
     assert by_symbol["NVDA"].reason == "alias_dict"
     assert by_symbol["NVDA"].matched_term == "엔비디아"
+
+
+# ---------------------------------------------------------------------------
+# match_kr_universe_symbols (ROB-916)
+# ---------------------------------------------------------------------------
+
+_UNIVERSE = [
+    ("042660", "한화오션"),
+    ("000880", "한화"),
+    ("005930", "삼성전자"),
+    ("000810", "삼성화재"),
+    ("017670", "SK텔레콤"),
+    ("034730", "SK"),
+]
+
+
+@pytest.mark.unit
+def test_kr_universe_matches_hanwha_ocean_by_full_name():
+    """ROB-916 evidence case: 042660 title mentions must resolve to 한화오션."""
+    matches = match_kr_universe_symbols(
+        "한화오션, 3943억 규모 VLCC 2척 수주", _UNIVERSE
+    )
+    symbols = {m.symbol for m in matches}
+    assert "042660" in symbols
+
+
+@pytest.mark.unit
+def test_kr_universe_overlap_guard_suppresses_shorter_substring_match():
+    """부분 문자열 오탐 가드: "한화오션" 안의 "한화"(000880)는 별도 매치되면 안 됨."""
+    matches = match_kr_universe_symbols(
+        "한화오션, 3943억 규모 VLCC 2척 수주", _UNIVERSE
+    )
+    symbols = {m.symbol for m in matches}
+    assert "000880" not in symbols
+    assert symbols == {"042660"}
+
+
+@pytest.mark.unit
+def test_kr_universe_samsung_electronics_and_fire_insurance_resolve_independently():
+    """삼성전자/삼성화재 혼동 가드 — 둘 다 온전한 회사명으로 독립 매치돼야 함."""
+    matches = match_kr_universe_symbols(
+        "삼성전자 실적 호조, 삼성화재는 배당 확대 검토", _UNIVERSE
+    )
+    symbols = {m.symbol for m in matches}
+    assert symbols == {"005930", "000810"}
+
+
+@pytest.mark.unit
+def test_kr_universe_bare_short_name_still_matches_without_overlap():
+    matches = match_kr_universe_symbols("한화 그룹 지배구조 개편 검토", _UNIVERSE)
+    symbols = {m.symbol for m in matches}
+    assert "000880" in symbols
+
+
+@pytest.mark.unit
+def test_kr_universe_sk_telecom_mention_does_not_also_tag_bare_sk_holding():
+    matches = match_kr_universe_symbols(
+        "SK텔레콤, 실적 안정·배당 정상화 기대", _UNIVERSE
+    )
+    symbols = {m.symbol for m in matches}
+    assert symbols == {"017670"}
+
+
+@pytest.mark.unit
+def test_kr_universe_no_match_returns_empty_list():
+    assert match_kr_universe_symbols("오늘 날씨는 맑음", _UNIVERSE) == []
+
+
+@pytest.mark.unit
+def test_kr_universe_empty_text_returns_empty_list():
+    assert match_kr_universe_symbols("", _UNIVERSE) == []
+
+
+@pytest.mark.unit
+def test_kr_universe_match_reason_is_kr_symbol_universe_name():
+    matches = match_kr_universe_symbols("한화오션 수주 소식", _UNIVERSE)
+    assert matches
+    assert all(m.reason == "kr_symbol_universe_name" for m in matches)
+    assert all(m.market == "kr" for m in matches)

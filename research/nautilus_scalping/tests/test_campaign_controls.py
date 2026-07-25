@@ -21,13 +21,33 @@ def test_max_drawdown_bps_on_cumulative_pnl():
 
 
 def test_filter_universe_uses_membership_and_quality():
-    m = pit_universe.PITManifest.from_records([
-        {"symbol": "GOOD", "listed_from": 0, "delisted_at": None, "status": "live",
-         "kline_coverage": 1.0, "confidence": "high"},
-        {"symbol": "LOWCOV", "listed_from": 0, "delisted_at": None, "status": "live",
-         "kline_coverage": 0.5, "confidence": "low"},
-        {"symbol": "OUTWINDOW", "listed_from": 100 * DAY, "delisted_at": None, "status": "live",
-         "kline_coverage": 1.0, "confidence": "high"},
-    ])
+    m = pit_universe.PITManifest.from_records(
+        [
+            {
+                "symbol": "GOOD",
+                "listed_from": 0,
+                "delisted_at": None,
+                "status": "live",
+                "kline_coverage": 1.0,
+                "confidence": "high",
+            },
+            {
+                "symbol": "LOWCOV",
+                "listed_from": 0,
+                "delisted_at": None,
+                "status": "live",
+                "kline_coverage": 0.5,
+                "confidence": "low",
+            },
+            {
+                "symbol": "OUTWINDOW",
+                "listed_from": 100 * DAY,
+                "delisted_at": None,
+                "status": "live",
+                "kline_coverage": 1.0,
+                "confidence": "high",
+            },
+        ]
+    )
     kept = campaign_controls.filter_universe(m, lo_ts=0, hi_ts=10 * DAY)
     assert kept == ["GOOD"]

@@ -97,6 +97,7 @@ class TossOrder:
     ordered_at: str
     canceled_at: str | None
     execution: dict[str, Any]
+    client_order_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -207,6 +208,11 @@ def parse_orders(raw: dict[str, Any]) -> TossOrdersPage:
                 ordered_at=str(row["orderedAt"]),
                 canceled_at=row.get("canceledAt"),
                 execution=_parse_execution(dict(row.get("execution") or {})),
+                client_order_id=(
+                    str(row["clientOrderId"])
+                    if row.get("clientOrderId") is not None
+                    else None
+                ),
             )
         )
     return TossOrdersPage(

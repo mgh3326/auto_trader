@@ -66,7 +66,18 @@ async def test_resolve_symbol_us_normalizes_hyphen_and_slash_to_dot(raw):
 
 
 @pytest.mark.asyncio
-async def test_resolve_symbol_crypto_uses_upbit_market():
+@pytest.mark.parametrize(
+    ("raw_symbol", "expected_lookup"),
+    [
+        ("BTC", "KRW-BTC"),
+        ("btc", "KRW-BTC"),
+        ("BTC-KRW", "KRW-BTC"),
+        ("KRW-BTC", "KRW-BTC"),
+    ],
+)
+async def test_resolve_symbol_crypto_normalizes_route_inputs_to_upbit_market(
+    raw_symbol: str, expected_lookup: str
+):
     db = FakeSession(
         SimpleNamespace(
             market="KRW-BTC",
@@ -78,8 +89,10 @@ async def test_resolve_symbol_crypto_uses_upbit_market():
         )
     )
 
-    resolved = await resolve_symbol("crypto", "BTC-KRW", db)
+    resolved = await resolve_symbol("crypto", raw_symbol, db)
 
+    compiled = str(db.statements[0].compile(compile_kwargs={"literal_binds": True}))
+    assert f"upbit_symbol_universe.market = '{expected_lookup}'" in compiled
     assert resolved.symbol_db == "KRW-BTC"
     assert resolved.display_name == "비트코인"
     assert resolved.exchange == "KRW"

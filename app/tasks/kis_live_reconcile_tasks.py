@@ -1,9 +1,12 @@
-"""ROB-475 — paused taskiq periodic auto-reconcile for KIS live KR orders.
+"""ROB-475 / ROB-574 — paused TaskIQ auto-reconcile for KIS live KR orders.
 
-NO schedule: starts paused. An operator adds the cron in
-robin-prefect-automations + flips KIS_LIVE_AUTO_RECONCILE_ENABLED in a
-follow-up. Reuses the proven kis_live_reconcile_orders_impl kernel (accepted-
-only send gate stays intact — ROB-395). NOT added to TASKIQ_TASK_MODULES.
+Registered with the worker so operators can kick or externally schedule it, but
+it carries no in-code ``schedule=`` label. Recurrence is owned by
+robin-prefect-automations plus env gate flips after safety review.
+
+Reuses the proven kis_live_reconcile_orders_impl kernel. The accepted-only send
+gate stays intact: no fills, journals, or realized PnL are booked unless broker
+evidence is confirmed by the reconcile kernel.
 """
 
 from __future__ import annotations

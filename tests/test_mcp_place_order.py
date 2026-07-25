@@ -6,11 +6,12 @@ extracted from test_mcp_server_tools.py for better organization.
 """
 
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import delete
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
@@ -20,6 +21,7 @@ from app.mcp_server.tooling import (
     orders_kis_variants,
     orders_registration,
 )
+from app.models.review import OrderSendIntent
 from tests._mcp_tooling_support import (
     _patch_runtime_attr,
     build_tools,
@@ -39,6 +41,17 @@ async def _ensure_live_order_ledger_schema(db_session):
     """ROB-407: live US/crypto orders write to review.live_order_ledger directly.
     Depend on db_session so its create_all builds the table before any test in this
     module inserts (CI builds the test schema via create_all, not alembic)."""
+    yield
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_order_send_intents(db_session):
+    """ROB-653: the KIS pre-send guard writes content+trading-day-keyed rows to
+    review.order_send_intents on every dry_run=False KIS/US order. Clear them
+    before each test so these tests stay idempotent across local re-runs (CI
+    starts from a fresh schema, but local DBs persist)."""
+    await db_session.execute(delete(OrderSendIntent))
+    await db_session.commit()
     yield
 
 
@@ -154,6 +167,52 @@ async def test_place_order_sell_with_amount_error():
             amount=100000.0,
             dry_run=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_place_order_send_timeout_surfaces_outcome_unknown(monkeypatch):
+    """ROB-645: a live order whose send times out returns an explicit
+    outcome-unknown error pointing at the reconcile tool (never a blank error,
+    never a retry)."""
+    import httpx
+
+    tools = build_tools()
+
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_multiple_current_prices",
+        AsyncMock(return_value={"KRW-BTC": 50000000.0}),
+    )
+    monkeypatch.setattr(
+        upbit_service,
+        "fetch_my_coins",
+        AsyncMock(
+            return_value=[{"currency": "KRW", "balance": "5000000", "locked": "0"}]
+        ),
+    )
+    # The order POST times out — outcome is unknown (may have reached the broker).
+    monkeypatch.setattr(
+        upbit_service,
+        "place_buy_order",
+        AsyncMock(side_effect=httpx.ReadTimeout("")),
+    )
+
+    result = await tools["place_order"](
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="limit",
+        amount=100000.0,
+        price=49000000.0,
+        dry_run=False,
+        thesis="t",
+        strategy="s",
+    )
+
+    assert result["success"] is False
+    assert result["outcome_unknown"] is True
+    assert result["reconcile_tool"] == "live_reconcile_orders"
+    assert result["error"].strip()
+    assert "불확실" in result["error"]
 
 
 # ----------------------------------------------------------------------
@@ -320,14 +379,13 @@ async def test_place_order_insufficient_balance_upbit(monkeypatch):
         dry_run=True,
     )
 
-    assert result["success"] is True, (
-        f"Expected success=True with warning, got {result}"
-    )
+    # ROB-625: dry_run도 잔액부족을 차단(success=False)하되 프리뷰 본문은 유지한다.
+    assert result["success"] is False, result
     assert result["dry_run"] is True
-    assert "warning" in result
-    assert "Insufficient" in result["warning"]
-    assert "deposit" in result["warning"].lower()
-    assert "Upbit" in result["warning"]
+    assert result["insufficient_balance"] is True
+    assert "Insufficient" in result["error"]
+    assert "deposit" in result["error"].lower()
+    assert "Upbit" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -378,11 +436,12 @@ async def test_place_order_insufficient_balance_kis_domestic(monkeypatch):
         dry_run=True,
     )
 
-    assert result["success"] is True
+    # ROB-625: dry_run도 잔액부족을 차단한다 (equity_kr breakdown은 US-우선이라 생략).
+    assert result["success"] is False, result
     assert result["dry_run"] is True
-    assert "warning" in result
-    assert "Insufficient" in result["warning"]
-    assert "KIS domestic account" in result["warning"]
+    assert result["insufficient_balance"] is True
+    assert "Insufficient" in result["error"]
+    assert "KIS domestic account" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -481,13 +540,16 @@ async def test_place_order_insufficient_balance_kis_overseas(monkeypatch):
         dry_run=True,
     )
 
-    assert result["success"] is True
+    # ROB-625: dry_run도 잔액부족을 차단(success=False)하고, Phase 3 KIS 필드
+    # breakdown을 에러메시지에 노출한다.
+    assert result["success"] is False, result
     assert result["dry_run"] is True
-    assert "warning" in result
-    assert "Insufficient" in result["warning"]
-    assert "KIS overseas account" in result["warning"]
-    assert "deposit" in result["warning"].lower()
-    assert "100.00 USD < 500.00 USD" in result["warning"]
+    assert result["insufficient_balance"] is True
+    assert "Insufficient" in result["error"]
+    assert "KIS overseas account" in result["error"]
+    assert "deposit" in result["error"].lower()
+    assert "100.00 USD < 500.00 USD" in result["error"]
+    assert "frcr_gnrl_ord_psbl_amt" in result["error"]
 
 
 # ----------------------------------------------------------------------
@@ -578,10 +640,11 @@ async def test_place_order_us_uses_frcr_gnrl_orderable_when_ord1_is_zero(monkeyp
         dry_run=True,
     )
 
-    assert result["success"] is True
+    # ROB-625: dry_run 잔액부족 차단. ord1=0이어도 frcr_gnrl_ord_psbl_amt로 판단.
+    assert result["success"] is False, result
     assert result["dry_run"] is True
-    assert "warning" in result
-    assert "100.00 USD < 500.00 USD" in result["warning"]
+    assert result["insufficient_balance"] is True
+    assert "100.00 USD < 500.00 USD" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -1137,12 +1200,23 @@ class TestPlaceOrderHighAmount:
         assert result["dry_run"] is False
         assert result["preview"]["quantity"] == pytest.approx(0.1, rel=1e-6)
         mock.place_buy_order.assert_awaited_once_with(
-            "KRW-BTC", 50000000.0, "0.10000000", "limit"
+            "KRW-BTC",
+            50000000.0,
+            "0.10000000",
+            "limit",
+            identifier=ANY,
+            pre_send_hook=None,
         )
 
     @pytest.mark.asyncio
-    async def test_place_order_daily_limit_blocks_high_amount_order(self, monkeypatch):
-        """Daily order limit is enforced even for high-amount orders."""
+    async def test_real_order_not_blocked_by_daily_limit(self, monkeypatch):
+        """ROB-540: the manual flow is uncapped.
+
+        The dead daily-order cap is gone, so a real (dry_run=False) order must
+        execute regardless of any 'order_count' value — there is no longer any
+        'Daily order limit' rejection. A stale Redis count of 999 (well past the
+        old cap of 20) must NOT block the order.
+        """
         tools = build_tools()
 
         mock = AsyncMock()
@@ -1152,8 +1226,8 @@ class TestPlaceOrderHighAmount:
         mock.fetch_my_coins = AsyncMock(
             return_value=[{"currency": "KRW", "balance": "10000000", "locked": "0"}]
         )
-        mock.place_market_buy_order = AsyncMock(
-            return_value={"uuid": _unique_order_id("crypto-limit"), "side": "bid"}
+        mock.place_buy_order = AsyncMock(
+            return_value={"uuid": _unique_order_id("crypto-uncapped"), "side": "bid"}
         )
 
         monkeypatch.setattr(
@@ -1168,16 +1242,30 @@ class TestPlaceOrderHighAmount:
         )
         monkeypatch.setattr(
             upbit_service,
-            "place_market_buy_order",
-            mock.place_market_buy_order,
+            "place_buy_order",
+            mock.place_buy_order,
         )
+        monkeypatch.setattr(
+            upbit_service,
+            "adjust_price_to_upbit_unit",
+            lambda price: price,
+        )
+        # Symbol is NOT in stop-loss cooldown — isolate the assertion to the
+        # (now-deleted) daily-order cap.
+        _patch_runtime_attr(
+            monkeypatch,
+            "_get_crypto_trade_cooldown_service",
+            lambda: FakeCooldownService(in_cooldown=False),
+        )
+        # Simulate a Redis order_count far above the old cap of 20 — proves the
+        # cap is dead and never consulted.
         monkeypatch.setattr(
             settings, "redis_url", "redis://localhost:6379/0", raising=False
         )
 
         class FakeRedisClient:
             async def get(self, key):
-                return "20"
+                return "999"
 
         monkeypatch.setattr(
             "redis.asyncio.from_url", AsyncMock(return_value=FakeRedisClient())
@@ -1194,10 +1282,18 @@ class TestPlaceOrderHighAmount:
             strategy="test-strategy",
         )
 
-        assert result["success"] is False
-        assert "Daily order limit" in result.get(
-            "error", ""
-        ) or "Daily order limit" in result.get("message", "")
+        assert result["success"] is True
+        assert result["dry_run"] is False
+        assert "Daily order limit" not in str(result.get("error", ""))
+        assert "Daily order limit" not in str(result.get("message", ""))
+        mock.place_buy_order.assert_awaited_once_with(
+            "KRW-BTC",
+            50000000.0,
+            "0.10000000",
+            "limit",
+            identifier=ANY,
+            pre_send_hook=None,
+        )
 
 
 # ----------------------------------------------------------------------
@@ -1813,7 +1909,16 @@ async def test_place_order_crypto_sell_records_stop_loss_cooldown(monkeypatch):
         def adjust_price_to_upbit_unit(self, price):
             return price
 
-        async def place_sell_order(self, symbol, volume, price):
+        async def place_sell_order(
+            self,
+            symbol,
+            volume,
+            price,
+            identifier=None,
+            pre_send_hook=None,
+        ):
+            if pre_send_hook is not None:
+                await pre_send_hook()
             return {
                 "uuid": _unique_order_id("cd-sell-loss"),
                 "side": "ask",
@@ -1917,7 +2022,16 @@ async def test_place_order_crypto_profitable_sell_does_not_record_cooldown(monke
         def adjust_price_to_upbit_unit(self, price):
             return price
 
-        async def place_sell_order(self, symbol, volume, price):
+        async def place_sell_order(
+            self,
+            symbol,
+            volume,
+            price,
+            identifier=None,
+            pre_send_hook=None,
+        ):
+            if pre_send_hook is not None:
+                await pre_send_hook()
             return {
                 "uuid": _unique_order_id("cd-sell-profit"),
                 "side": "ask",
@@ -2755,3 +2869,235 @@ async def test_ladder_fill_preview_echoes_anchor_as_of():
         anchor_as_of="2026-06-11T09:31:00-04:00",
     )
     assert sell["anchor_as_of"] == "2026-06-11T09:31:00-04:00"
+
+
+@pytest.mark.unit
+def test_order_tool_descriptions_drop_daily_order_cap_advertising() -> None:
+    """ROB-540: neither place_order nor kis_live_place_order advertises a daily cap.
+
+    The dead 'order_count' cap is deleted, so its 'max N orders/day' advertising
+    must be stripped from both MCP tool descriptions.
+    """
+
+    class CapturingMCP:
+        def __init__(self) -> None:
+            self.descriptions: dict[str, str] = {}
+
+        def tool(self, name: str, description: str):
+            self.descriptions[name] = description
+
+            def decorator(func):
+                return func
+
+            return decorator
+
+    mcp = CapturingMCP()
+    orders_registration.register_order_tools(mcp)  # type: ignore[arg-type]
+    orders_kis_variants.register_kis_live_order_tools(mcp)  # type: ignore[arg-type]
+
+    generic_desc = mcp.descriptions["place_order"]
+    kis_live_desc = mcp.descriptions["kis_live_place_order"]
+
+    for description in (generic_desc, kis_live_desc):
+        assert "orders/day" not in description
+        assert "Safety limit: max" not in description
+
+
+@pytest.mark.asyncio
+async def test_place_order_readtimeout_surfaces_class_name(monkeypatch):
+    """ROB-600: a ReadTimeout during execution must surface 'ReadTimeout', not ''."""
+    import httpx
+
+    from app.mcp_server.tooling import order_execution
+
+    recorded = AsyncMock()
+    monkeypatch.setattr(
+        order_execution,
+        "_resolve_market_type",
+        lambda symbol, market: ("equity_kr", "005930"),
+    )
+    monkeypatch.setattr(order_execution, "_record_order_history", recorded)
+    monkeypatch.setattr(
+        order_execution,
+        "_fetch_current_price",
+        AsyncMock(side_effect=httpx.ReadTimeout("")),
+    )
+
+    result = await order_execution._place_order_impl(
+        symbol="005930",
+        side="sell",
+        order_type="limit",
+        quantity=1,
+        price=370000.0,
+        dry_run=False,
+        is_mock=True,
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "ReadTimeout"
+    assert result["source"] == "kis"
+    # :1128 — order-history record also gets the concrete reason, not ""
+    assert recorded.await_args.kwargs["error"] == "ReadTimeout"
+
+
+@pytest.mark.asyncio
+async def test_execute_order_rejects_mock_crypto_before_upbit_send(monkeypatch):
+    from app.mcp_server.tooling import order_execution
+
+    place_buy = AsyncMock()
+    market_buy = AsyncMock()
+    place_sell = AsyncMock()
+    market_sell = AsyncMock()
+    monkeypatch.setattr(order_execution.upbit_service, "place_buy_order", place_buy)
+    monkeypatch.setattr(
+        order_execution.upbit_service,
+        "place_market_buy_order",
+        market_buy,
+    )
+    monkeypatch.setattr(order_execution.upbit_service, "place_sell_order", place_sell)
+    monkeypatch.setattr(
+        order_execution.upbit_service,
+        "place_market_sell_order",
+        market_sell,
+    )
+
+    with pytest.raises(ValueError, match="crypto has no mock venue"):
+        await order_execution._execute_order(
+            symbol="KRW-BTC",
+            side="buy",
+            order_type="limit",
+            quantity=0.001,
+            price=50000000.0,
+            market_type="crypto",
+            is_mock=True,
+        )
+
+    place_buy.assert_not_awaited()
+    market_buy.assert_not_awaited()
+    place_sell.assert_not_awaited()
+    market_sell.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_place_order_impl_rejects_mock_crypto_before_upbit_reads(monkeypatch):
+    from app.mcp_server.tooling import order_execution
+
+    fetch_prices = AsyncMock()
+    fetch_coins = AsyncMock()
+    place_buy = AsyncMock()
+    market_buy = AsyncMock()
+    place_sell = AsyncMock()
+    market_sell = AsyncMock()
+    monkeypatch.setattr(
+        order_execution.upbit_service,
+        "fetch_multiple_current_prices",
+        fetch_prices,
+    )
+    monkeypatch.setattr(order_execution.upbit_service, "fetch_my_coins", fetch_coins)
+    monkeypatch.setattr(order_execution.upbit_service, "place_buy_order", place_buy)
+    monkeypatch.setattr(
+        order_execution.upbit_service,
+        "place_market_buy_order",
+        market_buy,
+    )
+    monkeypatch.setattr(order_execution.upbit_service, "place_sell_order", place_sell)
+    monkeypatch.setattr(
+        order_execution.upbit_service,
+        "place_market_sell_order",
+        market_sell,
+    )
+
+    result = await order_execution._place_order_impl(
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="limit",
+        quantity=0.001,
+        price=50000000.0,
+        dry_run=False,
+        is_mock=True,
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "crypto has no mock venue"
+    assert result["source"] == "upbit"
+    assert result["symbol"] == "KRW-BTC"
+    assert result["instrument_type"] == "crypto"
+    fetch_prices.assert_not_awaited()
+    fetch_coins.assert_not_awaited()
+    place_buy.assert_not_awaited()
+    market_buy.assert_not_awaited()
+    place_sell.assert_not_awaited()
+    market_sell.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_place_order_impl_client_order_id_override_reaches_execution(monkeypatch):
+    executed = AsyncMock(return_value={"success": True, "broker_status": "accepted"})
+    monkeypatch.setattr(
+        order_execution,
+        "_fetch_current_price",
+        AsyncMock(return_value=70_000_000.0),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_build_preview",
+        AsyncMock(return_value={"estimated_value": 700_000.0}),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_check_balance_and_warn",
+        AsyncMock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "evaluate_sector_concentration",
+        AsyncMock(return_value={"verdict": "ok"}),
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_get_crypto_trade_cooldown_service",
+        lambda: type(
+            "Cooldown", (), {"is_in_cooldown": AsyncMock(return_value=False)}
+        )(),
+    )
+    monkeypatch.setattr(order_execution, "_execute_and_record", executed)
+
+    result = await order_execution._place_order_impl(
+        symbol="KRW-BTC",
+        side="buy",
+        market="crypto",
+        order_type="limit",
+        quantity=0.01,
+        price=70_000_000.0,
+        dry_run=False,
+        thesis="t",
+        strategy="s",
+        client_order_id="oprop-fixed",
+    )
+
+    assert result["success"] is True
+    assert executed.await_args.kwargs["idempotency_key"] == "oprop-fixed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_order_id", ["", " ", "x" * 41])
+async def test_place_order_impl_rejects_invalid_client_order_id_before_execution(
+    monkeypatch, client_order_id
+):
+    executed = AsyncMock()
+    monkeypatch.setattr(order_execution, "_execute_and_record", executed)
+
+    result = await order_execution._place_order_impl(
+        symbol="KRW-BTC",
+        side="buy",
+        market="crypto",
+        order_type="limit",
+        quantity=0.01,
+        price=70_000_000.0,
+        dry_run=False,
+        client_order_id=client_order_id,
+    )
+
+    assert result["success"] is False
+    assert "client_order_id" in result["error"]
+    executed.assert_not_awaited()

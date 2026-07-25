@@ -3,7 +3,7 @@
 Extracted from the legacy :class:`app.jobs.watch_scanner.WatchScanner`
 so the new :class:`InvestmentWatchScanner` can read live price /
 RSI / trade-value / index / FX values without inheriting from the
-legacy class (which couples to OpenClawClient).
+legacy class (which couples to AgentGatewayClient).
 
 Behaviourally identical to the legacy methods. Plan 5 deletes the
 legacy scanner's duplicate copy.

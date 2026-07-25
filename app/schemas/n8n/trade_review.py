@@ -123,7 +123,7 @@ class N8nTradeReviewListItem(BaseModel):
 
 
 class N8nTradeReviewListResponse(BaseModel):
-    """Response for GET /api/n8n/trade-reviews."""
+    """Response for the trade-reviews list payload."""
 
     success: bool = Field(...)
     period: str = Field(..., description="Period label, e.g. '2026-03-11 ~ 2026-03-18'")

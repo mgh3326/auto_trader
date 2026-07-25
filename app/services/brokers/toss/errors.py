@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -69,8 +70,27 @@ def _parse_error_envelope(payload: dict[str, Any]) -> TossErrorEnvelope:
     )
 
 
+def _non_json_envelope(response: httpx.Response) -> TossErrorEnvelope:
+    request_id = response.headers.get("x-request-id") or response.headers.get("cf-ray")
+    body = (response.text or "").strip()
+    return TossErrorEnvelope(
+        request_id=request_id,
+        code="non-json-response",
+        message=body[:200],
+        data=None,
+    )
+
+
 def parse_toss_response(response: httpx.Response) -> Any:
-    payload = response.json()
+    try:
+        payload = response.json()
+    except (json.JSONDecodeError, ValueError):
+        # Non-JSON body (LB/CDN HTML error page, empty body). Surface a typed
+        # error carrying status + request id instead of a raw JSONDecodeError.
+        envelope = _non_json_envelope(response)
+        if response.status_code == 429:
+            raise TossRateLimitError(envelope, status_code=response.status_code)
+        raise TossApiResponseError(envelope, status_code=response.status_code)
     if 200 <= response.status_code < 300:
         if isinstance(payload, dict) and "result" in payload:
             return payload["result"]

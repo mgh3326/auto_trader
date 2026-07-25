@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 
@@ -53,6 +54,21 @@ async def test_token_is_cached_until_near_expiry(mock_token_transport):
     t1 = await auth.get_token()
     t2 = await auth.get_token()
     assert t1 == t2
+    assert mock_token_transport.calls["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_token_requests_share_one_refresh(mock_token_transport):
+    auth = KiwoomAuthClient(
+        base_url=constants.MOCK_BASE_URL,
+        app_key="ak",
+        app_secret="SECRET-VAL",
+        transport=mock_token_transport,
+    )
+
+    tokens = await asyncio.gather(*(auth.get_token() for _ in range(12)))
+
+    assert tokens == ["tkn-1"] * 12
     assert mock_token_transport.calls["count"] == 1
 
 

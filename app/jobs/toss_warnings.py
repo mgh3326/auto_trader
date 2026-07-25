@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.services.brokers.toss.client import TossReadClient
 from app.services.toss_warnings_sync_service import sync_toss_warnings
@@ -13,6 +14,10 @@ async def run_toss_warnings_sync() -> dict[str, int | str | list[str]]:
     """
     Sync job for stock warnings from Toss API to database.
     """
+    # ROB-550: graceful skip when Toss is disabled so a deployment that never
+    # armed TOSS_API_ENABLED does not emit a daily ERROR.
+    if not bool(getattr(settings, "toss_api_enabled", False)):
+        return {"status": "disabled"}
     client: TossReadClient | None = None
     try:
         client = TossReadClient.from_settings()

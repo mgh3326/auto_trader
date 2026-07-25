@@ -268,3 +268,142 @@ async def test_actions_crud(db_session) -> None:
         await svc.add_action(review.id, action_type="bogus", title="x", now=_NOW)
     with pytest.raises(ScalpingReviewError):
         await svc.update_action(action.id, now=_NOW, status="bogus")
+
+
+@pytest.mark.asyncio
+async def test_set_benchmark_persists_value_and_detail(db_session) -> None:
+    iid = await _instrument(db_session)
+    await _analytics(
+        db_session,
+        iid,
+        tag="w",
+        entry_price=Decimal("100"),
+        exit_price=Decimal("101"),
+        entry_notional_usdt=Decimal("100"),
+        net_pnl_usdt=Decimal("0.9"),
+        gross_pnl_usdt=Decimal("1.0"),
+        exit_reason="take_profit",
+    )
+    svc = ScalpingReviewService(db_session)
+    await svc.build_draft(review_date=_DATE, product="usdm_futures", now=_NOW)
+    updated = await svc.set_benchmark(
+        review_date=_DATE,
+        product="usdm_futures",
+        value=Decimal("12.5"),
+        now=_NOW,
+        detail={"XRPUSDT": {"open": "100", "close": "100.5", "bps": "50"}},
+    )
+    assert updated is not None
+    assert updated.benchmark_return_bps == Decimal("12.5")
+    assert updated.source_payload["benchmark"]["XRPUSDT"]["bps"] == "50"
+    assert updated.net_pnl_usdt == Decimal("0.9")  # rollup metrics preserved
+
+
+@pytest.mark.asyncio
+async def test_set_benchmark_noop_on_missing_review(db_session) -> None:
+    svc = ScalpingReviewService(db_session)
+    assert (
+        await svc.set_benchmark(
+            review_date=dt.date(2099, 1, 1),
+            product="usdm_futures",
+            value=Decimal("1"),
+            now=_NOW,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_benchmark_skips_locked_review(db_session) -> None:
+    iid = await _instrument(db_session)
+    await _analytics(
+        db_session,
+        iid,
+        tag="a",
+        entry_price=Decimal("100"),
+        exit_price=Decimal("101"),
+        entry_notional_usdt=Decimal("100"),
+        net_pnl_usdt=Decimal("0.5"),
+        gross_pnl_usdt=Decimal("0.6"),
+        exit_reason="take_profit",
+    )
+    svc = ScalpingReviewService(db_session)
+    r = await svc.build_draft(review_date=_DATE, product="usdm_futures", now=_NOW)
+    await svc.update_review(r.id, now=_NOW, status="locked")
+    res = await svc.set_benchmark(
+        review_date=_DATE, product="usdm_futures", value=Decimal("9"), now=_NOW
+    )
+    assert res is not None and res.status == "locked"
+    assert res.benchmark_return_bps is None  # not written while locked
+
+
+@pytest.mark.asyncio
+async def test_rollup_separates_by_session_tag(db_session) -> None:
+    iid = await _instrument(db_session, "SEPXRPUSDT")
+    # 규칙(NULL) 1건 + llm 2건, 같은 날/product
+    await _analytics(
+        db_session,
+        iid,
+        tag="rule1",
+        symbol="SEPXRPUSDT",
+        entry_price=Decimal("100"),
+        exit_price=Decimal("101"),
+        entry_notional_usdt=Decimal("100"),
+        net_pnl_usdt=Decimal("0.9"),
+        gross_pnl_usdt=Decimal("1.0"),
+        net_return_bps=Decimal("90"),
+        exit_reason="take_profit",
+    )
+    for i in range(2):
+        await _analytics(
+            db_session,
+            iid,
+            tag=f"llm{i}",
+            symbol="SEPXRPUSDT",
+            session_tag="llm",
+            entry_price=Decimal("100"),
+            exit_price=Decimal("102"),
+            entry_notional_usdt=Decimal("100"),
+            net_pnl_usdt=Decimal("1.5"),
+            gross_pnl_usdt=Decimal("1.6"),
+            net_return_bps=Decimal("150"),
+            exit_reason="take_profit",
+        )
+    svc = ScalpingReviewService(db_session)
+    rule_review = await svc.build_draft(
+        review_date=_DATE, product="usdm_futures", now=_NOW, session_tag=""
+    )
+    llm_review = await svc.build_draft(
+        review_date=_DATE, product="usdm_futures", now=_NOW, session_tag="llm"
+    )
+    assert rule_review.trade_count == 1
+    assert llm_review.trade_count == 2
+    # list_analytics: None=전체(무회귀), 값=필터
+    assert len(await svc.list_analytics(review_date=_DATE, product="usdm_futures")) == 3
+    assert (
+        len(
+            await svc.list_analytics(
+                review_date=_DATE, product="usdm_futures", session_tag=""
+            )
+        )
+        == 1
+    )
+    assert (
+        len(
+            await svc.list_analytics(
+                review_date=_DATE, product="usdm_futures", session_tag="llm"
+            )
+        )
+        == 2
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_session_tags_distinct_coalesced(db_session) -> None:
+    iid = await _instrument(db_session, "TAGXRPUSDT")
+    await _analytics(db_session, iid, tag="n", symbol="TAGXRPUSDT")  # NULL → ""
+    await _analytics(db_session, iid, tag="l1", symbol="TAGXRPUSDT", session_tag="llm")
+    await _analytics(db_session, iid, tag="l2", symbol="TAGXRPUSDT", session_tag="llm")
+    svc = ScalpingReviewService(db_session)
+    tags = await svc.list_session_tags(review_date=_DATE, product="usdm_futures")
+    assert tags == ["", "llm"]

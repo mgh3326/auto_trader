@@ -37,6 +37,7 @@ from app.services.invest_home_service import _SourceFetchResult
 from app.services.invest_quote_service import InvestQuoteService
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
+from app.services.toss_sellable_cache import get_shared_sellable_cache
 from app.services.upbit_symbol_universe_service import (
     get_active_upbit_markets,
     get_upbit_warning_markets,
@@ -82,20 +83,43 @@ class KISHomeReader:
 
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         try:
-            # 1. Domestic
-            stocks_kr = await self._client.account.fetch_my_stocks(is_overseas=False)
-            margin = await self._client.account.inquire_integrated_margin()
+            with sentry_sdk.start_span(
+                op="invest.home.kis.phase",
+                name="invest.home.kis.domestic_balance",
+            ) as span:
+                stocks_kr = await self._client.account.fetch_my_stocks(
+                    is_overseas=False
+                )
+                span.set_data("holding_count", len(stocks_kr))
+
+            with sentry_sdk.start_span(
+                op="invest.home.kis.phase",
+                name="invest.home.kis.integrated_margin",
+            ) as span:
+                margin = await self._client.account.inquire_integrated_margin()
+                span.set_data("field_count", len(margin))
+
             domestic_cash = extract_domestic_cash_summary_from_integrated_margin(margin)
 
-            # 2. Overseas (simplified to NASD for now as per account.py common usage)
-            stocks_us = await self._client.account.fetch_my_overseas_stocks(
-                exchange_code="NASD"
-            )
+            with sentry_sdk.start_span(
+                op="invest.home.kis.phase",
+                name="invest.home.kis.overseas_balance",
+            ) as span:
+                stocks_us = await self._client.account.fetch_my_overseas_stocks(
+                    exchange_code="NASD"
+                )
+                span.set_data("holding_count", len(stocks_us))
+                span.set_tag("exchange_code", "NASD")
 
             fx_warning: InvestHomeWarning | None = None
             usd_krw_rate: float | None = None
             try:
-                usd_krw_rate = await get_usd_krw_rate()
+                with sentry_sdk.start_span(
+                    op="invest.home.kis.phase",
+                    name="invest.home.kis.fx",
+                ) as span:
+                    usd_krw_rate = await get_usd_krw_rate()
+                    span.set_tag("success", True)
             except Exception as exc:
                 logger.warning("USD/KRW FX fetch failed: %s", exc, exc_info=True)
                 fx_warning = InvestHomeWarning(
@@ -213,10 +237,14 @@ class KISHomeReader:
             # must not be gated by ``stocks_us``.
             if _is_missing_money(usd_balance) or _is_missing_money(usd_buying_power):
                 try:
-                    overseas_margin = (
-                        await self._client.account.inquire_overseas_margin()
-                    )
-                    # US row: crcy_cd=USD and natn_name in {미국, US, USA}
+                    with sentry_sdk.start_span(
+                        op="invest.home.kis.phase",
+                        name="invest.home.kis.overseas_margin_fallback",
+                    ) as span:
+                        overseas_margin = (
+                            await self._client.account.inquire_overseas_margin()
+                        )
+                        span.set_data("row_count", len(overseas_margin))
                     us_margin = next(
                         (
                             m
@@ -486,13 +514,52 @@ class UpbitHomeReader:
             )
 
 
+def _toss_sellable_quantity(position: Any, mutations_enabled: bool) -> float:
+    """ROB-549: 0.0 while reference-only; the API-provided sellable quantity
+    (falling back to full quantity) once Toss live mutations are armed."""
+    if not mutations_enabled:
+        return 0.0
+    sellable = getattr(position, "sellable_quantity", None)
+    if sellable is None:
+        return float(position.quantity)
+    return float(sellable)
+
+
+def _toss_pending_sell_quantity(position: Any, mutations_enabled: bool) -> float:
+    if not mutations_enabled:
+        return 0.0
+    return max(
+        float(position.quantity) - _toss_sellable_quantity(position, mutations_enabled),
+        0.0,
+    )
+
+
 class TossApiHomeReader:
     """Toss Open API live portfolio reader."""
 
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         del user_id
         try:
-            snapshot = await fetch_toss_portfolio_snapshot()
+            # ROB-549: gate tradeability/sellable on the live-mutation flag so
+            # toss_api holdings stop contradicting the registered toss_live order
+            # tools once the operator arms TOSS_LIVE_ORDER_MUTATIONS_ENABLED.
+            from app.core.config import settings as _settings
+
+            mutations_enabled = bool(
+                getattr(_settings, "toss_live_order_mutations_enabled", False)
+            )
+            with sentry_sdk.start_span(
+                op="invest.home.toss_api.phase",
+                name="invest.home.toss_api.snapshot",
+            ) as span:
+                snapshot = await fetch_toss_portfolio_snapshot(
+                    need_sellable=mutations_enabled,
+                    sellable_cache=(
+                        get_shared_sellable_cache() if mutations_enabled else None
+                    ),
+                )
+                span.set_data("position_count", len(snapshot.positions))
+                span.set_data("error_count", len(snapshot.errors))
             holdings: list[Holding] = []
             value_krw_total = 0.0
             cost_basis_krw_total: float | None = 0.0
@@ -505,7 +572,12 @@ class TossApiHomeReader:
                 for position in snapshot.positions
             ):
                 try:
-                    usd_krw_rate = await get_usd_krw_rate()
+                    with sentry_sdk.start_span(
+                        op="invest.home.toss_api.phase",
+                        name="invest.home.toss_api.fx",
+                    ) as span:
+                        usd_krw_rate = await get_usd_krw_rate()
+                        span.set_tag("success", True)
                 except Exception as exc:
                     logger.warning(
                         "USD/KRW FX fetch failed for Toss API reader: %s",
@@ -584,10 +656,14 @@ class TossApiHomeReader:
                         else None,
                         priceState="live",
                         sourceOfTruth=True,
-                        isTradeable=False,
+                        isTradeable=mutations_enabled,
                         manualOnly=False,
-                        sellableQuantity=0.0,
-                        pendingSellQuantity=0.0,
+                        sellableQuantity=_toss_sellable_quantity(
+                            position, mutations_enabled
+                        ),
+                        pendingSellQuantity=_toss_pending_sell_quantity(
+                            position, mutations_enabled
+                        ),
                         referenceQuantity=float(position.quantity),
                     )
                 )
@@ -618,7 +694,20 @@ class TossApiHomeReader:
                     if snapshot.cash_usd is not None
                     else None,
                 ),
-                buyingPower=CashAmounts(),
+                buyingPower=CashAmounts(
+                    # ROB-707: Toss GET /api/v1/buying-power exposes only
+                    # cashBuyingPower (orderable cash). fetch_toss_cash_snapshot
+                    # (ROB-696) already fetched it onto snapshot.cash_{krw,usd};
+                    # surface it here. Fail-open: None per currency when the
+                    # fetch failed (the error is already in snapshot.errors ->
+                    # warning). cashBalances is left unchanged above.
+                    krw=float(snapshot.cash_krw)
+                    if snapshot.cash_krw is not None
+                    else None,
+                    usd=float(snapshot.cash_usd)
+                    if snapshot.cash_usd is not None
+                    else None,
+                ),
             )
             warning = None
             if snapshot.errors:
@@ -656,7 +745,13 @@ class ManualHomeReader:
 
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         try:
-            raw_holdings = await self._service.get_holdings_by_user(user_id)
+            with sentry_sdk.start_span(
+                op="invest.home.manual.phase",
+                name="invest.home.manual.load_holdings",
+            ) as span:
+                raw_holdings = await self._service.get_holdings_by_user(user_id)
+                span.set_data("raw_holding_count", len(raw_holdings))
+
             toss_holdings = [
                 h
                 for h in raw_holdings
@@ -675,11 +770,45 @@ class ManualHomeReader:
             usd_krw_rate: float | None = None
 
             if self._quote_service:
-                kr_prices = await self._quote_service.fetch_kr_prices(kr_tickers)
-                us_prices = await self._quote_service.fetch_us_prices(us_tickers)
+                quote_service = self._quote_service
+
+                async def _fetch_kr_prices() -> dict[str, float | None]:
+                    with sentry_sdk.start_span(
+                        op="invest.home.manual.phase",
+                        name="invest.home.manual.fetch_kr_prices",
+                    ) as span:
+                        span.set_data("ticker_count", len(kr_tickers))
+                        prices = await quote_service.fetch_kr_prices(kr_tickers)
+                        span.set_data("price_count", len(prices))
+                        return prices
+
+                async def _fetch_us_prices() -> dict[str, float | None]:
+                    with sentry_sdk.start_span(
+                        op="invest.home.manual.phase",
+                        name="invest.home.manual.fetch_us_prices",
+                    ) as span:
+                        span.set_data("ticker_count", len(us_tickers))
+                        prices = await quote_service.fetch_us_prices(us_tickers)
+                        span.set_data("price_count", len(prices))
+                        return prices
+
+                # ROB-702: KR and US price fetches are independent — run them
+                # concurrently so the manual reader's wall time is max(kr, us),
+                # not kr + us (~7s -> ~3.5s). Failure semantics unchanged: a
+                # raise from either fetch propagates (gather re-raises) to the
+                # outer try/except, exactly as the sequential awaits did.
+                kr_prices, us_prices = await asyncio.gather(
+                    _fetch_kr_prices(), _fetch_us_prices()
+                )
+
                 if us_tickers:
                     try:
-                        usd_krw_rate = await get_usd_krw_rate()
+                        with sentry_sdk.start_span(
+                            op="invest.home.manual.phase",
+                            name="invest.home.manual.fx",
+                        ) as span:
+                            usd_krw_rate = await get_usd_krw_rate()
+                            span.set_tag("success", True)
                     except Exception:
                         logger.warning("FX fetch failed for ManualHomeReader")
 
@@ -837,14 +966,16 @@ class SafeKISMockClient(BaseKISClient):
 
     def __init__(self) -> None:
         from app.core.config import settings as _settings
-        from app.services.redis_token_manager import RedisTokenManager
+        from app.services.redis_token_manager import get_kis_mock_token_manager
 
         self._mock_settings = _KISMockSettingsProxy(_settings)
         # Call super().__init__() — since _settings property is overridden,
         # _hdr_base will use mock app key/secret automatically.
         super().__init__()
-        # Override token manager to use separate Redis namespace for mock tokens.
-        self._token_manager = RedisTokenManager(namespace="kis_mock")
+        self._token_manager = get_kis_mock_token_manager(
+            base_url=str(self._mock_settings.kis_base_url),
+            app_key=str(self._mock_settings.kis_app_key or ""),
+        )
         self.account = AccountClient(self)
 
     @property
@@ -856,6 +987,9 @@ class SafeKISMockClient(BaseKISClient):
         if not base_url:
             base_url = "https://openapivts.koreainvestment.com:29443"
         return f"{base_url}{path}"
+
+    def _token_request_timeout(self) -> float:
+        return 10.0
 
 
 def _kis_mock_configured() -> bool:

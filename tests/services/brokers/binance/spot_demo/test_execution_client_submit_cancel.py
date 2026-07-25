@@ -87,6 +87,14 @@ async def test_submit_order_confirm_true_hits_demo_host(
             "timeInForce": "GTC",
             "type": "MARKET",
             "side": "BUY",
+            "fills": [
+                {
+                    "price": "50000",
+                    "qty": "0.0001",
+                    "commission": "0.000001",
+                    "commissionAsset": "BTC",
+                }
+            ],
         },
         status_code=200,
     )
@@ -105,6 +113,7 @@ async def test_submit_order_confirm_true_hits_demo_host(
     assert result.client_order_id == "test-cid-confirmed"
     assert result.executed_qty == Decimal("0.0001")
     assert result.cummulative_quote_qty == Decimal("5.00")
+    assert result.fee_usdt == Decimal("0.050000")
 
     # Verify the request hit the Spot Demo host with the X-MBX-APIKEY header
     # and a signed payload (contains a signature param).

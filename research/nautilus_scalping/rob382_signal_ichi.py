@@ -19,6 +19,7 @@ source is a PAST shift (``fan.shift(k)[i] == fan[i-k]``). The ichimoku senkou sp
 forward-displaced (span at i derives from i-displacement), so ``close > senkou_a`` is
 causal (no lookahead). ``crossed_below`` uses only i and i-1.
 """
+
 from __future__ import annotations
 
 import rob382_backtest as bt
@@ -84,7 +85,9 @@ def signals(bars, bars_1h=None) -> tuple[list[bool], list[bool]]:
 
     # fan_magnitude = trend_close_1h / trend_close_8h; gain = fan[i]/fan[i-1]
     fan = [
-        (tc_1h[i] / tc_8h[i]) if (_v(tc_1h[i]) and _v(tc_8h[i]) and tc_8h[i] != 0) else float("nan")
+        (tc_1h[i] / tc_8h[i])
+        if (_v(tc_1h[i]) and _v(tc_8h[i]) and tc_8h[i] != 0)
+        else float("nan")
         for i in range(n)
     ]
     fan_gain = [float("nan")] * n

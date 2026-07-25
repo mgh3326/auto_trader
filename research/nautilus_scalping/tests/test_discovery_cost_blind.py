@@ -11,8 +11,12 @@ from discovery.screen import HypothesisSummary, classify
 
 def _summary(gross, fee_adj, *, oos=None, oos_gross=None, samples=300, name="h"):
     return HypothesisSummary(
-        name=name, conditions="c", sample_count=samples,
-        gross_expectancy_bps=gross, fee_adjusted_bps=fee_adj, oos_fee_adjusted_bps=oos,
+        name=name,
+        conditions="c",
+        sample_count=samples,
+        gross_expectancy_bps=gross,
+        fee_adjusted_bps=fee_adj,
+        oos_fee_adjusted_bps=oos,
         oos_gross_bps=oos_gross,
     )
 

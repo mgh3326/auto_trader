@@ -30,8 +30,13 @@ from app.mcp_server.tooling.market_data_indicators import (
 from app.mcp_server.tooling.market_session import (
     DATA_STATE_FRESH,
     DATA_STATE_PREMARKET_UNAVAILABLE,
+    DATA_STATE_STALE,
+    US_SESSION_AFTERHOURS,
+    US_SESSION_CLOSED,
+    US_SESSION_PREMARKET,
     is_kr_session_day,
     kr_market_data_state,
+    us_market_session,
 )
 from app.mcp_server.tooling.shared import (
     error_payload as _error_payload,
@@ -59,7 +64,10 @@ from app.services.kr_hourly_candles_read_service import (
     read_kr_hourly_candles_1h,
     read_kr_intraday_candles,
 )
-from app.services.kr_symbol_universe_service import search_kr_symbols
+from app.services.kr_symbol_universe_service import (
+    get_kr_nxt_tradability,
+    search_kr_symbols,
+)
 from app.services.market_data.constants import (
     CRYPTO_MINUTE_OHLCV_PERIODS,
     CRYPTO_MINUTE_PUBLIC_ROW_KEYS,
@@ -72,6 +80,7 @@ from app.services.market_data.toss_ohlcv import (
     fetch_daily_toss_frame,
     fetch_kr_intraday_toss_frame,
 )
+from app.services.symbol_analysis.freshness import compute_is_stale
 from app.services.upbit_symbol_universe_service import search_upbit_symbols
 from app.services.us_intraday_candles_read_service import read_us_intraday_candles
 from app.services.us_symbol_universe_service import (
@@ -352,6 +361,42 @@ def _positive_price(value: float | int | None) -> float | None:
     return price if price > 0 else None
 
 
+# ROB-888: map the internal NXT session label to a consumer-facing session_state.
+_NXT_SESSION_STATE = {
+    "nxt_premarket": "premarket",
+    "nxt_after": "nxt_after",
+}
+
+
+def _annotate_nxt_session_change(
+    quote: dict[str, Any], *, session: str, krx_prev_close: float | None
+) -> None:
+    """ROB-888: stamp self-describing fields onto an NXT-overlaid quote.
+
+    Consumers (e.g. the operator premarket cross-check) can then judge the real
+    gap from the MCP quote alone instead of scraping CDP naver, whose premarket
+    dump conflates the KRX prior close with the NXT realtime block.
+
+    - ``session_state``: ``premarket`` | ``nxt_after`` (normalized from the NXT
+      session label).
+    - ``krx_prev_close``: the most recent completed KRX regular close — captured
+      as the quote's pre-overlay price (prior-day close in premarket, today's
+      regular close during nxt_after). ``None`` when unavailable.
+    - ``change_pct``: ``(nxt_price - krx_prev_close) / krx_prev_close * 100``,
+      rounded to 2dp. ``None`` (never a fake 0, never raise) when either side is
+      missing/non-positive — mirrors the ROB-448 previous_close convention.
+    """
+    quote["session_state"] = _NXT_SESSION_STATE.get(session, session)
+    quote["krx_prev_close"] = krx_prev_close
+    nxt_price = _positive_price(quote.get("price"))
+    if krx_prev_close is not None and nxt_price is not None:
+        quote["change_pct"] = round(
+            (nxt_price - krx_prev_close) / krx_prev_close * 100.0, 2
+        )
+    else:
+        quote["change_pct"] = None
+
+
 def _nxt_price_from_orderbook(
     snapshot: market_data_service.OrderbookSnapshot,
 ) -> tuple[float | None, str | None]:
@@ -403,6 +448,34 @@ async def _fetch_nxt_quote_overlay(
     if snapshot.source_tr_id is not None:
         overlay["source_tr_id"] = snapshot.source_tr_id
     return overlay
+
+
+async def _apply_nxt_quote_overlay(
+    symbol: str, quote: dict[str, Any], *, data_state: str
+) -> bool:
+    """Overlay an NXT-derived price onto ``quote`` during NXT sessions (ROB-725).
+
+    In-place mutation: ``price`` becomes the NXT expected/mid/best price and
+    ``price_source``/``session``/``venue``/``data_state`` are tagged. Returns
+    ``True`` when applied. Returns ``False`` (no mutation) when not in an NXT
+    session or the NXT orderbook is empty. Never raises — fail-open to the base
+    quote.
+    """
+    session = await _nxt_quote_session(data_state)
+    if session is None:
+        return False
+    # ROB-888: capture the pre-overlay price (the most recent completed KRX
+    # regular close) before ``quote.update`` overwrites it with the NXT price.
+    krx_prev_close = _positive_price(quote.get("price"))
+    overlay = await _fetch_nxt_quote_overlay(symbol, session=session)
+    if overlay is None:
+        return False
+    quote.update(overlay)
+    quote["regular_session_data_state"] = data_state
+    quote["data_state"] = DATA_STATE_FRESH
+    _annotate_nxt_session_change(quote, session=session, krx_prev_close=krx_prev_close)
+    _annotate_kr_price_freshness(quote, now_kst())
+    return True
 
 
 def _build_orderbook_walls_for_side(
@@ -541,6 +614,65 @@ async def _search_master_data(
 # ---------------------------------------------------------------------------
 
 
+def _parse_price_as_of(value: Any) -> datetime.datetime | None:
+    """Parse a provider timestamp without turning integer indexes into epoch data."""
+    if value is None:
+        return None
+    try:
+        timestamp = pd.Timestamp(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if pd.isna(timestamp) or timestamp.value <= 0:
+        return None
+    return timestamp.to_pydatetime()
+
+
+def _kr_price_as_of_from_frame(df: pd.DataFrame) -> datetime.datetime | None:
+    """Read a real candle date; RangeIndex values are not timestamps."""
+    if df.empty:
+        return None
+    row_value = df.iloc[-1].get("date")
+    if row_value is not None and not pd.isna(row_value):
+        return _parse_price_as_of(row_value)
+    if isinstance(df.index, pd.DatetimeIndex):
+        return _parse_price_as_of(df.index[-1])
+    return None
+
+
+def _annotate_kr_price_freshness(
+    quote: dict[str, Any],
+    as_of: Any,
+    *,
+    trading_date: datetime.date | None = None,
+) -> None:
+    """Expose whether a KR quote is safe to consume as a current price."""
+    parsed = _parse_price_as_of(as_of)
+    quote["price_as_of"] = parsed.isoformat() if parsed is not None else None
+    if parsed is None:
+        quote.update(
+            {
+                "is_stale_price": True,
+                "price_freshness": "unavailable",
+                "price_usable": False,
+                "price_unavailable_reason": "missing_price_asof",
+            }
+        )
+        return
+
+    stale = compute_is_stale(
+        "price",
+        parsed,
+        trading_date=trading_date or now_kst().date(),
+    )
+    quote["is_stale_price"] = stale
+    quote["price_freshness"] = "stale" if stale else "fresh"
+    quote["price_usable"] = not stale
+    if stale:
+        quote["price_unavailable_reason"] = "stale_price_asof"
+    else:
+        quote.pop("price_unavailable_reason", None)
+
+
 async def _fetch_quote_crypto(symbol: str) -> dict[str, Any]:
     """Fetch crypto quote from Upbit."""
     prices = await upbit_service.fetch_multiple_current_prices([symbol])
@@ -574,7 +706,7 @@ async def _fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
         prev_close_raw = df.iloc[-2].to_dict().get("close")
         if prev_close_raw is not None and not pd.isna(prev_close_raw):
             previous_close = float(prev_close_raw)
-    return {
+    quote = {
         "symbol": symbol,
         "instrument_type": "equity_kr",
         "price": last.get("close"),
@@ -586,6 +718,8 @@ async def _fetch_quote_equity_kr(symbol: str) -> dict[str, Any]:
         "value": last.get("value"),
         "source": "kis",
     }
+    _annotate_kr_price_freshness(quote, _kr_price_as_of_from_frame(df))
+    return quote
 
 
 async def _fetch_kr_live_quote(symbol: str) -> dict[str, Any] | None:
@@ -649,7 +783,7 @@ async def _fetch_us_quote_from_kis(normalized_symbol: str) -> dict[str, Any] | N
     price = _to_float_or_none(row.get("close"))
     if price is None or price <= 0:
         return None
-    return {
+    quote = {
         "symbol": normalized_symbol,
         "instrument_type": "equity_us",
         "price": price,
@@ -660,7 +794,13 @@ async def _fetch_us_quote_from_kis(normalized_symbol: str) -> dict[str, Any] | N
         "volume": _to_int_or_none(row.get("volume")),
         "source": "kis_overseas",
         "delayed": True,
+        "venue": exchange_code,
+        "price_source": "kis_overseas_last",
     }
+    quote_asof = _optional_text(row.get("quote_asof"))
+    if quote_asof is not None:
+        quote["quote_asof"] = quote_asof
+    return quote
 
 
 def _is_yahoo_symbol_not_found_error(exc: BaseException) -> bool:
@@ -675,13 +815,89 @@ def _is_yahoo_symbol_not_found_error(exc: BaseException) -> bool:
     )
 
 
-async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
+_US_MARKET_CLOSED_REASON = "us_market_closed"
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _tag_us_quote_session(
+    quote: dict[str, Any], *, now: datetime.datetime | None = None
+) -> dict[str, Any]:
+    session = us_market_session(now)
+    quote["session"] = session
+    if session == US_SESSION_CLOSED:
+        quote["data_state"] = DATA_STATE_STALE
+        quote["data_state_reason"] = _US_MARKET_CLOSED_REASON
+    else:
+        quote["data_state"] = DATA_STATE_FRESH
+        quote.pop("data_state_reason", None)
+    if "price_source" not in quote:
+        quote["price_source"] = (
+            "kis_overseas_last"
+            if quote.get("source") == "kis_overseas"
+            else "yahoo_fast_info_close"
+        )
+    return quote
+
+
+async def _apply_extended_hours_overlay(
+    quote: dict[str, Any], symbol: str, include_extended_hours: bool
+) -> dict[str, Any]:
+    """ROB-922: opt-in Yahoo prepost overlay for US premarket/afterhours quotes.
+
+    Only attempted when the caller opts in AND the tagged session is an
+    extended session (premarket/afterhours) — regular-session and closed
+    quotes are untouched (no-op), and KR/crypto callers never reach this
+    helper at all. On any failure or empty prepost data the existing quote
+    and its labels are kept as-is — never lie about price_source.
+    """
+    if not include_extended_hours:
+        return quote
+    if quote.get("session") not in (US_SESSION_PREMARKET, US_SESSION_AFTERHOURS):
+        return quote
+    try:
+        prepost = await yahoo_service.fetch_prepost_quote(symbol)
+    except Exception as exc:  # noqa: BLE001 — best-effort overlay, never breaks the base quote
+        logger.warning(
+            "Yahoo prepost overlay failed for '%s'; keeping existing quote: %s",
+            symbol,
+            exc,
+        )
+        return quote
+    if prepost is None:
+        return quote
+    price = _to_float_or_none(prepost.get("price"))
+    if price is None:
+        return quote
+    quote["price"] = price
+    quote["price_source"] = "yahoo_prepost_last"
+    quote_asof = _optional_text(prepost.get("quote_asof"))
+    if quote_asof is not None:
+        quote["quote_asof"] = quote_asof
+    quote["data_state"] = DATA_STATE_FRESH
+    quote.pop("data_state_reason", None)
+    return quote
+
+
+async def _fetch_quote_equity_us(
+    symbol: str, *, include_extended_hours: bool = False
+) -> dict[str, Any]:
     """Fetch US equity quote.
 
     ROB-471: KIS 해외 현재가 primary(settings.us_quote_kis_primary), Yahoo
     fast_info fallback. 정직 에러 분리:
       - provider 명시적 not-found → symbol_not_found (ValueError)
       - fast_info 정상응답·무가격 → quote_unavailable (RuntimeError)
+
+    ROB-922: include_extended_hours=True opportunistically overlays the
+    latest Yahoo prepost (extended-hours) price during premarket/afterhours
+    sessions via ``_apply_extended_hours_overlay``. Default False leaves the
+    result byte-identical to the pre-ROB-922 payload.
     """
     normalized_symbol = str(symbol or "").strip().upper()
     not_found_message = f"Symbol '{normalized_symbol}' not found"
@@ -700,7 +916,11 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
             )
         else:
             if kis_quote is not None:
-                return kis_quote
+                return await _apply_extended_hours_overlay(
+                    _tag_us_quote_session(kis_quote),
+                    normalized_symbol,
+                    include_extended_hours,
+                )
 
     # FALLBACK: Yahoo fast_info
     try:
@@ -720,18 +940,25 @@ async def _fetch_quote_equity_us(symbol: str) -> dict[str, Any]:
             )
         raise RuntimeError(f"{unavailable_message} (yahoo returned no price)")
 
-    return {
-        "symbol": normalized_symbol,
-        "instrument_type": "equity_us",
-        "price": price,
-        "previous_close": _to_float_or_none(fast_info.get("previous_close")),
-        "open": _to_float_or_none(fast_info.get("open")),
-        "high": _to_float_or_none(fast_info.get("high")),
-        "low": _to_float_or_none(fast_info.get("low")),
-        "volume": _to_int_or_none(fast_info.get("volume")),
-        "source": "yahoo",
-        "delayed": True,
-    }
+    return await _apply_extended_hours_overlay(
+        _tag_us_quote_session(
+            {
+                "symbol": normalized_symbol,
+                "instrument_type": "equity_us",
+                "price": price,
+                "previous_close": _to_float_or_none(fast_info.get("previous_close")),
+                "open": _to_float_or_none(fast_info.get("open")),
+                "high": _to_float_or_none(fast_info.get("high")),
+                "low": _to_float_or_none(fast_info.get("low")),
+                "volume": _to_int_or_none(fast_info.get("volume")),
+                "source": "yahoo",
+                "delayed": True,
+                "price_source": "yahoo_fast_info_close",
+            }
+        ),
+        normalized_symbol,
+        include_extended_hours,
+    )
 
 
 async def fetch_us_live_last_price(symbol: str) -> float | None:
@@ -1199,8 +1426,14 @@ async def _search_symbol_impl(
 async def _get_quote_impl(
     symbol: str | int,
     market: str | None = None,
+    include_extended_hours: bool = False,
 ) -> dict[str, Any]:
-    """Implementation for get_quote tool."""
+    """Implementation for get_quote tool.
+
+    ROB-922: include_extended_hours is US-equity-only opt-in (see
+    _fetch_quote_equity_us / _apply_extended_hours_overlay); KR and crypto
+    ignore the parameter entirely (no-op).
+    """
     symbol = _normalize_symbol_input(symbol, market)
     if not symbol:
         raise ValueError("symbol is required")
@@ -1208,7 +1441,9 @@ async def _get_quote_impl(
     market_type, symbol = _resolve_market_type(symbol, market)
 
     if market_type == "equity_us":
-        return await _fetch_quote_equity_us(symbol)
+        return await _fetch_quote_equity_us(
+            symbol, include_extended_hours=include_extended_hours
+        )
 
     source_map = {"crypto": "upbit", "equity_kr": "kis"}
     source = source_map[market_type]
@@ -1221,14 +1456,11 @@ async def _get_quote_impl(
         # previous_close used for gap calculations.
         data_state = kr_market_data_state()
         quote = await _fetch_quote_equity_kr(symbol)
-        session = await _nxt_quote_session(data_state)
-        if session is not None:
-            overlay = await _fetch_nxt_quote_overlay(symbol, session=session)
-            if overlay is not None:
-                quote.update(overlay)
-                quote["regular_session_data_state"] = data_state
-                quote["data_state"] = DATA_STATE_FRESH
-                return quote
+        tradability = (await get_kr_nxt_tradability([symbol])).get(symbol)
+        if tradability is not None:
+            quote.update(tradability.public_fields())
+        if await _apply_nxt_quote_overlay(symbol, quote, data_state=data_state):
+            return quote
 
         quote["data_state"] = data_state
         return quote
@@ -1454,13 +1686,26 @@ def _register_market_data_tools_impl(mcp: FastMCP) -> None:
         name="get_quote",
         description=(
             "Get latest quote/last price for a symbol (KR equity / US equity / crypto). "
+            "Use this for a fast standalone price/last-trade check. For KR/crypto and "
+            "US regular-session analysis, a planned analyze_stock_batch already includes "
+            "a fresh price, so this call is normally redundant; still use get_quote for "
+            "US premarket/afterhours with include_extended_hours=True or when "
+            "previous_close is needed, and use get_ohlcv when OHLC candles are needed. "
             "For KR equities during NXT pre-market/after-hours sessions, price falls "
             "back to the NXT orderbook expected price or best bid/ask mid while "
-            "preserving KRX previous_close for gap calculations."
+            "preserving KRX previous_close for gap calculations. "
+            "include_extended_hours=True (US equity only, default False) opportunistically "
+            "overlays the latest Yahoo pre/post-market 1-minute price during premarket/"
+            "afterhours sessions (price_source='yahoo_prepost_last'); no-op for KR/crypto "
+            "and for regular/closed US sessions."
         ),
     )
-    async def get_quote(symbol: str | int, market: str | None = None) -> dict[str, Any]:
-        return await _get_quote_impl(symbol, market)
+    async def get_quote(
+        symbol: str | int,
+        market: str | None = None,
+        include_extended_hours: bool = False,
+    ) -> dict[str, Any]:
+        return await _get_quote_impl(symbol, market, include_extended_hours)
 
     @mcp.tool(
         name="get_orderbook",

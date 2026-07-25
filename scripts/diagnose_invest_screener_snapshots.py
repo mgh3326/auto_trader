@@ -8,6 +8,7 @@ Examples:
     uv run python -m scripts.diagnose_invest_screener_snapshots --market kr
     uv run python -m scripts.diagnose_invest_screener_snapshots --market us
 """
+
 from __future__ import annotations
 
 import argparse

@@ -73,12 +73,18 @@ def app(db_session) -> FastAPI:
 async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
     db_session,
 ):
-    # Use a date that is intentionally distinct from the shared market-events
-    # freshness tests. The global test database is shared across xdist workers, so
-    # inserting a partition for 2026-05-11 here can race with tests that assert a
+    # Date KEY stays fixed and intentionally distinct from the shared
+    # market-events freshness tests: the global test DB is shared across xdist
+    # workers, so reusing 2026-05-11 here can race with tests asserting a
     # completely missing market-events partition on that day.
     trading_day = dt.date(2026, 6, 17)
-    now = dt.datetime(2026, 6, 17, 8, 0, tzinfo=dt.UTC)
+    # Wall-clock `now`, by contrast, MUST track real time. The news (24h),
+    # calendar (36h), holdings (24h) and pending-order (30m) freshness windows in
+    # invest_coverage_service compare row timestamps against datetime.now(), not
+    # `as_of`. A hardcoded `now` silently rots into a date time-bomb: once the
+    # wall-clock date advances past the window, the seeded "fresh" rows fall
+    # outside it and the expected-fresh surfaces flip to stale.
+    now = dt.datetime.now(dt.UTC)
     now_naive = now.replace(tzinfo=None)
 
     await db_session.execute(

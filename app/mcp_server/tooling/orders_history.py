@@ -60,6 +60,7 @@ def _calculate_order_summary(orders: list[dict[str, Any]]) -> dict[str, Any]:
     pending = sum(1 for o in orders if o.get("status") == "pending")
     partial = sum(1 for o in orders if o.get("status") == "partial")
     cancelled = sum(1 for o in orders if o.get("status") == "cancelled")
+    expired = sum(1 for o in orders if o.get("status") == "expired")
 
     return {
         "total_orders": total_orders,
@@ -67,6 +68,7 @@ def _calculate_order_summary(orders: list[dict[str, Any]]) -> dict[str, Any]:
         "pending": pending,
         "partial": partial,
         "cancelled": cancelled,
+        "expired": expired,
     }
 
 
@@ -130,7 +132,9 @@ def _validate_history_inputs(
         if norm:
             market_types = [norm]
 
-    if not market_types and status in ("pending", "all"):
+    if not market_types and status in ("pending", "all", "expired"):
+        # ROB-665 item 3: expired (dead day orders) surface via the live
+        # KR/US inquiries just like pending, so scan all markets when unscoped.
         market_types = ["crypto", "equity_kr", "equity_us"]
 
     if not market_types and order_id:
@@ -185,7 +189,7 @@ async def _fetch_kr_orders(
     fetched: list[dict[str, Any]] = []
     kis = _create_kis_client(is_mock=is_mock)
 
-    if status in ("all", "pending"):
+    if status in ("all", "pending", "expired"):
         logger.debug("Fetching KR pending orders, symbol=%s", normalized_symbol)
         try:
             open_ops = await _call_kis(kis.inquire_korea_orders, is_mock=is_mock)
@@ -211,7 +215,7 @@ async def _fetch_kr_orders(
             )
             fetched.extend(shadow_orders)
 
-    if status in ("all", "filled", "cancelled") and normalized_symbol:
+    if status in ("all", "filled", "cancelled", "expired") and normalized_symbol:
         lookup_days = effective_days if effective_days is not None else 30
         start_dt, end_dt = _calculate_date_range(lookup_days)
         hist_ops = await _call_kis(
@@ -221,6 +225,12 @@ async def _fetch_kr_orders(
             stock_code=normalized_symbol,
             side="00",
             is_mock=is_mock,
+            # ROB-903: display-only fast pagination. rate limiter paces requests
+            # (drop the redundant inter-page sleep) and halt on the KIS
+            # duplicate-cursor runaway. Reconcile/fill-evidence paths keep the
+            # broker defaults (exhaustive, 0.1s spacing) — untouched.
+            inter_page_delay=0.0,
+            stop_when_no_new_rows=True,
         )
         fetched.extend([_normalize_kis_domestic_order(o) for o in hist_ops])
 
@@ -237,7 +247,7 @@ async def _fetch_us_orders(
     fetched: list[dict[str, Any]] = []
     kis = _create_kis_client(is_mock=is_mock)
 
-    if status in ("all", "pending"):
+    if status in ("all", "pending", "expired"):
         target_exchanges = ["NASD", "NYSE", "AMEX"]
         if normalized_symbol:
             target_exchanges = [await get_us_exchange_by_symbol(normalized_symbol)]
@@ -279,7 +289,7 @@ async def _fetch_us_orders(
             )
             fetched.extend(shadow_orders)
 
-    if status in ("all", "filled", "cancelled") and normalized_symbol:
+    if status in ("all", "filled", "cancelled", "expired") and normalized_symbol:
         lookup_days = effective_days if effective_days is not None else 30
         start_dt, end_dt = _calculate_date_range(lookup_days)
         ex = await get_us_exchange_by_symbol(normalized_symbol)
@@ -291,6 +301,10 @@ async def _fetch_us_orders(
             exchange_code=ex,
             side="00",
             is_mock=is_mock,
+            # ROB-903: display-only fast pagination (see _fetch_kr_orders).
+            # Reconcile/fill-evidence paths keep the broker defaults.
+            inter_page_delay=0.0,
+            stop_when_no_new_rows=True,
         )
         fetched.extend([_normalize_kis_overseas_order(o) for o in hist_ops])
 
@@ -352,6 +366,9 @@ def _filter_and_sort_orders(
                 continue
         elif status == "cancelled":
             if o_status != "cancelled":
+                continue
+        elif status == "expired":
+            if o_status != "expired":
                 continue
 
         if order_id and o.get("order_id") != order_id:
@@ -440,7 +457,7 @@ def _build_history_response(
 
 async def get_order_history_impl(
     symbol: str | None = None,
-    status: Literal["all", "pending", "filled", "cancelled"] = "all",
+    status: Literal["all", "pending", "filled", "cancelled", "expired"] = "all",
     order_id: str | None = None,
     market: str | None = None,
     side: str | None = None,

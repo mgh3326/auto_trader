@@ -29,6 +29,23 @@ toss_reconcile_orders(order_id="ORDER_ID", dry_run=True)
 toss_reconcile_orders(order_id="ORDER_ID", dry_run=False)
 ```
 
+## Auto-reconcile (ROB-574)
+
+수동 `toss_reconcile_orders(dry_run=False)` 반복을 피하려면 주기 자동 정산을
+활성화한다. TaskIQ wrapper는 기존 증거-게이트 커널만 호출하며 새 booking 로직은
+없다.
+
+- **Paused TaskIQ 태스크**: `toss_live.reconcile_periodic` — worker에 등록되지만
+  코드 내 `schedule=`은 없다. 외부 recurrence는 robin-prefect-automations에서
+  등록한다.
+- **Activation gates**: `TOSS_LIVE_AUTO_RECONCILE_ENABLED=true` **그리고**
+  `TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED=true`가 모두 필요하다. 하나라도
+  미설정 시 `{"status":"paused"}`로 inert.
+- **권장 external cadence**: 장중 수 분 간격 reconcile + 장마감 후 sweep.
+  정확한 cron은 운영 자동화 레포에서 관리한다.
+- **Safety**: 배포만으로 자동 booking은 시작되지 않는다. cron 등록과 env flip은
+  high-risk final review 이후 별도 operator 후속으로 진행한다.
+
 ## Status Semantics
 
 - `PENDING`: no local booking.
@@ -52,6 +69,173 @@ single-order detail resolves. If Toss returns `CANCEL_REJECTED` or
 `REPLACE_REJECTED`, reconcile marks the replacement operation row rejected and
 clears the original row's replacement link so the original order remains open.
 
+## 403 / non-JSON Manual Review
+
+`toss_reconcile_orders` fetches broker evidence with `GET /orders/{orderId}`.
+When a GET order lookup returns `403` with a non-JSON body, the Toss client
+force-reissues the OAuth token once and retries the same GET. If the retry still
+fails, reconcile fails closed:
+
+- the tool response returns `verdict="anomaly"`, `action="requires_manual_review"`,
+  and structured `error_details`;
+- `review.toss_live_order_ledger.status` becomes `anomaly`;
+- `requires_manual_review=true`, `manual_review_reason`, and
+  `last_reconcile_error` are persisted for operator lookup.
+
+Mutation POSTs (`place`, `modify`, `cancel`) do not use this new 403 retry path.
+They must not be repeated implicitly because a retry can create duplicate live
+order side effects. Rate-limit (`429`) responses continue to use backoff and do
+not trigger token reissue loops.
+
+## Manual Review Query
+
+```sql
+SELECT
+    id,
+    market,
+    symbol,
+    broker_order_id,
+    operation_kind,
+    status,
+    manual_review_reason,
+    last_reconcile_error,
+    updated_at
+FROM review.toss_live_order_ledger
+WHERE requires_manual_review IS TRUE
+ORDER BY updated_at DESC, id DESC;
+```
+
+For each row, verify the Toss broker UI/API order detail before booking a fill,
+closing the row, or resetting it for another reconcile attempt. Do not infer a
+cancel or fill from a missing/failed order-detail response.
+
+## Transient vs Anomaly (ROB-669)
+
+To prevent transient network or broker outages from locking rows permanently, `toss_reconcile_orders` distinguishes between transient failures and anomalies:
+- **Transient Failures**: Timeout, transport errors, HTTP 429/5xx, or specific transient error codes (`rate-limit-exceeded`, `internal-error`, `maintenance`, `expired-token`, etc.). The row status is left unchanged (remains retryable/open), and the error payload is stored in `last_reconcile_error` for observability.
+- **Anomalies**: Broker-confirmed contradictions (e.g. 404 order-not-found, 403 access failure, or idempotency conflict). The row is marked with `status='anomaly'` and `requires_manual_review=true` to park it.
+
+## Re-opening `'equity'` InstrumentType Anomalies (ROB-631)
+
+Before the ROB-631 fix, KR equity fills were booked with the invalid instrument
+type literal `"equity"`. `InstrumentType("equity")` raised
+`ValueError: 'equity' is not a valid InstrumentType` (valid members are
+`equity_kr`, `equity_us`, `crypto`, `forex`, `index`), so KR rows were parked as
+`status='anomaly'` / `requires_manual_review=true` instead of booked
+(e.g. ledger 139, 169 두산에너빌리티 034020).
+
+The fix changes the KR branch to `"equity_kr"`. New KR fills book normally, but
+existing anomaly rows are not re-processed automatically.
+
+Remediation (operator, one-off after deploying the fix) — use the existing
+reconcile tool; recovery is self-healing, no special flag. The reconcile pass only
+reopens no-fill anomaly rows (filled_qty NULL/0 AND trade_id NULL) whose
+last_reconcile_error is the pre-ROB-631 InstrumentType signature or a transient
+(rate-limit/5xx/token/network) signature. It never reopens 403/404/duplicate
+contradictions.
+
+1. Preview which rows would reopen (no mutation):
+
+   ```bash
+   toss_reconcile_orders(market="kr", dry_run=True)
+   ```
+
+   Inspect the `reopened.candidates` list and confirm each is a bug/transient row.
+
+2. Apply: run the same pass without dry_run — qualifying rows are reopened AND
+   reconciled together:
+
+   ```bash
+   toss_reconcile_orders(market="kr", dry_run=False)
+   ```
+
+3. Confirm the rows now show `status='filled'` (or `partial`) with non-null
+   `trade_id` / `journal_id`.
+
+> **Operator note — anomalies that are NOT auto-reopened.** Anomaly rows whose
+> `last_reconcile_error` does NOT match the auto-reopen signatures (e.g. a genuine
+> 403 access failure, a 404 order-not-found, a duplicate/idempotency contradiction,
+> or any row that already carries fill evidence) are **intentionally left as
+> `anomaly`** and never appear in `reopened.candidates`. These still require manual
+> review: verify each against the Toss broker order detail before taking any action.
+
+Audit Query (to list all anomalies for manual review):
+
+```sql
+SELECT id, market, symbol, broker_order_id, status, last_reconcile_error
+FROM review.toss_live_order_ledger
+WHERE status = 'anomaly'
+  AND requires_manual_review IS TRUE;
+```
+
+## US FX PnL Split
+
+Toss `GET /orders/{orderId}` execution does not include fill-time FX fields. For
+US orders only, reconcile captures the current USD/KRW quote from
+`exchange_rate_service` when the fill is booked:
+
+- buy reconcile stores `buy_fx_rate`;
+- sell reconcile stores `sell_fx_rate`;
+- closed FIFO journal lots store `security_pnl_usd`, `security_pnl_krw`, `fx_pnl_krw`, and `total_pnl_krw`;
+- automatic values use `fx_rate_source='reconcile_spot'` and `fx_pnl_accuracy='approximate'`.
+
+Legacy lots with no captured buy FX cannot produce automatic FX PnL. They remain
+`fx_pnl_accuracy='unavailable'` with null FX PnL fields until the operator
+supplies exact values through
+`modify_journal_entry(..., fx_rate_source='manual', fx_pnl_accuracy='exact')`.
+
+```text
+security_pnl_usd = sell_notional_usd - buy_notional_usd
+security_pnl_krw = security_pnl_usd * sell_fx_rate
+fx_pnl_krw = buy_notional_usd * (sell_fx_rate - buy_fx_rate)
+total_pnl_krw = security_pnl_krw + fx_pnl_krw
+```
+
 ## Operational Hold
 
 Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until ROB-539 live smoke and stronger-model/CTO review clear this path. This feature changes live-order bookkeeping and must stay under `hold_for_final_review` until cleared.
+
+## Fill Notifications (ROB-576)
+
+When `TOSS_FILL_NOTIFY_ENABLED=true`, `toss_reconcile_orders(dry_run=False)` sends a fill notification after a new fill delta is durably booked. Dry runs never notify. Re-running reconcile for an already-booked quantity does not notify because the existing delta-idempotency guard returns `noop_already_booked`.
+
+Notification routing:
+
+- `market="kr"` → `DISCORD_WEBHOOK_KR`
+- `market="us"` → `DISCORD_WEBHOOK_US`
+- Telegram fallback uses the existing `TELEGRAM_TOKEN` / `TELEGRAM_CHAT_ID` settings.
+
+Toss fill notifications intentionally use `enrichment=None`. The existing KR/US fill enrichment reads KIS account state and can display the wrong position/PnL for Toss fills if the same symbol is also held in KIS.
+
+## Auto-Reconcile (ROB-576 PR2)
+
+The optional TaskIQ task `toss_live.reconcile_periodic` is shipped without an in-repo schedule and returns `{"status": "paused"}` until both gates are true:
+
+- `TOSS_LIVE_AUTO_RECONCILE_ENABLED=true`
+- `TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED=true`
+
+When enabled, the task calls `toss_reconcile_orders_impl(dry_run=False)`. This still does not place, modify, or cancel live orders; it only books confirmed broker evidence into local trades/journals and triggers fill notifications if `TOSS_FILL_NOTIFY_ENABLED=true`.
+
+Recommended initial external cadence: 1-5 minutes. Start at 5 minutes unless there is an operator need for faster Discord latency, then tighten after watching Toss API rate-limit and OAuth behavior.
+
+## Fill Poller (ROB-757)
+
+`toss_live.poll_fills_periodic` is the default-off TaskIQ poller that closes the
+Toss websocket gap. It performs a read-only Toss order scan, seeds app-direct
+orders missing from `review.toss_live_order_ledger`, then calls
+`toss_reconcile_orders_impl(dry_run=False)`.
+
+Activation gates:
+
+- `TOSS_FILL_POLL_ENABLED=true`
+- `TOSS_API_ENABLED=true`
+- existing Toss API credentials
+
+The task never places, modifies, or cancels broker orders. Confirmed fill deltas
+are written to `review.execution_ledger` with `broker="toss"` and
+`source="reconciler"`; ROB-755 triage should query `--source reconciler --broker toss`.
+
+For manual reps / single-shot runs of this exact poll before promoting it to
+a recurring schedule, see `docs/runbooks/toss-fill-reconcile-poller.md`
+(ROB-925) — a standalone CLI wrapping the same kernels, usable without the
+TaskIQ worker/scheduler.

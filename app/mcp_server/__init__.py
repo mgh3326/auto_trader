@@ -32,6 +32,8 @@ AVAILABLE_TOOL_NAMES = [
     "get_valuation",
     "get_short_interest",
     "get_market_index",
+    "get_fx_rate",
+    "suggest_order_account",
     "get_support_resistance",
     "get_sector_peers",
     "get_cash_balance",
@@ -51,6 +53,12 @@ AVAILABLE_TOOL_NAMES = [
     "save_trade_retrospective",
     "get_trade_retrospectives",
     "get_retrospective_aggregate",
+    "trade_retrospective_pending",
+    # ROB-650: resolvable forecast ledger
+    "forecast_save",
+    "forecast_resolve",
+    "get_forecasts",
+    "get_forecast_calibration",
     # Crypto research tools
     "get_crypto_profile",
     "get_kimchi_premium",

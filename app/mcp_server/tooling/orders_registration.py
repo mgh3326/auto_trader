@@ -119,6 +119,10 @@ def register_order_tools(mcp: FastMCP) -> None:
             "Get order history for a symbol. Supports Upbit (crypto) and KIS "
             "(KR/US equities). Pending orders can be queried without a symbol, "
             "but filled/cancelled/all queries require symbol. "
+            "status='expired' returns dead day orders (KIS: nothing filled, "
+            "nothing left to modify/cancel — EOD expiry/reject, distinct from an "
+            "operator cancel which is status='cancelled'). Each order carries "
+            "is_live (true only for pending/partial). "
             "Set account_type='paper' to query the virtual paper-trading "
             "account's trade history instead; pass paper_account to target a "
             "named paper account (defaults to 'default'). "
@@ -128,7 +132,7 @@ def register_order_tools(mcp: FastMCP) -> None:
     )
     async def get_order_history(
         symbol: str | None = None,
-        status: Literal["all", "pending", "filled", "cancelled"] = "all",
+        status: Literal["all", "pending", "filled", "cancelled", "expired"] = "all",
         order_id: str | None = None,
         market: str | None = None,
         side: str | None = None,
@@ -190,7 +194,10 @@ def register_order_tools(mcp: FastMCP) -> None:
             "so a trade journal can be created automatically. "
             "For sell orders, active trade journals are auto-closed in FIFO order. "
             "Use exit_reason to record the sell thesis in the journal. "
-            "Safety limit: max 20 orders/day. "
+            "If this order originates from an investment_report item, pass that "
+            "item's item_uuid (from investment_report_create / investment_report_get) "
+            "as report_item_uuid to create the ROB-473 audit link so /invest can show "
+            "rationale → order → fill status; omit when there is no originating report item. "
             "dry_run=True by default for safety. "
             "Set account_type='paper' to route to the virtual paper-trading engine "
             "(no real broker calls, uses PaperTradingService). In paper mode, the "
@@ -199,11 +206,20 @@ def register_order_tools(mcp: FastMCP) -> None:
             "Use account_mode={'db_simulated','kis_mock','kis_live'} "
             "(preferred); account_type aliases are deprecated and emit warnings. "
             "Journal features (thesis/strategy/FIFO close) ARE supported in paper mode. "
-            "defensive_trim=True enables a sell/limit-only floor bypass path. "
-            "ROB-164/ROB-166 defensive_trim requires ALL of: (a) side='sell', "
-            "(b) order_type='limit', (c) valid approval_issue_id with approval issue "
-            "status=done in Paperclip, and (d) middleware-extracted caller identity "
-            "matching Trader agent."
+            "defensive_trim=True is disabled on this direct tool; create an "
+            "order_proposal_create request so Telegram can collect the required "
+            "human confirmation. "
+            "Approval-hash binding (ORDER_APPROVAL_HASH_MODE, default optional): the "
+            "dry_run=True preview mints approval_hash (self-contained token over the "
+            "normalized order, 5-minute TTL), approval_expires_at, and idempotency_key; "
+            "pass that approval_hash back (with the same rung ladder level) so live "
+            "send re-derives the canonical order and fail-closes on mismatch/expiry. "
+            "off=ignored; optional=verified only when supplied; warn=logs a hash-less "
+            "live send; required=mandatory for LIVE sends (mock/is_mock paths exempt)."
+            ' ROB-864 exit_intent="loss_cut" is disabled on this direct tool. Use '
+            "order_proposal_create; Telegram performs two-click confirmation with a "
+            "single-use nonce and second-click full revalidation. approval_issue_id "
+            "is only an optional audit note."
         ),
     )
     async def place_order(
@@ -225,29 +241,38 @@ def register_order_tools(mcp: FastMCP) -> None:
         indicators_snapshot: dict[str, Any] | None = None,
         defensive_trim: bool = False,
         approval_issue_id: str | None = None,
+        exit_intent: str | None = None,
+        retrospective_id: int | None = None,
         account_mode: str | None = None,
         account_type: str | None = None,
         paper_account: str | None = None,
         report_item_uuid: str | None = None,
+        approval_hash: str | None = None,
+        rung: str | int | None = None,
     ):
         routing = normalize_account_mode(
             account_mode=account_mode,
             account_type=account_type,
         )
+        if exit_intent == "loss_cut":
+            return {
+                "success": False,
+                "error": "loss_cut_direct_path_disabled_use_order_proposal_create",
+                "source": "mcp",
+                "symbol": symbol,
+            }
+        if defensive_trim:
+            return {
+                "success": False,
+                "error": (
+                    "defensive_trim_direct_path_disabled_use_order_proposal_create"
+                ),
+                "source": "mcp",
+                "symbol": symbol,
+            }
         # Defense in depth: reject market orders even if a stale client
         # bypasses the tightened schema and still sends order_type="market".
         if str(order_type).lower().strip() != "limit":
-            if defensive_trim:
-                return {
-                    "success": False,
-                    "error": (
-                        "defensive_trim requires order_type='limit' "
-                        "(market orders are blocked)"
-                    ),
-                    "source": "mcp",
-                    "symbol": symbol,
-                    "order_type": order_type,
-                }
             return {
                 "success": False,
                 "error": (
@@ -305,8 +330,12 @@ def register_order_tools(mcp: FastMCP) -> None:
                 indicators_snapshot=indicators_snapshot,
                 defensive_trim=defensive_trim,
                 approval_issue_id=approval_issue_id,
+                exit_intent=exit_intent,
+                retrospective_id=retrospective_id,
                 is_mock=routing.is_kis_mock,
                 report_item_uuid=report_item_uuid,
+                approval_hash=approval_hash,
+                rung=rung,
             ),
             routing,
         )
@@ -508,6 +537,22 @@ def register_order_tools(mcp: FastMCP) -> None:
             "holdings deltas and updates ledger lifecycle states. "
             "dry_run=True by default for safety. Applying transitions requires "
             "BOTH dry_run=False AND confirm=True. "
+            "market (kr/us or equity_kr/equity_us) and/or symbol scope the run "
+            "to matching open orders only — omit both to scan all open KIS mock "
+            "orders (unchanged default behavior). ledger_ids (list of positive "
+            "ints) further narrows to an explicit set of ledger rows — useful "
+            "to re-check specific previously-'stale' rows without a full scan. "
+            "An unrecognized market value, or an invalid ledger_ids (empty "
+            "list, negative/non-integer entries, or ids that don't exist) is "
+            "rejected (success=false + `selector` naming which one) rather "
+            "than silently treated as a full scan. Every path that has a "
+            "valid scope (config error, confirm-required, success, and "
+            "unexpected-exception) echoes the effective/canonical scope under "
+            '`scope` (e.g. market="us" always echoes back as "equity_us") — '
+            "never the raw, pre-alias request. The one exception is an "
+            "invalid-selector rejection: since no valid scope exists there, "
+            "it has no `scope` key and instead echoes the verbatim request "
+            "under `requested_scope` plus `selector`. "
             "Fails closed if KIS mock config is missing."
         ),
     )
@@ -515,19 +560,45 @@ def register_order_tools(mcp: FastMCP) -> None:
         dry_run: bool = True,
         confirm: bool = False,
         limit: int = 100,
+        market: str | None = None,
+        symbol: str | None = None,
+        ledger_ids: list[int] | None = None,
     ):
+        # ROB-1018 fix #3 / ROB-1007 fix #2/#3: selector validation runs at
+        # this single front-layer point, BEFORE the config-error and confirm
+        # gates below — so an invalid market or ledger_ids always
+        # short-circuits with the same rejection (requested_scope, no scope
+        # key, `selector` naming which one) no matter what other conditions
+        # also hold. See resolve_kis_mock_reconcile_scope's docstring for why
+        # both layers must share this one function.
+        scope, scope_error = kis_mock_ledger.resolve_kis_mock_reconcile_scope(
+            market=market, symbol=symbol, ledger_ids=ledger_ids
+        )
+        if scope_error:
+            return scope_error
         config_error = _kis_mock_config_error()
         if config_error:
-            return config_error
+            return {**config_error, "scope": scope}
         if not dry_run and not confirm:
             return {
                 "success": False,
                 "account_mode": "kis_mock",
                 "dry_run": dry_run,
                 "error": "confirm=True is required when dry_run=False",
+                "scope": scope,
             }
+        # Pass the raw request through (not the pre-normalized `scope`) —
+        # kis_mock_reconciliation_run_impl calls the same resolve helper
+        # itself and is the authoritative normalization point for the
+        # actual reconciliation call; this call can never disagree with
+        # the `scope`/`requested_scope` already validated above because
+        # both derive from the identical resolve_kis_mock_reconcile_scope.
         return await kis_mock_ledger.kis_mock_reconciliation_run_impl(
-            dry_run=dry_run, limit=limit
+            dry_run=dry_run,
+            limit=limit,
+            market=market,
+            symbol=symbol,
+            ledger_ids=ledger_ids,
         )
 
 

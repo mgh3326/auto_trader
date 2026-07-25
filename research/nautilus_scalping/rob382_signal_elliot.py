@@ -20,6 +20,7 @@ Causality: ElliotV7 uses NO ``.shift(k)`` in either populate_*_trend — every g
 SAME bar's columns, so signals[i] depends only on bars[0..i]. The 1h merge is the lookahead-
 safe ``merge_informative`` (last FULLY-CLOSED 1h bar as of the 5m bar's open time).
 """
+
 from __future__ import annotations
 
 import rob382_backtest

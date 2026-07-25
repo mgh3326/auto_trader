@@ -53,8 +53,29 @@ SINGLE_ACTIVE_LABELS=(
   "com.robinco.auto-trader.scheduler"
   "com.robinco.auto-trader.kis-websocket"
   "com.robinco.auto-trader.upbit-websocket"
+  # ROB-760: fixed-profile readonly MCP services outside the blue/green pair.
+  "com.robinco.auto-trader.mcp-analysis-readonly"
+  "com.robinco.auto-trader.mcp-account-read"
+  # ROB-762: TradingCodex execution MCP service outside the blue/green pair.
+  "com.robinco.auto-trader.mcp-tradingcodex-execution"
   # ROB-469 PR3: single non-color-specific watchdog that restarts a wedged MCP color.
   "com.robinco.auto-trader.mcp-watchdog"
+)
+
+# ROB-831: fixed-profile MCP services (label:port) whose *process release path*
+# must be re-verified after restart_single_active_services() kickstarts them.
+# restart_single_active_services() already bounces these via
+# `launchctl kickstart -k`, but a wedged/slow-to-reap process can survive the
+# kickstart and keep serving the previous release's code while /health still
+# answers 200 — this is exactly what was observed on 2026-07-11: PR-3a's
+# order_proposal_void tool was missing from :8770 (mcp-tradingcodex-execution)
+# after an otherwise "successful" deploy until an operator ran
+# `launchctl kickstart -k` by hand. verify_mcp_profile_release_paths() below
+# closes that gap by asserting the listening process's cwd is $NEW_RELEASE.
+MCP_PROFILE_PORTS=(
+  "com.robinco.auto-trader.mcp-analysis-readonly:8768"
+  "com.robinco.auto-trader.mcp-account-read:8769"
+  "com.robinco.auto-trader.mcp-tradingcodex-execution:8770"
 )
 
 NEW_RELEASE="$RELEASES/$SHA"
@@ -66,6 +87,8 @@ SWITCHED=0
 # whether it also needs to roll back the api/mcp half (color state, color
 # symlinks, color launchd jobs, HAProxy cfg).
 BLUEGREEN_COMMITTED=0
+RETROSPECTIVE_ACTION_CUTOVER_ATTEMPTED=0
+RETROSPECTIVE_ACTION_SAFE_PRECOMMIT_EXIT=10
 API_PRE_COLOR=""
 MCP_PRE_COLOR=""
 BLUE_PRE_TARGET=""
@@ -167,9 +190,76 @@ restart_single_active_services() {
   done
 }
 
+# verify_mcp_profile_release_paths
+#
+# ROB-831: after restart_single_active_services() kickstarts the fixed-profile
+# MCP services (MCP_PROFILE_PORTS), confirm the process actually LISTENING on
+# each port has a working directory under $NEW_RELEASE. Each service's plist
+# sets WorkingDirectory to the `current` symlink, which is repointed to
+# $NEW_RELEASE before restart_single_active_services() runs; a kernel chdir()
+# through that symlink resolves to the release's real (canonical) path, so a
+# freshly-restarted process's cwd must equal $NEW_RELEASE's canonical path. A
+# process that failed to actually restart (wedged, slow to reap, or a stray
+# survivor still bound to the port) keeps its OLD cwd and therefore old code —
+# `/health` can still answer 200 while serving stale tools (the 2026-07-11
+# incident: order_proposal_void missing from :8770/mcp-tradingcodex-execution
+# after a "successful" deploy). Fail closed instead of silently skipping.
+#
+# Tunables (mainly for tests / slow cold starts):
+#   AUTO_TRADER_MCP_RELEASE_VERIFY_ATTEMPTS          (default 10)
+#   AUTO_TRADER_MCP_RELEASE_VERIFY_INTERVAL_SECONDS  (default 2)
+verify_mcp_profile_release_paths() {
+  local expected entry label port attempts interval attempt pid cwd rc
+  expected="$(cd "$NEW_RELEASE" && pwd -P)"
+  attempts="${AUTO_TRADER_MCP_RELEASE_VERIFY_ATTEMPTS:-10}"
+  interval="${AUTO_TRADER_MCP_RELEASE_VERIFY_INTERVAL_SECONDS:-2}"
+  [[ "$attempts" =~ ^[0-9]+$ ]] && (( attempts >= 1 )) || attempts=10
+  rc=0
+
+  for entry in "${MCP_PROFILE_PORTS[@]}"; do
+    label="${entry%%:*}"
+    port="${entry##*:}"
+    pid=""
+    cwd=""
+
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+      pid="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+      if [[ -n "$pid" ]]; then
+        cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | awk '/^n/{print substr($0, 2); exit}' || true)"
+        if [[ "$cwd" == "$expected" ]]; then
+          log "verify_mcp_profile_release_paths: $label (pid $pid, :$port) OK -> $cwd"
+          break
+        fi
+      fi
+      if (( attempt < attempts )); then
+        sleep "$interval"
+      fi
+    done
+
+    if [[ -z "$pid" ]]; then
+      echo "verify_mcp_profile_release_paths: no listening process found on :$port ($label) after $attempts attempts" >&2
+      rc=1
+      continue
+    fi
+    if [[ "$cwd" != "$expected" ]]; then
+      echo "verify_mcp_profile_release_paths: $label (pid $pid, :$port) is running from '${cwd:-<unknown>}', expected '$expected' -- stale release, this MCP profile did not actually reload" >&2
+      rc=1
+    fi
+  done
+
+  return "$rc"
+}
+
 run_healthcheck_once() {
   if [[ -x "$SERVER_HEALTHCHECK" ]]; then
-    "$SERVER_HEALTHCHECK"
+    # ROB-698: WS connectivity (KIS/Upbit real-time) must NOT be a fatal deploy
+    # gate. The blue-green cutover checks already run with
+    # AUTO_TRADER_HEALTHCHECK_SKIP_WS=1 (native_deploy_lib.sh); make this final
+    # post-cutover retry check consistent so a broker's scheduled maintenance
+    # (e.g. KIS) cannot fail+rollback an otherwise-healthy deploy. api/mcp
+    # /healthz stay hard gates; WS is monitored separately (watchdog/Sentry).
+    # An operator can still force WS-gating with AUTO_TRADER_HEALTHCHECK_SKIP_WS=0.
+    AUTO_TRADER_HEALTHCHECK_SKIP_WS="${AUTO_TRADER_HEALTHCHECK_SKIP_WS:-1}" "$SERVER_HEALTHCHECK"
     return $?
   fi
 
@@ -188,12 +278,18 @@ run_healthcheck_once() {
   fi
 
   if [[ -f "$CURRENT/scripts/websocket_healthcheck.py" ]]; then
+    # ROB-698: WS heartbeat is advisory (logged, non-fatal) here too — a broker
+    # WS outage (e.g. KIS scheduled maintenance) must not roll back an
+    # otherwise-healthy deploy (consistent with the primary path above and the
+    # blue-green cutover checks, which skip WS).
     WS_MONITOR_HEARTBEAT_PATH="$BASE/state/heartbeat/kis.json" \
       WS_MONITOR_EXPECT_MODE=kis \
-      uv run python scripts/websocket_healthcheck.py || rc=1
+      uv run python scripts/websocket_healthcheck.py \
+      || echo "WS(kis) heartbeat not connected (advisory, non-fatal)" >&2
     WS_MONITOR_HEARTBEAT_PATH="$BASE/state/heartbeat/upbit.json" \
       WS_MONITOR_EXPECT_MODE=upbit \
-      uv run python scripts/websocket_healthcheck.py || rc=1
+      uv run python scripts/websocket_healthcheck.py \
+      || echo "WS(upbit) heartbeat not connected (advisory, non-fatal)" >&2
   else
     echo "websocket_healthcheck.py not found; skipping websocket heartbeat checks" >&2
   fi
@@ -228,9 +324,31 @@ run_healthcheck() {
   return 1
 }
 
+run_retrospective_action_cutover() {
+  local rc
+
+  RETROSPECTIVE_ACTION_CUTOVER_ATTEMPTED=1
+  set +e
+  ENV_FILE="$SHARED_ENV" uv run python scripts/retrospective_action_cutover.py --if-shadow
+  rc=$?
+  set -e
+
+  if (( rc == RETROSPECTIVE_ACTION_SAFE_PRECOMMIT_EXIT )); then
+    # The CLI guarantees no canonical commit for this exit state, so the
+    # normal deploy rollback path remains safe and needs no roll-forward warning.
+    RETROSPECTIVE_ACTION_CUTOVER_ATTEMPTED=0
+  fi
+  return "$rc"
+}
+
 rollback() {
   local exit_code=$?
   echo "Deploy failed with exit code $exit_code" >&2
+
+  if (( RETROSPECTIVE_ACTION_CUTOVER_ATTEMPTED == 1 )); then
+    echo "WARNING: retrospective action cutover was attempted; the database may already be canonical." >&2
+    echo "Disable retrospective action mutation, roll forward, and do not schema-downgrade." >&2
+  fi
 
   # ROB-259 review: when deploy_bluegreen_flow committed but a later step
   # (restart_single_active_services, run_healthcheck) failed, the api/mcp
@@ -344,8 +462,21 @@ SWITCHED=1
 log "Restarting single-active services"
 restart_single_active_services
 
+log "Verifying fixed-profile MCP services loaded the new release"
+verify_mcp_profile_release_paths
+
 log "Running healthcheck"
 run_healthcheck
+
+# ROB-880: post-switch canonical cutover for retrospective actions.
+# Runs only after blue/green is committed, traffic switched, services
+# restarted, and healthcheck passed. --if-shadow makes it idempotent.
+if (( BLUEGREEN_COMMITTED == 1 )); then
+  log "Running retrospective action canonical cutover (--if-shadow)"
+  run_retrospective_action_cutover
+else
+  log "Skipping retrospective action cutover (BLUEGREEN_COMMITTED != 1)"
+fi
 
 trap - ERR
 log "Deploy complete: $SHA"

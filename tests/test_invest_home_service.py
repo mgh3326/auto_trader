@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -938,6 +939,76 @@ async def test_get_home_default_skips_paper_spans(monkeypatch):
 
     assert "invest.home.alpaca_paper" not in spans
     assert "invest.home.kis_mock" not in spans
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_get_home_runs_primary_readers_concurrently() -> None:
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    active = 0
+    peak_active = 0
+
+    class _ConcurrentReader:
+        async def fetch(self, *, user_id: int) -> _SourceFetchResult:
+            nonlocal active, peak_active
+            assert user_id == 1
+            active += 1
+            peak_active = max(peak_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _ManualReader:
+        async def fetch(self, *, user_id: int) -> _SourceFetchResult:
+            assert user_id == 1
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    service = InvestHomeService(
+        kis_reader=_ConcurrentReader(),
+        upbit_reader=_ConcurrentReader(),
+        manual_reader=_ManualReader(),
+        toss_api_reader=_ConcurrentReader(),
+    )
+
+    await service.get_home(user_id=1)
+
+    assert peak_active == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_account_panel_view_runs_primary_readers_concurrently() -> None:
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+
+    active = 0
+    peak_active = 0
+
+    class _ConcurrentReader:
+        async def fetch(self, *, user_id: int) -> _SourceFetchResult:
+            nonlocal active, peak_active
+            assert user_id == 1
+            active += 1
+            peak_active = max(peak_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    class _ManualReader:
+        async def fetch(self, *, user_id: int) -> _SourceFetchResult:
+            assert user_id == 1
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    service = InvestHomeService(
+        kis_reader=_ConcurrentReader(),
+        upbit_reader=_ConcurrentReader(),
+        manual_reader=_ManualReader(),
+        toss_api_reader=_ConcurrentReader(),
+    )
+
+    await service.build_account_panel_view(user_id=1)
+
+    assert peak_active == 3
 
 
 # ---------------------------------------------------------------------------

@@ -29,5 +29,5 @@ async def get_news_issues(
     p: PaginationParams = Depends(_pagination),
 ) -> MarketIssuesResponse:
     return await build_market_issues(
-        market=market, window_hours=window_hours, limit=p.limit
+        market=market, window_hours=window_hours, limit=p.limit, detail="full"
     )

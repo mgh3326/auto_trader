@@ -27,7 +27,7 @@ from app.schemas.investment_snapshots import (
 )
 from app.services.investment_snapshots.collectors import SnapshotCollectResult
 
-EnsureMode = Literal["ensure_fresh", "reuse_only"]
+EnsureMode = Literal["ensure_fresh", "reuse_only", "create_new"]
 
 
 # ---------------------------------------------------------------------------

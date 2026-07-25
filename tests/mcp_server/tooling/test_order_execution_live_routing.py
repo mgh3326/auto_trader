@@ -16,7 +16,6 @@ async def test_live_kr_routes_to_ledger_not_record_fill():
             new=AsyncMock(return_value={"rt_cd": "0", "odno": "X1"}),
         ),
         patch.object(oe, "_record_order_history", new=AsyncMock(return_value=None)),
-        patch.object(oe, "_check_daily_order_limit", new=AsyncMock(return_value=True)),
         patch(
             "app.mcp_server.tooling.kis_live_ledger._record_kis_live_order",
             new=AsyncMock(
@@ -76,7 +75,6 @@ async def test_live_us_routes_to_accepted_only_ledger():
             new=AsyncMock(return_value={"rt_cd": "0", "odno": "U1"}),
         ),
         patch.object(oe, "_record_order_history", new=AsyncMock(return_value=None)),
-        patch.object(oe, "_check_daily_order_limit", new=AsyncMock(return_value=True)),
         patch(
             "app.mcp_server.tooling.live_order_ledger._record_live_order",
             new=AsyncMock(

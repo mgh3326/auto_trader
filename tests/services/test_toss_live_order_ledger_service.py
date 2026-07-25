@@ -15,6 +15,7 @@ from app.services.toss_live_order_ledger_service import (
 )
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+pytestmark.append(pytest.mark.usefixtures("toss_ledger_cleanup_lock"))
 
 
 def _place_kwargs(**overrides):
@@ -43,7 +44,7 @@ def _place_kwargs(**overrides):
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean(db_session):
+async def _clean(db_session, toss_ledger_cleanup_lock):
     await db_session.execute(delete(TossLiveOrderLedger))
     await db_session.commit()
     yield
@@ -78,6 +79,31 @@ async def test_record_place_order_is_accepted_only(db_session):
     assert row.filled_qty is None
     assert row.trade_id is None
     assert row.journal_id is None
+
+
+async def test_record_send_persists_loss_cut_audit_binding(db_session):
+    row = await TossLiveOrderLedgerService(db_session).record_send(
+        **_place_kwargs(
+            side="sell",
+            client_order_id="cid-loss-cut",
+            broker_order_id="ord-loss-cut",
+            exit_intent="loss_cut",
+            exit_reason="stop_loss",
+            retrospective_id=42,
+            approval_issue_id="ROB-858",
+        )
+    )
+
+    assert row.exit_intent == "loss_cut"
+    assert row.retrospective_id == 42
+    assert row.approval_issue_id == "ROB-858"
+
+
+async def test_toss_ledger_model_has_loss_cut_audit_columns():
+    columns = TossLiveOrderLedger.__table__.columns
+    assert "exit_intent" in columns
+    assert "retrospective_id" in columns
+    assert "approval_issue_id" in columns
 
 
 async def test_mark_replaced_links_original_to_replacement(db_session):
@@ -300,3 +326,104 @@ async def test_record_send_conflicting_broker_id_raises_idempotency_conflict(
     assert excinfo.value.client_order_id == "cid-anomaly"
     assert excinfo.value.existing_broker_order_id == "ord-first"
     assert excinfo.value.new_broker_order_id == "ord-second"
+
+
+async def test_mark_manual_review_sets_operator_visible_error(db_session):
+    svc = TossLiveOrderLedgerService(db_session)
+    row = await svc.record_send(
+        **_place_kwargs(
+            client_order_id="cid-manual-review",
+            broker_order_id="ord-manual-review",
+        )
+    )
+
+    await svc.mark_manual_review(
+        ledger_id=row.id,
+        reason="reconcile failed; operator must verify Toss order detail",
+        error={
+            "type": "TossApiResponseError",
+            "status_code": 403,
+            "code": "non-json-response",
+            "request_id": "ray-403",
+            "message": "<html>Forbidden</html>",
+        },
+        broker_status=None,
+    )
+
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed is not None
+    assert refreshed.status == "anomaly"
+    assert refreshed.requires_manual_review is True
+    assert (
+        refreshed.manual_review_reason
+        == "reconcile failed; operator must verify Toss order detail"
+    )
+    assert refreshed.last_reconcile_error == {
+        "type": "TossApiResponseError",
+        "status_code": 403,
+        "code": "non-json-response",
+        "request_id": "ray-403",
+        "message": "<html>Forbidden</html>",
+    }
+    assert refreshed.broker_status is None
+    assert refreshed.reconciled_at is not None
+
+
+async def test_update_reconcile_outcome_records_us_fx_fields(db_session):
+    svc = TossLiveOrderLedgerService(db_session)
+    row = await svc.record_send(
+        **_place_kwargs(client_order_id="cid-fx", broker_order_id="ord-fx")
+    )
+
+    await svc.update_reconcile_outcome(
+        ledger_id=row.id,
+        status="filled",
+        broker_status="FILLED",
+        buy_fx_rate=Decimal("1389.33"),
+        sell_fx_rate=Decimal("1503.19"),
+        fx_pnl_krw=Decimal("22772.00"),
+        security_pnl_usd=Decimal("60.00"),
+        security_pnl_krw=Decimal("90191.40"),
+        total_pnl_krw=Decimal("112963.40"),
+        fx_rate_source="reconcile_spot",
+        fx_pnl_accuracy="approximate",
+    )
+
+    refreshed = await db_session.get(TossLiveOrderLedger, row.id)
+    assert refreshed.buy_fx_rate == Decimal("1389.33")
+    assert refreshed.sell_fx_rate == Decimal("1503.19")
+    assert refreshed.fx_pnl_krw == Decimal("22772.00")
+    assert refreshed.fx_rate_source == "reconcile_spot"
+    assert refreshed.fx_pnl_accuracy == "approximate"
+
+
+# ROB-651 P6-A — record_send stores approval_hash on insert only;
+# a replay with the same client_order_id must keep the original hash.
+
+
+async def test_record_send_stores_approval_hash(db_session):
+    svc = TossLiveOrderLedgerService(db_session)
+
+    row = await svc.record_send(
+        **_place_kwargs(
+            client_order_id="cid-approval-hash",
+            broker_order_id="ord-approval-hash",
+        ),
+        approval_hash="p6a-abc123abc123abc1",
+    )
+
+    assert row.approval_hash == "p6a-abc123abc123abc1"
+
+
+async def test_record_send_replay_keeps_original_approval_hash(db_session):
+    svc = TossLiveOrderLedgerService(db_session)
+
+    common = _place_kwargs(
+        client_order_id="cid-approval-replay",
+        broker_order_id="ord-approval-replay",
+    )
+    first = await svc.record_send(**common, approval_hash="p6a-original00000000")
+    replay = await svc.record_send(**common, approval_hash="p6a-different0000000")
+
+    assert replay.id == first.id
+    assert replay.approval_hash == "p6a-original00000000"

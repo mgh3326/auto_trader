@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import app.services.brokers.upbit.client as upbit_service
@@ -23,6 +24,11 @@ from app.mcp_server.tooling.shared import (
 )
 from app.mcp_server.tooling.shared import to_float as _to_float
 from app.services.brokers.kis.client import KISClient
+from app.services.brokers.kis.live_order_expiry import (
+    kr_day_order_expiry,
+    parse_kis_ordered_at,
+    row_has_cancel_evidence,
+)
 from app.services.brokers.kis.overseas_orders import _normalize_kis_exchange_code
 from app.services.us_symbol_universe_service import get_us_exchange_by_symbol
 
@@ -113,13 +119,29 @@ def _build_temp_kr_order_id(
     return f"TEMP_KR_{digest}"
 
 
-def _map_kis_status(filled: int, remaining: int, status_name: str | None) -> str:
+def _map_kis_status(
+    ordered: int,
+    filled: int,
+    remaining: int,
+    status_name: str | None,
+    *,
+    cancel_evidence: bool = False,
+) -> str:
     normalized_name = str(status_name or "").strip()
 
+    # Explicit cancel evidence is authoritative at any point. ROB-665: the real
+    # broker signal is cancel_evidence (cncl_yn / '취소' side name); the legacy
+    # `prcs_stat_name == "주문취소"` key does not exist on live responses.
+    if cancel_evidence or normalized_name == "주문취소":
+        return "cancelled"
+    # ROB-657: nothing filled and nothing left to modify/cancel
+    # (정정취소가능수량 0) means the order is dead (EOD expiry / reject).
+    # KIS ledger truth is "alive iff rmn_qty > 0", so this wins over a
+    # stale '접수' status name that TTTC8036R may still carry.
+    if ordered > 0 and filled == 0 and remaining <= 0:
+        return "expired"
     if normalized_name in ("접수", "주문접수"):
         return "pending"
-    if normalized_name == "주문취소":
-        return "cancelled"
     if normalized_name == "체결":
         if filled > 0 and remaining > 0:
             return "partial"
@@ -132,6 +154,21 @@ def _map_kis_status(filled: int, remaining: int, status_name: str | None) -> str
     if filled > 0 and remaining > 0:
         return "partial"
     return "pending"
+
+
+_US_DAY_ORDER_REASON = "us_day_order"
+
+
+def _kr_history_expiry_reason(*, ordered_at: str, side: str) -> str | None:
+    """Categorical session×side expiry reason for a KR order-history row.
+
+    Read-path classification only (no 15:30 downgrade — that is a live send-path
+    decision). Returns None when ``ordered_at`` cannot be parsed.
+    """
+    accepted_at = parse_kis_ordered_at(ordered_at)
+    if accepted_at is None:
+        return None
+    return kr_day_order_expiry(accepted_at=accepted_at, side=side)[1]
 
 
 def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
@@ -177,9 +214,11 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
     )
 
     status = _map_kis_status(
+        ordered,
         filled,
         remaining,
         _get_kis_field(order, "prcs_stat_name", "PRCS_STAT_NAME"),
+        cancel_evidence=row_has_cancel_evidence(order),
     )
     symbol = str(_get_kis_field(order, "pdno", "PDNO"))
     ordered_at = (
@@ -210,6 +249,7 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
         "symbol": symbol,
         "side": side,
         "status": status,
+        "is_live": status in ("pending", "partial"),
         "ordered_qty": ordered,
         "filled_qty": filled,
         "remaining_qty": remaining,
@@ -217,6 +257,7 @@ def _normalize_kis_domestic_order(order: dict[str, Any]) -> dict[str, Any]:
         "filled_avg_price": filled_price,
         "ordered_at": ordered_at,
         "filled_at": "",
+        "expiry_reason": _kr_history_expiry_reason(ordered_at=ordered_at, side=side),
         "currency": "KRW",
     }
 
@@ -359,7 +400,14 @@ def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
     filled = int(
         float(_get_kis_field(order, "ft_ccld_qty", "FT_CCLD_QTY", default=0) or 0)
     )
-    remaining = ordered - filled
+    # ROB-665 item 4: prefer the broker's 미체결수량 (nccs_qty) — a cancelled
+    # unfilled order reports nccs_qty=0, whereas synthesizing ordered-filled
+    # kept it pending+is_live. Fall back to ordered-filled when absent.
+    nccs_raw = _get_kis_field(order, "nccs_qty", "NCCS_QTY")
+    if nccs_raw is not None and str(nccs_raw).strip() != "":
+        remaining = int(float(nccs_raw))
+    else:
+        remaining = ordered - filled
 
     ordered_price = float(
         _get_kis_field(order, "ft_ord_unpr3", "FT_ORD_UNPR3", default=0) or 0
@@ -369,9 +417,11 @@ def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
     )
 
     status = _map_kis_status(
+        ordered,
         filled,
         remaining,
         _get_kis_field(order, "prcs_stat_name", "PRCS_STAT_NAME"),
+        cancel_evidence=row_has_cancel_evidence(order),
     )
 
     return {
@@ -379,6 +429,7 @@ def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
         "symbol": _get_kis_field(order, "pdno", "PDNO"),
         "side": side,
         "status": status,
+        "is_live": status in ("pending", "partial"),
         "ordered_qty": ordered,
         "filled_qty": filled,
         "remaining_qty": remaining,
@@ -389,6 +440,7 @@ def _normalize_kis_overseas_order(order: dict[str, Any]) -> dict[str, Any]:
             f"{_get_kis_field(order, 'ord_tmd', 'ORD_TMD')}"
         ),
         "filled_at": "",
+        "expiry_reason": _US_DAY_ORDER_REASON,
         "currency": "USD",
     }
 
@@ -424,9 +476,17 @@ def _validate_cancel_inputs(
     return order_id, symbol, market_type
 
 
-async def _cancel_upbit(order_id: str) -> dict[str, Any]:
+async def _cancel_upbit(
+    order_id: str,
+    *,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
     """Cancel an Upbit (crypto) order."""
-    results = await upbit_service.cancel_orders([order_id])
+    hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
+    results = await upbit_service.cancel_orders(
+        [order_id],
+        **hook_kw,
+    )
     if results and len(results) > 0:
         result = results[0]
         if "error" in result:
@@ -568,6 +628,7 @@ async def _cancel_kis_domestic(
     symbol: str | None,
     *,
     is_mock: bool = False,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Cancel a KIS domestic (Korean equity) order."""
     if is_mock:
@@ -641,9 +702,21 @@ async def _cancel_kis_domestic(
                 price = int(
                     float(_get_kis_field(order, "ord_unpr", "ORD_UNPR", default=0) or 0)
                 )
-                quantity = int(
-                    float(_get_kis_field(order, "ord_qty", "ORD_QTY", default=0) or 0)
+                remaining_raw = _get_kis_field(
+                    order, "rmn_qty", "RMN_QTY", default=None
                 )
+                if remaining_raw is None:
+                    ordered_quantity = float(
+                        _get_kis_field(order, "ord_qty", "ORD_QTY", default=0) or 0
+                    )
+                    filled_quantity = float(
+                        _get_kis_field(order, "tot_ccld_qty", "TOT_CCLD_QTY", default=0)
+                        or 0
+                    )
+                    remaining_raw = max(ordered_quantity - filled_quantity, 0)
+                quantity = int(float(remaining_raw or 0))
+                if quantity <= 0:
+                    raise RuntimeError("broker order has no remaining quantity")
                 orgno_value = _get_kis_field(
                     order,
                     "ord_gno_brno",
@@ -655,6 +728,7 @@ async def _cancel_kis_domestic(
                 break
 
         order_type_str = "buy" if side_code == "02" else "sell"
+        hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
         result = await kis.cancel_korea_order(
             order_number=order_id,
             stock_code=symbol,
@@ -663,6 +737,7 @@ async def _cancel_kis_domestic(
             order_type=order_type_str,
             krx_fwdg_ord_orgno=krx_fwdg_ord_orgno,
             is_mock=is_mock,
+            **hook_kw,
         )
         return {
             "success": True,
@@ -684,6 +759,7 @@ async def _cancel_kis_overseas(
     symbol: str | None,
     *,
     is_mock: bool = False,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Cancel a KIS overseas (US equity) order."""
     if is_mock:
@@ -798,11 +874,13 @@ async def _cancel_kis_overseas(
             quantity,
         )
 
+        hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
         result = await kis.cancel_overseas_order(
             order_number=order_id,
             symbol=symbol,
             exchange_code=exchange_code,
             quantity=quantity,
+            **hook_kw,
         )
         return {
             "success": True,
@@ -825,14 +903,23 @@ async def cancel_order_impl(
     market: str | None = None,
     *,
     is_mock: bool = False,
+    pre_send_hook: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     order_id, symbol, market_type = _validate_cancel_inputs(order_id, symbol, market)
 
     try:
         if market_type == "crypto":
-            return await _cancel_upbit(order_id)
+            return await _cancel_upbit(
+                order_id,
+                pre_send_hook=pre_send_hook,
+            )
         if market_type == "equity_kr":
-            result = await _cancel_kis_domestic(order_id, symbol, is_mock=is_mock)
+            result = await _cancel_kis_domestic(
+                order_id,
+                symbol,
+                is_mock=is_mock,
+                pre_send_hook=pre_send_hook,
+            )
             # ROB-395: keep the live ledger truthful — a cancelled live order must
             # not stay accepted/pending (otherwise reconcile could still act on it).
             if not is_mock and result.get("success"):
@@ -843,7 +930,12 @@ async def cancel_order_impl(
                 await _mark_ledger_cancelled(order_id)
             return result
         if market_type == "equity_us":
-            return await _cancel_kis_overseas(order_id, symbol, is_mock=is_mock)
+            return await _cancel_kis_overseas(
+                order_id,
+                symbol,
+                is_mock=is_mock,
+                pre_send_hook=pre_send_hook,
+            )
         return {
             "success": False,
             "order_id": order_id,

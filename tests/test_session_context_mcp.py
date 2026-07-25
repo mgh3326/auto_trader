@@ -126,3 +126,22 @@ async def test_get_recent_returns_empty_list_when_no_match(
     assert response["success"] is True
     assert response["count"] == 0
     assert response["entries"] == []
+
+
+@pytest.mark.asyncio
+async def test_append_accepts_codex_created_by(db_session: AsyncSession) -> None:
+    response = await session_context_append(
+        entries=[
+            {
+                "kst_date": "2026-07-06",
+                "market": "kr",
+                "entry_type": "handoff_note",
+                "title": "Codex handoff",
+                "body": "analysis_readonly smoke",
+                "created_by": "codex",
+            }
+        ]
+    )
+
+    assert response["success"] is True
+    assert response["entries"][0]["created_by"] == "codex"
