@@ -742,6 +742,12 @@ class Settings(BaseSettings):
     # operator automation layer; unattended booking requires both gates.
     TOSS_LIVE_AUTO_RECONCILE_ENABLED: bool = False
     TOSS_LIVE_AUTO_RECONCILE_SAFETY_REVIEW_PASSED: bool = False
+
+    # ROB-1050 — paused periodic auto-reconcile for US (KIS) and Crypto (Upbit) live orders.
+    # Default off and scheduleless in this repo. Operator flips and adds recurrence.
+    LIVE_AUTO_RECONCILE_ENABLED: bool = False
+    LIVE_AUTO_RECONCILE_DRY_RUN: bool = True
+
     # ROB-757 — Toss REST fill poller. Default off; read-only broker scan plus
     # evidence-gated local booking only after operator activation.
     TOSS_FILL_POLL_ENABLED: bool = False
