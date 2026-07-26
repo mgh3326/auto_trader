@@ -1,7 +1,7 @@
-"""Thin wrapper around OpenDartReader.list_date for per-day market-wide DART fetch (ROB-128).
+"""Thin wrapper around OpenDartReader.list_date_ex for market-wide DART fetches.
 
-This is the only DART-side new code; for per-symbol filings the existing
-`app/services/disclosures/dart.py::list_filings` is reused elsewhere.
+``list_date_ex`` scrapes ``dart.fss.or.kr`` rather than using the official API,
+so its response shape is validated before any result can be treated as usable.
 """
 
 from __future__ import annotations
@@ -15,9 +15,25 @@ from app.services.disclosures.dart import _get_client
 
 logger = logging.getLogger(__name__)
 
+DART_LIST_DATE_EX_REQUIRED_COLUMNS = frozenset(
+    {
+        "rcept_dt",
+        "corp_cls",
+        "corp_name",
+        "rcept_no",
+        "report_nm",
+        "flr_nm",
+        "rm",
+    }
+)
+
+
+class DartResponseSchemaError(RuntimeError):
+    """The DART scraping response no longer matches the expected table shape."""
+
 
 async def fetch_dart_filings_for_date(target_date: date) -> list[dict[str, Any]]:
-    """Return DART filings for one day. Empty list if DART is unavailable.
+    """Return validated DART filings for one day.
 
     The OpenDartReader client is loaded lazily and reused across calls.
     """
@@ -29,9 +45,26 @@ async def fetch_dart_filings_for_date(target_date: date) -> list[dict[str, Any]]
     iso = target_date.isoformat()
 
     def fetch_sync() -> list[dict[str, Any]]:
-        df = client.list_date(iso)
-        if df is None or df.empty:
+        df = client.list_date_ex(iso)
+        columns = getattr(df, "columns", None)
+        if columns is None:
+            raise DartResponseSchemaError(
+                "DART list_date_ex returned a non-DataFrame response"
+            )
+        missing = DART_LIST_DATE_EX_REQUIRED_COLUMNS.difference(columns)
+        if missing:
+            raise DartResponseSchemaError(
+                "DART list_date_ex response missing required columns: "
+                + ", ".join(sorted(missing))
+            )
+        if df.empty:
             return []
-        return df.to_dict(orient="records")
+        records = df.to_dict(orient="records")
+        for record in records:
+            receipt_at = record.get("rcept_dt")
+            isoformat = getattr(receipt_at, "isoformat", None)
+            if callable(isoformat):
+                record["rcept_dt"] = isoformat()
+        return records
 
     return await asyncio.to_thread(fetch_sync)

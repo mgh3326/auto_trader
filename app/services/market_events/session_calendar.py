@@ -21,6 +21,7 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 Market = Literal["us", "kr"]
+SessionStatus = Literal["open", "closed", "unknown"]
 
 _CALENDAR_NAME: dict[str, str] = {"us": "XNYS", "kr": "XKRX"}
 
@@ -41,8 +42,33 @@ def _calendar(market: Market):
         raise ValueError(f"unsupported market {market!r}") from exc
 
 
+def trading_session_status(market: Market, day: date) -> SessionStatus:
+    """Classify ``day`` as an open, closed, or unresolvable exchange session.
+
+    ``unknown`` deliberately differs from ``closed``. Callers deciding whether an
+    empty provider response is legitimate must fail closed when the calendar cannot
+    classify the date instead of silently treating an infrastructure error as a
+    holiday.
+    """
+    import pandas as pd
+
+    try:
+        cal = _calendar(market)
+        return "open" if bool(cal.is_session(pd.Timestamp(day))) else "closed"
+    except (ValueError, KeyError):
+        return "unknown"
+    except Exception:  # noqa: BLE001 - expose uncertainty without claiming open/closed
+        logger.warning(
+            "session_calendar: unexpected error classifying %s %s; status unknown",
+            market,
+            day,
+            exc_info=True,
+        )
+        return "unknown"
+
+
 def is_trading_session(market: Market, day: date) -> bool:
-    """True iff ``day`` is a trading session on the market's exchange.
+    """True iff ``day`` is a confirmed trading session on the market's exchange.
 
     Fail-closed: ANY error from the calendar load or query path returns
     ``False`` (never raises). Expected out-of-range / unrepresentable-date
@@ -50,22 +76,7 @@ def is_trading_session(market: Market, day: date) -> bool:
     unexpected errors are logged (so library/data bugs aren't hidden) but still
     fail closed — the contract is that we never claim a session we can't confirm.
     """
-    import pandas as pd
-
-    try:
-        cal = _calendar(market)
-        return bool(cal.is_session(pd.Timestamp(day)))
-    except (ValueError, KeyError):
-        return False
-    except Exception:  # noqa: BLE001 - fail-closed on any calendar/library error
-        logger.warning(
-            "session_calendar: unexpected error classifying %s %s; treating as "
-            "closed (fail-closed)",
-            market,
-            day,
-            exc_info=True,
-        )
-        return False
+    return trading_session_status(market, day) == "open"
 
 
 def regular_session_bounds(
