@@ -45,7 +45,13 @@ from typing import Any
 import artifact as art
 import identity as ident
 
-__all__ = ["SemanticHashDriftError", "build_registration_plan", "main"]
+__all__ = [
+    "PlanComponentDivergenceError",
+    "SemanticHashDriftError",
+    "SupersessionGuardUnwiredError",
+    "build_registration_plan",
+    "main",
+]
 
 ENV_WRITE_OPT_IN = "ALPACA_TRACK_SEAL_REGISTER_WRITE_OPT_IN"
 
@@ -64,6 +70,30 @@ class SemanticHashDriftError(RuntimeError):
     notice, and the test suite is not wired into CI (Finding 1). This is the
     runtime half of the lock: fail closed here too, before any identity
     reaches ``register_experiment``."""
+
+
+class PlanComponentDivergenceError(RuntimeError):
+    """A spec's ``components`` in the plan returned by
+    ``build_registration_plan()`` diverge from the sealed artifact's own
+    ``identity_components`` for the same ``config_id`` (ROB-1060 H2-lock
+    adversarial-verification NEW-1, 2026-07-26).
+
+    Finding 4's ``SemanticHashDriftError`` proves the pinned digest binds the
+    ARTIFACT (``sealed.semantic_hash()``). It does NOT prove the digest binds
+    the PLAN this function derives from that artifact and returns -- an
+    independent adversarial pass demonstrated that a uniform mutation applied
+    to every spec's ``components`` AFTER the digest check (e.g. forcing
+    ``cost.primary`` to a relaxed scenario across all 16 configs) passes the
+    Finding-4 gate untouched, keeps
+    ``validate_same_family_components_are_identical`` satisfied (a uniform
+    mutation stays internally consistent within each family), and the fully
+    green test suite: the correct pinned digest ships attached to relaxed
+    components, and that exact dict is what ``_cmd_register`` feeds into
+    ``StrategyExperimentIdentity``. This check closes that gap: immediately
+    before returning, every spec's ``components`` must equal
+    ``sealed.to_dict()["identity_components"][config_id]`` -- a fresh,
+    independent recomputation from the same (unmutated) sealed artifact --
+    or registration is refused."""
 
 
 def build_registration_plan() -> dict[str, Any]:
@@ -101,6 +131,36 @@ def build_registration_plan() -> dict[str, Any]:
             }
         )
     ident.validate_same_family_components_are_identical(per_config_components)
+
+    # ROB-1060 H2-lock adversarial-verification NEW-1 (2026-07-26): bind the
+    # digest to the PLAN, not merely to the artifact it was derived from.
+    # `sealed.to_dict()["identity_components"]` is a fresh, independent
+    # recomputation of every config's 11-component identity from the same
+    # (unmutated) `sealed` object built above -- if anything mutated `specs`
+    # in between (the exact adversarial scenario this closes), this
+    # recomputation will not reflect that mutation and the comparison below
+    # will diverge.
+    fresh_identity_components = sealed.to_dict()["identity_components"]
+    for spec in specs:
+        config_id = spec["config_id"]
+        expected_components = fresh_identity_components[config_id]
+        actual_components = spec["components"]
+        if actual_components == expected_components:
+            continue
+        diverged_names = [
+            name
+            for name in expected_components
+            if actual_components.get(name) != expected_components[name]
+        ]
+        raise PlanComponentDivergenceError(
+            f"config {config_id!r}: component(s) {diverged_names!r} in the "
+            "returned registration plan diverge from the sealed artifact's "
+            "own identity_components -- the pinned semantic hash binds the "
+            "ARTIFACT, not any plan derived from it; refusing to return (or "
+            "register) a plan whose components were mutated after the "
+            "digest check"
+        )
+
     return {
         "semantic_hash": semantic_hash,
         "config_count": len(sealed.configs),
@@ -112,6 +172,48 @@ def _cmd_plan(_args: argparse.Namespace) -> int:
     plan = build_registration_plan()
     print(json.dumps(plan, indent=2, sort_keys=True, default=str))
     return 0
+
+
+class SupersessionGuardUnwiredError(RuntimeError):
+    """``_cmd_register`` was about to register a superseding experiment
+    (``supersedes_experiment_id`` is not ``None``) without first wiring
+    ``identity.assert_supersession_preserves_sealed_components`` (ROB-1060
+    H2-lock adversarial-verification NEW-2, 2026-07-26).
+
+    Finding 5 (below, and in ``identity.assert_supersession_preserves_
+    sealed_components``'s own docstring) DETERMINED, correctly, that wiring
+    that guard is blocked on an ``app.*``/DB read this pure H2 package is not
+    allowed to add -- and left it documented-but-unwired via a code comment.
+    A code comment is not fail-closed: a developer who later adds
+    ``supersedes_experiment_id=...`` here (wiring a real H3 supersession)
+    without ALSO wiring the component-preservation guard would get a silent
+    pass, exactly the post-hoc relaxation this whole seal exists to prevent.
+    This guard converts "documented-but-unwired" into "fail-closed-unwired":
+    it does not (and cannot, per the Finding-5 determination) perform the
+    comparison itself, but it refuses to proceed at all until that
+    prerequisite is met."""
+
+
+def _assert_supersession_guard_wired_before_use(
+    supersedes_experiment_id: str | None,
+) -> None:
+    """Fail closed if a future edit ever sets ``supersedes_experiment_id`` to
+    non-``None`` in ``_cmd_register`` -- see ``SupersessionGuardUnwiredError``
+    and the Finding-5 note below for the full rationale. No-op (returns
+    silently) for this H2 seal's actual behavior today: every registered
+    identity is a fresh registration with no parent."""
+    if supersedes_experiment_id is not None:
+        raise SupersessionGuardUnwiredError(
+            f"supersedes_experiment_id={supersedes_experiment_id!r} was about "
+            "to be registered, but "
+            "identity.assert_supersession_preserves_sealed_components has "
+            "not been wired into _cmd_register to check it against its "
+            "parent's sealed components -- wiring that component-"
+            "preservation guard is a HARD PREREQUISITE for any supersession "
+            "(see the Finding-5 note in _cmd_register and that function's "
+            "own docstring); refusing to register a superseding experiment "
+            "without it"
+        )
 
 
 def _cmd_register(args: argparse.Namespace) -> int:
@@ -128,7 +230,12 @@ def _cmd_register(args: argparse.Namespace) -> int:
     # for this pure H2 package under the ROB-1060 remediation constraints.
     # See `identity.assert_supersession_preserves_sealed_components`'s
     # docstring for the full determination; this is a recorded HARD
-    # PREREQUISITE for H3, not an oversight.
+    # PREREQUISITE for H3, not an oversight. `_assert_supersession_guard_
+    # wired_before_use` below (NEW-2) makes that prerequisite fail-closed
+    # rather than merely documented: a future edit that sets
+    # `supersedes_experiment_id` to non-`None` without also wiring the
+    # component-preservation guard raises `SupersessionGuardUnwiredError`
+    # instead of silently registering.
     #
     # Deliberate two-stage deferred import (stricter than a single deferred
     # block): `app.services.research_db_write_guard` imports nothing but the
@@ -180,10 +287,19 @@ def _cmd_register(args: argparse.Namespace) -> int:
 
             registered = []
             for spec in plan["specs"]:
+                # ROB-1060 H2-lock NEW-2: this H2 seal never supersedes an
+                # existing experiment -- see the Finding-5 note above. The
+                # explicit `None` here is the ONLY value this call site may
+                # pass without also wiring the component-preservation guard;
+                # `_assert_supersession_guard_wired_before_use` fails closed
+                # if that ever changes.
+                supersedes_experiment_id: str | None = None
+                _assert_supersession_guard_wired_before_use(supersedes_experiment_id)
                 identity = StrategyExperimentIdentity(
                     strategy_key=spec["strategy_key"],
                     strategy_version=spec["strategy_version"],
                     hypothesis=f"ROB-1060 H2 seal: {spec['config_id']}",
+                    supersedes_experiment_id=supersedes_experiment_id,
                     **spec["components"],
                 )
                 row = await registry.register_experiment(session, identity)
