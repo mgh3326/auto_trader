@@ -41,14 +41,20 @@ _SEALED_DIR = Path(__file__).resolve().parent / "sealed_source_data"
 # table (2026-07-25). These strings are the immutable ground truth this
 # module verifies loaded bytes against — never derived from the files
 # themselves (that would make the check vacuous).
-UNIVERSE_MAP_SHA256 = "512285ebf67bb49dc1844d7c76dda4ea09dc19cbfb5968d32caee4a688cae8b2"
+# Not a credential -- published SHA-256 digest of a sealed research fixture
+# (see module docstring); the value must remain published verbatim to serve
+# its integrity-check purpose.
+UNIVERSE_MAP_SHA256 = "512285ebf67bb49dc1844d7c76dda4ea09dc19cbfb5968d32caee4a688cae8b2"  # pragma: allowlist secret
 SPREAD_CENSUS_SHA256 = (
     "10d5a1c52c77d6c2a1ce81adb4776fec69aefdcc2dbc7e87f08672b185113609"
 )
 BASIS_ANALYSIS_FULL_SHA256 = (
     "835e2abea219d3e78eec21f7ef64d939d7945ca764e3684136f41287e9b0378c"
 )
-FEE_PROBE_SHA256 = "b94532dcd3c2cc8aa04a137c6471ff3ffa6d2ba4dffca3af3c287ca7b1532a5d"
+# Not a credential -- published SHA-256 digest of a sealed research fixture
+# (see module docstring); the value must remain published verbatim to serve
+# its integrity-check purpose.
+FEE_PROBE_SHA256 = "b94532dcd3c2cc8aa04a137c6471ff3ffa6d2ba4dffca3af3c287ca7b1532a5d"  # pragma: allowlist secret
 
 # The two markdown authority documents are NOT shipped as files in this repo
 # (they live in the separate herdr-strategy-prompts workspace) -- only their
