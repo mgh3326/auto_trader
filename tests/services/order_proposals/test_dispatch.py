@@ -35,6 +35,7 @@ from app.services.order_proposals.dispatch_contract import (
 )
 from app.services.order_proposals.revalidation import RungOutcome, revalidate_and_submit
 from app.services.order_proposals.service import RungInput
+from app.services.trading_policy_service import policy_version_stamp
 from app.telegram_contract import TelegramMethodResult, telegram_text_length
 from tests.services.order_proposals.window_fakes import allow_known_session
 
@@ -772,10 +773,14 @@ async def test_dispatch_auto_eligible_buy_or_sell_rests_without_approval(
     refreshed, rungs = await service.get_proposal(group.proposal_id)
     assert rungs[0].state == "resting"
     assert refreshed.approved_by_telegram_user_id is None
-    assert refreshed.source_asof["auto_approved"]["policy_version"] == "2026-07-23.3"
+    loaded_policy_version = policy_version_stamp()["version"]
+    assert (
+        refreshed.source_asof["auto_approved"]["policy_version"]
+        == loaded_policy_version
+    )
     text, keyboard, _chat_id = notifier.sent_messages[0]
     assert "자동 접수됨" in text
-    assert "auto:policy@2026-07-23.3" in text
+    assert f"auto:policy@{loaded_policy_version}" in text
     assert keyboard["inline_keyboard"][0][0]["text"] == "취소"
     assert keyboard["inline_keyboard"][0][0]["callback_data"].startswith("vc:")
 
