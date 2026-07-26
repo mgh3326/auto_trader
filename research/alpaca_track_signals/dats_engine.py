@@ -9,7 +9,7 @@ runner) owns ``prior_state``/``new_state`` across calls, including across
 fold boundaries (no reset). Calling this function twice with identical
 inputs always produces byte-identical output.
 
-No PnL/return/forward_*/exit_price field anywhere in this module.
+No PnL/return/forward-*/exit-price field anywhere in this module.
 """
 
 from __future__ import annotations

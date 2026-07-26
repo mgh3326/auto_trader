@@ -18,8 +18,8 @@ PnL-blind by construction: "available cash" is always ``INITIAL_EQUITY_USD``
 minus the sum of entry-time COMMITTED notional for currently-open positions
 — never a running mark-to-market balance, never adjusted for price moves or
 realized/unrealized P&L (positions are never resized/rebalanced while held,
-SS11.5/SS12.5 "보유 중 리밸런스 없음"). No ``pnl``/``return``/``forward_*``/
-``exit_price`` field anywhere in this module.
+SS11.5/SS12.5 "보유 중 리밸런스 없음"). No ``pnl``/``return``/``forward-*``/
+``exit-price`` field anywhere in this module.
 """
 
 from __future__ import annotations

@@ -16,7 +16,7 @@ unchanged; it never resizes a held position.
 
 Stateless (AC5): the caller (H4) owns ``prior_held``/the returned
 ``new_held`` across decisions, including across fold boundaries. No PnL/
-return/forward_*/exit_price field anywhere in this module.
+return/forward-*/exit-price field anywhere in this module.
 """
 
 from __future__ import annotations

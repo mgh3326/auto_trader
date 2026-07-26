@@ -3,7 +3,7 @@
     (decision_ts, strategy, config_id, symbol, action, target_notional,
      reason_code, evidence_hash)
 
-NO ``pnl``, ``return``, ``forward_*``, or ``exit_price`` field exists on this
+NO ``pnl``, ``return``, ``forward-*``, or ``exit-price`` field exists on this
 dataclass, anywhere in this module, or anywhere else in this package — H5's
 PnL-blind dry-count gate depends on that property, and
 ``tests/test_no_forbidden_imports_and_pnl_surface.py`` statically enforces it
@@ -60,7 +60,7 @@ def evidence_hash(evidence: dict) -> str:
     """The canonical SHA-256 identity of one record's supporting evidence
     dict (D/R/Score/rank/sigma20/vol_scale/... — whatever the caller
     supplies), via the SAME typed canonical AST authority H1/H2 use. Never
-    includes a pnl/return/forward_*/exit_price key (the caller-supplied
+    includes a pnl/return/forward-*/exit-price key (the caller-supplied
     ``evidence`` dict is itself scanned by the no-PnL-surface guard's
     lexical token check, belt-and-suspenders alongside the schema check)."""
     return canonical_hash.canonical_sha256(evidence)
