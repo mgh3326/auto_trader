@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import inspect
+from dataclasses import fields, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -12,6 +14,7 @@ import pytest
 
 import app.schemas.trading_policy as policy_schema
 import app.services.single_share_exit_snapshot_service as snapshot_service
+from app.schemas.trading_policy import TradingPolicyDocument
 from app.services import trading_policy_service as policy
 from app.services.single_share_exit_snapshot_service import (
     BROKER_EVIDENCE_CAPABILITY,
@@ -317,6 +320,17 @@ def _replay_result(**kwargs):
     return policy.evaluate_single_share_exit_replay(_make_context(**kwargs))
 
 
+def _with_single_share_rule(doc, rule):
+    return doc.model_copy(
+        update={
+            "decision_rules": {
+                **doc.decision_rules,
+                "sell.single_share_exit": rule,
+            }
+        }
+    )
+
+
 def test_raw_public_construction_and_completeness_flags_are_removed():
     assert not hasattr(policy_schema, "SingleShareExitEvidenceSnapshot")
     assert (
@@ -398,11 +412,111 @@ def test_omitted_account_cannot_claim_complete():
     assert result.observed_account_identities == ("kis:kis-main", "toss:toss-main")
 
 
-def test_context_uses_private_concrete_type_and_isinstance_boundary():
+def test_context_uses_private_exact_replay_type_with_derived_mode():
     context = _make_context()
-    assert type(context).__name__ == "_ValidatedSingleShareExitContext"
+    assert type(context).__name__ == "_ValidatedReplaySingleShareExitContext"
     assert snapshot_service.is_validated_context(context) is True
+    assert snapshot_service.is_validated_replay_context(context) is True
+    assert snapshot_service.is_validated_live_context(context) is False
+    assert context.mode is snapshot_service.ContextMode.REPLAY
+    assert "mode" not in {field.name for field in fields(context)}
     assert not hasattr(context, "model_copy")
+
+
+def test_functional_copy_cannot_promote_replay_or_redeclare_derived_roster_hash():
+    replay = _make_context()
+
+    with pytest.raises(TypeError):
+        replace(replay, mode=snapshot_service.ContextMode.LIVE)
+    with pytest.raises(TypeError):
+        copy.replace(replay, mode=snapshot_service.ContextMode.LIVE)
+    with pytest.raises(AttributeError):
+        replay.model_copy(update={"mode": snapshot_service.ContextMode.LIVE})  # type: ignore[attr-defined]
+
+    for copied in (replace(replay), copy.replace(replay)):
+        assert type(copied) is type(replay)
+        result = policy.evaluate_single_share_exit(copied)
+        assert (result.outcome, result.reason) == (
+            "INELIGIBLE",
+            "replay_context_not_live",
+        )
+
+    forged_hash = replace(replay, roster_hash="caller-claims-complete")
+    assert forged_hash.derived_roster_hash != forged_hash.roster_hash
+    result = policy.evaluate_single_share_exit_replay(forged_hash)
+    assert (result.outcome, result.reason) == (
+        "INELIGIBLE",
+        "account_roster_hash_mismatch",
+    )
+
+
+def test_exact_type_boundary_rejects_subclass_and_blocks_class_swap():
+    replay = _make_context()
+    live = _make_context(live=True)
+    replay_type = type(replay)
+
+    class ReplaySubclass(replay_type):
+        pass
+
+    values = {field.name: getattr(replay, field.name) for field in fields(replay)}
+    subclass = ReplaySubclass(**values)
+    assert snapshot_service.is_validated_context(subclass) is False
+    result = policy.evaluate_single_share_exit_replay(subclass)
+    assert (result.outcome, result.reason) == (
+        "INELIGIBLE",
+        "unvalidated_producer_context",
+    )
+
+    with pytest.raises(TypeError, match="object layout differs"):
+        object.__setattr__(replay, "__class__", type(live))
+    assert replay.mode is snapshot_service.ContextMode.REPLAY
+
+
+def test_live_wrapper_ignores_class_level_replay_mode_spoof(monkeypatch):
+    replay = _make_context()
+    monkeypatch.setattr(
+        type(replay),
+        "mode",
+        property(lambda _context: snapshot_service.ContextMode.LIVE),
+    )
+
+    assert replay.mode is snapshot_service.ContextMode.LIVE
+    result = policy.evaluate_single_share_exit(replay)
+    assert (result.outcome, result.reason) == (
+        "INELIGIBLE",
+        "replay_context_not_live",
+    )
+
+
+@pytest.mark.parametrize("live", [False, True], ids=["replay", "live"])
+def test_uninitialized_exact_context_is_structured_ineligible(live):
+    context_type = type(_make_context(live=live))
+    uninitialized = object.__new__(context_type)
+
+    assert snapshot_service.is_validated_context(uninitialized) is False
+    evaluator = (
+        policy.evaluate_single_share_exit
+        if live
+        else policy.evaluate_single_share_exit_replay
+    )
+    result = evaluator(uninitialized)
+    assert (result.outcome, result.reason) == (
+        "INELIGIBLE",
+        "unvalidated_producer_context",
+    )
+
+
+def test_slotted_context_has_no_dict_mutation_path():
+    context = _make_context()
+
+    with pytest.raises(AttributeError):
+        _ = context.__dict__
+    with pytest.raises(AttributeError):
+        object.__setattr__(
+            context,
+            "mode",
+            snapshot_service.ContextMode.LIVE,
+        )
 
 
 def test_raw_context_shaped_object_is_rejected():
@@ -474,8 +588,14 @@ def test_snapshot_service_has_no_app_or_broker_import_reachability():
         for node in ast.walk(tree)
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
+    relative_imports = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level
+    ]
 
     assert not {module for module in imported_modules if module.startswith("app")}
+    assert not relative_imports
 
 
 def test_declared_roster_hash_forgery_is_rejected():
@@ -483,6 +603,27 @@ def test_declared_roster_hash_forgery_is_rejected():
     assert (result.outcome, result.reason) == (
         "INELIGIBLE",
         "account_roster_hash_mismatch",
+    )
+
+
+def test_roster_hash_canonical_compatibility_vector_is_unchanged():
+    assert (
+        compute_account_roster_hash(
+            roster_id="kr-live-routable-accounts",
+            roster_version="2026-07-23T15:50:00+09:00",
+            read_model_identity="offline.authoritative_roster",
+            accounts=_default_roster(),
+        )
+        == "34f9275b3b4c153af15f39200da470ad7f4e9acbf26795bc1a5ae94fed26c4a9"
+    )
+    assert (
+        compute_account_roster_hash(
+            roster_id='명부"A',
+            roster_version="v1\\n",
+            read_model_identity="reader/한글",
+            accounts=(_configured(KrBroker.KIS, '계좌"\\n'),),
+        )
+        == "f4d927823d5cba703695fe9e7a642eedd751d1ecff92579e0dac3c6fe69089c2"
     )
 
 
@@ -575,7 +716,7 @@ def test_each_evidence_kind_has_wall_clock_age_limit(
     widened_rule = rule.model_copy(update={"conditions": widened_conditions})
     monkeypatch.setattr(
         policy,
-        "load_trading_policy",
+        "_single_share_policy_document",
         lambda: doc.model_copy(
             update={
                 "decision_rules": {
@@ -1194,6 +1335,172 @@ def test_far_band_exact_boundaries(resistance_price, expected):
     assert result.outcome == expected
 
 
+def test_public_policy_loader_never_returns_mutable_cached_singleton():
+    detached = policy.load_trading_policy()
+    detached_rule = detached.decision_rules["sell.single_share_exit"]
+    detached_rule.proposal.auto_approve = True
+    detached.thresholds["sell.loss_guard_min_multiple"].value = 0.01
+
+    fresh = policy.load_trading_policy()
+    cached = policy._single_share_policy_document()
+    for document in (fresh, cached):
+        rule = document.decision_rules["sell.single_share_exit"]
+        assert rule.proposal.auto_approve is False
+        assert document.thresholds["sell.loss_guard_min_multiple"].value == 1.01
+    assert detached is not fresh
+
+
+@pytest.mark.parametrize(
+    ("component", "field", "unsafe_value"),
+    [
+        ("proposal", "action", "order_proposal_create"),
+        ("proposal", "sizing", "partial_lot"),
+        ("proposal", "approval", "none"),
+        ("proposal", "auto_approve", True),
+        ("proposal", "execution", "direct_broker_submit"),
+        ("rule", "operator_approval_required", False),
+        ("conditions", "min_sell_price_multiple_policy_key", "other.key"),
+    ],
+)
+def test_exact_policy_safety_projection_is_rechecked(
+    monkeypatch,
+    component,
+    field,
+    unsafe_value,
+):
+    doc = policy.load_trading_policy()
+    rule = doc.decision_rules["sell.single_share_exit"]
+    if component == "proposal":
+        mutated = rule.model_copy(
+            update={"proposal": rule.proposal.model_copy(update={field: unsafe_value})}
+        )
+    elif component == "conditions":
+        mutated = rule.model_copy(
+            update={
+                "conditions": rule.conditions.model_copy(update={field: unsafe_value})
+            }
+        )
+    else:
+        mutated = rule.model_copy(update={field: unsafe_value})
+    monkeypatch.setattr(
+        policy,
+        "_single_share_policy_document",
+        lambda: _with_single_share_rule(doc, mutated),
+    )
+
+    result = _replay_result()
+    assert (result.outcome, result.reason) == (
+        "INELIGIBLE",
+        "policy_safe_projection_mismatch",
+    )
+    assert result.candidate_action is None
+    assert result.auto_approve is False
+    assert result.execution is None
+
+
+def test_unsafe_nested_proposal_never_leaks_auto_approval_metadata(
+    monkeypatch,
+):
+    now = datetime.now(UTC)
+    expected_date = now.date()
+    monkeypatch.setattr(
+        policy, "_expected_completed_krx_bar", lambda _now: expected_date
+    )
+    doc = policy.load_trading_policy()
+    rule = doc.decision_rules["sell.single_share_exit"]
+    rule.proposal.auto_approve = True
+    rule.proposal.execution = "direct_broker_submit"
+    monkeypatch.setattr(policy, "_single_share_policy_document", lambda: doc)
+    accounts = (
+        _account(
+            KrBroker.KIS,
+            "kis-main",
+            holdings_at=now,
+            orders_at=now,
+        ),
+        _account(
+            KrBroker.TOSS,
+            "toss-main",
+            lots=(_lot(),),
+            holdings_at=now,
+            orders_at=now,
+        ),
+    )
+    context = _make_context(
+        accounts=accounts,
+        quote=_firm_quote(observed_at=now),
+        resistance=ResistanceEvidence(
+            symbol="257720",
+            price=Decimal("39946.31"),
+            sources=("bb_upper", "fib_50"),
+            strength=ResistanceStrength.STRONG,
+            computed_at=now,
+            ohlcv_through_date=expected_date,
+        ),
+        actions_at=now,
+        live=True,
+    )
+
+    result = policy.evaluate_single_share_exit(context)
+    assert (result.outcome, result.reason) == (
+        "INELIGIBLE",
+        "policy_safe_projection_mismatch",
+    )
+    assert result.proposal_enabled is False
+    assert result.candidate_action is None
+    assert result.auto_approve is False
+    assert result.execution is None
+
+
+def test_schema_valid_policy_below_code_loss_floor_stays_ineligible(
+    monkeypatch,
+):
+    raw = policy.load_trading_policy().model_dump(mode="python")
+    raw["thresholds"]["sell.loss_guard_min_multiple"]["value"] = 0.01
+    raw["decision_rules"]["sell.single_share_exit"]["conditions"]["profit_pct_min"] = 0
+    schema_valid = TradingPolicyDocument.model_validate(raw)
+    monkeypatch.setattr(
+        policy,
+        "_single_share_policy_document",
+        lambda: schema_valid,
+    )
+
+    result = _replay_result(
+        accounts=_default_accounts(average_cost="100000"),
+        quote=_firm_quote(price="100000"),
+        resistance=_resistance(price="112000"),
+    )
+    assert (result.outcome, result.reason) == (
+        "INELIGIBLE",
+        "loss_guard_not_met",
+    )
+    assert result.average_cost == Decimal("100000")
+    assert result.current_quote == Decimal("100000")
+
+
+@pytest.mark.parametrize(
+    "configured_value", [float("nan"), float("inf"), float("-inf")]
+)
+def test_schema_valid_non_finite_loss_guard_fails_closed(
+    monkeypatch,
+    configured_value,
+):
+    raw = policy.load_trading_policy().model_dump(mode="python")
+    raw["thresholds"]["sell.loss_guard_min_multiple"]["value"] = configured_value
+    schema_valid = TradingPolicyDocument.model_validate(raw)
+    monkeypatch.setattr(
+        policy,
+        "_single_share_policy_document",
+        lambda: schema_valid,
+    )
+
+    result = _replay_result()
+    assert (result.outcome, result.reason) == (
+        "INELIGIBLE",
+        "invalid_loss_guard_policy",
+    )
+
+
 @pytest.mark.parametrize(
     "gate_mutation",
     [
@@ -1209,7 +1516,7 @@ def test_activation_and_proposal_off_are_rechecked(monkeypatch, gate_mutation):
     bypassed = rule.model_copy(update=gate_mutation)
     monkeypatch.setattr(
         policy,
-        "load_trading_policy",
+        "_single_share_policy_document",
         lambda: doc.model_copy(
             update={
                 "decision_rules": {

@@ -20,11 +20,12 @@ from app.services.single_share_exit_snapshot_service import (
     PRODUCER_CAPABILITY,
     PRODUCER_IDENTITY,
     ROSTER_CAPABILITY,
-    ContextMode,
     ResistanceStrength,
     ValidatedSingleShareExitContext,
+    compute_account_roster_hash,
     executable_quote_price,
-    is_validated_context,
+    is_validated_live_context,
+    is_validated_replay_context,
     required_reader_capabilities,
 )
 
@@ -33,6 +34,15 @@ _POLICY_PATH: Path = (
 )
 
 _cache: dict[str, Any] = {"key": None, "doc": None, "hash": None}
+
+_SINGLE_SHARE_EXIT_ACTION: Literal["full_exit_at_far_resistance"] = (
+    "full_exit_at_far_resistance"
+)
+_SINGLE_SHARE_EXIT_SIZING: Literal["full_account_lot_exit"] = "full_account_lot_exit"
+_SINGLE_SHARE_EXIT_APPROVAL: Literal["telegram_manual"] = "telegram_manual"
+_SINGLE_SHARE_EXIT_EXECUTION: Literal["proposal_only"] = "proposal_only"
+_SINGLE_SHARE_EXIT_LOSS_GUARD_KEY = "sell.loss_guard_min_multiple"
+_SINGLE_SHARE_EXIT_CODE_LOSS_FLOOR = Decimal("1.01")
 
 
 class TradingPolicyKeyError(ValueError):
@@ -104,6 +114,14 @@ def _load() -> tuple[TradingPolicyDocument, str]:
 
 
 def load_trading_policy() -> TradingPolicyDocument:
+    """Return a detached policy model, never the mutable cached singleton."""
+
+    return _load()[0].model_copy(deep=True)
+
+
+def _single_share_policy_document() -> TradingPolicyDocument:
+    """Internal read-only view used by the hot evaluator path."""
+
     return _load()[0]
 
 
@@ -201,6 +219,43 @@ def sector_cluster_for(label: str | None) -> str | None:
     return None
 
 
+def _single_share_policy_contract_is_safe(
+    rule: SingleShareExitDecisionRule,
+) -> bool:
+    """Pin the non-judgment safety projection before any eligible result."""
+
+    if type(rule) is not SingleShareExitDecisionRule:
+        return False
+    proposal = rule.proposal
+    conditions = rule.conditions
+    scope = rule.scope
+    return (
+        rule.lanes == ["sell"]
+        and rule.activation_state == "shadow"
+        and rule.proposal_enabled is False
+        and scope.markets == ["kr"]
+        and scope.brokers == ["kis", "toss"]
+        and scope.required_broker_inventory == ["kis", "toss"]
+        and scope.order_routable_required is True
+        and conditions.symbol_routable_sellable_quantity_eq == 1
+        and conditions.resistance_reference_required is True
+        and conditions.resistance_strength_min == "strong"
+        and conditions.required_completed_bar_market == "XKRX"
+        and conditions.min_sell_price_multiple_policy_key
+        == _SINGLE_SHARE_EXIT_LOSS_GUARD_KEY
+        and conditions.same_symbol_open_orders_max == 0
+        and conditions.unresolved_open_actions_max == 0
+        and conditions.loss_state_uses_existing_path == "loss_cut_only"
+        and proposal.action == _SINGLE_SHARE_EXIT_ACTION
+        and proposal.sizing == _SINGLE_SHARE_EXIT_SIZING
+        and proposal.approval == _SINGLE_SHARE_EXIT_APPROVAL
+        and proposal.auto_approve is False
+        and proposal.execution == _SINGLE_SHARE_EXIT_EXECUTION
+        and rule.threshold_status == "provisional"
+        and rule.operator_approval_required is True
+    )
+
+
 def _single_share_result(
     context: ValidatedSingleShareExitContext,
     *,
@@ -216,7 +271,7 @@ def _single_share_result(
     symbol_routable_sellable_quantity: Decimal | None = None,
     quote_age_seconds: Decimal | None = None,
 ) -> SingleShareExitEvaluation:
-    proposal = rule.proposal if outcome == "SHADOW_ELIGIBLE" and rule else None
+    include_candidate_metadata = outcome == "SHADOW_ELIGIBLE" and rule is not None
     expected_identities = tuple(
         f"{identity.broker.value}:{identity.broker_account_id}"
         for identity in context.expected_account_identities
@@ -233,11 +288,15 @@ def _single_share_result(
         broker=context.target.broker.value,
         broker_account_id=context.target.broker_account_id,
         lot_id=context.target.lot_id,
-        candidate_action=proposal.action if proposal else None,
-        sizing=proposal.sizing if proposal else None,
-        approval=proposal.approval if proposal else None,
-        auto_approve=proposal.auto_approve if proposal else False,
-        execution=proposal.execution if proposal else None,
+        candidate_action=(
+            _SINGLE_SHARE_EXIT_ACTION if include_candidate_metadata else None
+        ),
+        sizing=_SINGLE_SHARE_EXIT_SIZING if include_candidate_metadata else None,
+        approval=_SINGLE_SHARE_EXIT_APPROVAL if include_candidate_metadata else None,
+        auto_approve=False,
+        execution=(
+            _SINGLE_SHARE_EXIT_EXECUTION if include_candidate_metadata else None
+        ),
         average_cost=average_cost,
         symbol_routable_sellable_quantity=symbol_routable_sellable_quantity,
         current_quote=current_quote,
@@ -329,9 +388,9 @@ def _evaluate_single_share_exit(
     now: dt.datetime,
     eligible_outcome: Literal["SHADOW_ELIGIBLE", "REPLAY_ELIGIBLE"],
 ) -> SingleShareExitEvaluation:
-    doc = load_trading_policy()
+    doc = _single_share_policy_document()
     rule = doc.decision_rules.get("sell.single_share_exit")
-    if not isinstance(rule, SingleShareExitDecisionRule):
+    if type(rule) is not SingleShareExitDecisionRule:
         return _single_share_result(
             context, outcome="INELIGIBLE", reason="policy_rule_unavailable"
         )
@@ -340,6 +399,13 @@ def _evaluate_single_share_exit(
             context,
             outcome="INELIGIBLE",
             reason="policy_not_shadow_off",
+            rule=rule,
+        )
+    if not _single_share_policy_contract_is_safe(rule):
+        return _single_share_result(
+            context,
+            outcome="INELIGIBLE",
+            reason="policy_safe_projection_mismatch",
             rule=rule,
         )
     if context.market not in rule.scope.markets:
@@ -362,7 +428,21 @@ def _evaluate_single_share_exit(
             reason="authoritative_producer_capability_mismatch",
             rule=rule,
         )
-    if context.roster_hash != context.derived_roster_hash:
+    try:
+        derived_roster_hash = compute_account_roster_hash(
+            roster_id=context.roster_id,
+            roster_version=context.roster_version,
+            read_model_identity=context.roster_read_model_identity,
+            accounts=context.configured_accounts,
+        )
+    except (AttributeError, TypeError, ValueError):
+        return _single_share_result(
+            context,
+            outcome="INELIGIBLE",
+            reason="invalid_account_roster_context",
+            rule=rule,
+        )
+    if context.roster_hash != derived_roster_hash:
         return _single_share_result(
             context,
             outcome="INELIGIBLE",
@@ -647,12 +727,14 @@ def _evaluate_single_share_exit(
 
     average_cost = target_lot.average_cost
     resistance = context.resistance.price
-    guard_spec = doc.thresholds.get(rule.conditions.min_sell_price_multiple_policy_key)
+    guard_spec = doc.thresholds.get(_SINGLE_SHARE_EXIT_LOSS_GUARD_KEY)
     try:
-        guard_multiple = Decimal(str(guard_spec.value)) if guard_spec else Decimal(0)
+        configured_guard_multiple = (
+            Decimal(str(guard_spec.value)) if guard_spec else Decimal(0)
+        )
     except (InvalidOperation, ValueError):
-        guard_multiple = Decimal(0)
-    if guard_multiple <= 0:
+        configured_guard_multiple = Decimal(0)
+    if not configured_guard_multiple.is_finite() or configured_guard_multiple <= 0:
         return _single_share_result(
             context,
             outcome="INELIGIBLE",
@@ -664,6 +746,10 @@ def _evaluate_single_share_exit(
             quote_age_seconds=quote_age_seconds,
             expected_completed_krx_bar_date=expected_bar_date,
         )
+    guard_multiple = max(
+        configured_guard_multiple,
+        _SINGLE_SHARE_EXIT_CODE_LOSS_FLOOR,
+    )
     if quote < average_cost * guard_multiple:
         return _single_share_result(
             context,
@@ -738,16 +824,16 @@ def _evaluate_single_share_exit(
 def evaluate_single_share_exit(
     context: ValidatedSingleShareExitContext,
 ) -> SingleShareExitEvaluation:
-    """Evaluate only a live producer-issued context using the internal clock."""
+    """Evaluate only the initialized exact live context type."""
 
-    if not is_validated_context(context):
-        return _invalid_context_result("unvalidated_producer_context")
-    if context.mode is not ContextMode.LIVE:
+    if is_validated_replay_context(context):
         return _single_share_result(
             context,
             outcome="INELIGIBLE",
             reason="replay_context_not_live",
         )
+    if not is_validated_live_context(context):
+        return _invalid_context_result("unvalidated_producer_context")
     return _evaluate_single_share_exit(
         context,
         now=dt.datetime.now(dt.UTC),
@@ -758,16 +844,16 @@ def evaluate_single_share_exit(
 def evaluate_single_share_exit_replay(
     context: ValidatedSingleShareExitContext,
 ) -> SingleShareExitEvaluation:
-    """Deterministic offline seam; never returns live ``SHADOW_ELIGIBLE``."""
+    """Deterministic seam accepting only the initialized exact replay type."""
 
-    if not is_validated_context(context):
-        return _invalid_context_result("unvalidated_producer_context")
-    if context.mode is not ContextMode.REPLAY:
+    if is_validated_live_context(context):
         return _single_share_result(
             context,
             outcome="INELIGIBLE",
             reason="live_context_not_replay",
         )
+    if not is_validated_replay_context(context):
+        return _invalid_context_result("unvalidated_producer_context")
     return _evaluate_single_share_exit(
         context,
         now=context.produced_at,

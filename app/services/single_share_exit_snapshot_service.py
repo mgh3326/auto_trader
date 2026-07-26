@@ -3,7 +3,8 @@
 Raw account rows and caller-supplied completeness booleans are not evaluator
 inputs. A producer enumerates the configured account roster, asks each read port
 for evidence over that roster, derives the roster hash, and returns a private
-concrete context type that the evaluator recognizes with ``isinstance``.
+live or replay concrete context type that the matching evaluator recognizes by
+exact type.
 
 This type check is an API boundary, not an evidence-authenticity or security
 boundary. Capability values are descriptive labels, and callers supply the read
@@ -17,10 +18,11 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import hashlib
-import json
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from decimal import Decimal
 from enum import StrEnum
+from json.encoder import encode_basestring_ascii
+from operator import attrgetter
 from typing import Protocol
 
 PRODUCER_IDENTITY = "kr_single_share_exit_snapshot_producer/v2"
@@ -337,12 +339,10 @@ class ValidatedSingleShareExitContext(Protocol):
     market: str
     captured_at: dt.datetime
     produced_at: dt.datetime
-    mode: ContextMode
     target: SingleShareExitTarget
     roster_id: str
     roster_version: str
     roster_hash: str
-    derived_roster_hash: str
     roster_read_model_identity: str
     roster_read_model_capability: str
     expected_account_identities: tuple[AccountIdentity, ...]
@@ -356,25 +356,29 @@ class ValidatedSingleShareExitContext(Protocol):
     producer_capability: str
     reader_identities: tuple[str, ...]
     reader_capabilities: tuple[str, ...]
+
+    @property
+    def mode(self) -> ContextMode: ...
+
+    @property
+    def derived_roster_hash(self) -> str: ...
 
     @property
     def roster_is_exact(self) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
-class _ValidatedSingleShareExitContext:
-    """Private concrete context produced after roster-first evidence reads."""
+class _ValidatedSingleShareExitContextBase:
+    """Shared immutable payload for the two private evaluator context types."""
 
     snapshot_id: str
     market: str
     captured_at: dt.datetime
     produced_at: dt.datetime
-    mode: ContextMode
     target: SingleShareExitTarget
     roster_id: str
     roster_version: str
     roster_hash: str
-    derived_roster_hash: str
     roster_read_model_identity: str
     roster_read_model_capability: str
     expected_account_identities: tuple[AccountIdentity, ...]
@@ -390,8 +394,48 @@ class _ValidatedSingleShareExitContext:
     reader_capabilities: tuple[str, ...]
 
     @property
+    def derived_roster_hash(self) -> str:
+        """Recompute the roster digest; never trust a second caller-carried hash."""
+
+        return compute_account_roster_hash(
+            roster_id=self.roster_id,
+            roster_version=self.roster_version,
+            read_model_identity=self.roster_read_model_identity,
+            accounts=self.configured_accounts,
+        )
+
+    @property
     def roster_is_exact(self) -> bool:
         return self.expected_account_identities == self.observed_account_identities
+
+
+class _ValidatedLiveSingleShareExitContext(_ValidatedSingleShareExitContextBase):
+    """Private live context; mode is derived from this exact concrete type."""
+
+    # Different layouts prevent ``object.__setattr__(replay, "__class__", live)``
+    # from turning a replay object into a live object without storing a mutable
+    # or caller-copyable mode field.
+    __slots__ = ("_live_context_layout",)
+
+    @property
+    def mode(self) -> ContextMode:
+        return ContextMode.LIVE
+
+
+class _ValidatedReplaySingleShareExitContext(_ValidatedSingleShareExitContextBase):
+    """Private replay context; mode is derived from this exact concrete type."""
+
+    __slots__ = ("_replay_context_layout_a", "_replay_context_layout_b")
+
+    @property
+    def mode(self) -> ContextMode:
+        return ContextMode.REPLAY
+
+
+_CONTEXT_FIELD_NAMES = tuple(
+    field.name for field in fields(_ValidatedSingleShareExitContextBase)
+)
+_CONTEXT_FIELDS_GETTER = attrgetter(*_CONTEXT_FIELD_NAMES)
 
 
 def compute_account_roster_hash(
@@ -408,23 +452,31 @@ def compute_account_roster_hash(
             account.identity.broker_account_id,
         ),
     )
-    payload = {
-        "roster_id": roster_id,
-        "roster_version": roster_version,
-        "read_model_identity": read_model_identity,
-        "accounts": [
-            {
-                "broker": account.identity.broker.value,
-                "broker_account_id": account.identity.broker_account_id,
-                "account_kind": account.account_kind.value,
-                "order_routable": account.order_routable,
-            }
-            for account in ordered
-        ],
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    # Preserve the byte-for-byte canonical JSON contract without rebuilding and
+    # sorting a nested dict on every evaluation. ``encode_basestring_ascii`` is
+    # the string encoder used by the stdlib JSON encoder, so quotes, control
+    # characters, and non-ASCII account IDs retain the prior representation.
+    encoded_accounts = ",".join(
+        (
+            '{"account_kind":'
+            f"{encode_basestring_ascii(account.account_kind.value)},"
+            '"broker":'
+            f"{encode_basestring_ascii(account.identity.broker.value)},"
+            '"broker_account_id":'
+            f"{encode_basestring_ascii(account.identity.broker_account_id)},"
+            '"order_routable":'
+            f"{'true' if account.order_routable else 'false'}"
+            "}"
+        )
+        for account in ordered
+    )
+    payload = (
+        f'{{"accounts":[{encoded_accounts}],"read_model_identity":'
+        f"{encode_basestring_ascii(read_model_identity)},"
+        f'"roster_id":{encode_basestring_ascii(roster_id)},'
+        f'"roster_version":{encode_basestring_ascii(roster_version)}}}'
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def executable_quote_price(quote: TypedQuoteEvidence) -> Decimal | None:
@@ -481,7 +533,8 @@ class _Producer:
         target: SingleShareExitTarget,
         mode: ContextMode,
         clock: ReplayClock,
-    ) -> _ValidatedSingleShareExitContext:
+        context_type: type[_ValidatedSingleShareExitContextBase],
+    ) -> _ValidatedSingleShareExitContextBase:
         roster = await self._roster_reader.read_configured_kr_accounts()
         accounts, open_actions, market = await asyncio.gather(
             self._broker_reader.read_accounts(
@@ -531,6 +584,7 @@ class _Producer:
                 target.broker_account_id,
                 target.lot_id,
                 mode.value,
+                derived_hash,
             )
         )
         snapshot_id = hashlib.sha256(snapshot_seed.encode()).hexdigest()[:24]
@@ -546,17 +600,15 @@ class _Producer:
             self._open_action_reader.capability,
             self._market_reader.capability,
         )
-        return _ValidatedSingleShareExitContext(
+        return context_type(
             snapshot_id=snapshot_id,
             market="kr",
             captured_at=captured_at,
             produced_at=captured_at,
-            mode=mode,
             target=target,
             roster_id=roster.roster_id,
             roster_version=roster.roster_version,
             roster_hash=roster.roster_hash,
-            derived_roster_hash=derived_hash,
             roster_read_model_identity=roster.read_model_identity,
             roster_read_model_capability=roster.read_model_capability,
             expected_account_identities=expected,
@@ -585,11 +637,12 @@ class SingleShareExitSnapshotProducer(_Producer):
             target=target,
             mode=ContextMode.LIVE,
             clock=_SystemClock(),
+            context_type=_ValidatedLiveSingleShareExitContext,
         )
 
 
 class SingleShareExitReplayProducer(_Producer):
-    """Replay-only producer; its contexts can never be live-eligible."""
+    """Replay producer whose exact context type is rejected by the live wrapper."""
 
     def __init__(
         self,
@@ -617,13 +670,45 @@ class SingleShareExitReplayProducer(_Producer):
             target=target,
             mode=ContextMode.REPLAY,
             clock=self._replay_clock,
+            context_type=_ValidatedReplaySingleShareExitContext,
         )
 
 
-def is_validated_context(candidate: object) -> bool:
-    """Return whether the producer API's private concrete type was supplied."""
+def _is_initialized_exact_context(
+    candidate: object,
+    expected_type: type[_ValidatedSingleShareExitContextBase],
+) -> bool:
+    if type(candidate) is not expected_type:
+        return False
+    try:
+        _CONTEXT_FIELDS_GETTER(candidate)
+    except AttributeError:
+        return False
+    return True
 
-    return isinstance(candidate, _ValidatedSingleShareExitContext)
+
+def is_validated_live_context(candidate: object) -> bool:
+    """Return whether an initialized exact live context was supplied."""
+
+    return _is_initialized_exact_context(
+        candidate, _ValidatedLiveSingleShareExitContext
+    )
+
+
+def is_validated_replay_context(candidate: object) -> bool:
+    """Return whether an initialized exact replay context was supplied."""
+
+    return _is_initialized_exact_context(
+        candidate, _ValidatedReplaySingleShareExitContext
+    )
+
+
+def is_validated_context(candidate: object) -> bool:
+    """Return whether either initialized exact producer context was supplied."""
+
+    return is_validated_live_context(candidate) or is_validated_replay_context(
+        candidate
+    )
 
 
 def required_reader_capabilities() -> tuple[str, ...]:
