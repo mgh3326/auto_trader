@@ -59,6 +59,10 @@ EVIDENCE_SCHEMA_VERSION = "rob1040.crs24.corr1.feasibility_evidence.v3"
 FROZEN_SYNTHETIC_EVIDENCE_SHA256 = (
     "ef9b0b819bef5e4cb0a63a9f88b5df0a7a65832d103d4ed379ba460fa3232bab"
 )
+# Mandatory `extra_authority` key for the `refrozen_real_corpus` posture: the
+# real corpus has no compile-time content pin, so its provenance trail must at
+# minimum name the frozen corpus manifest it was loaded from.
+REAL_CORPUS_MANIFEST_AUTHORITY_KEY = "corpus_manifest_content_sha256"
 
 
 def _exact_int(value: object, name: str) -> int:
@@ -617,11 +621,209 @@ class ValidatedCampaignContext(Protocol):
     ) -> FeasibilityEvidence: ...
 
 
-def _validated_campaign_factory() -> ValidatedCampaignContext:
+@dataclass(frozen=True, slots=True)
+class CampaignInputBinding:
+    """Caller-constructed ``generator``/``references`` pair, pinned once.
+
+    Exactly two postures exist:
+
+    * ``"frozen_synthetic_fixture"`` — the posture this module's
+      zero-argument default path builds (:func:`_validated_campaign_factory`
+      called with no binding). Every pin must equal this module's
+      compile-time frozen ``SYNTHETIC_*`` constant. An external caller *can*
+      construct such a binding, but only by supplying a generator/reference
+      pair whose self-computed digests equal those frozen constants — i.e.
+      only by supplying byte-identical frozen content — so this posture stays
+      byte-identical to the pre-existing behavior regardless of who builds
+      it. (It is separately barred from the real-corpus entry points by
+      :func:`open_real_corpus_campaign_context`'s posture check.)
+    * ``"refrozen_real_corpus"`` — built by an external caller (the ROB-1040
+      refreeze launcher) from real 1-minute corpus data via
+      :meth:`for_real_corpus`. No compile-time literal can exist for
+      un-emitted real-corpus content, so every pin is instead captured once
+      from the bound ``generator``/``references`` objects themselves at
+      construction time and reverified against that same captured value on
+      every later use — the same anti-substitution identity discipline as
+      the synthetic path, without a value known in advance.
+
+    Nothing downstream of this binding (``evaluate_cell`` and everything it
+    calls) branches on posture; only the pin *source* differs.
+    """
+
+    posture: str
+    version: str
+    generator: CRSFeatureGenerator
+    references: ReferenceSurface
+    snapshot_sha256_pin: str
+    entry_source_sha256_pin: str
+    exit_presence_source_sha256_pin: str
+    fixture_content_sha256_pin: str
+    extra_authority: tuple[tuple[str, str], ...]
+
+    def __post_init__(self) -> None:
+        if self.posture not in {"frozen_synthetic_fixture", "refrozen_real_corpus"}:
+            raise ValueError("campaign input binding posture is unknown")
+        if type(self.version) is not str or not self.version:
+            raise TypeError("campaign input binding version must be a non-empty str")
+        if type(self.generator) is not CRSFeatureGenerator:
+            raise TypeError(
+                "campaign input binding generator must be exact CRSFeatureGenerator"
+            )
+        if type(self.references) is not ReferenceSurface:
+            raise TypeError(
+                "campaign input binding references must be exact ReferenceSurface"
+            )
+        for name in (
+            "snapshot_sha256_pin",
+            "entry_source_sha256_pin",
+            "exit_presence_source_sha256_pin",
+            "fixture_content_sha256_pin",
+        ):
+            _sha256(getattr(self, name), name)
+        if type(self.extra_authority) is not tuple or any(
+            type(item) is not tuple
+            or len(item) != 2
+            or type(item[0]) is not str
+            or type(item[1]) is not str
+            for item in self.extra_authority
+        ):
+            raise TypeError(
+                "extra_authority must be an exact tuple of (str, str) pairs"
+            )
+        if self.posture == "frozen_synthetic_fixture":
+            if (
+                self.version != SYNTHETIC_FIXTURE_VERSION
+                or self.snapshot_sha256_pin != SYNTHETIC_COMPLETE_BAR_SNAPSHOT_SHA256
+                or self.entry_source_sha256_pin
+                != SYNTHETIC_ENTRY_REFERENCE_SOURCE_SHA256
+                or self.exit_presence_source_sha256_pin
+                != SYNTHETIC_EXIT_PRESENCE_SOURCE_SHA256
+                or self.fixture_content_sha256_pin != SYNTHETIC_FIXTURE_CONTENT_SHA256
+                or self.extra_authority != ()
+            ):
+                raise ValueError(
+                    "synthetic posture must reuse only the frozen synthetic pins"
+                )
+        else:
+            # Anti-substitution: a real-corpus binding must not be a relabelled
+            # frozen synthetic fixture. The decisive discriminator is the JOINT
+            # identity `fixture_content_sha256_pin` (generator + references
+            # together) -- differing there is by itself sufficient proof that
+            # this binding is not the synthetic fixture. `version`, the
+            # complete-bar `snapshot_sha256_pin` and the value-bearing
+            # `entry_source_sha256_pin` add independent content-bearing
+            # evidence and are also required to differ.
+            #
+            # `exit_presence_source_sha256_pin` is DELIBERATELY EXCLUDED from
+            # the must-differ set. `ReferenceSurface.exit_presence_source_sha256`
+            # hashes only the {symbol, timestamp_ms} of the rows whose
+            # `present` flag is True, over a FROZEN key domain (1296 keys,
+            # fixed order) -- it is a presence bitmap and carries no content.
+            # Consequently ANY two datasets with complete exit coverage produce
+            # the identical digest by construction: the all-signal synthetic
+            # calendar (1296/1296 present) and a gapless real corpus
+            # (1296/1296 present) necessarily collide. Requiring that pin to
+            # differ would amount to requiring the real corpus to be MISSING
+            # exit bars -- the exact opposite of the desired property, and a
+            # false positive on every healthy corpus. The pin is still captured
+            # at construction and still reverified against the bound references
+            # below and on every later use (`verify_live_inputs`), so exit
+            # presence remains tamper-evident; it simply is not a posture
+            # discriminator.
+            if (
+                self.version == SYNTHETIC_FIXTURE_VERSION
+                or self.snapshot_sha256_pin == SYNTHETIC_COMPLETE_BAR_SNAPSHOT_SHA256
+                or self.entry_source_sha256_pin
+                == SYNTHETIC_ENTRY_REFERENCE_SOURCE_SHA256
+                or self.fixture_content_sha256_pin == SYNTHETIC_FIXTURE_CONTENT_SHA256
+            ):
+                raise ValueError(
+                    "real-corpus posture must not reuse any frozen synthetic pin"
+                )
+            # Provenance is mandatory for the real posture: without it the
+            # emitted evidence would carry no corpus authority at all.
+            if not any(
+                name == REAL_CORPUS_MANIFEST_AUTHORITY_KEY
+                for name, _ in self.extra_authority
+            ):
+                raise ValueError(
+                    "real-corpus posture requires corpus-manifest provenance authority"
+                )
+        if self.snapshot_sha256_pin != self.generator.snapshot_sha256:
+            raise ValueError("snapshot pin does not match the bound generator")
+        if self.entry_source_sha256_pin != self.references.entry_source_sha256:
+            raise ValueError("entry-source pin does not match the bound references")
+        if (
+            self.exit_presence_source_sha256_pin
+            != self.references.exit_presence_source_sha256
+        ):
+            raise ValueError("exit-presence pin does not match the bound references")
+        if self.fixture_content_sha256_pin != fixture_content_sha256(
+            self.generator, self.references
+        ):
+            raise ValueError(
+                "full-input pin does not match the bound generator/references"
+            )
+
+    @classmethod
+    def for_real_corpus(
+        cls,
+        *,
+        version: str,
+        generator: CRSFeatureGenerator,
+        references: ReferenceSurface,
+        corpus_manifest_content_sha256: str,
+    ) -> CampaignInputBinding:
+        """Build a ``refrozen_real_corpus`` binding; every pin is self-captured.
+
+        The caller supplies only the generator/references objects and the
+        corpus manifest content hash for evidence-trail purposes — every pin
+        value is read back from ``generator``/``references`` themselves
+        (never accepted as a bare caller-supplied string), so a mismatched or
+        forged pin cannot be constructed this way.
+        """
+        _sha256(corpus_manifest_content_sha256, "corpus_manifest_content_sha256")
+        return cls(
+            posture="refrozen_real_corpus",
+            version=version,
+            generator=generator,
+            references=references,
+            snapshot_sha256_pin=generator.snapshot_sha256,
+            entry_source_sha256_pin=references.entry_source_sha256,
+            exit_presence_source_sha256_pin=references.exit_presence_source_sha256,
+            fixture_content_sha256_pin=fixture_content_sha256(generator, references),
+            extra_authority=(
+                (
+                    REAL_CORPUS_MANIFEST_AUTHORITY_KEY,
+                    corpus_manifest_content_sha256,
+                ),
+            ),
+        )
+
+
+def _validated_campaign_factory(
+    binding: CampaignInputBinding | None = None,
+) -> ValidatedCampaignContext:
     """Build the sole computation context after checking every frozen input pin."""
-    fixture = build_synthetic_fixture()
-    generator = validate_frozen_synthetic_fixture(fixture)
-    references = fixture.references
+    if binding is None:
+        fixture = build_synthetic_fixture()
+        generator = validate_frozen_synthetic_fixture(fixture)
+        binding = CampaignInputBinding(
+            posture="frozen_synthetic_fixture",
+            version=fixture.version,
+            generator=generator,
+            references=fixture.references,
+            snapshot_sha256_pin=SYNTHETIC_COMPLETE_BAR_SNAPSHOT_SHA256,
+            entry_source_sha256_pin=SYNTHETIC_ENTRY_REFERENCE_SOURCE_SHA256,
+            exit_presence_source_sha256_pin=SYNTHETIC_EXIT_PRESENCE_SOURCE_SHA256,
+            fixture_content_sha256_pin=SYNTHETIC_FIXTURE_CONTENT_SHA256,
+            extra_authority=(),
+        )
+    if type(binding) is not CampaignInputBinding:
+        raise TypeError("campaign input binding must be exact CampaignInputBinding")
+
+    generator = binding.generator
+    references = binding.references
     registered_configs = ACTIVE_CONFIGS
     registered_folds = exact_h4_folds()
     registered_config_snapshots = copy.deepcopy(registered_configs)
@@ -630,8 +832,11 @@ def _validated_campaign_factory() -> ValidatedCampaignContext:
     references_identity = id(references)
 
     def verify_live_inputs() -> None:
-        if fixture.version != SYNTHETIC_FIXTURE_VERSION:
-            raise RunAuthorityClosedError("campaign fixture version changed at use")
+        if (
+            binding.posture == "frozen_synthetic_fixture"
+            and binding.version != SYNTHETIC_FIXTURE_VERSION
+        ):
+            raise RunAuthorityClosedError("campaign binding version changed at use")
         if registered_configs != registered_config_snapshots:
             raise RunAuthorityClosedError("campaign config state changed at use")
         if registered_folds != registered_fold_snapshots:
@@ -644,18 +849,18 @@ def _validated_campaign_factory() -> ValidatedCampaignContext:
             references_identity
         ):
             raise RunAuthorityClosedError("campaign reference identity changed")
-        if generator.snapshot_sha256 != SYNTHETIC_COMPLETE_BAR_SNAPSHOT_SHA256:
+        if generator.snapshot_sha256 != binding.snapshot_sha256_pin:
             raise RunAuthorityClosedError("campaign snapshot pin changed at use")
-        if references.entry_source_sha256 != SYNTHETIC_ENTRY_REFERENCE_SOURCE_SHA256:
+        if references.entry_source_sha256 != binding.entry_source_sha256_pin:
             raise RunAuthorityClosedError("campaign entry-source pin changed at use")
         if (
             references.exit_presence_source_sha256
-            != SYNTHETIC_EXIT_PRESENCE_SOURCE_SHA256
+            != binding.exit_presence_source_sha256_pin
         ):
             raise RunAuthorityClosedError("campaign exit-presence pin changed at use")
         if (
             fixture_content_sha256(generator, references)
-            != SYNTHETIC_FIXTURE_CONTENT_SHA256
+            != binding.fixture_content_sha256_pin
         ):
             raise RunAuthorityClosedError("campaign full-input identity changed at use")
 
@@ -668,17 +873,20 @@ def _validated_campaign_factory() -> ValidatedCampaignContext:
     issued_evidence_digest: str | None = None
     issued_evidence_totals_snapshot: CampaignTotals | None = None
 
-    def live_input_identity() -> dict[str, str]:
+    def live_input_identity() -> dict[str, object]:
         verify_live_inputs()
-        return {
-            "posture": "frozen_synthetic_fixture",
-            "fixture_version": fixture.version,
+        payload: dict[str, object] = {
+            "posture": binding.posture,
+            "fixture_version": binding.version,
             "complete_bar_snapshot_sha256": generator.snapshot_sha256,
             "entry_reference_source_sha256": references.entry_source_sha256,
             "exit_presence_source_sha256": references.exit_presence_source_sha256,
             "fixture_content_sha256": fixture_content_sha256(generator, references),
             "binding": "validated_campaign_context_object_identity",
         }
+        if binding.extra_authority:
+            payload["real_corpus_authority"] = dict(binding.extra_authority)
+        return payload
 
     def evaluate_cell(config: object, fold: object) -> CellFeasibility:
         verify_live_inputs()
@@ -928,7 +1136,10 @@ def _validated_campaign_factory() -> ValidatedCampaignContext:
         digest = canonical_sha256(core)
         if issued_evidence_digest is None or digest != issued_evidence_digest:
             raise RunAuthorityClosedError("evidence payload identity changed")
-        if digest != FROZEN_SYNTHETIC_EVIDENCE_SHA256:
+        if (
+            binding.posture == "frozen_synthetic_fixture"
+            and digest != FROZEN_SYNTHETIC_EVIDENCE_SHA256
+        ):
             raise RunAuthorityClosedError("frozen synthetic evidence pin changed")
         return cells, totals, digest, core
 
@@ -1027,6 +1238,41 @@ def build_frozen_synthetic_evidence() -> FeasibilityEvidence:
     return context.seal_cells(cells)
 
 
+def open_real_corpus_campaign_context(
+    binding: CampaignInputBinding,
+) -> ValidatedCampaignContext:
+    """Open a validated context from a caller-supplied real-corpus binding.
+
+    Only an exact ``posture="refrozen_real_corpus"`` binding is accepted —
+    a synthetic-posture binding can only ever be constructed by this
+    module's own zero-argument default path
+    (:func:`open_frozen_synthetic_test_seam`/
+    :func:`build_frozen_synthetic_evidence`), never by a caller, so every
+    synthetic invocation stays on the byte-identical frozen path and no
+    caller can claim the synthetic posture for substituted content.
+    """
+    if type(binding) is not CampaignInputBinding or binding.posture != (
+        "refrozen_real_corpus"
+    ):
+        raise RunAuthorityClosedError(
+            "real-corpus campaign context requires an exact refrozen_real_corpus"
+            " binding"
+        )
+    return _validated_campaign_factory(binding)
+
+
+def build_real_corpus_evidence(
+    binding: CampaignInputBinding,
+) -> FeasibilityEvidence:
+    """Issue evidence for cells computed from a caller-supplied real-corpus
+    binding. The decision logic invoked is identical to the synthetic path
+    (same ``evaluate_cell``/``evaluate_all``/``evidence_core`` closures);
+    only the bound ``generator``/``references`` differ."""
+    context = open_real_corpus_campaign_context(binding)
+    cells = context.cells()
+    return context.seal_cells(cells)
+
+
 def build_evidence(*_args: object, **_kwargs: object) -> None:
     raise RunAuthorityClosedError(
         "caller-supplied evidence issuance is closed pending merge/refreeze/approval"
@@ -1055,6 +1301,7 @@ def render_evidence_bytes() -> bytes:
 
 
 __all__ = [
+    "CampaignInputBinding",
     "CampaignTotals",
     "EVIDENCE_SCHEMA_VERSION",
     "FROZEN_SYNTHETIC_EVIDENCE_SHA256",
@@ -1062,8 +1309,10 @@ __all__ = [
     "ValidatedCampaignContext",
     "build_evidence",
     "build_frozen_synthetic_evidence",
+    "build_real_corpus_evidence",
     "cell_payload",
     "open_frozen_synthetic_test_seam",
+    "open_real_corpus_campaign_context",
     "render_evidence_bytes",
     "run_frozen_synthetic_cells",
 ]
