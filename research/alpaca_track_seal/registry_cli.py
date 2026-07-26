@@ -100,8 +100,7 @@ def _cmd_register(args: argparse.Namespace) -> int:
     opt_in_enabled = research_write_opt_in_enabled(os.environ.get(ENV_WRITE_OPT_IN))
     if not opt_in_enabled:
         print(
-            f"registration refused: {ENV_WRITE_OPT_IN} is not enabled "
-            "(default-off)",
+            f"registration refused: {ENV_WRITE_OPT_IN} is not enabled (default-off)",
             file=sys.stderr,
         )
         return 2

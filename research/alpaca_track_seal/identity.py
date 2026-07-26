@@ -118,7 +118,9 @@ def default_formula_provenance(family: str) -> StrategySourceProvenance:
     raise ValueError(f"unknown family {family!r}")
 
 
-def _build_strategy_component(config: cfg.ConfigSpec, source: StrategySourceProvenance) -> dict[str, Any]:
+def _build_strategy_component(
+    config: cfg.ConfigSpec, source: StrategySourceProvenance
+) -> dict[str, Any]:
     return {
         "family": config.family,
         "strategy_key": source.strategy_key,

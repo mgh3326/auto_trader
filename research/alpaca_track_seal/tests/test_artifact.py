@@ -132,9 +132,10 @@ def test_dataset_manifest_hash_is_an_honest_none_not_a_fabricated_value():
 
 
 def test_semantic_hash_changes_if_a_config_threshold_is_tampered():
+    import dataclasses as dc
+
     import artifact as m
     import configs as c
-    import dataclasses as dc
 
     a = m.build_sealed_artifact()
     tampered_configs = list(a.configs)
@@ -158,8 +159,9 @@ def test_constructing_artifact_with_tampered_sealed_effective_n_is_rejected():
     every construction — a tampered ``sealed_effective_n`` is rejected at
     construction time (fail-closed), stronger than merely producing a
     different hash."""
-    import artifact as m
     import dataclasses as dc
+
+    import artifact as m
     import params as prm
 
     a = m.build_sealed_artifact()

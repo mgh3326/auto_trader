@@ -42,7 +42,9 @@ _SEALED_DIR = Path(__file__).resolve().parent / "sealed_source_data"
 # module verifies loaded bytes against — never derived from the files
 # themselves (that would make the check vacuous).
 UNIVERSE_MAP_SHA256 = "512285ebf67bb49dc1844d7c76dda4ea09dc19cbfb5968d32caee4a688cae8b2"
-SPREAD_CENSUS_SHA256 = "10d5a1c52c77d6c2a1ce81adb4776fec69aefdcc2dbc7e87f08672b185113609"
+SPREAD_CENSUS_SHA256 = (
+    "10d5a1c52c77d6c2a1ce81adb4776fec69aefdcc2dbc7e87f08672b185113609"
+)
 BASIS_ANALYSIS_FULL_SHA256 = (
     "835e2abea219d3e78eec21f7ef64d939d7945ca764e3684136f41287e9b0378c"
 )

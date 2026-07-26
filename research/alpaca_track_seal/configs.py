@@ -97,9 +97,7 @@ class ConfigSpec:
     canonical_hash: str
 
 
-def canonical_config_hash(
-    config_id: str, family: str, params: dict[str, Any]
-) -> str:
+def canonical_config_hash(config_id: str, family: str, params: dict[str, Any]) -> str:
     """The canonical SHA-256 identity of one config.
 
     Uses the SAME typed canonical AST authority

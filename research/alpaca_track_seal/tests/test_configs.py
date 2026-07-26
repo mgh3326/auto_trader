@@ -24,7 +24,9 @@ def test_config_ids_are_exactly_the_expected_16_names():
     import configs as m
 
     ids = {c.config_id for c in m.build_all_configs()}
-    expected = {f"AP-A1-{i:02d}" for i in range(8)} | {f"AP-A2-{i:02d}" for i in range(8)}
+    expected = {f"AP-A1-{i:02d}" for i in range(8)} | {
+        f"AP-A2-{i:02d}" for i in range(8)
+    }
     assert ids == expected
 
 
@@ -34,9 +36,7 @@ def test_ap_a1_grid_is_the_full_cartesian_product_f_s_m():
     a1 = m.build_ap_a1_configs()
     assert len(a1) == 8
     grid = {(c.params["f"], c.params["s"], c.params["m"]) for c in a1}
-    expected = {
-        (f, s, mm) for f in (14, 21) for s in (56, 84) for mm in (28, 56)
-    }
+    expected = {(f, s, mm) for f in (14, 21) for s in (56, 84) for mm in (28, 56)}
     assert grid == expected
 
 
@@ -143,8 +143,9 @@ def test_validate_config_domain_rejects_a_duplicate_config_id():
 def test_assert_no_seventeenth_slot_is_structural_not_just_a_count_check():
     """The builder itself takes no extension parameter -- there is no
     caller-reachable way to ask ``build_all_configs`` for a 17th config."""
-    import configs as m
     import inspect
+
+    import configs as m
 
     sig = inspect.signature(m.build_all_configs)
     assert len(sig.parameters) == 0

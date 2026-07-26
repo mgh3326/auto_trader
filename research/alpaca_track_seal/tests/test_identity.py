@@ -51,8 +51,8 @@ def test_ap_a1_and_ap_a2_have_distinct_default_formula_provenance():
 
 
 def test_build_components_for_config_has_exactly_the_11_rob846_keys():
-    import identity as m
     import configs as cfg
+    import identity as m
     import params as prm
 
     seal = prm.build_sealed_params()
@@ -66,8 +66,8 @@ def test_build_components_for_config_has_exactly_the_11_rob846_keys():
 
 
 def test_params_component_is_the_only_thing_that_varies_within_one_family():
-    import identity as m
     import configs as cfg
+    import identity as m
     import params as prm
 
     seal = prm.build_sealed_params()
@@ -78,9 +78,7 @@ def test_params_component_is_the_only_thing_that_varies_within_one_family():
     )
     # And the params component DOES differ across the 8 configs (it is the
     # one legitimate axis of variation).
-    params_values = {
-        tuple(sorted(s["params"].items())) for s in specs
-    }
+    params_values = {tuple(sorted(s["params"].items())) for s in specs}
     assert len(params_values) == 8
 
 
@@ -88,8 +86,8 @@ def test_cross_family_component_divergence_is_expected_and_detected():
     """AP-A1 and AP-A2 legitimately differ on frozen_config/strategy/code —
     the validator only enforces identity WITHIN one strategy_key, never
     across families."""
-    import identity as m
     import configs as cfg
+    import identity as m
     import params as prm
 
     seal = prm.build_sealed_params()
@@ -105,8 +103,8 @@ def test_dataset_manifest_component_is_an_explicit_pending_sentinel_by_default()
     """H1's real corpus manifest does not exist in this environment — the
     component must be an explicit, honest "pending" fact, never a fabricated
     hash standing in for missing data."""
-    import identity as m
     import configs as cfg
+    import identity as m
     import params as prm
 
     seal = prm.build_sealed_params()
@@ -116,8 +114,8 @@ def test_dataset_manifest_component_is_an_explicit_pending_sentinel_by_default()
 
 
 def test_universe_component_reflects_the_sealed_20_symbol_universe():
-    import identity as m
     import configs as cfg
+    import identity as m
     import params as prm
 
     seal = prm.build_sealed_params()
@@ -128,8 +126,8 @@ def test_universe_component_reflects_the_sealed_20_symbol_universe():
 
 
 def test_cost_component_carries_exactly_the_4_sealed_scenarios():
-    import identity as m
     import configs as cfg
+    import identity as m
     import params as prm
 
     seal = prm.build_sealed_params()

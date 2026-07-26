@@ -113,11 +113,7 @@ def test_pure_module_list_is_exhaustive_over_the_package_root():
     tests/, not sealed_source_data/, not registry_cli.py, not conftest.py)
     must be accounted for in ``_PURE_MODULES``."""
     excluded_names = {"conftest.py", "registry_cli.py", "__init__.py"}
-    discovered = {
-        p.name
-        for p in _ROOT.glob("*.py")
-        if p.name not in excluded_names
-    }
+    discovered = {p.name for p in _ROOT.glob("*.py") if p.name not in excluded_names}
     assert discovered == set(_PURE_MODULES), (
         f"module list drift: discovered {sorted(discovered)}, expected "
         f"{sorted(_PURE_MODULES)}"

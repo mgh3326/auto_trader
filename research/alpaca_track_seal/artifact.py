@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 import canonical_hash
-
 import configs as cfg
 import params as prm
 import source_provenance as sp
@@ -217,9 +216,7 @@ def _params_from_dict(d: dict[str, Any]) -> prm.SealedParams:
             exclusion_reason=u["exclusion_reason"],
             exclusion_authority=u["exclusion_authority"],
             sealed_effective_n=u["sealed_effective_n"],
-            raw_symbols=tuple(
-                _universe_entry_from_dict(e) for e in u["raw_symbols"]
-            ),
+            raw_symbols=tuple(_universe_entry_from_dict(e) for e in u["raw_symbols"]),
             sealed_symbols=tuple(
                 _universe_entry_from_dict(e) for e in u["sealed_symbols"]
             ),
