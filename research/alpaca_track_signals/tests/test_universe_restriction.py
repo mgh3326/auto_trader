@@ -112,6 +112,7 @@ def test_ap_a1_blocks_a_new_entry_when_the_universe_is_below_the_minimum_size():
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
         prior_state={},
     )
+    assert len(result.records) == 1  # only AAA/USD -- deliberately n_t=1
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "UNIVERSE_RESTRICTED_NEW_ENTRY_BLOCKED"
     assert record.action == "NO_ACTION"
@@ -139,6 +140,7 @@ def test_ap_a1_exit_is_unaffected_by_a_below_minimum_universe():
             )
         },
     )
+    assert len(result.records) == 1  # only AAA/USD -- deliberately n_t=1
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "EXIT_TRIGGERED"
     assert record.action == "EXIT"
@@ -162,6 +164,7 @@ def test_ap_a2_blocks_a_new_entry_when_the_universe_is_below_the_minimum_size():
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
         prior_held={},
     )
+    assert len(result.records) == 1  # only AAA/USD -- deliberately n_t=1
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "UNIVERSE_RESTRICTED_NEW_ENTRY_BLOCKED"
     assert record.action == "NO_ACTION"
@@ -195,6 +198,7 @@ def test_ap_a2_exit_is_unaffected_by_a_below_minimum_universe():
         bars_by_symbol=bars_by_symbol,
         prior_held=prior_held,
     )
+    assert len(result.records) == 7  # KEEP/USD + H0/USD + F0..F4, no padding
     by_symbol = {r.symbol: r for r in result.records}
     # H0/USD still exits (rank 7 > k+b=6) -- restriction never blocks exits.
     assert by_symbol["H0/USD"].reason_code == "RANK_EXCEEDS_BUFFER_EXIT"
@@ -206,3 +210,82 @@ def test_ap_a2_exit_is_unaffected_by_a_below_minimum_universe():
         symbol = f"F{idx}/USD"
         assert by_symbol[symbol].reason_code == "UNIVERSE_RESTRICTED_NEW_ENTRY_BLOCKED"
         assert symbol not in result.new_held
+
+
+# --------------------------------------------------------------------------- #
+# B7 (ROB-1061 adversarial-verification remediation, 2026-07-26): the AP-A2
+# buy loop's source comment claims the universe-restriction gate is checked
+# "BEFORE slots_full so a restricted universe is never masked by an unrelated
+# RANK_SLOTS_FULL rejection" -- but until this test, nothing actually
+# exercised BOTH conditions being true at once. Every existing restricted-
+# universe test above has slots_full == False (0 pre-held symbols), so a
+# mutant that swapped the two checks' order (slots_full checked first) would
+# still misattribute a universe outage to slot pressure without any test
+# noticing. This fixture forces both true simultaneously.
+# --------------------------------------------------------------------------- #
+
+
+def test_ap_a2_universe_restriction_takes_priority_over_a_simultaneously_full_slot_cap():
+    n = 30
+    # Exactly k=5 held symbols, all comfortably ranked (none beyond k+b -- no
+    # exits), so `slots_full` is True from the very start of the decision.
+    prior_held = {
+        f"H{i}/USD": wcmb_engine.AP_A2_HeldState(committed_notional=100.0)
+        for i in range(5)
+    }
+    bars_by_symbol = {
+        f"H{i}/USD": _bars_ending_at_window(_uptrend_closes(n, step=0.05 - i * 0.005))
+        for i in range(5)
+    }
+    # One more unheld, positive-Score candidate.
+    bars_by_symbol["NEW/USD"] = _bars_ending_at_window(_uptrend_closes(n, step=0.10))
+    # Deliberately below N_t>=18 -- only 6 symbols total, same as this file's
+    # other AP-A2 fixtures (no `_snapshot` padding).
+    universe = _restricted_snapshot(tuple(bars_by_symbol))
+    assert universe.n_t < 18
+
+    result = wcmb_engine.run_ap_a2_decision(
+        decision_ts_ms=DECISION_TS,
+        config=AP_A2_00,
+        universe=universe,
+        bars_by_symbol=bars_by_symbol,
+        prior_held=prior_held,
+    )
+    record = next(r for r in result.records if r.symbol == "NEW/USD")
+    # Must be attributed to the universe outage, NOT slot pressure -- even
+    # though BOTH conditions independently hold for this candidate.
+    assert record.reason_code == "UNIVERSE_RESTRICTED_NEW_ENTRY_BLOCKED"
+    assert record.action == "NO_ACTION"
+    assert "NEW/USD" not in result.new_held
+    assert len(result.new_held) == 5
+
+
+# --------------------------------------------------------------------------- #
+# B20 (ROB-1061 adversarial-verification remediation, 2026-07-26): AP-A1's
+# flat-symbol branch checks universe-membership (UNIVERSE_INELIGIBLE) BEFORE
+# checking universe-wide restriction (UNIVERSE_RESTRICTED_NEW_ENTRY_BLOCKED)
+# -- same "earlier, more specific check must win" shape as B7 above, on the
+# OTHER engine's OTHER pair of gates. Every existing UNIVERSE_INELIGIBLE
+# fixture uses an otherwise-normal (N_t>=18) universe, and every existing
+# UNIVERSE_RESTRICTED_NEW_ENTRY_BLOCKED fixture uses a symbol that IS
+# eligible -- neither combines both conditions on the SAME symbol, so a
+# mutant that swapped the two checks' order would misattribute a genuinely-
+# ineligible symbol to the universe-wide restriction reason instead, with
+# zero test noticing.
+# --------------------------------------------------------------------------- #
+
+
+def test_ap_a1_universe_ineligible_takes_priority_over_a_simultaneous_universe_restriction():
+    result = dats_engine.run_ap_a1_decision(
+        decision_ts_ms=DECISION_TS,
+        config=AP_A1_00,
+        universe=_restricted_snapshot(()),  # AAA/USD not eligible, n_t=0 < 18
+        bars_by_symbol={"AAA/USD": _bars_ending_at_window(_uptrend_closes(90))},
+        prior_state={"AAA/USD": dats_engine.AP_A1_PositionState(state="flat")},
+    )
+    assert len(result.records) == 1  # only AAA/USD -- eligible set is empty
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
+    # Must be attributed to ineligibility specifically, NOT the universe-wide
+    # restriction -- even though the universe (n_t=0) is ALSO restricted.
+    assert record.reason_code == "UNIVERSE_INELIGIBLE"
+    assert record.action == "NO_ACTION"

@@ -115,6 +115,58 @@ def _dataclass_field_names(tree: ast.AST):
 # --------------------------------------------------------------------------- #
 
 
+def _forbidden_import_root_violations(mod: str, tree: ast.AST) -> list[tuple[str, str]]:
+    """Every import whose ROOT module name is in ``_FORBIDDEN_IMPORT_ROOTS``
+    (app/DB/broker/scheduler/random/time/alpaca) -- the actual scanner
+    ``test_no_forbidden_imports_in_h3_signal_engine`` calls, extracted so it
+    can be self-tested against a synthetic fixture the same way every other
+    scanner in this file is (ROB-1061 remediation: this scanner used to run
+    entirely inline inside the test function, with no synthetic-violation
+    regression coverage of its own)."""
+    violations = []
+    for name in _imports(tree):
+        root = name.split(".")[0]
+        if root in _FORBIDDEN_IMPORT_ROOTS:
+            violations.append((mod, name))
+    return violations
+
+
+def _alpaca_named_import_violations(mod: str, tree: ast.AST) -> list[tuple[str, str]]:
+    """Every import whose full name mentions "alpaca" (case-insensitive),
+    excluding the one explicit, name-based exception
+    (``_ALLOWED_ALPACA_NAMED_IMPORTS``) -- extracted for the same
+    self-testability reason as ``_forbidden_import_root_violations`` above."""
+    violations = []
+    for name in _imports(tree):
+        if name in _ALLOWED_ALPACA_NAMED_IMPORTS:
+            continue
+        if "alpaca" in name.lower():
+            violations.append((mod, name))
+    return violations
+
+
+def _forbidden_token_violations(mod: str, text: str) -> list[tuple[str, str]]:
+    """Every forbidden broker-order/scheduler token found lexically in
+    ``text`` -- the actual scanner
+    ``test_no_broker_order_fill_or_scheduler_symbols_referenced`` calls,
+    extracted for the same self-testability reason as the import-root
+    scanner above (this used to run entirely inline inside the test
+    function, with no synthetic-violation regression coverage)."""
+    forbidden_tokens = (
+        "submit_order",
+        "place_order",
+        "cancel_order",
+        "TaskiqScheduler",
+        "@broker.task",
+        "prefect.flow",
+    )
+    violations = []
+    for token in forbidden_tokens:
+        if token in text:
+            violations.append((mod, token))
+    return violations
+
+
 def _field_violations(mod: str, tree: ast.AST) -> list[tuple[str, str]]:
     violations = []
     for field_name in _dataclass_field_names(tree):
@@ -148,20 +200,18 @@ def _wall_clock_hit(tree: ast.AST) -> bool:
 
 
 def test_no_forbidden_imports_in_h3_signal_engine():
+    root_violations = []
+    alpaca_violations = []
     for mod in _MODULES:
         tree = ast.parse((_ROOT / mod).read_text())
-        for name in _imports(tree):
-            root = name.split(".")[0]
-            assert root not in _FORBIDDEN_IMPORT_ROOTS, (
-                f"{mod} imports forbidden module {name!r} (root {root!r})"
-            )
-            if name in _ALLOWED_ALPACA_NAMED_IMPORTS:
-                continue
-            assert "alpaca" not in name.lower(), (
-                f"{mod} imports an Alpaca-named module {name!r} -- H3 must "
-                "never touch Alpaca quote/BBO/execution (SS13 is the live "
-                "loop's scope, not the backtest's)"
-            )
+        root_violations.extend(_forbidden_import_root_violations(mod, tree))
+        alpaca_violations.extend(_alpaca_named_import_violations(mod, tree))
+    assert root_violations == [], f"forbidden-root imports found: {root_violations}"
+    assert alpaca_violations == [], (
+        f"Alpaca-named imports found (H3 must never touch Alpaca quote/BBO/"
+        f"execution -- SS13 is the live loop's scope, not the backtest's): "
+        f"{alpaca_violations}"
+    )
 
 
 def test_no_wall_clock_now_calls_in_h3_signal_engine():
@@ -171,18 +221,11 @@ def test_no_wall_clock_now_calls_in_h3_signal_engine():
 
 
 def test_no_broker_order_fill_or_scheduler_symbols_referenced():
-    forbidden_tokens = (
-        "submit_order",
-        "place_order",
-        "cancel_order",
-        "TaskiqScheduler",
-        "@broker.task",
-        "prefect.flow",
-    )
+    violations = []
     for mod in _MODULES:
         text = (_ROOT / mod).read_text()
-        for token in forbidden_tokens:
-            assert token not in text, f"{mod} references forbidden token {token!r}"
+        violations.extend(_forbidden_token_violations(mod, text))
+    assert violations == [], f"forbidden broker/scheduler tokens found: {violations}"
 
 
 def test_no_pnl_return_forward_or_exit_price_field_anywhere_in_h3():
@@ -252,6 +295,57 @@ def test_all_h3_signal_engine_modules_are_accounted_for():
 # real guards depend on -- a bug in THAT logic (e.g. a typo in
 # ``_FORBIDDEN_FIELD_NAME_SUBSTRINGS``) could have shipped undetected.
 # --------------------------------------------------------------------------- #
+def test_forbidden_import_root_scanner_actually_catches_a_synthetic_violation(tmp_path):
+    (tmp_path / "bad.py").write_text("import sqlalchemy\n")
+    tree = ast.parse((tmp_path / "bad.py").read_text())
+    assert _forbidden_import_root_violations("bad.py", tree) == [
+        ("bad.py", "sqlalchemy")
+    ]
+
+
+def test_forbidden_import_root_scanner_catches_a_dotted_submodule_by_its_root(tmp_path):
+    (tmp_path / "bad.py").write_text("import alpaca_trade_api.rest\n")
+    tree = ast.parse((tmp_path / "bad.py").read_text())
+    assert _forbidden_import_root_violations("bad.py", tree) == [
+        ("bad.py", "alpaca_trade_api.rest")
+    ]
+
+
+def test_alpaca_named_import_scanner_actually_catches_a_synthetic_violation(tmp_path):
+    (tmp_path / "bad.py").write_text("import alpaca_quote_client\n")
+    tree = ast.parse((tmp_path / "bad.py").read_text())
+    assert _alpaca_named_import_violations("bad.py", tree) == [
+        ("bad.py", "alpaca_quote_client")
+    ]
+
+
+def test_alpaca_named_import_scanner_exempts_the_one_allowed_module(tmp_path):
+    (tmp_path / "ok.py").write_text("import pit_universe_alpaca\n")
+    tree = ast.parse((tmp_path / "ok.py").read_text())
+    assert _alpaca_named_import_violations("ok.py", tree) == []
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "submit_order",
+        "place_order",
+        "cancel_order",
+        "TaskiqScheduler",
+        "@broker.task",
+        "prefect.flow",
+    ],
+)
+def test_forbidden_token_scanner_actually_catches_each_synthetic_violation(token):
+    text = f"def f():\n    return {token!r}  # {token}\n"
+    assert _forbidden_token_violations("bad.py", text) == [("bad.py", token)]
+
+
+def test_forbidden_token_scanner_is_clean_on_ordinary_source_text():
+    text = "def compute_score(closes, ell):\n    return sum(closes) / ell\n"
+    assert _forbidden_token_violations("ok.py", text) == []
+
+
 def test_pnl_field_scanner_actually_catches_a_synthetic_violation(tmp_path):
     (tmp_path / "bad.py").write_text(
         "from dataclasses import dataclass\n\n"

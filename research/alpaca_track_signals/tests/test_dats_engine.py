@@ -136,6 +136,7 @@ def test_universe_ineligible_flat_symbol_is_rejected_without_computing_indicator
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(_uptrend_closes(90))},
         prior_state={"AAA/USD": eng.AP_A1_PositionState(state="flat")},
     )
+    assert len(result.records) == 19  # AAA/USD + 18 eligible-universe padding
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "UNIVERSE_INELIGIBLE"
     assert record.action == "NO_ACTION"
@@ -149,6 +150,7 @@ def test_insufficient_price_history_when_fewer_than_s_bars_available():
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(_uptrend_closes(10))},
         prior_state={},
     )
+    assert len(result.records) == 18  # AAA/USD + 17 padding fillers
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "INSUFFICIENT_PRICE_HISTORY"
 
@@ -162,6 +164,7 @@ def test_a_strong_uptrend_produces_an_accepted_entry_matching_direct_indicator_c
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
         prior_state={},
     )
+    assert len(result.records) == 18  # AAA/USD + 17 padding fillers
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     d = ind.compute_trend_d(closes, f=14, s=56)
     r = ind.compute_momentum_r(closes, m=28)
@@ -191,6 +194,7 @@ def test_a_flat_price_series_produces_no_entry_signal():
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
         prior_state={},
     )
+    assert len(result.records) == 18  # AAA/USD + 17 padding fillers
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "NO_ENTRY_SIGNAL"
 
@@ -210,6 +214,7 @@ def test_an_existing_long_position_exits_on_a_sharp_downtrend():
             "AAA/USD": eng.AP_A1_PositionState(state="long", committed_notional=50.0)
         },
     )
+    assert len(result.records) == 18  # AAA/USD + 17 padding fillers
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "EXIT_TRIGGERED"
     assert record.action == "EXIT"
@@ -235,6 +240,7 @@ def test_an_existing_long_position_holds_through_a_mild_wobble():
             "AAA/USD": eng.AP_A1_PositionState(state="long", committed_notional=50.0)
         },
     )
+    assert len(result.records) == 18  # AAA/USD + 17 padding fillers
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "HYSTERESIS_HOLD"
     assert record.action == "HOLD"
@@ -264,6 +270,7 @@ def test_an_existing_long_position_holds_with_trend_intact_reason_well_outside_t
             "AAA/USD": eng.AP_A1_PositionState(state="long", committed_notional=50.0)
         },
     )
+    assert len(result.records) == 18  # AAA/USD + 17 padding fillers
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "TREND_INTACT_HOLD"
     assert record.action == "HOLD"
@@ -297,6 +304,7 @@ def test_min_target_notional_floor_rejects_a_sub_25_entry_at_the_engine_boundary
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
         prior_state={},
     )
+    assert len(result.records) == 18  # AAA/USD + 17 padding fillers
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "MIN_TARGET_NOTIONAL"
     assert record.action == "NO_ACTION"
@@ -330,6 +338,7 @@ def test_two_simultaneous_entry_candidates_compete_for_cash_by_d_descending():
         },
         prior_state=prior_state,
     )
+    assert len(result.records) == 28  # STRONG/WEAK + 16 padding + 10 HOLD-i
     strong_record = next(r for r in result.records if r.symbol == "STRONG/USD")
     weak_record = next(r for r in result.records if r.symbol == "WEAK/USD")
     assert strong_record.reason_code == "ENTRY_ACCEPTED"

@@ -143,6 +143,7 @@ def test_min_target_notional_floor_rejects_a_sub_25_buy_at_the_engine_boundary()
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
         prior_held={},
     )
+    assert len(result.records) == 18  # AAA/USD + 17 N_t>=18 padding fillers
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "MIN_TARGET_NOTIONAL"
     assert record.action == "NO_ACTION"
@@ -169,6 +170,7 @@ def test_min_target_notional_floor_also_gates_the_cash_capped_branch():
         },
         prior_held=prior_held,
     )
+    assert len(result.records) == 18  # AAA/USD + KEEP/USD + 16 padding fillers
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "INSUFFICIENT_CASH"
     assert record.action == "NO_ACTION"
@@ -185,6 +187,7 @@ def test_unheld_negative_score_symbol_is_rejected_score_not_positive():
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
         prior_held={},
     )
+    assert len(result.records) == 18  # AAA/USD + 17 padding fillers
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "SCORE_NOT_POSITIVE"
     assert record.action == "NO_ACTION"
@@ -199,6 +202,7 @@ def test_unheld_positive_score_symbol_is_bought_when_a_slot_is_free():
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
         prior_held={},
     )
+    assert len(result.records) == 18  # AAA/USD + 17 padding fillers
     record = next(r for r in result.records if r.symbol == "AAA/USD")
     score = ind.compute_score(closes, ell=14)
     sigma20 = ind.annualized_sigma20(closes)
@@ -249,6 +253,7 @@ def test_held_symbol_beyond_k_plus_b_rank_is_exited_and_frees_cash_for_a_buy():
         bars_by_symbol=bars_by_symbol,
         prior_held=prior_held,
     )
+    assert len(result.records) == 18  # KEEP/USD + H0/USD + F0..F4 + 11 padding
     by_symbol = {r.symbol: r for r in result.records}
     assert by_symbol["H0/USD"].reason_code == "RANK_EXCEEDS_BUFFER_EXIT"
     assert by_symbol["H0/USD"].action == "EXIT"
@@ -297,6 +302,7 @@ def test_an_exited_symbol_is_never_reconsidered_as_a_same_decision_buy_candidate
         bars_by_symbol=bars_by_symbol,
         prior_held=prior_held,
     )
+    assert len(result.records) == 18  # KEEP/USD + H0/USD + F0..F4 + 11 padding
     h0_records = [r for r in result.records if r.symbol == "H0/USD"]
     assert len(h0_records) == 1
     assert h0_records[0].reason_code == "RANK_EXCEEDS_BUFFER_EXIT"
@@ -321,6 +327,7 @@ def test_held_symbol_at_rank_k_plus_b_holds_not_exit():
         bars_by_symbol=bars_by_symbol,
         prior_held=prior_held,
     )
+    assert len(result.records) == 18  # H0..H5 + 12 padding fillers
     rank6_symbol = "H5/USD"  # smallest step -> smallest score -> rank 6
     record = next(r for r in result.records if r.symbol == rank6_symbol)
     assert record.reason_code == "RANK_BUFFER_HOLD"
@@ -348,6 +355,47 @@ def test_rank_slots_full_once_k_symbols_are_held():
     full = {r.symbol for r in result.records if r.reason_code == "RANK_SLOTS_FULL"}
     assert bought == {f"C{i}/USD" for i in range(5)}
     assert full == {"C5/USD"}
+
+
+def test_rank_slots_full_when_the_decision_starts_already_at_k_held_symbols():
+    # A7 (ROB-1061 adversarial-verification): EVERY existing k-cap test
+    # (including the one immediately above) uses `prior_held={}` -- the
+    # decision always STARTS with zero held slots and fills up to k=5 DURING
+    # the decision. A mutant that relaxes the init-time cap check
+    # (`slots_full = len(new_held) >= k` -> `> k`) never gets exercised at
+    # the boundary that actually matters in production: a decision that
+    # STARTS already at k held symbols. Under the `> k` mutant, a single
+    # unheld positive-Score candidate would be accepted (`len(new_held)=5
+    # >= k=5` is False under `>`, i.e. slots_full stays False), breaching the
+    # k=5 cap to 6 held symbols. Under the correct `>= k` this candidate must
+    # be rejected RANK_SLOTS_FULL and the held count must stay exactly 5.
+    n = 30
+    # 5 held symbols, all comfortably scored/ranked so none exit (all rank
+    # within k+b=6 of each other -- none is beyond the buffer).
+    prior_held = {
+        f"H{i}/USD": eng.AP_A2_HeldState(committed_notional=100.0) for i in range(5)
+    }
+    bars_by_symbol = {
+        f"H{i}/USD": _bars_ending_at_window(_uptrend_closes(n, step=0.05 - i * 0.005))
+        for i in range(5)
+    }
+    # A single NEW, unheld, strongly-positive-Score candidate that would
+    # outrank every held symbol if a slot were free.
+    bars_by_symbol["NEW/USD"] = _bars_ending_at_window(_uptrend_closes(n, step=0.10))
+    universe = _snapshot(tuple(bars_by_symbol))
+    result = eng.run_ap_a2_decision(
+        decision_ts_ms=DECISION_TS,
+        config=AP_A2_00,
+        universe=universe,
+        bars_by_symbol=bars_by_symbol,
+        prior_held=prior_held,
+    )
+    record = next(r for r in result.records if r.symbol == "NEW/USD")
+    assert record.reason_code == "RANK_SLOTS_FULL"
+    assert record.action == "NO_ACTION"
+    assert record.target_notional == 0.0
+    assert "NEW/USD" not in result.new_held
+    assert len(result.new_held) == 5  # cap never breached past k=5
 
 
 def test_look_ahead_is_structurally_impossible_appending_future_bars_never_changes_output():

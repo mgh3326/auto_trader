@@ -71,6 +71,37 @@ def test_evidence_hash_is_deterministic_and_1_ulp_sensitive():
     assert h1 != h3
 
 
+def test_evidence_hash_pins_every_field_not_only_d():
+    # A8/A8b (ROB-1061 adversarial-verification): the test above only ever
+    # perturbs `d` -- a mutant that narrowed `evidence_hash` to hash ONLY the
+    # `d` key (silently dropping `symbol`/`r`/`threshold`/anything else the
+    # caller supplied) would still pass it. Perturb every OTHER field
+    # independently, holding `d` fixed, and prove each one alone moves the
+    # hash -- this is the actual "full evidence field set is pinned"
+    # property, not just "d is pinned".
+    base = {"symbol": "AAA/USD", "d": 0.005, "r": 0.01, "threshold": 0.005}
+    baseline = os_.evidence_hash(base)
+    for key, replacement in (
+        ("symbol", "ZZZ/USD"),
+        ("r", 0.02),
+        ("threshold", 0.0001),
+    ):
+        mutated = dict(base)
+        mutated[key] = replacement
+        assert os_.evidence_hash(mutated) != baseline, (
+            f"changing {key!r} alone (with every other field held fixed) "
+            "must move the evidence_hash"
+        )
+
+
+def test_evidence_hash_is_sensitive_to_a_dropped_field_not_only_a_changed_one():
+    # A dropped key (evidence built by a caller that forgot a field) must
+    # ALSO move the hash -- distinct from "a changed value moves it".
+    with_threshold = {"symbol": "AAA/USD", "d": 0.005, "threshold": 0.005}
+    without_threshold = {"symbol": "AAA/USD", "d": 0.005}
+    assert os_.evidence_hash(with_threshold) != os_.evidence_hash(without_threshold)
+
+
 def test_canonical_sort_orders_by_decision_ts_strategy_config_id_symbol():
     records = [
         _record(decision_ts_ms=2, symbol="ZZZ/USD"),
