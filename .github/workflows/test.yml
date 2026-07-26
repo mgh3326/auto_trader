@@ -329,9 +329,56 @@ jobs:
       run: |
         uv run pytest research/alpaca_track/tests/ -v
 
+  alpaca-track-seal-tests:
+    # ROB-1060 H2-lock adversarial-verification Finding 1: the H2 seal (94+
+    # tests pinning the ROB-846 registration domain/params/identity/semantic
+    # digest) previously ran ONLY on a developer's machine -- `pyproject.toml`
+    # `testpaths` collects only `tests/` (the DB-backed app suite), and no CI
+    # job referenced `alpaca_track_seal`. Additive-only job, exactly mirroring
+    # the `alpaca-track-tests` job above (H1): the main `test` job's
+    # `testpaths` and pytest invocation are UNCHANGED, and this does not
+    # attempt to fix the pre-existing, separately out-of-scope
+    # research/nautilus_scalping CI gap. research/alpaca_track_seal/tests/ is
+    # a fully separate, network-0, no-DB/no-Redis suite (own conftest.py
+    # sys.path wiring), so it gets its own lightweight job rather than being
+    # folded into the sharded `test` job's DB-backed run.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PYTHON_VERSION: "3.13"
+
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        persist-credentials: false
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install UV
+      run: pip install uv
+
+    - name: Load cached venv
+      id: cached-uv-dependencies
+      uses: actions/cache@v5
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group test
+
+    - name: Run ROB-1060 alpaca_track_seal H2 registry-seal tests (network-0, no DB/Redis)
+      run: |
+        uv run pytest research/alpaca_track_seal/tests/ -v
+
   notify:
     if: failure()
-    needs: [lint, test, taskiq-smoke, security, alpaca-track-tests]
+    needs: [lint, test, taskiq-smoke, security, alpaca-track-tests, alpaca-track-seal-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Discord failure notification
