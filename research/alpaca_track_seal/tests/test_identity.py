@@ -139,3 +139,282 @@ def test_cost_component_carries_exactly_the_4_sealed_scenarios():
         "C120": 120,
         "C150": 150,
     }
+
+
+# --------------------------------------------------------------------------- #
+# ROB-1060 H2-lock item 3/4: literal content assertions.                      #
+# `assert components[name] is not None` cannot fail for a dict -- emptying    #
+# pit/policy/benchmark to {} (and dropping quote_mode from universe) survived #
+# a green suite. These pin the FULL literal content, not mere existence.      #
+# --------------------------------------------------------------------------- #
+
+
+def test_pit_component_literal_content():
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    config = cfg.build_ap_a1_configs()[0]
+    components = m.build_components_for_config(config, seal)
+    assert components["pit"] == {
+        "warmup_days": 180,
+        "n_t_minimum": 18,
+        "alpaca_first_daily_is_pit_proxy": True,
+        "universe_source_sha256": (
+            "512285ebf67bb49dc1844d7c76dda4ea09dc19cbfb5968d32caee4a688cae8b2"
+        ),
+    }
+
+
+def test_policy_component_literal_content():
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    config = cfg.build_ap_a1_configs()[0]
+    components = m.build_components_for_config(config, seal)
+    assert components["policy"] == {
+        "walk_forward": {
+            "oos_folds": 8,
+            "oos_days": 28,
+            "train_days": 365,
+            "embargo_days": 7,
+            "roll_days": 28,
+        },
+        "min_modeled_entries_per_fold": 5,
+        "dry_count_gate": "pnl_blind_dry_count_before_oos_unmask",
+        "no_threshold_relaxation": True,
+        "no_post_pnl_config_addition": True,
+        "order_type": "LIMIT_ONLY",
+        "economic_execution": "TAKER_TAKER",
+        "min_broker_order_usd": 10,
+    }
+
+
+def test_benchmark_component_literal_content():
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    config = cfg.build_ap_a1_configs()[0]
+    components = m.build_components_for_config(config, seal)
+    assert components["benchmark"] == {
+        "benchmarks": ["BTC", "ETH", "cash", "pit_equal_weight"],
+        "role": "reported_alongside_not_a_pass_authority",
+    }
+
+
+def test_mdd_component_literal_content_including_hard_gate():
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    config = cfg.build_ap_a1_configs()[0]
+    components = m.build_components_for_config(config, seal)
+    assert components["mdd"] == {
+        "definition": "peak_to_trough_oos_window",
+        "max_oos_dd_pct": 20,
+        "hard_gate": True,
+    }
+
+
+def test_frozen_config_component_ap_a1_literal_content():
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    config = cfg.build_ap_a1_configs()[0]
+    components = m.build_components_for_config(config, seal)
+    assert components["frozen_config"] == {
+        "evaluation": "daily_00:05_utc",
+        "initial_equity_usd": 2000,
+        "base_slot_usd": 62.50,
+        "min_strategy_target_usd": 25,
+        "gross_ev_floor_bp": 180,
+        "e120_floor_bp": 60,
+        "annual_stress_cost_cap_pct": 6,
+        "fixed_tp": "NONE",
+        "future_tp_min_bp": 240,
+    }
+
+
+def test_frozen_config_component_ap_a2_literal_content():
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    config = cfg.build_ap_a2_configs()[0]
+    components = m.build_components_for_config(config, seal)
+    assert components["frozen_config"] == {
+        "evaluation": "weekly_monday_00:05_utc",
+        "initial_equity_usd": 2000,
+        "min_strategy_target_usd": 25,
+        "gross_ev_floor_bp": 200,
+        "e120_floor_bp": 80,
+        "annual_stress_cost_cap_pct": 18,
+        "turnover_band": [0.2083, 0.2885],
+        "fixed_tp": "NONE",
+        "future_tp_min_bp": 240,
+    }
+
+
+def test_universe_component_literal_symbols_and_quote_mode_for_all_20():
+    """AC6 requires ``quote_mode`` in the identity universe component --
+    dropping it survived because prior coverage only checked
+    ``sealed_effective_n`` and a single exclusion. Pins the full 20-symbol
+    list and every quote_mode literally."""
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    config = cfg.build_ap_a1_configs()[0]
+    components = m.build_components_for_config(config, seal)
+    u = components["universe"]
+    assert u["sealed_effective_n"] == 20
+    assert u["excluded_symbols"] == ["PEPE", "SHIB"]
+    assert u["exclusion_reason"] == "basis_red_grade_hv_p95_ge_28bp"
+    assert u["exclusion_authority"] == "operator_decision_2026-07-25"
+    assert u["symbols"] == [
+        "AAVE/USD",
+        "AVAX/USD",
+        "BAT/USD",
+        "BCH/USD",
+        "BTC/USD",
+        "CRV/USD",
+        "DOGE/USD",
+        "DOT/USD",
+        "ETH/USD",
+        "GRT/USD",
+        "LINK/USD",
+        "LTC/USD",
+        "SKY/USD",
+        "SOL/USD",
+        "SUSHI/USD",
+        "TRUMP/USD",
+        "UNI/USD",
+        "XRP/USD",
+        "XTZ/USD",
+        "YFI/USD",
+    ]
+    assert u["quote_mode"] == {
+        "AAVE/USD": "SYNTH_USDC",
+        "AVAX/USD": "USDC",
+        "BAT/USD": "USDT_PROXY",
+        "BCH/USD": "USDC",
+        "BTC/USD": "USDC",
+        "CRV/USD": "USDC",
+        "DOGE/USD": "USDC",
+        "DOT/USD": "USDC",
+        "ETH/USD": "USDC",
+        "GRT/USD": "SYNTH_USDC",
+        "LINK/USD": "USDC",
+        "LTC/USD": "USDC",
+        "SKY/USD": "SYNTH_USDC",
+        "SOL/USD": "USDC",
+        "SUSHI/USD": "SYNTH_USDC",
+        "TRUMP/USD": "SYNTH_USDC",
+        "UNI/USD": "USDC",
+        "XRP/USD": "USDC",
+        "XTZ/USD": "SYNTH_USDC",
+        "YFI/USD": "USDT_PROXY",
+    }
+
+
+def test_ap_a1_formula_spec_source_text_is_the_literal_preregistration_text():
+    """A 10x entry-threshold relaxation (D >= +0.005 -> D >= +0.05) in this
+    text survived because the ``code`` identity component only hashes it --
+    nothing pinned the literal spec text itself."""
+    import identity as m
+
+    prov = m.default_formula_provenance("AP-A1")
+    assert prov.source_text == (
+        "R[i,m,t] = C[i,t]/C[i,t-m] - 1; D[i,f,s,t] = EMA_f(C)/EMA_s(C) - 1. "
+        "entry: flat AND D >= +0.005 AND R > 0. "
+        "exit: long AND (D <= -0.005 OR R <= 0). "
+        "hysteresis: -0.005 < D < +0.005 keeps existing state."
+    )
+
+
+def test_ap_a2_formula_spec_source_text_is_the_literal_preregistration_text():
+    import identity as m
+
+    prov = m.default_formula_provenance("AP-A2")
+    assert prov.source_text == (
+        "Score[i,L,t] = C[i,t]/C[i,t-L] - 1, descending sort, ties by symbol "
+        "ascending. order: (1) held with Score<=0 OR rank>k+buffer -> exit "
+        "queued; (2) exits submitted first; (3) after exits, from remaining "
+        "cash buy Score>0 unheld symbols in rank order; (4) stop once k held; "
+        "(5) held symbols with rank<=k+buffer AND Score>0 -> no trade (hold); "
+        "(6) fewer than k positive-Score symbols -> remainder stays cash. no "
+        "restoration of existing holdings' weight (rank buffer suppresses "
+        "turnover)."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# ROB-1060 H2-lock item 9: supersession must preserve every sealed component  #
+# except `code`.                                                              #
+# --------------------------------------------------------------------------- #
+
+
+def test_supersession_allows_identical_sealed_components_with_only_code_differing():
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    config = cfg.build_ap_a1_configs()[0]
+    parent = m.build_components_for_config(config, seal)
+    child = dict(parent)
+    child["code"] = {"kind": "real_implementation", "source_sha256": "1" * 64}
+    m.assert_supersession_preserves_sealed_components(
+        child_components=child, parent_components=parent
+    )  # must not raise
+
+
+def test_supersession_rejects_a_changed_sealed_component_even_if_code_also_changed():
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    config = cfg.build_ap_a1_configs()[0]
+    parent = m.build_components_for_config(config, seal)
+    child = dict(parent)
+    child["code"] = {"kind": "real_implementation", "source_sha256": "1" * 64}
+    child["mdd"] = {**parent["mdd"], "max_oos_dd_pct": 50}
+    with pytest.raises(m.SupersessionSealedComponentDivergenceError, match="mdd"):
+        m.assert_supersession_preserves_sealed_components(
+            child_components=child, parent_components=parent
+        )
+
+
+def test_supersession_rejects_divergence_in_any_single_sealed_component():
+    """Parametrized-by-hand sweep: tampering ANY one non-code component must
+    be caught, not just 'mdd'."""
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    config = cfg.build_ap_a1_configs()[0]
+    parent = m.build_components_for_config(config, seal)
+    from research_contracts.canonical_hash import IDENTITY_COMPONENTS
+
+    for name in IDENTITY_COMPONENTS:
+        if name == "code":
+            continue
+        child = dict(parent)
+        child["code"] = {"kind": "real_implementation", "source_sha256": "2" * 64}
+        child[name] = {"__tampered__": True}
+        with pytest.raises(m.SupersessionSealedComponentDivergenceError, match=name):
+            m.assert_supersession_preserves_sealed_components(
+                child_components=child, parent_components=parent
+            )

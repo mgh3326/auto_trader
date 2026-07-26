@@ -31,9 +31,13 @@ from typing import Any
 import configs as cfg
 import params as prm
 
+from research_contracts.canonical_hash import IDENTITY_COMPONENTS
+
 __all__ = [
     "SourceMismatchError",
     "StrategySourceProvenance",
+    "SupersessionSealedComponentDivergenceError",
+    "assert_supersession_preserves_sealed_components",
     "build_components_for_config",
     "default_formula_provenance",
     "validate_same_family_components_are_identical",
@@ -285,3 +289,38 @@ def validate_same_family_components_are_identical(
                         f"{first_config.config_id!r} and {other_config.config_id!r} "
                         "— only 'params' may vary within one family's configs"
                     )
+
+
+class SupersessionSealedComponentDivergenceError(ValueError):
+    """A superseding registration's identity components diverge from its
+    parent's outside the ``code`` component (ROB-1060 H2-lock item 9)."""
+
+
+def assert_supersession_preserves_sealed_components(
+    *,
+    child_components: dict[str, Any],
+    parent_components: dict[str, Any],
+) -> None:
+    """Fail closed unless ``child_components`` carries every sealed H2
+    identity component IDENTICAL to ``parent_components``, with ``code`` as
+    the ONLY component allowed to differ.
+
+    ROB-846's own lineage guard (``SupersedesStrategyMismatch``) checks only
+    that ``strategy_key`` matches; ``configs.assert_valid_supersedes`` checks
+    only that ``family`` matches. Neither asserts that the superseding
+    record's ``params``/``universe``/``pit``/``frozen_config``/``policy``/
+    ``benchmark``/``cost``/``mdd``/``dataset_manifest``/``strategy``
+    components are unchanged. Without this check, a supersession that looks
+    legitimate (same strategy_key, same family, new ``code`` for H3's real
+    implementation) could silently ship different gate thresholds, universe
+    membership, or cost assumptions under that cover -- exactly the post-hoc
+    relaxation this seal exists to prevent."""
+    for name in IDENTITY_COMPONENTS:
+        if name == "code":
+            continue
+        if child_components.get(name) != parent_components.get(name):
+            raise SupersessionSealedComponentDivergenceError(
+                f"component {name!r} differs between the superseding "
+                "registration and its parent -- a supersession may change "
+                "only the 'code' component"
+            )
