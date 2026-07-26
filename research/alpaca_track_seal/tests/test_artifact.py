@@ -154,6 +154,26 @@ def test_semantic_hash_changes_if_a_config_threshold_is_tampered():
     assert tampered.semantic_hash() != a.semantic_hash()
 
 
+def test_semantic_hash_matches_the_pinned_h2_lock_digest():
+    """ROB-1060 H2-lock item 1 (root cause fix): every sealed VALUE was
+    independently re-derived and found correct at seal time, but the
+    semantic hash summarizing all of them was pinned NOWHERE -- so a fully
+    green 69-test suite let 17 of 37 mutations silently move it. THIS test is
+    the actual lock. `SEALED_ARTIFACT_SEMANTIC_HASH` is a module constant;
+    changing it is a deliberate re-seal, never a routine edit to make a
+    failing test pass."""
+    import artifact as m
+
+    a = m.build_sealed_artifact()
+    assert a.semantic_hash() == m.SEALED_ARTIFACT_SEMANTIC_HASH
+    # Also compared against a bare literal (not merely the constant under
+    # test) so the pin itself cannot silently drift with the module.
+    assert (
+        m.SEALED_ARTIFACT_SEMANTIC_HASH
+        == "b0456239ba5893208c30f93c3a58a7f2ecb2a28800cfbdefc150124e771508e0"
+    )
+
+
 def test_constructing_artifact_with_tampered_sealed_effective_n_is_rejected():
     """``SealedArtifact.__post_init__`` re-validates the universe invariant on
     every construction — a tampered ``sealed_effective_n`` is rejected at
@@ -169,3 +189,62 @@ def test_constructing_artifact_with_tampered_sealed_effective_n_is_rejected():
     tampered_params = dc.replace(a.params, universe=tampered_universe)
     with pytest.raises(prm.UniverseSealError, match="20"):
         dc.replace(a, params=tampered_params)
+
+
+# --------------------------------------------------------------------------- #
+# ROB-1060 H2-lock item 8: `load()` must be tamper-evident -- a saved         #
+# artifact JSON edited to relax a sealed value must fail to load, not         #
+# silently succeed.                                                           #
+# --------------------------------------------------------------------------- #
+
+
+def test_load_rejects_a_config_whose_params_were_tampered_leaving_a_stale_canonical_hash(
+    tmp_path,
+):
+    import json as _json
+
+    import artifact as m
+
+    a = m.build_sealed_artifact()
+    path = tmp_path / "seal.json"
+    a.save(path)
+    d = _json.loads(path.read_text())
+    # Tamper AP-A1-00's threshold but leave the recorded canonical_hash
+    # untouched (stale) -- exactly the "config case is worst" scenario the
+    # H2-lock verification flagged.
+    d["configs"]["AP-A1-00"]["params"]["threshold"] = 0.010
+    path.write_text(_json.dumps(d))
+    with pytest.raises(m.ArtifactIntegrityError, match="AP-A1-00"):
+        m.SealedArtifact.load(path)
+
+
+def test_load_rejects_a_semantic_hash_mismatch_against_an_expected_digest(tmp_path):
+    import json as _json
+
+    import artifact as m
+
+    a = m.build_sealed_artifact()
+    original_hash = a.semantic_hash()
+    path = tmp_path / "seal.json"
+    a.save(path)
+    d = _json.loads(path.read_text())
+    # Relax AP-A2's symbol_concentration_pct 35 -> 40 -- every per-config
+    # canonical_hash stays internally consistent with its own (untouched)
+    # params, so only the semantic-digest check (against an expected value)
+    # can catch this.
+    for cond in d["params"]["gate_thresholds"]["ap_a2"]:
+        if cond["metric"] == "symbol_concentration_pct":
+            cond["value"] = 40
+    path.write_text(_json.dumps(d))
+    with pytest.raises(m.ArtifactIntegrityError, match="semantic hash mismatch"):
+        m.SealedArtifact.load(path, expected_semantic_hash=original_hash)
+
+
+def test_load_with_expected_hash_succeeds_when_untampered(tmp_path):
+    import artifact as m
+
+    a = m.build_sealed_artifact()
+    path = tmp_path / "seal.json"
+    a.save(path)
+    loaded = m.SealedArtifact.load(path, expected_semantic_hash=a.semantic_hash())
+    assert loaded.semantic_hash() == a.semantic_hash()

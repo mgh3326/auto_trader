@@ -21,10 +21,37 @@ import params as prm
 import source_provenance as sp
 
 __all__ = [
+    "ArtifactIntegrityError",
+    "SEALED_ARTIFACT_SEMANTIC_HASH",
     "SealedArtifact",
     "SealedSources",
     "build_sealed_artifact",
 ]
+
+# ROB-1060 H2-lock item 1 (root cause): every sealed VALUE in this package was
+# independently re-derived and found correct at seal time (2026-07-25) --
+# but the semantic hash summarizing all of them was pinned NOWHERE, so a
+# fully green 69-test suite let 17 of 37 mutations silently move it. THIS
+# constant is the actual lock: `test_semantic_hash_matches_the_pinned_h2_lock_digest`
+# fails the instant any sealed config/param/identity value drifts.
+#
+# Changing this constant is a DELIBERATE RE-SEAL (a new operator decision or
+# a new authority document supersedes the 2026-07-25 seal) -- never a routine
+# edit to make a failing test pass. If you are editing this value because a
+# test failed, STOP and report: that is exactly the post-hoc relaxation
+# ROB-1060 exists to prevent.
+SEALED_ARTIFACT_SEMANTIC_HASH = (
+    "b0456239ba5893208c30f93c3a58a7f2ecb2a28800cfbdefc150124e771508e0"
+)
+
+
+class ArtifactIntegrityError(Exception):
+    """A saved ``SealedArtifact`` JSON failed load-time tamper-evidence
+    verification (ROB-1060 H2-lock item 8): a config's recomputed
+    ``canonical_hash`` does not match its recorded value, or the artifact's
+    recomputed semantic digest does not match an expected digest supplied by
+    the caller. Fails closed -- ``load()`` never returns a silently-tampered
+    artifact."""
 
 
 @dataclass(frozen=True)
@@ -288,7 +315,7 @@ class SealedArtifact:
             "configs": {
                 c.config_id: {
                     "family": c.family,
-                    "params": c.params,
+                    "params": dict(c.params),
                     "canonical_hash": c.canonical_hash,
                 }
                 for c in self.configs
@@ -312,27 +339,66 @@ class SealedArtifact:
         path.write_text(json.dumps(self.to_dict(), indent=2, sort_keys=True))
 
     @classmethod
-    def load(cls, path: str | Path) -> SealedArtifact:
+    def load(
+        cls, path: str | Path, *, expected_semantic_hash: str | None = None
+    ) -> SealedArtifact:
+        """Load a saved seal, fail-closed on any tamper evidence (ROB-1060
+        H2-lock item 8).
+
+        Two independent checks, both mandatory-on-detection:
+
+        1. Every config's ``canonical_hash`` is recomputed from its own
+           ``params`` and compared to the recorded value -- catches a config
+           whose ``params`` were edited in the JSON while its
+           ``canonical_hash`` was left stale (or vice versa).
+        2. If ``expected_semantic_hash`` is supplied (e.g. this module's
+           pinned ``SEALED_ARTIFACT_SEMANTIC_HASH``), the freshly-loaded
+           artifact's own ``semantic_hash()`` must match it -- catches ANY
+           tampered sealed value (gate threshold, universe membership, cost
+           scenario, ...) even when every per-config ``canonical_hash``
+           happens to still be internally consistent.
+        """
         d = json.loads(Path(path).read_text())
-        configs = tuple(
-            cfg.ConfigSpec(
-                config_id=config_id,
-                family=entry["family"],
-                params=entry["params"],
-                canonical_hash=entry["canonical_hash"],
+        configs = []
+        for config_id, entry in d["configs"].items():
+            recomputed_hash = cfg.canonical_config_hash(
+                config_id, entry["family"], entry["params"]
             )
-            for config_id, entry in d["configs"].items()
-        )
+            if recomputed_hash != entry["canonical_hash"]:
+                raise ArtifactIntegrityError(
+                    f"config {config_id!r}: recorded canonical_hash "
+                    f"{entry['canonical_hash']!r} does not match recomputed "
+                    f"{recomputed_hash!r} -- params were tampered while the "
+                    "recorded hash was left stale"
+                )
+            configs.append(
+                cfg.ConfigSpec(
+                    config_id=config_id,
+                    family=entry["family"],
+                    params=entry["params"],
+                    canonical_hash=entry["canonical_hash"],
+                )
+            )
         # Restore canonical (AP-A1 before AP-A2, 00..07 ascending) order —
         # the source dict has no guaranteed order, but the CONFIG DOMAIN
         # itself is order-independent for hashing (dict-keyed); sorting here
         # is purely for a stable, readable .configs tuple.
         configs = tuple(sorted(configs, key=lambda c: c.config_id))
-        return cls(
+        artifact = cls(
             configs=configs,
             params=_params_from_dict(d["params"]),
             sources=SealedSources.from_dict(d["sources"]),
         )
+        if expected_semantic_hash is not None:
+            recomputed_semantic = artifact.semantic_hash()
+            if recomputed_semantic != expected_semantic_hash:
+                raise ArtifactIntegrityError(
+                    f"semantic hash mismatch: expected "
+                    f"{expected_semantic_hash!r}, recomputed "
+                    f"{recomputed_semantic!r} -- the loaded artifact's "
+                    "content diverges from the expected sealed record"
+                )
+        return artifact
 
 
 def build_sealed_artifact() -> SealedArtifact:
