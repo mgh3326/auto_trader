@@ -456,3 +456,56 @@ async def test_process_dims_include_no_fill_evidence_rows(db_session: AsyncSessi
     assert by_trigger["excluded_no_fill_evidence"] == 0
     groups = {g["group"]: g for g in by_trigger["groups"]}
     assert groups["rejected_order"]["sample_size"] == 1
+
+
+@pytest.mark.asyncio
+async def test_missed_cohort_is_separate_from_trade_performance_groups(
+    db_session: AsyncSession,
+):
+    await _seed(db_session, strategy="executed", pnl=100.0)
+    await svc.save_retrospective(
+        db_session,
+        symbol="000660",
+        instrument_type="equity_kr",
+        account_mode="toss_live",
+        market="kr",
+        outcome="unfilled",
+        strategy_key="missed_opportunity",
+        pnl_pct=7.5,
+        trigger_type="missed_opportunity",
+        next_actions=[{"action": "score D+5"}],
+    )
+    await svc.save_retrospective(
+        db_session,
+        symbol="035420",
+        instrument_type="equity_kr",
+        account_mode="toss_live",
+        market="kr",
+        outcome="unfilled",
+        strategy_key="missed_opportunity",
+        trigger_type="missed_opportunity",
+        next_actions=[{"action": "score D+5"}],
+    )
+    await db_session.commit()
+
+    result = await svc.build_retrospective_aggregate(db_session, group_by="strategy")
+
+    groups = {g["group"]: g for g in result["groups"]}
+    assert set(groups) == {"executed"}
+    assert result["excluded_missed_opportunity"] == 2
+    assert result["missed_cohort"] == {
+        "sample_size": 2,
+        "scored_sample_size": 1,
+        "pending_sample_size": 1,
+        "positive_opportunities": 1,
+        "non_positive_opportunities": 0,
+        "positive_opportunity_rate_pct": 100.0,
+        "avg_opportunity_return_pct": 7.5,
+        "by_market": {"kr": 2},
+    }
+
+    by_trigger = await svc.build_retrospective_aggregate(
+        db_session, group_by="trigger_type"
+    )
+    trigger_groups = {g["group"]: g for g in by_trigger["groups"]}
+    assert trigger_groups["missed_opportunity"]["sample_size"] == 2

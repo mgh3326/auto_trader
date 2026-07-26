@@ -128,6 +128,10 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
         {"tool": "get_disclosures", "purpose": "rights-issue / overhang filter"},
         {"tool": "analyze_stock_batch", "purpose": "deep confirm on ranked survivors"},
         {"tool": "toss_place_order", "purpose": "winners only, support-line limit"},
+        {
+            "tool": "missed_opportunity_save",
+            "purpose": "session close: if |index move| >2% and zero new buys, publish top-N D+5 missed cohort",
+        },
     ],
 }
 
@@ -148,6 +152,9 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "reason, and leave a resolvable forecast_save (price_target with required "
         "outcome_rule_version='window-touch-v1-high-gte-low-lte', e.g. "
         "'no +X% within N days') so calibration isn't censored (ROB-712)",
+        "session-close opportunity cost: when |index_change_pct| > 2% and zero new buys, "
+        "call missed_opportunity_save for exactly the top-N unbought candidates; "
+        "their D+5 close returns form the missed cohort (ROB-1017)",
     ],
     "sell": [
         "loss guard: sell price >= avg * sell.loss_guard_min_multiple",
@@ -170,6 +177,9 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "reason, and leave a resolvable forecast_save (price_target with required "
         "outcome_rule_version='window-touch-v1-high-gte-low-lte', e.g. "
         "'no +X% within N days') so calibration isn't censored (ROB-712)",
+        "session-close opportunity cost: when |index_change_pct| > 2% and zero new buys, "
+        "call missed_opportunity_save for exactly the top-N unbought candidates; "
+        "their D+5 close returns form the missed cohort (ROB-1017)",
     ],
     "bootstrap": [
         "context-load only; no order mutation in this lane",
@@ -330,6 +340,8 @@ _PLACE_ORDER_TOOLS: frozenset[str] = frozenset(
     {"place_order", "toss_place_order", "kis_live_place_order"}
 )
 
+_SESSION_CLOSE_TOOLS: frozenset[str] = frozenset({"missed_opportunity_save"})
+
 # Discovery keeps its direct Toss preview precursor. Proposal-led buy/sell do
 # not expose broker previews: fresh preview/revalidation is owned internally by
 # the proposal approval subsystem. sell_ladder_fill_preview remains a pure
@@ -349,7 +361,13 @@ PREVIEW_TOOLS: frozenset[str] = frozenset({"toss_preview_order"})
 # per-lane allowance (not a MUTATION_TOOLS -> READ_ONLY reclassification) keeps
 # discovery/bootstrap unchanged.
 LANE_EXTRA_ALLOWED: dict[str, frozenset[str]] = {
-    "buy": frozenset({"kis_live_get_order_history", "toss_get_order_history"}),
+    "buy": frozenset(
+        {
+            "kis_live_get_order_history",
+            "toss_get_order_history",
+            "missed_opportunity_save",
+        }
+    ),
     "sell": frozenset({"kis_live_get_order_history", "toss_get_order_history"}),
 }
 
@@ -485,6 +503,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "list_active_watches",
         "investment_watch_events_list_recent",
         "modify_journal_entry",
+        "missed_opportunity_save",
         "paper_list_pending_orders",
         "research_session_get",
         "research_session_list_recent",
@@ -632,8 +651,19 @@ def build_route_plan(
         and (not proposal_led or step["tool"] not in DIRECT_BROKER_MUTATION_TOOLS)
     ]
     if lane_place_tools and not (lane_place_tools & registered_tools):
-        for tool in sorted(market_exec & registered_tools):
-            seq_steps.append({"tool": tool, "purpose": _MARKET_EXEC_PURPOSE[lane]})
+        market_steps = [
+            {"tool": tool, "purpose": _MARKET_EXEC_PURPOSE[lane]}
+            for tool in sorted(market_exec & registered_tools)
+        ]
+        close_index = next(
+            (
+                index
+                for index, step in enumerate(seq_steps)
+                if step["tool"] in _SESSION_CLOSE_TOOLS
+            ),
+            len(seq_steps),
+        )
+        seq_steps[close_index:close_index] = market_steps
 
     standard_tool_sequence = [
         {"step": i, "tool": step["tool"], "purpose": step["purpose"]}

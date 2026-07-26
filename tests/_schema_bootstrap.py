@@ -61,7 +61,8 @@ from sqlalchemy import text
 # v28: durable Telegram approval-dispatch summary columns + attempt ledger.
 # v29: immutable approval publication bindings and frozen batch snapshots.
 # v30: persistent-schema typed dispatch/card constraints and attempt nullability.
-SCHEMA_BOOTSTRAP_VERSION = 30
+# v31 (ROB-1017): widen the retrospective trigger CHECK with missed_opportunity.
+SCHEMA_BOOTSTRAP_VERSION = 31
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -896,12 +897,14 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE review.trade_retrospectives ADD COLUMN IF NOT EXISTS policy_version TEXT",
     "ALTER TABLE review.trade_retrospectives DROP CONSTRAINT IF EXISTS "
     "ck_trade_retrospectives_trigger_type",
+    "ALTER TABLE review.trade_retrospectives DROP CONSTRAINT IF EXISTS "
+    "ck_trade_retrospectives_ck_trade_retrospectives_trigger_type",
     "ALTER TABLE review.trade_retrospectives "
     "ADD CONSTRAINT ck_trade_retrospectives_trigger_type "
     "CHECK (trigger_type IS NULL OR trigger_type IN ("
     "'fill','partial_fill','rejected_order','cancelled','expired',"
     "'thesis_change','policy_violation','stale_evidence',"
-    "'guardrail_block','stop_loss'))",
+    "'guardrail_block','stop_loss','missed_opportunity'))",
     "ALTER TABLE review.trade_retrospectives DROP CONSTRAINT IF EXISTS "
     "ck_trade_retrospectives_root_cause_class",
     "ALTER TABLE review.trade_retrospectives "
