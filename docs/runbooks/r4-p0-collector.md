@@ -10,12 +10,35 @@ Prefect.
 - REST: HTTPS `GET` only, host `fapi.binance.com`, exact paths:
   `/fapi/v1/openInterest`, `/fapi/v1/premiumIndex`,
   `/fapi/v1/premiumIndexKlines`,
-  `/futures/data/basis`, `/futures/data/takerlongshortRatio`.
+  `/futures/data/openInterestHist`, `/futures/data/basis`,
+  `/futures/data/takerlongshortRatio`.
 - Websocket: `wss://fstream.binance.com/public` for book/depth and
   `wss://fstream.binance.com/market` for aggTrade/forceOrder. The split is
   required by Binance's post-2026-04-23 routed websocket contract.
 - No API key, signing, account endpoint, order endpoint, or broker mutation.
 - XRP/DOGE/SOL are signal symbols. BTC is collected only as a predictor.
+
+## Collection priority and backfill boundary
+
+Operational attention follows this order without dropping any P0 source:
+
+1. The four websocket sources: aggTrade, forceOrder, 1-second bookTicker
+   snapshots, and top-5 depth. Their local receive time is not recoverable
+   later; book snapshots and forceOrder observations are likewise not
+   reconstructable from a later REST backfill. Although aggTrade content was
+   observed to be REST-backfillable through roughly 390 days, that does not
+   recreate the original PIT receive-time observation.
+2. `openInterestHist` at 5-minute resolution. Production probing confirmed
+   that this endpoint has the actual short retrospective boundary (under 30
+   days), so it is collected on every open-interest poll. The instantaneous
+   `/fapi/v1/openInterest` snapshot remains as a separate additive source.
+3. Basis, taker ratio, and premium/funding polls. They remain in scope, but are
+   lower urgency because their exchange-time content can be backfilled. In
+   particular, production basis rows were observed beyond 1,000 days; the
+   earlier 30-day basis assumption is not used by this collector.
+
+Backfill reach and PIT observation are separate properties. A later REST row
+must not be treated as if it had the `local_receive_time` of the live collector.
 
 ## Modes
 

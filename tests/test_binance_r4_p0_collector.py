@@ -25,6 +25,7 @@ def test_allowlists_are_read_only_and_exact() -> None:
         "/fapi/v1/premiumIndex",
         "/fapi/v1/premiumIndexKlines",
         "/futures/data/basis",
+        "/futures/data/openInterestHist",
         "/futures/data/takerlongshortRatio",
     ):
         assert_rest_target(path)
@@ -215,3 +216,59 @@ async def test_premium_kline_persists_only_a_completed_period(tmp_path) -> None:
         assert row["source"] == "binance_usdm.premiumIndexKline1m"
         assert json.loads(row["raw_payload"]) == closed
         assert row["event_time"] == row["transaction_time"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_open_interest_family_keeps_current_and_bounded_history(tmp_path) -> None:
+    timestamp = 1785027600000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/fapi/v1/openInterest":
+            assert request.url.params["symbol"] == "XRPUSDT"
+            return httpx.Response(
+                200,
+                json={
+                    "symbol": "XRPUSDT",
+                    "openInterest": "335606096.1",
+                    "time": timestamp,
+                },
+            )
+        assert request.url.path == "/futures/data/openInterestHist"
+        assert dict(request.url.params) == {
+            "symbol": "XRPUSDT",
+            "period": "5m",
+            "limit": "1",
+        }
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "symbol": "XRPUSDT",
+                    "sumOpenInterest": "335602101.0",
+                    "sumOpenInterestValue": "368798010.1",
+                    "CMCCirculatingSupply": "59985132502",
+                    "timestamp": timestamp,
+                }
+            ],
+        )
+
+    with AppendOnlyPITStore(tmp_path) as store:
+        collector = BinanceR4P0Collector(
+            CollectorConfig(artifact_root=tmp_path, symbols=("XRPUSDT",)),
+            store,
+        )
+        async with httpx.AsyncClient(
+            base_url="https://fapi.binance.com",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            await collector._poll_family(client, "open_interest")  # noqa: SLF001
+        samples = {row["source"]: row for row in store.sample_by_source()}
+        assert set(samples) == {
+            "binance_usdm.openInterest",
+            "binance_usdm.openInterestHist",
+        }
+        assert samples["binance_usdm.openInterestHist"]["event_time"] == (
+            "2026-07-26T01:00:00.000000Z"
+        )
+        assert set(PIT_COLUMNS).issubset(samples["binance_usdm.openInterestHist"])

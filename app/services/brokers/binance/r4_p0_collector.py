@@ -35,6 +35,7 @@ REST_PATH_ALLOWLIST: Final = frozenset(
         "/fapi/v1/premiumIndex",
         "/fapi/v1/premiumIndexKlines",
         "/futures/data/basis",
+        "/futures/data/openInterestHist",
         "/futures/data/takerlongshortRatio",
     }
 )
@@ -56,7 +57,7 @@ PIT_COLUMNS: Final = (
     "gap_detected",
     "reconnect_id",
 )
-COLLECTOR_VERSION: Final = "r4-p0-collector.v1"
+COLLECTOR_VERSION: Final = "r4-p0-collector.v2"
 EXPECTED_SOURCES: Final = frozenset(
     {
         "binance_usdm.aggTrade",
@@ -64,6 +65,7 @@ EXPECTED_SOURCES: Final = frozenset(
         "binance_usdm.bookTicker",
         "binance_usdm.depth5",
         "binance_usdm.openInterest",
+        "binance_usdm.openInterestHist",
         "binance_usdm.basis",
         "binance_usdm.takerLongShortRatio",
         "binance_usdm.premiumIndex",
@@ -734,6 +736,13 @@ class BinanceR4P0Collector:
                     params={"symbol": symbol},
                     symbol=symbol,
                     outputs=(("binance_usdm.openInterest", None),),
+                )
+                await self._rest_get(
+                    client,
+                    path="/futures/data/openInterestHist",
+                    params={"symbol": symbol, "period": "5m", "limit": 1},
+                    symbol=symbol,
+                    outputs=(("binance_usdm.openInterestHist", None),),
                 )
             elif family == "premium":
                 await self._rest_get(
