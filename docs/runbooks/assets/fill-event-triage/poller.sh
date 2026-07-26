@@ -31,9 +31,18 @@ DRY_RUN="${DRY_RUN:-0}"
 export ENV_FILE="${ENV_FILE:-.env.prod}"   # repo CLI가 prod DB를 보도록
 
 mkdir -p "$STATE_DIR"
-command -v flock >/dev/null 2>&1 || { echo "flock 미설치(PATH 확인 필요)" >&2; exit 1; }
-exec 9> "$STATE_DIR/.lock"
-flock -n 9 || exit 0
+# macOS 전용: shlock/stat -f는 Linux repo CI에서 명령 존재 여부를 검증할 수 없다.
+LOCK="$STATE_DIR/poller.lock"
+command -v shlock >/dev/null 2>&1 || { echo "shlock 없음" >&2; exit 1; }
+if ! shlock -f "$LOCK" -p $$; then
+  if [[ -f "$LOCK" ]] && (( $(date +%s) - $(stat -f %m "$LOCK") > 1800 )); then
+    rm -f "$LOCK"
+    shlock -f "$LOCK" -p $$ || exit 0
+  else
+    exit 0
+  fi
+fi
+trap 'rm -f "$LOCK"' EXIT
 touch "$SEEN" "$RETRY_COUNTS"
 last_id="$(cat "$WATERMARK" 2>/dev/null || true)"
 

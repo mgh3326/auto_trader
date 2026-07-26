@@ -32,6 +32,7 @@ ROB-755 — 체결(fill) 이벤트 자동 기동: websocket 동기화된 `execut
 | auto_trader 레포 | `~/work/auto_trader` (main 체크아웃) |
 | MCP 서버 | `auto_trader_local` — `claude mcp list` 에 노출 확인 |
 | Discord Webhook | `DISCORD_FILL_TRIAGE_WEBHOOK` — 운영자 채널 webhook URL |
+| `shlock` | macOS `/usr/bin/shlock` — poller 중복 실행 차단 |
 | `jq` | brew install jq |
 | Python/uv | 레포 `.venv` 구성 완료 (`uv sync`) |
 
@@ -127,11 +128,20 @@ diff poller.sh "$AUTO_TRADER_REPO/docs/runbooks/assets/fill-event-triage/poller.
 ```
 
 **주요 동작:**
+- `poller.lock` — `FILL_TRIAGE_STATE_DIR`별 중복 실행 방지. macOS `shlock`만 이 파일을
+  생성하며 정상 종료 시 trap으로 삭제한다. 30분(최장 배치 약 20분 + 여유)이 지난 lock은
+  PID 재사용·재부팅 잔존·오염 병리의 안전망으로 강제 해제 후 한 번 재획득한다.
+  **lock 파일을 `echo`/`printf`/`touch`/편집기로 직접 생성하거나 내용을 수정하지 않는다.**
+  같은 PID·개행·권한으로 만든 파일도 `shlock`이 만든 파일과 stale 탈취 동작이 다를 수
+  있으므로, 운영 절차와 테스트 모두 반드시 `shlock`이 직접 생성한 lock만 사용한다.
 - `~/.local/state/fill-event-triage/last_ledger_id` — 워터마크 (가장 큰 `execution_ledger.id`). 처음엔 없으므로 최근 50건만 조회한다. 전체 백필이 필요하면 별도 절차를 돌린다. 처리 성공 시마다 갱신.
 - `seen_ledger_ids` — 같은 watermark(=`id`)를 갖는 동시각 row가 다수일 수 있는 케이스 대비(예: 동일 ID로 동일 초에 여러 source에서 upsert된 경우) 중복 처리 방지. 최대 500행 유지.
+- `retry_counts` — Claude 실패 횟수를 ledger_id별로 기록. 3회째 실패 시 강제
+  `seen` 처리하고 Discord 실패 통지를 한 번 시도해 영구 실패의 무한 재호출을 차단한다.
 - `validation.jsonl` — Q3 검증용 메타 로그 (§6 참조).
 - `DRY_RUN=1` — claude/Discord 미호출. 안전하게 명령 미리보기.
-- `at-least-once` 보장: `claude -p` 또는 `curl` Discord가 실패하면 `seen`/`last_ledger_id`를 모두 갱신하지 않고 다음 사이클에서 동일 row를 다시 트리아지한다.
+- Claude 유료 단계는 **at-most-once**: 성공 직후 `seen`을 먼저 커밋한다. 이후 Discord
+  POST는 best-effort이며 실패해도 같은 ledger_id의 Claude 세션을 다시 열지 않는다.
 
 ---
 
@@ -204,6 +214,20 @@ tail -f ~/.local/state/fill-event-triage/stderr.log
 ### Step 1: 설치 사전 확인
 
 ```bash
+# 배포 대상 스크립트가 직접 참조하는 외부 명령을 launchd와 같은 PATH에서 전수 확인
+required_commands=(
+  bash mkdir shlock date stat rm touch cat grep head cut
+  uv jq awk mv tail claude curl
+)
+missing=0
+for command_name in "${required_commands[@]}"; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    echo "missing command: $command_name" >&2
+    missing=1
+  }
+done
+(( missing == 0 ))
+
 # Claude Code CLI 설치 확인
 claude --version
 
@@ -218,6 +242,8 @@ ls -l ~/ops/fill-event-triage/poller.sh   # -rwxr-xr-x 이어야 함
 ```
 
 예상 결과:
+- 모든 외부 명령의 `command -v` 확인 통과. 특히 macOS poller lock은
+  `/usr/bin/shlock`이어야 한다. repo CI는 Linux이므로 이 호스트 의존성을 대신 검증하지 못한다.
 - `claude --version` → 버전 출력
 - `claude mcp list` → `auto_trader_local` 항목 노출
 - `settings.readonly.json` → deny 목록에 `"Bash"`, `"mcp__auto_trader_local__place_order"` 등 포함
@@ -561,7 +587,9 @@ claude -p "/fill-event-triage ledger_id=... event_key=... broker=... account_mod
   --output-format json | jq -r '.result'
 ```
 
-claude 실패 시 해당 ledger_id는 seen-set에 들어가지 않으므로 **다음 사이클에 재시도된다(at-least-once)**. 일시적 API 오류라면 자연 회복. 영구적 오류라면 `claude --version` / 인증 상태 / MCP 서버 노출을 확인.
+Claude 실패 시 해당 ledger_id는 `retry_counts`를 올리고 다음 사이클에 재시도한다.
+3회째 실패하면 강제 seen + Discord 실패 통지 후 재호출을 중단한다. 일시적 API 오류라면
+그 전에 자연 회복하며, 영구적 오류라면 `claude --version` / 인증 상태 / MCP 서버 노출을 확인한다.
 
 ### Discord webhook이 4xx/5xx를 반환하는 경우
 
@@ -575,7 +603,9 @@ curl -fsS -o /dev/null -w "%{http_code}\n" \
 
 200이 아니면: webhook URL / 채널 권한 / rate limit (Discord는 채널당 분당 ~30 메시지) 확인.
 
-curl 실패 시 해당 ledger_id는 seen-set에 들어가지 않으므로 **다음 사이클에 재시도된다(at-least-once)**. webhook이 영구적으로 잘못 설정된 경우 매 사이클마다 claude 재호출 비용이 발생하므로 `stderr.log` 의 `discord post 실패(재시도 예정)` 메시지를 지속 모니터링하라.
+Claude 성공 직후 ledger_id는 이미 seen-set에 들어가므로 curl 실패는
+`discord post 실패(best-effort)` 로그만 남기고 Claude를 재호출하지 않는다. webhook URL,
+채널 권한, rate limit을 수리한 뒤 필요한 통지는 검증 로그를 기준으로 운영자가 별도 재전송한다.
 
 ### Step 4에서 주문이 실제로 실행되는 경우
 
