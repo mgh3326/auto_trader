@@ -1,4 +1,4 @@
-"""R4 P0 point-in-time collector for Binance USD-M public market data.
+"""Binance USD-M R4 P0 point-in-time public market-data collector.
 
 This module is deliberately isolated from every Binance execution adapter.  It
 can issue only unsigned GET requests to a small production-public allowlist and

@@ -15,7 +15,7 @@ import os
 import signal
 from pathlib import Path
 
-from app.services.binance_r4_p0_collector import (
+from app.services.brokers.binance.r4_p0_collector import (
     COLLECTOR_VERSION,
     PIT_COLUMNS,
     REST_PATH_ALLOWLIST,

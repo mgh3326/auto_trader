@@ -7,7 +7,7 @@ import sqlite3
 import httpx
 import pytest
 
-from app.services.binance_r4_p0_collector import (
+from app.services.brokers.binance.r4_p0_collector import (
     PIT_COLUMNS,
     AppendOnlyPITStore,
     BinanceR4P0Collector,
