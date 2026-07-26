@@ -179,13 +179,18 @@ class AppendOnlyPITStore:
     """Crash-safe local research artifact with immutable rows and deduplication."""
 
     def __init__(
-        self, root: Path, *, collector_version: str = COLLECTOR_VERSION
+        self,
+        root: Path,
+        *,
+        collector_version: str = COLLECTOR_VERSION,
+        artifact_filename: str = "r4_p0_collector.sqlite3",
+        lock_filename: str = ".collector.lock",
     ) -> None:
         self.root = root.expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
-        self.path = self.root / "r4_p0_collector.sqlite3"
+        self.path = self.root / artifact_filename
         self.collector_version = collector_version
-        self._lock_file = (self.root / ".collector.lock").open("a+")
+        self._lock_file = (self.root / lock_filename).open("a+")
         try:
             fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
