@@ -292,3 +292,84 @@ def test_load_with_expected_hash_succeeds_when_untampered(tmp_path):
     a.save(path)
     loaded = m.SealedArtifact.load(path, expected_semantic_hash=a.semantic_hash())
     assert loaded.semantic_hash() == a.semantic_hash()
+
+
+# --------------------------------------------------------------------------- #
+# ROB-1060 H2-lock adversarial-verification Finding 3 (2026-07-26): `load()`  #
+# must be tamper-evident BY DEFAULT, with no caller-supplied hash required.   #
+# --------------------------------------------------------------------------- #
+
+
+def test_load_default_call_with_no_kwargs_is_the_safe_call_and_rejects_tamper(
+    tmp_path,
+):
+    """Reproduces the exact adversarial-verification scenario: tamper
+    `pooled_gross_ev_bp` 180 -> 10 in a saved seal, with every per-config
+    `canonical_hash` left internally consistent (the tampered value lives in
+    `gate_thresholds`, never in a config's own `params`). Before Finding 3,
+    `expected_semantic_hash` defaulted to `None`, so
+    ``SealedArtifact.load(path)`` -- the call every H3-H6 consumer actually
+    makes -- returned the corrupted artifact SILENTLY. The default must now
+    verify against the pinned `SEALED_ARTIFACT_SEMANTIC_HASH` with zero
+    caller opt-in."""
+    import json as _json
+
+    import artifact as m
+
+    a = m.build_sealed_artifact()
+    path = tmp_path / "seal.json"
+    a.save(path)
+    d = _json.loads(path.read_text())
+    for cond in d["params"]["gate_thresholds"]["ap_a1"]:
+        if cond["metric"] == "pooled_gross_ev_bp":
+            cond["value"] = 10
+    path.write_text(_json.dumps(d))
+    with pytest.raises(m.ArtifactIntegrityError, match="semantic hash mismatch"):
+        m.SealedArtifact.load(path)  # NO expected_semantic_hash kwarg at all
+
+
+def test_load_default_succeeds_when_untampered_with_no_kwargs(tmp_path):
+    import artifact as m
+
+    a = m.build_sealed_artifact()
+    path = tmp_path / "seal.json"
+    a.save(path)
+    loaded = m.SealedArtifact.load(path)  # NO expected_semantic_hash kwarg
+    assert (
+        loaded.semantic_hash() == a.semantic_hash() == m.SEALED_ARTIFACT_SEMANTIC_HASH
+    )
+
+
+def test_load_explicit_none_opts_out_of_the_default_verification():
+    """The documented opt-out: passing `expected_semantic_hash=None`
+    explicitly still loads without the digest check (per-config
+    `canonical_hash` re-verification still applies, unconditionally) -- for
+    a diagnostic/repair tool that intentionally inspects a foreign/legacy
+    artifact rather than consuming it as the trusted H2 record. No caller in
+    this package uses this path; `plan`/`register` never pass it."""
+    import json as _json
+
+    import artifact as m
+
+    a = m.build_sealed_artifact()
+
+    def _save_tampered(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        a.save(path)
+        d = _json.loads(path.read_text())
+        for cond in d["params"]["gate_thresholds"]["ap_a1"]:
+            if cond["metric"] == "pooled_gross_ev_bp":
+                cond["value"] = 10
+        path.write_text(_json.dumps(d))
+
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "seal.json"
+        _save_tampered(path)
+        loaded = m.SealedArtifact.load(path, expected_semantic_hash=None)
+        # Loads successfully (opted out) but the loaded artifact's own
+        # semantic hash now visibly diverges from the pinned constant --
+        # proving the opt-out skips the CHECK, not the tamper itself.
+        assert loaded.semantic_hash() != m.SEALED_ARTIFACT_SEMANTIC_HASH

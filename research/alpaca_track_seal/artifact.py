@@ -399,7 +399,10 @@ class SealedArtifact:
 
     @classmethod
     def load(
-        cls, path: str | Path, *, expected_semantic_hash: str | None = None
+        cls,
+        path: str | Path,
+        *,
+        expected_semantic_hash: str | None = SEALED_ARTIFACT_SEMANTIC_HASH,
     ) -> SealedArtifact:
         """Load a saved seal, fail-closed on any tamper evidence (ROB-1060
         H2-lock item 8).
@@ -410,12 +413,27 @@ class SealedArtifact:
            ``params`` and compared to the recorded value -- catches a config
            whose ``params`` were edited in the JSON while its
            ``canonical_hash`` was left stale (or vice versa).
-        2. If ``expected_semantic_hash`` is supplied (e.g. this module's
-           pinned ``SEALED_ARTIFACT_SEMANTIC_HASH``), the freshly-loaded
-           artifact's own ``semantic_hash()`` must match it -- catches ANY
-           tampered sealed value (gate threshold, universe membership, cost
-           scenario, ...) even when every per-config ``canonical_hash``
-           happens to still be internally consistent.
+        2. ``expected_semantic_hash`` defaults to this module's pinned
+           ``SEALED_ARTIFACT_SEMANTIC_HASH`` -- the freshly-loaded artifact's
+           own ``semantic_hash()`` must match it -- catches ANY tampered
+           sealed value (gate threshold, universe membership, cost scenario,
+           ...) even when every per-config ``canonical_hash`` happens to
+           still be internally consistent.
+
+        ROB-1060 H2-lock adversarial-verification Finding 3 (2026-07-26): the
+        default used to be ``None`` (verification skipped unless the caller
+        remembered to pass the pinned hash) -- a saved artifact tampered to
+        relax ``pooled_gross_ev_bp`` 180 -> 10, with every per-config
+        ``canonical_hash`` left internally consistent, loaded SILENTLY. The
+        naive call ``SealedArtifact.load(path)`` must be the SAFE one, since
+        H3-H6 (the intended consumers) call it exactly that way. Pass
+        ``expected_semantic_hash=None`` explicitly to opt out -- e.g. a
+        diagnostic/repair tool that intentionally loads a artifact of
+        *unknown* or *foreign* provenance in order to report ITS OWN
+        semantic hash (so an operator can decide whether to re-seal), rather
+        than to consume it as the trusted H2 record. No such caller exists in
+        this package today; `plan`/`register` in ``registry_cli.py`` never
+        use the opt-out.
         """
         d = json.loads(Path(path).read_text())
         configs = []
