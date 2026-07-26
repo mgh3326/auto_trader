@@ -25,11 +25,16 @@ DISCORD_FILL_TRIAGE_WEBHOOK="${DISCORD_FILL_TRIAGE_WEBHOOK:-$(grep '^DISCORD_WEB
 STATE_DIR="${FILL_TRIAGE_STATE_DIR:-$HOME/.local/state/fill-event-triage}"
 WATERMARK="$STATE_DIR/last_ledger_id"
 SEEN="$STATE_DIR/seen_ledger_ids"
+RETRY_COUNTS="$STATE_DIR/retry_counts"
 VLOG="$STATE_DIR/validation.jsonl"
 DRY_RUN="${DRY_RUN:-0}"
 export ENV_FILE="${ENV_FILE:-.env.prod}"   # repo CLI가 prod DB를 보도록
 
-mkdir -p "$STATE_DIR"; touch "$SEEN"
+mkdir -p "$STATE_DIR"
+command -v flock >/dev/null 2>&1 || { echo "flock 미설치(PATH 확인 필요)" >&2; exit 1; }
+exec 9> "$STATE_DIR/.lock"
+flock -n 9 || exit 0
+touch "$SEEN" "$RETRY_COUNTS"
 last_id="$(cat "$WATERMARK" 2>/dev/null || true)"
 
 cd "$REPO"
@@ -49,9 +54,15 @@ if [[ "$(jq -r '.success' <<<"$response")" != "true" ]]; then
 fi
 fills="$(jq -c '.fills // []' <<<"$response")"
 
+watermark_blocked=0
 echo "$fills" | jq -c '.[]' | while read -r fill; do
   lid="$(jq -r '.ledger_id' <<<"$fill")"
-  grep -qxF "$lid" "$SEEN" && continue   # 이미 처리
+  if grep -qxF "$lid" "$SEEN"; then
+    if [[ "$DRY_RUN" != "1" && "$watermark_blocked" == "0" ]]; then
+      echo "$lid" > "$WATERMARK"
+    fi
+    continue   # 이미 처리
+  fi
 
   payload="$(jq -r \
     '"ledger_id=\(.ledger_id) event_key=\(.event_key) broker=\(.broker) account_mode=\(.account_mode) market=\(.market) symbol=\(.symbol) side=\(.side) filled_qty=\(.filled_qty) filled_price=\(.filled_price) filled_notional=\(.filled_notional) currency=\(.currency) filled_at=\(.filled_at) correlation_id=\(.correlation_id // "")"' \
@@ -65,20 +76,39 @@ echo "$fills" | jq -c '.[]' | while read -r fill; do
             --permission-mode bypassPermissions \
             --settings "$SETTINGS" \
             --output-format json) > "$STATE_DIR/last_claude_out.json" 2>> "$STATE_DIR/claude_err.log"; then
-      echo "claude 실패(배치 중단, 다음 폴에서 재시도): $lid — 출력 꼬리:" >&2
+      retry_count="$(awk -v id="$lid" '$1 == id { count=$2 } END { print count + 1 }' "$RETRY_COUNTS")"
+      awk -v id="$lid" '$1 != id' "$RETRY_COUNTS" > "$RETRY_COUNTS.tmp"
+      printf '%s %s\n' "$lid" "$retry_count" >> "$RETRY_COUNTS.tmp"
+      mv "$RETRY_COUNTS.tmp" "$RETRY_COUNTS"
+      echo "claude 실패(${retry_count}/3): $lid — 출력 꼬리:" >&2
       tail -c 600 "$STATE_DIR/last_claude_out.json" >&2 || true
-      break
+      if (( retry_count >= 3 )); then
+        echo "$lid" >> "$SEEN"; tail -n 500 "$SEEN" > "$SEEN.tmp" && mv "$SEEN.tmp" "$SEEN"
+        curl -fsS -H 'Content-Type: application/json' \
+          -d "$(jq -nc --arg c "**[fill triage failed]** ledger_id=$lid — claude failed 3 times; marked seen" '{content:$c}')" \
+          "$DISCORD_FILL_TRIAGE_WEBHOOK" >/dev/null \
+          || echo "discord 실패 통지 post 실패(best-effort): $lid" >&2
+        if [[ "$watermark_blocked" == "0" ]]; then
+          echo "$lid" > "$WATERMARK"
+        fi
+        continue
+      fi
+      watermark_blocked=1
+      continue
     fi
     res="$(cat "$STATE_DIR/last_claude_out.json")"
+    echo "$lid" >> "$SEEN"; tail -n 500 "$SEEN" > "$SEEN.tmp" && mv "$SEEN.tmp" "$SEEN"
+    awk -v id="$lid" '$1 != id' "$RETRY_COUNTS" > "$RETRY_COUNTS.tmp" && mv "$RETRY_COUNTS.tmp" "$RETRY_COUNTS"
     text="$(jq -r '.result' <<<"$res")"
     curl -fsS -H 'Content-Type: application/json' \
       -d "$(jq -nc --arg c "**[fill triage] $(jq -r .symbol <<<"$fill")**"$'\n'"$text" '{content:$c}')" \
       "$DISCORD_FILL_TRIAGE_WEBHOOK" >/dev/null \
-      || { echo "discord post 실패(배치 중단, 다음 폴에서 재시도): $lid" >&2; break; }
+      || echo "discord post 실패(best-effort): $lid" >&2
     jq -nc --arg lid "$lid" --argjson r "$res" \
       '{ledger_id:$lid, session_id:$r.session_id, cost_usd:$r.cost_usd, duration_ms:$r.duration_ms, num_turns:$r.num_turns}' >> "$VLOG"
   fi
 
-  echo "$lid" >> "$SEEN"; tail -n 500 "$SEEN" > "$SEEN.tmp" && mv "$SEEN.tmp" "$SEEN"
-  echo "$lid" > "$WATERMARK"
+  if [[ "$watermark_blocked" == "0" ]]; then
+    echo "$lid" > "$WATERMARK"
+  fi
 done
