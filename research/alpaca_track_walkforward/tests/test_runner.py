@@ -14,13 +14,17 @@ module's own development surfaced (see
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
+import fill_model as fm
 import fold_schedule as fs
 import oos_mask as om
 import pytest
 import runner
 import synthetic_fixture as sfx
+import trade_ledger as tl
+import wf_seal_consumption as wf_seal
 
 _ANCHOR_MS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)
 _FOLD = fs.build_fold_schedule(_ANCHOR_MS)[0]
@@ -81,6 +85,186 @@ def test_unfilled_entry_never_produces_an_orphan_exit_ap_a1(
     assert len(unfilled_or_incomplete) > 0
 
 
+def test_future_universe_snapshot_is_rejected_fail_closed(
+    bars_20, universe_provider_20, minute_provider_20
+):
+    """Verifier reproduction: a provider cannot return a future U_t."""
+    import seal_consumption as h3_seal
+
+    config = next(
+        c
+        for c in h3_seal.load_sealed_configs_and_params().configs
+        if c.family == "AP-A1"
+    )
+
+    def future_provider(decision_ts_ms):
+        current = universe_provider_20(decision_ts_ms)
+        return replace(
+            current,
+            decision_ts_ms=decision_ts_ms + 999 * 86_400_000,
+        )
+
+    with pytest.raises(runner.ProviderTimeBindingError, match="does not equal"):
+        runner._run_continuous_decisions(
+            config=config,
+            family="AP-A1",
+            fold=_FOLD,
+            bars_by_symbol=bars_20,
+            universe_snapshot_provider=future_provider,
+            minute_bars_provider=minute_provider_20,
+        )
+
+
+def test_runner_rejects_fold_id_not_bound_to_issued_fold(
+    bars_20, universe_provider_20, minute_provider_20
+):
+    with pytest.raises(fs.FoldBindingError, match="does not match"):
+        runner.run_family_fold(
+            family="AP-A2",
+            fold_id="fold-99",
+            fold=_FOLD,
+            bars_by_symbol=bars_20,
+            universe_snapshot_provider=universe_provider_20,
+            minute_bars_provider=minute_provider_20,
+        )
+
+
+def _filled(price: float) -> fm.FillOutcome:
+    return fm.FillOutcome(
+        filled=True,
+        fill_price=price,
+        fill_bar_offset=1,
+        reason="FILLED",
+    )
+
+
+def _boundary_trade(
+    *,
+    entry_fill_ts_ms: int,
+    exit_fill_ts_ms: int,
+    exit_price: float,
+) -> tl.Trade:
+    entry_fill = _filled(100.0)
+    exit_fill = _filled(exit_price)
+    return tl.Trade(
+        symbol="BTC/USD",
+        config_id="AP-A1-00",
+        entry_decision_ts_ms=entry_fill_ts_ms - fm.MINUTE_MS,
+        entry_fill_ts_ms=entry_fill_ts_ms,
+        exit_decision_ts_ms=exit_fill_ts_ms - fm.MINUTE_MS,
+        exit_fill_ts_ms=exit_fill_ts_ms,
+        entry_reference_close=100.0,
+        exit_reference_close=exit_price,
+        filled_qty=0.625,
+        entry_fill=entry_fill,
+        exit_fill=exit_fill,
+    )
+
+
+def _run_result_for_trade(trade: tl.Trade) -> runner._ContinuousRunResult:
+    return runner._ContinuousRunResult(
+        all_records=(),
+        closed_trades=(trade,),
+        open_legs_by_symbol={},
+        fill_attempts=(),
+        modeled_entry_evidence=(trade.entry_evidence,),
+    )
+
+
+def test_train_entry_oos_exit_counts_entry_cost_but_never_train_closed_or_e120():
+    """Frozen event-time table rows 2/3 in one lifecycle."""
+    trade = _boundary_trade(
+        entry_fill_ts_ms=_FOLD.train_end_ms - 60_000,
+        exit_fill_ts_ms=_FOLD.oos_start_ms + 60_000,
+        exit_price=120.0,
+    )
+    run_result = _run_result_for_trade(trade)
+    scenarios = wf_seal.cost_scenarios_bp()
+
+    train, train_trades = runner._build_phase_metrics(
+        phase="TRAIN",
+        run_result=run_result,
+        fold=_FOLD,
+        cost_scenarios_bp=scenarios,
+    )
+    oos, oos_trades = runner._build_phase_metrics(
+        phase="OOS",
+        run_result=run_result,
+        fold=_FOLD,
+        cost_scenarios_bp=scenarios,
+    )
+
+    assert train.modeled_entries_count == 1
+    assert len(train.modeled_entry_evidence) == 1
+    assert train.closed_trades_count == 0
+    assert train.median_trade_e120_bp is None
+    assert train_trades == ()
+    assert oos.modeled_entries_count == 0
+    assert oos.closed_trades_count == 0
+    assert oos.median_trade_e120_bp is None
+    assert oos_trades == ()
+
+
+def test_oos_exit_price_mutation_cannot_move_train_e120_verifier_reproduction():
+    scenarios = wf_seal.cost_scenarios_bp()
+    observed = []
+    for exit_price in (120.0, 80.0):
+        trade = _boundary_trade(
+            entry_fill_ts_ms=_FOLD.train_end_ms - 60_000,
+            exit_fill_ts_ms=_FOLD.oos_start_ms + 60_000,
+            exit_price=exit_price,
+        )
+        train, _trades = runner._build_phase_metrics(
+            phase="TRAIN",
+            run_result=_run_result_for_trade(trade),
+            fold=_FOLD,
+            cost_scenarios_bp=scenarios,
+        )
+        observed.append(
+            (
+                train.closed_trades_count,
+                train.median_trade_e120_bp,
+                train.modeled_entries_count,
+            )
+        )
+    assert observed == [(0, None, 1), (0, None, 1)]
+
+
+def test_complete_lifecycle_inside_train_is_included_in_closed_and_e120():
+    trade = _boundary_trade(
+        entry_fill_ts_ms=_FOLD.train_end_ms - 2 * 86_400_000,
+        exit_fill_ts_ms=_FOLD.train_end_ms - 86_400_000,
+        exit_price=120.0,
+    )
+    train, train_trades = runner._build_phase_metrics(
+        phase="TRAIN",
+        run_result=_run_result_for_trade(trade),
+        fold=_FOLD,
+        cost_scenarios_bp=wf_seal.cost_scenarios_bp(),
+    )
+    assert train.modeled_entries_count == 1
+    assert train.closed_trades_count == 1
+    assert train.median_trade_e120_bp == pytest.approx(1880.0)
+    assert train_trades == (trade,)
+
+
+def test_entry_fill_exactly_at_train_end_is_outside_half_open_train():
+    trade = _boundary_trade(
+        entry_fill_ts_ms=_FOLD.train_end_ms,
+        exit_fill_ts_ms=_FOLD.oos_start_ms + 60_000,
+        exit_price=120.0,
+    )
+    train, train_trades = runner._build_phase_metrics(
+        phase="TRAIN",
+        run_result=_run_result_for_trade(trade),
+        fold=_FOLD,
+        cost_scenarios_bp=wf_seal.cost_scenarios_bp(),
+    )
+    assert train.modeled_entries_count == 0
+    assert train.closed_trades_count == 0
+    assert train_trades == ()
+
+
 @pytest.fixture(scope="module")
 def ap_a2_full_result(bars_20, universe_provider_20, minute_provider_20):
     # Expensive (~1 minute, all 8 configs) -- module-scoped so the two
@@ -118,17 +302,14 @@ def test_run_family_fold_ap_a2_full_8_configs_end_to_end(ap_a2_full_result):
             assert masked.fold_id == "fold-0"
             assert masked.family == "AP-A2"
             assert masked.config_id == cr.config_id
-            with pytest.raises(om.OOSMaskBypassError):
-                om.unmask(
-                    masked,
-                    om.DryCountPassEvidence(
-                        fold_id="WRONG-fold",
-                        family="AP-A2",
-                        config_id=cr.config_id,
-                        modeled_entries=999,
-                        min_modeled_entries_per_fold=5,
-                        passed=True,
-                    ),
+            with pytest.raises(om.OOSMaskBypassError, match="cannot be constructed"):
+                om.DryCountPassEvidence(
+                    fold_id="WRONG-fold",
+                    family="AP-A2",
+                    config_id=cr.config_id,
+                    modeled_entries=999,
+                    min_modeled_entries_per_fold=5,
+                    passed=True,
                 )
         # TRAIN PnL (median E120) IS directly readable (AC23) -- plain
         # float or None, never masked.

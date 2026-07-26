@@ -111,8 +111,8 @@ def make_minute_bars_provider(
         idx = idx_by_symbol[symbol]
         day_index = (decision_ts_ms - window_start_ms) // DAY_MS
         price = close_for(idx, day_index)
-        m1 = decision_ts_ms
-        m2 = decision_ts_ms + 60_000
+        m1 = decision_ts_ms + 60_000
+        m2 = decision_ts_ms + 120_000
         return [
             SpotMinute(
                 open_time_ms=m1,

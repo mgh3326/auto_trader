@@ -25,6 +25,7 @@ argument alone.
 
 from __future__ import annotations
 
+import weakref
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -36,6 +37,8 @@ __all__ = [
     "ROLL_DAYS",
     "TRAIN_DAYS",
     "Fold",
+    "FoldBindingError",
+    "assert_registered_fold_binding",
     "build_fold_schedule",
 ]
 
@@ -54,13 +57,22 @@ OOS_DAYS = 28
 ROLL_DAYS = 28
 
 
+class FoldBindingError(ValueError):
+    """A fold was not issued by ``build_fold_schedule`` or its public id
+    does not match the issued fold index."""
+
+
+_FOLD_CONSTRUCTION_TOKEN = object()
+_ISSUED_FOLDS: dict[int, weakref.ReferenceType[Fold]] = {}
+
+
 def _int(value: object, name: str) -> int:
     if type(value) is not int:
         raise TypeError(f"{name} must be built-in int")
     return value
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True, init=False)
 class Fold:
     """One walk-forward fold. Every boundary is UTC-half-open ``[start,
     end)``; ``embargo_start_ms == train_end_ms`` and ``oos_start_ms ==
@@ -74,8 +86,40 @@ class Fold:
     oos_start_ms: int
     oos_end_ms: int
 
-    def __post_init__(self) -> None:
+    def __init__(
+        self,
+        fold_index: int,
+        train_start_ms: int,
+        train_end_ms: int,
+        embargo_start_ms: int,
+        embargo_end_ms: int,
+        oos_start_ms: int,
+        oos_end_ms: int,
+        *,
+        _construction_token: object | None = None,
+    ) -> None:
+        if _construction_token is not _FOLD_CONSTRUCTION_TOKEN:
+            raise FoldBindingError(
+                "Fold objects are issued only by build_fold_schedule(); "
+                "direct construction/reconstruction is forbidden"
+            )
+        values = {
+            "fold_index": fold_index,
+            "train_start_ms": train_start_ms,
+            "train_end_ms": train_end_ms,
+            "embargo_start_ms": embargo_start_ms,
+            "embargo_end_ms": embargo_end_ms,
+            "oos_start_ms": oos_start_ms,
+            "oos_end_ms": oos_end_ms,
+        }
+        for name, value in values.items():
+            object.__setattr__(self, name, value)
+        self._validate()
+
+    def _validate(self) -> None:
         _int(self.fold_index, "fold_index")
+        if not 0 <= self.fold_index < OOS_FOLDS:
+            raise ValueError(f"fold_index must be in [0, {OOS_FOLDS})")
         for name in (
             "train_start_ms",
             "train_end_ms",
@@ -95,6 +139,33 @@ class Fold:
             raise ValueError("embargo must start exactly where TRAIN ends (no gap)")
         if self.oos_start_ms != self.embargo_end_ms:
             raise ValueError("OOS must start exactly where embargo ends (no gap)")
+        _assert_utc_monday_midnight(self.oos_start_ms, label="oos_start_ms")
+
+
+def _register_fold(fold: Fold) -> Fold:
+    fold_id = id(fold)
+
+    def _discard(_ref: weakref.ReferenceType[Fold]) -> None:
+        _ISSUED_FOLDS.pop(fold_id, None)
+
+    _ISSUED_FOLDS[fold_id] = weakref.ref(fold, _discard)
+    return fold
+
+
+def assert_registered_fold_binding(*, fold_id: str, fold: Fold) -> None:
+    """Fail closed on direct copies/reconstruction and fold-id swapping."""
+    if type(fold) is not Fold:
+        raise FoldBindingError("fold must be an exact Fold instance")
+    issued_ref = _ISSUED_FOLDS.get(id(fold))
+    if issued_ref is None or issued_ref() is not fold:
+        raise FoldBindingError(
+            "fold was not issued by build_fold_schedule() in this process"
+        )
+    expected_fold_id = f"fold-{fold.fold_index}"
+    if fold_id != expected_fold_id:
+        raise FoldBindingError(
+            f"fold_id {fold_id!r} does not match issued {expected_fold_id!r}"
+        )
 
 
 def _assert_utc_monday_midnight(ts_ms: int, *, label: str) -> None:
@@ -128,14 +199,17 @@ def build_fold_schedule(anchor_oos_start_ms: int) -> tuple[Fold, ...]:
         train_end = embargo_start
         train_start = train_end - TRAIN_DAYS * DAY_MS
         folds.append(
-            Fold(
-                fold_index=i,
-                train_start_ms=train_start,
-                train_end_ms=train_end,
-                embargo_start_ms=embargo_start,
-                embargo_end_ms=embargo_end,
-                oos_start_ms=oos_start,
-                oos_end_ms=oos_end,
+            _register_fold(
+                Fold(
+                    fold_index=i,
+                    train_start_ms=train_start,
+                    train_end_ms=train_end,
+                    embargo_start_ms=embargo_start,
+                    embargo_end_ms=embargo_end,
+                    oos_start_ms=oos_start,
+                    oos_end_ms=oos_end,
+                    _construction_token=_FOLD_CONSTRUCTION_TOKEN,
+                )
             )
         )
     return tuple(folds)

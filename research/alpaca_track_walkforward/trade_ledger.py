@@ -29,6 +29,7 @@ from output_schema import SignalRecord
 
 __all__ = [
     "FillAttempt",
+    "ModeledEntryEvidence",
     "OpenLeg",
     "Trade",
     "TradeLedgerResult",
@@ -55,6 +56,29 @@ class FillAttempt:
     outcome: fm.FillOutcome
 
 
+@dataclass(frozen=True, slots=True)
+class ModeledEntryEvidence:
+    """Immutable AC9 evidence for one actual all-or-none entry fill."""
+
+    symbol: str
+    config_id: str
+    entry_fill_ts_ms: int
+    filled_qty: float
+    entry_fill_price: float
+
+    def __post_init__(self) -> None:
+        if type(self.entry_fill_ts_ms) is not int:
+            raise TypeError("entry_fill_ts_ms must be built-in int")
+        for name in ("filled_qty", "entry_fill_price"):
+            value = getattr(self, name)
+            if type(value) is not float or value <= 0.0:
+                raise ValueError(f"{name} must be a positive built-in float")
+
+    @property
+    def entry_filled_notional(self) -> float:
+        return self.filled_qty * self.entry_fill_price
+
+
 @dataclass(frozen=True)
 class OpenLeg:
     """An ENTER with no matching EXIT yet inside the supplied record
@@ -63,8 +87,21 @@ class OpenLeg:
     symbol: str
     config_id: str
     entry_decision_ts_ms: int
+    entry_fill_ts_ms: int
     entry_reference_close: float
+    filled_qty: float
     entry_fill: fm.FillOutcome
+
+    @property
+    def entry_evidence(self) -> ModeledEntryEvidence:
+        assert self.entry_fill.fill_price is not None
+        return ModeledEntryEvidence(
+            symbol=self.symbol,
+            config_id=self.config_id,
+            entry_fill_ts_ms=self.entry_fill_ts_ms,
+            filled_qty=self.filled_qty,
+            entry_fill_price=self.entry_fill.fill_price,
+        )
 
 
 @dataclass(frozen=True)
@@ -75,9 +112,12 @@ class Trade:
     symbol: str
     config_id: str
     entry_decision_ts_ms: int
+    entry_fill_ts_ms: int
     exit_decision_ts_ms: int
+    exit_fill_ts_ms: int
     entry_reference_close: float
     exit_reference_close: float
+    filled_qty: float
     entry_fill: fm.FillOutcome
     exit_fill: fm.FillOutcome
 
@@ -92,6 +132,23 @@ class Trade:
     @property
     def holding_days(self) -> int:
         return (self.exit_decision_ts_ms - self.entry_decision_ts_ms) // 86_400_000
+
+    @property
+    def entry_evidence(self) -> ModeledEntryEvidence:
+        assert self.entry_fill.fill_price is not None
+        return ModeledEntryEvidence(
+            symbol=self.symbol,
+            config_id=self.config_id,
+            entry_fill_ts_ms=self.entry_fill_ts_ms,
+            filled_qty=self.filled_qty,
+            entry_fill_price=self.entry_fill.fill_price,
+        )
+
+
+def _fill_ts_ms(decision_ts_ms: int, fill: fm.FillOutcome) -> int:
+    if not fill.filled or fill.fill_bar_offset is None:
+        raise ValueError("fill timestamp requires a filled FillOutcome")
+    return decision_ts_ms + fill.fill_bar_offset * fm.MINUTE_MS
 
 
 @dataclass(frozen=True)
@@ -129,11 +186,20 @@ def process_entry_signal(
     )
     if not fill.filled:
         return attempt, None
+    assert fill.fill_price is not None
+    # H3 commits target_notional at the signal/reference price before H4 can
+    # observe a later fill. The quantity is therefore fixed pre-fill; using
+    # the actual fill price below preserves the audit contract's
+    # filled_qty*entry_fill_price numerator rather than substituting target
+    # notional or a family base slot.
+    filled_qty = record.target_notional / reference_close
     return attempt, OpenLeg(
         symbol=record.symbol,
         config_id=record.config_id,
         entry_decision_ts_ms=ts,
+        entry_fill_ts_ms=_fill_ts_ms(ts, fill),
         entry_reference_close=reference_close,
+        filled_qty=filled_qty,
         entry_fill=fill,
     )
 
@@ -164,9 +230,12 @@ def process_exit_signal(
         symbol=open_leg.symbol,
         config_id=open_leg.config_id,
         entry_decision_ts_ms=open_leg.entry_decision_ts_ms,
+        entry_fill_ts_ms=open_leg.entry_fill_ts_ms,
         exit_decision_ts_ms=ts,
+        exit_fill_ts_ms=_fill_ts_ms(ts, fill),
         entry_reference_close=open_leg.entry_reference_close,
         exit_reference_close=reference_close,
+        filled_qty=open_leg.filled_qty,
         entry_fill=open_leg.entry_fill,
         exit_fill=fill,
     )

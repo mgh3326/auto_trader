@@ -34,7 +34,7 @@ _NUM_DAYS = (_FOLD.oos_end_ms - _FOLD.train_start_ms) // 86_400_000
 # pnl_views/config_selection/blind_counts/oos_mask/runner) -- never a
 # routine edit to make a failing test pass. If this test fails, STOP and
 # determine WHY the digest moved before touching this constant.
-GOLDEN_DIGEST = "f787c3baa866b654e786437fe78bd7ed15445671dd914de1e568bd9665c94bf8"
+GOLDEN_DIGEST = "91b5d47e2abcc2b23c07dcff3303f5b2113139a443779b10a8d8725012a06850"
 
 
 def _digest_summary(result: runner.FamilyFoldResult) -> dict:
@@ -54,6 +54,15 @@ def _digest_summary(result: runner.FamilyFoldResult) -> dict:
                     "median_trade_e120_bp": cr.train_metrics.median_trade_e120_bp,
                     "modeled_entries_count": cr.train_metrics.modeled_entries_count,
                     "turnover_p": cr.train_metrics.turnover_p,
+                    "modeled_entry_evidence": [
+                        {
+                            "entry_fill_ts_ms": entry.entry_fill_ts_ms,
+                            "filled_qty": entry.filled_qty,
+                            "entry_fill_price": entry.entry_fill_price,
+                            "entry_filled_notional": entry.entry_filled_notional,
+                        }
+                        for entry in cr.train_metrics.modeled_entry_evidence
+                    ],
                     "blind_counts": {
                         "total_decision_records": (
                             cr.train_metrics.blind_counts.total_decision_records
@@ -99,6 +108,15 @@ def _digest_summary(result: runner.FamilyFoldResult) -> dict:
                         cr.oos_blind_counts.reason_code_histogram
                     ),
                 },
+                "oos_modeled_entry_evidence": [
+                    {
+                        "entry_fill_ts_ms": entry.entry_fill_ts_ms,
+                        "filled_qty": entry.filled_qty,
+                        "entry_fill_price": entry.entry_fill_price,
+                        "entry_filled_notional": entry.entry_filled_notional,
+                    }
+                    for entry in cr.oos_modeled_entry_evidence
+                ],
                 "oos_masked_pnl_bindings": [
                     {
                         "fold_id": m.fold_id,

@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import fold_schedule as fs
+import pytest
 
 # A Monday 00:00:00 UTC anchor (first OOS start) — 2024-01-01 is a Monday.
 _ANCHOR_MS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)
@@ -93,3 +94,24 @@ def test_build_fold_schedule_takes_no_fold_list_parameter():
 
     sig = inspect.signature(fs.build_fold_schedule)
     assert list(sig.parameters) == ["anchor_oos_start_ms"]
+
+
+def test_report_reproduction_direct_arbitrary_fold_construction_is_rejected():
+    real = fs.build_fold_schedule(_ANCHOR_MS)[0]
+    with pytest.raises(fs.FoldBindingError, match="direct construction"):
+        fs.Fold(
+            fold_index=99,
+            train_start_ms=real.train_start_ms,
+            train_end_ms=real.train_end_ms,
+            embargo_start_ms=real.embargo_start_ms,
+            embargo_end_ms=real.embargo_end_ms,
+            oos_start_ms=real.oos_start_ms,
+            oos_end_ms=real.oos_end_ms,
+        )
+
+
+def test_fold_id_must_match_builder_issued_fold_index():
+    fold = fs.build_fold_schedule(_ANCHOR_MS)[0]
+    fs.assert_registered_fold_binding(fold_id="fold-0", fold=fold)
+    with pytest.raises(fs.FoldBindingError, match="does not match"):
+        fs.assert_registered_fold_binding(fold_id="fold-7", fold=fold)

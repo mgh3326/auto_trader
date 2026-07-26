@@ -90,3 +90,19 @@ def test_binding_is_immutable():
     except AttributeError:
         raised = True
     assert raised is True
+
+
+def test_inner_context_mappings_are_immutable_and_hashes_cover_source_and_features():
+    bars = {
+        "BTC/USD": [_bar(0, close=100.0, is_segment_start=True), _bar(1, close=101.0)]
+    }
+    binding = cb.compute_warmup_context_binding(bars, window_end_ms=2 * _DAY_MS)
+    try:
+        binding.per_symbol_segment_hash["FUTURE/USD"] = "attacker-mutated"
+        raised = False
+    except TypeError:
+        raised = True
+    assert raised is True
+    assert len(binding.source_corpus_hash) == 64
+    assert len(binding.feature_input_hash) == 64
+    assert binding.per_symbol_segment_range["BTC/USD"] == (0, 2 * _DAY_MS)

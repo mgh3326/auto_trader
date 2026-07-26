@@ -29,7 +29,7 @@ def _rec(ts, action, reason, notional=0.0):
 def _bars(ts, *, open_price):
     return [
         SpotMinute(
-            open_time_ms=ts,
+            open_time_ms=ts + _MIN,
             open=open_price,
             high=open_price + 1,
             low=open_price / 2,
@@ -37,7 +37,7 @@ def _bars(ts, *, open_price):
             volume=1.0,
         ),
         SpotMinute(
-            open_time_ms=ts + _MIN,
+            open_time_ms=ts + 2 * _MIN,
             open=open_price,
             high=open_price + 1,
             low=open_price / 2,
@@ -69,6 +69,13 @@ def test_enter_then_exit_produces_one_closed_trade():
     trade = result.closed_trades[0]
     assert trade.both_legs_filled is True
     assert trade.holding_days == 3
+    assert trade.entry_fill_ts_ms == t_entry + _MIN
+    assert trade.exit_fill_ts_ms == t_exit + _MIN
+    assert trade.filled_qty == pytest.approx(62.5 / 100.0)
+    assert trade.entry_evidence.entry_fill_price == pytest.approx(100.2)
+    assert trade.entry_evidence.entry_filled_notional == pytest.approx(
+        (62.5 / 100.0) * 100.2
+    )
     assert result.open_position is None
 
 
@@ -85,6 +92,18 @@ def test_enter_with_no_exit_is_reported_as_open_not_closed():
     assert result.closed_trades == ()
     assert result.open_position is not None
     assert result.open_position.entry_decision_ts_ms == t_entry
+
+
+def test_modeled_entry_evidence_is_immutable():
+    t_entry = _T0
+    result = tl.build_trades_for_symbol_config(
+        [_rec(t_entry, "ENTER", "ENTRY_ACCEPTED", notional=62.5)],
+        reference_close_by_decision_ts={t_entry: 100.0},
+        minute_bars_by_decision_ts={t_entry: _bars(t_entry, open_price=100.2)},
+    )
+    evidence = result.open_position.entry_evidence
+    with pytest.raises(AttributeError):
+        evidence.filled_qty = 999.0
 
 
 def test_entry_unfilled_never_opens_a_position():

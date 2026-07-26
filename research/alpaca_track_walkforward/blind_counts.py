@@ -59,6 +59,7 @@ def compute_blind_counts(
     closed_trades: Sequence[Trade] = (),
     open_positions_count: int = 0,
     fill_attempts: Sequence[FillAttempt] = (),
+    modeled_entries_count: int | None = None,
 ) -> BlindCounts:
     """``records``/``closed_trades``/``fill_attempts`` must already be
     scoped to the phase (TRAIN or OOS) the caller wants counted — this
@@ -70,7 +71,10 @@ def compute_blind_counts(
     phase-sliced record subsequence can orphan a EXIT whose paired ENTER
     fell in the other phase)."""
     closed_trades_count = len(closed_trades)
-    modeled_entries_count = closed_trades_count + open_positions_count
+    if modeled_entries_count is None:
+        modeled_entries_count = closed_trades_count + open_positions_count
+    if type(modeled_entries_count) is not int or modeled_entries_count < 0:
+        raise ValueError("modeled_entries_count must be a non-negative built-in int")
     holding_days = tuple(t.holding_days for t in closed_trades)
     histogram = rc.reconcile_histogram([r.reason_code for r in records])
     entry_unfilled = sum(
@@ -100,15 +104,30 @@ def compute_blind_counts(
 
 
 def annualized_stress_cost_pct(
-    *, modeled_entries_count: int, window_days: int, cost_bp: float
+    *,
+    entry_filled_notionals: Sequence[float],
+    window_days: int,
+    nav_usd: float,
+    cost_bp: float,
 ) -> float:
-    """PnL-blind annualized turnover-cost drag, as a percentage of NAV
-    (Run A SS5/SS11.6/SS12.6's "stress 드래그 연 X%"): entries-per-year times
-    the (stress) cost scenario's bp, expressed as a percent. Uses ONLY
-    entry counts and the sealed cost scenario bp — never a PnL figure —
-    which is exactly what lets AC9's cost cap reject a config "PnL-blind,
-    before any gross edge is even looked at"."""
+    """Annualized notional-weighted drag as percentage of fixed NAV.
+
+    Audit freeze 2026-07-26:
+      100 * (365 / D_W) * sum((entry_filled_notional / NAV0) * cost_rate)
+    """
     if window_days <= 0:
         raise ValueError("window_days must be positive")
-    entries_per_year = modeled_entries_count / window_days * 365.0
-    return entries_per_year * (cost_bp / 10_000.0) * 100.0
+    if type(nav_usd) is not float or nav_usd <= 0.0:
+        raise ValueError("nav_usd must be a positive built-in float")
+    if type(cost_bp) is not float or cost_bp <= 0.0:
+        raise ValueError("cost_bp must be a positive built-in float")
+    for notional in entry_filled_notionals:
+        if type(notional) is not float or notional <= 0.0:
+            raise ValueError(
+                "entry_filled_notionals must contain positive built-in floats"
+            )
+    cost_rate = cost_bp / 10_000.0
+    window_drag = sum(
+        (notional / nav_usd) * cost_rate for notional in entry_filled_notionals
+    )
+    return 100.0 * (365.0 / window_days) * window_drag

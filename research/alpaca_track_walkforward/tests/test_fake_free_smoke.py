@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import blind_counts as bc
 import daily_bars as db
 import dats_engine
 import oos_mask as om
@@ -131,7 +132,7 @@ def test_fake_free_entry_then_exit_through_the_full_h4_pipeline():
     exit_ref = [b for b in strong_bars if b.day_end_ms == exit_decision_day][0].close
     entry_minutes = [
         db.SpotMinute(
-            open_time_ms=entry_record.decision_ts_ms,
+            open_time_ms=entry_record.decision_ts_ms + 60_000,
             open=entry_ref,
             high=entry_ref + 1,
             low=entry_ref - 1,
@@ -139,7 +140,7 @@ def test_fake_free_entry_then_exit_through_the_full_h4_pipeline():
             volume=1.0,
         ),
         db.SpotMinute(
-            open_time_ms=entry_record.decision_ts_ms + 60_000,
+            open_time_ms=entry_record.decision_ts_ms + 120_000,
             open=entry_ref,
             high=entry_ref + 1,
             low=entry_ref - 1,
@@ -149,7 +150,7 @@ def test_fake_free_entry_then_exit_through_the_full_h4_pipeline():
     ]
     exit_minutes = [
         db.SpotMinute(
-            open_time_ms=exit_record.decision_ts_ms,
+            open_time_ms=exit_record.decision_ts_ms + 60_000,
             open=exit_ref,
             high=exit_ref + 1,
             low=max(exit_ref - 1, 0.01),
@@ -157,7 +158,7 @@ def test_fake_free_entry_then_exit_through_the_full_h4_pipeline():
             volume=1.0,
         ),
         db.SpotMinute(
-            open_time_ms=exit_record.decision_ts_ms + 60_000,
+            open_time_ms=exit_record.decision_ts_ms + 120_000,
             open=exit_ref,
             high=exit_ref + 1,
             low=max(exit_ref - 1, 0.01),
@@ -190,16 +191,24 @@ def test_fake_free_entry_then_exit_through_the_full_h4_pipeline():
     assert three_view.shadow_net_bp_by_scenario["C120"] < three_view.actual_fill_bp
 
     # Real oos_mask -- masked by default, unmaskable only with matching PASS evidence.
-    masked = om.mask(
-        three_view, fold_id="smoke-fold", family="AP-A1", config_id=config.config_id
+    dry_counts = bc.BlindCounts(
+        total_decision_records=5,
+        modeled_entries_count=5,
+        closed_trades_count=5,
+        open_positions_count=0,
+        entry_unfilled_count=0,
+        exit_unfilled_count=0,
+        fill_window_incomplete_count=0,
+        holding_days=(3, 3, 3, 3, 3),
+        reason_code_histogram={"ENTRY_ACCEPTED": 5},
     )
-    evidence = om.DryCountPassEvidence(
+    masked = om.mask(
+        three_view,
         fold_id="smoke-fold",
         family="AP-A1",
         config_id=config.config_id,
-        modeled_entries=5,
-        min_modeled_entries_per_fold=5,
-        passed=True,
+        dry_counts=dry_counts,
     )
+    evidence = om.issue_dry_count_pass(masked, dry_counts)
     unmasked = om.unmask(masked, evidence)
-    assert unmasked is three_view
+    assert unmasked == three_view

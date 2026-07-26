@@ -1,250 +1,214 @@
-"""ROB-1062 H4 (AC22-AC25) — the OOS PnL masking guarantee: every named
-bypass route in AC24 (direct field access, debug/repr output, pickle/JSON
-round-trip, exception-message leakage) is attempted here and proven blocked.
-"""
+"""Adversarial tests for the OOS PnL mask and dry-count authority."""
 
 from __future__ import annotations
 
 import copy
+import gc
+import inspect
 import json
 import pickle
+import weakref
 
+import blind_counts as bc
 import oos_mask as om
 import pytest
 
-_SECRET_PNL_VALUE = -12345.6789  # an OOS PnL value that must never leak
+_SECRET_PNL_VALUE = -12345.6789
 
 
-def _masked(**overrides):
+class _SecretBox:
+    pass
+
+
+def _counts(*, modeled_entries: int = 7) -> bc.BlindCounts:
+    return bc.BlindCounts(
+        total_decision_records=modeled_entries,
+        modeled_entries_count=modeled_entries,
+        closed_trades_count=modeled_entries,
+        open_positions_count=0,
+        entry_unfilled_count=0,
+        exit_unfilled_count=0,
+        fill_window_incomplete_count=0,
+        holding_days=tuple(3 for _ in range(modeled_entries)),
+        reason_code_histogram={"ENTRY_ACCEPTED": modeled_entries},
+    )
+
+
+def _masked(
+    *,
+    secret: object = _SECRET_PNL_VALUE,
+    counts: bc.BlindCounts | None = None,
+    **overrides: str,
+) -> tuple[om.Masked, bc.BlindCounts]:
+    actual_counts = counts or _counts()
     kwargs = {"fold_id": "fold-0", "family": "AP-A1", "config_id": "AP-A1-00"}
     kwargs.update(overrides)
-    return om.mask(_SECRET_PNL_VALUE, **kwargs)
+    return (
+        om.mask(secret, dry_counts=actual_counts, **kwargs),
+        actual_counts,
+    )
 
 
-def _pass_evidence(**overrides):
-    kwargs = {
-        "fold_id": "fold-0",
-        "family": "AP-A1",
-        "config_id": "AP-A1-00",
-        "modeled_entries": 7,
-        "min_modeled_entries_per_fold": 5,
-        "passed": True,
-    }
-    kwargs.update(overrides)
-    return om.DryCountPassEvidence(**kwargs)
+def _issued_pass(masked: om.Masked, counts: bc.BlindCounts) -> om.DryCountPassEvidence:
+    return om.issue_dry_count_pass(masked, counts)
 
 
-# --------------------------------------------------------------------- #
-# The mask must be transparent when the evidence genuinely matches.
-# --------------------------------------------------------------------- #
-
-
-def test_unmask_with_matching_evidence_returns_the_raw_value():
-    masked = _masked()
-    evidence = _pass_evidence()
+def test_matching_real_dry_count_pass_unmasks_once():
+    masked, counts = _masked()
+    evidence = _issued_pass(masked, counts)
     assert om.unmask(masked, evidence) == _SECRET_PNL_VALUE
+    with pytest.raises(om.OOSMaskBypassError, match="already"):
+        om.unmask(masked, evidence)
 
 
-# --------------------------------------------------------------------- #
-# AC24 bypass route 1: direct field/attribute access.
-# --------------------------------------------------------------------- #
+def test_report_reproduction_closure_and_inspect_paths_have_no_raw_value():
+    masked, _counts_value = _masked()
+    with pytest.raises(AttributeError):
+        object.__getattribute__(masked, "_reveal")
+    closure_vars = inspect.getclosurevars(om.mask)
+    assert "raw_value" not in closure_vars.nonlocals
+    assert "raw_value" not in closure_vars.globals
+    assert all(value is not _SECRET_PNL_VALUE for value in gc.get_referents(masked))
 
 
-def test_direct_attribute_access_to_the_closure_itself_never_yields_the_raw_value():
-    masked = _masked()
-    reveal = masked._reveal  # the closure itself, not the value
-    assert callable(reveal)
-    with pytest.raises(om.OOSMaskBypassError, match="direct access"):
-        reveal(None)
-    with pytest.raises(om.OOSMaskBypassError, match="direct access"):
-        reveal(object())  # a fresh, wrong sentinel object
-
-
-def test_object_getattribute_direct_bypass_of_any_override_still_fails():
-    """The most aggressive attribute-access bypass attempt: calling
-    object.__getattribute__ directly, which would defeat a
-    __getattribute__-override-based design outright."""
-    masked = _masked()
-    reveal = object.__getattribute__(masked, "_reveal")
-    with pytest.raises(om.OOSMaskBypassError):
-        reveal(object())
-
-
-def test_vars_and_dict_introspection_blocked_by_slots():
-    masked = _masked()
-    with pytest.raises(TypeError):
-        vars(masked)
-    assert not hasattr(masked, "__dict__")
-
-
-def test_setattr_and_delattr_are_blocked():
-    masked = _masked()
-    with pytest.raises(om.OOSMaskBypassError):
-        masked.new_attr = 1
-    with pytest.raises(om.OOSMaskBypassError):
-        del masked._fold_id
-
-
-# --------------------------------------------------------------------- #
-# AC24 bypass route 2: debug/repr/str output.
-# --------------------------------------------------------------------- #
-
-
-def test_repr_never_contains_the_raw_value():
-    masked = _masked()
-    text = repr(masked)
-    assert str(_SECRET_PNL_VALUE) not in text
-    assert "<masked>" in text
-
-
-def test_str_never_contains_the_raw_value():
-    masked = _masked()
-    text = str(masked)
-    assert str(_SECRET_PNL_VALUE) not in text
-
-
-def test_f_string_formatting_never_leaks_the_raw_value():
-    masked = _masked()
-    text = f"debug: {masked}"
-    assert str(_SECRET_PNL_VALUE) not in text
-
-
-# --------------------------------------------------------------------- #
-# AC24 bypass route 3: pickle / JSON round-trip / deepcopy.
-# --------------------------------------------------------------------- #
-
-
-def test_pickle_dumps_is_blocked():
-    masked = _masked()
-    with pytest.raises((om.OOSMaskBypassError, TypeError, pickle.PicklingError)):
-        pickle.dumps(masked)
-
-
-def test_deepcopy_is_blocked():
-    masked = _masked()
-    with pytest.raises((om.OOSMaskBypassError, TypeError)):
-        copy.deepcopy(masked)
-
-
-def test_json_dumps_cannot_serialize_a_masked_value():
-    masked = _masked()
-    with pytest.raises(TypeError):
-        json.dumps(masked)
-    # Even a caller-supplied default= hook that naively formats via str()
-    # must not leak the value (repr/str are already redacted above, but
-    # this proves the composition holds end-to-end through json.dumps).
-    text = json.dumps({"pnl": None}, default=lambda o: str(o))
-    assert str(_SECRET_PNL_VALUE) not in text
-
-
-# --------------------------------------------------------------------- #
-# AC24 bypass route 4: exception-message leakage.
-# --------------------------------------------------------------------- #
-
-
-def test_wrong_evidence_binding_error_message_never_contains_the_raw_value():
-    masked = _masked()
-    wrong_fold_evidence = _pass_evidence(fold_id="fold-1")
-    with pytest.raises(om.OOSMaskBypassError) as exc_info:
-        om.unmask(masked, wrong_fold_evidence)
-    assert str(_SECRET_PNL_VALUE) not in str(exc_info.value)
-
-
-def test_type_error_on_bad_evidence_type_never_contains_the_raw_value():
-    masked = _masked()
-    with pytest.raises(TypeError) as exc_info:
-        om.unmask(masked, "not evidence")
-    assert str(_SECRET_PNL_VALUE) not in str(exc_info.value)
-
-
-# --------------------------------------------------------------------- #
-# Binding: a PASS evidence for a DIFFERENT fold/family/config must never
-# unmask THIS value (no evidence reuse across scope).
-# --------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    "override",
-    [
-        {"fold_id": "fold-1"},
-        {"family": "AP-A2"},
-        {"config_id": "AP-A1-01"},
-    ],
-)
-def test_evidence_from_a_different_scope_cannot_unmask(override):
-    masked = _masked()
-    wrong_evidence = _pass_evidence(**override)
-    with pytest.raises(om.OOSMaskBypassError, match="does not match"):
-        om.unmask(masked, wrong_evidence)
-
-
-def test_unmask_rejects_non_masked_first_argument():
-    evidence = _pass_evidence()
-    with pytest.raises(TypeError, match="expected a Masked value"):
-        om.unmask(_SECRET_PNL_VALUE, evidence)
-
-
-# --------------------------------------------------------------------- #
-# Equality/hash cannot be used as an oracle.
-# --------------------------------------------------------------------- #
-
-
-def test_equality_comparison_is_blocked_not_a_silent_false():
-    masked_a = _masked()
-    masked_b = _masked()
-    with pytest.raises(om.OOSMaskBypassError):
-        _ = masked_a == masked_b
-
-
-def test_masked_is_unhashable():
-    masked = _masked()
-    with pytest.raises(TypeError):
-        hash(masked)
-
-
-# --------------------------------------------------------------------- #
-# DryCountPassEvidence itself can never represent a fail — closing off a
-# whole class of "construct a fake-looking pass to smuggle through" bug.
-# --------------------------------------------------------------------- #
-
-
-def test_dry_count_pass_evidence_cannot_be_constructed_as_a_fail():
-    with pytest.raises(ValueError, match="genuine PASS"):
+def test_report_reproduction_external_pass_constructor_is_blocked():
+    masked, _counts_value = _masked()
+    with pytest.raises(om.OOSMaskBypassError, match="cannot be constructed"):
         om.DryCountPassEvidence(
             fold_id="fold-0",
             family="AP-A1",
             config_id="AP-A1-00",
-            modeled_entries=2,
-            min_modeled_entries_per_fold=5,
-            passed=False,
-        )
-
-
-def test_dry_count_pass_evidence_rejects_entries_below_threshold_even_if_flagged_passed():
-    with pytest.raises(ValueError, match="below"):
-        om.DryCountPassEvidence(
-            fold_id="fold-0",
-            family="AP-A1",
-            config_id="AP-A1-00",
-            modeled_entries=2,
-            min_modeled_entries_per_fold=5,
+            modeled_entries=0,
+            min_modeled_entries_per_fold=0,
             passed=True,
         )
+    with pytest.raises(TypeError):
+        om.unmask(masked, object())
 
 
-# --------------------------------------------------------------------- #
-# PnL-blind counts (AC25) are the exact OPPOSITE of masked: they must be
-# always-visible plain data, never wrapped. This test documents that
-# `mask`/`unmask` are the ONLY functions this module offers to wrap
-# anything — a caller cannot accidentally end up masking a blind count.
-# --------------------------------------------------------------------- #
+def test_private_token_import_bypass_no_longer_exists():
+    assert not hasattr(om, "_AUTHORIZED_UNMASK_TOKEN")
+    masked, _counts_value = _masked()
+    assert not hasattr(masked, "_reveal")
 
 
-def test_module_public_api_is_exactly_mask_unmask_and_the_two_types():
+def test_fake_counts_cannot_issue_pass_for_an_existing_mask():
+    masked, actual_counts = _masked()
+    fake_counts = _counts(modeled_entries=999)
+    assert fake_counts is not actual_counts
+    with pytest.raises(om.OOSMaskBypassError, match="actual object"):
+        om.issue_dry_count_pass(masked, fake_counts)
+
+
+def test_below_sealed_minimum_cannot_issue_pass():
+    counts = _counts(modeled_entries=4)
+    masked, counts = _masked(counts=counts)
+    with pytest.raises(om.OOSMaskBypassError, match="sealed minimum"):
+        om.issue_dry_count_pass(masked, counts)
+
+
+def test_reconstructed_evidence_object_is_not_authority():
+    masked, counts = _masked()
+    forged = object.__new__(om.DryCountPassEvidence)
+    for name, value in (
+        ("_fold_id", "fold-0"),
+        ("_family", "AP-A1"),
+        ("_config_id", "AP-A1-00"),
+        ("_modeled_entries", 999),
+        ("_min_modeled_entries_per_fold", 0),
+    ):
+        object.__setattr__(forged, name, value)
+    with pytest.raises(om.OOSMaskBypassError, match="reconstructed"):
+        om.unmask(masked, forged)
+
+
+def test_reconstructed_mask_handle_is_not_in_the_issuance_registry():
+    forged = object.__new__(om.Masked)
+    object.__setattr__(forged, "_fold_id", "fold-0")
+    object.__setattr__(forged, "_family", "AP-A1")
+    object.__setattr__(forged, "_config_id", "AP-A1-00")
+    with pytest.raises(om.OOSMaskBypassError, match="reconstructed"):
+        om.issue_dry_count_pass(forged, _counts())
+
+
+def test_object_setattr_tampering_fails_integrity_check():
+    masked, counts = _masked()
+    object.__setattr__(masked, "_config_id", "AP-A1-07")
+    with pytest.raises(om.OOSMaskBypassError, match="integrity"):
+        om.issue_dry_count_pass(masked, counts)
+
+
+def test_masked_and_evidence_subclassing_is_blocked():
+    with pytest.raises(TypeError, match="cannot be subclassed"):
+
+        class EvilMasked(om.Masked):
+            pass
+
+    with pytest.raises(TypeError, match="cannot be subclassed"):
+
+        class EvilEvidence(om.DryCountPassEvidence):
+            pass
+
+
+def test_copy_reconstruction_pickle_and_deepcopy_are_blocked():
+    masked, counts = _masked()
+    evidence = _issued_pass(masked, counts)
+    for value in (masked, evidence):
+        with pytest.raises((om.OOSMaskBypassError, TypeError, pickle.PicklingError)):
+            copy.copy(value)
+        with pytest.raises((om.OOSMaskBypassError, TypeError, pickle.PicklingError)):
+            copy.deepcopy(value)
+        with pytest.raises((om.OOSMaskBypassError, TypeError, pickle.PicklingError)):
+            pickle.dumps(value)
+
+
+def test_nested_raw_values_are_not_object_referents_or_string_representations():
+    secret = {"outer": [{"pnl": _SECRET_PNL_VALUE}], "other": ("x", 3)}
+    masked, _counts_value = _masked(secret=secret)
+    assert secret not in gc.get_referents(masked)
+    assert str(_SECRET_PNL_VALUE) not in repr(masked)
+    assert str(_SECRET_PNL_VALUE) not in str(masked)
+    with pytest.raises(TypeError):
+        json.dumps(masked)
+    redacted_json = json.dumps({"pnl": masked}, default=str)
+    assert str(_SECRET_PNL_VALUE) not in redacted_json
+
+
+def test_source_object_is_not_retained_in_the_caller_process_object_graph():
+    secret = _SecretBox()
+    secret_ref = weakref.ref(secret)
+    masked, counts = _masked(secret=secret)
+    del secret
+    gc.collect()
+    assert secret_ref() is None
+    evidence = _issued_pass(masked, counts)
+    assert isinstance(om.unmask(masked, evidence), _SecretBox)
+
+
+def test_exception_messages_never_contain_raw_value():
+    masked, counts = _masked()
+    evidence = _issued_pass(masked, counts)
+    other_masked, _other_counts = _masked(config_id="AP-A1-01")
+    with pytest.raises(om.OOSMaskBypassError) as exc_info:
+        om.unmask(other_masked, evidence)
+    assert str(_SECRET_PNL_VALUE) not in str(exc_info.value)
+
+
+def test_equality_and_hash_oracles_are_blocked():
+    masked_a, _counts_a = _masked()
+    masked_b, _counts_b = _masked()
+    with pytest.raises(om.OOSMaskBypassError):
+        _ = masked_a == masked_b
+    with pytest.raises(TypeError):
+        hash(masked_a)
+
+
+def test_public_api_requires_issuance_not_public_evidence_construction():
     assert set(om.__all__) == {
         "DryCountPassEvidence",
         "Masked",
         "OOSMaskBypassError",
+        "issue_dry_count_pass",
         "mask",
         "unmask",
     }

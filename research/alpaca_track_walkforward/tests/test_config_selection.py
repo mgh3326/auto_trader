@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import blind_counts as bc
 import config_selection as cs
 import pytest
 
@@ -79,6 +80,47 @@ def test_non_positive_median_e120_excluded():
 def test_cost_cap_exceeded_excluded_pnl_blind_even_with_great_median_e120():
     metrics = [_metric("AP-A1-00", median_e120=1000.0, cost_pct=6.01)]
     result = cs.select_config(metrics, data_window="TRAIN", stress_cost_cap_pct=6.0)
+    assert result.status == "NO_SELECTED_CONFIG"
+
+
+def test_cost_gate_is_compared_before_pnl_and_stops_pnl_access_on_cost_failure():
+    events: list[str] = []
+
+    class CostSpy(float):
+        def __le__(self, other):
+            events.append("COST<=")
+            return False
+
+    class PnLSpy(float):
+        def __gt__(self, other):
+            events.append("PNL>")
+            return True
+
+    metrics = [
+        _metric(
+            "AP-A1-00",
+            median_e120=PnLSpy(1000.0),
+            cost_pct=CostSpy(99.0),
+        )
+    ]
+    result = cs.select_config(metrics, data_window="TRAIN", stress_cost_cap_pct=6.0)
+    assert result.status == "NO_SELECTED_CONFIG"
+    assert events == ["COST<="]
+
+
+def test_full_nav_per_trade_36pct_misread_is_rejected_by_unchanged_caps():
+    full_nav_drag = bc.annualized_stress_cost_pct(
+        entry_filled_notionals=(2000.0,) * 30,
+        window_days=365,
+        nav_usd=2000.0,
+        cost_bp=120.0,
+    )
+    assert full_nav_drag == pytest.approx(36.0)
+    result = cs.select_config(
+        [_metric("AP-A1-00", closed=30, median_e120=999.0, cost_pct=full_nav_drag)],
+        data_window="TRAIN",
+        stress_cost_cap_pct=6.0,
+    )
     assert result.status == "NO_SELECTED_CONFIG"
 
 

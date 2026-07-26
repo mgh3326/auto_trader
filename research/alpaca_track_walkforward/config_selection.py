@@ -91,13 +91,20 @@ def select_config(
             f"{data_window!r} — OOS information must never reach config "
             "selection (Run A SS15/AC8)"
         )
+    # AC9 is procedural, not merely a final-result predicate: the
+    # PnL-blind cost cap must run before *any* E120 value is inspected.
+    structurally_eligible = [
+        m for m in metrics if m.closed_trades_count >= MIN_TRAIN_CLOSED_TRADES
+    ]
+    cost_eligible = [
+        m
+        for m in structurally_eligible
+        if m.annualized_stress_cost_pct <= stress_cost_cap_pct
+    ]
     eligible = [
         m
-        for m in metrics
-        if m.closed_trades_count >= MIN_TRAIN_CLOSED_TRADES
-        and m.median_trade_e120_bp is not None
-        and m.median_trade_e120_bp > 0.0
-        and m.annualized_stress_cost_pct <= stress_cost_cap_pct
+        for m in cost_eligible
+        if m.median_trade_e120_bp is not None and m.median_trade_e120_bp > 0.0
     ]
     if not eligible:
         return ConfigSelectionResult(

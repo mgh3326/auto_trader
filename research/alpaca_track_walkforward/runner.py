@@ -15,20 +15,13 @@ per the fold_schedule module's own docstring on why TRAIN windows mostly
 overlap fold-to-fold rather than continuing a single simulation across
 folds).
 
-Trade attribution (a documented, flagged implementation choice — Run A SS15
-does not itself resolve what happens to a trade whose ENTRY and EXIT
-straddle the TRAIN/OOS boundary): a trade (closed or still-open) is
-attributed to whichever phase its ENTRY decision timestamp falls in. A
-TRAIN-entered trade that has not yet closed by ``train_end_ms`` is simply
-carried forward (never force-closed, never reset) and, if it later closes
-during OOS, its REALIZED PnL naturally uses OOS-period price bytes for the
-EXIT leg only — this is an unavoidable consequence of multi-day holding
-periods in ANY walk-forward design and is NOT the same thing as OOS SIGNAL
-information influencing the TRAIN entry decision itself (AC8's concern).
-Symmetrically, an OOS-entered trade's ``modeled_entries`` count (H5's own
-dry-count input) counts ONLY entries whose OWN decision timestamp is inside
-the OOS window — a carried-forward TRAIN position that happens to still be
-open during OOS is not itself a new OOS entry and is never counted as one.
+Event-time attribution (2026-07-26 audit-contract freeze): an actual ENTRY
+fill belongs to the half-open window containing ``entry_fill_ts_ms`` for
+modeled-entry dry count and C120 cost, regardless of whether it later closes.
+A closed trade/E120 belongs to a window only when BOTH its entry-fill and
+exit-fill timestamps are inside that same window. Cross-boundary positions
+remain carried without reset or synthetic exit, but their later exit price
+cannot enter an earlier window's closed/E120 statistic.
 
 Fill-aware state feedback (a real structural finding, not a simplification):
 H3's own engines assume every ``ENTER``/``EXIT`` signal they accept executes
@@ -70,6 +63,7 @@ import config_selection as cs
 import context_binding as ctxb
 import dats_engine as dats_eng
 import decision_calendar as dc
+import fold_schedule as fs
 import oos_mask as om
 import pit_universe_alpaca as pu
 import pnl_views as pv
@@ -86,6 +80,7 @@ __all__ = [
     "FamilyFoldResult",
     "MinuteBarsProvider",
     "PhaseTradeMetrics",
+    "ProviderTimeBindingError",
     "UniverseSnapshotProvider",
     "run_family_fold",
 ]
@@ -102,6 +97,7 @@ class PhaseTradeMetrics:
     median_trade_e120_bp: float | None
     modeled_entries_count: int
     turnover_p: float
+    modeled_entry_evidence: tuple[tl.ModeledEntryEvidence, ...]
     blind_counts: bc.BlindCounts
 
 
@@ -111,6 +107,7 @@ class ConfigFoldRun:
     family: str
     train_metrics: PhaseTradeMetrics
     oos_blind_counts: bc.BlindCounts
+    oos_modeled_entry_evidence: tuple[tl.ModeledEntryEvidence, ...]
     oos_masked_pnl_by_trade: tuple[om.Masked, ...]
     context_binding_at_oos_start: ctxb.WarmupContextBinding
 
@@ -144,6 +141,7 @@ class _ContinuousRunResult:
     closed_trades: tuple[tl.Trade, ...]
     open_legs_by_symbol: Mapping[str, tl.OpenLeg]
     fill_attempts: tuple[tl.FillAttempt, ...]
+    modeled_entry_evidence: tuple[tl.ModeledEntryEvidence, ...]
 
 
 class _RunnerInternalInvariantError(RuntimeError):
@@ -152,6 +150,10 @@ class _RunnerInternalInvariantError(RuntimeError):
     fill-aware state patching have desynced. Structurally unreachable given
     the patching this module performs (see module docstring); kept as an
     explicit, fail-closed check rather than a silent ``KeyError``."""
+
+
+class ProviderTimeBindingError(ValueError):
+    """A provider returned evidence for a timestamp other than requested."""
 
 
 def _reference_close(
@@ -168,16 +170,6 @@ def _reference_close(
     )
 
 
-def _phase_of(
-    ts: int, *, train_start: int, train_end: int, oos_start: int, oos_end: int
-) -> str:
-    if train_start <= ts < train_end:
-        return "TRAIN"
-    if oos_start <= ts < oos_end:
-        return "OOS"
-    raise ValueError(f"decision_ts {ts} is outside both TRAIN and OOS windows")
-
-
 def _run_continuous_decisions(
     *,
     config,
@@ -187,6 +179,7 @@ def _run_continuous_decisions(
     universe_snapshot_provider: UniverseSnapshotProvider,
     minute_bars_provider: MinuteBarsProvider,
 ) -> _ContinuousRunResult:
+    fs.assert_registered_fold_binding(fold_id=f"fold-{fold.fold_index}", fold=fold)
     timestamps = sorted(
         _decision_timestamps(
             family=family,
@@ -204,9 +197,17 @@ def _run_continuous_decisions(
     closed_trades: list[tl.Trade] = []
     open_legs: dict[str, tl.OpenLeg] = {}
     fill_attempts: list[tl.FillAttempt] = []
+    modeled_entry_evidence: list[tl.ModeledEntryEvidence] = []
 
     for ts in timestamps:
         universe = universe_snapshot_provider(ts)
+        if type(universe) is not pu.UniverseSnapshot:
+            raise TypeError("universe_snapshot_provider must return UniverseSnapshot")
+        if universe.decision_ts_ms != ts:
+            raise ProviderTimeBindingError(
+                "universe snapshot timestamp does not equal the requested "
+                "decision timestamp"
+            )
         prior_state = state
         if family == "AP-A1":
             result = dats_eng.run_ap_a1_decision(
@@ -241,6 +242,7 @@ def _run_continuous_decisions(
                 fill_attempts.append(attempt)
                 if maybe_open_leg is not None:
                     open_legs[symbol] = maybe_open_leg
+                    modeled_entry_evidence.append(maybe_open_leg.entry_evidence)
                     # naive_new_state already reflects long/held -- keep it.
                 elif family == "AP-A1":
                     patched_state[symbol] = dats_eng.AP_A1_PositionState(state="flat")
@@ -273,6 +275,7 @@ def _run_continuous_decisions(
         closed_trades=tuple(closed_trades),
         open_legs_by_symbol=dict(open_legs),
         fill_attempts=tuple(fill_attempts),
+        modeled_entry_evidence=tuple(modeled_entry_evidence),
     )
 
 
@@ -286,36 +289,38 @@ def _build_phase_metrics(
     """Derive this phase's metrics from the ALREADY-COMPUTED continuous run
     result (``_run_continuous_decisions``), by filtering trades/open-legs/
     fill-attempts by timestamp membership in this phase."""
+    if phase == "TRAIN":
+        phase_start_ms, phase_end_ms = fold.train_start_ms, fold.train_end_ms
+    elif phase == "OOS":
+        phase_start_ms, phase_end_ms = fold.oos_start_ms, fold.oos_end_ms
+    else:
+        raise ValueError(f"unknown phase {phase!r}")
 
     def _in_phase(ts: int) -> bool:
-        return (
-            _phase_of(
-                ts,
-                train_start=fold.train_start_ms,
-                train_end=fold.train_end_ms,
-                oos_start=fold.oos_start_ms,
-                oos_end=fold.oos_end_ms,
-            )
-            == phase
-        )
+        return phase_start_ms <= ts < phase_end_ms
 
     phase_records = tuple(
         r for r in run_result.all_records if _in_phase(r.decision_ts_ms)
     )
 
-    phase_closed_trades = [
-        t for t in run_result.closed_trades if _in_phase(t.entry_decision_ts_ms)
-    ]
-    phase_open_count = sum(
-        1
-        for open_leg in run_result.open_legs_by_symbol.values()
-        if _in_phase(open_leg.entry_decision_ts_ms)
+    phase_modeled_entries = tuple(
+        entry
+        for entry in run_result.modeled_entry_evidence
+        if _in_phase(entry.entry_fill_ts_ms)
     )
+    phase_closed_trades = [
+        trade
+        for trade in run_result.closed_trades
+        if _in_phase(trade.entry_fill_ts_ms) and _in_phase(trade.exit_fill_ts_ms)
+    ]
+    # Entries that close outside the phase remain open at this phase's end
+    # for phase accounting, even if the continuous lifecycle later closes.
+    phase_open_count = len(phase_modeled_entries) - len(phase_closed_trades)
     phase_fill_attempts = [
         a for a in run_result.fill_attempts if _in_phase(a.decision_ts_ms)
     ]
 
-    modeled_entries_count = len(phase_closed_trades) + phase_open_count
+    modeled_entries_count = len(phase_modeled_entries)
     turnover_p = modeled_entries_count / len(phase_records) if phase_records else 0.0
 
     trade_fills = [
@@ -340,6 +345,7 @@ def _build_phase_metrics(
         closed_trades=phase_closed_trades,
         open_positions_count=phase_open_count,
         fill_attempts=phase_fill_attempts,
+        modeled_entries_count=modeled_entries_count,
     )
 
     metrics = PhaseTradeMetrics(
@@ -347,6 +353,7 @@ def _build_phase_metrics(
         median_trade_e120_bp=median_e120,
         modeled_entries_count=modeled_entries_count,
         turnover_p=turnover_p,
+        modeled_entry_evidence=phase_modeled_entries,
         blind_counts=blind,
     )
     return metrics, tuple(phase_closed_trades)
@@ -366,6 +373,19 @@ def run_family_fold(
     metrics, and return every config's run with OOS PnL masked-by-default."""
     if family not in ("AP-A1", "AP-A2"):
         raise ValueError(f"unknown family {family!r}")
+    fs.assert_registered_fold_binding(fold_id=fold_id, fold=fold)
+    wf_seal.assert_policy_matches_schedule_constants(
+        oos_folds_const=fs.OOS_FOLDS,
+        oos_days_const=fs.OOS_DAYS,
+        train_days_const=fs.TRAIN_DAYS,
+        embargo_days_const=fs.EMBARGO_DAYS,
+        roll_days_const=fs.ROLL_DAYS,
+    )
+    train_window_days = (fold.train_end_ms - fold.train_start_ms) // fs.DAY_MS
+    if train_window_days != wf_seal.train_days():
+        raise wf_seal.SealDriftError(
+            "canonical TRAIN window must equal the sealed day count"
+        )
 
     bundle = h3_seal.load_sealed_configs_and_params()
     family_configs = [c for c in bundle.configs if c.family == family]
@@ -375,8 +395,14 @@ def run_family_fold(
     config_runs: list[ConfigFoldRun] = []
     train_metrics_by_config: dict[str, cs.ConfigTrainMetrics] = {}
 
+    # Snapshot caller-owned buffers once. Engines and context evidence read
+    # these same tuples, so an in-run caller mutation cannot silently
+    # substitute bytes after the binding was computed.
+    bars_snapshot = {
+        symbol: tuple(bars_by_symbol[symbol]) for symbol in sorted(bars_by_symbol)
+    }
     context_binding = ctxb.compute_warmup_context_binding(
-        bars_by_symbol, window_end_ms=fold.oos_start_ms
+        bars_snapshot, window_end_ms=fold.oos_start_ms
     )
 
     for config in family_configs:
@@ -384,7 +410,7 @@ def run_family_fold(
             config=config,
             family=family,
             fold=fold,
-            bars_by_symbol=bars_by_symbol,
+            bars_by_symbol=bars_snapshot,
             universe_snapshot_provider=universe_snapshot_provider,
             minute_bars_provider=minute_bars_provider,
         )
@@ -407,9 +433,13 @@ def run_family_fold(
             median_trade_e120_bp=train_metrics.median_trade_e120_bp,
             turnover_p=train_metrics.turnover_p,
             annualized_stress_cost_pct=bc.annualized_stress_cost_pct(
-                modeled_entries_count=train_metrics.modeled_entries_count,
-                window_days=(fold.train_end_ms - fold.train_start_ms) // 86_400_000,
-                cost_bp=cost_scenarios_bp[wf_seal.primary_cost_scenario()],
+                entry_filled_notionals=tuple(
+                    entry.entry_filled_notional
+                    for entry in train_metrics.modeled_entry_evidence
+                ),
+                window_days=train_window_days,
+                nav_usd=h3_seal.initial_equity_usd(),
+                cost_bp=float(cost_scenarios_bp[wf_seal.primary_cost_scenario()]),
             ),
         )
 
@@ -427,6 +457,7 @@ def run_family_fold(
                 fold_id=fold_id,
                 family=family,
                 config_id=config.config_id,
+                dry_counts=oos_metrics.blind_counts,
             )
             for t in oos_trades
         )
@@ -437,6 +468,7 @@ def run_family_fold(
                 family=family,
                 train_metrics=train_metrics,
                 oos_blind_counts=oos_metrics.blind_counts,
+                oos_modeled_entry_evidence=oos_metrics.modeled_entry_evidence,
                 oos_masked_pnl_by_trade=oos_masked,
                 context_binding_at_oos_start=context_binding,
             )

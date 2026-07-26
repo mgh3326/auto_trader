@@ -17,18 +17,11 @@ structurally impossible here — there is no code path that returns
 ``reference_close`` itself as a fill price; every returned ``fill_price`` is
 traceable to one of the two window bars via ``fill_bar_offset``).
 
-Documented, explicit implementation choice (SS14.5 specifies the 2-bar
-window and both multipliers but does not pin an exact clock anchor for
-"이후" / "after" the signal): the window's first bar is the one-minute bar
-whose ``open_time_ms`` equals the DECISION timestamp itself (the instant the
-order actually reaches the book), and the second is the immediately
-following minute. This is flagged here (and in the H4 completion report),
-mirroring H3's own precedent for genuinely open implementation choices not
-pinned by the authority doc (EMA seed rule, sigma20 annualization,
-greedy-continue cash allocation) — it is a documented choice, not a
-reinterpretation of a specified VALUE (the ``1.005``/``0.995`` multipliers
-and the "2 bars" window count themselves are taken verbatim and are never
-altered here).
+The Korean authority word ``이후`` is enforced strictly: the first eligible
+bar opens one full minute AFTER ``decision_ts_ms`` and the second opens two
+minutes after it. A bar whose open equals the signal/decision timestamp is
+already observable when the decision is formed and is therefore rejected
+from the fill window rather than treated as an optimistic instantaneous fill.
 
 A missing expected minute bar (data gap) is NEVER treated as an unfilled
 attempt — that would fabricate a market outcome from absent data (AC15).
@@ -128,8 +121,18 @@ def _window_bars(
     for bar in minute_bars_after_signal:
         if type(bar) is not SpotMinute:
             raise TypeError("minute_bars_after_signal must contain SpotMinute")
+    timestamps = [b.open_time_ms for b in minute_bars_after_signal]
+    if len(timestamps) != len(set(timestamps)):
+        raise ValueError("minute_bars_after_signal contains duplicate open_time_ms")
+    if any(timestamp <= decision_ts_ms for timestamp in timestamps):
+        raise ValueError(
+            "minute fill bars must open strictly after the signal timestamp"
+        )
     by_ts = {b.open_time_ms: b for b in minute_bars_after_signal}
-    expected = [decision_ts_ms + i * MINUTE_MS for i in range(FILL_WINDOW_MINUTE_COUNT)]
+    expected = [
+        decision_ts_ms + offset * MINUTE_MS
+        for offset in range(1, FILL_WINDOW_MINUTE_COUNT + 1)
+    ]
     return [by_ts.get(ts) for ts in expected]
 
 

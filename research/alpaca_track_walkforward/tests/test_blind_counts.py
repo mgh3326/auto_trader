@@ -22,17 +22,93 @@ def _rec(ts, action, reason):
     )
 
 
-def test_annualized_stress_cost_pct_matches_direct_arithmetic():
+def test_annualized_stress_cost_pct_matches_frozen_notional_formula():
     result = bc.annualized_stress_cost_pct(
-        modeled_entries_count=10, window_days=365, cost_bp=120
+        entry_filled_notionals=(62.5,) * 10,
+        window_days=365,
+        nav_usd=2000.0,
+        cost_bp=120.0,
     )
-    assert result == pytest.approx(10 * (120 / 10_000.0) * 100.0)
+    assert result == pytest.approx(10 * (62.5 / 2000.0) * 0.012 * 100.0)
 
 
 def test_annualized_stress_cost_pct_rejects_non_positive_window():
     with pytest.raises(ValueError, match="window_days"):
         bc.annualized_stress_cost_pct(
-            modeled_entries_count=1, window_days=0, cost_bp=100
+            entry_filled_notionals=(62.5,),
+            window_days=0,
+            nav_usd=2000.0,
+            cost_bp=120.0,
+        )
+
+
+def _fractional_entry_notionals(
+    entry_count: float, full_size_notional: float
+) -> tuple[float, ...]:
+    whole = int(entry_count)
+    fraction = entry_count - whole
+    notionals = [full_size_notional] * whole
+    if fraction:
+        notionals.append(full_size_notional * fraction)
+    return tuple(notionals)
+
+
+@pytest.mark.parametrize(
+    ("entry_count", "full_size_notional", "expected_pct"),
+    [
+        (365 * 24 * 0.008, 2000.0 / 32, 2.628),
+        (365 * 24 * 0.015, 2000.0 / 32, 4.9275),
+        (52 * 5 * 0.21, 2000.0 / 5, 13.104),
+        (52 * 5 * 0.29, 2000.0 / 5, 18.096),
+    ],
+)
+def test_frozen_formula_reproduces_preregistered_drag_ranges(
+    entry_count, full_size_notional, expected_pct
+):
+    result = bc.annualized_stress_cost_pct(
+        entry_filled_notionals=_fractional_entry_notionals(
+            entry_count, full_size_notional
+        ),
+        window_days=365,
+        nav_usd=2000.0,
+        cost_bp=120.0,
+    )
+    assert result == pytest.approx(expected_pct)
+
+
+@pytest.mark.parametrize(
+    ("full_size_notional", "expected_pct"),
+    [
+        (2000.0 / 32, 1.125),
+        (2000.0 / 5, 7.2),
+        (2000.0 / 6, 6.0),
+    ],
+)
+def test_thirty_full_size_entries_are_compatible_with_frozen_caps(
+    full_size_notional, expected_pct
+):
+    result = bc.annualized_stress_cost_pct(
+        entry_filled_notionals=(full_size_notional,) * 30,
+        window_days=365,
+        nav_usd=2000.0,
+        cost_bp=120.0,
+    )
+    assert result == pytest.approx(expected_pct)
+
+
+def test_full_nav_per_entry_misread_is_rejected_not_used_by_the_api():
+    full_nav_drag = bc.annualized_stress_cost_pct(
+        entry_filled_notionals=(2000.0,) * 30,
+        window_days=365,
+        nav_usd=2000.0,
+        cost_bp=120.0,
+    )
+    assert full_nav_drag == pytest.approx(36.0)
+    with pytest.raises(TypeError):
+        bc.annualized_stress_cost_pct(
+            modeled_entries_count=30,  # type: ignore[call-arg]
+            window_days=365,
+            cost_bp=120.0,
         )
 
 
