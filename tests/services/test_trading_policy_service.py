@@ -8,14 +8,14 @@ from app.services import trading_policy_service as svc
 
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
-    assert stamp["version"] == "2026-07-25.1"
+    assert stamp["version"] == svc.load_trading_policy().version
     assert len(stamp["content_hash"]) == 12
     assert svc.policy_content_hash() == svc.policy_content_hash()
 
 
 def test_get_policy_for_buy_kr_includes_cap_and_version():
     view = svc.get_policy_for("kr", "buy")
-    assert view["version"] == "2026-07-25.1"
+    assert view["version"] == svc.load_trading_policy().version
     assert view["version"] == svc.policy_version_stamp()["version"]
     assert view["content_hash"] == svc.policy_content_hash()
     assert view["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10

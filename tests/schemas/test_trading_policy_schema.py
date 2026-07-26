@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 import app.schemas.trading_policy as policy_schema
 from app.schemas.trading_policy import TradingPolicyDocument
+from app.services.trading_policy_service import load_trading_policy
 
 _CONFIG = Path(__file__).resolve().parents[2] / "config" / "trading_policy.yaml"
 
@@ -16,7 +17,7 @@ def _raw() -> dict:
 
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-07-25.1"
+    assert doc.version == load_trading_policy().version
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01

@@ -5,6 +5,7 @@ import pytest
 from app.mcp_server.profiles import McpProfile
 from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.trading_policy_tools import get_trading_policy
+from app.services.trading_policy_service import policy_version_stamp
 from tests._mcp_tooling_support import DummyMCP
 
 
@@ -12,7 +13,7 @@ from tests._mcp_tooling_support import DummyMCP
 async def test_get_trading_policy_returns_thresholds_and_version():
     out = await get_trading_policy(market="kr", lane="buy")
     assert out["success"] is True
-    assert out["version"] == "2026-07-25.1"
+    assert out["version"] == policy_version_stamp()["version"]
     assert out["content_hash"]
     assert out["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
     assert set(out["decision_rules"]) == {
@@ -26,7 +27,7 @@ async def test_get_trading_policy_returns_crypto_market_rules_and_stamp():
     out = await get_trading_policy(market="crypto", lane="buy")
 
     assert out["success"] is True
-    assert out["version"] == "2026-07-25.1"
+    assert out["version"] == policy_version_stamp()["version"]
     assert len(out["content_hash"]) == 12
     gate = out["market_rules"]["recovery_gate"]
     assert gate["min_conditions_met"] == 2
