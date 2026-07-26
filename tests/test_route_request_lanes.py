@@ -287,8 +287,9 @@ def test_buy_discovery_have_negative_class_constraint():
 
 
 def test_buy_discovery_end_with_missed_opportunity_session_hook():
+    assert L.LANE_SEQUENCES["discovery"][-1]["tool"] == "missed_opportunity_save"
+    assert "missed_opportunity_save" in L.LANE_EXTRA_ALLOWED["buy"]
     for lane in ("buy", "discovery"):
-        assert L.LANE_SEQUENCES[lane][-1]["tool"] == "missed_opportunity_save"
         joined = " ".join(L.HARD_CONSTRAINTS[lane]).lower()
         assert "2%" in joined
         assert "zero new buys" in joined

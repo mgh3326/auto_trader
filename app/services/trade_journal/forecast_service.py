@@ -168,7 +168,6 @@ def classify_price_target_outcome(
     raise ForecastValidationError(f"invalid price-target direction: {direction!r}")
 
 
-<<<<<<< HEAD
 def classify_terminal_close_outcome(
     candles: list[DailyCandleRow],
     *,
@@ -346,7 +345,6 @@ def _validate_forecast_target(
             raise ForecastValidationError(
                 "price_target.target_price must be a number"
             ) from exc
-<<<<<<< HEAD
         if not math.isfinite(price_f) or price_f <= 0:
             raise ForecastValidationError(
                 "price_target.target_price must be positive and finite"
@@ -1173,196 +1171,197 @@ async def resolve_forecast(
             "manual_evidence": manual_evidence,
         }
     elif kind in _AUTO_RESOLVABLE_FORECAST_KINDS:
-        if instrument not in _AUTO_RESOLVABLE_INSTRUMENTS:
-            return {
-                "status": "requires_manual",
-                "changed": False,
-                "reason": (
-                    f"instrument_type={instrument} has no daily candle store; "
-                    "supply manual_outcome + manual_evidence"
-                ),
-                "forecast": serialize_forecast(row),
-            }
-        start_date = row.forecast_start_date or _kst_date(row.created_at)
-        candles = await _read_window_candles(
-            db,
-            symbol=row.symbol,
-            instrument_type=instrument,
-            start_date=start_date,
-            review_date=row.review_date,
-        )
-        # ROB-712: rejected (non-held) symbols usually have no daily OHLCV in
-        # the DB yet. Lazily fetch+persist once via the shared sync service, then
-        # re-read. Never raises — backfill returns 0 on failure and the existing
-        # unresolved_no_data branch still runs below.
-        if not candles and backfill_missing:
-            resolved = await _resolve_candle_partition(
-                db, symbol=row.symbol, instrument_type=instrument
+        if kind == _TERMINAL_CLOSE_KIND:
+            terminal_evidence = _terminal_resolution_evidence(row, target)
+            if instrument not in _TERMINAL_CLOSE_INSTRUMENTS:
+                return {
+                    "status": "requires_manual",
+                    "changed": False,
+                    "reason": (
+                        f"instrument_type={instrument} has no regular-session "
+                        "terminal-close contract"
+                    ),
+                    "resolution_evidence": terminal_evidence,
+                    "forecast": serialize_forecast(row),
+                }
+
+            session_failure = _terminal_close_session_failure(
+                instrument_type=instrument,
+                review_date=row.review_date,
+                now=resolved_now,
             )
-            if resolved is not None:
-                market, partition = resolved
-                rows = await _backfill_daily_candles(
-                    symbol=row.symbol, market=market, partition=partition
+            if session_failure is not None:
+                return {
+                    "status": "unresolved_session_not_final",
+                    "changed": False,
+                    "reason": session_failure,
+                    "resolution_evidence": terminal_evidence,
+                    "forecast": serialize_forecast(row),
+                }
+
+            terminal_window_start = row.review_date - timedelta(
+                days=_TERMINAL_CLOSE_STALE_LOOKBACK_DAYS
+            )
+            candles = await _read_window_candles(
+                db,
+                symbol=row.symbol,
+                instrument_type=instrument,
+                start_date=terminal_window_start,
+                review_date=row.review_date,
+            )
+            if not candles and backfill_missing:
+                resolved = await _resolve_candle_partition(
+                    db, symbol=row.symbol, instrument_type=instrument
                 )
-                if rows:
+                if resolved is not None:
+                    market, partition = resolved
+                    await _backfill_daily_candles(
+                        symbol=row.symbol, market=market, partition=partition
+                    )
+                    # Daily-candle batch upserts may report rowcount=0 even after a
+                    # successful write, so always re-read once after the attempt.
                     candles = await _read_window_candles(
                         db,
                         symbol=row.symbol,
                         instrument_type=instrument,
-                        start_date=start_date,
+                        start_date=terminal_window_start,
                         review_date=row.review_date,
                     )
-        if not candles:
-            return {
-                "status": "unresolved_no_data",
-                "changed": False,
-                "reason": "no loaded daily candles in the resolution window",
-                "forecast": serialize_forecast(row),
-            }
 
-        direction = target.get("direction")
-        if kind == "price_target":
             target_price = float(target.get("target_price"))
-            outcome, observed = classify_price_target_outcome(
-                candles, direction=direction, target_price=target_price
-            )
-            resolution_source = "ohlcv_day"
+            try:
+                outcome, observed, selected = classify_terminal_close_outcome(
+                    candles or [],
+                    review_date=row.review_date,
+                    direction=str(target.get("direction")),
+                    target_price=target_price,
+                )
+            except TerminalCloseDataError as exc:
+                return {
+                    "status": exc.status,
+                    "changed": False,
+                    "reason": str(exc),
+                    "resolution_evidence": {
+                        **terminal_evidence,
+                        **exc.evidence,
+                    },
+                    "forecast": serialize_forecast(row),
+                }
+
+            direction = str(target.get("direction"))
+            source = str(selected.source)
+            resolution_source = "ohlcv_day_terminal_close"
             detail = {
-                "target_kind": "price_target",
-                "outcome_rule_version": target.get("outcome_rule_version"),
-                "window_start": start_date.isoformat(),
-                "window_end": row.review_date.isoformat(),
-                "candles": len(candles),
-                "direction": direction,
-                "target_price": target_price,
-                "observed_extreme": observed,
+                **terminal_evidence,
+                "comparison_operator": ">=" if direction == "up" else "<",
+                "source_date": _row_date(selected).isoformat(),
+                "source_timestamp": selected.time_utc.isoformat(),
+                "source": source,
+                "source_label": source,
+                "source_partition": selected.partition,
+                "source_price": observed,
+                "source_price_field": "close",
+                "source_price_basis": _REGULAR_SESSION_CLOSE_SOURCE_BASIS[source],
+                "session_scope_contract": "regular-session-daily-close",
+                "session_finality_gate": "exchange-calendar",
+                "adj_close_used": False,
             }
         else:
-            horizon_candles = [
-                candle for candle in candles if _row_date(candle) == row.review_date
-            ]
-            if not horizon_candles:
+            if instrument not in _AUTO_RESOLVABLE_INSTRUMENTS:
+                return {
+                    "status": "requires_manual",
+                    "changed": False,
+                    "reason": (
+                        f"instrument_type={instrument} has no daily candle store; "
+                        "supply manual_outcome + manual_evidence"
+                    ),
+                    "forecast": serialize_forecast(row),
+                }
+            start_date = row.forecast_start_date or _kst_date(row.created_at)
+            candles = await _read_window_candles(
+                db,
+                symbol=row.symbol,
+                instrument_type=instrument,
+                start_date=start_date,
+                review_date=row.review_date,
+            )
+            # ROB-712: rejected (non-held) symbols usually have no daily OHLCV in
+            # the DB yet. Lazily fetch+persist once via the shared sync service, then
+            # re-read. Never raises — backfill returns 0 on failure and the existing
+            # unresolved_no_data branch still runs below.
+            if not candles and backfill_missing:
+                resolved = await _resolve_candle_partition(
+                    db, symbol=row.symbol, instrument_type=instrument
+                )
+                if resolved is not None:
+                    market, partition = resolved
+                    rows = await _backfill_daily_candles(
+                        symbol=row.symbol, market=market, partition=partition
+                    )
+                    if rows:
+                        candles = await _read_window_candles(
+                            db,
+                            symbol=row.symbol,
+                            instrument_type=instrument,
+                            start_date=start_date,
+                            review_date=row.review_date,
+                        )
+            if not candles:
                 return {
                     "status": "unresolved_no_data",
                     "changed": False,
-                    "reason": "no daily close for the exact horizon date",
+                    "reason": "no loaded daily candles in the resolution window",
                     "forecast": serialize_forecast(row),
                 }
-            horizon_candle = max(horizon_candles, key=lambda candle: candle.time_utc)
-            reference_price = float(target.get("reference_price"))
-            target_return_pct = float(target.get("target_return_pct"))
-            outcome, observed = classify_return_at_horizon_outcome(
-                horizon_candle=horizon_candle,
-                direction=direction,
-                reference_price=reference_price,
-                target_return_pct=target_return_pct,
-            )
-            resolution_source = "ohlcv_day_close"
-            detail = {
-                "window_start": start_date.isoformat(),
-                "horizon_date": row.review_date.isoformat(),
-                "candles": len(candles),
-                "direction": direction,
-                "reference_price": reference_price,
-                "target_return_pct": target_return_pct,
-                "horizon_close": float(horizon_candle.close),
-                "observed_return_pct": observed,
-            }
-    elif kind == _TERMINAL_CLOSE_KIND:
-        terminal_evidence = _terminal_resolution_evidence(row, target)
-        if instrument not in _TERMINAL_CLOSE_INSTRUMENTS:
-            return {
-                "status": "requires_manual",
-                "changed": False,
-                "reason": (
-                    f"instrument_type={instrument} has no regular-session "
-                    "terminal-close contract"
-                ),
-                "resolution_evidence": terminal_evidence,
-                "forecast": serialize_forecast(row),
-            }
 
-        session_failure = _terminal_close_session_failure(
-            instrument_type=instrument,
-            review_date=row.review_date,
-            now=resolved_now,
-        )
-        if session_failure is not None:
-            return {
-                "status": "unresolved_session_not_final",
-                "changed": False,
-                "reason": session_failure,
-                "resolution_evidence": terminal_evidence,
-                "forecast": serialize_forecast(row),
-            }
-
-        terminal_window_start = row.review_date - timedelta(
-            days=_TERMINAL_CLOSE_STALE_LOOKBACK_DAYS
-        )
-        candles = await _read_window_candles(
-            db,
-            symbol=row.symbol,
-            instrument_type=instrument,
-            start_date=terminal_window_start,
-            review_date=row.review_date,
-        )
-        if not candles and backfill_missing:
-            resolved = await _resolve_candle_partition(
-                db, symbol=row.symbol, instrument_type=instrument
-            )
-            if resolved is not None:
-                market, partition = resolved
-                await _backfill_daily_candles(
-                    symbol=row.symbol, market=market, partition=partition
+            direction = target.get("direction")
+            if kind == "price_target":
+                target_price = float(target.get("target_price"))
+                outcome, observed = classify_price_target_outcome(
+                    candles, direction=direction, target_price=target_price
                 )
-                # Daily-candle batch upserts may report rowcount=0 even after a
-                # successful write, so always re-read once after the attempt.
-                candles = await _read_window_candles(
-                    db,
-                    symbol=row.symbol,
-                    instrument_type=instrument,
-                    start_date=terminal_window_start,
-                    review_date=row.review_date,
+                resolution_source = "ohlcv_day"
+                detail = {
+                    "target_kind": "price_target",
+                    "outcome_rule_version": target.get("outcome_rule_version"),
+                    "window_start": start_date.isoformat(),
+                    "window_end": row.review_date.isoformat(),
+                    "candles": len(candles),
+                    "direction": direction,
+                    "target_price": target_price,
+                    "observed_extreme": observed,
+                }
+            elif kind == "return_at_horizon":
+                horizon_candles = [
+                    candle for candle in candles if _row_date(candle) == row.review_date
+                ]
+                if not horizon_candles:
+                    return {
+                        "status": "unresolved_no_data",
+                        "changed": False,
+                        "reason": "no daily close for the exact horizon date",
+                        "forecast": serialize_forecast(row),
+                    }
+                horizon_candle = max(horizon_candles, key=lambda candle: candle.time_utc)
+                reference_price = float(target.get("reference_price"))
+                target_return_pct = float(target.get("target_return_pct"))
+                outcome, observed = classify_return_at_horizon_outcome(
+                    horizon_candle=horizon_candle,
+                    direction=direction,
+                    reference_price=reference_price,
+                    target_return_pct=target_return_pct,
                 )
-
-        target_price = float(target.get("target_price"))
-        try:
-            outcome, observed, selected = classify_terminal_close_outcome(
-                candles or [],
-                review_date=row.review_date,
-                direction=str(target.get("direction")),
-                target_price=target_price,
-            )
-        except TerminalCloseDataError as exc:
-            return {
-                "status": exc.status,
-                "changed": False,
-                "reason": str(exc),
-                "resolution_evidence": {
-                    **terminal_evidence,
-                    **exc.evidence,
-                },
-                "forecast": serialize_forecast(row),
-            }
-
-        direction = str(target.get("direction"))
-        source = str(selected.source)
-        resolution_source = "ohlcv_day_terminal_close"
-        detail = {
-            **terminal_evidence,
-            "comparison_operator": ">=" if direction == "up" else "<",
-            "source_date": _row_date(selected).isoformat(),
-            "source_timestamp": selected.time_utc.isoformat(),
-            "source": source,
-            "source_label": source,
-            "source_partition": selected.partition,
-            "source_price": observed,
-            "source_price_field": "close",
-            "source_price_basis": _REGULAR_SESSION_CLOSE_SOURCE_BASIS[source],
-            "session_scope_contract": "regular-session-daily-close",
-            "session_finality_gate": "exchange-calendar",
-            "adj_close_used": False,
-        }
+                resolution_source = "ohlcv_day_close"
+                detail = {
+                    "window_start": start_date.isoformat(),
+                    "horizon_date": row.review_date.isoformat(),
+                    "candles": len(candles),
+                    "direction": direction,
+                    "reference_price": reference_price,
+                    "target_return_pct": target_return_pct,
+                    "horizon_close": float(horizon_candle.close),
+                    "observed_return_pct": observed,
+                }
     else:
         return {
             "status": "requires_manual",

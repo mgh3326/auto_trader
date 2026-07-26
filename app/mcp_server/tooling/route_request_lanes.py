@@ -97,10 +97,6 @@ LANE_SEQUENCES: dict[str, list[dict[str, Any]]] = {
             "tool": "order_proposal_create",
             "purpose": "create place proposal; Telegram human approval is required before proposal-owned revalidation and submit",
         },
-        {
-            "tool": "missed_opportunity_save",
-            "purpose": "session close: if |index move| >2% and zero new buys, publish top-N D+5 missed cohort",
-        },
     ],
     "sell": [
         {
@@ -356,7 +352,13 @@ PREVIEW_TOOLS: frozenset[str] = frozenset({"toss_preview_order"})
 # per-lane allowance (not a MUTATION_TOOLS -> READ_ONLY reclassification) keeps
 # discovery/bootstrap unchanged.
 LANE_EXTRA_ALLOWED: dict[str, frozenset[str]] = {
-    "buy": frozenset({"kis_live_get_order_history", "toss_get_order_history"}),
+    "buy": frozenset(
+        {
+            "kis_live_get_order_history",
+            "toss_get_order_history",
+            "missed_opportunity_save",
+        }
+    ),
     "sell": frozenset({"kis_live_get_order_history", "toss_get_order_history"}),
 }
 

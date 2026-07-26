@@ -162,8 +162,6 @@ lanes:
         approval: telegram_human_click_required
         preview_owner: proposal_revalidation
         reconcile_requirement: broker_evidence
-      - tool: missed_opportunity_save
-        note: mandatory volatile zero-entry session-close hook
     gates:
       - recovery_gate     # deploy reserve only when >= recovery_gate.min_conditions_met
       - loss_guard        # sell price >= avg * sell.loss_guard_min_multiple (sell-side)
