@@ -1,0 +1,139 @@
+"""Manual R4 P0 Binance USD-M point-in-time collector.
+
+Default invocation is a no-network dry-run.  Long-running collection requires
+both ``R4_P0_COLLECTOR_ENABLED=true`` and ``--run``.  ``--probe`` is an
+explicit, bounded (<=180 seconds) production-public validation mode.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import os
+import signal
+from pathlib import Path
+
+from app.services.brokers.binance.r4_p0_collector import (
+    COLLECTOR_VERSION,
+    PIT_COLUMNS,
+    REST_PATH_ALLOWLIST,
+    SYMBOLS,
+    AppendOnlyPITStore,
+    BinanceR4P0Collector,
+    CollectorConfig,
+    redact_sample,
+)
+
+ENABLED_ENV = "R4_P0_COLLECTOR_ENABLED"
+ARTIFACT_ENV = "R4_P0_ARTIFACT_ROOT"
+DEFAULT_ARTIFACT_ROOT = "~/work/herdr-artifacts/r4-p0-collector"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--run", action="store_true", help="run until stopped (env-gated)"
+    )
+    mode.add_argument(
+        "--probe",
+        action="store_true",
+        help="bounded public-network validation; does not require the operational env gate",
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        help="stop after N seconds; required for --probe and capped at 180",
+    )
+    parser.add_argument(
+        "--artifact-root",
+        default=os.getenv(ARTIFACT_ENV, DEFAULT_ARTIFACT_ROOT),
+    )
+    parser.add_argument("--status-seconds", type=float, default=30.0)
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="offline integrity audit and one sample per source; no network",
+    )
+    return parser.parse_args()
+
+
+def _enabled() -> bool:
+    return os.getenv(ENABLED_ENV, "").strip().lower() == "true"
+
+
+def _dry_run_payload(args: argparse.Namespace) -> dict[str, object]:
+    return {
+        "mode": "dry_run",
+        "network": False,
+        "database_write": False,
+        "broker_mutation": False,
+        "collector_version": COLLECTOR_VERSION,
+        "symbols": list(SYMBOLS),
+        "signal_symbols": ["XRPUSDT", "DOGEUSDT", "SOLUSDT"],
+        "predictor_only_symbols": ["BTCUSDT"],
+        "rest_method": "GET",
+        "rest_paths": sorted(REST_PATH_ALLOWLIST),
+        "pit_columns": list(PIT_COLUMNS),
+        "artifact_root_if_armed": str(Path(args.artifact_root).expanduser()),
+        "arm": f"{ENABLED_ENV}=true plus --run",
+    }
+
+
+def _offline_audit(root: Path) -> int:
+    with AppendOnlyPITStore(root) as store:
+        result = store.audit()
+        result["samples"] = [redact_sample(row) for row in store.sample_by_source()]
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0 if result["ok"] else 1
+
+
+async def _run_collector(args: argparse.Namespace) -> int:
+    root = Path(args.artifact_root)
+    config = CollectorConfig(
+        artifact_root=root,
+        duration_seconds=args.duration,
+        status_seconds=args.status_seconds,
+    )
+    with AppendOnlyPITStore(root) as store:
+        collector = BinanceR4P0Collector(config, store)
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, collector.stop.set)
+        await collector.run()
+        audit = store.audit()
+        logging.info("collector.audit %s", json.dumps(audit, sort_keys=True))
+        health = collector.health()
+        logging.info("collector.health %s", json.dumps(health, sort_keys=True))
+        return 0 if audit["ok"] and health["ok"] else 1
+
+
+def main() -> int:
+    args = parse_args()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)sZ %(levelname)s %(message)s",
+    )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    if args.audit:
+        if args.run or args.probe:
+            raise SystemExit("--audit cannot be combined with network modes")
+        return _offline_audit(Path(args.artifact_root))
+    if not args.run and not args.probe:
+        print(json.dumps(_dry_run_payload(args), ensure_ascii=False, indent=2))
+        return 0
+    if args.probe:
+        if args.duration is None or not 1 <= args.duration <= 180:
+            raise SystemExit("--probe requires --duration between 1 and 180 seconds")
+    elif not _enabled():
+        raise SystemExit(f"refusing --run: set {ENABLED_ENV}=true explicitly")
+    if args.duration is not None and args.duration <= 0:
+        raise SystemExit("--duration must be positive")
+    return asyncio.run(_run_collector(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
