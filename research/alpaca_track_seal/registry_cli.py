@@ -45,16 +45,46 @@ from typing import Any
 import artifact as art
 import identity as ident
 
-__all__ = ["build_registration_plan", "main"]
+__all__ = ["SemanticHashDriftError", "build_registration_plan", "main"]
 
 ENV_WRITE_OPT_IN = "ALPACA_TRACK_SEAL_REGISTER_WRITE_OPT_IN"
+
+
+class SemanticHashDriftError(RuntimeError):
+    """``build_registration_plan()``'s freshly-built artifact's semantic hash
+    does not match the pinned ``artifact.SEALED_ARTIFACT_SEMANTIC_HASH``
+    (ROB-1060 H2-lock adversarial-verification Finding 4, 2026-07-26).
+
+    Before this check existed, the seal was a TEST-TIME lock only:
+    ``build_registration_plan()`` computed and emitted ``semantic_hash`` in
+    its output but never compared it to the pinned constant, so a drifted
+    ``artifact.py``/``identity.py``/``configs.py``/``params.py`` (e.g. an
+    edit that passed a code review but silently moved the digest) would
+    register without complaint at RUNTIME -- only the test suite would
+    notice, and the test suite is not wired into CI (Finding 1). This is the
+    runtime half of the lock: fail closed here too, before any identity
+    reaches ``register_experiment``."""
 
 
 def build_registration_plan() -> dict[str, Any]:
     """The full, PURE registration plan: semantic hash + per-config identity
     components, ready to feed an app-side ``StrategyExperimentIdentity``.
-    Never touches DB/network — safe to call from ``plan`` or from tests."""
+    Never touches DB/network — safe to call from ``plan`` or from tests.
+
+    Fails closed (``SemanticHashDriftError``) if the freshly-built artifact's
+    semantic hash does not match the pinned
+    ``artifact.SEALED_ARTIFACT_SEMANTIC_HASH`` -- this is the ONLY runtime
+    entry point in this package that consumes the sealed artifact
+    (``_cmd_plan``/``_cmd_register`` both call it), so gating here covers
+    both the read-only ``plan`` output and the ``register`` write path."""
     sealed = art.build_sealed_artifact()
+    semantic_hash = sealed.semantic_hash()
+    if semantic_hash != art.SEALED_ARTIFACT_SEMANTIC_HASH:
+        raise SemanticHashDriftError(
+            f"sealed artifact semantic hash {semantic_hash!r} does not match "
+            f"the pinned {art.SEALED_ARTIFACT_SEMANTIC_HASH!r} -- refusing to "
+            "build a registration plan (or register) from a drifted artifact"
+        )
     seal = sealed.params
     per_config_components = []
     specs = []
@@ -72,7 +102,7 @@ def build_registration_plan() -> dict[str, Any]:
         )
     ident.validate_same_family_components_are_identical(per_config_components)
     return {
-        "semantic_hash": sealed.semantic_hash(),
+        "semantic_hash": semantic_hash,
         "config_count": len(sealed.configs),
         "specs": specs,
     }
