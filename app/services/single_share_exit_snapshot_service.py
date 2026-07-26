@@ -395,7 +395,7 @@ class _ValidatedSingleShareExitContextBase:
 
     @property
     def derived_roster_hash(self) -> str:
-        """Recompute the roster digest; never trust a second caller-carried hash."""
+        """Recompute the roster digest from configured accounts rather than relying on a secondary hash field."""
 
         return compute_account_roster_hash(
             roster_id=self.roster_id,
@@ -412,9 +412,10 @@ class _ValidatedSingleShareExitContextBase:
 class _ValidatedLiveSingleShareExitContext(_ValidatedSingleShareExitContextBase):
     """Private live context; mode is derived from this exact concrete type."""
 
-    # Different layouts prevent ``object.__setattr__(replay, "__class__", live)``
-    # from turning a replay object into a live object without storing a mutable
-    # or caller-copyable mode field.
+    # Standard copy, serialization, and subclassing paths do not promote a replay
+    # context into a live context. This layout distinction can be bypassed via matching
+    # slot layouts or reflection (equivalent to arbitrary in-process execution),
+    # so this layout distinction is an API structure boundary rather than a security boundary.
     __slots__ = ("_live_context_layout",)
 
     @property
@@ -626,7 +627,7 @@ class _Producer:
 
 
 class SingleShareExitSnapshotProducer(_Producer):
-    """Live producer. Its clock is internal and cannot be caller-supplied."""
+    """Live producer using an internal _SystemClock."""
 
     async def produce(
         self,

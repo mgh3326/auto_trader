@@ -423,7 +423,7 @@ def test_context_uses_private_exact_replay_type_with_derived_mode():
     assert not hasattr(context, "model_copy")
 
 
-def test_functional_copy_cannot_promote_replay_or_redeclare_derived_roster_hash():
+def test_functional_copy_does_not_promote_replay_or_redeclare_derived_roster_hash():
     replay = _make_context()
 
     with pytest.raises(TypeError):
@@ -450,7 +450,7 @@ def test_functional_copy_cannot_promote_replay_or_redeclare_derived_roster_hash(
     )
 
 
-def test_exact_type_boundary_rejects_subclass_and_blocks_class_swap():
+def test_exact_type_boundary_rejects_subclass_and_direct_differing_layout_swap():
     replay = _make_context()
     live = _make_context(live=True)
     replay_type = type(replay)
@@ -598,7 +598,7 @@ def test_snapshot_service_has_no_app_or_broker_import_reachability():
     assert not relative_imports
 
 
-def test_declared_roster_hash_forgery_is_rejected():
+def test_mismatched_declared_roster_hash_is_rejected():
     result = _replay_result(declared_roster_hash="0" * 64)
     assert (result.outcome, result.reason) == (
         "INELIGIBLE",
@@ -627,7 +627,7 @@ def test_roster_hash_canonical_compatibility_vector_is_unchanged():
     )
 
 
-def test_replay_clock_can_never_create_live_eligibility():
+def test_replay_clock_does_not_create_live_eligibility():
     old_clock = _CLOCK_AT - timedelta(days=1)
     old_evidence = _EVIDENCE_AT - timedelta(days=1)
     accounts = (
@@ -785,7 +785,7 @@ def test_non_executable_quote_kinds_fail_closed(kind, source):
     )
 
 
-def test_unknown_string_quote_source_cannot_form_typed_evidence():
+def test_unknown_string_quote_source_does_not_form_typed_evidence():
     with pytest.raises(ValueError, match="quote source must be typed"):
         TypedQuoteEvidence(
             symbol="257720",
@@ -937,7 +937,7 @@ def test_secondary_non_routable_retirement_lot_is_excluded_from_aggregate():
     assert result.symbol_routable_sellable_quantity == Decimal("1")
 
 
-def test_actual_total_quantity_over_one_cannot_pass_with_one_account_lot():
+def test_actual_total_quantity_over_one_fails_with_one_account_lot():
     roster = (
         _configured(KrBroker.KIS, "kis-main"),
         _configured(KrBroker.KIS, "kis-secondary"),
@@ -1335,7 +1335,7 @@ def test_far_band_exact_boundaries(resistance_price, expected):
     assert result.outcome == expected
 
 
-def test_public_policy_loader_never_returns_mutable_cached_singleton():
+def test_public_policy_loader_returns_detached_policy_copy():
     detached = policy.load_trading_policy()
     detached_rule = detached.decision_rules["sell.single_share_exit"]
     detached_rule.proposal.auto_approve = True
@@ -1398,7 +1398,7 @@ def test_exact_policy_safety_projection_is_rechecked(
     assert result.execution is None
 
 
-def test_unsafe_nested_proposal_never_leaks_auto_approval_metadata(
+def test_unsafe_nested_proposal_does_not_leak_auto_approval_metadata(
     monkeypatch,
 ):
     now = datetime.now(UTC)

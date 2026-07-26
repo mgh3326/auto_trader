@@ -114,7 +114,7 @@ def _load() -> tuple[TradingPolicyDocument, str]:
 
 
 def load_trading_policy() -> TradingPolicyDocument:
-    """Return a detached policy model, never the mutable cached singleton."""
+    """Return a detached policy copy rather than the internal cached instance."""
 
     return _load()[0].model_copy(deep=True)
 
