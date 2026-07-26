@@ -17,8 +17,10 @@ hash, and the selection result.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
+import blind_counts as bc
 import canonical_hash
 import fold_schedule as fs
 import pytest
@@ -132,6 +134,54 @@ def _digest_summary(result: runner.FamilyFoldResult) -> dict:
     }
 
 
+def _digest_diagnostics(result: runner.FamilyFoldResult) -> dict:
+    """Human-readable semantic projection for a moved golden hash.
+
+    This intentionally uses the production C120 accounting function so a
+    digest failure exposes whether the full runner and the frozen-formula
+    unit tests are still exercising the same calculation.
+    """
+    return {
+        "selection": {
+            "status": result.selection.status,
+            "selected_config_id": result.selection.selected_config_id,
+        },
+        "configs": {
+            run.config_id: {
+                "train": {
+                    "closed": run.train_metrics.closed_trades_count,
+                    "median_e120_bp": run.train_metrics.median_trade_e120_bp,
+                    "modeled_entries": run.train_metrics.modeled_entries_count,
+                    "open": run.train_metrics.blind_counts.open_positions_count,
+                    "annualized_c120_pct": bc.annualized_stress_cost_pct(
+                        entry_filled_notionals=tuple(
+                            entry.entry_filled_notional
+                            for entry in run.train_metrics.modeled_entry_evidence
+                        ),
+                        window_days=365,
+                        nav_usd=2000.0,
+                        cost_bp=120.0,
+                    ),
+                },
+                "oos_blind_counts": {
+                    "modeled_entries": run.oos_blind_counts.modeled_entries_count,
+                    "closed": run.oos_blind_counts.closed_trades_count,
+                    "open": run.oos_blind_counts.open_positions_count,
+                    "entry_unfilled": run.oos_blind_counts.entry_unfilled_count,
+                    "exit_unfilled": run.oos_blind_counts.exit_unfilled_count,
+                    "incomplete": run.oos_blind_counts.fill_window_incomplete_count,
+                    "holding_days": list(run.oos_blind_counts.holding_days),
+                    "histogram": dict(run.oos_blind_counts.reason_code_histogram),
+                },
+                "context_binding_hash": (
+                    run.context_binding_at_oos_start.combined_context_hash
+                ),
+            }
+            for run in result.config_runs
+        },
+    }
+
+
 def _run() -> runner.FamilyFoldResult:
     bars = sfx.build_bars_by_symbol(
         window_start_ms=_FOLD.train_start_ms, num_days=_NUM_DAYS, n_symbols=20
@@ -168,11 +218,15 @@ def baseline_digest(baseline_result) -> str:
 
 
 @pytest.mark.slow
-def test_golden_digest_matches_the_pinned_value(baseline_digest):
+def test_golden_digest_matches_the_pinned_value(baseline_digest, baseline_result):
     # First-run bootstrap: print the real digest so it can be pinned above.
     print(f"\nCOMPUTED GOLDEN DIGEST: {baseline_digest}")
     if GOLDEN_DIGEST != "pending":
-        assert baseline_digest == GOLDEN_DIGEST
+        assert baseline_digest == GOLDEN_DIGEST, json.dumps(
+            _digest_diagnostics(baseline_result),
+            sort_keys=True,
+            indent=2,
+        )
 
 
 @pytest.mark.slow
