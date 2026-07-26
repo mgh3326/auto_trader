@@ -11,6 +11,7 @@ from app.services.market_events.session_calendar import (
     next_trading_session,
     previous_trading_session,
     regular_session_bounds,
+    trading_session_status,
     trading_sessions_in_range,
 )
 
@@ -38,6 +39,13 @@ def test_us_regular_weekday_is_a_session():
 def test_kr_holiday_is_not_a_session():
     # 2025-01-01 New Year — XKRX closed.
     assert is_trading_session("kr", date(2025, 1, 1)) is False
+
+
+@pytest.mark.unit
+def test_session_status_distinguishes_closed_from_unknown():
+    assert trading_session_status("kr", date(2025, 1, 1)) == "closed"
+    assert trading_session_status("kr", date(2025, 1, 2)) == "open"
+    assert trading_session_status("kr", date(2100, 1, 4)) == "unknown"
 
 
 @pytest.mark.unit

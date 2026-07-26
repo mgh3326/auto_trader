@@ -97,6 +97,41 @@ async def test_run_ingest_dispatches_per_day(db_session, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_run_ingest_returns_nonzero_when_dart_partition_fails(
+    db_session, monkeypatch
+):
+    from scripts import ingest_market_events as cli
+
+    fake = AsyncMock(
+        return_value=type(
+            "R",
+            (),
+            {
+                "status": "failed",
+                "event_count": 0,
+                "error": "DART returned zero filings on confirmed XKRX trading session",
+            },
+        )()
+    )
+    monkeypatch.setitem(cli.SUPPORTED, ("dart", "disclosure", "kr"), fake)
+
+    rc = await cli.run_ingest(
+        db=db_session,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        from_date=date(2026, 5, 7),
+        to_date=date(2026, 5, 7),
+        dry_run=False,
+        force=False,
+    )
+
+    assert rc == 2
+    fake.assert_awaited_once_with(db_session, date(2026, 5, 7))
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_run_ingest_rejects_reversed_range_before_dispatch(
     db_session, monkeypatch
 ):

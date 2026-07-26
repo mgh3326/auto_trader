@@ -131,11 +131,11 @@ def classify_dart_category(report_nm: str) -> str:
 def normalize_dart_disclosure_row(
     row: dict[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Normalize one DART `list_date` row to a MarketEvent.
+    """Normalize one DART ``list_date_ex`` row to a MarketEvent.
 
-    DART rows expose at minimum: rcept_no, rcept_dt, corp_name, corp_code, report_nm.
-    Prefer stock_code for symbol matching; corp_code stays in raw_payload_json.
-    URL builds from rcept_no.
+    The scraper exposes receipt time, class, company name, receipt number, report
+    name, filer name, and remarks. It does not expose ``stock_code``; keep support
+    for that field for injected/legacy rows, but never substitute ``corp_code``.
     """
     rcept_no = (row.get("rcept_no") or row.get("rcp_no") or "").strip()
     rcept_dt = (row.get("rcept_dt") or row.get("date") or "").strip()
@@ -150,7 +150,7 @@ def normalize_dart_disclosure_row(
     if len(rcept_dt) >= 8 and rcept_dt[:8].isdigit():
         event_date = date(int(rcept_dt[:4]), int(rcept_dt[4:6]), int(rcept_dt[6:8]))
     else:
-        event_date = date.fromisoformat(rcept_dt)
+        event_date = date.fromisoformat(rcept_dt[:10])
 
     category = classify_dart_category(report_nm)
 

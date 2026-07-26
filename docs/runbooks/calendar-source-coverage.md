@@ -10,7 +10,7 @@
 | Source | Category | Market | Ingest entry point | Notes |
 | --- | --- | --- | --- | --- |
 | Finnhub | earnings | us | `app/services/market_events/finnhub_helpers.py::fetch_earnings_calendar_finnhub` | Per-day partition. EPS / revenue / fiscal period. `time_hint` = bmo/amc/dmh. |
-| DART | disclosure (and `earnings` when title matches) | kr | `app/services/market_events/dart_helpers.py::fetch_dart_filings_for_date` | Uses `OpenDartReader.list_date`. Symbol from `stock_code`. Title-classified into earnings vs. disclosure via `normalize_dart_disclosure_row`. |
+| DART | disclosure (and `earnings` when title matches) | kr | `app/services/market_events/dart_helpers.py::fetch_dart_filings_for_date` | Uses scraping-backed `OpenDartReader.list_date_ex` with an explicit response-column contract. A zero result succeeds only on a confirmed XKRX non-session; trading-session or calendar-unknown zeroes fail closed. `list_date_ex` does not expose `stock_code`, so symbol is empty. Title-classified into earnings vs. disclosure via `normalize_dart_disclosure_row`. |
 | ForexFactory | economic | global | `app/services/market_events/forexfactory_helpers.py::fetch_forexfactory_events_for_date` | This-week + next-week XML. Times converted ET → UTC. |
 
 `scripts/ingest_market_events.py::SUPPORTED` is the canonical list of supported triples.

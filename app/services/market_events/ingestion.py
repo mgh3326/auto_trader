@@ -26,8 +26,33 @@ from app.services.market_events.normalizers import (
     normalize_finnhub_earnings_row,
 )
 from app.services.market_events.repository import MarketEventsRepository
+from app.services.market_events.session_calendar import trading_session_status
 
 logger = logging.getLogger(__name__)
+
+
+def _require_legitimate_dart_zero(target_date: date, event_count: int) -> None:
+    """Reject an empty DART result unless XKRX confirms the date was closed."""
+    if event_count > 0:
+        return
+
+    session_status = trading_session_status("kr", target_date)
+    if session_status == "closed":
+        logger.info(
+            "DART returned zero filings on confirmed XKRX non-session %s",
+            target_date,
+        )
+        return
+    if session_status == "open":
+        raise RuntimeError(
+            f"DART returned zero filings on confirmed XKRX trading session "
+            f"{target_date}"
+        )
+    raise RuntimeError(
+        f"DART returned zero filings for {target_date}, but XKRX calendar "
+        "classification is unknown; cannot distinguish a legitimate empty day "
+        "from a broken DART scraper"
+    )
 
 
 async def _mark_failed_after_exception(
@@ -281,6 +306,7 @@ async def ingest_kr_disclosures_for_date(
             await repo.upsert_event_with_values(event_dict, value_dicts)
             upserted += 1
 
+        _require_legitimate_dart_zero(target_date, upserted)
         await repo.mark_partition_succeeded(partition, event_count=upserted)
         return IngestionRunResult(
             source=source,

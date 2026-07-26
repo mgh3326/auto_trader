@@ -275,6 +275,138 @@ async def test_ingest_kr_disclosures_for_date_with_injected_fetcher(db_session):
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+async def test_ingest_kr_disclosures_accepts_zero_on_confirmed_xkrx_holiday(
+    db_session,
+):
+    from app.models.market_events import MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+
+    holiday = date(2025, 1, 1)
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        db_session,
+        holiday,
+        fetch_rows=AsyncMock(return_value=[]),
+    )
+    await db_session.commit()
+
+    assert result.status == "succeeded"
+    assert result.event_count == 0
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=holiday,
+    )
+    assert len(parts) == 1
+    assert parts[0].status == "succeeded"
+    assert parts[0].event_count == 0
+    assert parts[0].last_error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_kr_disclosures_fails_zero_on_xkrx_trading_session(
+    db_session,
+):
+    from app.models.market_events import MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+
+    trading_day = date(2026, 5, 7)
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        db_session,
+        trading_day,
+        fetch_rows=AsyncMock(return_value=[]),
+    )
+    await db_session.commit()
+
+    assert result.status == "failed"
+    assert result.event_count == 0
+    assert "confirmed XKRX trading session" in (result.error or "")
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=trading_day,
+    )
+    assert len(parts) == 1
+    assert parts[0].status == "failed"
+    assert "confirmed XKRX trading session" in (parts[0].last_error or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_kr_disclosures_fails_zero_when_calendar_is_unknown(
+    db_session,
+    monkeypatch,
+):
+    from app.models.market_events import MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+
+    target_date = date(2026, 5, 7)
+    monkeypatch.setattr(ingestion, "trading_session_status", lambda *_: "unknown")
+
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        db_session,
+        target_date,
+        fetch_rows=AsyncMock(return_value=[]),
+    )
+    await db_session.commit()
+
+    assert result.status == "failed"
+    assert "calendar classification is unknown" in (result.error or "")
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=target_date,
+    )
+    assert len(parts) == 1
+    assert parts[0].status == "failed"
+    assert "calendar classification is unknown" in (parts[0].last_error or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ingest_kr_disclosures_records_scraper_schema_failure(db_session):
+    from app.models.market_events import MarketEventIngestionPartition
+    from app.services.market_events import ingestion
+    from app.services.market_events.dart_helpers import DartResponseSchemaError
+
+    target_date = date(2026, 5, 7)
+    result = await ingestion.ingest_kr_disclosures_for_date(
+        db_session,
+        target_date,
+        fetch_rows=AsyncMock(
+            side_effect=DartResponseSchemaError(
+                "DART list_date_ex response missing required columns: rcept_no"
+            )
+        ),
+    )
+    await db_session.commit()
+
+    assert result.status == "failed"
+    assert "missing required columns: rcept_no" in (result.error or "")
+    parts = await _load_partitions(
+        db_session,
+        MarketEventIngestionPartition,
+        source="dart",
+        category="disclosure",
+        market="kr",
+        partition_date=target_date,
+    )
+    assert len(parts) == 1
+    assert parts[0].status == "failed"
+    assert "missing required columns: rcept_no" in (parts[0].last_error or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
 async def test_ingest_us_earnings_records_failure_when_upsert_fails(
     db_session, monkeypatch
 ):
