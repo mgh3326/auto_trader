@@ -115,6 +115,21 @@ def _cmd_plan(_args: argparse.Namespace) -> int:
 
 
 def _cmd_register(args: argparse.Namespace) -> int:
+    # ROB-1060 H2-lock adversarial-verification Finding 5 (2026-07-26,
+    # DETERMINATION -- genuinely blocked, left UNWIRED): every identity built
+    # below has `supersedes_experiment_id` unset -- this command registers
+    # 16 FRESH identities, never a supersession, so
+    # `identity.assert_supersession_preserves_sealed_components` has no
+    # in-process parent to compare against here. Wiring it for a REAL future
+    # supersession (H3's real-implementation `code` superseding one of these
+    # rows) would require fetching the parent's stored `manifest` from
+    # `research.strategy_experiments` (an `app.*`/DB read) and reconstructing
+    # comparable raw components from its AST encoding -- both out of scope
+    # for this pure H2 package under the ROB-1060 remediation constraints.
+    # See `identity.assert_supersession_preserves_sealed_components`'s
+    # docstring for the full determination; this is a recorded HARD
+    # PREREQUISITE for H3, not an oversight.
+    #
     # Deliberate two-stage deferred import (stricter than a single deferred
     # block): `app.services.research_db_write_guard` imports nothing but the
     # stdlib itself, so importing ONLY it first is safe even with no .env

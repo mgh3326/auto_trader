@@ -314,7 +314,38 @@ def assert_supersession_preserves_sealed_components(
     legitimate (same strategy_key, same family, new ``code`` for H3's real
     implementation) could silently ship different gate thresholds, universe
     membership, or cost assumptions under that cover -- exactly the post-hoc
-    relaxation this seal exists to prevent."""
+    relaxation this seal exists to prevent.
+
+    ROB-1060 H2-lock adversarial-verification Finding 5 (2026-07-26,
+    DETERMINATION -- genuinely blocked, NOT wired): this function is pure
+    and DB-agnostic by design (plain ``dict`` in, plain ``dict`` out), and
+    ``registry_cli.build_registration_plan()`` already proves the
+    "pure sibling-component comparison, zero DB" pattern works
+    (``validate_same_family_components_are_identical`` runs purely over the
+    in-process per-config components list). But THIS package's own
+    ``_cmd_register`` never declares a supersession at all -- it registers
+    16 fresh identities with no ``supersedes_experiment_id`` -- so there is
+    no in-process "parent" for this specific registration to compare
+    against. Once a REAL supersession exists (H3's real-implementation
+    ``code`` superseding one of these 16 rows), the parent's components live
+    only as a persisted row in ``research.strategy_experiments``
+    (``app.models.research_backtest.ResearchStrategyExperiment``): the table
+    stores an AST-ENCODED ``manifest`` (via
+    ``research_canonical_hash.encode_manifest``), not the raw components
+    this function compares with plain ``==``, and the app-side registry
+    (``app.services.strategy_experiment_registry.register_experiment``)
+    fetches that row via ``_get_experiment`` -- an ``app.*``/DB read. Wiring
+    this guard into a genuine supersession therefore requires either an
+    ``app.*`` DB fetch (out of scope for this pure package and forbidden by
+    the ROB-1060 remediation constraints) or a new AST-vs-AST comparison
+    path that does not exist today. Recorded here as a HARD PREREQUISITE for
+    H3: before H3 registers a superseding experiment, it (or a follow-up
+    ROB-846 registry read helper) must fetch and reconstruct the parent H2
+    identity's components -- from the DB row, or from re-running THIS
+    package's own ``build_components_for_config`` if the parent is exactly
+    this H2 seal (deterministic and reproducible) -- before calling this
+    guard. Left UNWIRED in ``registry_cli.py`` until that prerequisite is
+    met; see the matching note in ``registry_cli._cmd_register``."""
     for name in IDENTITY_COMPONENTS:
         if name == "code":
             continue
