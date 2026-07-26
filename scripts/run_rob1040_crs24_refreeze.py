@@ -15,13 +15,18 @@ Two gated modes exist beyond that:
     re-run any number of times; it never writes the one-shot marker.
 
 ``--run-one-shot``
-    Everything ``--preflight`` does, plus the explicit literal one-shot
-    confirmation phrase, plus the full CRS-24 campaign evaluation via the
+    Everything ``--preflight`` does, plus three gates preflight is exempt
+    from — ``HEAD == origin/main`` (Linear ROB-1040 실행순서 step 3: the seal
+    must be taken on the *merged exact main tree*, not merely on a descendant
+    of the refreeze head), a clean worktree, and the exact literal one-shot
+    confirmation phrase — plus the full CRS-24 campaign evaluation via the
     sealed ``rob1040_crs24_evidence`` decision closure (unmodified by this
     launcher — this file only supplies the input binding), plus writing the
-    evidence/metadata artifacts and a one-shot exhaustion marker. A second
-    invocation against the same ``--output-root`` refuses fail-closed once
-    that marker exists.
+    evidence/metadata artifacts and a one-shot exhaustion marker. The marker
+    is written ``ARMED`` *before* the evaluation and promoted to ``CONSUMED``
+    only after every artifact write, so an interrupted run cannot silently
+    re-arm. A second invocation against the same ``--output-root`` refuses
+    fail-closed in either state.
 
 This launcher performs no PnL/forward-return computation; the sealed CRS-24
 decision logic already accepts no realized-outcome columns and emits none
@@ -36,6 +41,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -96,7 +102,29 @@ CRS24_CHANGED_FILES: frozenset[str] = frozenset({"rob1040_crs24_evidence.py"})
 CRS24_CURRENT_REFREEZE_FILE_DIGESTS: dict[str, str] = {
     **CRS24_FILE_DIGESTS_AT_MERGE_COMMIT,
     "rob1040_crs24_evidence.py": (
-        "96d1e6b8b3bd08dd2baf4084bcdea1a56b7028659dfbf19d0ab205d4723a7c32"
+        "93bbee16960858cb79beabf821cd9a0d04835cd555066b2ca6ed82473c0916ea"
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# Defence-in-depth beyond the preregistration's seven-file table: the CRS-24
+# fold/calendar authority modules the campaign REUSES (Linear "구현 경계":
+# `rob944_folds.generate_frozen_fold_schedule` /
+# `rob974_h4_contracts.exact_h4_folds`). They are outside the sealed seven, so
+# the seven-file table alone would let a drifted calendar authority through
+# while the *stale* fold-schedule digest still got stamped into all 24 cells.
+# `_require_contract_authority` re-verifies these digests AND calls
+# `rob1040_crs24_contracts.validate_contract()`, which recomputes the fold /
+# filter / contract digests from the live authorities at run time. Kept in a
+# separate table from the seven-file seal so a reviewer never confuses the
+# preregistered seal with this additional guard.
+# ---------------------------------------------------------------------------
+CRS24_AUTHORITY_FILE_DIGESTS: dict[str, str] = {
+    "rob944_folds.py": (
+        "97a646b96647aca40f953701e04aa2d081fcf5b9bc50a654981a01feed40add0"
+    ),
+    "rob974_h4_contracts.py": (
+        "db68351c04321fa8e92054af930ebe78d1082a7c9f0862a1d9e7eb72b1d3499a"
     ),
 }
 
@@ -134,7 +162,15 @@ EXPECTED_OUTPUT_ROOT = Path(
 
 SELECTED_SYMBOLS = ("XRPUSDT", "DOGEUSDT", "SOLUSDT")
 REAL_CORPUS_BINDING_VERSION = "rob1040.crs24.corr1.real_corpus.v1"
+# Single durable one-shot marker file with an explicit lifecycle state.
+# `ARMED` is written (exclusive-create) BEFORE the sealed evaluation begins, so
+# a crash/interrupt/disk error after the counts were computed still leaves a
+# durable record; it is promoted to `CONSUMED` only after every artifact write
+# succeeds. Either state refuses a later `--run-one-shot`, with distinct reason
+# codes, so an operator can tell "completed" from "must be investigated".
 ONE_SHOT_MARKER_NAME = "ONE_SHOT_CONSUMED.json"
+ONE_SHOT_STATE_ARMED = "ARMED"
+ONE_SHOT_STATE_CONSUMED = "CONSUMED"
 EVIDENCE_ARTIFACT_NAME = "crs24_corr1_evidence.json"
 METADATA_ARTIFACT_NAME = "crs24_corr1_launch_metadata.json"
 
@@ -180,15 +216,16 @@ _COMMON_REQUIRED = ("manifest", "corpus_root", "output_root", "launcher_sha256")
 
 def _dry_run_payload() -> dict[str, object]:
     return {
-        "schema_version": "rob1040_crs24_refreeze_launcher_dry_run.v1",
+        "schema_version": "rob1040_crs24_refreeze_launcher_dry_run.v2",
         "run_requested": False,
         "default_state": "DISABLED",
         "description": (
             "No arguments perform no corpus load, artifact write, or broker "
             "call. --preflight verifies gates and builds the real-corpus "
             "input binding without evaluating any feature/gate/count. "
-            "--run-one-shot additionally requires the exact literal "
-            "confirmation phrase and performs the one-shot evaluation."
+            "--run-one-shot additionally requires HEAD == origin/main (the "
+            "merged exact main tree), a clean worktree, and the exact literal "
+            "confirmation phrase, and performs the one-shot evaluation."
         ),
         "refreeze_head": CRS24_MERGE_REFREEZE_HEAD,
         "seven_file_seal": {
@@ -196,6 +233,12 @@ def _dry_run_payload() -> dict[str, object]:
             "current_refreeze": CRS24_CURRENT_REFREEZE_FILE_DIGESTS,
             "changed_files": sorted(CRS24_CHANGED_FILES),
         },
+        "authority_file_seal": dict(CRS24_AUTHORITY_FILE_DIGESTS),
+        "one_shot_only_gates": [
+            "head_is_origin_main",
+            "clean_worktree",
+            "confirm_phrase",
+        ],
         "corpus": {
             "manifest": str(EXPECTED_MANIFEST),
             "corpus_root": str(EXPECTED_CORPUS_ROOT),
@@ -271,6 +314,96 @@ def _require_refreeze_head_ancestor() -> None:
         raise LaunchRefused("REFREEZE_HEAD_NOT_ANCESTOR") from None
 
 
+def _require_head_is_origin_main() -> None:
+    """`--run-one-shot` may only run on the exact merged `main` tree.
+
+    Linear ROB-1040 실행순서 step 3 requires the final hash-seal/launcher gate
+    to be taken "머지된 exact main tree에서". The ancestry check alone is not
+    sufficient: it also passes on an unmerged feature branch that merely
+    descends from the refreeze head. This gate compares LOCAL refs only (no
+    network, no fetch) -- the operator is responsible for having fetched
+    `origin/main` before arming the one-shot.
+
+    `--preflight` is exempt (it must stay auditable while the PR is under
+    review); the preflight output says so explicitly.
+    """
+    try:
+        head = _git("rev-parse", "HEAD")
+        origin_main = _git("rev-parse", "origin/main")
+    except (OSError, subprocess.CalledProcessError):
+        raise LaunchRefused("GIT_STATE_UNAVAILABLE") from None
+    if not head or head != origin_main:
+        raise LaunchRefused("HEAD_IS_NOT_ORIGIN_MAIN")
+
+
+def _measured_head_sha() -> str:
+    """The physical `git rev-parse HEAD` at run time.
+
+    The preregistration's stage-3 procedure requires recording "the merge
+    commit SHA on `main` that carries this implementation". That SHA cannot be
+    known before the merge, so it is not a compile-time constant here; the
+    one-shot instead measures it and stamps it into the run metadata, where
+    `_require_head_is_origin_main` has already proven it equals `origin/main`.
+    """
+    try:
+        return _git("rev-parse", "HEAD")
+    except (OSError, subprocess.CalledProcessError):
+        raise LaunchRefused("GIT_STATE_UNAVAILABLE") from None
+
+
+def _require_contract_authority() -> None:
+    """Run-time re-verification of the fold/filter/contract authorities.
+
+    Two independent layers:
+
+    1. The physical digests of the two reused calendar/fold authority modules
+       (outside the preregistered seven-file seal).
+    2. ``rob1040_crs24_contracts.validate_contract()``, which recomputes
+       `fold_schedule_payload()` / `filter_manifest_payload()` /
+       `contract_payload()` from the LIVE authorities and compares them to the
+       frozen `FOLD_SCHEDULE_SHA256` / `FILTER_MANIFEST_SHA256` /
+       `CONTRACT_SHA256`, plus the exact 8-fold and config-roster assertions.
+
+    Without (2) a drifted calendar authority would be used silently while the
+    stale digest was still stamped into all 24 cells.
+    """
+    for name, expected_digest in CRS24_AUTHORITY_FILE_DIGESTS.items():
+        actual = _physical_sha256(RESEARCH_ROOT / name)
+        if actual != expected_digest:
+            raise LaunchRefused(f"AUTHORITY_FILE_DIGEST_MISMATCH:{name}")
+    from rob1040_crs24_contracts import validate_contract
+
+    try:
+        validate_contract()
+    except (ValueError, TypeError):
+        raise LaunchRefused("CONTRACT_AUTHORITY_DRIFTED") from None
+
+
+def _require_preregistration_artifact() -> None:
+    """Physically verify the preregistration `.md` against its frozen pins.
+
+    The sealed CRS-24 modules cannot do this (the static guard forbids
+    `open`/`pathlib` inside them) even though they stamp
+    `PREREGISTRATION_SHA256` into every cell's `hashes` block. The launcher
+    can, so it does -- reading the expected size/digest from
+    `rob1040_crs24_contracts` rather than hardcoding a second copy.
+    """
+    from rob1040_crs24_contracts import (
+        PREREGISTRATION_RELATIVE_PATH,
+        canonical_preregistration_bytes,
+    )
+
+    path = REPO_ROOT / PREREGISTRATION_RELATIVE_PATH
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        raise LaunchRefused("PREREGISTRATION_ARTIFACT_MISSING") from None
+    try:
+        canonical_preregistration_bytes(raw)
+    except (ValueError, TypeError):
+        raise LaunchRefused("PREREGISTRATION_ARTIFACT_MISMATCH") from None
+
+
 def _require_clean_worktree() -> None:
     try:
         dirty = _git("status", "--porcelain", "--untracked-files=all")
@@ -326,19 +459,36 @@ def _require_pit_lookback_coverage(manifest) -> None:  # noqa: ANN001
     """Metadata-only PIT sufficiency check: the first scheduled cutoff's PIT
     lookback (60 calendar days) plus the widest configured formation window
     (CRS-A2, 84 complete 4h returns) must not require history before the
-    corpus's declared minimum open_time_ms. Uses ONLY the manifest's declared
-    `min_open_time_ms` per symbol -- no row data is read, no statistic is
-    computed."""
+    corpus's declared minimum open_time_ms.
+
+    Two-sided. The upper bound matters just as much: a corpus truncated on the
+    RIGHT would not be refused by a lower-bound-only gate -- every missing
+    entry/exit reference past the truncation would simply be counted as
+    `entry_reference_missing` / `exit_reference_missing` and the run would look
+    "valid" while silently under-counting. So the last exit-presence key in the
+    frozen domain (last cutoff + 24h + 60s) must also be inside the corpus's
+    declared `max_open_time_ms`.
+
+    Uses ONLY the manifest's declared `min_open_time_ms`/`max_open_time_ms`
+    per symbol -- no row data is read, no statistic is computed."""
     from rob974_h4_contracts import exact_h4_folds
     from rob1040_crs24_contracts import ACTIVE_CONFIGS, FOUR_HOUR_MS, PIT_LOOKBACK_MS
-    from rob1040_crs24_feasibility import scheduled_cutoffs
+    from rob1040_crs24_feasibility import (
+        expected_exit_presence_keys,
+        scheduled_cutoffs,
+    )
 
     first_cutoff = scheduled_cutoffs(exact_h4_folds()[0])[0]
     widest_formation = max(config.formation_return_count for config in ACTIVE_CONFIGS)
     floor_ms = first_cutoff - PIT_LOOKBACK_MS - widest_formation * FOUR_HOUR_MS
+    ceiling_ms = max(key.timestamp_ms for key in expected_exit_presence_keys())
     for kline in manifest.klines:
-        if kline.symbol in SELECTED_SYMBOLS and kline.min_open_time_ms > floor_ms:
+        if kline.symbol not in SELECTED_SYMBOLS:
+            continue
+        if kline.min_open_time_ms > floor_ms:
             raise LaunchRefused("PIT_LOOKBACK_COVERAGE_INSUFFICIENT")
+        if kline.max_open_time_ms < ceiling_ms:
+            raise LaunchRefused("PIT_HORIZON_COVERAGE_INSUFFICIENT")
 
 
 def _build_reference_surface(minute_rows: Mapping[str, tuple]):  # noqa: ANN001, ANN201
@@ -417,9 +567,66 @@ def _load_real_corpus_binding(manifest, corpus_root: Path):  # noqa: ANN001, ANN
 
 
 def _require_one_shot_not_consumed(output_root: Path) -> None:
+    """Refuse if the one-shot has been armed or consumed, with distinct codes.
+
+    ``ARMED`` means a previous invocation reached the sealed evaluation but did
+    not finish writing its artifacts -- the one-shot may in fact have been
+    consumed (the counts computed) with no complete record. That state is NOT
+    self-clearing: a human must investigate the output root and explicitly
+    resolve it before any further run.
+    """
     marker = output_root / ONE_SHOT_MARKER_NAME
-    if marker.exists():
+    if not marker.exists():
+        return
+    try:
+        state = json.loads(marker.read_text(encoding="utf-8")).get("state")
+    except (OSError, ValueError, AttributeError):
+        raise LaunchRefused("ONE_SHOT_MARKER_UNREADABLE") from None
+    if state == ONE_SHOT_STATE_ARMED:
+        raise LaunchRefused("ONE_SHOT_ARMED_NOT_RECONCILED")
+    if state == ONE_SHOT_STATE_CONSUMED:
         raise LaunchRefused("ONE_SHOT_ALREADY_CONSUMED")
+    raise LaunchRefused("ONE_SHOT_MARKER_UNREADABLE")
+
+
+def _arm_one_shot_marker(output_root: Path, *, armed_at_utc: str) -> None:
+    """Durably record ARMED before the sealed evaluation can compute anything.
+
+    Exclusive-create (``O_CREAT | O_EXCL``) so a concurrent invocation cannot
+    both pass the pre-check and both arm; ``fsync`` before returning so a
+    crash immediately after arming still leaves the record on disk.
+    """
+    output_root.mkdir(parents=True, exist_ok=True)
+    marker = output_root / ONE_SHOT_MARKER_NAME
+    body = (
+        json.dumps(
+            {
+                "state": ONE_SHOT_STATE_ARMED,
+                "armed_at_utc": armed_at_utc,
+                "note": (
+                    "Sealed CRS-24 evaluation was about to begin. If this state "
+                    "persists the one-shot may have been consumed without a "
+                    "complete artifact set; investigate before any re-run."
+                ),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    )
+    try:
+        descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        raise LaunchRefused("ONE_SHOT_ALREADY_CONSUMED") from None
+    except OSError:
+        raise LaunchRefused("ONE_SHOT_MARKER_UNWRITABLE") from None
+    try:
+        os.write(descriptor, body.encode("utf-8"))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _preflight_payload(binding) -> dict[str, object]:  # noqa: ANN001
@@ -434,10 +641,19 @@ def _preflight_payload(binding) -> dict[str, object]:  # noqa: ANN001
     if binding.extra_authority:
         identity["real_corpus_authority"] = dict(binding.extra_authority)
     return {
-        "schema_version": "rob1040_crs24_refreeze_launcher_preflight.v1",
+        "schema_version": "rob1040_crs24_refreeze_launcher_preflight.v2",
         "mode": "preflight",
         "refreeze_head": CRS24_MERGE_REFREEZE_HEAD,
         "seven_file_seal_verified": True,
+        "authority_file_seal_verified": True,
+        "contract_authority_revalidated": True,
+        "preregistration_artifact_verified": True,
+        "head_is_origin_main_enforced": False,
+        "head_is_origin_main_note": (
+            "HEAD == origin/main is enforced ONLY by --run-one-shot; "
+            "--preflight is deliberately exempt so it stays auditable while "
+            "this PR is under review."
+        ),
         "binding_identity": identity,
         "counts_computed": False,
         "effects": {"artifact_writes": 0, "one_shot_consumed": False},
@@ -467,17 +683,28 @@ def _run_one_shot_payload(
     evidence,  # noqa: ANN001
     output_root: Path,
     run_started_at_utc: str,
+    measured_head_sha: str,
 ) -> tuple[dict[str, object], dict[str, object]]:
     evidence_payload = evidence.to_payload()
     metadata_payload: dict[str, object] = {
-        "schema_version": "rob1040_crs24_refreeze_launcher_metadata.v1",
+        "schema_version": "rob1040_crs24_refreeze_launcher_metadata.v2",
         "run_started_at_utc": run_started_at_utc,
         "refreeze_head": CRS24_MERGE_REFREEZE_HEAD,
+        # Stage-3 procedure item 1 ("the merge commit SHA on main that carries
+        # this implementation"). It cannot be a compile-time constant -- the
+        # merge SHA is unknowable before the merge -- so it is MEASURED here,
+        # after `_require_head_is_origin_main` proved HEAD == origin/main.
+        "head_sha_at_run": measured_head_sha,
+        "head_is_origin_main_verified": True,
         "seven_file_seal": {
             "at_merge_commit": CRS24_FILE_DIGESTS_AT_MERGE_COMMIT,
             "current_refreeze": CRS24_CURRENT_REFREEZE_FILE_DIGESTS,
             "changed_files": sorted(CRS24_CHANGED_FILES),
         },
+        # Separate from the preregistered seven-file seal on purpose.
+        "authority_file_seal": dict(CRS24_AUTHORITY_FILE_DIGESTS),
+        "contract_authority_revalidated": True,
+        "preregistration_artifact_verified": True,
         "corpus": {
             "manifest": str(EXPECTED_MANIFEST),
             "corpus_root": str(EXPECTED_CORPUS_ROOT),
@@ -512,6 +739,14 @@ def _execute_preflight(
     stderr.write("REFREEZE_PREFLIGHT seven_file_seal=PASS\n")
     manifest_path, corpus_root, _output_root = _require_paths(arguments)
     _install_runtime_paths()
+    _require_contract_authority()
+    stderr.write("REFREEZE_PREFLIGHT contract_authority=PASS\n")
+    _require_preregistration_artifact()
+    stderr.write("REFREEZE_PREFLIGHT preregistration_artifact=PASS\n")
+    stderr.write(
+        "REFREEZE_PREFLIGHT head_is_origin_main=EXEMPT_IN_PREFLIGHT "
+        "(enforced only in --run-one-shot)\n"
+    )
     manifest = _verify_manifest(manifest_path)
     stderr.write("REFREEZE_PREFLIGHT manifest_lineage=PASS\n")
     _require_pit_lookback_coverage(manifest)
@@ -539,13 +774,17 @@ def _execute_run_one_shot(
         raise LaunchRefused("CONFIRM_PHRASE_MISMATCH")
     _require_launcher_self_sha256(arguments.launcher_sha256)
     _require_refreeze_head_ancestor()
+    _require_head_is_origin_main()
     _require_clean_worktree()
     _require_seven_file_seal(CRS24_CURRENT_REFREEZE_FILE_DIGESTS)
     manifest_path, corpus_root, output_root = _require_paths(arguments)
+    _install_runtime_paths()
+    _require_contract_authority()
+    _require_preregistration_artifact()
     _require_one_shot_not_consumed(output_root)
+    measured_head_sha = _measured_head_sha()
     stderr.write("REFREEZE_ONE_SHOT static_gates=PASS\n")
 
-    _install_runtime_paths()
     manifest = _verify_manifest(manifest_path)
     _require_pit_lookback_coverage(manifest)
     binding = _load_real_corpus_binding(manifest, corpus_root)
@@ -558,6 +797,11 @@ def _execute_run_one_shot(
     from rob1040_crs24_evidence import build_real_corpus_evidence
 
     run_started_at_utc = datetime.now(UTC).isoformat()
+    # Durably ARM the one-shot BEFORE any count can be computed: after this
+    # point a crash, interrupt or write failure still leaves a record, so the
+    # "exactly once" contract no longer depends on the happy path.
+    _arm_one_shot_marker(output_root, armed_at_utc=run_started_at_utc)
+    stderr.write("REFREEZE_ONE_SHOT one_shot_marker=ARMED\n")
     stderr.write("REFREEZE_ONE_SHOT evaluating_sealed_campaign starting\n")
     evidence = build_real_corpus_evidence(binding)
     stderr.write("REFREEZE_ONE_SHOT evaluating_sealed_campaign PASS\n")
@@ -568,19 +812,22 @@ def _execute_run_one_shot(
         evidence=evidence,
         output_root=output_root,
         run_started_at_utc=run_started_at_utc,
+        measured_head_sha=measured_head_sha,
     )
 
-    output_root.mkdir(parents=True, exist_ok=True)
-    _require_one_shot_not_consumed(output_root)
     _atomic_write_json(output_root / EVIDENCE_ARTIFACT_NAME, evidence_payload)
     _atomic_write_json(output_root / METADATA_ARTIFACT_NAME, metadata_payload)
     _atomic_write_json(
         output_root / ONE_SHOT_MARKER_NAME,
         {
+            "state": ONE_SHOT_STATE_CONSUMED,
+            "armed_at_utc": run_started_at_utc,
             "consumed_at_utc": run_started_at_utc,
+            "head_sha_at_run": measured_head_sha,
             "evidence_sha256": evidence.evidence_sha256,
         },
     )
+    stderr.write("REFREEZE_ONE_SHOT one_shot_marker=CONSUMED\n")
 
     _write_json(
         stdout,

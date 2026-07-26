@@ -18,6 +18,7 @@ no real corpus here at all).
 from __future__ import annotations
 
 import dataclasses
+from decimal import Decimal
 
 import pytest
 import rob1040_crs24_evidence as evidence_module
@@ -86,25 +87,16 @@ def test_empty_real_corpus_binding_round_trips_through_for_real_corpus() -> None
     )
 
 
-@pytest.mark.parametrize(
-    "field",
-    (
-        "snapshot_sha256_pin",
-        "entry_source_sha256_pin",
-        "exit_presence_source_sha256_pin",
-        "fixture_content_sha256_pin",
-    ),
-)
-def test_real_corpus_binding_cannot_reuse_any_synthetic_pin(field: str) -> None:
+def _real_posture_kwargs(*, all_exits_present: bool = False) -> dict[str, object]:
     generator = CRSFeatureGenerator({"XRPUSDT": (), "DOGEUSDT": (), "SOLUSDT": ()})
     entries = tuple(
         EntryReference(key, None) for key in expected_entry_reference_keys()
     )
     exit_presence = tuple(
-        ExitPresence(key, False) for key in expected_exit_presence_keys()
+        ExitPresence(key, all_exits_present) for key in expected_exit_presence_keys()
     )
     references = ReferenceSurface(entries, exit_presence)
-    kwargs = {
+    return {
         "posture": "refrozen_real_corpus",
         "version": "rob1040.crs24.corr1.real_corpus.v1",
         "generator": generator,
@@ -115,16 +107,131 @@ def test_real_corpus_binding_cannot_reuse_any_synthetic_pin(field: str) -> None:
         "fixture_content_sha256_pin": evidence_module.fixture_content_sha256(
             generator, references
         ),
-        "extra_authority": (),
+        "extra_authority": (
+            (
+                evidence_module.REAL_CORPUS_MANIFEST_AUTHORITY_KEY,
+                _FAKE_MANIFEST_SHA256,
+            ),
+        ),
     }
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "snapshot_sha256_pin",
+        "entry_source_sha256_pin",
+        "fixture_content_sha256_pin",
+    ),
+)
+def test_real_corpus_binding_cannot_reuse_any_content_bearing_synthetic_pin(
+    field: str,
+) -> None:
+    """`exit_presence_source_sha256_pin` is intentionally NOT in this set --
+    see :func:`test_a_full_exit_coverage_real_binding_collides_on_the_exit_pin`
+    for why a presence-only bitmap over a frozen key domain cannot serve as a
+    posture discriminator."""
+    kwargs = _real_posture_kwargs()
     synthetic_pin_by_field = {
         "snapshot_sha256_pin": SYNTHETIC_COMPLETE_BAR_SNAPSHOT_SHA256,
         "entry_source_sha256_pin": SYNTHETIC_ENTRY_REFERENCE_SOURCE_SHA256,
-        "exit_presence_source_sha256_pin": SYNTHETIC_EXIT_PRESENCE_SOURCE_SHA256,
         "fixture_content_sha256_pin": SYNTHETIC_FIXTURE_CONTENT_SHA256,
     }
     kwargs[field] = synthetic_pin_by_field[field]
     with pytest.raises(ValueError, match="must not reuse"):
+        CampaignInputBinding(**kwargs)
+
+
+def test_exit_presence_pin_is_still_reverified_against_the_bound_references() -> None:
+    """Dropping the exit pin from the must-differ set does NOT drop it from the
+    identity discipline: a substituted exit pin still cannot be bound, it is
+    just refused by the pin-vs-references check instead of the posture check."""
+    kwargs = _real_posture_kwargs()  # all-absent -> pin != the synthetic one
+    kwargs["exit_presence_source_sha256_pin"] = SYNTHETIC_EXIT_PRESENCE_SOURCE_SHA256
+    with pytest.raises(ValueError, match="exit-presence pin does not match"):
+        CampaignInputBinding(**kwargs)
+
+
+def test_a_full_exit_coverage_real_binding_collides_on_the_exit_pin() -> None:
+    """REGRESSION (adversarial verification 2026-07-26, blocking defect).
+
+    ``ReferenceSurface.exit_presence_source_sha256`` hashes only the
+    ``present=True`` rows of a FROZEN 1296-key domain, so it is a presence
+    bitmap with no content. Any dataset with COMPLETE exit coverage therefore
+    produces exactly the synthetic all-signal calendar's digest -- including a
+    healthy, gapless real corpus. This test first pins that structural fact,
+    then asserts that such a binding is nonetheless accepted.
+
+    Before the fix, ``__post_init__`` required every one of the four pins to
+    differ from its ``SYNTHETIC_*`` constant, so this test's
+    ``for_real_corpus`` call raised ``ValueError: real-corpus posture must not
+    reuse any frozen synthetic pin`` -- i.e. the launcher could never load ANY
+    corpus without exit gaps. Every pre-existing test used an all-absent
+    (``present=False``) or 1-row surface, which is why 97 green tests missed
+    it.
+    """
+    kwargs = _real_posture_kwargs(all_exits_present=True)
+    references = kwargs["references"]
+    # The collision is structural, not incidental -- assert it explicitly so a
+    # future reader cannot mistake the relaxed guard for an oversight.
+    assert (
+        references.exit_presence_source_sha256 == SYNTHETIC_EXIT_PRESENCE_SOURCE_SHA256
+    )
+    assert all(item.present for item in references.exit_presence)
+    assert len(references.exit_presence) == 1_296
+
+    binding = CampaignInputBinding.for_real_corpus(
+        version="rob1040.crs24.corr1.real_corpus.v1",
+        generator=kwargs["generator"],
+        references=references,
+        corpus_manifest_content_sha256=_FAKE_MANIFEST_SHA256,
+    )
+    assert binding.posture == "refrozen_real_corpus"
+    assert binding.exit_presence_source_sha256_pin == (
+        SYNTHETIC_EXIT_PRESENCE_SOURCE_SHA256
+    )
+    # ...and the binding is actually usable end to end.
+    evidence = build_real_corpus_evidence(binding)
+    assert evidence.evidence_sha256 != FROZEN_SYNTHETIC_EVIDENCE_SHA256
+    assert evidence.totals.scheduled == 1_344
+
+
+def test_a_full_exit_coverage_real_binding_with_entry_values_is_accepted() -> None:
+    """Same as above but with real-shaped (non-None) entry values, i.e. the
+    exact shape the launcher builds from the ROB-941 corpus: every entry
+    resolves AND every exit is present."""
+    generator = CRSFeatureGenerator({"XRPUSDT": (), "DOGEUSDT": (), "SOLUSDT": ()})
+    entries = tuple(
+        EntryReference(key, Decimal("1.25")) for key in expected_entry_reference_keys()
+    )
+    exit_presence = tuple(
+        ExitPresence(key, True) for key in expected_exit_presence_keys()
+    )
+    references = ReferenceSurface(entries, exit_presence)
+    binding = CampaignInputBinding.for_real_corpus(
+        version="rob1040.crs24.corr1.real_corpus.v1",
+        generator=generator,
+        references=references,
+        corpus_manifest_content_sha256=_FAKE_MANIFEST_SHA256,
+    )
+    assert binding.posture == "refrozen_real_corpus"
+    assert binding.exit_presence_source_sha256_pin == (
+        SYNTHETIC_EXIT_PRESENCE_SOURCE_SHA256
+    )
+    assert binding.entry_source_sha256_pin != SYNTHETIC_ENTRY_REFERENCE_SOURCE_SHA256
+    assert binding.fixture_content_sha256_pin != SYNTHETIC_FIXTURE_CONTENT_SHA256
+
+
+def test_real_corpus_posture_requires_corpus_manifest_provenance() -> None:
+    """A ``refrozen_real_corpus`` binding with no provenance would emit
+    evidence whose `authorities.input` names no corpus at all."""
+    kwargs = _real_posture_kwargs()
+    kwargs["extra_authority"] = ()
+    with pytest.raises(ValueError, match="corpus-manifest provenance"):
+        CampaignInputBinding(**kwargs)
+
+    kwargs["extra_authority"] = (("some_other_key", "0" * 64),)
+    with pytest.raises(ValueError, match="corpus-manifest provenance"):
         CampaignInputBinding(**kwargs)
 
 

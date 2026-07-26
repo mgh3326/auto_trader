@@ -219,11 +219,46 @@ def test_require_paths_rejects_a_mismatched_path(
         launcher._require_paths(_Args())
 
 
-def test_one_shot_marker_gate(tmp_path: Path) -> None:
+def test_one_shot_marker_gate_refuses_a_consumed_marker(tmp_path: Path) -> None:
     launcher._require_one_shot_not_consumed(tmp_path)
-    (tmp_path / launcher.ONE_SHOT_MARKER_NAME).write_text("{}")
+    (tmp_path / launcher.ONE_SHOT_MARKER_NAME).write_text(
+        json.dumps({"state": launcher.ONE_SHOT_STATE_CONSUMED})
+    )
     with pytest.raises(launcher.LaunchRefused, match="ONE_SHOT_ALREADY_CONSUMED"):
         launcher._require_one_shot_not_consumed(tmp_path)
+
+
+def test_one_shot_marker_gate_refuses_an_armed_marker_with_its_own_code(
+    tmp_path: Path,
+) -> None:
+    """An ARMED marker means a previous run reached the sealed evaluation but
+    never finished writing -- the one-shot may already be consumed with no
+    complete record, so it must NOT be silently re-runnable."""
+    (tmp_path / launcher.ONE_SHOT_MARKER_NAME).write_text(
+        json.dumps({"state": launcher.ONE_SHOT_STATE_ARMED})
+    )
+    with pytest.raises(launcher.LaunchRefused, match="ONE_SHOT_ARMED_NOT_RECONCILED"):
+        launcher._require_one_shot_not_consumed(tmp_path)
+
+
+@pytest.mark.parametrize("body", ("{}", "not json at all", '{"state":"WHATEVER"}'))
+def test_one_shot_marker_gate_refuses_an_unreadable_marker(
+    tmp_path: Path, body: str
+) -> None:
+    (tmp_path / launcher.ONE_SHOT_MARKER_NAME).write_text(body)
+    with pytest.raises(launcher.LaunchRefused, match="ONE_SHOT_MARKER_UNREADABLE"):
+        launcher._require_one_shot_not_consumed(tmp_path)
+
+
+def test_arm_one_shot_marker_is_exclusive_create(tmp_path: Path) -> None:
+    output_root = tmp_path / "out"
+    launcher._arm_one_shot_marker(output_root, armed_at_utc="2026-07-26T00:00:00+00:00")
+    payload = json.loads((output_root / launcher.ONE_SHOT_MARKER_NAME).read_text())
+    assert payload["state"] == launcher.ONE_SHOT_STATE_ARMED
+    with pytest.raises(launcher.LaunchRefused, match="ONE_SHOT_ALREADY_CONSUMED"):
+        launcher._arm_one_shot_marker(
+            output_root, armed_at_utc="2026-07-26T00:00:01+00:00"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -231,10 +266,14 @@ def test_one_shot_marker_gate(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+_AMPLE_MAX_OPEN_TIME_MS = 1 << 62
+
+
 @dataclass(frozen=True)
 class _FakeKlineManifestRow:
     symbol: str
     min_open_time_ms: int
+    max_open_time_ms: int = _AMPLE_MAX_OPEN_TIME_MS
 
 
 @dataclass(frozen=True)
@@ -275,6 +314,159 @@ def test_pit_lookback_coverage_gate_refuses_insufficient_history() -> None:
         launcher.LaunchRefused, match="PIT_LOOKBACK_COVERAGE_INSUFFICIENT"
     ):
         launcher._require_pit_lookback_coverage(manifest)
+
+
+def test_pit_coverage_gate_refuses_a_right_truncated_corpus() -> None:
+    """Upper-bound half of the two-sided gate: a corpus that stops before the
+    last exit-presence key would otherwise silently report every truncated
+    reference as `exit_reference_missing` and still look 'valid'."""
+    from rob974_h4_contracts import exact_h4_folds
+    from rob1040_crs24_feasibility import expected_exit_presence_keys, scheduled_cutoffs
+
+    first_cutoff = scheduled_cutoffs(exact_h4_folds()[0])[0]
+    last_exit_ts = max(key.timestamp_ms for key in expected_exit_presence_keys())
+    manifest = _FakeManifest(
+        (
+            _FakeKlineManifestRow("XRPUSDT", first_cutoff - 200 * 86_400_000),
+            _FakeKlineManifestRow(
+                "DOGEUSDT",
+                first_cutoff - 200 * 86_400_000,
+                last_exit_ts - 60_000,  # one minute short of the last exit key
+            ),
+            _FakeKlineManifestRow("SOLUSDT", first_cutoff - 200 * 86_400_000),
+        )
+    )
+    with pytest.raises(
+        launcher.LaunchRefused, match="PIT_HORIZON_COVERAGE_INSUFFICIENT"
+    ):
+        launcher._require_pit_lookback_coverage(manifest)
+
+
+def test_pit_coverage_gate_accepts_a_corpus_ending_exactly_on_the_last_exit_key() -> (
+    None
+):
+    from rob974_h4_contracts import exact_h4_folds
+    from rob1040_crs24_feasibility import expected_exit_presence_keys, scheduled_cutoffs
+
+    first_cutoff = scheduled_cutoffs(exact_h4_folds()[0])[0]
+    last_exit_ts = max(key.timestamp_ms for key in expected_exit_presence_keys())
+    manifest = _FakeManifest(
+        tuple(
+            _FakeKlineManifestRow(symbol, first_cutoff - 200 * 86_400_000, last_exit_ts)
+            for symbol in launcher.SELECTED_SYMBOLS
+        )
+    )
+    launcher._require_pit_lookback_coverage(manifest)
+
+
+# ---------------------------------------------------------------------------
+# Contract-authority re-verification / preregistration artifact / origin-main
+# ---------------------------------------------------------------------------
+
+
+def test_contract_authority_gate_passes_against_the_real_worktree() -> None:
+    launcher._install_runtime_paths()
+    launcher._require_contract_authority()
+
+
+def test_contract_authority_gate_rejects_a_drifted_authority_file_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(
+        launcher.CRS24_AUTHORITY_FILE_DIGESTS, "rob944_folds.py", "0" * 64
+    )
+    with pytest.raises(
+        launcher.LaunchRefused, match="AUTHORITY_FILE_DIGEST_MISMATCH:rob944_folds.py"
+    ):
+        launcher._require_contract_authority()
+
+
+def test_contract_authority_gate_actually_calls_validate_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole point of gate (4): the fold/filter/contract digests stamped
+    into all 24 cells must be re-derived from the LIVE authorities at run
+    time, not merely echoed."""
+    launcher._install_runtime_paths()
+    import rob1040_crs24_contracts
+
+    calls: list[int] = []
+
+    def _drifted() -> None:
+        calls.append(1)
+        raise ValueError("fold schedule digest drifted")
+
+    monkeypatch.setattr(rob1040_crs24_contracts, "validate_contract", _drifted)
+    with pytest.raises(launcher.LaunchRefused, match="CONTRACT_AUTHORITY_DRIFTED"):
+        launcher._require_contract_authority()
+    assert calls == [1]
+
+
+def test_preregistration_artifact_gate_passes_against_the_real_file() -> None:
+    launcher._install_runtime_paths()
+    launcher._require_preregistration_artifact()
+
+
+def test_preregistration_artifact_gate_refuses_a_missing_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    launcher._install_runtime_paths()
+    monkeypatch.setattr(launcher, "REPO_ROOT", tmp_path)
+    with pytest.raises(
+        launcher.LaunchRefused, match="PREREGISTRATION_ARTIFACT_MISSING"
+    ):
+        launcher._require_preregistration_artifact()
+
+
+def test_preregistration_artifact_gate_refuses_tampered_bytes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    launcher._install_runtime_paths()
+    from rob1040_crs24_contracts import PREREGISTRATION_RELATIVE_PATH
+
+    forged = tmp_path / PREREGISTRATION_RELATIVE_PATH
+    forged.parent.mkdir(parents=True)
+    forged.write_bytes(b"not the preregistration\n")
+    monkeypatch.setattr(launcher, "REPO_ROOT", tmp_path)
+    with pytest.raises(
+        launcher.LaunchRefused, match="PREREGISTRATION_ARTIFACT_MISMATCH"
+    ):
+        launcher._require_preregistration_artifact()
+
+
+def test_head_is_origin_main_gate_reflects_actual_git_state() -> None:
+    head = launcher._git("rev-parse", "HEAD")
+    origin_main = launcher._git("rev-parse", "origin/main")
+    if head == origin_main:
+        launcher._require_head_is_origin_main()
+    else:
+        with pytest.raises(launcher.LaunchRefused, match="HEAD_IS_NOT_ORIGIN_MAIN"):
+            launcher._require_head_is_origin_main()
+
+
+def test_head_is_origin_main_gate_refuses_a_descendant_feature_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The defect this gate closes: `merge-base --is-ancestor` alone passes on
+    an unmerged feature branch that merely descends from the refreeze head."""
+    real_git = launcher._git
+
+    def _fake_git(*arguments: str) -> str:
+        if arguments == ("rev-parse", "HEAD"):
+            return "a" * 40
+        if arguments == ("rev-parse", "origin/main"):
+            return "b" * 40
+        return real_git(*arguments)
+
+    monkeypatch.setattr(launcher, "_git", _fake_git)
+    with pytest.raises(launcher.LaunchRefused, match="HEAD_IS_NOT_ORIGIN_MAIN"):
+        launcher._require_head_is_origin_main()
+    # ...and the ancestry check on its own is NOT sufficient: it still passes.
+    launcher._require_refreeze_head_ancestor()
+
+
+def test_measured_head_sha_is_the_physical_head() -> None:
+    assert launcher._measured_head_sha() == launcher._git("rev-parse", "HEAD")
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +621,15 @@ def _wire_common_fakes(
     return manifest, corpus_root, output_root
 
 
+def _wire_one_shot_only_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralize the two one-shot-only environment gates that cannot hold in a
+    feature-branch test run: the worktree is dirty (this PR) and HEAD is not
+    `origin/main` (unmerged). Both are exercised for real by their own tests
+    above; here they would only mask the CLI wiring under test."""
+    monkeypatch.setattr(launcher, "_require_clean_worktree", lambda: None)
+    monkeypatch.setattr(launcher, "_require_head_is_origin_main", lambda: None)
+
+
 def test_preflight_never_computes_or_prints_any_count(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -483,7 +684,7 @@ def test_run_one_shot_writes_artifacts_and_marker_then_refuses_a_second_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     manifest, corpus_root, output_root = _wire_common_fakes(monkeypatch, tmp_path)
-    monkeypatch.setattr(launcher, "_require_clean_worktree", lambda: None)
+    _wire_one_shot_only_fakes(monkeypatch)
     argv = (
         "--run-one-shot",
         "--manifest",
@@ -517,11 +718,167 @@ def test_run_one_shot_writes_artifacts_and_marker_then_refuses_a_second_run(
     assert "ONE_SHOT_ALREADY_CONSUMED" in stderr2.getvalue()
 
 
-def test_run_one_shot_rejects_a_wrong_confirmation_phrase(
+def test_a_crash_during_evaluation_leaves_an_armed_marker_and_blocks_a_rerun(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The marker-ordering defect: before the fix the marker was written LAST,
+    so a crash after the sealed evaluation consumed the one-shot with ZERO
+    durable record and a second run was permitted. Now ARMED is durable before
+    any count can exist, and it is not self-clearing."""
+    launcher._install_runtime_paths()
+    import rob1040_crs24_evidence
+
+    manifest, corpus_root, output_root = _wire_common_fakes(monkeypatch, tmp_path)
+    _wire_one_shot_only_fakes(monkeypatch)
+
+    real_build = rob1040_crs24_evidence.build_real_corpus_evidence
+    crash_next = [True]
+
+    def _maybe_explode(binding: object):  # noqa: ANN202
+        if crash_next[0]:
+            crash_next[0] = False
+            raise RuntimeError("simulated crash mid-evaluation")
+        return real_build(binding)
+
+    monkeypatch.setattr(
+        rob1040_crs24_evidence, "build_real_corpus_evidence", _maybe_explode
+    )
+    argv = (
+        "--run-one-shot",
+        "--manifest",
+        str(manifest),
+        "--corpus-root",
+        str(corpus_root),
+        "--output-root",
+        str(output_root),
+        "--launcher-sha256",
+        _LAUNCHER_SHA256,
+        "--confirm-one-shot-oos-dry-count",
+        launcher.ONE_SHOT_CONFIRMATION,
+    )
+    stdout, stderr = _stdio()
+    assert (
+        launcher.run_cli(argv, stdout=stdout, stderr=stderr) == launcher.LAUNCH_REFUSED
+    )
+    marker = output_root / launcher.ONE_SHOT_MARKER_NAME
+    assert marker.is_file(), "the one-shot must be durably armed before evaluation"
+    assert json.loads(marker.read_text())["state"] == launcher.ONE_SHOT_STATE_ARMED
+    assert not (output_root / launcher.EVIDENCE_ARTIFACT_NAME).exists()
+
+    # Second run: the evaluation would now succeed, but the ARMED marker must
+    # still refuse it -- the one-shot may already have been consumed.
+    stdout2, stderr2 = _stdio()
+    assert launcher.run_cli(argv, stdout=stdout2, stderr=stderr2) == (
+        launcher.LAUNCH_REFUSED
+    )
+    assert "ONE_SHOT_ARMED_NOT_RECONCILED" in stderr2.getvalue()
+
+
+def test_run_one_shot_refuses_when_head_is_not_origin_main(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     manifest, corpus_root, output_root = _wire_common_fakes(monkeypatch, tmp_path)
     monkeypatch.setattr(launcher, "_require_clean_worktree", lambda: None)
+
+    def _refuse() -> None:
+        raise launcher.LaunchRefused("HEAD_IS_NOT_ORIGIN_MAIN")
+
+    monkeypatch.setattr(launcher, "_require_head_is_origin_main", _refuse)
+    stdout, stderr = _stdio()
+    exit_code = launcher.run_cli(
+        (
+            "--run-one-shot",
+            "--manifest",
+            str(manifest),
+            "--corpus-root",
+            str(corpus_root),
+            "--output-root",
+            str(output_root),
+            "--launcher-sha256",
+            _LAUNCHER_SHA256,
+            "--confirm-one-shot-oos-dry-count",
+            launcher.ONE_SHOT_CONFIRMATION,
+        ),
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert exit_code == launcher.LAUNCH_REFUSED
+    assert "HEAD_IS_NOT_ORIGIN_MAIN" in stderr.getvalue()
+    assert not output_root.exists()
+
+
+def test_preflight_is_exempt_from_the_origin_main_gate_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest, corpus_root, output_root = _wire_common_fakes(monkeypatch, tmp_path)
+
+    def _explode() -> None:  # pragma: no cover - must never be called
+        raise AssertionError("preflight must not consult the origin/main gate")
+
+    monkeypatch.setattr(launcher, "_require_head_is_origin_main", _explode)
+    stdout, stderr = _stdio()
+    exit_code = launcher.run_cli(
+        (
+            "--preflight",
+            "--manifest",
+            str(manifest),
+            "--corpus-root",
+            str(corpus_root),
+            "--output-root",
+            str(output_root),
+            "--launcher-sha256",
+            _LAUNCHER_SHA256,
+        ),
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert exit_code == 0, stderr.getvalue()
+    payload = json.loads(stdout.getvalue())
+    assert payload["head_is_origin_main_enforced"] is False
+    assert "--run-one-shot" in payload["head_is_origin_main_note"]
+    assert "head_is_origin_main=EXEMPT_IN_PREFLIGHT" in stderr.getvalue()
+    assert payload["contract_authority_revalidated"] is True
+    assert payload["preregistration_artifact_verified"] is True
+
+
+def test_run_one_shot_metadata_records_the_measured_head_sha(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest, corpus_root, output_root = _wire_common_fakes(monkeypatch, tmp_path)
+    _wire_one_shot_only_fakes(monkeypatch)
+    stdout, stderr = _stdio()
+    exit_code = launcher.run_cli(
+        (
+            "--run-one-shot",
+            "--manifest",
+            str(manifest),
+            "--corpus-root",
+            str(corpus_root),
+            "--output-root",
+            str(output_root),
+            "--launcher-sha256",
+            _LAUNCHER_SHA256,
+            "--confirm-one-shot-oos-dry-count",
+            launcher.ONE_SHOT_CONFIRMATION,
+        ),
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert exit_code == 0, stderr.getvalue()
+    metadata = json.loads((output_root / launcher.METADATA_ARTIFACT_NAME).read_text())
+    assert metadata["head_sha_at_run"] == launcher._git("rev-parse", "HEAD")
+    assert metadata["head_is_origin_main_verified"] is True
+    assert metadata["authority_file_seal"] == launcher.CRS24_AUTHORITY_FILE_DIGESTS
+    marker = json.loads((output_root / launcher.ONE_SHOT_MARKER_NAME).read_text())
+    assert marker["state"] == launcher.ONE_SHOT_STATE_CONSUMED
+    assert marker["head_sha_at_run"] == metadata["head_sha_at_run"]
+
+
+def test_run_one_shot_rejects_a_wrong_confirmation_phrase(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest, corpus_root, output_root = _wire_common_fakes(monkeypatch, tmp_path)
+    _wire_one_shot_only_fakes(monkeypatch)
     stdout, stderr = _stdio()
     exit_code = launcher.run_cli(
         (

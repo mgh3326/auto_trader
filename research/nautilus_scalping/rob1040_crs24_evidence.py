@@ -59,6 +59,10 @@ EVIDENCE_SCHEMA_VERSION = "rob1040.crs24.corr1.feasibility_evidence.v3"
 FROZEN_SYNTHETIC_EVIDENCE_SHA256 = (
     "ef9b0b819bef5e4cb0a63a9f88b5df0a7a65832d103d4ed379ba460fa3232bab"
 )
+# Mandatory `extra_authority` key for the `refrozen_real_corpus` posture: the
+# real corpus has no compile-time content pin, so its provenance trail must at
+# minimum name the frozen corpus manifest it was loaded from.
+REAL_CORPUS_MANIFEST_AUTHORITY_KEY = "corpus_manifest_content_sha256"
 
 
 def _exact_int(value: object, name: str) -> int:
@@ -623,11 +627,16 @@ class CampaignInputBinding:
 
     Exactly two postures exist:
 
-    * ``"frozen_synthetic_fixture"`` — built ONLY by this module's
-      zero-argument default path (:func:`_validated_campaign_factory` called
-      with no binding). Every pin must equal this module's compile-time
-      frozen ``SYNTHETIC_*`` constant, so this posture stays byte-identical
-      to the pre-existing behavior; a caller can never construct one.
+    * ``"frozen_synthetic_fixture"`` — the posture this module's
+      zero-argument default path builds (:func:`_validated_campaign_factory`
+      called with no binding). Every pin must equal this module's
+      compile-time frozen ``SYNTHETIC_*`` constant. An external caller *can*
+      construct such a binding, but only by supplying a generator/reference
+      pair whose self-computed digests equal those frozen constants — i.e.
+      only by supplying byte-identical frozen content — so this posture stays
+      byte-identical to the pre-existing behavior regardless of who builds
+      it. (It is separately barred from the real-corpus entry points by
+      :func:`open_real_corpus_campaign_context`'s posture check.)
     * ``"refrozen_real_corpus"`` — built by an external caller (the ROB-1040
       refreeze launcher) from real 1-minute corpus data via
       :meth:`for_real_corpus`. No compile-time literal can exist for
@@ -696,17 +705,49 @@ class CampaignInputBinding:
                     "synthetic posture must reuse only the frozen synthetic pins"
                 )
         else:
+            # Anti-substitution: a real-corpus binding must not be a relabelled
+            # frozen synthetic fixture. The decisive discriminator is the JOINT
+            # identity `fixture_content_sha256_pin` (generator + references
+            # together) -- differing there is by itself sufficient proof that
+            # this binding is not the synthetic fixture. `version`, the
+            # complete-bar `snapshot_sha256_pin` and the value-bearing
+            # `entry_source_sha256_pin` add independent content-bearing
+            # evidence and are also required to differ.
+            #
+            # `exit_presence_source_sha256_pin` is DELIBERATELY EXCLUDED from
+            # the must-differ set. `ReferenceSurface.exit_presence_source_sha256`
+            # hashes only the {symbol, timestamp_ms} of the rows whose
+            # `present` flag is True, over a FROZEN key domain (1296 keys,
+            # fixed order) -- it is a presence bitmap and carries no content.
+            # Consequently ANY two datasets with complete exit coverage produce
+            # the identical digest by construction: the all-signal synthetic
+            # calendar (1296/1296 present) and a gapless real corpus
+            # (1296/1296 present) necessarily collide. Requiring that pin to
+            # differ would amount to requiring the real corpus to be MISSING
+            # exit bars -- the exact opposite of the desired property, and a
+            # false positive on every healthy corpus. The pin is still captured
+            # at construction and still reverified against the bound references
+            # below and on every later use (`verify_live_inputs`), so exit
+            # presence remains tamper-evident; it simply is not a posture
+            # discriminator.
             if (
                 self.version == SYNTHETIC_FIXTURE_VERSION
                 or self.snapshot_sha256_pin == SYNTHETIC_COMPLETE_BAR_SNAPSHOT_SHA256
                 or self.entry_source_sha256_pin
                 == SYNTHETIC_ENTRY_REFERENCE_SOURCE_SHA256
-                or self.exit_presence_source_sha256_pin
-                == SYNTHETIC_EXIT_PRESENCE_SOURCE_SHA256
                 or self.fixture_content_sha256_pin == SYNTHETIC_FIXTURE_CONTENT_SHA256
             ):
                 raise ValueError(
                     "real-corpus posture must not reuse any frozen synthetic pin"
+                )
+            # Provenance is mandatory for the real posture: without it the
+            # emitted evidence would carry no corpus authority at all.
+            if not any(
+                name == REAL_CORPUS_MANIFEST_AUTHORITY_KEY
+                for name, _ in self.extra_authority
+            ):
+                raise ValueError(
+                    "real-corpus posture requires corpus-manifest provenance authority"
                 )
         if self.snapshot_sha256_pin != self.generator.snapshot_sha256:
             raise ValueError("snapshot pin does not match the bound generator")
@@ -753,7 +794,7 @@ class CampaignInputBinding:
             fixture_content_sha256_pin=fixture_content_sha256(generator, references),
             extra_authority=(
                 (
-                    "corpus_manifest_content_sha256",
+                    REAL_CORPUS_MANIFEST_AUTHORITY_KEY,
                     corpus_manifest_content_sha256,
                 ),
             ),
