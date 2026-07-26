@@ -18,13 +18,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-import configs as cfg
 import dats_state as ds
 import decision_calendar as dc
 import indicators as ind
 import output_schema as out
 import pit_universe_alpaca as pu
 import reason_codes as rc
+import seal_consumption as sc
 import sizing
 from daily_bars import DailyBar
 
@@ -66,7 +66,7 @@ def _evidence(**kwargs: object) -> dict:
 def run_ap_a1_decision(
     *,
     decision_ts_ms: int,
-    config: cfg.ConfigSpec,
+    config: sc.ConfigSpec,
     universe: pu.UniverseSnapshot,
     bars_by_symbol: Mapping[str, Sequence[DailyBar]],
     prior_state: Mapping[str, AP_A1_PositionState],
@@ -75,6 +75,11 @@ def run_ap_a1_decision(
         raise ValueError(f"expected an AP-A1 config, got family={config.family!r}")
     if not dc.is_ap_a1_decision_ts(decision_ts_ms):
         raise ValueError(f"{decision_ts_ms} is not an AP-A1 (daily 00:05 UTC) decision")
+    # NO_THRESHOLD_RELAXATION (run_status.no_threshold_relaxation) enforcement
+    # point: `config.family` alone cannot tell a forged/relaxed config (a
+    # real config_id with e.g. a lowered `threshold`) from a genuine sealed
+    # one -- this fails closed on that class of forgery.
+    sc.assert_sealed_config(config)
 
     f = config.params["f"]
     s = config.params["s"]
@@ -82,6 +87,12 @@ def run_ap_a1_decision(
     threshold = config.params["threshold"]
 
     _window_start, window_end = dc.prior_completed_day_window(decision_ts_ms)
+
+    # Run A §6 rule 7 (N_t >= 18): below the minimum universe size, new
+    # entries stop for EVERY symbol -- existing positions may still exit.
+    # Consumes H1's own `universe_state` rather than reimplementing the
+    # `n_t < 18` comparison here.
+    universe_mode = pu.universe_state(universe.n_t)
 
     all_symbols = sorted(set(universe.eligible_symbols) | set(prior_state.keys()))
 
@@ -151,6 +162,16 @@ def run_ap_a1_decision(
                 )
                 new_state[symbol] = AP_A1_PositionState(state="flat")
             else:
+                # `outcome.action == "HOLD"` covers TWO diagnostically
+                # distinct states, both structurally "not exiting": D is
+                # genuinely inside the hysteresis band (-threshold < D <
+                # threshold), OR D is already at/past the ENTRY threshold
+                # (the long position is simply never re-entered, AC9) --
+                # collapsing both into one "HYSTERESIS_HOLD" reason mislabels
+                # every healthy, comfortably-trending long as if it were
+                # teetering on the exit boundary, destroying the §11.8 kill-
+                # gate / H5 diagnostic.
+                reason = "HYSTERESIS_HOLD" if d < threshold else "TREND_INTACT_HOLD"
                 provisional[symbol] = out.SignalRecord(
                     decision_ts_ms=decision_ts_ms,
                     strategy="AP-A1",
@@ -158,7 +179,7 @@ def run_ap_a1_decision(
                     symbol=symbol,
                     action="HOLD",
                     target_notional=0.0,
-                    reason_code="HYSTERESIS_HOLD",
+                    reason_code=reason,
                     evidence_hash=out.evidence_hash(evidence),
                 )
                 new_state[symbol] = position  # unchanged, still long
@@ -175,6 +196,26 @@ def run_ap_a1_decision(
                 target_notional=0.0,
                 reason_code="UNIVERSE_INELIGIBLE",
                 evidence_hash=out.evidence_hash(_evidence(symbol=symbol)),
+            )
+            new_state[symbol] = _FLAT_STATE
+            continue
+
+        if universe_mode != "normal":
+            # Run A §6 rule 7 -- new entries stop, existing positions'
+            # exits are unaffected (this branch is reached only for a FLAT
+            # symbol; a long position's exit is classified above,
+            # unconditionally).
+            provisional[symbol] = out.SignalRecord(
+                decision_ts_ms=decision_ts_ms,
+                strategy="AP-A1",
+                config_id=config.config_id,
+                symbol=symbol,
+                action="NO_ACTION",
+                target_notional=0.0,
+                reason_code="UNIVERSE_RESTRICTED_NEW_ENTRY_BLOCKED",
+                evidence_hash=out.evidence_hash(
+                    _evidence(symbol=symbol, universe_mode=universe_mode)
+                ),
             )
             new_state[symbol] = _FLAT_STATE
             continue

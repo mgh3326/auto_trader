@@ -24,12 +24,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-import configs as cfg
 import decision_calendar as dc
 import indicators as ind
 import output_schema as out
 import pit_universe_alpaca as pu
 import reason_codes as rc
+import seal_consumption as sc
 import sizing
 import wcmb_ranking as wr
 from daily_bars import DailyBar
@@ -64,7 +64,7 @@ def _evidence(**kwargs: object) -> dict:
 def run_ap_a2_decision(
     *,
     decision_ts_ms: int,
-    config: cfg.ConfigSpec,
+    config: sc.ConfigSpec,
     universe: pu.UniverseSnapshot,
     bars_by_symbol: Mapping[str, Sequence[DailyBar]],
     prior_held: Mapping[str, AP_A2_HeldState],
@@ -75,12 +75,20 @@ def run_ap_a2_decision(
         raise ValueError(
             f"{decision_ts_ms} is not an AP-A2 (weekly Monday 00:05 UTC) decision"
         )
+    # NO_THRESHOLD_RELAXATION enforcement point -- see dats_engine.py's
+    # matching call for the full rationale.
+    sc.assert_sealed_config(config)
 
     ell = config.params["L"]
     k = config.params["k"]
     b = config.params["b"]
 
     _window_start, window_end = dc.prior_completed_day_window(decision_ts_ms)
+
+    # Run A §6 rule 7 (N_t >= 18): below the minimum universe size, new
+    # entries stop for EVERY symbol -- existing positions may still exit
+    # (step (1)/(2) below are unaffected by this mode).
+    universe_mode = pu.universe_state(universe.n_t)
 
     held_symbols = set(prior_held.keys())
     universe_symbols = set(universe.eligible_symbols)
@@ -195,6 +203,24 @@ def run_ap_a2_decision(
     ]
     slots_full = len(new_held) >= k
     for symbol in buy_candidates:
+        if universe_mode != "normal":
+            # Run A §6 rule 7 -- new entries stop universe-wide, regardless
+            # of rank/slots. Checked BEFORE slots_full so a restricted
+            # universe is never masked by an unrelated RANK_SLOTS_FULL
+            # rejection.
+            provisional[symbol] = out.SignalRecord(
+                decision_ts_ms=decision_ts_ms,
+                strategy="AP-A2",
+                config_id=config.config_id,
+                symbol=symbol,
+                action="NO_ACTION",
+                target_notional=0.0,
+                reason_code="UNIVERSE_RESTRICTED_NEW_ENTRY_BLOCKED",
+                evidence_hash=out.evidence_hash(
+                    _evidence(symbol=symbol, universe_mode=universe_mode)
+                ),
+            )
+            continue
         if slots_full:
             provisional[symbol] = out.SignalRecord(
                 decision_ts_ms=decision_ts_ms,

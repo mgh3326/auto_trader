@@ -40,11 +40,22 @@ ReasonCode = Literal[
     "SIGMA_INSUFFICIENT_SAMPLE",
     "MIN_TARGET_NOTIONAL",
     "INSUFFICIENT_CASH",
+    # Run A §6 rule 7 (N_t >= 18): the universe-wide "restricted_exits_only"
+    # mode (H1 pit_universe_alpaca.universe_state) blocks every NEW entry for
+    # every symbol, regardless of that symbol's own signal -- shared across
+    # both strategies for the same reason UNIVERSE_INELIGIBLE is shared.
+    "UNIVERSE_RESTRICTED_NEW_ENTRY_BLOCKED",
     # AP-A1 DATS (SS11.3/SS11.5).
     "ENTRY_ACCEPTED",
     "NO_ENTRY_SIGNAL",
     "EXIT_TRIGGERED",
     "HYSTERESIS_HOLD",
+    # A long position holding well outside the hysteresis band (D already at
+    # or past the ENTRY threshold, simply not re-entered per AC9) is a
+    # distinct diagnostic state from "sitting inside the -threshold<D<
+    # threshold band" -- collapsing both into HYSTERESIS_HOLD mislabels every
+    # healthy long as if it were teetering on the exit boundary.
+    "TREND_INTACT_HOLD",
     # AP-A2 WCM-B (SS12.2-SS12.5).
     "RANK_BUY_ACCEPTED",
     "SCORE_NOT_POSITIVE",
@@ -64,10 +75,12 @@ ALL_REASON_CODES: frozenset[str] = frozenset(
         "SIGMA_INSUFFICIENT_SAMPLE",
         "MIN_TARGET_NOTIONAL",
         "INSUFFICIENT_CASH",
+        "UNIVERSE_RESTRICTED_NEW_ENTRY_BLOCKED",
         "ENTRY_ACCEPTED",
         "NO_ENTRY_SIGNAL",
         "EXIT_TRIGGERED",
         "HYSTERESIS_HOLD",
+        "TREND_INTACT_HOLD",
         "RANK_BUY_ACCEPTED",
         "SCORE_NOT_POSITIVE",
         "RANK_SLOTS_FULL",
@@ -85,10 +98,12 @@ ACTION_FOR_REASON: dict[str, str] = {
     "SIGMA_INSUFFICIENT_SAMPLE": "NO_ACTION",
     "MIN_TARGET_NOTIONAL": "NO_ACTION",
     "INSUFFICIENT_CASH": "NO_ACTION",
+    "UNIVERSE_RESTRICTED_NEW_ENTRY_BLOCKED": "NO_ACTION",
     "ENTRY_ACCEPTED": "ENTER",
     "NO_ENTRY_SIGNAL": "NO_ACTION",
     "EXIT_TRIGGERED": "EXIT",
     "HYSTERESIS_HOLD": "HOLD",
+    "TREND_INTACT_HOLD": "HOLD",
     "RANK_BUY_ACCEPTED": "ENTER",
     "SCORE_NOT_POSITIVE": "NO_ACTION",
     "RANK_SLOTS_FULL": "NO_ACTION",
