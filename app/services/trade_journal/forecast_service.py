@@ -105,7 +105,11 @@ _REGULAR_SESSION_CLOSE_SOURCE_BASIS = {
     "yahoo": "raw",
     "yahoo_fallback": "raw",
 }
-_AUTO_RESOLVABLE_FORECAST_KINDS = {"price_target", "terminal_close", "return_at_horizon"}
+_AUTO_RESOLVABLE_FORECAST_KINDS = {
+    "price_target",
+    "terminal_close",
+    "return_at_horizon",
+}
 _GROUP_BY_FIELDS = {"created_by", "session_label", "model_label", "day"}
 _NO_RESOLVABLE_FORECAST_KIND = "no_resolvable_forecast"
 _CLOSED_NO_CLAIM_STATUS = "closed_no_claim"
@@ -1342,7 +1346,9 @@ async def resolve_forecast(
                         "reason": "no daily close for the exact horizon date",
                         "forecast": serialize_forecast(row),
                     }
-                horizon_candle = max(horizon_candles, key=lambda candle: candle.time_utc)
+                horizon_candle = max(
+                    horizon_candles, key=lambda candle: candle.time_utc
+                )
                 reference_price = float(target.get("reference_price"))
                 target_return_pct = float(target.get("target_return_pct"))
                 outcome, observed = classify_return_at_horizon_outcome(

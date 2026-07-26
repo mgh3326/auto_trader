@@ -271,6 +271,7 @@ def test_classify_return_at_horizon_uses_horizon_close():
     assert outcome is True
     assert observed == pytest.approx(10.0)
 
+
 @pytest.mark.asyncio
 async def test_save_stamps_policy_version_and_normalizes_symbol(
     db_session: AsyncSession,
