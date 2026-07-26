@@ -48,6 +48,7 @@ _DEFENSIVE_INTENTS = frozenset({"sell_review", "risk_review"})
 
 LevelSource = Literal["stop_loss_mirror", "recent_low_20d"]
 RecentLowFetcher = Callable[[str], Awaitable[Decimal | None]]
+CurrentPriceFetcher = Callable[[str], Awaitable[Decimal | None]]
 
 
 @dataclass(frozen=True)
@@ -87,12 +88,14 @@ class DownsideWatchService:
         *,
         watch_repo: InvestmentReportsRepository | None = None,
         recent_low_fetcher: RecentLowFetcher | None = None,
+        current_price_fetcher: CurrentPriceFetcher | None = None,
     ) -> None:
         self._session = session
         self._watch_repo = watch_repo or InvestmentReportsRepository(session)
         self._recent_low_fetcher = recent_low_fetcher or (
             lambda symbol: _fetch_recent_low_from_db(session, symbol)
         )
+        self._current_price_fetcher = current_price_fetcher or _fetch_current_price
 
     async def _active_kr_holdings(self) -> dict[str, list[TradeJournal]]:
         stmt = sa.select(TradeJournal).where(
@@ -151,13 +154,49 @@ class DownsideWatchService:
         )
 
     def _build_request(
-        self, level: DownsideWatchLevel, *, valid_until
+        self,
+        level: DownsideWatchLevel,
+        *,
+        valid_until,
+        already_breached: bool = False,
+        current_price: Decimal | None = None,
     ) -> CreateInvestmentWatchRequest:
         rationale = (
             f"ROB-928 하방 워치 자동등록 (source={level.source}): "
             f"근거 레벨={level.threshold}. 트레일링 미지원 — 레벨 고정, "
             "주기 재등록 필요 (stale 경고)."
         )
+        metadata: dict[str, Any] = {
+            "rob928_level_source": level.source,
+            "rob928_quantity": str(level.quantity),
+            "trailing_supported": False,
+        }
+        trigger_checklist: list[str] = []
+        if already_breached:
+            # ROB-971: registered while current_price was already past the
+            # below threshold. The tag states only the registration-time
+            # fact (timestamp, price, threshold) — it deliberately does not
+            # interpret what a later scanner fire means. already_breached is
+            # computed once at registration and fixed on the row for its
+            # 14-day validity window, so an interpretive claim like "this
+            # fire is not a new breach" would go stale the moment price
+            # recovers and re-breaches later (a genuinely new breach would
+            # then read as old news). A registration-time-only fact stays
+            # true regardless of what happens between registration and fire.
+            registered_at = now_kst()
+            metadata["rob971_already_breached"] = {
+                "reason": "already_breached",
+                "at": registered_at.isoformat(),
+                "current_price_at_registration": str(current_price),
+                "threshold": str(level.threshold),
+            }
+            trigger_checklist.append(
+                "ROB-971 already_breached: 등록 시점 "
+                f"{registered_at.strftime('%Y-%m-%d %H:%M')} KST 현재가 "
+                f"{current_price} < 손절선 {level.threshold} "
+                "(등록 당시 이미 손절선 이탈 상태였음 — 이후 발화 시점의 "
+                "이탈 여부는 별도 확인 필요)"
+            )
         return CreateInvestmentWatchRequest.model_validate(
             {
                 "created_by": CREATED_BY,
@@ -172,20 +211,40 @@ class DownsideWatchService:
                     "action_mode": "notify_only",
                 },
                 "valid_until": valid_until,
-                "metadata": {
-                    "rob928_level_source": level.source,
-                    "rob928_quantity": str(level.quantity),
-                    "trailing_supported": False,
-                },
+                "trigger_checklist": trigger_checklist,
+                "metadata": metadata,
             }
         )
 
     async def register_sweep(self, *, dry_run: bool = True) -> dict[str, Any]:
+        """Sweep active KR holdings and register support-break watches.
+
+        ROB-971: a below watch whose price is already at/below its threshold
+        used to be dropped entirely (``continue``, never registered) to avoid
+        an immediate alert-burst. That silently removed the most at-risk
+        positions from monitoring — the exact "stop-loss breach goes
+        unactioned" failure this module exists to prevent. It is now
+        registered like any other level; ``already_breached`` (True when
+        ``current_price`` has already crossed the threshold, using the same
+        strict ``<`` the below-scanner uses in
+        ``app.jobs.watch_market_data.is_triggered``) is tagged onto the
+        alert's metadata and trigger_checklist as a registration-time-only
+        fact (timestamp, price, threshold) — it does not claim anything
+        about what a later scanner fire means, since the tag is fixed for
+        the row's full validity window and would go stale if price recovers
+        and re-breaches before the row actually fires.
+        ``skipped_already_triggered`` is kept only for response-shape
+        backward compatibility and is expected to stay empty; genuine
+        registration-time price failures are reported separately in
+        ``skipped_price_unavailable``.
+        """
         levels = await self.compute_levels()
         valid_until = now_kst() + DEFAULT_VALID_FOR
 
         registered: list[dict[str, Any]] = []
         skipped_existing: list[dict[str, Any]] = []
+        skipped_already_triggered: list[dict[str, Any]] = []
+        skipped_price_unavailable: list[dict[str, Any]] = []
         level_summaries: list[dict[str, Any]] = []
 
         for level in levels:
@@ -207,6 +266,21 @@ class DownsideWatchService:
                 )
                 continue
 
+            current_price = await self._current_price_fetcher(level.symbol)
+            if current_price is None:
+                skipped_price_unavailable.append(
+                    {
+                        "symbol": level.symbol,
+                        "reason": "current_price_unavailable",
+                    }
+                )
+                continue
+
+            # Matches the below-scanner's strict comparison
+            # (app.jobs.watch_market_data.is_triggered) so the tag means
+            # exactly "the scanner would fire on its very next pass".
+            already_breached = current_price < level.threshold
+
             if dry_run:
                 registered.append(
                     {
@@ -214,11 +288,17 @@ class DownsideWatchService:
                         "threshold": str(level.threshold),
                         "source": level.source,
                         "would_register": True,
+                        "already_breached": already_breached,
                     }
                 )
                 continue
 
-            request = self._build_request(level, valid_until=valid_until)
+            request = self._build_request(
+                level,
+                valid_until=valid_until,
+                already_breached=already_breached,
+                current_price=current_price,
+            )
             alert, idempotent = await DirectWatchCreateService(
                 self._session, self._watch_repo
             ).create(request)
@@ -230,6 +310,7 @@ class DownsideWatchService:
                     "threshold": str(level.threshold),
                     "source": level.source,
                     "idempotent": idempotent,
+                    "already_breached": already_breached,
                 }
             )
 
@@ -237,5 +318,20 @@ class DownsideWatchService:
             "dry_run": dry_run,
             "registered": registered,
             "skipped_existing": skipped_existing,
+            "skipped_already_triggered": skipped_already_triggered,
+            "skipped_price_unavailable": skipped_price_unavailable,
             "levels": level_summaries,
         }
+
+
+async def _fetch_current_price(symbol: str) -> Decimal | None:
+    """Fetch the registration-time KR price; failures fail closed upstream."""
+    from app.services import market_data
+
+    try:
+        quote = await market_data.get_quote(symbol=symbol, market="equity_kr")
+    except Exception:
+        logger.warning("downside_watch: current price unavailable for %s", symbol)
+        return None
+    price = getattr(quote, "price", None)
+    return Decimal(str(price)) if price is not None else None

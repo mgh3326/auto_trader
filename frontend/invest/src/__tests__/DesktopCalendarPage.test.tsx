@@ -184,7 +184,7 @@ test("clicking a grid cell sets selectedDate as scroll target (does not filter t
     // And we scrolled.
     expect(scrollSpy).toHaveBeenCalled();
     // May 13's cluster is still visible in its section.
-    expect(within(may13 as HTMLElement).getByText("미국 실적 발표 327건")).toBeInTheDocument();
+    expect(within(may13 as HTMLElement).getByText("미국 실적 발표 · 그 외 325건")).toBeInTheDocument();
   } finally {
     Element.prototype.scrollIntoView = originalScroll;
   }
@@ -345,11 +345,11 @@ test("type and region filters hide non-matching items from each day section, gri
   await screen.findByTestId("calendar-timeline");
 
   // Baseline: May 13 cluster present somewhere.
-  expect(screen.getByText("미국 실적 발표 327건")).toBeInTheDocument();
+  expect(screen.getByText("미국 실적 발표 · 그 외 325건")).toBeInTheDocument();
 
   // Filter to 경제지표 — earnings cluster gone, day section still rendered with the empty placeholder.
   await user.click(screen.getByRole("button", { name: "경제지표" }));
-  expect(screen.queryByText("미국 실적 발표 327건")).not.toBeInTheDocument();
+  expect(screen.queryByText("미국 실적 발표 · 그 외 325건")).not.toBeInTheDocument();
   const may13 = document.querySelector('[data-day-anchor="2026-05-13"]')!;
   expect(within(may13 as HTMLElement).getByText("이 날은 예정된 일정이 없어요")).toBeInTheDocument();
   // Grid count badge for May 13 is gone.
@@ -358,10 +358,10 @@ test("type and region filters hide non-matching items from each day section, gri
 
   // Switch to 실적 — cluster reappears.
   await user.click(screen.getByRole("button", { name: "실적" }));
-  expect(screen.getByText("미국 실적 발표 327건")).toBeInTheDocument();
+  expect(screen.getByText("미국 실적 발표 · 그 외 325건")).toBeInTheDocument();
 
   // 국내 region filter — empty (cluster is US).
   await user.click(screen.getByRole("button", { name: "국내" }));
-  expect(screen.queryByText("미국 실적 발표 327건")).not.toBeInTheDocument();
+  expect(screen.queryByText("미국 실적 발표 · 그 외 325건")).not.toBeInTheDocument();
   expect(within(may13 as HTMLElement).getByText("이 날은 예정된 일정이 없어요")).toBeInTheDocument();
 });

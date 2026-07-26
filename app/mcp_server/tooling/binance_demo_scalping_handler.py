@@ -21,6 +21,9 @@ from app.services.brokers.binance.demo_scalping.market_data import (
     MarketConditionsUnavailable,
 )
 from app.services.brokers.binance.demo_scalping.order_intent import OrderIntent
+from app.services.brokers.binance.demo_scalping_exec.validated_signal_gate import (
+    evaluate_validated_signal_gate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +288,17 @@ async def binance_demo_scalping_submit_decision(
     }
     now = dt.datetime.now(dt.UTC)
 
+    # ROB-937: this interactive LLM path is INTENTIONALLY exempt from the
+    # ROB-905 validated-signal gate (which arms only recurring scheduler ticks).
+    # Its authorization comes from registry opt-in + the human per-call
+    # ``confirm=true`` + ROB-841 market-conditions fail-close + the allowlist/1x/
+    # notional caps — NOT the gate artifact. We evaluate the gate once here for
+    # AUDIT ONLY and echo the verdict in every response; execution is UNCHANGED
+    # whether the gate allows or denies. Do not add a block/downgrade here — that
+    # would reverse the ROB-905 scoping and break the human-in-the-loop design.
+    gate = evaluate_validated_signal_gate(now=now)
+    validated_signal_gate = {"allowed": gate.allowed, "reason": gate.reason}
+
     if dry_run or not confirm:
         # ROB-841 AC6: run the SAME server-derived market/risk preflight as a
         # real order, but place no order and insert no ledger row.
@@ -299,17 +313,27 @@ async def binance_demo_scalping_submit_decision(
                 now=now,
             )
         except MarketConditionsUnavailable as exc:
-            return _unavailable_response(sym, side, exc, dry_run=True)
+            return {
+                **_unavailable_response(sym, side, exc, dry_run=True),
+                "validated_signal_gate": validated_signal_gate,
+                "authorization_mode": "dry_run",
+            }
         except Exception as exc:  # noqa: BLE001 — surface setup errors as data
             logger.exception("binance demo scalping dry-run preflight failed")
             return {
                 "status": "error",
                 "dry_run": True,
                 "error": f"{type(exc).__name__}: {exc}",
+                "validated_signal_gate": validated_signal_gate,
+                "authorization_mode": "dry_run",
             }
-        return _dry_run_response(
-            sym, side, rationale.strip(), result, market, tp_bps, sl_bps
-        )
+        return {
+            **_dry_run_response(
+                sym, side, rationale.strip(), result, market, tp_bps, sl_bps
+            ),
+            "validated_signal_gate": validated_signal_gate,
+            "authorization_mode": "dry_run",
+        }
 
     try:
         result = await _execute_confirmed_round_trip(
@@ -323,10 +347,19 @@ async def binance_demo_scalping_submit_decision(
             now=now,
         )
     except MarketConditionsUnavailable as exc:
-        return _unavailable_response(sym, side, exc, dry_run=False)
+        return {
+            **_unavailable_response(sym, side, exc, dry_run=False),
+            "validated_signal_gate": validated_signal_gate,
+            "authorization_mode": "operator_interactive_exception",
+        }
     except Exception as exc:  # noqa: BLE001 — surface broker/setup errors as data
         logger.exception("binance demo scalping submit_decision failed")
-        return {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "status": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "validated_signal_gate": validated_signal_gate,
+            "authorization_mode": "operator_interactive_exception",
+        }
 
     evidence = result.to_evidence_dict()
     return {
@@ -340,6 +373,11 @@ async def binance_demo_scalping_submit_decision(
         "close_client_order_id": result.close_client_order_id,
         "exit_reason": result.exit_reason,
         "evidence": evidence,
+        # ROB-937: audit-only gate verdict + explicit authorization marker. The
+        # round-trip above ALREADY ran regardless of gate.allowed — this path's
+        # authorization is the human confirm=true, not the gate artifact.
+        "validated_signal_gate": validated_signal_gate,
+        "authorization_mode": "operator_interactive_exception",
     }
 
 

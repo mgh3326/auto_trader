@@ -287,9 +287,51 @@ jobs:
           bandit-report.json
           safety-report.json
 
+  alpaca-track-tests:
+    # ROB-1059 S9: additive-only job -- the main `test` job's `testpaths`
+    # (pyproject.toml: ["tests"]) and its own pytest invocation are UNCHANGED.
+    # research/alpaca_track/tests/ is a fully separate, network-0, no-DB/no-
+    # Redis suite (own conftest.py sys.path wiring), so it gets its own
+    # lightweight job rather than being folded into the sharded `test` job's
+    # DB-backed run. This does not attempt to fix the pre-existing, separately
+    # out-of-scope research/nautilus_scalping CI gap.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PYTHON_VERSION: "3.13"
+
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        persist-credentials: false
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install UV
+      run: pip install uv
+
+    - name: Load cached venv
+      id: cached-uv-dependencies
+      uses: actions/cache@v5
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group test
+
+    - name: Run ROB-1059 alpaca_track H1 data-layer tests (network-0, no DB/Redis)
+      run: |
+        uv run pytest research/alpaca_track/tests/ -v
+
   notify:
     if: failure()
-    needs: [lint, test, taskiq-smoke, security]
+    needs: [lint, test, taskiq-smoke, security, alpaca-track-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Discord failure notification

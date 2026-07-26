@@ -31,5 +31,34 @@
   관측 실패 시 0/0으로 합성하지 않고 `market_conditions_unavailable`로 fail-close 한다(ROB-841).
 - 같은 날 결과는 `session_tag="llm"`로 분리 집계(규칙 baseline과 비교; surfacing은 D-PR2).
 
+## Validated-signal gate 면제 (ROB-937)
+
+이 대화형 LLM 경로(`binance_demo_scalping_submit_decision`)는 ROB-905 validated-signal
+gate 적용을 **의도적으로 면제**한다. ROB-905 gate는 반복 스케줄러 틱
+(`run_demo_scalping_tick`)에만 배선되어, gate 아티팩트가 `validated`가 아니면
+`confirm=true`를 dry-run으로 다운그레이드한다. 그 gate는 이 MCP 도구에는 적용되지
+않는다 — 즉 gate 아티팩트가 denied여도 이 경로의 실 데모 라운드트립은 그대로 집행된다.
+
+이 경로의 권한(authorization)은 gate 아티팩트가 아니라 **다른 가드 스택**이다:
+
+- (a) registry opt-in — `binance_demo_scalping_enabled` (미설정 시 도구 자체가 미등록)
+- (b) 사람 per-call `confirm=true` (매 호출마다 명시해야 실 주문)
+- (c) ROB-841 market-conditions fail-close (서버 관측 실패 시 `market_conditions_unavailable`)
+- (d) allowlist(XRPUSDT/DOGEUSDT/SOLUSDT) · 1x · notional≤10 USDT (executor 강제)
+
+### 응답 감사 필드
+- `validated_signal_gate: {"allowed": bool, "reason": str}` — 실행 전 1회 평가한 gate 판정을
+  **감사용으로만** 에코한다. `allowed=false`(예: `gate_path_unset`)여도 라운드트립은 집행된다.
+  dry-run·confirm·`market_conditions_unavailable`·error 응답 모두에 실린다(관측 일관성).
+- `authorization_mode` — 실 주문(confirm=true) 응답은 `"operator_interactive_exception"`,
+  dry-run/미confirm 응답은 `"dry_run"`. gate가 아니라 사람 인가로 집행됐음을 명시하는 마커.
+
+교차참조: ROB-905(스케줄러 gate)·ROB-316(OOS gross-negative 신호 posture)·ROB-937(이 면제 명시).
+
+### ⚠ 전방 위험
+`confirm=true`의 인가 전제는 **사람 per-call 승인**이다. 만약 비대화형 자동 caller
+(예: ROB-840 champion/challenger 러너)가 이 경로를 구동하면 사람-인가 전제가 소멸하므로,
+그 경우엔 이 경로에도 validated-signal gate 강제(차단/다운그레이드)를 별도 후속으로 배선해야 한다.
+
 ## MCP 배포 반영 절차
 MCP 배포 반영 절차 = ops/native/scripts sync → mcp 재기동, BINANCE_*는 래퍼의 접두사 export에 의존. `BINANCE_*` 접두사(예: `BINANCE_FUTURES_DEMO_ENABLED` 등)를 통해 노출되는 환경 변수들은 MCP 기동 래퍼의 접두사 export 기능을 거쳐 `os.environ`에 공급되므로, 배포 시 스크립트 동기화와 MCP 재기동이 필수적이다.
