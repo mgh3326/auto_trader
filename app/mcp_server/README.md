@@ -1932,6 +1932,13 @@ Response shape:
     permits only a small pre-placed trim ladder; RSI-neutral 2-6% resistance is
     a watch; `sell.upside_place_max_pct` limits size rather than blocking
     pre-placement eligibility.
+    `decision_rules["sell.single_share_exit"]` is intentionally visible only
+    for KR sell, but remains shadow metadata: `activation_state=shadow` and
+    `proposal_enabled=false` mean that neither `get_trading_policy` nor
+    `route_request` may interpret its candidate action as permission to create,
+    approve, or execute a proposal. Capability labels in its snapshot API are
+    descriptive, not authentication; any future live composition must pin the
+    trusted read-adapter provenance separately.
   - **Version-stamping contract**: consumers cite `{version, content_hash}` (from `get_trading_policy` or the `policy_version` field of `get_operating_briefing`) in `report_item.evidence_snapshot`, `trade_retrospectives`, and forecast records so the judging criteria are recoverable.
   - The buy-preview `sector_concentration` field is **fail-open** advisory (never blocks).
 

@@ -11,7 +11,13 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 Lane = Literal["buy", "sell", "discovery"]
 Market = Literal["kr", "us", "crypto"]
@@ -19,6 +25,7 @@ Market = Literal["kr", "us", "crypto"]
 ThresholdValue = int | float | str | list[int | float]
 RuleConditionValue = int | float | str | bool | list[int | float | str | bool]
 PolicyComparison = Literal["gt", "gte", "lt", "lte", "eq"]
+KrBroker = Literal["kis", "toss"]
 
 
 class OneShareExceptionPolicy(BaseModel):
@@ -63,6 +70,104 @@ class PolicyDecisionRule(BaseModel):
     tiers: list[PolicyDecisionRuleTier]
     tie_breaks: dict[str, str] = Field(default_factory=dict)
     exclusions: list[str] = Field(default_factory=list)
+
+
+class SingleShareExitScope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    markets: list[Literal["kr"]]
+    brokers: list[KrBroker]
+    required_broker_inventory: list[KrBroker]
+    order_routable_required: Literal[True]
+
+    @model_validator(mode="after")
+    def validate_kis_toss_scope(self) -> SingleShareExitScope:
+        required = {"kis", "toss"}
+        if set(self.brokers) != required or len(self.brokers) != len(required):
+            raise ValueError("brokers must contain exactly kis and toss")
+        if set(self.required_broker_inventory) != required or len(
+            self.required_broker_inventory
+        ) != len(required):
+            raise ValueError(
+                "required_broker_inventory must contain exactly kis and toss"
+            )
+        return self
+
+
+class SingleShareResistanceSourceFamilies(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    volume_profile_exact: list[str]
+    fibonacci_prefixes: list[str]
+    bollinger_prefixes: list[str]
+
+
+class SingleShareExitConditions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol_routable_sellable_quantity_eq: Literal[1]
+    profit_pct_min: float = Field(ge=0)
+    resistance_reference_required: Literal[True]
+    resistance_strength_min: Literal["strong"]
+    resistance_distance_pct_min_exclusive: float = Field(ge=0, le=100)
+    resistance_distance_pct_max: float = Field(ge=0, le=100)
+    resistance_source_family_min: int = Field(ge=2)
+    resistance_source_families: SingleShareResistanceSourceFamilies
+    quote_max_age_seconds: int = Field(gt=0)
+    resistance_max_age_seconds: int = Field(gt=0)
+    holdings_max_age_seconds: int = Field(gt=0)
+    open_orders_max_age_seconds: int = Field(gt=0)
+    open_actions_max_age_seconds: int = Field(gt=0)
+    captured_at_max_age_seconds: int = Field(gt=0)
+    snapshot_max_skew_seconds: int = Field(gt=0)
+    required_completed_bar_market: Literal["XKRX"]
+    min_sell_price_multiple_policy_key: Literal["sell.loss_guard_min_multiple"]
+    same_symbol_open_orders_max: Literal[0]
+    unresolved_open_actions_max: Literal[0]
+    loss_state_uses_existing_path: Literal["loss_cut_only"]
+
+    @model_validator(mode="after")
+    def validate_resistance_band(self) -> SingleShareExitConditions:
+        if (
+            self.resistance_distance_pct_max
+            <= self.resistance_distance_pct_min_exclusive
+        ):
+            raise ValueError("resistance distance max must exceed exclusive min")
+        return self
+
+
+class SingleShareExitProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["full_exit_at_far_resistance"]
+    sizing: Literal["full_account_lot_exit"]
+    approval: Literal["telegram_manual"]
+    auto_approve: Literal[False]
+    execution: Literal["proposal_only"]
+
+
+class SingleShareExitDecisionRule(BaseModel):
+    """Additive KR one-share profit-exit shadow policy.
+
+    This rule intentionally has a distinct shape from the tiered trim rule:
+    ``sell.trim_preplace`` excludes one-share positions globally, while this
+    path can only classify shadow eligibility while ``proposal_enabled`` is
+    false. Its candidate metadata is manual-approval-only for a separately
+    authorized future activation; this schema never enables an order.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    lanes: list[Literal["sell"]]
+    semantics: str
+    activation_state: Literal["shadow"]
+    proposal_enabled: Literal[False]
+    scope: SingleShareExitScope
+    conditions: SingleShareExitConditions
+    proposal: SingleShareExitProposal
+    threshold_status: Literal["provisional"]
+    operator_approval_required: Literal[True]
+    recalibration_note: str
 
 
 class PolicyRecoveryCondition(BaseModel):
@@ -235,7 +340,9 @@ class TradingPolicyDocument(BaseModel):
     order_proposals: OrderProposalsPolicy
     sector_clusters: dict[str, list[str]]
     thresholds: dict[str, PolicyThreshold]
-    decision_rules: dict[str, PolicyDecisionRule] = Field(default_factory=dict)
+    decision_rules: dict[str, PolicyDecisionRule | SingleShareExitDecisionRule] = Field(
+        default_factory=dict
+    )
     market_rules: dict[Literal["crypto"], CryptoMarketRules]
     market_overrides: dict[Market, dict[str, ThresholdValue]]
     crash_day: CrashDayPolicy

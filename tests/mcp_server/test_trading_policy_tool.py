@@ -12,7 +12,7 @@ from tests._mcp_tooling_support import DummyMCP
 async def test_get_trading_policy_returns_thresholds_and_version():
     out = await get_trading_policy(market="kr", lane="buy")
     assert out["success"] is True
-    assert out["version"] == "2026-07-22.1"
+    assert out["version"] == "2026-07-23.3"
     assert out["content_hash"]
     assert out["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
     assert out["decision_rules"] == {}
@@ -23,7 +23,7 @@ async def test_get_trading_policy_returns_crypto_market_rules_and_stamp():
     out = await get_trading_policy(market="crypto", lane="buy")
 
     assert out["success"] is True
-    assert out["version"] == "2026-07-22.1"
+    assert out["version"] == "2026-07-23.3"
     assert len(out["content_hash"]) == 12
     gate = out["market_rules"]["recovery_gate"]
     assert gate["min_conditions_met"] == 2
@@ -45,6 +45,31 @@ async def test_get_trading_policy_returns_sell_trim_preplace_rule():
     assert rule["tiers"][0]["action"] == "preplace_small_trim_ladder"
     assert rule["tiers"][2]["conditions"]["resistance_near_pct_max"] == 2
     assert rule["tiers"][3]["action"] == "register_watch"
+    single_share = out["decision_rules"]["sell.single_share_exit"]
+    assert single_share["activation_state"] == "shadow"
+    assert single_share["proposal_enabled"] is False
+    assert single_share["conditions"]["profit_pct_min"] == 8
+    assert single_share["conditions"]["resistance_strength_min"] == "strong"
+    assert single_share["conditions"]["resistance_distance_pct_min_exclusive"] == 6
+    assert single_share["conditions"]["resistance_distance_pct_max"] == 15
+    assert single_share["conditions"]["resistance_source_family_min"] == 2
+    assert single_share["proposal"] == {
+        "action": "full_exit_at_far_resistance",
+        "sizing": "full_account_lot_exit",
+        "approval": "telegram_manual",
+        "auto_approve": False,
+        "execution": "proposal_only",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("market", ["us", "crypto"])
+async def test_get_trading_policy_hides_kr_single_share_exit_from_other_markets(
+    market,
+):
+    out = await get_trading_policy(market=market, lane="sell")
+    assert out["success"] is True
+    assert "sell.single_share_exit" not in out["decision_rules"]
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+import app.schemas.trading_policy as policy_schema
 from app.schemas.trading_policy import TradingPolicyDocument
 
 _CONFIG = Path(__file__).resolve().parents[2] / "config" / "trading_policy.yaml"
@@ -15,7 +16,7 @@ def _raw() -> dict:
 
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
-    assert doc.version == "2026-07-22.1"
+    assert doc.version == "2026-07-23.3"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -39,6 +40,97 @@ def test_shipped_config_validates():
         "first_matching_tier_wins"
     )
     assert trim_rule.tie_breaks["sell.upside_place_max_pct"] == "size_limit_only"
+
+
+def test_single_share_exit_rule_is_provisional_shadow_only():
+    rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
+        "sell.single_share_exit"
+    ]
+
+    assert rule.activation_state == "shadow"
+    assert rule.proposal_enabled is False
+    assert rule.scope.markets == ["kr"]
+    assert rule.scope.brokers == ["kis", "toss"]
+    assert rule.scope.required_broker_inventory == ["kis", "toss"]
+    assert rule.scope.order_routable_required is True
+    assert rule.conditions.symbol_routable_sellable_quantity_eq == 1
+    assert rule.conditions.profit_pct_min == 8
+    assert rule.conditions.resistance_reference_required is True
+    assert rule.conditions.resistance_strength_min == "strong"
+    assert rule.conditions.resistance_distance_pct_min_exclusive == 6
+    assert rule.conditions.resistance_distance_pct_max == 15
+    assert rule.conditions.resistance_source_family_min == 2
+    assert rule.conditions.quote_max_age_seconds == 300
+    assert rule.conditions.resistance_max_age_seconds == 300
+    assert rule.conditions.holdings_max_age_seconds == 300
+    assert rule.conditions.open_orders_max_age_seconds == 300
+    assert rule.conditions.open_actions_max_age_seconds == 300
+    assert rule.conditions.captured_at_max_age_seconds == 300
+    assert rule.conditions.snapshot_max_skew_seconds == 300
+    assert rule.conditions.required_completed_bar_market == "XKRX"
+    assert (
+        rule.conditions.min_sell_price_multiple_policy_key
+        == "sell.loss_guard_min_multiple"
+    )
+    assert rule.conditions.same_symbol_open_orders_max == 0
+    assert rule.conditions.unresolved_open_actions_max == 0
+    assert rule.conditions.loss_state_uses_existing_path == "loss_cut_only"
+    assert rule.proposal.action == "full_exit_at_far_resistance"
+    assert rule.proposal.sizing == "full_account_lot_exit"
+    assert rule.proposal.approval == "telegram_manual"
+    assert rule.proposal.auto_approve is False
+    assert rule.proposal.execution == "proposal_only"
+    assert rule.threshold_status == "provisional"
+    assert rule.operator_approval_required is True
+    assert "research must recalibrate this initial threshold" in (
+        rule.recalibration_note
+    )
+
+
+def test_single_share_exit_rule_rejects_automatic_approval():
+    raw = _raw()
+    raw["decision_rules"]["sell.single_share_exit"]["proposal"]["auto_approve"] = True
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_single_share_exit_rule_rejects_live_activation_or_enabled_proposal():
+    activation = _raw()
+    activation["decision_rules"]["sell.single_share_exit"]["activation_state"] = "live"
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(activation)
+
+    enabled = _raw()
+    enabled["decision_rules"]["sell.single_share_exit"]["proposal_enabled"] = True
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(enabled)
+
+
+def test_single_share_exit_rule_requires_both_kis_and_toss_inventory():
+    raw = _raw()
+    raw["decision_rules"]["sell.single_share_exit"]["scope"][
+        "required_broker_inventory"
+    ] = ["kis"]
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_single_share_exit_rule_requires_strong_resistance():
+    raw = _raw()
+    raw["decision_rules"]["sell.single_share_exit"]["conditions"][
+        "resistance_strength_min"
+    ] = "moderate"
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_raw_evidence_and_caller_completeness_contract_is_not_public():
+    assert not hasattr(policy_schema, "SingleShareExitEvidenceSnapshot")
+    assert not hasattr(policy_schema, "SingleShareExitBrokerAccountSnapshot")
+    assert not hasattr(policy_schema, "SingleShareExitTargetIdentity")
 
 
 def test_auto_approve_policy_has_conservative_market_caps():
