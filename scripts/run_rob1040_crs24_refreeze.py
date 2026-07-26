@@ -102,7 +102,7 @@ CRS24_CHANGED_FILES: frozenset[str] = frozenset({"rob1040_crs24_evidence.py"})
 CRS24_CURRENT_REFREEZE_FILE_DIGESTS: dict[str, str] = {
     **CRS24_FILE_DIGESTS_AT_MERGE_COMMIT,
     "rob1040_crs24_evidence.py": (
-        "93bbee16960858cb79beabf821cd9a0d04835cd555066b2ca6ed82473c0916ea"
+        "08550a03bd0e8517efe004cbd2eb9ea7b3d0367b9acddcf7dfd898e3c993ab74"
     ),
 }
 
@@ -303,13 +303,35 @@ def _require_launcher_self_sha256(claimed: str) -> None:
 
 
 def _require_refreeze_head_ancestor() -> None:
-    try:
-        subprocess.run(
+    def _is_ancestor() -> bool:
+        result = subprocess.run(
             ("git", "merge-base", "--is-ancestor", CRS24_MERGE_REFREEZE_HEAD, "HEAD"),
             cwd=REPO_ROOT,
-            check=True,
+            check=False,
             capture_output=True,
         )
+        return result.returncode == 0
+
+    try:
+        if _is_ancestor():
+            return
+        if _git("rev-parse", "--is-shallow-repository") != "true":
+            raise LaunchRefused("REFREEZE_HEAD_NOT_ANCESTOR")
+        # A depth-limited checkout cannot distinguish "not an ancestor" from
+        # "the ancestor exists upstream but is outside the local boundary".
+        # Complete the history, then make the ancestry decision from the full
+        # graph. A failed unshallow or a still-false result remains fail-closed.
+        _git(
+            "fetch",
+            "--prune",
+            "--unshallow",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main",
+        )
+        if not _is_ancestor():
+            raise LaunchRefused("REFREEZE_HEAD_NOT_ANCESTOR")
+    except LaunchRefused:
+        raise
     except (OSError, subprocess.CalledProcessError):
         raise LaunchRefused("REFREEZE_HEAD_NOT_ANCESTOR") from None
 
@@ -320,13 +342,22 @@ def _require_head_is_origin_main() -> None:
     Linear ROB-1040 실행순서 step 3 requires the final hash-seal/launcher gate
     to be taken "머지된 exact main tree에서". The ancestry check alone is not
     sufficient: it also passes on an unmerged feature branch that merely
-    descends from the refreeze head. This gate compares LOCAL refs only (no
-    network, no fetch) -- the operator is responsible for having fetched
-    `origin/main` before arming the one-shot.
+    descends from the refreeze head. A successful ``git fetch --prune origin``
+    is mandatory inside this gate, so a stale or locally forged
+    ``origin/main`` ref cannot make the comparison pass.
 
     `--preflight` is exempt (it must stay auditable while the PR is under
     review); the preflight output says so explicitly.
     """
+    try:
+        _git(
+            "fetch",
+            "--prune",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main",
+        )
+    except (OSError, subprocess.CalledProcessError):
+        raise LaunchRefused("ORIGIN_FETCH_FAILED") from None
     try:
         head = _git("rev-parse", "HEAD")
         origin_main = _git("rev-parse", "origin/main")
@@ -596,7 +627,6 @@ def _arm_one_shot_marker(output_root: Path, *, armed_at_utc: str) -> None:
     both pass the pre-check and both arm; ``fsync`` before returning so a
     crash immediately after arming still leaves the record on disk.
     """
-    output_root.mkdir(parents=True, exist_ok=True)
     marker = output_root / ONE_SHOT_MARKER_NAME
     body = (
         json.dumps(
@@ -617,6 +647,7 @@ def _arm_one_shot_marker(output_root: Path, *, armed_at_utc: str) -> None:
         + "\n"
     )
     try:
+        output_root.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
         raise LaunchRefused("ONE_SHOT_ALREADY_CONSUMED") from None

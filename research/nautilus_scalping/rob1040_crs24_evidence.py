@@ -706,13 +706,13 @@ class CampaignInputBinding:
                 )
         else:
             # Anti-substitution: a real-corpus binding must not be a relabelled
-            # frozen synthetic fixture. The decisive discriminator is the JOINT
-            # identity `fixture_content_sha256_pin` (generator + references
-            # together) -- differing there is by itself sufficient proof that
-            # this binding is not the synthetic fixture. `version`, the
-            # complete-bar `snapshot_sha256_pin` and the value-bearing
-            # `entry_source_sha256_pin` add independent content-bearing
-            # evidence and are also required to differ.
+            # frozen synthetic fixture. The complete-bar
+            # `snapshot_sha256_pin` and value-bearing `entry_source_sha256_pin`
+            # are the two content-bearing discriminators. The
+            # `fixture_content_sha256_pin` is a derived join of its component
+            # digests, so it cannot detect anything those inputs miss; `version`
+            # is a caller-supplied assertion. Both are still required to differ
+            # as redundant posture checks, not as independent corpus evidence.
             #
             # `exit_presence_source_sha256_pin` is DELIBERATELY EXCLUDED from
             # the must-differ set. `ReferenceSurface.exit_presence_source_sha256`
