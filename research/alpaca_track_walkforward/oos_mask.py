@@ -462,6 +462,12 @@ def issue_dry_count_pass(
     if fingerprint != record.counts_fingerprint:
         raise OOSMaskBypassError("bound dry counts changed after mask issuance")
     sealed_minimum = wf_seal.min_modeled_entries_per_fold()
+    if dry_counts.is_incomplete:
+        raise OOSMaskBypassError("incomplete dry counts can never issue PASS")
+    if dry_counts.modeled_entries_count < sealed_minimum:
+        raise OOSMaskBypassError(
+            "bound dry count is below the sealed minimum modeled entries"
+        )
     vault_token = _vault().call(("ISSUE", record.vault_handle, fingerprint))
 
     evidence = object.__new__(DryCountPassEvidence)

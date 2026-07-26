@@ -15,8 +15,9 @@ distinction explicit and queryable rather than left for a caller to notice.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 
 import reason_codes as rc
 from output_schema import SignalRecord
@@ -39,17 +40,54 @@ class BlindCounts:
     exit_unfilled_count: int
     fill_window_incomplete_count: int
     holding_days: tuple[int, ...]
-    reason_code_histogram: dict[str, int]
+    reason_code_histogram: Mapping[str, int]
+
+    def __post_init__(self) -> None:
+        count_fields = (
+            "total_decision_records",
+            "modeled_entries_count",
+            "closed_trades_count",
+            "open_positions_count",
+            "entry_unfilled_count",
+            "exit_unfilled_count",
+            "fill_window_incomplete_count",
+        )
+        for name in count_fields:
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a non-negative built-in int")
+        for value in self.holding_days:
+            if type(value) is not int or value < 0:
+                raise ValueError("holding_days must contain non-negative built-in ints")
+        histogram = dict(self.reason_code_histogram)
+        for reason, count in histogram.items():
+            if type(reason) is not str or type(count) is not int or count < 0:
+                raise ValueError(
+                    "reason_code_histogram must map built-in str to "
+                    "non-negative built-in int"
+                )
+        object.__setattr__(
+            self,
+            "reason_code_histogram",
+            MappingProxyType(dict(sorted(histogram.items()))),
+        )
 
     @property
     def is_incomplete(self) -> bool:
-        """ROB-1025 lesson: real decision records with an EMPTY reason
-        histogram means the histogram plumbing broke, not that nothing
-        happened — never silently collapse this into a clean zero-trade
-        result."""
+        """Fail closed on any structural incompleteness signal.
+
+        A valid zero-trade fold still has scheduled decision records and one
+        reconciled reason per record.  No-record phases, partial histograms,
+        incomplete fill windows, or internally inconsistent lifecycle counts
+        can therefore never be promoted into dry-count PASS evidence.
+        """
         return (
-            self.total_decision_records > 0
-            and sum(self.reason_code_histogram.values()) == 0
+            self.total_decision_records == 0
+            or sum(self.reason_code_histogram.values()) != self.total_decision_records
+            or self.fill_window_incomplete_count > 0
+            or self.modeled_entries_count
+            != self.closed_trades_count + self.open_positions_count
+            or len(self.holding_days) != self.closed_trades_count
         )
 
 

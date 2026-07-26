@@ -115,3 +115,11 @@ def test_fold_id_must_match_builder_issued_fold_index():
     fs.assert_registered_fold_binding(fold_id="fold-0", fold=fold)
     with pytest.raises(fs.FoldBindingError, match="does not match"):
         fs.assert_registered_fold_binding(fold_id="fold-7", fold=fold)
+
+
+def test_second_valid_monday_anchor_cannot_register_another_fold_zero():
+    """Verifier reproduction: fold-0 has one process-level run identity."""
+    fs.build_fold_schedule(_ANCHOR_MS)
+    second_monday_anchor = _ANCHOR_MS + 28 * 86_400_000
+    with pytest.raises(fs.FoldBindingError, match="different walk-forward anchor"):
+        fs.build_fold_schedule(second_monday_anchor)

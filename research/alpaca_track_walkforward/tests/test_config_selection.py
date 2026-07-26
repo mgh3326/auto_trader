@@ -108,6 +108,52 @@ def test_cost_gate_is_compared_before_pnl_and_stops_pnl_access_on_cost_failure()
     assert events == ["COST<="]
 
 
+def test_ap_a2_turnover_band_is_pnl_blind_and_rejects_90pct_before_e120():
+    events: list[str] = []
+
+    class PnLSpy(float):
+        def __gt__(self, other):
+            events.append("PNL>")
+            return True
+
+    result = cs.select_config(
+        [
+            _metric(
+                "AP-A2-00",
+                closed=30,
+                median_e120=PnLSpy(1.0),
+                turnover=0.90,
+                cost_pct=1.0,
+            )
+        ],
+        data_window="TRAIN",
+        stress_cost_cap_pct=18.0,
+        turnover_band=(0.2083, 0.2885),
+    )
+    assert result.status == "NO_SELECTED_CONFIG"
+    assert events == []
+
+
+def test_ap_a2_selection_cannot_omit_the_sealed_turnover_band():
+    with pytest.raises(ValueError, match="requires the sealed turnover band"):
+        cs.select_config(
+            [_metric("AP-A2-00", turnover=0.25)],
+            data_window="TRAIN",
+            stress_cost_cap_pct=18.0,
+        )
+
+
+@pytest.mark.parametrize("turnover", [0.2083, 0.2885])
+def test_ap_a2_turnover_band_boundaries_are_inclusive(turnover):
+    result = cs.select_config(
+        [_metric("AP-A2-00", closed=30, median_e120=1.0, turnover=turnover)],
+        data_window="TRAIN",
+        stress_cost_cap_pct=18.0,
+        turnover_band=(0.2083, 0.2885),
+    )
+    assert result.selected_config_id == "AP-A2-00"
+
+
 def test_full_nav_per_trade_36pct_misread_is_rejected_by_unchanged_caps():
     full_nav_drag = bc.annualized_stress_cost_pct(
         entry_filled_notionals=(2000.0,) * 30,

@@ -205,6 +205,7 @@ def test_all_h4_source_modules_are_accounted_for():
         "fold_schedule.py",
         "oos_mask.py",
         "pnl_views.py",
+        "provider_evidence.py",
         "runner.py",
         "trade_ledger.py",
         "wf_seal_consumption.py",

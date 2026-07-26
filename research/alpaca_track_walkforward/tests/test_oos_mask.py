@@ -107,6 +107,77 @@ def test_below_sealed_minimum_cannot_issue_pass():
         om.issue_dry_count_pass(masked, counts)
 
 
+@pytest.mark.parametrize(
+    "counts",
+    [
+        # Verifier reproduction: five modeled entries plus one incomplete
+        # fill window must not become PASS.
+        bc.BlindCounts(
+            total_decision_records=5,
+            modeled_entries_count=5,
+            closed_trades_count=5,
+            open_positions_count=0,
+            entry_unfilled_count=0,
+            exit_unfilled_count=0,
+            fill_window_incomplete_count=1,
+            holding_days=(3, 3, 3, 3, 3),
+            reason_code_histogram={"ENTRY_ACCEPTED": 5},
+        ),
+        # Self-devised bypass 1: modeled entries with no scheduled records.
+        bc.BlindCounts(
+            total_decision_records=0,
+            modeled_entries_count=5,
+            closed_trades_count=5,
+            open_positions_count=0,
+            entry_unfilled_count=0,
+            exit_unfilled_count=0,
+            fill_window_incomplete_count=0,
+            holding_days=(3, 3, 3, 3, 3),
+            reason_code_histogram={},
+        ),
+        # Self-devised bypass 2: a non-empty but under-counted histogram.
+        bc.BlindCounts(
+            total_decision_records=5,
+            modeled_entries_count=5,
+            closed_trades_count=5,
+            open_positions_count=0,
+            entry_unfilled_count=0,
+            exit_unfilled_count=0,
+            fill_window_incomplete_count=0,
+            holding_days=(3, 3, 3, 3, 3),
+            reason_code_histogram={"ENTRY_ACCEPTED": 4},
+        ),
+        # Self-devised bypass 3: entries do not reconcile to closed + open.
+        bc.BlindCounts(
+            total_decision_records=5,
+            modeled_entries_count=5,
+            closed_trades_count=4,
+            open_positions_count=0,
+            entry_unfilled_count=0,
+            exit_unfilled_count=0,
+            fill_window_incomplete_count=0,
+            holding_days=(3, 3, 3, 3),
+            reason_code_histogram={"ENTRY_ACCEPTED": 5},
+        ),
+    ],
+)
+def test_any_structurally_incomplete_counts_cannot_issue_or_unmask(counts):
+    masked, actual_counts = _masked(counts=counts)
+    with pytest.raises(om.OOSMaskBypassError, match="incomplete"):
+        om.issue_dry_count_pass(masked, actual_counts)
+    forged = object.__new__(om.DryCountPassEvidence)
+    for name, value in (
+        ("_fold_id", "fold-0"),
+        ("_family", "AP-A1"),
+        ("_config_id", "AP-A1-00"),
+        ("_modeled_entries", 5),
+        ("_min_modeled_entries_per_fold", 5),
+    ):
+        object.__setattr__(forged, name, value)
+    with pytest.raises(om.OOSMaskBypassError, match="reconstructed"):
+        om.unmask(masked, forged)
+
+
 def test_reconstructed_evidence_object_is_not_authority():
     masked, counts = _masked()
     forged = object.__new__(om.DryCountPassEvidence)

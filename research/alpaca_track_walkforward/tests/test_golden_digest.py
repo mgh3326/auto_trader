@@ -39,9 +39,13 @@ _NUM_DAYS = (_FOLD.oos_end_ms - _FOLD.train_start_ms) // 86_400_000
 # context/evidence fields were added. Synthetic prices and this hash
 # projection are quantized only to remove CPython/libm last-bit differences
 # between macOS and Linux; runner gates still compare full-precision values.
-# Any later change remains a deliberate re-seal: STOP and inspect the
-# human-readable diagnostic before touching this constant.
-GOLDEN_DIGEST = "d8a78ac0a9ebe38169ff9e4abd887e4a81e4b8fe3db11308bb71323b00bac922"
+# Re-pinned 2026-07-27 after verify2: AP-A2 turnover now uses
+# entries/(weekly evaluations*k), the unchanged sealed band is enforced
+# before E120, and immutable per-call universe/minute provenance hashes are
+# part of the regression projection. Selection and every TRAIN/OOS lifecycle
+# count remain unchanged. Any later change remains a deliberate re-seal:
+# STOP and inspect the human-readable diagnostic before touching this value.
+GOLDEN_DIGEST = "f80a016ad1be1af5883e5c13e793bb2f9209c12c328c67131456ea9029613867"
 
 
 def _golden_float(value: float) -> float:
@@ -146,6 +150,7 @@ def _digest_summary(result: runner.FamilyFoldResult) -> dict:
                     for m in cr.oos_masked_pnl_by_trade
                 ],
                 "context_binding_hash": cr.context_binding_at_oos_start.combined_context_hash,
+                "provider_evidence_hash": cr.provider_evidence_binding.combined_hash,
             }
             for cr in result.config_runs
         },
@@ -171,6 +176,7 @@ def _digest_diagnostics(result: runner.FamilyFoldResult) -> dict:
                     "median_e120_bp": run.train_metrics.median_trade_e120_bp,
                     "modeled_entries": run.train_metrics.modeled_entries_count,
                     "open": run.train_metrics.blind_counts.open_positions_count,
+                    "turnover_p": run.train_metrics.turnover_p,
                     "annualized_c120_pct": bc.annualized_stress_cost_pct(
                         entry_filled_notionals=tuple(
                             entry.entry_filled_notional
@@ -194,6 +200,7 @@ def _digest_diagnostics(result: runner.FamilyFoldResult) -> dict:
                 "context_binding_hash": (
                     run.context_binding_at_oos_start.combined_context_hash
                 ),
+                "provider_evidence_hash": run.provider_evidence_binding.combined_hash,
             }
             for run in result.config_runs
         },

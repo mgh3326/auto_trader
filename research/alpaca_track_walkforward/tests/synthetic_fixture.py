@@ -14,8 +14,9 @@ symbols, and AP-A2 WCM-B sees genuine cross-sectional rank variation.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping
 
+import provider_evidence as pe
 from daily_bars import DailyBar, SpotMinute
 from pit_universe_alpaca import SymbolEligibility, UniverseSnapshot
 
@@ -82,10 +83,10 @@ def build_bars_by_symbol(
 
 def make_universe_snapshot_provider(
     n_symbols: int = N_SYMBOLS,
-) -> callable:
+) -> Callable[[int], pe.UniverseSnapshotEvidence]:
     names = tuple(sorted(symbol_names(n_symbols)))
 
-    def provider(decision_ts_ms: int) -> UniverseSnapshot:
+    def provider(decision_ts_ms: int) -> pe.UniverseSnapshotEvidence:
         per_symbol = tuple(
             SymbolEligibility(
                 symbol=s,
@@ -96,31 +97,32 @@ def make_universe_snapshot_provider(
             )
             for s in names
         )
-        return UniverseSnapshot(
+        snapshot = UniverseSnapshot(
             decision_ts_ms=decision_ts_ms,
             eligible_symbols=names,
             per_symbol=per_symbol,
             n_t=len(names),
             meets_min_universe_size=True,
         )
+        return pe.bind_universe_snapshot(snapshot, source_as_of_ts_ms=decision_ts_ms)
 
     return provider
 
 
 def make_minute_bars_provider(
     *, window_start_ms: int, n_symbols: int = N_SYMBOLS
-) -> callable:
+) -> Callable[[str, int], pe.MinuteBarsEvidence]:
     idx_by_symbol: Mapping[str, int] = {
         s: i for i, s in enumerate(symbol_names(n_symbols))
     }
 
-    def provider(symbol: str, decision_ts_ms: int) -> Sequence[SpotMinute]:
+    def provider(symbol: str, decision_ts_ms: int) -> pe.MinuteBarsEvidence:
         idx = idx_by_symbol[symbol]
         day_index = (decision_ts_ms - window_start_ms) // DAY_MS
         price = close_for(idx, day_index)
         m1 = decision_ts_ms + 60_000
         m2 = decision_ts_ms + 120_000
-        return [
+        bars = [
             SpotMinute(
                 open_time_ms=m1,
                 open=price,
@@ -138,5 +140,10 @@ def make_minute_bars_provider(
                 volume=1.0,
             ),
         ]
+        return pe.bind_minute_bars(
+            symbol=symbol,
+            signal_ts_ms=decision_ts_ms,
+            bars=bars,
+        )
 
     return provider

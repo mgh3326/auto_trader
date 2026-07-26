@@ -3,8 +3,9 @@
 Selection rule, applied IN ORDER, exactly as SS15 states it:
 
     TRAIN closed >= 30
-    AND TRAIN E120 > 0
     AND passes the PnL-blind annualized stress cost cap
+    AND, for AP-A2, sealed replacement p is inside its turnover band
+    AND TRAIN E120 > 0
     -> max median-trade E120
     -> tie: lower turnover
     -> tie: canonical config_id ascending (AP-A1-00..07 / AP-A2-00..07 sort
@@ -65,6 +66,8 @@ class ConfigTrainMetrics:
             raise ValueError("zero closed trades cannot carry a median E120")
         if self.closed_trades_count > 0 and self.median_trade_e120_bp is None:
             raise ValueError("a config with closed trades must carry a median E120")
+        if type(self.turnover_p) is not float or not 0.0 <= self.turnover_p <= 1.0:
+            raise ValueError("turnover_p must be a built-in float in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,7 @@ def select_config(
     *,
     data_window: str,
     stress_cost_cap_pct: float,
+    turnover_band: tuple[float, float] | None = None,
 ) -> ConfigSelectionResult:
     if data_window != "TRAIN":
         raise OOSDataReachedSelectionError(
@@ -101,9 +105,25 @@ def select_config(
         for m in structurally_eligible
         if m.annualized_stress_cost_pct <= stress_cost_cap_pct
     ]
+    contains_ap_a2 = any(m.config_id.startswith("AP-A2-") for m in metrics)
+    if contains_ap_a2 and turnover_band is None:
+        raise ValueError("AP-A2 selection requires the sealed turnover band")
+    if turnover_band is not None:
+        lower, upper = turnover_band
+        if (
+            type(lower) is not float
+            or type(upper) is not float
+            or not 0.0 <= lower <= upper <= 1.0
+        ):
+            raise ValueError("turnover_band must contain two ordered floats in [0, 1]")
+        turnover_eligible = [
+            m for m in cost_eligible if m.turnover_p >= lower and m.turnover_p <= upper
+        ]
+    else:
+        turnover_eligible = cost_eligible
     eligible = [
         m
-        for m in cost_eligible
+        for m in turnover_eligible
         if m.median_trade_e120_bp is not None and m.median_trade_e120_bp > 0.0
     ]
     if not eligible:

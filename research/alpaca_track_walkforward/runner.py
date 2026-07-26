@@ -65,13 +65,13 @@ import dats_engine as dats_eng
 import decision_calendar as dc
 import fold_schedule as fs
 import oos_mask as om
-import pit_universe_alpaca as pu
 import pnl_views as pv
+import provider_evidence as pe
 import seal_consumption as h3_seal
 import trade_ledger as tl
 import wcmb_engine as wcmb_eng
 import wf_seal_consumption as wf_seal
-from daily_bars import DailyBar, SpotMinute
+from daily_bars import DailyBar
 from fold_schedule import Fold
 from output_schema import SignalRecord
 
@@ -85,8 +85,8 @@ __all__ = [
     "run_family_fold",
 ]
 
-UniverseSnapshotProvider = Callable[[int], pu.UniverseSnapshot]
-MinuteBarsProvider = Callable[[str, int], Sequence[SpotMinute]]
+UniverseSnapshotProvider = Callable[[int], pe.UniverseSnapshotEvidence]
+MinuteBarsProvider = Callable[[str, int], pe.MinuteBarsEvidence]
 
 _PRIMARY_SCENARIO = "C120"
 
@@ -110,6 +110,7 @@ class ConfigFoldRun:
     oos_modeled_entry_evidence: tuple[tl.ModeledEntryEvidence, ...]
     oos_masked_pnl_by_trade: tuple[om.Masked, ...]
     context_binding_at_oos_start: ctxb.WarmupContextBinding
+    provider_evidence_binding: pe.RunProviderEvidenceBinding
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,7 @@ class _ContinuousRunResult:
     open_legs_by_symbol: Mapping[str, tl.OpenLeg]
     fill_attempts: tuple[tl.FillAttempt, ...]
     modeled_entry_evidence: tuple[tl.ModeledEntryEvidence, ...]
+    provider_evidence_binding: pe.RunProviderEvidenceBinding
 
 
 class _RunnerInternalInvariantError(RuntimeError):
@@ -198,16 +200,27 @@ def _run_continuous_decisions(
     open_legs: dict[str, tl.OpenLeg] = {}
     fill_attempts: list[tl.FillAttempt] = []
     modeled_entry_evidence: list[tl.ModeledEntryEvidence] = []
+    universe_artifacts: list[tuple[int, int, str]] = []
+    minute_artifacts: list[tuple[str, int, int, str]] = []
 
     for ts in timestamps:
-        universe = universe_snapshot_provider(ts)
-        if type(universe) is not pu.UniverseSnapshot:
-            raise TypeError("universe_snapshot_provider must return UniverseSnapshot")
-        if universe.decision_ts_ms != ts:
-            raise ProviderTimeBindingError(
-                "universe snapshot timestamp does not equal the requested "
-                "decision timestamp"
+        universe_evidence = universe_snapshot_provider(ts)
+        if type(universe_evidence) is not pe.UniverseSnapshotEvidence:
+            raise TypeError(
+                "universe_snapshot_provider must return UniverseSnapshotEvidence"
             )
+        try:
+            universe_evidence.assert_integrity(requested_ts_ms=ts)
+        except pe.ProviderEvidenceError as exc:
+            raise ProviderTimeBindingError(str(exc)) from exc
+        universe = universe_evidence.snapshot
+        universe_artifacts.append(
+            (
+                ts,
+                universe_evidence.source_as_of_ts_ms,
+                universe_evidence.source_artifact_hash,
+            )
+        )
         prior_state = state
         if family == "AP-A1":
             result = dats_eng.run_ap_a1_decision(
@@ -235,9 +248,27 @@ def _run_continuous_decisions(
             symbol = record.symbol
             if record.action == "ENTER":
                 ref = _reference_close(bars_by_symbol, symbol, ts)
-                bars = minute_bars_provider(symbol, ts)
+                minute_evidence = minute_bars_provider(symbol, ts)
+                if type(minute_evidence) is not pe.MinuteBarsEvidence:
+                    raise TypeError(
+                        "minute_bars_provider must return MinuteBarsEvidence"
+                    )
+                try:
+                    minute_evidence.assert_integrity(symbol=symbol, signal_ts_ms=ts)
+                except pe.ProviderEvidenceError as exc:
+                    raise ProviderTimeBindingError(str(exc)) from exc
+                minute_artifacts.append(
+                    (
+                        symbol,
+                        ts,
+                        minute_evidence.source_as_of_ts_ms,
+                        minute_evidence.source_artifact_hash,
+                    )
+                )
                 attempt, maybe_open_leg = tl.process_entry_signal(
-                    record, reference_close=ref, minute_bars=bars
+                    record,
+                    reference_close=ref,
+                    minute_bars=minute_evidence.bars,
                 )
                 fill_attempts.append(attempt)
                 if maybe_open_leg is not None:
@@ -255,9 +286,28 @@ def _run_continuous_decisions(
                         f"EXIT for {symbol} at {ts} with no tracked open leg"
                     )
                 ref = _reference_close(bars_by_symbol, symbol, ts)
-                bars = minute_bars_provider(symbol, ts)
+                minute_evidence = minute_bars_provider(symbol, ts)
+                if type(minute_evidence) is not pe.MinuteBarsEvidence:
+                    raise TypeError(
+                        "minute_bars_provider must return MinuteBarsEvidence"
+                    )
+                try:
+                    minute_evidence.assert_integrity(symbol=symbol, signal_ts_ms=ts)
+                except pe.ProviderEvidenceError as exc:
+                    raise ProviderTimeBindingError(str(exc)) from exc
+                minute_artifacts.append(
+                    (
+                        symbol,
+                        ts,
+                        minute_evidence.source_as_of_ts_ms,
+                        minute_evidence.source_artifact_hash,
+                    )
+                )
                 attempt, maybe_trade = tl.process_exit_signal(
-                    record, open_leg, reference_close=ref, minute_bars=bars
+                    record,
+                    open_leg,
+                    reference_close=ref,
+                    minute_bars=minute_evidence.bars,
                 )
                 fill_attempts.append(attempt)
                 if maybe_trade is not None:
@@ -276,6 +326,10 @@ def _run_continuous_decisions(
         open_legs_by_symbol=dict(open_legs),
         fill_attempts=tuple(fill_attempts),
         modeled_entry_evidence=tuple(modeled_entry_evidence),
+        provider_evidence_binding=pe.RunProviderEvidenceBinding(
+            universe_artifacts=tuple(universe_artifacts),
+            minute_artifacts=tuple(minute_artifacts),
+        ),
     )
 
 
@@ -285,6 +339,7 @@ def _build_phase_metrics(
     run_result: _ContinuousRunResult,
     fold: Fold,
     cost_scenarios_bp: Mapping[str, int],
+    turnover_capacity_k: int | None,
 ) -> tuple[PhaseTradeMetrics, tuple[tl.Trade, ...]]:
     """Derive this phase's metrics from the ALREADY-COMPUTED continuous run
     result (``_run_continuous_decisions``), by filtering trades/open-legs/
@@ -321,7 +376,26 @@ def _build_phase_metrics(
     ]
 
     modeled_entries_count = len(phase_modeled_entries)
-    turnover_p = modeled_entries_count / len(phase_records) if phase_records else 0.0
+    if turnover_capacity_k is None:
+        turnover_p = (
+            modeled_entries_count / len(phase_records) if phase_records else 0.0
+        )
+    else:
+        if type(turnover_capacity_k) is not int or turnover_capacity_k <= 0:
+            raise ValueError("turnover_capacity_k must be a positive built-in int")
+        weekly_evaluations = len(
+            _decision_timestamps(
+                family="AP-A2",
+                window_start_ms=phase_start_ms,
+                window_end_ms=phase_end_ms,
+            )
+        )
+        if weekly_evaluations <= 0:
+            raise ValueError("AP-A2 phase must contain scheduled weekly evaluations")
+        # Run A §7/§12.6: E[entries/fold] = evaluations * k * p.
+        # Therefore p is replacement incidence per available top-k slot,
+        # not entries divided by every symbol decision record.
+        turnover_p = modeled_entries_count / (weekly_evaluations * turnover_capacity_k)
 
     trade_fills = [
         pv.TradeFill(
@@ -419,12 +493,18 @@ def run_family_fold(
             run_result=run_result,
             fold=fold,
             cost_scenarios_bp=cost_scenarios_bp,
+            turnover_capacity_k=(
+                int(config.params["k"]) if family == "AP-A2" else None
+            ),
         )
         oos_metrics, oos_trades = _build_phase_metrics(
             phase="OOS",
             run_result=run_result,
             fold=fold,
             cost_scenarios_bp=cost_scenarios_bp,
+            turnover_capacity_k=(
+                int(config.params["k"]) if family == "AP-A2" else None
+            ),
         )
 
         train_metrics_by_config[config.config_id] = cs.ConfigTrainMetrics(
@@ -471,6 +551,7 @@ def run_family_fold(
                 oos_modeled_entry_evidence=oos_metrics.modeled_entry_evidence,
                 oos_masked_pnl_by_trade=oos_masked,
                 context_binding_at_oos_start=context_binding,
+                provider_evidence_binding=run_result.provider_evidence_binding,
             )
         )
 
@@ -478,6 +559,7 @@ def run_family_fold(
         [train_metrics_by_config[c.config_id] for c in family_configs],
         data_window="TRAIN",
         stress_cost_cap_pct=stress_cap_pct,
+        turnover_band=(wf_seal.ap_a2_turnover_band() if family == "AP-A2" else None),
     )
     return FamilyFoldResult(
         family=family,

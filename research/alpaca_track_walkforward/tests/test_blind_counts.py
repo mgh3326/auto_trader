@@ -161,7 +161,7 @@ def test_empty_histogram_alongside_real_records_is_incomplete_rob_1025_lesson():
     assert counts.is_incomplete is True
 
 
-def test_no_records_at_all_is_not_incomplete_there_is_nothing_to_summarize():
+def test_no_records_at_all_is_incomplete_for_a_scheduled_fold():
     counts = bc.BlindCounts(
         total_decision_records=0,
         modeled_entries_count=0,
@@ -173,4 +173,52 @@ def test_no_records_at_all_is_not_incomplete_there_is_nothing_to_summarize():
         holding_days=(),
         reason_code_histogram={},
     )
-    assert counts.is_incomplete is False
+    assert counts.is_incomplete is True
+
+
+def test_fill_window_incomplete_is_always_structurally_incomplete():
+    counts = bc.BlindCounts(
+        total_decision_records=5,
+        modeled_entries_count=5,
+        closed_trades_count=5,
+        open_positions_count=0,
+        entry_unfilled_count=0,
+        exit_unfilled_count=0,
+        fill_window_incomplete_count=1,
+        holding_days=(3, 3, 3, 3, 3),
+        reason_code_histogram={"ENTRY_ACCEPTED": 5},
+    )
+    assert counts.is_incomplete is True
+
+
+def test_partial_histogram_and_lifecycle_count_mismatch_are_incomplete():
+    partial_histogram = bc.BlindCounts(
+        total_decision_records=5,
+        modeled_entries_count=5,
+        closed_trades_count=5,
+        open_positions_count=0,
+        entry_unfilled_count=0,
+        exit_unfilled_count=0,
+        fill_window_incomplete_count=0,
+        holding_days=(3, 3, 3, 3, 3),
+        reason_code_histogram={"ENTRY_ACCEPTED": 4},
+    )
+    lifecycle_mismatch = bc.BlindCounts(
+        total_decision_records=5,
+        modeled_entries_count=5,
+        closed_trades_count=4,
+        open_positions_count=0,
+        entry_unfilled_count=0,
+        exit_unfilled_count=0,
+        fill_window_incomplete_count=0,
+        holding_days=(3, 3, 3, 3),
+        reason_code_histogram={"ENTRY_ACCEPTED": 5},
+    )
+    assert partial_histogram.is_incomplete is True
+    assert lifecycle_mismatch.is_incomplete is True
+
+
+def test_reason_histogram_is_immutable_after_completeness_is_bound():
+    counts = bc.compute_blind_counts([_rec(1, "NO_ACTION", "NO_ENTRY_SIGNAL")])
+    with pytest.raises(TypeError):
+        counts.reason_code_histogram["ENTRY_ACCEPTED"] = 99  # type: ignore[index]
