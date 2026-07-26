@@ -142,6 +142,78 @@ def test_cost_component_carries_exactly_the_4_sealed_scenarios():
 
 
 # --------------------------------------------------------------------------- #
+# ROB-1060 H2-lock adversarial-verification Finding 2 (2026-07-26): belt-and-  #
+# braces literal pins for the exact fields 4 mutations survived on            #
+# (`cost.primary` C120->C50, `code.kind` formula-spec->real-implementation,   #
+# `strategy_version` ...-v1->...-v2, `strategy_key` ...->..._relaxed). The    #
+# root-cause fix is the digest coverage extension (see artifact.py /          #
+# test_artifact.py); these are GRANULAR, so a future coverage regression in   #
+# the digest doesn't silently reopen this specific hole.                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_cost_component_primary_and_upward_are_pinned_literally():
+    """`cost.primary`/`cost.upward` were only pinned on the `params.py`
+    `CostScenarios` object (test_params.py), which a mutation hardcoding a
+    DIFFERENT value directly in `_build_cost_component` bypasses entirely --
+    pin them on the COMPONENT BUILDER'S OUTPUT too."""
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    for config in (cfg.build_ap_a1_configs()[0], cfg.build_ap_a2_configs()[0]):
+        components = m.build_components_for_config(config, seal)
+        assert components["cost"]["primary"] == "C120"
+        assert components["cost"]["upward"] == "C150"
+
+
+def test_strategy_component_literal_content_for_ap_a1_and_ap_a2():
+    """The `strategy` component's `strategy_key`/`strategy_version` were
+    never literally pinned -- only existence-checked (`is not None`) and
+    cross-family-divergence-checked. A mutation bumping `strategy_version`
+    to `...-v2` or `strategy_key` to `..._relaxed` survived the green suite."""
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    a1 = m.build_components_for_config(cfg.build_ap_a1_configs()[0], seal)
+    assert a1["strategy"] == {
+        "family": "AP-A1",
+        "strategy_key": "alpaca_track_ap_a1",
+        "strategy_version": "2026-07-25-h2-formula-seal-v1",
+    }
+    a2 = m.build_components_for_config(cfg.build_ap_a2_configs()[0], seal)
+    assert a2["strategy"] == {
+        "family": "AP-A2",
+        "strategy_key": "alpaca_track_ap_a2",
+        "strategy_version": "2026-07-25-h2-formula-seal-v1",
+    }
+
+
+def test_code_component_kind_is_pinned_as_formula_specification_not_implementation():
+    """H3 (the real DATS/WCM-B implementation, ROB-1061) does not exist yet --
+    the `code.kind` identity component must be the honest
+    `formula_specification_not_implementation` sentinel, never
+    `real_implementation` (that value belongs to H3's eventual registration,
+    which MUST derive a different `code_hash`/`experiment_id`, per this
+    module's own docstring). A mutation flipping this value silently
+    masquerades the H2 formula-spec seal as H3's implementation identity."""
+    import configs as cfg
+    import identity as m
+    import params as prm
+
+    seal = prm.build_sealed_params()
+    config = cfg.build_ap_a1_configs()[0]
+    components = m.build_components_for_config(config, seal)
+    assert components["code"]["kind"] == "formula_specification_not_implementation"
+    assert components["code"]["source_sha256"] == (
+        m.default_formula_provenance("AP-A1").verified_source_sha256()
+    )
+
+
+# --------------------------------------------------------------------------- #
 # ROB-1060 H2-lock item 3/4: literal content assertions.                      #
 # `assert components[name] is not None` cannot fail for a dict -- emptying    #
 # pit/policy/benchmark to {} (and dropping quote_mode from universe) survived #

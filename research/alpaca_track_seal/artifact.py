@@ -17,11 +17,13 @@ from typing import Any
 
 import canonical_hash
 import configs as cfg
+import identity as ident
 import params as prm
 import source_provenance as sp
 
 __all__ = [
     "ArtifactIntegrityError",
+    "PRE_COVERAGE_EXTENSION_SEMANTIC_HASH",
     "SEALED_ARTIFACT_SEMANTIC_HASH",
     "SealedArtifact",
     "SealedSources",
@@ -40,7 +42,36 @@ __all__ = [
 # edit to make a failing test pass. If you are editing this value because a
 # test failed, STOP and report: that is exactly the post-hoc relaxation
 # ROB-1060 exists to prevent.
+#
+# ROB-1060 H2-lock adversarial-verification Finding 2 (2026-07-26 re-seal):
+# `to_dict()` originally covered only `{configs, params, sources}` -- ALL 11
+# ROB-846 identity components (built by `identity.build_components_for_config`)
+# sat OUTSIDE the digest. That is why 4 mutations (`cost.primary` C120->C50,
+# `code.kind` formula-spec->real-implementation, `strategy_version` ...-v1->
+# ...-v2, `strategy_key` ...->..._relaxed) survived the fully green 94-test
+# suite: nothing but per-field granular tests caught them, and per-field
+# coverage is a whack-a-mole strategy, not a lock. `to_dict()` now ALSO folds
+# in `identity_components` (every config's full 11-component ROB-846 identity,
+# a pure function of `self.configs`/`self.params`) so a SINGLE pin catches
+# this entire class of drift.
+#
+# This is a DELIBERATE, AUTHORIZED re-seal of digest COVERAGE, not of any
+# sealed VALUE: `PRE_COVERAGE_EXTENSION_SEMANTIC_HASH` below is the OLD
+# digest (`{configs, params, sources}` only), and
+# `test_pre_coverage_extension_semantic_hash_still_matches_the_original_h2_
+# lock_digest` proves it is STILL byte-identical to the original 2026-07-25
+# pin -- i.e. every sealed value inside `configs`/`params`/`sources` is
+# unchanged; only what the digest COVERS grew.
 SEALED_ARTIFACT_SEMANTIC_HASH = (
+    "6ed1656501766f9e026048d0a725a669b21d8ae16225c475c5bb321a2265e8e8"
+)
+
+# The H2-lock semantic hash BEFORE the 2026-07-26 Finding-2 coverage
+# extension (see the docstring above). Kept permanently for audit --
+# `SealedArtifact.semantic_hash_pre_coverage_extension()` recomputes the
+# OLD-coverage digest from the CURRENT (never-changed) sealed configs/
+# params/sources and must always still equal this constant.
+PRE_COVERAGE_EXTENSION_SEMANTIC_HASH = (
     "b0456239ba5893208c30f93c3a58a7f2ecb2a28800cfbdefc150124e771508e0"
 )
 
@@ -310,7 +341,13 @@ class SealedArtifact:
         prm.validate_sealed_universe(self.params.universe)
         prm.validate_cost_scenarios(self.params.cost_scenarios.scenarios_bp)
 
-    def to_dict(self) -> dict[str, Any]:
+    def _pre_coverage_extension_dict(self) -> dict[str, Any]:
+        """The EXACT dict shape `to_dict()` produced before the ROB-1060
+        H2-lock Finding-2 coverage extension (2026-07-26): `{configs, params,
+        sources}` only, no `identity_components`. Exists solely so the
+        coverage extension can be PROVEN not to have touched any sealed
+        value (see `semantic_hash_pre_coverage_extension`) -- never used by
+        `save()`/`load()`/the pinned digest itself."""
         return {
             "configs": {
                 c.config_id: {
@@ -324,14 +361,36 @@ class SealedArtifact:
             "sources": self.sources.to_dict(),
         }
 
+    def to_dict(self) -> dict[str, Any]:
+        d = self._pre_coverage_extension_dict()
+        # ROB-1060 H2-lock Finding 2: fold every config's full 11-component
+        # ROB-846 identity into the digest -- a pure function of `self.configs`
+        # / `self.params`, so no new state is introduced and `save()`/`load()`
+        # round-trip identically (the loaded artifact recomputes the same
+        # components from the same configs/params).
+        d["identity_components"] = {
+            c.config_id: ident.build_components_for_config(c, self.params)
+            for c in self.configs
+        }
+        return d
+
     def semantic_hash(self) -> str:
-        """Representation-independent SHA-256 of the full seal content, via
-        the same typed canonical AST authority every config/manifest hash in
-        this repo uses. Byte-identical across repeated calls, separate
-        process invocations, and PYTHONHASHSEED — configs are keyed by
-        config_id (a dict, canonically key-sorted) so top-level ordering
-        cannot perturb it."""
+        """Representation-independent SHA-256 of the full seal content
+        (configs + params + sources + every config's 11 ROB-846 identity
+        components), via the same typed canonical AST authority every
+        config/manifest hash in this repo uses. Byte-identical across
+        repeated calls, separate process invocations, and PYTHONHASHSEED —
+        configs are keyed by config_id (a dict, canonically key-sorted) so
+        top-level ordering cannot perturb it."""
         return canonical_hash.canonical_sha256(self.to_dict())
+
+    def semantic_hash_pre_coverage_extension(self) -> str:
+        """Recompute the semantic hash using ONLY the pre-Finding-2 coverage
+        (`{configs, params, sources}`, no identity components) — used solely
+        as an audit proof that the 2026-07-26 re-seal changed digest
+        COVERAGE, not any sealed VALUE. Must always equal
+        `PRE_COVERAGE_EXTENSION_SEMANTIC_HASH`."""
+        return canonical_hash.canonical_sha256(self._pre_coverage_extension_dict())
 
     def save(self, path: str | Path) -> None:
         path = Path(path)

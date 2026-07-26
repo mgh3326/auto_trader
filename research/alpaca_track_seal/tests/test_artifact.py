@@ -161,7 +161,13 @@ def test_semantic_hash_matches_the_pinned_h2_lock_digest():
     green 69-test suite let 17 of 37 mutations silently move it. THIS test is
     the actual lock. `SEALED_ARTIFACT_SEMANTIC_HASH` is a module constant;
     changing it is a deliberate re-seal, never a routine edit to make a
-    failing test pass."""
+    failing test pass.
+
+    2026-07-26 adversarial-verification Finding 2: the digest was re-sealed
+    to COVER the 11 ROB-846 identity components (previously outside it) --
+    see `test_pre_coverage_extension_semantic_hash_still_matches_the_
+    original_h2_lock_digest` for proof that no sealed VALUE changed, only
+    digest coverage."""
     import artifact as m
 
     a = m.build_sealed_artifact()
@@ -170,8 +176,46 @@ def test_semantic_hash_matches_the_pinned_h2_lock_digest():
     # test) so the pin itself cannot silently drift with the module.
     assert (
         m.SEALED_ARTIFACT_SEMANTIC_HASH
+        == "6ed1656501766f9e026048d0a725a669b21d8ae16225c475c5bb321a2265e8e8"
+    )
+
+
+def test_pre_coverage_extension_semantic_hash_still_matches_the_original_h2_lock_digest():
+    """Proof for the Finding-2 re-seal: recomputing the digest with ONLY the
+    ORIGINAL coverage (`{configs, params, sources}`, no identity components)
+    against the CURRENT (never-changed) sealed configs/params/sources still
+    equals the original 2026-07-25 pin, byte-for-byte -- the coverage
+    extension changed WHAT the digest covers, never any sealed VALUE inside
+    it."""
+    import artifact as m
+
+    a = m.build_sealed_artifact()
+    assert (
+        a.semantic_hash_pre_coverage_extension()
+        == m.PRE_COVERAGE_EXTENSION_SEMANTIC_HASH
         == "b0456239ba5893208c30f93c3a58a7f2ecb2a28800cfbdefc150124e771508e0"
     )
+    # And the pre-/post-coverage-extension digests are (necessarily)
+    # different values -- the extension is a real, non-vacuous change to
+    # what the digest covers, not a no-op.
+    assert a.semantic_hash_pre_coverage_extension() != a.semantic_hash()
+
+
+def test_identity_components_section_covers_every_config_and_is_a_pure_function_of_configs_and_params():
+    """The digest coverage extension itself: `to_dict()["identity_components"]`
+    must key every one of the 16 configs and carry each config's full
+    11-component ROB-846 identity -- and be reproducible byte-for-byte
+    (proving it introduces no hidden state)."""
+    import artifact as m
+
+    a = m.build_sealed_artifact()
+    d = a.to_dict()
+    assert set(d["identity_components"]) == {c.config_id for c in a.configs}
+    from research_contracts.canonical_hash import IDENTITY_COMPONENTS
+
+    for config_id, components in d["identity_components"].items():
+        assert set(components) == set(IDENTITY_COMPONENTS), config_id
+    assert a.to_dict() == m.build_sealed_artifact().to_dict()
 
 
 def test_constructing_artifact_with_tampered_sealed_effective_n_is_rejected():
