@@ -13,6 +13,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +34,69 @@ launcher._install_runtime_paths()
 
 def _stdio() -> tuple[io.StringIO, io.StringIO]:
     return io.StringIO(), io.StringIO()
+
+
+# ---------------------------------------------------------------------------
+# Hermetic git-repo fixtures for the ancestor / origin-main gates
+#
+# These two gates (`_require_refreeze_head_ancestor`, `_require_head_is_origin_
+# main`) shell out to the real `git` binary against `launcher.REPO_ROOT`. A
+# naive test that just calls them against the ambient checkout is coupled to
+# how deep/wide that checkout happens to be: a local clone has full history
+# and a fetched `origin/main`, but a CI runner's checkout is commonly shallow
+# (the CRS-24 merge commit may not be reachable at all) and has no
+# `origin/main` ref unless a prior step fetched one. Building a tiny, private
+# git repo per test and pointing `launcher.REPO_ROOT` at it removes that
+# coupling entirely -- the gate logic itself is still exercised for real
+# (real `git` subprocess calls), just against a repo whose shape the test
+# fully controls.
+# ---------------------------------------------------------------------------
+
+_GIT_ENV = {
+    **os.environ,
+    "GIT_AUTHOR_NAME": "rob1040-test",
+    "GIT_AUTHOR_EMAIL": "rob1040-test@example.invalid",
+    "GIT_COMMITTER_NAME": "rob1040-test",
+    "GIT_COMMITTER_EMAIL": "rob1040-test@example.invalid",
+}
+
+
+def _run_git(repo_dir: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ("git", *arguments),
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=_GIT_ENV,
+    )
+    return result.stdout.strip()
+
+
+def _init_hermetic_git_repo(repo_dir: Path) -> tuple[str, str]:
+    """Build a tiny, fully self-contained git repo with two commits.
+
+    Returns ``(first_commit_sha, head_sha)`` where ``head_sha`` is a direct
+    child of ``first_commit_sha`` -- i.e. exactly the ancestor/descendant
+    shape the CRS-24 refreeze-head gate checks for, without depending on the
+    ambient checkout at all.
+    """
+    repo_dir.mkdir(parents=True, exist_ok=True)
+    _run_git(repo_dir, "init", "-q", "-b", "main")
+    seed = repo_dir / "seed.txt"
+    seed.write_text("seed\n")
+    _run_git(repo_dir, "add", "seed.txt")
+    _run_git(repo_dir, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "first")
+    first_sha = _run_git(repo_dir, "rev-parse", "HEAD")
+    seed.write_text("seed 2\n")
+    _run_git(repo_dir, "add", "seed.txt")
+    _run_git(repo_dir, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "second")
+    head_sha = _run_git(repo_dir, "rev-parse", "HEAD")
+    return first_sha, head_sha
+
+
+def _set_origin_main_ref(repo_dir: Path, sha: str) -> None:
+    _run_git(repo_dir, "update-ref", "refs/remotes/origin/main", sha)
 
 
 # ---------------------------------------------------------------------------
@@ -105,9 +170,17 @@ def test_launcher_self_sha256_gate() -> None:
         launcher._require_launcher_self_sha256("0" * 64)
 
 
-def test_refreeze_head_ancestor_gate_passes_on_this_worktree() -> None:
-    # The worktree this test runs in was branched from a commit descending
-    # from the CRS-24 merge commit, so this must pass without a monkeypatch.
+def test_refreeze_head_ancestor_gate_passes_when_head_descends_from_the_refreeze_commit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Hermetic stand-in for "the worktree was branched from a commit
+    # descending from the CRS-24 merge commit" -- does not depend on the
+    # ambient checkout's history depth (a CI shallow clone may not contain
+    # the real CRS24_MERGE_REFREEZE_HEAD commit at all).
+    repo_dir = tmp_path / "repo"
+    merge_sha, _head_sha = _init_hermetic_git_repo(repo_dir)
+    monkeypatch.setattr(launcher, "REPO_ROOT", repo_dir)
+    monkeypatch.setattr(launcher, "CRS24_MERGE_REFREEZE_HEAD", merge_sha)
     launcher._require_refreeze_head_ancestor()
 
 
@@ -434,21 +507,53 @@ def test_preregistration_artifact_gate_refuses_tampered_bytes(
         launcher._require_preregistration_artifact()
 
 
-def test_head_is_origin_main_gate_reflects_actual_git_state() -> None:
-    head = launcher._git("rev-parse", "HEAD")
-    origin_main = launcher._git("rev-parse", "origin/main")
-    if head == origin_main:
+def test_head_is_origin_main_gate_passes_when_head_equals_origin_main(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo_dir = tmp_path / "repo"
+    _first_sha, head_sha = _init_hermetic_git_repo(repo_dir)
+    _set_origin_main_ref(repo_dir, head_sha)
+    monkeypatch.setattr(launcher, "REPO_ROOT", repo_dir)
+    launcher._require_head_is_origin_main()
+
+
+def test_head_is_origin_main_gate_refuses_when_head_diverges_from_origin_main(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo_dir = tmp_path / "repo"
+    first_sha, _head_sha = _init_hermetic_git_repo(repo_dir)
+    # origin/main points at the earlier commit -- HEAD (the second commit) has
+    # moved on without being merged/fetched back.
+    _set_origin_main_ref(repo_dir, first_sha)
+    monkeypatch.setattr(launcher, "REPO_ROOT", repo_dir)
+    with pytest.raises(launcher.LaunchRefused, match="HEAD_IS_NOT_ORIGIN_MAIN"):
         launcher._require_head_is_origin_main()
-    else:
-        with pytest.raises(launcher.LaunchRefused, match="HEAD_IS_NOT_ORIGIN_MAIN"):
-            launcher._require_head_is_origin_main()
+
+
+def test_head_is_origin_main_gate_refuses_when_origin_main_ref_is_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Reproduces the CI checkout shape directly: a shallow/partial checkout
+    commonly has no `origin/main` ref at all (`git rev-parse origin/main`
+    exits 128) unless a prior step explicitly fetched one. The gate must fail
+    closed with a typed refusal, not let the subprocess error propagate."""
+    repo_dir = tmp_path / "repo"
+    _init_hermetic_git_repo(repo_dir)  # no origin/main ref created
+    monkeypatch.setattr(launcher, "REPO_ROOT", repo_dir)
+    with pytest.raises(launcher.LaunchRefused, match="GIT_STATE_UNAVAILABLE"):
+        launcher._require_head_is_origin_main()
 
 
 def test_head_is_origin_main_gate_refuses_a_descendant_feature_branch(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The defect this gate closes: `merge-base --is-ancestor` alone passes on
     an unmerged feature branch that merely descends from the refreeze head."""
+    repo_dir = tmp_path / "repo"
+    merge_sha, _head_sha = _init_hermetic_git_repo(repo_dir)
+    monkeypatch.setattr(launcher, "REPO_ROOT", repo_dir)
+    monkeypatch.setattr(launcher, "CRS24_MERGE_REFREEZE_HEAD", merge_sha)
+
     real_git = launcher._git
 
     def _fake_git(*arguments: str) -> str:
@@ -461,7 +566,9 @@ def test_head_is_origin_main_gate_refuses_a_descendant_feature_branch(
     monkeypatch.setattr(launcher, "_git", _fake_git)
     with pytest.raises(launcher.LaunchRefused, match="HEAD_IS_NOT_ORIGIN_MAIN"):
         launcher._require_head_is_origin_main()
-    # ...and the ancestry check on its own is NOT sufficient: it still passes.
+    # ...and the ancestry check on its own is NOT sufficient: it still passes
+    # (real `git merge-base --is-ancestor` against the hermetic repo, not the
+    # faked `_git`).
     launcher._require_refreeze_head_ancestor()
 
 
@@ -609,6 +716,12 @@ def _wire_common_fakes(
     monkeypatch.setattr(launcher, "EXPECTED_MANIFEST", manifest)
     monkeypatch.setattr(launcher, "EXPECTED_CORPUS_ROOT", corpus_root)
     monkeypatch.setattr(launcher, "EXPECTED_OUTPUT_ROOT", output_root)
+    # `_require_refreeze_head_ancestor` is another environment gate that
+    # cannot reliably hold against the ambient checkout in every runner (a CI
+    # shallow clone may not contain the real CRS24_MERGE_REFREEZE_HEAD
+    # commit). It is exercised for real, hermetically, by its own dedicated
+    # tests above; here it would only mask the CLI wiring under test.
+    monkeypatch.setattr(launcher, "_require_refreeze_head_ancestor", lambda: None)
     monkeypatch.setattr(launcher, "_verify_manifest", lambda path: _FakeManifest(()))
     monkeypatch.setattr(
         launcher, "_require_pit_lookback_coverage", lambda manifest: None
