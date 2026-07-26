@@ -37,7 +37,7 @@ def test_strategy_source_provenance_rejects_a_stale_asserted_hash():
         source_text="entry: D>=0.005 and R>0",
         expected_source_sha256="0" * 64,
     )
-    with pytest.raises(m.SourceMismatchError):
+    with pytest.raises(m.SourceMismatchError, match="source SHA-256 mismatch"):
         prov.verified_source_sha256()
 
 
@@ -408,6 +408,13 @@ def test_supersession_rejects_divergence_in_any_single_sealed_component():
     parent = m.build_components_for_config(config, seal)
     from research_contracts.canonical_hash import IDENTITY_COMPONENTS
 
+    # ROB-1060 H2-lock adversarial-verification note: this sweep loops
+    # `IDENTITY_COMPONENTS`, the SAME tuple `assert_supersession_preserves_
+    # sealed_components` itself iterates -- a lockstep shrink of that tuple
+    # (dropping a component) would silently shrink this sweep too, with the
+    # loop-count check below (a hardcoded literal, not the constant under
+    # test) as an independent, self-standing guard against exactly that.
+    assert len(IDENTITY_COMPONENTS) == 11
     for name in IDENTITY_COMPONENTS:
         if name == "code":
             continue

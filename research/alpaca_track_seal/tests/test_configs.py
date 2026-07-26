@@ -195,7 +195,7 @@ def test_validate_config_domain_rejects_a_duplicate_config_id():
     # Build a version that keeps count at 16 but duplicates one id.
     corrupted = (configs_list[0], *configs_list[1:])
     assert len(corrupted) == 16
-    with pytest.raises(m.DuplicateConfigError):
+    with pytest.raises(m.DuplicateConfigError, match="duplicate config_id"):
         m.validate_config_domain(corrupted)
 
 
@@ -215,7 +215,7 @@ def test_supersedes_lineage_check_rejects_cross_family_supersession():
 
     a1 = m.build_ap_a1_configs()[0]
     a2 = m.build_ap_a2_configs()[0]
-    with pytest.raises(m.CrossFamilySupersedesError):
+    with pytest.raises(m.CrossFamilySupersedesError, match="cannot supersede"):
         m.assert_valid_supersedes(child=a2, parent=a1)
 
 

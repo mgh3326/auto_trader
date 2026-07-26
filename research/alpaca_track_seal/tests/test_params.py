@@ -275,7 +275,7 @@ def test_validate_cost_scenarios_rejects_wrong_scenario_names():
     import params as m
 
     tampered = {"C50": 50, "C100": 100, "C120": 120, "C200": 200}
-    with pytest.raises(m.CostScenarioNameError):
+    with pytest.raises(m.CostScenarioNameError, match="expected exactly"):
         m.validate_cost_scenarios(tampered)
 
 

@@ -81,7 +81,7 @@ def test_artifact_is_frozen_dataclass_no_attribute_mutation_possible():
     import artifact as m
 
     a = m.build_sealed_artifact()
-    with pytest.raises(dataclasses.FrozenInstanceError):
+    with pytest.raises(dataclasses.FrozenInstanceError, match="cannot assign to field"):
         a.configs = ()  # type: ignore[misc]
 
 
