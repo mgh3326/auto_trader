@@ -20,6 +20,7 @@ def test_trigger_type_taxonomy_is_closed_and_stable():
     assert "expired" in VALID_TRIGGER_TYPES
     assert "fill" in VALID_TRIGGER_TYPES
     assert "policy_violation" in VALID_TRIGGER_TYPES
+    assert "missed_opportunity" in VALID_TRIGGER_TYPES
     # expired must NOT be an outcome — it only survives as a trigger_type.
     assert VALID_ROOT_CAUSE_CLASSES == {
         "user_input",

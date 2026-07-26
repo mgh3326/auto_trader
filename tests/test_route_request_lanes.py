@@ -284,3 +284,13 @@ def test_buy_discovery_have_negative_class_constraint():
         assert "confidence" in joined
         assert "forecast" in joined
         assert "outcome_rule_version='window-touch-v1-high-gte-low-lte'" in joined
+
+
+def test_buy_discovery_end_with_missed_opportunity_session_hook():
+    assert L.LANE_SEQUENCES["discovery"][-1]["tool"] == "missed_opportunity_save"
+    assert "missed_opportunity_save" in L.LANE_EXTRA_ALLOWED["buy"]
+    for lane in ("buy", "discovery"):
+        joined = " ".join(L.HARD_CONSTRAINTS[lane]).lower()
+        assert "2%" in joined
+        assert "zero new buys" in joined
+        assert "d+5" in joined
