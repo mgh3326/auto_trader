@@ -8,21 +8,24 @@ from app.services import trading_policy_service as svc
 
 def test_version_stamp_has_version_and_hash():
     stamp = svc.policy_version_stamp()
-    assert stamp["version"] == "2026-07-23.3"
+    assert stamp["version"] == "2026-07-25.1"
     assert len(stamp["content_hash"]) == 12
     assert svc.policy_content_hash() == svc.policy_content_hash()
 
 
 def test_get_policy_for_buy_kr_includes_cap_and_version():
     view = svc.get_policy_for("kr", "buy")
-    assert view["version"] == "2026-07-23.3"
+    assert view["version"] == "2026-07-25.1"
     assert view["version"] == svc.policy_version_stamp()["version"]
     assert view["content_hash"] == svc.policy_content_hash()
     assert view["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
     assert view["thresholds"]["portfolio.max_symbols_per_theme"]["value"] == 2
     assert view["thresholds"]["sell.loss_guard_min_multiple"]["value"] == 1.01
     assert "sell.rsi_place_min" not in view["thresholds"]
-    assert view["decision_rules"] == {}
+    assert set(view["decision_rules"]) == {
+        "phase25.06_toss_account_symbol_mode",
+        "phase25.07_risk_and_hard_exit_priority",
+    }
 
 
 def test_get_policy_for_sell_lane_filters_thresholds():
