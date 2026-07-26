@@ -376,9 +376,59 @@ jobs:
       run: |
         uv run pytest research/alpaca_track_seal/tests/ -v
 
+  alpaca-track-signals-tests:
+    # ROB-1061 H3 -- exactly mirrors the alpaca-track-tests (H1) /
+    # alpaca-track-seal-tests (H2) jobs above: H1 and H2 both shipped a full
+    # suite that ran in NO CI job at all (each phase's own closing report
+    # calls this out as a completion-criteria failure caught only by
+    # adversarial re-verification, not by "tests passed locally"). This job
+    # exists so that mistake is not repeated a third time.
+    # research/alpaca_track_signals/tests/ is a fully separate, network-0,
+    # no-DB/no-Redis suite (own conftest.py sys.path wiring onto its two
+    # producer siblings, research/alpaca_track and research/alpaca_track_seal),
+    # so it gets its own lightweight job rather than being folded into the
+    # sharded `test` job's DB-backed run. The main `test` job's `testpaths`
+    # and pytest invocation remain UNCHANGED.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PYTHON_VERSION: "3.13"
+
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        persist-credentials: false
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install UV
+      run: pip install uv
+
+    - name: Load cached venv
+      id: cached-uv-dependencies
+      uses: actions/cache@v5
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group test
+
+    - name: Run ROB-1061 alpaca_track_signals H3 signal-engine tests (network-0, no DB/Redis)
+      run: |
+        uv run pytest research/alpaca_track_signals/tests/ -v --strict-markers -ra
+        # pytest exits 5 ("no tests collected") on an empty/misconfigured
+        # path -- a nonzero exit fails this step, so this job cannot pass
+        # silently on zero collected tests.
+
   notify:
     if: failure()
-    needs: [lint, test, taskiq-smoke, security, alpaca-track-tests, alpaca-track-seal-tests]
+    needs: [lint, test, taskiq-smoke, security, alpaca-track-tests, alpaca-track-seal-tests, alpaca-track-signals-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Discord failure notification
