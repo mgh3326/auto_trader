@@ -1,0 +1,156 @@
+{
+  "probe_ts": "20260725T142435Z",
+  "symbol": "BTC/USD",
+  "events": [
+    {
+      "t": "2026-07-25T14:24:36.133290+00:00",
+      "label": "asset",
+      "data": {
+        "price_increment": 1e-09,
+        "min_trade_increment": 1e-09
+      }
+    },
+    {
+      "t": "2026-07-25T14:24:36.376255+00:00",
+      "label": "account_before",
+      "data": {
+        "cash": "98140.9",
+        "equity": "100009.29"
+      }
+    },
+    {
+      "t": "2026-07-25T14:24:36.560755+00:00",
+      "label": "position_before",
+      "data": {
+        "qty": 0.000824863
+      }
+    },
+    {
+      "t": "2026-07-25T14:24:37.099338+00:00",
+      "label": "quote_before_buy",
+      "data": {
+        "bid": 64039.82,
+        "ask": 64114.3,
+        "spread_bp": 11.62350457402434
+      }
+    },
+    {
+      "t": "2026-07-25T14:24:37.481196+00:00",
+      "label": "buy_order_final",
+      "data": {
+        "status": "filled",
+        "filled_qty": "0.000387988",
+        "filled_avg_price": "64125.367"
+      }
+    },
+    {
+      "t": "2026-07-25T14:24:40.671308+00:00",
+      "label": "position_after_buy",
+      "data": {
+        "qty": 0.001211881,
+        "delta": 0.00038701799999999993,
+        "filled_qty": 0.000387988,
+        "implied_coin_fee_bp": 25.0
+      }
+    },
+    {
+      "t": "2026-07-25T14:24:40.854015+00:00",
+      "label": "account_after_buy",
+      "data": {
+        "cash": "98116.02",
+        "equity": "100009.21"
+      }
+    },
+    {
+      "t": "2026-07-25T14:24:41.403780+00:00",
+      "label": "sell_order_final",
+      "data": {
+        "status": "filled",
+        "filled_qty": "0.000387017",
+        "filled_avg_price": "64069.022"
+      }
+    },
+    {
+      "t": "2026-07-25T14:24:41.403870+00:00",
+      "label": "sell_gross_proceeds",
+      "data": {
+        "usd": 24.795801
+      }
+    },
+    {
+      "t": "2026-07-25T14:24:44.594872+00:00",
+      "label": "account_after_sell",
+      "data": {
+        "cash": "98140.75",
+        "equity": "100009.14"
+      }
+    },
+    {
+      "t": "2026-07-25T14:24:44.777055+00:00",
+      "label": "position_final",
+      "data": {
+        "qty": 0.000824864
+      }
+    },
+    {
+      "t": "2026-07-25T14:24:44.777198+00:00",
+      "label": "cash_roundtrip_delta_usd",
+      "data": {
+        "delta": -0.15
+      }
+    },
+    {
+      "t": "2026-07-25T14:24:44.969066+00:00",
+      "label": "fee_activities_today",
+      "data": [
+        {
+          "id": "20260724000000000::2a775a72-fd5f-4223-9166-c6d6b0b56722",
+          "activity_type": "FEE",
+          "activity_sub_type": "CAT",
+          "date": "2026-07-24",
+          "created_at": "2026-07-25T00:07:11.412216Z",
+          "net_amount": "-0.01",
+          "description": "CAT fee for proceed of 4 trades on 2026-07-24 by PA3ZY3LBO7I1",
+          "status": "executed",
+          "currency": "USD"
+        }
+      ]
+    },
+    {
+      "t": "2026-07-25T14:24:45.168858+00:00",
+      "label": "fill_activities_today",
+      "data": [
+        {
+          "id": "20260725102443165::e8203985-f28e-4de4-921d-9b7de78c1cad",
+          "activity_type": "FILL",
+          "transaction_time": "2026-07-25T14:24:43.16591Z",
+          "type": "fill",
+          "price": "64069.022",
+          "qty": "0.000387017",
+          "side": "sell",
+          "symbol": "BTC/USD",
+          "leaves_qty": "0",
+          "order_id": "233f64e3-a892-437c-ba8f-b33b677e66fb",
+          "cum_qty": "0.000387017",
+          "order_status": "filled",
+          "swap_rate": "1"
+        },
+        {
+          "id": "20260725102439242::fc0db5ce-b691-4364-ac90-1b0524ccd3fb",
+          "activity_type": "FILL",
+          "transaction_time": "2026-07-25T14:24:39.242036Z",
+          "type": "fill",
+          "price": "64125.367",
+          "qty": "0.000387988",
+          "side": "buy",
+          "symbol": "BTC/USD",
+          "leaves_qty": "0",
+          "order_id": "28cbcf2f-3038-47fb-b39d-db5f8aeacefc",
+          "cum_qty": "0.000387988",
+          "order_status": "filled",
+          "swap_rate": "1"
+        }
+      ]
+    }
+  ]
+}
