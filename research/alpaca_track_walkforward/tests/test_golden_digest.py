@@ -31,12 +31,22 @@ _ANCHOR_MS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)
 _FOLD = fs.build_fold_schedule(_ANCHOR_MS)[0]
 _NUM_DAYS = (_FOLD.oos_end_ms - _FOLD.train_start_ms) // 86_400_000
 
-# Pinned 2026-07-26. Changing this constant is a deliberate re-seal of the
-# golden fixture (a real behavioral change to fold_schedule/fill_model/
-# pnl_views/config_selection/blind_counts/oos_mask/runner) -- never a
-# routine edit to make a failing test pass. If this test fails, STOP and
-# determine WHY the digest moved before touching this constant.
-GOLDEN_DIGEST = "91b5d47e2abcc2b23c07dcff3303f5b2113139a443779b10a8d8725012a06850"
+# Pinned 2026-07-27 after the audit-contract change. The moved summary was
+# decomposed before re-pinning: event-time attribution removed only
+# cross-boundary trades from TRAIN closed/E120 (entry counts stayed fixed),
+# actual-filled-notional C120 replaced the count-as-full-NAV formula, OOS
+# blind counts and NO_SELECTED_CONFIG stayed unchanged, and the strengthened
+# context/evidence fields were added. Synthetic prices and this hash
+# projection are quantized only to remove CPython/libm last-bit differences
+# between macOS and Linux; runner gates still compare full-precision values.
+# Any later change remains a deliberate re-seal: STOP and inspect the
+# human-readable diagnostic before touching this constant.
+GOLDEN_DIGEST = "d8a78ac0a9ebe38169ff9e4abd887e4a81e4b8fe3db11308bb71323b00bac922"
+
+
+def _golden_float(value: float) -> float:
+    """Cross-platform golden projection only, never a gate input."""
+    return round(value, 10)
 
 
 def _digest_summary(result: runner.FamilyFoldResult) -> dict:
@@ -53,15 +63,21 @@ def _digest_summary(result: runner.FamilyFoldResult) -> dict:
             cr.config_id: {
                 "train_metrics": {
                     "closed_trades_count": cr.train_metrics.closed_trades_count,
-                    "median_trade_e120_bp": cr.train_metrics.median_trade_e120_bp,
+                    "median_trade_e120_bp": (
+                        _golden_float(cr.train_metrics.median_trade_e120_bp)
+                        if cr.train_metrics.median_trade_e120_bp is not None
+                        else None
+                    ),
                     "modeled_entries_count": cr.train_metrics.modeled_entries_count,
-                    "turnover_p": cr.train_metrics.turnover_p,
+                    "turnover_p": _golden_float(cr.train_metrics.turnover_p),
                     "modeled_entry_evidence": [
                         {
                             "entry_fill_ts_ms": entry.entry_fill_ts_ms,
-                            "filled_qty": entry.filled_qty,
-                            "entry_fill_price": entry.entry_fill_price,
-                            "entry_filled_notional": entry.entry_filled_notional,
+                            "filled_qty": _golden_float(entry.filled_qty),
+                            "entry_fill_price": _golden_float(entry.entry_fill_price),
+                            "entry_filled_notional": _golden_float(
+                                entry.entry_filled_notional
+                            ),
                         }
                         for entry in cr.train_metrics.modeled_entry_evidence
                     ],
@@ -113,9 +129,11 @@ def _digest_summary(result: runner.FamilyFoldResult) -> dict:
                 "oos_modeled_entry_evidence": [
                     {
                         "entry_fill_ts_ms": entry.entry_fill_ts_ms,
-                        "filled_qty": entry.filled_qty,
-                        "entry_fill_price": entry.entry_fill_price,
-                        "entry_filled_notional": entry.entry_filled_notional,
+                        "filled_qty": _golden_float(entry.filled_qty),
+                        "entry_fill_price": _golden_float(entry.entry_fill_price),
+                        "entry_filled_notional": _golden_float(
+                            entry.entry_filled_notional
+                        ),
                     }
                     for entry in cr.oos_modeled_entry_evidence
                 ],
@@ -227,6 +245,38 @@ def test_golden_digest_matches_the_pinned_value(baseline_digest, baseline_result
             sort_keys=True,
             indent=2,
         )
+
+
+@pytest.mark.slow
+def test_golden_runner_costs_match_the_frozen_full_precision_formula(
+    baseline_result,
+):
+    """Cross-check the golden run against the same frozen equation whose
+    range/30-entry cases are pinned in ``test_blind_counts.py``.
+
+    Golden float normalization is presentation-only: both sides here use
+    the immutable raw fill evidence and compare the production calculation
+    before any rounding.
+    """
+    for run in baseline_result.config_runs:
+        evidence = run.train_metrics.modeled_entry_evidence
+        production = bc.annualized_stress_cost_pct(
+            entry_filled_notionals=tuple(
+                entry.entry_filled_notional for entry in evidence
+            ),
+            window_days=365,
+            nav_usd=2000.0,
+            cost_bp=120.0,
+        )
+        direct = (
+            100.0
+            * (365.0 / 365)
+            * sum(
+                ((entry.filled_qty * entry.entry_fill_price) / 2000.0) * 0.012
+                for entry in evidence
+            )
+        )
+        assert production == direct
 
 
 @pytest.mark.slow

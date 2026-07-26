@@ -28,12 +28,19 @@ def symbol_names(n: int = N_SYMBOLS) -> list[str]:
 
 
 def close_for(symbol_idx: int, day_index: int) -> float:
-    """Deterministic sinusoidal close price, always positive."""
+    """Deterministic sinusoidal close price, always positive.
+
+    The test corpus is quantized at generation so CPython/libm last-bit
+    differences cannot turn the same semantic fixture into different source
+    corpus hashes on macOS and Linux. This affects this synthetic fixture
+    only; runner calculations and gate comparisons retain full precision.
+    """
     amplitude = 0.15 + 0.02 * (symbol_idx % 5)
     period = 80 + 15 * (symbol_idx % 6)
     phase = (symbol_idx * 0.7) % (2 * math.pi)
-    return 100.0 * (
-        1.0 + amplitude * math.sin(2 * math.pi * day_index / period + phase)
+    return round(
+        100.0 * (1.0 + amplitude * math.sin(2 * math.pi * day_index / period + phase)),
+        10,
     )
 
 
