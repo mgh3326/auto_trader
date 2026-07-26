@@ -34,7 +34,7 @@ dependencies = [
     "taskiq-fastapi>=0.3.4,<1.0.0",
     "email-validator>=2.0.0,<3.0.0",
     "itsdangerous>=2.0.0,<3.0.0",
-    "pandas-stubs==3.0.0.260204",
+    "pandas-stubs==3.0.3.260530",
     "slowapi>=0.1.9",
     "fastmcp>=3.0.1,<4.0.0",
     "finnhub-python>=2.4.21,<3.0.0",
