@@ -25,6 +25,7 @@ Pure stdlib + ``canonical_hash``. No app/DB/network import.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any
 
 import canonical_hash
@@ -96,6 +97,14 @@ class ConfigSpec:
     params: dict[str, Any]
     canonical_hash: str
 
+    def __post_init__(self) -> None:
+        # ROB-1060 H2-lock item 7: `frozen=True` blocks `config.params = ...`
+        # but NOT `config.params["threshold"] = ...`, which silently rots the
+        # already-computed `canonical_hash` (nothing re-derives it). Wrap
+        # `params` in a genuinely immutable mapping so in-place mutation
+        # raises instead of drifting the seal out from under its own hash.
+        object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
+
 
 def canonical_config_hash(config_id: str, family: str, params: dict[str, Any]) -> str:
     """The canonical SHA-256 identity of one config.
@@ -108,7 +117,10 @@ def canonical_config_hash(config_id: str, family: str, params: dict[str, Any]) -
     payload = {
         "config_id": config_id,
         "family": family,
-        "params": params,
+        # `dict(...)` so a caller re-hashing a `ConfigSpec.params` (a
+        # `MappingProxyType` since ROB-1060 H2-lock item 7) still produces a
+        # JSON-native payload the canonical AST authority accepts.
+        "params": dict(params),
     }
     return canonical_hash.canonical_sha256(payload)
 

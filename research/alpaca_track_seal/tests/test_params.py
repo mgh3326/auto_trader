@@ -154,6 +154,101 @@ def test_frozen_basis_cap_is_close_basis_proxy_not_executable():
 
 
 # --------------------------------------------------------------------------- #
+# ROB-1060 H2-lock item 5: only 2 of 20 basis caps were pinned (BTC=11,       #
+# YFI=27) -- AAVE 14 -> 15 (and any other single-symbol drift) survived a     #
+# green suite. Pin all 20 literally, AND independently recompute each from    #
+# the raw fixture's `venue_basis.high_vol.abs_p95_bp` via the documented      #
+# `ceil(hv_p95_bp) + 3` method -- so a wrong value in the fixture itself, not #
+# just a wrong transcription, is caught too.                                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_all_20_sealed_basis_caps_match_the_pinned_literal_table():
+    import params as m
+
+    cap = m.build_sealed_params().frozen_basis_cap
+    assert dict(cap.sealed_cap_bp) == {
+        "BTC/USD": 11,
+        "ETH/USD": 13,
+        "SOL/USD": 16,
+        "DOGE/USD": 13,
+        "XRP/USD": 13,
+        "AAVE/USD": 14,
+        "AVAX/USD": 18,
+        "BAT/USD": 23,
+        "BCH/USD": 14,
+        "CRV/USD": 17,
+        "DOT/USD": 19,
+        "GRT/USD": 20,
+        "LINK/USD": 12,
+        "LTC/USD": 14,
+        "SKY/USD": 17,
+        "SUSHI/USD": 20,
+        "TRUMP/USD": 16,
+        "UNI/USD": 15,
+        "XTZ/USD": 17,
+        "YFI/USD": 27,
+    }
+
+
+def test_all_22_raw_basis_caps_match_ceil_hv_p95_plus_3_recomputed_from_source():
+    """Recomputes the cap independently from the raw fixture data (NOT from
+    `build_sealed_params()`'s output) so a fixture-level or method-level
+    error, not just a copy-paste error, is caught."""
+    import math
+
+    import source_provenance as sp
+
+    raw = sp.load_basis_analysis_full()
+    caps = raw["_frozen_basis_cap_proposal_bp"]
+    assert len(caps) == 22
+    for symbol, cap in caps.items():
+        p95 = raw[symbol]["venue_basis"]["high_vol"]["abs_p95_bp"]
+        expected = math.ceil(p95) + 3
+        assert cap == expected, (
+            f"{symbol}: sealed cap {cap} != ceil({p95}) + 3 == {expected}"
+        )
+
+
+def test_frozen_basis_cap_method_string_is_the_literal_ceil_plus_3_description():
+    import params as m
+
+    cap = m.build_sealed_params().frozen_basis_cap
+    assert cap.method == "ceil(hv_p95_bp) + 3bp margin (Run B SS10)"
+
+
+# --------------------------------------------------------------------------- #
+# ROB-1060 H2-lock item 7: dict-valued sealed fields must be genuinely        #
+# immutable through the object -- `frozen=True` blocks attribute rebinding    #
+# but not `sealed.raw_cap_bp["X"] = ...` mutating the dict in place.          #
+# --------------------------------------------------------------------------- #
+
+
+def test_frozen_basis_cap_raw_cap_bp_is_immutable_through_the_object():
+    import params as m
+
+    sealed = m.build_sealed_params()
+    with pytest.raises(TypeError, match="does not support item assignment"):
+        sealed.frozen_basis_cap.raw_cap_bp["BTC/USD"] = 999
+
+
+def test_frozen_basis_cap_sealed_cap_bp_is_immutable_through_the_object():
+    import params as m
+
+    sealed = m.build_sealed_params()
+    with pytest.raises(TypeError, match="does not support item assignment"):
+        sealed.frozen_basis_cap.sealed_cap_bp["BTC/USD"] = 999
+
+
+def test_cost_scenarios_scenarios_bp_is_immutable_through_the_object():
+    import params as m
+
+    sealed = m.build_sealed_params()
+    with pytest.raises(TypeError, match="does not support item assignment"):
+        sealed.cost_scenarios.scenarios_bp["C200"] = 200
+
+
+# --------------------------------------------------------------------------- #
 # 5. Cost scenarios — exactly 4, C50/C100/C120/C150                           #
 # --------------------------------------------------------------------------- #
 
@@ -199,21 +294,31 @@ def test_common_gate_literals():
 
 
 def test_ap_a1_gate_has_the_11_conditions_from_section_11_7():
+    """ROB-1060 H2-lock item 2: pins EVERY field of EVERY condition --
+    `.op` was previously asserted only for `all_folds_entries`, so an
+    inverted operator elsewhere (`max_oos_dd_pct <= -> >=`,
+    `pooled_gross_ev_bp >= -> <=`, `e150 > 0 -> < 0`) survived a green
+    suite. Also pins `e120_bootstrap_95_lower_bound`'s threshold literally
+    (`> 0` relaxed to `> -50` also survived)."""
     import params as m
 
     g = m.build_sealed_params().gate_thresholds
     assert len(g.ap_a1) == 11
-    by_metric = {c.metric: c for c in g.ap_a1}
-    assert by_metric["all_folds_entries"].op == ">="
-    assert by_metric["all_folds_entries"].value == 5
-    assert by_metric["median_hold_days"].value == 3
-    assert by_metric["pooled_gross_ev_bp"].value == 180
-    assert by_metric["pooled_e120_bp"].value == 60
-    assert by_metric["pf120"].value == pytest.approx(1.15)
-    assert by_metric["positive_folds"].value == (5, 8)
-    assert by_metric["max_oos_dd_pct"].value == 20
-    assert by_metric["monthly_concentration_pct"].value == 50
-    assert by_metric["symbol_concentration_pct"].value == 40
+    actual = [(c.metric, c.op, c.value, c.unit) for c in g.ap_a1]
+    expected = [
+        ("all_folds_entries", ">=", 5, "count"),
+        ("median_hold_days", ">=", 3, "days"),
+        ("pooled_gross_ev_bp", ">=", 180, "bp"),
+        ("pooled_e120_bp", ">=", 60, "bp"),
+        ("e120_bootstrap_95_lower_bound", ">", 0, "bp"),
+        ("e150", ">", 0, "bp"),
+        ("pf120", ">=", pytest.approx(1.15), None),
+        ("positive_folds", ">=", (5, 8), "folds_of_8"),
+        ("max_oos_dd_pct", "<=", 20, "pct"),
+        ("monthly_concentration_pct", "<=", 50, "pct"),
+        ("symbol_concentration_pct", "<=", 40, "pct"),
+    ]
+    assert actual == expected
 
 
 def test_ap_a2_gate_has_the_13_conditions_literally_present_in_section_12_7():
@@ -229,18 +334,23 @@ def test_ap_a2_gate_has_the_13_conditions_literally_present_in_section_12_7():
 
     g = m.build_sealed_params().gate_thresholds
     assert len(g.ap_a2) == 13
-    by_metric = {c.metric: c for c in g.ap_a2}
-    assert by_metric["all_folds_entries"].value == 5
-    assert by_metric["turnover_in_intersection"].value is True
-    assert by_metric["pooled_gross_ev_bp"].value == 200
-    assert by_metric["pooled_e120_bp"].value == 80
-    assert by_metric["pf120"].value == pytest.approx(1.15)
-    assert by_metric["positive_folds"].value == (5, 8)
-    assert by_metric["equal_weight_e120_positive"].value is True
-    assert by_metric["topk_vs_middle_wins"].value == (5, 8)
-    assert by_metric["max_oos_dd_pct"].value == 20
-    assert by_metric["monthly_concentration_pct"].value == 50
-    assert by_metric["symbol_concentration_pct"].value == 35
+    actual = [(c.metric, c.op, c.value, c.unit) for c in g.ap_a2]
+    expected = [
+        ("all_folds_entries", ">=", 5, "count"),
+        ("turnover_in_intersection", "==", True, None),
+        ("pooled_gross_ev_bp", ">=", 200, "bp"),
+        ("pooled_e120_bp", ">=", 80, "bp"),
+        ("e120_bootstrap_lower_bound", ">", 0, "bp"),
+        ("e150", ">", 0, "bp"),
+        ("pf120", ">=", pytest.approx(1.15), None),
+        ("positive_folds", ">=", (5, 8), "folds_of_8"),
+        ("equal_weight_e120_positive", "==", True, None),
+        ("topk_vs_middle_wins", ">=", (5, 8), "folds_of_8"),
+        ("max_oos_dd_pct", "<=", 20, "pct"),
+        ("monthly_concentration_pct", "<=", 50, "pct"),
+        ("symbol_concentration_pct", "<=", 35, "pct"),
+    ]
+    assert actual == expected
 
 
 def test_ap_a2_turnover_band_is_exactly_20_83_to_28_85_pct():

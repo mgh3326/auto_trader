@@ -91,9 +91,68 @@ def test_key_order_permutation_of_params_does_not_change_the_hash():
 
     base = m.build_ap_a1_configs()[0]
     reordered = dict(reversed(list(base.params.items())))
-    assert reordered != base.params or True  # dict equality ignores order anyway
     reordered_hash = m.canonical_config_hash(base.config_id, base.family, reordered)
     assert reordered_hash == base.canonical_hash
+
+
+# --------------------------------------------------------------------------- #
+# ROB-1060 H2-lock item 6: set-based grid assertions are invariant to         #
+# enumeration order, so reordering `_AP_A1_F` (etc.) silently reassigns which #
+# grid point each `AP-A1-NN` id names, while `test_ap_a1_grid_is_the_full_    #
+# cartesian_product_f_s_m` still passes. Pin the ORDERED id -> params         #
+# mapping so the index<->grid-point contract the module docstring promises   #
+# is actually enforced.                                                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_ap_a1_config_ids_map_to_the_pinned_ordered_grid_points():
+    import configs as m
+
+    expected = [
+        ("AP-A1-00", {"f": 14, "s": 56, "m": 28, "threshold": 0.005}),
+        ("AP-A1-01", {"f": 14, "s": 56, "m": 56, "threshold": 0.005}),
+        ("AP-A1-02", {"f": 14, "s": 84, "m": 28, "threshold": 0.005}),
+        ("AP-A1-03", {"f": 14, "s": 84, "m": 56, "threshold": 0.005}),
+        ("AP-A1-04", {"f": 21, "s": 56, "m": 28, "threshold": 0.005}),
+        ("AP-A1-05", {"f": 21, "s": 56, "m": 56, "threshold": 0.005}),
+        ("AP-A1-06", {"f": 21, "s": 84, "m": 28, "threshold": 0.005}),
+        ("AP-A1-07", {"f": 21, "s": 84, "m": 56, "threshold": 0.005}),
+    ]
+    actual = [(c.config_id, dict(c.params)) for c in m.build_ap_a1_configs()]
+    assert actual == expected
+
+
+def test_ap_a2_config_ids_map_to_the_pinned_ordered_grid_points():
+    import configs as m
+
+    expected = [
+        ("AP-A2-00", {"L": 14, "k": 5, "b": 1, "positive_filter": "Score > 0"}),
+        ("AP-A2-01", {"L": 14, "k": 5, "b": 2, "positive_filter": "Score > 0"}),
+        ("AP-A2-02", {"L": 14, "k": 6, "b": 1, "positive_filter": "Score > 0"}),
+        ("AP-A2-03", {"L": 14, "k": 6, "b": 2, "positive_filter": "Score > 0"}),
+        ("AP-A2-04", {"L": 28, "k": 5, "b": 1, "positive_filter": "Score > 0"}),
+        ("AP-A2-05", {"L": 28, "k": 5, "b": 2, "positive_filter": "Score > 0"}),
+        ("AP-A2-06", {"L": 28, "k": 6, "b": 1, "positive_filter": "Score > 0"}),
+        ("AP-A2-07", {"L": 28, "k": 6, "b": 2, "positive_filter": "Score > 0"}),
+    ]
+    actual = [(c.config_id, dict(c.params)) for c in m.build_ap_a2_configs()]
+    assert actual == expected
+
+
+# --------------------------------------------------------------------------- #
+# ROB-1060 H2-lock item 7: `config.params` must be genuinely immutable        #
+# through the object -- `frozen=True` blocks `config.params = ...` but not    #
+# `config.params["threshold"] = ...`, which would rot `canonical_hash`        #
+# without re-deriving it.                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_config_params_dict_is_immutable_through_the_object():
+    import configs as m
+
+    config = m.build_ap_a1_configs()[0]
+    with pytest.raises(TypeError, match="does not support item assignment"):
+        config.params["threshold"] = 0.010
 
 
 def test_build_all_configs_is_reproducible_byte_identical_across_calls():

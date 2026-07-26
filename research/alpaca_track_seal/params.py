@@ -11,6 +11,7 @@ JSON). No app/DB/network import.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 
 import source_provenance as sp
 
@@ -119,12 +120,29 @@ class FrozenBasisCapSeal:
     raw_cap_bp: dict
     sealed_cap_bp: dict
 
+    def __post_init__(self) -> None:
+        # ROB-1060 H2-lock item 7: a plain dict survives `frozen=True` only
+        # against attribute rebinding, not against `sealed.raw_cap_bp["X"] =
+        # ...` mutating the dict object itself. Wrap both cap tables in a
+        # genuinely immutable MappingProxyType at construction time so that
+        # mutation raises TypeError instead of silently drifting the seal.
+        object.__setattr__(self, "raw_cap_bp", MappingProxyType(dict(self.raw_cap_bp)))
+        object.__setattr__(
+            self, "sealed_cap_bp", MappingProxyType(dict(self.sealed_cap_bp))
+        )
+
 
 @dataclass(frozen=True)
 class CostScenarios:
     scenarios_bp: dict
     primary: str
     upward: str
+
+    def __post_init__(self) -> None:
+        # ROB-1060 H2-lock item 7 (see FrozenBasisCapSeal.__post_init__).
+        object.__setattr__(
+            self, "scenarios_bp", MappingProxyType(dict(self.scenarios_bp))
+        )
 
 
 @dataclass(frozen=True)
