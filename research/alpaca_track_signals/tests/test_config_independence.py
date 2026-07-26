@@ -63,12 +63,18 @@ def _bars_ending_at_window(closes: list[float]) -> tuple[DailyBar, ...]:
 
 
 def _snapshot(eligible: tuple[str, ...]) -> pu.UniverseSnapshot:
+    # Pad with filler symbols (no bars supplied for them -- harmless
+    # INVALID_DECISION_DAY no-ops) so N_t >= 18 by default (Run A §6 rule 7):
+    # this file is about AC24 config-independence, not the restricted-entry
+    # gate, so an unrealistically tiny fixture universe must not trip it.
+    padding = tuple(f"PAD{i}/USD" for i in range(max(0, 18 - len(eligible))))
+    all_eligible = tuple(sorted(set(eligible) | set(padding)))
     return pu.UniverseSnapshot(
         decision_ts_ms=DECISION_TS,
-        eligible_symbols=tuple(sorted(eligible)),
+        eligible_symbols=all_eligible,
         per_symbol=(),
-        n_t=len(eligible),
-        meets_min_universe_size=len(eligible) >= 18,
+        n_t=len(all_eligible),
+        meets_min_universe_size=len(all_eligible) >= 18,
     )
 
 
@@ -78,6 +84,10 @@ def _piecewise_closes(
     flat = [100.0] * flat_days
     spike = [100.0 * (1 + spike_step) ** i for i in range(1, spike_days + 1)]
     return flat + spike
+
+
+def _uptrend_closes(n: int, start: float = 100.0, step: float = 0.01) -> list[float]:
+    return [start * (1 + step) ** i for i in range(n)]
 
 
 # A handful of distinct per-symbol shapes so D/R/Score genuinely differ by
@@ -212,3 +222,104 @@ def test_all_8_ap_a2_configs_are_independent_over_the_same_corpus_snapshot():
     }
     distinct_l_values = {c.params["L"] for c in configs}
     assert len(set(score_values.values())) == len(distinct_l_values)
+
+
+# --------------------------------------------------------------------------- #
+# V1/V2 (ROB-1061 adversarial-verification): both `d_values`/`score_values`
+# checks above never reference `results` at all -- they independently
+# recompute D/Score from each config's own (f,s)/L and assert those values
+# are merely DISTINCT across configs, a property that holds even if the
+# ENGINE itself silently hardcoded a single f/k and ignored the config it
+# was handed (V1: AP-A1 hardcodes f=14; V2: AP-A2 hardcodes k=5) -- the whole
+# 16-config grid would then be secretly evaluating only 1 config, and these
+# tests would still pass. The two tests below force the ENGINE'S OWN VERDICT
+# to differ across two configs that share every parameter except the one
+# under test, on a fixture specifically engineered so the verdict actually
+# flips -- an oracle that distinguishes configs by their real output.
+# --------------------------------------------------------------------------- #
+
+
+def test_ap_a1_f_parameter_actually_changes_the_engine_verdict_not_just_the_grid_shape():
+    # A sharp decline followed by a recent sharp recovery: the FAST EMA
+    # (f=14) recovers above the +0.005 threshold quickly; the slower EMA
+    # (f=21, same s=56/m=28/threshold otherwise) has not caught up yet and
+    # stays negative. If the engine silently hardcoded f=14 regardless of
+    # `config.params["f"]`, AP-A1-04 (f=21) would wrongly ALSO enter.
+    closes = []
+    price = 100.0
+    for _ in range(60):
+        price *= 1 - 0.006
+        closes.append(price)
+    for _ in range(10):
+        price *= 1 + 0.04
+        closes.append(price)
+    d14 = ind.compute_trend_d(closes, f=14, s=56)
+    d21 = ind.compute_trend_d(closes, f=21, s=56)
+    r28 = ind.compute_momentum_r(closes, m=28)
+    assert d14 >= 0.005 > d21 and r28 > 0.0  # sanity: the fixture discriminates
+
+    config_f14 = cfg.build_ap_a1_configs()[0]  # AP-A1-00: f=14, s=56, m=28
+    config_f21 = cfg.build_ap_a1_configs()[4]  # AP-A1-04: f=21, s=56, m=28
+    assert config_f14.params["s"] == config_f21.params["s"]
+    assert config_f14.params["m"] == config_f21.params["m"]
+    assert config_f14.params["f"] != config_f21.params["f"]
+
+    universe = _snapshot(("XXX/USD",))
+    bars_by_symbol = {"XXX/USD": _bars_ending_at_window(closes)}
+    result_f14 = dats_engine.run_ap_a1_decision(
+        decision_ts_ms=DECISION_TS,
+        config=config_f14,
+        universe=universe,
+        bars_by_symbol=bars_by_symbol,
+        prior_state={},
+    )
+    result_f21 = dats_engine.run_ap_a1_decision(
+        decision_ts_ms=DECISION_TS,
+        config=config_f21,
+        universe=universe,
+        bars_by_symbol=bars_by_symbol,
+        prior_state={},
+    )
+    record_f14 = next(r for r in result_f14.records if r.symbol == "XXX/USD")
+    record_f21 = next(r for r in result_f21.records if r.symbol == "XXX/USD")
+    assert record_f14.reason_code == "ENTRY_ACCEPTED"
+    assert record_f21.reason_code != "ENTRY_ACCEPTED"
+
+
+def test_ap_a2_k_parameter_actually_changes_the_engine_verdict_not_just_the_grid_shape():
+    # 6 unheld candidates, all Score>0, strictly ranked 1..6 by construction
+    # (distinct step sizes). Under k=5 the weakest (rank 6) is
+    # RANK_SLOTS_FULL; under k=6 (same L/b otherwise) that SAME symbol must
+    # be bought instead. If the engine silently hardcoded k=5 regardless of
+    # `config.params["k"]`, AP-A2-02 (k=6) would wrongly ALSO reject it.
+    n = 30
+    bars_by_symbol = {
+        f"C{i}/USD": _bars_ending_at_window(_uptrend_closes(n, step=0.05 - i * 0.005))
+        for i in range(6)
+    }
+    universe = _snapshot(tuple(bars_by_symbol))
+
+    config_k5 = cfg.build_ap_a2_configs()[0]  # AP-A2-00: L=14, k=5, b=1
+    config_k6 = cfg.build_ap_a2_configs()[2]  # AP-A2-02: L=14, k=6, b=1
+    assert config_k5.params["L"] == config_k6.params["L"]
+    assert config_k5.params["b"] == config_k6.params["b"]
+    assert config_k5.params["k"] != config_k6.params["k"]
+
+    result_k5 = wcmb_engine.run_ap_a2_decision(
+        decision_ts_ms=DECISION_TS,
+        config=config_k5,
+        universe=universe,
+        bars_by_symbol=bars_by_symbol,
+        prior_held={},
+    )
+    result_k6 = wcmb_engine.run_ap_a2_decision(
+        decision_ts_ms=DECISION_TS,
+        config=config_k6,
+        universe=universe,
+        bars_by_symbol=bars_by_symbol,
+        prior_held={},
+    )
+    record_k5 = next(r for r in result_k5.records if r.symbol == "C5/USD")
+    record_k6 = next(r for r in result_k6.records if r.symbol == "C5/USD")
+    assert record_k5.reason_code == "RANK_SLOTS_FULL"
+    assert record_k6.reason_code == "RANK_BUY_ACCEPTED"

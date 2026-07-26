@@ -6,6 +6,7 @@ reason_histogram), a 1-ULP source price change moves the result, and
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 
 import configs as cfg
@@ -53,12 +54,18 @@ def _bars_ending_at_window(closes: list[float]) -> tuple[DailyBar, ...]:
 
 
 def _snapshot(eligible: tuple[str, ...]) -> pu.UniverseSnapshot:
+    # Pad with filler symbols (no bars supplied for them -- harmless
+    # INVALID_DECISION_DAY no-ops) so N_t >= 18 by default (Run A §6 rule 7):
+    # this file is about determinism, not the restricted-entry gate, so an
+    # unrealistically tiny fixture universe must not trip it.
+    padding = tuple(f"PAD{i}/USD" for i in range(max(0, 18 - len(eligible))))
+    all_eligible = tuple(sorted(set(eligible) | set(padding)))
     return pu.UniverseSnapshot(
         decision_ts_ms=DECISION_TS,
-        eligible_symbols=tuple(sorted(eligible)),
+        eligible_symbols=all_eligible,
         per_symbol=(),
-        n_t=len(eligible),
-        meets_min_universe_size=len(eligible) >= 18,
+        n_t=len(all_eligible),
+        meets_min_universe_size=len(all_eligible) >= 18,
     )
 
 
@@ -91,7 +98,11 @@ def test_ap_a1_one_ulp_source_price_change_moves_the_evidence_hash():
     closes = _closes()
     bars = {"AAA/USD": _bars_ending_at_window(closes)}
     tampered_closes = list(closes)
-    tampered_closes[-1] = tampered_closes[-1] + 1e-9
+    # A GENUINE single ULP step (math.nextafter), not an arbitrary
+    # 1e-9 perturbation -- at this fixture's magnitude (~hundreds),
+    # 1e-9 was ~10^4-10^6 ULPs, silently overstating the sensitivity
+    # this test claims to prove.
+    tampered_closes[-1] = math.nextafter(tampered_closes[-1], math.inf)
     tampered_bars = {"AAA/USD": _bars_ending_at_window(tampered_closes)}
     universe = _snapshot(("AAA/USD",))
     r1 = dats_engine.run_ap_a1_decision(
@@ -163,7 +174,11 @@ def test_ap_a2_one_ulp_source_price_change_moves_the_evidence_hash():
     closes = _closes()
     bars = {"AAA/USD": _bars_ending_at_window(closes)}
     tampered_closes = list(closes)
-    tampered_closes[-1] = tampered_closes[-1] + 1e-9
+    # A GENUINE single ULP step (math.nextafter), not an arbitrary
+    # 1e-9 perturbation -- at this fixture's magnitude (~hundreds),
+    # 1e-9 was ~10^4-10^6 ULPs, silently overstating the sensitivity
+    # this test claims to prove.
+    tampered_closes[-1] = math.nextafter(tampered_closes[-1], math.inf)
     tampered_bars = {"AAA/USD": _bars_ending_at_window(tampered_closes)}
     universe = _snapshot(("AAA/USD",))
     r1 = wcmb_engine.run_ap_a2_decision(

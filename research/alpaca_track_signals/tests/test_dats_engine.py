@@ -8,6 +8,7 @@ import decision_calendar as dc
 import indicators as ind
 import pit_universe_alpaca as pu
 import pytest
+import seal_consumption as sc
 import sizing
 from daily_bars import DAY_MS, DailyBar
 
@@ -48,12 +49,19 @@ def _bars_ending_at_window(closes: list[float]) -> tuple[DailyBar, ...]:
 
 
 def _snapshot(eligible: tuple[str, ...]) -> pu.UniverseSnapshot:
+    # Pad with filler symbols (no bars supplied for them -- harmless
+    # INVALID_DECISION_DAY no-ops) so N_t >= 18 by default (Run A §6 rule 7):
+    # tests not specifically about the restricted-entry gate
+    # (test_universe_restriction.py) must not accidentally trip it via an
+    # unrealistically tiny fixture universe.
+    padding = tuple(f"PAD{i}/USD" for i in range(max(0, 18 - len(eligible))))
+    all_eligible = tuple(sorted(set(eligible) | set(padding)))
     return pu.UniverseSnapshot(
         decision_ts_ms=DECISION_TS,
-        eligible_symbols=tuple(sorted(eligible)),
+        eligible_symbols=all_eligible,
         per_symbol=(),
-        n_t=len(eligible),
-        meets_min_universe_size=len(eligible) >= 18,
+        n_t=len(all_eligible),
+        meets_min_universe_size=len(all_eligible) >= 18,
     )
 
 
@@ -88,6 +96,33 @@ def test_rejects_a_non_decision_timestamp():
         )
 
 
+def test_rejects_a_forged_config_reusing_a_real_config_id_with_a_relaxed_threshold():
+    # SPEC DEFECT 3 (ROB-1061 adversarial-verification): `config.family`
+    # alone cannot tell a forged/relaxed config from a genuine sealed one --
+    # the verifier demonstrated a forged "AP-A1-99-RELAXED" (threshold
+    # lowered to 0.0001) producing a live ENTER where the sealed threshold
+    # (0.005) would not. This engine must now fail closed BEFORE ever
+    # touching bars/universe/indicators, on config identity alone.
+    forged_params = dict(AP_A1_00.params)
+    forged_params["threshold"] = 0.0001
+    forged = cfg.ConfigSpec(
+        config_id=AP_A1_00.config_id,
+        family=AP_A1_00.family,
+        params=forged_params,
+        canonical_hash=cfg.canonical_config_hash(
+            AP_A1_00.config_id, AP_A1_00.family, forged_params
+        ),
+    )
+    with pytest.raises(sc.ConfigNotSealedError, match=AP_A1_00.config_id):
+        eng.run_ap_a1_decision(
+            decision_ts_ms=DECISION_TS,
+            config=forged,
+            universe=_snapshot(()),
+            bars_by_symbol={},
+            prior_state={},
+        )
+
+
 def test_universe_ineligible_flat_symbol_is_rejected_without_computing_indicators():
     # AAA/USD is not in the eligible universe, but IS carried over from a
     # prior decision as a flat position -- it must still be evaluated (and
@@ -101,8 +136,7 @@ def test_universe_ineligible_flat_symbol_is_rejected_without_computing_indicator
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(_uptrend_closes(90))},
         prior_state={"AAA/USD": eng.AP_A1_PositionState(state="flat")},
     )
-    assert len(result.records) == 1
-    record = result.records[0]
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "UNIVERSE_INELIGIBLE"
     assert record.action == "NO_ACTION"
 
@@ -115,7 +149,7 @@ def test_insufficient_price_history_when_fewer_than_s_bars_available():
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(_uptrend_closes(10))},
         prior_state={},
     )
-    (record,) = result.records
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "INSUFFICIENT_PRICE_HISTORY"
 
 
@@ -128,12 +162,16 @@ def test_a_strong_uptrend_produces_an_accepted_entry_matching_direct_indicator_c
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
         prior_state={},
     )
-    (record,) = result.records
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
     d = ind.compute_trend_d(closes, f=14, s=56)
     r = ind.compute_momentum_r(closes, m=28)
     sigma20 = ind.annualized_sigma20(closes)
-    vol_scale = sizing.compute_vol_scale(sigma20)
-    expected_target = sizing.target_notional_ap_a1(vol_scale)
+    # Independent oracle: the literal SS11.5 formula (base_slot=$62.50,
+    # vol_target=0.50), NOT a re-derivation through `sizing.compute_vol_scale`/
+    # `sizing.target_notional_ap_a1` -- those are the SAME functions the
+    # engine itself calls, so reusing them here would let a shared bug in
+    # either hide from this test.
+    expected_target = 62.50 * min(1.0, 0.50 / sigma20)
     assert d >= 0.005 and r > 0.0  # sanity: this fixture really is an entry signal
     assert record.reason_code == "ENTRY_ACCEPTED"
     assert record.action == "ENTER"
@@ -153,7 +191,7 @@ def test_a_flat_price_series_produces_no_entry_signal():
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
         prior_state={},
     )
-    (record,) = result.records
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "NO_ENTRY_SIGNAL"
 
 
@@ -172,7 +210,7 @@ def test_an_existing_long_position_exits_on_a_sharp_downtrend():
             "AAA/USD": eng.AP_A1_PositionState(state="long", committed_notional=50.0)
         },
     )
-    (record,) = result.records
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "EXIT_TRIGGERED"
     assert record.action == "EXIT"
     assert result.new_state["AAA/USD"].state == "flat"
@@ -197,11 +235,73 @@ def test_an_existing_long_position_holds_through_a_mild_wobble():
             "AAA/USD": eng.AP_A1_PositionState(state="long", committed_notional=50.0)
         },
     )
-    (record,) = result.records
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "HYSTERESIS_HOLD"
     assert record.action == "HOLD"
     assert result.new_state["AAA/USD"].state == "long"
     assert result.new_state["AAA/USD"].committed_notional == 50.0
+
+
+def test_an_existing_long_position_holds_with_trend_intact_reason_well_outside_the_band():
+    # DIAGNOSTIC DEFECT (ROB-1061 adversarial-verification): D deep inside
+    # "healthy long" territory (well ABOVE +threshold, not sitting in the
+    # -threshold<D<threshold band) must NOT be labelled HYSTERESIS_HOLD --
+    # that reason implies the position is teetering near the exit boundary,
+    # destroying the §11.8 kill-gate / H5 diagnostic. A strong, sustained
+    # uptrend (same shape as the ENTRY-ACCEPTED fixture) held long must
+    # report the distinct TREND_INTACT_HOLD reason instead.
+    closes = _uptrend_closes(120, start=100.0, step=0.015)
+    d = ind.compute_trend_d(closes, f=14, s=56)
+    r = ind.compute_momentum_r(closes, m=28)
+    assert d >= 0.005  # sanity: well past the positive threshold, not in-band
+    assert r > 0.0
+    result = eng.run_ap_a1_decision(
+        decision_ts_ms=DECISION_TS,
+        config=AP_A1_00,
+        universe=_snapshot(("AAA/USD",)),
+        bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
+        prior_state={
+            "AAA/USD": eng.AP_A1_PositionState(state="long", committed_notional=50.0)
+        },
+    )
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
+    assert record.reason_code == "TREND_INTACT_HOLD"
+    assert record.action == "HOLD"
+    assert result.new_state["AAA/USD"].state == "long"
+    assert result.new_state["AAA/USD"].committed_notional == 50.0
+
+
+def test_min_target_notional_floor_rejects_a_sub_25_entry_at_the_engine_boundary():
+    # V4 (ROB-1061 adversarial-verification): the `$25` floor gate can be
+    # deleted at the ENGINE call site (as opposed to lowering the predicate
+    # inside `sizing.meets_min_target_notional` itself) with zero prior test
+    # noticing, because no engine-level test previously exercised a
+    # target_notional actually landing below the floor. This fixture (a
+    # strong, sustained uptrend with wild day-to-day oscillation) produces a
+    # genuine ENTRY_ACCEPTED signal (D/R both qualify) but a huge annualized
+    # sigma20 -- vol_scale clamps the AP-A1 $62.50 base slot down to ~$3.12,
+    # well under the sealed $25 floor.
+    closes = [100.0 * (1.02**i) * (1.25 if i % 2 == 0 else 0.75) for i in range(120)]
+    d = ind.compute_trend_d(closes, f=14, s=56)
+    r = ind.compute_momentum_r(closes, m=28)
+    sigma20 = ind.annualized_sigma20(closes)
+    vol_scale = sizing.compute_vol_scale(sigma20)
+    target = 62.50 * vol_scale
+    assert d >= 0.005 and r > 0.0  # sanity: this really is an entry signal
+    assert target < sc.min_strategy_target_usd()  # sanity: below the $25 floor
+
+    result = eng.run_ap_a1_decision(
+        decision_ts_ms=DECISION_TS,
+        config=AP_A1_00,
+        universe=_snapshot(("AAA/USD",)),
+        bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
+        prior_state={},
+    )
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
+    assert record.reason_code == "MIN_TARGET_NOTIONAL"
+    assert record.action == "NO_ACTION"
+    assert record.target_notional == 0.0
+    assert result.new_state["AAA/USD"].state == "flat"
 
 
 def test_two_simultaneous_entry_candidates_compete_for_cash_by_d_descending():

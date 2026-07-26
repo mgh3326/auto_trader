@@ -33,14 +33,19 @@ def test_flat_does_not_enter_one_ulp_below_the_positive_threshold():
     outcome = ds.classify_transition(
         state="flat", d=just_below, r=0.01, threshold=THRESHOLD
     )
-    assert outcome.action != "ENTER"
+    # Pin the EXACT literal, not just "!= ENTER" -- `!= "ENTER"` is also
+    # satisfied by a mutant that relabels the flat-non-entry branch to
+    # "HOLD" (a `TransitionOutcome` value that never occurs for a FLAT
+    # input in the correct implementation), so it silently admits 3 of the
+    # 4 possible actions instead of pinning the single correct one.
+    assert outcome.action == "NO_ENTRY"
 
 
 def test_flat_requires_r_strictly_positive_not_just_nonnegative():
     # D condition satisfied, but R == 0 exactly must NOT allow entry
     # (entry requires R > 0, strictly -- R == 0 is not "R > 0").
     outcome = ds.classify_transition(state="flat", d=0.01, r=0.0, threshold=THRESHOLD)
-    assert outcome.action != "ENTER"
+    assert outcome.action == "NO_ENTRY"  # exact literal, see rationale above
 
 
 def test_long_exits_at_the_exact_negative_threshold():

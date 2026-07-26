@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import artifact as art
+import configs as cfg
 import pytest
 import seal_consumption as sc
 
@@ -41,3 +42,64 @@ def test_seal_drift_error_fires_when_the_pinned_hash_no_longer_matches(monkeypat
     monkeypatch.setattr(art, "SEALED_ARTIFACT_SEMANTIC_HASH", "0" * 64)
     with pytest.raises(sc.SealDriftError, match="drifted seal"):
         sc.load_sealed_configs_and_params()
+
+
+# --------------------------------------------------------------------------- #
+# assert_sealed_config -- the actual NO_THRESHOLD_RELAXATION enforcement
+# point (ROB-1061 adversarial-verification SPEC DEFECT 3): neither engine
+# previously checked more than `config.family`, so a forged config reusing a
+# real config_id with a relaxed threshold (or any other param) passed
+# straight through.
+# --------------------------------------------------------------------------- #
+
+
+def test_assert_sealed_config_accepts_every_genuine_sealed_config():
+    bundle = sc.load_sealed_configs_and_params()
+    for config in bundle.configs:
+        sc.assert_sealed_config(config)  # must not raise
+
+
+def test_assert_sealed_config_rejects_a_relaxed_threshold_reusing_a_real_id():
+    bundle = sc.load_sealed_configs_and_params()
+    real = next(c for c in bundle.configs if c.family == "AP-A1")
+    forged_params = dict(real.params)
+    forged_params["threshold"] = 0.0001  # relaxed from the sealed 0.005
+    forged = cfg.ConfigSpec(
+        config_id=real.config_id,
+        family=real.family,
+        params=forged_params,
+        canonical_hash=cfg.canonical_config_hash(
+            real.config_id, real.family, forged_params
+        ),
+    )
+    with pytest.raises(sc.ConfigNotSealedError, match=real.config_id):
+        sc.assert_sealed_config(forged)
+
+
+def test_assert_sealed_config_rejects_an_unknown_config_id():
+    bundle = sc.load_sealed_configs_and_params()
+    real = bundle.configs[0]
+    forged = cfg.ConfigSpec(
+        config_id="AP-A1-99-RELAXED",
+        family=real.family,
+        params=dict(real.params),
+        canonical_hash="0" * 64,
+    )
+    with pytest.raises(sc.ConfigNotSealedError, match="AP-A1-99-RELAXED"):
+        sc.assert_sealed_config(forged)
+
+
+def test_assert_sealed_config_rejects_a_real_id_with_tampered_canonical_hash_only():
+    # Params byte-identical to the sealed row, but the canonical_hash field
+    # itself was tampered -- still must fail closed (never trust the caller's
+    # own canonical_hash claim over a byte comparison of params).
+    bundle = sc.load_sealed_configs_and_params()
+    real = bundle.configs[0]
+    forged = cfg.ConfigSpec(
+        config_id=real.config_id,
+        family=real.family,
+        params=dict(real.params),
+        canonical_hash="0" * 64,
+    )
+    with pytest.raises(sc.ConfigNotSealedError, match=real.config_id):
+        sc.assert_sealed_config(forged)

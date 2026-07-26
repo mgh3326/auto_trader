@@ -7,6 +7,7 @@ import decision_calendar as dc
 import indicators as ind
 import pit_universe_alpaca as pu
 import pytest
+import seal_consumption as sc
 import sizing
 import wcmb_engine as eng
 from daily_bars import DAY_MS, DailyBar
@@ -48,12 +49,19 @@ def _bars_ending_at_window(closes: list[float]) -> tuple[DailyBar, ...]:
 
 
 def _snapshot(eligible: tuple[str, ...]) -> pu.UniverseSnapshot:
+    # Pad with filler symbols (no bars supplied for them -- harmless
+    # INVALID_DECISION_DAY no-ops) so N_t >= 18 by default (Run A §6 rule 7):
+    # tests not specifically about the restricted-entry gate
+    # (test_universe_restriction.py) must not accidentally trip it via an
+    # unrealistically tiny fixture universe.
+    padding = tuple(f"PAD{i}/USD" for i in range(max(0, 18 - len(eligible))))
+    all_eligible = tuple(sorted(set(eligible) | set(padding)))
     return pu.UniverseSnapshot(
         decision_ts_ms=DECISION_TS,
-        eligible_symbols=tuple(sorted(eligible)),
+        eligible_symbols=all_eligible,
         per_symbol=(),
-        n_t=len(eligible),
-        meets_min_universe_size=len(eligible) >= 18,
+        n_t=len(all_eligible),
+        meets_min_universe_size=len(all_eligible) >= 18,
     )
 
 
@@ -89,6 +97,85 @@ def test_rejects_a_non_monday_decision_timestamp():
         )
 
 
+def test_rejects_a_forged_config_reusing_a_real_config_id_with_a_relaxed_k():
+    # SPEC DEFECT 3 (ROB-1061 adversarial-verification) -- see
+    # test_dats_engine.py's matching AP-A1 test for the full rationale.
+    forged_params = dict(AP_A2_00.params)
+    forged_params["k"] = 50  # relaxed from the sealed 5 -- inflates entries
+    forged = cfg.ConfigSpec(
+        config_id=AP_A2_00.config_id,
+        family=AP_A2_00.family,
+        params=forged_params,
+        canonical_hash=cfg.canonical_config_hash(
+            AP_A2_00.config_id, AP_A2_00.family, forged_params
+        ),
+    )
+    with pytest.raises(sc.ConfigNotSealedError, match=AP_A2_00.config_id):
+        eng.run_ap_a2_decision(
+            decision_ts_ms=DECISION_TS,
+            config=forged,
+            universe=_snapshot(()),
+            bars_by_symbol={},
+            prior_held={},
+        )
+
+
+def test_min_target_notional_floor_rejects_a_sub_25_buy_at_the_engine_boundary():
+    # V5 (ROB-1061 adversarial-verification): the AP-A2 `$25` floor gate can
+    # be deleted at the ENGINE call site with zero prior test noticing --
+    # no engine-level test previously exercised an `uncapped` target_notional
+    # actually landing below the floor (as opposed to being cash-capped
+    # above it). Same wild-oscillation fixture shape as the AP-A1 sibling
+    # test: Score > 0 (qualifies for a buy), but the huge annualized sigma20
+    # clamps the AP-A2 k=5 base slot ($400) down to well under $25.
+    closes = [100.0 * (1.02**i) * (1.25 if i % 2 == 0 else 0.75) for i in range(120)]
+    score = ind.compute_score(closes, ell=14)
+    sigma20 = ind.annualized_sigma20(closes)
+    vol_scale = sizing.compute_vol_scale(sigma20)
+    uncapped = 400.0 * vol_scale
+    assert score > 0.0  # sanity: this really is a buy candidate
+    assert uncapped < sc.min_strategy_target_usd()  # sanity: below the $25 floor
+
+    result = eng.run_ap_a2_decision(
+        decision_ts_ms=DECISION_TS,
+        config=AP_A2_00,
+        universe=_snapshot(("AAA/USD",)),
+        bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
+        prior_held={},
+    )
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
+    assert record.reason_code == "MIN_TARGET_NOTIONAL"
+    assert record.action == "NO_ACTION"
+    assert "AAA/USD" not in result.new_held
+
+
+def test_min_target_notional_floor_also_gates_the_cash_capped_branch():
+    # The SECOND `meets_min_target_notional` call site in the AP-A2 buy
+    # loop (capped by available_cash, not by vol_scale) -- a distinct
+    # deletable gate from the one above. Almost all $2,000 equity is
+    # committed to KEEP/USD, leaving only $20 available -- below the $25
+    # floor -- for AAA/USD's buy attempt, which must be rejected as
+    # INSUFFICIENT_CASH (not silently funded at a sub-floor $20).
+    closes = _uptrend_closes(30, step=0.01)
+    prior_held = {"KEEP/USD": eng.AP_A2_HeldState(committed_notional=1980.0)}
+    keep_bars = _bars_ending_at_window(_uptrend_closes(30, step=0.001))
+    result = eng.run_ap_a2_decision(
+        decision_ts_ms=DECISION_TS,
+        config=AP_A2_00,
+        universe=_snapshot(("AAA/USD", "KEEP/USD")),
+        bars_by_symbol={
+            "AAA/USD": _bars_ending_at_window(closes),
+            "KEEP/USD": keep_bars,
+        },
+        prior_held=prior_held,
+    )
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
+    assert record.reason_code == "INSUFFICIENT_CASH"
+    assert record.action == "NO_ACTION"
+    assert "AAA/USD" not in result.new_held
+    assert result.new_held["KEEP/USD"].committed_notional == pytest.approx(1980.0)
+
+
 def test_unheld_negative_score_symbol_is_rejected_score_not_positive():
     closes = _downtrend_closes(30)
     result = eng.run_ap_a2_decision(
@@ -98,7 +185,7 @@ def test_unheld_negative_score_symbol_is_rejected_score_not_positive():
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
         prior_held={},
     )
-    (record,) = result.records
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
     assert record.reason_code == "SCORE_NOT_POSITIVE"
     assert record.action == "NO_ACTION"
 
@@ -112,11 +199,15 @@ def test_unheld_positive_score_symbol_is_bought_when_a_slot_is_free():
         bars_by_symbol={"AAA/USD": _bars_ending_at_window(closes)},
         prior_held={},
     )
-    (record,) = result.records
+    record = next(r for r in result.records if r.symbol == "AAA/USD")
     score = ind.compute_score(closes, ell=14)
     sigma20 = ind.annualized_sigma20(closes)
-    vol_scale = sizing.compute_vol_scale(sigma20)
-    expected = sizing.ap_a2_base_slot_usd(5) * vol_scale
+    # Independent oracle: the literal SS12.5 formula (equity=$2,000, k=5,
+    # vol_target=0.50), NOT a re-derivation through `sizing.compute_vol_scale`/
+    # `sizing.ap_a2_base_slot_usd` -- those are the SAME functions the engine
+    # itself calls, so reusing them here would let a shared bug in either
+    # hide from this test.
+    expected = (2000.0 / 5) * min(1.0, 0.50 / sigma20)
     assert score > 0.0
     assert record.reason_code == "RANK_BUY_ACCEPTED"
     assert record.action == "ENTER"
@@ -167,6 +258,14 @@ def test_held_symbol_beyond_k_plus_b_rank_is_exited_and_frees_cash_for_a_buy():
     assert by_symbol["F1/USD"].reason_code == "INSUFFICIENT_CASH"
     assert "H0/USD" not in result.new_held
     assert result.new_held["F0/USD"].committed_notional == pytest.approx(100.0)
+    # AC16 verbatim ("no restoration of existing holdings' weight"): a HELD
+    # symbol that lands in RANK_BUFFER_HOLD keeps its ORIGINAL entry-time
+    # committed_notional untouched -- it must NOT be re-normalized/
+    # equal-weighted just because a decision happened. KEEP/USD entered at
+    # $1900; a mutant that recomputes it to the equal-weight base_slot
+    # ($400 for k=5) on every hold would leave this specific number
+    # unchecked without this assertion.
+    assert result.new_held["KEEP/USD"].committed_notional == pytest.approx(1900.0)
 
 
 def test_an_exited_symbol_is_never_reconsidered_as_a_same_decision_buy_candidate():

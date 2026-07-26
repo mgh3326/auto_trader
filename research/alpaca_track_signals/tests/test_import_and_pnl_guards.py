@@ -105,6 +105,48 @@ def _dataclass_field_names(tree: ast.AST):
                     yield stmt.target.id
 
 
+# --------------------------------------------------------------------------- #
+# Shared scan primitives -- the REAL guard tests below and the regression
+# tests at the bottom of this file both call THESE, so a regression test
+# actually exercises the wired-up scanner used in production, not just a
+# lower-level AST helper re-implemented inline (an earlier version of this
+# file's regression tests called ``_dataclass_field_names``/``_imports``
+# directly and never invoked the forbidden-name/prefix logic below at all).
+# --------------------------------------------------------------------------- #
+
+
+def _field_violations(mod: str, tree: ast.AST) -> list[tuple[str, str]]:
+    violations = []
+    for field_name in _dataclass_field_names(tree):
+        lowered = field_name.lower()
+        if (
+            lowered in _FORBIDDEN_FIELD_NAME_EXACT
+            or any(s in lowered for s in _FORBIDDEN_FIELD_NAME_SUBSTRINGS)
+            or lowered.startswith(_FORBIDDEN_FIELD_NAME_PREFIX)
+        ):
+            violations.append((mod, field_name))
+    return violations
+
+
+def _import_violations(mod: str, tree: ast.AST) -> list[tuple[str, str, str]]:
+    violations = []
+    for name in _imports(tree):
+        lowered = name.lower()
+        for forbidden in _FORBIDDEN_IMPORT_NAME_SUBSTRINGS:
+            if forbidden in lowered:
+                violations.append((mod, name, forbidden))
+    return violations
+
+
+def _wall_clock_hit(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr in _FORBIDDEN_NOW_ATTRS:
+                return True
+    return False
+
+
 def test_no_forbidden_imports_in_h3_signal_engine():
     for mod in _MODULES:
         tree = ast.parse((_ROOT / mod).read_text())
@@ -125,14 +167,7 @@ def test_no_forbidden_imports_in_h3_signal_engine():
 def test_no_wall_clock_now_calls_in_h3_signal_engine():
     for mod in _MODULES:
         tree = ast.parse((_ROOT / mod).read_text())
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if isinstance(func, ast.Attribute) and func.attr in _FORBIDDEN_NOW_ATTRS:
-                raise AssertionError(
-                    f"{mod}: forbidden wall-clock call `.{func.attr}(...)` found"
-                )
+        assert not _wall_clock_hit(tree), f"{mod}: forbidden wall-clock call found"
 
 
 def test_no_broker_order_fill_or_scheduler_symbols_referenced():
@@ -156,14 +191,7 @@ def test_no_pnl_return_forward_or_exit_price_field_anywhere_in_h3():
     violations = []
     for mod in _MODULES:
         tree = ast.parse((_ROOT / mod).read_text())
-        for field_name in _dataclass_field_names(tree):
-            lowered = field_name.lower()
-            if (
-                lowered in _FORBIDDEN_FIELD_NAME_EXACT
-                or any(s in lowered for s in _FORBIDDEN_FIELD_NAME_SUBSTRINGS)
-                or lowered.startswith(_FORBIDDEN_FIELD_NAME_PREFIX)
-            ):
-                violations.append((mod, field_name))
+        violations.extend(_field_violations(mod, tree))
     assert violations == []
 
 
@@ -175,11 +203,7 @@ def test_no_pnl_engine_scorecard_or_scenario_ledger_import_anywhere_in_h3():
     violations = []
     for mod in _MODULES:
         tree = ast.parse((_ROOT / mod).read_text())
-        for name in _imports(tree):
-            lowered = name.lower()
-            for forbidden in _FORBIDDEN_IMPORT_NAME_SUBSTRINGS:
-                if forbidden in lowered:
-                    violations.append((mod, name, forbidden))
+        violations.extend(_import_violations(mod, tree))
     assert violations == []
 
 
@@ -219,8 +243,14 @@ def test_all_h3_signal_engine_modules_are_accounted_for():
 
 
 # --------------------------------------------------------------------------- #
-# Regression coverage: prove the PnL-field scanner actually fires, against a
-# synthetic fixture (none of these violations exist in the real package).
+# Regression coverage: prove the ACTUAL scanners the real guard tests above
+# call (``_field_violations``/``_import_violations``/``_wall_clock_hit``, NOT
+# the lower-level ``_dataclass_field_names``/``_imports`` AST helpers) fire
+# against a synthetic fixture (none of these violations exist in the real
+# package). An earlier version of these tests called the low-level helpers
+# directly and never exercised the forbidden-name/prefix matching logic the
+# real guards depend on -- a bug in THAT logic (e.g. a typo in
+# ``_FORBIDDEN_FIELD_NAME_SUBSTRINGS``) could have shipped undetected.
 # --------------------------------------------------------------------------- #
 def test_pnl_field_scanner_actually_catches_a_synthetic_violation(tmp_path):
     (tmp_path / "bad.py").write_text(
@@ -231,8 +261,7 @@ def test_pnl_field_scanner_actually_catches_a_synthetic_violation(tmp_path):
         "    pnl: float\n"
     )
     tree = ast.parse((tmp_path / "bad.py").read_text())
-    fields = list(_dataclass_field_names(tree))
-    assert "pnl" in fields
+    assert _field_violations("bad.py", tree) == [("bad.py", "pnl")]
 
 
 def test_exit_price_field_scanner_actually_catches_a_synthetic_violation(tmp_path):
@@ -243,8 +272,7 @@ def test_exit_price_field_scanner_actually_catches_a_synthetic_violation(tmp_pat
         "    exit_price: float\n"
     )
     tree = ast.parse((tmp_path / "bad.py").read_text())
-    fields = list(_dataclass_field_names(tree))
-    assert any(f.lower() in _FORBIDDEN_FIELD_NAME_EXACT for f in fields)
+    assert _field_violations("bad.py", tree) == [("bad.py", "exit_price")]
 
 
 def test_forward_prefixed_field_scanner_actually_catches_a_synthetic_violation(
@@ -257,15 +285,15 @@ def test_forward_prefixed_field_scanner_actually_catches_a_synthetic_violation(
         "    forward_return_bp: float\n"
     )
     tree = ast.parse((tmp_path / "bad.py").read_text())
-    fields = list(_dataclass_field_names(tree))
-    assert any(f.startswith(_FORBIDDEN_FIELD_NAME_PREFIX) for f in fields)
+    assert _field_violations("bad.py", tree) == [("bad.py", "forward_return_bp")]
 
 
 def test_pnl_shaped_import_scanner_actually_catches_a_synthetic_violation(tmp_path):
     (tmp_path / "bad.py").write_text("import scorecard_builder\n")
     tree = ast.parse((tmp_path / "bad.py").read_text())
-    names = list(_imports(tree))
-    assert any("scorecard" in n.lower() for n in names)
+    assert _import_violations("bad.py", tree) == [
+        ("bad.py", "scorecard_builder", "scorecard")
+    ]
 
 
 @pytest.mark.parametrize("attr", sorted(_FORBIDDEN_NOW_ATTRS))
@@ -274,10 +302,4 @@ def test_wall_clock_scanner_actually_catches_each_forbidden_attribute(tmp_path, 
         f"import datetime\n\n\ndef f():\n    return datetime.datetime.{attr}()\n"
     )
     tree = ast.parse((tmp_path / "bad.py").read_text())
-    hit = False
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            func = node.func
-            if isinstance(func, ast.Attribute) and func.attr in _FORBIDDEN_NOW_ATTRS:
-                hit = True
-    assert hit
+    assert _wall_clock_hit(tree) is True

@@ -45,7 +45,7 @@ def test_ema_final_value_updates_recursively_after_the_seed():
 
 
 def test_ema_final_value_raises_when_fewer_than_period_closes():
-    with pytest.raises(ind.InsufficientPriceHistoryError):
+    with pytest.raises(ind.InsufficientPriceHistoryError, match="need >= 3"):
         ind.ema_final_value([1.0, 2.0], 3)
 
 
@@ -54,30 +54,59 @@ def test_ema_final_value_raises_when_fewer_than_period_closes():
 # --------------------------------------------------------------------------- #
 
 
+def _manual_ema(closes: list[float], period: int) -> float:
+    """A hand-rolled re-implementation of the documented EMA seed/update rule
+    (SMA(period) seed, then the standard recursive update) -- INDEPENDENT of
+    ``ind.ema_final_value`` itself, so a shared bug in that function cannot
+    hide from ``test_compute_trend_d_is_fast_ema_over_slow_ema_minus_one``
+    (which used to call ``ind.ema_final_value`` for BOTH the actual and
+    "expected" value -- a derived, non-independent oracle)."""
+    alpha = 2.0 / (period + 1)
+    ema = sum(closes[:period]) / period
+    for close in closes[period:]:
+        ema = alpha * close + (1.0 - alpha) * ema
+    return ema
+
+
 def test_compute_trend_d_is_fast_ema_over_slow_ema_minus_one():
     closes = [100.0 + i for i in range(90)]
     d = ind.compute_trend_d(closes, f=14, s=56)
-    ema_f = ind.ema_final_value(closes, 14)
-    ema_s = ind.ema_final_value(closes, 56)
+    ema_f = _manual_ema(closes, 14)
+    ema_s = _manual_ema(closes, 56)
     assert d == pytest.approx(ema_f / ema_s - 1.0)
 
 
 def test_compute_momentum_r_boundary_needs_m_plus_one_closes():
     closes_ok = [1.0] * 29  # m=28 -> need 29
     assert ind.compute_momentum_r(closes_ok, m=28) == pytest.approx(0.0)
-    with pytest.raises(ind.InsufficientPriceHistoryError):
+    with pytest.raises(ind.InsufficientPriceHistoryError, match="need >= 29"):
         ind.compute_momentum_r([1.0] * 28, m=28)
 
 
 def test_compute_momentum_r_matches_the_literal_formula():
-    closes = [50.0] * 10 + [55.0]  # c_t=55, c_t-5 = 50.0
+    # Strictly increasing, non-degenerate closes -- an off-by-one in the
+    # lookback index (``closes[-m]`` instead of the correct ``closes[-1-m]``)
+    # must produce a VISIBLY different number here. The old fixture
+    # (``[50.0] * 10 + [55.0]``) was flat at every lookback point except the
+    # very last one, so shifting the index by one silently landed on the
+    # SAME 50.0 value and could never catch that mutation.
+    closes = [100.0 + i for i in range(10)]  # 100.0 .. 109.0
     r = ind.compute_momentum_r(closes, m=5)
-    assert r == pytest.approx(55.0 / 50.0 - 1.0)
+    assert r == pytest.approx(closes[-1] / closes[-1 - 5] - 1.0)
 
 
-def test_compute_score_is_the_same_shape_as_momentum_r():
-    closes = [50.0] * 15 + [60.0]
-    assert ind.compute_score(closes, ell=14) == ind.compute_momentum_r(closes, m=14)
+def test_compute_score_matches_the_literal_formula():
+    # Mirrors test_compute_momentum_r_matches_the_literal_formula's fix:
+    # the old test (``ind.compute_score(...) == ind.compute_momentum_r(...)``)
+    # was a pure tautology given ``compute_score``'s one-line delegation to
+    # ``compute_momentum_r`` -- it could never fail regardless of whether
+    # either function's formula was correct. This compares against an
+    # independently-computed literal value instead, and (being non-
+    # degenerate) also catches an ``ell`` off-by-one inside ``compute_score``
+    # itself.
+    closes = [100.0 + i for i in range(16)]  # 100.0 .. 115.0
+    score = ind.compute_score(closes, ell=14)
+    assert score == pytest.approx(closes[-1] / closes[-1 - 14] - 1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -87,7 +116,12 @@ def test_compute_score_is_the_same_shape_as_momentum_r():
 
 def test_annualized_sigma20_boundary_needs_21_closes():
     closes_20 = [100.0 * (1.01**i) for i in range(20)]
-    with pytest.raises(ind.SigmaInsufficientSampleError):
+    # SigmaInsufficientSampleError is raised from TWO structurally different
+    # guards inside annualized_sigma20 (too few closes, vs a degenerate
+    # zero-variance series of >= 21 closes) -- match= distinguishes which
+    # guard actually fired, here vs
+    # test_annualized_sigma20_rejects_degenerate_zero_variance_series below.
+    with pytest.raises(ind.SigmaInsufficientSampleError, match="need >= 21"):
         ind.annualized_sigma20(closes_20)
     closes_21 = [100.0 * (1.01**i) for i in range(21)]
     sigma = ind.annualized_sigma20(closes_21)
@@ -107,7 +141,7 @@ def test_annualized_sigma20_matches_manual_sample_stdev_times_sqrt_365():
 
 def test_annualized_sigma20_rejects_degenerate_zero_variance_series():
     closes = [100.0] * 21
-    with pytest.raises(ind.SigmaInsufficientSampleError):
+    with pytest.raises(ind.SigmaInsufficientSampleError, match="degenerate"):
         ind.annualized_sigma20(closes)
 
 

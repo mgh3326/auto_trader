@@ -60,7 +60,7 @@ def test_prior_completed_day_window_rejects_a_non_decision_timestamp():
 
 
 def test_int_type_discipline_rejects_bool_and_non_int():
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="must be built-in int"):
         dc.is_ap_a1_decision_ts(True)  # bool is a strict int subclass
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="must be built-in int"):
         dc.is_ap_a1_decision_ts(1.0)
