@@ -95,8 +95,21 @@ def _init_hermetic_git_repo(repo_dir: Path) -> tuple[str, str]:
     return first_sha, head_sha
 
 
-def _set_origin_main_ref(repo_dir: Path, sha: str) -> None:
-    _run_git(repo_dir, "update-ref", "refs/remotes/origin/main", sha)
+def _set_origin_main_ref(repo_dir: Path, sha: str) -> Path:
+    """Publish ``sha`` as main on a local bare origin and fetch it."""
+    remote_dir = repo_dir.with_name(f"{repo_dir.name}-origin.git")
+    if not remote_dir.exists():
+        subprocess.run(
+            ("git", "init", "--bare", "-q", str(remote_dir)),
+            cwd=repo_dir.parent,
+            check=True,
+            capture_output=True,
+            env=_GIT_ENV,
+        )
+        _run_git(repo_dir, "remote", "add", "origin", str(remote_dir))
+    _run_git(repo_dir, "push", "--force", "-q", "origin", f"{sha}:refs/heads/main")
+    _run_git(repo_dir, "fetch", "--prune", "-q", "origin")
+    return remote_dir
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +203,46 @@ def test_refreeze_head_ancestor_gate_rejects_an_unknown_sha(
     monkeypatch.setattr(launcher, "CRS24_MERGE_REFREEZE_HEAD", "f" * 40)
     with pytest.raises(launcher.LaunchRefused, match="REFREEZE_HEAD_NOT_ANCESTOR"):
         launcher._require_refreeze_head_ancestor()
+
+
+def test_refreeze_head_ancestor_gate_unshallows_before_deciding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A depth-1 clone cannot initially see the pinned ancestor.
+
+    The old gate reported REFREEZE_HEAD_NOT_ANCESTOR from that incomplete graph.
+    The hardened gate completes the history and then makes the real decision.
+    """
+    source_dir = tmp_path / "source"
+    merge_sha, head_sha = _init_hermetic_git_repo(source_dir)
+    remote_dir = _set_origin_main_ref(source_dir, head_sha)
+    shallow_dir = tmp_path / "shallow"
+    subprocess.run(
+        (
+            "git",
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            "--branch",
+            "main",
+            f"file://{remote_dir}",
+            str(shallow_dir),
+        ),
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        env=_GIT_ENV,
+    )
+    assert _run_git(shallow_dir, "rev-parse", "--is-shallow-repository") == "true"
+    with pytest.raises(subprocess.CalledProcessError):
+        _run_git(shallow_dir, "cat-file", "-e", f"{merge_sha}^{{commit}}")
+
+    monkeypatch.setattr(launcher, "REPO_ROOT", shallow_dir)
+    monkeypatch.setattr(launcher, "CRS24_MERGE_REFREEZE_HEAD", merge_sha)
+    launcher._require_refreeze_head_ancestor()
+
+    assert _run_git(shallow_dir, "rev-parse", "--is-shallow-repository") == "false"
 
 
 def test_clean_worktree_gate_reflects_actual_git_status() -> None:
@@ -332,6 +385,26 @@ def test_arm_one_shot_marker_is_exclusive_create(tmp_path: Path) -> None:
         launcher._arm_one_shot_marker(
             output_root, armed_at_utc="2026-07-26T00:00:01+00:00"
         )
+
+
+def test_arm_one_shot_marker_classifies_mkdir_permission_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    output_root = tmp_path / "unwritable" / "out"
+    real_mkdir = Path.mkdir
+
+    def _permission_denied(path: Path, *args: object, **kwargs: object) -> None:
+        if path == output_root:
+            raise PermissionError("simulated unwritable output parent")
+        real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", _permission_denied)
+    with pytest.raises(launcher.LaunchRefused) as refusal:
+        launcher._arm_one_shot_marker(
+            output_root, armed_at_utc="2026-07-26T00:00:00+00:00"
+        )
+    assert refusal.value.reason_code == "ONE_SHOT_MARKER_UNWRITABLE"
+    assert not output_root.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -530,17 +603,34 @@ def test_head_is_origin_main_gate_refuses_when_head_diverges_from_origin_main(
         launcher._require_head_is_origin_main()
 
 
-def test_head_is_origin_main_gate_refuses_when_origin_main_ref_is_absent(
+def test_head_is_origin_main_gate_fetches_before_trusting_a_forged_local_ref(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Reproduces the CI checkout shape directly: a shallow/partial checkout
-    commonly has no `origin/main` ref at all (`git rev-parse origin/main`
-    exits 128) unless a prior step explicitly fetched one. The gate must fail
-    closed with a typed refusal, not let the subprocess error propagate."""
     repo_dir = tmp_path / "repo"
-    _init_hermetic_git_repo(repo_dir)  # no origin/main ref created
+    origin_sha, head_sha = _init_hermetic_git_repo(repo_dir)
+    _set_origin_main_ref(repo_dir, origin_sha)
+    # Forge the local remote-tracking ref so the old local-only comparison
+    # would pass even though the origin's main still points at origin_sha.
+    _run_git(repo_dir, "update-ref", "refs/remotes/origin/main", head_sha)
+    assert _run_git(repo_dir, "rev-parse", "HEAD") == _run_git(
+        repo_dir, "rev-parse", "origin/main"
+    )
+
     monkeypatch.setattr(launcher, "REPO_ROOT", repo_dir)
-    with pytest.raises(launcher.LaunchRefused, match="GIT_STATE_UNAVAILABLE"):
+    with pytest.raises(launcher.LaunchRefused, match="HEAD_IS_NOT_ORIGIN_MAIN"):
+        launcher._require_head_is_origin_main()
+
+    assert _run_git(repo_dir, "rev-parse", "origin/main") == origin_sha
+
+
+def test_head_is_origin_main_gate_refuses_when_origin_fetch_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The exact-main decision cannot pass without a successful fresh fetch."""
+    repo_dir = tmp_path / "repo"
+    _init_hermetic_git_repo(repo_dir)  # no origin remote configured
+    monkeypatch.setattr(launcher, "REPO_ROOT", repo_dir)
+    with pytest.raises(launcher.LaunchRefused, match="ORIGIN_FETCH_FAILED"):
         launcher._require_head_is_origin_main()
 
 
@@ -551,6 +641,7 @@ def test_head_is_origin_main_gate_refuses_a_descendant_feature_branch(
     an unmerged feature branch that merely descends from the refreeze head."""
     repo_dir = tmp_path / "repo"
     merge_sha, _head_sha = _init_hermetic_git_repo(repo_dir)
+    _set_origin_main_ref(repo_dir, merge_sha)
     monkeypatch.setattr(launcher, "REPO_ROOT", repo_dir)
     monkeypatch.setattr(launcher, "CRS24_MERGE_REFREEZE_HEAD", merge_sha)
 
