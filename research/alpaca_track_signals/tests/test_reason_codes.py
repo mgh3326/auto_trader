@@ -3,7 +3,6 @@ from __future__ import annotations
 import typing
 
 import pytest
-
 import reason_codes as rc
 
 

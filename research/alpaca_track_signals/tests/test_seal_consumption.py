@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import pytest
-
 import artifact as art
+import pytest
 import seal_consumption as sc
 
 

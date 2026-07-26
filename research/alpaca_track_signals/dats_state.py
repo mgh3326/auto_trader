@@ -75,9 +75,7 @@ def classify_transition(
     if type(threshold) is not float or threshold <= 0.0:
         raise ValueError(f"threshold must be a positive float, got {threshold!r}")
     if state not in _VALID_STATES:
-        raise ValueError(
-            f"state must be one of {sorted(_VALID_STATES)}, got {state!r}"
-        )
+        raise ValueError(f"state must be one of {sorted(_VALID_STATES)}, got {state!r}")
     if state == "flat":
         if d >= threshold and r > 0.0:
             return TransitionOutcome(action="ENTER")

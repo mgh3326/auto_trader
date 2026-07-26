@@ -69,9 +69,7 @@ def prior_completed_day_window(decision_ts_ms: int) -> tuple[int, int]:
     recently completed UTC day), so this same function serves both.
     """
     if not is_ap_a1_decision_ts(decision_ts_ms):
-        raise ValueError(
-            f"{decision_ts_ms} is not a 00:05:00 UTC decision timestamp"
-        )
+        raise ValueError(f"{decision_ts_ms} is not a 00:05:00 UTC decision timestamp")
     day_start_of_decision_day = (decision_ts_ms // DAY_MS) * DAY_MS
     end_ms = day_start_of_decision_day
     start_ms = end_ms - DAY_MS

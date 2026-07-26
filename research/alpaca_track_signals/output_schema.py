@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 import canonical_hash
-
 import reason_codes as rc
 
 __all__ = [

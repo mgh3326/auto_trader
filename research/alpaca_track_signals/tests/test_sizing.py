@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 import seal_consumption as sc
 import sizing
 

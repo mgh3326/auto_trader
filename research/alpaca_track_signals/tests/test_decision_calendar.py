@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import pytest
-
 import decision_calendar as dc
+import pytest
 
 
 def _ms(y, m, d, hh=0, mm=0, ss=0) -> int:

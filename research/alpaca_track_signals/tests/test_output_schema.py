@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import random
 
+import output_schema as os_
 import pytest
 
-import output_schema as os_
 
-
-def _record(*, decision_ts_ms=1, strategy="AP-A1", config_id="AP-A1-00", symbol="AAA/USD"):
+def _record(
+    *, decision_ts_ms=1, strategy="AP-A1", config_id="AP-A1-00", symbol="AAA/USD"
+):
     return os_.SignalRecord(
         decision_ts_ms=decision_ts_ms,
         strategy=strategy,

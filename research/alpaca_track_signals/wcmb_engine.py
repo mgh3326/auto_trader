@@ -27,13 +27,12 @@ from dataclasses import dataclass
 import configs as cfg
 import decision_calendar as dc
 import indicators as ind
-import pit_universe_alpaca as pu
-import sizing
-from daily_bars import DailyBar
-
 import output_schema as out
+import pit_universe_alpaca as pu
 import reason_codes as rc
+import sizing
 import wcmb_ranking as wr
+from daily_bars import DailyBar
 
 __all__ = [
     "AP_A2_DecisionResult",

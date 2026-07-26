@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import math
 
-import pytest
-
 import daily_bars as db
 import indicators as ind
+import pytest
 
 
 def _bar(day_index: int, close: float, *, is_valid=True, is_segment_start=False):

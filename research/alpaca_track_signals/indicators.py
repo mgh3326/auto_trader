@@ -127,17 +127,14 @@ def annualized_sigma20(closes: Sequence[float]) -> float:
     docstring for the ``sqrt(365)``/sample-stdev convention rationale."""
     if len(closes) < SIGMA_WINDOW_DAYS + 1:
         raise SigmaInsufficientSampleError(
-            f"need >= {SIGMA_WINDOW_DAYS + 1} closes for sigma20, got "
-            f"{len(closes)}"
+            f"need >= {SIGMA_WINDOW_DAYS + 1} closes for sigma20, got {len(closes)}"
         )
     tail = closes[-(SIGMA_WINDOW_DAYS + 1) :]
     log_returns = [
         math.log(tail[i] / tail[i - 1]) for i in range(1, SIGMA_WINDOW_DAYS + 1)
     ]
     mean = math.fsum(log_returns) / SIGMA_WINDOW_DAYS
-    variance = math.fsum((x - mean) ** 2 for x in log_returns) / (
-        SIGMA_WINDOW_DAYS - 1
-    )
+    variance = math.fsum((x - mean) ** 2 for x in log_returns) / (SIGMA_WINDOW_DAYS - 1)
     daily_sigma = math.sqrt(variance)
     if daily_sigma <= 0.0:
         raise SigmaInsufficientSampleError(

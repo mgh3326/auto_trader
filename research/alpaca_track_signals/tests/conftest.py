@@ -9,7 +9,9 @@ import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-_REPO_ROOT = _HERE.parent.parent.parent  # tests -> alpaca_track_signals -> research -> repo root
+_REPO_ROOT = (
+    _HERE.parent.parent.parent
+)  # tests -> alpaca_track_signals -> research -> repo root
 _NAUTILUS_SCALPING = _REPO_ROOT / "research" / "nautilus_scalping"
 _ALPACA_TRACK = _REPO_ROOT / "research" / "alpaca_track"
 _ALPACA_TRACK_SEAL = _REPO_ROOT / "research" / "alpaca_track_seal"

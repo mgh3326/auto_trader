@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import pytest
-
 import configs as cfg
 import dats_engine as eng
 import decision_calendar as dc
 import indicators as ind
 import pit_universe_alpaca as pu
+import pytest
 import sizing
 from daily_bars import DAY_MS, DailyBar
 

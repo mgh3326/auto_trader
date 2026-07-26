@@ -20,14 +20,13 @@ import random
 from datetime import UTC, datetime
 
 import configs as cfg
+import dats_engine
 import decision_calendar as dc
 import indicators as ind
 import pit_universe_alpaca as pu
+import wcmb_engine
 import wcmb_ranking as wr
 from daily_bars import DAY_MS, DailyBar
-
-import dats_engine
-import wcmb_engine
 
 
 def _ms(y, m, d, hh=0, mm=0, ss=0) -> int:
@@ -73,7 +72,9 @@ def _snapshot(eligible: tuple[str, ...]) -> pu.UniverseSnapshot:
     )
 
 
-def _piecewise_closes(flat_days: int, spike_days: int, spike_step: float) -> list[float]:
+def _piecewise_closes(
+    flat_days: int, spike_days: int, spike_step: float
+) -> list[float]:
     flat = [100.0] * flat_days
     spike = [100.0 * (1 + spike_step) ** i for i in range(1, spike_days + 1)]
     return flat + spike
@@ -153,7 +154,9 @@ def test_all_8_ap_a1_configs_are_independent_over_the_same_corpus_snapshot():
         )
         for config in configs
     }
-    assert len(set(d_values.values())) == len({(c.params["f"], c.params["s"]) for c in configs})
+    assert len(set(d_values.values())) == len(
+        {(c.params["f"], c.params["s"]) for c in configs}
+    )
 
 
 def test_all_8_ap_a2_configs_are_independent_over_the_same_corpus_snapshot():
@@ -179,7 +182,7 @@ def test_all_8_ap_a2_configs_are_independent_over_the_same_corpus_snapshot():
     assert len(all_new_held_ids) == len(results)
 
     for config in configs:
-        ell, k, b = config.params["L"], config.params["k"], config.params["b"]
+        ell, k = config.params["L"], config.params["k"]
         result = results[config.config_id]
         scores = {
             symbol: ind.compute_score(closes, ell=ell)
@@ -202,7 +205,9 @@ def test_all_8_ap_a2_configs_are_independent_over_the_same_corpus_snapshot():
                 )
 
     score_values = {
-        config.config_id: ind.compute_score(_SYMBOL_SHAPES["BBB/USD"], ell=config.params["L"])
+        config.config_id: ind.compute_score(
+            _SYMBOL_SHAPES["BBB/USD"], ell=config.params["L"]
+        )
         for config in configs
     }
     distinct_l_values = {c.params["L"] for c in configs}

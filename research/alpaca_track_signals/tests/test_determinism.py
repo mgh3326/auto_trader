@@ -9,12 +9,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import configs as cfg
+import dats_engine
 import decision_calendar as dc
 import pit_universe_alpaca as pu
-from daily_bars import DAY_MS, DailyBar
-
-import dats_engine
 import wcmb_engine
+from daily_bars import DAY_MS, DailyBar
 
 AP_A1_00 = cfg.build_ap_a1_configs()[0]
 AP_A2_00 = cfg.build_ap_a2_configs()[0]

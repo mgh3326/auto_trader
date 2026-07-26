@@ -16,18 +16,15 @@ that state allows), not by convention.
 
 from __future__ import annotations
 
-import pytest
-
 import dats_state as ds
+import pytest
 
 THRESHOLD = 0.005
 
 
 def test_flat_enters_at_the_exact_positive_threshold_with_positive_r():
     # D == +0.005 exactly (boundary INCLUSIVE per AC8) AND R > 0 -> ENTER.
-    outcome = ds.classify_transition(
-        state="flat", d=0.005, r=0.01, threshold=THRESHOLD
-    )
+    outcome = ds.classify_transition(state="flat", d=0.005, r=0.01, threshold=THRESHOLD)
     assert outcome.action == "ENTER"
 
 
@@ -80,7 +77,9 @@ def test_a_long_symbol_can_never_receive_an_enter_action_no_reentry_pyramiding()
     # re-enter.
     for d in (0.005, 0.01, 1.0):
         for r in (0.001, 0.5, 5.0):
-            outcome = ds.classify_transition(state="long", d=d, r=r, threshold=THRESHOLD)
+            outcome = ds.classify_transition(
+                state="long", d=d, r=r, threshold=THRESHOLD
+            )
             assert outcome.action != "ENTER"
 
 
