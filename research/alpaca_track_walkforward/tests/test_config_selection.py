@@ -7,9 +7,18 @@ import config_selection as cs
 import pytest
 
 
-def _metric(config_id, *, closed=40, median_e120=50.0, turnover=0.2, cost_pct=3.0):
+def _metric(
+    config_id,
+    *,
+    incomplete=False,
+    closed=40,
+    median_e120=50.0,
+    turnover=0.2,
+    cost_pct=3.0,
+):
     return cs.ConfigTrainMetrics(
         config_id=config_id,
+        is_incomplete=incomplete,
         closed_trades_count=closed,
         median_trade_e120_bp=median_e120,
         turnover_p=turnover,
@@ -108,6 +117,41 @@ def test_cost_gate_is_compared_before_pnl_and_stops_pnl_access_on_cost_failure()
     assert events == ["COST<="]
 
 
+def test_incomplete_train_is_rejected_before_closed_cost_or_pnl_gates():
+    events: list[str] = []
+
+    class CountSpy(int):
+        def __ge__(self, other):
+            events.append("CLOSED>=")
+            return True
+
+    class CostSpy(float):
+        def __le__(self, other):
+            events.append("COST<=")
+            return True
+
+    class PnLSpy(float):
+        def __gt__(self, other):
+            events.append("PNL>")
+            return True
+
+    result = cs.select_config(
+        [
+            _metric(
+                "AP-A1-00",
+                incomplete=True,
+                closed=CountSpy(30),
+                cost_pct=CostSpy(1.0),
+                median_e120=PnLSpy(1.0),
+            )
+        ],
+        data_window="TRAIN",
+        stress_cost_cap_pct=6.0,
+    )
+    assert result.status == "NO_SELECTED_CONFIG"
+    assert events == []
+
+
 def test_ap_a2_turnover_band_is_pnl_blind_and_rejects_90pct_before_e120():
     events: list[str] = []
 
@@ -181,6 +225,7 @@ def test_zero_closed_trades_metric_construction_requires_none_median():
     with pytest.raises(ValueError, match="zero closed trades"):
         cs.ConfigTrainMetrics(
             config_id="x",
+            is_incomplete=False,
             closed_trades_count=0,
             median_trade_e120_bp=1.0,
             turnover_p=0.1,
@@ -192,6 +237,7 @@ def test_nonzero_closed_trades_metric_construction_requires_a_median():
     with pytest.raises(ValueError, match="must carry a median E120"):
         cs.ConfigTrainMetrics(
             config_id="x",
+            is_incomplete=False,
             closed_trades_count=5,
             median_trade_e120_bp=None,
             turnover_p=0.1,

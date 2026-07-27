@@ -49,13 +49,53 @@ def _masked(
     )
 
 
-def _issued_pass(masked: om.Masked, counts: bc.BlindCounts) -> om.DryCountPassEvidence:
-    return om.issue_dry_count_pass(masked, counts)
+def _aggregate_pass(
+    *,
+    secret: object = _SECRET_PNL_VALUE,
+    target_counts: bc.BlindCounts | None = None,
+) -> tuple[om.Masked, bc.BlindCounts, om.DryCountPassEvidence]:
+    masked_by_fold: dict[str, tuple[om.Masked, ...]] = {}
+    counts_by_fold: dict[str, bc.BlindCounts] = {}
+    target_masked: om.Masked | None = None
+    target_actual_counts: bc.BlindCounts | None = None
+    for index in range(8):
+        fold_id = f"fold-{index}"
+        counts = (
+            target_counts if index == 0 and target_counts is not None else _counts()
+        )
+        masked, actual_counts = _masked(
+            secret=secret if index == 0 else 0.0,
+            counts=counts,
+            fold_id=fold_id,
+        )
+        masked_by_fold[fold_id] = (masked,)
+        counts_by_fold[fold_id] = actual_counts
+        if index == 0:
+            target_masked = masked
+            target_actual_counts = actual_counts
+    assert target_masked is not None
+    assert target_actual_counts is not None
+    evidence = om.issue_all_folds_dry_count_pass(
+        masked_by_fold=masked_by_fold,
+        dry_counts_by_fold=counts_by_fold,
+    )
+    return target_masked, target_actual_counts, evidence
+
+
+def _aggregate_inputs(
+    *,
+    counts_by_fold: dict[str, bc.BlindCounts] | None = None,
+) -> tuple[dict[str, tuple[om.Masked, ...]], dict[str, bc.BlindCounts]]:
+    actual_counts = counts_by_fold or {f"fold-{index}": _counts() for index in range(8)}
+    masked_by_fold = {
+        fold_id: (_masked(counts=actual_counts[fold_id], fold_id=fold_id)[0],)
+        for fold_id in (f"fold-{index}" for index in range(8))
+    }
+    return masked_by_fold, actual_counts
 
 
 def test_matching_real_dry_count_pass_unmasks_once():
-    masked, counts = _masked()
-    evidence = _issued_pass(masked, counts)
+    masked, _counts_value, evidence = _aggregate_pass()
     assert om.unmask(masked, evidence) == _SECRET_PNL_VALUE
     with pytest.raises(om.OOSMaskBypassError, match="already"):
         om.unmask(masked, evidence)
@@ -93,18 +133,35 @@ def test_private_token_import_bypass_no_longer_exists():
 
 
 def test_fake_counts_cannot_issue_pass_for_an_existing_mask():
-    masked, actual_counts = _masked()
-    fake_counts = _counts(modeled_entries=999)
-    assert fake_counts is not actual_counts
+    masked_by_fold, counts_by_fold = _aggregate_inputs()
+    fake_counts = dict(counts_by_fold)
+    fake_counts["fold-0"] = _counts(modeled_entries=999)
+    assert fake_counts["fold-0"] is not counts_by_fold["fold-0"]
     with pytest.raises(om.OOSMaskBypassError, match="actual object"):
-        om.issue_dry_count_pass(masked, fake_counts)
+        om.issue_all_folds_dry_count_pass(
+            masked_by_fold=masked_by_fold,
+            dry_counts_by_fold=fake_counts,
+        )
 
 
-def test_below_sealed_minimum_cannot_issue_pass():
-    counts = _counts(modeled_entries=4)
-    masked, counts = _masked(counts=counts)
-    with pytest.raises(om.OOSMaskBypassError, match="sealed minimum"):
+def test_verifier_reproduction_fold_local_pass_is_forbidden():
+    masked, counts = _masked()
+    with pytest.raises(om.OOSMaskBypassError, match="all 8 folds"):
         om.issue_dry_count_pass(masked, counts)
+
+
+def test_one_below_minimum_fold_blocks_every_fold_and_issues_no_pass():
+    counts_by_fold = {f"fold-{index}": _counts() for index in range(8)}
+    counts_by_fold["fold-1"] = _counts(modeled_entries=4)
+    masked_by_fold, counts_by_fold = _aggregate_inputs(counts_by_fold=counts_by_fold)
+    with pytest.raises(om.OOSMaskBypassError, match="fold-1.*sealed minimum"):
+        om.issue_all_folds_dry_count_pass(
+            masked_by_fold=masked_by_fold,
+            dry_counts_by_fold=counts_by_fold,
+        )
+    forged = object.__new__(om.DryCountPassEvidence)
+    with pytest.raises(om.OOSMaskBypassError, match="reconstructed"):
+        om.unmask(masked_by_fold["fold-0"][0], forged)
 
 
 @pytest.mark.parametrize(
@@ -162,30 +219,41 @@ def test_below_sealed_minimum_cannot_issue_pass():
     ],
 )
 def test_any_structurally_incomplete_counts_cannot_issue_or_unmask(counts):
-    masked, actual_counts = _masked(counts=counts)
-    with pytest.raises(om.OOSMaskBypassError, match="incomplete"):
-        om.issue_dry_count_pass(masked, actual_counts)
+    counts_by_fold = {f"fold-{index}": _counts() for index in range(8)}
+    counts_by_fold["fold-3"] = counts
+    masked_by_fold, counts_by_fold = _aggregate_inputs(counts_by_fold=counts_by_fold)
+    with pytest.raises(om.OOSMaskBypassError, match="fold-3.*incomplete"):
+        om.issue_all_folds_dry_count_pass(
+            masked_by_fold=masked_by_fold,
+            dry_counts_by_fold=counts_by_fold,
+        )
     forged = object.__new__(om.DryCountPassEvidence)
     for name, value in (
-        ("_fold_id", "fold-0"),
         ("_family", "AP-A1"),
         ("_config_id", "AP-A1-00"),
-        ("_modeled_entries", 5),
+        ("_fold_ids", tuple(f"fold-{index}" for index in range(8))),
+        (
+            "_modeled_entries_by_fold",
+            tuple((f"fold-{index}", 5) for index in range(8)),
+        ),
         ("_min_modeled_entries_per_fold", 5),
     ):
         object.__setattr__(forged, name, value)
     with pytest.raises(om.OOSMaskBypassError, match="reconstructed"):
-        om.unmask(masked, forged)
+        om.unmask(masked_by_fold["fold-0"][0], forged)
 
 
 def test_reconstructed_evidence_object_is_not_authority():
-    masked, counts = _masked()
+    masked, _counts_value = _masked()
     forged = object.__new__(om.DryCountPassEvidence)
     for name, value in (
-        ("_fold_id", "fold-0"),
         ("_family", "AP-A1"),
         ("_config_id", "AP-A1-00"),
-        ("_modeled_entries", 999),
+        ("_fold_ids", tuple(f"fold-{index}" for index in range(8))),
+        (
+            "_modeled_entries_by_fold",
+            tuple((f"fold-{index}", 999) for index in range(8)),
+        ),
         ("_min_modeled_entries_per_fold", 0),
     ):
         object.__setattr__(forged, name, value)
@@ -203,10 +271,14 @@ def test_reconstructed_mask_handle_is_not_in_the_issuance_registry():
 
 
 def test_object_setattr_tampering_fails_integrity_check():
-    masked, counts = _masked()
+    masked_by_fold, counts_by_fold = _aggregate_inputs()
+    masked = masked_by_fold["fold-0"][0]
     object.__setattr__(masked, "_config_id", "AP-A1-07")
     with pytest.raises(om.OOSMaskBypassError, match="integrity"):
-        om.issue_dry_count_pass(masked, counts)
+        om.issue_all_folds_dry_count_pass(
+            masked_by_fold=masked_by_fold,
+            dry_counts_by_fold=counts_by_fold,
+        )
 
 
 def test_masked_and_evidence_subclassing_is_blocked():
@@ -222,8 +294,7 @@ def test_masked_and_evidence_subclassing_is_blocked():
 
 
 def test_copy_reconstruction_pickle_and_deepcopy_are_blocked():
-    masked, counts = _masked()
-    evidence = _issued_pass(masked, counts)
+    masked, _counts_value, evidence = _aggregate_pass()
     for value in (masked, evidence):
         with pytest.raises((om.OOSMaskBypassError, TypeError, pickle.PicklingError)):
             copy.copy(value)
@@ -248,17 +319,15 @@ def test_nested_raw_values_are_not_object_referents_or_string_representations():
 def test_source_object_is_not_retained_in_the_caller_process_object_graph():
     secret = _SecretBox()
     secret_ref = weakref.ref(secret)
-    masked, counts = _masked(secret=secret)
+    masked, _counts_value, evidence = _aggregate_pass(secret=secret)
     del secret
     gc.collect()
     assert secret_ref() is None
-    evidence = _issued_pass(masked, counts)
     assert isinstance(om.unmask(masked, evidence), _SecretBox)
 
 
 def test_exception_messages_never_contain_raw_value():
-    masked, counts = _masked()
-    evidence = _issued_pass(masked, counts)
+    _masked_value, _counts_value, evidence = _aggregate_pass()
     other_masked, _other_counts = _masked(config_id="AP-A1-01")
     with pytest.raises(om.OOSMaskBypassError) as exc_info:
         om.unmask(other_masked, evidence)
@@ -279,6 +348,7 @@ def test_public_api_requires_issuance_not_public_evidence_construction():
         "DryCountPassEvidence",
         "Masked",
         "OOSMaskBypassError",
+        "issue_all_folds_dry_count_pass",
         "issue_dry_count_pass",
         "mask",
         "unmask",

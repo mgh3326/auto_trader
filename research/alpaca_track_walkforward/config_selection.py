@@ -2,6 +2,7 @@
 
 Selection rule, applied IN ORDER, exactly as SS15 states it:
 
+    TRAIN dry counts must be complete
     TRAIN closed >= 30
     AND passes the PnL-blind annualized stress cost cap
     AND, for AP-A2, sealed replacement p is inside its turnover band
@@ -54,12 +55,15 @@ class ConfigTrainMetrics:
     ``select_config`` ever looks at."""
 
     config_id: str
+    is_incomplete: bool
     closed_trades_count: int
     median_trade_e120_bp: float | None  # None iff closed_trades_count == 0
     turnover_p: float
     annualized_stress_cost_pct: float
 
     def __post_init__(self) -> None:
+        if type(self.is_incomplete) is not bool:
+            raise TypeError("is_incomplete must be a built-in bool")
         if self.closed_trades_count < 0:
             raise ValueError("closed_trades_count must be non-negative")
         if self.closed_trades_count == 0 and self.median_trade_e120_bp is not None:
@@ -97,8 +101,9 @@ def select_config(
         )
     # AC9 is procedural, not merely a final-result predicate: the
     # PnL-blind cost cap must run before *any* E120 value is inspected.
+    complete = [m for m in metrics if not m.is_incomplete]
     structurally_eligible = [
-        m for m in metrics if m.closed_trades_count >= MIN_TRAIN_CLOSED_TRADES
+        m for m in complete if m.closed_trades_count >= MIN_TRAIN_CLOSED_TRADES
     ]
     cost_eligible = [
         m

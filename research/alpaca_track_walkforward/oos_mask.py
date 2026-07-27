@@ -6,12 +6,11 @@ serializes the value immediately and transfers it into an isolated local
 vault process. The public object contains binding metadata only.
 
 Unmask authority is not a public dataclass constructor. H5 must call
-``issue_dry_count_pass`` with the exact ``BlindCounts`` object that H4 bound
-to the masked value at creation. Issuance rechecks that object's fingerprint,
-the sealed minimum-entry threshold, and incomplete status inside both the
-caller and the isolated vault. Evidence reconstructed with ``object.__new__``,
-copied, subclassed, or mutated is absent from the issuance registry and is
-rejected.
+``issue_all_folds_dry_count_pass`` with all 8 folds' exact ``BlindCounts``
+objects and masked handles for one family/config. No vault token is issued
+until every fold is complete and meets the sealed minimum. Evidence
+reconstructed with ``object.__new__``, copied, subclassed, or mutated is
+absent from the issuance registry and is rejected.
 
 Native debuggers able to read another process's address space are outside the
 threat model. Ordinary Python reflection, closure inspection, object graph
@@ -28,6 +27,7 @@ import os
 import pickle
 import threading
 import weakref
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -38,6 +38,7 @@ __all__ = [
     "DryCountPassEvidence",
     "Masked",
     "OOSMaskBypassError",
+    "issue_all_folds_dry_count_pass",
     "issue_dry_count_pass",
     "mask",
     "unmask",
@@ -135,13 +136,13 @@ class Masked:
 
 
 class DryCountPassEvidence:
-    """Registry-backed evidence issued only for an actual bound dry count."""
+    """Registry-backed evidence issued only after all 8 folds pass."""
 
     __slots__ = (
-        "_fold_id",
         "_family",
         "_config_id",
-        "_modeled_entries",
+        "_fold_ids",
+        "_modeled_entries_by_fold",
         "_min_modeled_entries_per_fold",
         "__weakref__",
     )
@@ -149,15 +150,15 @@ class DryCountPassEvidence:
     def __init__(self, *args: object, **kwargs: object) -> None:
         raise OOSMaskBypassError(
             "DryCountPassEvidence cannot be constructed externally; "
-            "call issue_dry_count_pass(masked, actual_blind_counts)"
+            "call issue_all_folds_dry_count_pass(...)"
         )
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         raise TypeError("DryCountPassEvidence cannot be subclassed")
 
     @property
-    def fold_id(self) -> str:
-        return object.__getattribute__(self, "_fold_id")
+    def fold_ids(self) -> tuple[str, ...]:
+        return object.__getattribute__(self, "_fold_ids")
 
     @property
     def family(self) -> str:
@@ -168,8 +169,8 @@ class DryCountPassEvidence:
         return object.__getattribute__(self, "_config_id")
 
     @property
-    def modeled_entries(self) -> int:
-        return object.__getattribute__(self, "_modeled_entries")
+    def modeled_entries_by_fold(self) -> tuple[tuple[str, int], ...]:
+        return object.__getattribute__(self, "_modeled_entries_by_fold")
 
     @property
     def min_modeled_entries_per_fold(self) -> int:
@@ -179,8 +180,8 @@ class DryCountPassEvidence:
     def passed(self) -> bool:
         return True
 
-    def binding_key(self) -> tuple[str, str, str]:
-        return (self.fold_id, self.family, self.config_id)
+    def binding_key(self) -> tuple[str, str, tuple[str, ...]]:
+        return (self.family, self.config_id, self.fold_ids)
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise OOSMaskBypassError("DryCountPassEvidence is immutable")
@@ -191,8 +192,9 @@ class DryCountPassEvidence:
     def __repr__(self) -> str:
         return (
             "DryCountPassEvidence("
-            f"fold_id={self.fold_id!r}, family={self.family!r}, "
-            f"config_id={self.config_id!r}, modeled_entries={self.modeled_entries}, "
+            f"fold_ids={self.fold_ids!r}, family={self.family!r}, "
+            f"config_id={self.config_id!r}, "
+            f"modeled_entries_by_fold={self.modeled_entries_by_fold!r}, "
             f"min_modeled_entries_per_fold={self.min_modeled_entries_per_fold}, "
             "passed=True)"
         )
@@ -340,10 +342,12 @@ class _MaskRecord:
 @dataclass(slots=True)
 class _EvidenceRecord:
     evidence_ref: weakref.ReferenceType[DryCountPassEvidence]
-    masked_id: int
-    binding: tuple[str, str, str]
-    counts_fingerprint: str
-    vault_token: bytes
+    family: str
+    config_id: str
+    fold_ids: tuple[str, ...]
+    binding_by_masked_id: Mapping[int, tuple[str, str, str]]
+    counts_fingerprint_by_masked_id: Mapping[int, str]
+    vault_token_by_masked_id: Mapping[int, bytes]
 
 
 _VAULT: _VaultClient | None = None
@@ -450,32 +454,97 @@ def mask(
 def issue_dry_count_pass(
     masked: Masked, dry_counts: bc.BlindCounts
 ) -> DryCountPassEvidence:
-    """Issue PASS only for the exact bound counts and sealed threshold."""
-    record = _record_for(masked)
+    """The former fold-local authority is deliberately disabled."""
+    _record_for(masked)
     if type(dry_counts) is not bc.BlindCounts:
         raise TypeError("dry_counts must be an exact BlindCounts instance")
-    if record.counts is not dry_counts:
-        raise OOSMaskBypassError(
-            "dry counts are not the actual object bound by H4 to this mask"
-        )
-    fingerprint = _counts_fingerprint(dry_counts)
-    if fingerprint != record.counts_fingerprint:
-        raise OOSMaskBypassError("bound dry counts changed after mask issuance")
-    sealed_minimum = wf_seal.min_modeled_entries_per_fold()
-    if dry_counts.is_incomplete:
-        raise OOSMaskBypassError("incomplete dry counts can never issue PASS")
-    if dry_counts.modeled_entries_count < sealed_minimum:
-        raise OOSMaskBypassError(
-            "bound dry count is below the sealed minimum modeled entries"
-        )
-    vault_token = _vault().call(("ISSUE", record.vault_handle, fingerprint))
+    raise OOSMaskBypassError(
+        "fold-local PASS is forbidden; all 8 folds must pass together"
+    )
 
+
+def issue_all_folds_dry_count_pass(
+    *,
+    masked_by_fold: Mapping[str, Sequence[Masked]],
+    dry_counts_by_fold: Mapping[str, bc.BlindCounts],
+) -> DryCountPassEvidence:
+    """Issue one authority only after the exact 8-fold dry gate passes."""
+    expected_fold_ids = tuple(f"fold-{index}" for index in range(wf_seal.oos_folds()))
+    if tuple(sorted(masked_by_fold)) != expected_fold_ids:
+        raise OOSMaskBypassError("masked_by_fold must cover exactly fold-0..fold-7")
+    if tuple(sorted(dry_counts_by_fold)) != expected_fold_ids:
+        raise OOSMaskBypassError("dry_counts_by_fold must cover exactly fold-0..fold-7")
+
+    sealed_minimum = wf_seal.min_modeled_entries_per_fold()
+    family: str | None = None
+    config_id: str | None = None
+    records_by_masked_id: dict[int, _MaskRecord] = {}
+    fingerprints_by_masked_id: dict[int, str] = {}
+
+    # Validate every fold before asking the vault to issue any token.
+    for fold_id in expected_fold_ids:
+        counts = dry_counts_by_fold[fold_id]
+        if type(counts) is not bc.BlindCounts:
+            raise TypeError("every dry count must be an exact BlindCounts instance")
+        if counts.is_incomplete:
+            raise OOSMaskBypassError(
+                f"{fold_id} is incomplete; aggregate PASS cannot issue"
+            )
+        if counts.modeled_entries_count < sealed_minimum:
+            raise OOSMaskBypassError(
+                f"{fold_id} is below the sealed minimum modeled entries"
+            )
+        if not masked_by_fold[fold_id]:
+            raise OOSMaskBypassError(
+                f"{fold_id} has no H4-issued dry-count gate handle"
+            )
+        for masked in masked_by_fold[fold_id]:
+            record = _record_for(masked)
+            if record.binding[0] != fold_id:
+                raise OOSMaskBypassError("masked handle is filed under the wrong fold")
+            if record.counts is not counts:
+                raise OOSMaskBypassError(
+                    "dry counts are not the actual object bound by H4 to this mask"
+                )
+            fingerprint = _counts_fingerprint(counts)
+            if fingerprint != record.counts_fingerprint:
+                raise OOSMaskBypassError("bound dry counts changed after mask issuance")
+            if family is None:
+                family, config_id = record.binding[1], record.binding[2]
+            elif (record.binding[1], record.binding[2]) != (family, config_id):
+                raise OOSMaskBypassError(
+                    "aggregate PASS cannot mix family/config identities"
+                )
+            records_by_masked_id[id(masked)] = record
+            fingerprints_by_masked_id[id(masked)] = fingerprint
+
+    if family is None or config_id is None:
+        raise OOSMaskBypassError(
+            "aggregate PASS requires at least one actual masked H4 value"
+        )
+
+    tokens_by_masked_id = {
+        masked_id: _vault().call(
+            (
+                "ISSUE",
+                record.vault_handle,
+                fingerprints_by_masked_id[masked_id],
+            )
+        )
+        for masked_id, record in records_by_masked_id.items()
+    }
     evidence = object.__new__(DryCountPassEvidence)
     for name, value in (
-        ("_fold_id", record.binding[0]),
-        ("_family", record.binding[1]),
-        ("_config_id", record.binding[2]),
-        ("_modeled_entries", dry_counts.modeled_entries_count),
+        ("_family", family),
+        ("_config_id", config_id),
+        ("_fold_ids", expected_fold_ids),
+        (
+            "_modeled_entries_by_fold",
+            tuple(
+                (fold_id, dry_counts_by_fold[fold_id].modeled_entries_count)
+                for fold_id in expected_fold_ids
+            ),
+        ),
         ("_min_modeled_entries_per_fold", sealed_minimum),
     ):
         object.__setattr__(evidence, name, value)
@@ -483,10 +552,15 @@ def issue_dry_count_pass(
     evidence_ref = weakref.ref(evidence, _drop_evidence(evidence_id))
     _EVIDENCES[evidence_id] = _EvidenceRecord(
         evidence_ref=evidence_ref,
-        masked_id=id(masked),
-        binding=record.binding,
-        counts_fingerprint=fingerprint,
-        vault_token=vault_token,
+        family=family,
+        config_id=config_id,
+        fold_ids=expected_fold_ids,
+        binding_by_masked_id={
+            masked_id: record.binding
+            for masked_id, record in records_by_masked_id.items()
+        },
+        counts_fingerprint_by_masked_id=dict(fingerprints_by_masked_id),
+        vault_token_by_masked_id=tokens_by_masked_id,
     )
     return evidence
 
@@ -497,19 +571,29 @@ def unmask(masked: Masked, evidence: DryCountPassEvidence) -> Any:
     if type(evidence) is not DryCountPassEvidence:
         raise TypeError("expected an exact DryCountPassEvidence instance")
     evidence_record = _EVIDENCES.get(id(evidence))
+    masked_id = id(masked)
     if (
         evidence_record is None
         or evidence_record.evidence_ref() is not evidence
-        or evidence_record.masked_id != id(masked)
-        or evidence_record.binding != record.binding
-        or evidence.binding_key() != record.binding
-        or evidence_record.counts_fingerprint != record.counts_fingerprint
+        or evidence_record.binding_by_masked_id.get(masked_id) != record.binding
+        or evidence.binding_key()
+        != (
+            evidence_record.family,
+            evidence_record.config_id,
+            evidence_record.fold_ids,
+        )
+        or evidence_record.counts_fingerprint_by_masked_id.get(masked_id)
+        != record.counts_fingerprint
     ):
         raise OOSMaskBypassError(
             "PASS evidence was reconstructed, mutated, or issued for another mask"
         )
     payload = _vault().call(
-        ("REVEAL", record.vault_handle, evidence_record.vault_token)
+        (
+            "REVEAL",
+            record.vault_handle,
+            evidence_record.vault_token_by_masked_id[masked_id],
+        )
     )
     try:
         return pickle.loads(payload)

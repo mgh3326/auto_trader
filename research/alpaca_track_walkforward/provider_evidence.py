@@ -31,8 +31,12 @@ class ProviderEvidenceError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class RunProviderEvidenceBinding:
-    """Immutable aggregate of every provider artifact consumed by one run."""
+    """Immutable aggregate bound to the code-pinned canonical run manifest."""
 
+    run_manifest_hash: str
+    daily_bars_artifact_hash: str
+    universe_grid_hash: str
+    minute_grid_hash: str
     universe_artifacts: tuple[tuple[int, int, str], ...]
     minute_artifacts: tuple[tuple[str, int, int, str], ...]
     combined_hash: str = field(init=False)
@@ -43,6 +47,10 @@ class RunProviderEvidenceBinding:
             "combined_hash",
             canonical_hash.canonical_sha256(
                 {
+                    "run_manifest_hash": self.run_manifest_hash,
+                    "daily_bars_artifact_hash": self.daily_bars_artifact_hash,
+                    "universe_grid_hash": self.universe_grid_hash,
+                    "minute_grid_hash": self.minute_grid_hash,
                     "universe_artifacts": [
                         list(item) for item in self.universe_artifacts
                     ],

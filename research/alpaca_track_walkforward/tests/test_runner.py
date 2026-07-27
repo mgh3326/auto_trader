@@ -23,6 +23,7 @@ import fold_schedule as fs
 import oos_mask as om
 import provider_evidence as pe
 import pytest
+import run_manifest as rm
 import runner
 import synthetic_fixture as sfx
 import trade_ledger as tl
@@ -152,6 +153,110 @@ def test_future_universe_content_relabelled_to_current_timestamp_is_rejected(
         )
 
 
+def test_changed_universe_content_self_signed_at_current_timestamp_is_rejected(
+    bars_20, universe_provider_20, minute_provider_20
+):
+    """Verifier reproduction: caller-controlled labels and hashes are not authority."""
+    import seal_consumption as h3_seal
+
+    config = next(
+        c
+        for c in h3_seal.load_sealed_configs_and_params().configs
+        if c.family == "AP-A1"
+    )
+
+    def self_signed_changed_provider(decision_ts_ms):
+        current = universe_provider_20(decision_ts_ms)
+        first = current.snapshot.per_symbol[0]
+        changed_first = replace(
+            first,
+            eligible=False,
+            fail_reason="gap_in_last_60min",
+        )
+        changed = replace(
+            current.snapshot,
+            eligible_symbols=current.snapshot.eligible_symbols[1:],
+            per_symbol=(changed_first, *current.snapshot.per_symbol[1:]),
+            n_t=current.snapshot.n_t - 1,
+        )
+        # Both public labels are rewritten to "now", and the public binder
+        # happily hashes those caller-selected values. The immutable complete
+        # grid in run_manifest remains different and must reject the run.
+        return pe.bind_universe_snapshot(
+            changed,
+            source_as_of_ts_ms=decision_ts_ms,
+        )
+
+    with pytest.raises(rm.RunManifestError, match="universe grid hash"):
+        runner._run_continuous_decisions(
+            config=config,
+            family="AP-A1",
+            fold=_FOLD,
+            bars_by_symbol=bars_20,
+            universe_snapshot_provider=self_signed_changed_provider,
+            minute_bars_provider=minute_provider_20,
+        )
+
+
+def test_daily_feature_mutation_is_rejected_against_complete_corpus_identity(
+    bars_20, universe_provider_20, minute_provider_20
+):
+    mutated = dict(bars_20)
+    symbol = sorted(mutated)[0]
+    bars = list(mutated[symbol])
+    bars[-1] = replace(bars[-1], volume=bars[-1].volume + 1.0)
+    mutated[symbol] = tuple(bars)
+
+    with pytest.raises(rm.RunManifestError, match="daily corpus hash"):
+        runner.run_family_fold(
+            family="AP-A2",
+            fold_id="fold-0",
+            fold=_FOLD,
+            bars_by_symbol=mutated,
+            universe_snapshot_provider=universe_provider_20,
+            minute_bars_provider=minute_provider_20,
+        )
+
+
+def test_oos_provider_state_cannot_rewrite_later_config_train_inputs(
+    bars_20, universe_provider_20, minute_provider_20
+):
+    """Verifier reproduction: all provider inputs bind before any config runs."""
+
+    def changes_after_train_provider(decision_ts_ms):
+        current = universe_provider_20(decision_ts_ms)
+        if decision_ts_ms < _FOLD.oos_start_ms:
+            return current
+        first = current.snapshot.per_symbol[0]
+        changed = replace(
+            current.snapshot,
+            eligible_symbols=current.snapshot.eligible_symbols[1:],
+            per_symbol=(
+                replace(
+                    first,
+                    eligible=False,
+                    fail_reason="gap_in_last_60min",
+                ),
+                *current.snapshot.per_symbol[1:],
+            ),
+            n_t=current.snapshot.n_t - 1,
+        )
+        return pe.bind_universe_snapshot(
+            changed,
+            source_as_of_ts_ms=decision_ts_ms,
+        )
+
+    with pytest.raises(rm.RunManifestError, match="universe grid hash"):
+        runner.run_family_fold(
+            family="AP-A2",
+            fold_id="fold-0",
+            fold=_FOLD,
+            bars_by_symbol=bars_20,
+            universe_snapshot_provider=changes_after_train_provider,
+            minute_bars_provider=minute_provider_20,
+        )
+
+
 def test_mutated_universe_content_is_rejected_by_source_artifact_hash(
     bars_20, universe_provider_20, minute_provider_20
 ):
@@ -267,6 +372,10 @@ def _run_result_for_trade(trade: tl.Trade) -> runner._ContinuousRunResult:
         fill_attempts=(),
         modeled_entry_evidence=(trade.entry_evidence,),
         provider_evidence_binding=pe.RunProviderEvidenceBinding(
+            run_manifest_hash="0" * 64,
+            daily_bars_artifact_hash="1" * 64,
+            universe_grid_hash="2" * 64,
+            minute_grid_hash="3" * 64,
             universe_artifacts=(),
             minute_artifacts=(),
         ),
@@ -395,6 +504,7 @@ def test_run_family_fold_ap_a2_full_8_configs_end_to_end(ap_a2_full_result):
         f"AP-A2-{i:02d}" for i in range(8)
     }
     assert result.selection.status in ("SELECTED", "NO_SELECTED_CONFIG")
+    assert len({id(run.provider_evidence_binding) for run in result.config_runs}) == 1
 
     for cr in result.config_runs:
         # PnL-blind counts are ALWAYS visible (AC25) -- plain ints/dicts,

@@ -43,9 +43,16 @@ _NUM_DAYS = (_FOLD.oos_end_ms - _FOLD.train_start_ms) // 86_400_000
 # entries/(weekly evaluations*k), the unchanged sealed band is enforced
 # before E120, and immutable per-call universe/minute provenance hashes are
 # part of the regression projection. Selection and every TRAIN/OOS lifecycle
-# count remain unchanged. Any later change remains a deliberate re-seal:
+# count remain unchanged.
+# Re-pinned 2026-07-27 after verify4: the synthetic runner now compares its
+# complete daily/universe/minute inputs to one immutable run-manifest identity,
+# shares that pre-materialized snapshot across all configs, exposes OOS
+# turnover and an aggregate-dry-gate handle, and records those binding fields
+# here. The human-readable diagnostic confirmed selection, every TRAIN metric,
+# and every OOS blind count are unchanged; only provenance/gate metadata moved.
+# Any later change remains a deliberate re-seal:
 # STOP and inspect the human-readable diagnostic before touching this value.
-GOLDEN_DIGEST = "f80a016ad1be1af5883e5c13e793bb2f9209c12c328c67131456ea9029613867"
+GOLDEN_DIGEST = "35756b6d90aa9fc1190cc0c6dcd6b6c2503b8dd57966917058baccf28bcbd8c5"
 
 
 def _golden_float(value: float) -> float:
@@ -130,6 +137,7 @@ def _digest_summary(result: runner.FamilyFoldResult) -> dict:
                         cr.oos_blind_counts.reason_code_histogram
                     ),
                 },
+                "oos_turnover_p": _golden_float(cr.oos_turnover_p),
                 "oos_modeled_entry_evidence": [
                     {
                         "entry_fill_ts_ms": entry.entry_fill_ts_ms,
@@ -149,8 +157,25 @@ def _digest_summary(result: runner.FamilyFoldResult) -> dict:
                     }
                     for m in cr.oos_masked_pnl_by_trade
                 ],
+                "oos_dry_count_gate_binding": {
+                    "fold_id": cr.oos_dry_count_gate_handle.fold_id,
+                    "family": cr.oos_dry_count_gate_handle.family,
+                    "config_id": cr.oos_dry_count_gate_handle.config_id,
+                },
                 "context_binding_hash": cr.context_binding_at_oos_start.combined_context_hash,
-                "provider_evidence_hash": cr.provider_evidence_binding.combined_hash,
+                "provider_evidence": {
+                    "run_manifest_hash": (
+                        cr.provider_evidence_binding.run_manifest_hash
+                    ),
+                    "daily_bars_artifact_hash": (
+                        cr.provider_evidence_binding.daily_bars_artifact_hash
+                    ),
+                    "universe_grid_hash": (
+                        cr.provider_evidence_binding.universe_grid_hash
+                    ),
+                    "minute_grid_hash": cr.provider_evidence_binding.minute_grid_hash,
+                    "combined_hash": cr.provider_evidence_binding.combined_hash,
+                },
             }
             for cr in result.config_runs
         },

@@ -57,6 +57,7 @@ from __future__ import annotations
 import statistics
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 
 import blind_counts as bc
 import config_selection as cs
@@ -67,6 +68,7 @@ import fold_schedule as fs
 import oos_mask as om
 import pnl_views as pv
 import provider_evidence as pe
+import run_manifest as rm
 import seal_consumption as h3_seal
 import trade_ledger as tl
 import wcmb_engine as wcmb_eng
@@ -107,7 +109,9 @@ class ConfigFoldRun:
     family: str
     train_metrics: PhaseTradeMetrics
     oos_blind_counts: bc.BlindCounts
+    oos_turnover_p: float
     oos_modeled_entry_evidence: tuple[tl.ModeledEntryEvidence, ...]
+    oos_dry_count_gate_handle: om.Masked
     oos_masked_pnl_by_trade: tuple[om.Masked, ...]
     context_binding_at_oos_start: ctxb.WarmupContextBinding
     provider_evidence_binding: pe.RunProviderEvidenceBinding
@@ -146,6 +150,15 @@ class _ContinuousRunResult:
     provider_evidence_binding: pe.RunProviderEvidenceBinding
 
 
+@dataclass(frozen=True)
+class _ProviderSnapshot:
+    """One immutable input snapshot shared by every sealed config."""
+
+    universe_by_ts: Mapping[int, pe.UniverseSnapshotEvidence]
+    minute_by_key: Mapping[tuple[str, int], pe.MinuteBarsEvidence]
+    binding: pe.RunProviderEvidenceBinding
+
+
 class _RunnerInternalInvariantError(RuntimeError):
     """The engine emitted an EXIT for a symbol this runner has no tracked
     open leg for — this would mean engine state and this runner's own
@@ -172,6 +185,209 @@ def _reference_close(
     )
 
 
+def _all_decision_timestamps(*, family: str, fold: Fold) -> tuple[int, ...]:
+    return tuple(
+        sorted(
+            _decision_timestamps(
+                family=family,
+                window_start_ms=fold.train_start_ms,
+                window_end_ms=fold.train_end_ms,
+            )
+            + _decision_timestamps(
+                family=family,
+                window_start_ms=fold.oos_start_ms,
+                window_end_ms=fold.oos_end_ms,
+            )
+        )
+    )
+
+
+def _materialize_provider_snapshot(
+    *,
+    family: str,
+    fold: Fold,
+    fold_id: str,
+    bars_by_symbol: Mapping[str, Sequence[DailyBar]],
+    universe_snapshot_provider: UniverseSnapshotProvider,
+    minute_bars_provider: MinuteBarsProvider,
+) -> _ProviderSnapshot:
+    """Materialize and authenticate every possible provider input once.
+
+    No config can call a stateful provider after another config has entered
+    OOS.  The complete grids are compared to the immutable run manifest, so
+    a caller cannot re-sign changed content with a rewritten timestamp.
+    """
+    manifest = rm.canonical_run_manifest()
+    if tuple(sorted(bars_by_symbol)) != manifest.symbols:
+        raise rm.RunManifestError(
+            "daily corpus symbols do not match the canonical run manifest"
+        )
+    daily_hash = rm.canonical_daily_bars_hash(bars_by_symbol)
+    manifest.assert_daily_bars(fold_id=fold_id, actual_hash=daily_hash)
+
+    timestamps = _all_decision_timestamps(family=family, fold=fold)
+    universe_by_ts: dict[int, pe.UniverseSnapshotEvidence] = {}
+    minute_by_key: dict[tuple[str, int], pe.MinuteBarsEvidence] = {}
+
+    for timestamp in timestamps:
+        evidence = universe_snapshot_provider(timestamp)
+        if type(evidence) is not pe.UniverseSnapshotEvidence:
+            raise TypeError(
+                "universe_snapshot_provider must return UniverseSnapshotEvidence"
+            )
+        try:
+            evidence.assert_integrity(requested_ts_ms=timestamp)
+        except pe.ProviderEvidenceError as exc:
+            raise ProviderTimeBindingError(str(exc)) from exc
+        universe_by_ts[timestamp] = evidence
+
+    universe_grid_hash = rm.canonical_universe_grid_hash(
+        {timestamp: evidence.snapshot for timestamp, evidence in universe_by_ts.items()}
+    )
+    manifest.assert_universe_grid(
+        fold_id=fold_id,
+        family=family,
+        actual_hash=universe_grid_hash,
+    )
+
+    for timestamp in timestamps:
+        for symbol in manifest.symbols:
+            evidence = minute_bars_provider(symbol, timestamp)
+            if type(evidence) is not pe.MinuteBarsEvidence:
+                raise TypeError("minute_bars_provider must return MinuteBarsEvidence")
+            try:
+                evidence.assert_integrity(symbol=symbol, signal_ts_ms=timestamp)
+            except pe.ProviderEvidenceError as exc:
+                raise ProviderTimeBindingError(str(exc)) from exc
+            minute_by_key[(symbol, timestamp)] = evidence
+
+    minute_grid_hash = rm.canonical_minute_grid_hash(
+        {key: evidence.bars for key, evidence in minute_by_key.items()}
+    )
+    manifest.assert_minute_grid(
+        fold_id=fold_id,
+        family=family,
+        actual_hash=minute_grid_hash,
+    )
+    binding = pe.RunProviderEvidenceBinding(
+        run_manifest_hash=manifest.manifest_hash,
+        daily_bars_artifact_hash=daily_hash,
+        universe_grid_hash=universe_grid_hash,
+        minute_grid_hash=minute_grid_hash,
+        universe_artifacts=tuple(
+            (
+                timestamp,
+                evidence.source_as_of_ts_ms,
+                evidence.source_artifact_hash,
+            )
+            for timestamp, evidence in sorted(universe_by_ts.items())
+        ),
+        minute_artifacts=tuple(
+            (
+                symbol,
+                timestamp,
+                evidence.source_as_of_ts_ms,
+                evidence.source_artifact_hash,
+            )
+            for (symbol, timestamp), evidence in sorted(minute_by_key.items())
+        ),
+    )
+    return _ProviderSnapshot(
+        universe_by_ts=MappingProxyType(dict(universe_by_ts)),
+        minute_by_key=MappingProxyType(dict(minute_by_key)),
+        binding=binding,
+    )
+
+
+def _assert_provider_snapshot(
+    *,
+    snapshot: _ProviderSnapshot,
+    family: str,
+    fold: Fold,
+    fold_id: str,
+    bars_by_symbol: Mapping[str, Sequence[DailyBar]],
+) -> None:
+    """Re-authenticate a supplied cache; private arguments are not authority."""
+    if type(snapshot) is not _ProviderSnapshot:
+        raise TypeError("provider_snapshot must be an exact _ProviderSnapshot")
+    manifest = rm.canonical_run_manifest()
+    timestamps = _all_decision_timestamps(family=family, fold=fold)
+    expected_universe_keys = set(timestamps)
+    expected_minute_keys = {
+        (symbol, timestamp) for timestamp in timestamps for symbol in manifest.symbols
+    }
+    if set(snapshot.universe_by_ts) != expected_universe_keys:
+        raise rm.RunManifestError("provider snapshot universe coverage is incomplete")
+    if set(snapshot.minute_by_key) != expected_minute_keys:
+        raise rm.RunManifestError("provider snapshot minute coverage is incomplete")
+
+    for timestamp, evidence in snapshot.universe_by_ts.items():
+        if type(evidence) is not pe.UniverseSnapshotEvidence:
+            raise TypeError("cached universe evidence must use the typed envelope")
+        try:
+            evidence.assert_integrity(requested_ts_ms=timestamp)
+        except pe.ProviderEvidenceError as exc:
+            raise ProviderTimeBindingError(str(exc)) from exc
+    for (symbol, timestamp), evidence in snapshot.minute_by_key.items():
+        if type(evidence) is not pe.MinuteBarsEvidence:
+            raise TypeError("cached minute evidence must use the typed envelope")
+        try:
+            evidence.assert_integrity(symbol=symbol, signal_ts_ms=timestamp)
+        except pe.ProviderEvidenceError as exc:
+            raise ProviderTimeBindingError(str(exc)) from exc
+
+    daily_hash = rm.canonical_daily_bars_hash(bars_by_symbol)
+    universe_hash = rm.canonical_universe_grid_hash(
+        {
+            timestamp: evidence.snapshot
+            for timestamp, evidence in snapshot.universe_by_ts.items()
+        }
+    )
+    minute_hash = rm.canonical_minute_grid_hash(
+        {key: evidence.bars for key, evidence in snapshot.minute_by_key.items()}
+    )
+    manifest.assert_daily_bars(fold_id=fold_id, actual_hash=daily_hash)
+    manifest.assert_provider_grids(
+        fold_id=fold_id,
+        family=family,
+        universe_grid_hash=universe_hash,
+        minute_grid_hash=minute_hash,
+    )
+    binding = snapshot.binding
+    expected_universe_artifacts = tuple(
+        (
+            timestamp,
+            evidence.source_as_of_ts_ms,
+            evidence.source_artifact_hash,
+        )
+        for timestamp, evidence in sorted(snapshot.universe_by_ts.items())
+    )
+    expected_minute_artifacts = tuple(
+        (
+            symbol,
+            timestamp,
+            evidence.source_as_of_ts_ms,
+            evidence.source_artifact_hash,
+        )
+        for (symbol, timestamp), evidence in sorted(snapshot.minute_by_key.items())
+    )
+    expected_binding = pe.RunProviderEvidenceBinding(
+        run_manifest_hash=manifest.manifest_hash,
+        daily_bars_artifact_hash=daily_hash,
+        universe_grid_hash=universe_hash,
+        minute_grid_hash=minute_hash,
+        universe_artifacts=expected_universe_artifacts,
+        minute_artifacts=expected_minute_artifacts,
+    )
+    if (
+        type(binding) is not pe.RunProviderEvidenceBinding
+        or binding != expected_binding
+    ):
+        raise rm.RunManifestError(
+            "provider evidence binding does not match canonical materialized inputs"
+        )
+
+
 def _run_continuous_decisions(
     *,
     config,
@@ -180,47 +396,37 @@ def _run_continuous_decisions(
     bars_by_symbol: Mapping[str, Sequence[DailyBar]],
     universe_snapshot_provider: UniverseSnapshotProvider,
     minute_bars_provider: MinuteBarsProvider,
+    provider_snapshot: _ProviderSnapshot | None = None,
 ) -> _ContinuousRunResult:
     fs.assert_registered_fold_binding(fold_id=f"fold-{fold.fold_index}", fold=fold)
-    timestamps = sorted(
-        _decision_timestamps(
+    fold_id = f"fold-{fold.fold_index}"
+    if provider_snapshot is None:
+        provider_snapshot = _materialize_provider_snapshot(
             family=family,
-            window_start_ms=fold.train_start_ms,
-            window_end_ms=fold.train_end_ms,
+            fold=fold,
+            fold_id=fold_id,
+            bars_by_symbol=bars_by_symbol,
+            universe_snapshot_provider=universe_snapshot_provider,
+            minute_bars_provider=minute_bars_provider,
         )
-        + _decision_timestamps(
-            family=family,
-            window_start_ms=fold.oos_start_ms,
-            window_end_ms=fold.oos_end_ms,
-        )
+    _assert_provider_snapshot(
+        snapshot=provider_snapshot,
+        family=family,
+        fold=fold,
+        fold_id=fold_id,
+        bars_by_symbol=bars_by_symbol,
     )
+    timestamps = _all_decision_timestamps(family=family, fold=fold)
     state: dict = {}
     all_records: list[SignalRecord] = []
     closed_trades: list[tl.Trade] = []
     open_legs: dict[str, tl.OpenLeg] = {}
     fill_attempts: list[tl.FillAttempt] = []
     modeled_entry_evidence: list[tl.ModeledEntryEvidence] = []
-    universe_artifacts: list[tuple[int, int, str]] = []
-    minute_artifacts: list[tuple[str, int, int, str]] = []
 
     for ts in timestamps:
-        universe_evidence = universe_snapshot_provider(ts)
-        if type(universe_evidence) is not pe.UniverseSnapshotEvidence:
-            raise TypeError(
-                "universe_snapshot_provider must return UniverseSnapshotEvidence"
-            )
-        try:
-            universe_evidence.assert_integrity(requested_ts_ms=ts)
-        except pe.ProviderEvidenceError as exc:
-            raise ProviderTimeBindingError(str(exc)) from exc
+        universe_evidence = provider_snapshot.universe_by_ts[ts]
         universe = universe_evidence.snapshot
-        universe_artifacts.append(
-            (
-                ts,
-                universe_evidence.source_as_of_ts_ms,
-                universe_evidence.source_artifact_hash,
-            )
-        )
         prior_state = state
         if family == "AP-A1":
             result = dats_eng.run_ap_a1_decision(
@@ -248,23 +454,7 @@ def _run_continuous_decisions(
             symbol = record.symbol
             if record.action == "ENTER":
                 ref = _reference_close(bars_by_symbol, symbol, ts)
-                minute_evidence = minute_bars_provider(symbol, ts)
-                if type(minute_evidence) is not pe.MinuteBarsEvidence:
-                    raise TypeError(
-                        "minute_bars_provider must return MinuteBarsEvidence"
-                    )
-                try:
-                    minute_evidence.assert_integrity(symbol=symbol, signal_ts_ms=ts)
-                except pe.ProviderEvidenceError as exc:
-                    raise ProviderTimeBindingError(str(exc)) from exc
-                minute_artifacts.append(
-                    (
-                        symbol,
-                        ts,
-                        minute_evidence.source_as_of_ts_ms,
-                        minute_evidence.source_artifact_hash,
-                    )
-                )
+                minute_evidence = provider_snapshot.minute_by_key[(symbol, ts)]
                 attempt, maybe_open_leg = tl.process_entry_signal(
                     record,
                     reference_close=ref,
@@ -286,23 +476,7 @@ def _run_continuous_decisions(
                         f"EXIT for {symbol} at {ts} with no tracked open leg"
                     )
                 ref = _reference_close(bars_by_symbol, symbol, ts)
-                minute_evidence = minute_bars_provider(symbol, ts)
-                if type(minute_evidence) is not pe.MinuteBarsEvidence:
-                    raise TypeError(
-                        "minute_bars_provider must return MinuteBarsEvidence"
-                    )
-                try:
-                    minute_evidence.assert_integrity(symbol=symbol, signal_ts_ms=ts)
-                except pe.ProviderEvidenceError as exc:
-                    raise ProviderTimeBindingError(str(exc)) from exc
-                minute_artifacts.append(
-                    (
-                        symbol,
-                        ts,
-                        minute_evidence.source_as_of_ts_ms,
-                        minute_evidence.source_artifact_hash,
-                    )
-                )
+                minute_evidence = provider_snapshot.minute_by_key[(symbol, ts)]
                 attempt, maybe_trade = tl.process_exit_signal(
                     record,
                     open_leg,
@@ -326,10 +500,7 @@ def _run_continuous_decisions(
         open_legs_by_symbol=dict(open_legs),
         fill_attempts=tuple(fill_attempts),
         modeled_entry_evidence=tuple(modeled_entry_evidence),
-        provider_evidence_binding=pe.RunProviderEvidenceBinding(
-            universe_artifacts=tuple(universe_artifacts),
-            minute_artifacts=tuple(minute_artifacts),
-        ),
+        provider_evidence_binding=provider_snapshot.binding,
     )
 
 
@@ -475,6 +646,14 @@ def run_family_fold(
     bars_snapshot = {
         symbol: tuple(bars_by_symbol[symbol]) for symbol in sorted(bars_by_symbol)
     }
+    provider_snapshot = _materialize_provider_snapshot(
+        family=family,
+        fold=fold,
+        fold_id=fold_id,
+        bars_by_symbol=bars_snapshot,
+        universe_snapshot_provider=universe_snapshot_provider,
+        minute_bars_provider=minute_bars_provider,
+    )
     context_binding = ctxb.compute_warmup_context_binding(
         bars_snapshot, window_end_ms=fold.oos_start_ms
     )
@@ -487,6 +666,7 @@ def run_family_fold(
             bars_by_symbol=bars_snapshot,
             universe_snapshot_provider=universe_snapshot_provider,
             minute_bars_provider=minute_bars_provider,
+            provider_snapshot=provider_snapshot,
         )
         train_metrics, _train_trades = _build_phase_metrics(
             phase="TRAIN",
@@ -509,6 +689,7 @@ def run_family_fold(
 
         train_metrics_by_config[config.config_id] = cs.ConfigTrainMetrics(
             config_id=config.config_id,
+            is_incomplete=train_metrics.blind_counts.is_incomplete,
             closed_trades_count=train_metrics.closed_trades_count,
             median_trade_e120_bp=train_metrics.median_trade_e120_bp,
             turnover_p=train_metrics.turnover_p,
@@ -541,6 +722,13 @@ def run_family_fold(
             )
             for t in oos_trades
         )
+        oos_gate_handle = om.mask(
+            True,
+            fold_id=fold_id,
+            family=family,
+            config_id=config.config_id,
+            dry_counts=oos_metrics.blind_counts,
+        )
 
         config_runs.append(
             ConfigFoldRun(
@@ -548,7 +736,9 @@ def run_family_fold(
                 family=family,
                 train_metrics=train_metrics,
                 oos_blind_counts=oos_metrics.blind_counts,
+                oos_turnover_p=oos_metrics.turnover_p,
                 oos_modeled_entry_evidence=oos_metrics.modeled_entry_evidence,
+                oos_dry_count_gate_handle=oos_gate_handle,
                 oos_masked_pnl_by_trade=oos_masked,
                 context_binding_at_oos_start=context_binding,
                 provider_evidence_binding=run_result.provider_evidence_binding,

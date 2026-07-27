@@ -190,25 +190,37 @@ def test_fake_free_entry_then_exit_through_the_full_h4_pipeline():
     three_view = pv.three_view_pnl_bp(trade_fill, cost_scenarios_bp=real_scenarios)
     assert three_view.shadow_net_bp_by_scenario["C120"] < three_view.actual_fill_bp
 
-    # Real oos_mask -- masked by default, unmaskable only with matching PASS evidence.
-    dry_counts = bc.BlindCounts(
-        total_decision_records=5,
-        modeled_entries_count=5,
-        closed_trades_count=5,
-        open_positions_count=0,
-        entry_unfilled_count=0,
-        exit_unfilled_count=0,
-        fill_window_incomplete_count=0,
-        holding_days=(3, 3, 3, 3, 3),
-        reason_code_histogram={"ENTRY_ACCEPTED": 5},
+    # Real oos_mask -- no fold-local reveal exists. One aggregate authority
+    # is issued only after exact, complete dry counts for all 8 folds pass.
+    counts_by_fold = {
+        f"fold-{index}": bc.BlindCounts(
+            total_decision_records=5,
+            modeled_entries_count=5,
+            closed_trades_count=5,
+            open_positions_count=0,
+            entry_unfilled_count=0,
+            exit_unfilled_count=0,
+            fill_window_incomplete_count=0,
+            holding_days=(3, 3, 3, 3, 3),
+            reason_code_histogram={"ENTRY_ACCEPTED": 5},
+        )
+        for index in range(8)
+    }
+    masked_by_fold = {
+        fold_id: (
+            om.mask(
+                three_view if fold_id == "fold-0" else None,
+                fold_id=fold_id,
+                family="AP-A1",
+                config_id=config.config_id,
+                dry_counts=counts,
+            ),
+        )
+        for fold_id, counts in counts_by_fold.items()
+    }
+    evidence = om.issue_all_folds_dry_count_pass(
+        masked_by_fold=masked_by_fold,
+        dry_counts_by_fold=counts_by_fold,
     )
-    masked = om.mask(
-        three_view,
-        fold_id="smoke-fold",
-        family="AP-A1",
-        config_id=config.config_id,
-        dry_counts=dry_counts,
-    )
-    evidence = om.issue_dry_count_pass(masked, dry_counts)
-    unmasked = om.unmask(masked, evidence)
+    unmasked = om.unmask(masked_by_fold["fold-0"][0], evidence)
     assert unmasked == three_view
