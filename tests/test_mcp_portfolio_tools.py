@@ -923,7 +923,15 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
         "_fetch_quote_equity_kr",
         AsyncMock(return_value={"price": 71000.0}),
     )
-    us_quote_mock = AsyncMock(return_value={"price": 220.0})
+    us_quote_mock = AsyncMock(
+        return_value={
+            "price": 220.0,
+            "source": "kis_overseas",
+            "price_source": "kis_overseas_last",
+            "data_state": "fresh",
+            "venue": "NASD",
+        }
+    )
     _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", us_quote_mock)
     monkeypatch.setattr(
         upbit_service,
@@ -954,20 +962,22 @@ async def test_get_holdings_groups_by_account_and_calculates_pnl(monkeypatch):
     )
     # ROB-902: a KIS-account KR holding keeps its bulk balance snapshot
     # (prpr / evlu_amt / evlu_pfls_amt / evlu_pfls_rt) instead of firing the
-    # per-symbol itemchartprice refresh — mirroring the US snapshot exemption
-    # asserted below. The 71000 KR refresh mock only serves the manual/Toss
-    # 005930 holding (source != kis_api), not this KIS-account one.
+    # per-symbol itemchartprice refresh. The 71000 KR refresh mock only serves
+    # the manual/Toss 005930 holding (source != kis_api), not this KIS-account
+    # one. US positions below intentionally do refresh (ROB-1095).
     assert kis_kr["current_price"] == pytest.approx(70500.0)
     assert kis_kr["evaluation_amount"] == pytest.approx(141000.0)
     assert kis_kr["profit_loss"] == pytest.approx(1000.0)
     assert kis_kr["profit_rate"] == pytest.approx(0.71)
 
     kis_us = next(item for item in kis_account["positions"] if item["symbol"] == "AAPL")
-    assert kis_us["current_price"] == pytest.approx(210.0)
-    assert kis_us["evaluation_amount"] == pytest.approx(210.0)
-    assert kis_us["profit_loss"] == pytest.approx(10.0)
-    assert kis_us["profit_rate"] == pytest.approx(5.0)
-    us_quote_mock.assert_not_awaited()
+    assert kis_us["current_price"] == pytest.approx(220.0)
+    assert kis_us["evaluation_amount"] == pytest.approx(220.0)
+    assert kis_us["profit_loss"] == pytest.approx(20.0)
+    assert kis_us["profit_rate"] == pytest.approx(10.0)
+    assert kis_us["price_source"] == "kis_overseas_last"
+    assert kis_us["profit_rate_price_source"] == "kis_overseas_last"
+    us_quote_mock.assert_awaited_once_with("AAPL")
 
     upbit_account = next(
         item for item in result["accounts"] if item["account"] == "upbit"
@@ -1858,8 +1868,8 @@ async def test_get_holdings_preserves_kis_values_on_yahoo_failure(monkeypatch):
         async def inquire_overseas_daily_price(
             self, symbol, exchange_code="NASD", n=200, period="D"
         ):
-            # ROB-365 bug 2: KIS daily close is the primary refresh source; here it
-            # is also unavailable, so the position must fall back / fail-closed.
+            # Legacy method retained on the stub; ROB-1095 no longer uses a
+            # daily bar as a US holdings current-price refresh.
             return pd.DataFrame()
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
@@ -1909,7 +1919,7 @@ async def test_get_holdings_preserves_kis_values_on_yahoo_failure(monkeypatch):
     assert "AMZN" in error_symbols
     assert "AAPL" in error_symbols
     for error in result["errors"]:
-        # KIS daily close is tried first, then Yahoo; both unavailable here.
+        # The shared KIS-current/Yahoo quote path failed.
         assert error["source"] == "kis+yahoo"
         assert error["market"] == "us"
         assert error["stage"] == "current_price"
@@ -1918,8 +1928,9 @@ async def test_get_holdings_preserves_kis_values_on_yahoo_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_collect_portfolio_positions_skips_yahoo_for_kis_us_with_valid_numeric_snapshot(
-    monkeypatch,
+@pytest.mark.parametrize("is_mock", [False, True])
+async def test_collect_portfolio_positions_refreshes_kis_us_valid_numeric_snapshot(
+    monkeypatch, is_mock
 ):
     from app.mcp_server.tooling import portfolio_holdings
 
@@ -1942,11 +1953,24 @@ async def test_collect_portfolio_positions_skips_yahoo_for_kis_us_with_valid_num
         }
     ]
 
-    async def fake_collect_kis_positions(market_filter):
+    async def fake_collect_kis_positions(market_filter, *, is_mock=False):
         assert market_filter == "equity_us"
+        assert is_mock is is_mock_mode
         return positions, []
 
-    quote_mock = AsyncMock(return_value={"price": 220.0})
+    is_mock_mode = is_mock
+    quote_mock = AsyncMock(
+        return_value={
+            "price": 220.0,
+            "source": "kis_overseas",
+            "price_source": "kis_overseas_last",
+            "quote_asof": "2026-07-27T10:03:00-04:00",
+            "data_state": "fresh",
+            "session": "regular",
+            "venue": "NASD",
+            "delayed": True,
+        }
+    )
 
     monkeypatch.setattr(
         portfolio_holdings, "_collect_kis_positions", fake_collect_kis_positions
@@ -1972,20 +1996,109 @@ async def test_collect_portfolio_positions_skips_yahoo_for_kis_us_with_valid_num
         account="kis",
         market="us",
         include_current_price=True,
+        is_mock=is_mock,
     )
 
     assert result_errors == []
-    assert result_positions == positions
-    assert result_positions[0]["current_price"] == pytest.approx(210.0)
-    assert result_positions[0]["evaluation_amount"] == pytest.approx(210.0)
-    assert result_positions[0]["profit_loss"] == pytest.approx(0.0)
-    assert result_positions[0]["profit_rate"] == pytest.approx(0.0)
-    quote_mock.assert_not_awaited()
+    assert result_positions[0]["current_price"] == pytest.approx(220.0)
+    assert result_positions[0]["evaluation_amount"] == pytest.approx(220.0)
+    assert result_positions[0]["profit_loss"] == pytest.approx(20.0)
+    assert result_positions[0]["profit_rate"] == pytest.approx(10.0)
+    assert result_positions[0]["price_source"] == "kis_overseas_last"
+    assert result_positions[0]["price_asof"] == "2026-07-27T10:03:00-04:00"
+    assert result_positions[0]["data_state"] == "fresh"
+    assert result_positions[0]["profit_rate_price_source"] == "kis_overseas_last"
+    quote_mock.assert_awaited_once_with("AAPL")
+
+
+@pytest.mark.asyncio
+async def test_rob1095_wdc_and_uber_refresh_live_price_and_derived_pnl(monkeypatch):
+    """ROB-1095 production reproduction: both valid snapshots use live quotes."""
+    tools = build_tools()
+
+    class DummyKISClient:
+        def __init__(self, is_mock=False):
+            self.is_mock = is_mock
+
+        async def fetch_my_stocks(self, is_mock=False):
+            return []
+
+        async def fetch_my_us_stocks(self, is_mock=False):
+            return [
+                {
+                    "ovrs_pdno": "WDC",
+                    "ovrs_item_name": "Western Digital",
+                    "ovrs_cblc_qty": "1",
+                    "pchs_avg_pric": "532",
+                    "now_pric2": "513.99",
+                    "ovrs_stck_evlu_amt": "513.99",
+                    "frcr_evlu_pfls_amt": "-18.01",
+                    "evlu_pfls_rt": "-3.39",
+                },
+                {
+                    "ovrs_pdno": "UBER",
+                    "ovrs_item_name": "Uber",
+                    "ovrs_cblc_qty": "4",
+                    "pchs_avg_pric": "68.6",
+                    "now_pric2": "66.49",
+                    "ovrs_stck_evlu_amt": "265.96",
+                    "frcr_evlu_pfls_amt": "-8.44",
+                    "evlu_pfls_rt": "-3.08",
+                },
+            ]
+
+    async def fetch_quote(symbol: str) -> dict[str, object]:
+        return {
+            "price": {"WDC": 498.39, "UBER": 66.56}[symbol],
+            "source": "kis_overseas",
+            "price_source": "kis_overseas_last",
+            "data_state": "fresh",
+            "session": "regular",
+            "venue": {"WDC": "NASD", "UBER": "NYSE"}[symbol],
+            "delayed": True,
+        }
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+    _patch_runtime_attr(
+        monkeypatch,
+        "_collect_manual_positions",
+        AsyncMock(return_value=([], [])),
+    )
+    _patch_runtime_attr(monkeypatch, "validate_kis_mock_config", lambda: [])
+    quote_mock = AsyncMock(side_effect=fetch_quote)
+    _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", quote_mock)
+
+    result = await tools["get_holdings"](
+        account="kis",
+        account_mode="kis_mock",
+        market="us",
+        minimum_value=0,
+    )
+    positions = {
+        position["symbol"]: position for position in result["accounts"][0]["positions"]
+    }
+
+    assert positions["WDC"]["current_price"] == pytest.approx(498.39)
+    assert positions["WDC"]["evaluation_amount"] == pytest.approx(498.39)
+    assert positions["WDC"]["profit_loss"] == pytest.approx(-33.61)
+    assert positions["WDC"]["profit_rate"] == pytest.approx(-6.32)
+    assert positions["WDC"]["venue"] == "NASD"
+
+    assert positions["UBER"]["current_price"] == pytest.approx(66.56)
+    assert positions["UBER"]["evaluation_amount"] == pytest.approx(266.24)
+    assert positions["UBER"]["profit_loss"] == pytest.approx(-8.16)
+    assert positions["UBER"]["profit_rate"] == pytest.approx(-2.97)
+    assert positions["UBER"]["venue"] == "NYSE"
+
+    assert result["summary"]["total_evaluation"] == pytest.approx(764.63)
+    assert result["summary"]["total_profit_loss"] == pytest.approx(-41.77)
+    assert result["summary"]["total_profit_rate"] == pytest.approx(-5.18)
+    assert {call.args[0] for call in quote_mock.await_args_list} == {"WDC", "UBER"}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kis_price_value", ["", "0"])
-async def test_get_holdings_fetches_yahoo_only_for_kis_us_missing_price_and_recalculates(
+async def test_get_holdings_refreshes_all_kis_us_positions_and_recalculates(
     monkeypatch, kis_price_value
 ):
     tools = build_tools()
@@ -2024,7 +2137,16 @@ async def test_get_holdings_fetches_yahoo_only_for_kis_us_missing_price_and_reca
         "_collect_manual_positions",
         AsyncMock(return_value=([], [])),
     )
-    quote_mock = AsyncMock(return_value={"price": 165.0})
+
+    async def fetch_quote(symbol: str) -> dict[str, object]:
+        return {
+            "price": {"AAPL": 220.0, "AMZN": 165.0}[symbol],
+            "source": "kis_overseas",
+            "price_source": "kis_overseas_last",
+            "data_state": "fresh",
+        }
+
+    quote_mock = AsyncMock(side_effect=fetch_quote)
     _patch_runtime_attr(monkeypatch, "_fetch_quote_equity_us", quote_mock)
 
     result = await tools["get_holdings"](account="kis", market="us")
@@ -2038,10 +2160,11 @@ async def test_get_holdings_fetches_yahoo_only_for_kis_us_missing_price_and_reca
     }
 
     aapl = positions_by_symbol["AAPL"]
-    assert aapl["current_price"] == pytest.approx(210.0)
-    assert aapl["evaluation_amount"] == pytest.approx(210.0)
-    assert aapl["profit_loss"] == pytest.approx(10.0)
-    assert aapl["profit_rate"] == pytest.approx(5.0)
+    assert aapl["current_price"] == pytest.approx(220.0)
+    assert aapl["evaluation_amount"] == pytest.approx(220.0)
+    assert aapl["profit_loss"] == pytest.approx(20.0)
+    assert aapl["profit_rate"] == pytest.approx(10.0)
+    assert aapl["profit_rate_price_source"] == "kis_overseas_last"
     assert "price_error" not in aapl
 
     amzn = positions_by_symbol["AMZN"]
@@ -2051,7 +2174,7 @@ async def test_get_holdings_fetches_yahoo_only_for_kis_us_missing_price_and_reca
     assert amzn["profit_rate"] == pytest.approx(10.0)
     assert "price_error" not in amzn
 
-    quote_mock.assert_awaited_once_with("AMZN")
+    assert {call.args[0] for call in quote_mock.await_args_list} == {"AAPL", "AMZN"}
 
 
 @pytest.mark.asyncio
@@ -2213,7 +2336,7 @@ async def test_get_holdings_fetches_yahoo_for_kis_us_with_invalid_profit_metrics
 
 
 @pytest.mark.asyncio
-async def test_get_holdings_keeps_kis_us_price_when_manual_same_symbol_uses_yahoo(
+async def test_get_holdings_shares_us_live_price_for_same_symbol_across_accounts(
     monkeypatch,
 ):
     tools = build_tools()
@@ -2276,10 +2399,10 @@ async def test_get_holdings_keeps_kis_us_price_when_manual_same_symbol_uses_yaho
     kis_aapl = accounts_by_id["kis"]["positions"][0]
     manual_aapl = accounts_by_id["toss"]["positions"][0]
 
-    assert kis_aapl["current_price"] == pytest.approx(210.0)
-    assert kis_aapl["evaluation_amount"] == pytest.approx(210.0)
-    assert kis_aapl["profit_loss"] == pytest.approx(10.0)
-    assert kis_aapl["profit_rate"] == pytest.approx(5.0)
+    assert kis_aapl["current_price"] == pytest.approx(225.0)
+    assert kis_aapl["evaluation_amount"] == pytest.approx(225.0)
+    assert kis_aapl["profit_loss"] == pytest.approx(25.0)
+    assert kis_aapl["profit_rate"] == pytest.approx(12.5)
     assert "price_error" not in kis_aapl
 
     assert manual_aapl["current_price"] == pytest.approx(225.0)
@@ -2318,7 +2441,8 @@ async def test_get_holdings_only_records_yahoo_error_for_same_symbol_manual_fall
         async def inquire_overseas_daily_price(
             self, symbol, exchange_code="NASD", n=200, period="D"
         ):
-            # KIS daily close (primary refresh source) also unavailable here.
+            # Legacy method retained on the stub; ROB-1095 uses the shared
+            # KIS-current/Yahoo quote path instead.
             return pd.DataFrame()
 
     _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
@@ -2365,7 +2489,12 @@ async def test_get_holdings_only_records_yahoo_error_for_same_symbol_manual_fall
     assert kis_aapl["evaluation_amount"] == pytest.approx(210.0)
     assert kis_aapl["profit_loss"] == pytest.approx(10.0)
     assert kis_aapl["profit_rate"] == pytest.approx(5.0)
-    assert "price_error" not in kis_aapl
+    assert "not found" in kis_aapl["price_error"]
+    assert kis_aapl["price_source"] == "kis_holdings_snapshot"
+    assert kis_aapl["price_asof"] is None
+    assert kis_aapl["data_state"] == "stale"
+    assert kis_aapl["data_state_reason"] == "live_price_refresh_failed"
+    assert kis_aapl["profit_rate_price_source"] == "kis_holdings_snapshot"
 
     assert manual_aapl["current_price"] is None
     assert manual_aapl["evaluation_amount"] is None
@@ -2373,8 +2502,7 @@ async def test_get_holdings_only_records_yahoo_error_for_same_symbol_manual_fall
     assert manual_aapl["profit_rate"] is None
     assert "not found" in manual_aapl["price_error"]
 
-    # A single deduped error for the symbol; KIS daily close is tried before Yahoo,
-    # both unavailable here, so the source reflects both providers (ROB-365 bug 2).
+    # One shared live-quote attempt/error serves both same-symbol positions.
     assert len(result["errors"]) == 1
     error = result["errors"][0]
     assert error["source"] == "kis+yahoo"
@@ -3312,15 +3440,12 @@ async def test_get_available_capital_paper(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# ROB-365 bug 2: get_holdings US current-price refresh — KIS-primary, fail-closed
+# ROB-1095: get_holdings US current-price refresh + provenance
 # ---------------------------------------------------------------------------
 
 
 def _us_refresh_position(symbol: str = "AAPL") -> dict:
-    """A US position whose KIS snapshot is incomplete, so the refresh path fires.
-
-    source != "kis_api" makes _has_valid_kis_equity_snapshot() return False.
-    """
+    """A US position; every US position takes the live quote refresh path."""
     return {
         "instrument_type": "equity_us",
         "symbol": symbol,
@@ -3332,86 +3457,84 @@ def _us_refresh_position(symbol: str = "AAPL") -> dict:
     }
 
 
-def _kis_daily_frame(last_close: float) -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "date": pd.date_range("2024-01-01", periods=2, freq="D"),
-            "open": [last_close - 2, last_close - 1],
-            "high": [last_close + 2, last_close + 2],
-            "low": [last_close - 3, last_close - 2],
-            "close": [last_close - 1, last_close],
-            "volume": [1000, 1100],
+@pytest.mark.asyncio
+async def test_fetch_price_map_us_uses_live_quote_and_preserves_provenance(monkeypatch):
+    """ROB-1095: refresh through get_quote's venue-aware KIS current-price arm."""
+    us_quote_mock = AsyncMock(
+        return_value={
+            "price": 208.0,
+            "source": "kis_overseas",
+            "price_source": "kis_overseas_last",
+            "quote_asof": "2026-07-27T10:03:00-04:00",
+            "data_state": "fresh",
+            "session": "regular",
+            "venue": "NYSE",
+            "delayed": True,
         }
     )
-
-
-@pytest.mark.asyncio
-async def test_fetch_price_map_us_uses_kis_daily_close_primary(monkeypatch):
-    """US current-price refresh resolves from KIS daily close first; Yahoo not called (ROB-365 bug 2)."""
-
-    class DummyKISClient:
-        async def inquire_overseas_daily_price(
-            self, symbol, exchange_code="NASD", n=200, period="D"
-        ):
-            return _kis_daily_frame(208.0)
-
-    monkeypatch.setattr(portfolio_holdings, "KISClient", DummyKISClient)
-    us_quote_mock = AsyncMock(return_value={"price": 220.0})
     monkeypatch.setattr(portfolio_holdings, "_fetch_quote_equity_us", us_quote_mock)
 
     (
         price_map,
         price_errors,
         error_map,
+        metadata_map,
     ) = await portfolio_holdings._fetch_price_map_for_positions(
         [_us_refresh_position()]
     )
 
     assert price_map[("equity_us", "AAPL")] == pytest.approx(208.0)
+    assert price_errors == []
     assert ("equity_us", "AAPL") not in error_map
-    us_quote_mock.assert_not_awaited()
+    assert metadata_map[("equity_us", "AAPL")] == {
+        "price_source": "kis_overseas_last",
+        "price_asof": "2026-07-27T10:03:00-04:00",
+        "data_state": "fresh",
+        "session": "regular",
+        "venue": "NYSE",
+        "delayed": True,
+    }
+    us_quote_mock.assert_awaited_once_with("AAPL")
 
 
 @pytest.mark.asyncio
-async def test_fetch_price_map_us_falls_back_to_yahoo_when_kis_empty(monkeypatch):
-    """When KIS daily close is unavailable, fall back to the Yahoo live quote (ROB-365 bug 2)."""
-
-    class DummyKISClient:
-        async def inquire_overseas_daily_price(
-            self, symbol, exchange_code="NASD", n=200, period="D"
-        ):
-            return pd.DataFrame()  # no data (e.g. a NYSE/AMEX symbol under NASD)
-
-    monkeypatch.setattr(portfolio_holdings, "KISClient", DummyKISClient)
-    us_quote_mock = AsyncMock(return_value={"price": 215.0})
+async def test_fetch_price_map_us_preserves_yahoo_fallback_provenance(monkeypatch):
+    """The shared quote path can fall back to Yahoo without losing provenance."""
+    us_quote_mock = AsyncMock(
+        return_value={
+            "price": 215.0,
+            "source": "yahoo",
+            "price_source": "yahoo_fast_info_close",
+            "data_state": "fresh",
+            "session": "regular",
+            "delayed": True,
+        }
+    )
     monkeypatch.setattr(portfolio_holdings, "_fetch_quote_equity_us", us_quote_mock)
 
     (
         price_map,
         price_errors,
         error_map,
+        metadata_map,
     ) = await portfolio_holdings._fetch_price_map_for_positions(
         [_us_refresh_position()]
     )
 
     assert price_map[("equity_us", "AAPL")] == pytest.approx(215.0)
+    assert price_errors == []
+    assert error_map == {}
+    assert metadata_map[("equity_us", "AAPL")]["price_source"] == (
+        "yahoo_fast_info_close"
+    )
     us_quote_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_fetch_price_map_us_fail_closed_when_all_sources_fail(monkeypatch):
-    """When both KIS and Yahoo fail, no price is fabricated and the error records the
-    actual source (not the previously hardcoded 'yahoo') (ROB-365 bug 2)."""
-
-    class DummyKISClient:
-        async def inquire_overseas_daily_price(
-            self, symbol, exchange_code="NASD", n=200, period="D"
-        ):
-            raise RuntimeError("KIS overseas daily unavailable")
-
-    monkeypatch.setattr(portfolio_holdings, "KISClient", DummyKISClient)
+    """When the shared KIS/Yahoo quote path fails, no price is fabricated."""
     us_quote_mock = AsyncMock(
-        side_effect=RuntimeError("'NoneType' object is not subscriptable")
+        side_effect=RuntimeError("US quote temporarily unavailable")
     )
     monkeypatch.setattr(portfolio_holdings, "_fetch_quote_equity_us", us_quote_mock)
 
@@ -3419,12 +3542,14 @@ async def test_fetch_price_map_us_fail_closed_when_all_sources_fail(monkeypatch)
         price_map,
         price_errors,
         error_map,
+        metadata_map,
     ) = await portfolio_holdings._fetch_price_map_for_positions(
         [_us_refresh_position()]
     )
 
     assert ("equity_us", "AAPL") not in price_map  # no fabricated price
     assert ("equity_us", "AAPL") in error_map
+    assert metadata_map == {}
     us_error = next(e for e in price_errors if e.get("symbol") == "AAPL")
     assert us_error["source"] == "kis+yahoo"
     assert us_error["market"] == "us"

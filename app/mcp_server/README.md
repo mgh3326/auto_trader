@@ -1894,8 +1894,15 @@ Filtering rules:
 - If `include_current_price=False`, `minimum_value` filtering is skipped
 - When `minimum_value=None`, per-currency thresholds are automatically applied based on `instrument_type`: `equity_kr` and `crypto` use 5000, `equity_us` uses 10
 - When `minimum_value` is a number, that uniform threshold is applied to all positions
-- KIS US holdings keep KIS-provided snapshot values when the KIS snapshot is numerically valid: `current_price > 0`, `evaluation_amount > 0`, and `profit_loss` / `profit_rate` are parseable numbers
-- KIS US holdings fall back to Yahoo only when that KIS snapshot is missing or invalid; Yahoo is a fallback refresh path, not the default for valid KIS US holdings
+- KIS US balance snapshots are not treated as current-price truth even when
+  `current_price > 0`, `evaluation_amount > 0`, and `profit_loss` /
+  `profit_rate` are parseable: the balance response has no trustworthy
+  per-symbol as-of and can lag the live quote materially.
+- With `include_current_price=True`, every US position is refreshed through the
+  same venue-aware KIS overseas current-price path as `get_quote`, with Yahoo as
+  fallback. `evaluation_amount`, `profit_loss`, and `profit_rate` are
+  recalculated from that refreshed price. KIS KR holdings retain their complete
+  bulk balance snapshot to avoid the domestic per-symbol N+1.
 - Upbit crypto current prices are fetched via batch ticker request (`/v1/ticker?markets=...`)
 - During Upbit holdings collection, coins that raise `UpbitSymbolNotRegisteredError` or `UpbitSymbolInactiveError` on name lookup are silently skipped (not added to `errors`).
 - Before batch ticker request, tradable markets are loaded from `upbit_symbol_universe` and only valid holdings symbols are included in the batch
@@ -1907,6 +1914,13 @@ Response contract additions:
 - `filtered_count`: number of positions excluded by `minimum_value` filter
 - `filter_reason`: filter status string, e.g. `minimum_value < 1000` or `equity_kr < 5000, equity_us < 10, crypto < 5000`
 - `errors`: includes per-symbol price lookup failures for holdings price refresh (example fields: `source`, `market`, `symbol`, `stage`, `error`)
+- Refreshed US positions expose `price_source`, nullable `price_asof`,
+  `data_state`, and `profit_rate_price_source`; provider metadata such as
+  `session`, `venue`, and `delayed` is included when available. If both live
+  quote sources fail, the retained KIS balance snapshot is marked
+  `data_state="stale"` with
+  `data_state_reason="live_price_refresh_failed"` rather than silently reading
+  as current.
 - `filters.minimum_value`: when `minimum_value=None` in the request, this field contains the per-currency threshold dict that was applied
 - When `TOSS_API_ENABLED=true`, Toss Open API holdings are emitted with `broker="toss"`, `source="toss_api"`. `order_routable` (and `get_cash_balance` `orderable`, `/invest` home `isTradeable`/`sellableQuantity`) are gated on `TOSS_LIVE_ORDER_MUTATIONS_ENABLED` (ROB-549): reference-only (`order_routable=false`, `orderable=0`, `isTradeable=false`, `sellableQuantity=0`) while disabled, and routable with the API-provided `sellable_quantity` (Toss `/api/v1/sellable-quantity`) once the operator arms live mutations.
 - Toss sellable quantities use a successful-values-only Redis cache shared by `/invest` home and MCP processes (600-second default, controlled by `TOSS_SELLABLE_CACHE_TTL_SECONDS`; `TOSS_SELLABLE_CACHE_ENABLED=false` disables it). Reads use one batched `MGET`; confirmed fills and successful sell place/cancel/modify mutations delete only the affected symbol. `fresh_sellable=true` bypasses the cache, while `need_sellable=false` paths skip Redis and Toss sellable reads entirely.
