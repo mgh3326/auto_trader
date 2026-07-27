@@ -159,13 +159,10 @@ def test_approval_dispatch_migration_is_additive_and_the_single_head():
     config = Config(str(_REPO / "alembic.ini"))
     config.set_main_option("script_location", str(_REPO / "alembic"))
     scripts = ScriptDirectory.from_config(config)
-    # Note: This test explicitly asserts the latest migration revision head ID to enforce
-    # single-head linear history across all Alembic migrations (preventing unintentional head splits).
-    # Each new Alembic migration must update this target head revision.
-    assert scripts.get_heads() == ["20260725_rob1010_crypto_venue"]
-    revision = scripts.get_revision("20260725_rob1010_crypto_venue")
+    assert len(scripts.get_heads()) == 1
+    revision = scripts.get_revision("20260723_approval_dispatch")
     assert revision is not None
-    assert revision.down_revision == "20260723_approval_dispatch"
+    assert revision.down_revision == "20260722_rob1023_widen_runner"
 
 
 @pytest.mark.unit

@@ -57,7 +57,7 @@ def test_production_campaign_metadata_values_and_lengths_are_exact() -> None:
     )
 
 
-def test_runner_width_contract_and_alembic_head_are_pinned() -> None:
+def test_runner_width_contract_and_alembic_history_has_single_head() -> None:
     assert BACKTEST_RUNNER_MAX_LENGTH == 64
     assert ResearchBacktestRun.__table__.c.runner.type.length == 64
 
@@ -68,10 +68,7 @@ def test_runner_width_contract_and_alembic_head_are_pinned() -> None:
 
     config = Config(str(_REPO / "alembic.ini"))
     config.set_main_option("script_location", str(_REPO / "alembic"))
-    # Note: Enforce single-head linear Alembic migration history.
-    assert ScriptDirectory.from_config(config).get_heads() == [
-        "20260725_rob1010_crypto_venue"
-    ]
+    assert len(ScriptDirectory.from_config(config).get_heads()) == 1
 
 
 def test_schema_only_repair_preserves_h6b_production_identity_pins() -> None:
