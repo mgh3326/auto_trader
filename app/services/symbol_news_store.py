@@ -9,6 +9,7 @@ LLM, no broker/order surface. Callers own session lifecycle and commit.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -26,6 +27,31 @@ logger = logging.getLogger(__name__)
 KR_FEED_SOURCE = "naver_item_news"
 FINNHUB_COMPANY_FEED_SOURCE = "finnhub_company_news"  # us
 FINNHUB_GENERAL_FEED_SOURCE = "finnhub_general_news"  # crypto (심볼 키 아님)
+
+NEWS_RELEVANCE_CONTAMINATION_START = datetime(2026, 7, 26, 23, 0)
+NEWS_RELEVANCE_CONTAMINATION_END = datetime(2026, 7, 27, 0, 30)
+NEWS_RELEVANCE_CONTAMINATION_JUDGE = "hermes-news-relevance"
+NEWS_RELEVANCE_CONTAMINATION_TITLE_PREFIX_LENGTH = 20
+
+
+class NewsRelevanceRecoveryError(RuntimeError):
+    """Base error for the bounded 2026-07-27 contamination repair."""
+
+
+class NewsRelevanceRecoveryCountMismatch(NewsRelevanceRecoveryError):
+    """Selected rows differ from the operator-approved expected count."""
+
+
+class NewsRelevanceRecoverySnapshotRequired(NewsRelevanceRecoveryError):
+    """Execution was requested without a previously exported audit snapshot."""
+
+
+class NewsRelevanceRecoverySnapshotMismatch(NewsRelevanceRecoveryError):
+    """Locked rows no longer match the pre-mutation audit snapshot."""
+
+
+class NewsRelevanceRecoveryVerificationError(NewsRelevanceRecoveryError):
+    """The flushed reset state did not match the selected row count."""
 
 
 @dataclass(frozen=True)
@@ -52,6 +78,35 @@ class StoredSymbolNews:
     fetched_at: datetime | None = None
 
 
+@dataclass(frozen=True)
+class NewsRelevanceJudgmentSnapshot:
+    """Recoverable pre-reset values for one contaminated judgment."""
+
+    id: int
+    article_id: int
+    market: str
+    symbol: str
+    status: str
+    relationship: str | None
+    relevance: str | None
+    price_relevance: str | None
+    score: float | None
+    reason: str | None
+    judged_by: str | None
+    judged_at: datetime | None
+
+
+@dataclass(frozen=True)
+class NewsRelevanceRecoveryResult:
+    dry_run: bool
+    selected: tuple[NewsRelevanceJudgmentSnapshot, ...]
+    updated_count: int
+
+    @property
+    def selected_count(self) -> int:
+        return len(self.selected)
+
+
 def _utcnow() -> datetime:
     # Convention in this repo: naive UTC for DB storage to avoid asyncpg DataError
     return datetime.now(tz=UTC).replace(tzinfo=None)
@@ -62,6 +117,140 @@ def derive_status(relationship: str, relevance: str) -> str:
     if relationship == "unrelated" or relevance == "low":
         return "excluded"
     return "confirmed"
+
+
+def _contaminated_news_relevance_conditions() -> tuple[Any, ...]:
+    """Exact bounded predicate proven against production read-only on 2026-07-27."""
+    title_prefix = func.substr(
+        NewsArticle.title,
+        1,
+        NEWS_RELEVANCE_CONTAMINATION_TITLE_PREFIX_LENGTH,
+    )
+    return (
+        SymbolNewsRelevance.judged_at >= NEWS_RELEVANCE_CONTAMINATION_START,
+        SymbolNewsRelevance.judged_at < NEWS_RELEVANCE_CONTAMINATION_END,
+        SymbolNewsRelevance.judged_by == NEWS_RELEVANCE_CONTAMINATION_JUDGE,
+        SymbolNewsRelevance.reason.is_not(None),
+        NewsArticle.title != "",
+        func.strpos(SymbolNewsRelevance.reason, title_prefix) > 0,
+    )
+
+
+def _judgment_snapshot(
+    link: SymbolNewsRelevance,
+) -> NewsRelevanceJudgmentSnapshot:
+    return NewsRelevanceJudgmentSnapshot(
+        id=link.id,
+        article_id=link.article_id,
+        market=link.market,
+        symbol=link.symbol,
+        status=link.status,
+        relationship=link.relationship,
+        relevance=link.relevance,
+        price_relevance=link.price_relevance,
+        score=link.score,
+        reason=link.reason,
+        judged_by=link.judged_by,
+        judged_at=link.judged_at,
+    )
+
+
+async def recover_contaminated_news_relevance(
+    db: AsyncSession,
+    *,
+    expected_count: int,
+    execute: bool = False,
+    audit_snapshot: Sequence[NewsRelevanceJudgmentSnapshot] | None = None,
+) -> NewsRelevanceRecoveryResult:
+    """Preview or reset only the attributable 2026-07-27 contaminated rows.
+
+    Dry-run is the default and performs no mutation. Execution additionally
+    requires an exact pre-reset snapshot (written to an audit artifact by the
+    operator CLI), locks and rechecks those rows, then clears only judgment
+    fields. The caller owns commit/rollback.
+    """
+    if expected_count <= 0:
+        raise ValueError("expected_count must be positive")
+
+    stmt = (
+        select(SymbolNewsRelevance)
+        .join(NewsArticle, NewsArticle.id == SymbolNewsRelevance.article_id)
+        .where(*_contaminated_news_relevance_conditions())
+        .order_by(
+            SymbolNewsRelevance.judged_at.asc(),
+            SymbolNewsRelevance.id.asc(),
+        )
+        .execution_options(populate_existing=True)
+    )
+    if execute:
+        stmt = stmt.with_for_update(of=SymbolNewsRelevance)
+
+    links = (await db.execute(stmt)).scalars().all()
+    selected = tuple(_judgment_snapshot(link) for link in links)
+    if len(selected) != expected_count:
+        raise NewsRelevanceRecoveryCountMismatch(
+            "news relevance recovery aborted: "
+            f"expected {expected_count} contaminated rows, selected {len(selected)}"
+        )
+
+    if not execute:
+        return NewsRelevanceRecoveryResult(
+            dry_run=True,
+            selected=selected,
+            updated_count=0,
+        )
+
+    if audit_snapshot is None:
+        raise NewsRelevanceRecoverySnapshotRequired(
+            "news relevance recovery execution requires an exported audit snapshot"
+        )
+    if tuple(audit_snapshot) != selected:
+        raise NewsRelevanceRecoverySnapshotMismatch(
+            "news relevance recovery aborted: locked rows differ from audit snapshot"
+        )
+
+    now = _utcnow()
+    for link in links:
+        link.status = "pending"
+        link.relationship = None
+        link.relevance = None
+        link.price_relevance = None
+        link.score = None
+        link.reason = None
+        link.judged_by = None
+        link.judged_at = None
+        link.updated_at = now
+    await db.flush()
+
+    selected_ids = [row.id for row in selected]
+    verified_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(SymbolNewsRelevance)
+            .where(
+                SymbolNewsRelevance.id.in_(selected_ids),
+                SymbolNewsRelevance.status == "pending",
+                SymbolNewsRelevance.relationship.is_(None),
+                SymbolNewsRelevance.relevance.is_(None),
+                SymbolNewsRelevance.price_relevance.is_(None),
+                SymbolNewsRelevance.score.is_(None),
+                SymbolNewsRelevance.reason.is_(None),
+                SymbolNewsRelevance.judged_by.is_(None),
+                SymbolNewsRelevance.judged_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    if int(verified_count) != expected_count:
+        raise NewsRelevanceRecoveryVerificationError(
+            "news relevance recovery verification failed: "
+            f"expected {expected_count} reset rows, verified {verified_count}"
+        )
+
+    return NewsRelevanceRecoveryResult(
+        dry_run=False,
+        selected=selected,
+        updated_count=expected_count,
+    )
 
 
 def _relevance_block(link: SymbolNewsRelevance) -> dict[str, Any]:
