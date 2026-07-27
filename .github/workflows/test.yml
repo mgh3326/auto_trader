@@ -426,9 +426,62 @@ jobs:
         # path -- a nonzero exit fails this step, so this job cannot pass
         # silently on zero collected tests.
 
+  alpaca-track-walkforward-tests:
+    # ROB-1062 H4 -- exactly mirrors the alpaca-track-tests (H1) /
+    # alpaca-track-seal-tests (H2) / alpaca-track-signals-tests (H3) jobs
+    # above: additive-only, own conftest.py sys.path wiring onto its three
+    # producer siblings (research/alpaca_track, research/alpaca_track_seal,
+    # research/alpaca_track_signals), network-0, no DB/Redis. The main
+    # `test` job's `testpaths` and pytest invocation remain UNCHANGED.
+    #
+    # Runtime note: this suite includes a handful of `@pytest.mark.slow`
+    # tests exercising the full walk-forward runner across all 8 sealed
+    # AP-A2 configs on one fold (~1 minute each) -- H3's own engine reloads
+    # and re-hashes the entire H2 seal from disk on every decision
+    # (NO_THRESHOLD_RELAXATION enforcement H4 does not, and must not,
+    # bypass), so this is a genuine, disclosed cost inherited from H3, not
+    # an H4 inefficiency. `timeout-minutes` is set higher than the sibling
+    # H1/H2/H3 jobs to give this comfortable headroom.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      PYTHON_VERSION: "3.13"
+
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        persist-credentials: false
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install UV
+      run: pip install uv
+
+    - name: Load cached venv
+      id: cached-uv-dependencies
+      uses: actions/cache@v5
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group test
+
+    - name: Run ROB-1062 alpaca_track_walkforward H4 walk-forward-runner tests (network-0, no DB/Redis)
+      run: |
+        uv run pytest research/alpaca_track_walkforward/tests/ -v --strict-markers -ra
+        # pytest exits 5 ("no tests collected") on an empty/misconfigured
+        # path -- a nonzero exit fails this step, so this job cannot pass
+        # silently on zero collected tests.
+
   notify:
     if: failure()
-    needs: [lint, test, taskiq-smoke, security, alpaca-track-tests, alpaca-track-seal-tests, alpaca-track-signals-tests]
+    needs: [lint, test, taskiq-smoke, security, alpaca-track-tests, alpaca-track-seal-tests, alpaca-track-signals-tests, alpaca-track-walkforward-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Discord failure notification
