@@ -13,6 +13,11 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from app.services.alpaca_paper_account_modes import (
+    ALPACA_PAPER_ACCOUNT_MODE,
+    normalize_alpaca_paper_account_mode,
+    profile_for_account_mode,
+)
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 
 if TYPE_CHECKING:
@@ -61,6 +66,14 @@ def reset_alpaca_paper_service_factory() -> None:
     _service_factory = _default_service_factory
 
 
+def _service_for_account_mode(account_mode: str) -> AlpacaPaperBrokerService:
+    selected = normalize_alpaca_paper_account_mode(account_mode)
+    profile = profile_for_account_mode(selected)
+    if profile is None or _service_factory is not _default_service_factory:
+        return _service_factory()
+    return AlpacaPaperBrokerService(profile=profile)
+
+
 def _model_to_jsonable(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json", by_alias=True)
@@ -91,37 +104,46 @@ def _normalize_optional_limit(limit: int | None, *, max_limit: int = 500) -> int
     return min(limit, max_limit)
 
 
-async def alpaca_paper_get_account() -> dict[str, Any]:
+async def alpaca_paper_get_account(
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
+) -> dict[str, Any]:
     """Return the Alpaca paper account snapshot using the paper-only service."""
 
-    account = await _service_factory().get_account()
+    selected = normalize_alpaca_paper_account_mode(account_mode)
+    account = await _service_for_account_mode(selected).get_account()
     return {
         "success": True,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected,
         "source": "alpaca_paper",
         "account": _model_to_jsonable(account),
     }
 
 
-async def alpaca_paper_get_cash() -> dict[str, Any]:
+async def alpaca_paper_get_cash(
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
+) -> dict[str, Any]:
     """Return paper cash and buying power."""
 
-    cash = await _service_factory().get_cash()
+    selected = normalize_alpaca_paper_account_mode(account_mode)
+    cash = await _service_for_account_mode(selected).get_cash()
     return {
         "success": True,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected,
         "source": "alpaca_paper",
         "cash": _model_to_jsonable(cash),
     }
 
 
-async def alpaca_paper_list_positions() -> dict[str, Any]:
+async def alpaca_paper_list_positions(
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
+) -> dict[str, Any]:
     """List current Alpaca paper positions."""
 
-    positions = await _service_factory().list_positions()
+    selected = normalize_alpaca_paper_account_mode(account_mode)
+    positions = await _service_for_account_mode(selected).list_positions()
     return {
         "success": True,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected,
         "source": "alpaca_paper",
         "count": len(positions),
         "positions": _model_to_jsonable(positions),
@@ -131,14 +153,18 @@ async def alpaca_paper_list_positions() -> dict[str, Any]:
 async def alpaca_paper_list_orders(
     status: str | None = "open",
     limit: int | None = 50,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> dict[str, Any]:
     """List Alpaca paper orders without mutating broker state."""
 
     normalized_limit = _normalize_optional_limit(limit)
-    orders = await _service_factory().list_orders(status=status, limit=normalized_limit)
+    selected = normalize_alpaca_paper_account_mode(account_mode)
+    orders = await _service_for_account_mode(selected).list_orders(
+        status=status, limit=normalized_limit
+    )
     return {
         "success": True,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected,
         "source": "alpaca_paper",
         "status": status,
         "limit": normalized_limit,
@@ -147,15 +173,19 @@ async def alpaca_paper_list_orders(
     }
 
 
-async def alpaca_paper_get_order(order_id: str) -> dict[str, Any]:
+async def alpaca_paper_get_order(
+    order_id: str,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
+) -> dict[str, Any]:
     """Fetch one Alpaca paper order by id without modifying it."""
 
     if not order_id.strip():
         raise ValueError("order_id is required")
-    order = await _service_factory().get_order(order_id.strip())
+    selected = normalize_alpaca_paper_account_mode(account_mode)
+    order = await _service_for_account_mode(selected).get_order(order_id.strip())
     return {
         "success": True,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected,
         "source": "alpaca_paper",
         "order": _model_to_jsonable(order),
     }
@@ -164,15 +194,17 @@ async def alpaca_paper_get_order(order_id: str) -> dict[str, Any]:
 async def alpaca_paper_list_assets(
     status: str | None = "active",
     asset_class: str | None = "us_equity",
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> dict[str, Any]:
     """List Alpaca paper-visible assets with optional status/class filters."""
 
-    assets = await _service_factory().list_assets(
+    selected = normalize_alpaca_paper_account_mode(account_mode)
+    assets = await _service_for_account_mode(selected).list_assets(
         status=status, asset_class=asset_class
     )
     return {
         "success": True,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected,
         "source": "alpaca_paper",
         "status": status,
         "asset_class": asset_class,
@@ -185,20 +217,22 @@ async def alpaca_paper_list_fills(
     after: str | None = None,
     until: str | None = None,
     limit: int | None = 50,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> dict[str, Any]:
     """List Alpaca paper fill activities without placing/cancelling orders."""
 
     parsed_after = _parse_optional_datetime(after, field_name="after")
     parsed_until = _parse_optional_datetime(until, field_name="until")
     normalized_limit = _normalize_optional_limit(limit)
-    fills = await _service_factory().list_fills(
+    selected = normalize_alpaca_paper_account_mode(account_mode)
+    fills = await _service_for_account_mode(selected).list_fills(
         after=parsed_after,
         until=parsed_until,
         limit=normalized_limit,
     )
     return {
         "success": True,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected,
         "source": "alpaca_paper",
         "after": after,
         "until": until,

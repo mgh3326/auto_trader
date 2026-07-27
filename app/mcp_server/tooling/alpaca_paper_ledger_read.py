@@ -11,6 +11,10 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
+from app.services.alpaca_paper_account_modes import (
+    ALPACA_PAPER_ACCOUNT_MODE,
+    normalize_alpaca_paper_account_mode,
+)
 from app.services.alpaca_paper_anomaly_checks import (
     build_paper_execution_preflight_report,
 )
@@ -25,6 +29,24 @@ if TYPE_CHECKING:
 
 def _session_factory() -> async_sessionmaker[AsyncSession]:
     return cast(async_sessionmaker[AsyncSession], cast(object, AsyncSessionLocal))
+
+
+def _ledger_service(
+    db: AsyncSession,
+    account_mode: str,
+) -> AlpacaPaperLedgerService:
+    if account_mode == ALPACA_PAPER_ACCOUNT_MODE:
+        return AlpacaPaperLedgerService(db)
+    return AlpacaPaperLedgerService(db, account_mode=account_mode)
+
+
+def _roundtrip_service(
+    db: AsyncSession,
+    account_mode: str,
+) -> AlpacaPaperRoundtripReportService:
+    if account_mode == ALPACA_PAPER_ACCOUNT_MODE:
+        return AlpacaPaperRoundtripReportService(db)
+    return AlpacaPaperRoundtripReportService(db, account_mode=account_mode)
 
 
 def _clean_scope_value(value: Any) -> str | None:
@@ -57,6 +79,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 async def alpaca_paper_ledger_list_recent(
     limit: int = 50,
     lifecycle_state: str | None = None,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> dict[str, Any]:
     """List recent Alpaca Paper order ledger entries (read-only).
 
@@ -66,18 +89,19 @@ async def alpaca_paper_ledger_list_recent(
             planned, previewed, validated, submitted, filled,
             position_reconciled, sell_validated, closed, final_reconciled, anomaly, canceled.
     """
+    selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
     if limit < 1:
         raise ValueError("limit must be >= 1")
     limit = min(limit, 200)
 
     async with _session_factory()() as db:
-        svc = AlpacaPaperLedgerService(db)
+        svc = _ledger_service(db, selected_account_mode)
         rows = await svc.list_recent(limit=limit, lifecycle_state=lifecycle_state)
 
     items = [_row_to_dict(r) for r in rows]
     return {
         "success": True,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected_account_mode,
         "source": "alpaca_paper_ledger",
         "lifecycle_state_filter": lifecycle_state,
         "limit": limit,
@@ -88,22 +112,24 @@ async def alpaca_paper_ledger_list_recent(
 
 async def alpaca_paper_ledger_get(
     client_order_id: str,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> dict[str, Any] | None:
     """Fetch one Alpaca Paper ledger entry by client_order_id (read-only).
 
     Returns None if not found.
     """
+    selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
     if not client_order_id or not client_order_id.strip():
         raise ValueError("client_order_id is required")
 
     async with _session_factory()() as db:
-        svc = AlpacaPaperLedgerService(db)
+        svc = _ledger_service(db, selected_account_mode)
         row = await svc.get_by_client_order_id(client_order_id.strip())
 
     if row is None:
         return {
             "success": False,
-            "account_mode": "alpaca_paper",
+            "account_mode": selected_account_mode,
             "source": "alpaca_paper_ledger",
             "client_order_id": client_order_id,
             "found": False,
@@ -111,7 +137,7 @@ async def alpaca_paper_ledger_get(
         }
     return {
         "success": True,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected_account_mode,
         "source": "alpaca_paper_ledger",
         "client_order_id": client_order_id,
         "found": True,
@@ -133,6 +159,7 @@ async def alpaca_paper_execution_preflight_check(
     candidate_uuid: str | None = None,
     briefing_artifact_run_uuid: str | None = None,
     session_uuid: str | None = None,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> dict[str, Any]:
     """Run read-only Alpaca Paper execution anomaly checks.
 
@@ -152,6 +179,7 @@ async def alpaca_paper_execution_preflight_check(
     warnings, while open-order conflicts, duplicate IDs, ledger/fill anomalies,
     symbol mismatches, and other execution-safety findings remain blockers.
     """
+    selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
     if limit < 1:
         raise ValueError("limit must be >= 1")
     limit = min(limit, 200)
@@ -175,7 +203,7 @@ async def alpaca_paper_execution_preflight_check(
     scoped_by: dict[str, str] | None = None
 
     async with _session_factory()() as db:
-        svc = AlpacaPaperLedgerService(db)
+        svc = _ledger_service(db, selected_account_mode)
         if scope["lifecycle_correlation_id"]:
             scoped_by = {
                 "kind": "lifecycle_correlation_id",
@@ -214,7 +242,7 @@ async def alpaca_paper_execution_preflight_check(
     data.update(
         {
             "success": True,
-            "account_mode": "alpaca_paper",
+            "account_mode": selected_account_mode,
             "source": "alpaca_paper_execution_preflight",
             "read_only": True,
             "limit": limit,
@@ -228,23 +256,25 @@ async def alpaca_paper_execution_preflight_check(
 
 async def alpaca_paper_ledger_get_by_correlation(
     lifecycle_correlation_id: str,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> dict[str, Any]:
     """Fetch all Alpaca Paper ledger rows sharing a lifecycle_correlation_id (read-only).
 
     Returns the buy/sell roundtrip records in chronological order.
     lifecycle_correlation_id links buy and sell legs of the same paper roundtrip.
     """
+    selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
     if not lifecycle_correlation_id or not lifecycle_correlation_id.strip():
         raise ValueError("lifecycle_correlation_id is required")
 
     async with _session_factory()() as db:
-        svc = AlpacaPaperLedgerService(db)
+        svc = _ledger_service(db, selected_account_mode)
         rows = await svc.list_by_correlation_id(lifecycle_correlation_id.strip())
 
     items = [_row_to_dict(r) for r in rows]
     return {
         "success": True,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected_account_mode,
         "source": "alpaca_paper_ledger",
         "lifecycle_correlation_id": lifecycle_correlation_id,
         "count": len(items),
@@ -261,6 +291,7 @@ async def alpaca_paper_roundtrip_report(
     positions: list[dict[str, Any]] | None = None,
     stale_after_minutes: int = 30,
     include_ledger_rows: bool = True,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> dict[str, Any]:
     """Build a read-only Alpaca Paper roundtrip audit report.
 
@@ -269,6 +300,7 @@ async def alpaca_paper_roundtrip_report(
     optional caller-supplied read-only snapshots; this tool never fetches broker
     state itself.
     """
+    selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
     supplied = [
         lifecycle_correlation_id is not None,
         client_order_id is not None,
@@ -288,7 +320,7 @@ async def alpaca_paper_roundtrip_report(
     )
 
     async with _session_factory()() as db:
-        svc = AlpacaPaperRoundtripReportService(db)
+        svc = _roundtrip_service(db, selected_account_mode)
         if candidate_lookup is not None:
             response = await svc.build_reports_for_candidate_uuid(
                 candidate_lookup,
@@ -319,7 +351,7 @@ async def alpaca_paper_roundtrip_report(
 
     return {
         "success": success,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected_account_mode,
         "source": "alpaca_paper_roundtrip_report",
         "read_only": True,
         "report": payload,

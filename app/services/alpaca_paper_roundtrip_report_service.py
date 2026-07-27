@@ -32,6 +32,7 @@ from app.schemas.alpaca_paper_roundtrip_report import (
     RoundtripQaBlock,
     RoundtripReconcileBlock,
 )
+from app.services.alpaca_paper_account_modes import ALPACA_PAPER_ACCOUNT_MODE
 from app.services.alpaca_paper_anomaly_checks import (
     build_paper_execution_preflight_report,
 )
@@ -116,8 +117,12 @@ def _first(rows: list[Any]) -> Any | None:
 class AlpacaPaperRoundtripReportService:
     """Build read-only Alpaca Paper roundtrip reports from ledger rows."""
 
-    def __init__(self, db: AsyncSession) -> None:
-        self._ledger = AlpacaPaperLedgerService(db)
+    def __init__(
+        self,
+        db: AsyncSession,
+        account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
+    ) -> None:
+        self._ledger = AlpacaPaperLedgerService(db, account_mode=account_mode)
 
     async def build_report(
         self,

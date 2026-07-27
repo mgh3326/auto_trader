@@ -505,6 +505,34 @@ async def test_reconciled_fill_via_real_reconcile_service_surfaces_as_pending(
     assert entry["suggested_correlation_id"] == coid
 
 
+async def test_lab_retrospective_scan_is_account_scoped(
+    db_session: AsyncSession,
+) -> None:
+    coid = _uniq("-lab")
+    row = _row(client_order_id=coid, lifecycle_state="filled")
+    row.account_mode = "alpaca_paper_lab"
+    db_session.add(row)
+    await db_session.commit()
+
+    lab = await _pending_with_retry(
+        db_session,
+        kst_date_from="2000-01-01",
+        kst_date_to="2100-01-01",
+        account_mode="alpaca_paper_lab",
+    )
+    default = await _pending_with_retry(
+        db_session,
+        kst_date_from="2000-01-01",
+        kst_date_to="2100-01-01",
+        account_mode="alpaca_paper",
+    )
+
+    entry = await _find(lab, coid)
+    assert entry is not None
+    assert entry["account_mode"] == "alpaca_paper_lab"
+    assert await _find(default, coid) is None
+
+
 # ---------------------------------------------------------------------------
 # HIGH-1 (round-3) — window anchors on terminalized_at (terminal-transition time),
 # not created_at (claim time). A row claimed days ago that only becomes

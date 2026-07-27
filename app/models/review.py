@@ -706,7 +706,8 @@ class AlpacaPaperOrderLedger(Base):
         ),
         CheckConstraint("broker = 'alpaca'", name="alpaca_paper_ledger_broker"),
         CheckConstraint(
-            "account_mode = 'alpaca_paper'", name="alpaca_paper_ledger_account_mode"
+            "account_mode IN ('alpaca_paper','alpaca_paper_lab')",
+            name="alpaca_paper_ledger_account_mode",
         ),
         CheckConstraint(
             "lifecycle_state IN ("
@@ -1048,7 +1049,8 @@ class TradeRetrospective(Base):
             name="uq_trade_retrospectives_correlation_account",
         ),
         CheckConstraint(
-            "account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live','alpaca_paper','upbit_live','paper')",
+            "account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live',"
+            "'alpaca_paper','alpaca_paper_lab','upbit_live','paper')",
             name="account_mode",
         ),
         CheckConstraint(

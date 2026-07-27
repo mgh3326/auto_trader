@@ -30,9 +30,15 @@ class AlpacaPaperBrokerService:
         self,
         transport: HTTPTransport | None = None,
         settings: AlpacaPaperSettings | None = None,
+        *,
+        profile: str | None = None,
     ) -> None:
         if settings is None:
-            settings = AlpacaPaperSettings.from_app_settings()
+            settings = (
+                AlpacaPaperSettings.from_app_settings()
+                if profile is None
+                else AlpacaPaperSettings.from_app_settings(profile=profile)
+            )
 
         if not settings.api_key or not settings.api_secret:
             raise AlpacaPaperConfigurationError(

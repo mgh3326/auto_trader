@@ -494,21 +494,33 @@ ROB-69 exposes Alpaca paper broker inspection via explicit read-only MCP tool
 names only. These tools are registered under `MCP_PROFILE=us-paper`; they are
 not part of the default or `hermes-paper-kis` surfaces.
 
-- `alpaca_paper_get_account()`
-- `alpaca_paper_get_cash()`
-- `alpaca_paper_list_positions()`
-- `alpaca_paper_list_orders(status="open", limit=50)`
-- `alpaca_paper_get_order(order_id)`
-- `alpaca_paper_list_assets(status="active", asset_class="us_equity")`
-- `alpaca_paper_list_fills(after=None, until=None, limit=50)`
-- `alpaca_paper_ledger_list_recent(limit=50, lifecycle_state=None)`
-- `alpaca_paper_ledger_get(client_order_id)`
+- `alpaca_paper_get_account(account_mode="alpaca_paper")`
+- `alpaca_paper_get_cash(account_mode="alpaca_paper")`
+- `alpaca_paper_list_positions(account_mode="alpaca_paper")`
+- `alpaca_paper_list_orders(status="open", limit=50, account_mode="alpaca_paper")`
+- `alpaca_paper_get_order(order_id, account_mode="alpaca_paper")`
+- `alpaca_paper_list_assets(status="active", asset_class="us_equity", account_mode="alpaca_paper")`
+- `alpaca_paper_list_fills(after=None, until=None, limit=50, account_mode="alpaca_paper")`
+- `alpaca_paper_ledger_list_recent(limit=50, lifecycle_state=None, account_mode="alpaca_paper")`
+- `alpaca_paper_ledger_get(client_order_id, account_mode="alpaca_paper")`
 - `alpaca_paper_execution_preflight_check(...)`
+
+All existing calls keep `account_mode="alpaca_paper"` by default. The
+directional-lab lane selects its isolated paper account with
+`account_mode="alpaca_paper_lab"`. That mode reads
+`ALPACA_PAPER_LAB_API_KEY` and `ALPACA_PAPER_LAB_API_SECRET`, while reusing
+`ALPACA_PAPER_BASE_URL`. Both lab credentials are mandatory: missing or
+incomplete lab credentials raise a configuration error and never fall back to
+the existing Alpaca paper credentials. Lab order preview/submit is restricted
+to `asset_class="us_equity"`; Alpaca crypto paper remains on the existing
+account only. Ledger, preflight, roundtrip, cancel status sync, and reconcile
+lookups are scoped to the selected account mode.
 
 ### Alpaca paper fill reconcile (DB-writing mutation, ROB-953)
 
 `alpaca_paper_reconcile_orders(symbol=None, client_order_id=None, dry_run=True,
-confirm=False, limit=100)` is **not** part of the read-only surface above. It is
+confirm=False, limit=100, account_mode="alpaca_paper")` is **not** part of the
+read-only surface above. It is
 a **DB-writing mutation** classified in `MUTATION_TOOLS`, denied by the
 read-only settings profile, and exposed on the **DEFAULT** profile behind
 `settings.alpaca_paper_default_tools_enabled` (default off) — not `us-paper`
@@ -695,6 +707,7 @@ alpaca_paper_preview_order(
     stop_price=None,       # always rejected (deferred)
     client_order_id=None,  # optional, 1-48 chars
     asset_class="us_equity",  # "us_equity" or ROB-74 "crypto"
+    account_mode="alpaca_paper",  # or isolated US-equity-only "alpaca_paper_lab"
 )
 ```
 
