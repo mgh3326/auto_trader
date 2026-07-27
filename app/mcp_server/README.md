@@ -2286,6 +2286,12 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
 | Canonical paper execution | `paper_execution` | ROB-845 façade + ROB-848 validation + ROB-849 operator kill switch. Default-off and auth-required; no generic, venue-native, or live tools. |
 
+Generic `live_reconcile_orders` is evidence-first: `none` returns
+`noop_no_evidence` with `requires_manual_review=true` and leaves the ledger open.
+Only explicit broker cancellation evidence returns `cancelled`; its dry-run
+action is `would_mark_cancelled`, while an applied reconcile reports
+`marked_cancelled`.
+
 ### Profile: `paper_execution` (ROB-845)
 
 This isolated profile is the canonical experiment-to-paper-broker boundary. It

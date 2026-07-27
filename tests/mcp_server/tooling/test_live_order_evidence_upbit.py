@@ -70,7 +70,7 @@ async def test_upbit_adapter_partial():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_upbit_adapter_cancelled_zero_fill_is_none():
+async def test_upbit_adapter_cancelled_zero_fill_is_cancelled():
     from app.mcp_server.tooling import live_order_evidence as ev
     from app.services.brokers.kis.mock_scalping_exec.fill_evidence import FillVerdict
 
@@ -82,4 +82,22 @@ async def test_upbit_adapter_cancelled_zero_fill_is_none():
     )
     with patch.object(ev, "fetch_order_detail", new=AsyncMock(return_value=detail)):
         e = await ev.UpbitEvidenceAdapter().fetch_evidence(_Row())
+    assert e.verdict == FillVerdict.CANCELLED
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_upbit_adapter_unknown_state_is_fail_closed_none():
+    from app.mcp_server.tooling import live_order_evidence as ev
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import FillVerdict
+
+    class _Row:
+        order_no = "U-UNKNOWN"
+
+    detail = _detail(
+        state="unknown", executed_volume="0", remaining_volume="0", avg_price=None
+    )
+    with patch.object(ev, "fetch_order_detail", new=AsyncMock(return_value=detail)):
+        e = await ev.UpbitEvidenceAdapter().fetch_evidence(_Row())
     assert e.verdict == FillVerdict.NONE
+    assert e.reason_code == "unexpected_order_state"

@@ -42,7 +42,7 @@ uv run python scripts/live_reconcile_backfill_report.py --market all
 LIVE_AUTO_RECONCILE_ENABLED=true LIVE_AUTO_RECONCILE_DRY_RUN=true \
   uv run python -c "import asyncio; from app.tasks.live_reconcile_tasks import live_reconcile_us_periodic; print(asyncio.run(live_reconcile_us_periodic()))"
 ```
-- **목적:** 브로커 API 조회를 통해 `would_book_filled`, `would_mark_expired`, `would_mark_cancelled`, `noop_pending` 분류 결과를 미리 확인 (DB Mutation 0).
+- **목적:** 브로커 API 조회를 통해 `would_book_filled`, `would_mark_expired`, `would_mark_cancelled`, `noop_pending`, `noop_no_evidence` 분류 결과를 미리 확인 (DB Mutation 0). `noop_no_evidence`는 ledger를 open으로 유지하고 `requires_manual_review=true`를 반환한다.
 
 ### ③ 3단계: 백필 실행 (Non-Dry Reconcile)
 운영자 확정 후 수동 실행 또는 MCP `live_reconcile_orders` 도구를 통해 `dry_run=False`로 실행.

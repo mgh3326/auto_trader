@@ -312,8 +312,8 @@ async def _reconcile_one_live_row(
                 base["proposal_rung"] = converged
         return base
 
-    if evidence.verdict == FillVerdict.NONE:
-        base["action"] = "marked_cancelled"
+    if evidence.verdict == FillVerdict.CANCELLED:
+        base["action"] = "would_mark_cancelled" if dry_run else "marked_cancelled"
         if not dry_run:
             await _update_live_ledger_outcome(ledger_id=row.id, status="cancelled")
             converged = await _converge_proposal_rung(
@@ -321,6 +321,15 @@ async def _reconcile_one_live_row(
             )
             if converged is not None:
                 base["proposal_rung"] = converged
+        return base
+
+    if evidence.verdict == FillVerdict.NONE:
+        base["action"] = "noop_no_evidence"
+        base["requires_manual_review"] = True
+        base["reason_code"] = evidence.reason_code
+        base["reason"] = evidence.detail or (
+            "no broker fill evidence; ledger left open instead of marking cancelled"
+        )
         return base
 
     # FILLED / PARTIAL — broker 확정값. 델타 멱등 booking.
