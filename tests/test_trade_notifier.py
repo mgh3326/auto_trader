@@ -1070,7 +1070,7 @@ async def test_notify_agent_message_mirror_telegram_sends_both_on_discord_succes
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_notify_agent_message_mirror_returns_true_when_telegram_unconfigured(
+async def test_notify_agent_message_mirror_returns_false_and_escalates_when_unconfigured(
     trade_notifier,
 ):
     trade_notifier.configure(
@@ -1083,7 +1083,7 @@ async def test_notify_agent_message_mirror_returns_true_when_telegram_unconfigur
     with patch.object(
         trade_notifier,
         "_send_to_discord_content_single",
-        new=AsyncMock(return_value=True),
+        new=AsyncMock(side_effect=[True, True]),
     ) as md:
         ok = await trade_notifier.notify_agent_message(
             "triage text",
@@ -1092,8 +1092,52 @@ async def test_notify_agent_message_mirror_returns_true_when_telegram_unconfigur
             mirror_telegram=True,
         )
 
-    assert ok is True
-    md.assert_awaited_once()
+    assert ok is False
+    assert md.await_count == 2
+    escalation = md.await_args_list[1].args[0]
+    assert "텔레그램 미러 실패" in escalation
+    assert "event-2" in escalation
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_notify_agent_message_mirror_failure_is_escalated_and_not_success(
+    trade_notifier,
+):
+    webhook = "https://discord.com/api/webhooks/crypto"
+    trade_notifier.configure(
+        bot_token="t",
+        chat_ids=["1"],
+        enabled=True,
+        discord_webhook_crypto=webhook,
+    )
+
+    with (
+        patch.object(
+            trade_notifier,
+            "_send_to_discord_content_single",
+            new=AsyncMock(side_effect=[True, True]),
+        ) as mock_discord,
+        patch.object(
+            trade_notifier,
+            "_send_to_telegram",
+            new=AsyncMock(return_value=False),
+        ) as mock_telegram,
+    ):
+        ok = await trade_notifier.notify_agent_message(
+            "triage text",
+            parse_mode=None,
+            correlation_id="event-3",
+            market_type="crypto",
+            mirror_telegram=True,
+        )
+
+    assert ok is False
+    mock_telegram.assert_awaited_once_with("triage text", parse_mode=None)
+    assert mock_discord.await_count == 2
+    assert mock_discord.await_args_list[0].args == ("triage text", webhook)
+    assert "텔레그램 미러 실패" in mock_discord.await_args_list[1].args[0]
+    assert mock_discord.await_args_list[1].args[1] == webhook
 
 
 @pytest.mark.unit

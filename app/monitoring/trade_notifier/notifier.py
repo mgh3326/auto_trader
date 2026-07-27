@@ -162,7 +162,7 @@ class TradeNotifier:
     # ── transport wrappers (delegate to transports module) ──
 
     async def _send_to_telegram(
-        self, message: str, parse_mode: str = "Markdown"
+        self, message: str, parse_mode: str | None = "Markdown"
     ) -> bool:
         """Send message to all configured Telegram chats."""
         if not self._http_client or not self._bot_token or not self._chat_ids:
@@ -712,7 +712,7 @@ class TradeNotifier:
     async def notify_agent_message(
         self,
         message: str,
-        parse_mode: str = "Markdown",
+        parse_mode: str | None = "Markdown",
         *,
         correlation_id: str | None = None,
         market_type: str | None = None,
@@ -766,24 +766,69 @@ class TradeNotifier:
             # Fall back to Telegram
             if not self._has_telegram_delivery_config():
                 telegram_result = "skipped(no_telegram_config)"
+                if (
+                    mirror_telegram
+                    and discord_result == "success"
+                    and webhook_url is not None
+                ):
+                    escalation = (
+                        "⚠️ 텔레그램 미러 실패\n"
+                        f"correlation_id: {correlation_id or 'unknown'}\n"
+                        "Discord 원문은 전송됐지만 Telegram 설정이 없어 "
+                        "미러를 완료하지 못했습니다."
+                    )
+                    escalated = await self._send_to_discord_content_single(
+                        escalation, webhook_url
+                    )
+                    logger.error(
+                        "Agent gateway Telegram mirror escalation: "
+                        "correlation_id=%s reason=%s discord_escalation=%s",
+                        correlation_id,
+                        "no_telegram_config",
+                        "success" if escalated else "failed",
+                    )
                 logger.info(
                     "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
                     correlation_id,
                     discord_result,
                     telegram_result,
                 )
-                return discord_result == "success"
+                return discord_result == "success" and not mirror_telegram
 
             telegram_success = await self._send_to_telegram(
                 message, parse_mode=parse_mode
             )
             telegram_result = "success" if telegram_success else "failed"
+            if (
+                mirror_telegram
+                and not telegram_success
+                and discord_result == "success"
+                and webhook_url is not None
+            ):
+                escalation = (
+                    "⚠️ 텔레그램 미러 실패\n"
+                    f"correlation_id: {correlation_id or 'unknown'}\n"
+                    "Discord 원문은 전송됐지만 Telegram 미러가 재시도 후 "
+                    "최종 실패했습니다."
+                )
+                escalated = await self._send_to_discord_content_single(
+                    escalation, webhook_url
+                )
+                logger.error(
+                    "Agent gateway Telegram mirror escalation: "
+                    "correlation_id=%s reason=%s discord_escalation=%s",
+                    correlation_id,
+                    "delivery_failed",
+                    "success" if escalated else "failed",
+                )
             logger.info(
                 "Agent gateway mirror result: correlation_id=%s discord=%s telegram=%s",
                 correlation_id,
                 discord_result,
                 telegram_result,
             )
+            if mirror_telegram:
+                return telegram_success
             return telegram_success or discord_result == "success"
         except Exception as e:
             logger.error(f"Failed to forward agent-gateway message: {e}")
