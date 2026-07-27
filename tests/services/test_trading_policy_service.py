@@ -62,67 +62,56 @@ def test_single_share_exit_is_exposed_only_for_kr_sell():
     )
 
 
-def test_existing_trim_preplace_rule_is_exactly_unchanged():
+def test_trim_preplace_exposes_d2_d5_d7_advisory_contracts():
     rule = svc.get_policy_for("kr", "sell")["decision_rules"]["sell.trim_preplace"]
+    tiers = {tier["id"]: tier for tier in rule["tiers"]}
 
-    assert rule == {
-        "semantics": (
-            "Tiers are evaluated in declared priority order and the first match wins. "
-            "profit_realization is resistance-distance-independent; global exclusions "
-            "apply to every tier. When resistance-near favors PLACE but upside-rich "
-            "would otherwise allow WATCH, resistance proximity can pre-place only a "
-            "small trim; upside richness limits size, not eligibility."
+    assert list(tiers) == [
+        "de_minimis_trim_watch",
+        "single_share_full_exit_review",
+        "momentum_spike_profit_ladder",
+        "profit_realization",
+        "rsi_confirmed_resistance",
+        "ultra_near_resistance",
+        "watch_zone",
+    ]
+    assert tiers["de_minimis_trim_watch"]["conditions"] == {
+        "markets": ["kr", "us", "crypto"],
+        "trim_candidate": True,
+        "expected_net_realized_gain_krw_below_policy_key": (
+            "sell.trim_min_expected_net_realized_gain_krw"
         ),
-        "tiers": [
-            {
-                "id": "profit_realization",
-                "conditions": {"profit_pct_min": 8},
-                "action": "preplace_small_trim_ladder",
-                "sizing": "small_trim_only",
-            },
-            {
-                "id": "rsi_confirmed_resistance",
-                "conditions": {
-                    "rsi_min_policy_key": "sell.rsi_place_min",
-                    "resistance_near_pct_max_policy_key": "sell.resistance_near_pct",
-                },
-                "action": "preplace_small_trim_ladder",
-                "sizing": "small_trim_only",
-            },
-            {
-                "id": "ultra_near_resistance",
-                "conditions": {
-                    "rsi_below_policy_key": "sell.rsi_place_min",
-                    "resistance_near_pct_max": 2,
-                },
-                "action": "preplace_small_trim_ladder",
-                "sizing": "small_trim_only",
-            },
-            {
-                "id": "watch_zone",
-                "conditions": {
-                    "rsi_below_policy_key": "sell.rsi_place_min",
-                    "resistance_near_pct_min_exclusive": 2,
-                    "resistance_near_pct_max_policy_key": "sell.resistance_near_pct",
-                },
-                "action": "register_watch",
-                "sizing": "no_preplaced_trim",
-            },
-        ],
-        "tie_breaks": {
-            "tier_priority": (
-                "profit_realization > rsi_confirmed_resistance > "
-                "ultra_near_resistance > watch_zone"
-            ),
-            "multiple_tiers_matched": "first_matching_tier_wins",
-            "sell.upside_place_max_pct": "size_limit_only",
-        },
-        "exclusions": [
-            "single_share_position",
-            "no_resistance_reference",
-            "composite_gates",
-        ],
     }
+    assert tiers["de_minimis_trim_watch"]["action"] == (
+        "register_watch_instead_of_trim"
+    )
+    assert tiers["single_share_full_exit_review"]["conditions"][
+        "profit_pct_min_policy_key"
+    ] == "sell.single_share_profit_pct_min"
+    assert tiers["single_share_full_exit_review"]["sizing"] == "full_position"
+    spike = tiers["momentum_spike_profit_ladder"]
+    assert spike["conditions"]["session_change_pct_min_policy_key"] == (
+        "sell.momentum_spike_change_pct_min"
+    )
+    assert spike["conditions"]["rsi_gate_exempt"] is True
+    assert spike["conditions"]["required_thesis_evidence"] == [
+        "catalyst_basis",
+        "flow_basis",
+    ]
+    assert spike["conditions"]["resistance_levels_required"] == [
+        "resistance_1",
+        "resistance_2",
+    ]
+    assert spike["conditions"]["ladder_total_position_pct_max"] == 33.3333
+    assert spike["sizing"] == "at_most_one_third_position"
+    assert rule["tie_breaks"]["multiple_tiers_matched"] == (
+        "first_matching_tier_wins"
+    )
+    assert rule["tie_breaks"]["momentum_spike_integer_rounding"] == (
+        "floor_without_exceeding_one_third_or_watch"
+    )
+    assert "single_share_position" not in rule["exclusions"]
+    assert rule["exclusions"] == ["no_resistance_reference", "composite_gates"]
 
 
 def test_market_override_applied(monkeypatch, tmp_path):

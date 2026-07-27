@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-25.1"
-captured_as_of: "2026-07-25"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25"
+version: "2026-07-27.1"
+captured_as_of: "2026-07-27"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27"
 
 authority:
   scope: judgment_policy_only
@@ -133,6 +133,29 @@ thresholds:
     value: 50
     unit: percent
     semantics: upside at/above which WATCH (let-it-run) is allowed
+  sell.momentum_spike_change_pct_min:
+    lanes: [sell]
+    value: 10
+    unit: percent
+    semantics: >-
+      D2 advisory threshold for a KR/US equity momentum-spike day or premarket
+      session; applicability and evidence requirements are defined by the
+      momentum_spike_profit_ladder tier
+  sell.single_share_profit_pct_min:
+    lanes: [sell]
+    value: 8
+    unit: percent
+    semantics: >-
+      D5 advisory profit threshold at which a one-share KR/US equity position
+      may be reviewed for a full-position resistance exit; never a partial trim
+  sell.trim_min_expected_net_realized_gain_krw:
+    lanes: [sell]
+    value: 5000
+    unit: krw_equivalent
+    semantics: >-
+      D7 advisory minimum expected net realized gain after estimated fees and
+      taxes for a trim; US gains use the decision snapshot FX rate, and a trim
+      below this threshold becomes WATCH instead of inventing a session-local gate
   screen.rsi_max:
     lanes: [discovery]
     value: 45
@@ -154,11 +177,44 @@ decision_rules:
     lanes: [sell]
     semantics: >-
       Tiers are evaluated in declared priority order and the first match wins.
-      profit_realization is resistance-distance-independent; global exclusions
-      apply to every tier. When resistance-near favors PLACE but upside-rich
-      would otherwise allow WATCH, resistance proximity can pre-place only a
-      small trim; upside richness limits size, not eligibility.
+      ADVISORY ONLY. de_minimis_trim_watch prevents session-local benefit gates.
+      A one-share equity position is assessed for a full exit, never a
+      pseudo-partial trim. momentum_spike_profit_ladder exempts only its matched
+      spike candidate from the RSI gate and remains profit-zone-only.
+      profit_realization is resistance-distance-independent. When
+      resistance-near favors PLACE but upside-rich would otherwise allow WATCH,
+      resistance proximity can pre-place only a small trim; upside richness
+      limits size, not eligibility.
     tiers:
+      - id: de_minimis_trim_watch
+        conditions:
+          markets: [kr, us, crypto]
+          trim_candidate: true
+          expected_net_realized_gain_krw_below_policy_key: sell.trim_min_expected_net_realized_gain_krw
+        action: register_watch_instead_of_trim
+        sizing: no_preplaced_trim
+      - id: single_share_full_exit_review
+        conditions:
+          markets: [kr, us]
+          total_quantity_eq: 1
+          profit_pct_min_policy_key: sell.single_share_profit_pct_min
+          resistance_reference_required: true
+          disposition_policy_key: phase25.10_single_share_exit_choice
+        action: advise_full_quantity_resistance_exit_or_trailing_verdict
+        sizing: full_position
+      - id: momentum_spike_profit_ladder
+        conditions:
+          markets: [kr, us]
+          position_quantity_min: 2
+          session_change_basis: [regular_day, premarket]
+          session_change_pct_min_policy_key: sell.momentum_spike_change_pct_min
+          rsi_gate_exempt: true
+          required_thesis_evidence: [catalyst_basis, flow_basis]
+          resistance_levels_required: [resistance_1, resistance_2]
+          average_cost_multiple_min_exclusive: 1.0
+          ladder_total_position_pct_max: 33.3333
+        action: preplace_resistance_1_2_small_trim_ladder
+        sizing: at_most_one_third_position
       - id: profit_realization
         conditions:
           # Fable governance advisory Q3-#4 Phase 1 seed; follow-up sell-policy
@@ -186,22 +242,28 @@ decision_rules:
         action: register_watch
         sizing: no_preplaced_trim
     tie_breaks:
-      tier_priority: "profit_realization > rsi_confirmed_resistance > ultra_near_resistance > watch_zone"
+      tier_priority: "de_minimis_trim_watch > single_share_full_exit_review > momentum_spike_profit_ladder > profit_realization > rsi_confirmed_resistance > ultra_near_resistance > watch_zone"
       multiple_tiers_matched: first_matching_tier_wins
       sell.upside_place_max_pct: size_limit_only
+      momentum_spike_rsi_exception: matched_tier_only
+      momentum_spike_profit_zone: average_cost_multiple_strictly_above_1
+      momentum_spike_integer_rounding: floor_without_exceeding_one_third_or_watch
+      single_share_disposition: full_static_target_or_full_trailing_verdict_never_partial
+      minimum_benefit_boundary: at_or_above_threshold_may_trim_below_threshold_watch
     exclusions:
-      - single_share_position
       - no_resistance_reference
       - composite_gates
   sell.single_share_exit:
     lanes: [sell]
     semantics: >-
-      Additive shadow-only fallback review for a profitable KR account lot when
-      complete KIS+Toss evidence proves the symbol-wide routable sellable
-      quantity is exactly one. This rule is evaluated separately from
-      sell.trim_preplace. It cannot create, approve, or execute a proposal while
-      proposal_enabled is false. A loss state remains ineligible here and
-      belongs exclusively to the existing loss_cut path.
+      DEPRECATED AS THE GENERAL SINGLE-SHARE EXCLUSION/FALLBACK. Retained without
+      key deletion or activation change for historical KR KIS+Toss shadow and
+      replay evidence only. The replacement advisory path is
+      sell.trim_preplace.single_share_full_exit_review, with disposition by
+      phase25.10_single_share_exit_choice. This shadow rule cannot narrow that
+      general advisory eligibility and cannot create, approve, or execute a
+      proposal while proposal_enabled is false. A loss state remains ineligible
+      here and belongs exclusively to the existing loss_cut path.
     activation_state: shadow
     proposal_enabled: false
     scope:
@@ -249,10 +311,15 @@ decision_rules:
     operator_approval_required: true
     recalibration_note: >-
       Fable governance advisory Q3-#4 Phase 1 seed; follow-up sell-policy
-      research must recalibrate this initial threshold. The single-share
-      profit and far-resistance thresholds inherit that provisional status.
-      Shadow evidence must be adversarially validated before proposal_enabled
-      can be considered separately by the operator.
+      research must recalibrate this initial threshold. Deprecated as a general
+      fallback by D5 on 2026-07-27 and retained only for the existing KR
+      far-resistance shadow/replay cohort. General one-share advisory eligibility
+      is replaced by
+      sell.trim_preplace.single_share_full_exit_review and its 8% threshold
+      sell.single_share_profit_pct_min; phase25.10_single_share_exit_choice owns
+      the full-static-target versus full-trailing verdict. Shadow evidence must
+      still be adversarially validated before proposal_enabled can be considered
+      separately by the operator.
 
   # GPT Pro trading retrospective Phase 2.5 (received 2026-07-25).
   # Rules 01-14 are advisory policy data only. They do not activate proposals,
@@ -608,9 +675,21 @@ decision_rules:
     semantics: >-
       ADVISORY ONLY. An equity position of exactly one share cannot use a
       pseudo-partial exit: choose a full static target or a full trailing
-      verdict. Crypto is excluded because the recommendation is share-specific.
-      Existing loss-cut and approval guards remain unchanged.
+      verdict. This rule owns disposition after
+      sell.trim_preplace.single_share_full_exit_review includes the position in
+      the funnel. At or above sell.single_share_profit_pct_min, a full-position
+      resistance exit may be preplaced or proposed; this does not force an exit.
+      Crypto is excluded because the recommendation is share-specific. Existing
+      loss-cut and approval guards remain unchanged.
     tiers:
+      - id: one_share_profitable_resistance_exit
+        conditions:
+          markets: [kr, us]
+          total_quantity_eq: 1
+          profit_pct_min_policy_key: sell.single_share_profit_pct_min
+          resistance_reference_required: true
+        action: advise_full_quantity_resistance_exit_or_proposal
+        sizing: full_position
       - id: one_share_hard_exit
         conditions:
           markets: [kr, us]
@@ -648,6 +727,7 @@ decision_rules:
         action: advise_static_trim_then_trail_remainder
         sizing: reserved_quantity_without_overlap
     tie_breaks:
+      profitable_resistance_priority: full_exit_review_before_role_or_trail_choice
       one_share_choice: hard_target_or_trail_not_both
       collision_sequence: cancel_terminal_before_replacement_submit
     exclusions: [crypto_fractional_quantity, loss_state_uses_existing_loss_cut_path]

@@ -44,11 +44,18 @@ async def test_get_trading_policy_returns_sell_trim_preplace_rule():
     out = await get_trading_policy(market="kr", lane="sell")
     assert out["success"] is True
     rule = out["decision_rules"]["sell.trim_preplace"]
-    assert rule["tiers"][0]["id"] == "profit_realization"
-    assert rule["tiers"][0]["conditions"]["profit_pct_min"] == 8
-    assert rule["tiers"][0]["action"] == "preplace_small_trim_ladder"
-    assert rule["tiers"][2]["conditions"]["resistance_near_pct_max"] == 2
-    assert rule["tiers"][3]["action"] == "register_watch"
+    tiers = {tier["id"]: tier for tier in rule["tiers"]}
+    assert tiers["de_minimis_trim_watch"]["action"] == "register_watch_instead_of_trim"
+    assert tiers["single_share_full_exit_review"]["sizing"] == "full_position"
+    assert tiers["momentum_spike_profit_ladder"]["conditions"]["rsi_gate_exempt"] is True
+    assert tiers["momentum_spike_profit_ladder"]["conditions"][
+        "ladder_total_position_pct_max"
+    ] == 33.3333
+    assert tiers["profit_realization"]["conditions"]["profit_pct_min"] == 8
+    assert tiers["profit_realization"]["action"] == "preplace_small_trim_ladder"
+    assert tiers["ultra_near_resistance"]["conditions"]["resistance_near_pct_max"] == 2
+    assert tiers["watch_zone"]["action"] == "register_watch"
+    assert "single_share_position" not in rule["exclusions"]
     single_share = out["decision_rules"]["sell.single_share_exit"]
     assert single_share["activation_state"] == "shadow"
     assert single_share["proposal_enabled"] is False
