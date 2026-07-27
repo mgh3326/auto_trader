@@ -59,6 +59,7 @@ async def test_send_reply_uses_trade_notifier_mirror(monkeypatch) -> None:
     assert kwargs["correlation_id"] == "event-1"
     assert kwargs["market_type"] == "crypto"
     assert kwargs["mirror_telegram"] is True
+    assert kwargs["parse_mode"] is None
 
 
 def test_main_reads_stdin_and_returns_zero(monkeypatch, capsys) -> None:

@@ -65,6 +65,7 @@ async def send_reply(
     try:
         return await get_trade_notifier().notify_agent_message(
             message,
+            parse_mode=None,
             correlation_id=event_uuid,
             market_type=market,
             mirror_telegram=True,
