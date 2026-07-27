@@ -101,6 +101,18 @@ async def test_committed_create_survives_dispatch_and_failure_recorder_errors(
     monkeypatch.setattr(
         order_proposal_tools, "record_approval_dispatch_failure", recorder
     )
+    operator_alert = {
+        "state": "failed",
+        "channel": "discord",
+        "failure_code": "discord_delivery_failed",
+        "recorded": True,
+    }
+    alert = AsyncMock(return_value=operator_alert)
+    monkeypatch.setattr(
+        order_proposal_tools,
+        "_alert_non_sent_dispatch",
+        alert,
+    )
 
     result = await order_proposal_tools.order_proposal_create(**_create_kwargs())
 
@@ -115,10 +127,12 @@ async def test_committed_create_survives_dispatch_and_failure_recorder_errors(
         "payload_chars": 0,
         "failure_code": "approval_dispatch_ledger_error",
         "ok": False,
+        "operator_alert": operator_alert,
     }
     session.commit.assert_awaited_once()
     service.create_proposal.assert_awaited_once()
     recorder.assert_awaited_once()
+    alert.assert_awaited_once()
     if enabled and allowlist:
         dispatch.assert_awaited_once()
     else:

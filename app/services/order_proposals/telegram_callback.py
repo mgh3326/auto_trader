@@ -55,6 +55,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.caller_identity import caller_agent_id_var
+from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_message import (
     _escape_markdown,
     build_approval_dispatch_messages,
@@ -320,6 +321,44 @@ async def _safe_edit_message(
             failure_code="telegram_transport_error",
             error_classification=TelegramErrorClassification.TRANSPORT_ERROR,
         )
+
+
+async def _alert_non_sent_callback_dispatch(
+    proposal_id: uuid.UUID,
+    *,
+    dispatch_state: str,
+    dispatch_failure_code: str,
+    now: datetime,
+    service_factory: ServiceFactory,
+) -> dict[str, Any]:
+    """Alert without hiding an already-committed callback dispatch result."""
+    try:
+        return (
+            await send_approval_dispatch_alert(
+                proposal_id,
+                dispatch_state=dispatch_state,
+                dispatch_failure_code=dispatch_failure_code,
+                now=now,
+                service_factory=service_factory,
+            )
+        ).as_dict()
+    except Exception as exc:  # noqa: BLE001 - preserve the durable dispatch outcome
+        logger.error(
+            "order_proposals.approval_dispatch_alert_boundary_failed",
+            extra={
+                "proposal_id": str(proposal_id),
+                "dispatch_state": dispatch_state,
+                "dispatch_failure_code": dispatch_failure_code,
+                "alert_failure_code": "approval_dispatch_alert_internal_error",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        return {
+            "state": "failed",
+            "channel": "discord",
+            "failure_code": "approval_dispatch_alert_internal_error",
+            "recorded": False,
+        }
 
 
 async def _resolve_proposal_id(service: Any, proposal_short: str) -> uuid.UUID | None:
@@ -594,6 +633,7 @@ async def _handle_approve(
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
     loss_cut_confirmation: bool = False,
+    service_factory: ServiceFactory = AsyncSessionLocal,
 ) -> dict[str, Any]:
     window_evaluator = window_evaluator or evaluate_approval_window
     now_fn = now_fn or (lambda: now)
@@ -922,6 +962,17 @@ async def _handle_approve(
             approval_window_policy_stamp=send_window.policy_stamp,
         )
         await session.commit()
+        operator_alert = None
+        if not dispatch_result.ok:
+            operator_alert = await _alert_non_sent_callback_dispatch(
+                proposal_id,
+                dispatch_state=dispatch_result.state.value,
+                dispatch_failure_code=(
+                    dispatch_result.failure_code or "approval_dispatch_failed"
+                ),
+                now=send_window.observed_at,
+                service_factory=service_factory,
+            )
         new_message_id = dispatch_result.message_id if dispatch_result.ok else None
         return {
             "handled": True,
@@ -929,6 +980,7 @@ async def _handle_approve(
             "proposal_id": str(proposal_id),
             "new_message_id": new_message_id,
             "approval_dispatch": dispatch_result.as_dict(),
+            "operator_alert": operator_alert,
             "results": [outcome.result for outcome in outcomes],
             "rung_results": _serialize_rung_outcomes(outcomes),
         }
@@ -1208,6 +1260,7 @@ async def _handle_batch_approve(
                         revalidate_fn=revalidate_fn,
                         window_evaluator=window_evaluator,
                         now_fn=now_fn,
+                        service_factory=service_factory,
                     )
                     rung_results = approval_result.get("rung_results")
                     if isinstance(rung_results, list):
@@ -1318,6 +1371,7 @@ async def _handle_loss_cut_first_click(
     loss_cut_preview_fn: RevalidateFn,
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
+    service_factory: ServiceFactory = AsyncSessionLocal,
 ) -> dict[str, Any]:
     """Consume step one and edit the message into a bound confirmation."""
     window_evaluator = window_evaluator or evaluate_approval_window
@@ -1538,6 +1592,17 @@ async def _handle_loss_cut_first_click(
         approval_window_policy_stamp=publish_window.policy_stamp,
     )
     await session.commit()
+    operator_alert = None
+    if not dispatch_result.ok:
+        operator_alert = await _alert_non_sent_callback_dispatch(
+            proposal_id,
+            dispatch_state=dispatch_result.state.value,
+            dispatch_failure_code=(
+                dispatch_result.failure_code or "approval_dispatch_failed"
+            ),
+            now=publish_window.observed_at,
+            service_factory=service_factory,
+        )
     return {
         "handled": dispatch_result.ok,
         "reason": (
@@ -1547,6 +1612,7 @@ async def _handle_loss_cut_first_click(
         ),
         "proposal_id": str(proposal_id),
         "approval_dispatch": dispatch_result.as_dict(),
+        "operator_alert": operator_alert,
     }
 
 
@@ -1676,6 +1742,7 @@ async def handle_callback_update(
                         loss_cut_preview_fn=loss_cut_preview_fn,
                         window_evaluator=evaluate_window,
                         now_fn=clock,
+                        service_factory=service_factory,
                     )
                     return result
                 result = await _handle_approve(
@@ -1694,6 +1761,7 @@ async def handle_callback_update(
                     revalidate_fn=revalidate_fn,
                     window_evaluator=evaluate_window,
                     now_fn=clock,
+                    service_factory=service_factory,
                 )
             else:
                 result = await _handle_approve(
@@ -1713,6 +1781,7 @@ async def handle_callback_update(
                     window_evaluator=evaluate_window,
                     now_fn=clock,
                     loss_cut_confirmation=True,
+                    service_factory=service_factory,
                 )
             # `_handle_deny`/`_handle_approve` each commit their own
             # mutating work internally before making any Telegram notify

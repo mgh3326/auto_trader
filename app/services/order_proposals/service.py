@@ -1091,7 +1091,13 @@ class OrderProposalsService:
         return voided_rungs
 
     # -- PR-2 helpers -------------------------------------------------------
-    async def set_approval_nonce(self, proposal_id: uuid.UUID, nonce: str) -> None:
+    async def set_approval_nonce(
+        self,
+        proposal_id: uuid.UUID,
+        nonce: str,
+        *,
+        require_redispatchable: bool = False,
+    ) -> None:
         """Stage a nonce while fail-closing any previously published card.
 
         Production dispatch calls this immediately before
@@ -1105,6 +1111,15 @@ class OrderProposalsService:
         block_reason = proposal_approval_block_reason(group)
         if block_reason is not None:
             raise OrderProposalError(block_reason)
+        if require_redispatchable:
+            if group.approval_dispatch_state == ApprovalDispatchState.PENDING.value:
+                raise OrderProposalError("approval_dispatch_already_pending")
+            if (
+                group.approval_dispatch_state
+                == ApprovalDispatchState.SENT_CURRENT.value
+                and group.approval_nonce_used_at is None
+            ):
+                raise OrderProposalError("approval_dispatch_already_current")
         await self._repo.update_group(
             group,
             approval_nonce=nonce,
@@ -1113,6 +1128,37 @@ class OrderProposalsService:
             approval_dispatch_published_at=None,
             approval_dispatch_failure_code="approval_dispatch_snapshot_missing",
         )
+
+    async def record_approval_dispatch_alert(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        state: str,
+        alert_failure_code: str | None,
+        dispatch_failure_code: str,
+        now: datetime,
+    ) -> OrderProposal:
+        """Persist the latest Discord ops-alert result without hiding root failure."""
+        self._require_timezone_aware(now)
+        if state not in {"sent", "failed"}:
+            raise ValueError("approval dispatch alert state must be sent or failed")
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = dict(group.source_asof or {})
+        source_asof["approval_dispatch_alert"] = {
+            "state": state,
+            "channel": "discord",
+            "attempted_at": now.isoformat(),
+            "failure_code": alert_failure_code,
+            "dispatch_failure_code": dispatch_failure_code,
+            "dispatch_attempt_id": (
+                str(group.approval_dispatch_attempt_id)
+                if group.approval_dispatch_attempt_id is not None
+                else None
+            ),
+        }
+        return await self._repo.update_group(group, source_asof=source_asof)
 
     async def clear_approval_nonce(
         self,

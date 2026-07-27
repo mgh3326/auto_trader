@@ -1103,6 +1103,83 @@ async def test_approval_nonce_mismatch_and_reset(db_session):
 
 
 @pytest.mark.asyncio
+async def test_set_approval_nonce_rejects_pending_or_live_current_card(db_session):
+    service, pending_group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 10, 9, 0, tzinfo=UTC)
+    await service.set_approval_nonce(pending_group.proposal_id, "pending-nonce")
+    pending_group, _ = await service.get_proposal(pending_group.proposal_id)
+    attempt_id = uuid.uuid4()
+    binding = build_proposal_dispatch_binding(
+        proposal_id=pending_group.proposal_id,
+        nonce="pending-nonce",
+        attempt_id=attempt_id,
+        card_kind=ApprovalCardKind.MANUAL,
+        current_membership_revision=pending_group.approval_dispatch_membership_revision,
+    )
+    await service.start_approval_dispatch(
+        pending_group.proposal_id,
+        attempt_id=attempt_id,
+        binding=binding,
+        now=now,
+        payload_chars=10,
+        context_message_count=0,
+    )
+    with pytest.raises(OrderProposalError, match="^approval_dispatch_already_pending$"):
+        await service.set_approval_nonce(
+            pending_group.proposal_id,
+            "duplicate-nonce",
+            require_redispatchable=True,
+        )
+
+    service, current_group = await _create_single_rung(db_session)
+    await service.set_approval_nonce(current_group.proposal_id, "current-nonce")
+    await _publish_fixture_card(
+        service,
+        current_group,
+        nonce="current-nonce",
+        now=now,
+    )
+    with pytest.raises(OrderProposalError, match="^approval_dispatch_already_current$"):
+        await service.set_approval_nonce(
+            current_group.proposal_id,
+            "duplicate-nonce",
+            require_redispatchable=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_approval_dispatch_alert_failure_is_queryable_without_overwriting_root(
+    db_session,
+):
+    service, group = await _create_single_rung(db_session)
+    now = datetime(2026, 7, 27, 0, 17, tzinfo=UTC)
+    group.approval_dispatch_failure_code = "CALENDAR_UNKNOWN/nxt_capability_stale"
+
+    await service.record_approval_dispatch_alert(
+        group.proposal_id,
+        state="failed",
+        alert_failure_code="discord_delivery_failed",
+        dispatch_failure_code="CALENDAR_UNKNOWN/nxt_capability_stale",
+        now=now,
+    )
+    await db_session.commit()
+
+    refreshed, _ = await service.get_proposal(group.proposal_id)
+    assert (
+        refreshed.approval_dispatch_failure_code
+        == "CALENDAR_UNKNOWN/nxt_capability_stale"
+    )
+    assert refreshed.source_asof["approval_dispatch_alert"] == {
+        "state": "failed",
+        "channel": "discord",
+        "attempted_at": now.isoformat(),
+        "failure_code": "discord_delivery_failed",
+        "dispatch_failure_code": "CALENDAR_UNKNOWN/nxt_capability_stale",
+        "dispatch_attempt_id": None,
+    }
+
+
+@pytest.mark.asyncio
 async def test_approval_nonce_replay_blocked(db_session):
     service, group = await _create_single_rung(db_session)
     now = datetime(2026, 7, 10, 9, 1, tzinfo=UTC)
