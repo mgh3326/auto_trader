@@ -4,7 +4,7 @@
 # Repo is public; exposing these values is an accepted decision.
 version: "2026-07-27.1"
 captured_as_of: "2026-07-27"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27"
 
 authority:
   scope: judgment_policy_only
@@ -140,14 +140,23 @@ thresholds:
     semantics: >-
       D2 advisory threshold for a KR/US equity momentum-spike day or premarket
       session; applicability and evidence requirements are defined by the
-      momentum_spike_profit_ladder tier
+      momentum_spike_profit_ladder tier. TRANSITIONAL PATCH: posture-v1
+      (ROB-1090) §11 retires the RSI hard gate in favor of continuous signal
+      multipliers, so this tier is absorbed after posture shadow completion.
+      Parameter status: 측정으로 확정할 가설; frozen at 10 for this policy
+      version, not adjustable by a runtime session, and changeable only by an
+      operator-reviewed policy PR after measurement
   sell.single_share_profit_pct_min:
     lanes: [sell]
     value: 8
     unit: percent
     semantics: >-
       D5 advisory profit threshold at which a one-share KR/US equity position
-      may be reviewed for a full-position resistance exit; never a partial trim
+      may be reviewed for a full-position resistance exit; never a partial trim.
+      posture-v1 (ROB-1090) carries this full-position verdict forward.
+      Parameter status: 측정으로 확정할 가설; frozen at 8 for this policy
+      version, not adjustable by a runtime session, and changeable only by an
+      operator-reviewed policy PR after measurement
   sell.trim_min_expected_net_realized_gain_krw:
     lanes: [sell]
     value: 5000
@@ -155,7 +164,12 @@ thresholds:
     semantics: >-
       D7 advisory minimum expected net realized gain after estimated fees and
       taxes for a trim; US gains use the decision snapshot FX rate, and a trim
-      below this threshold becomes WATCH instead of inventing a session-local gate
+      below this threshold becomes WATCH instead of inventing a session-local
+      gate. posture-v1 (ROB-1090) carries this forward as
+      sell.net_realization_floor. Parameter status: 측정으로 확정할 가설;
+      frozen at 5000 KRW equivalent for this policy version, not adjustable by
+      a runtime session, and changeable only by an operator-reviewed policy PR
+      after measurement
   screen.rsi_max:
     lanes: [discovery]
     value: 45

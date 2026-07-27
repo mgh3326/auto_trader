@@ -29,6 +29,17 @@ def test_shipped_config_validates():
     assert (
         doc.thresholds["sell.trim_min_expected_net_realized_gain_krw"].value == 5000
     )
+    for key in (
+        "sell.momentum_spike_change_pct_min",
+        "sell.single_share_profit_pct_min",
+        "sell.trim_min_expected_net_realized_gain_krw",
+    ):
+        semantics = doc.thresholds[key].semantics
+        assert "측정으로 확정할 가설" in semantics
+        assert "not adjustable by a runtime session" in semantics
+    assert "posture shadow completion" in doc.thresholds[
+        "sell.momentum_spike_change_pct_min"
+    ].semantics
     assert set(doc.market_overrides.keys()) == {"kr", "us", "crypto"}
     assert "semis_memory" in doc.sector_clusters
     assert "sell.trim_preplace" in doc.decision_rules
