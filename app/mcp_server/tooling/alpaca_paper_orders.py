@@ -26,6 +26,12 @@ from app.mcp_server.tooling.alpaca_paper_preview import (
     ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD,
     PreviewOrderInput,
 )
+from app.services.alpaca_paper_account_modes import (
+    ALPACA_PAPER_ACCOUNT_MODE,
+    ALPACA_PAPER_LAB_ACCOUNT_MODE,
+    normalize_alpaca_paper_account_mode,
+    profile_for_account_mode,
+)
 from app.services.alpaca_paper_ledger_service import (
     KNOWN_OPEN_BROKER_STATUSES,
     AlpacaPaperLedgerService,
@@ -100,6 +106,14 @@ def reset_alpaca_paper_orders_service_factory() -> None:
     _service_factory = _default_service_factory
 
 
+def _service_for_account_mode(account_mode: str) -> AlpacaPaperBrokerService:
+    selected = normalize_alpaca_paper_account_mode(account_mode)
+    profile = profile_for_account_mode(selected)
+    if profile is None or _service_factory is not _default_service_factory:
+        return _service_factory()
+    return AlpacaPaperBrokerService(profile=profile)
+
+
 def _model_to_jsonable(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json", by_alias=True)
@@ -124,9 +138,13 @@ def _canonical_payload(validated: PreviewOrderInput) -> dict[str, Any]:
     )
 
 
-def _derive_client_order_id(payload: dict[str, Any]) -> str:
+def _derive_client_order_id(
+    payload: dict[str, Any],
+    *,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
+) -> str:
     """Server-derived deterministic client_order_id (shared, single source)."""
-    return derive_client_order_id(payload)
+    return derive_client_order_id(payload, account_mode=account_mode)
 
 
 def _validate_exact_order_id(order_id: str) -> str:
@@ -169,6 +187,8 @@ def _build_manual_packet(
     canonical: dict[str, Any],
     coid: str,
     evidence: MarketEvidence,
+    *,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> PaperApprovalPacket:
     """Server-built manual operator packet (origin='manual', server-derived key).
 
@@ -197,7 +217,7 @@ def _build_manual_packet(
         lifecycle_correlation_id=coid,
         client_order_id=coid,
         expires_at=datetime.now(UTC) + timedelta(seconds=_MANUAL_PACKET_TTL_SECONDS),
-        account_mode="alpaca_paper",
+        account_mode=account_mode,
         origin="manual",
         market_data_asof=evidence.market_data_asof,
         market_data_source=evidence.market_data_source,
@@ -219,6 +239,7 @@ async def alpaca_paper_submit_order(
     limit_price: Decimal | None = None,
     asset_class: str = "us_equity",
     confirm: bool = False,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> dict[str, Any]:
     """Submit a single Alpaca PAPER order (us_equity or narrow crypto).
 
@@ -235,6 +256,7 @@ async def alpaca_paper_submit_order(
     uncertain outcome is reconciled — never re-POSTed. There is no direct-POST
     fallback and this behaviour does not depend on the automated feature flag.
     """
+    selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
     validated = PreviewOrderInput(
         symbol=symbol,
         side=side,
@@ -247,6 +269,16 @@ async def alpaca_paper_submit_order(
         client_order_id=None,
         asset_class=asset_class,
     )
+    if (
+        selected_account_mode == ALPACA_PAPER_LAB_ACCOUNT_MODE
+        and validated.asset_class != "us_equity"
+    ):
+        raise ValueError("alpaca_paper_lab supports us_equity orders only")
+    if selected_account_mode == ALPACA_PAPER_LAB_ACCOUNT_MODE:
+        # Resolve the dedicated profile before returning even a confirmation
+        # preview. Missing/incomplete lab credentials must never be mistaken for
+        # a valid request that could later route through the shared account.
+        _service_for_account_mode(selected_account_mode)
 
     submit_notional_cap = (
         ALPACA_PAPER_CRYPTO_MAX_NOTIONAL_USD
@@ -274,12 +306,15 @@ async def alpaca_paper_submit_order(
         )
 
     canonical = _canonical_payload(validated)
-    coid = _derive_client_order_id(canonical)
+    coid = _derive_client_order_id(
+        canonical,
+        account_mode=selected_account_mode,
+    )
 
     if confirm is not True:
         return {
             "success": True,
-            "account_mode": "alpaca_paper",
+            "account_mode": selected_account_mode,
             "source": "alpaca_paper",
             "submitted": False,
             "blocked_reason": "confirmation_required",
@@ -293,7 +328,7 @@ async def alpaca_paper_submit_order(
     if quote_snapshot_id is None:
         return {
             "success": False,
-            "account_mode": "alpaca_paper",
+            "account_mode": selected_account_mode,
             "source": "alpaca_paper",
             "submitted": False,
             "status": "rejected",
@@ -316,7 +351,7 @@ async def alpaca_paper_submit_order(
         except MarketEvidenceError as exc:
             return {
                 "success": False,
-                "account_mode": "alpaca_paper",
+                "account_mode": selected_account_mode,
                 "source": "alpaca_paper",
                 "submitted": False,
                 "status": "rejected",
@@ -324,14 +359,24 @@ async def alpaca_paper_submit_order(
                 "client_order_id": coid,
                 "message": str(exc),
             }
-        packet = _build_manual_packet(validated, canonical, coid, evidence)
-        ledger = AlpacaPaperLedgerService(db)
-        coordinator = AlpacaPaperSubmitCoordinator(ledger, _service_factory)
+        packet = _build_manual_packet(
+            validated,
+            canonical,
+            coid,
+            evidence,
+            account_mode=selected_account_mode,
+        )
+        ledger = AlpacaPaperLedgerService(db, account_mode=selected_account_mode)
+        coordinator = AlpacaPaperSubmitCoordinator(
+            ledger,
+            lambda: _service_for_account_mode(selected_account_mode),
+            expected_account_mode=selected_account_mode,
+        )
         outcome = await coordinator.submit(packet, submit_canonical=canonical)
 
     return {
         "success": outcome.success,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected_account_mode,
         "source": "alpaca_paper",
         "submitted": outcome.submitted,
         "status": outcome.status,
@@ -345,21 +390,25 @@ async def alpaca_paper_submit_order(
 async def alpaca_paper_cancel_order(
     order_id: str,
     confirm: bool = False,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> dict[str, Any]:
     """Cancel exactly one Alpaca PAPER order by id."""
+    selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
+    if selected_account_mode == ALPACA_PAPER_LAB_ACCOUNT_MODE:
+        _service_for_account_mode(selected_account_mode)
     stripped = _validate_exact_order_id(order_id)
 
     if confirm is not True:
         return {
             "success": True,
-            "account_mode": "alpaca_paper",
+            "account_mode": selected_account_mode,
             "source": "alpaca_paper",
             "cancelled": False,
             "blocked_reason": "confirmation_required",
             "target_order_id": stripped,
         }
 
-    service = _service_factory()
+    service = _service_for_account_mode(selected_account_mode)
     await service.cancel_order(stripped)
 
     # A DELETE 204 only ACCEPTS the cancel request; it is not a terminal
@@ -390,7 +439,10 @@ async def alpaca_paper_cancel_order(
     if client_order_id and read_back_status == "ok" and status_should_sync:
         try:
             async with _session_factory()() as db:
-                ledger = AlpacaPaperLedgerService(db)
+                ledger = AlpacaPaperLedgerService(
+                    db,
+                    account_mode=selected_account_mode,
+                )
                 normalized_payload = dict(order_payload)
                 normalized_payload["status"] = normalized_status
                 await ledger.record_status(
@@ -414,7 +466,7 @@ async def alpaca_paper_cancel_order(
 
     return {
         "success": True,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected_account_mode,
         "source": "alpaca_paper",
         # honest: cancel_requested was accepted; cancelled is True only once the
         # broker confirms the terminal `canceled` status.
@@ -436,12 +488,16 @@ async def alpaca_paper_reconcile_orders(
     dry_run: bool = True,
     confirm: bool = False,
     limit: int = 100,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> dict[str, Any]:
     """Book broker-confirmed Alpaca paper fills into non-terminal ledger rows.
 
     This only performs read-only broker evidence lookups plus existing ledger
     writes. It never submits, replaces, or cancels a broker order.
     """
+    selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
+    if selected_account_mode == ALPACA_PAPER_LAB_ACCOUNT_MODE:
+        _service_for_account_mode(selected_account_mode)
     if limit < 1:
         raise ValueError("limit must be >= 1")
     if not dry_run and not confirm:
@@ -456,7 +512,8 @@ async def alpaca_paper_reconcile_orders(
     )
     async with _session_factory()() as db:
         reconcile = AlpacaPaperReconcileService(
-            AlpacaPaperLedgerService(db), _service_factory()
+            AlpacaPaperLedgerService(db, account_mode=selected_account_mode),
+            _service_for_account_mode(selected_account_mode),
         )
         result = await reconcile.reconcile(
             symbol=clean_symbol,
@@ -465,7 +522,7 @@ async def alpaca_paper_reconcile_orders(
             limit=min(limit, 200),
         )
     return {
-        "account_mode": "alpaca_paper",
+        "account_mode": selected_account_mode,
         "source": "alpaca_paper_reconcile_orders",
         "symbol": clean_symbol,
         "client_order_id": clean_order_id,

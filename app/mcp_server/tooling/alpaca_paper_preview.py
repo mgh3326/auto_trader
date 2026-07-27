@@ -14,6 +14,12 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, field_validator, model_validator
 
+from app.services.alpaca_paper_account_modes import (
+    ALPACA_PAPER_ACCOUNT_MODE,
+    ALPACA_PAPER_LAB_ACCOUNT_MODE,
+    normalize_alpaca_paper_account_mode,
+    profile_for_account_mode,
+)
 from app.services.brokers.alpaca.exceptions import (
     AlpacaPaperConfigurationError,
     AlpacaPaperEndpointError,
@@ -62,6 +68,17 @@ def reset_alpaca_paper_preview_service_factory() -> None:
     """Restore the default preview service factory after tests."""
     global _preview_service_factory
     _preview_service_factory = _default_preview_service_factory
+
+
+def _preview_service_for_account_mode(account_mode: str) -> AlpacaPaperBrokerService:
+    selected = normalize_alpaca_paper_account_mode(account_mode)
+    profile = profile_for_account_mode(selected)
+    if (
+        profile is None
+        or _preview_service_factory is not _default_preview_service_factory
+    ):
+        return _preview_service_factory()
+    return AlpacaPaperBrokerService(profile=profile)
 
 
 class PreviewOrderInput(BaseModel):
@@ -260,6 +277,7 @@ async def alpaca_paper_preview_order(
     stop_price: Decimal | None = None,
     client_order_id: str | None = None,
     asset_class: str = "us_equity",
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> dict[str, Any]:
     """Preview and validate an Alpaca paper US equity or narrow crypto order without submitting it.
 
@@ -270,6 +288,7 @@ async def alpaca_paper_preview_order(
     place_order, replace_order, modify_order, bulk-cancel, or generic order
     tools.
     """
+    selected = normalize_alpaca_paper_account_mode(account_mode)
     validated = PreviewOrderInput(
         symbol=symbol,
         side=side,
@@ -282,6 +301,11 @@ async def alpaca_paper_preview_order(
         client_order_id=client_order_id,
         asset_class=asset_class,
     )
+    if (
+        selected == ALPACA_PAPER_LAB_ACCOUNT_MODE
+        and validated.asset_class != "us_equity"
+    ):
+        raise ValueError("alpaca_paper_lab supports us_equity orders only")
 
     order_request: dict[str, Any] = {
         "symbol": validated.symbol,
@@ -304,7 +328,7 @@ async def alpaca_paper_preview_order(
     would_exceed_buying_power: bool | None = None
 
     try:
-        service = _preview_service_factory()
+        service = _preview_service_for_account_mode(selected)
         cash = await service.get_cash()
         account_context = {
             "cash": str(cash.cash),
@@ -312,7 +336,11 @@ async def alpaca_paper_preview_order(
         }
     except AlpacaPaperEndpointError:
         raise  # fail closed — live endpoint is never allowed
-    except (AlpacaPaperConfigurationError, AlpacaPaperRequestError):
+    except AlpacaPaperConfigurationError:
+        if selected == ALPACA_PAPER_LAB_ACCOUNT_MODE:
+            raise
+        warnings.append("context_unavailable")
+    except AlpacaPaperRequestError:
         warnings.append("context_unavailable")
 
     if validated.qty is not None and validated.limit_price is not None:
@@ -333,7 +361,7 @@ async def alpaca_paper_preview_order(
 
     return {
         "success": True,
-        "account_mode": "alpaca_paper",
+        "account_mode": selected,
         "source": "alpaca_paper",
         "preview": True,
         "submitted": False,

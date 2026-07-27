@@ -621,7 +621,7 @@ async def test_cancel_signature_has_no_bulk_or_filter_params() -> None:
     import inspect
 
     sig = inspect.signature(alpaca_paper_cancel_order)
-    assert set(sig.parameters.keys()) == {"order_id", "confirm"}
+    assert set(sig.parameters.keys()) == {"order_id", "confirm", "account_mode"}
 
 
 @pytest.mark.unit

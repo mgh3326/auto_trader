@@ -25,6 +25,10 @@ from app.schemas.preopen import (
     PreopenPaperApprovalBridge,
     PreopenPaperApprovalCandidate,
 )
+from app.services.alpaca_paper_account_modes import (
+    ALPACA_PAPER_ACCOUNT_MODE,
+    normalize_alpaca_paper_account_mode,
+)
 
 # ---------------------------------------------------------------------------
 # ROB-90 canonical lifecycle state constants
@@ -429,8 +433,13 @@ class AlpacaPaperLedgerService:
     All sensitive keys in JSONB payloads are redacted before persistence.
     """
 
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
+    ) -> None:
         self._db = db
+        self._account_mode = normalize_alpaca_paper_account_mode(account_mode)
 
     @property
     def session(self) -> AsyncSession:
@@ -446,7 +455,10 @@ class AlpacaPaperLedgerService:
     ) -> AlpacaPaperOrderLedger | None:
         stmt = (
             select(AlpacaPaperOrderLedger)
-            .where(AlpacaPaperOrderLedger.client_order_id == client_order_id)
+            .where(
+                AlpacaPaperOrderLedger.client_order_id == client_order_id,
+                AlpacaPaperOrderLedger.account_mode == self._account_mode,
+            )
             .order_by(
                 AlpacaPaperOrderLedger.created_at.desc(),
                 AlpacaPaperOrderLedger.id.desc(),
@@ -458,7 +470,8 @@ class AlpacaPaperLedgerService:
 
     async def get_by_id(self, ledger_id: int) -> AlpacaPaperOrderLedger | None:
         stmt = select(AlpacaPaperOrderLedger).where(
-            AlpacaPaperOrderLedger.id == ledger_id
+            AlpacaPaperOrderLedger.id == ledger_id,
+            AlpacaPaperOrderLedger.account_mode == self._account_mode,
         )
         result = await self._db.execute(stmt)
         return result.scalar_one_or_none()
@@ -468,8 +481,10 @@ class AlpacaPaperLedgerService:
         limit: int = 50,
         lifecycle_state: str | None = None,
     ) -> list[AlpacaPaperOrderLedger]:
-        stmt = select(AlpacaPaperOrderLedger).order_by(
-            AlpacaPaperOrderLedger.created_at.desc()
+        stmt = (
+            select(AlpacaPaperOrderLedger)
+            .where(AlpacaPaperOrderLedger.account_mode == self._account_mode)
+            .order_by(AlpacaPaperOrderLedger.created_at.desc())
         )
         if lifecycle_state is not None:
             stmt = stmt.where(AlpacaPaperOrderLedger.lifecycle_state == lifecycle_state)
@@ -490,6 +505,7 @@ class AlpacaPaperLedgerService:
         as soon as N newer preview/terminal rows existed.
         """
         conditions: list[Any] = [
+            AlpacaPaperOrderLedger.account_mode == self._account_mode,
             AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
             AlpacaPaperOrderLedger.lifecycle_state.not_in(
                 RECONCILE_TERMINAL_LIFECYCLE_STATES
@@ -517,7 +533,8 @@ class AlpacaPaperLedgerService:
             select(AlpacaPaperOrderLedger)
             .where(
                 AlpacaPaperOrderLedger.lifecycle_correlation_id
-                == lifecycle_correlation_id
+                == lifecycle_correlation_id,
+                AlpacaPaperOrderLedger.account_mode == self._account_mode,
             )
             .order_by(
                 AlpacaPaperOrderLedger.created_at.asc(),
@@ -534,7 +551,10 @@ class AlpacaPaperLedgerService:
         """Return all ledger rows for a candidate UUID, ordered by created_at, id."""
         stmt = (
             select(AlpacaPaperOrderLedger)
-            .where(AlpacaPaperOrderLedger.candidate_uuid == candidate_uuid)
+            .where(
+                AlpacaPaperOrderLedger.candidate_uuid == candidate_uuid,
+                AlpacaPaperOrderLedger.account_mode == self._account_mode,
+            )
             .order_by(
                 AlpacaPaperOrderLedger.created_at.asc(),
                 AlpacaPaperOrderLedger.id.asc(),
@@ -552,7 +572,8 @@ class AlpacaPaperLedgerService:
             select(AlpacaPaperOrderLedger)
             .where(
                 AlpacaPaperOrderLedger.briefing_artifact_run_uuid
-                == briefing_artifact_run_uuid
+                == briefing_artifact_run_uuid,
+                AlpacaPaperOrderLedger.account_mode == self._account_mode,
             )
             .order_by(
                 AlpacaPaperOrderLedger.created_at.asc(),
@@ -575,6 +596,7 @@ class AlpacaPaperLedgerService:
             select(AlpacaPaperOrderLedger)
             .where(
                 AlpacaPaperOrderLedger.client_order_id == client_order_id,
+                AlpacaPaperOrderLedger.account_mode == self._account_mode,
                 AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
                 AlpacaPaperOrderLedger.lifecycle_state.in_(EXECUTED_LIFECYCLE_STATES),
             )
@@ -635,7 +657,7 @@ class AlpacaPaperLedgerService:
             "lifecycle_correlation_id": correlation_id,
             "record_kind": RECORD_KIND_EXECUTION,
             "broker": "alpaca",
-            "account_mode": "alpaca_paper",
+            "account_mode": self._account_mode,
             "lifecycle_state": LIFECYCLE_SUBMITTED,
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
@@ -683,7 +705,7 @@ class AlpacaPaperLedgerService:
         execution_venue: str,
         execution_asset_class: str | None = None,
         instrument_type: InstrumentType,
-        account_mode: str = "alpaca_paper",
+        account_mode: str | None = None,
         requested_qty: Decimal,
         position_qty: Decimal,
         position_available: Decimal,
@@ -709,12 +731,19 @@ class AlpacaPaperLedgerService:
         """
         if not client_order_id or not client_order_id.strip():
             raise ValueError("client_order_id must not be empty")
+        selected_account_mode = normalize_alpaca_paper_account_mode(
+            account_mode or self._account_mode
+        )
+        if selected_account_mode != self._account_mode:
+            raise ValueError(
+                "sell reservation account_mode does not match ledger account_mode"
+            )
 
         prov = provenance or ApprovalProvenance()
         correlation_id = lifecycle_correlation_id or client_order_id
         exact_source_id = (source_client_order_id or "").strip() or None
         await self.acquire_sell_reservation_lock(
-            account_mode=account_mode, execution_symbol=execution_symbol
+            account_mode=selected_account_mode, execution_symbol=execution_symbol
         )
 
         source_available: Decimal | None = None
@@ -722,7 +751,7 @@ class AlpacaPaperLedgerService:
             source = await self._find_execution_row(exact_source_id, for_update=True)
             source_filled = self._validated_source_filled_qty(
                 source,
-                account_mode=account_mode,
+                account_mode=selected_account_mode,
                 execution_symbol=execution_symbol,
                 execution_venue=execution_venue,
                 execution_asset_class=execution_asset_class,
@@ -738,7 +767,7 @@ class AlpacaPaperLedgerService:
             source_sells_stmt = select(AlpacaPaperOrderLedger).where(
                 AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
                 AlpacaPaperOrderLedger.side == "sell",
-                AlpacaPaperOrderLedger.account_mode == account_mode,
+                AlpacaPaperOrderLedger.account_mode == selected_account_mode,
                 AlpacaPaperOrderLedger.execution_symbol == execution_symbol,
                 AlpacaPaperOrderLedger.client_order_id != client_order_id,
                 AlpacaPaperOrderLedger.preview_payload[
@@ -774,7 +803,7 @@ class AlpacaPaperLedgerService:
             AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
             AlpacaPaperOrderLedger.side == "sell",
             AlpacaPaperOrderLedger.execution_symbol == execution_symbol,
-            AlpacaPaperOrderLedger.account_mode == account_mode,
+            AlpacaPaperOrderLedger.account_mode == selected_account_mode,
             AlpacaPaperOrderLedger.lifecycle_state == LIFECYCLE_SUBMITTED,
             AlpacaPaperOrderLedger.cancel_status.is_(None),
             AlpacaPaperOrderLedger.client_order_id != client_order_id,
@@ -808,7 +837,7 @@ class AlpacaPaperLedgerService:
             "lifecycle_correlation_id": correlation_id,
             "record_kind": RECORD_KIND_EXECUTION,
             "broker": "alpaca",
-            "account_mode": account_mode,
+            "account_mode": selected_account_mode,
             "lifecycle_state": LIFECYCLE_SUBMITTED,
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
@@ -955,7 +984,10 @@ class AlpacaPaperLedgerService:
         self, *, account_mode: str, execution_symbol: str
     ) -> None:
         """Hold the account+symbol sell lock until the current transaction ends."""
-        lock_key = f"alpaca_paper_sell:{account_mode}:{execution_symbol}"
+        selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
+        if selected_account_mode != self._account_mode:
+            raise ValueError("sell lock account_mode does not match ledger account_mode")
+        lock_key = f"alpaca_paper_sell:{selected_account_mode}:{execution_symbol}"
         await self._db.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": lock_key}
         )
@@ -970,13 +1002,18 @@ class AlpacaPaperLedgerService:
         availability so a stale ``submitted`` row (actually filled/canceled at the
         broker) is not double-counted.
         """
+        selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
+        if selected_account_mode != self._account_mode:
+            raise ValueError(
+                "open-sell account_mode does not match ledger account_mode"
+            )
         stmt = (
             select(AlpacaPaperOrderLedger)
             .where(
                 AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
                 AlpacaPaperOrderLedger.side == "sell",
                 AlpacaPaperOrderLedger.execution_symbol == execution_symbol,
-                AlpacaPaperOrderLedger.account_mode == account_mode,
+                AlpacaPaperOrderLedger.account_mode == selected_account_mode,
                 AlpacaPaperOrderLedger.lifecycle_state == LIFECYCLE_SUBMITTED,
                 AlpacaPaperOrderLedger.cancel_status.is_(None),
             )
@@ -993,6 +1030,7 @@ class AlpacaPaperLedgerService:
             select(AlpacaPaperOrderLedger)
             .where(
                 AlpacaPaperOrderLedger.client_order_id == client_order_id,
+                AlpacaPaperOrderLedger.account_mode == self._account_mode,
                 AlpacaPaperOrderLedger.record_kind == RECORD_KIND_EXECUTION,
             )
             .order_by(
@@ -1070,6 +1108,7 @@ class AlpacaPaperLedgerService:
             select(AlpacaPaperOrderLedger)
             .where(
                 AlpacaPaperOrderLedger.client_order_id == client_order_id,
+                AlpacaPaperOrderLedger.account_mode == self._account_mode,
                 AlpacaPaperOrderLedger.record_kind == RECORD_KIND_PREVIEW,
             )
             .order_by(
@@ -1168,7 +1207,7 @@ class AlpacaPaperLedgerService:
             "lifecycle_correlation_id": correlation_id,
             "record_kind": RECORD_KIND_PLAN,
             "broker": "alpaca",
-            "account_mode": "alpaca_paper",
+            "account_mode": self._account_mode,
             "lifecycle_state": LIFECYCLE_PLANNED,
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
@@ -1248,7 +1287,7 @@ class AlpacaPaperLedgerService:
             "lifecycle_correlation_id": correlation_id,
             "record_kind": RECORD_KIND_PREVIEW,
             "broker": "alpaca",
-            "account_mode": "alpaca_paper",
+            "account_mode": self._account_mode,
             "lifecycle_state": lifecycle_state,
             "terminalized_at": _initial_terminalized_at(lifecycle_state),
             "execution_symbol": execution_symbol,
@@ -1336,7 +1375,7 @@ class AlpacaPaperLedgerService:
             "lifecycle_correlation_id": correlation_id,
             "record_kind": RECORD_KIND_VALIDATION_ATTEMPT,
             "broker": "alpaca",
-            "account_mode": "alpaca_paper",
+            "account_mode": self._account_mode,
             "lifecycle_state": lc_state,
             "terminalized_at": _initial_terminalized_at(lc_state),
             "execution_symbol": execution_symbol,
@@ -1432,7 +1471,7 @@ class AlpacaPaperLedgerService:
             or client_order_id,
             "record_kind": RECORD_KIND_EXECUTION,
             "broker": "alpaca",
-            "account_mode": "alpaca_paper",
+            "account_mode": self._account_mode,
             "lifecycle_state": lifecycle_state,
             "terminalized_at": _initial_terminalized_at(lifecycle_state),
             "execution_symbol": source_row.execution_symbol,
@@ -1755,7 +1794,7 @@ class AlpacaPaperLedgerService:
             "lifecycle_correlation_id": correlation_id,
             "record_kind": RECORD_KIND_VALIDATION_ATTEMPT,
             "broker": "alpaca",
-            "account_mode": "alpaca_paper",
+            "account_mode": self._account_mode,
             "lifecycle_state": LIFECYCLE_SELL_VALIDATED,
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,

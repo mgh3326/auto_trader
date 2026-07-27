@@ -61,7 +61,8 @@ from sqlalchemy import text
 # v28: durable Telegram approval-dispatch summary columns + attempt ledger.
 # v29: immutable approval publication bindings and frozen batch snapshots.
 # v30: persistent-schema typed dispatch/card constraints and attempt nullability.
-SCHEMA_BOOTSTRAP_VERSION = 30
+# v31: Alpaca paper lab account_mode CHECK expansions.
+SCHEMA_BOOTSTRAP_VERSION = 31
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -886,7 +887,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE review.trade_retrospectives "
     "ADD CONSTRAINT ck_trade_retrospectives_account_mode "
     "CHECK (account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live',"
-    "'alpaca_paper','upbit_live','paper'))",
+    "'alpaca_paper','alpaca_paper_lab','upbit_live','paper'))",
     # ---- ROB-647 postmortem columns + CHECKs ----
     "ALTER TABLE review.trade_retrospectives ADD COLUMN IF NOT EXISTS trigger_type TEXT",
     "ALTER TABLE review.trade_retrospectives ADD COLUMN IF NOT EXISTS root_cause_class TEXT",
@@ -1651,6 +1652,38 @@ async def _ensure_alpaca_paper_ledger_lifecycle_state_constraint(conn) -> None:
     )
 
 
+async def _ensure_alpaca_paper_ledger_account_mode_constraint(conn) -> None:
+    constraints = await conn.execute(
+        text(
+            "SELECT conname, pg_get_constraintdef(oid) AS definition "
+            "FROM pg_constraint "
+            "WHERE conrelid = 'review.alpaca_paper_order_ledger'::regclass "
+            "AND contype = 'c' "
+            "AND pg_get_constraintdef(oid) LIKE '%account_mode%'"
+        )
+    )
+    rows = list(constraints)
+    if rows and all(
+        "alpaca_paper_lab" in (definition or "") for _conname, definition in rows
+    ):
+        return
+
+    for conname, _definition in rows:
+        await conn.execute(
+            text(
+                f"ALTER TABLE review.alpaca_paper_order_ledger "
+                f"DROP CONSTRAINT IF EXISTS {conname}"
+            )
+        )
+    await conn.execute(
+        text(
+            "ALTER TABLE review.alpaca_paper_order_ledger "
+            "ADD CONSTRAINT alpaca_paper_ledger_account_mode "
+            "CHECK (account_mode IN ('alpaca_paper','alpaca_paper_lab'))"
+        )
+    )
+
+
 async def _assert_approval_dispatch_schema_contract(conn) -> None:
     """Fail bootstrap if a persistent table remains weaker than production."""
     column_result = await conn.execute(
@@ -1804,6 +1837,7 @@ async def apply_test_schema(conn) -> None:
     await _ensure_analysis_artifacts_created_by_constraint(conn)
     await _ensure_operator_session_context_created_by_constraint(conn)
     await _ensure_alpaca_paper_ledger_lifecycle_state_constraint(conn)
+    await _ensure_alpaca_paper_ledger_account_mode_constraint(conn)
 
     for stmt in _DDL_STATEMENTS:
         await conn.execute(text(stmt))

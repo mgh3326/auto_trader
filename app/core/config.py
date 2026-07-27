@@ -860,6 +860,10 @@ class Settings(BaseSettings):
     # Only paper credentials/endpoint — no live trading support.
     alpaca_paper_api_key: str | None = None
     alpaca_paper_api_secret: SecretStr | None = None
+    # directional-lab uses a distinct Alpaca paper account. The endpoint is
+    # intentionally shared; credentials are not allowed to fall back.
+    alpaca_paper_lab_api_key: str | None = None
+    alpaca_paper_lab_api_secret: SecretStr | None = None
     alpaca_paper_base_url: str = "https://paper-api.alpaca.markets"
     alpaca_paper_data_base_url: str = "https://data.alpaca.markets"
 

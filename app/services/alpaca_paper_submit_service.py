@@ -29,6 +29,11 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from app.models.trading import InstrumentType
+from app.services.alpaca_paper_account_modes import (
+    ALPACA_PAPER_ACCOUNT_MODE,
+    ALPACA_PAPER_LAB_ACCOUNT_MODE,
+    normalize_alpaca_paper_account_mode,
+)
 from app.services.alpaca_paper_ledger_service import (
     KNOWN_OPEN_BROKER_STATUSES,
     LIFECYCLE_SUBMITTED,
@@ -159,7 +164,11 @@ def canonical_hash(canonical: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_blob(canonical)).hexdigest()
 
 
-def derive_client_order_id(canonical: dict[str, Any]) -> str:
+def derive_client_order_id(
+    canonical: dict[str, Any],
+    *,
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
+) -> str:
     """Deterministic server-derived client_order_id for a canonical payload.
 
     Preserves the historical ``rob73-``/``rob74-crypto-`` prefixes and 16-char
@@ -169,8 +178,19 @@ def derive_client_order_id(canonical: dict[str, Any]) -> str:
     submits use ``derive_automated_key`` which folds in server-owned decision
     identity so distinct decisions never collide on economics alone.
     """
-    digest = canonical_hash(canonical)[:16]
+    selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
+    if selected_account_mode == ALPACA_PAPER_ACCOUNT_MODE:
+        digest = canonical_hash(canonical)[:16]
+    else:
+        digest = canonical_hash(
+            {
+                "account_mode": selected_account_mode,
+                "canonical": canonical,
+            }
+        )[:16]
     prefix = "rob74-crypto" if canonical.get("asset_class") == "crypto" else "rob73"
+    if selected_account_mode == ALPACA_PAPER_LAB_ACCOUNT_MODE:
+        prefix = f"dlab-{prefix}"
     return f"{prefix}-{digest}"
 
 
@@ -179,6 +199,7 @@ def derive_automated_key(
     correlation_id: str,
     snapshot_id: str | None,
     canonical: dict[str, Any],
+    account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
 ) -> str:
     """Server-owned idempotency key for an automated submit (ROB-842 blocker 4).
 
@@ -188,13 +209,23 @@ def derive_automated_key(
     decision gets the same key (dedup). The caller supplies correlation/snapshot as
     decision identity but can never inject the final key directly.
     """
+    selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
+    identity_payload: dict[str, Any] = {
+        "c": correlation_id,
+        "s": snapshot_id,
+        "canonical": canonical,
+    }
+    if selected_account_mode != ALPACA_PAPER_ACCOUNT_MODE:
+        identity_payload["account_mode"] = selected_account_mode
     identity = json.dumps(
-        {"c": correlation_id, "s": snapshot_id, "canonical": canonical},
+        identity_payload,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
     digest = hashlib.sha256(identity).hexdigest()[:20]
     prefix = "rob842a-crypto" if canonical.get("asset_class") == "crypto" else "rob842a"
+    if selected_account_mode == ALPACA_PAPER_LAB_ACCOUNT_MODE:
+        prefix = f"dlab-{prefix}"
     return f"{prefix}-{digest}"
 
 
@@ -263,7 +294,7 @@ class AlpacaPaperSubmitCoordinator:
         *,
         now_fn: Callable[[], datetime] | None = None,
         quote_max_age: timedelta = DEFAULT_QUOTE_MAX_AGE,
-        expected_account_mode: str = "alpaca_paper",
+        expected_account_mode: str = ALPACA_PAPER_ACCOUNT_MODE,
         inflight_max_polls: int = DEFAULT_INFLIGHT_MAX_POLLS,
         inflight_poll_interval_s: float = DEFAULT_INFLIGHT_POLL_INTERVAL_S,
         sleep_fn: Callable[[float], Awaitable[None]] | None = None,
@@ -272,7 +303,9 @@ class AlpacaPaperSubmitCoordinator:
         self._broker_factory = broker_factory
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
         self._quote_max_age = quote_max_age
-        self._expected_account_mode = expected_account_mode
+        self._expected_account_mode = normalize_alpaca_paper_account_mode(
+            expected_account_mode
+        )
         self._inflight_max_polls = max(1, int(inflight_max_polls))
         self._inflight_poll_interval_s = float(inflight_poll_interval_s)
         self._sleep_fn = sleep_fn or asyncio.sleep
@@ -290,8 +323,12 @@ class AlpacaPaperSubmitCoordinator:
                 correlation_id=packet.lifecycle_correlation_id,
                 snapshot_id=packet.snapshot_id,
                 canonical=canonical,
+                account_mode=self._expected_account_mode,
             )
-        return derive_client_order_id(canonical)
+        return derive_client_order_id(
+            canonical,
+            account_mode=self._expected_account_mode,
+        )
 
     async def submit(
         self,

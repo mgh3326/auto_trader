@@ -76,6 +76,7 @@ _VALID_ACCOUNT_MODES = {
     "kis_live",
     "toss_live",
     "alpaca_paper",
+    "alpaca_paper_lab",
     "upbit_live",
     "paper",
 }
@@ -1301,7 +1302,8 @@ async def build_retrospective_pending(
     report_item_uuid or the suggested correlation_id). Mirrors the ROB-120
     coverage pattern (terminal-without-artifact). Filter to one source with
     account_mode (e.g. "kis_mock" for the counterfactual mock loop, "kis_live"/
-    "toss_live"/"upbit_live"/"paper"/"alpaca_paper" otherwise); None scans all.
+    "toss_live"/"upbit_live"/"paper"/"alpaca_paper"/"alpaca_paper_lab"
+    otherwise); None scans all.
 
     Cancel-family rows (cancelled / cancel_rejected / replace_rejected) are
     hidden unless include_cancelled=True; the hidden count is reported in
@@ -1502,7 +1504,7 @@ async def build_retrospective_pending(
     # (client_order_id, record_kind) unique-slot family, not a second order —
     # scanning them would double-surface a single execution as multiple
     # due-list entries.
-    if account_mode in (None, "alpaca_paper"):
+    if account_mode in (None, "alpaca_paper", "alpaca_paper_lab"):
         # ROB-954 R3: terminalized_at is the first terminal transition, not the
         # mutable updated_at. Existing terminal rows have NULL after this
         # additive migration; created_at is the deliberate stable fallback.
@@ -1533,6 +1535,8 @@ async def build_retrospective_pending(
             .order_by(terminal_window_at.desc(), AlpacaPaperOrderLedger.id.desc())
             .limit(_PENDING_LEDGER_FETCH_CAP)
         )
+        if account_mode is not None:
+            stmt = stmt.where(AlpacaPaperOrderLedger.account_mode == account_mode)
         # ROB-954 R3: a buy/sell roundtrip's two execution rows can share
         # one lifecycle_correlation_id. review.trade_retrospectives enforces
         # UNIQUE(correlation_id, account_mode) (app/models/review.py), so two
@@ -1541,10 +1545,13 @@ async def build_retrospective_pending(
         # once. Collapse to one deterministic close/sell-first representative;
         # metadata-only updated_at changes play no role. Identity-inconsistent
         # groups keep every member in correlation_anomaly evidence below.
-        by_correlation: dict[str, list[AlpacaPaperOrderLedger]] = {}
+        by_correlation: dict[tuple[str, str], list[AlpacaPaperOrderLedger]] = {}
         for row in (await db.execute(stmt)).scalars().all():
             scanned += 1
-            key = row.lifecycle_correlation_id or f"ledger-row:{row.id}"
+            key = (
+                row.account_mode,
+                row.lifecycle_correlation_id or f"ledger-row:{row.id}",
+            )
             by_correlation.setdefault(key, []).append(row)
         for group in by_correlation.values():
             row = max(group, key=_alpaca_paper_representative_rank)
@@ -1552,7 +1559,7 @@ async def build_retrospective_pending(
             market = "crypto" if itype == "crypto" else itype.removeprefix("equity_")
             entry = _pending_entry(
                 ledger="alpaca_paper",
-                account_mode="alpaca_paper",
+                account_mode=row.account_mode,
                 market=market,
                 instrument_type=itype,
                 symbol=row.execution_symbol,
