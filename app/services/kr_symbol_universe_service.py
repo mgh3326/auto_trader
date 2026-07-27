@@ -297,6 +297,41 @@ async def _apply_snapshot(
     }
 
 
+async def _plan_snapshot(
+    db: AsyncSession,
+    snapshot: dict[str, _UniverseRow],
+) -> dict[str, int]:
+    """Return the apply counts without mutating ORM rows or flushing."""
+    existing_result = await db.execute(select(KRSymbolUniverse))
+    existing_rows = {row.symbol: row for row in list(existing_result.scalars().all())}
+
+    inserted = sum(symbol not in existing_rows for symbol in snapshot)
+    updated = 0
+    for symbol, row in snapshot.items():
+        existing = existing_rows.get(symbol)
+        if existing is None:
+            continue
+        if (
+            existing.name != row.name
+            or existing.exchange != row.exchange
+            or existing.nxt_eligible != row.nxt_eligible
+            or not existing.is_active
+        ):
+            updated += 1
+
+    snapshot_symbols = set(snapshot)
+    deactivated = sum(
+        existing.is_active and symbol not in snapshot_symbols
+        for symbol, existing in existing_rows.items()
+    )
+    return {
+        "total": len(snapshot),
+        "inserted": inserted,
+        "updated": updated,
+        "deactivated": deactivated,
+    }
+
+
 async def _resolve_active_symbol_by_name(db: AsyncSession, name: str) -> str:
     normalized_name = normalize_name(name)
     if not normalized_name:
@@ -499,19 +534,31 @@ async def search_kr_symbols(
         await session.close()
 
 
-async def sync_kr_symbol_universe(db: AsyncSession | None = None) -> dict[str, int]:
+async def sync_kr_symbol_universe(
+    db: AsyncSession | None = None,
+    *,
+    dry_run: bool = False,
+) -> dict[str, int]:
     snapshot = await build_kr_symbol_universe_snapshot()
     if db is not None:
-        return await _apply_snapshot(db, snapshot)
+        return (
+            await _plan_snapshot(db, snapshot)
+            if dry_run
+            else await _apply_snapshot(db, snapshot)
+        )
 
     session = cast(AsyncSession, cast(object, AsyncSessionLocal()))
     try:
-        async with session.begin():
-            result = await _apply_snapshot(session, snapshot)
+        if dry_run:
+            result = await _plan_snapshot(session, snapshot)
+        else:
+            async with session.begin():
+                result = await _apply_snapshot(session, snapshot)
     finally:
         await session.close()
     logger.info(
-        "KR symbol universe synced total=%d inserted=%d updated=%d deactivated=%d",
+        "KR symbol universe %s total=%d inserted=%d updated=%d deactivated=%d",
+        "dry-run" if dry_run else "synced",
         result["total"],
         result["inserted"],
         result["updated"],
