@@ -22,6 +22,7 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_window import ApprovalWindowDecision
 from app.services.order_proposals.broker_gateway import (
     fetch_operator_void_evidence,
@@ -33,8 +34,10 @@ from app.services.order_proposals.buying_power import (
     default_buying_power_reader,
 )
 from app.services.order_proposals.dispatch import (
+    approval_window_failure_code,
     dispatch_proposal,
     record_approval_dispatch_failure,
+    send_proposal_for_approval,
 )
 from app.services.order_proposals.dispatch_contract import (
     ApprovalDispatchState,
@@ -46,6 +49,7 @@ from app.services.order_proposals.errors import (
     OrderProposalNotFound,
     OrderProposalUnsupportedTargetAction,
 )
+from app.services.order_proposals.redispatch import validate_proposal_redispatch
 from app.services.order_proposals.service import RungInput, check_action_capability
 from app.services.order_proposals.telegram_callback import _safe_edit_message
 
@@ -61,6 +65,7 @@ ORDER_PROPOSAL_TOOL_NAMES: set[str] = {
     "order_proposal_void",
     "order_proposal_expire_sweep",
     "order_proposal_list_expired_defensive",
+    "order_proposal_redispatch",
 }
 
 _MARKET_ALIASES = {"kr": "equity_kr", "us": "equity_us"}
@@ -114,6 +119,7 @@ def _group_dict(g: Any) -> dict[str, Any]:
         ),
         "approval_dispatch_failure_code": g.approval_dispatch_failure_code,
         "approval_dispatch_payload_chars": g.approval_dispatch_payload_chars,
+        "approval_dispatch_alert": (g.source_asof or {}).get("approval_dispatch_alert"),
         "created_at": g.created_at.isoformat() if g.created_at else None,
     }
 
@@ -176,6 +182,40 @@ async def _record_post_commit_dispatch_failure(
             },
         )
         return _approval_dispatch_ledger_error_result()
+
+
+async def _alert_non_sent_dispatch(
+    proposal_id: uuid.UUID,
+    *,
+    dispatch_state: str,
+    dispatch_failure_code: str,
+) -> dict[str, Any]:
+    """Keep alert failure observable without replacing committed create success."""
+    try:
+        alert = await send_approval_dispatch_alert(
+            proposal_id,
+            dispatch_state=dispatch_state,
+            dispatch_failure_code=dispatch_failure_code,
+            now=now_kst(),
+        )
+        return alert.as_dict()
+    except Exception as exc:  # noqa: BLE001 - alerting is secondary to durable dispatch
+        logger.error(
+            "order_proposals.approval_dispatch_alert_boundary_failed",
+            extra={
+                "proposal_id": str(proposal_id),
+                "dispatch_state": dispatch_state,
+                "dispatch_failure_code": dispatch_failure_code,
+                "alert_failure_code": "approval_dispatch_alert_internal_error",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        return {
+            "state": "failed",
+            "channel": "discord",
+            "failure_code": "approval_dispatch_alert_internal_error",
+            "recorded": False,
+        }
 
 
 async def _dispatch_after_proposal_commit(
@@ -297,12 +337,28 @@ async def _complete_committed_proposal_create(
 
         dispatch_result = await _dispatch_after_proposal_commit(proposal_id)
         if isinstance(dispatch_result, ApprovalWindowDecision):
+            operator_alert = await _alert_non_sent_dispatch(
+                proposal_id,
+                dispatch_state="blocked",
+                dispatch_failure_code=approval_window_failure_code(dispatch_result),
+            )
             result["approval_dispatch"] = {
                 "status": "blocked",
                 **dispatch_result.to_dict(),
+                "operator_alert": operator_alert,
             }
         else:
-            result["approval_dispatch"] = dispatch_result.as_dict()
+            dispatch_payload = dispatch_result.as_dict()
+            if not dispatch_result.ok:
+                operator_alert = await _alert_non_sent_dispatch(
+                    proposal_id,
+                    dispatch_state=dispatch_result.state.value,
+                    dispatch_failure_code=(
+                        dispatch_result.failure_code or dispatch_result.state.value
+                    ),
+                )
+                dispatch_payload["operator_alert"] = operator_alert
+            result["approval_dispatch"] = dispatch_payload
         return result
     except Exception as exc:  # noqa: BLE001 - committed create result is immutable
         logger.error(
@@ -763,6 +819,136 @@ async def order_proposal_list_expired_defensive(
         return {"success": False, "error": str(exc)}
 
 
+async def order_proposal_redispatch(
+    proposal_id: str,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Revalidate and optionally re-send one failed approval card.
+
+    ``dry_run=True`` is read-only and is the required first step. Execution
+    sends only a fresh Telegram approval card; it never approves or submits an
+    order. Only active limit/place proposals with failed-or-missing dispatch,
+    unused/no active nonce, eligible rungs, a live approval window, and exact
+    fresh preview price/quantity are eligible.
+    """
+    try:
+        pid = uuid.UUID(proposal_id)
+    except ValueError:
+        return {"success": False, "error": f"invalid proposal_id {proposal_id!r}"}
+
+    try:
+        now = now_kst()
+        async with AsyncSessionLocal() as session:
+            service = OrderProposalsService(session)
+            group, rungs = await service.get_proposal(pid)
+            validation = await validate_proposal_redispatch(
+                group=group,
+                rungs=rungs,
+                now=now,
+                now_fn=now_kst,
+            )
+        validation_payload = validation.as_dict()
+        base = {
+            "proposal_id": str(pid),
+            "symbol": group.symbol,
+            "side": group.side,
+            "dry_run": bool(dry_run),
+            "validation": validation_payload,
+        }
+        if dry_run:
+            return {
+                "success": True,
+                **base,
+            }
+        if not validation.eligible:
+            return {
+                "success": False,
+                **base,
+                "error": validation.failure_code,
+            }
+        if not settings.ORDER_PROPOSALS_TELEGRAM_ENABLED:
+            return {
+                "success": False,
+                **base,
+                "error": "telegram_disabled",
+            }
+
+        try:
+            dispatch_result = await send_proposal_for_approval(
+                pid,
+                notifier=_get_trade_notifier(),
+                now=now_kst(),
+                now_fn=now_kst,
+                redispatch=True,
+            )
+        except OrderProposalError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - preserve any uncertain pending card
+            logger.error(
+                "order_proposal_redispatch.approval_dispatch_failed",
+                extra={
+                    "proposal_id": str(pid),
+                    "failure_code": "approval_redispatch_internal_error",
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            operator_alert = await _alert_non_sent_dispatch(
+                pid,
+                dispatch_state="unknown",
+                dispatch_failure_code="approval_redispatch_internal_error",
+            )
+            return {
+                "success": False,
+                **base,
+                "error": "approval_redispatch_internal_error",
+                "operator_alert": operator_alert,
+            }
+        if isinstance(dispatch_result, ApprovalWindowDecision):
+            failure_code = approval_window_failure_code(dispatch_result)
+            operator_alert = await _alert_non_sent_dispatch(
+                pid,
+                dispatch_state="blocked",
+                dispatch_failure_code=failure_code,
+            )
+            return {
+                "success": False,
+                **base,
+                "approval_dispatch": {
+                    "status": "blocked",
+                    **dispatch_result.to_dict(),
+                    "operator_alert": operator_alert,
+                },
+                "error": failure_code,
+            }
+
+        dispatch_payload = dispatch_result.as_dict()
+        if not dispatch_result.ok:
+            operator_alert = await _alert_non_sent_dispatch(
+                pid,
+                dispatch_state=dispatch_result.state.value,
+                dispatch_failure_code=(
+                    dispatch_result.failure_code or dispatch_result.state.value
+                ),
+            )
+            dispatch_payload["operator_alert"] = operator_alert
+        return {
+            "success": dispatch_result.ok,
+            **base,
+            "approval_dispatch": dispatch_payload,
+            **(
+                {}
+                if dispatch_result.ok
+                else {
+                    "error": dispatch_result.failure_code or dispatch_result.state.value
+                }
+            ),
+        }
+    except OrderProposalNotFound:
+        return {"success": False, "error": "not_found"}
+    except (ValueError, OrderProposalError) as exc:
+        return {"success": False, "error": str(exc)}
+
+
 def register_order_proposal_tools(mcp: FastMCP) -> None:
     """Register the order_proposals read/create/void MCP tools.
 
@@ -821,6 +1007,16 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
             "re-judgment (needs_reassessment=true) -- NOT a broker mutation."
         ),
     )(order_proposal_list_expired_defensive)
+    _ = mcp.tool(
+        name="order_proposal_redispatch",
+        description=(
+            "Revalidate and optionally re-send one failed/missing Telegram approval "
+            "card. dry_run=True is the default and performs only fresh session, "
+            "validity, state, nonce, holdings/guard, price, and quantity checks. "
+            "dry_run=False sends a new Telegram approval card only; it never approves "
+            "or submits an order. Active/current/pending/acted proposals fail closed."
+        ),
+    )(order_proposal_redispatch)
 
 
 __all__ = [
@@ -830,6 +1026,7 @@ __all__ = [
     "order_proposal_get",
     "order_proposal_list",
     "order_proposal_list_expired_defensive",
+    "order_proposal_redispatch",
     "order_proposal_void",
     "register_order_proposal_tools",
     "run_order_proposal_expire_sweep",

@@ -105,6 +105,17 @@ class _EventNotifier(_FakeNotifier):
         return await super().edit_message(chat_id, message_id, text, reply_markup)
 
 
+class _FailedSendNotifier(_FakeNotifier):
+    async def send_approval_message(
+        self, text, inline_keyboard, *, chat_id, parse_mode="Markdown"
+    ):
+        self.sent_messages.append((text, inline_keyboard, chat_id))
+        return TelegramMethodResult.failed(
+            payload_chars=telegram_text_length(text),
+            failure_code="telegram_transport_error",
+        )
+
+
 def _session_factory(db_session):
     @contextlib.asynccontextmanager
     async def _factory():
@@ -1919,6 +1930,59 @@ async def test_needs_reconfirm_sends_new_diff_message(monkeypatch, db_session):
     refreshed, _rungs = await service.get_proposal(group.proposal_id)
     assert refreshed.approval_nonce == parsed.nonce
     assert refreshed.approved_by_telegram_user_id == str(USER_ID)
+
+
+@pytest.mark.asyncio
+async def test_needs_reconfirm_dispatch_failure_alerts_operator(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_proposal(db_session, nonce="nonce-alert1")
+    data = _proposal_callback_data(group, action="op", nonce="nonce-alert1")
+    notifier = _FailedSendNotifier()
+    alert_calls = []
+
+    async def fake_alert(proposal_id, **kwargs):
+        alert_calls.append((proposal_id, kwargs))
+        return SimpleNamespace(
+            as_dict=lambda: {
+                "state": "sent",
+                "channel": "discord",
+                "failure_code": None,
+                "recorded": True,
+            }
+        )
+
+    monkeypatch.setattr(callback_module, "send_approval_dispatch_alert", fake_alert)
+
+    async def fake_revalidate(*, service, proposal_id, now):
+        return [
+            RungOutcome(
+                0,
+                "needs_reconfirm",
+                {
+                    "before": {"limit_price": "100", "quantity": "10"},
+                    "after": {"limit_price": "105", "quantity": "10"},
+                },
+            )
+        ]
+
+    result = await handle_callback_update(
+        _make_update(data=data),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+    )
+
+    assert result["approval_dispatch"]["state"] == "failed"
+    assert result["operator_alert"]["state"] == "sent"
+    assert len(alert_calls) == 1
+    alert_proposal_id, alert_kwargs = alert_calls[0]
+    assert alert_proposal_id == group.proposal_id
+    assert alert_kwargs["dispatch_state"] == "failed"
+    assert alert_kwargs["dispatch_failure_code"] == "approval_card_dispatch_failed"
+    assert alert_kwargs["service_factory"] is not None
 
 
 @pytest.mark.asyncio

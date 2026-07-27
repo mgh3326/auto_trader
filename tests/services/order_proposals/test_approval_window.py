@@ -55,6 +55,8 @@ def _group(
         order_type="limit",
         exit_intent=exit_intent,
         exit_reason=exit_reason,
+        approval_nonce=None,
+        approval_dispatch_membership_revision=None,
     )
 
 
@@ -240,6 +242,12 @@ async def test_dispatch_session_block_publishes_no_nonce_or_card(
             nonlocal nonce_mints
             nonce_mints += 1
 
+        async def start_approval_dispatch(self, *args, **kwargs):
+            return None
+
+        async def finish_approval_dispatch(self, *args, **kwargs):
+            return None
+
     class FakeSession:
         async def commit(self):
             return None
@@ -304,6 +312,12 @@ async def test_dispatch_rechecks_boundary_before_nonce_or_card(monkeypatch):
             nonlocal expiry_transitions
             expiry_transitions += 1
             return True
+
+        async def start_approval_dispatch(self, *args, **kwargs):
+            return None
+
+        async def finish_approval_dispatch(self, *args, **kwargs):
+            return None
 
     class FakeSession:
         async def commit(self):
@@ -1851,6 +1865,12 @@ async def test_july_23_incident_fixture_is_typed_expired_without_calendar_lookup
             nonlocal expiry_transitions
             expiry_transitions += 1
             return True
+
+        async def start_approval_dispatch(self, *args, **kwargs):
+            return None
+
+        async def finish_approval_dispatch(self, *args, **kwargs):
+            return None
 
     class FakeSession:
         async def commit(self):

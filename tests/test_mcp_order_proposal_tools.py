@@ -1,8 +1,10 @@
+import contextlib
 import functools
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -16,6 +18,7 @@ from app.services.order_proposals.approval_window import (
     ApprovalWindowDecision,
 )
 from app.services.order_proposals.errors import OrderProposalError
+from app.services.order_proposals.redispatch import RedispatchValidation
 from app.services.order_proposals.target_order import TargetOrderSnapshot
 from app.telegram_contract import TelegramMethodResult, telegram_text_length
 from tests.services.order_proposals.window_fakes import allow_known_session
@@ -166,6 +169,16 @@ async def test_create_surfaces_typed_approval_dispatch_block(monkeypatch):
         "app.monitoring.trade_notifier.notifier.get_trade_notifier",
         lambda: _FakeNotifier(),
     )
+    alert_result = SimpleNamespace(
+        as_dict=lambda: {
+            "state": "sent",
+            "channel": "discord",
+            "failure_code": None,
+            "recorded": True,
+        }
+    )
+    alert = AsyncMock(return_value=alert_result)
+    monkeypatch.setattr(opt, "send_approval_dispatch_alert", alert)
 
     result = await opt.order_proposal_create(**_create_kwargs())
 
@@ -173,6 +186,12 @@ async def test_create_surfaces_typed_approval_dispatch_block(monkeypatch):
     assert result["approval_dispatch"]["status"] == "blocked"
     assert result["approval_dispatch"]["code"] == "EXPIRED"
     assert result["approval_dispatch"]["detail"] == "now_at_or_after_valid_until"
+    assert result["approval_dispatch"]["operator_alert"]["state"] == "sent"
+    alert.assert_awaited_once()
+    assert (
+        alert.await_args.kwargs["dispatch_failure_code"]
+        == "EXPIRED/now_at_or_after_valid_until"
+    )
 
 
 @pytest.mark.asyncio
@@ -1008,7 +1027,170 @@ def test_tools_registered_and_names_exported():
         "order_proposal_void",
         "order_proposal_expire_sweep",
         "order_proposal_list_expired_defensive",
+        "order_proposal_redispatch",
     }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_redispatch_defaults_to_dry_run_and_never_loads_notifier(monkeypatch):
+    group = SimpleNamespace(symbol="052690", side="sell")
+    service = SimpleNamespace(get_proposal=AsyncMock(return_value=(group, [])))
+
+    @contextlib.asynccontextmanager
+    async def session_factory():
+        yield SimpleNamespace()
+
+    validation = RedispatchValidation(
+        False,
+        "redispatch_price_changed",
+        {"rung_index": 0},
+    )
+    validator = AsyncMock(return_value=validation)
+    monkeypatch.setattr(opt, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(opt, "OrderProposalsService", lambda _session: service)
+    monkeypatch.setattr(opt, "validate_proposal_redispatch", validator)
+    monkeypatch.setattr(
+        opt,
+        "_get_trade_notifier",
+        lambda: (_ for _ in ()).throw(AssertionError("notifier must not load")),
+    )
+
+    result = await opt.order_proposal_redispatch(str(uuid.uuid4()))
+
+    assert result["success"] is True
+    assert result["dry_run"] is True
+    assert result["validation"]["eligible"] is False
+    validator.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_redispatch_execute_refuses_invalid_proposal_without_telegram(
+    monkeypatch,
+):
+    group = SimpleNamespace(symbol="052690", side="sell")
+    service = SimpleNamespace(get_proposal=AsyncMock(return_value=(group, [])))
+
+    @contextlib.asynccontextmanager
+    async def session_factory():
+        yield SimpleNamespace()
+
+    monkeypatch.setattr(opt, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(opt, "OrderProposalsService", lambda _session: service)
+    monkeypatch.setattr(
+        opt,
+        "validate_proposal_redispatch",
+        AsyncMock(
+            return_value=RedispatchValidation(
+                False,
+                "redispatch_approval_already_acted",
+                {},
+            )
+        ),
+    )
+    sender = AsyncMock()
+    monkeypatch.setattr(opt, "send_proposal_for_approval", sender)
+
+    result = await opt.order_proposal_redispatch(str(uuid.uuid4()), dry_run=False)
+
+    assert result["success"] is False
+    assert result["error"] == "redispatch_approval_already_acted"
+    sender.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_redispatch_execute_sends_only_fresh_telegram_card(monkeypatch):
+    proposal_id = uuid.uuid4()
+    group = SimpleNamespace(symbol="052690", side="sell")
+    service = SimpleNamespace(get_proposal=AsyncMock(return_value=(group, [])))
+
+    @contextlib.asynccontextmanager
+    async def session_factory():
+        yield SimpleNamespace()
+
+    monkeypatch.setattr(opt, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(opt, "OrderProposalsService", lambda _session: service)
+    monkeypatch.setattr(
+        opt,
+        "validate_proposal_redispatch",
+        AsyncMock(return_value=RedispatchValidation(True, None, {"rungs": []})),
+    )
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    notifier = SimpleNamespace()
+    monkeypatch.setattr(opt, "_get_trade_notifier", lambda: notifier)
+    sender = AsyncMock(
+        return_value=opt.TelegramDispatchResult(
+            state=opt.ApprovalDispatchState.SENT_CURRENT,
+            message_id=4242,
+            status_code=200,
+            error_code=None,
+            error_classification=None,
+            payload_chars=120,
+            failure_code=None,
+        )
+    )
+    monkeypatch.setattr(opt, "send_proposal_for_approval", sender)
+
+    result = await opt.order_proposal_redispatch(str(proposal_id), dry_run=False)
+
+    assert result["success"] is True
+    assert result["approval_dispatch"]["state"] == "sent"
+    sender.assert_awaited_once()
+    assert sender.await_args.kwargs["notifier"] is notifier
+    assert sender.await_args.kwargs["redispatch"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_redispatch_uncertain_send_failure_alerts_without_replacing_attempt(
+    monkeypatch,
+):
+    proposal_id = uuid.uuid4()
+    group = SimpleNamespace(symbol="052690", side="sell")
+    service = SimpleNamespace(get_proposal=AsyncMock(return_value=(group, [])))
+
+    @contextlib.asynccontextmanager
+    async def session_factory():
+        yield SimpleNamespace()
+
+    monkeypatch.setattr(opt, "AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(opt, "OrderProposalsService", lambda _session: service)
+    monkeypatch.setattr(
+        opt,
+        "validate_proposal_redispatch",
+        AsyncMock(return_value=RedispatchValidation(True, None, {"rungs": []})),
+    )
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
+    monkeypatch.setattr(opt, "_get_trade_notifier", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        opt,
+        "send_proposal_for_approval",
+        AsyncMock(side_effect=RuntimeError("uncertain publication boundary")),
+    )
+    alert = AsyncMock(return_value={"state": "sent", "channel": "discord"})
+    monkeypatch.setattr(opt, "_alert_non_sent_dispatch", alert)
+    replacement_ledger = AsyncMock()
+    monkeypatch.setattr(
+        opt,
+        "_record_post_commit_dispatch_failure",
+        replacement_ledger,
+    )
+
+    result = await opt.order_proposal_redispatch(
+        str(proposal_id),
+        dry_run=False,
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "approval_redispatch_internal_error"
+    alert.assert_awaited_once_with(
+        proposal_id,
+        dispatch_state="unknown",
+        dispatch_failure_code="approval_redispatch_internal_error",
+    )
+    replacement_ledger.assert_not_awaited()
 
 
 # -- ROB-897 cause (1): order_proposal_expire_sweep MCP tool ----------------

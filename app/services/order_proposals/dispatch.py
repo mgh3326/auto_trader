@@ -91,6 +91,15 @@ def _generate_nonce() -> str:
     return secrets.token_urlsafe(8)
 
 
+def approval_window_failure_code(decision: ApprovalWindowDecision) -> str:
+    """Return the stable dispatch-ledger code for a blocked approval window."""
+    evidence_detail = (
+        decision.evidence.detail if decision.evidence is not None else None
+    )
+    detail = evidence_detail or decision.detail
+    return f"{decision.code.value}/{detail or 'unspecified'}"
+
+
 def _proposal_binding(
     *,
     group: Any,
@@ -104,6 +113,43 @@ def _proposal_binding(
         attempt_id=attempt_id,
         card_kind=card_kind,
         current_membership_revision=group.approval_dispatch_membership_revision,
+    )
+
+
+async def _record_approval_window_block(
+    *,
+    service: OrderProposalsService,
+    group: Any,
+    decision: ApprovalWindowDecision,
+    attempt_id: uuid.UUID,
+    binding: DispatchBinding | None = None,
+) -> TelegramDispatchResult:
+    """Ledger a fail-closed window decision before returning it to the caller."""
+    resolved_binding = binding or _proposal_binding(
+        group=group,
+        nonce=group.approval_nonce,
+        attempt_id=attempt_id,
+        card_kind=ApprovalCardKind.MANUAL,
+    )
+    publication = ApprovalPublication.failed(
+        payload_chars=0,
+        failure_code=approval_window_failure_code(decision),
+    )
+    await service.start_approval_dispatch(
+        group.proposal_id,
+        attempt_id=attempt_id,
+        binding=resolved_binding,
+        now=decision.observed_at,
+        payload_chars=0,
+        context_message_count=0,
+    )
+    return await service.finish_approval_dispatch(
+        group.proposal_id,
+        attempt_id=attempt_id,
+        publication=publication,
+        chat_id=None,
+        now=decision.observed_at,
+        approval_window_policy_stamp=decision.policy_stamp,
     )
 
 
@@ -243,6 +289,7 @@ async def send_proposal_for_approval(
     service_factory: ServiceFactory = AsyncSessionLocal,
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
+    redispatch: bool = False,
 ) -> TelegramDispatchResult | ApprovalWindowDecision:
     """Mint a fresh approval nonce, render the message, and send it.
 
@@ -280,6 +327,12 @@ async def send_proposal_for_approval(
         )
         observed_now = window.observed_at
         if not window.allowed:
+            await _record_approval_window_block(
+                service=service,
+                group=group,
+                decision=window,
+                attempt_id=attempt_id,
+            )
             if window.code is ApprovalWindowCode.EXPIRED:
                 await service.expire_mutable_rungs_if_needed(
                     proposal_id, now=observed_now
@@ -299,6 +352,12 @@ async def send_proposal_for_approval(
         )
         publish_now = window.observed_at
         if not window.allowed:
+            await _record_approval_window_block(
+                service=service,
+                group=group,
+                decision=window,
+                attempt_id=attempt_id,
+            )
             if window.code is ApprovalWindowCode.EXPIRED:
                 await service.expire_mutable_rungs_if_needed(
                     proposal_id, now=publish_now
@@ -307,7 +366,14 @@ async def send_proposal_for_approval(
             return window
 
         fresh_nonce = _generate_nonce()
-        await service.set_approval_nonce(proposal_id, fresh_nonce)
+        if redispatch:
+            await service.set_approval_nonce(
+                proposal_id,
+                fresh_nonce,
+                require_redispatchable=True,
+            )
+        else:
+            await service.set_approval_nonce(proposal_id, fresh_nonce)
 
         group, rungs = await service.get_proposal(proposal_id)
         binding = _proposal_binding(
@@ -329,15 +395,17 @@ async def send_proposal_for_approval(
             expected_policy_stamp=window.policy_stamp,
         )
         if not send_window.allowed:
+            await _record_approval_window_block(
+                service=service,
+                group=group,
+                decision=send_window,
+                attempt_id=attempt_id,
+                binding=binding,
+            )
             if send_window.code is ApprovalWindowCode.EXPIRED:
                 await service.expire_mutable_rungs_if_needed(
                     proposal_id,
                     now=send_window.observed_at,
-                )
-            else:
-                await service.clear_approval_nonce(
-                    proposal_id,
-                    expected_nonce=fresh_nonce,
                 )
             await session.commit()
             return send_window

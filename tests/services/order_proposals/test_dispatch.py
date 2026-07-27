@@ -322,19 +322,34 @@ async def test_dispatch_expired_returns_typed_result_without_nonce_or_telegram(
     )
     assert refreshed.approval_nonce is None
     assert refreshed.lifecycle_state == "expired"
+    assert refreshed.approval_dispatch_state == "failed"
+    assert (
+        refreshed.approval_dispatch_failure_code
+        == "EXPIRED/now_at_or_after_valid_until"
+    )
+    assert refreshed.approval_dispatch_attempted_at == deadline
+    assert refreshed.approval_dispatch_published_at is None
     assert [rung.state for rung in rungs] == ["expired"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("known", "expected"),
+    ("known", "expected", "expected_failure"),
     [
-        (True, ApprovalWindowCode.DEFER_SESSION_CLOSED),
-        (False, ApprovalWindowCode.CALENDAR_UNKNOWN),
+        (
+            True,
+            ApprovalWindowCode.DEFER_SESSION_CLOSED,
+            "DEFER_SESSION_CLOSED/submission_session_closed",
+        ),
+        (
+            False,
+            ApprovalWindowCode.CALENDAR_UNKNOWN,
+            "CALENDAR_UNKNOWN/nxt_capability_stale",
+        ),
     ],
 )
-async def test_dispatch_closed_or_unknown_session_has_zero_visible_side_effects(
-    monkeypatch, db_session, known, expected
+async def test_dispatch_closed_or_unknown_session_is_durably_blocked_without_telegram(
+    monkeypatch, db_session, known, expected, expected_failure
 ):
     from app.core.config import settings
 
@@ -356,6 +371,7 @@ async def test_dispatch_closed_or_unknown_session_has_zero_visible_side_effects(
                 allowed_sessions=("regular",),
                 allowed_now=False,
                 next_allowed_at=now + timedelta(hours=12) if known else None,
+                detail=None if known else "nxt_capability_stale",
             )
 
         return await evaluate_approval_window(group, now=now, session_resolver=resolver)
@@ -376,6 +392,10 @@ async def test_dispatch_closed_or_unknown_session_has_zero_visible_side_effects(
     )
     assert refreshed.approval_nonce is None
     assert refreshed.approval_nonce_used_at is None
+    assert refreshed.approval_dispatch_state == "failed"
+    assert refreshed.approval_dispatch_failure_code == expected_failure
+    assert refreshed.approval_dispatch_attempted_at == now
+    assert refreshed.approval_dispatch_published_at is None
     assert [rung.state for rung in rungs] == ["pending_approval"]
 
 

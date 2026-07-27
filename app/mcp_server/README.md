@@ -786,7 +786,15 @@ order mutation.
     adds `approval_dispatch={status:"blocked", code, ...}` with typed
     `EXPIRED`, `INVALID_VALID_UNTIL`, `DEFER_SESSION_CLOSED`,
     `CALENDAR_UNKNOWN`, or `NO_EXECUTABLE_WINDOW` evidence. No Telegram card
-    or approval nonce is published for that dispatch attempt.
+    or approval nonce is published for that dispatch attempt. The blocked
+    attempt is nevertheless finalized durably with
+    `approval_dispatch_state="failed"` and a `CODE/detail` failure code.
+    Every create-time non-sent dispatch also sends a Discord-first operational
+    alert through `discord_webhook_alerts`; callback-generated reconfirm and
+    loss-cut confirmation dispatches use the same alert boundary. The alert
+    includes proposal ID, symbol, side, failure code, and the safe next action.
+    Alert delivery failure is logged at error level and retained in
+    `source_asof.approval_dispatch_alert` instead of being reported as success.
   - When `supersedes_proposal_id` is present, the old group's
     `pending_approval`/`needs_reconfirm` rungs become `superseded`, its
     approval nonce is consumed, and its recorded Telegram message is edited
@@ -849,6 +857,21 @@ order mutation.
     batch instead of editing the published card. Batch callbacks recompute and
     verify the exact ordered membership digest, so a row not shown on the card
     cannot be approved.
+- `order_proposal_redispatch(proposal_id, dry_run=true)`
+  - This is a single-proposal manual lever; there is no automatic redispatch
+    sweep. `dry_run=true` is read-only and must be reviewed before execution.
+  - Only active `limit` + `place` proposals whose prior dispatch is failed (or
+    absent for proposals blocked before the dispatch ledger existed) are
+    eligible. A pending/current dispatch, published card, active or consumed
+    nonce, terminal/approved/cancelled rung, expired/closed/unknown approval
+    window, unsupported action, or market order fails closed.
+  - Every rung receives a fresh broker-safe dry-run preview. The normalized
+    executable price and quantity must exactly match the stored proposal, and a
+    limit that crossed the current market is rejected as a price departure.
+  - `dry_run=false` repeats the checks and sends only a fresh Telegram approval
+    card. It never approves or submits an order. A DB-row-locked nonce guard
+    rejects concurrent redispatch after the first attempt becomes pending or
+    current, so two live approval cards cannot be minted for one proposal.
 - `order_proposal_void(proposal_id, reason)`
   - Requires a non-blank operator reason.
   - Pre-submit rungs retain the existing local `voided` path. An `unverified`
