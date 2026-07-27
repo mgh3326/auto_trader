@@ -75,8 +75,7 @@ class KISWebSocketMonitor:
         account_mode = "kis_mock" if is_mock else "kis_live"
 
         logger.info(
-            "Initializing KIS WebSocket: account_mode=%s mock_mode=%s "
-            "ws_url=%s",
+            "Initializing KIS WebSocket: account_mode=%s mock_mode=%s ws_url=%s",
             account_mode,
             is_mock,
             "ws://ops.koreainvestment.com:31000/tryitout"

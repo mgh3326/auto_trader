@@ -35,14 +35,14 @@ class VolumeProfile:
             SVG fragment string (no <svg> wrapper).
         """
         if not ohlcv:
-            return f'    <!-- Empty volume profile at ({x}, {y}) -->\n'
+            return f"    <!-- Empty volume profile at ({x}, {y}) -->\n"
 
         # Filter rows with required keys
         required_keys = {"open", "high", "low", "close", "volume"}
         rows = [row for row in ohlcv if required_keys <= row.keys()]
 
         if not rows:
-            return '    <!-- No valid OHLCV data for volume profile -->\n'
+            return "    <!-- No valid OHLCV data for volume profile -->\n"
 
         # Calculate price range from all rows
         global_min = min(row["low"] for row in rows)
@@ -96,7 +96,9 @@ class VolumeProfile:
 
         # Draw current price marker (arrow/triangle)
         if current_price is not None and global_min <= current_price <= global_max:
-            marker_y = y + height - ((current_price - global_min) / price_range * height)
+            marker_y = (
+                y + height - ((current_price - global_min) / price_range * height)
+            )
             marker_size = 6
 
             # Triangle pointing right
@@ -107,8 +109,7 @@ class VolumeProfile:
             ]
 
             parts.append(
-                f'    <polygon points="{" ".join(triangle_points)}" '
-                f'fill="#FF5722"/>'
+                f'    <polygon points="{" ".join(triangle_points)}" fill="#FF5722"/>'
             )
 
             # Price label

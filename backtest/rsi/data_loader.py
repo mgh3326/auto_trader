@@ -80,18 +80,22 @@ def normalize_candles(raw: list[dict]) -> pd.DataFrame:
     datetime is KST ISO string "YYYY-MM-DDTHH:MM:SS".
     """
     if not raw:
-        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume", "value"])
+        return pd.DataFrame(
+            columns=["datetime", "open", "high", "low", "close", "volume", "value"]
+        )
 
     df = pd.DataFrame(raw)
-    df = df.rename(columns={
-        "candle_date_time_kst": "datetime",
-        "opening_price": "open",
-        "high_price": "high",
-        "low_price": "low",
-        "trade_price": "close",
-        "candle_acc_trade_volume": "volume",
-        "candle_acc_trade_price": "value",
-    })
+    df = df.rename(
+        columns={
+            "candle_date_time_kst": "datetime",
+            "opening_price": "open",
+            "high_price": "high",
+            "low_price": "low",
+            "trade_price": "close",
+            "candle_acc_trade_volume": "volume",
+            "candle_acc_trade_price": "value",
+        }
+    )
     df = df[["datetime", "open", "high", "low", "close", "volume", "value"]]
     df = df.sort_values("datetime").reset_index(drop=True)
     return df
@@ -197,7 +201,9 @@ def fetch_all_universe(
     """
     # Get current top markets by 24h volume
     with httpx.Client(timeout=10) as client:
-        resp = client.get(f"{UPBIT_API_URL}/ticker/all", params={"quoteCurrencies": "KRW"})
+        resp = client.get(
+            f"{UPBIT_API_URL}/ticker/all", params={"quoteCurrencies": "KRW"}
+        )
         resp.raise_for_status()
         tickers = resp.json()
 

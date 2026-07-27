@@ -47,10 +47,15 @@ async def test_get_trading_policy_returns_sell_trim_preplace_rule():
     tiers = {tier["id"]: tier for tier in rule["tiers"]}
     assert tiers["de_minimis_trim_watch"]["action"] == "register_watch_instead_of_trim"
     assert tiers["single_share_full_exit_review"]["sizing"] == "full_position"
-    assert tiers["momentum_spike_profit_ladder"]["conditions"]["rsi_gate_exempt"] is True
-    assert tiers["momentum_spike_profit_ladder"]["conditions"][
-        "ladder_total_position_pct_max"
-    ] == 33.3333
+    assert (
+        tiers["momentum_spike_profit_ladder"]["conditions"]["rsi_gate_exempt"] is True
+    )
+    assert (
+        tiers["momentum_spike_profit_ladder"]["conditions"][
+            "ladder_total_position_pct_max"
+        ]
+        == 33.3333
+    )
     assert tiers["profit_realization"]["conditions"]["profit_pct_min"] == 8
     assert tiers["profit_realization"]["action"] == "preplace_small_trim_ladder"
     assert tiers["ultra_near_resistance"]["conditions"]["resistance_near_pct_max"] == 2

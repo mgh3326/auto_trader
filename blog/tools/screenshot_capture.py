@@ -172,7 +172,9 @@ class ScreenshotCapture:
         theme: str = "dark",
     ) -> Path:
         """Capture an Upbit chart screenshot."""
-        del theme  # Current Playwright capture path does not theme Upbit pages directly.
+        del (
+            theme
+        )  # Current Playwright capture path does not theme Upbit pages directly.
 
         url = f"https://upbit.com/exchange?code=CRIX.UPBIT.{market}"
         output_path = (

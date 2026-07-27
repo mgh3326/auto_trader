@@ -27,29 +27,84 @@ class TestImageComposer:
         # Create a small valid PNG file
         png_path = tmp_path / "test.png"
         # Minimal valid PNG: 1x1 pixel, transparent
-        png_data = bytes([
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,  # PNG signature
-            0x00, 0x00, 0x00, 0x0D,  # IHDR length
-            0x49, 0x48, 0x44, 0x52,  # IHDR
-            0x00, 0x00, 0x00, 0x01,  # width: 1
-            0x00, 0x00, 0x00, 0x01,  # height: 1
-            0x08, 0x06, 0x00, 0x00, 0x00,  # 8-bit RGBA
-            0x1F, 0x15, 0xC4, 0x89,  # IHDR CRC
-            0x00, 0x00, 0x00, 0x0A,  # IDAT length
-            0x49, 0x44, 0x41, 0x54,  # IDAT
-            0x78, 0x9C, 0x63, 0x60, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01,
-            0x73, 0x75, 0x01, 0x18,  # IDAT data + CRC
-            0x00, 0x00, 0x00, 0x00,  # IEND length
-            0x49, 0x45, 0x4E, 0x44,  # IEND
-            0xAE, 0x42, 0x60, 0x82,  # IEND CRC
-        ])
+        png_data = bytes(
+            [
+                0x89,
+                0x50,
+                0x4E,
+                0x47,
+                0x0D,
+                0x0A,
+                0x1A,
+                0x0A,  # PNG signature
+                0x00,
+                0x00,
+                0x00,
+                0x0D,  # IHDR length
+                0x49,
+                0x48,
+                0x44,
+                0x52,  # IHDR
+                0x00,
+                0x00,
+                0x00,
+                0x01,  # width: 1
+                0x00,
+                0x00,
+                0x00,
+                0x01,  # height: 1
+                0x08,
+                0x06,
+                0x00,
+                0x00,
+                0x00,  # 8-bit RGBA
+                0x1F,
+                0x15,
+                0xC4,
+                0x89,  # IHDR CRC
+                0x00,
+                0x00,
+                0x00,
+                0x0A,  # IDAT length
+                0x49,
+                0x44,
+                0x41,
+                0x54,  # IDAT
+                0x78,
+                0x9C,
+                0x63,
+                0x60,
+                0x00,
+                0x00,
+                0x00,
+                0x02,
+                0x00,
+                0x01,
+                0x73,
+                0x75,
+                0x01,
+                0x18,  # IDAT data + CRC
+                0x00,
+                0x00,
+                0x00,
+                0x00,  # IEND length
+                0x49,
+                0x45,
+                0x4E,
+                0x44,  # IEND
+                0xAE,
+                0x42,
+                0x60,
+                0x82,  # IEND CRC
+            ]
+        )
         png_path.write_bytes(png_data)
 
         result = ImageComposer.embed_png(png_path, x=10, y=20, width=100, height=100)
 
-        assert 'data:image/png;base64,' in result
+        assert "data:image/png;base64," in result
         # Verify it's valid base64
-        encoded = result.split('data:image/png;base64,')[1].split('"')[0]
+        encoded = result.split("data:image/png;base64,")[1].split('"')[0]
         decoded = base64.b64decode(encoded)
         assert decoded == png_data
 
@@ -109,7 +164,9 @@ class TestImageComposer:
 
         missing_path = tmp_path / "nonexistent.png"
 
-        result = ImageComposer.embed_png(missing_path, x=10, y=20, width=100, height=100)
+        result = ImageComposer.embed_png(
+            missing_path, x=10, y=20, width=100, height=100
+        )
 
         assert result.startswith("<!--")
         assert "not found" in result.lower() or "missing" in result.lower()
@@ -121,8 +178,12 @@ class TestImageComposer:
         screenshot_path = tmp_path / "screenshot.png"
         screenshot_path.write_bytes(b"\x89PNG\r\n\x1a\n")
 
-        indicator_fragment = '<rect x="880" y="95" width="480" height="350" fill="blue"/>'
-        support_resistance_fragment = '<rect x="60" y="480" width="1300" height="280" fill="green"/>'
+        indicator_fragment = (
+            '<rect x="880" y="95" width="480" height="350" fill="blue"/>'
+        )
+        support_resistance_fragment = (
+            '<rect x="60" y="480" width="1300" height="280" fill="green"/>'
+        )
 
         result = ImageComposer.create_hybrid_technical(
             screenshot_path=screenshot_path,
@@ -179,7 +240,9 @@ class TestScreenshotCaptureUnit:
             )
 
             capture = ScreenshotCapture()
-            capture._mcporter_call("playwright.browser_navigate", {"url": "https://example.com"})
+            capture._mcporter_call(
+                "playwright.browser_navigate", {"url": "https://example.com"}
+            )
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
@@ -193,6 +256,7 @@ class TestScreenshotCaptureUnit:
             # Find --args index and verify JSON follows
             args_idx = cmd.index("--args")
             import json
+
             params = json.loads(cmd[args_idx + 1])
             assert params["url"] == "https://example.com"
 
@@ -237,7 +301,10 @@ class TestScreenshotCaptureUnit:
                 capture._mcporter_call("stealth_browser.spawn_browser")
 
             assert "stealth_browser.spawn_browser" in str(exc_info.value)
-            assert "unknown server" in str(exc_info.value).lower() or "unavailable" in str(exc_info.value).lower()
+            assert (
+                "unknown server" in str(exc_info.value).lower()
+                or "unavailable" in str(exc_info.value).lower()
+            )
 
     def test_ensure_browser_marks_session_ready_once(self) -> None:
         """_ensure_browser should only initialize the session once."""
@@ -302,7 +369,9 @@ class TestScreenshotCaptureUnit:
 
         assert result == png_data
 
-    def test_capture_tradingview_uses_playwright_schema_calls(self, tmp_path: Path) -> None:
+    def test_capture_tradingview_uses_playwright_schema_calls(
+        self, tmp_path: Path
+    ) -> None:
         """capture_tradingview should use browser_navigate/resize/wait/take_screenshot."""
         from blog.tools.screenshot_capture import ScreenshotCapture
 
@@ -360,7 +429,9 @@ class TestScreenshotCaptureIntegration:
         capture = ScreenshotCapture(output_dir=tmp_path)
 
         try:
-            path = capture.capture_tradingview("BINANCE:BTCUSDT", interval="D", theme="dark")
+            path = capture.capture_tradingview(
+                "BINANCE:BTCUSDT", interval="D", theme="dark"
+            )
 
             assert path.exists()
             assert path.stat().st_size > 1000  # Should be a real PNG, not empty

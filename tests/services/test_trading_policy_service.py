@@ -85,9 +85,12 @@ def test_trim_preplace_exposes_d2_d5_d7_advisory_contracts():
     assert tiers["de_minimis_trim_watch"]["action"] == (
         "register_watch_instead_of_trim"
     )
-    assert tiers["single_share_full_exit_review"]["conditions"][
-        "profit_pct_min_policy_key"
-    ] == "sell.single_share_profit_pct_min"
+    assert (
+        tiers["single_share_full_exit_review"]["conditions"][
+            "profit_pct_min_policy_key"
+        ]
+        == "sell.single_share_profit_pct_min"
+    )
     assert tiers["single_share_full_exit_review"]["sizing"] == "full_position"
     spike = tiers["momentum_spike_profit_ladder"]
     assert spike["conditions"]["session_change_pct_min_policy_key"] == (
@@ -104,9 +107,7 @@ def test_trim_preplace_exposes_d2_d5_d7_advisory_contracts():
     ]
     assert spike["conditions"]["ladder_total_position_pct_max"] == 33.3333
     assert spike["sizing"] == "at_most_one_third_position"
-    assert rule["tie_breaks"]["multiple_tiers_matched"] == (
-        "first_matching_tier_wins"
-    )
+    assert rule["tie_breaks"]["multiple_tiers_matched"] == ("first_matching_tier_wins")
     assert rule["tie_breaks"]["momentum_spike_integer_rounding"] == (
         "floor_without_exceeding_one_third_or_watch"
     )

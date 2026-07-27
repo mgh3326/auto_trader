@@ -33,15 +33,42 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
     parser.add_argument("--end", required=True, help="End date YYYY-MM-DD")
-    parser.add_argument("--top-n", type=int, default=30, help="Universe size by 거래대금 (default: 30)")
-    parser.add_argument("--pick-k", type=int, default=5, help="Number of coins to hold (default: 5)")
-    parser.add_argument("--max-rsi", type=float, default=45.0, help="Max RSI for entry (default: 45)")
-    parser.add_argument("--rebalance-hours", type=int, default=24, help="Rebalance interval in hours (default: 24)")
-    parser.add_argument("--rsi-period", type=int, default=14, help="RSI lookback period (default: 14)")
-    parser.add_argument("--initial-capital", type=float, default=10_000_000, help="Initial capital in KRW (default: 10M)")
-    parser.add_argument("--prefetch", type=int, default=100, help="Number of markets to pre-fetch (default: 100)")
-    parser.add_argument("--export-dir", type=str, default=None, help="Directory for CSV exports")
-    parser.add_argument("--skip-fetch", action="store_true", help="Skip API fetch, use cached data only")
+    parser.add_argument(
+        "--top-n", type=int, default=30, help="Universe size by 거래대금 (default: 30)"
+    )
+    parser.add_argument(
+        "--pick-k", type=int, default=5, help="Number of coins to hold (default: 5)"
+    )
+    parser.add_argument(
+        "--max-rsi", type=float, default=45.0, help="Max RSI for entry (default: 45)"
+    )
+    parser.add_argument(
+        "--rebalance-hours",
+        type=int,
+        default=24,
+        help="Rebalance interval in hours (default: 24)",
+    )
+    parser.add_argument(
+        "--rsi-period", type=int, default=14, help="RSI lookback period (default: 14)"
+    )
+    parser.add_argument(
+        "--initial-capital",
+        type=float,
+        default=10_000_000,
+        help="Initial capital in KRW (default: 10M)",
+    )
+    parser.add_argument(
+        "--prefetch",
+        type=int,
+        default=100,
+        help="Number of markets to pre-fetch (default: 100)",
+    )
+    parser.add_argument(
+        "--export-dir", type=str, default=None, help="Directory for CSV exports"
+    )
+    parser.add_argument(
+        "--skip-fetch", action="store_true", help="Skip API fetch, use cached data only"
+    )
     return parser
 
 

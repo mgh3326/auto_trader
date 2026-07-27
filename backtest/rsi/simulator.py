@@ -42,7 +42,9 @@ def _build_price_index(all_data: dict[str, pd.DataFrame]) -> PriceIndex:
     """Pre-build a price lookup dict for O(1) access per (market, timestamp)."""
     index: PriceIndex = {}
     for market, df in all_data.items():
-        index[market] = dict(zip(df["datetime"], df["close"].astype(float), strict=False))
+        index[market] = dict(
+            zip(df["datetime"], df["close"].astype(float), strict=False)
+        )
     return index
 
 
@@ -97,14 +99,16 @@ def _execute_rebalance(
                 proceeds = qty * sell_price
                 fee = proceeds * config.fee_rate
                 portfolio.cash += proceeds - fee
-                trades.append({
-                    "datetime": timestamp,
-                    "market": market,
-                    "action": "sell",
-                    "quantity": qty,
-                    "price": sell_price,
-                    "fee": fee,
-                })
+                trades.append(
+                    {
+                        "datetime": timestamp,
+                        "market": market,
+                        "action": "sell",
+                        "quantity": qty,
+                        "price": sell_price,
+                        "fee": fee,
+                    }
+                )
             portfolio.positions.pop(market, None)
 
     # Phase 2: Rebalance existing + buy new
@@ -137,14 +141,16 @@ def _execute_rebalance(
             fee = cost * config.fee_rate
             portfolio.cash -= cost + fee
             portfolio.positions[market] = current_qty + qty
-            trades.append({
-                "datetime": timestamp,
-                "market": market,
-                "action": "buy",
-                "quantity": qty,
-                "price": buy_price,
-                "fee": fee,
-            })
+            trades.append(
+                {
+                    "datetime": timestamp,
+                    "market": market,
+                    "action": "buy",
+                    "quantity": qty,
+                    "price": buy_price,
+                    "fee": fee,
+                }
+            )
         elif diff_value < 0:
             # Sell excess
             sell_price = price * (1 - slippage_mult)
@@ -157,14 +163,16 @@ def _execute_rebalance(
             portfolio.positions[market] = current_qty - sell_qty
             if portfolio.positions[market] <= 0:
                 portfolio.positions.pop(market, None)
-            trades.append({
-                "datetime": timestamp,
-                "market": market,
-                "action": "sell",
-                "quantity": sell_qty,
-                "price": sell_price,
-                "fee": fee,
-            })
+            trades.append(
+                {
+                    "datetime": timestamp,
+                    "market": market,
+                    "action": "sell",
+                    "quantity": sell_qty,
+                    "price": sell_price,
+                    "fee": fee,
+                }
+            )
 
     return trades
 
