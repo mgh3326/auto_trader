@@ -199,7 +199,9 @@ class TestThumbnailWithThemes:
         from blog.tools.components.base import THEMES
         from blog.tools.components.thumbnail import ThumbnailTemplate
 
-        svg = ThumbnailTemplate.create(title_line1="Test", title_line2="Accent", theme="terminal")
+        svg = ThumbnailTemplate.create(
+            title_line1="Test", title_line2="Accent", theme="terminal"
+        )
         assert THEMES["terminal"].accent in svg
 
     def test_thumbnail_explicit_accent_overrides_theme_accent(self) -> None:

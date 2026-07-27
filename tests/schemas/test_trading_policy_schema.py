@@ -24,23 +24,46 @@ def test_shipped_config_validates():
     assert doc.thresholds["screen.rsi_max"].value == 45
     assert doc.thresholds["buy.deep_limit_pct_range"].value == [-12, -3]
     assert doc.thresholds["portfolio.max_symbols_per_theme"].value == 2
+    assert doc.thresholds["sell.momentum_spike_change_pct_min"].value == 10
+    assert doc.thresholds["sell.single_share_profit_pct_min"].value == 8
+    assert doc.thresholds["sell.trim_min_expected_net_realized_gain_krw"].value == 5000
+    for key in (
+        "sell.momentum_spike_change_pct_min",
+        "sell.single_share_profit_pct_min",
+        "sell.trim_min_expected_net_realized_gain_krw",
+    ):
+        semantics = doc.thresholds[key].semantics
+        assert "측정으로 확정할 가설" in semantics
+        assert "not adjustable by a runtime session" in semantics
+    assert (
+        "posture shadow completion"
+        in doc.thresholds["sell.momentum_spike_change_pct_min"].semantics
+    )
     assert set(doc.market_overrides.keys()) == {"kr", "us", "crypto"}
     assert "semis_memory" in doc.sector_clusters
     assert "sell.trim_preplace" in doc.decision_rules
     trim_rule = doc.decision_rules["sell.trim_preplace"]
     assert trim_rule.lanes == ["sell"]
     assert [tier.id for tier in trim_rule.tiers] == [
+        "de_minimis_trim_watch",
+        "single_share_full_exit_review",
+        "momentum_spike_profit_ladder",
         "profit_realization",
         "rsi_confirmed_resistance",
         "ultra_near_resistance",
         "watch_zone",
     ]
-    assert trim_rule.tiers[0].conditions["profit_pct_min"] == 8
-    assert trim_rule.tiers[2].conditions["resistance_near_pct_max"] == 2
+    assert trim_rule.tiers[0].action == "register_watch_instead_of_trim"
+    assert trim_rule.tiers[1].sizing == "full_position"
+    assert trim_rule.tiers[2].conditions["rsi_gate_exempt"] is True
+    assert trim_rule.tiers[2].conditions["ladder_total_position_pct_max"] == 33.3333
+    assert trim_rule.tiers[3].conditions["profit_pct_min"] == 8
+    assert trim_rule.tiers[5].conditions["resistance_near_pct_max"] == 2
     assert trim_rule.tie_breaks["multiple_tiers_matched"] == (
         "first_matching_tier_wins"
     )
     assert trim_rule.tie_breaks["sell.upside_place_max_pct"] == "size_limit_only"
+    assert "single_share_position" not in trim_rule.exclusions
 
 
 def test_single_share_exit_rule_is_provisional_shadow_only():

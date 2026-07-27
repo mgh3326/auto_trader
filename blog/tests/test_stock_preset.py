@@ -112,17 +112,77 @@ class TestStockAnalysisPresetHybridMode:
         from blog.tools.presets.stock_analysis import StockAnalysisPreset
 
         # Create a minimal valid PNG file
-        png_data = bytes([
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
-            0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
-            0x54, 0x78, 0x9C, 0x63, 0x60, 0x00, 0x00, 0x00,
-            0x02, 0x00, 0x01, 0x73, 0x75, 0x01, 0x18, 0x00,
-            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
-            0x42, 0x60, 0x82,
-        ])
+        png_data = bytes(
+            [
+                0x89,
+                0x50,
+                0x4E,
+                0x47,
+                0x0D,
+                0x0A,
+                0x1A,
+                0x0A,
+                0x00,
+                0x00,
+                0x00,
+                0x0D,
+                0x49,
+                0x48,
+                0x44,
+                0x52,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x08,
+                0x06,
+                0x00,
+                0x00,
+                0x00,
+                0x1F,
+                0x15,
+                0xC4,
+                0x89,
+                0x00,
+                0x00,
+                0x00,
+                0x0A,
+                0x49,
+                0x44,
+                0x41,
+                0x54,
+                0x78,
+                0x9C,
+                0x63,
+                0x60,
+                0x00,
+                0x00,
+                0x00,
+                0x02,
+                0x00,
+                0x01,
+                0x73,
+                0x75,
+                0x01,
+                0x18,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x49,
+                0x45,
+                0x4E,
+                0x44,
+                0xAE,
+                0x42,
+                0x60,
+                0x82,
+            ]
+        )
         screenshot_path = tmp_path / "test_screenshot.png"
         screenshot_path.write_bytes(png_data)
 
@@ -130,7 +190,10 @@ class TestStockAnalysisPresetHybridMode:
         output_dir.mkdir()
 
         preset = StockAnalysisPreset(
-            "005930", SAMPLE_DATA, output_dir=output_dir, screenshot_path=screenshot_path
+            "005930",
+            SAMPLE_DATA,
+            output_dir=output_dir,
+            screenshot_path=screenshot_path,
         )
         paths = preset.generate_svgs()
         tech = next(p for p in paths if "technical" in p.stem)
@@ -141,23 +204,85 @@ class TestStockAnalysisPresetHybridMode:
         # Should still contain indicator dashboard
         assert "RSI" in content
         # Should still contain support/resistance
-        assert "지지선" in content or "저항선" in content or "support" in content.lower()
+        assert (
+            "지지선" in content or "저항선" in content or "support" in content.lower()
+        )
 
     def test_hybrid_mode_keeps_indicator_and_sr_fragments(self, tmp_path: Path) -> None:
         """Hybrid mode should include both indicator and support/resistance fragments."""
         from blog.tools.presets.stock_analysis import StockAnalysisPreset
 
-        png_data = bytes([
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
-            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
-            0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
-            0x54, 0x78, 0x9C, 0x63, 0x60, 0x00, 0x00, 0x00,
-            0x02, 0x00, 0x01, 0x73, 0x75, 0x01, 0x18, 0x00,
-            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
-            0x42, 0x60, 0x82,
-        ])
+        png_data = bytes(
+            [
+                0x89,
+                0x50,
+                0x4E,
+                0x47,
+                0x0D,
+                0x0A,
+                0x1A,
+                0x0A,
+                0x00,
+                0x00,
+                0x00,
+                0x0D,
+                0x49,
+                0x48,
+                0x44,
+                0x52,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x08,
+                0x06,
+                0x00,
+                0x00,
+                0x00,
+                0x1F,
+                0x15,
+                0xC4,
+                0x89,
+                0x00,
+                0x00,
+                0x00,
+                0x0A,
+                0x49,
+                0x44,
+                0x41,
+                0x54,
+                0x78,
+                0x9C,
+                0x63,
+                0x60,
+                0x00,
+                0x00,
+                0x00,
+                0x02,
+                0x00,
+                0x01,
+                0x73,
+                0x75,
+                0x01,
+                0x18,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x49,
+                0x45,
+                0x4E,
+                0x44,
+                0xAE,
+                0x42,
+                0x60,
+                0x82,
+            ]
+        )
         screenshot_path = tmp_path / "test_screenshot.png"
         screenshot_path.write_bytes(png_data)
 
@@ -165,7 +290,10 @@ class TestStockAnalysisPresetHybridMode:
         output_dir.mkdir()
 
         preset = StockAnalysisPreset(
-            "005930", SAMPLE_DATA, output_dir=output_dir, screenshot_path=screenshot_path
+            "005930",
+            SAMPLE_DATA,
+            output_dir=output_dir,
+            screenshot_path=screenshot_path,
         )
         paths = preset.generate_svgs()
         tech = next(p for p in paths if "technical" in p.stem)

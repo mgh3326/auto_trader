@@ -57,20 +57,24 @@ class RandomBaseline:
         if can_buy and (not can_sell or self._rng.random() < 0.5):
             # Buy a random symbol
             symbol = self._rng.choice(can_buy)
-            signals.append(prepare.Signal(
-                symbol=symbol,
-                action="buy",
-                weight=0.15,  # Fixed position size
-                reason="Random buy signal",
-            ))
+            signals.append(
+                prepare.Signal(
+                    symbol=symbol,
+                    action="buy",
+                    weight=0.15,  # Fixed position size
+                    reason="Random buy signal",
+                )
+            )
         elif can_sell:
             # Sell a random held symbol
             symbol = self._rng.choice(can_sell)
-            signals.append(prepare.Signal(
-                symbol=symbol,
-                action="sell",
-                weight=1.0,  # Full sell
-                reason="Random sell signal",
-            ))
+            signals.append(
+                prepare.Signal(
+                    symbol=symbol,
+                    action="sell",
+                    weight=1.0,  # Full sell
+                    reason="Random sell signal",
+                )
+            )
 
         return signals

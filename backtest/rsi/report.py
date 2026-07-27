@@ -18,7 +18,9 @@ def print_summary(metrics: Metrics, result: BacktestResult) -> None:
     print("  Strategy Parameters:")
     print(f"    Period:           {cfg.start} ~ {cfg.end}")
     print(f"    Universe:         top {cfg.top_n} by 24h trade value")
-    print(f"    Selection:        RSI-{cfg.rsi_period} ascending, max_rsi={cfg.max_rsi}")
+    print(
+        f"    Selection:        RSI-{cfg.rsi_period} ascending, max_rsi={cfg.max_rsi}"
+    )
     print(f"    Portfolio:        equal-weight top {cfg.pick_k}")
     print(f"    Rebalance:        every {cfg.rebalance_hours}h")
     print(f"    Fee:              {cfg.fee_rate * 100:.3f}%")
@@ -76,7 +78,9 @@ def export_monthly_returns(result: BacktestResult, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Group equity by month
-    monthly: dict[str, tuple[float, float]] = {}  # "YYYY-MM" -> (first_equity, last_equity)
+    monthly: dict[
+        str, tuple[float, float]
+    ] = {}  # "YYYY-MM" -> (first_equity, last_equity)
     for ts, eq in zip(result.timestamps, result.equity_curve, strict=False):
         month = ts[:7]  # "YYYY-MM"
         if month not in monthly:

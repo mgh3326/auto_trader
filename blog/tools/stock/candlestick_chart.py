@@ -120,18 +120,33 @@ class CandlestickChart:
         if bollinger and "upper" in bollinger and "lower" in bollinger:
             upper = bollinger["upper"]
             lower = bollinger["lower"]
-            visible_upper = upper[-visible_count:] if len(upper) >= visible_count else upper
-            visible_lower = lower[-visible_count:] if len(lower) >= visible_count else lower
-            if len(visible_upper) == visible_count and len(visible_lower) == visible_count:
+            visible_upper = (
+                upper[-visible_count:] if len(upper) >= visible_count else upper
+            )
+            visible_lower = (
+                lower[-visible_count:] if len(lower) >= visible_count else lower
+            )
+            if (
+                len(visible_upper) == visible_count
+                and len(visible_lower) == visible_count
+            ):
                 points = []
                 # Upper band (left to right)
                 for i, val in enumerate(visible_upper):
-                    px = x + (i / (visible_count - 1)) * width if visible_count > 1 else x
+                    px = (
+                        x + (i / (visible_count - 1)) * width
+                        if visible_count > 1
+                        else x
+                    )
                     py = price_to_y(val)
                     points.append(f"{px},{py}")
                 # Lower band (right to left)
                 for i in range(len(visible_lower) - 1, -1, -1):
-                    px = x + (i / (visible_count - 1)) * width if visible_count > 1 else x
+                    px = (
+                        x + (i / (visible_count - 1)) * width
+                        if visible_count > 1
+                        else x
+                    )
                     py = price_to_y(visible_lower[i])
                     points.append(f"{px},{py}")
 
@@ -144,11 +159,19 @@ class CandlestickChart:
                 # Middle band (dashed line)
                 if "middle" in bollinger:
                     middle = bollinger["middle"]
-                    visible_middle = middle[-visible_count:] if len(middle) >= visible_count else middle
+                    visible_middle = (
+                        middle[-visible_count:]
+                        if len(middle) >= visible_count
+                        else middle
+                    )
                     if len(visible_middle) == visible_count:
                         middle_points = []
                         for i, val in enumerate(visible_middle):
-                            px = x + (i / (visible_count - 1)) * width if visible_count > 1 else x
+                            px = (
+                                x + (i / (visible_count - 1)) * width
+                                if visible_count > 1
+                                else x
+                            )
                             py = price_to_y(val)
                             middle_points.append(f"{px},{py}")
                         parts.append(
@@ -205,7 +228,10 @@ class CandlestickChart:
             wick_y1 = price_to_y(high_p)
             wick_y2 = price_to_y(low_p)
             candle_svg_elements.append(
-                (0, f'    <line x1="{cx}" y1="{wick_y1}" x2="{cx}" y2="{wick_y2}" stroke="{color}" stroke-width="1"/>')
+                (
+                    0,
+                    f'    <line x1="{cx}" y1="{wick_y1}" x2="{cx}" y2="{wick_y2}" stroke="{color}" stroke-width="1"/>',
+                )
             )
 
             # Body
@@ -216,7 +242,10 @@ class CandlestickChart:
 
             candle_x = cx - candle_width / 2
             candle_svg_elements.append(
-                (1, f'    <rect x="{candle_x}" y="{body_top}" width="{candle_width}" height="{body_height}" fill="{color}"/>')
+                (
+                    1,
+                    f'    <rect x="{candle_x}" y="{body_top}" width="{candle_width}" height="{body_height}" fill="{color}"/>',
+                )
             )
 
             # Volume bar
@@ -224,7 +253,10 @@ class CandlestickChart:
                 vol_h = volume_to_h(vol)
                 vol_y = y + height - vol_h
                 candle_svg_elements.append(
-                    (0, f'    <rect x="{candle_x}" y="{vol_y}" width="{candle_width}" height="{vol_h}" fill="{color}" opacity="0.4"/>')
+                    (
+                        0,
+                        f'    <rect x="{candle_x}" y="{vol_y}" width="{candle_width}" height="{vol_h}" fill="{color}" opacity="0.4"/>',
+                    )
                 )
 
         # Sort by z-index and add to parts
@@ -235,11 +267,17 @@ class CandlestickChart:
         # Draw EMA lines (over candles)
         if ema_values:
             for idx, (_name, values) in enumerate(ema_values.items()):
-                visible_values = values[-visible_count:] if len(values) >= visible_count else values
+                visible_values = (
+                    values[-visible_count:] if len(values) >= visible_count else values
+                )
                 if len(visible_values) == visible_count:
                     ema_points = []
                     for i, val in enumerate(visible_values):
-                        px = x + (i / (visible_count - 1)) * width if visible_count > 1 else x
+                        px = (
+                            x + (i / (visible_count - 1)) * width
+                            if visible_count > 1
+                            else x
+                        )
                         py = price_to_y(val)
                         ema_points.append(f"{px},{py}")
 

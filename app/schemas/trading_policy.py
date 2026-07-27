@@ -147,13 +147,14 @@ class SingleShareExitProposal(BaseModel):
 
 
 class SingleShareExitDecisionRule(BaseModel):
-    """Additive KR one-share profit-exit shadow policy.
+    """Deprecated general fallback retained as a KR shadow/replay policy.
 
     This rule intentionally has a distinct shape from the tiered trim rule:
-    ``sell.trim_preplace`` excludes one-share positions globally, while this
-    path can only classify shadow eligibility while ``proposal_enabled`` is
-    false. Its candidate metadata is manual-approval-only for a separately
-    authorized future activation; this schema never enables an order.
+    ``sell.trim_preplace`` now includes one-share positions for a full-exit
+    advisory review, while this legacy path can only classify the narrower KR
+    far-resistance shadow cohort while ``proposal_enabled`` is false. Its
+    candidate metadata is manual-approval-only for a separately authorized
+    future activation; this schema never enables an order.
     """
 
     model_config = ConfigDict(extra="forbid")

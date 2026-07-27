@@ -41,12 +41,14 @@ class BuyAndHold:
         weight = 1.0 / len(symbols)
 
         for symbol in symbols:
-            signals.append(prepare.Signal(
-                symbol=symbol,
-                action="buy",
-                weight=weight,
-                reason="Buy and hold initial allocation",
-            ))
+            signals.append(
+                prepare.Signal(
+                    symbol=symbol,
+                    action="buy",
+                    weight=weight,
+                    reason="Buy and hold initial allocation",
+                )
+            )
 
         self._has_bought = True
         return signals

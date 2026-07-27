@@ -65,21 +65,23 @@ class ImageComposer:
         ]
 
         if shadow:
-            svg_parts.extend([
-                '    <defs>',
-                '        <filter id="dropShadow" x="-20%" y="-20%" width="140%" height="140%">',
-                '            <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>',
-                '            <feOffset dx="2" dy="2" result="offsetblur"/>',
-                '            <feComponentTransfer>',
-                '                <feFuncA type="linear" slope="0.3"/>',
-                '            </feComponentTransfer>',
-                '            <feMerge>',
-                '                <feMergeNode/>',
-                '                <feMergeNode in="SourceGraphic"/>',
-                '            </feMerge>',
-                '        </filter>',
-                '    </defs>',
-            ])
+            svg_parts.extend(
+                [
+                    "    <defs>",
+                    '        <filter id="dropShadow" x="-20%" y="-20%" width="140%" height="140%">',
+                    '            <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>',
+                    '            <feOffset dx="2" dy="2" result="offsetblur"/>',
+                    "            <feComponentTransfer>",
+                    '                <feFuncA type="linear" slope="0.3"/>',
+                    "            </feComponentTransfer>",
+                    "            <feMerge>",
+                    "                <feMergeNode/>",
+                    '                <feMergeNode in="SourceGraphic"/>',
+                    "            </feMerge>",
+                    "        </filter>",
+                    "    </defs>",
+                ]
+            )
 
         svg_parts.append(
             f'    <image x="{x}" y="{y}" width="{width}" height="{height}" '
@@ -132,7 +134,9 @@ class ImageComposer:
 
         svg = SVGComponent.header(width, height)
         svg += SVGComponent.background(width, height, theme=theme)
-        svg += SVGComponent.title(width, f"{company_name} — 기술적 분석", fill="#e0e1dd")
+        svg += SVGComponent.title(
+            width, f"{company_name} — 기술적 분석", fill="#e0e1dd"
+        )
 
         # Embed the screenshot
         svg += ImageComposer.embed_png(

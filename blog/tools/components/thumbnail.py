@@ -14,7 +14,9 @@ class ThumbnailTemplate:
     """Blog thumbnail template — 1200×630 standard layout."""
 
     @staticmethod
-    def _render_icon_cell(icon_name_or_emoji: str, label: str, color: str, x: int) -> str:
+    def _render_icon_cell(
+        icon_name_or_emoji: str, label: str, color: str, x: int
+    ) -> str:
         """Render a single icon cell with Lucide icon or emoji.
 
         Args:
@@ -33,7 +35,9 @@ class ThumbnailTemplate:
         # Check if it's a Lucide icon or emoji/text
         if Icon.exists(icon_name_or_emoji):
             # Lucide icon - render as path
-            icon_svg = Icon.render(icon_name_or_emoji, x + 26, y=26, size=48, color="#ffffff")
+            icon_svg = Icon.render(
+                icon_name_or_emoji, x + 26, y=26, size=48, color="#ffffff"
+            )
             parts.append(f"        {icon_svg}")
         else:
             # Emoji or text
@@ -134,7 +138,12 @@ class ThumbnailTemplate:
 
             for i, (icon_name_or_emoji, label, color) in enumerate(icons):
                 x = i * 130
-                svg += ThumbnailTemplate._render_icon_cell(icon_name_or_emoji, label, color, x) + "\n"
+                svg += (
+                    ThumbnailTemplate._render_icon_cell(
+                        icon_name_or_emoji, label, color, x
+                    )
+                    + "\n"
+                )
             svg += "    </g>\n"
 
         if tech_stack:
@@ -174,7 +183,7 @@ class ThumbnailTemplate:
         """Candlestick chart pattern."""
         # Fixed positions for candlesticks (deterministic, not random)
         candles = [
-            (100, 50, 30, 80, "#ff5252"),   # bearish
+            (100, 50, 30, 80, "#ff5252"),  # bearish
             (200, 100, 25, 60, "#4CAF50"),  # bullish
             (300, 80, 35, 70, "#ff5252"),
             (400, 120, 20, 50, "#4CAF50"),
@@ -187,7 +196,7 @@ class ThumbnailTemplate:
             (1100, 75, 30, 70, "#4CAF50"),
         ]
 
-        parts = ['    <!-- Background pattern: candlesticks -->']
+        parts = ["    <!-- Background pattern: candlesticks -->"]
         for x, y, w, h, color in candles:
             parts.append(
                 f'    <rect x="{x}" y="{y}" width="{w}" height="{h}" '
@@ -199,7 +208,7 @@ class ThumbnailTemplate:
     @staticmethod
     def _pattern_grid(width: int, height: int) -> str:
         """Grid pattern."""
-        parts = ['    <!-- Background pattern: grid -->']
+        parts = ["    <!-- Background pattern: grid -->"]
         # Vertical lines
         for x in range(100, width, 100):
             parts.append(
@@ -218,7 +227,7 @@ class ThumbnailTemplate:
     @staticmethod
     def _pattern_dots(width: int, height: int) -> str:
         """Dots pattern."""
-        parts = ['    <!-- Background pattern: dots -->']
+        parts = ["    <!-- Background pattern: dots -->"]
         # Fixed grid of dots
         for x in range(50, width, 80):
             for y in range(50, height, 80):
@@ -232,12 +241,12 @@ class ThumbnailTemplate:
     @staticmethod
     def _pattern_wave(width: int, height: int) -> str:
         """Wave pattern."""
-        parts = ['    <!-- Background pattern: wave -->']
+        parts = ["    <!-- Background pattern: wave -->"]
         # Simple wave lines
         for offset in range(0, 200, 40):
             parts.append(
-                f'    <path d="M0,{150 + offset} Q{width//4},{100 + offset} '
-                f'{width//2},{150 + offset} T{width},{150 + offset}" '
+                f'    <path d="M0,{150 + offset} Q{width // 4},{100 + offset} '
+                f'{width // 2},{150 + offset} T{width},{150 + offset}" '
                 f'fill="none" stroke="#ffffff" stroke-width="2" opacity="0.06"/>'
             )
         parts.append("")
