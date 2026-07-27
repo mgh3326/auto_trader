@@ -21,14 +21,10 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 _LEDGER_TABLE = "review.alpaca_paper_order_ledger"
-_LEDGER_CHECK = (
-    "ck_alpaca_paper_order_ledger_alpaca_paper_ledger_account_mode"
-)
+_LEDGER_CHECK = "ck_alpaca_paper_order_ledger_alpaca_paper_ledger_account_mode"
 _LEDGER_TEMP_CHECK = "ck_alpaca_paper_ledger_account_mode_next"
 _RETROSPECTIVE_TABLE = "review.trade_retrospectives"
-_RETROSPECTIVE_CHECK = (
-    "ck_trade_retrospectives_ck_trade_retrospectives_account_mode"
-)
+_RETROSPECTIVE_CHECK = "ck_trade_retrospectives_ck_trade_retrospectives_account_mode"
 _RETROSPECTIVE_TEMP_CHECK = "ck_trade_retrospectives_account_mode_next"
 
 _LEDGER_NEW = "account_mode IN ('alpaca_paper','alpaca_paper_lab')"
@@ -53,22 +49,15 @@ def _swap_check(
     temporary_name: str,
     expression: str,
 ) -> None:
-    op.execute(
-        f'ALTER TABLE {table} DROP CONSTRAINT IF EXISTS "{temporary_name}"'
-    )
+    op.execute(f'ALTER TABLE {table} DROP CONSTRAINT IF EXISTS "{temporary_name}"')
     op.execute(
         f'ALTER TABLE {table} ADD CONSTRAINT "{temporary_name}" '
         f"CHECK ({expression}) NOT VALID"
     )
+    op.execute(f'ALTER TABLE {table} VALIDATE CONSTRAINT "{temporary_name}"')
+    op.execute(f'ALTER TABLE {table} DROP CONSTRAINT IF EXISTS "{current_name}"')
     op.execute(
-        f'ALTER TABLE {table} VALIDATE CONSTRAINT "{temporary_name}"'
-    )
-    op.execute(
-        f'ALTER TABLE {table} DROP CONSTRAINT IF EXISTS "{current_name}"'
-    )
-    op.execute(
-        f'ALTER TABLE {table} RENAME CONSTRAINT "{temporary_name}" '
-        f'TO "{current_name}"'
+        f'ALTER TABLE {table} RENAME CONSTRAINT "{temporary_name}" TO "{current_name}"'
     )
 
 

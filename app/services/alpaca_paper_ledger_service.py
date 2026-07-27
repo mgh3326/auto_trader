@@ -986,7 +986,9 @@ class AlpacaPaperLedgerService:
         """Hold the account+symbol sell lock until the current transaction ends."""
         selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
         if selected_account_mode != self._account_mode:
-            raise ValueError("sell lock account_mode does not match ledger account_mode")
+            raise ValueError(
+                "sell lock account_mode does not match ledger account_mode"
+            )
         lock_key = f"alpaca_paper_sell:{selected_account_mode}:{execution_symbol}"
         await self._db.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": lock_key}
