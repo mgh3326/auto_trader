@@ -11,6 +11,7 @@ import weakref
 
 import blind_counts as bc
 import oos_mask as om
+import pnl_views as pv
 import pytest
 
 _SECRET_PNL_VALUE = -12345.6789
@@ -317,13 +318,26 @@ def test_nested_raw_values_are_not_object_referents_or_string_representations():
 
 
 def test_source_object_is_not_retained_in_the_caller_process_object_graph():
-    secret = _SecretBox()
+    secret = pv.ThreeViewPnL(
+        gross_bp=12.5,
+        actual_fill_bp=10.0,
+        shadow_net_bp_by_scenario={"C120": -110.0},
+    )
     secret_ref = weakref.ref(secret)
     masked, _counts_value, evidence = _aggregate_pass(secret=secret)
     del secret
     gc.collect()
     assert secret_ref() is None
-    assert isinstance(om.unmask(masked, evidence), _SecretBox)
+    assert om.unmask(masked, evidence) == pv.ThreeViewPnL(
+        gross_bp=12.5,
+        actual_fill_bp=10.0,
+        shadow_net_bp_by_scenario={"C120": -110.0},
+    )
+
+
+def test_typed_codec_rejects_arbitrary_python_objects():
+    with pytest.raises(om.OOSMaskBypassError, match="unsupported masked value type"):
+        _masked(secret=_SecretBox())
 
 
 def test_exception_messages_never_contain_raw_value():

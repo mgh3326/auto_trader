@@ -1,9 +1,9 @@
 """ROB-1062 H4 (AC22-AC25) — fail-closed OOS PnL masking.
 
 ``Masked`` never retains the source object, a closure over it, plaintext
-pickle bytes, ciphertext, or a caller-reachable reveal callable. ``mask``
-serializes the value immediately and transfers it into an isolated local
-vault process. The public object contains binding metadata only.
+payload bytes, ciphertext, or a caller-reachable reveal callable. ``mask``
+encodes the value with a closed typed codec and transfers it into an isolated
+local vault process. The public object contains binding metadata only.
 
 Unmask authority is not a public dataclass constructor. H5 must call
 ``issue_all_folds_dry_count_pass`` with all 8 folds' exact ``BlindCounts``
@@ -21,10 +21,10 @@ process and cannot recover the vault payload.
 from __future__ import annotations
 
 import atexit
-import hashlib
+import json
+import math
 import multiprocessing
 import os
-import pickle
 import threading
 import weakref
 from collections.abc import Mapping, Sequence
@@ -32,6 +32,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import blind_counts as bc
+import canonical_hash
+import pnl_views as pv
 import wf_seal_consumption as wf_seal
 
 __all__ = [
@@ -74,7 +76,159 @@ def _counts_fingerprint(counts: bc.BlindCounts) -> str:
         tuple(sorted(counts.reason_code_histogram.items())),
         counts.is_incomplete,
     )
-    return hashlib.sha256(pickle.dumps(payload, protocol=5)).hexdigest()
+    return canonical_hash.canonical_sha256(payload)
+
+
+def _finite_float(value: object, label: str) -> float:
+    if type(value) is not float:
+        raise OOSMaskBypassError(f"{label} must be an exact float")
+    if not math.isfinite(value):
+        raise OOSMaskBypassError(f"{label} must be finite")
+    return value
+
+
+def _encode_node(value: object) -> list:
+    """Encode only the closed set of OOS result value types."""
+    if value is None:
+        return ["none", None]
+    if type(value) is bool:
+        return ["bool", value]
+    if type(value) is int:
+        return ["int", value]
+    if type(value) is float:
+        return ["float", _finite_float(value, "masked float").hex()]
+    if type(value) is str:
+        return ["str", value]
+    if type(value) is list:
+        return ["list", [_encode_node(item) for item in value]]
+    if type(value) is tuple:
+        return ["tuple", [_encode_node(item) for item in value]]
+    if type(value) is dict:
+        entries: list[list] = []
+        for key, item in value.items():
+            if type(key) is not str:
+                raise OOSMaskBypassError("masked dict keys must be exact strings")
+            entries.append([key, _encode_node(item)])
+        return ["dict", sorted(entries, key=lambda pair: pair[0])]
+    if type(value) is pv.ThreeViewPnL:
+        scenarios: list[list[str]] = []
+        for key, scenario_value in value.shadow_net_bp_by_scenario.items():
+            if type(key) is not str:
+                raise OOSMaskBypassError(
+                    "ThreeViewPnL scenario keys must be exact strings"
+                )
+            scenarios.append(
+                [
+                    key,
+                    _finite_float(
+                        scenario_value, f"ThreeViewPnL scenario {key!r}"
+                    ).hex(),
+                ]
+            )
+        return [
+            "three_view_pnl",
+            {
+                "gross_bp": _finite_float(
+                    value.gross_bp, "ThreeViewPnL.gross_bp"
+                ).hex(),
+                "actual_fill_bp": _finite_float(
+                    value.actual_fill_bp, "ThreeViewPnL.actual_fill_bp"
+                ).hex(),
+                "shadow_net_bp_by_scenario": sorted(
+                    scenarios, key=lambda pair: pair[0]
+                ),
+            },
+        ]
+    raise OOSMaskBypassError(f"unsupported masked value type {type(value).__name__!r}")
+
+
+def _decode_node(node: object) -> object:
+    """Decode the closed wire schema and reject every malformed shape."""
+    if type(node) is not list or len(node) != 2 or type(node[0]) is not str:
+        raise OOSMaskBypassError("masked payload has an invalid typed node")
+    tag, payload = node
+    if tag == "none" and payload is None:
+        return None
+    if tag == "bool" and type(payload) is bool:
+        return payload
+    if tag == "int" and type(payload) is int:
+        return payload
+    if tag == "float" and type(payload) is str:
+        try:
+            return _finite_float(float.fromhex(payload), "decoded float")
+        except ValueError as exc:
+            raise OOSMaskBypassError("masked float payload is invalid") from exc
+    if tag == "str" and type(payload) is str:
+        return payload
+    if tag in {"list", "tuple"} and type(payload) is list:
+        values = [_decode_node(item) for item in payload]
+        return values if tag == "list" else tuple(values)
+    if tag == "dict" and type(payload) is list:
+        result: dict[str, object] = {}
+        for pair in payload:
+            if (
+                type(pair) is not list
+                or len(pair) != 2
+                or type(pair[0]) is not str
+                or pair[0] in result
+            ):
+                raise OOSMaskBypassError("masked dict payload is invalid")
+            result[pair[0]] = _decode_node(pair[1])
+        return result
+    if tag == "three_view_pnl" and type(payload) is dict:
+        if set(payload) != {
+            "gross_bp",
+            "actual_fill_bp",
+            "shadow_net_bp_by_scenario",
+        }:
+            raise OOSMaskBypassError("ThreeViewPnL payload fields are invalid")
+        gross_bp = _decode_node(["float", payload["gross_bp"]])
+        actual_fill_bp = _decode_node(["float", payload["actual_fill_bp"]])
+        scenarios_payload = payload["shadow_net_bp_by_scenario"]
+        if type(scenarios_payload) is not list:
+            raise OOSMaskBypassError("ThreeViewPnL scenario payload is invalid")
+        scenarios: dict[str, float] = {}
+        for pair in scenarios_payload:
+            if (
+                type(pair) is not list
+                or len(pair) != 2
+                or type(pair[0]) is not str
+                or pair[0] in scenarios
+                or type(pair[1]) is not str
+            ):
+                raise OOSMaskBypassError("ThreeViewPnL scenario entry is invalid")
+            scenario_value = _decode_node(["float", pair[1]])
+            if type(scenario_value) is not float:
+                raise OOSMaskBypassError("ThreeViewPnL scenario value is invalid")
+            scenarios[pair[0]] = scenario_value
+        if type(gross_bp) is not float or type(actual_fill_bp) is not float:
+            raise OOSMaskBypassError("ThreeViewPnL scalar payload is invalid")
+        return pv.ThreeViewPnL(
+            gross_bp=gross_bp,
+            actual_fill_bp=actual_fill_bp,
+            shadow_net_bp_by_scenario=scenarios,
+        )
+    raise OOSMaskBypassError("masked payload uses an unknown or malformed type")
+
+
+def _encode_masked_value(value: object) -> bytes:
+    return json.dumps(
+        _encode_node(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _decode_masked_value(payload: object) -> object:
+    if type(payload) is not bytes:
+        raise OOSMaskBypassError("vault returned a non-bytes masked payload")
+    try:
+        node = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OOSMaskBypassError("vault returned an invalid masked payload") from exc
+    return _decode_node(node)
 
 
 class Masked:
@@ -419,7 +573,7 @@ def mask(
         raise TypeError("dry_counts must be an exact BlindCounts instance")
     binding = _binding_tuple(fold_id=fold_id, family=family, config_id=config_id)
     counts_fingerprint = _counts_fingerprint(dry_counts)
-    payload = pickle.dumps(raw_value, protocol=5)
+    payload = _encode_masked_value(raw_value)
     try:
         vault_handle = _vault().call(
             (
@@ -596,6 +750,6 @@ def unmask(masked: Masked, evidence: DryCountPassEvidence) -> Any:
         )
     )
     try:
-        return pickle.loads(payload)
+        return _decode_masked_value(payload)
     finally:
         del payload
