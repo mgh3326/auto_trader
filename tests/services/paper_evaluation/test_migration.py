@@ -55,9 +55,7 @@ def test_migration_descends_from_latest_main_head_and_is_the_single_head() -> No
 
     config = Config(str(REPO / "alembic.ini"))
     config.set_main_option("script_location", str(REPO / "alembic"))
-    assert ScriptDirectory.from_config(config).get_heads() == [
-        "20260725_rob1010_crypto_venue"
-    ]
+    assert len(ScriptDirectory.from_config(config).get_heads()) == 1
 
 
 def test_migration_defines_immutable_triggers() -> None:
@@ -151,7 +149,11 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             assert completed.returncode == 0, completed.stdout + completed.stderr
         current = await asyncio.to_thread(alembic, "current")
         assert current.returncode == 0, current.stdout + current.stderr
-        assert "20260725_rob1010_crypto_venue (head)" in current.stdout
+        config = Config(str(REPO / "alembic.ini"))
+        config.set_main_option("script_location", str(REPO / "alembic"))
+        expected_head = ScriptDirectory.from_config(config).get_current_head()
+        assert expected_head is not None
+        assert current.stdout.strip() == f"{expected_head} (head)"
 
         async with engine.connect() as connection:
             triggers = await connection.scalar(
