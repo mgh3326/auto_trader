@@ -264,6 +264,65 @@ async def test_sync_service_upsert_deactivate_and_idempotent(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_sync_service_dry_run_reports_diff_without_mutation(monkeypatch):
+    snapshot = {
+        "005930": kr_symbol_universe_service._UniverseRow(
+            symbol="005930",
+            name="삼성전자",
+            exchange="KOSPI",
+            nxt_eligible=True,
+        ),
+        "035420": kr_symbol_universe_service._UniverseRow(
+            symbol="035420",
+            name="NAVER",
+            exchange="KOSDAQ",
+            nxt_eligible=False,
+        ),
+    }
+    monkeypatch.setattr(
+        kr_symbol_universe_service,
+        "build_kr_symbol_universe_snapshot",
+        AsyncMock(return_value=snapshot),
+    )
+    db = _FakeSession(
+        [
+            KRSymbolUniverse(
+                symbol="005930",
+                name="OLD",
+                exchange="KOSPI",
+                nxt_eligible=False,
+                is_active=False,
+            ),
+            KRSymbolUniverse(
+                symbol="000001",
+                name="LEGACY",
+                exchange="KOSPI",
+                nxt_eligible=False,
+                is_active=True,
+            ),
+        ]
+    )
+
+    result = await kr_symbol_universe_service.sync_kr_symbol_universe(
+        db=db,
+        dry_run=True,
+    )
+
+    assert result == {
+        "total": 2,
+        "inserted": 1,
+        "updated": 1,
+        "deactivated": 1,
+    }
+    assert db.flushed is False
+    assert db.added == []
+    assert db.rows["005930"].name == "OLD"
+    assert db.rows["005930"].is_active is False
+    assert db.rows["005930"].nxt_eligible is False
+    assert db.rows["000001"].is_active is True
+
+
+@pytest.mark.asyncio
 async def test_sync_service_hard_fails_before_db_changes_on_snapshot_error(monkeypatch):
     db = _FakeSession([])
     monkeypatch.setattr(
@@ -508,6 +567,32 @@ async def test_script_main_returns_zero_on_success(monkeypatch):
     code = await sync_kr_symbol_universe.main()
 
     assert code == 0
+
+
+def test_script_parse_args_supports_read_only_dry_run() -> None:
+    args = sync_kr_symbol_universe.parse_args(["--dry-run"])
+
+    assert args.dry_run is True
+
+
+@pytest.mark.asyncio
+async def test_script_main_forwards_dry_run(monkeypatch):
+    import app.core.cli as _cli
+
+    monkeypatch.setattr(_cli, "init_sentry", lambda **_: None)
+    runner = AsyncMock(
+        return_value={"status": "completed", "dry_run": True, "total": 1}
+    )
+    monkeypatch.setattr(
+        sync_kr_symbol_universe,
+        "run_kr_symbol_universe_sync",
+        runner,
+    )
+
+    code = await sync_kr_symbol_universe.main(dry_run=True)
+
+    assert code == 0
+    runner.assert_awaited_once_with(dry_run=True)
 
 
 @pytest.mark.asyncio
