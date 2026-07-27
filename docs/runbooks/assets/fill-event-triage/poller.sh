@@ -27,6 +27,10 @@ WATERMARK="$STATE_DIR/last_ledger_id"
 SEEN="$STATE_DIR/seen_ledger_ids"
 RETRY_COUNTS="$STATE_DIR/retry_counts"
 VLOG="$STATE_DIR/validation.jsonl"
+DIGEST_QUEUE="$STATE_DIR/digest_queue.jsonl"
+DIGEST_LAST_SENT_DATE="$STATE_DIR/digest_last_sent_date"
+DIGEST_RETRY_COUNT="$STATE_DIR/digest_retry_count"
+MIN_NOTIONAL_KRW="${FILL_TRIAGE_MIN_NOTIONAL_KRW:-50000}"
 DRY_RUN="${DRY_RUN:-0}"
 export ENV_FILE="${ENV_FILE:-.env.prod}"   # repo CLI가 prod DB를 보도록
 
@@ -43,7 +47,13 @@ if ! shlock -f "$LOCK" -p $$; then
   fi
 fi
 trap 'rm -f "$LOCK"' EXIT
-touch "$SEEN" "$RETRY_COUNTS"
+if ! jq -en --arg value "$MIN_NOTIONAL_KRW" \
+    '($value | tonumber?) as $number | $number != null and $number >= 0' \
+    >/dev/null; then
+  echo "FILL_TRIAGE_MIN_NOTIONAL_KRW는 0 이상의 숫자여야 함: $MIN_NOTIONAL_KRW" >&2
+  exit 1
+fi
+touch "$SEEN" "$RETRY_COUNTS" "$DIGEST_QUEUE"
 last_id="$(cat "$WATERMARK" 2>/dev/null || true)"
 
 cd "$REPO"
@@ -71,6 +81,25 @@ echo "$fills" | jq -c '.[]' | while read -r fill; do
       echo "$lid" > "$WATERMARK"
     fi
     continue   # 이미 처리
+  fi
+
+  if jq -e --arg threshold "$MIN_NOTIONAL_KRW" \
+      '($threshold | tonumber) as $min
+       | $min > 0
+         and .currency == "KRW"
+         and ((.filled_notional | tonumber?) < $min)' \
+      <<<"$fill" >/dev/null; then
+    if [[ "$DRY_RUN" == "1" ]]; then
+      echo "[dry-run] digest queue: ledger_id=$lid filled_notional=$(jq -r .filled_notional <<<"$fill") KRW"
+      continue
+    fi
+    jq -c . <<<"$fill" >> "$DIGEST_QUEUE"
+    echo "$lid" >> "$SEEN"; tail -n 500 "$SEEN" > "$SEEN.tmp" && mv "$SEEN.tmp" "$SEEN"
+    awk -v id="$lid" '$1 != id' "$RETRY_COUNTS" > "$RETRY_COUNTS.tmp" && mv "$RETRY_COUNTS.tmp" "$RETRY_COUNTS"
+    if [[ "$watermark_blocked" == "0" ]]; then
+      echo "$lid" > "$WATERMARK"
+    fi
+    continue
   fi
 
   payload="$(jq -r \
@@ -121,3 +150,52 @@ echo "$fills" | jq -c '.[]' | while read -r fill; do
     echo "$lid" > "$WATERMARK"
   fi
 done
+
+digest_date_kst="$(TZ=Asia/Seoul date +%Y-%m-%d)"
+digest_hour_kst="$(TZ=Asia/Seoul date +%H)"
+last_digest_date="$(cat "$DIGEST_LAST_SENT_DATE" 2>/dev/null || true)"
+digest_retry_date=""
+digest_retries=0
+if [[ -f "$DIGEST_RETRY_COUNT" ]]; then
+  read -r digest_retry_date digest_retries < "$DIGEST_RETRY_COUNT" || true
+fi
+if [[ "$digest_retry_date" != "$digest_date_kst" ]]; then
+  digest_retries=0
+fi
+if [[ -s "$DIGEST_QUEUE"
+      && ( "$digest_hour_kst" == "21" || "$digest_hour_kst" == "22" || "$digest_hour_kst" == "23" )
+      && "$last_digest_date" != "$digest_date_kst"
+      && "$digest_retries" -lt 3 ]]; then
+  digest_payload="$(jq -sc 'unique_by(.ledger_id)' "$DIGEST_QUEUE")"
+  digest_count="$(jq -r 'length' <<<"$digest_payload")"
+  digest_ledger_ids="$(jq -c '[.[].ledger_id]' <<<"$digest_payload")"
+  digest_prompt="/fill-event-triage digest=true digest_date_kst=$digest_date_kst fills_json=$digest_payload"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "[dry-run] daily digest ($digest_count fills): claude -p \"$digest_prompt\" --permission-mode bypassPermissions --settings $SETTINGS --output-format json"
+  elif ! (cd "$OPERATOR_WS" && claude -p "$digest_prompt" \
+      --permission-mode bypassPermissions \
+      --settings "$SETTINGS" \
+      --output-format json) > "$STATE_DIR/last_digest_claude_out.json" 2>> "$STATE_DIR/claude_err.log"; then
+    digest_retries=$((digest_retries + 1))
+    printf '%s %s\n' "$digest_date_kst" "$digest_retries" > "$DIGEST_RETRY_COUNT"
+    echo "daily digest claude 실패(${digest_retries}/3, 큐 유지): $digest_date_kst" >&2
+    if (( digest_retries >= 3 )); then
+      curl -fsS -H 'Content-Type: application/json' \
+        -d "$(jq -nc --arg c "**[fill triage daily digest failed]** $digest_date_kst — claude failed 3 times; queue retained" '{content:$c}')" \
+        "$DISCORD_FILL_TRIAGE_WEBHOOK" >/dev/null \
+        || echo "daily digest 실패 통지 post 실패(best-effort): $digest_date_kst" >&2
+    fi
+  else
+    digest_res="$(cat "$STATE_DIR/last_digest_claude_out.json")"
+    echo "$digest_date_kst" > "$DIGEST_LAST_SENT_DATE"
+    : > "$DIGEST_RETRY_COUNT"
+    : > "$DIGEST_QUEUE"
+    digest_text="$(jq -r '.result' <<<"$digest_res")"
+    curl -fsS -H 'Content-Type: application/json' \
+      -d "$(jq -nc --arg c "**[fill triage daily digest] $digest_date_kst · ${digest_count} fills**"$'\n'"$digest_text" '{content:$c}')" \
+      "$DISCORD_FILL_TRIAGE_WEBHOOK" >/dev/null \
+      || echo "daily digest discord post 실패(best-effort): $digest_date_kst" >&2
+    jq -nc --arg digest_date "$digest_date_kst" --argjson count "$digest_count" --argjson ledger_ids "$digest_ledger_ids" --argjson r "$digest_res" \
+      '{digest_date_kst:$digest_date, fill_count:$count, ledger_ids:$ledger_ids, session_id:$r.session_id, cost_usd:$r.cost_usd, duration_ms:$r.duration_ms, num_turns:$r.num_turns}' >> "$VLOG"
+  fi
+fi
