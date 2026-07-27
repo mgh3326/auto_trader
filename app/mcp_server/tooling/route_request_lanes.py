@@ -220,6 +220,7 @@ PROPOSAL_LED_TOOLS: frozenset[str] = frozenset({PROPOSAL_TOOL})
 PROPOSAL_LIFECYCLE_TOOLS: frozenset[str] = frozenset(
     {
         "order_proposal_expire_sweep",
+        "order_proposal_redispatch",
         "order_proposal_void",
     }
 )
