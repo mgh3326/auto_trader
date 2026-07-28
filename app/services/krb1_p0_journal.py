@@ -16,10 +16,13 @@ from pathlib import Path
 from typing import Any
 
 GENESIS_HASH = "0" * 64
-SEALED_INITIAL_ROW_HASH = (
-    "48335298149e92cdfbbb83f7f604b488074d33122f9c5ad15fe8d42b3925d8b8"
-)
-SEALED_INITIAL_HEAD = "be117294febe0c8280949a37e35baf95246f527049484b2c20ee890591408229"
+_SEALED_INITIAL_ROW = {
+    "next_stage": "P0_10_KRX_SESSIONS",
+    "p0_state": "NOT_STARTED",
+    "record_type": "SEAL_INITIALIZED",
+    "recorded_date": "2026-07-28",
+    "study_id": "KRB1-CSM60-H5-v1",
+}
 _ENTRY_KEYS = frozenset({"chain_hash", "index", "row", "row_hash"})
 _HEX_DIGITS = frozenset("0123456789abcdef")
 
@@ -67,6 +70,14 @@ def canonical_json_bytes(value: Any) -> bytes:
     except (TypeError, ValueError) as exc:
         raise JournalError(f"value is not canonical-JSON encodable: {exc}") from exc
     return encoded.encode("utf-8")
+
+
+SEALED_INITIAL_ROW_HASH = hashlib.sha256(
+    canonical_json_bytes(_SEALED_INITIAL_ROW)
+).hexdigest()
+SEALED_INITIAL_HEAD = hashlib.sha256(
+    bytes.fromhex(GENESIS_HASH) + bytes.fromhex(SEALED_INITIAL_ROW_HASH)
+).hexdigest()
 
 
 def compute_row_hash(row: Mapping[str, Any]) -> str:
