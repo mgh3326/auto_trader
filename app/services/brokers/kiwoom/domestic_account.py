@@ -131,9 +131,13 @@ class KiwoomDomesticAccountClient:
             api_id=constants.ACCOUNT_ORDER_STATUS_API_ID,
             path=ACCOUNT_PATH,
             # ROB-418 — kt00009 requires stk_bond_tp; omitting it returns
-            # return_code 2 (필수입력 파라미터=stk_bond_tp). Convention-default,
-            # smoke-confirmed.
-            body={"stk_bond_tp": constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT},
+            # return_code 2 (필수입력 파라미터=stk_bond_tp).
+            # ROB-1111 — kt00009 ALSO requires mrkt_tp; omitting it returns
+            # return_code 2 (필수입력 파라미터=mrkt_tp).
+            body={
+                "stk_bond_tp": constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT,
+                "mrkt_tp": constants.ACCOUNT_ORDER_MRKT_TP_DEFAULT,
+            },
             cont_yn=cont_yn,
             next_key=next_key,
         )

@@ -227,6 +227,7 @@ async def test_request_body_captured_via_mocktransport(
     }
     assert captured[kw_constants.ACCOUNT_ORDER_STATUS_API_ID] == {
         "stk_bond_tp": kw_constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT,
+        "mrkt_tp": kw_constants.ACCOUNT_ORDER_MRKT_TP_DEFAULT,
     }
 
 

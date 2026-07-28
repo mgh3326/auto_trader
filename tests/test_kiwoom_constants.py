@@ -34,6 +34,12 @@ def test_account_api_ids():
     assert k.ACCOUNT_BALANCE_API_ID == "kt00018"
 
 
+def test_kt00009_order_status_defaults():
+    # ROB-418 & ROB-1111 — kt00009 required parameters: stk_bond_tp and mrkt_tp
+    assert k.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT == "0"
+    assert k.ACCOUNT_ORDER_MRKT_TP_DEFAULT == "0"
+
+
 def test_kt00001_deposit_qry_tp_is_general_query_two():
     # ROB-891 — Official kt00001 (예수금상세현황) body is exactly {"qry_tp": "2"}.
     # "2" is 일반조회, used for current orderable cash. Must NOT reuse

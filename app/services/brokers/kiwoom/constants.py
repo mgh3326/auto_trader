@@ -66,6 +66,7 @@ TOKEN_REFRESH_LEEWAY_SECONDS = 30  # refresh slightly before expires_dt
 ACCOUNT_BALANCE_QRY_TP_DEFAULT = "1"  # kt00018 조회구분
 ACCOUNT_DEPOSIT_QRY_TP_DEFAULT = "2"  # ROB-891 — kt00001 일반조회 (orderable cash)
 ACCOUNT_ORDER_STK_BOND_TP_DEFAULT = "0"  # kt00009 주식채권구분(전체)
+ACCOUNT_ORDER_MRKT_TP_DEFAULT = "0"  # ROB-1111 — kt00009 시장구분(전체)
 
 # ROB-460 — Kiwoom REST account-cash reads also require dmst_stex_tp (국내거래소구분).
 # 2026-06-09 live: get_positions(kt00018)·get_orderable_cash returned return_code 2

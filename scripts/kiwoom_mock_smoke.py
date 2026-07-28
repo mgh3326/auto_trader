@@ -137,6 +137,7 @@ _TRUSTED_CONTRACT_OUTPUT_KEYS: frozenset[str] = frozenset(
         "trde_tp",
         "uv",
         "stk_bond_tp",
+        "mrkt_tp",
     }
 )
 
@@ -684,7 +685,7 @@ _CONTRACT_STEPS_SPEC: list[dict[str, Any]] = [
         "evidence_kind": "order_history",
         "tool_args": {},
         "contract_fields": {
-            "request_body": {"stk_bond_tp": "0"},
+            "request_body": {"stk_bond_tp": "0", "mrkt_tp": "0"},
             "response_array": "acnt_ord_cntr_prst_array",
         },
     },
