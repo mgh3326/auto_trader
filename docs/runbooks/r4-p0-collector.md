@@ -40,6 +40,16 @@ Operational attention follows this order without dropping any P0 source:
 Backfill reach and PIT observation are separate properties. A later REST row
 must not be treated as if it had the `local_receive_time` of the live collector.
 
+The basis endpoint can transiently return HTTP 200 with an empty JSON list.
+That is **missing source data**, not a successful zero-observation state. The
+collector continues polling the other symbols, reports the failed symbol, and
+re-reads a bounded 100-period (8h20m) window on the next attempt. Deduplication
+keeps replays idempotent, while the original collection floor prevents this
+recovery path from acting as seed backfill. Any absence still unresolved at
+epoch finalization is `FINAL_MISSING`; two different canonical payloads for the
+same source identity are `FINAL_CONFLICT`, never last-write-wins
+`FINAL_COMPLETE`.
+
 ## Modes
 
 With no mode flag the command prints its contract and makes no network or disk
