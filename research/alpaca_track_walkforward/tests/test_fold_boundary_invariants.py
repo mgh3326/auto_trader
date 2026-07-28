@@ -16,6 +16,16 @@ import wf_seal_consumption as wf_seal
 _ANCHOR_MS = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)
 _FOLD = fs.build_fold_schedule(_ANCHOR_MS)[0]
 
+# AC3/AC27 need a fold in which a TRAIN-entered AP-A2 position demonstrably
+# survives the OOS boundary for BOTH probe configs. Under the v1 fold-relative
+# corpus every fold replayed one identical price path, so fold-0 stood in for
+# all eight and the choice was meaningless. With the absolute-time corpus each
+# fold is a different period, so the fold has to be chosen for the property
+# being demonstrated: AP-A2-00 carries a TRAIN position into OOS on fold-1,
+# fold-3, and fold-7 but not on fold-0. Picking the earliest such fold keeps
+# the assertion below strict (it is NOT relaxed) while making it observable.
+_AC3_FOLD = fs.build_fold_schedule(_ANCHOR_MS)[1]
+
 
 def test_decision_timestamps_never_land_inside_the_embargo_window_ap_a1():
     """AC4 — embargo data may only ever be consumed as warm-up CONTEXT; no
@@ -88,19 +98,17 @@ def test_two_different_configs_never_share_or_alias_mutable_state_rob_1012_guard
     config_b = next(c for c in bundle.configs if c.config_id == "AP-A2-07")
 
     bars = sfx.build_bars_by_symbol(
-        window_start_ms=_FOLD.train_start_ms,
-        num_days=(_FOLD.oos_end_ms - _FOLD.train_start_ms) // 86_400_000,
+        window_start_ms=_AC3_FOLD.train_start_ms,
+        num_days=(_AC3_FOLD.oos_end_ms - _AC3_FOLD.train_start_ms) // 86_400_000,
         n_symbols=20,
     )
     universe_provider = sfx.make_universe_snapshot_provider(20)
-    minute_provider = sfx.make_minute_bars_provider(
-        window_start_ms=_FOLD.train_start_ms, n_symbols=20
-    )
+    minute_provider = sfx.make_minute_bars_provider(n_symbols=20)
 
     result_a = runner._run_continuous_decisions(
         config=config_a,
         family="AP-A2",
-        fold=_FOLD,
+        fold=_AC3_FOLD,
         bars_by_symbol=bars,
         universe_snapshot_provider=universe_provider,
         minute_bars_provider=minute_provider,
@@ -108,7 +116,7 @@ def test_two_different_configs_never_share_or_alias_mutable_state_rob_1012_guard
     result_b = runner._run_continuous_decisions(
         config=config_b,
         family="AP-A2",
-        fold=_FOLD,
+        fold=_AC3_FOLD,
         bars_by_symbol=bars,
         universe_snapshot_provider=universe_provider,
         minute_bars_provider=minute_provider,
@@ -140,12 +148,12 @@ def test_two_different_configs_never_share_or_alias_mutable_state_rob_1012_guard
         train_entered_carrying_into_oos = [
             t
             for t in result.closed_trades
-            if t.entry_decision_ts_ms < _FOLD.train_end_ms
-            and t.exit_decision_ts_ms >= _FOLD.oos_start_ms
+            if t.entry_decision_ts_ms < _AC3_FOLD.train_end_ms
+            and t.exit_decision_ts_ms >= _AC3_FOLD.oos_start_ms
         ] + [
             leg
             for leg in result.open_legs_by_symbol.values()
-            if leg.entry_decision_ts_ms < _FOLD.train_end_ms
+            if leg.entry_decision_ts_ms < _AC3_FOLD.train_end_ms
         ]
         assert len(train_entered_carrying_into_oos) > 0, (
             "expected at least one TRAIN-entered position to still be open "

@@ -7,6 +7,17 @@ fixture.  This module pins that fixture's anchor and every input-artifact
 digest used by each fold/family.  A future real run must add an
 operator-approved manifest whose H1 ``CorpusManifest.content_hash()`` is
 fixed here; callers cannot nominate an authority at runtime.
+
+Identity ``...-v2`` supersedes ``...-v1``.  v1's corpus generator keyed
+prices off each fold's own window start, so all eight walk-forward folds
+observed the same price path and the terminal artifact held 16 distinct
+observations replicated eight times (see ``synthetic_corpus`` module
+docstring).  v2 derives every price from absolute UTC calendar time, so the
+eight folds are eight different periods of one history.  Every daily and
+minute digest below therefore changed; the universe digests did not, because
+eligibility never depended on price.  v1's artifact and the H6 seals built
+from it stay on disk as historical evidence and are NOT loadable under this
+identity — that rejection is the intended fail-closed behaviour.
 """
 
 from __future__ import annotations
@@ -30,7 +41,7 @@ __all__ = [
 
 DAY_MS = 86_400_000
 CANONICAL_ANCHOR_OOS_START_MS = 1_704_067_200_000  # 2024-01-01T00:00:00Z
-CANONICAL_RUN_ID = "rob1062-h4-synthetic-ac27-v1"
+CANONICAL_RUN_ID = "rob1062-h4-synthetic-ac27-v2"
 CANONICAL_SOURCE_KIND = "synthetic_fixture"
 CANONICAL_SYMBOLS = tuple(f"SYM{index:02d}/USD" for index in range(20))
 
@@ -201,16 +212,19 @@ class CanonicalRunManifest:
 
 # Generated from the deterministic synthetic fixture and reviewed as part of
 # the implementation commit. These are source-input identities, not strategy
-# thresholds.
+# thresholds. Regenerated for identity v2 (absolute-time corpus): all eight
+# daily digests and all sixteen minute digests moved because every fold now
+# observes a different segment of one history; the universe digests are
+# byte-identical to v1 because eligibility is price-independent.
 _DAILY_HASHES = {
-    "fold-0": "553a05325c38edb4f2744956c10a8ab398df431d6d9ff91d3f3046690b261f96",
-    "fold-1": "756c051d0b8a85b4c4b10f5255e5bf537496313405eb9d14520d39158f620bd2",
-    "fold-2": "eef6a24886063bbbb582c71ec222e645f559c45122655491fabe615c8c8582e1",
-    "fold-3": "5349e5ae3a9e8951115c86e5fff195abd2d03479a79b34c4ffeba3c71a99256c",
-    "fold-4": "b788911bf968ee95208b404e434d75922436fa960f2255f5293898620b2a9984",
-    "fold-5": "8ba808a848b578be0309335909c0e63df343139c0af993fcde85af2f35b6b150",
-    "fold-6": "d37ff902e9ac8a329814211904ef6dbdf7a6044b4fa49bf8661e98bf0f0fae0f",
-    "fold-7": "b31253c8bfbc63aadf2b9ae3d7a82edb4d332e062e07574de66fed4a4b48a8ee",
+    "fold-0": "59d6a40a63ccf31b19a1273b6ccfe68044fc52c40f470abf53d7f6d592a2a974",
+    "fold-1": "a488ffbbc9f3c0af604c93d34c1df20c8bffebe4de558a1e6463510ee598c402",
+    "fold-2": "03be33cb21794db0d9b3d7e9cef300ffa47c6176f1d67549379a3a47a2a6374f",
+    "fold-3": "d9dcbf0d0634df692641f8298b48e716ebb94c5851582e5c86e1ed9374a9ad95",
+    "fold-4": "60ccd7854f3a8116c4c1b5f3c5c85269f7dfc8ec0137663658ce533872fc1142",
+    "fold-5": "f12420f4075a6f4d734ba959644bfe12a82a3258eb55774c54156f5804d4f4b7",
+    "fold-6": "e51d3f1d08f722e7eaeae550f622849be18104e53d25df153806dc20435eb660",
+    "fold-7": "764fb8d731321b506d696176c6960064e1263b6c33a42adcaf698342b67657e9",
 }
 _UNIVERSE_HASHES = {
     "fold-0:AP-A1": "3811ac111ceb1dd796710003f206881a5ffd1b80b9c4832622e2b3cdcc41fa11",
@@ -231,22 +245,22 @@ _UNIVERSE_HASHES = {
     "fold-7:AP-A2": "ebb3994ad7022776f0a736df0fa8e201e82002f8070dccd1008adbcf2644dc59",
 }
 _MINUTE_HASHES = {
-    "fold-0:AP-A1": "b74732a30da4de5fe4970c45555911c1019d8cc6bdfe2276eb3bcac5bbb1b5d8",
-    "fold-0:AP-A2": "a687e88607bdfb2247110e4a0f244d7e17963b383290072afa78006c8b31bc96",
-    "fold-1:AP-A1": "2e292e4b50cc7308a4ac333e86a3cc208c5c4e8a09268188a7a5f5660c6d10fd",
-    "fold-1:AP-A2": "11dac9610dae09292fda1f2c6706dfb2ec3ce5770a2429ec58eeb21f2817b1df",
-    "fold-2:AP-A1": "76c758fd69287e6a2c324001f71a01c04c3499ace8fffbafa4a09c58934a3484",
-    "fold-2:AP-A2": "d3e579f270829959b34ac749a721718632676a489232e754a1ea0a7b69c2cc05",
-    "fold-3:AP-A1": "cd722aaab16add4a3e6d4597434dd7ff0de32a64ededd851b3d4dbc096681058",
-    "fold-3:AP-A2": "b3b0c406dccf2bc9590ab70e5e7d9f05caa93a8126bd7e21483bc74fcb25bc67",
-    "fold-4:AP-A1": "1daf8e6fe553620084926d139b60f0d79f04a2f78763e832c4283b513965cc72",
-    "fold-4:AP-A2": "9c8662eeea4636aba239410184b5844053b6932fa957d08aa252358f9efc2881",
-    "fold-5:AP-A1": "84691f4678e58f15bff55e8869c97bbe37b90406a9ae2f82e443484dae4d3143",
-    "fold-5:AP-A2": "b594b7f2b0fe6586b76038b8a82fa4b055af9e71d775cfcb48f1ec2223f4487e",
-    "fold-6:AP-A1": "52a6c1be58ad63bc0080a6c63cab71a9932fa709d429deb4b455167e09bcb6a7",
-    "fold-6:AP-A2": "7b0a2651603279997cd3056bab6d8653551ba936b5c0e5281c88d407ff9f458a",
-    "fold-7:AP-A1": "dba362f3e2490017bd037d5ceb14d7874a6d38ef14eb36b1a9b7d0b8d0750399",
-    "fold-7:AP-A2": "bc1a46a526c8c8d82f2105b612ae942143b87c1ce8521d7287e247a96dd165f2",
+    "fold-0:AP-A1": "43ddda4b2cde16333974fad95b5659ca413354413633511b5b5ed4a41d372ad3",
+    "fold-0:AP-A2": "3521f4461128046193a4f49ec69c0f02ed306de623c2473ace450ccf445d2aef",
+    "fold-1:AP-A1": "c20c24a1be981b08f665401281158bfe486fbccfa9c6f4cbdba8d72e814e88d7",
+    "fold-1:AP-A2": "f09102cc5632f24af2be5b39f98fa0f4d466fe408fb1ab85ed2561266049e055",
+    "fold-2:AP-A1": "f657a1d38838e9b93da7d617ab19551fb5097b70c3056a5d87f524c2379b24b4",
+    "fold-2:AP-A2": "19d7a6aa87a92ed712e757385041ed5427349e00a63542c5e6a4f1832f8afb71",
+    "fold-3:AP-A1": "a55a96a4783e13018f9eaa629962415f2c5f73c1339e90616d9afa21fa35ca08",
+    "fold-3:AP-A2": "e9ad33be36ff7cce8fc58e71b843717e0b0d09e27aaeba7db671df77b0e86b2d",
+    "fold-4:AP-A1": "755e76788e7add3ddc996642524d134a45c73ddb92c4fcd386e9c63452ef1db3",
+    "fold-4:AP-A2": "b9bf6c922258ffa4cee21b70f018a50ab4b79af1d93b2dd5f62b016450add335",
+    "fold-5:AP-A1": "e383bf3211b63a5fbf97cfb1f55df63fc204befaa14d5c2e41f0d1324cdff6e0",
+    "fold-5:AP-A2": "5335dc630c303f0097f81cfd8227ca53027e6a91109a8db50eef64f3b941d503",
+    "fold-6:AP-A1": "a11129503f477c27ae8030be9d22cecc9cdd1c5b7aca70294afef6f1afa3c8d7",
+    "fold-6:AP-A2": "1acac39d81e989e9f29f40c4a99085760fd171842a97b33b3fb4de16ac55f710",
+    "fold-7:AP-A1": "b531db22fe1e5525a69bdcadaca32e5037d961b6a53688b1777901e73be9d827",
+    "fold-7:AP-A2": "a608a669b5e01eced7c6f1f825b37ed154a06446cc2b88ea47bf8d5d5bb382ff",
 }
 
 

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 from pathlib import Path
 
+import accounting as acct
 import authority
+import pytest
+import terminal_status as h4_terminal
 
 _PACKAGE = Path(__file__).resolve().parents[1]
 
@@ -23,7 +27,7 @@ def test_authority_binds_exact_h2_configs_h4_folds_and_provenance() -> None:
     assert len(provenance.corpus_manifest_hash) == 64
     assert len(provenance.fold_schedule_hash) == 64
     assert len(provenance.code_hash) == 64
-    assert provenance.run_id == "rob1062-h4-synthetic-ac27-v1"
+    assert provenance.run_id == "rob1062-h4-synthetic-ac27-v2"
 
 
 def test_current_seal_is_truthful_structural_incomplete_not_fake_success() -> None:
@@ -68,6 +72,19 @@ def test_materialized_h4_terminal_artifact_produces_a_distinct_usable_seal() -> 
         for trial in resealed.trials
         for cell in trial.cells
     )
+    # Reaching here means the H4 loader accepted the source artifact, which
+    # includes its ``degenerate_fold_replication`` gate: a seal can no longer
+    # be built from an artifact whose folds are replicas of each other.
+    artifact = h4_terminal.load_terminal_execution_artifact(
+        h4_terminal.CANONICAL_TERMINAL_ARTIFACT_PATH
+    )
+    per_config: dict[tuple[str, str], set[str]] = {}
+    for cell in artifact.cells:
+        per_config.setdefault((cell.family, cell.config_id), set()).add(
+            h4_terminal._fold_agnostic_count_digest(cell)
+        )
+    assert len(per_config) == 16
+    assert all(len(digests) == 8 for digests in per_config.values())
 
 
 def test_committed_current_report_is_exact_deterministic_generator_output() -> None:
@@ -81,7 +98,7 @@ def test_committed_current_report_is_exact_deterministic_generator_output() -> N
 
 def test_committed_reseal_is_exact_deterministic_generator_output() -> None:
     committed = (
-        _PACKAGE / "sealed_reports" / "rob-1064-run-2026-07-29-h4-terminal-v1.json"
+        _PACKAGE / "sealed_reports" / "rob-1064-run-2026-07-29-h4-terminal-v2.json"
     ).read_bytes()
     generated = authority.build_materialized_seal().to_bytes()
 
@@ -89,6 +106,76 @@ def test_committed_reseal_is_exact_deterministic_generator_output() -> None:
     parsed = json.loads(committed)
     assert parsed["report"]["structural_incomplete"] == 0
     assert parsed["report"]["performance_usable"] is True
+
+
+def test_every_earlier_seal_is_preserved_byte_for_byte() -> None:
+    """Append-only in the strongest available form.
+
+    The pre-materialization seal and the superseded v1 materialized seal are
+    both pinned by content digest. A future reseal that deletes, truncates, or
+    rewrites either one fails here. The v1 materialized seal is deliberately
+    NOT required to be regenerable: the defective corpus identity it consumed
+    no longer exists, and re-deriving it would mean keeping that corpus alive.
+    """
+    directory = _PACKAGE / "sealed_reports"
+    assert set(authority.PRESERVED_SEAL_DIGESTS) == {
+        "rob-1064-current.json",
+        "rob-1064-run-2026-07-29-h4-terminal-v1.json",
+    }
+    for filename, digest in authority.PRESERVED_SEAL_DIGESTS.items():
+        path = directory / filename
+        assert path.is_file(), filename
+        raw = path.read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == digest, filename
+
+    # The current seal is a NEW file, not a rewrite of either of them.
+    assert authority.MATERIALIZED_SEAL_PATH.name not in (
+        authority.PRESERVED_SEAL_DIGESTS
+    )
+    assert authority.MATERIALIZED_SEAL_PATH.is_file()
+    assert {path.name for path in directory.glob("*.json")} == {
+        *authority.PRESERVED_SEAL_DIGESTS,
+        authority.MATERIALIZED_SEAL_PATH.name,
+    }
+
+
+def test_superseded_v1_seal_recorded_the_degenerate_campaign() -> None:
+    """What the preserved v1 seal proves: counts were right, sample was not.
+
+    Its report is a truthful record of the arithmetic; the reason it was
+    blocked lives in the H4 artifact it consumed, not in these counts.
+    """
+    parsed = json.loads(
+        (
+            _PACKAGE / "sealed_reports" / "rob-1064-run-2026-07-29-h4-terminal-v1.json"
+        ).read_bytes()
+    )
+
+    assert parsed["report"]["cells"] == 128
+    assert parsed["report"]["structural_incomplete"] == 0
+    assert parsed["report"]["performance_usable"] is True
+    provenance_run_ids = {trial["provenance"]["run_id"] for trial in parsed["trials"]}
+    assert provenance_run_ids == {"rob1062-h4-synthetic-ac27-v1"}
+    # And the current authority no longer produces that identity.
+    assert authority.canonical_trial_provenance().run_id == (
+        "rob1062-h4-synthetic-ac27-v2"
+    )
+
+
+def test_h5_gate_accepts_the_current_seal_and_blocks_the_preserved_incomplete_one() -> (
+    None
+):
+    """Boundary only — ``verify_seal_for_h5``. H5 itself is NOT run."""
+    current = authority.build_materialized_seal()
+    report = acct.verify_seal_for_h5(current)
+
+    assert report.performance_usable is True
+    assert report.structural_incomplete == 0
+    assert report.cells == 128
+    assert report.violations == ()
+
+    with pytest.raises(acct.H5GateBlocked):
+        acct.verify_seal_for_h5(authority.build_current_seal())
 
 
 def test_reexecution_is_byte_identical() -> None:

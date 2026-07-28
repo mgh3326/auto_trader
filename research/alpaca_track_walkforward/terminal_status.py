@@ -8,7 +8,11 @@ strictly count/status-only:
 * the canonical synthetic corpus is executed through the signal/fill ledger;
 * TRAIN and OOS ``BlindCounts`` are derived from the continuous lifecycle;
 * no performance-view helper and no mask reveal function is called;
-* all 16 configs x 8 folds are written as one hash-bound artifact.
+* all 16 configs x 8 folds are written as one hash-bound artifact;
+* an artifact whose folds are numerical replicas of each other is REJECTED
+  (``degenerate_fold_replication``) — see
+  :func:`_assert_folds_are_not_replicas` for why counting 128 complete cells
+  is not by itself evidence of 128 observations.
 """
 
 from __future__ import annotations
@@ -35,6 +39,8 @@ from research_contracts.canonical_hash import canonical_sha256
 
 __all__ = [
     "CANONICAL_TERMINAL_ARTIFACT_PATH",
+    "DEGENERATE_FOLD_REPLICATION",
+    "HISTORICAL_TERMINAL_ARTIFACT_PATHS",
     "TerminalArtifactError",
     "TerminalCell",
     "TerminalExecutionArtifact",
@@ -48,10 +54,17 @@ __all__ = [
 SCHEMA_VERSION = "alpaca_track_h4_terminal_execution_status.v1"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_TERMINAL_ARTIFACT_DIR = Path(__file__).resolve().parent / "terminal_artifacts"
 CANONICAL_TERMINAL_ARTIFACT_PATH = (
-    Path(__file__).resolve().parent
-    / "terminal_artifacts"
-    / "rob1062-h4-synthetic-ac27-v1.json"
+    _TERMINAL_ARTIFACT_DIR / "rob1062-h4-synthetic-ac27-v2.json"
+)
+
+# Superseded artifacts, kept as immutable historical evidence of what the
+# campaign looked like at the time each H6 seal was written.  They are NOT
+# loadable under the current identity (their corpus/code hashes differ) and
+# `load_terminal_execution_artifact` must keep rejecting them.
+HISTORICAL_TERMINAL_ARTIFACT_PATHS = (
+    _TERMINAL_ARTIFACT_DIR / "rob1062-h4-synthetic-ac27-v1.json",
 )
 
 # These are the exact H3+H4 bytes that produce the terminal count/status
@@ -263,6 +276,58 @@ class TerminalCell:
         }
 
 
+DEGENERATE_FOLD_REPLICATION = "degenerate_fold_replication"
+
+
+def _fold_agnostic_count_digest(cell: TerminalCell) -> str:
+    """Digest one cell's counts with ``fold_id`` removed.
+
+    Two folds of the same config sharing this digest means they observed
+    numerically indistinguishable data.
+    """
+
+    payload = {
+        key: value for key, value in cell.to_payload().items() if key != "fold_id"
+    }
+    return canonical_sha256(payload)
+
+
+def _assert_folds_are_not_replicas(cells: tuple[TerminalCell, ...]) -> None:
+    """Fail closed when a config's eight folds are numerical replicas.
+
+    This is the gate the v1 campaign was missing.  v1 satisfied every count
+    check (128 cells, ``structural_incomplete == 0``) while carrying only 16
+    distinct observations replicated eight times, because its corpus restarted
+    the same price path at every fold's window start.  Walk-forward requires
+    eight DIFFERENT periods, so eight identical count payloads for one config
+    is a structural defect, not a pass.
+
+    Deliberately checked on the FULL blind-count payload, not on
+    ``observation_count``: the number of decision records is fixed by the
+    decision calendar and is legitimately equal across folds of equal length,
+    so it can never detect replication on its own.
+
+    Count/status only — no forward return, PnL, or hit-rate input (CRS-24).
+    """
+
+    digests_by_config: dict[tuple[str, str], set[str]] = {}
+    for cell in cells:
+        digests_by_config.setdefault((cell.family, cell.config_id), set()).add(
+            _fold_agnostic_count_digest(cell)
+        )
+    replicated = sorted(
+        f"{family}/{config_id}"
+        for (family, config_id), digests in digests_by_config.items()
+        if len(digests) < 2
+    )
+    if replicated:
+        raise TerminalArtifactError(
+            f"{DEGENERATE_FOLD_REPLICATION}: every fold produced identical "
+            f"counts for {', '.join(replicated)}; the eight walk-forward folds "
+            "must observe different periods of one history"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class TerminalExecutionArtifact:
     run_id: str
@@ -297,6 +362,7 @@ class TerminalExecutionArtifact:
             f"fold-{index}" for index in range(8)
         }:
             raise TerminalArtifactError("terminal artifact must cover fold-0..fold-7")
+        _assert_folds_are_not_replicas(self.cells)
         object.__setattr__(
             self, "cells", tuple(sorted(self.cells, key=lambda c: c.key))
         )
@@ -458,9 +524,7 @@ def _build_family_fold_terminal_cells(
         num_days=num_days,
     )
     universe_provider = corpus.make_universe_snapshot_provider()
-    minute_provider = corpus.make_minute_bars_provider(
-        window_start_ms=fold.train_start_ms,
-    )
+    minute_provider = corpus.make_minute_bars_provider()
     provider_snapshot = runner._materialize_provider_snapshot(
         family=family,
         fold=fold,

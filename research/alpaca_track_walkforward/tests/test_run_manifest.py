@@ -48,10 +48,7 @@ def test_fold0_fixture_recomputes_exact_pinned_input_lineage(family):
         n_symbols=20,
     )
     universe_provider = sfx.make_universe_snapshot_provider(20)
-    minute_provider = sfx.make_minute_bars_provider(
-        window_start_ms=_FOLD.train_start_ms,
-        n_symbols=20,
-    )
+    minute_provider = sfx.make_minute_bars_provider(n_symbols=20)
     timestamps = runner._all_decision_timestamps(family=family, fold=_FOLD)
     universe_grid = {
         timestamp: universe_provider(timestamp).snapshot for timestamp in timestamps
