@@ -14,9 +14,10 @@ from app.mcp_server.tooling import (
 from app.mcp_server.tooling.screening import kr as screening_kr
 from app.mcp_server.tooling.screening import us as screening_us
 from tests._mcp_recommend_support import _mock_empty_holdings, _mock_kr_sources
-from tests._mcp_tooling_support import build_tools
+from tests._mcp_tooling_support import _mock_crypto_external_sources, build_tools
 
-pytest_plugins = ("tests._mcp_tooling_support",)
+__all__ = ["_mock_crypto_external_sources"]
+
 pytestmark = pytest.mark.usefixtures("_mock_crypto_external_sources")
 
 

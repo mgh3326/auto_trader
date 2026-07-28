@@ -5,8 +5,8 @@ Pytest configuration and common fixtures for auto-trader tests.
 import asyncio
 import contextlib
 import os
-import re
 import tempfile
+import time
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,20 +15,28 @@ import pandas as pd
 import pytest
 import pytest_asyncio
 
-# Cross-worker mutex serialising the Alpaca-paper suites that mutate the shared
-# `market_quote_snapshots` / `alpaca_paper_order_ledger` tables. See
-# `_serialize_alpaca_paper_db_suites` below. Lives in the temp dir so every
-# `pytest -n auto` worker process (same machine, same DB) contends on one file.
+from tests._run_owned_database import (
+    DATABASE_NAME_ENV as _XDIST_DATABASE_NAME_ENV,
+)
+from tests._run_owned_database import (
+    DEFAULT_TEST_DATABASE_URL as _DEFAULT_TEST_DATABASE_URL,
+)
+from tests._run_owned_database import (
+    configure_test_database_environment,
+    drop_run_owned_database,
+    ensure_run_owned_database,
+    uses_run_owned_database,
+    uses_shared_test_database,
+)
+
+# Compatibility mutex for the explicit shared-DB opt-in. Normal serial and
+# xdist runs own separate databases and never take this lock. It lives in the
+# temp dir so opted-in workers using the same database contend on one file.
 # Uses stdlib fcntl.flock (posix; the Linux CI + macOS dev boxes) — no extra
 # dependency — and no-ops on the rare non-posix host.
 _ALPACA_PAPER_DB_LOCK_PATH = (
     Path(tempfile.gettempdir()) / "auto_trader_alpaca_paper_db_suite.lock"
 )
-_DEFAULT_TEST_DATABASE_URL = (
-    "postgresql+asyncpg://postgres:postgres@localhost:5432/test_db"
-)
-_XDIST_DATABASE_NAME_ENV = "AUTO_TRADER_XDIST_DATABASE_NAME"
-_XDIST_BASE_DATABASE_URL_ENV = "AUTO_TRADER_XDIST_BASE_DATABASE_URL"
 _DATABASE_FIXTURE_NAMES = frozenset(
     {
         "db_session",
@@ -39,6 +47,41 @@ _DATABASE_FIXTURE_NAMES = frozenset(
         "binance_demo_reservation_lock",
         "binance_demo_smoke_ledger_isolation",
     }
+)
+_SCHEMA_METRICS_KEY = pytest.StashKey[list[dict[str, object]]]()
+_KIS_DEFAULT_SCOPE_PARTS = (
+    "/brokers/kis/",
+    "/services/brokers/kis/",
+    "/services/order_proposals/",
+    "/test_kis",
+    "/test_mcp_order",
+    "/test_mcp_place_order",
+    "/test_nxt",
+    "/test_order",
+    "/test_services_kis",
+)
+_KR_CALENDAR_SCOPE_PARTS = (
+    "market_session",
+    "session_calendar",
+    "/test_daily_scan.py",
+    "/test_market_events",
+    "/test_mcp_",
+    "/test_preopen",
+    "/test_screener",
+    "/services/market_events/",
+)
+_AUTH_DB_SCOPE_PARTS = (
+    "/routers/",
+    "/test_admin",
+    "/test_agent_callback",
+    "/test_api",
+    "/test_auth",
+    "/test_dependencies",
+    "/test_invest_api",
+    "/test_main",
+    "/test_middleware",
+    "/test_routers",
+    "/test_web",
 )
 
 
@@ -121,25 +164,10 @@ def _ensure_test_env() -> None:
     # regardless of what's in env.example or .env
     os.environ["SECRET_KEY"] = "Test_Secret_Key_12345_Test_Secret_Key_12345"
 
-    # Force overwrite DATABASE_URL to ensure tests use the correct test database
-    # regardless of what's in env.example (which may contain placeholder values)
-    os.environ["DATABASE_URL"] = _DEFAULT_TEST_DATABASE_URL
-
-    # Each xdist worker gets its own PostgreSQL database. File-based distribution
-    # prevents two workers from running one file, but it does not isolate table
-    # rows: broad cleanup and fixed-key fixtures in different files can still
-    # delete or duplicate one another's data. A run-unique database removes that
-    # race while leaving ordinary serial pytest runs on the conventional test_db.
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER")
-    if worker_id and worker_id != "master":
-        run_uid = os.environ.get("PYTEST_XDIST_TESTRUNUID", "local")
-        safe_suffix = re.sub(r"[^a-zA-Z0-9_]", "_", f"{run_uid}_{worker_id}")
-        database_name = f"test_db_{safe_suffix[:55]}"
-        os.environ[_XDIST_DATABASE_NAME_ENV] = database_name
-        os.environ[_XDIST_BASE_DATABASE_URL_ENV] = _DEFAULT_TEST_DATABASE_URL
-        os.environ["DATABASE_URL"] = (
-            _DEFAULT_TEST_DATABASE_URL.rsplit("/", 1)[0] + f"/{database_name}"
-        )
+    # Select a run-owned database name without opening a connection. Serial
+    # pytest and every xdist worker get an exact, validated target. Pure unit
+    # and collect-only runs never cross the PostgreSQL boundary.
+    configure_test_database_environment()
 
     # ROB-469 PR2: force tests onto NullPool. Production defaults to the async queue
     # pool (DB_POOL_CLASS=queue), but pytest-asyncio uses a fresh event loop PER TEST,
@@ -309,7 +337,7 @@ def mock_redis_service():
     return mock_redis
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def _mock_nxt_eligible(monkeypatch):
     """Default NXT eligible to True for tests that expect 'SOR' (legacy compatibility).
 
@@ -323,7 +351,7 @@ def _mock_nxt_eligible(monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def _mock_kr_market_session_calendar(monkeypatch):
     """Use a deterministic lightweight KRX calendar in fast tests.
 
@@ -360,7 +388,7 @@ def _mock_kr_market_session_calendar(monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def _serialize_alpaca_paper_db_suites(request):
     """Serialize Alpaca-paper suites that mutate shared DB tables across workers.
 
@@ -393,19 +421,14 @@ def _serialize_alpaca_paper_db_suites(request):
     also wrap this file's own cleanup in ``_alpaca_paper_db_suite_lock()`` —
     ``fcntl.flock`` is not reentrant across separate ``open()`` calls even
     within one process, so nesting it under this fixture would deadlock.)"""
-    path = str(getattr(request.node, "fspath", "") or "")
-    if (
-        "alpaca_paper" not in path
-        and "paper_approval_packet" not in path
-        and "test_trade_retrospective_pending" not in path
-    ):
+    if uses_run_owned_database():
         yield
         return
     with _alpaca_paper_db_suite_lock():
         yield
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def _isolate_kis_circuit_breaker(monkeypatch):
     # ROB-699: the KIS circuit breaker is a per-process singleton, enabled by
     # default. Force it OFF + reset it for every test so the existing KIS suite
@@ -449,7 +472,7 @@ def _block_tvscreener_http_boundary(request, monkeypatch):
     )
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def mock_auth_middleware_db():
     """Mock AsyncSessionLocal in AuthMiddleware to prevent DB connection attempts."""
     with patch("app.middleware.auth.AsyncSessionLocal") as mock:
@@ -560,12 +583,13 @@ def sample_yahoo_data():
     }
 
 
-# Markers for different test types
+# Markers for different test types.
 pytest_plugins = ["pytest_asyncio", "tests._investment_reports_helpers"]
 
 
 def pytest_configure(config):
     """Configure pytest with custom markers."""
+    config.stash[_SCHEMA_METRICS_KEY] = []
     config.addinivalue_line(
         "markers", "slow: marks tests as slow (deselect with '-m \"not slow\"')"
     )
@@ -573,6 +597,37 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "unit: marks tests as unit tests")
     config.addinivalue_line(
         "markers", "live: marks tests as live API tests (require --run-live to execute)"
+    )
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    """Forward per-worker schema metrics to the xdist controller."""
+
+    worker_output = getattr(session.config, "workeroutput", None)
+    if worker_output is not None:
+        worker_output["auto_trader_schema_metrics"] = session.config.stash[
+            _SCHEMA_METRICS_KEY
+        ]
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error) -> None:  # noqa: ARG001
+    metrics = node.workeroutput.get("auto_trader_schema_metrics", [])
+    node.config.stash[_SCHEMA_METRICS_KEY].extend(metrics)
+
+
+def pytest_terminal_summary(terminalreporter) -> None:
+    metrics = terminalreporter.config.stash[_SCHEMA_METRICS_KEY]
+    if not metrics:
+        return
+    applied = sum(bool(metric["schema_applied"]) for metric in metrics)
+    schema_seconds = sum(float(metric["schema_seconds"]) for metric in metrics)
+    database_seconds = sum(float(metric["database_seconds"]) for metric in metrics)
+    terminalreporter.write_line(
+        "test schema bootstrap: "
+        f"databases={len(metrics)} applied={applied} "
+        f"schema_seconds={schema_seconds:.2f} "
+        f"database_seconds={database_seconds:.2f}"
     )
 
 
@@ -605,58 +660,24 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_live)
 
 
-async def _ensure_xdist_test_database() -> None:
-    """Create the current worker's isolated database before its first DB test."""
-    database_name = os.environ.get(_XDIST_DATABASE_NAME_ENV)
-    if not database_name:
-        return
-    if not re.fullmatch(r"[A-Za-z0-9_]+", database_name):
-        raise RuntimeError("refusing unsafe xdist database name")
+@pytest.fixture(autouse=True)
+def _scoped_test_defaults(request: pytest.FixtureRequest) -> None:
+    """Activate compatibility defaults only for their owning test areas."""
 
-    import asyncpg
-    from sqlalchemy.engine import make_url
-
-    base_url = make_url(os.environ[_XDIST_BASE_DATABASE_URL_ENV])
-    admin = await asyncpg.connect(
-        user=base_url.username,
-        password=base_url.password,
-        host=base_url.host,
-        port=base_url.port,
-        database="postgres",
-    )
-    try:
-        exists = await admin.fetchval(
-            "SELECT 1 FROM pg_database WHERE datname = $1", database_name
-        )
-        if not exists:
-            await admin.execute(f'CREATE DATABASE "{database_name}"')
-    finally:
-        await admin.close()
-
-
-async def _drop_xdist_test_database() -> None:
-    """Drop only the validated, run-owned xdist database."""
-    database_name = os.environ.get(_XDIST_DATABASE_NAME_ENV)
-    if not database_name:
-        return
-    if not re.fullmatch(r"test_db_[A-Za-z0-9_]+", database_name):
-        raise RuntimeError("refusing to drop an unowned xdist database")
-
-    import asyncpg
-    from sqlalchemy.engine import make_url
-
-    base_url = make_url(os.environ[_XDIST_BASE_DATABASE_URL_ENV])
-    admin = await asyncpg.connect(
-        user=base_url.username,
-        password=base_url.password,
-        host=base_url.host,
-        port=base_url.port,
-        database="postgres",
-    )
-    try:
-        await admin.execute(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
-    finally:
-        await admin.close()
+    path = str(getattr(request.node, "path", "") or "")
+    if any(part in path for part in _KIS_DEFAULT_SCOPE_PARTS):
+        request.getfixturevalue("_mock_nxt_eligible")
+        request.getfixturevalue("_isolate_kis_circuit_breaker")
+    if any(part in path for part in _KR_CALENDAR_SCOPE_PARTS):
+        request.getfixturevalue("_mock_kr_market_session_calendar")
+    if any(part in path for part in _AUTH_DB_SCOPE_PARTS):
+        request.getfixturevalue("mock_auth_middleware_db")
+    if uses_shared_test_database() and (
+        "alpaca_paper" in path
+        or "paper_approval_packet" in path
+        or "test_trade_retrospective_pending" in path
+    ):
+        request.getfixturevalue("_serialize_alpaca_paper_db_suites")
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
@@ -682,65 +703,90 @@ async def _bootstrap_test_schema(request: pytest.FixtureRequest):
         yield
         return
 
-    await _ensure_xdist_test_database()
+    database_created = False
+    database_seconds = 0.0
+    engine = None
+    try:
+        database_started = time.perf_counter()
+        database_created = await ensure_run_owned_database()
+        database_seconds = time.perf_counter() - database_started
 
-    from sqlalchemy import text
+        from sqlalchemy import text
 
-    from app.core.db import engine
-    from tests._db_retry import run_with_deadlock_retry
-    from tests._investment_reports_helpers import INVESTMENT_REPORTS_TEST_LOCK_ID
-    from tests._schema_bootstrap import apply_test_schema, schema_content_hash
+        from app.core.db import engine as app_engine
+        from tests._db_retry import run_with_deadlock_retry
+        from tests._investment_reports_helpers import INVESTMENT_REPORTS_TEST_LOCK_ID
+        from tests._schema_bootstrap import apply_test_schema, schema_content_hash
 
-    wanted = schema_content_hash()
+        engine = app_engine
+        wanted = schema_content_hash()
+        schema_applied = False
 
-    async def _bootstrap_once() -> None:
-        async with engine.connect() as guard:
-            await guard.execute(
-                text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
-                {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
-            )
-            try:
-                async with engine.begin() as conn:
-                    await conn.execute(
-                        text(
-                            "CREATE TABLE IF NOT EXISTS public._pytest_schema_ready ("
-                            "content_hash TEXT PRIMARY KEY, "
-                            "applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
-                        )
-                    )
-                    already = (
+        async def _bootstrap_once() -> None:
+            nonlocal schema_applied
+            async with app_engine.connect() as guard:
+                await guard.execute(
+                    text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+                    {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
+                )
+                try:
+                    async with app_engine.begin() as conn:
                         await conn.execute(
                             text(
-                                "SELECT 1 FROM public._pytest_schema_ready "
-                                "WHERE content_hash = :h"
+                                "CREATE TABLE IF NOT EXISTS "
+                                "public._pytest_schema_ready ("
+                                "content_hash TEXT PRIMARY KEY, "
+                                "applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+                            )
+                        )
+                        already = (
+                            await conn.execute(
+                                text(
+                                    "SELECT 1 FROM public._pytest_schema_ready "
+                                    "WHERE content_hash = :h"
+                                ),
+                                {"h": wanted},
+                            )
+                        ).first()
+                        if already:
+                            return
+                        await apply_test_schema(conn)
+                        schema_applied = True
+                        await conn.execute(
+                            text("DELETE FROM public._pytest_schema_ready")
+                        )
+                        await conn.execute(
+                            text(
+                                "INSERT INTO public._pytest_schema_ready "
+                                "(content_hash) VALUES (:h)"
                             ),
                             {"h": wanted},
                         )
-                    ).first()
-                    if already:
-                        return
-                    await apply_test_schema(conn)
-                    await conn.execute(text("DELETE FROM public._pytest_schema_ready"))
-                    await conn.execute(
-                        text(
-                            "INSERT INTO public._pytest_schema_ready (content_hash) "
-                            "VALUES (:h)"
-                        ),
-                        {"h": wanted},
+                finally:
+                    await guard.execute(
+                        text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                        {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
                     )
-            finally:
-                await guard.execute(
-                    text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
-                    {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
-                )
 
-    try:
+        schema_started = time.perf_counter()
         await run_with_deadlock_retry(_bootstrap_once)
+        request.config.stash[_SCHEMA_METRICS_KEY].append(
+            {
+                "database": os.environ.get(_XDIST_DATABASE_NAME_ENV, "test_db"),
+                "database_created": database_created,
+                "database_seconds": database_seconds,
+                "schema_applied": schema_applied,
+                "schema_seconds": time.perf_counter() - schema_started,
+            }
+        )
         yield
     finally:
-        if os.environ.get(_XDIST_DATABASE_NAME_ENV):
-            await engine.dispose()
-            await _drop_xdist_test_database()
+        if uses_run_owned_database():
+            try:
+                if engine is not None:
+                    await engine.dispose()
+            finally:
+                await drop_run_owned_database()
 
 
 # Database fixtures for integration tests
@@ -761,11 +807,12 @@ async def db_session(_bootstrap_test_schema):
 
 @pytest_asyncio.fixture
 async def investment_reports_cleanup_lock(db_session):
-    """Hold the investment-report cleanup lock for tests using ``db_session``.
+    """Isolate committed investment-report rows for global ``db_session`` tests.
 
-    Most investment-report table tests use ``tests._investment_reports_helpers.session``.
-    That fixture serializes its own body and cleanup because it truncates
-    ``review.investment_reports`` and child tables after each test.
+    Most investment-report table tests use
+    ``tests._investment_reports_helpers.session``. That fixture uses an outer
+    transaction plus SAVEPOINT-aware sessions, so ordinary test cleanup is a
+    rollback rather than committed table-wide deletion.
 
     A few cross-domain tests must use the global ``db_session`` fixture because
     they span ``review.investment_reports`` plus snapshot/stage tables. During
@@ -787,41 +834,45 @@ async def investment_reports_cleanup_lock(db_session):
         INVESTMENT_REPORTS_TEST_LOCK_ID,
     )
 
-    async def _truncate_investment_report_tables() -> None:
+    async def _delete_investment_report_rows() -> None:
         # Keep this cleanup aligned with tests._investment_reports_helpers.session:
         # only the investment-report table family is reset here. Snapshot/stage
         # tables use UUID-scoped test rows and are intentionally left alone.
         async with engine.begin() as cleanup:
             for table in reversed(INVESTMENT_REPORTS_TABLES):
                 table_name = table.name  # type: ignore[attr-defined]
-                await cleanup.execute(
-                    text(
-                        f'TRUNCATE TABLE review."{table_name}" RESTART IDENTITY CASCADE'
-                    )
-                )
+                await cleanup.execute(text(f'DELETE FROM review."{table_name}"'))
 
-    async with engine.connect() as guard:
-        await guard.execute(
-            text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
-            {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
-        )
-        try:
-            await db_session.rollback()
-            await run_with_deadlock_retry(
-                _truncate_investment_report_tables,
-                rollback=db_session.rollback,
-            )
-            yield db_session
-            await db_session.rollback()
-            await run_with_deadlock_retry(
-                _truncate_investment_report_tables,
-                rollback=db_session.rollback,
-            )
-        finally:
+    guard = None
+    try:
+        if uses_shared_test_database():
+            guard = await engine.connect()
             await guard.execute(
-                text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
                 {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
             )
+        await db_session.rollback()
+        await run_with_deadlock_retry(
+            _delete_investment_report_rows,
+            rollback=db_session.rollback,
+        )
+        try:
+            yield db_session
+        finally:
+            await db_session.rollback()
+            await run_with_deadlock_retry(
+                _delete_investment_report_rows,
+                rollback=db_session.rollback,
+            )
+    finally:
+        if guard is not None:
+            try:
+                await guard.execute(
+                    text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                    {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
+                )
+            finally:
+                await guard.close()
 
 
 @pytest_asyncio.fixture
@@ -833,6 +884,10 @@ async def retrospective_action_control_lock(_bootstrap_test_schema):
     workers share one PostgreSQL database, so those tests must not observe one
     another's temporary canonical mode or DDL state.
     """
+    if uses_run_owned_database():
+        yield
+        return
+
     from sqlalchemy import text
 
     from app.core.db import engine

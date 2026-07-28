@@ -7,9 +7,23 @@ import app.services.naver_finance as naver_finance
 from app.mcp_server.tooling.screening import crypto as screening_crypto
 from app.mcp_server.tooling.screening import kr as screening_kr
 from app.mcp_server.tooling.screening import us as screening_us
-from tests._mcp_tooling_support import build_tools
+from tests._mcp_tooling_support import (
+    _mock_crypto_external_sources,
+    build_tools,
+    mock_krx_etfs,
+    mock_krx_stocks,
+    mock_upbit_coins,
+    mock_yfinance_screen,
+)
 
-pytest_plugins = ("tests._mcp_tooling_support",)
+__all__ = [
+    "_mock_crypto_external_sources",
+    "mock_krx_etfs",
+    "mock_krx_stocks",
+    "mock_upbit_coins",
+    "mock_yfinance_screen",
+]
+
 pytestmark = pytest.mark.usefixtures("_mock_crypto_external_sources")
 
 

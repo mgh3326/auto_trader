@@ -312,6 +312,16 @@ class TestNewsReadinessPreopenIntegration:
                 "get_news_readiness",
                 new=AsyncMock(return_value=readiness),
             ),
+            patch.object(
+                preopen_dashboard_service,
+                "get_latest_news_preview",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(
+                preopen_dashboard_service,
+                "_build_market_news_briefing",
+                new=AsyncMock(return_value=None),
+            ),
         ):
             result = await preopen_dashboard_service.get_latest_preopen_dashboard(
                 db=AsyncMock(),

@@ -10,14 +10,12 @@ Covers four concerns:
    pre-ROB-723 fixtures (incl. the ROB-455 decision CHECK unique to the
    investment-reports helper).
 3. The session-scoped barrier fixture in ``tests.conftest`` must leave a
-   durable sentinel behind so subsequent (workers') bootstrap calls can
-   short-circuit.
+   durable sentinel in each run-owned database.
 4. The ``db_session`` and helper ``session`` fixtures must no longer carry
    DDL inline (schema parity is owned by the barrier).
 
-A concurrency stress test exercises real contention against the shared
-test DB to confirm the buffer (combined with the barrier) absorbs the
-deadlock window.
+A concurrency stress test keeps the explicit shared-DB opt-in cleanup path
+covered even though normal serial and xdist runs no longer share a database.
 """
 
 from __future__ import annotations
@@ -42,10 +40,10 @@ from tests._db_retry import run_with_deadlock_retry
 async def _throwaway_schema_db() -> AsyncIterator[AsyncEngine]:
     """Yield an engine on a dedicated one-off database (ROB-968).
 
-    The DDL-idempotency and TRUNCATE-hammer tests below must NOT run against
+    The DDL-idempotency and cleanup-hammer tests below must NOT run against
     the shared xdist test DB: apply_test_schema takes AccessExclusiveLock per
-    DDL statement and the hammer's ``TRUNCATE ... CASCADE`` both locks AND
-    empties every FK-connected table — deadlocking (and deleting rows under)
+    DDL statement and the cleanup hammer both lock and empty related tables —
+    deadlocking (and deleting rows under)
     sibling workers whenever shard composition co-schedules review-DML files
     (runs 29643108579 / 29643559556 / 29643876785). A throwaway database
     preserves exactly what these tests assert while making the module inert
@@ -257,23 +255,22 @@ def test_helper_session_fixture_is_ddl_free():
     assert "create_all" not in src
     assert "ADD CONSTRAINT" not in src
     assert "ALTER TABLE" not in src
+    assert "create_async_engine" not in src
+    assert "TRUNCATE" not in src
 
 
 # --------------------------------------------------------------------------- #
-# Task 6: concurrency — the advisory-lock serialization the real fixtures use  #
-# must let concurrent TRUNCATE + read complete without a deadlock escaping.    #
+# Task 6: explicit shared-DB compatibility keeps cleanup/read serialization.   #
 # --------------------------------------------------------------------------- #
 @pytest.mark.slow
 @pytest.mark.asyncio
 async def test_concurrent_serialized_access_no_deadlock_escape():
     """Model the REAL fixture invariant and assert it is deadlock-free.
 
-    The ``session``/``investment_reports_cleanup_lock`` fixtures serialize ALL
-    review-table access (TRUNCATE *and* the report-table reads/writes that opt
-    into the cleanup lock) under ``INVESTMENT_REPORTS_TEST_LOCK_ID``. When both
-    sides hold that lock there is no cross-transaction lock-order cycle, so the
-    multi-table TRUNCATE-vs-read hazard that produced ROB-723 cannot form. This
-    test drives that exact shape concurrently and asserts nothing escapes.
+    Normal runs use separate databases and need no cross-worker serialization.
+    Explicit shared-DB compatibility still serializes report-family DELETE and
+    reads under ``INVESTMENT_REPORTS_TEST_LOCK_ID``. This test drives that
+    fallback shape concurrently and asserts nothing escapes.
 
     The retry buffer for the un-opted-in reader tail is proven independently by
     the ``run_with_deadlock_retry`` unit tests above; asserting "retry alone
@@ -316,16 +313,11 @@ async def _drive_hammer(
 
         await run_with_deadlock_retry(_op)
 
-    async def truncate_cycle():
+    async def cleanup_cycle():
         async def _body():
             async with engine.begin() as conn:
                 for table in reversed(INVESTMENT_REPORTS_TABLES):
-                    await conn.execute(
-                        text(
-                            f'TRUNCATE TABLE review."{table.name}" '
-                            "RESTART IDENTITY CASCADE"
-                        )
-                    )
+                    await conn.execute(text(f'DELETE FROM review."{table.name}"'))
 
         await _under_advisory_lock(_body)
 
@@ -341,7 +333,7 @@ async def _drive_hammer(
 
     tasks = []
     for _ in range(8):
-        tasks.append(truncate_cycle())
+        tasks.append(cleanup_cycle())
         tasks.append(read_cycle())
     # Must complete without a DeadlockDetectedError propagating.
     await asyncio.gather(*tasks)

@@ -2,17 +2,20 @@
 
 Each tool's ``*_impl`` is called directly (matches the legacy
 ``test_analysis_report_workflow.py`` style). The handlers open their
-own ``AsyncSessionLocal`` against the same test_db that the ``session``
-fixture manages; the fixture's per-test TRUNCATE keeps state clean.
+own ``AsyncSessionLocal`` against the current run-owned DB. This module
+explicitly selects the committed-session fixture, whose narrow DELETE cleanup
+keeps independent handler transactions isolated without table-wide TRUNCATE.
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import AsyncIterator
 from datetime import timedelta
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +40,14 @@ from app.mcp_server.tooling.investment_reports_handlers import (
 )
 from app.services.investment_reports.ingestion import InvestmentReportIngestionService
 from tests._investment_reports_helpers import future_datetime
+
+
+@pytest_asyncio.fixture(name="session")
+async def _committed_session(
+    committed_investment_reports_session: AsyncSession,
+) -> AsyncIterator[AsyncSession]:
+    """Expose the explicit cross-session cleanup path under the legacy name."""
+    yield committed_investment_reports_session
 
 
 async def _publish_by_uuid(report_uuid: str) -> None:
