@@ -229,16 +229,31 @@ def _is_mock_counterfactual_retrospective_clause():
     )
 
 
+_MOCK_ACCOUNT_MODES = {
+    "kis_mock",
+    "kiwoom_mock",
+    "kiwoom_mock_us",
+    "alpaca_paper",
+    "alpaca_paper_lab",
+    "paper",
+    "simulated",
+    "db_simulated",
+    "mock",
+}
+
+
 def _visibility_predicate(account_mode: str | None):
     """Shared retrospective visibility clause for lessons, outcomes, and actions.
 
-    - ``kis_mock``: exact ``account_mode == 'kis_mock'`` only.
-    - default (None or other): exclude mock-counterfactual cohort; non-counterfactual
-      ``kis_mock`` retrospectives remain visible.
+    - explicit ``account_mode``: exact ``TradeRetrospective.account_mode == account_mode``.
+    - default (None): exclude all mock/paper account modes, keeping only live lesson corpus.
     """
-    if account_mode == "kis_mock":
-        return TradeRetrospective.account_mode == "kis_mock"
-    return ~_is_mock_counterfactual_retrospective_clause()
+    if account_mode is not None:
+        return TradeRetrospective.account_mode == account_mode
+    return TradeRetrospective.account_mode.not_in(_MOCK_ACCOUNT_MODES)
+
+
+
 
 
 async def _retrospectives(

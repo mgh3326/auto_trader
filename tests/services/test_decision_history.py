@@ -356,7 +356,7 @@ async def test_decision_history_supports_kis_mock_account_mode(
 
 
 @pytest.mark.asyncio
-async def test_default_decision_history_keeps_legacy_kis_mock_lessons(
+async def test_default_decision_history_excludes_mock_lessons(
     db_session: AsyncSession,
 ) -> None:
     raw = _uniq_symbol()
@@ -366,76 +366,59 @@ async def test_default_decision_history_keeps_legacy_kis_mock_lessons(
         symbol=sym,
         account_mode="kis_mock",
         correlation_id=f"legacy-mock:{uuid.uuid4()}",
-        lesson="ROB-705 mock stop lesson remains visible",
+        lesson="ROB-1092 mock stop lesson excluded by default",
         created_at=datetime(2026, 7, 6, tzinfo=UTC),
     )
 
-    ctx = await build_decision_context(db_session, symbol=raw, market="kr")
+    ctx_default = await build_decision_context(db_session, symbol=raw, market="kr")
+    assert ctx_default is None
 
-    assert ctx is not None
-    assert "ROB-705 mock stop lesson remains visible" in ctx["prior_lessons"]
+    ctx_mock = await build_decision_context(
+        db_session, symbol=raw, market="kr", account_mode="kis_mock"
+    )
+    assert ctx_mock is not None
+    assert (
+        "ROB-1092 mock stop lesson excluded by default" in ctx_mock["prior_lessons"]
+    )
 
 
 @pytest.mark.asyncio
-async def test_default_decision_history_excludes_mock_counterfactual_by_cohort(
+async def test_decision_history_excludes_all_mock_account_modes_in_default(
     db_session: AsyncSession,
 ) -> None:
-    from app.models.review import KISMockOrderLedger
-    from app.models.trading import InstrumentType
-
     raw = _uniq_symbol()
-    sym = _normalize_symbol_for_filter(raw, "equity_kr")
-    keep_corr = f"legacy-mock:{uuid.uuid4()}"
-    drop_corr = f"mirror-mock:{uuid.uuid4()}"
-
-    db_session.add(
-        KISMockOrderLedger(
-            trade_date=datetime(2026, 7, 6, tzinfo=UTC),
+    sym = _normalize_symbol_for_filter(raw, "equity_us")
+    for mode, lesson in (
+        ("kis_mock", "kis_mock lesson"),
+        ("kiwoom_mock", "kiwoom_mock lesson"),
+        ("alpaca_paper", "alpaca_paper lesson"),
+    ):
+        await _add_retro(
+            db_session,
             symbol=sym,
-            instrument_type=InstrumentType.equity_kr,
-            side="buy",
-            order_type="limit",
-            quantity=Decimal("5"),
-            price=Decimal("1500"),
-            amount=Decimal("7500"),
-            fee=Decimal("0"),
-            currency="KRW",
-            order_no=f"MIRROR-{uuid.uuid4().hex[:8]}",
-            account_mode="kis_mock",
-            broker="kis",
-            status="accepted",
-            lifecycle_state="fill",
-            last_reconcile_detail={"attributed_fill_qty": "5"},
-            mirror_cohort="mock_counterfactual",
-            mirror_source_bucket="place_original",
-            correlation_id=drop_corr,
+            account_mode=mode,
+            correlation_id=f"mock-{mode}:{uuid.uuid4()}",
+            lesson=lesson,
+            created_at=datetime(2026, 7, 6, tzinfo=UTC),
         )
-    )
-    await _add_retro(
-        db_session,
-        symbol=sym,
-        account_mode="kis_mock",
-        correlation_id=keep_corr,
-        pnl_pct=Decimal("5.0"),
-        lesson="legacy mock lesson",
-        created_at=datetime(2026, 7, 6, 10, tzinfo=UTC),
-    )
-    await _add_retro(
-        db_session,
-        symbol=sym,
-        account_mode="kis_mock",
-        correlation_id=drop_corr,
-        lesson="mirror counterfactual lesson",
-        created_at=datetime(2026, 7, 6, 11, tzinfo=UTC),
-    )
-    await db_session.flush()
 
-    ctx = await build_decision_context(db_session, symbol=raw, market="kr")
+    # 기본 분기: 모든 mock/paper 회고가 제외된다
+    ctx_default = await build_decision_context(db_session, symbol=raw, market="us")
+    assert ctx_default is None
 
-    assert ctx is not None
-    assert "legacy mock lesson" in ctx["prior_lessons"]
-    assert "mirror counterfactual lesson" not in ctx["prior_lessons"]
-    assert all(
-        outcome["pnl_pct"] != 11.9 or outcome["date"] != "2026-07-06"
-        for outcome in ctx["realized_outcomes"]
+    # 명시적 account_mode 지정: 해당 account_mode 행만 노출된다
+    ctx_kiwoom = await build_decision_context(
+        db_session, symbol=raw, market="us", account_mode="kiwoom_mock"
     )
+    assert ctx_kiwoom is not None
+    assert ctx_kiwoom["prior_lessons"] == ["kiwoom_mock lesson"]
+
+    ctx_alpaca = await build_decision_context(
+        db_session, symbol=raw, market="us", account_mode="alpaca_paper"
+    )
+    assert ctx_alpaca is not None
+    assert ctx_alpaca["prior_lessons"] == ["alpaca_paper lesson"]
+
+
+
+
