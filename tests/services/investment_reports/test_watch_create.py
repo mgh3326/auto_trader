@@ -57,7 +57,10 @@ async def test_direct_watch_create_persists_alert_without_report_rows(
     assert alert.max_action == {"side": "buy", "cash_fraction": 0.1}
     assert alert.alert_metadata["created_by"] == "tradingcodex"
     assert alert.alert_metadata["source_tool"] == "investment_watch_create"
+    assert alert.alert_metadata["source_link"] == "direct_without_report"
     assert alert.alert_metadata["ticket_hint"] == "support-reclaim"
+    assert alert.source_report_uuid is None
+    assert alert.source_item_uuid is None
 
     report_count = await session.scalar(
         sa.select(sa.func.count()).select_from(InvestmentReport)

@@ -116,7 +116,7 @@ echo "$events" | jq -c '.[]' | while read -r ev; do
   # uuid가 seen에 있으면(exit 0) continue; 없으면(exit 1) && 단락→계속 진행 (set -e 미발동)
   grep -qxF "$uuid" "$SEEN" && continue   # 이미 처리
 
-  payload="$(jq -r '"event_uuid=\(.event_uuid) symbol=\(.symbol) market=\(.market) source_report_uuid=\(.source_report_uuid) metric=\(.metric) operator=\(.operator) threshold=\(.threshold) current_value=\(.current_value)"' <<<"$ev")"
+  payload="$(jq -r '"event_uuid=\(.event_uuid) symbol=\(.symbol) market=\(.market) source_report_uuid=\(.source_report_uuid) source_report_link_state=\(.source_report_link_state) metric=\(.metric) operator=\(.operator) threshold=\(.threshold) current_value=\(.current_value)"' <<<"$ev")"
 
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "[dry-run] claude -p \"/crypto-alert-triage $payload\" --permission-mode bypassPermissions --settings $SETTINGS --output-format json"
@@ -158,6 +158,27 @@ chmod +x ~/ops/watch-alert-triage/poller.sh
 - `seen_event_uuids` — 같은 초에 여러 이벤트가 동일 `delivered_at`를 갖는 경우 중복 처리 방지. 최대 500행 유지.
 - `validation.jsonl` — Q3 검증용 메타 로그 (§6 참조).
 - `DRY_RUN=1` — claude/Discord/Telegram 미호출. 안전하게 명령 미리보기.
+
+### Source report link 판정 (ROB-1103)
+
+`list_recent_watch_events.py`의 `source_report_link_state`를 먼저 확인한다.
+
+- `report_lookup_required`: UUIDv4 리포트 기반 watch. `investment_report_get`
+  조회를 수행한다. v4인데 `not_found`면 실제 무결성 이상으로 에스컬레이션한다.
+- `not_applicable_direct_watch`: ROB-1103 이후 직접 생성 watch. 애초에
+  report/item이 없으므로 `source_report_uuid=null`이 정상이다. report 조회를
+  시도하지 말고 이벤트/알림의 `rationale`, `trigger_checklist`, `max_action`,
+  `watch_condition` 스냅샷으로 트리아지한다.
+- `legacy_direct_watch_placeholder`: ROB-768 직접 생성 경로가 남긴 UUIDv5
+  placeholder. 이는 삭제된 리포트가 아니며, 대응 리포트/item은 처음부터
+  존재하지 않았다. UUIDv5를 "유실"로 기록하거나 report 백필 대상으로
+  분류하지 말고 직접 watch 스냅샷으로 트리아지한다.
+
+UUIDv5는 고정 namespace와 저장된 idempotency key로 같은 값을 재계산할 수
+있지만 SHA-1 preimage를 역산할 수 없고, 무엇보다 원본 report/item 행이 생성된
+적이 없다. 따라서 기존 UUIDv5 행의 **리포트 맥락 복원은 불가**하다.
+레거시 공식은 namespace `7d85169b-7e5d-4d53-87eb-1bb7ba8ecf60`, name
+`report:<idempotency_key>` / `item:<idempotency_key>`다.
 
 ---
 
@@ -269,6 +290,7 @@ uv run python -m scripts.list_recent_watch_events --market crypto --limit 5 | jq
       "symbol": "KRW-BTC",
       "market": "crypto",
       "source_report_uuid": "...",
+      "source_report_link_state": "report_lookup_required",
       "metric": "price",
       "operator": "above",
       "threshold": "...",
@@ -312,7 +334,7 @@ DRY_RUN=1 AUTO_TRADER_REPO="$AUTO_TRADER_REPO" \
 예상 결과: 새 이벤트(워터마크 이후)마다 다음 형태의 출력:
 
 ```
-[dry-run] claude -p "/crypto-alert-triage event_uuid=f912d55f-... symbol=KRW-BTC market=crypto source_report_uuid=... metric=price operator=above threshold=1.00000000 current_value=92000000.00000000" --permission-mode bypassPermissions --settings /Users/.../auto_trader/.claude/settings.readonly.json --output-format json
+[dry-run] claude -p "/crypto-alert-triage event_uuid=f912d55f-... symbol=KRW-BTC market=crypto source_report_uuid=... source_report_link_state=report_lookup_required metric=price operator=above threshold=1.00000000 current_value=92000000.00000000" --permission-mode bypassPermissions --settings /Users/.../auto_trader/.claude/settings.readonly.json --output-format json
 ```
 
 2회 실행 시: 동일 uuid가 `seen_event_uuids`에 기록되어 두 번째 실행에서는 출력 없음 (디듀프 동작).

@@ -273,8 +273,8 @@ async def test_alert_accepts_between_operator_and_conditions(
     alert = InvestmentWatchAlert(
         alert_uuid=uuid.uuid4(),
         idempotency_key=f"k-{uuid.uuid4()}",
-        source_report_uuid=uuid.uuid4(),
-        source_item_uuid=uuid.uuid4(),
+        source_report_uuid=None,
+        source_item_uuid=None,
         market="kr",
         target_kind="asset",
         symbol="005930",

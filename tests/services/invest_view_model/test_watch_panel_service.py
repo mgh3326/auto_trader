@@ -38,8 +38,8 @@ async def test_watch_panel_service_list_watches(session: AsyncSession) -> None: 
     alert1 = InvestmentWatchAlert(
         alert_uuid=uuid.uuid4(),
         idempotency_key="key-1",
-        source_report_uuid=uuid.uuid4(),
-        source_item_uuid=uuid.uuid4(),
+        source_report_uuid=None,
+        source_item_uuid=None,
         market="kr",
         target_kind="asset",
         symbol="005930",
@@ -61,8 +61,8 @@ async def test_watch_panel_service_list_watches(session: AsyncSession) -> None: 
     alert2 = InvestmentWatchAlert(
         alert_uuid=uuid.uuid4(),
         idempotency_key="key-2",
-        source_report_uuid=uuid.uuid4(),
-        source_item_uuid=uuid.uuid4(),
+        source_report_uuid=None,
+        source_item_uuid=None,
         market="us",
         target_kind="asset",
         # Test-unique ticker: this alert must stay price-less to drive the
@@ -85,8 +85,8 @@ async def test_watch_panel_service_list_watches(session: AsyncSession) -> None: 
     alert3 = InvestmentWatchAlert(
         alert_uuid=uuid.uuid4(),
         idempotency_key="key-3",
-        source_report_uuid=uuid.uuid4(),
-        source_item_uuid=uuid.uuid4(),
+        source_report_uuid=None,
+        source_item_uuid=None,
         market="crypto",
         target_kind="asset",
         symbol="BTC",
@@ -196,8 +196,8 @@ async def test_watch_panel_service_us_symbol_normalization(
     alert = InvestmentWatchAlert(
         alert_uuid=uuid.uuid4(),
         idempotency_key="key-brk",
-        source_report_uuid=uuid.uuid4(),
-        source_item_uuid=uuid.uuid4(),
+        source_report_uuid=None,
+        source_item_uuid=None,
         market="us",
         target_kind="asset",
         symbol="BRK.B",  # alert table stores the dot form
@@ -239,8 +239,8 @@ async def test_watch_panel_service_skips_unbuildable_row(
         return InvestmentWatchAlert(
             alert_uuid=uuid.uuid4(),
             idempotency_key=idem,
-            source_report_uuid=uuid.uuid4(),
-            source_item_uuid=uuid.uuid4(),
+            source_report_uuid=None,
+            source_item_uuid=None,
             market="us",
             target_kind="asset",
             symbol=symbol,

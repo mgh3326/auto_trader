@@ -62,7 +62,8 @@ from sqlalchemy import text
 # v29: immutable approval publication bindings and frozen batch snapshots.
 # v30: persistent-schema typed dispatch/card constraints and attempt nullability.
 # v31: Alpaca paper lab account_mode CHECK expansions.
-SCHEMA_BOOTSTRAP_VERSION = 31
+# v32 (ROB-1103): nullable direct-watch source links + future-write FKs.
+SCHEMA_BOOTSTRAP_VERSION = 32
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -831,6 +832,31 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ADD CONSTRAINT ck_investment_watch_events_outcome "
     "CHECK (outcome IN ('notified','review_required','preview_attached',"
     "'executed','expired','ignored','failed'))",
+    # ---- watch source-link semantics (ROB-1103) ----
+    "ALTER TABLE review.investment_watch_alerts "
+    "ALTER COLUMN source_report_uuid DROP NOT NULL",
+    "ALTER TABLE review.investment_watch_alerts "
+    "ALTER COLUMN source_item_uuid DROP NOT NULL",
+    "ALTER TABLE review.investment_watch_events "
+    "ALTER COLUMN source_report_uuid DROP NOT NULL",
+    "ALTER TABLE review.investment_watch_events "
+    "ALTER COLUMN source_item_uuid DROP NOT NULL",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conrelid = 'review.investment_watch_alerts'::regclass "
+    "AND conname = 'fk_investment_watch_alerts_source_report_uuid') THEN "
+    "ALTER TABLE review.investment_watch_alerts "
+    "ADD CONSTRAINT fk_investment_watch_alerts_source_report_uuid "
+    "FOREIGN KEY (source_report_uuid) "
+    "REFERENCES review.investment_reports (report_uuid) "
+    "ON DELETE SET NULL NOT VALID; END IF; END $$",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conrelid = 'review.investment_watch_alerts'::regclass "
+    "AND conname = 'fk_investment_watch_alerts_source_item_uuid') THEN "
+    "ALTER TABLE review.investment_watch_alerts "
+    "ADD CONSTRAINT fk_investment_watch_alerts_source_item_uuid "
+    "FOREIGN KEY (source_item_uuid) "
+    "REFERENCES review.investment_report_items (item_uuid) "
+    "ON DELETE SET NULL NOT VALID; END IF; END $$",
     # ---- trade_journals (ROB-405 / ROB-568) ----
     "ALTER TABLE review.trade_journals ADD COLUMN IF NOT EXISTS correlation_id TEXT",
     "ALTER TABLE review.trade_journals DROP CONSTRAINT IF EXISTS trade_journals_account_type",

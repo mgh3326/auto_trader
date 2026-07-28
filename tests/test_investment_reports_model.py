@@ -475,6 +475,16 @@ async def test_alert_target_kind_index_allowed(session: AsyncSession) -> None:
     assert alert.target_kind == "index"
 
 
+@pytest.mark.asyncio
+async def test_alert_rejects_nonexistent_non_null_source_links(
+    session: AsyncSession,
+) -> None:
+    await assert_integrity_error(
+        session,
+        InvestmentWatchAlert(**_base_alert_payload(uuid.uuid4(), uuid.uuid4())),
+    )
+
+
 # ---------------------------------------------------------------------------
 # InvestmentWatchEvent
 # ---------------------------------------------------------------------------

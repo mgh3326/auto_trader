@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from decimal import Decimal
 from typing import Any
 
@@ -13,8 +12,6 @@ from app.models.investment_reports import InvestmentWatchAlert
 from app.schemas.investment_reports import CreateInvestmentWatchRequest
 from app.services.investment_reports.idempotency import direct_watch_key
 from app.services.investment_reports.repository import InvestmentReportsRepository
-
-_DIRECT_WATCH_NAMESPACE = uuid.UUID("7d85169b-7e5d-4d53-87eb-1bb7ba8ecf60")
 
 
 class DirectWatchCreateService:
@@ -87,13 +84,16 @@ def _alert_fields(
         {
             "created_by": request.created_by,
             "source_tool": "investment_watch_create",
+            "source_link": "direct_without_report",
         }
     )
 
     return {
         "idempotency_key": idempotency_key,
-        "source_report_uuid": _source_uuid(idempotency_key, "report"),
-        "source_item_uuid": _source_uuid(idempotency_key, "item"),
+        # Direct watches have no report/item source. UUIDv5 placeholders used
+        # before ROB-1103 looked like valid links but could never resolve.
+        "source_report_uuid": None,
+        "source_item_uuid": None,
         "market": request.market,
         "target_kind": condition.get("target_kind", "asset"),
         "symbol": symbol,
@@ -153,10 +153,6 @@ def _assert_same_identity(
             f"idempotency_key {existing.idempotency_key!r} already used for "
             "a different watch identity"
         )
-
-
-def _source_uuid(idempotency_key: str, slot: str) -> uuid.UUID:
-    return uuid.uuid5(_DIRECT_WATCH_NAMESPACE, f"{slot}:{idempotency_key}")
 
 
 def _to_decimal(value: Any) -> Decimal:

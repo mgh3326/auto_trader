@@ -323,7 +323,11 @@ class InvestmentWatchScanner:
         # never block the trigger notification itself.
         price_guidance = None
         try:
-            item = await repo.get_item_by_uuid(event.source_item_uuid)
+            item = (
+                await repo.get_item_by_uuid(event.source_item_uuid)
+                if event.source_item_uuid is not None
+                else None
+            )
             price_guidance = price_guidance_from_watch_recommendation(
                 item.watch_recommendation if item is not None else None
             )

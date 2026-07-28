@@ -20,6 +20,7 @@ from app.jobs import investment_watch_scanner as scanner_module
 from app.jobs.investment_watch_scanner import InvestmentWatchScanner
 from app.schemas.investment_reports import (
     ActivateWatchRequest,
+    CreateInvestmentWatchRequest,
     IngestReportItem,
     IngestReportRequest,
     RecordDecisionRequest,
@@ -35,6 +36,7 @@ from app.services.investment_reports.ingestion import (
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_activation import WatchActivationService
+from app.services.investment_reports.watch_create import DirectWatchCreateService
 from tests._investment_reports_helpers import future_datetime
 
 
@@ -220,6 +222,47 @@ async def test_scan_market_triggered_notify_only_emits_event_and_hermes_call(
     assert delivered_at is not None
     assert delivery_attempts == 1
     assert delivery_reason is None
+
+
+@pytest.mark.asyncio
+async def test_scan_direct_watch_uses_null_source_links(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alert, _ = await DirectWatchCreateService(session).create(
+        CreateInvestmentWatchRequest(
+            created_by="test",
+            market="kr",
+            symbol="005930",
+            intent="trend_recovery_review",
+            rationale="direct watch without a report",
+            watch_condition=WatchConditionPayload(
+                metric="rsi",
+                operator="below",
+                threshold=Decimal("30"),
+            ),
+            valid_until=future_datetime(days=30),
+        )
+    )
+    await session.commit()
+
+    async def _fake_current_value(**_kwargs) -> float:
+        return 25.0
+
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+    monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
+
+    stub = _StubHermesClient()
+    summary = await InvestmentWatchScanner(hermes_client=stub).scan_market("kr")
+
+    assert summary["triggered"] == 1
+    assert len(stub.calls) == 1
+    payload = stub.calls[0]
+    assert payload.alert_uuid == alert.alert_uuid
+    assert payload.source_report_uuid is None
+    assert payload.source_item_uuid is None
+    assert payload.invest_links is not None
+    assert payload.invest_links.report_path is None
+    assert payload.invest_links.stock_path == "/invest/stocks/kr/005930"
 
 
 @pytest.mark.asyncio

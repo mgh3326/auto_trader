@@ -45,10 +45,8 @@ async def mk_watch_event(
         kst_date=kst_date,
         correlation_id=f"corr-{symbol}-{delivery_status}-{delivered_at}",
         idempotency_key=f"event:{symbol}:{kst_date}:{symbol}:price:below:100:{uuid.uuid4()}",
-        source_report_uuid=source_report_uuid
-        if source_report_uuid is not None
-        else uuid.uuid4(),
-        source_item_uuid=uuid.uuid4(),
+        source_report_uuid=source_report_uuid,
+        source_item_uuid=None,
         delivery_status=delivery_status,
         delivered_at=delivered_at if delivery_status == "delivered" else None,
     )
