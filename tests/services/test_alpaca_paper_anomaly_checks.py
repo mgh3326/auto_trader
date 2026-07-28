@@ -1147,3 +1147,78 @@ def test_rob1130_audit_callers_may_opt_out_without_downgrading_other_blockers():
 def test_rob1130_invalid_snapshot_max_age_raises():
     with pytest.raises(ValueError, match="snapshot_max_age_minutes must be >= 1"):
         build_paper_execution_preflight_report(snapshot_max_age_minutes=0)
+
+
+# ---------------------------------------------------------------------------
+# ROB-1129 + ROB-1130 combined: what the 07-28 account looks like after both fixes
+# ---------------------------------------------------------------------------
+
+
+def _rob1129_measured_sell_legs():
+    """The seven sell rows measured as `sell_filled_position_not_closed` on 07-28.
+
+    Source: ~/work/herdr-inbox/alpaca-paper-block-proposal-2026-07-28.md 2-B.
+    Their stored `position_snapshot` is the pre-fill sell_claim_baseline rather
+    than a post-fill re-read, which is a separate defect from the buy/sell
+    pairing one and is deliberately left untouched by the ROB-1129 fix.
+    """
+    measured = [
+        ("rob73-ce5159550b11e626", "F"),
+        ("rob73-abc306c7599f4b63", "F"),
+        ("rob73-cce8e0d3264fb86d", "ROST"),
+        ("rob73-9dd2e832f0e9dd05", "REGN"),
+        ("rob73-2b58a4ff9b6645ff", "F"),
+        ("rob73-e37deae38a423090", "DPZ"),
+        ("rob73-6623cf6a1009e34c", "AMC"),
+    ]
+    return [
+        _row(
+            client_order_id=client_order_id,
+            lifecycle_correlation_id=client_order_id,
+            side="sell",
+            lifecycle_state="filled",
+            order_status="filled",
+            execution_symbol=symbol,
+            signal_symbol=symbol,
+            filled_qty="1",
+            position_snapshot={"qty": "1"},
+        )
+        for client_order_id, symbol in measured
+    ]
+
+
+@pytest.mark.unit
+def test_rob1129_stage_one_does_not_release_the_account_block():
+    """Both fixes together shrink the findings but the account still blocks.
+
+    Fixing the checker removes the five false positives and fixing the snapshot
+    input makes the holdings visible. What remains is real: four buy legs the
+    broker already closed, seven sell legs whose ledger rows never advanced, and
+    the flat-account residual gate. Advancing those rows needs the stage 2/3
+    tooling, not a checker change.
+    """
+    report = build_paper_execution_preflight_report(
+        ledger_rows=_rob1129_measured_buy_legs() + _rob1129_measured_sell_legs(),
+        positions=[
+            {"symbol": "ISRG", "qty": "1.014", "asset_class": "us_equity"},
+            {"symbol": "UBER", "qty": "5", "asset_class": "us_equity"},
+            {"symbol": "WDC", "qty": "1", "asset_class": "us_equity"},
+            {"symbol": "OLED", "qty": "0.0614", "asset_class": "us_equity"},
+        ],
+        positions_fetched_at=_ROB1130_NOW,
+        open_orders=[],
+        open_orders_fetched_at=_ROB1130_NOW,
+        now=_ROB1130_NOW,
+    )
+
+    assert report.should_block is True
+    assert _blocking_check_ids(report) == {
+        "residual_position_exists",
+        "previous_buy_filled_sell_missing",
+        "sell_filled_position_not_closed",
+    }
+    assert _anomaly(report, "open_position_without_sell_leg").details["count"] == 5
+    assert _anomaly(report, "previous_buy_filled_sell_missing").details["count"] == 4
+    assert len(_anomaly(report, "sell_filled_position_not_closed").details["rows"]) == 7
+    # No bypass: the test-mode downgrade flag stays off and untouched.
+    assert report.broker_snapshot["evidence_required"] is True
