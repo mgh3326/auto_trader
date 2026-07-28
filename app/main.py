@@ -17,6 +17,7 @@ from app.auth.router import router as auth_router
 from app.auth.web_router import limiter
 from app.auth.web_router import router as web_auth_router
 from app.core.config import settings
+from app.core.logging_config import configure_dependency_log_levels
 from app.core.taskiq_broker import broker
 from app.middleware.auth import AuthMiddleware
 from app.middleware.csrf import TemplateFormCSRFMiddleware
@@ -95,6 +96,7 @@ def configure_logging() -> None:
         level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    configure_dependency_log_levels()
     # uvicorn 로거도 동일 레벨로 설정
     logging.getLogger("uvicorn").setLevel(log_level)
     logging.getLogger("uvicorn.access").setLevel(log_level)

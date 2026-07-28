@@ -1,6 +1,7 @@
 import logging
 
 from app.core.config import settings, validate_kiwoom_mock_config
+from app.core.logging_config import configure_dependency_log_levels
 from app.mcp_server.env_utils import (
     _env,
     _env_int,
@@ -180,6 +181,7 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
     )
+    configure_dependency_log_levels()
 
     mcp_type = _env("MCP_TYPE", "streamable-http")
     mcp_host = _env("MCP_HOST", "0.0.0.0")

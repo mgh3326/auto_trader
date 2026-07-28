@@ -9,8 +9,11 @@ from taskiq_redis import (
 )
 
 from app.core.config import settings
+from app.core.logging_config import configure_dependency_log_levels
 from app.monitoring.sentry import init_sentry
 from app.monitoring.trade_notifier.runtime import configure_trade_notifier_from_settings
+
+configure_dependency_log_levels()
 
 logger = logging.getLogger(__name__)
 
