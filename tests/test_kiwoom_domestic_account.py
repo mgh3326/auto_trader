@@ -165,7 +165,7 @@ async def test_get_balance_uses_kt00018_with_qry_tp_and_dmst_stex_tp():
 
 
 @pytest.mark.asyncio
-async def test_get_order_status_uses_kt00009_with_stk_bond_tp_and_continuation():
+async def test_get_order_status_uses_kt00009_with_required_params_and_continuation():
     fake = FakeClient()
     acct = KiwoomDomesticAccountClient(fake)
     await acct.get_order_status(cont_yn="Y", next_key="page-2")
@@ -173,10 +173,10 @@ async def test_get_order_status_uses_kt00009_with_stk_bond_tp_and_continuation()
     assert call["api_id"] == constants.ACCOUNT_ORDER_STATUS_API_ID
     # ROB-418 — kt00009 requires stk_bond_tp (operator return_code 2 without it).
     assert call["body"]["stk_bond_tp"] == constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT
+    # ROB-1111 — kt00009 ALSO requires mrkt_tp (operator return_code 2 without it).
+    assert call["body"]["mrkt_tp"] == constants.ACCOUNT_ORDER_MRKT_TP_DEFAULT
     # ROB-460 boundary — kt00009 is an order-history read (different tool,
-    # get_order_history), already recovered by ROB-418, and NOT proven to need
-    # dmst_stex_tp. Do not speculatively add it to a working endpoint; scope is
-    # operator-smoke-validated (see kiwoom-mock-smoke runbook).
+    # get_order_history), and NOT proven to need dmst_stex_tp.
     assert "dmst_stex_tp" not in call["body"]
     assert call["cont_yn"] == "Y"
     assert call["next_key"] == "page-2"
