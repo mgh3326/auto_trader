@@ -832,7 +832,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ALTER TABLE review.investment_watch_events "
     "ADD CONSTRAINT ck_investment_watch_events_outcome "
     "CHECK (outcome IN ('notified','review_required','preview_attached',"
-    "'executed','expired','ignored','failed'))",
+    "'pending','executed','expired','ignored','failed'))",
     # ---- watch source-link semantics (ROB-1103) ----
     "ALTER TABLE review.investment_watch_alerts "
     "ALTER COLUMN source_report_uuid DROP NOT NULL",

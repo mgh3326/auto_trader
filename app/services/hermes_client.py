@@ -42,6 +42,7 @@ WatchEventOutcomeLiteral = Literal[
     "notified",
     "review_required",
     "preview_attached",
+    "pending",
     "executed",
     "expired",
     "ignored",

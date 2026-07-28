@@ -7,7 +7,8 @@ snapshot, transitions the alert to ``triggered``, and emits Hermes
 review-trigger notifications.
 
 Locked semantics:
-* Watch is a **review trigger**, never an automatic order instruction.
+* Watch is a **review trigger** unless the report activation explicitly uses
+  ``auto_execute_mock``; that mode is permanently limited to ``kis_mock``.
 * No broker / live order mutation from this path.
 * Notification target is **Hermes**, never the agent gateway (the legacy
   agent-gateway watch-alert path has been removed).
@@ -87,12 +88,13 @@ logger = logging.getLogger(__name__)
 # success/failure is tracked separately via the delivery_status /
 # delivery_reason / delivered_at / delivery_attempts columns; the
 # original ``outcome`` is the operator-facing classification of what
-# the watch represented (notified / review_required / preview_attached).
+# the watch represented. Auto-execution starts pending and is finalized
+# only after maybe_auto_execute returns evidence (ROB-843 / ROB-1109).
 _OUTCOME_BY_ACTION_MODE: dict[str, str] = {
     "notify_only": "notified",
     "preview_only": "preview_attached",
     "approval_required": "review_required",
-    "auto_execute_mock": "executed",
+    "auto_execute_mock": "pending",
 }
 
 
@@ -363,13 +365,16 @@ class InvestmentWatchScanner:
             stats.details.append(emission["detail"])
             if alert.action_mode == "auto_execute_mock":
                 payload = emission["payload"]
+                execution_outcome = "failed"
                 try:
-                    await maybe_auto_execute(
+                    execution_result = await maybe_auto_execute(
                         db,
                         alert=alert,
                         correlation_id=payload.correlation_id,
                         kst_date=payload.kst_date,
                     )
+                    if execution_result.get("executed") is True:
+                        execution_outcome = "executed"
                 except Exception:  # noqa: BLE001 - never kill the scan loop
                     logger.exception(
                         "auto_execute_mock failed for alert %s",
@@ -380,6 +385,13 @@ class InvestmentWatchScanner:
                     # back so this alert's own delivery bookkeeping (and
                     # every alert after it) can still commit.
                     await self._reset_session(db)
+                await repo.update_event_outcome(
+                    emission["event_id"],
+                    outcome=execution_outcome,
+                )
+                await db.commit()
+                payload.outcome = execution_outcome
+                emission["detail"]["outcome"] = execution_outcome
         else:
             # No new event row this iteration — we found an existing
             # pending/failed/skipped row from earlier in the day and are

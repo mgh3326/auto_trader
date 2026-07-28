@@ -475,6 +475,14 @@ class InvestmentReportsRepository:
             .values(follow_up_report_item_id=follow_up_report_item_id)
         )
 
+    async def update_event_outcome(self, event_id: int, *, outcome: str) -> None:
+        """Persist the evidence-backed execution outcome for a watch event."""
+        await self._session.execute(
+            sa.update(InvestmentWatchEvent)
+            .where(InvestmentWatchEvent.id == event_id)
+            .values(outcome=outcome)
+        )
+
     async def update_event_delivery(
         self,
         event_id: int,

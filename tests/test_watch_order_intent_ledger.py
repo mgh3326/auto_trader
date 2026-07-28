@@ -49,3 +49,36 @@ async def test_intent_account_mode_check_blocks_live(db_session: AsyncSession):
     with pytest.raises(IntegrityError):
         await db_session.commit()
     await db_session.rollback()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("overrides", "constraint"),
+    [
+        ({"side": "hold"}, "side"),
+        ({"lifecycle_state": "executed"}, "lifecycle_state"),
+    ],
+)
+async def test_intent_domain_checks_reject_invalid_values(
+    db_session: AsyncSession,
+    overrides: dict,
+    constraint: str,
+):
+    db_session.add(_row(**overrides))
+    with pytest.raises(IntegrityError, match=constraint):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_intent_correlation_id_is_unique(db_session: AsyncSession):
+    correlation_id = f"corr-{uuid4().hex}"
+    db_session.add_all(
+        [
+            _row(correlation_id=correlation_id),
+            _row(correlation_id=correlation_id),
+        ]
+    )
+    with pytest.raises(IntegrityError, match="uq_watch_intent_correlation_id"):
+        await db_session.commit()
+    await db_session.rollback()

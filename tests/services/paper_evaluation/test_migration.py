@@ -129,6 +129,12 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("DROP TABLE research.strategy_learning_events")
             )
+            # ROB-1109 is later than this reconstructed boundary. Current
+            # metadata already contains its restored table, so remove it before
+            # upgrading the post-ROB-850 chain.
+            await connection.execute(
+                text("DROP TABLE review.watch_order_intent_ledger")
+            )
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 

@@ -589,10 +589,11 @@ class InvestmentWatchAlert(Base):
 class InvestmentWatchEvent(Base):
     """Scanner-emitted trigger event linked back to source report/item.
 
-    Replaces every legacy write path that went through
-    ``watch_order_intent_ledger``. ``idempotency_key`` is
-    ``alert_uuid:kst_date:threshold_key`` so a single watch can only
-    fire once per day per threshold cross.
+    Replaces the legacy watch-notification write path.
+    ``watch_order_intent_ledger`` remains a separate, active audit ledger for
+    the explicitly mock-only auto-execution decision. ``idempotency_key`` is
+    ``alert_uuid:kst_date:threshold_key`` so a single watch can only fire once
+    per day per threshold cross.
 
     **Audit identity is self-contained.** Because ``alert_id`` is
     ``ON DELETE SET NULL``, the event row must carry the full immutable
@@ -615,7 +616,7 @@ class InvestmentWatchEvent(Base):
         ),
         CheckConstraint(
             "outcome IN ('notified','review_required','preview_attached',"
-            "'executed','expired','ignored','failed')",
+            "'pending','executed','expired','ignored','failed')",
             name="ck_investment_watch_events_outcome",
         ),
         CheckConstraint(

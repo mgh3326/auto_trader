@@ -1374,15 +1374,19 @@ Watch execution context fields:
 ### `manage_watch_alerts` — removed (ROB-265)
 
 The legacy Redis-backed `manage_watch_alerts` MCP tool was removed by
-ROB-265 along with the `watch_alerts` / `watch_order_intent_ledger` /
-`watch_scanner` Redis surface. Report-scoped watches now flow through
+ROB-265 along with the `watch_alerts` / `watch_scanner` Redis surface.
+`review.watch_order_intent_ledger` is not part of that legacy surface: ROB-1109
+restored it as the active audit ledger for the mock-only auto-execution path.
+Report-scoped watches now flow through
 `investment_report_activate_watch` (which copies an approved watch
 item into `investment_watch_alerts` as an immutable activation
 snapshot) and the `investment_watch_scanner` job (which evaluates
 those alerts, writes `investment_watch_events` with the full trigger
 identity snapshot, and emits Hermes review-trigger notifications).
-Watches are review triggers, not automatic order instructions —
-delivery state is auditable per event row (`delivery_status` /
+Watches are review triggers by default. The explicit `auto_execute_mock` mode
+is permanently restricted to `kis_mock`; its event starts with
+`outcome='pending'` and becomes `executed` only after positive executor
+evidence. Delivery state is auditable per event row (`delivery_status` /
 `delivery_reason` / `delivered_at` / `delivery_attempts`).
 
 ### `list_active_watches`
