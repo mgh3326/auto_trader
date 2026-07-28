@@ -10,7 +10,7 @@ so callers cannot smuggle in the live host. The token is fetched via
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Final
 
 import httpx
 
@@ -18,6 +18,25 @@ from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.auth import KiwoomAuthClient
 
 _log = logging.getLogger(__name__)
+
+_AUTH_REJECT_RETURN_CODE: Final[int] = 8005
+# ROB-733-style fail-closed bound: a loop counter, never recursive resubmission.
+_MAX_TOKEN_REFRESH_RESUBMITS: Final[int] = 1
+# Explicit allowlist keeps every domestic/US order mutation out of token retry.
+_AUTH_RETRY_READ_API_IDS: Final[frozenset[str]] = frozenset(
+    {
+        constants.ACCOUNT_ORDER_DETAIL_API_ID,
+        constants.ACCOUNT_ORDER_STATUS_API_ID,
+        constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID,
+        constants.ACCOUNT_DEPOSIT_API_ID,
+        constants.ACCOUNT_BALANCE_API_ID,
+        constants.US_ACCOUNT_OPEN_ORDERS_API_ID,
+        constants.US_ACCOUNT_POSITIONS_API_ID,
+        constants.US_ACCOUNT_TODAY_ORDERS_API_ID,
+        constants.US_ACCOUNT_DEPOSIT_DETAIL_API_ID,
+        constants.US_ACCOUNT_FOREIGN_DEPOSIT_API_ID,
+    }
+)
 
 
 class KiwoomConfigurationError(RuntimeError):
@@ -129,9 +148,16 @@ class KiwoomMockClient:
     def account_no(self) -> str:
         return self._account_no
 
-    async def _resolve_token(self) -> str:
+    async def _resolve_token(
+        self, *, force_reissue: bool = False, failed_token: str | None = None
+    ) -> str:
         if self._token_override is not None:
             return self._token_override
+        if force_reissue:
+            return await self._auth.get_token(
+                force_reissue=True,
+                failed_token=failed_token,
+            )
         return await self._auth.get_token()
 
     async def _before_api_dispatch(self, api_id: str) -> None:
@@ -153,11 +179,73 @@ class KiwoomMockClient:
             raise ValueError(
                 "Kiwoom mock request resolved to non-mock host; refusing to send."
             )
-        stage = "token_resolution"
-        dispatch_started = False
+
         try:
             token = await self._resolve_token()
-            stage = "pre_dispatch_hook"
+        except Exception as exc:
+            raise KiwoomPreDispatchError(
+                stage="token_resolution",
+                api_id=api_id,
+                cause_type=type(exc).__name__,
+            ) from exc
+
+        token_refresh_resubmits = 0
+        while True:
+            response = await self._send_api_once(
+                token=token,
+                api_id=api_id,
+                path=path,
+                body=body,
+                cont_yn=cont_yn,
+                next_key=next_key,
+            )
+            response.raise_for_status()
+            payload: dict[str, Any] = dict(response.json())
+            payload["continuation"] = {
+                "cont_yn": response.headers.get(constants.HEADER_CONT_YN, ""),
+                "next_key": response.headers.get(constants.HEADER_NEXT_KEY, ""),
+            }
+            if (
+                api_id in _AUTH_RETRY_READ_API_IDS
+                and payload.get("return_code")
+                in {_AUTH_REJECT_RETURN_CODE, str(_AUTH_REJECT_RETURN_CODE)}
+                and token_refresh_resubmits < _MAX_TOKEN_REFRESH_RESUBMITS
+            ):
+                token_refresh_resubmits += 1
+                try:
+                    token = await self._resolve_token(
+                        force_reissue=True,
+                        failed_token=token,
+                    )
+                except Exception as exc:
+                    raise KiwoomPreDispatchError(
+                        stage="token_refresh",
+                        api_id=api_id,
+                        cause_type=type(exc).__name__,
+                    ) from exc
+                continue
+
+            if int(payload.get("return_code", 0)) != constants.SUCCESS_RETURN_CODE:
+                _log.info(
+                    "Kiwoom api_id=%s returned non-zero return_code=%s",
+                    api_id,
+                    payload.get("return_code"),
+                )
+            return payload
+
+    async def _send_api_once(
+        self,
+        *,
+        token: str,
+        api_id: str,
+        path: str,
+        body: dict[str, Any],
+        cont_yn: str | None,
+        next_key: str | None,
+    ) -> httpx.Response:
+        stage = "pre_dispatch_hook"
+        dispatch_started = False
+        try:
             await self._before_api_dispatch(api_id)
             stage = "request_build"
             headers = {
@@ -190,16 +278,4 @@ class KiwoomMockClient:
                     stage=stage, api_id=api_id, cause_type=type(exc).__name__
                 ) from exc
             raise
-        response.raise_for_status()
-        payload: dict[str, Any] = dict(response.json())
-        payload["continuation"] = {
-            "cont_yn": response.headers.get(constants.HEADER_CONT_YN, ""),
-            "next_key": response.headers.get(constants.HEADER_NEXT_KEY, ""),
-        }
-        if int(payload.get("return_code", 0)) != constants.SUCCESS_RETURN_CODE:
-            _log.info(
-                "Kiwoom api_id=%s returned non-zero return_code=%s",
-                api_id,
-                payload.get("return_code"),
-            )
-        return payload
+        return response

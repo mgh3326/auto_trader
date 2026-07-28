@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import fakeredis.aioredis
 import pytest
 
 from app.services.brokers.kiwoom.client import KiwoomPreDispatchError
@@ -807,6 +808,7 @@ async def test_concurrent_auth_refresh_dedupes_to_single_mint():
         app_key="k",
         app_secret="s",
         transport=httpx.MockTransport(handler),
+        redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
     )
 
     import asyncio

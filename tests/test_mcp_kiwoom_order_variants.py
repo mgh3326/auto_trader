@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import fakeredis.aioredis
 import pytest
 
 
@@ -2509,6 +2510,7 @@ async def test_confirmed_place_cold_cache_token_issued_once():
     )
     client._transport = httpx.MockTransport(tr_handler)
     client._auth._transport = httpx.MockTransport(oauth_handler)
+    client._auth._redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
     account_client = KiwoomDomesticAccountClient(client)
     order_client = KiwoomDomesticOrderClient(client)
@@ -2736,6 +2738,7 @@ def _patch_real_confirmed_sell_client(monkeypatch, mod, *, stage: str | None = N
     )
     client._transport = httpx.MockTransport(broker_handler)
     client._auth._transport = httpx.MockTransport(oauth_handler)
+    client._auth._redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
     if stage == "pre_dispatch_hook":
 
