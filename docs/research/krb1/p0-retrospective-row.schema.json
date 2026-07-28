@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:auto-trader:krb1:p0-retrospective-row:v1",
+  "title": "KR-B1 P0 append-only journal retrospective row",
+  "description": "The §6 retrospective fields, retained with the canonical clause's field labels. Hash-chain metadata is the surrounding JSONL envelope.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "record_type": {
+      "const": "RETROSPECTIVE"
+    },
+    "study_id": {
+      "const": "KRB1-CSM60-H5-v1"
+    },
+    "rank": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "M60": {
+      "type": "number"
+    },
+    "DV20_pct": {
+      "type": "number"
+    },
+    "planned_limit": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "actual_execution_price": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "quantity": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "planned_exit_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "actual_exit_date": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    },
+    "gross": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "base_net": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "stress_net": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "tick_bp": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "fees": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "taxes": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "delay": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "correlation_id": {
+      "type": "string",
+      "pattern": "^krb1:csm60-h5:v1:[0-9]{8}:[^:]+:[0-9]+$"
+    }
+  },
+  "required": [
+    "record_type",
+    "study_id",
+    "rank",
+    "M60",
+    "DV20_pct",
+    "planned_limit",
+    "actual_execution_price",
+    "quantity",
+    "planned_exit_date",
+    "actual_exit_date",
+    "gross",
+    "base_net",
+    "stress_net",
+    "tick_bp",
+    "fees",
+    "taxes",
+    "delay",
+    "hash",
+    "correlation_id"
+  ]
+}

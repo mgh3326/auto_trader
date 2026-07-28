@@ -1,0 +1,26 @@
+{
+  "schema_version": "krb1-p0-prep-artifact-manifest.v1",
+  "study_id": "KRB1-CSM60-H5-v1",
+  "sealed_canonical_sha256": "d5e1246b2072ad227d924e059091e27fa49719e42a5bfba651ae8f2bced9d6f1",
+  "artifacts": {
+    "cost-probe-plan.md": "47fba3b51027dad170f4ee104adf8b566a39669a29a2a473c1ead9de9ef6e800",
+    "krx-calendar-2026-07-30-p0.json": "b8933e4b02ed29b5e40b96a77fa0091f70c25394cfc854657064cda99eca84da",
+    "p0-anchor-ledger.initial.jsonl": "d76ff46f9f38c205ccfab16d541fbddf8c439e08a0cbb1b4f90c16be7b0d7af9",
+    "p0-retrospective-row.schema.json": "39752e133b3a9f5b6ca4e18e7a5cc765833a0e7c287eda21d4bb08b42c105239"
+  },
+  "calendar_authority": {
+    "artifact": "krx-calendar-2026-07-30-p0.json",
+    "first_session": "2026-07-30",
+    "last_session": "2026-08-12",
+    "session_count": 10,
+    "runtime_recalculation": "PROHIBITED"
+  },
+  "rob_1115_review": {
+    "pr": 1700,
+    "head_sha": "54876480be03eb7996717e6949f9207695bc44d7",
+    "state_at_review": "OPEN",
+    "decision": "DO_NOT_DUPLICATE_OR_USE_AS_P0_HASH_CHAIN"
+  },
+  "cost_probe_state": "NOT_EXECUTED",
+  "p0_state": "NOT_STARTED"
+}
