@@ -7,8 +7,8 @@ on:
     branches: [ main, develop ]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
@@ -53,9 +53,8 @@ jobs:
       matrix:
         python-version: ["3.13"]
         # Duration-based shards via pytest-split (.test_durations is committed;
-        # refresh it periodically with: uv run pytest tests/ -m "not live"
-        # --store-durations -n 4 --dist=loadfile). Unrecorded new tests fall
-        # back to an even-split assumption until the next refresh.
+        # refresh it with test-durations-refresh.yml). Unrecorded new tests
+        # fall back to an even-split assumption until the next refresh.
         group: [1, 2, 3, 4]
 
     services:
@@ -66,7 +65,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: test_db
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U postgres -d test_db"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -108,7 +107,7 @@ jobs:
     - name: Wait for PostgreSQL to be ready
       run: |
         for i in {1..30}; do
-          if pg_isready -h localhost -p 5432 -U postgres; then
+          if pg_isready -h localhost -p 5432 -U postgres -d test_db; then
             echo "PostgreSQL is ready!"
             exit 0
           fi
@@ -141,7 +140,7 @@ jobs:
       # per commit).
       run: |
         set +e
-        uv run pytest tests/ -m "not live" --splits 4 --group ${{ matrix.group }} --durations-path .test_durations -n auto --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml 2>&1 | tee pytest-output.log
+        uv run pytest tests/ -m "not live" --splits 4 --group ${{ matrix.group }} --durations-path .test_durations -n 4 --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml 2>&1 | tee pytest-output.log
         status=${PIPESTATUS[0]}
         if [ "$status" -ne 0 ]; then
           {
@@ -209,34 +208,52 @@ jobs:
     - name: TaskIQ worker smoke test
       run: |
         set -euo pipefail
-        status=0
-        timeout --signal=TERM --kill-after=5s 30s uv run taskiq worker app.core.taskiq_broker:broker app.tasks > taskiq-worker.log 2>&1 || status=$?
-        if [[ "$status" -ne 124 && "$status" -ne 137 ]]; then
-          echo "TaskIQ worker smoke test failed: unexpected exit code $status."
-          tail -n 200 taskiq-worker.log || true
-          exit 1
-        fi
-        if ! grep -Fq "Listening started." taskiq-worker.log; then
-          echo "TaskIQ worker smoke test failed: startup marker not found."
-          tail -n 200 taskiq-worker.log || true
-          exit 1
-        fi
+        uv run taskiq worker app.core.taskiq_broker:broker app.tasks > taskiq-worker.log 2>&1 &
+        process_id=$!
+        for _ in {1..60}; do
+          if grep -Fq "Listening started." taskiq-worker.log; then
+            kill -TERM "$process_id"
+            wait "$process_id" || true
+            exit 0
+          fi
+          if ! kill -0 "$process_id" 2>/dev/null; then
+            wait "$process_id" || status=$?
+            echo "TaskIQ worker smoke test exited before readiness (status ${status:-0})."
+            tail -n 200 taskiq-worker.log || true
+            exit 1
+          fi
+          sleep 0.5
+        done
+        kill -TERM "$process_id" 2>/dev/null || true
+        wait "$process_id" || true
+        echo "TaskIQ worker smoke test did not become ready within 30 seconds."
+        tail -n 200 taskiq-worker.log || true
+        exit 1
 
     - name: TaskIQ scheduler smoke test
       run: |
         set -euo pipefail
-        status=0
-        timeout --signal=TERM --kill-after=5s 30s uv run taskiq scheduler app.core.scheduler:sched app.tasks --skip-first-run > taskiq-scheduler.log 2>&1 || status=$?
-        if [[ "$status" -ne 124 && "$status" -ne 137 ]]; then
-          echo "TaskIQ scheduler smoke test failed: unexpected exit code $status."
-          tail -n 200 taskiq-scheduler.log || true
-          exit 1
-        fi
-        if ! grep -Fq "Startup completed." taskiq-scheduler.log; then
-          echo "TaskIQ scheduler smoke test failed: startup marker not found."
-          tail -n 200 taskiq-scheduler.log || true
-          exit 1
-        fi
+        uv run taskiq scheduler app.core.scheduler:sched app.tasks --skip-first-run > taskiq-scheduler.log 2>&1 &
+        process_id=$!
+        for _ in {1..60}; do
+          if grep -Fq "Startup completed." taskiq-scheduler.log; then
+            kill -TERM "$process_id"
+            wait "$process_id" || true
+            exit 0
+          fi
+          if ! kill -0 "$process_id" 2>/dev/null; then
+            wait "$process_id" || status=$?
+            echo "TaskIQ scheduler smoke test exited before readiness (status ${status:-0})."
+            tail -n 200 taskiq-scheduler.log || true
+            exit 1
+          fi
+          sleep 0.5
+        done
+        kill -TERM "$process_id" 2>/dev/null || true
+        wait "$process_id" || true
+        echo "TaskIQ scheduler smoke test did not become ready within 30 seconds."
+        tail -n 200 taskiq-scheduler.log || true
+        exit 1
 
     - name: Upload TaskIQ smoke logs
       if: always()
@@ -287,14 +304,10 @@ jobs:
           bandit-report.json
           safety-report.json
 
-  alpaca-track-tests:
-    # ROB-1059 S9: additive-only job -- the main `test` job's `testpaths`
-    # (pyproject.toml: ["tests"]) and its own pytest invocation are UNCHANGED.
-    # research/alpaca_track/tests/ is a fully separate, network-0, no-DB/no-
-    # Redis suite (own conftest.py sys.path wiring), so it gets its own
-    # lightweight job rather than being folded into the sharded `test` job's
-    # DB-backed run. This does not attempt to fix the pre-existing, separately
-    # out-of-scope research/nautilus_scalping CI gap.
+  alpaca-track-fast-tests:
+    # H1/H2/H3 are separate pytest invocations because they contain duplicate
+    # test module basenames under prepend import mode. They share one job so
+    # checkout/Python/uv/dependency setup is paid once instead of three times.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -325,111 +338,21 @@ jobs:
     - name: Install dependencies
       run: uv sync --group test
 
-    - name: Run ROB-1059 alpaca_track H1 data-layer tests (network-0, no DB/Redis)
+    - name: Run H1 data-layer tests
       run: |
-        uv run pytest research/alpaca_track/tests/ -v
+        uv run pytest research/alpaca_track/tests/ -q -ra --strict-markers
 
-  alpaca-track-seal-tests:
-    # ROB-1060 H2-lock adversarial-verification Finding 1: the H2 seal (94+
-    # tests pinning the ROB-846 registration domain/params/identity/semantic
-    # digest) previously ran ONLY on a developer's machine -- `pyproject.toml`
-    # `testpaths` collects only `tests/` (the DB-backed app suite), and no CI
-    # job referenced `alpaca_track_seal`. Additive-only job, exactly mirroring
-    # the `alpaca-track-tests` job above (H1): the main `test` job's
-    # `testpaths` and pytest invocation are UNCHANGED, and this does not
-    # attempt to fix the pre-existing, separately out-of-scope
-    # research/nautilus_scalping CI gap. research/alpaca_track_seal/tests/ is
-    # a fully separate, network-0, no-DB/no-Redis suite (own conftest.py
-    # sys.path wiring), so it gets its own lightweight job rather than being
-    # folded into the sharded `test` job's DB-backed run.
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    env:
-      PYTHON_VERSION: "3.13"
-
-    steps:
-    - uses: actions/checkout@v5
-      with:
-        persist-credentials: false
-
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
-
-    - name: Load cached venv
-      id: cached-uv-dependencies
-      uses: actions/cache@v5
-      with:
-        path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
-
-    - name: Install dependencies
-      run: uv sync --group test
-
-    - name: Run ROB-1060 alpaca_track_seal H2 registry-seal tests (network-0, no DB/Redis)
+    - name: Run H2 registry-seal tests
       run: |
-        uv run pytest research/alpaca_track_seal/tests/ -v
+        uv run pytest research/alpaca_track_seal/tests/ -q -ra --strict-markers
 
-  alpaca-track-signals-tests:
-    # ROB-1061 H3 -- exactly mirrors the alpaca-track-tests (H1) /
-    # alpaca-track-seal-tests (H2) jobs above: H1 and H2 both shipped a full
-    # suite that ran in NO CI job at all (each phase's own closing report
-    # calls this out as a completion-criteria failure caught only by
-    # adversarial re-verification, not by "tests passed locally"). This job
-    # exists so that mistake is not repeated a third time.
-    # research/alpaca_track_signals/tests/ is a fully separate, network-0,
-    # no-DB/no-Redis suite (own conftest.py sys.path wiring onto its two
-    # producer siblings, research/alpaca_track and research/alpaca_track_seal),
-    # so it gets its own lightweight job rather than being folded into the
-    # sharded `test` job's DB-backed run. The main `test` job's `testpaths`
-    # and pytest invocation remain UNCHANGED.
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    env:
-      PYTHON_VERSION: "3.13"
-
-    steps:
-    - uses: actions/checkout@v5
-      with:
-        persist-credentials: false
-
-    - name: Set up Python ${{ env.PYTHON_VERSION }}
-      uses: actions/setup-python@v6
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
-
-    - name: Install UV
-      run: pip install uv
-
-    - name: Load cached venv
-      id: cached-uv-dependencies
-      uses: actions/cache@v5
-      with:
-        path: .venv
-        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
-
-    - name: Install dependencies
-      run: uv sync --group test
-
-    - name: Run ROB-1061 alpaca_track_signals H3 signal-engine tests (network-0, no DB/Redis)
+    - name: Run H3 signal-engine tests
       run: |
-        uv run pytest research/alpaca_track_signals/tests/ -v --strict-markers -ra
-        # pytest exits 5 ("no tests collected") on an empty/misconfigured
-        # path -- a nonzero exit fails this step, so this job cannot pass
-        # silently on zero collected tests.
+        uv run pytest research/alpaca_track_signals/tests/ -q -ra --strict-markers
 
   alpaca-track-walkforward-tests:
-    # ROB-1062 H4 -- exactly mirrors the alpaca-track-tests (H1) /
-    # alpaca-track-seal-tests (H2) / alpaca-track-signals-tests (H3) jobs
-    # above: additive-only, own conftest.py sys.path wiring onto its three
+    # ROB-1062 H4 remains a separate gate from the consolidated H1/H2/H3 job:
+    # it has its own conftest.py sys.path wiring onto its three
     # producer siblings (research/alpaca_track, research/alpaca_track_seal,
     # research/alpaca_track_signals), network-0, no DB/Redis. The main
     # `test` job's `testpaths` and pytest invocation remain UNCHANGED.
@@ -481,7 +404,7 @@ jobs:
 
   notify:
     if: failure()
-    needs: [lint, test, taskiq-smoke, security, alpaca-track-tests, alpaca-track-seal-tests, alpaca-track-signals-tests, alpaca-track-walkforward-tests]
+    needs: [lint, test, taskiq-smoke, security, alpaca-track-fast-tests, alpaca-track-walkforward-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Discord failure notification
