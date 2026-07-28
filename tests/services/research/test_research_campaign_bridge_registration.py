@@ -28,10 +28,11 @@ from app.services.research_db_write_guard import (
     ResearchDbTargetRejected,
     ResearchWriteDisabled,
 )
-
-_POLICY = ResearchDbPolicy.of(
-    ResearchDbTarget(host="localhost", database_name="test_db")
+from tests.services.research._db_guard_test_policy import (
+    current_research_test_db_policy,
 )
+
+_POLICY = current_research_test_db_policy()
 _DENYING_POLICY = ResearchDbPolicy.of(
     ResearchDbTarget(host="some-other-host", database_name="some_other_db")
 )

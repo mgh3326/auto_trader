@@ -30,7 +30,6 @@ from app.services.research_campaign_bridge import (
     CampaignSpecCountError,
     campaign_completeness_report,
 )
-from app.services.research_db_write_guard import ResearchDbPolicy, ResearchDbTarget
 from app.services.rob944_campaign_controller import (
     AttemptKeyExperimentMismatchError,
     CampaignBatchValidationError,
@@ -43,10 +42,11 @@ from app.services.rob944_campaign_controller import (
     _run_preflight_and_register,
     run_full_campaign,
 )
-
-_POLICY = ResearchDbPolicy.of(
-    ResearchDbTarget(host="localhost", database_name="test_db")
+from tests.services.research._db_guard_test_policy import (
+    current_research_test_db_policy,
 )
+
+_POLICY = current_research_test_db_policy()
 
 
 def _hex64(label: str) -> str:
