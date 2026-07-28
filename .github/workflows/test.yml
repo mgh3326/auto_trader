@@ -207,6 +207,9 @@ jobs:
     - name: Install dependencies
       run: uv sync --group test
 
+    - name: Run TaskIQ smoke helper regression tests
+      run: bash .github/workflows/taskiq-smoke-test.sh
+
     - name: Set environment variables from env.example
       run: |
         chmod +x scripts/setup-test-env.sh
