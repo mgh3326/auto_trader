@@ -39,6 +39,46 @@ _REPORT_FK = "fk_investment_watch_alerts_source_report_uuid"
 _ITEM_FK = "fk_investment_watch_alerts_source_item_uuid"
 
 
+def _add_foreign_key_if_missing(
+    name: str,
+    column: str,
+    referred_table: str,
+    referred_column: str,
+) -> None:
+    """Add a source-link FK unless the current schema already materialized it."""
+
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conrelid = '{_SCHEMA}.{_ALERTS}'::regclass
+                  AND conname = '{name}'
+            ) THEN
+                ALTER TABLE {_SCHEMA}.{_ALERTS}
+                ADD CONSTRAINT {name}
+                FOREIGN KEY ({column})
+                REFERENCES {_SCHEMA}.{referred_table} ({referred_column})
+                ON DELETE SET NULL
+                NOT VALID;
+            END IF;
+        END
+        $$;
+        """
+    )
+
+
+def _drop_foreign_key_if_exists(name: str) -> None:
+    op.execute(
+        f"""
+        ALTER TABLE {_SCHEMA}.{_ALERTS}
+        DROP CONSTRAINT IF EXISTS "{name}"
+        """
+    )
+
+
 def upgrade() -> None:
     for table in (_ALERTS, _EVENTS):
         op.alter_column(
@@ -56,31 +96,23 @@ def upgrade() -> None:
             schema=_SCHEMA,
         )
 
-    op.execute(
-        f"""
-        ALTER TABLE {_SCHEMA}.{_ALERTS}
-        ADD CONSTRAINT {_REPORT_FK}
-        FOREIGN KEY (source_report_uuid)
-        REFERENCES {_SCHEMA}.investment_reports (report_uuid)
-        ON DELETE SET NULL
-        NOT VALID
-        """
+    _add_foreign_key_if_missing(
+        _REPORT_FK,
+        "source_report_uuid",
+        "investment_reports",
+        "report_uuid",
     )
-    op.execute(
-        f"""
-        ALTER TABLE {_SCHEMA}.{_ALERTS}
-        ADD CONSTRAINT {_ITEM_FK}
-        FOREIGN KEY (source_item_uuid)
-        REFERENCES {_SCHEMA}.investment_report_items (item_uuid)
-        ON DELETE SET NULL
-        NOT VALID
-        """
+    _add_foreign_key_if_missing(
+        _ITEM_FK,
+        "source_item_uuid",
+        "investment_report_items",
+        "item_uuid",
     )
 
 
 def downgrade() -> None:
-    op.drop_constraint(_ITEM_FK, _ALERTS, schema=_SCHEMA, type_="foreignkey")
-    op.drop_constraint(_REPORT_FK, _ALERTS, schema=_SCHEMA, type_="foreignkey")
+    _drop_foreign_key_if_exists(_ITEM_FK)
+    _drop_foreign_key_if_exists(_REPORT_FK)
 
     for table in (_EVENTS, _ALERTS):
         op.alter_column(
