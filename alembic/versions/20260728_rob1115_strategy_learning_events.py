@@ -112,47 +112,47 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             f"memory_event_id ~ '{_SHA256}' AND request_hash ~ '{_SHA256}'",
-            name="ck_strategy_learning_event_hashes",
+            name=op.f("ck_strategy_learning_event_hashes"),
         ),
         sa.CheckConstraint(
             f"experiment_id IS NULL OR experiment_id ~ '{_SHA256}'",
-            name="ck_strategy_learning_event_experiment_id",
+            name=op.f("ck_strategy_learning_event_experiment_id"),
         ),
         sa.CheckConstraint(
             f"stage IN ({_STAGES})",
-            name="ck_strategy_learning_event_stage",
+            name=op.f("ck_strategy_learning_event_stage"),
         ),
         sa.CheckConstraint(
             f"verdict IN ({_VERDICTS})",
-            name="ck_strategy_learning_event_verdict",
+            name=op.f("ck_strategy_learning_event_verdict"),
         ),
         sa.CheckConstraint(
             f"failure_class IN ({_FAILURE_CLASSES})",
-            name="ck_strategy_learning_event_failure_class",
+            name=op.f("ck_strategy_learning_event_failure_class"),
         ),
         sa.CheckConstraint(
             "jsonb_typeof(reason_codes) = 'array' "
             "AND jsonb_array_length(reason_codes) > 0",
-            name="ck_strategy_learning_event_reason_codes",
+            name=op.f("ck_strategy_learning_event_reason_codes"),
         ),
         sa.CheckConstraint(
             "jsonb_typeof(evidence_refs) = 'array'",
-            name="ck_strategy_learning_event_evidence_refs",
+            name=op.f("ck_strategy_learning_event_evidence_refs"),
         ),
         sa.CheckConstraint(
             "jsonb_typeof(failure_fingerprint) = 'array' "
             "AND jsonb_array_length(failure_fingerprint) = 2",
-            name="ck_strategy_learning_event_failure_fingerprint",
+            name=op.f("ck_strategy_learning_event_failure_fingerprint"),
         ),
         sa.CheckConstraint(
             "jsonb_typeof(learning_payload) = 'array' "
             "AND jsonb_array_length(learning_payload) = 2",
-            name="ck_strategy_learning_event_learning_payload",
+            name=op.f("ck_strategy_learning_event_learning_payload"),
         ),
         sa.CheckConstraint(
             "btrim(idempotency_key) <> '' AND btrim(actor_id) <> '' "
             "AND btrim(actor_role) <> ''",
-            name="ck_strategy_learning_event_nonblank_audit",
+            name=op.f("ck_strategy_learning_event_nonblank_audit"),
         ),
         schema="research",
     )

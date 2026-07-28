@@ -31,10 +31,23 @@ def test_migration_is_single_chain_and_has_up_down_entrypoints() -> None:
 
 def test_migration_contains_fk_checks_uniques_and_full_append_only_fence() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
+    expected_checks = {
+        "ck_strategy_learning_event_hashes",
+        "ck_strategy_learning_event_experiment_id",
+        "ck_strategy_learning_event_stage",
+        "ck_strategy_learning_event_verdict",
+        "ck_strategy_learning_event_failure_class",
+        "ck_strategy_learning_event_reason_codes",
+        "ck_strategy_learning_event_evidence_refs",
+        "ck_strategy_learning_event_failure_fingerprint",
+        "ck_strategy_learning_event_learning_payload",
+        "ck_strategy_learning_event_nonblank_audit",
+    }
     assert "research.strategy_experiments.experiment_id" in source
     assert 'sa.Column("experiment_id", sa.String(64), nullable=True)' in source
     assert "uq_strategy_learning_event_memory_event_id" in source
     assert "uq_strategy_learning_event_idempotency_key" in source
-    assert "ck_strategy_learning_event_reason_codes" in source
+    for name in expected_checks:
+        assert f'name=op.f("{name}")' in source
     assert "BEFORE UPDATE OR DELETE" in source
     assert "BEFORE TRUNCATE" in source
