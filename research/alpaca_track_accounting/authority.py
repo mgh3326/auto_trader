@@ -1,14 +1,29 @@
 """ROB-1064 H6 — exact H2/H4 authority binding and append-only seals.
 
-``rob-1064-current.json`` remains the immutable historical record from before
-H4 terminal evidence existed.  A distinct new seal consumes H4's materialized,
-count/status-only terminal artifact.  Neither path reads current market tape
-or substitutes zero observations.
+Seals are append-only historical records; nothing here rewrites or deletes an
+earlier one.  Three exist:
+
+* ``rob-1064-current.json`` — the pre-materialization record from before H4
+  terminal evidence existed at all (``structural_incomplete == 16``).  It stays
+  regenerable because its provenance is pinned in
+  ``_LEGACY_INCOMPLETE_PROVENANCE``.
+* ``rob-1064-run-2026-07-29-h4-terminal-v1.json`` — the first materialized
+  seal, built from H4 identity ``...-v1``.  Its counts were arithmetically
+  correct and informationally empty: v1's corpus restarted the same price path
+  at every fold, so its 128 cells held 16 distinct observations replicated
+  eight times.  Preserved verbatim as evidence of that state; NOT regenerable,
+  because the defective corpus it consumed no longer exists.  Byte-preservation
+  is pinned by ``test_authority_and_safety.py``.
+* ``rob-1064-run-2026-07-29-h4-terminal-v2.json`` — the current seal, built
+  from H4 identity ``...-v2`` whose eight folds are eight different periods.
+
+Neither path reads current market tape or substitutes zero observations.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import MappingProxyType
 
 import accounting as acct
 import configs as h2_configs
@@ -19,6 +34,7 @@ import terminal_status as h4_terminal
 __all__ = [
     "CURRENT_INCOMPLETE_REASON",
     "MATERIALIZED_SEAL_PATH",
+    "PRESERVED_SEAL_DIGESTS",
     "build_current_seal",
     "build_materialized_seal",
     "canonical_expected_configs",
@@ -32,11 +48,25 @@ CURRENT_INCOMPLETE_REASON = (
     "observation is null and no current tape or zero default was substituted"
 )
 
+_SEALED_REPORTS_DIR = Path(__file__).resolve().parent / "sealed_reports"
 MATERIALIZED_SEAL_PATH = (
-    Path(__file__).resolve().parent
-    / "sealed_reports"
-    / "rob-1064-run-2026-07-29-h4-terminal-v1.json"
+    _SEALED_REPORTS_DIR / "rob-1064-run-2026-07-29-h4-terminal-v2.json"
 )
+
+# Every seal written before the current one, pinned by content digest so that a
+# later run cannot quietly delete, truncate, or rewrite it. Filename -> SHA-256
+# of the exact committed bytes.
+PRESERVED_SEAL_DIGESTS = MappingProxyType(
+    {
+        "rob-1064-current.json": (
+            "3f8f8c674f2b136d2c8aeff53d4ad9102d2cc7847c0856c2de7f1231dd28574e"
+        ),
+        "rob-1064-run-2026-07-29-h4-terminal-v1.json": (
+            "95be02e90719e082502d0947d0ccd4aa0f89eb038dbec96bcbd7682946fcab06"
+        ),
+    }
+)
+
 _LEGACY_INCOMPLETE_PROVENANCE = acct.TrialProvenance(
     corpus_manifest_hash=(
         "4ad4ea2ddbfc795f6ecb0188be5801ed1a8db06ca4c9933f0fe884e6eac68113"

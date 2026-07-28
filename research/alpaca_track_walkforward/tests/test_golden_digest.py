@@ -50,9 +50,21 @@ _NUM_DAYS = (_FOLD.oos_end_ms - _FOLD.train_start_ms) // 86_400_000
 # turnover and an aggregate-dry-gate handle, and records those binding fields
 # here. The human-readable diagnostic confirmed selection, every TRAIN metric,
 # and every OOS blind count are unchanged; only provenance/gate metadata moved.
+# Re-pinned 2026-07-29 for H4 identity v2 (absolute-time corpus). This is a
+# DATA re-seal, not a behavioural one: no runner/engine/fill logic changed.
+# v1's corpus keyed prices off each fold's own window start, so every fold
+# replayed one identical path; v2 derives prices from absolute UTC calendar
+# time, so fold-0 now observes calendar days 19351.. instead of a series
+# restarted at index 0. Every price input to this AP-A2 fold-0 run therefore
+# moved, and with it every TRAIN metric and OOS blind count. The semantic
+# diagnostic was inspected before re-pinning: selection status and structure
+# are unchanged, and AP-A2-00's OOS blind counts moved from
+# modeled_entries=2/closed=1 (v1) to modeled_entries=4/closed=4 (v2) on this
+# fold, matching the committed v2 terminal artifact cell. No field was removed
+# or added.
 # Any later change remains a deliberate re-seal:
 # STOP and inspect the human-readable diagnostic before touching this value.
-GOLDEN_DIGEST = "35756b6d90aa9fc1190cc0c6dcd6b6c2503b8dd57966917058baccf28bcbd8c5"
+GOLDEN_DIGEST = "83651aa154b32d8532f24bce36a5ccac80bb1a33c519d622ba21329bcc5fcca1"
 
 
 def _golden_float(value: float) -> float:
@@ -237,9 +249,7 @@ def _run() -> runner.FamilyFoldResult:
         window_start_ms=_FOLD.train_start_ms, num_days=_NUM_DAYS, n_symbols=20
     )
     universe_provider = sfx.make_universe_snapshot_provider(20)
-    minute_provider = sfx.make_minute_bars_provider(
-        window_start_ms=_FOLD.train_start_ms, n_symbols=20
-    )
+    minute_provider = sfx.make_minute_bars_provider(n_symbols=20)
     return runner.run_family_fold(
         family="AP-A2",
         fold_id="fold-0",

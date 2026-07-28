@@ -48,9 +48,7 @@ def universe_provider_20():
 
 @pytest.fixture(scope="module")
 def minute_provider_20():
-    return sfx.make_minute_bars_provider(
-        window_start_ms=_FOLD.train_start_ms, n_symbols=20
-    )
+    return sfx.make_minute_bars_provider(n_symbols=20)
 
 
 def test_unfilled_entry_never_produces_an_orphan_exit_ap_a1(

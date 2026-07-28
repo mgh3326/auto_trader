@@ -8,6 +8,7 @@ Tests keep this import name while consuming the single canonical definition.
 from synthetic_corpus import (
     DAY_MS,
     N_SYMBOLS,
+    absolute_day_index,
     build_bars_by_symbol,
     close_for,
     make_minute_bars_provider,
@@ -18,6 +19,7 @@ from synthetic_corpus import (
 __all__ = [
     "DAY_MS",
     "N_SYMBOLS",
+    "absolute_day_index",
     "build_bars_by_symbol",
     "close_for",
     "make_minute_bars_provider",
