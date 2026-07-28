@@ -75,6 +75,16 @@ PIT_COLUMNS: Final = (
 )
 COLLECTOR_VERSION: Final = "r4-p0-collector.v3"
 BASIS_RECOVERY_LIMIT: Final = 100
+# Binance's taker ratio endpoint maps requested boundaries to the preceding
+# 5-minute buckets ([S-5m, E-5m]); the other epoch-history endpoints use their
+# requested boundaries directly. Keep these source-specific vendor semantics
+# explicit so their recovery windows are not incorrectly normalized.
+EPOCH_HISTORY_REQUEST_OFFSET_MS: Final[dict[str, int]] = {
+    "binance_usdm.openInterestHist": 0,
+    "binance_usdm.basis": 0,
+    "binance_usdm.takerLongShortRatio": 5 * 60 * 1000,
+    "binance_usdm.premiumIndexKline1m": 0,
+}
 EXPECTED_SOURCES: Final = frozenset(
     {
         "binance_usdm.aggTrade",
@@ -1496,14 +1506,17 @@ class BinanceR4P0Collector:
         interval_start = decision_epoch - dt.timedelta(hours=4)
         start_ms = int(interval_start.timestamp() * 1000)
         end_ms = int(decision_epoch.timestamp() * 1000) - 1
+        request_offset_ms = EPOCH_HISTORY_REQUEST_OFFSET_MS[source]
+        request_start_ms = start_ms + request_offset_ms
+        request_end_ms = end_ms + request_offset_ms
         request_by_source: dict[str, tuple[str, dict[str, Any]]] = {
             "binance_usdm.openInterestHist": (
                 "/futures/data/openInterestHist",
                 {
                     "symbol": symbol,
                     "period": "5m",
-                    "startTime": start_ms,
-                    "endTime": end_ms,
+                    "startTime": request_start_ms,
+                    "endTime": request_end_ms,
                     "limit": 500,
                 },
             ),
@@ -1513,8 +1526,8 @@ class BinanceR4P0Collector:
                     "pair": symbol,
                     "contractType": "PERPETUAL",
                     "period": "5m",
-                    "startTime": start_ms,
-                    "endTime": end_ms,
+                    "startTime": request_start_ms,
+                    "endTime": request_end_ms,
                     "limit": 500,
                 },
             ),
@@ -1523,8 +1536,8 @@ class BinanceR4P0Collector:
                 {
                     "symbol": symbol,
                     "period": "5m",
-                    "startTime": start_ms,
-                    "endTime": end_ms,
+                    "startTime": request_start_ms,
+                    "endTime": request_end_ms,
                     "limit": 500,
                 },
             ),
@@ -1533,8 +1546,8 @@ class BinanceR4P0Collector:
                 {
                     "symbol": symbol,
                     "interval": "1m",
-                    "startTime": start_ms,
-                    "endTime": end_ms,
+                    "startTime": request_start_ms,
+                    "endTime": request_end_ms,
                     "limit": 500,
                 },
             ),

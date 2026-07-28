@@ -474,6 +474,69 @@ async def test_historical_retry_appends_terminal_attempt(tmp_path) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_taker_history_shift_restores_full_epoch_coverage(tmp_path) -> None:
+    cadence = dt.timedelta(minutes=5)
+    interval_start = EPOCH - dt.timedelta(hours=4)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/futures/data/takerlongshortRatio"
+        request_start = int(request.url.params["startTime"])
+        assert request_start == int((interval_start + cadence).timestamp() * 1000)
+        assert request.url.params["endTime"] == str(
+            int((EPOCH + cadence).timestamp() * 1000) - 1
+        )
+        # This endpoint returns the bucket preceding each requested boundary.
+        first_bucket = request_start - int(cadence.total_seconds() * 1000)
+        return httpx.Response(
+            200,
+            json=[
+                _payload(
+                    "binance_usdm.takerLongShortRatio",
+                    timestamp=first_bucket
+                    + index * int(cadence.total_seconds() * 1000),
+                )
+                for index in range(48)
+            ],
+        )
+
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.takerLongShortRatio",),
+        symbols=("XRPUSDT",),
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path,
+                symbols=("XRPUSDT",),
+                collector_instance_id="replica-a",
+            ),
+            store,
+        )
+        async with httpx.AsyncClient(
+            base_url="https://fapi.binance.com",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            await collector._rest_epoch_history(  # noqa: SLF001
+                client,
+                source="binance_usdm.takerLongShortRatio",
+                symbol="XRPUSDT",
+                decision_epoch=EPOCH,
+            )
+
+        stored_rows = store._db.execute(  # noqa: SLF001
+            "SELECT COUNT(*) FROM pit_records "
+            "WHERE source = 'binance_usdm.takerLongShortRatio'"
+        ).fetchone()[0]
+        _, finalizer = _finalizer(store, policy=policy)
+        preview = finalizer.preview("XRPUSDT", EPOCH)
+
+        assert stored_rows == 48
+        assert preview.final_status == FINAL_COMPLETE
+        assert preview.invalid_sources == ()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_invalid_retry_response_keeps_hash_and_terminal_failure(
     tmp_path,
 ) -> None:
