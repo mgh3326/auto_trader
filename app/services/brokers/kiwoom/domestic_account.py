@@ -130,13 +130,37 @@ class KiwoomDomesticAccountClient:
         return await self._client.post_api(
             api_id=constants.ACCOUNT_ORDER_STATUS_API_ID,
             path=ACCOUNT_PATH,
-            # ROB-418 — kt00009 requires stk_bond_tp; omitting it returns
-            # return_code 2 (필수입력 파라미터=stk_bond_tp).
-            # ROB-1111 — kt00009 ALSO requires mrkt_tp; omitting it returns
-            # return_code 2 (필수입력 파라미터=mrkt_tp).
+            # ROB-1088 (2026-07-28, independent-verification fix) — Official
+            # Kiwoom REST docs
+            # (https://openapi.kiwoom.com/m/guide/apiguide?apiId=kt00009&jobTp=FS_JOB_TP&jobTpCode=08)
+            # list kt00009's request body as five Required=Y fields:
+            #   stk_bond_tp   "0:전체, 1:주식, 2:채권"        (ROB-418)
+            #   mrkt_tp       "0:전체, 1:코스피, 2:코스닥, 3:OTCBB, 4:ECN"  (ROB-1111)
+            #   sell_tp       "0:전체, 1:매도, 2:매수"        (ROB-1088)
+            #   qry_tp        "0:전체, 1:체결"                (ROB-1088)
+            #   dmst_stex_tp  "%:(전체), KRX, NXT, SOR"       (ROB-1088)
+            # An earlier revision of this fix (PR #1708 initial version) sent
+            # only the first two, having treated sell_tp/qry_tp/dmst_stex_tp as
+            # unproven speculation sourced only from a third-party REST client
+            # (bamjun/kiwoom-rest-api). Independent verification opened the
+            # official doc directly and found all five Required=Y — that
+            # revision was a contract mismatch, not caution. All five values
+            # below are read directly off the official table, not guessed.
+            # dmst_stex_tp uses "KRX" (not "%"): kiwoom_mock is KRX-only
+            # (MOCK_REJECTED_EXCHANGES={"NXT","SOR"}), and "%"(전체) would blend
+            # NXT/SOR results into a fail-closed-only surface, undermining that
+            # boundary even though the docs allow it as a value.
+            # NOTE: return_code 0 for this exact five-field body has NOT been
+            # confirmed via a real mockapi.kiwoom.com call in this codebase —
+            # only unit tests exercise it (mutation/live-call is out of scope
+            # for this fix). The 07-29 08:50 KR-B1 P0-3 smoke is the first real
+            # verification opportunity.
             body={
                 "stk_bond_tp": constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT,
                 "mrkt_tp": constants.ACCOUNT_ORDER_MRKT_TP_DEFAULT,
+                "sell_tp": constants.ACCOUNT_ORDER_SELL_TP_DEFAULT,
+                "qry_tp": constants.ACCOUNT_ORDER_QRY_TP_DEFAULT,
+                "dmst_stex_tp": constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
             },
             cont_yn=cont_yn,
             next_key=next_key,

@@ -175,11 +175,55 @@ async def test_get_order_status_uses_kt00009_with_required_params_and_continuati
     assert call["body"]["stk_bond_tp"] == constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT
     # ROB-1111 — kt00009 ALSO requires mrkt_tp (operator return_code 2 without it).
     assert call["body"]["mrkt_tp"] == constants.ACCOUNT_ORDER_MRKT_TP_DEFAULT
-    # ROB-460 boundary — kt00009 is an order-history read (different tool,
-    # get_order_history), and NOT proven to need dmst_stex_tp.
-    assert "dmst_stex_tp" not in call["body"]
+    # ROB-1088 (2026-07-28 official-doc fix) — kt00009 requires all five fields
+    # per the official Kiwoom REST docs (Required=Y on every one of
+    # stk_bond_tp/mrkt_tp/sell_tp/qry_tp/dmst_stex_tp). sell_tp/qry_tp/
+    # dmst_stex_tp were previously omitted as "unproven speculation"; that was
+    # a contract mismatch, not caution — the official doc lists them as
+    # required just like stk_bond_tp/mrkt_tp.
+    assert call["body"]["sell_tp"] == constants.ACCOUNT_ORDER_SELL_TP_DEFAULT
+    assert call["body"]["qry_tp"] == constants.ACCOUNT_ORDER_QRY_TP_DEFAULT
+    # dmst_stex_tp: official docs allow %/KRX/NXT/SOR, but kiwoom_mock is
+    # KRX-only (MOCK_REJECTED_EXCHANGES={"NXT","SOR"}) — "KRX" is the only
+    # selection consistent with that fail-closed boundary.
+    assert call["body"]["dmst_stex_tp"] == constants.ACCOUNT_DMST_STEX_TP_DEFAULT
+    assert call["body"]["dmst_stex_tp"] == "KRX"
     assert call["cont_yn"] == "Y"
     assert call["next_key"] == "page-2"
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_body_is_exactly_the_official_five_fields():
+    # ROB-1088 — pins the exact wire body to the official Kiwoom kt00009
+    # contract (all 5 Required=Y fields, no more, no less). This intentionally
+    # replaces an earlier two-field-only pin that was found to mismatch the
+    # official contract during independent verification of PR #1708.
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_order_status()
+    assert fake.calls[-1]["body"] == {
+        "stk_bond_tp": constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT,
+        "mrkt_tp": constants.ACCOUNT_ORDER_MRKT_TP_DEFAULT,
+        "sell_tp": constants.ACCOUNT_ORDER_SELL_TP_DEFAULT,
+        "qry_tp": constants.ACCOUNT_ORDER_QRY_TP_DEFAULT,
+        "dmst_stex_tp": constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_order_status_dmst_stex_tp_never_nxt_or_sor():
+    # ROB-1088 — explicit regression guard for the KRX-only boundary: even
+    # though the official docs permit "%"(전체)/NXT/SOR as dmst_stex_tp values,
+    # kt00009 must never select a value inside MOCK_REJECTED_EXCHANGES, and
+    # must not use "%" either (that would blend NXT/SOR rows into a
+    # KRX-only-intended surface).
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_order_status()
+    dmst_stex_tp = fake.calls[-1]["body"]["dmst_stex_tp"]
+    assert dmst_stex_tp not in constants.MOCK_REJECTED_EXCHANGES
+    assert dmst_stex_tp != "%"
+    assert dmst_stex_tp == constants.MOCK_EXCHANGE_KRX
 
 
 @pytest.mark.asyncio

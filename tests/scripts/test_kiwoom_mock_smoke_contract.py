@@ -228,6 +228,11 @@ async def test_request_body_captured_via_mocktransport(
     assert captured[kw_constants.ACCOUNT_ORDER_STATUS_API_ID] == {
         "stk_bond_tp": kw_constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT,
         "mrkt_tp": kw_constants.ACCOUNT_ORDER_MRKT_TP_DEFAULT,
+        # ROB-1088 (2026-07-28, official-doc fix) — kt00009 official contract
+        # requires sell_tp/qry_tp/dmst_stex_tp too (all 5 fields Required=Y).
+        "sell_tp": kw_constants.ACCOUNT_ORDER_SELL_TP_DEFAULT,
+        "qry_tp": kw_constants.ACCOUNT_ORDER_QRY_TP_DEFAULT,
+        "dmst_stex_tp": kw_constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
     }
 
 
