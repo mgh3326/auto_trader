@@ -8,9 +8,13 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Branch protection snapshot (verified 2026-07-28): only lint,
+  # taskiq-smoke, and test (3.13, 1..4) are required checks. The
+  # report-only security job and both research jobs remain diagnostic,
+  # non-required checks; this workflow does not change protection policy.
   lint:
     runs-on: ubuntu-latest
     env:
@@ -45,6 +49,9 @@ jobs:
 
     - name: Run ty
       run: uv run ty check app/ --error-on-warning
+
+    - name: Run duration merge unit tests
+      run: uv run pytest scripts/merge_test_durations_test.py -q
 
   test:
     runs-on: ubuntu-latest
@@ -207,53 +214,19 @@ jobs:
 
     - name: TaskIQ worker smoke test
       run: |
-        set -euo pipefail
-        uv run taskiq worker app.core.taskiq_broker:broker app.tasks > taskiq-worker.log 2>&1 &
-        process_id=$!
-        for _ in {1..60}; do
-          if grep -Fq "Listening started." taskiq-worker.log; then
-            kill -TERM "$process_id"
-            wait "$process_id" || true
-            exit 0
-          fi
-          if ! kill -0 "$process_id" 2>/dev/null; then
-            wait "$process_id" || status=$?
-            echo "TaskIQ worker smoke test exited before readiness (status ${status:-0})."
-            tail -n 200 taskiq-worker.log || true
-            exit 1
-          fi
-          sleep 0.5
-        done
-        kill -TERM "$process_id" 2>/dev/null || true
-        wait "$process_id" || true
-        echo "TaskIQ worker smoke test did not become ready within 30 seconds."
-        tail -n 200 taskiq-worker.log || true
-        exit 1
+        bash .github/workflows/taskiq-smoke.sh \
+          "TaskIQ worker smoke test" \
+          "Listening started." \
+          taskiq-worker.log \
+          -- uv run taskiq worker app.core.taskiq_broker:broker app.tasks
 
     - name: TaskIQ scheduler smoke test
       run: |
-        set -euo pipefail
-        uv run taskiq scheduler app.core.scheduler:sched app.tasks --skip-first-run > taskiq-scheduler.log 2>&1 &
-        process_id=$!
-        for _ in {1..60}; do
-          if grep -Fq "Startup completed." taskiq-scheduler.log; then
-            kill -TERM "$process_id"
-            wait "$process_id" || true
-            exit 0
-          fi
-          if ! kill -0 "$process_id" 2>/dev/null; then
-            wait "$process_id" || status=$?
-            echo "TaskIQ scheduler smoke test exited before readiness (status ${status:-0})."
-            tail -n 200 taskiq-scheduler.log || true
-            exit 1
-          fi
-          sleep 0.5
-        done
-        kill -TERM "$process_id" 2>/dev/null || true
-        wait "$process_id" || true
-        echo "TaskIQ scheduler smoke test did not become ready within 30 seconds."
-        tail -n 200 taskiq-scheduler.log || true
-        exit 1
+        bash .github/workflows/taskiq-smoke.sh \
+          "TaskIQ scheduler smoke test" \
+          "Startup completed." \
+          taskiq-scheduler.log \
+          -- uv run taskiq scheduler app.core.scheduler:sched app.tasks --skip-first-run
 
     - name: Upload TaskIQ smoke logs
       if: always()
@@ -343,10 +316,12 @@ jobs:
         uv run pytest research/alpaca_track/tests/ -q -ra --strict-markers
 
     - name: Run H2 registry-seal tests
+      if: ${{ !cancelled() }}
       run: |
         uv run pytest research/alpaca_track_seal/tests/ -q -ra --strict-markers
 
     - name: Run H3 signal-engine tests
+      if: ${{ !cancelled() }}
       run: |
         uv run pytest research/alpaca_track_signals/tests/ -q -ra --strict-markers
 
