@@ -21,6 +21,13 @@ from pydantic import (
 
 Lane = Literal["buy", "sell", "discovery"]
 Market = Literal["kr", "us", "crypto"]
+PostureStateName = Literal[
+    "RESTING",
+    "CONDITIONAL",
+    "ARMED_DEFERRED",
+    "DISARMED",
+    "EXPIRED_REARMABLE",
+]
 
 ThresholdValue = int | float | str | list[int | float]
 RuleConditionValue = int | float | str | bool | list[int | float | str | bool]
@@ -235,6 +242,40 @@ class PolicyAuthority(BaseModel):
     does_not_govern: list[str]
 
 
+class PosturePolicy(BaseModel):
+    """ROB-1106 stage-1 feature gate and five-state shadow contract.
+
+    Only ``shadow`` is accepted in this stage. Later pilot/live modes need
+    separate authorization and implementation rather than silently widening
+    this schema.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    mode: Literal["shadow"]
+    states: list[PostureStateName]
+    policy_stamp_required: Literal[True]
+
+    @field_validator("states")
+    @classmethod
+    def validate_exact_five_states(
+        cls, value: list[PostureStateName]
+    ) -> list[PostureStateName]:
+        required = {
+            "RESTING",
+            "CONDITIONAL",
+            "ARMED_DEFERRED",
+            "DISARMED",
+            "EXPIRED_REARMABLE",
+        }
+        if len(value) != len(required) or set(value) != required:
+            raise ValueError(
+                "posture.states must contain exactly the five posture-v1 states"
+            )
+        return value
+
+
 class OrderProposalAutoApprovePolicy(BaseModel):
     """Default-off resting-order auto-approval thresholds (ROB-871).
 
@@ -338,6 +379,7 @@ class TradingPolicyDocument(BaseModel):
     captured_as_of: str
     source: str
     authority: PolicyAuthority
+    posture: PosturePolicy
     order_proposals: OrderProposalsPolicy
     sector_clusters: dict[str, list[str]]
     thresholds: dict[str, PolicyThreshold]

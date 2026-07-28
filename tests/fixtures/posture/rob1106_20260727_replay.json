@@ -1,0 +1,52 @@
+{
+  "captured_at": "2026-07-27T00:30:00+09:00",
+  "holdings": [
+    {"holding_id": "toss-052690", "account_id": "toss", "symbol": "052690", "market": "kr", "quantity": "2", "average_cost": "90400"},
+    {"holding_id": "toss-259960", "account_id": "toss", "symbol": "259960", "market": "kr", "quantity": "1", "average_cost": "228286"},
+    {"holding_id": "toss-214450", "account_id": "toss", "symbol": "214450", "market": "kr", "quantity": "9", "average_cost": "382777.78"},
+    {"holding_id": "kis-035420", "account_id": "kis", "symbol": "035420", "market": "kr", "quantity": "4", "average_cost": "220000"},
+    {"holding_id": "toss-035420", "account_id": "toss", "symbol": "035420", "market": "kr", "quantity": "2", "average_cost": "225000"},
+    {"holding_id": "toss-069620", "account_id": "toss", "symbol": "069620", "market": "kr", "quantity": "3", "average_cost": "120000"},
+    {"holding_id": "toss-298040", "account_id": "toss", "symbol": "298040", "market": "kr", "quantity": "2", "average_cost": "430000"},
+    {"holding_id": "toss-000270", "account_id": "toss", "symbol": "000270", "market": "kr", "quantity": "2", "average_cost": "150000"},
+    {"holding_id": "toss-067160", "account_id": "toss", "symbol": "067160", "market": "kr", "quantity": "2", "average_cost": "90000"},
+    {"holding_id": "kis-257720", "account_id": "kis", "symbol": "257720", "market": "kr", "quantity": "4", "average_cost": "45000"},
+    {"holding_id": "toss-214150", "account_id": "toss", "symbol": "214150", "market": "kr", "quantity": "2", "average_cost": "60000"},
+    {"holding_id": "toss-257720", "account_id": "toss", "symbol": "257720", "market": "kr", "quantity": "3", "average_cost": "46000"},
+    {"holding_id": "toss-011210", "account_id": "toss", "symbol": "011210", "market": "kr", "quantity": "4", "average_cost": "53900"},
+    {"holding_id": "toss-138040", "account_id": "toss", "symbol": "138040", "market": "kr", "quantity": "3", "average_cost": "109000"},
+    {"holding_id": "toss-036460", "account_id": "toss", "symbol": "036460", "market": "kr", "quantity": "5", "average_cost": "34000"}
+  ],
+  "quotes": [
+    {"symbol": "052690", "market": "kr", "price": "101300", "observed_at": "2026-07-27T00:25:00+09:00"},
+    {"symbol": "259960", "market": "kr", "price": "244750", "observed_at": "2026-07-27T00:25:00+09:00"},
+    {"symbol": "214450", "market": "kr", "price": "361750", "observed_at": "2026-07-27T00:25:00+09:00"},
+    {"symbol": "035420", "market": "kr", "price": "250000", "observed_at": "2026-07-27T00:25:00+09:00"},
+    {"symbol": "069620", "market": "kr", "price": "130000", "observed_at": "2026-07-27T00:25:00+09:00"},
+    {"symbol": "298040", "market": "kr", "price": "450000", "observed_at": "2026-07-27T00:25:00+09:00"},
+    {"symbol": "000270", "market": "kr", "price": "160000", "observed_at": "2026-07-27T00:25:00+09:00"},
+    {"symbol": "067160", "market": "kr", "price": "100000", "observed_at": "2026-07-27T00:25:00+09:00"},
+    {"symbol": "257720", "market": "kr", "price": "50000", "observed_at": "2026-07-27T00:25:00+09:00"},
+    {"symbol": "214150", "market": "kr", "price": "65000", "observed_at": "2026-07-27T00:25:00+09:00"},
+    {"symbol": "011210", "market": "kr", "price": "56000", "observed_at": "2026-07-27T00:25:00+09:00"},
+    {"symbol": "138040", "market": "kr", "price": "115000", "observed_at": "2026-07-27T00:25:00+09:00"},
+    {"symbol": "036460", "market": "kr", "price": "36000", "observed_at": "2026-07-27T00:25:00+09:00"}
+  ],
+  "policy_contexts": [
+    {"holding_id": "toss-052690", "intent": "sell", "level_role": "HARD_EXIT", "level_price": "111200", "level_status": "fresh", "level_strength": "moderate", "price_touch_sufficient": true, "evidence_ready": true, "risk_eligible": true, "economic_floor_met": true},
+    {"holding_id": "toss-259960", "intent": "sell", "level_role": "HARD_EXIT", "level_price": "253000", "level_status": "fresh", "level_strength": "moderate", "price_touch_sufficient": true, "evidence_ready": true, "risk_eligible": true, "economic_floor_met": true},
+    {"holding_id": "toss-214450", "intent": "sell", "level_role": "CONDITIONAL_EXIT", "level_price": "386700", "level_status": "fresh", "level_strength": "moderate", "price_touch_sufficient": false, "evidence_ready": true, "risk_eligible": true, "economic_floor_met": true},
+    {"holding_id": "kis-035420", "intent": "sell", "level_role": "CONDITIONAL_EXIT", "level_price": "270000", "level_status": "fresh", "level_strength": "moderate", "price_touch_sufficient": false, "evidence_ready": true, "risk_eligible": true, "economic_floor_met": true},
+    {"holding_id": "toss-035420", "intent": "sell", "level_role": "CONDITIONAL_EXIT", "level_price": "270000", "level_status": "fresh", "level_strength": "moderate", "price_touch_sufficient": false, "evidence_ready": true, "risk_eligible": true, "economic_floor_met": true},
+    {"holding_id": "toss-069620", "intent": "sell", "level_role": "CONDITIONAL_EXIT", "level_price": "140000", "level_status": "fresh", "level_strength": "moderate", "price_touch_sufficient": false, "evidence_ready": true, "risk_eligible": true, "economic_floor_met": true},
+    {"holding_id": "toss-298040", "intent": "sell", "level_role": "CONDITIONAL_EXIT", "level_price": "480000", "level_status": "fresh", "level_strength": "moderate", "price_touch_sufficient": false, "evidence_ready": true, "risk_eligible": true, "economic_floor_met": true},
+    {"holding_id": "toss-000270", "intent": "sell", "level_role": "CONDITIONAL_EXIT", "level_price": "175000", "level_status": "fresh", "level_strength": "moderate", "price_touch_sufficient": false, "evidence_ready": true, "risk_eligible": true, "economic_floor_met": true},
+    {"holding_id": "toss-067160", "intent": "sell", "level_role": "HARD_EXIT", "level_price": "108000", "level_status": "fresh", "level_strength": "moderate", "price_touch_sufficient": true, "evidence_ready": true, "risk_eligible": true, "economic_floor_met": false},
+    {"holding_id": "kis-257720", "intent": "sell", "level_role": "HARD_EXIT", "level_price": "54000", "level_status": "fresh", "level_strength": "moderate", "price_touch_sufficient": true, "evidence_ready": true, "risk_eligible": true, "economic_floor_met": false},
+    {"holding_id": "toss-214150", "intent": "sell", "level_role": "HARD_EXIT", "level_price": "70000", "level_status": "fresh", "level_strength": "moderate", "price_touch_sufficient": true, "evidence_ready": true, "risk_eligible": true, "economic_floor_met": false},
+    {"holding_id": "toss-257720", "intent": "sell", "level_role": "HARD_EXIT", "level_price": "54000", "level_status": "fresh", "level_strength": "moderate", "price_touch_sufficient": true, "evidence_ready": true, "risk_eligible": true, "economic_floor_met": true, "block_reasons": ["single_share_verdict_pending"]},
+    {"holding_id": "toss-011210", "intent": "buy", "level_role": "BUY_SUPPORT", "level_price": "53900", "level_status": "fresh", "level_strength": "moderate", "evidence_ready": false, "intent_approved": false, "risk_eligible": true, "economic_floor_met": true, "review_at": "2026-07-28T09:00:00+09:00"},
+    {"holding_id": "toss-138040", "intent": "buy", "level_role": "BUY_SUPPORT", "level_price": "110900", "level_status": "fresh", "level_strength": "moderate", "evidence_ready": true, "intent_approved": false, "risk_eligible": false, "economic_floor_met": true, "block_reasons": ["outside_band", "financials_concentration"]},
+    {"holding_id": "toss-036460", "intent": "buy", "level_role": "BUY_SUPPORT", "level_price": "33950", "level_status": "stale", "level_strength": "moderate", "evidence_ready": true, "intent_approved": true, "risk_eligible": true, "economic_floor_met": true}
+  ]
+}

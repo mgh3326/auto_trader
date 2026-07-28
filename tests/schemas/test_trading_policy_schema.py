@@ -42,6 +42,16 @@ def test_shipped_config_validates():
     assert set(doc.market_overrides.keys()) == {"kr", "us", "crypto"}
     assert "semis_memory" in doc.sector_clusters
     assert "sell.trim_preplace" in doc.decision_rules
+    assert doc.posture.enabled is False
+    assert doc.posture.mode == "shadow"
+    assert doc.posture.states == [
+        "RESTING",
+        "CONDITIONAL",
+        "ARMED_DEFERRED",
+        "DISARMED",
+        "EXPIRED_REARMABLE",
+    ]
+    assert doc.posture.policy_stamp_required is True
     trim_rule = doc.decision_rules["sell.trim_preplace"]
     assert trim_rule.lanes == ["sell"]
     assert [tier.id for tier in trim_rule.tiers] == [
@@ -237,6 +247,25 @@ def test_decision_rule_schema_accepts_sell_trim_preplace_block():
 def test_extra_key_rejected():
     raw = _raw()
     raw["unexpected_top_level"] = 1
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_posture_rejects_sixth_or_missing_state():
+    extra = _raw()
+    extra["posture"]["states"].append("CATALYST_GAP_CAPTURE_V1")
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(extra)
+
+    missing = _raw()
+    missing["posture"]["states"].remove("EXPIRED_REARMABLE")
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(missing)
+
+
+def test_posture_stage_one_rejects_non_shadow_mode():
+    raw = _raw()
+    raw["posture"]["mode"] = "sell_pilot"
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)
 
