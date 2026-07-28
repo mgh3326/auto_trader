@@ -167,6 +167,62 @@ async def test_list_open_orders_returns_only_inflight_and_fill(
     assert terminal.id not in ids
 
 
+@pytest.mark.asyncio
+async def test_list_open_orders_excludes_concluded_full_fill_but_keeps_partial_and_legacy(
+    db_session: AsyncSession,
+):
+    """ROB-1019: a proven full fill must not be rejudged from later holdings.
+
+    Partial fills still need another pass, and legacy fill rows without durable
+    reconcile evidence retain the previous fail-closed behavior.
+    """
+    symbol = f"TEST-{uuid4().hex}"
+
+    def _fill_row(*, reason_code: str | None) -> KISMockOrderLedger:
+        detail = None
+        if reason_code is not None:
+            detail = {
+                "reason_code": reason_code,
+                "observed_holdings_qty": "10",
+                "attributed_fill_qty": (
+                    "10" if reason_code == "fill_detected" else "4"
+                ),
+            }
+        return KISMockOrderLedger(
+            trade_date=datetime(2026, 7, 28, 9, 0, tzinfo=UTC),
+            symbol=symbol,
+            instrument_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            quantity=Decimal("10"),
+            price=Decimal("70000"),
+            amount=Decimal("700000"),
+            currency="KRW",
+            order_no=f"MOCK-{uuid4()}",
+            account_mode="kis_mock",
+            broker="kis",
+            status="accepted",
+            lifecycle_state="fill",
+            holdings_baseline_qty=Decimal("0"),
+            last_reconcile_detail=detail,
+        )
+
+    concluded = _fill_row(reason_code="fill_detected")
+    partial = _fill_row(reason_code="partial_fill_detected")
+    legacy = _fill_row(reason_code=None)
+    db_session.add_all([concluded, partial, legacy])
+    await db_session.commit()
+
+    rows = await KISMockLifecycleService(db_session).list_open_orders(
+        limit=50, symbol=symbol
+    )
+    ids = {row.id for row in rows}
+
+    assert concluded.id not in ids
+    assert partial.id in ids
+    assert legacy.id in ids
+
+
 def test_service_does_not_call_broker_or_live_paths():
     """Service must remain record-keeping only. No broker / live imports."""
     src = SERVICE_PATH.read_text()

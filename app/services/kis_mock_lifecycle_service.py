@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.review import KISMockOrderLedger
@@ -24,9 +24,12 @@ from app.schemas.execution_contracts import (
     OrderLifecycleState,
 )
 
-# These are the lifecycle states the reconciler reads from. anything
-# else is excluded from `list_open_orders`.
+# These are the lifecycle states the reconciler may read from. A ``fill`` with
+# durable full-fill evidence is excluded separately in ``list_open_orders``:
+# current holdings can later fall after an opposite-side close, so they cannot
+# safely re-prove or invalidate that completed leg (ROB-1019).
 OPEN_LIFECYCLE_STATES: frozenset[str] = frozenset({"accepted", "pending", "fill"})
+_CONCLUDED_FILL_REASON_CODES: frozenset[str] = frozenset({"fill_detected"})
 
 
 class LedgerNotFoundError(Exception):
@@ -50,8 +53,20 @@ class KISMockLifecycleService:
     ) -> list[KISMockOrderLedger]:
         if limit < 1:
             raise ValueError("limit must be >= 1")
+        fill_reason = KISMockOrderLedger.last_reconcile_detail["reason_code"].astext
         stmt = select(KISMockOrderLedger).where(
-            KISMockOrderLedger.lifecycle_state.in_(OPEN_LIFECYCLE_STATES)
+            or_(
+                KISMockOrderLedger.lifecycle_state.in_(
+                    OPEN_LIFECYCLE_STATES - {"fill"}
+                ),
+                and_(
+                    KISMockOrderLedger.lifecycle_state == "fill",
+                    or_(
+                        fill_reason.is_(None),
+                        fill_reason.notin_(_CONCLUDED_FILL_REASON_CODES),
+                    ),
+                ),
+            )
         )
         if symbol:
             stmt = stmt.where(KISMockOrderLedger.symbol == symbol)
