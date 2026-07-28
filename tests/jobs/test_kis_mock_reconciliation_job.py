@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
 import pytest
 
@@ -51,6 +52,69 @@ def _fake_kis_client_seq(*, side_effect):
     client = MagicMock()
     client.fetch_my_stocks = AsyncMock(side_effect=side_effect)
     return client
+
+
+@pytest.mark.asyncio
+async def test_roundtrip_close_does_not_retransition_concluded_buy_fill(
+    db_session,
+):
+    """ROB-1019 production shape: a later sell-to-zero must not revive the buy."""
+    symbol = f"RT-{uuid4().hex}"
+    common = {
+        "instrument_type": "equity_kr",
+        "order_type": "limit",
+        "quantity": Decimal("1"),
+        "price": Decimal("70000"),
+        "amount": Decimal("70000"),
+        "currency": "KRW",
+        "account_mode": "kis_mock",
+        "broker": "kis",
+        "status": "accepted",
+    }
+    concluded_buy = KISMockOrderLedger(
+        **common,
+        trade_date=datetime.now(UTC) - timedelta(minutes=2),
+        symbol=symbol,
+        side="buy",
+        order_no=f"MOCK-{uuid4()}",
+        lifecycle_state="fill",
+        holdings_baseline_qty=Decimal("0"),
+        last_reconcile_detail={
+            "reason_code": "fill_detected",
+            "observed_holdings_qty": "1",
+            "observed_delta": "1",
+            "attributed_fill_qty": "1",
+        },
+    )
+    closing_sell = KISMockOrderLedger(
+        **common,
+        trade_date=datetime.now(UTC) - timedelta(minutes=1),
+        symbol=symbol,
+        side="sell",
+        order_no=f"MOCK-{uuid4()}",
+        lifecycle_state="accepted",
+        holdings_baseline_qty=Decimal("1"),
+    )
+    db_session.add_all([concluded_buy, closing_sell])
+    await db_session.commit()
+
+    result = await run_kis_mock_reconciliation(
+        db_session,
+        dry_run=True,
+        market="equity_kr",
+        symbol=symbol,
+        kis_client=_fake_kis_client(kr=[], us=[]),
+    )
+
+    assert result["orders_processed"] == 1
+    assert [event["detail"]["ledger_id"] for event in result["events"]] == [
+        closing_sell.id
+    ]
+    assert result["events"][0]["detail"]["reason_code"] == "fill_detected"
+    assert result["events"][0]["detail"]["observed_holdings_qty"] == "0"
+    assert concluded_buy.id not in {
+        transition["ledger_id"] for transition in result["transitions"]
+    }
 
 
 @pytest.mark.asyncio
