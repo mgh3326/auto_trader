@@ -7,6 +7,7 @@ import sqlite3
 import httpx
 import pytest
 
+from app.services.brokers.binance import r4_p0_collector as collector_module
 from app.services.brokers.binance.r4_p0_collector import (
     BASIS_RECOVERY_LIMIT,
     PIT_COLUMNS,
@@ -218,6 +219,90 @@ async def test_premium_kline_persists_only_a_completed_period(tmp_path) -> None:
         assert row["source"] == "binance_usdm.premiumIndexKline1m"
         assert json.loads(row["raw_payload"]) == closed
         assert row["event_time"] == row["transaction_time"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_premium_kline_long_poll_recovers_every_completed_slot(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = dt.datetime(2026, 7, 29, tzinfo=dt.UTC)
+    clock = iter(
+        (
+            base + dt.timedelta(minutes=1, seconds=10),
+            base + dt.timedelta(minutes=1, seconds=11),
+            base + dt.timedelta(minutes=4, seconds=10),
+            base + dt.timedelta(minutes=4, seconds=11),
+        )
+    )
+    monkeypatch.setattr(collector_module, "utc_now", lambda: next(clock))
+    calls = 0
+
+    def kline(minute: int) -> list[object]:
+        opened = base + dt.timedelta(minutes=minute)
+        closed = opened + dt.timedelta(minutes=1) - dt.timedelta(milliseconds=1)
+        return [
+            int(opened.timestamp() * 1000),
+            "0.1",
+            "0.2",
+            "0.0",
+            "0.1",
+            "0",
+            int(closed.timestamp() * 1000),
+        ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert dict(request.url.params) == {
+                "symbol": "XRPUSDT",
+                "interval": "1m",
+                "limit": "2",
+            }
+            return httpx.Response(200, json=[kline(0), kline(1)])
+        if "startTime" not in request.url.params:
+            # Current HEAD's latest-two request permanently skips minutes 1 and 2.
+            return httpx.Response(200, json=[kline(3), kline(4)])
+        assert request.url.params["startTime"] == str(kline(0)[6] + 1)
+        return httpx.Response(
+            200,
+            json=[kline(1), kline(2), kline(3), kline(4)],
+        )
+
+    with AppendOnlyPITStore(tmp_path) as store:
+        collector = BinanceR4P0Collector(
+            CollectorConfig(artifact_root=tmp_path, symbols=("XRPUSDT",)),
+            store,
+        )
+        async with httpx.AsyncClient(
+            base_url="https://fapi.binance.com",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            await collector._rest_premium_kline(  # noqa: SLF001
+                client, symbol="XRPUSDT"
+            )
+            await collector._rest_premium_kline(  # noqa: SLF001
+                client, symbol="XRPUSDT"
+            )
+
+        rows = list(
+            store._db.execute(  # noqa: SLF001
+                """
+                SELECT event_time
+                FROM pit_records
+                WHERE source = 'binance_usdm.premiumIndexKline1m'
+                ORDER BY event_time
+                """
+            )
+        )
+        assert [row["event_time"] for row in rows] == [
+            "2026-07-29T00:00:59.999000Z",
+            "2026-07-29T00:01:59.999000Z",
+            "2026-07-29T00:02:59.999000Z",
+            "2026-07-29T00:03:59.999000Z",
+        ]
 
 
 @pytest.mark.unit

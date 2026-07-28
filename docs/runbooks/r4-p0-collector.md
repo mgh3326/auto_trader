@@ -4,7 +4,8 @@ This is a manual, research-artifact-only point-in-time collector. It never
 writes the production database and is not registered with TaskIQ, cron, or
 Prefect. ROB-1108 adds epoch finalization, deadline recovery, independent
 replica awareness, and fail-fast alerting without changing feature, score,
-candidate, or stage-decision logic.
+candidate, or stage-decision logic. DFC-4H 1.5 advances the collector to
+`r4-p0-collector.v4`.
 
 ## Hard boundary
 
@@ -51,6 +52,13 @@ recovery path from acting as seed backfill. Any absence still unresolved at
 epoch finalization is `FINAL_MISSING`; two different canonical payloads for the
 same source identity are `FINAL_CONFLICT`, never last-write-wins
 `FINAL_COMPLETE`.
+
+The premium-index 1-minute poll establishes its live floor with the latest
+completed row. Every later poll requests the bounded range after the last
+stored close through the current request time, capped by the active four-hour
+contract window. A loop longer than 60 seconds therefore replays every missed
+completed slot instead of keeping only the newest row. The epoch supervisor
+remains the recovery path for a slot in the just-closed window.
 
 ## Modes
 
@@ -99,7 +107,7 @@ All persistence uses INSERT; database triggers reject UPDATE and DELETE.
 `record_id` is a semantic unique key, so replayed websocket events and
 unchanged REST periods are ignored after restart.
 
-ROB-1108 adds seven tables to the same local artifact. Every table has
+ROB-1108 and DFC-4H 1.5 add eight tables to the same local artifact. Every table has
 UPDATE/DELETE rejection triggers:
 
 - `epoch_source_events`: one immutable `OPEN` event per
@@ -116,6 +124,8 @@ UPDATE/DELETE rejection triggers:
 - `late_only_corrections`: observations received after the deadline. These
   never rewrite a finalization.
 - `collector_heartbeats`: append-only replica liveness evidence.
+- `collector_process_versions`: one append-only startup stamp per run with the
+  exact Git commit hash and collector version loaded by that process.
 - `collector_alert_events`: alert creation and each delivery result; failed
   delivery attempts are not overwritten.
 
@@ -128,8 +138,10 @@ silently reuse another finalization key.
 allows either every change or 1s snapshots); raw aggTrade, forceOrder snapshots,
 and top-5 depth updates are not sampled.
 
-The premium poll stores the live mark/index/predicted-funding snapshot and the
-latest completed 1-minute premium-index kline. An in-progress kline whose close
+The premium poll stores the live mark/index/predicted-funding snapshot and every
+completed 1-minute premium-index kline after the last stored close in the active
+contract window. The first observation still stores only the latest completed
+row, so this path cannot become seed backfill. An in-progress kline whose close
 time is after `request_completed_at` is rejected, so downstream PIT consumers
 cannot accidentally use its future close.
 
@@ -238,6 +250,14 @@ uv run python -m scripts.r4_p0_watchdog --run \
   --minimum-healthy-replicas 2
 ```
 
+At collector startup, `git rev-parse HEAD` is resolved from the loaded source
+tree and written to `collector_process_versions` before collection tasks start.
+The watchdog resolves its own deployed HEAD and compares it with the stamp tied
+to each current heartbeat `run_id`. Missing stamps and hash mismatches are
+`COLLECTOR_VERSION_MISMATCH`, remove that replica from the healthy count, and
+fail the rehearsal version gate. A checkout without resolvable Git metadata
+fails closed rather than starting an unstamped collector.
+
 The alert path is:
 
 ```text
@@ -245,6 +265,7 @@ epoch deadline risk (last hour) -> append-only alert ledger -> CRITICAL/WARNING 
                                                      \-> HTTPS webhook(s)
 final MISSING/CONFLICT --------> DATA_INTEGRITY_FAIL through the same path
 stale replica/finalizer --------> independent watchdog through the same path
+missing/mismatched code stamp --> COLLECTOR_VERSION_MISMATCH through the same path
 ```
 
 Logging is formatted in real UTC before adding the `Z` suffix. Webhook delivery
@@ -277,4 +298,5 @@ uv run python -m scripts.r4_p0_watchdog \
 Before T_WEEK0, the operator-owned one-week rehearsal must use the same source
 manifest, two-host topology, finalizer, and alert route. Acceptance is 100%
 `FINAL_COMPLETE`, zero `FINAL_MISSING`, zero `FINAL_CONFLICT`, zero stalled
-finalizers, and demonstrated page delivery under injected process/host loss.
+finalizers, a matching process-version stamp on both current collector run IDs,
+and demonstrated page delivery under injected process/host loss.

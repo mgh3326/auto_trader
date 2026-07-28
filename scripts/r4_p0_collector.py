@@ -25,6 +25,7 @@ from app.services.brokers.binance.r4_p0_collector import (
     BinanceR4P0Collector,
     CollectorConfig,
     redact_sample,
+    runtime_code_hash,
 )
 
 ENABLED_ENV = "R4_P0_COLLECTOR_ENABLED"
@@ -110,6 +111,7 @@ def _dry_run_payload(args: argparse.Namespace) -> dict[str, object]:
         "database_write": False,
         "broker_mutation": False,
         "collector_version": COLLECTOR_VERSION,
+        "code_hash": runtime_code_hash(),
         "symbols": list(SYMBOLS),
         "signal_symbols": ["XRPUSDT", "DOGEUSDT", "SOLUSDT"],
         "predictor_only_symbols": ["BTCUSDT"],
