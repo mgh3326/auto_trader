@@ -69,7 +69,7 @@ ACCOUNT_ORDER_STK_BOND_TP_DEFAULT = "0"  # kt00009 주식채권구분(전체)
 ACCOUNT_ORDER_MRKT_TP_DEFAULT = "0"  # ROB-1111 — kt00009 시장구분(전체)
 
 # ROB-1088 (2026-07-28, independent-verification fix) — 공식 Kiwoom REST 문서
-# (https://openapi.kiwoom.com/m/guide/apiguide?apiId=kt00009&jobTp=FS_JOB_TP&jobTpCode=02)
+# (https://openapi.kiwoom.com/m/guide/apiguide?apiId=kt00009&jobTp=FS_JOB_TP&jobTpCode=08)
 # 직접 확인 결과 kt00009(계좌별주문체결현황요청) 요청 body는 다음 5개 필드를
 # 전부 Required=Y로 요구한다(공식 HTML 표, 2026-07-28 확인):
 #   stk_bond_tp   Required=Y  "0:전체, 1:주식, 2:채권"

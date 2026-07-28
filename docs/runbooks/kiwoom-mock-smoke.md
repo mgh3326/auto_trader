@@ -134,7 +134,7 @@ stays deferred). To pick a conservative buy limit well below market that will
 > `stk_bond_tp`를, ROB-1111이 `mrkt_tp`를 각각 관례값으로 복구했으나, 그 시점에는
 > 공식 문서를 직접 확보하지 못해 두 필드만으로 충분한지 불확실했다.
 > **ROB-1088 독립 검증**이 공식 Kiwoom REST 문서
-> (`https://openapi.kiwoom.com/m/guide/apiguide?apiId=kt00009&jobTp=FS_JOB_TP&jobTpCode=02`,
+> (`https://openapi.kiwoom.com/m/guide/apiguide?apiId=kt00009&jobTp=FS_JOB_TP&jobTpCode=08`,
 > 2026-07-28 직접 확인)를 열어 kt00009 요청 body가 **5개 필드 전부 `Required=Y`**
 > 임을 확정했다:
 > `stk_bond_tp`(0:전체/1:주식/2:채권), `mrkt_tp`(0:전체/1:코스피/2:코스닥/3:OTCBB/

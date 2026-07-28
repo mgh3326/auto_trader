@@ -132,7 +132,7 @@ class KiwoomDomesticAccountClient:
             path=ACCOUNT_PATH,
             # ROB-1088 (2026-07-28, independent-verification fix) — Official
             # Kiwoom REST docs
-            # (https://openapi.kiwoom.com/m/guide/apiguide?apiId=kt00009&jobTp=FS_JOB_TP&jobTpCode=02)
+            # (https://openapi.kiwoom.com/m/guide/apiguide?apiId=kt00009&jobTp=FS_JOB_TP&jobTpCode=08)
             # list kt00009's request body as five Required=Y fields:
             #   stk_bond_tp   "0:전체, 1:주식, 2:채권"        (ROB-418)
             #   mrkt_tp       "0:전체, 1:코스피, 2:코스닥, 3:OTCBB, 4:ECN"  (ROB-1111)
