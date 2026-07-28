@@ -30,9 +30,9 @@ Clause map
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .tick import PRICE_MAX, PRICE_MIN, TickTable
 
@@ -78,16 +78,16 @@ class CostRecord:
     market: str
     buy_commission_rate_e12: int
     sell_commission_rate_e12: int
-    sell_tax_components: Tuple[SellTaxComponent, ...]
+    sell_tax_components: tuple[SellTaxComponent, ...]
     cost_basis: str = "REAL_TRADING_TARIFF"
-    effective_from: Optional[str] = None
-    effective_to: Optional[str] = None
-    source_snapshot_sha256: Optional[str] = None
+    effective_from: str | None = None
+    effective_to: str | None = None
+    source_snapshot_sha256: str | None = None
     probe_reconciliation_status: str = "PASS"
     mock_cost_relation: str = "DIFFERENT"
-    broker_id: Optional[str] = None
-    account_product_id: Optional[str] = None
-    order_channel_id: Optional[str] = None
+    broker_id: str | None = None
+    account_product_id: str | None = None
+    order_channel_id: str | None = None
 
     def total_sell_tax_rate_e12(self) -> int:
         """Sum of this record's sell tax components (§ⓒ decomposition)."""
@@ -154,9 +154,7 @@ def reduce_records(market: str, records: Sequence[CostRecord]) -> MarketCostInpu
         _require_rate_e12(rec.buy_commission_rate_e12, f"{market} buy")
         _require_rate_e12(rec.sell_commission_rate_e12, f"{market} sell")
         if not rec.sell_tax_components:
-            raise ReducerFailClosed(
-                "8.1(g)", f"{market}: sell_tax_components empty"
-            )
+            raise ReducerFailClosed("8.1(g)", f"{market}: sell_tax_components empty")
         seen: set = set()
         for comp in rec.sell_tax_components:
             if comp.component_code in seen:
@@ -218,13 +216,13 @@ def rho_entry_of(table: TickTable, price: int) -> Fraction:
     return Fraction(table.tick(price), price)
 
 
-def rho_exit_of(table: TickTable, price: int) -> Tuple[Fraction, int]:
+def rho_exit_of(table: TickTable, price: int) -> tuple[Fraction, int]:
     """§4.8 — (rho_exit, witness Q). Tie broken by the least Q.
 
     Maximum is taken over the finite candidate set X_m(P) of §4.6, which §4.7
     proves equals the supremum over all valid Q >= P.
     """
-    best: Optional[Fraction] = None
+    best: Fraction | None = None
     witness = 0
     for q in table.exit_candidates(price):  # ascending, so ">" keeps least Q
         ratio = Fraction(table.tick(q), q)
@@ -236,9 +234,7 @@ def rho_exit_of(table: TickTable, price: int) -> Tuple[Fraction, int]:
     return best, witness
 
 
-def candidate_at(
-    table: TickTable, cost: MarketCostInput, price: int
-) -> CandidateRow:
+def candidate_at(table: TickTable, cost: MarketCostInput, price: int) -> CandidateRow:
     """§5 — the stress break-even cost rate c_m(P) at one price."""
     rho_entry = rho_entry_of(table, price)
     rho_exit, witness = rho_exit_of(table, price)
@@ -250,8 +246,7 @@ def candidate_at(
     if exit_multiplier_cap <= 0:
         raise ReducerFailClosed(
             "8.1(k)",
-            f"{table.market} P={price}: exit_multiplier_cap="
-            f"{exit_multiplier_cap} <= 0",
+            f"{table.market} P={price}: exit_multiplier_cap={exit_multiplier_cap} <= 0",
         )
 
     c = entry_multiplier / exit_multiplier_cap - ONE
@@ -317,10 +312,10 @@ class MarketResult:
 
     market: str
     cost: MarketCostInput
-    candidates: List[CandidateRow]
+    candidates: list[CandidateRow]
     c_raw: Fraction
     witness_price: int
-    target_checks: List[TargetCheckRow] = field(default_factory=list)
+    target_checks: list[TargetCheckRow] = field(default_factory=list)
 
     @property
     def enumerated_count(self) -> int:
@@ -332,7 +327,7 @@ class ReducerResult:
     """§6/§7.6 reducer output."""
 
     reducer_spec_id: str
-    markets: Dict[str, MarketResult]
+    markets: dict[str, MarketResult]
     c_raw: Fraction
     witness_market: str
     witness_price: int
@@ -340,7 +335,7 @@ class ReducerResult:
     c_stress_cap: Fraction
     c_stress_cap_decimal: str
     all_target_checks_passed: bool
-    target_check_failures: List[TargetCheckRow] = field(default_factory=list)
+    target_check_failures: list[TargetCheckRow] = field(default_factory=list)
 
     @property
     def enumerated_count(self) -> int:
@@ -369,8 +364,8 @@ def reduce_market(
             "4.5", f"{table.market}: E_m is empty on [{price_min},{price_max}]"
         )
 
-    candidates: List[CandidateRow] = []
-    best: Optional[Fraction] = None
+    candidates: list[CandidateRow] = []
+    best: Fraction | None = None
     witness = 0
     for price in prices:
         row = candidate_at(table, cost, price)
@@ -395,7 +390,7 @@ def run_target_checks(
     cost: MarketCostInput,
     cap: Fraction,
     prices: Sequence[int],
-) -> List[TargetCheckRow]:
+) -> list[TargetCheckRow]:
     """§6.8 + §6.9 — build T(P) and verify the break-even inequality.
 
     ``T = tick_ceil(P * (1 + cap))`` with the product kept as an exact
@@ -405,12 +400,10 @@ def run_target_checks(
 
     with both sides exact Fractions.
     """
-    rows: List[TargetCheckRow] = []
+    rows: list[TargetCheckRow] = []
     for price in prices:
         target = table.tick_ceil(Fraction(price) * (ONE + cap))
-        lhs = target * (
-            ONE - cost.s - cost.tau - Fraction(table.tick(target), target)
-        )
+        lhs = target * (ONE - cost.s - cost.tau - Fraction(table.tick(target), target))
         rhs = price * (ONE + cost.b + Fraction(table.tick(price), price))
         rows.append(
             TargetCheckRow(
@@ -445,7 +438,7 @@ def reduce_c_stress_cap(
     if not tables:
         raise ReducerFailClosed("8.1(a)", "no markets supplied")
 
-    results: Dict[str, MarketResult] = {}
+    results: dict[str, MarketResult] = {}
     for market in sorted(tables):
         results[market] = reduce_market(
             tables[market], costs[market], price_min, price_max
@@ -453,7 +446,7 @@ def reduce_c_stress_cap(
 
     # §6 — C_raw = max(KOSPI, KOSDAQ); at a tie the witness market is KOSPI
     # (the value is unaffected, only the recorded witness).
-    c_raw: Optional[Fraction] = None
+    c_raw: Fraction | None = None
     witness_market = ""
     for market in sorted(results):
         candidate = results[market].c_raw
@@ -469,7 +462,7 @@ def reduce_c_stress_cap(
     bp = ceil_to_bp(c_raw)
     cap = Fraction(bp, BP_SCALE)
 
-    failures: List[TargetCheckRow] = []
+    failures: list[TargetCheckRow] = []
     for market in sorted(results):
         res = results[market]
         res.target_checks = run_target_checks(

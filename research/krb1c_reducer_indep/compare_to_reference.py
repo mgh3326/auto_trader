@@ -29,14 +29,13 @@ import csv
 import json
 import sys
 from fractions import Fraction
-from typing import Dict, List, Tuple
 
 from .cli import TABLES
 from .reducer import reduce_c_stress_cap
 from .sealed_input import sealed_cost_inputs
 
 # (reference column, this implementation's key)
-FIELD_MAP: Tuple[Tuple[str, str], ...] = (
+FIELD_MAP: tuple[tuple[str, str], ...] = (
     ("entry_price", "price"),
     ("entry_tick", "tick_at_price"),
     ("rho_entry_num", "rho_entry_num"),
@@ -58,9 +57,9 @@ FIELD_MAP: Tuple[Tuple[str, str], ...] = (
 BOOL_FIELDS = {"target_check_passed"}
 
 
-def independent_rows() -> Tuple[Dict[Tuple[str, int], dict], object]:
+def independent_rows() -> tuple[dict[tuple[str, int], dict], object]:
     result = reduce_c_stress_cap(TABLES, sealed_cost_inputs())
-    rows: Dict[Tuple[str, int], dict] = {}
+    rows: dict[tuple[str, int], dict] = {}
     for market, res in result.markets.items():
         checks = {c.price: c for c in res.target_checks}
         for row in res.candidates:
@@ -86,8 +85,8 @@ def independent_rows() -> Tuple[Dict[Tuple[str, int], dict], object]:
     return rows, result
 
 
-def reference_rows(path: str) -> Dict[Tuple[str, int], dict]:
-    rows: Dict[Tuple[str, int], dict] = {}
+def reference_rows(path: str) -> dict[tuple[str, int], dict]:
+    rows: dict[tuple[str, int], dict] = {}
     with open(path, encoding="utf-8", newline="") as handle:
         for rec in csv.DictReader(handle):
             key = (rec["market"], int(rec["entry_price"]))
@@ -104,7 +103,7 @@ def reference_rows(path: str) -> Dict[Tuple[str, int], dict]:
     return rows
 
 
-def main(argv: List[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reference-csv", required=True)
     parser.add_argument("--reference-result-json", default=None)
@@ -184,11 +183,7 @@ def main(argv: List[str] | None = None) -> int:
             print(f"  {'OK ' if ok else 'BAD'} {name}: mine={mine_v!r} ref={ref_v!r}")
 
     total = (
-        len(only_mine)
-        + len(only_ref)
-        + len(mismatches)
-        + value_mismatches
-        + scalar_bad
+        len(only_mine) + len(only_ref) + len(mismatches) + value_mismatches + scalar_bad
     )
     print(f"\nTOTAL DIVERGENCES: {total}")
     if total:

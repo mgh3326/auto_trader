@@ -118,7 +118,9 @@ def test_valid_prices_full_enumeration(table: TickTable) -> None:
     assert len(prices) == 4_001
     assert prices[0] == PRICE_MIN
     assert prices[-1] == PRICE_MAX
-    assert all(b > a for a, b in zip(prices, prices[1:]))
+    # strict=False is deliberate: this is an offset self-pairing, so the two
+    # operands differ in length by exactly one and strict=True would raise.
+    assert all(b > a for a, b in zip(prices, prices[1:], strict=False))
     assert all(table.is_valid_price(p) for p in prices)
 
     # band-by-band counts
@@ -132,9 +134,7 @@ def test_valid_prices_full_enumeration(table: TickTable) -> None:
 
     # completeness: the enumeration equals a brute-force filter of every
     # integer in range (no sampling, nothing skipped)
-    brute = tuple(
-        x for x in range(PRICE_MIN, PRICE_MAX + 1) if table.is_valid_price(x)
-    )
+    brute = tuple(x for x in range(PRICE_MIN, PRICE_MAX + 1) if table.is_valid_price(x))
     assert prices == brute
 
 

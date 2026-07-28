@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from typing import Dict, Sequence, Tuple
+from collections.abc import Sequence
 
 from .reducer import (
     CostRecord,
@@ -43,7 +43,7 @@ OFFICIAL_TARIFF_SNAPSHOT_SHA256 = (
     "8fd195fe7426ab66afca2ff131a08153afd114a2c0912b32e0924ba2434095af"
 )
 
-MARKETS: Tuple[str, ...] = ("KOSPI", "KOSDAQ")
+MARKETS: tuple[str, ...] = ("KOSPI", "KOSDAQ")
 
 # .cost_binding
 BUY_COMMISSION_RATE_E12 = 150_000_000
@@ -54,14 +54,12 @@ ORDER_CHANNEL_ID = "KIWOOM_OPENAPI_KRX"
 COST_BASIS = "REAL_TRADING_TARIFF"
 
 # .sell_tax_components
-SELL_TAX_COMPONENTS: Dict[str, Tuple[Tuple[str, int], ...]] = {
+SELL_TAX_COMPONENTS: dict[str, tuple[tuple[str, int], ...]] = {
     "KOSPI": (
         ("KOSPI_SECURITIES_TRANSACTION_TAX", 500_000_000),
         ("KOSPI_RURAL_SPECIAL_TAX", 1_500_000_000),
     ),
-    "KOSDAQ": (
-        ("KOSDAQ_SECURITIES_TRANSACTION_TAX", 2_000_000_000),
-    ),
+    "KOSDAQ": (("KOSDAQ_SECURITIES_TRANSACTION_TAX", 2_000_000_000),),
 }
 
 
@@ -71,8 +69,7 @@ def _record(market: str) -> CostRecord:
         buy_commission_rate_e12=BUY_COMMISSION_RATE_E12,
         sell_commission_rate_e12=SELL_COMMISSION_RATE_E12,
         sell_tax_components=tuple(
-            SellTaxComponent(code, rate)
-            for code, rate in SELL_TAX_COMPONENTS[market]
+            SellTaxComponent(code, rate) for code, rate in SELL_TAX_COMPONENTS[market]
         ),
         cost_basis=COST_BASIS,
         effective_from=None,
@@ -86,12 +83,12 @@ def _record(market: str) -> CostRecord:
     )
 
 
-def sealed_records() -> Dict[str, Tuple[CostRecord, ...]]:
+def sealed_records() -> dict[str, tuple[CostRecord, ...]]:
     """The binding market_cost_records, one current-tariff record per market."""
     return {market: (_record(market),) for market in MARKETS}
 
 
-def sealed_cost_inputs() -> Dict[str, MarketCostInput]:
+def sealed_cost_inputs() -> dict[str, MarketCostInput]:
     """§3 reduction of the sealed records into B_m / S_m / A_m per market."""
     return {
         market: reduce_records(market, records)
@@ -118,7 +115,7 @@ def default_canonical_path() -> str:
     )
 
 
-def load_from_canonical(path: str | None = None) -> Dict[str, MarketCostInput]:
+def load_from_canonical(path: str | None = None) -> dict[str, MarketCostInput]:
     """Re-read the sealed canonical and cross-check the transcribed constants.
 
     Fails closed (§8.1(c)/(g)) on a hash mismatch or any numeric divergence.
@@ -132,7 +129,7 @@ def load_from_canonical(path: str | None = None) -> Dict[str, MarketCostInput]:
             f"{AMENDMENT_CANONICAL_SHA256}, got {actual}",
         )
 
-    with open(path, "r", encoding="utf-8") as handle:
+    with open(path, encoding="utf-8") as handle:
         doc = json.load(handle)
 
     binding = doc["cost_binding"]
@@ -158,8 +155,7 @@ def load_from_canonical(path: str | None = None) -> Dict[str, MarketCostInput]:
         if binding[key] != expected_str:
             raise ReducerFailClosed(
                 "8.1(d)",
-                f"canonical {key}={binding[key]!r} != transcribed "
-                f"{expected_str!r}",
+                f"canonical {key}={binding[key]!r} != transcribed {expected_str!r}",
             )
 
     taxes = doc["sell_tax_components"]

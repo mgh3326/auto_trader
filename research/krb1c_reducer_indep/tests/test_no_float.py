@@ -39,28 +39,21 @@ def test_package_has_sources() -> None:
     assert package_sources(), "no sources found — guard would vacuously pass"
 
 
-@pytest.mark.parametrize(
-    "path", package_sources(), ids=lambda p: p.name
-)
+@pytest.mark.parametrize("path", package_sources(), ids=lambda p: p.name)
 def test_source_has_no_float_or_decimal(path: pathlib.Path) -> None:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     problems: list[str] = []
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(
-            node.value, (float, complex)
-        ):
+        if isinstance(node, ast.Constant) and isinstance(node.value, (float, complex)):
             problems.append(
-                f"{path.name}:{node.lineno} float/complex literal "
-                f"{node.value!r}"
+                f"{path.name}:{node.lineno} float/complex literal {node.value!r}"
             )
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 root = alias.name.split(".")[0]
                 if root in FORBIDDEN_MODULES:
-                    problems.append(
-                        f"{path.name}:{node.lineno} import {alias.name}"
-                    )
+                    problems.append(f"{path.name}:{node.lineno} import {alias.name}")
         elif isinstance(node, ast.ImportFrom):
             root = (node.module or "").split(".")[0]
             if root in FORBIDDEN_MODULES:
@@ -69,9 +62,7 @@ def test_source_has_no_float_or_decimal(path: pathlib.Path) -> None:
                 )
             for alias in node.names:
                 if alias.name in FORBIDDEN_NAMES:
-                    problems.append(
-                        f"{path.name}:{node.lineno} imports {alias.name}"
-                    )
+                    problems.append(f"{path.name}:{node.lineno} imports {alias.name}")
         elif isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
             # `float` inside an isinstance-style guard would still be a Name;
             # the package uses none, so any occurrence is reported.

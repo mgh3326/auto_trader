@@ -45,13 +45,13 @@ def test_sealed_cost_inputs_match_binding() -> None:
 
 
 def _rec(**kwargs) -> CostRecord:
-    base = dict(
-        market="KOSPI",
-        buy_commission_rate_e12=100,
-        sell_commission_rate_e12=200,
-        sell_tax_components=(SellTaxComponent("T", 300),),
-        source_snapshot_sha256="x" * 64,
-    )
+    base = {
+        "market": "KOSPI",
+        "buy_commission_rate_e12": 100,
+        "sell_commission_rate_e12": 200,
+        "sell_tax_components": (SellTaxComponent("T", 300),),
+        "source_snapshot_sha256": "x" * 64,
+    }
     base.update(kwargs)
     return CostRecord(**base)  # type: ignore[arg-type]
 
@@ -242,9 +242,7 @@ def test_market_c_raw_witness_is_least_price_on_tie() -> None:
 def test_full_reduction_closed_form() -> None:
     result = reduce_c_stress_cap(TABLES, sealed_cost_inputs())
 
-    expected_c_raw = (
-        (1 + B + Fraction(1, 400)) / (1 - S - TAU - Fraction(1, 400)) - 1
-    )
+    expected_c_raw = (1 + B + Fraction(1, 400)) / (1 - S - TAU - Fraction(1, 400)) - 1
     assert result.c_raw == expected_c_raw
     assert result.c_stress_cap_bp == ceil_to_bp(expected_c_raw)
     assert result.c_stress_cap == Fraction(result.c_stress_cap_bp, 10_000)
@@ -260,8 +258,7 @@ def test_both_markets_agree_under_identical_binding() -> None:
     result = reduce_c_stress_cap(TABLES, sealed_cost_inputs())
     assert result.markets["KOSPI"].c_raw == result.markets["KOSDAQ"].c_raw
     assert (
-        result.markets["KOSPI"].witness_price
-        == result.markets["KOSDAQ"].witness_price
+        result.markets["KOSPI"].witness_price == result.markets["KOSDAQ"].witness_price
     )
 
 
@@ -281,15 +278,10 @@ def test_target_check_holds_at_every_price() -> None:
         cost = res.cost
         assert len(res.target_checks) == len(res.candidates)
         for check in res.target_checks:
-            assert check.target == table.tick_ceil(
-                Fraction(check.price) * (1 + cap)
-            )
+            assert check.target == table.tick_ceil(Fraction(check.price) * (1 + cap))
             assert check.target >= check.price
             lhs = check.target * (
-                1
-                - cost.s
-                - cost.tau
-                - Fraction(table.tick(check.target), check.target)
+                1 - cost.s - cost.tau - Fraction(table.tick(check.target), check.target)
             )
             rhs = check.price * (
                 1 + cost.b + Fraction(table.tick(check.price), check.price)

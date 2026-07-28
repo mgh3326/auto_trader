@@ -29,18 +29,18 @@ produce a P0-2 completion hash and is not the "정확히 1회" binding numeric
 reducer execution of §7.2.
 """
 
-from .tick import (
-    KOSDAQ_TICK_TABLE,
-    KOSPI_TICK_TABLE,
-    TickTable,
-    TickBand,
-)
 from .reducer import (
     CandidateRow,
     MarketCostInput,
     MarketResult,
     ReducerResult,
     reduce_c_stress_cap,
+)
+from .tick import (
+    KOSDAQ_TICK_TABLE,
+    KOSPI_TICK_TABLE,
+    TickBand,
+    TickTable,
 )
 
 __all__ = [

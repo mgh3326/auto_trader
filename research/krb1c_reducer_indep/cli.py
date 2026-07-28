@@ -23,7 +23,6 @@ import json
 import os
 import sys
 from fractions import Fraction
-from typing import Dict
 
 from .reducer import (
     MarketCostInput,
@@ -66,7 +65,7 @@ CANDIDATE_FIELDS = (
 assert len(CANDIDATE_FIELDS) == 17, "§7.5 requires 17 fields"
 
 
-def frac(value: Fraction) -> Dict[str, int]:
+def frac(value: Fraction) -> dict[str, int]:
     """Reduced-fraction rendering. ``Fraction`` is always in lowest terms."""
     return {"num": value.numerator, "den": value.denominator}
 
@@ -104,7 +103,7 @@ def write_candidates_csv(result: ReducerResult, path: str) -> int:
     return rows
 
 
-def build_normalized_inputs(costs: Dict[str, MarketCostInput]) -> dict:
+def build_normalized_inputs(costs: dict[str, MarketCostInput]) -> dict:
     return {
         "schema_version": "krb1.p0_2_cost_inputs.v1",
         "parent_canonical_sha256": PARENT_CANONICAL_SHA256,
@@ -248,14 +247,18 @@ def main(argv: list[str] | None = None) -> int:
             allow_nan=False,
         )
 
-    print(f"C_raw            = {result.c_raw} "
-          f"({result.c_raw.numerator}/{result.c_raw.denominator})")
+    print(
+        f"C_raw            = {result.c_raw} "
+        f"({result.c_raw.numerator}/{result.c_raw.denominator})"
+    )
     print(f"witness          = {result.witness_market} P={result.witness_price}")
     print(f"C_stress_cap_bp  = {result.c_stress_cap_bp}")
     print(f"C_stress_cap     = {result.c_stress_cap_decimal}")
     print(f"candidates       = {rows}")
-    print(f"target checks    = {result.target_check_count} "
-          f"(all passed = {result.all_target_checks_passed})")
+    print(
+        f"target checks    = {result.target_check_count} "
+        f"(all passed = {result.all_target_checks_passed})"
+    )
     for market in sorted(result.markets):
         res = result.markets[market]
         print(

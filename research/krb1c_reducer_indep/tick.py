@@ -31,9 +31,9 @@ sealed data, and the tick_ceil semantics are re-derived from the clause.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Optional, Sequence, Tuple
 
 # §6.2.1 §1.3 — 가격 범위 5,000 ≤ P ≤ 400,000 정수 KRW.
 PRICE_MIN: int = 5_000
@@ -52,7 +52,7 @@ class TickBand:
     """
 
     lower: int
-    upper: Optional[int]
+    upper: int | None
     tick: int
 
     def __post_init__(self) -> None:
@@ -105,18 +105,13 @@ class TickTable:
         bands = tuple(bands)
 
         if bands[0].lower != 0:
-            raise TickTableError(
-                f"first band must start at 0, got {bands[0].lower}"
-            )
+            raise TickTableError(f"first band must start at 0, got {bands[0].lower}")
         for i in range(len(bands) - 1):
             if bands[i].upper is None:
-                raise TickTableError(
-                    f"open-ended band at index {i} is not last (§4.3)"
-                )
+                raise TickTableError(f"open-ended band at index {i} is not last (§4.3)")
             if bands[i].upper != bands[i + 1].lower:
                 raise TickTableError(
-                    "band gap/overlap between "
-                    f"{bands[i]} and {bands[i + 1]} (§4.2)"
+                    f"band gap/overlap between {bands[i]} and {bands[i + 1]} (§4.2)"
                 )
         if bands[-1].upper is not None:
             raise TickTableError("last band must be open-ended (§4.3)")
@@ -142,7 +137,7 @@ class TickTable:
                 return band.tick
         raise TickTableError(f"no band covers price {x}")  # pragma: no cover
 
-    def band_lower_bounds(self) -> Tuple[int, ...]:
+    def band_lower_bounds(self) -> tuple[int, ...]:
         """The ordered band lower bounds ``d_h`` (§4.6 candidate generators)."""
         return tuple(band.lower for band in self.bands)
 
@@ -151,7 +146,7 @@ class TickTable:
         _require_nonneg_int(x, "price")
         return x % self.tick(x) == 0
 
-    def tick_ceil(self, x: "int | Fraction") -> int:
+    def tick_ceil(self, x: int | Fraction) -> int:
         """Smallest valid quote price ``>= x``. Exact arithmetic, int result.
 
         Accepts an exact ``Fraction`` as well as an ``int`` so that §6.8's
@@ -192,7 +187,7 @@ class TickTable:
 
     def valid_prices(
         self, low: int = PRICE_MIN, high: int = PRICE_MAX
-    ) -> Tuple[int, ...]:
+    ) -> tuple[int, ...]:
         """E_m — full enumeration, exactly per §4.5.
 
         ``p_0 = tick_ceil(low)``; ``p_{k+1} = tick_ceil(p_k + 1)``; stop once
@@ -221,7 +216,7 @@ class TickTable:
 
     # ---- §4.6 exit candidate set ----------------------------------------
 
-    def exit_candidates(self, price: int) -> Tuple[int, ...]:
+    def exit_candidates(self, price: int) -> tuple[int, ...]:
         """X_m(P) = {P} ∪ {tick_ceil(d_h) : d_h > P}, ascending, deduplicated.
 
         Finite by §4.7: inside a band ``tick(Q)/Q`` is strictly decreasing in
@@ -258,7 +253,7 @@ def _require_nonneg_exact(x: object, label: str) -> None:
         raise TickTableError(f"{label} must be >= 0, got {x}")
 
 
-def _ceil_int(x: "int | Fraction", divisor: int) -> int:
+def _ceil_int(x: int | Fraction, divisor: int) -> int:
     """``ceil(x / divisor)`` as an exact integer. ``divisor > 0`` required."""
     if divisor <= 0:  # pragma: no cover - guarded at construction
         raise TickTableError(f"divisor must be > 0, got {divisor}")
