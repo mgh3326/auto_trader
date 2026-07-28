@@ -35,9 +35,13 @@ these boundaries:
   reads 중 **kt00018(잔고)** 의 요청 본문에만 `dmst_stex_tp="KRX"`를 채운다.
   이 값은 order 엔드포인트(kt10000-kt10003)에서 이미 검증된 값(추측 아님)이며
   mock은 KRX 전용이다. **경계 결정:** kt00010(주문가능, with-symbol)은
-  `stk_cd`/`trde_tp`/`uv`만 보내고 `dmst_stex_tp`를 보내지 않는다. order-history reads
-  **kt00009/kt00007**는 의도적으로 미변경 — 이미 ROB-418로 복구됐고 `dmst_stex_tp`
+  `stk_cd`/`trde_tp`/`uv`만 보내고 `dmst_stex_tp`를 보내지 않는다. 당시(2026-06-09)
+  **kt00009/kt00007**는 의도적으로 미변경 — ROB-418로 이미 복구됐고 `dmst_stex_tp`
   필요가 입증되지 않았다(작동 중인 엔드포인트에 추측 파라미터를 더해 회귀시키지 않음).
+  **이 판단은 ROB-1088(2026-07-28)에서 뒤집혔다** — kt00009는 공식 문서 확인 결과
+  `dmst_stex_tp`를 포함한 5필드 전부가 Required=Y이며, 현재 코드는 5필드를 모두
+  보낸다(kt00007은 여전히 코드가 호출하지 않으므로 미해당). 아래 ROB-1111/ROB-1088
+  블록 참고.
   아래 smoke 체크리스트로 4개 read 도구를 한 번에 검증하여 잔여 누락을 선제 포착한다.
 - **ROB-899 — confirmed place preflight/dispatch client reuse:** confirmed place는
   preflight와 broker POST가 하나의 request-scoped `KiwoomMockClient`를 재사용하며,
@@ -125,19 +129,25 @@ stays deferred). To pick a conservative buy limit well below market that will
 > **kt00001(예수금상세현황)** 을 사용한다. kt00018의 `prsm_dpst_aset_amt`는
 > 추정예탁자산으로 보유증권 평가액을 포함하므로 주문가능현금의 근거가 될 수 없다.
 
-> **ROB-1111/ROB-1088 (2026-07-28):** `kiwoom_mock_get_order_history`(kt00009)가
-> `mrkt_tp`(시장구분) 누락으로 **전건 실패**했다(`return_code 2`,
-> `필수입력 파라미터=mrkt_tp`). `mrkt_tp="0"`(전체) 추가로 복구(PR #1693).
-> **이 값은 유닛테스트로만 검증됐고 mockapi.kiwoom.com 실호출로 확인된 적이
-> 없다(미검증).** 공식 apiportal.kiwoom.com 문서도 이 세션들에서 직접 확보하지
-> 못했다 — 근거는 kt00009와 필드가 겹치는 kt00007/kt00018을 실측-일치 필드명으로
-> 문서화한 서드파티 REST 클라이언트(bamjun/kiwoom-rest-api)뿐이다. 그 문서는
-> `sell_tp`(매도수구분)·`qry_tp`(조회구분)·`dmst_stex_tp`(국내거래소구분) 3개도
-> kt00009 필수 인자로 기술하지만, 이 3개는 **추측이라 아직 코드에 추가하지
-> 않았다**. 07-29 08:50 KR-B1 P0-3 스모크에서 `kiwoom_mock_get_order_history`를
-> 호출할 때 `return_code 2`(`필수입력 파라미터=sell_tp|qry_tp|dmst_stex_tp`)가
-> 재현되면 그 이름을 근거로 즉시 후속 fix를 연다 — 추측하지 말고 그 스모크의
-> 원문 오류를 근거로 확정한다.
+> **ROB-1111/ROB-1088 (2026-07-28, 공식 문서 확정):** `kiwoom_mock_get_order_history`
+> (kt00009)가 필수 파라미터 누락으로 **전건 실패**했다(`return_code 2`). ROB-418이
+> `stk_bond_tp`를, ROB-1111이 `mrkt_tp`를 각각 관례값으로 복구했으나, 그 시점에는
+> 공식 문서를 직접 확보하지 못해 두 필드만으로 충분한지 불확실했다.
+> **ROB-1088 독립 검증**이 공식 Kiwoom REST 문서
+> (`https://openapi.kiwoom.com/m/guide/apiguide?apiId=kt00009&jobTp=FS_JOB_TP&jobTpCode=02`,
+> 2026-07-28 직접 확인)를 열어 kt00009 요청 body가 **5개 필드 전부 `Required=Y`**
+> 임을 확정했다:
+> `stk_bond_tp`(0:전체/1:주식/2:채권), `mrkt_tp`(0:전체/1:코스피/2:코스닥/3:OTCBB/
+> 4:ECN), `sell_tp`(0:전체/1:매도/2:매수), `qry_tp`(0:전체/1:체결), `dmst_stex_tp`
+> (%:전체/KRX/NXT/SOR). 코드는 현재 5개 필드 전부를 보낸다.
+> `dmst_stex_tp`는 공식 문서상 `%`(전체)도 허용되지만, kiwoom_mock의 KRX-only
+> 경계(`MOCK_REJECTED_EXCHANGES={"NXT","SOR"}`)와 정합하도록 명시적으로 `KRX`를
+> 보낸다(`%`는 NXT/SOR 결과까지 섞어 그 경계를 사실상 무력화하므로 선택하지 않음).
+> **이 5필드 조합이 `return_code 0`을 낸다는 실제 mockapi.kiwoom.com 호출 증거는
+> 아직 없다** — 이 코드베이스에서는 유닛테스트로만 검증됐다(mutation/실호출 금지
+> 제약). 07-29 08:50 KR-B1 P0-3 스모크가 최초의 실제 검증 기회다. 그 스모크에서도
+> `return_code 2`가 재현되면, 위 5필드 외 정본 문서에 없는 추가 요구사항이 있다는
+> 뜻이므로 그 원문 오류 메시지를 근거로 후속 조사를 연다(추측 금지).
 
 ### 공식 TR 계약 (Kiwoom REST docs 기준)
 
@@ -146,7 +156,7 @@ stays deferred). To pick a conservative buy limit well below market that will
 | `kiwoom_mock_get_positions` | kt00018 | `qry_tp=1`, `dmst_stex_tp=KRX` | `acnt_evlt_remn_indv_tot` | `return_code 0` |
 | `kiwoom_mock_get_orderable_cash` (no symbol) | **kt00001** | `qry_tp=2` | `ord_alow_amt` | `return_code 0` |
 | `kiwoom_mock_get_orderable_cash` (with symbol) | kt00010 | `stk_cd`, `trde_tp`, `uv` | `ord_alowa` | `return_code 0` |
-| `kiwoom_mock_get_order_history` | kt00009 | `stk_bond_tp=0`, `mrkt_tp=0` | `acnt_ord_cntr_prst_array` | `return_code 0` (mrkt_tp 미검증, 위 경고 참고) |
+| `kiwoom_mock_get_order_history` | kt00009 | `stk_bond_tp=0`, `mrkt_tp=0`, `sell_tp=0`, `qry_tp=0`, `dmst_stex_tp=KRX` | `acnt_ord_cntr_prst_array` | `return_code 0` (실호출로 미검증, 위 경고 참고) |
 
 > **주의:** kt00001은 `qry_tp=2`만 요구하며 **`dmst_stex_tp`를 보내지 않는다**.
 > kt00010은 `stk_cd`/`trde_tp`/`uv`만 요구하며 **`dmst_stex_tp`를 보내지 않는다**.
@@ -158,13 +168,13 @@ stays deferred). To pick a conservative buy limit well below market that will
 | kt00018 | 잔고/포지션 (sellable 포함) | `qry_tp=1`, `dmst_stex_tp=KRX` | `acnt_evlt_remn_indv_tot` |
 | kt00001 | no-symbol 예수금/주문가능현금 | `qry_tp=2` | `ord_alow_amt` |
 | kt00010 | symbol/side/price 주문가능금액 | `stk_cd`, `trde_tp`, `uv` | `ord_alowa` |
-| kt00009 | 주문 이력 | `stk_bond_tp=0`, `mrkt_tp=0` | `acnt_ord_cntr_prst_array` |
+| kt00009 | 주문 이력 | `stk_bond_tp=0`, `mrkt_tp=0`, `sell_tp=0`, `qry_tp=0`, `dmst_stex_tp=KRX` | `acnt_ord_cntr_prst_array` |
 
 - 어떤 도구든 `필수입력 파라미터=<name>`(`return_code 2`)가 나오면 그 `<name>`을
   기록하고 해당 broker API 본문에 추가하는 follow-up을 연다(추측 금지, 증명된 누락만).
-- kt00009는 ROB-418(`stk_bond_tp`)·ROB-1111(`mrkt_tp`)로 2차례 부분 복구됐다 —
-  `sell_tp`/`qry_tp`/`dmst_stex_tp`가 남아 있을 가능성은 위 ROB-1111/ROB-1088 경고
-  참고. kt00007은 코드가 아직 호출하지 않으므로 미해당.
+- kt00009는 ROB-418(`stk_bond_tp`)·ROB-1111(`mrkt_tp`)·ROB-1088(공식 문서 확정,
+  `sell_tp`/`qry_tp`/`dmst_stex_tp`)로 완전히 5필드 공식 계약을 만족하도록 복구됐다
+  — 위 ROB-1111/ROB-1088 경고 참고. kt00007은 코드가 아직 호출하지 않으므로 미해당.
 - **US 경로(`kiwoom_mock_us_*`)는 kt00009/mrkt_tp와 무관하다** — `ust21050`/
   `ust21070`/`ust21510`/`ust21160` 등 별도 TR family를 쓰며 어떤 US 코드도
   `ACCOUNT_ORDER_STATUS_API_ID`("kt00009")를 참조하지 않는다(ROB-1088, 2026-07-28

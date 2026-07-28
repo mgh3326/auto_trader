@@ -138,6 +138,7 @@ _TRUSTED_CONTRACT_OUTPUT_KEYS: frozenset[str] = frozenset(
         "uv",
         "stk_bond_tp",
         "mrkt_tp",
+        "sell_tp",
     }
 )
 
@@ -685,7 +686,18 @@ _CONTRACT_STEPS_SPEC: list[dict[str, Any]] = [
         "evidence_kind": "order_history",
         "tool_args": {},
         "contract_fields": {
-            "request_body": {"stk_bond_tp": "0", "mrkt_tp": "0"},
+            # ROB-1088 (2026-07-28, official-doc fix) — kt00009 official
+            # contract requires all five Required=Y fields; sell_tp/qry_tp/
+            # dmst_stex_tp were added on top of the earlier stk_bond_tp/
+            # mrkt_tp-only body after independent verification confirmed the
+            # official doc lists all five as required.
+            "request_body": {
+                "stk_bond_tp": "0",
+                "mrkt_tp": "0",
+                "sell_tp": "0",
+                "qry_tp": "0",
+                "dmst_stex_tp": "KRX",
+            },
             "response_array": "acnt_ord_cntr_prst_array",
         },
     },
