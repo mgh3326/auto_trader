@@ -173,9 +173,7 @@ def test_failed_config_cannot_be_removed_from_multiple_testing_denominator() -> 
         _trial(
             config,
             status=(
-                "insufficient_sample"
-                if config.config_id == "AP-A1-00"
-                else "executed"
+                "insufficient_sample" if config.config_id == "AP-A1-00" else "executed"
             ),
         )
         for config in configs
@@ -267,16 +265,16 @@ def test_one_config_status_change_changes_semantic_hash() -> None:
         status="turnover_band_reject",
     )
 
-    assert _seal(tuple(base_trials)).semantic_hash != _seal(
-        tuple(changed_trials)
-    ).semantic_hash
+    assert (
+        _seal(tuple(base_trials)).semantic_hash
+        != _seal(tuple(changed_trials)).semantic_hash
+    )
 
 
 def test_container_permutation_is_byte_identical() -> None:
     trials = _complete_trials()
     permuted = tuple(
-        replace(trial, cells=tuple(reversed(trial.cells)))
-        for trial in reversed(trials)
+        replace(trial, cells=tuple(reversed(trial.cells))) for trial in reversed(trials)
     )
 
     first = _seal(trials)
@@ -325,7 +323,8 @@ def test_unobserved_value_requires_explicit_null_and_reason() -> None:
 
 
 def test_report_exposes_h5_gate_fields_explicitly() -> None:
-    report = _seal(_complete_trials()).report.to_payload()
+    seal = _seal(_complete_trials())
+    report = a.verify_seal_for_h5(seal).to_payload()
     for field in (
         "expected",
         "registered",
@@ -343,3 +342,32 @@ def test_report_exposes_h5_gate_fields_explicitly() -> None:
     assert report["cells"] == 128
     assert report["retry"] == 0
     assert report["performance_usable"] is True
+
+
+def test_h5_verifies_seal_instead_of_reconstructing_partial_subset() -> None:
+    trials = list(_complete_trials())
+    trials[0] = _trial(
+        _expected_configs()[0],
+        status="structural_incomplete",
+    )
+    incomplete = _seal(tuple(trials))
+
+    with pytest.raises(a.H5GateBlocked, match="whole campaign incomplete"):
+        a.verify_seal_for_h5(incomplete)
+    with pytest.raises(a.SealIntegrityError, match="integrity"):
+        a.verify_seal_for_h5(replace(_seal(_complete_trials()), semantic_hash="0" * 64))
+
+
+def test_non_primary_or_config_hash_drift_blocks_h5() -> None:
+    non_primary = list(_complete_trials())
+    non_primary[0] = replace(non_primary[0], primary=False)
+    hash_drift = list(_complete_trials())
+    hash_drift[0] = replace(hash_drift[0], config_hash="e" * 64)
+
+    non_primary_seal = _seal(tuple(non_primary))
+    hash_drift_seal = _seal(tuple(hash_drift))
+
+    assert non_primary_seal.report.primary == 15
+    assert non_primary_seal.report.performance_usable is False
+    assert "config_hash_mismatch" in hash_drift_seal.report.violations
+    assert hash_drift_seal.report.performance_usable is False

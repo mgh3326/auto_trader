@@ -7,13 +7,17 @@ _HERE = Path(__file__).resolve().parent
 _REPO_ROOT = _HERE.parent.parent.parent
 _PACKAGE = _HERE.parent
 _NAUTILUS_SCALPING = _REPO_ROOT / "research" / "nautilus_scalping"
+_ALPACA_TRACK = _REPO_ROOT / "research" / "alpaca_track"
 _ALPACA_TRACK_SEAL = _REPO_ROOT / "research" / "alpaca_track_seal"
+_ALPACA_TRACK_SIGNALS = _REPO_ROOT / "research" / "alpaca_track_signals"
 _ALPACA_TRACK_WALKFORWARD = _REPO_ROOT / "research" / "alpaca_track_walkforward"
 
 for _path in (
     _PACKAGE,
     _NAUTILUS_SCALPING,
+    _ALPACA_TRACK,
     _ALPACA_TRACK_SEAL,
+    _ALPACA_TRACK_SIGNALS,
     _ALPACA_TRACK_WALKFORWARD,
     _REPO_ROOT,
 ):

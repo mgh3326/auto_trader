@@ -377,6 +377,14 @@ jobs:
         # path -- a nonzero exit fails this step, so this job cannot pass
         # silently on zero collected tests.
 
+    - name: Run ROB-1064 alpaca_track_accounting H6 accounting-seal tests (network-0, no DB/Redis)
+      if: ${{ !cancelled() }}
+      run: |
+        uv run pytest research/alpaca_track_accounting/tests/ -v --strict-markers -ra
+        # H6 is the fail-closed predecessor of H5. This explicit invocation
+        # keeps its 16-config/128-cell accounting boundary from disappearing
+        # behind the repository's canonical tests/ discovery root.
+
   notify:
     if: failure()
     needs: [lint, test, taskiq-smoke, security, alpaca-track-fast-tests, alpaca-track-walkforward-tests]

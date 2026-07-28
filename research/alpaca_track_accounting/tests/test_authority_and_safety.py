@@ -23,7 +23,7 @@ def test_authority_binds_exact_h2_configs_h4_folds_and_provenance() -> None:
     assert len(provenance.corpus_manifest_hash) == 64
     assert len(provenance.fold_schedule_hash) == 64
     assert len(provenance.code_hash) == 64
-    assert provenance.run_id
+    assert provenance.run_id == "rob1062-h4-synthetic-ac27-v1"
 
 
 def test_current_seal_is_truthful_structural_incomplete_not_fake_success() -> None:
@@ -37,9 +37,11 @@ def test_current_seal_is_truthful_structural_incomplete_not_fake_success() -> No
     assert seal.report.retry == 0
     assert seal.report.structural_incomplete == 16
     assert seal.report.performance_usable is False
-    assert {trial.current_status for trial in seal.trials} == {
-        "structural_incomplete"
-    }
+    assert (
+        seal.semantic_hash
+        == "b57a600c347b377e93565435502c6c9988063342d514eb26a0fcc1f6811556ef"
+    )
+    assert {trial.current_status for trial in seal.trials} == {"structural_incomplete"}
     assert all(
         cell.observation_count is None and cell.unobserved_reason
         for trial in seal.trials
@@ -48,9 +50,7 @@ def test_current_seal_is_truthful_structural_incomplete_not_fake_success() -> No
 
 
 def test_committed_current_report_is_exact_deterministic_generator_output() -> None:
-    committed = (
-        _PACKAGE / "sealed_reports" / "rob-1064-current.json"
-    ).read_bytes()
+    committed = (_PACKAGE / "sealed_reports" / "rob-1064-current.json").read_bytes()
     generated = authority.build_current_seal().to_bytes()
 
     assert committed == generated
@@ -73,6 +73,7 @@ def test_package_has_no_runtime_or_side_effect_imports() -> None:
         "socket",
         "sqlalchemy",
         "taskiq",
+        "time",
     }
     for path in _PACKAGE.glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -99,8 +100,7 @@ def test_no_broker_order_scheduler_or_performance_surface() -> None:
         "hit_rate",
     )
     source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in _PACKAGE.glob("*.py")
+        path.read_text(encoding="utf-8") for path in _PACKAGE.glob("*.py")
     ).lower()
     for token in forbidden_tokens:
         assert token not in source
