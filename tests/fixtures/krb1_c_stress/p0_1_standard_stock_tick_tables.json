@@ -1,0 +1,37 @@
+{
+  "schema_version": "krb1.reference.tick_tables.v1",
+  "parent_canonical_sha256": "d5e1246b2072ad227d924e059091e27fa49719e42a5bfba651ae8f2bced9d6f1",
+  "symbol_table_mapping_status": "COMPLETE",
+  "markets": {
+    "KOSPI": {
+      "table_id": "KRX_KOSPI_STANDARD_STOCK_2023_PLUS",
+      "instrument_scope": "STANDARD_STOCK_ONLY_TEST_FIXTURE",
+      "source_locator": "repository:app/mcp_server/tick_size.py",
+      "source_snapshot_sha256": "0b99d17d7fc59a9f8ef792d38548c85d37256360c424bba053c19a597bb17f18",
+      "bands": [
+        {"lower": 0, "upper_exclusive": 2000, "tick": 1},
+        {"lower": 2000, "upper_exclusive": 5000, "tick": 5},
+        {"lower": 5000, "upper_exclusive": 20000, "tick": 10},
+        {"lower": 20000, "upper_exclusive": 50000, "tick": 50},
+        {"lower": 50000, "upper_exclusive": 200000, "tick": 100},
+        {"lower": 200000, "upper_exclusive": 500000, "tick": 500},
+        {"lower": 500000, "upper_exclusive": null, "tick": 1000}
+      ]
+    },
+    "KOSDAQ": {
+      "table_id": "KRX_KOSDAQ_STANDARD_STOCK_2023_PLUS",
+      "instrument_scope": "STANDARD_STOCK_ONLY_TEST_FIXTURE",
+      "source_locator": "repository:app/mcp_server/tick_size.py",
+      "source_snapshot_sha256": "0b99d17d7fc59a9f8ef792d38548c85d37256360c424bba053c19a597bb17f18",
+      "bands": [
+        {"lower": 0, "upper_exclusive": 2000, "tick": 1},
+        {"lower": 2000, "upper_exclusive": 5000, "tick": 5},
+        {"lower": 5000, "upper_exclusive": 20000, "tick": 10},
+        {"lower": 20000, "upper_exclusive": 50000, "tick": 50},
+        {"lower": 50000, "upper_exclusive": 200000, "tick": 100},
+        {"lower": 200000, "upper_exclusive": 500000, "tick": 500},
+        {"lower": 500000, "upper_exclusive": null, "tick": 1000}
+      ]
+    }
+  }
+}
