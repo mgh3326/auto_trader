@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-27.1"
-captured_as_of: "2026-07-27"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27"
+version: "2026-07-28.1"
+captured_as_of: "2026-07-28"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28"
 
 authority:
   scope: judgment_policy_only
@@ -16,6 +16,21 @@ authority:
     - "symbol_trade_settings — live per-symbol sizing (separate authority)"
     - "sell_conditions — dormant/test-only (not authoritative)"
     - "trade_profile — dead since ROB-488 (not revived)"
+
+# ROB-1106 posture-v1 stage 1. This block is deliberately default-off and
+# shadow-only. It is consumed only by the manual posture shadow entrypoint;
+# existing signal/gate, proposal, broker, worker, and scheduler paths do not
+# import or consult it.
+posture:
+  enabled: false
+  mode: shadow
+  states:
+    - RESTING
+    - CONDITIONAL
+    - ARMED_DEFERRED
+    - DISARMED
+    - EXPIRED_REARMABLE
+  policy_stamp_required: true
 
 # ROB-871 — master-gated by ORDER_PROPOSALS_AUTO_APPROVE=false. Caps use the
 # settlement currency for each market (KRW for kr/crypto, USD for us).
