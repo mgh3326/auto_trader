@@ -134,6 +134,25 @@ class KiwoomDomesticAccountClient:
             # return_code 2 (필수입력 파라미터=stk_bond_tp).
             # ROB-1111 — kt00009 ALSO requires mrkt_tp; omitting it returns
             # return_code 2 (필수입력 파라미터=mrkt_tp).
+            #
+            # ROB-1088 — mrkt_tp="0" (시장구분: 전체) 값의 근거: 공식 Kiwoom REST
+            # 문서는 이 세션에서 직접 확보하지 못했다(apiportal.kiwoom.com 접근 불가,
+            # 일반 웹검색으로 kt00009 명세 미발견). 대신 kt00009와 필드가 거의 겹치는
+            # kt00007/kt00018/kt00010 body를 실제 필드명 그대로 문서화한 서드파티
+            # REST 클라이언트(bamjun/kiwoom-rest-api, MIT, PyPI 배포)의
+            # account_order_execution_status_request_kt00009 시그니처를 대조 근거로
+            # 사용했다: stk_bond_tp(0:전체/1:주식/2:채권), mrkt_tp(0:전체/1:코스피/
+            # 2:코스닥/3:OTCBB/4:ECN), sell_tp(0:전체/1:매도/2:매수), qry_tp(0:전체/
+            # 1:체결), dmst_stex_tp(%:전체/KRX/NXT/SOR) 5개를 전부 위치 인자(문서상
+            # optional 표기 없음)로 요구한다.
+            # 이 라이브러리의 kt00007/kt00018 필드명·구조가 이 코드베이스의 실측
+            # 확정값(ROB-418/ROB-460/ROB-891)과 100% 일치해 신뢰도가 있다.
+            # 다만 sell_tp/qry_tp/dmst_stex_tp는 이 서드파티 문서에만 근거하며
+            # 이 코드베이스의 실측(return_code 2)으로 아직 증명되지 않았다 — 추측
+            # 파라미터를 여기서 추가하지 않는다(작동 중인 stk_bond_tp+mrkt_tp 조합을
+            # 회귀시키지 않기 위함). 07-29 08:50 스모크에서
+            # `필수입력 파라미터=sell_tp|qry_tp|dmst_stex_tp` 형태의 return_code 2가
+            # 재현되면 그 파라미터명을 근거로 후속 수정을 연다.
             body={
                 "stk_bond_tp": constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT,
                 "mrkt_tp": constants.ACCOUNT_ORDER_MRKT_TP_DEFAULT,

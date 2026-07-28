@@ -67,6 +67,12 @@ ACCOUNT_BALANCE_QRY_TP_DEFAULT = "1"  # kt00018 조회구분
 ACCOUNT_DEPOSIT_QRY_TP_DEFAULT = "2"  # ROB-891 — kt00001 일반조회 (orderable cash)
 ACCOUNT_ORDER_STK_BOND_TP_DEFAULT = "0"  # kt00009 주식채권구분(전체)
 ACCOUNT_ORDER_MRKT_TP_DEFAULT = "0"  # ROB-1111 — kt00009 시장구분(전체)
+# ROB-1088 — "0"(전체) 값의 근거: bamjun/kiwoom-rest-api(서드파티 REST 클라이언트,
+# MIT/PyPI)가 kt00009 mrkt_tp를 "0:전체, 1:코스피, 2:코스닥, 3:OTCBB, 4:ECN"으로
+# 문서화. 공식 apiportal.kiwoom.com 문서는 이 세션에서 접근 불가(네트워크 미해결).
+# 실제 mockapi.kiwoom.com 호출로 이 값의 성공을 확인한 기록은 아직 없다(unit-test
+# 전용 검증, PR #1693). 자세한 근거·잔여 리스크는 domestic_account.py의
+# get_order_status 주석 참고.
 
 # ROB-460 — Kiwoom REST account-cash reads also require dmst_stex_tp (국내거래소구분).
 # 2026-06-09 live: get_positions(kt00018)·get_orderable_cash returned return_code 2

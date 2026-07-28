@@ -183,6 +183,25 @@ async def test_get_order_status_uses_kt00009_with_required_params_and_continuati
 
 
 @pytest.mark.asyncio
+async def test_get_order_status_body_is_exactly_two_fields():
+    # ROB-1088 — pins the exact wire body so a future speculative addition of
+    # sell_tp/qry_tp/dmst_stex_tp (see bamjun/kiwoom-rest-api's kt00009
+    # signature, which documents all five as required) is a deliberate,
+    # reviewed change rather than an accidental drift. Those three fields are
+    # NOT proven necessary against mockapi.kiwoom.com in this codebase — if
+    # the 07-29 08:50 smoke reproduces return_code 2 with
+    # 필수입력 파라미터=sell_tp|qry_tp|dmst_stex_tp, this test must be updated
+    # alongside the fix, with the smoke evidence cited in the commit.
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_order_status()
+    assert fake.calls[-1]["body"] == {
+        "stk_bond_tp": constants.ACCOUNT_ORDER_STK_BOND_TP_DEFAULT,
+        "mrkt_tp": constants.ACCOUNT_ORDER_MRKT_TP_DEFAULT,
+    }
+
+
+@pytest.mark.asyncio
 async def test_get_order_detail_uses_kt00007():
     fake = FakeClient()
     acct = KiwoomDomesticAccountClient(fake)
