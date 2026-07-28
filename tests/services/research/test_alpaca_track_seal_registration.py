@@ -24,6 +24,7 @@ real subprocess invocations.
 
 from __future__ import annotations
 
+import copy
 import sys
 import uuid
 from pathlib import Path
@@ -43,6 +44,10 @@ for _p in (str(_SEAL_PKG), str(_NAUTILUS_SCALPING), str(_REPO_ROOT)):
 
 from app.schemas.research_backtest import StrategyExperimentIdentity  # noqa: E402
 from app.services import strategy_experiment_registry as reg  # noqa: E402
+from app.services.research_canonical_hash import (  # noqa: E402
+    compute_identity_hashes,
+    derive_experiment_id,
+)
 
 
 @pytest_asyncio.fixture
@@ -67,6 +72,30 @@ def _unique_plan():
     for spec in plan["specs"]:
         spec["strategy_version"] = f"{spec['strategy_version']}-{suffix}"
     return plan
+
+
+def _unique_supersession_pair():
+    """One exact H2 parent plus its H3-code-only child, namespaced per test."""
+    import artifact as art
+    import registry_cli as cli
+
+    plan = cli.build_registration_plan()
+    spec = copy.deepcopy(plan["specs"][0])
+    config_id = spec["config_id"]
+    parent_components = copy.deepcopy(
+        art.build_sealed_artifact().to_dict()["identity_components"][config_id]
+    )
+    suffix = uuid.uuid4().hex[:8]
+    version = f"{spec['strategy_version']}-{suffix}"
+    spec["strategy_version"] = version
+    spec["components"]["strategy"]["strategy_version"] = version
+    parent_components["strategy"]["strategy_version"] = version
+    spec["supersedes_experiment_id"] = derive_experiment_id(
+        spec["strategy_key"],
+        version,
+        compute_identity_hashes(parent_components),
+    )
+    return {"specs": [spec]}, parent_components
 
 
 @pytest.mark.integration
@@ -143,3 +172,116 @@ async def test_ap_a1_config_cannot_supersede_an_ap_a2_experiment(
     )
     with pytest.raises(reg.SupersedesStrategyMismatch):
         await reg.register_experiment(session, a2_identity)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_h3_code_only_supersession_path_calls_guard_and_creates_new_row(
+    registry_tables,
+    monkeypatch,
+) -> None:
+    import registry_cli as cli
+
+    session = registry_tables
+    plan, parent_components = _unique_supersession_pair()
+    spec = plan["specs"][0]
+    parent_identity = StrategyExperimentIdentity(
+        strategy_key=spec["strategy_key"],
+        strategy_version=spec["strategy_version"],
+        hypothesis=f"ROB-1060 H2 seal: {spec['config_id']}",
+        **parent_components,
+    )
+    parent = await reg.register_experiment(session, parent_identity)
+    await session.flush()
+    assert parent.experiment_id == spec["supersedes_experiment_id"]
+
+    guard_calls = []
+    real_guard = cli.ident.assert_supersession_preserves_sealed_components
+
+    def guard_spy(*, child_components, parent_components):
+        guard_calls.append((child_components, parent_components))
+        real_guard(
+            child_components=child_components,
+            parent_components=parent_components,
+        )
+
+    monkeypatch.setattr(
+        cli.ident, "assert_supersession_preserves_sealed_components", guard_spy
+    )
+    registered = await cli._register_supersession_plan(
+        session=session,
+        plan=plan,
+        registry=reg,
+        identity_type=StrategyExperimentIdentity,
+    )
+    await session.flush()
+
+    child = await reg._get_experiment(session, registered[0]["experiment_id"])
+    assert child is not None
+    assert child.supersedes_experiment_id == parent.experiment_id
+    assert child.experiment_id != parent.experiment_id
+    assert len(guard_calls) == 1
+    assert child.code_hash != parent.code_hash
+    for name in (
+        "strategy",
+        "params",
+        "dataset_manifest",
+        "universe",
+        "pit",
+        "frozen_config",
+        "policy",
+        "benchmark",
+        "cost",
+        "mdd",
+    ):
+        assert getattr(child, f"{name}_hash") == getattr(parent, f"{name}_hash")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_supersession_path_rejects_changed_sealed_component_before_register(
+    registry_tables,
+    monkeypatch,
+) -> None:
+    import identity as identity_module
+    import registry_cli as cli
+
+    session = registry_tables
+    plan, parent_components = _unique_supersession_pair()
+    spec = plan["specs"][0]
+    parent = await reg.register_experiment(
+        session,
+        StrategyExperimentIdentity(
+            strategy_key=spec["strategy_key"],
+            strategy_version=spec["strategy_version"],
+            hypothesis=f"ROB-1060 H2 seal: {spec['config_id']}",
+            **parent_components,
+        ),
+    )
+    await session.flush()
+    assert parent.experiment_id == spec["supersedes_experiment_id"]
+    spec["components"]["cost"] = {
+        **spec["components"]["cost"],
+        "primary": "C50",
+    }
+
+    register_calls = 0
+    real_register = reg.register_experiment
+
+    async def register_spy(session, identity):
+        nonlocal register_calls
+        register_calls += 1
+        return await real_register(session, identity)
+
+    monkeypatch.setattr(reg, "register_experiment", register_spy)
+    with pytest.raises(
+        identity_module.SupersessionSealedComponentDivergenceError,
+        match="cost",
+    ):
+        await cli._register_supersession_plan(
+            session=session,
+            plan=plan,
+            registry=reg,
+            identity_type=StrategyExperimentIdentity,
+        )
+    assert register_calls == 0

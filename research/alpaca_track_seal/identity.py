@@ -7,16 +7,11 @@ app-side registration CLI (``registry_cli.py``) is the only place that
 constructs the real Pydantic identity, using this module's output as pure
 input.
 
-Design note on the ``code`` component (open question, see H2 completion
-report): H3 (the actual DATS state-machine / WCM-B ranking signal engine,
-ROB-1061) does not exist yet — there is no real implementation source to
-hash. ``default_formula_provenance`` seals the FORMULA SPECIFICATION text
-verbatim from the Run A preregistration (SS11.3 / SS12.2-12.3) as the ``code``
-identity for now. This is deliberately NOT a stand-in for H3's eventual
-implementation hash — once H3 merges, registering with its real source text
-derives a DIFFERENT ``code_hash`` and therefore a different experiment_id,
-which must be registered as a NEW experiment superseding this one (same
-strategy_key, ROB-846 lineage), never an in-place edit.
+The H2 builders remain immutable: ``default_formula_provenance`` still seals
+the Run A formula specification as the original ``code`` identity. ROB-1069
+adds a separate byte-derived H3 implementation component. Registration copies
+the H2 identity, replaces only ``code``, and creates a new experiment linked by
+``supersedes_experiment_id``; the H2 record is never edited in place.
 
 Pure stdlib + ``canonical_hash``/``research_contracts``. No app/DB/network
 import.
@@ -26,12 +21,13 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import configs as cfg
 import params as prm
 
-from research_contracts.canonical_hash import IDENTITY_COMPONENTS
+from research_contracts.canonical_hash import IDENTITY_COMPONENTS, canonical_sha256
 
 __all__ = [
     "SourceMismatchError",
@@ -39,6 +35,7 @@ __all__ = [
     "SupersessionSealedComponentDivergenceError",
     "assert_supersession_preserves_sealed_components",
     "build_components_for_config",
+    "build_h3_implementation_code_component",
     "default_formula_provenance",
     "validate_same_family_components_are_identical",
 ]
@@ -74,6 +71,34 @@ _AP_A2_FORMULA_SPEC = (
     "restoration of existing holdings' weight (rank buffer suppresses "
     "turnover)."
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_H3_SOURCE_COMMIT = "5c09c2e7a"
+_H3_SOURCE_BUNDLE_SCHEMA = "alpaca_track_h3_source_bundle.v1"
+_H3_COMMON_SOURCE_PATHS = (
+    "research/alpaca_track_signals/decision_calendar.py",
+    "research/alpaca_track_signals/indicators.py",
+    "research/alpaca_track_signals/output_schema.py",
+    "research/alpaca_track_signals/reason_codes.py",
+    "research/alpaca_track_signals/seal_consumption.py",
+    "research/alpaca_track_signals/sizing.py",
+)
+_H3_SOURCE_PATHS_BY_FAMILY = {
+    "AP-A1": (
+        "research/alpaca_track_signals/dats_engine.py",
+        "research/alpaca_track_signals/dats_state.py",
+        *_H3_COMMON_SOURCE_PATHS,
+    ),
+    "AP-A2": (
+        *_H3_COMMON_SOURCE_PATHS,
+        "research/alpaca_track_signals/wcmb_engine.py",
+        "research/alpaca_track_signals/wcmb_ranking.py",
+    ),
+}
+_H3_EXPECTED_SOURCE_SHA256 = {
+    "AP-A1": "321e532fc9c70d40451caf37a2e2e84b5c76ad0f3cdf93d8fd77813580079c68",
+    "AP-A2": "c233333e988d41d7aa90ef2ff31b4ff97b7d61be427367f4f02b780acc44cc65",
+}
 
 
 class SourceMismatchError(ValueError):
@@ -136,6 +161,82 @@ def _build_code_component(source: StrategySourceProvenance) -> dict[str, Any]:
     return {
         "kind": "formula_specification_not_implementation",
         "source_sha256": source.verified_source_sha256(),
+    }
+
+
+def build_h3_implementation_code_component(
+    family: str,
+    *,
+    source_files: tuple[tuple[str, Path], ...] | None = None,
+) -> dict[str, Any]:
+    """Build a byte-derived H3 implementation provenance component.
+
+    Each strategy family binds its two family-specific engine modules plus the
+    six shared H3 signal modules.  The bundle hashes an ordered inventory of
+    normalized repo-relative logical paths and each file's raw SHA-256 through
+    the ROB-846 canonical authority.  The expected digest is pinned to merged
+    H3 commit ``5c09c2e7a`` so a later source edit cannot be mislabeled as that
+    implementation.
+    """
+    try:
+        expected_sha256 = _H3_EXPECTED_SOURCE_SHA256[family]
+        logical_paths = _H3_SOURCE_PATHS_BY_FAMILY[family]
+    except KeyError as exc:
+        raise ValueError(f"unknown family {family!r}") from exc
+
+    resolved = source_files
+    if resolved is None:
+        resolved = tuple((logical, _REPO_ROOT / logical) for logical in logical_paths)
+    if not resolved:
+        raise SourceMismatchError(f"{family}: H3 source bundle is empty")
+
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for logical_path, path in resolved:
+        logical = PurePosixPath(logical_path)
+        if (
+            not logical_path
+            or logical.is_absolute()
+            or ".." in logical.parts
+            or str(logical) != logical_path
+            or logical_path in seen
+        ):
+            raise SourceMismatchError(
+                f"{family}: invalid or duplicate H3 logical source path {logical_path!r}"
+            )
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise SourceMismatchError(
+                f"{family}: cannot read H3 source {logical_path!r}"
+            ) from exc
+        if not path.is_file():
+            raise SourceMismatchError(
+                f"{family}: H3 source is not a regular file: {logical_path!r}"
+            )
+        rows.append(
+            {
+                "logical_path": logical_path,
+                "raw_sha256": hashlib.sha256(raw).hexdigest(),
+            }
+        )
+        seen.add(logical_path)
+
+    source_sha256 = canonical_sha256(
+        {"schema_version": _H3_SOURCE_BUNDLE_SCHEMA, "files": rows}
+    )
+    if source_sha256 != expected_sha256:
+        raise SourceMismatchError(
+            f"{family}: H3 source bundle SHA-256 mismatch (expected "
+            f"{expected_sha256}, actual {source_sha256}) — checked-out source "
+            f"does not match merged H3 commit {_H3_SOURCE_COMMIT}"
+        )
+    return {
+        "kind": "real_implementation",
+        "source_commit": _H3_SOURCE_COMMIT,
+        "source_bundle_schema": _H3_SOURCE_BUNDLE_SCHEMA,
+        "source_sha256": source_sha256,
+        "files": rows,
     }
 
 
@@ -316,36 +417,12 @@ def assert_supersession_preserves_sealed_components(
     membership, or cost assumptions under that cover -- exactly the post-hoc
     relaxation this seal exists to prevent.
 
-    ROB-1060 H2-lock adversarial-verification Finding 5 (2026-07-26,
-    DETERMINATION -- genuinely blocked, NOT wired): this function is pure
-    and DB-agnostic by design (plain ``dict`` in, plain ``dict`` out), and
-    ``registry_cli.build_registration_plan()`` already proves the
-    "pure sibling-component comparison, zero DB" pattern works
-    (``validate_same_family_components_are_identical`` runs purely over the
-    in-process per-config components list). But THIS package's own
-    ``_cmd_register`` never declares a supersession at all -- it registers
-    16 fresh identities with no ``supersedes_experiment_id`` -- so there is
-    no in-process "parent" for this specific registration to compare
-    against. Once a REAL supersession exists (H3's real-implementation
-    ``code`` superseding one of these 16 rows), the parent's components live
-    only as a persisted row in ``research.strategy_experiments``
-    (``app.models.research_backtest.ResearchStrategyExperiment``): the table
-    stores an AST-ENCODED ``manifest`` (via
-    ``research_canonical_hash.encode_manifest``), not the raw components
-    this function compares with plain ``==``, and the app-side registry
-    (``app.services.strategy_experiment_registry.register_experiment``)
-    fetches that row via ``_get_experiment`` -- an ``app.*``/DB read. Wiring
-    this guard into a genuine supersession therefore requires either an
-    ``app.*`` DB fetch (out of scope for this pure package and forbidden by
-    the ROB-1060 remediation constraints) or a new AST-vs-AST comparison
-    path that does not exist today. Recorded here as a HARD PREREQUISITE for
-    H3: before H3 registers a superseding experiment, it (or a follow-up
-    ROB-846 registry read helper) must fetch and reconstruct the parent H2
-    identity's components -- from the DB row, or from re-running THIS
-    package's own ``build_components_for_config`` if the parent is exactly
-    this H2 seal (deterministic and reproducible) -- before calling this
-    guard. Left UNWIRED in ``registry_cli.py`` until that prerequisite is
-    met; see the matching note in ``registry_cli._cmd_register``."""
+    ROB-1069 closes ROB-1060 Finding 5 by wiring this pure authority into
+    ``registry_cli._register_supersession_plan``. The app-side registry helper
+    fetches the parent through ``_get_experiment``, verifies all 11 persisted
+    AST hashes, decodes the closed typed manifest, and supplies the reconstructed
+    raw components here before ``register_experiment`` is allowed to run.
+    """
     for name in IDENTITY_COMPONENTS:
         if name == "code":
             continue
