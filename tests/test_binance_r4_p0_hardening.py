@@ -474,9 +474,16 @@ async def test_historical_retry_appends_terminal_attempt(tmp_path) -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_taker_history_shift_restores_full_epoch_coverage(tmp_path) -> None:
+async def test_taker_history_shift_restores_full_epoch_coverage(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cadence = dt.timedelta(minutes=5)
     interval_start = EPOCH - dt.timedelta(hours=4)
+    monkeypatch.setattr(
+        collector_module,
+        "utc_now",
+        lambda: EPOCH + dt.timedelta(minutes=1),
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/futures/data/takerlongshortRatio"

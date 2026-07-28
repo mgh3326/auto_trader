@@ -1,7 +1,7 @@
 """Shared test scaffolding for ROB-265 investment_reports tests.
 
-Centralises the per-test async session fixture, the truncated-table
-list, the xdist guard lock, and a couple of small helpers so the ORM, schema, repository,
+Centralises the per-test async session fixture, the cleanup-table
+list, the shared-DB guard lock, and a couple of small helpers so the ORM, schema, repository,
 ingestion, decisions, watch-activation, and query-service test files
 don't each re-declare the same boilerplate (Sonar duplicated-line fix).
 """
@@ -15,10 +15,8 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
 
-from app.core.config import settings
 from app.models.investment_reports import (
     InvestmentReport,
     InvestmentReportItem,
@@ -28,6 +26,7 @@ from app.models.investment_reports import (
     InvestmentWatchAlert,
     InvestmentWatchEvent,
 )
+from tests._run_owned_database import uses_shared_test_database
 
 INVESTMENT_REPORTS_TABLES = [
     InvestmentReport.__table__,
@@ -43,50 +42,92 @@ INVESTMENT_REPORTS_TEST_LOCK_ID = 265_202_605
 
 @pytest_asyncio.fixture
 async def session(_bootstrap_test_schema) -> AsyncSession:
-    """Per-test AsyncSession against the current PostgreSQL test database.
+    """Rollback-isolated AsyncSession against the current PostgreSQL test DB.
 
     Schema is owned by the session-scoped ``_bootstrap_test_schema`` barrier
-    (ROB-723) — this fixture performs no DDL. Between tests it TRUNCATEs the
-    investment-report table family, serialized against the conftest cleanup by
-    the shared advisory lock and made deadlock-resilient by run_with_deadlock_retry.
+    (ROB-723) — this fixture performs no DDL. A SAVEPOINT-aware session lets
+    tests exercise ``commit()`` while the outer transaction remains owned by
+    the fixture and is rolled back after the test. The shared-DB opt-in keeps
+    the legacy advisory lock; ordinary run-owned DBs need no serialization.
     """
     import sqlalchemy as sa
 
-    from tests._db_retry import run_with_deadlock_retry
+    from app.core.db import engine
 
-    engine = create_async_engine(settings.DATABASE_URL, future=True)
-
-    async def _truncate() -> None:
-        async with engine.begin() as conn:
-            for table in reversed(INVESTMENT_REPORTS_TABLES):
-                await conn.execute(
-                    sa.text(
-                        f'TRUNCATE TABLE review."{table.name}" RESTART IDENTITY CASCADE'
-                    )
-                )
-
+    guard = None
     try:
-        async with engine.connect() as guard:
+        if uses_shared_test_database():
+            guard = await engine.connect()
             await guard.execute(
                 sa.text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
                 {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
             )
+        async with engine.connect() as connection:
+            outer = await connection.begin()
             try:
-                await run_with_deadlock_retry(_truncate)
-                factory = async_sessionmaker(engine, expire_on_commit=False)
+                factory = async_sessionmaker(
+                    bind=connection,
+                    expire_on_commit=False,
+                    join_transaction_mode="create_savepoint",
+                )
                 async with factory() as sess:
-                    try:
-                        yield sess
-                    finally:
-                        await sess.rollback()
-                await run_with_deadlock_retry(_truncate)
+                    yield sess
             finally:
+                if outer.is_active:
+                    await outer.rollback()
+    finally:
+        if guard is not None:
+            try:
                 await guard.execute(
                     sa.text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
                     {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
                 )
+            finally:
+                await guard.close()
+
+
+@pytest_asyncio.fixture
+async def committed_investment_reports_session(
+    _bootstrap_test_schema,
+) -> AsyncSession:
+    """Session for tests whose production handler opens independent sessions.
+
+    Those commits cannot participate in the fixture's outer transaction. Keep
+    this exceptional path explicit and clean only its seven-table family with
+    row-level DELETEs, avoiding repeated engines and AccessExclusive TRUNCATE.
+    """
+    import sqlalchemy as sa
+
+    from app.core.db import AsyncSessionLocal, engine
+
+    async def _delete_rows() -> None:
+        async with engine.begin() as connection:
+            for table in reversed(INVESTMENT_REPORTS_TABLES):
+                await connection.execute(sa.text(f'DELETE FROM review."{table.name}"'))
+
+    guard = None
+    try:
+        if uses_shared_test_database():
+            guard = await engine.connect()
+            await guard.execute(
+                sa.text("SELECT pg_advisory_lock(CAST(:lock_id AS bigint))"),
+                {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
+            )
+        await _delete_rows()
+        try:
+            async with AsyncSessionLocal() as sess:
+                yield sess
+        finally:
+            await _delete_rows()
     finally:
-        await engine.dispose()
+        if guard is not None:
+            try:
+                await guard.execute(
+                    sa.text("SELECT pg_advisory_unlock(CAST(:lock_id AS bigint))"),
+                    {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
+                )
+            finally:
+                await guard.close()
 
 
 def future_datetime(days: int = 7) -> datetime:

@@ -26,8 +26,6 @@ from tests._mcp_tooling_support import (
     build_tools,
 )
 
-pytest_plugins = ("tests._mcp_tooling_support",)
-
 ToolFunc = Callable[..., Awaitable[Any]]
 
 
@@ -609,44 +607,6 @@ def mock_upbit_coins():
             "acc_trade_price_24h": 800_000_000_000,
         },
     ]
-
-
-@pytest.fixture(autouse=True)
-def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
-    async def mock_get_upbit_warning_markets(
-        db=None,
-        quote_currency: str | None = None,
-        fiat: str | None = None,
-    ):
-        _ = (quote_currency, fiat, db)
-        return set()
-
-    async def mock_market_cap_cache_get():
-        return {
-            "data": {},
-            "cached": True,
-            "age_seconds": 0.0,
-            "stale": False,
-            "error": None,
-        }
-
-    async def mock_fetch_ohlcv_for_indicators(
-        symbol: str, market_type: str, count: int
-    ):
-        import pandas as pd
-
-        return pd.DataFrame()
-
-    monkeypatch.setattr(
-        screening_crypto,
-        "get_upbit_warning_markets",
-        mock_get_upbit_warning_markets,
-    )
-    monkeypatch.setattr(
-        screening_crypto._CRYPTO_MARKET_CAP_CACHE,
-        "get",
-        mock_market_cap_cache_get,
-    )
 
 
 class TestScreenStocksCrypto:

@@ -33,7 +33,7 @@ def _fake_external_boundaries_by_default(monkeypatch: pytest.MonkeyPatch) -> Non
 
     async def _empty_positions(
         market_filter: str | None, *, is_mock: bool = False
-    ) -> tuple[list[dict[str, Any]], list[str]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         del market_filter, is_mock
         return [], []
 
@@ -51,14 +51,23 @@ def _fake_external_boundaries_by_default(monkeypatch: pytest.MonkeyPatch) -> Non
         market: str,
         session_factory,
         opinion_provider=None,
+        fetch_kr_sector=None,
+        fetch_us_sector=None,
     ) -> dict[str, Any]:
-        del market, session_factory, opinion_provider
+        del (
+            market,
+            session_factory,
+            opinion_provider,
+            fetch_kr_sector,
+            fetch_us_sector,
+        )
         return {
             "results": rows,
             "summary": {
                 "attempted": len(rows),
                 "consensusSucceeded": 0,
                 "rsiSucceeded": 0,
+                "sectorResolved": 0,
                 "warnings": [],
             },
         }
@@ -269,7 +278,10 @@ async def test_enriches_only_returned_page(monkeypatch) -> None:
         market: str,
         session_factory,
         opinion_provider=None,
-    ):
+        fetch_kr_sector=None,
+        fetch_us_sector=None,
+    ) -> dict[str, Any]:
+        del opinion_provider, fetch_kr_sector, fetch_us_sector
         captured["symbols"] = [row["symbol"] for row in rows]
         captured["market"] = market
         captured["session_factory"] = session_factory
@@ -306,6 +318,7 @@ async def test_enriches_only_returned_page(monkeypatch) -> None:
                 "attempted": len(rows),
                 "consensusSucceeded": len(rows),
                 "rsiSucceeded": len(rows),
+                "sectorResolved": 0,
                 "warnings": [],
             },
         }
@@ -355,7 +368,7 @@ async def test_snapshot_tool_marks_kis_live_held_rows(monkeypatch) -> None:
 
     async def _fake_collect_kis_positions(
         market_filter: str | None, *, is_mock: bool = False
-    ):
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         assert market_filter == "equity_kr"
         assert is_mock is False
         return ([{"market": "kr", "symbol": "005930"}], [])
@@ -412,7 +425,7 @@ async def test_snapshot_tool_marks_us_kis_live_held_rows(monkeypatch) -> None:
 
     async def _fake_collect_kis_positions(
         market_filter: str | None, *, is_mock: bool = False
-    ):
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         assert market_filter == "equity_us"
         assert is_mock is False
         return ([{"market": "us", "symbol": "BRK.B"}], [])
@@ -458,7 +471,8 @@ async def test_snapshot_tool_holdings_failure_warns_and_keeps_results(
 
     async def _fail_collect_kis_positions(
         market_filter: str | None, *, is_mock: bool = False
-    ):
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        del market_filter, is_mock
         raise RuntimeError("kis unavailable")
 
     monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
@@ -501,7 +515,9 @@ async def test_snapshot_tool_holdings_error_tuple_warns_and_keeps_results(
     async def _fake_build(**_kwargs: Any) -> _Resp:
         return _Resp()
 
-    async def _collect_with_errors(market_filter: str | None, *, is_mock: bool = False):
+    async def _collect_with_errors(
+        market_filter: str | None, *, is_mock: bool = False
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         assert market_filter == "equity_kr"
         assert is_mock is False
         return (
@@ -557,7 +573,9 @@ async def test_snapshot_tool_holdings_partial_tuple_warns_and_marks_rows(
         assert resolver.relation("kr", "000660") == "none"
         return _Resp()
 
-    async def _collect_partial(market_filter: str | None, *, is_mock: bool = False):
+    async def _collect_partial(
+        market_filter: str | None, *, is_mock: bool = False
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         assert market_filter == "equity_kr"
         assert is_mock is False
         return (
@@ -892,7 +910,22 @@ async def test_snapshot_tool_filters_market_cap_and_analyst(monkeypatch) -> None
     async def _fake_build(**_kwargs: Any) -> _Resp:
         return _Resp()
 
-    async def _fake_enrich_page(*, rows: list[dict[str, Any]], **kwargs: Any):
+    async def _fake_enrich_page(
+        *,
+        rows: list[dict[str, Any]],
+        market: str,
+        session_factory,
+        opinion_provider=None,
+        fetch_kr_sector=None,
+        fetch_us_sector=None,
+    ) -> dict[str, Any]:
+        del (
+            market,
+            session_factory,
+            opinion_provider,
+            fetch_kr_sector,
+            fetch_us_sector,
+        )
         # S1 has 2 buy ratings, S2 has 0
         enriched = []
         for r in rows:
@@ -909,7 +942,16 @@ async def test_snapshot_tool_filters_market_cap_and_analyst(monkeypatch) -> None
                     },
                 }
             )
-        return {"results": enriched, "summary": {"warnings": []}}
+        return {
+            "results": enriched,
+            "summary": {
+                "attempted": len(rows),
+                "consensusSucceeded": 1,
+                "rsiSucceeded": 0,
+                "sectorResolved": 0,
+                "warnings": [],
+            },
+        }
 
     monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
     monkeypatch.setattr(
@@ -1122,14 +1164,33 @@ async def test_min_analyst_filters_via_counts_and_enriches_only_page(
     enriched_symbols: list[list[str]] = []
 
     async def _fake_enrich_page(
-        *, rows, market, session_factory, opinion_provider=None
-    ):
+        *,
+        rows: list[dict[str, Any]],
+        market: str,
+        session_factory,
+        opinion_provider=None,
+        fetch_kr_sector=None,
+        fetch_us_sector=None,
+    ) -> dict[str, Any]:
+        del (
+            market,
+            session_factory,
+            opinion_provider,
+            fetch_kr_sector,
+            fetch_us_sector,
+        )
         enriched_symbols.append([r["symbol"] for r in rows])
         return {
             "results": [
                 {**r, "analystLabel": "x", "analysisContext": {}} for r in rows
             ],
-            "summary": {"attempted": len(rows), "warnings": []},
+            "summary": {
+                "attempted": len(rows),
+                "consensusSucceeded": 0,
+                "rsiSucceeded": 0,
+                "sectorResolved": 0,
+                "warnings": [],
+            },
         }
 
     monkeypatch.setattr(

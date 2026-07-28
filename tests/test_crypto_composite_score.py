@@ -29,9 +29,10 @@ from app.mcp_server.tooling.market_data_indicators import (
     _calculate_adx,
 )
 from app.mcp_server.tooling.screening import crypto as screening_crypto
-from tests._mcp_tooling_support import build_tools
+from tests._mcp_tooling_support import build_tools, fake_crypto_tvscreener_module
 
-pytest_plugins = ("tests._mcp_tooling_support",)
+__all__ = ["fake_crypto_tvscreener_module"]
+
 pytestmark = pytest.mark.usefixtures("_mock_crypto_external_sources")
 
 

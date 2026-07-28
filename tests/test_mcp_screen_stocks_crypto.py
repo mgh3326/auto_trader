@@ -7,9 +7,19 @@ import sentry_sdk
 
 import app.services.brokers.upbit.client as upbit_service
 from app.mcp_server.tooling.screening import crypto as screening_crypto
-from tests._mcp_tooling_support import build_tools
+from tests._mcp_tooling_support import (
+    _mock_crypto_external_sources,
+    build_tools,
+    fake_crypto_tvscreener_module,
+    mock_upbit_coins,
+)
 
-pytest_plugins = ("tests._mcp_tooling_support",)
+__all__ = [
+    "_mock_crypto_external_sources",
+    "fake_crypto_tvscreener_module",
+    "mock_upbit_coins",
+]
+
 pytestmark = pytest.mark.usefixtures("_mock_crypto_external_sources")
 
 

@@ -10,9 +10,14 @@ from app.services.tvscreener_service import (
     TvScreenerCapabilitySnapshot,
     TvScreenerCapabilityState,
 )
-from tests._mcp_tooling_support import build_tools
+from tests._mcp_tooling_support import (
+    _mock_crypto_external_sources,
+    build_tools,
+    mock_yfinance_screen,
+)
 
-pytest_plugins = ("tests._mcp_tooling_support",)
+__all__ = ["_mock_crypto_external_sources", "mock_yfinance_screen"]
+
 pytestmark = pytest.mark.usefixtures("_mock_crypto_external_sources")
 
 

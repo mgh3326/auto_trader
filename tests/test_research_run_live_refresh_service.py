@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,14 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.asyncio
 
 
+def _mock_db_without_kr_universe() -> AsyncMock:
+    db = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    db.execute.return_value = result
+    return db
+
+
 @pytest.mark.unit
 async def test_build_snapshot_returns_live_refresh_snapshot():
     """Test that build_live_refresh_snapshot returns a LiveRefreshSnapshot."""
@@ -30,7 +38,7 @@ async def test_build_snapshot_returns_live_refresh_snapshot():
         ],
         reconciliations=[],
     )
-    mock_db = AsyncMock()
+    mock_db = _mock_db_without_kr_universe()
 
     with patch("app.services.market_data.get_quote") as mock_quote:
         with patch("app.services.market_data.get_orderbook") as mock_orderbook:
@@ -70,7 +78,7 @@ async def test_build_snapshot_quote_failure_adds_warning():
         ],
         reconciliations=[],
     )
-    mock_db = AsyncMock()
+    mock_db = _mock_db_without_kr_universe()
 
     with patch("app.services.market_data.get_quote") as mock_quote:
         with patch("app.services.market_data.get_orderbook") as mock_orderbook:
@@ -109,7 +117,7 @@ async def test_build_snapshot_us_skips_orderbook():
         ],
         reconciliations=[],
     )
-    mock_db = AsyncMock()
+    mock_db = _mock_db_without_kr_universe()
 
     with patch("app.services.market_data.get_quote") as mock_quote:
         with patch("app.services.market_data.get_orderbook") as mock_orderbook:
@@ -144,7 +152,7 @@ async def test_build_snapshot_missing_kr_universe_adds_warning():
         ],
         reconciliations=[],
     )
-    mock_db = AsyncMock()
+    mock_db = _mock_db_without_kr_universe()
 
     with patch("app.services.market_data.get_quote") as mock_quote:
         with patch("app.services.market_data.get_orderbook") as mock_orderbook:
@@ -186,7 +194,7 @@ async def test_build_snapshot_refreshed_at_after_gather():
         ],
         reconciliations=[],
     )
-    mock_db = AsyncMock()
+    mock_db = _mock_db_without_kr_universe()
     start_time = datetime.now(UTC)
 
     with patch("app.services.market_data.get_quote") as mock_quote:

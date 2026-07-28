@@ -28,7 +28,6 @@ from app.services.trade_journal.retrospective_action_types import (
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.usefixtures("investment_reports_cleanup_lock"),
     pytest.mark.usefixtures("retrospective_action_control_lock"),
 ]
 
@@ -140,7 +139,6 @@ async def _projection(db: AsyncSession, parent_id: int) -> list[dict[str, object
 @pytest_asyncio.fixture(autouse=True)
 async def _isolate_tables(
     db_session: AsyncSession,
-    investment_reports_cleanup_lock: AsyncSession,
     retrospective_action_control_lock: None,
 ) -> AsyncIterator[None]:
     await db_session.rollback()
