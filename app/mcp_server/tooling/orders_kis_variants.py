@@ -720,8 +720,11 @@ def register_live_reconcile_tools(mcp: FastMCP) -> None:
         description=(
             "Reconcile accepted/pending US/overseas + crypto live (real-money) orders "
             "against broker fill evidence (overseas daily-order / Upbit order-state). "
-            "Books fills/journals/realized_pnl ONLY from confirmed fills (delta-idempotent); "
-            "marks unfilled/cancelled without journal side-effects. dry_run=True by default. "
+            "Books fills/journals/realized_pnl ONLY from confirmed fills (delta-idempotent). "
+            "Evidence-first: explicit broker cancellation returns cancelled "
+            "(dry: would_mark_cancelled, real: marked_cancelled); missing evidence (NONE) "
+            "returns noop_no_evidence with requires_manual_review=true and leaves ledger open "
+            "without ledger/proposal rung mutation. dry_run=True by default. "
             "ROB-568: Surfaces US FX PnL split (security_pnl_krw, fx_pnl_krw) "
             "for overseas equity fills. "
             "realized_pnl_pct (alias journal_pnl_pct, labeled "
