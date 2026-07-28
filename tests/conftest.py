@@ -41,6 +41,7 @@ _DATABASE_FIXTURE_NAMES = frozenset(
     {
         "db_session",
         "session",
+        "committed_investment_reports_session",
         "investment_reports_cleanup_lock",
         "retrospective_action_control_lock",
         "toss_ledger_cleanup_lock",
