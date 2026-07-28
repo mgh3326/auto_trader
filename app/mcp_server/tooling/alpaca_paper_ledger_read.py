@@ -16,6 +16,7 @@ from app.services.alpaca_paper_account_modes import (
     normalize_alpaca_paper_account_mode,
 )
 from app.services.alpaca_paper_anomaly_checks import (
+    DEFAULT_SNAPSHOT_MAX_AGE_MINUTES,
     build_paper_execution_preflight_report,
 )
 from app.services.alpaca_paper_ledger_service import AlpacaPaperLedgerService
@@ -149,6 +150,8 @@ async def alpaca_paper_execution_preflight_check(
     limit: int = 50,
     open_orders: list[dict[str, Any]] | None = None,
     positions: list[dict[str, Any]] | None = None,
+    broker_snapshot_fetched_at: str | None = None,
+    snapshot_max_age_minutes: int = DEFAULT_SNAPSHOT_MAX_AGE_MINUTES,
     approval_packet: dict[str, Any] | None = None,
     expected_signal_symbol: str | None = None,
     expected_execution_symbol: str | None = None,
@@ -168,6 +171,14 @@ async def alpaca_paper_execution_preflight_check(
     cancels, repairs, or writes data. The returned ``should_block`` field is
     intended for runner preflight gates.
 
+    Broker snapshots are fail-closed (ROB-1130). ``open_orders`` and
+    ``positions`` must both be supplied together with
+    ``broker_snapshot_fetched_at``, the time the snapshot was read from the
+    broker. A missing, empty-but-unattested, stale, or unparseable snapshot is
+    reported as a ``broker_snapshot_unverified`` blocker instead of passing as
+    ``positions=0``. Fetch them with ``alpaca_paper_list_positions`` and
+    ``alpaca_paper_list_orders(status="open")`` immediately before this call.
+
     When a correlation/candidate/client/briefing scope is provided directly or
     via approval_packet, stale and symbol-context checks evaluate only rows in
     that scope. Calls without scope preserve the global recent-ledger safety
@@ -177,7 +188,8 @@ async def alpaca_paper_execution_preflight_check(
     ``legacy_cycle_blockers_as_warnings`` is an explicit Alpaca Paper test-mode
     switch: residual-position and stale-preview cleanup findings are returned as
     warnings, while open-order conflicts, duplicate IDs, ledger/fill anomalies,
-    symbol mismatches, and other execution-safety findings remain blockers.
+    symbol mismatches, unverified broker snapshots, and other execution-safety
+    findings remain blockers.
     """
     selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
     if limit < 1:
@@ -185,6 +197,8 @@ async def alpaca_paper_execution_preflight_check(
     limit = min(limit, 200)
     if stale_after_minutes < 1:
         raise ValueError("stale_after_minutes must be >= 1")
+    if snapshot_max_age_minutes < 1:
+        raise ValueError("snapshot_max_age_minutes must be >= 1")
 
     scope = {
         "lifecycle_correlation_id": _clean_scope_value(lifecycle_correlation_id)
@@ -230,8 +244,11 @@ async def alpaca_paper_execution_preflight_check(
 
     report = build_paper_execution_preflight_report(
         ledger_rows=rows,
-        open_orders=open_orders or [],
-        positions=positions or [],
+        open_orders=open_orders,
+        positions=positions,
+        open_orders_fetched_at=broker_snapshot_fetched_at,
+        positions_fetched_at=broker_snapshot_fetched_at,
+        snapshot_max_age_minutes=snapshot_max_age_minutes,
         approval_packet=approval_packet,
         expected_signal_symbol=expected_signal_symbol,
         expected_execution_symbol=expected_execution_symbol,
@@ -382,6 +399,10 @@ def register_alpaca_paper_ledger_read_tools(mcp: FastMCP) -> None:
         description=(
             "Read-only Alpaca Paper execution anomaly preflight. Returns "
             "severity-classified findings and should_block for cycle runners. "
+            "Broker snapshots are fail-closed: pass open_orders, positions and "
+            "broker_snapshot_fetched_at from reads taken immediately before the "
+            "call, otherwise the gate blocks with broker_snapshot_unverified "
+            "rather than passing as positions=0. "
             "Supports direct or approval_packet-derived correlation/client/"
             "candidate/briefing/session scope to avoid unrelated ledger rows. "
             "No broker mutation and no repair writes."

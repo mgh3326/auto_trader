@@ -545,7 +545,7 @@ only; it deliberately does not infer position or final reconciliation without
 independent evidence.
 
 `alpaca_paper_execution_preflight_check` is a read-only runner gate for the
-later automated paper cycle. It reads recent ledger rows and accepts optional
+later automated paper cycle. It reads recent ledger rows and accepts
 caller-supplied read-only `open_orders`, `positions`, and `approval_packet`
 snapshots, then returns severity-classified anomalies plus `should_block`. Scoped
 callers may pass `lifecycle_correlation_id`, `client_order_id`, `candidate_uuid`,
@@ -558,7 +558,8 @@ flow test-mode: residual positions and stale preview/approval packets are
 returned as warnings instead of blockers so operators can test buy/sell/order
 adjust/close flows on a used paper account. It does not weaken open-order
 conflicts, duplicate `client_order_id`, ledger/order/fill anomalies, missing
-linked sells, unclosed sell snapshots, or symbol mismatches; those remain
+linked sells, unclosed sell snapshots, unverified broker snapshots, or symbol
+mismatches; those remain
 blocking. ROB-93
 checks include unexpected open orders, residual positions, duplicate
 `client_order_id`, filled buys without linked sells, filled sells without a zero
@@ -570,6 +571,37 @@ findings return the dry-run action hint
 surface an explicit cleanup-required state before any separately approved repair
 write. The preflight itself performs no broker mutation, no repair writes, and
 no direct DB backfill.
+
+The broker snapshot is fail-closed (ROB-1130). `open_orders` and `positions` must
+both be supplied together with `broker_snapshot_fetched_at`, the time the
+snapshot was read from the broker:
+
+```python
+positions = await alpaca_paper_list_positions()
+open_orders = await alpaca_paper_list_orders(status="open")
+report = await alpaca_paper_execution_preflight_check(
+    positions=positions["positions"],
+    open_orders=open_orders["orders"],
+    broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+)
+```
+
+A snapshot that is missing, empty without an attestation, older than
+`snapshot_max_age_minutes` (default 5), or carries an unparseable/future
+timestamp is reported as a `broker_snapshot_unverified` blocker. Previously an
+omitted snapshot silently became `positions=0` and passed the gate while the
+account held positions. `counts.positions` and `counts.open_orders` are now
+omitted rather than reported as `0` when the snapshot cannot be verified, and
+`broker_snapshot` carries the per-kind `provided` / `verified` / `reason` state.
+This blocker is never downgraded by `legacy_cycle_blockers_as_warnings`.
+
+Buy legs that hold an open position are no longer reported as missing sell legs
+(ROB-1129). A filled/reconciled buy with no linked sell row is classified against
+the verified position snapshot: still-held symbols produce the informational
+`open_position_without_sell_leg` finding, while symbols the broker no longer
+holds, buys already in `closed`/`final_reconciled`, and rows with no verified
+snapshot keep blocking under `previous_buy_filled_sell_missing` with a per-row
+`reason`.
 
 The broker inspection tools instantiate `AlpacaPaperBrokerService`, so they
 inherit the

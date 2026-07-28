@@ -39,6 +39,21 @@ def _check_ids(report):
     return {a.check_id for a in report.anomalies}
 
 
+def _verified_snapshot(positions=None, open_orders=None, now=None):
+    """Kwargs for a freshly fetched, attested broker snapshot (ROB-1130).
+
+    The preflight gate is fail-closed: an empty list only counts as evidence of
+    an empty account when the caller also states when it was fetched.
+    """
+    fetched_at = now or datetime.now(UTC)
+    return {
+        "positions": list(positions or []),
+        "open_orders": list(open_orders or []),
+        "positions_fetched_at": fetched_at,
+        "open_orders_fetched_at": fetched_at,
+    }
+
+
 @pytest.mark.unit
 def test_clean_preflight_returns_info_and_does_not_block():
     report = build_paper_execution_preflight_report(
@@ -52,6 +67,8 @@ def test_clean_preflight_returns_info_and_does_not_block():
         ],
         open_orders=[],
         positions=[],
+        positions_fetched_at=datetime(2026, 5, 3, 12, 5, tzinfo=UTC),
+        open_orders_fetched_at=datetime(2026, 5, 3, 12, 5, tzinfo=UTC),
         approval_packet={"client_order_id": "rob93-buy-002"},
         expected_signal_symbol="KRW-BTC",
         expected_execution_symbol="BTC/USD",
@@ -95,7 +112,9 @@ def test_residual_position_blocks_new_cycle():
 @pytest.mark.unit
 def test_residual_position_can_warn_in_paper_execution_test_mode():
     report = build_paper_execution_preflight_report(
-        positions=[{"symbol": "BTCUSD", "qty": "0.001", "asset_class": "crypto"}],
+        **_verified_snapshot(
+            positions=[{"symbol": "BTCUSD", "qty": "0.001", "asset_class": "crypto"}]
+        ),
         legacy_cycle_blockers_as_warnings=True,
     )
 
@@ -165,6 +184,9 @@ def test_open_position_buy_without_sell_leg_is_info_not_block():
             )
         ],
         positions=[{"symbol": "UBER", "qty": "5", "asset_class": "us_equity"}],
+        positions_fetched_at=datetime.now(UTC),
+        open_orders=[],
+        open_orders_fetched_at=datetime.now(UTC),
     )
 
     assert "previous_buy_filled_sell_missing" not in _check_ids(report)
@@ -191,6 +213,9 @@ def test_holding_state_buy_without_broker_position_still_blocks():
             )
         ],
         positions=[{"symbol": "UBER", "qty": "5", "asset_class": "us_equity"}],
+        positions_fetched_at=datetime.now(UTC),
+        open_orders=[],
+        open_orders_fetched_at=datetime.now(UTC),
     )
 
     assert report.should_block is True
@@ -214,6 +239,9 @@ def test_completed_roundtrip_state_without_sell_leg_blocks_even_when_held():
             )
         ],
         positions=[{"symbol": "UBER", "qty": "5", "asset_class": "us_equity"}],
+        positions_fetched_at=datetime.now(UTC),
+        open_orders=[],
+        open_orders_fetched_at=datetime.now(UTC),
     )
 
     assert report.should_block is True
@@ -301,6 +329,9 @@ def test_rob1129_measured_ledger_drops_five_false_positive_open_positions():
             {"symbol": "HCA", "qty": "1", "asset_class": "us_equity"},
             {"symbol": "CPNG", "qty": "1", "asset_class": "us_equity"},
         ],
+        positions_fetched_at=datetime(2026, 7, 28, 14, 0, tzinfo=UTC),
+        open_orders=[],
+        open_orders_fetched_at=datetime(2026, 7, 28, 14, 0, tzinfo=UTC),
         now=datetime(2026, 7, 28, 14, 0, tzinfo=UTC),
     )
 
@@ -362,8 +393,7 @@ def test_canonical_completed_roundtrip_states_do_not_block():
                 raw_responses={"payload": {"source_client_order_id": "buy-reconciled"}},
             ),
         ],
-        open_orders=[],
-        positions=[],
+        **_verified_snapshot(),
     )
 
     assert report.status == "pass"
@@ -487,6 +517,7 @@ def test_spent_stale_preview_with_final_reconciled_sibling_warns_not_blocks():
                 signal_symbol="SOL/USD",
             ),
         ],
+        **_verified_snapshot(now=now),
         now=now,
         stale_after_minutes=30,
     )
@@ -527,6 +558,7 @@ def test_scoped_stale_preview_uses_unscoped_terminal_sibling_evidence():
             ),
         ],
         approval_packet={"candidate_uuid": "candidate-current"},
+        **_verified_snapshot(now=now),
         now=now,
         stale_after_minutes=30,
     )
@@ -583,6 +615,7 @@ def test_spent_stale_preview_fixture_for_rob_950_two_terminal_pairs_does_not_blo
                 signal_symbol="BTC/USD",
             ),
         ],
+        **_verified_snapshot(now=now),
         now=now,
         stale_after_minutes=30,
     )
@@ -684,6 +717,7 @@ def test_stale_preview_can_warn_in_paper_execution_test_mode():
                 created_at=now - timedelta(minutes=45),
             )
         ],
+        **_verified_snapshot(now=now),
         now=now,
         stale_after_minutes=30,
         legacy_cycle_blockers_as_warnings=True,
@@ -740,7 +774,10 @@ def test_signal_execution_symbol_mismatch_blocks():
 @pytest.mark.unit
 def test_report_to_dict_is_operator_readable():
     report = build_paper_execution_preflight_report(
-        open_orders=[{"id": "order-1", "status": "new", "symbol": "BTCUSD"}],
+        **_verified_snapshot(
+            open_orders=[{"id": "order-1", "status": "new", "symbol": "BTCUSD"}],
+            now=datetime(2026, 5, 3, 12, 0, tzinfo=UTC),
+        ),
         now=datetime(2026, 5, 3, 12, 0, tzinfo=UTC),
     )
     data = report.to_dict()
@@ -749,6 +786,8 @@ def test_report_to_dict_is_operator_readable():
     assert data["should_block"] is True
     assert data["counts"]["block"] == 1
     assert data["anomalies"][0]["check_id"] == "unexpected_open_orders"
+    assert data["broker_snapshot"]["positions"]["verified"] is True
+    assert data["broker_snapshot"]["open_orders"]["verified"] is True
 
 
 @pytest.mark.unit
@@ -783,6 +822,7 @@ def test_scoped_preflight_ignores_unrelated_stale_and_symbol_rows():
             "signal_symbol": "KRW-BTC",
             "execution_symbol": "BTC/USD",
         },
+        **_verified_snapshot(now=now),
         now=now,
         stale_after_minutes=30,
     )
@@ -876,10 +916,234 @@ def test_preflight_does_not_flag_canceled_state_as_anomaly():
                 raw_responses={"payload": {"source_client_order_id": "buy-reconciled"}},
             ),
         ],
-        open_orders=[],
-        positions=[],
+        **_verified_snapshot(),
     )
 
     assert report.status == "pass"
     assert report.should_block is False
     assert "ledger_anomaly_row" not in _check_ids(report)
+
+
+# ---------------------------------------------------------------------------
+# ROB-1130: broker snapshot is fail-closed
+# ---------------------------------------------------------------------------
+
+_ROB1130_NOW = datetime(2026, 7, 28, 14, 0, tzinfo=UTC)
+
+
+@pytest.mark.unit
+def test_rob1130_empty_snapshot_without_attestation_blocks():
+    """Regression 1/4: an empty snapshot is not evidence of an empty account."""
+    report = build_paper_execution_preflight_report(
+        open_orders=[],
+        positions=[],
+        now=_ROB1130_NOW,
+    )
+
+    assert report.should_block is True
+    assert report.status == "blocked"
+    finding = _anomaly(report, "broker_snapshot_unverified")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert finding.details["unverified"] == ["positions", "open_orders"]
+    assert finding.details["reasons"] == {
+        "positions": "snapshot_not_attested",
+        "open_orders": "snapshot_not_attested",
+    }
+    # The misleading "positions: 0" signal from ROB-1130 must not be reported as
+    # a verified count.
+    assert report.broker_snapshot["positions"]["verified"] is False
+    assert "positions" not in report.counts
+
+
+@pytest.mark.unit
+def test_rob1130_missing_snapshot_fields_block():
+    """Regression 2/4: omitting the snapshot entirely blocks."""
+    report = build_paper_execution_preflight_report(now=_ROB1130_NOW)
+
+    assert report.should_block is True
+    finding = _anomaly(report, "broker_snapshot_unverified")
+    assert finding.details["reasons"] == {
+        "positions": "snapshot_missing",
+        "open_orders": "snapshot_missing",
+    }
+    assert report.broker_snapshot["positions"]["provided"] is False
+    assert report.broker_snapshot["positions"]["count"] is None
+    assert "positions" not in report.counts
+    assert "open_orders" not in report.counts
+
+
+@pytest.mark.unit
+def test_rob1130_partial_snapshot_blocks_on_the_missing_half():
+    """Attesting positions only still leaves the open-order view unqueried."""
+    report = build_paper_execution_preflight_report(
+        positions=[],
+        positions_fetched_at=_ROB1130_NOW,
+        now=_ROB1130_NOW,
+    )
+
+    assert report.should_block is True
+    finding = _anomaly(report, "broker_snapshot_unverified")
+    assert finding.details["unverified"] == ["open_orders"]
+    assert report.broker_snapshot["positions"]["verified"] is True
+
+
+@pytest.mark.unit
+def test_rob1130_genuinely_queried_empty_account_passes():
+    """Regression 3/4: a real positions=0 read keeps the normal pass path."""
+    report = build_paper_execution_preflight_report(
+        open_orders=[],
+        positions=[],
+        open_orders_fetched_at=_ROB1130_NOW,
+        positions_fetched_at=_ROB1130_NOW,
+        now=_ROB1130_NOW,
+    )
+
+    assert report.status == "pass"
+    assert report.should_block is False
+    assert _check_ids(report) == {"preflight_clean"}
+    assert report.counts["positions"] == 0
+    assert report.counts["open_orders"] == 0
+    assert report.broker_snapshot["positions"] == {
+        "provided": True,
+        "count": 0,
+        "fetched_at": _ROB1130_NOW.isoformat(),
+        "verified": True,
+        "reason": None,
+    }
+
+
+@pytest.mark.unit
+def test_rob1130_held_position_in_real_snapshot_is_reflected():
+    """Regression 4/4: the UBER holding measured on 07-28 must be seen."""
+    report = build_paper_execution_preflight_report(
+        open_orders=[],
+        positions=[{"symbol": "UBER", "qty": "1", "asset_class": "us_equity"}],
+        open_orders_fetched_at=_ROB1130_NOW,
+        positions_fetched_at=_ROB1130_NOW,
+        now=_ROB1130_NOW,
+    )
+
+    assert report.should_block is True
+    finding = _anomaly(report, "residual_position_exists")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert finding.details["positions"] == [
+        {"symbol": "UBER", "qty": "1", "asset_class": "us_equity"}
+    ]
+    assert report.counts["positions"] == 1
+    assert "broker_snapshot_unverified" not in _check_ids(report)
+
+
+@pytest.mark.unit
+def test_rob1130_stale_snapshot_blocks():
+    report = build_paper_execution_preflight_report(
+        open_orders=[],
+        positions=[],
+        open_orders_fetched_at=_ROB1130_NOW - timedelta(minutes=30),
+        positions_fetched_at=_ROB1130_NOW - timedelta(minutes=30),
+        snapshot_max_age_minutes=5,
+        now=_ROB1130_NOW,
+    )
+
+    assert report.should_block is True
+    finding = _anomaly(report, "broker_snapshot_unverified")
+    assert finding.details["reasons"] == {
+        "positions": "snapshot_stale",
+        "open_orders": "snapshot_stale",
+    }
+
+
+@pytest.mark.unit
+def test_rob1130_unparseable_and_future_attestations_block():
+    unparseable = build_paper_execution_preflight_report(
+        open_orders=[],
+        positions=[],
+        open_orders_fetched_at="not-a-timestamp",
+        positions_fetched_at="not-a-timestamp",
+        now=_ROB1130_NOW,
+    )
+    assert unparseable.should_block is True
+    assert _anomaly(unparseable, "broker_snapshot_unverified").details["reasons"] == {
+        "positions": "snapshot_attestation_unparseable",
+        "open_orders": "snapshot_attestation_unparseable",
+    }
+
+    future = build_paper_execution_preflight_report(
+        open_orders=[],
+        positions=[],
+        open_orders_fetched_at=_ROB1130_NOW + timedelta(minutes=10),
+        positions_fetched_at=_ROB1130_NOW + timedelta(minutes=10),
+        now=_ROB1130_NOW,
+    )
+    assert future.should_block is True
+    assert _anomaly(future, "broker_snapshot_unverified").details["reasons"] == {
+        "positions": "snapshot_attestation_in_future",
+        "open_orders": "snapshot_attestation_in_future",
+    }
+
+
+@pytest.mark.unit
+def test_rob1130_snapshot_blocker_is_not_downgradeable_by_legacy_flag():
+    """legacy_cycle_blockers_as_warnings must not reopen the fail-open hole."""
+    report = build_paper_execution_preflight_report(
+        legacy_cycle_blockers_as_warnings=True,
+        now=_ROB1130_NOW,
+    )
+
+    assert report.should_block is True
+    assert (
+        _anomaly(report, "broker_snapshot_unverified").severity
+        == PaperExecutionAnomalySeverity.block
+    )
+
+
+@pytest.mark.unit
+def test_rob1130_unverified_snapshot_keeps_open_position_classification_closed():
+    """Without snapshot evidence a filled buy stays blocked, never assumed open."""
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="rob73-ac562d42b1d3ec16",
+                side="buy",
+                lifecycle_state="filled",
+                execution_symbol="UBER",
+                signal_symbol="UBER",
+            )
+        ],
+        now=_ROB1130_NOW,
+    )
+
+    assert report.should_block is True
+    assert "open_position_without_sell_leg" not in _check_ids(report)
+    finding = _anomaly(report, "previous_buy_filled_sell_missing")
+    assert [r["reason"] for r in finding.details["rows"]] == [
+        "position_snapshot_unverified"
+    ]
+
+
+@pytest.mark.unit
+def test_rob1130_audit_callers_may_opt_out_without_downgrading_other_blockers():
+    """Historical audit views are not order gates, but keep every real blocker."""
+    report = build_paper_execution_preflight_report(
+        snapshot_evidence_required=False,
+        now=_ROB1130_NOW,
+    )
+    assert report.should_block is False
+    assert _check_ids(report) == {"preflight_clean"}
+
+    still_blocking = build_paper_execution_preflight_report(
+        open_orders=[{"id": "order-1", "status": "new", "symbol": "BTCUSD"}],
+        positions=[{"symbol": "UBER", "qty": "1"}],
+        snapshot_evidence_required=False,
+        now=_ROB1130_NOW,
+    )
+    assert still_blocking.should_block is True
+    assert "broker_snapshot_unverified" not in _check_ids(still_blocking)
+    assert {"unexpected_open_orders", "residual_position_exists"} <= _check_ids(
+        still_blocking
+    )
+
+
+@pytest.mark.unit
+def test_rob1130_invalid_snapshot_max_age_raises():
+    with pytest.raises(ValueError, match="snapshot_max_age_minutes must be >= 1"):
+        build_paper_execution_preflight_report(snapshot_max_age_minutes=0)

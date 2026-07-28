@@ -297,6 +297,12 @@ class AlpacaPaperRoundtripReportService:
             ledger_rows=[],
             open_orders=open_orders,
             positions=positions,
+            # This is a historical audit view over already-persisted rows, not a
+            # pre-order gate, so it must not turn every report into an anomaly
+            # just because the caller passed no live broker snapshot. The
+            # fail-closed snapshot requirement (ROB-1130) applies to
+            # alpaca_paper_execution_preflight_check, which authorizes orders.
+            snapshot_evidence_required=False,
             stale_after_minutes=stale_after_minutes,
             now=generated_at,
         ).to_dict()

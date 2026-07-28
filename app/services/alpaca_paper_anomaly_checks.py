@@ -9,7 +9,7 @@ snapshots, and the service returns an operator-readable preflight report.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -17,6 +17,13 @@ from typing import Any
 
 STALE_PREVIEW_CLEANUP_REQUIRED_STATE = "stale_preview_cleanup_required"
 STALE_PREVIEW_CLEANUP_ACTION = "mark_stale_preview_cleanup_required"
+
+# ROB-1130: a broker snapshot is only evidence if the caller states when it was
+# fetched. Without that, "queried and genuinely empty" and "never queried" arrive
+# as the same empty list and the gate cannot tell them apart.
+DEFAULT_SNAPSHOT_MAX_AGE_MINUTES = 5
+_SNAPSHOT_FUTURE_TOLERANCE = timedelta(seconds=60)
+_SNAPSHOT_KINDS = ("positions", "open_orders")
 
 
 class PaperExecutionAnomalySeverity(StrEnum):
@@ -55,6 +62,7 @@ class PaperExecutionPreflightReport:
     stale_after_minutes: int
     anomalies: tuple[PaperExecutionAnomaly, ...]
     counts: dict[str, int]
+    broker_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +71,7 @@ class PaperExecutionPreflightReport:
             "checked_at": self.checked_at.isoformat(),
             "stale_after_minutes": self.stale_after_minutes,
             "counts": self.counts,
+            "broker_snapshot": self.broker_snapshot,
             "anomalies": [a.to_dict() for a in self.anomalies],
         }
 
@@ -156,8 +165,8 @@ def _iter_nested_values(payload: Any) -> Iterable[tuple[str, Any]]:
 
 def _source_client_order_ids(row: Any) -> set[str]:
     ids: set[str] = set()
-    for field in ("preview_payload", "validation_summary", "raw_responses"):
-        for key, value in _iter_nested_values(_get(row, field) or {}):
+    for field_name in ("preview_payload", "validation_summary", "raw_responses"):
+        for key, value in _iter_nested_values(_get(row, field_name) or {}):
             if key in _SELL_SOURCE_KEYS and value:
                 ids.add(str(value))
     return ids
@@ -327,11 +336,57 @@ def _cleanup_required_row_ref(row: Any) -> dict[str, Any]:
     return ref
 
 
+def _verify_broker_snapshot(
+    *,
+    rows: list[dict[str, Any]] | None,
+    fetched_at: Any,
+    checked_at: datetime,
+    max_age_minutes: int,
+) -> dict[str, Any]:
+    """Classify whether a caller-supplied broker snapshot counts as evidence.
+
+    ROB-1130: an empty list is not evidence of an empty account. The caller must
+    also state when the snapshot was fetched, otherwise "positions=0 because we
+    looked" is indistinguishable from "positions=0 because we did not look" and
+    the gate silently passes while the account holds positions.
+    """
+    state: dict[str, Any] = {
+        "provided": rows is not None,
+        "count": len(rows) if rows is not None else None,
+        "fetched_at": None,
+        "verified": False,
+        "reason": None,
+    }
+    if rows is None:
+        state["reason"] = "snapshot_missing"
+        return state
+    if fetched_at is None or (isinstance(fetched_at, str) and not fetched_at.strip()):
+        state["reason"] = "snapshot_not_attested"
+        return state
+    parsed = _as_aware_utc(_parse_datetime(fetched_at))
+    if parsed is None:
+        state["reason"] = "snapshot_attestation_unparseable"
+        return state
+    state["fetched_at"] = parsed.isoformat()
+    if parsed > checked_at + _SNAPSHOT_FUTURE_TOLERANCE:
+        state["reason"] = "snapshot_attestation_in_future"
+        return state
+    if parsed < checked_at - timedelta(minutes=max_age_minutes):
+        state["reason"] = "snapshot_stale"
+        return state
+    state["verified"] = True
+    return state
+
+
 def build_paper_execution_preflight_report(
     *,
     ledger_rows: Iterable[Any] = (),
-    open_orders: Iterable[dict[str, Any]] = (),
-    positions: Iterable[dict[str, Any]] = (),
+    open_orders: Iterable[dict[str, Any]] | None = None,
+    positions: Iterable[dict[str, Any]] | None = None,
+    open_orders_fetched_at: datetime | str | None = None,
+    positions_fetched_at: datetime | str | None = None,
+    snapshot_max_age_minutes: int = DEFAULT_SNAPSHOT_MAX_AGE_MINUTES,
+    snapshot_evidence_required: bool = True,
     approval_packet: dict[str, Any] | None = None,
     expected_signal_symbol: str | None = None,
     expected_execution_symbol: str | None = None,
@@ -345,11 +400,24 @@ def build_paper_execution_preflight_report(
         ledger_rows: Recent or correlation-scoped ledger rows. ORM rows and
             dictionaries are both accepted for deterministic tests.
         open_orders: Read-only broker open-order snapshot already fetched by
-            the caller. Non-terminal rows block a new cycle.
+            the caller. Non-terminal rows block a new cycle. ``None`` means the
+            snapshot was never fetched, which is itself a blocker.
         positions: Read-only position snapshot already fetched by the caller.
             Any non-zero quantity blocks a new cycle. The snapshot is also the
             evidence used to tell a still-open buy leg apart from a buy whose
-            sell leg was never recorded (ROB-1129).
+            sell leg was never recorded (ROB-1129). ``None`` means the snapshot
+            was never fetched, which is itself a blocker.
+        open_orders_fetched_at: When the open-order snapshot was read from the
+            broker. Required for the snapshot to count as evidence (ROB-1130).
+        positions_fetched_at: When the position snapshot was read from the
+            broker. Required for the snapshot to count as evidence (ROB-1130).
+        snapshot_max_age_minutes: Maximum snapshot age that still counts as a
+            current view of the account.
+        snapshot_evidence_required: When True (the default, and the only correct
+            setting for any pre-order gate) a missing, unattested, stale, or
+            unparseable broker snapshot is a blocker. Historical audit report
+            builders that are not authorizing an order may set this to False;
+            it does not downgrade any other blocker.
         approval_packet: Optional preview/approval packet being considered for
             execution. Used for duplicate, stale, and symbol checks.
         expected_signal_symbol: Optional symbol from the signal artifact.
@@ -362,12 +430,15 @@ def build_paper_execution_preflight_report(
             testing where operators deliberately exercise buy/sell/adjust/close
             paths against an already-used paper account. Open orders,
             duplicate client IDs, ledger/order/fill mismatches, unclosed sells,
-            missing linked sells, and symbol mismatches still block.
+            missing linked sells, unverified broker snapshots, and symbol
+            mismatches still block.
     """
+    if snapshot_max_age_minutes < 1:
+        raise ValueError("snapshot_max_age_minutes must be >= 1")
     checked_at = _as_aware_utc(now) or datetime.now(UTC)
     unscoped_ledger = list(ledger_rows)
-    orders = list(open_orders)
-    position_rows = list(positions)
+    orders = list(open_orders) if open_orders is not None else None
+    position_rows = list(positions) if positions is not None else None
     packet = approval_packet or {}
     preflight_scope = _preflight_scope_from_packet(packet)
     ledger = [
@@ -384,6 +455,59 @@ def build_paper_execution_preflight_report(
         details: dict[str, Any],
     ) -> None:
         anomalies.append(PaperExecutionAnomaly(check_id, severity, summary, details))
+
+    # 0. Broker snapshot evidence (ROB-1130). This runs first because every
+    # check below that concludes "nothing is there" depends on it.
+    snapshot_state: dict[str, Any] = {
+        "positions": _verify_broker_snapshot(
+            rows=position_rows,
+            fetched_at=positions_fetched_at,
+            checked_at=checked_at,
+            max_age_minutes=snapshot_max_age_minutes,
+        ),
+        "open_orders": _verify_broker_snapshot(
+            rows=orders,
+            fetched_at=open_orders_fetched_at,
+            checked_at=checked_at,
+            max_age_minutes=snapshot_max_age_minutes,
+        ),
+        "max_age_minutes": snapshot_max_age_minutes,
+        "evidence_required": snapshot_evidence_required,
+    }
+    unverified_kinds = [
+        kind for kind in _SNAPSHOT_KINDS if not snapshot_state[kind]["verified"]
+    ]
+    if snapshot_evidence_required and unverified_kinds:
+        add(
+            "broker_snapshot_unverified",
+            PaperExecutionAnomalySeverity.block,
+            "Broker state snapshot is missing or unverified, so an empty "
+            "account cannot be distinguished from an unqueried one",
+            {
+                "unverified": unverified_kinds,
+                "reasons": {
+                    kind: snapshot_state[kind]["reason"] for kind in unverified_kinds
+                },
+                "max_age_minutes": snapshot_max_age_minutes,
+                "required_reads": [
+                    "alpaca_paper_list_positions",
+                    "alpaca_paper_list_orders(status=open)",
+                ],
+                "remediation": (
+                    "Fetch the broker snapshot immediately before the gate and "
+                    "pass it together with the time it was fetched."
+                ),
+                "snapshot": {kind: snapshot_state[kind] for kind in _SNAPSHOT_KINDS},
+            },
+        )
+
+    positions_are_evidence = (
+        snapshot_state["positions"]["verified"]
+        if snapshot_evidence_required
+        else bool(position_rows)
+    )
+    orders = orders if orders is not None else []
+    position_rows = position_rows if position_rows is not None else []
 
     # 1. Unexpected open orders.
     open_snapshot = [o for o in orders if _is_open_order(o)]
@@ -476,7 +600,7 @@ def build_paper_execution_preflight_report(
         for source_id in _source_client_order_ids(row)
     }
     held_symbols = _held_position_symbols(position_rows)
-    positions_verified = bool(position_rows)
+    positions_verified = positions_are_evidence
     open_position_buys: list[Any] = []
     unresolved_buys: list[dict[str, Any]] = []
     for row in ledger:
@@ -720,31 +844,41 @@ def build_paper_execution_preflight_report(
     should_block = any(
         a.severity == PaperExecutionAnomalySeverity.block for a in anomalies
     )
+    counts: dict[str, int] = {
+        "ledger_rows": len(ledger),
+        "unscoped_ledger_rows": len(unscoped_ledger),
+        "block": sum(
+            a.severity == PaperExecutionAnomalySeverity.block for a in anomalies
+        ),
+        "warning": sum(
+            a.severity == PaperExecutionAnomalySeverity.warning for a in anomalies
+        ),
+        "info": sum(
+            a.severity == PaperExecutionAnomalySeverity.info for a in anomalies
+        ),
+    }
+    # Only report a snapshot count that actually describes the account. Emitting
+    # ``positions: 0`` for a snapshot we could not verify is the exact false
+    # assurance ROB-1130 was filed for.
+    for kind in _SNAPSHOT_KINDS:
+        kind_state = snapshot_state[kind]
+        if kind_state["count"] is None:
+            continue
+        if kind_state["verified"] or not snapshot_evidence_required:
+            counts[kind] = kind_state["count"]
     return PaperExecutionPreflightReport(
         status="blocked" if should_block else "pass",
         should_block=should_block,
         checked_at=checked_at,
         stale_after_minutes=stale_after_minutes,
         anomalies=tuple(anomalies),
-        counts={
-            "ledger_rows": len(ledger),
-            "unscoped_ledger_rows": len(unscoped_ledger),
-            "open_orders": len(orders),
-            "positions": len(position_rows),
-            "block": sum(
-                a.severity == PaperExecutionAnomalySeverity.block for a in anomalies
-            ),
-            "warning": sum(
-                a.severity == PaperExecutionAnomalySeverity.warning for a in anomalies
-            ),
-            "info": sum(
-                a.severity == PaperExecutionAnomalySeverity.info for a in anomalies
-            ),
-        },
+        counts=counts,
+        broker_snapshot=snapshot_state,
     )
 
 
 __all__ = [
+    "DEFAULT_SNAPSHOT_MAX_AGE_MINUTES",
     "STALE_PREVIEW_CLEANUP_ACTION",
     "STALE_PREVIEW_CLEANUP_REQUIRED_STATE",
     "PaperExecutionAnomaly",
