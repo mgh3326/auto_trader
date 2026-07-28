@@ -20,6 +20,8 @@ from app.services.research_canonical_hash import (
     canonical_sha256,
     compute_identity_hashes,
     compute_identity_hashes_from_ast,
+    decode_canonical,
+    decode_manifest,
     derive_experiment_id,
     encode_canonical,
     encode_manifest,
@@ -238,6 +240,28 @@ def test_ast_manifest_rehashes_to_same_component_hashes() -> None:
     roundtripped = json.loads(json.dumps(manifest))
     ast_hashes = compute_identity_hashes_from_ast(roundtripped)
     assert ast_hashes == raw_hashes
+
+
+def test_closed_typed_ast_decodes_back_to_raw_components() -> None:
+    components = _identity_components()
+    manifest = json.loads(json.dumps(encode_manifest(components)))
+    decoded = decode_manifest(manifest)
+    assert decoded == components
+    assert encode_manifest(decoded) == manifest
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        ["unknown", None],
+        ["dict", [["duplicate", ["int", 1]], ["duplicate", ["int", 2]]]],
+        ["float", "nan"],
+        ["int", True],
+    ],
+)
+def test_decode_canonical_rejects_noncanonical_or_malformed_ast(malformed) -> None:
+    with pytest.raises(ValueError):
+        decode_canonical(malformed)
 
 
 def test_hash_canonical_ast_does_not_re_encode() -> None:

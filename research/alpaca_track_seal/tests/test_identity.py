@@ -213,6 +213,38 @@ def test_code_component_kind_is_pinned_as_formula_specification_not_implementati
     )
 
 
+@pytest.mark.parametrize(
+    ("family", "expected_sha256"),
+    [
+        ("AP-A1", "321e532fc9c70d40451caf37a2e2e84b5c76ad0f3cdf93d8fd77813580079c68"),
+        ("AP-A2", "c233333e988d41d7aa90ef2ff31b4ff97b7d61be427367f4f02b780acc44cc65"),
+    ],
+)
+def test_h3_real_implementation_code_hashes_exact_merged_source_bytes(
+    family, expected_sha256
+):
+    import identity as m
+
+    code = m.build_h3_implementation_code_component(family)
+    assert code["kind"] == "real_implementation"
+    assert code["source_commit"] == "5c09c2e7a"
+    assert code["source_sha256"] == expected_sha256
+    assert code["source_bundle_schema"] == "alpaca_track_h3_source_bundle.v1"
+    assert code["files"]
+
+
+def test_h3_real_implementation_source_hash_rejects_a_changed_source_file(tmp_path):
+    import identity as m
+
+    source = tmp_path / "dats_engine.py"
+    source.write_text("changed implementation\n")
+    with pytest.raises(m.SourceMismatchError, match="source bundle SHA-256 mismatch"):
+        m.build_h3_implementation_code_component(
+            "AP-A1",
+            source_files=(("research/alpaca_track_signals/dats_engine.py", source),),
+        )
+
+
 # --------------------------------------------------------------------------- #
 # ROB-1060 H2-lock item 3/4: literal content assertions.                      #
 # `assert components[name] is not None` cannot fail for a dict -- emptying    #

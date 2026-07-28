@@ -15,6 +15,7 @@ import asyncio
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -299,6 +300,50 @@ async def test_correction_creates_new_lineage_without_changing_old_hashes(
         )
     ).one()
     assert tuple(persisted) == base_hashes
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_experiment_identity_components_decodes_stored_ast(
+    registry_tables,
+) -> None:
+    session = registry_tables
+    identity = _identity()
+    row = await reg.register_experiment(session, identity)
+    await session.flush()
+
+    components = await reg.get_experiment_identity_components(
+        session, row.experiment_id
+    )
+
+    assert components == identity.components()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_get_experiment_identity_components_rejects_manifest_hash_mismatch(
+    registry_tables,
+    monkeypatch,
+) -> None:
+    session = registry_tables
+    identity = _identity()
+    row = await reg.register_experiment(session, identity)
+    await session.flush()
+    tampered = SimpleNamespace(
+        manifest={**row.manifest, "cost": ["str", "tampered"]},
+        **{
+            f"{name}_hash": getattr(row, f"{name}_hash")
+            for name in reg.IDENTITY_COMPONENTS
+        },
+    )
+
+    async def get_tampered(_session, _experiment_id):
+        return tampered
+
+    monkeypatch.setattr(reg, "_get_experiment", get_tampered)
+
+    with pytest.raises(reg.StoredManifestInvalid, match="cost_hash"):
+        await reg.get_experiment_identity_components(session, row.experiment_id)
 
 
 @pytest.mark.integration

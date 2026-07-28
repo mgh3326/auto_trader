@@ -45,6 +45,10 @@ def test_build_registration_plan_succeeds_when_undrifted_new1_baseline():
     assert len(plan["semantic_hash"]) == 64
     assert plan["config_count"] == 16
     assert len(plan["specs"]) == 16
+    assert plan["plan_kind"] == "h3_real_implementation_supersession"
+    for spec in plan["specs"]:
+        assert spec["supersedes_experiment_id"]
+        assert spec["components"]["code"]["kind"] == "real_implementation"
 
 
 def test_build_registration_plan_fails_closed_when_a_fresh_recomputation_diverges(
@@ -110,3 +114,22 @@ def test_supersession_guard_wired_before_use_fails_closed_on_any_non_none_value(
         m.SupersessionGuardUnwiredError, match="has not been wired into _cmd_register"
     ):
         m._assert_supersession_guard_wired_before_use("some-parent-experiment-id")
+
+
+def test_supersession_guard_calls_the_component_preservation_authority(monkeypatch):
+    import registry_cli as m
+
+    calls = []
+
+    def spy(*, child_components, parent_components):
+        calls.append((child_components, parent_components))
+
+    monkeypatch.setattr(m.ident, "assert_supersession_preserves_sealed_components", spy)
+    child = {"code": {"kind": "real_implementation"}}
+    parent = {"code": {"kind": "formula_specification_not_implementation"}}
+    m._assert_supersession_guard_wired_before_use(
+        "parent-id",
+        child_components=child,
+        parent_components=parent,
+    )
+    assert calls == [(child, parent)]

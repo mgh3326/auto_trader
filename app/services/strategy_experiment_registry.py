@@ -36,6 +36,8 @@ from app.services.research_canonical_hash import (
     IDENTITY_COMPONENTS,
     canonical_ast_json,
     compute_identity_hashes,
+    compute_identity_hashes_from_ast,
+    decode_manifest,
     derive_experiment_id,
     encode_canonical,
     encode_manifest,
@@ -77,6 +79,10 @@ class CanonicalIdentityCollision(StrategyExperimentRegistryError):
     refuses to replay the stored immutable row under a different identity."""
 
 
+class StoredManifestInvalid(StrategyExperimentRegistryError):
+    """A stored experiment manifest is malformed or disagrees with its hashes."""
+
+
 async def _get_experiment(
     session: AsyncSession, experiment_id: str
 ) -> ResearchStrategyExperiment | None:
@@ -85,6 +91,45 @@ async def _get_experiment(
             ResearchStrategyExperiment.experiment_id == experiment_id
         )
     )
+
+
+async def get_experiment_identity_components(
+    session: AsyncSession,
+    experiment_id: str,
+) -> dict[str, object]:
+    """Fetch, integrity-check, and decode one persisted identity manifest.
+
+    The registry persists the already-encoded closed typed AST. Supersession
+    callers need raw components for policy checks, so this read boundary first
+    proves all 11 AST hashes still match their immutable columns and only then
+    decodes the exact manifest.
+    """
+    stored = await _get_experiment(session, experiment_id)
+    if stored is None:
+        raise ExperimentNotFound(f"experiment_id {experiment_id!r} is not registered")
+    if type(stored.manifest) is not dict:
+        raise StoredManifestInvalid(
+            f"experiment_id {experiment_id!r} has no canonical identity manifest"
+        )
+
+    ast_hashes = compute_identity_hashes_from_ast(stored.manifest)
+    mismatches = [
+        column
+        for column, actual in ast_hashes.items()
+        if getattr(stored, column) != actual
+    ]
+    if mismatches:
+        raise StoredManifestInvalid(
+            f"experiment_id {experiment_id!r} stored manifest disagrees with "
+            f"immutable component hash column(s): {', '.join(mismatches)}"
+        )
+    try:
+        return decode_manifest(stored.manifest)
+    except (TypeError, ValueError) as exc:
+        raise StoredManifestInvalid(
+            f"experiment_id {experiment_id!r} has an invalid canonical identity "
+            f"manifest: {exc}"
+        ) from exc
 
 
 def _assert_same_identity(
