@@ -26,7 +26,7 @@ from sqlalchemy.sql import text
 from alembic import op
 
 revision: str = "20260728_rob1109_watch_intent"
-down_revision: str | Sequence[str] | None = "20260728_rob1103_watch_links"
+down_revision: str | Sequence[str] | None = "20260728_rob1115_learning"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
