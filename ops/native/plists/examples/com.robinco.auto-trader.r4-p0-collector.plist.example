@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Example only. ROB-1108 does not load or register this service. -->
+  <key>Label</key>
+  <string>com.robinco.auto-trader.r4-p0-collector</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__UV_PATH__</string>
+    <string>run</string>
+    <string>python</string>
+    <string>-m</string>
+    <string>scripts.r4_p0_collector</string>
+    <string>--run</string>
+    <string>--collector-id</string>
+    <string>__UNIQUE_HOST_COLLECTOR_ID__</string>
+    <string>--artifact-root</string>
+    <string>__LOCAL_ARTIFACT_ROOT__</string>
+    <string>--replica-artifact</string>
+    <string>__READ_ONLY_PEER_ARTIFACT__</string>
+    <string>--minimum-healthy-replicas</string>
+    <string>2</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO_ROOT__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>R4_P0_COLLECTOR_ENABLED</key>
+    <string>true</string>
+    <key>R4_P0_ALERT_WEBHOOK_URLS</key>
+    <string>__PRIVATE_HTTPS_WEBHOOK_RENDER_VALUE__</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__LOG_ROOT__/r4-p0-collector.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_ROOT__/r4-p0-collector.error.log</string>
+</dict>
+</plist>

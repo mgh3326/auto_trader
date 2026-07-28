@@ -2,7 +2,9 @@
 
 This is a manual, research-artifact-only point-in-time collector. It never
 writes the production database and is not registered with TaskIQ, cron, or
-Prefect.
+Prefect. ROB-1108 adds epoch finalization, deadline recovery, independent
+replica awareness, and fail-fast alerting without changing feature, score,
+candidate, or stage-decision logic.
 
 ## Hard boundary
 
@@ -73,11 +75,22 @@ flag:
 ```bash
 export R4_P0_COLLECTOR_ENABLED=true
 export R4_P0_ARTIFACT_ROOT="$HOME/work/herdr-artifacts/r4-p0-collector"
-uv run python -m scripts.r4_p0_collector --run
+export R4_P0_COLLECTOR_ID="r4-p0-host-a"
+export R4_P0_ALERT_WEBHOOK_URLS="https://alerts.example.invalid/r4"
+uv run python -m scripts.r4_p0_collector --run \
+  --replica-artifact /path/to/host-b/r4_p0_collector.sqlite3 \
+  --minimum-healthy-replicas 2
 ```
 
 Do not put these values in a committed `.env` file. Stop with SIGTERM or
 Ctrl-C. A single-instance file lock prevents two writers sharing an artifact.
+`--run` refuses to arm unless two distinct artifact paths are configured and
+the minimum healthy replica count is at least two. It also requires an HTTPS
+webhook unless the operator explicitly chooses `--allow-log-only-alerts` for a
+manual validation. Webhook values are read from the environment, not command
+arguments, so they are not exposed in the process list.
+
+`--probe` remains a bounded single-replica validation and does not claim HA.
 
 ## Storage and restart contract
 
@@ -85,6 +98,30 @@ The artifact is `r4_p0_collector.sqlite3` in WAL mode with `synchronous=FULL`.
 All persistence uses INSERT; database triggers reject UPDATE and DELETE.
 `record_id` is a semantic unique key, so replayed websocket events and
 unchanged REST periods are ignored after restart.
+
+ROB-1108 adds seven tables to the same local artifact. Every table has
+UPDATE/DELETE rejection triggers:
+
+- `epoch_source_events`: one immutable `OPEN` event per
+  `(study, policy, source, symbol, decision_epoch)`.
+- `collector_attempt_starts`: a pre-request row committed before network I/O;
+  an unmatched start proves the process/host died mid-attempt.
+- `collector_attempts`: the matching terminal row for each completed REST
+  request or websocket connection attempt, including `attempted_at`, canonical
+  request identity and its hash, response SHA-256 when a response exists, and
+  terminal status.
+- `symbol_epoch_finalizations`: the one-shot three-way result and canonical
+  evaluator input/hash.
+- `late_only_corrections`: observations received after the deadline. These
+  never rewrite a finalization.
+- `collector_heartbeats`: append-only replica liveness evidence.
+- `collector_alert_events`: alert creation and each delivery result; failed
+  delivery attempts are not overwritten.
+
+The `source_manifest_hash` is computed from the sorted required-source matrix,
+source schema requirements, and the three sealed signal symbols. The policy
+hash is the R4.1 combined seal hash. A mismatch therefore cannot silently
+reuse another finalization key.
 
 `bookTicker` is stored as one snapshot per symbol per second (the P0 contract
 allows either every change or 1s snapshots); raw aggTrade, forceOrder snapshots,
@@ -118,3 +155,118 @@ process returns nonzero if any required source had neither an insert nor a
 deduplicated response. `forceOrder` is reported separately as a sparse,
 event-driven source and is not treated as failed merely because no liquidation
 occurred during a short run.
+
+## Deterministic epoch finalizer
+
+Decision epochs are the six UTC four-hour boundaries. For decision epoch `e`,
+the current source interval is `[e-4h,e)` and the immutable deadline is:
+
+```text
+finalize_at(e) = e + 4h
+```
+
+At or after that deadline, the evaluator reads only raw rows whose event time
+is in the source interval and whose local receive time is no later than the
+deadline. It sorts source identities and payload hashes before canonical JSON
+serialization. Runtime clock time, database append order, replica path order,
+run ID, and retry count are not evaluator inputs.
+
+The precedence is fixed:
+
+1. Any same-source-identity/different-payload conflict produces
+   `FINAL_CONFLICT`.
+2. Otherwise any absent, non-finite, schema-invalid, hash-invalid, or
+   PIT-invalid required source produces `FINAL_MISSING`.
+3. Otherwise the result is `FINAL_COMPLETE`.
+
+`finalized_at` is the logical deadline, while `recorded_at` preserves actual
+write time. Re-running the evaluator checks the stored `evaluation_hash`; it
+cannot insert or mutate another result. A row received after the deadline is
+excluded by the fixed receive-time cutoff and appended as `LATE_ONLY`.
+
+## Deadline-aware recovery
+
+Normal polling/reconnect remains in place. In addition, the epoch supervisor
+checks the just-closed interval every 30 seconds until its deadline. It retries
+only provider endpoints that can faithfully return an event-time-bounded
+history:
+
+| source | bounded retry |
+|---|---|
+| `openInterestHist` | 5-minute rows with `startTime`/`endTime` |
+| `basis` | 5-minute rows with `startTime`/`endTime` |
+| `takerLongShortRatio` | 5-minute rows with `startTime`/`endTime` |
+| `premiumIndexKline1m` | completed 1-minute rows with `startTime`/`endTime` |
+
+Websocket PIT receive time, book/depth continuity, instantaneous OI, and live
+premium/funding snapshots cannot be recreated honestly after the fact. The
+supervisor therefore does not relabel a later snapshot as an earlier one.
+Those sources rely on independent live replicas. Missing/invalid recoverable
+sources are retried only while `now < finalize_at`; the finalizer never waits
+past the deadline.
+
+Each request, including invalid responses and transport/HTTP failures, appends
+a terminal attempt row. The raw response body SHA-256 is retained even when
+JSON/schema validation fails.
+
+## Two collectors and an independent watchdog
+
+The operational topology is two collectors on distinct hosts/network paths,
+each with its own local SQLite artifact and stable collector ID. They must not
+share a writable SQLite file. Each process reads the other artifact through a
+read-only replicated/mounted path; deterministic source-identity merge removes
+byte-identical duplicates and exposes conflicting payloads.
+
+A third process on an independent host watches both heartbeat/finalization
+ledgers. It pages when fewer than two replicas are fresh or when a due epoch
+has no matching finalization within the configured grace:
+
+```bash
+export R4_P0_WATCHDOG_ENABLED=true
+export R4_P0_ALERT_WEBHOOK_URLS="https://alerts.example.invalid/r4"
+uv run python -m scripts.r4_p0_watchdog --run \
+  --artifact /path/to/host-a/r4_p0_collector.sqlite3 \
+  --artifact /path/to/host-b/r4_p0_collector.sqlite3 \
+  --minimum-healthy-replicas 2
+```
+
+The alert path is:
+
+```text
+epoch deadline risk (last hour) -> append-only alert ledger -> CRITICAL/WARNING log
+                                                     \-> HTTPS webhook(s)
+final MISSING/CONFLICT --------> DATA_INTEGRITY_FAIL through the same path
+stale replica/finalizer --------> independent watchdog through the same path
+```
+
+Logging is formatted in real UTC before adding the `Z` suffix. Webhook delivery
+success/failure is appended separately, so an outage cannot erase its own
+alert history.
+
+No scheduler or service registration is part of this change. After manual
+fault injection, operators may install the example `KeepAlive` launchd
+templates in `ops/native/plists/examples/`; merely committing those templates
+does not load or deploy them.
+
+## Manual pre-arm verification
+
+These checks write only temporary local artifacts and use public market data:
+
+```bash
+uv run pytest \
+  tests/test_binance_r4_p0_collector.py \
+  tests/test_binance_r4_p0_hardening.py -q
+
+uv run python -m scripts.r4_p0_collector \
+  --probe --duration 60 \
+  --artifact-root /tmp/r4-p0-host-a
+
+uv run python -m scripts.r4_p0_watchdog \
+  --artifact /tmp/r4-p0-host-a/r4_p0_collector.sqlite3 \
+  --artifact /tmp/r4-p0-host-b/r4_p0_collector.sqlite3
+```
+
+Before T_WEEK0, the operator-owned one-week rehearsal must use the same source
+manifest, two-host topology, finalizer, and alert route. Acceptance is 100%
+`FINAL_COMPLETE`, zero `FINAL_MISSING`, zero `FINAL_CONFLICT`, zero stalled
+finalizers, and demonstrated page delivery under injected process/host loss.

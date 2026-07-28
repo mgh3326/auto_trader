@@ -26,6 +26,21 @@ from typing import Any, Final
 import httpx
 import websockets
 
+from app.services.brokers.binance.r4_p0_hardening import (
+    FINAL_COMPLETE,
+    AlertDispatcher,
+    DeterministicEpochFinalizer,
+    EpochLedger,
+    EpochPolicy,
+    FinalizationInvariantError,
+    RawPITReader,
+    availability_report,
+    decision_epoch_for_event,
+    finalize_at,
+    scheduled_epochs,
+    sha256_bytes,
+)
+
 REST_BASE_URL: Final = "https://fapi.binance.com"
 WS_PUBLIC_BASE_URL: Final = "wss://fstream.binance.com/public"
 WS_MARKET_BASE_URL: Final = "wss://fstream.binance.com/market"
@@ -57,7 +72,7 @@ PIT_COLUMNS: Final = (
     "gap_detected",
     "reconnect_id",
 )
-COLLECTOR_VERSION: Final = "r4-p0-collector.v2"
+COLLECTOR_VERSION: Final = "r4-p0-collector.v3"
 BASIS_RECOVERY_LIMIT: Final = 100
 EXPECTED_SOURCES: Final = frozenset(
     {
@@ -182,6 +197,14 @@ class CollectorConfig:
     taker_poll_seconds: float = 300.0
     status_seconds: float = 30.0
     symbols: tuple[str, ...] = SYMBOLS
+    collector_instance_id: str = "r4-p0-local"
+    replica_artifacts: tuple[Path, ...] = ()
+    alert_webhook_urls: tuple[str, ...] = ()
+    epoch_tick_seconds: float = 5.0
+    epoch_retry_seconds: float = 30.0
+    deadline_risk_seconds: float = 60.0 * 60.0
+    heartbeat_stale_seconds: float = 120.0
+    minimum_healthy_replicas: int = 1
 
 
 class AppendOnlyPITStore:
@@ -463,6 +486,26 @@ class BinanceR4P0Collector:
         self._previous_sequence: dict[tuple[str, str], int] = {}
         self._seen_on_connection: set[tuple[str, str, str]] = set()
         self._last_book_snapshot: dict[str, dt.datetime] = {}
+        policy_symbols = tuple(sorted(set(config.symbols).intersection(SIGNAL_SYMBOLS)))
+        self.epoch_policy = EpochPolicy(
+            required_sources=tuple(sorted(REQUIRED_ACTIVE_SOURCES)),
+            symbols=policy_symbols,
+        )
+        self.epoch_ledger = EpochLedger(store._db, self.epoch_policy)
+        self.raw_reader = RawPITReader(
+            store._db,
+            store.path,
+            config.replica_artifacts,
+        )
+        self.epoch_finalizer = DeterministicEpochFinalizer(
+            self.epoch_ledger, self.raw_reader
+        )
+        self.alert_dispatcher = AlertDispatcher(
+            self.epoch_ledger, config.alert_webhook_urls
+        )
+        self._opened_epochs: set[str] = set()
+        self._finalized_epochs: set[tuple[str, str]] = set()
+        self._last_epoch_retry: dt.datetime | None = None
 
     async def run(self) -> None:
         log.info(
@@ -489,6 +532,9 @@ class BinanceR4P0Collector:
             asyncio.create_task(
                 self._poll_loop("taker", self.config.taker_poll_seconds),
                 name="r4-p0-taker",
+            ),
+            asyncio.create_task(
+                self._epoch_supervisor(), name="r4-p0-epoch-supervisor"
             ),
             asyncio.create_task(self._status_loop(), name="r4-p0-status"),
         ]
@@ -531,6 +577,14 @@ class BinanceR4P0Collector:
     async def _status_loop(self) -> None:
         while True:
             await asyncio.sleep(self.config.status_seconds)
+            observed_at = utc_now()
+            health = self.health()
+            self.epoch_ledger.append_heartbeat(
+                collector_instance_id=self.config.collector_instance_id,
+                run_id=self.run_id,
+                observed_at=observed_at,
+                health=health,
+            )
             log.info(
                 "collector.status run_id=%s session_counts=%s duplicates=%s failures=%s total=%s",
                 self.run_id,
@@ -539,6 +593,219 @@ class BinanceR4P0Collector:
                 dict(self.failure_counts),
                 self.store.counts(),
             )
+            artifact_paths = (self.store.path, *self.config.replica_artifacts)
+            availability = availability_report(
+                artifact_paths,
+                self.epoch_policy,
+                observed_at=observed_at,
+                stale_after_seconds=self.config.heartbeat_stale_seconds,
+            )
+            if (
+                availability["healthy_replica_count"]
+                < self.config.minimum_healthy_replicas
+            ):
+                await self.alert_dispatcher.emit(
+                    alert_key=(
+                        "COLLECTOR_REDUNDANCY_LOST:"
+                        f"{self.epoch_policy.study_id}:"
+                        f"{self.epoch_policy.policy_hash}:"
+                        f"{int(observed_at.timestamp()) // 900}"
+                    ),
+                    severity="CRITICAL",
+                    payload={
+                        "alert_type": "COLLECTOR_REDUNDANCY_LOST",
+                        "minimum_healthy_replicas": (
+                            self.config.minimum_healthy_replicas
+                        ),
+                        **availability,
+                    },
+                    now=observed_at,
+                )
+
+    async def _epoch_supervisor(self) -> None:
+        async with httpx.AsyncClient(
+            base_url=REST_BASE_URL,
+            timeout=httpx.Timeout(10.0),
+            follow_redirects=False,
+            headers={"User-Agent": f"auto-trader/{COLLECTOR_VERSION}"},
+        ) as client:
+            while not self.stop.is_set():
+                now = utc_now()
+                for epoch in scheduled_epochs(self.epoch_policy.t0, now):
+                    epoch_text = iso_utc(epoch)
+                    assert epoch_text is not None
+                    if epoch_text not in self._opened_epochs:
+                        self.epoch_ledger.ensure_open_rows(
+                            epoch,
+                            self.config.collector_instance_id,
+                            now,
+                        )
+                        self._opened_epochs.add(epoch_text)
+                    if now >= finalize_at(epoch):
+                        await self._finalize_epoch(epoch, now)
+
+                retry_epoch = decision_epoch_for_event(now) - dt.timedelta(hours=4)
+                retry_deadline = finalize_at(retry_epoch)
+                if (
+                    retry_epoch >= self.epoch_policy.t0
+                    and retry_epoch <= now < retry_deadline
+                ):
+                    due = (
+                        self._last_epoch_retry is None
+                        or (now - self._last_epoch_retry).total_seconds()
+                        >= self.config.epoch_retry_seconds
+                    )
+                    if due:
+                        await self._retry_incomplete_epoch(client, retry_epoch, now)
+                        self._last_epoch_retry = now
+                    if (
+                        retry_deadline - now
+                    ).total_seconds() <= self.config.deadline_risk_seconds:
+                        await self._alert_deadline_risk(retry_epoch, now)
+                await asyncio.sleep(self.config.epoch_tick_seconds)
+
+    async def _finalize_epoch(
+        self, epoch: dt.datetime, observed_at: dt.datetime
+    ) -> None:
+        epoch_text = iso_utc(epoch) or ""
+        if all(
+            (symbol, epoch_text) in self._finalized_epochs
+            for symbol in self.epoch_policy.symbols
+        ):
+            return
+        for symbol in self.epoch_policy.symbols:
+            cache_key = (symbol, epoch_text)
+            if cache_key in self._finalized_epochs:
+                continue
+            try:
+                result = self.epoch_finalizer.finalize(
+                    symbol, epoch, observed_at=observed_at
+                )
+            except FinalizationInvariantError as exc:
+                self.failure_counts["finalizer_invariant"] += 1
+                await self.alert_dispatcher.emit(
+                    alert_key=(
+                        "LEDGER_REPRODUCTION_FAIL:"
+                        f"{self.epoch_policy.study_id}:"
+                        f"{self.epoch_policy.policy_hash}:"
+                        f"{symbol}:{epoch_text}"
+                    ),
+                    severity="CRITICAL",
+                    payload={
+                        "alert_type": "LEDGER_REPRODUCTION_FAIL",
+                        "decision_epoch_utc": epoch_text,
+                        "error_type": type(exc).__name__,
+                        "policy_hash": self.epoch_policy.policy_hash,
+                        "study_id": self.epoch_policy.study_id,
+                        "symbol": symbol,
+                    },
+                    now=observed_at,
+                )
+                self.stop.set()
+                return
+            self._finalized_epochs.add(cache_key)
+            self.epoch_finalizer.append_late_only(
+                symbol, epoch, recorded_at=observed_at
+            )
+            if result.final_status != FINAL_COMPLETE:
+                await self.alert_dispatcher.emit(
+                    alert_key=(
+                        "DATA_INTEGRITY_FAIL:"
+                        f"{result.study_id}:{result.policy_hash}:"
+                        f"{result.symbol}:{result.decision_epoch_utc}:"
+                        f"{result.final_status}"
+                    ),
+                    severity="CRITICAL",
+                    payload={
+                        "alert_type": "DATA_INTEGRITY_FAIL",
+                        "conflict_sources": result.conflict_sources,
+                        "decision_epoch_utc": result.decision_epoch_utc,
+                        "evaluation_hash": result.evaluation_hash,
+                        "final_status": result.final_status,
+                        "finalize_at": result.finalize_at,
+                        "invalid_sources": result.invalid_sources,
+                        "missing_sources": result.missing_sources,
+                        "policy_hash": result.policy_hash,
+                        "study_id": result.study_id,
+                        "symbol": result.symbol,
+                    },
+                    now=observed_at,
+                )
+
+    async def _alert_deadline_risk(
+        self, epoch: dt.datetime, observed_at: dt.datetime
+    ) -> None:
+        for symbol in self.epoch_policy.symbols:
+            preview = self.epoch_finalizer.preview(symbol, epoch)
+            if preview.final_status == FINAL_COMPLETE:
+                continue
+            await self.alert_dispatcher.emit(
+                alert_key=(
+                    "EPOCH_DEADLINE_RISK:"
+                    f"{preview.study_id}:{preview.policy_hash}:"
+                    f"{symbol}:{preview.decision_epoch_utc}"
+                ),
+                severity="WARNING",
+                payload={
+                    "alert_type": "EPOCH_DEADLINE_RISK",
+                    "conflict_sources": preview.conflict_sources,
+                    "decision_epoch_utc": preview.decision_epoch_utc,
+                    "finalize_at": preview.finalize_at,
+                    "invalid_sources": preview.invalid_sources,
+                    "missing_sources": preview.missing_sources,
+                    "policy_hash": preview.policy_hash,
+                    "study_id": preview.study_id,
+                    "symbol": symbol,
+                },
+                now=observed_at,
+            )
+
+    async def _retry_incomplete_epoch(
+        self,
+        client: httpx.AsyncClient,
+        epoch: dt.datetime,
+        observed_at: dt.datetime,
+    ) -> None:
+        recoverable = {
+            "binance_usdm.basis",
+            "binance_usdm.openInterestHist",
+            "binance_usdm.premiumIndexKline1m",
+            "binance_usdm.takerLongShortRatio",
+        }
+        for symbol in self.epoch_policy.symbols:
+            preview = self.epoch_finalizer.preview(symbol, epoch)
+            retry_sources = sorted(
+                (set(preview.missing_sources) | set(preview.invalid_sources))
+                & recoverable
+            )
+            for source in retry_sources:
+                if observed_at >= finalize_at(epoch):
+                    self.epoch_ledger.append_attempt(
+                        collector_instance_id=self.config.collector_instance_id,
+                        decision_epoch=epoch,
+                        attempted_at=observed_at,
+                        completed_at=observed_at,
+                        request_identity={
+                            "method": "GET",
+                            "source_name": source,
+                            "symbol": symbol,
+                            "target": "deadline-recovery",
+                        },
+                        response_sha256=None,
+                        terminal_status="DEADLINE_EXPIRED",
+                    )
+                    continue
+                try:
+                    await self._rest_epoch_history(
+                        client,
+                        source=source,
+                        symbol=symbol,
+                        decision_epoch=epoch,
+                    )
+                except Exception:
+                    # The request-level immutable attempt row already contains
+                    # the terminal failure. Other missing sources still retry.
+                    continue
 
     async def _ws_supervisor(self, lane: str) -> None:
         failure_attempt = 0
@@ -548,6 +815,18 @@ class BinanceR4P0Collector:
             reconnect_number += 1
             reconnect_id = f"{self.run_id}:ws:{lane}:{reconnect_number}"
             request_started = utc_now()
+            request_identity = {
+                "lane": lane,
+                "method": "WEBSOCKET_CONNECT",
+                "target": url,
+            }
+            connect_attempt_id = self.epoch_ledger.begin_attempt(
+                collector_instance_id=self.config.collector_instance_id,
+                decision_epoch=decision_epoch_for_event(request_started),
+                attempted_at=request_started,
+                request_identity=request_identity,
+            )
+            connected_at: dt.datetime | None = None
             try:
                 assert_ws_target(url)
                 async with websockets.connect(
@@ -558,10 +837,21 @@ class BinanceR4P0Collector:
                     max_queue=4096,
                 ) as ws:
                     request_completed = utc_now()
+                    connected_at = request_completed
                     log.info(
                         "collector.ws.connected lane=%s reconnect_id=%s",
                         lane,
                         reconnect_id,
+                    )
+                    self.epoch_ledger.append_attempt(
+                        collector_instance_id=self.config.collector_instance_id,
+                        decision_epoch=decision_epoch_for_event(request_started),
+                        attempted_at=request_started,
+                        completed_at=request_completed,
+                        request_identity=request_identity,
+                        response_sha256=None,
+                        terminal_status="SUCCESS",
+                        attempt_id=connect_attempt_id,
                     )
                     failure_attempt = 0
                     async for raw in ws:
@@ -576,6 +866,32 @@ class BinanceR4P0Collector:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                failed_at = utc_now()
+                failure_identity = (
+                    {
+                        "lane": lane,
+                        "method": "WEBSOCKET_SESSION",
+                        "reconnect_id": reconnect_id,
+                        "target": url,
+                    }
+                    if connected_at is not None
+                    else request_identity
+                )
+                self.epoch_ledger.append_attempt(
+                    collector_instance_id=self.config.collector_instance_id,
+                    decision_epoch=decision_epoch_for_event(
+                        connected_at or request_started
+                    ),
+                    attempted_at=connected_at or request_started,
+                    completed_at=failed_at,
+                    request_identity=failure_identity,
+                    response_sha256=None,
+                    terminal_status="TRANSPORT_ERROR",
+                    error_type=type(exc).__name__,
+                    attempt_id=(
+                        None if connected_at is not None else connect_attempt_id
+                    ),
+                )
                 self.failure_counts["websocket"] += 1
                 delay = min(60.0, 1.0 * (2 ** min(failure_attempt, 6)))
                 delay *= random.uniform(0.8, 1.2)
@@ -884,45 +1200,89 @@ class BinanceR4P0Collector:
             self._count_result("binance_usdm.basis", inserted)
 
     async def _rest_premium_kline(
-        self, client: httpx.AsyncClient, *, symbol: str
+        self,
+        client: httpx.AsyncClient,
+        *,
+        symbol: str,
+        decision_epoch: dt.datetime | None = None,
     ) -> None:
         path = "/fapi/v1/premiumIndexKlines"
         assert_rest_target(path)
         started = utc_now()
-        response = await client.get(
-            path,
-            params={"symbol": symbol, "interval": "1m", "limit": 2},
-        )
-        completed = utc_now()
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise ValueError(f"invalid JSON shape from allowlisted path {path}")
-        completed_ms = int(completed.timestamp() * 1000)
-        complete_rows = [
-            row
-            for row in payload
-            if isinstance(row, list) and len(row) >= 7 and int(row[6]) <= completed_ms
-        ]
-        if not complete_rows:
-            raise ValueError(f"no completed 1m row from allowlisted path {path}")
-        item = complete_rows[-1]
-        source = "binance_usdm.premiumIndexKline1m"
-        inserted = self.store.append(
-            source=source,
+        params = {"symbol": symbol, "interval": "1m", "limit": 2}
+        target_epoch = decision_epoch or decision_epoch_for_event(started)
+        attempt_id = self._begin_rest_attempt(
+            decision_epoch=target_epoch,
+            attempted_at=started,
+            path=path,
+            params=params,
             symbol=symbol,
-            raw_payload=item,
-            local_receive_time=completed,
-            run_id=self.run_id,
-            event_time=epoch_ms(item[6]),
-            transaction_time=epoch_ms(item[6]),
-            request_started_at=iso_utc(started),
-            request_completed_at=iso_utc(completed),
-            sequence_or_trade_id=str(item[0]),
-            gap_detected=False,
-            reconnect_id=f"{self.run_id}:rest:{path}",
+            sources=("binance_usdm.premiumIndexKline1m",),
         )
-        self._count_result(source, inserted)
+        response_hash: str | None = None
+        completed = started
+        try:
+            response = await client.get(path, params=params)
+            completed = utc_now()
+            response_hash = sha256_bytes(response.content)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise ValueError(f"invalid JSON shape from allowlisted path {path}")
+            completed_ms = int(completed.timestamp() * 1000)
+            complete_rows = [
+                row
+                for row in payload
+                if isinstance(row, list)
+                and len(row) >= 7
+                and int(row[6]) <= completed_ms
+            ]
+            if not complete_rows:
+                raise ValueError(f"no completed 1m row from allowlisted path {path}")
+            item = complete_rows[-1]
+            source = "binance_usdm.premiumIndexKline1m"
+            inserted = self.store.append(
+                source=source,
+                symbol=symbol,
+                raw_payload=item,
+                local_receive_time=completed,
+                run_id=self.run_id,
+                event_time=epoch_ms(item[6]),
+                transaction_time=epoch_ms(item[6]),
+                request_started_at=iso_utc(started),
+                request_completed_at=iso_utc(completed),
+                sequence_or_trade_id=str(item[0]),
+                gap_detected=False,
+                reconnect_id=f"{self.run_id}:rest:{path}",
+            )
+            self._count_result(source, inserted)
+        except Exception as exc:
+            self._append_rest_attempt(
+                decision_epoch=target_epoch,
+                attempted_at=started,
+                completed_at=completed,
+                path=path,
+                params=params,
+                symbol=symbol,
+                sources=("binance_usdm.premiumIndexKline1m",),
+                response_hash=response_hash,
+                terminal_status=self._attempt_failure_status(exc),
+                error_type=type(exc).__name__,
+                attempt_id=attempt_id,
+            )
+            raise
+        self._append_rest_attempt(
+            decision_epoch=target_epoch,
+            attempted_at=started,
+            completed_at=completed,
+            path=path,
+            params=params,
+            symbol=symbol,
+            sources=("binance_usdm.premiumIndexKline1m",),
+            response_hash=response_hash,
+            terminal_status="SUCCESS" if inserted else "EXACT_DUPLICATE",
+            attempt_id=attempt_id,
+        )
 
     async def _rest_get(
         self,
@@ -932,46 +1292,324 @@ class BinanceR4P0Collector:
         params: Mapping[str, Any],
         symbol: str,
         outputs: Sequence[tuple[str, str | None]],
+        decision_epoch: dt.datetime | None = None,
     ) -> None:
         assert_rest_target(path)
         started = utc_now()
-        response = await client.get(path, params=params)
-        completed = utc_now()
-        response.raise_for_status()
-        payload = response.json()
-        if isinstance(payload, str) or not isinstance(payload, (dict, list)):
-            raise ValueError(f"invalid JSON shape from allowlisted path {path}")
-        item = payload[-1] if isinstance(payload, list) and payload else payload
-        if not isinstance(item, dict):
-            raise ValueError(f"empty/invalid payload from allowlisted path {path}")
-        event_time = epoch_ms(item.get("time") or item.get("timestamp"))
-        if event_time is None:
-            # A response with no exchange timestamp cannot satisfy the PIT
-            # contract and must never be silently persisted.
-            raise ValueError(f"missing exchange timestamp from allowlisted path {path}")
-        sequence = item.get("timestamp") or item.get("time")
-        reconnect_id = f"{self.run_id}:rest:{path}"
-        for source, semantic_field in outputs:
-            semantic_payload = (
-                {**item, "_semantic_field": semantic_field}
-                if semantic_field is not None
-                else item
-            )
-            inserted = self.store.append(
-                source=source,
+        target_epoch = decision_epoch or decision_epoch_for_event(started)
+        output_sources = tuple(source for source, _ in outputs)
+        attempt_id = self._begin_rest_attempt(
+            decision_epoch=target_epoch,
+            attempted_at=started,
+            path=path,
+            params=params,
+            symbol=symbol,
+            sources=output_sources,
+        )
+        response_hash: str | None = None
+        completed = started
+        inserted_any = False
+        all_duplicates = True
+        try:
+            response = await client.get(path, params=params)
+            completed = utc_now()
+            response_hash = sha256_bytes(response.content)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, str) or not isinstance(payload, (dict, list)):
+                raise ValueError(f"invalid JSON shape from allowlisted path {path}")
+            item = payload[-1] if isinstance(payload, list) and payload else payload
+            if not isinstance(item, dict):
+                raise ValueError(f"empty/invalid payload from allowlisted path {path}")
+            event_time = epoch_ms(item.get("time") or item.get("timestamp"))
+            if event_time is None:
+                # A response with no exchange timestamp cannot satisfy the PIT
+                # contract and must never be silently persisted.
+                raise ValueError(
+                    f"missing exchange timestamp from allowlisted path {path}"
+                )
+            sequence = item.get("timestamp") or item.get("time")
+            reconnect_id = f"{self.run_id}:rest:{path}"
+            for source, semantic_field in outputs:
+                semantic_payload = (
+                    {**item, "_semantic_field": semantic_field}
+                    if semantic_field is not None
+                    else item
+                )
+                inserted = self.store.append(
+                    source=source,
+                    symbol=symbol,
+                    raw_payload=semantic_payload,
+                    local_receive_time=completed,
+                    run_id=self.run_id,
+                    event_time=event_time,
+                    transaction_time=None,
+                    request_started_at=iso_utc(started),
+                    request_completed_at=iso_utc(completed),
+                    sequence_or_trade_id=(
+                        str(sequence) if sequence is not None else None
+                    ),
+                    gap_detected=False,
+                    reconnect_id=reconnect_id,
+                )
+                self._count_result(source, inserted)
+                inserted_any = inserted_any or inserted
+                all_duplicates = all_duplicates and not inserted
+        except Exception as exc:
+            self._append_rest_attempt(
+                decision_epoch=target_epoch,
+                attempted_at=started,
+                completed_at=completed,
+                path=path,
+                params=params,
                 symbol=symbol,
-                raw_payload=semantic_payload,
-                local_receive_time=completed,
-                run_id=self.run_id,
-                event_time=event_time,
-                transaction_time=None,
-                request_started_at=iso_utc(started),
-                request_completed_at=iso_utc(completed),
-                sequence_or_trade_id=str(sequence) if sequence is not None else None,
-                gap_detected=False,
-                reconnect_id=reconnect_id,
+                sources=output_sources,
+                response_hash=response_hash,
+                terminal_status=self._attempt_failure_status(exc),
+                error_type=type(exc).__name__,
+                attempt_id=attempt_id,
             )
-            self._count_result(source, inserted)
+            raise
+        self._append_rest_attempt(
+            decision_epoch=target_epoch,
+            attempted_at=started,
+            completed_at=completed,
+            path=path,
+            params=params,
+            symbol=symbol,
+            sources=output_sources,
+            response_hash=response_hash,
+            terminal_status=(
+                "EXACT_DUPLICATE" if all_duplicates and not inserted_any else "SUCCESS"
+            ),
+            attempt_id=attempt_id,
+        )
+
+    async def _rest_epoch_history(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        source: str,
+        symbol: str,
+        decision_epoch: dt.datetime,
+    ) -> None:
+        interval_start = decision_epoch - dt.timedelta(hours=4)
+        start_ms = int(interval_start.timestamp() * 1000)
+        end_ms = int(decision_epoch.timestamp() * 1000) - 1
+        request_by_source: dict[str, tuple[str, dict[str, Any]]] = {
+            "binance_usdm.openInterestHist": (
+                "/futures/data/openInterestHist",
+                {
+                    "symbol": symbol,
+                    "period": "5m",
+                    "startTime": start_ms,
+                    "endTime": end_ms,
+                    "limit": 500,
+                },
+            ),
+            "binance_usdm.basis": (
+                "/futures/data/basis",
+                {
+                    "pair": symbol,
+                    "contractType": "PERPETUAL",
+                    "period": "5m",
+                    "startTime": start_ms,
+                    "endTime": end_ms,
+                    "limit": 500,
+                },
+            ),
+            "binance_usdm.takerLongShortRatio": (
+                "/futures/data/takerlongshortRatio",
+                {
+                    "symbol": symbol,
+                    "period": "5m",
+                    "startTime": start_ms,
+                    "endTime": end_ms,
+                    "limit": 500,
+                },
+            ),
+            "binance_usdm.premiumIndexKline1m": (
+                "/fapi/v1/premiumIndexKlines",
+                {
+                    "symbol": symbol,
+                    "interval": "1m",
+                    "startTime": start_ms,
+                    "endTime": end_ms,
+                    "limit": 500,
+                },
+            ),
+        }
+        path, params = request_by_source[source]
+        assert_rest_target(path)
+        started = utc_now()
+        attempt_id = self._begin_rest_attempt(
+            decision_epoch=decision_epoch,
+            attempted_at=started,
+            path=path,
+            params=params,
+            symbol=symbol,
+            sources=(source,),
+        )
+        response_hash: str | None = None
+        completed = started
+        inserted_count = 0
+        try:
+            response = await client.get(path, params=params)
+            completed = utc_now()
+            response_hash = sha256_bytes(response.content)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise ValueError(f"invalid historical JSON shape from {path}")
+            reconnect_id = f"{self.run_id}:retry:{path}"
+            for item in payload:
+                if source == "binance_usdm.premiumIndexKline1m":
+                    if not isinstance(item, list) or len(item) < 7:
+                        raise ValueError(f"invalid historical kline row from {path}")
+                    event_time = epoch_ms(item[6])
+                    sequence = str(item[0])
+                else:
+                    if not isinstance(item, dict):
+                        raise ValueError(f"invalid historical data row from {path}")
+                    timestamp = item.get("timestamp") or item.get("time")
+                    event_time = epoch_ms(timestamp)
+                    sequence = str(timestamp) if timestamp is not None else None
+                if event_time is None:
+                    raise ValueError(
+                        f"missing historical exchange timestamp from {path}"
+                    )
+                event_dt = dt.datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+                if not interval_start <= event_dt < decision_epoch:
+                    continue
+                inserted = self.store.append(
+                    source=source,
+                    symbol=symbol,
+                    raw_payload=item,
+                    local_receive_time=completed,
+                    run_id=self.run_id,
+                    event_time=event_time,
+                    transaction_time=(
+                        event_time
+                        if source == "binance_usdm.premiumIndexKline1m"
+                        else None
+                    ),
+                    request_started_at=iso_utc(started),
+                    request_completed_at=iso_utc(completed),
+                    sequence_or_trade_id=sequence,
+                    gap_detected=False,
+                    reconnect_id=reconnect_id,
+                )
+                self._count_result(source, inserted)
+                inserted_count += int(inserted)
+            if not payload:
+                raise ValueError(f"empty historical response from {path}")
+        except Exception as exc:
+            self._append_rest_attempt(
+                decision_epoch=decision_epoch,
+                attempted_at=started,
+                completed_at=completed,
+                path=path,
+                params=params,
+                symbol=symbol,
+                sources=(source,),
+                response_hash=response_hash,
+                terminal_status=self._attempt_failure_status(exc),
+                error_type=type(exc).__name__,
+                attempt_id=attempt_id,
+            )
+            raise
+        self._append_rest_attempt(
+            decision_epoch=decision_epoch,
+            attempted_at=started,
+            completed_at=completed,
+            path=path,
+            params=params,
+            symbol=symbol,
+            sources=(source,),
+            response_hash=response_hash,
+            terminal_status=("SUCCESS" if inserted_count else "EXACT_DUPLICATE"),
+            attempt_id=attempt_id,
+        )
+
+    @staticmethod
+    def _attempt_failure_status(exc: Exception) -> str:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return "HTTP_ERROR"
+        if isinstance(exc, httpx.HTTPError):
+            return "TRANSPORT_ERROR"
+        return "INVALID_RESPONSE"
+
+    def _append_rest_attempt(
+        self,
+        *,
+        decision_epoch: dt.datetime,
+        attempted_at: dt.datetime,
+        completed_at: dt.datetime,
+        path: str,
+        params: Mapping[str, Any],
+        symbol: str,
+        sources: Sequence[str],
+        response_hash: str | None,
+        terminal_status: str,
+        error_type: str | None = None,
+        attempt_id: str | None = None,
+    ) -> None:
+        request_identity = self._rest_request_identity(
+            path=path,
+            params=params,
+            symbol=symbol,
+            sources=sources,
+        )
+        self.epoch_ledger.append_attempt(
+            collector_instance_id=self.config.collector_instance_id,
+            decision_epoch=decision_epoch,
+            attempted_at=attempted_at,
+            completed_at=completed_at,
+            request_identity=request_identity,
+            response_sha256=response_hash,
+            terminal_status=terminal_status,
+            error_type=error_type,
+            attempt_id=attempt_id,
+        )
+
+    def _begin_rest_attempt(
+        self,
+        *,
+        decision_epoch: dt.datetime,
+        attempted_at: dt.datetime,
+        path: str,
+        params: Mapping[str, Any],
+        symbol: str,
+        sources: Sequence[str],
+    ) -> str:
+        return self.epoch_ledger.begin_attempt(
+            collector_instance_id=self.config.collector_instance_id,
+            decision_epoch=decision_epoch,
+            attempted_at=attempted_at,
+            request_identity=self._rest_request_identity(
+                path=path,
+                params=params,
+                symbol=symbol,
+                sources=sources,
+            ),
+        )
+
+    @staticmethod
+    def _rest_request_identity(
+        *,
+        path: str,
+        params: Mapping[str, Any],
+        symbol: str,
+        sources: Sequence[str],
+    ) -> dict[str, Any]:
+        return {
+            "base_url": REST_BASE_URL,
+            "method": "GET",
+            "params": dict(sorted(params.items())),
+            "path": path,
+            "sources": sorted(sources),
+            "symbol": symbol,
+        }
 
     def _count_result(self, source: str, inserted: bool) -> None:
         if inserted:
