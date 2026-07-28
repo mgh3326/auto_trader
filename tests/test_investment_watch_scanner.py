@@ -754,3 +754,224 @@ async def test_trigger_payload_price_guidance_none_without_recommendation(
     assert len(stub.calls) == 1
     assert stub.calls[0].price_guidance is None
     assert stub.calls[0].invest_links is not None  # 링크는 항상 채움
+
+
+# ---------------------------------------------------------------------------
+# ROB-1110 — per-alert isolation.
+#
+# The scan loop writes to the DB while still iterating. Before the fix the
+# alerts were live ORM rows owned by that same session, so the first
+# ``rollback()`` (the routine same-day idempotency-collision retry path)
+# expired the identity map and every later ``alert.conditions`` read raised
+# ``MissingGreenlet`` — taking out the whole remainder of the cycle.
+# Live ``notify_only`` alerts share this exact loop, so these cover the live
+# notify lane too.
+# ---------------------------------------------------------------------------
+
+
+_ROB1110_SYMBOLS = ("005930", "000660", "035420", "051910")
+
+
+async def _seed_kr_alert_fleet(
+    session: AsyncSession,
+    *,
+    action_mode: str = "notify_only",
+    symbols: tuple[str, ...] = _ROB1110_SYMBOLS,
+) -> list[Any]:
+    """Seed several independently-activated active KR alerts."""
+    alerts = []
+    for index, symbol in enumerate(symbols):
+        alerts.append(
+            await _seed_active_kr_alert(
+                session,
+                action_mode=action_mode,
+                symbol=symbol,
+                # A distinct report per alert: report ingestion is idempotent
+                # per (report_type, kst_date), and the helper activates
+                # ``items[0]``, so same-day seeds would all resolve to the
+                # very same watch item.
+                kst_date=f"2026-05-{18 + index:02d}",
+                client_item_key=f"rob1110-watch-{index}",
+            )
+        )
+    return alerts
+
+
+@pytest.mark.asyncio
+async def test_multiple_triggers_in_one_cycle_all_emit(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ROB-1110 — a cycle with many simultaneous triggers emits all of them."""
+    await _seed_kr_alert_fleet(session)
+
+    async def _fake_current_value(**_kwargs) -> float:
+        return 25.0  # below 30 → every alert triggers
+
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+    monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
+
+    stub = _StubHermesClient()
+    summary = await InvestmentWatchScanner(hermes_client=stub).scan_market("kr")
+
+    assert summary["alerts_seen"] == len(_ROB1110_SYMBOLS)
+    assert summary["triggered"] == len(_ROB1110_SYMBOLS)
+    assert summary["notified"] == len(_ROB1110_SYMBOLS)
+    assert summary["failed_lookups"] == 0
+    assert summary["failed_alerts"] == 0
+    assert summary["not_evaluated"] == 0
+    assert {call.symbol for call in stub.calls} == set(_ROB1110_SYMBOLS)
+
+
+@pytest.mark.asyncio
+async def test_rollback_on_first_alert_does_not_kill_the_rest(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ROB-1110 regression — the ``MissingGreenlet`` cascade.
+
+    Scan 1 emits an event row per alert but Hermes is disabled, so every
+    alert stays ``active``. Scan 2 therefore hits the same-day
+    ``IntegrityError`` → ``db.rollback()`` path on the *first* alert, which
+    expires the ORM identity map. Before the fix the second alert's
+    ``alert.conditions`` read became a lazy refresh and raised
+    ``MissingGreenlet``, so scan 2 reported ``duplicates=1`` and silently
+    booked the other three as ``failed_lookups``. All of them must be
+    evaluated.
+    """
+    await _seed_kr_alert_fleet(session)
+
+    async def _fake_current_value(**_kwargs) -> float:
+        return 25.0
+
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+    monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
+
+    # Scan 1 — Hermes disabled → events written, alerts remain 'active'.
+    skipped = _StubHermesClient(
+        delivery=HermesDeliveryResult(
+            status="skipped", http_status=None, reason="hermes_disabled"
+        )
+    )
+    first = await InvestmentWatchScanner(hermes_client=skipped).scan_market("kr")
+    assert first["triggered"] == len(_ROB1110_SYMBOLS)
+    assert first["skipped_delivery"] == len(_ROB1110_SYMBOLS)
+
+    # Scan 2 — every alert now collides on idempotency_key and rolls back.
+    retry = _StubHermesClient()
+    second = await InvestmentWatchScanner(hermes_client=retry).scan_market("kr")
+
+    assert second["alerts_seen"] == len(_ROB1110_SYMBOLS)
+    # Rolled-back insert → retry against the existing row, for *every* alert.
+    assert second["duplicates"] == len(_ROB1110_SYMBOLS)
+    assert second["notified"] == len(_ROB1110_SYMBOLS)
+    assert second["failed_lookups"] == 0, second
+    assert second["failed_alerts"] == 0, second
+    assert second["not_evaluated"] == 0, second
+    assert {call.symbol for call in retry.calls} == set(_ROB1110_SYMBOLS)
+
+
+@pytest.mark.asyncio
+async def test_failing_alert_is_isolated_recorded_and_cycle_completes(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ROB-1110 — one alert blowing up must not cost the others, and the
+    failure must be visible in the summary rather than swallowed."""
+    await _seed_kr_alert_fleet(session)
+    poisoned = _ROB1110_SYMBOLS[1]
+
+    async def _fake_current_value(**_kwargs) -> float:
+        return 25.0
+
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+    monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
+
+    @dataclass
+    class _ExplodingHermesClient(_StubHermesClient):
+        async def send_review_trigger(
+            self, payload: ReviewTriggerPayload
+        ) -> HermesDeliveryResult:
+            if payload.symbol == poisoned:
+                raise RuntimeError("hermes transport exploded")
+            return await super().send_review_trigger(payload)
+
+    stub = _ExplodingHermesClient()
+    summary = await InvestmentWatchScanner(hermes_client=stub).scan_market("kr")
+
+    assert summary["alerts_seen"] == len(_ROB1110_SYMBOLS)
+    assert summary["failed_alerts"] == 1
+    assert summary["not_evaluated"] == 0
+    # The other three completed end-to-end.
+    assert summary["notified"] == len(_ROB1110_SYMBOLS) - 1
+    assert {call.symbol for call in stub.calls} == set(_ROB1110_SYMBOLS) - {poisoned}
+
+    # The failure is recorded, not swallowed.
+    failures = [d for d in summary["details"] if d.get("status") == "alert_failed"]
+    assert len(failures) == 1
+    assert failures[0]["symbol"] == poisoned
+    assert "hermes transport exploded" in failures[0]["error"]
+
+    # The failed alert keeps its retryable state: event row still pending and
+    # the alert is still active, so the next cycle picks it back up.
+    await session.commit()
+    row = await session.execute(
+        sa.text(
+            "SELECT e.delivery_status, a.status "
+            "FROM review.investment_watch_events e "
+            "JOIN review.investment_watch_alerts a ON a.id = e.alert_id "
+            "WHERE e.symbol = :symbol"
+        ),
+        {"symbol": poisoned},
+    )
+    delivery_status, alert_status = row.one()
+    assert delivery_status == "pending"
+    assert alert_status == "active"
+
+
+@pytest.mark.asyncio
+async def test_db_error_in_auto_execute_does_not_poison_later_alerts(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ROB-1110 / ROB-1109 shape — an aborted transaction must not cascade.
+
+    ``maybe_auto_execute`` failing on a missing table (the original ROB-1109
+    observation) leaves the transaction in an aborted state. Without the
+    rollback the alert's own delivery bookkeeping — and every commit after
+    it — fails too. The alert that broke still has to record its delivery,
+    and the alerts behind it must be untouched.
+    """
+    await _seed_kr_alert_fleet(session, action_mode="auto_execute_mock")
+    poisoned = _ROB1110_SYMBOLS[0]
+
+    async def _fake_current_value(**_kwargs) -> float:
+        return 25.0
+
+    async def _exploding_auto_execute(db, *, alert, **_kwargs):
+        if alert.symbol == poisoned:
+            # A real aborted-transaction failure, not a bare raise.
+            await db.execute(sa.text("SELECT * FROM review.__rob1110_missing__"))
+        return {"executed": False, "skipped": "test"}
+
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+    monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
+    monkeypatch.setattr(scanner_module, "maybe_auto_execute", _exploding_auto_execute)
+
+    stub = _StubHermesClient()
+    summary = await InvestmentWatchScanner(hermes_client=stub).scan_market("kr")
+
+    assert summary["alerts_seen"] == len(_ROB1110_SYMBOLS)
+    assert summary["triggered"] == len(_ROB1110_SYMBOLS)
+    # Including the alert whose auto-execute blew up: the event row was
+    # already committed, so its delivery is still booked.
+    assert summary["notified"] == len(_ROB1110_SYMBOLS)
+    assert summary["failed_alerts"] == 0, summary
+    assert summary["not_evaluated"] == 0, summary
+    assert {call.symbol for call in stub.calls} == set(_ROB1110_SYMBOLS)
+
+    await session.commit()
+    delivered = await session.scalar(
+        sa.text(
+            "SELECT COUNT(*) FROM review.investment_watch_events "
+            "WHERE symbol = ANY(:symbols) AND delivery_status = 'delivered'"
+        ),
+        {"symbols": list(_ROB1110_SYMBOLS)},
+    )
+    assert delivered == len(_ROB1110_SYMBOLS)

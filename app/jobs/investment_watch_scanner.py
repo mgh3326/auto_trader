@@ -21,10 +21,32 @@ Locked semantics:
 * ``investment_watch_events.idempotency_key`` is unique on
   ``event:{alert_uuid}:{kst_date}:{threshold_key}`` — same-day collisions
   trigger the retry path (NOT a silent no-op).
+
+ROB-1110 — per-alert isolation. The scan loop writes to the DB while it
+is still iterating, so a single alert used to be able to take out every
+alert behind it in the same cycle:
+
+* The rows returned by ``list_active_alerts`` are ORM objects owned by
+  the scan session. ``AsyncSession.rollback()`` **always** expires the
+  identity map (unlike ``commit()``, which this app configures with
+  ``expire_on_commit=False``), so after the very first rollback — e.g.
+  the routine same-day ``IntegrityError`` retry path in ``_upsert_event``
+  — the next ``alert.conditions`` read became an implicit lazy refresh
+  and raised ``MissingGreenlet`` under asyncio.
+* A DB error inside one alert's handling left the transaction in an
+  aborted state, so every later alert's ``commit()`` failed too.
+
+The fix is structural rather than a targeted eager-load: every alert row
+is materialized into an immutable ``_AlertSnapshot`` *before* the first
+write, so the loop holds no ORM state at all, and each alert is processed
+inside its own try/rollback boundary. A failure is counted
+(``failed_alerts``) and described in ``details`` — never silently
+swallowed — and the cycle carries on to the remaining alerts.
 """
 
 from __future__ import annotations
 
+import copy
 import logging
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
@@ -74,6 +96,68 @@ _OUTCOME_BY_ACTION_MODE: dict[str, str] = {
 }
 
 
+@dataclass(frozen=True)
+class _AlertSnapshot:
+    """Plain-Python copy of one ``investment_watch_alerts`` row.
+
+    ROB-1110: the scan loop commits and rolls back while iterating, and a
+    rollback expires the whole identity map. Reading any attribute off a
+    live ORM row after that point is an implicit lazy refresh, which
+    raises ``MissingGreenlet`` under asyncio. Materializing every field
+    the scan needs — once, before the first write — removes the
+    lazy-load surface entirely instead of eager-loading one column at a
+    time and hoping no future field is added.
+
+    Attribute names deliberately mirror ``InvestmentWatchAlert`` so this
+    is a drop-in for the collaborators that take an ``alert`` (notably
+    ``maybe_auto_execute``).
+    """
+
+    id: int
+    alert_uuid: Any
+    source_report_uuid: Any
+    source_item_uuid: Any
+    market: str
+    target_kind: str
+    symbol: str
+    metric: str
+    operator: str
+    threshold: Any
+    threshold_key: str
+    threshold_high: Any
+    intent: str
+    action_mode: str
+    combine: str
+    conditions: list[Any]
+    max_action: dict[str, Any]
+    trigger_checklist: list[Any]
+
+    @classmethod
+    def from_row(cls, row: Any) -> _AlertSnapshot:
+        # deepcopy the mutable JSON containers so the snapshot cannot be
+        # aliased to (or invalidated with) the ORM row's attribute state.
+        return cls(
+            id=row.id,
+            alert_uuid=row.alert_uuid,
+            source_report_uuid=row.source_report_uuid,
+            source_item_uuid=row.source_item_uuid,
+            market=row.market,
+            target_kind=row.target_kind,
+            symbol=row.symbol,
+            metric=row.metric,
+            operator=row.operator,
+            threshold=row.threshold,
+            threshold_key=row.threshold_key,
+            threshold_high=row.threshold_high,
+            intent=row.intent,
+            action_mode=row.action_mode,
+            combine=row.combine,
+            conditions=copy.deepcopy(row.conditions or []),
+            max_action=copy.deepcopy(row.max_action or {}),
+            trigger_checklist=copy.deepcopy(row.trigger_checklist or []),
+        )
+
+
 @dataclass
 class _ScanStats:
     alerts_seen: int = 0
@@ -84,6 +168,12 @@ class _ScanStats:
     failed_delivery: int = 0
     skipped_delivery: int = 0
     skipped_closed: int = 0
+    # ROB-1110: alerts whose handling raised and was isolated, and alerts
+    # the cycle never reached. Both are "not evaluated" — kept separate
+    # from the zero-trigger case so a quiet scan can't be mistaken for a
+    # clean one.
+    failed_alerts: int = 0
+    not_evaluated: int = 0
     details: list[dict[str, Any]] = field(default_factory=list)
 
     def summary(self, market: str, *, market_open: bool) -> dict[str, Any]:
@@ -98,6 +188,8 @@ class _ScanStats:
             "failed_delivery": self.failed_delivery,
             "skipped_delivery": self.skipped_delivery,
             "skipped_closed": self.skipped_closed,
+            "failed_alerts": self.failed_alerts,
+            "not_evaluated": self.not_evaluated,
             "details": self.details,
         }
 
@@ -125,117 +217,195 @@ class InvestmentWatchScanner:
         async with self._session_factory() as db:
             repo = InvestmentReportsRepository(db)
             now_utc = datetime.now(UTC)
-            alerts = await repo.list_active_alerts(
+            rows = await repo.list_active_alerts(
                 market=normalized_market, valid_at=now_utc
             )
+            # ROB-1110: detach from the ORM *before* the first write. From
+            # here on the loop touches nothing that a commit/rollback can
+            # invalidate.
+            alerts = [_AlertSnapshot.from_row(row) for row in rows]
+            del rows
             stats.alerts_seen = len(alerts)
 
             if not alerts:
                 return stats.summary(normalized_market, market_open=market_open)
 
-            for alert in alerts:
+            for index, alert in enumerate(alerts):
                 # FX watches keep firing while regular markets are closed.
                 if not market_open and alert.target_kind != "fx":
                     stats.skipped_closed += 1
                     continue
 
                 try:
-                    if alert.conditions:
-                        triggered, current_value = await evaluate_alert_conditions(
-                            target_kind=alert.target_kind,
-                            symbol=alert.symbol,
-                            market=alert.market,
-                            conditions=alert.conditions,
-                            combine=alert.combine,
-                            get_value_fn=get_current_value,
-                        )
-                    else:
-                        current_value = await get_current_value(
-                            target_kind=alert.target_kind,
-                            metric=alert.metric,
-                            symbol=alert.symbol,
-                            market=alert.market,
-                        )
-                        triggered = is_triggered(
-                            current_value, alert.operator, float(alert.threshold)
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "investment-watch lookup failed: "
-                        "alert_uuid=%s market=%s symbol=%s metric=%s error=%s",
+                    await self._process_alert(
+                        db=db, repo=repo, alert=alert, stats=stats
+                    )
+                except Exception as exc:  # noqa: BLE001 - isolate, don't swallow
+                    # ROB-1110: one alert's failure must not reach the next
+                    # one. Record it loudly, then reset the session so the
+                    # rest of the cycle still has a usable transaction.
+                    stats.failed_alerts += 1
+                    stats.details.append(
+                        {
+                            "alert_uuid": str(alert.alert_uuid),
+                            "symbol": alert.symbol,
+                            "status": "alert_failed",
+                            "error": f"{type(exc).__name__}: {exc}"[:300],
+                        }
+                    )
+                    logger.exception(
+                        "investment-watch alert processing failed — "
+                        "isolated, scan continues: alert_uuid=%s market=%s symbol=%s",
                         alert.alert_uuid,
                         alert.market,
                         alert.symbol,
-                        alert.metric,
-                        exc,
                     )
-                    stats.failed_lookups += 1
-                    continue
-
-                if not triggered:
-                    continue
-
-                # Insert (or look up existing) event row with delivery_status='pending'.
-                emission = await self._upsert_event(
-                    db=db,
-                    repo=repo,
-                    alert=alert,
-                    current_value=current_value,
-                )
-                if emission is None:
-                    # Same-day collision and existing event is already delivered;
-                    # nothing left to do for this loop iteration.
-                    stats.duplicates += 1
-                    continue
-
-                is_first_attempt = emission["is_first_attempt"]
-
-                if is_first_attempt:
-                    stats.triggered += 1
-                    stats.details.append(emission["detail"])
-                    if alert.action_mode == "auto_execute_mock":
-                        payload = emission["payload"]
-                        try:
-                            await maybe_auto_execute(
-                                db,
-                                alert=alert,
-                                correlation_id=payload.correlation_id,
-                                kst_date=payload.kst_date,
-                            )
-                        except Exception:  # noqa: BLE001 - never kill the scan loop
-                            logger.exception(
-                                "auto_execute_mock failed for alert %s",
-                                emission["alert_uuid"],
-                            )
-                else:
-                    # No new event row this iteration — we found an
-                    # existing pending/failed/skipped row from earlier
-                    # in the day and are re-attempting delivery against
-                    # it. Count as a duplicate so the scan summary
-                    # reflects "row reused, not created".
-                    stats.duplicates += 1
-
-                # Attempt Hermes delivery and gate the alert transition on it.
-                delivery = await self._hermes.send_review_trigger(emission["payload"])
-                await self._record_delivery_outcome(
-                    db=db,
-                    repo=repo,
-                    alert_id=emission["alert_id"],
-                    alert_uuid=emission["alert_uuid"],
-                    event_id=emission["event_id"],
-                    event_uuid=emission["event_uuid"],
-                    delivery=delivery,
-                    stats=stats,
-                )
+                    if not await self._reset_session(db):
+                        # The session itself is unusable; every remaining
+                        # alert would fail identically. Stop and report
+                        # exactly how many were never evaluated rather
+                        # than emitting a wall of identical failures.
+                        stats.not_evaluated = len(alerts) - index - 1
+                        stats.details.append(
+                            {
+                                "status": "scan_aborted",
+                                "reason": "session_unusable",
+                                "not_evaluated": stats.not_evaluated,
+                            }
+                        )
+                        break
 
             return stats.summary(normalized_market, market_open=market_open)
+
+    @staticmethod
+    async def _reset_session(db: AsyncSession) -> bool:
+        """Roll the scan session back to a clean state. ROB-1110.
+
+        Returns ``False`` when the rollback itself fails, which means the
+        session can no longer be reused for the remaining alerts.
+        """
+        try:
+            await db.rollback()
+        except Exception:  # noqa: BLE001 - reported by the caller
+            logger.exception(
+                "investment-watch: scan session rollback failed — "
+                "remaining alerts in this market cannot be evaluated"
+            )
+            return False
+        return True
+
+    async def _process_alert(
+        self,
+        *,
+        db: AsyncSession,
+        repo: InvestmentReportsRepository,
+        alert: _AlertSnapshot,
+        stats: _ScanStats,
+    ) -> None:
+        """Evaluate one alert and, if triggered, emit + deliver it.
+
+        Raises on unexpected failure; ``scan_market`` isolates and records
+        it so the remaining alerts still get evaluated (ROB-1110).
+        """
+        try:
+            if alert.conditions:
+                triggered, current_value = await evaluate_alert_conditions(
+                    target_kind=alert.target_kind,
+                    symbol=alert.symbol,
+                    market=alert.market,
+                    conditions=alert.conditions,
+                    combine=alert.combine,
+                    get_value_fn=get_current_value,
+                )
+            else:
+                current_value = await get_current_value(
+                    target_kind=alert.target_kind,
+                    metric=alert.metric,
+                    symbol=alert.symbol,
+                    market=alert.market,
+                )
+                triggered = is_triggered(
+                    current_value, alert.operator, float(alert.threshold)
+                )
+        except Exception as exc:
+            logger.warning(
+                "investment-watch lookup failed: "
+                "alert_uuid=%s market=%s symbol=%s metric=%s error=%s",
+                alert.alert_uuid,
+                alert.market,
+                alert.symbol,
+                alert.metric,
+                exc,
+            )
+            stats.failed_lookups += 1
+            return
+
+        if not triggered:
+            return
+
+        # Insert (or look up existing) event row with delivery_status='pending'.
+        emission = await self._upsert_event(
+            db=db,
+            repo=repo,
+            alert=alert,
+            current_value=current_value,
+        )
+        if emission is None:
+            # Same-day collision and existing event is already delivered;
+            # nothing left to do for this loop iteration.
+            stats.duplicates += 1
+            return
+
+        is_first_attempt = emission["is_first_attempt"]
+
+        if is_first_attempt:
+            stats.triggered += 1
+            stats.details.append(emission["detail"])
+            if alert.action_mode == "auto_execute_mock":
+                payload = emission["payload"]
+                try:
+                    await maybe_auto_execute(
+                        db,
+                        alert=alert,
+                        correlation_id=payload.correlation_id,
+                        kst_date=payload.kst_date,
+                    )
+                except Exception:  # noqa: BLE001 - never kill the scan loop
+                    logger.exception(
+                        "auto_execute_mock failed for alert %s",
+                        emission["alert_uuid"],
+                    )
+                    # ROB-1110: the event row is already committed, but a
+                    # failed statement leaves the transaction aborted — roll
+                    # back so this alert's own delivery bookkeeping (and
+                    # every alert after it) can still commit.
+                    await self._reset_session(db)
+        else:
+            # No new event row this iteration — we found an existing
+            # pending/failed/skipped row from earlier in the day and are
+            # re-attempting delivery against it. Count as a duplicate so
+            # the scan summary reflects "row reused, not created".
+            stats.duplicates += 1
+
+        # Attempt Hermes delivery and gate the alert transition on it.
+        delivery = await self._hermes.send_review_trigger(emission["payload"])
+        await self._record_delivery_outcome(
+            db=db,
+            repo=repo,
+            alert_id=emission["alert_id"],
+            alert_uuid=emission["alert_uuid"],
+            event_id=emission["event_id"],
+            event_uuid=emission["event_uuid"],
+            delivery=delivery,
+            stats=stats,
+        )
 
     async def _upsert_event(
         self,
         *,
         db: AsyncSession,
         repo: InvestmentReportsRepository,
-        alert: Any,
+        alert: _AlertSnapshot,
         current_value: float,
     ) -> dict[str, Any] | None:
         """Insert a fresh event row, or load the existing one for retry.
@@ -243,11 +413,12 @@ class InvestmentWatchScanner:
         Returns ``None`` if a same-day event already exists and was
         already delivered (nothing to do). Otherwise returns the event
         row + payload + ``is_first_attempt`` flag.
+
+        ``alert`` is an :class:`_AlertSnapshot`, i.e. already detached
+        plain data — the ``db.rollback()`` on the same-day collision path
+        below expires the ORM identity map, so nothing read here may be a
+        live ORM attribute (ROB-1110).
         """
-        # Snapshot the alert into plain locals before any commit/rollback —
-        # a rolled-back transaction expires SQLAlchemy attribute state, and
-        # later reads of ``alert.xxx`` would trigger a lazy refresh from
-        # the wrong session context (MissingGreenlet).
         alert_id = alert.id
         alert_uuid_value = alert.alert_uuid
         alert_source_report_uuid = alert.source_report_uuid
@@ -262,8 +433,8 @@ class InvestmentWatchScanner:
         alert_threshold_high = alert.threshold_high
         alert_intent = alert.intent
         alert_action_mode = alert.action_mode
-        alert_max_action = dict(alert.max_action or {})
-        alert_trigger_checklist = list(alert.trigger_checklist or [])
+        alert_max_action = alert.max_action
+        alert_trigger_checklist = alert.trigger_checklist
 
         outcome = _OUTCOME_BY_ACTION_MODE.get(alert_action_mode, "notified")
         correlation_id = uuid4().hex
