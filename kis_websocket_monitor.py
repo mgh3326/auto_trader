@@ -17,6 +17,7 @@ import sys
 from typing import Any
 
 from app.core.config import settings
+from app.core.logging_config import configure_dependency_log_levels
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.services.execution_event import (
     close_redis as close_execution_redis,
@@ -158,6 +159,7 @@ async def main():
         level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    configure_dependency_log_levels()
     init_sentry(service_name="auto-trader-kis-ws")
 
     monitor = KISWebSocketMonitor()

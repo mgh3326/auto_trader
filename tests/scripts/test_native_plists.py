@@ -21,6 +21,7 @@ PLISTS = [
     "com.robinco.auto-trader.mcp-account-read.plist",
     "com.robinco.auto-trader.mcp-tradingcodex-execution.plist",
     "com.robinco.auto-trader.worker.plist",
+    "com.robinco.auto-trader.worker-log-rotation.plist",
     "com.robinco.auto-trader.scheduler.plist",
     "com.robinco.auto-trader.kis-websocket.plist",
     "com.robinco.auto-trader.upbit-websocket.plist",
@@ -52,6 +53,13 @@ def test_haproxy_plist_label() -> None:
     # Silicon Homebrew). The plist must NOT hardcode /opt/homebrew/bin/haproxy.
     assert "scripts/run-haproxy.sh" in body
     assert "/opt/homebrew/bin/haproxy" not in body
+
+
+def test_worker_log_rotation_is_bounded_and_not_auto_armed() -> None:
+    body = (PLIST_DIR / "com.robinco.auto-trader.worker-log-rotation.plist").read_text()
+    assert "scripts/rotate-worker-logs.sh" in body
+    assert "<key>StartInterval</key>\n  <integer>60</integer>" in body
+    assert "<key>RunAtLoad</key>" not in body
 
 
 def test_api_blue_plist_port() -> None:

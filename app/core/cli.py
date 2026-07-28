@@ -11,6 +11,7 @@ import logging
 from collections.abc import Awaitable, Callable
 
 from app.core.config import settings
+from app.core.logging_config import configure_dependency_log_levels
 from app.monitoring.sentry import capture_exception, init_sentry
 
 __all__ = ["run_async_job", "setup_logging_and_sentry"]
@@ -27,6 +28,7 @@ def setup_logging_and_sentry(service_name: str) -> None:
         level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    configure_dependency_log_levels()
     init_sentry(service_name=service_name)
 
 

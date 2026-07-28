@@ -21,6 +21,7 @@ from typing import Any, cast
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.core.logging_config import configure_dependency_log_levels
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.monitoring.trade_notifier import get_trade_notifier
 from app.schemas.execution_ledger import ExecutionLedgerUpsert
@@ -966,6 +967,7 @@ async def main(mode: str = "both") -> None:
         level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    configure_dependency_log_levels()
     service_name = {
         "upbit": "auto-trader-upbit-ws",
         "kis": "auto-trader-kis-ws",

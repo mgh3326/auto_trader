@@ -9,6 +9,7 @@ OpenClaw-based analysis will be implemented in the future.
 import asyncio
 import logging
 
+from app.core.logging_config import configure_dependency_log_levels
 from app.monitoring.sentry import capture_exception, init_sentry
 from app.services.upbit_websocket import UpbitOrderAnalysisService
 
@@ -16,6 +17,7 @@ from app.services.upbit_websocket import UpbitOrderAnalysisService
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+configure_dependency_log_levels()
 logger = logging.getLogger(__name__)
 
 

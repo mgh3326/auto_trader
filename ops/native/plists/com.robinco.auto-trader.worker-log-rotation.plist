@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.robinco.auto-trader.worker-log-rotation</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/mgh3326/services/auto_trader/scripts/rotate-worker-logs.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/mgh3326</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>AUTO_TRADER_BASE</key>
+    <string>/Users/mgh3326/services/auto_trader</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/mgh3326/services/auto_trader/logs/com.robinco.auto-trader.worker-log-rotation.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mgh3326/services/auto_trader/logs/com.robinco.auto-trader.worker-log-rotation.err.log</string>
+</dict>
+</plist>
