@@ -209,6 +209,7 @@ async def test_kr_price_enrichment_db_hit_matches_legacy_result_and_skips_kis(
         {("equity_kr", "005930"): 62_000.0},
         [],
         {},
+        {},
     )
     db_read.assert_awaited_once_with("005930", 2)
     kis_quote.assert_not_awaited()
@@ -232,7 +233,7 @@ async def test_kr_price_enrichment_db_miss_falls_back_to_legacy_kis_result(
         [_kr_refresh_position()]
     )
 
-    assert actual == ({("equity_kr", "005930"): 62_000.0}, [], {})
+    assert actual == ({("equity_kr", "005930"): 62_000.0}, [], {}, {})
     kis_quote.assert_awaited_once_with("005930")
 
 
@@ -241,8 +242,8 @@ def _kr_kis_snapshot_position(symbol: str = "005930") -> dict[str, object]:
 
     ``_collect_kis_positions`` fills these four fields in one bulk balance call
     (``prpr`` / ``evlu_amt`` / ``evlu_pfls_amt`` / ``evlu_pfls_rt``). ROB-902:
-    such a holding must NOT trigger the per-symbol itemchartprice refresh —
-    mirroring the pre-existing US snapshot exemption (PR #288 / ROB-365).
+    such a KR holding must NOT trigger the per-symbol itemchartprice refresh.
+    ROB-1095 intentionally removed the corresponding US snapshot exemption.
     """
     return {
         "instrument_type": "equity_kr",
@@ -270,7 +271,7 @@ async def test_kr_kis_snapshot_skips_price_refresh_and_makes_zero_kis_http(
     )
 
     # No equity pair enqueued -> empty price map, no errors.
-    assert actual == ({}, [], {})
+    assert actual == ({}, [], {}, {})
     db_read.assert_not_awaited()
     kis_quote.assert_not_awaited()
 
@@ -299,8 +300,8 @@ def test_kr_non_kis_snapshot_still_refreshes() -> None:
     assert portfolio_holdings._position_needs_current_price_refresh(manual) is True
 
 
-def test_us_kis_snapshot_remains_exempt() -> None:
-    """Regression: the pre-existing US snapshot exemption is preserved."""
+def test_us_kis_snapshot_always_refreshes() -> None:
+    """ROB-1095: a complete US balance snapshot still needs a live quote."""
     us = _kr_kis_snapshot_position("AAPL")
     us["instrument_type"] = "equity_us"
-    assert portfolio_holdings._position_needs_current_price_refresh(us) is False
+    assert portfolio_holdings._position_needs_current_price_refresh(us) is True

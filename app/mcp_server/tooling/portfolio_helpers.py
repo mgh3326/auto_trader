@@ -39,6 +39,20 @@ def position_to_output(position: dict[str, Any]) -> dict[str, Any]:
         output["sellable_quantity"] = position["sellable_quantity"]
     if "source" in position:
         output["source"] = position["source"]
+    # ROB-1095: expose the quote freshness/provenance used by US holdings and
+    # make the derivation source of profit_rate explicit.
+    for key in (
+        "price_source",
+        "price_asof",
+        "data_state",
+        "data_state_reason",
+        "profit_rate_price_source",
+        "session",
+        "venue",
+        "delayed",
+    ):
+        if key in position:
+            output[key] = position[key]
     # ROB-541: surface per-position sellability + provenance so consumers that
     # only read positions[] (not just the account GROUP) still get the
     # authoritative order_routable flag and the ROB-357 account_mode label.

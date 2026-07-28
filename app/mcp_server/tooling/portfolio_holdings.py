@@ -10,7 +10,6 @@ import pandas as pd
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings, validate_kis_mock_config
 from app.core.db import AsyncSessionLocal
-from app.core.symbol import to_kis_symbol
 from app.mcp_server.env_utils import _env_int
 from app.mcp_server.tooling.account_modes import (
     apply_account_routing_metadata,
@@ -417,6 +416,14 @@ async def _collect_kis_positions(
                         "evaluation_amount": evaluation_amount,
                         "profit_loss": profit_loss,
                         "profit_rate": profit_rate,
+                        # KIS overseas balance rows do not carry a trustworthy
+                        # per-symbol quote timestamp.  This snapshot provenance
+                        # is replaced by the live quote refresh below when
+                        # include_current_price=True.
+                        "price_source": "kis_holdings_snapshot",
+                        "price_asof": None,
+                        "data_state": "unverified",
+                        "profit_rate_price_source": "kis_holdings_snapshot",
                     }
                 )
         except Exception as exc:
@@ -620,25 +627,27 @@ async def _collect_toss_api_positions(
     return positions, snapshot.errors, True
 
 
-def _has_valid_kis_equity_snapshot(position: dict[str, Any]) -> bool:
-    """KIS-account equity (KR or US) whose broker balance snapshot is complete.
+def _has_valid_kis_kr_snapshot(position: dict[str, Any]) -> bool:
+    """KIS-account KR equity whose broker balance snapshot is complete.
 
     When True, get_holdings keeps the KIS-provided snapshot values
     (``current_price`` / ``evaluation_amount`` / ``profit_loss`` /
     ``profit_rate``) and skips the per-symbol live current-price refresh.
 
-    PR #288 (ROB-365) established this for ``equity_us`` — the Yahoo/KIS live
-    refresh is a *fallback*, not the default for a valid KIS US snapshot.
-    ROB-902 extends the identical rule to ``equity_kr``: the KIS domestic
-    balance (``fetch_my_stocks``) already returns 현재가(``prpr``) / 평가금액 /
-    평가손익 for every holding in ONE bulk call, so the per-symbol
+    ROB-902 established this for ``equity_kr``: the KIS domestic balance
+    (``fetch_my_stocks``) already returns 현재가(``prpr``) / 평가금액 / 평가손익
+    for every holding in ONE bulk call, so the per-symbol
     ``inquire-daily-itemchartprice`` refresh was a redundant N+1 (~41 KR HTTP
     calls per get_holdings invocation).
+
+    ROB-1095 deliberately excludes ``equity_us``. KIS overseas balance rows
+    have no usable per-symbol as-of timestamp, and production measurement found
+    a numerically complete WDC snapshot lagging the live quote by 3.13%.
     """
     if position.get("source") != "kis_api":
         return False
 
-    if str(position.get("instrument_type") or "") not in {"equity_kr", "equity_us"}:
+    if str(position.get("instrument_type") or "") != "equity_kr":
         return False
 
     current_price = _to_optional_float(position.get("current_price"))
@@ -658,20 +667,53 @@ def _has_valid_kis_equity_snapshot(position: dict[str, Any]) -> bool:
 
 def _position_needs_current_price_refresh(position: dict[str, Any]) -> bool:
     instrument_type = str(position.get("instrument_type") or "")
-    if _has_valid_kis_equity_snapshot(position):
+    if _has_valid_kis_kr_snapshot(position):
         return False
 
     return instrument_type in {"equity_kr", "equity_us", "crypto"}
 
 
+def _apply_price_refresh(
+    position: dict[str, Any],
+    price: float,
+    metadata: dict[str, Any] | None,
+) -> None:
+    """Apply an authoritative price and keep its PnL provenance together."""
+    position["current_price"] = price
+    _recalculate_profit_fields(position)
+    if metadata is None:
+        return
+
+    position.update(metadata)
+    position["profit_rate_price_source"] = metadata.get("price_source")
+
+
+def _mark_price_refresh_failed(position: dict[str, Any], error: str) -> None:
+    """Surface that a retained KIS US balance snapshot could not be verified."""
+    position["price_error"] = error
+    if (
+        position.get("source") == "kis_api"
+        and position.get("instrument_type") == "equity_us"
+    ):
+        position["price_source"] = "kis_holdings_snapshot"
+        position["price_asof"] = None
+        position["data_state"] = "stale"
+        position["data_state_reason"] = "live_price_refresh_failed"
+        position["profit_rate_price_source"] = "kis_holdings_snapshot"
+
+
 async def _fetch_price_map_for_positions(
     positions: list[dict[str, Any]],
 ) -> tuple[
-    dict[tuple[str, str], float], list[dict[str, Any]], dict[tuple[str, str], str]
+    dict[tuple[str, str], float],
+    list[dict[str, Any]],
+    dict[tuple[str, str], str],
+    dict[tuple[str, str], dict[str, Any]],
 ]:
     price_map: dict[tuple[str, str], float] = {}
     price_errors: list[dict[str, Any]] = []
     error_map: dict[tuple[str, str], str] = {}
+    metadata_map: dict[tuple[str, str], dict[str, Any]] = {}
 
     crypto_symbols = sorted(
         {
@@ -757,7 +799,14 @@ async def _fetch_price_map_for_positions(
 
     async def fetch_equity_price(
         instrument_type: str, symbol: str
-    ) -> tuple[str, str, float | None, str | None, str | None]:
+    ) -> tuple[
+        str,
+        str,
+        float | None,
+        str | None,
+        str | None,
+        dict[str, Any] | None,
+    ]:
         if instrument_type == "equity_kr":
             try:
                 cached = await cache_first_kr(symbol, 2)
@@ -774,6 +823,7 @@ async def _fetch_price_map_for_positions(
                             cached_price,
                             None,
                             "db",
+                            None,
                         )
             except Exception:
                 logger.debug(
@@ -790,43 +840,54 @@ async def _fetch_price_map_for_positions(
                     float(price) if price is not None else None,
                     None,
                     "kis",
+                    None,
                 )
             except Exception as exc:
                 error_msg = str(exc)
                 logger.debug(
                     "Failed to fetch equity price for %s: %s", symbol, error_msg
                 )
-                return instrument_type, symbol, None, error_msg, "kis"
+                return instrument_type, symbol, None, error_msg, "kis", None
 
-        # equity_us (ROB-365 bug 2): KIS overseas daily close is the PRIMARY refresh
-        # source (reliable, no Yahoo fast_info session flakiness); Yahoo fast_info is
-        # the secondary live source; fail-closed (no fabricated price) if both miss.
-        kis_error: str | None = None
-        try:
-            kis = KISClient()
-            frame = await kis.inquire_overseas_daily_price(to_kis_symbol(symbol), n=2)
-            if frame is not None and not frame.empty and "close" in frame.columns:
-                last_close = float(frame["close"].iloc[-1])
-                if last_close > 0:
-                    return (instrument_type, symbol, last_close, None, "kis")
-            kis_error = "KIS overseas daily price unavailable"
-        except Exception as exc:
-            kis_error = str(exc)
-            logger.debug("KIS US daily price failed for %s: %s", symbol, kis_error)
-
-        yahoo_error: str
+        # ROB-1095: overseas balance ``now_pric2`` has no per-symbol as-of and
+        # can lag the regular-session quote by several percent while remaining
+        # numerically valid. Use the same venue-aware KIS-current -> Yahoo
+        # fallback path as get_quote, then recalculate every price-derived field.
         try:
             quote = await _fetch_quote_equity_us(symbol)
-            price = quote.get("price")
-            if price is not None:
-                return (instrument_type, symbol, float(price), None, "yahoo")
-            yahoo_error = "Yahoo quote returned no price"
-        except Exception as exc:
-            yahoo_error = str(exc)
-            logger.debug("Failed to fetch equity price for %s: %s", symbol, yahoo_error)
+            price = _to_optional_float(quote.get("price"))
+            if price is None or price <= 0:
+                raise RuntimeError("US live quote returned no price")
 
-        combined = "; ".join(part for part in (kis_error, yahoo_error) if part)
-        return instrument_type, symbol, None, combined, "kis+yahoo"
+            metadata = {
+                "price_source": (
+                    quote.get("price_source") or quote.get("source") or "us_live_quote"
+                ),
+                "price_asof": quote.get("quote_asof"),
+                "data_state": quote.get("data_state") or "unknown",
+            }
+            for key in ("data_state_reason", "session", "venue", "delayed"):
+                if key in quote:
+                    metadata[key] = quote[key]
+            return (
+                instrument_type,
+                symbol,
+                price,
+                None,
+                str(quote.get("source") or "kis+yahoo"),
+                metadata,
+            )
+        except Exception as exc:
+            error_msg = str(exc)
+            logger.debug("Failed to fetch US live quote for %s: %s", symbol, error_msg)
+            return (
+                instrument_type,
+                symbol,
+                None,
+                error_msg,
+                "kis+yahoo",
+                None,
+            )
 
     equity_pairs = sorted(
         {
@@ -845,9 +906,12 @@ async def _fetch_price_map_for_positions(
                 for it, sym in equity_pairs
             ],
         )
-        for instrument_type, symbol, price, error, source in results:
+        for instrument_type, symbol, price, error, source, metadata in results:
             if price is not None:
-                price_map[(instrument_type, symbol)] = price
+                key = (instrument_type, symbol)
+                price_map[key] = price
+                if metadata is not None:
+                    metadata_map[key] = metadata
             elif error is not None:
                 error_map[(instrument_type, symbol)] = error
                 price_errors.append(
@@ -861,7 +925,7 @@ async def _fetch_price_map_for_positions(
                     }
                 )
 
-    return price_map, price_errors, error_map
+    return price_map, price_errors, error_map, metadata_map
 
 
 async def _collect_portfolio_positions(
@@ -911,25 +975,38 @@ async def _collect_portfolio_positions(
             ]
 
         if include_current_price and positions:
-            price_map, price_errors, error_map = await _fetch_price_map_for_positions(
-                positions
-            )
+            (
+                price_map,
+                price_errors,
+                error_map,
+                metadata_map,
+            ) = await _fetch_price_map_for_positions(positions)
             errors.extend(price_errors)
             for position in positions:
                 key = (position["instrument_type"], position["symbol"])
                 needs_refresh = _position_needs_current_price_refresh(position)
                 price = price_map.get(key)
                 if price is not None and needs_refresh:
-                    position["current_price"] = price
-                    _recalculate_profit_fields(position)
+                    _apply_price_refresh(position, price, metadata_map.get(key))
                 elif (error := error_map.get(key)) is not None and needs_refresh:
-                    position["price_error"] = error
+                    _mark_price_refresh_failed(position, error)
         else:
             for position in positions:
                 position["current_price"] = None
                 position["evaluation_amount"] = None
                 position["profit_loss"] = None
                 position["profit_rate"] = None
+                for key in (
+                    "price_source",
+                    "price_asof",
+                    "data_state",
+                    "data_state_reason",
+                    "profit_rate_price_source",
+                    "session",
+                    "venue",
+                    "delayed",
+                ):
+                    position.pop(key, None)
 
         positions.sort(key=lambda p: (p["account"], p["market"], p["symbol"]))
         return positions, errors, market_filter, account
@@ -1015,27 +1092,40 @@ async def _collect_portfolio_positions(
         ]
 
     if include_current_price and positions:
-        price_map, price_errors, error_map = await _fetch_price_map_for_positions(
-            positions
-        )
+        (
+            price_map,
+            price_errors,
+            error_map,
+            metadata_map,
+        ) = await _fetch_price_map_for_positions(positions)
         errors.extend(price_errors)
         for position in positions:
             key = (position["instrument_type"], position["symbol"])
             needs_price_refresh = _position_needs_current_price_refresh(position)
             price = price_map.get(key)
             if price is not None and needs_price_refresh:
-                position["current_price"] = price
-                _recalculate_profit_fields(position)
+                _apply_price_refresh(position, price, metadata_map.get(key))
             else:
                 error = error_map.get(key)
                 if error is not None and needs_price_refresh:
-                    position["price_error"] = error
+                    _mark_price_refresh_failed(position, error)
     else:
         for position in positions:
             position["current_price"] = None
             position["evaluation_amount"] = None
             position["profit_loss"] = None
             position["profit_rate"] = None
+            for key in (
+                "price_source",
+                "price_asof",
+                "data_state",
+                "data_state_reason",
+                "profit_rate_price_source",
+                "session",
+                "venue",
+                "delayed",
+            ):
+                position.pop(key, None)
 
     positions.sort(
         key=lambda position: (
