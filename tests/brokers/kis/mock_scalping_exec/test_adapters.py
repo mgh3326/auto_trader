@@ -45,6 +45,8 @@ async def test_submit_exit_sell_uses_scalping_exit(mocker) -> None:
     place = mocker.patch.object(
         mod, "_place_order_impl", new=AsyncMock(return_value={})
     )
+    reserve = mocker.patch.object(mod, "reserve_entry", new=AsyncMock())
+    release = mocker.patch.object(mod, "release_entry", new=AsyncMock())
     broker = KisMockBroker(get_state=lambda s: None)
     mocker.patch.object(
         broker, "_read_snapshot", new=AsyncMock(return_value=(Decimal("1"), None))
@@ -65,6 +67,10 @@ async def test_submit_exit_sell_uses_scalping_exit(mocker) -> None:
     assert kw["scalping_exit"] is True
     assert kw["scalping_exit_reason"] == "stop_loss"
     assert kw["scalping_strategy_id"] == "kis-mock-v1"
+    reserve.assert_awaited_once_with(
+        correlation_id="cid1", symbol="005930", side="sell"
+    )
+    release.assert_awaited_once_with(correlation_id="cid1", side="sell")
 
 
 @pytest.mark.unit

@@ -62,6 +62,16 @@ def _related_symbol_session_factory(rows: list[SimpleNamespace]):
     return lambda: _RelatedRowsSession()
 
 
+@pytest.fixture(autouse=True)
+def _fake_related_symbol_database(monkeypatch):
+    """Keep unit fallback tests off PostgreSQL unless rows are injected."""
+    monkeypatch.setattr(
+        llm_news_service,
+        "AsyncSessionLocal",
+        _related_symbol_session_factory([]),
+    )
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fallback_exact_symbol_match_returned_first(monkeypatch):
@@ -76,6 +86,11 @@ async def test_fallback_exact_symbol_match_returned_first(monkeypatch):
         llm_news_service,
         "get_news_articles",
         AsyncMock(side_effect=fake_get_news_articles),
+    )
+    monkeypatch.setattr(
+        llm_news_service,
+        "AsyncSessionLocal",
+        _related_symbol_session_factory([]),
     )
 
     result = await llm_news_service.get_news_articles_with_fallback(

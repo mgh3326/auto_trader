@@ -27,6 +27,49 @@ class _FakeCM:
         return False
 
 
+@pytest.fixture(autouse=True)
+def _fake_external_boundaries_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ordinary unit paths hermetic; focused tests override these fakes."""
+
+    async def _empty_positions(
+        market_filter: str | None, *, is_mock: bool = False
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        del market_filter, is_mock
+        return [], []
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _empty_positions,
+    )
+
+    async def _no_redis():
+        return None
+
+    async def _identity_enrichment(
+        *,
+        rows: list[dict[str, Any]],
+        market: str,
+        session_factory,
+        opinion_provider=None,
+    ) -> dict[str, Any]:
+        del market, session_factory, opinion_provider
+        return {
+            "results": rows,
+            "summary": {
+                "attempted": len(rows),
+                "consensusSucceeded": 0,
+                "rsiSucceeded": 0,
+                "warnings": [],
+            },
+        }
+
+    monkeypatch.setattr("app.core.analyze_cache._get_redis_client", _no_redis)
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_analysis_enrichment.enrich_snapshot_page",
+        _identity_enrichment,
+    )
+
+
 @pytest.fixture
 def patched(monkeypatch):
     """Patch the session factory, ScreenerService, and build_screener_results."""

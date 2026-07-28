@@ -13,6 +13,7 @@ from app.services.tvscreener_service import (
 from tests._mcp_tooling_support import build_tools
 
 pytest_plugins = ("tests._mcp_tooling_support",)
+pytestmark = pytest.mark.usefixtures("_mock_crypto_external_sources")
 
 
 @pytest.fixture(autouse=True)

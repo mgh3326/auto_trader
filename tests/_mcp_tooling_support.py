@@ -351,7 +351,7 @@ def mock_upbit_coins() -> list[dict[str, Any]]:
     ]
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
     async def mock_get_upbit_warning_markets(
         db=None,

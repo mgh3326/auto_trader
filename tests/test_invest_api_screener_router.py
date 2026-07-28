@@ -65,6 +65,22 @@ class _StubScreening:
         return self._payload
 
 
+class _EmptyRelationResult:
+    def scalars(self) -> _EmptyRelationResult:
+        return self
+
+    def all(self) -> list[Any]:
+        return []
+
+
+class _EmptyRelationSession:
+    async def execute(self, stmt: Any) -> _EmptyRelationResult:  # noqa: ARG002
+        return _EmptyRelationResult()
+
+    async def rollback(self) -> None:
+        return None
+
+
 def _build_app(stub_screening: _StubScreening | None = None) -> FastAPI:
     app = FastAPI()
     app.include_router(invest_api_router)
@@ -74,6 +90,11 @@ def _build_app(stub_screening: _StubScreening | None = None) -> FastAPI:
     app.dependency_overrides[get_invest_home_service] = lambda: _StubHomeService()
     if stub_screening is not None:
         app.dependency_overrides[get_screener_service_dep] = lambda: stub_screening
+
+    async def _override_get_db():
+        yield _EmptyRelationSession()
+
+    app.dependency_overrides[get_db] = _override_get_db
     return app
 
 

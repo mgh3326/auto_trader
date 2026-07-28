@@ -1042,10 +1042,10 @@ async def test_save_and_transition_share_lock_order_and_keep_projection(
             )
             await session.commit()
 
-    outcomes = await asyncio.wait_for(
-        asyncio.gather(save(), transition(), return_exceptions=True), timeout=8
-    )
-    assert not any(isinstance(outcome, BaseException) for outcome in outcomes)
+    # Let gather propagate the original exception and traceback. Returning
+    # exceptions here previously reduced a useful DB/lock failure to a boolean
+    # assertion with no indication of which concurrent path failed.
+    await asyncio.wait_for(asyncio.gather(save(), transition()), timeout=8)
     row = await _load_action(db_session, action_id)
     assert row.status == "in_progress" and row.version == 2
     projection = await _projection(db_session, parent_id)
