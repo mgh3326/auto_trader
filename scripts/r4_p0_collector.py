@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import signal
+import time
 from pathlib import Path
 
 from app.services.brokers.binance.r4_p0_collector import (
@@ -28,6 +29,8 @@ from app.services.brokers.binance.r4_p0_collector import (
 
 ENABLED_ENV = "R4_P0_COLLECTOR_ENABLED"
 ARTIFACT_ENV = "R4_P0_ARTIFACT_ROOT"
+COLLECTOR_ID_ENV = "R4_P0_COLLECTOR_ID"
+ALERT_WEBHOOKS_ENV = "R4_P0_ALERT_WEBHOOK_URLS"
 DEFAULT_ARTIFACT_ROOT = "~/work/herdr-artifacts/r4-p0-collector"
 
 
@@ -54,6 +57,31 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--status-seconds", type=float, default=30.0)
     parser.add_argument(
+        "--collector-id",
+        default=os.getenv(COLLECTOR_ID_ENV, "r4-p0-local"),
+        help="stable identity unique to this host/collector replica",
+    )
+    parser.add_argument(
+        "--replica-artifact",
+        action="append",
+        default=[],
+        help=(
+            "read-only peer r4_p0_collector.sqlite3 path; repeat for "
+            "independent replicas"
+        ),
+    )
+    parser.add_argument(
+        "--minimum-healthy-replicas",
+        type=int,
+        default=2,
+        help="required fresh collector heartbeats (operational default: 2)",
+    )
+    parser.add_argument(
+        "--allow-log-only-alerts",
+        action="store_true",
+        help="explicitly permit no HTTPS webhook (probe/manual validation only)",
+    )
+    parser.add_argument(
         "--audit",
         action="store_true",
         help="offline integrity audit and one sample per source; no network",
@@ -63,6 +91,16 @@ def parse_args() -> argparse.Namespace:
 
 def _enabled() -> bool:
     return os.getenv(ENABLED_ENV, "").strip().lower() == "true"
+
+
+def _alert_webhook_urls() -> tuple[str, ...]:
+    raw = os.getenv(ALERT_WEBHOOKS_ENV, "")
+    return tuple(
+        item.strip()
+        for chunk in raw.splitlines()
+        for item in chunk.split(",")
+        if item.strip()
+    )
 
 
 def _dry_run_payload(args: argparse.Namespace) -> dict[str, object]:
@@ -79,6 +117,12 @@ def _dry_run_payload(args: argparse.Namespace) -> dict[str, object]:
         "rest_paths": sorted(REST_PATH_ALLOWLIST),
         "pit_columns": list(PIT_COLUMNS),
         "artifact_root_if_armed": str(Path(args.artifact_root).expanduser()),
+        "collector_instance_id": args.collector_id,
+        "replica_artifacts": [
+            str(Path(path).expanduser()) for path in args.replica_artifact
+        ],
+        "minimum_healthy_replicas": args.minimum_healthy_replicas,
+        "alert_webhook_count": len(_alert_webhook_urls()),
         "arm": f"{ENABLED_ENV}=true plus --run",
     }
 
@@ -97,6 +141,10 @@ async def _run_collector(args: argparse.Namespace) -> int:
         artifact_root=root,
         duration_seconds=args.duration,
         status_seconds=args.status_seconds,
+        collector_instance_id=args.collector_id,
+        replica_artifacts=tuple(Path(path) for path in args.replica_artifact),
+        alert_webhook_urls=_alert_webhook_urls(),
+        minimum_healthy_replicas=(1 if args.probe else args.minimum_healthy_replicas),
     )
     with AppendOnlyPITStore(root) as store:
         collector = BinanceR4P0Collector(config, store)
@@ -113,9 +161,13 @@ async def _run_collector(args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = parse_args()
+    formatter = logging.Formatter(fmt="%(asctime)sZ %(levelname)s %(message)s")
+    formatter.converter = time.gmtime
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)sZ %(levelname)s %(message)s",
+        handlers=[handler],
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     if args.audit:
@@ -130,6 +182,28 @@ def main() -> int:
             raise SystemExit("--probe requires --duration between 1 and 180 seconds")
     elif not _enabled():
         raise SystemExit(f"refusing --run: set {ENABLED_ENV}=true explicitly")
+    if args.run:
+        if args.collector_id == "r4-p0-local":
+            raise SystemExit(
+                "--run requires an explicit host-unique --collector-id "
+                f"or {COLLECTOR_ID_ENV}"
+            )
+        configured_replicas = 1 + len(
+            {str(Path(path).expanduser().resolve()) for path in args.replica_artifact}
+        )
+        if (
+            args.minimum_healthy_replicas < 2
+            or configured_replicas < args.minimum_healthy_replicas
+        ):
+            raise SystemExit(
+                "--run requires at least two independently configured "
+                "artifacts and --minimum-healthy-replicas >= 2"
+            )
+        if not _alert_webhook_urls() and not args.allow_log_only_alerts:
+            raise SystemExit(
+                f"--run requires {ALERT_WEBHOOKS_ENV}; "
+                "use --allow-log-only-alerts only for explicit validation"
+            )
     if args.duration is not None and args.duration <= 0:
         raise SystemExit("--duration must be positive")
     return asyncio.run(_run_collector(args))

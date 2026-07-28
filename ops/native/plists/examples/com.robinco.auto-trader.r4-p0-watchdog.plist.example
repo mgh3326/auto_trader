@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Example only. Install on an independent host after manual validation. -->
+  <key>Label</key>
+  <string>com.robinco.auto-trader.r4-p0-watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__UV_PATH__</string>
+    <string>run</string>
+    <string>python</string>
+    <string>-m</string>
+    <string>scripts.r4_p0_watchdog</string>
+    <string>--run</string>
+    <string>--artifact</string>
+    <string>__READ_ONLY_HOST_A_ARTIFACT__</string>
+    <string>--artifact</string>
+    <string>__READ_ONLY_HOST_B_ARTIFACT__</string>
+    <string>--minimum-healthy-replicas</string>
+    <string>2</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO_ROOT__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>R4_P0_WATCHDOG_ENABLED</key>
+    <string>true</string>
+    <key>R4_P0_ALERT_WEBHOOK_URLS</key>
+    <string>__PRIVATE_HTTPS_WEBHOOK_RENDER_VALUE__</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>__LOG_ROOT__/r4-p0-watchdog.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_ROOT__/r4-p0-watchdog.error.log</string>
+</dict>
+</plist>
