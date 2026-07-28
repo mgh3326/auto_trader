@@ -1,0 +1,57 @@
+{
+  "schema_version": "krb1.p0_2_cost_inputs.v1",
+  "p0_2_completed_at_kst": "2026-07-28T18:00:00+09:00",
+  "parent_canonical_sha256": "d5e1246b2072ad227d924e059091e27fa49719e42a5bfba651ae8f2bced9d6f1",
+  "coverage_start_session": "2026-07-28",
+  "coverage_end_session": "2026-07-28",
+  "market_cost_records": [
+    {
+      "market": "KOSPI",
+      "broker_id": "kiwoom",
+      "account_product_id": "KIWOOM_DOMESTIC_CASH_STOCK",
+      "order_channel_id": "KIWOOM_OPENAPI_KRX",
+      "cost_basis": "REAL_TRADING_TARIFF",
+      "rate_upper_bound_scope": "TEST_FIXTURE: OpenAPI KRX cash-stock proportional tariff; no minimum, fixed, tier, grade, or channel differential",
+      "effective_from": "2026-06-12",
+      "effective_to": null,
+      "buy_commission_rate_e12": 150000000,
+      "sell_commission_rate_e12": 150000000,
+      "sell_tax_components": [
+        {
+          "component_code": "KOSPI_SECURITIES_TRANSACTION_TAX",
+          "rate_e12": 500000000
+        },
+        {
+          "component_code": "KOSPI_RURAL_SPECIAL_TAX",
+          "rate_e12": 1500000000
+        }
+      ],
+      "source_locator": "https://download.kiwoom.com/deploy/AG003/pdf/AG003_27.pdf",
+      "source_snapshot_sha256": "8fd195fe7426ab66afca2ff131a08153afd114a2c0912b32e0924ba2434095af",
+      "probe_reconciliation_status": "PASS",
+      "mock_cost_relation": "DIFFERENT"
+    },
+    {
+      "market": "KOSDAQ",
+      "broker_id": "kiwoom",
+      "account_product_id": "KIWOOM_DOMESTIC_CASH_STOCK",
+      "order_channel_id": "KIWOOM_OPENAPI_KRX",
+      "cost_basis": "REAL_TRADING_TARIFF",
+      "rate_upper_bound_scope": "TEST_FIXTURE: OpenAPI KRX cash-stock proportional tariff; no minimum, fixed, tier, grade, or channel differential",
+      "effective_from": "2026-06-12",
+      "effective_to": null,
+      "buy_commission_rate_e12": 150000000,
+      "sell_commission_rate_e12": 150000000,
+      "sell_tax_components": [
+        {
+          "component_code": "KOSDAQ_SECURITIES_TRANSACTION_TAX",
+          "rate_e12": 2000000000
+        }
+      ],
+      "source_locator": "https://download.kiwoom.com/deploy/AG003/pdf/AG003_27.pdf",
+      "source_snapshot_sha256": "8fd195fe7426ab66afca2ff131a08153afd114a2c0912b32e0924ba2434095af",
+      "probe_reconciliation_status": "PASS",
+      "mock_cost_relation": "DIFFERENT"
+    }
+  ]
+}
