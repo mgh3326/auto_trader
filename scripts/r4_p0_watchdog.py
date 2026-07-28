@@ -20,6 +20,7 @@ from app.services.brokers.binance.r4_p0_collector import (
     REQUIRED_ACTIVE_SOURCES,
     SIGNAL_SYMBOLS,
     AppendOnlyPITStore,
+    runtime_code_hash,
     utc_now,
 )
 from app.services.brokers.binance.r4_p0_hardening import (
@@ -85,6 +86,7 @@ def _policy() -> EpochPolicy:
 
 async def _watch(args: argparse.Namespace) -> int:
     policy = _policy()
+    expected_code_hash = runtime_code_hash()
     artifact_paths = tuple(Path(path) for path in args.artifact)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -105,7 +107,22 @@ async def _watch(args: argparse.Namespace) -> int:
                 policy,
                 observed_at=now,
                 stale_after_seconds=args.stale_after_seconds,
+                expected_code_hash=expected_code_hash,
             )
+            if not availability["version_stamp_match"]:
+                await dispatcher.emit(
+                    alert_key=(
+                        "COLLECTOR_VERSION_MISMATCH:"
+                        f"{policy.study_id}:{policy.policy_hash}:"
+                        f"{int(now.timestamp()) // 900}"
+                    ),
+                    severity="CRITICAL",
+                    payload={
+                        "alert_type": "COLLECTOR_VERSION_MISMATCH",
+                        **availability,
+                    },
+                    now=now,
+                )
             if availability["healthy_replica_count"] < args.minimum_healthy_replicas:
                 await dispatcher.emit(
                     alert_key=(
@@ -170,6 +187,7 @@ def main() -> int:
         "artifacts": [str(Path(path).expanduser()) for path in args.artifact],
         "broker_mutation": False,
         "database_write": bool(args.run),
+        "expected_code_hash": runtime_code_hash(),
         "minimum_healthy_replicas": args.minimum_healthy_replicas,
         "mode": "run" if args.run else "dry_run",
         "network": bool(args.run and _alert_webhook_urls()),

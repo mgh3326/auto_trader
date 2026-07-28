@@ -15,12 +15,14 @@ import json
 import logging
 import random
 import sqlite3
+import subprocess
 import traceback
 import urllib.parse
 import uuid
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Final
 
@@ -73,7 +75,7 @@ PIT_COLUMNS: Final = (
     "gap_detected",
     "reconnect_id",
 )
-COLLECTOR_VERSION: Final = "r4-p0-collector.v3"
+COLLECTOR_VERSION: Final = "r4-p0-collector.v4"
 BASIS_RECOVERY_LIMIT: Final = 100
 # Binance's taker ratio endpoint maps requested boundaries to the preceding
 # 5-minute buckets ([S-5m, E-5m]); the other epoch-history endpoints use their
@@ -148,6 +150,31 @@ def canonical_json(value: Any) -> str:
 
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+@lru_cache(maxsize=1)
+def runtime_code_hash() -> str:
+    """Return the exact deployed Git commit loaded by this process."""
+
+    repository_root = Path(__file__).resolve().parents[4]
+    try:
+        result = subprocess.run(
+            ("git", "-C", str(repository_root), "rev-parse", "HEAD"),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            "cannot resolve deployed HEAD from the loaded source tree"
+        ) from exc
+    resolved = result.stdout.strip().lower()
+    if len(resolved) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in resolved
+    ):
+        raise RuntimeError(f"invalid deployed HEAD returned by git: {resolved!r}")
+    return resolved
 
 
 def assert_rest_target(path: str) -> None:
@@ -312,6 +339,17 @@ class AppendOnlyPITStore:
         row = self._db.execute(
             """
             SELECT MIN(event_time) AS event_time
+            FROM pit_records
+            WHERE source = ? AND symbol = ?
+            """,
+            (source, symbol),
+        ).fetchone()
+        return row["event_time"] if row is not None else None
+
+    def latest_event_time(self, source: str, symbol: str) -> str | None:
+        row = self._db.execute(
+            """
+            SELECT MAX(event_time) AS event_time
             FROM pit_records
             WHERE source = ? AND symbol = ?
             """,
@@ -494,6 +532,7 @@ class BinanceR4P0Collector:
         self.session_counts: Counter[str] = Counter()
         self.duplicate_counts: Counter[str] = Counter()
         self.failure_counts: Counter[str] = Counter()
+        self.code_hash = runtime_code_hash()
         self._previous_sequence: dict[tuple[str, str], int] = {}
         self._seen_on_connection: set[tuple[str, str, str]] = set()
         self._last_book_snapshot: dict[str, dt.datetime] = {}
@@ -519,9 +558,18 @@ class BinanceR4P0Collector:
         self._last_epoch_retry: dt.datetime | None = None
 
     async def run(self) -> None:
+        started_at = utc_now()
+        self.epoch_ledger.append_process_version(
+            collector_instance_id=self.config.collector_instance_id,
+            run_id=self.run_id,
+            started_at=started_at,
+            code_hash=self.code_hash,
+            collector_version=COLLECTOR_VERSION,
+        )
         log.info(
-            "collector.start run_id=%s symbols=%s artifact=%s",
+            "collector.start run_id=%s code_hash=%s symbols=%s artifact=%s",
             self.run_id,
+            self.code_hash,
             ",".join(self.config.symbols),
             self.store.path,
         )
@@ -578,6 +626,8 @@ class BinanceR4P0Collector:
             "failures": dict(self.failure_counts),
             "session_counts": dict(self.session_counts),
             "duplicate_counts": dict(self.duplicate_counts),
+            "code_hash": self.code_hash,
+            "collector_version": COLLECTOR_VERSION,
         }
 
     async def _duration_timer(self) -> None:
@@ -625,6 +675,7 @@ class BinanceR4P0Collector:
                 self.epoch_policy,
                 observed_at=observed_at,
                 stale_after_seconds=self.config.heartbeat_stale_seconds,
+                expected_code_hash=self.code_hash,
             )
             if (
                 availability["healthy_replica_count"]
@@ -1309,8 +1360,32 @@ class BinanceR4P0Collector:
         path = "/fapi/v1/premiumIndexKlines"
         assert_rest_target(path)
         started = utc_now()
-        params = {"symbol": symbol, "interval": "1m", "limit": 2}
         target_epoch = decision_epoch or decision_epoch_for_event(started)
+        source = "binance_usdm.premiumIndexKline1m"
+        latest_event_time = self.store.latest_event_time(source, symbol)
+        latest_event_ms: int | None = None
+        params: dict[str, Any] = {"symbol": symbol, "interval": "1m", "limit": 2}
+        if latest_event_time is not None:
+            latest_event = dt.datetime.fromisoformat(
+                latest_event_time.replace("Z", "+00:00")
+            )
+            latest_event_ms = int(latest_event.timestamp() * 1000)
+            interval_start = target_epoch - dt.timedelta(hours=4)
+            request_end_ms = min(
+                int(started.timestamp() * 1000),
+                int(target_epoch.timestamp() * 1000) - 1,
+            )
+            request_start_ms = max(
+                int(interval_start.timestamp() * 1000),
+                min(latest_event_ms + 1, request_end_ms),
+            )
+            params = {
+                "symbol": symbol,
+                "interval": "1m",
+                "startTime": request_start_ms,
+                "endTime": request_end_ms,
+                "limit": 500,
+            }
         attempt_id = self._begin_rest_attempt(
             decision_epoch=target_epoch,
             attempted_at=started,
@@ -1340,24 +1415,43 @@ class BinanceR4P0Collector:
                 and int(row[6]) <= completed_ms
             ]
             if not complete_rows:
-                raise ValueError(f"no completed 1m row from allowlisted path {path}")
-            item = complete_rows[-1]
-            source = "binance_usdm.premiumIndexKline1m"
-            inserted = self.store.append(
-                source=source,
-                symbol=symbol,
-                raw_payload=item,
-                local_receive_time=completed,
-                run_id=self.run_id,
-                event_time=epoch_ms(item[6]),
-                transaction_time=epoch_ms(item[6]),
-                request_started_at=iso_utc(started),
-                request_completed_at=iso_utc(completed),
-                sequence_or_trade_id=str(item[0]),
-                gap_detected=False,
-                reconnect_id=f"{self.run_id}:rest:{path}",
-            )
-            self._count_result(source, inserted)
+                if latest_event_ms is None:
+                    raise ValueError(
+                        f"no completed 1m row from allowlisted path {path}"
+                    )
+            elif latest_event_ms is None:
+                # Establish the live collection floor without seed backfill.
+                complete_rows = [max(complete_rows, key=lambda row: int(row[6]))]
+            else:
+                interval_start_ms = int(
+                    (target_epoch - dt.timedelta(hours=4)).timestamp() * 1000
+                )
+                interval_end_ms = int(target_epoch.timestamp() * 1000)
+                complete_rows = [
+                    row
+                    for row in complete_rows
+                    if latest_event_ms < int(row[6])
+                    and interval_start_ms <= int(row[6]) < interval_end_ms
+                ]
+
+            inserted_count = 0
+            for item in sorted(complete_rows, key=lambda row: int(row[6])):
+                inserted = self.store.append(
+                    source=source,
+                    symbol=symbol,
+                    raw_payload=item,
+                    local_receive_time=completed,
+                    run_id=self.run_id,
+                    event_time=epoch_ms(item[6]),
+                    transaction_time=epoch_ms(item[6]),
+                    request_started_at=iso_utc(started),
+                    request_completed_at=iso_utc(completed),
+                    sequence_or_trade_id=str(item[0]),
+                    gap_detected=False,
+                    reconnect_id=f"{self.run_id}:rest:{path}",
+                )
+                self._count_result(source, inserted)
+                inserted_count += int(inserted)
         except Exception as exc:
             self._append_rest_attempt(
                 decision_epoch=target_epoch,
@@ -1385,7 +1479,7 @@ class BinanceR4P0Collector:
             symbol=symbol,
             sources=("binance_usdm.premiumIndexKline1m",),
             response_hash=response_hash,
-            terminal_status="SUCCESS" if inserted else "EXACT_DUPLICATE",
+            terminal_status="SUCCESS" if inserted_count else "EXACT_DUPLICATE",
             attempt_id=attempt_id,
         )
 

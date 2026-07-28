@@ -10,6 +10,7 @@ import pytest
 from app.services.brokers.binance import r4_p0_collector as collector_module
 from app.services.brokers.binance.r4_p0_collector import (
     AppendOnlyPITStore,
+    BasisPollError,
     BinanceR4P0Collector,
     CollectorConfig,
 )
@@ -288,6 +289,159 @@ async def test_partial_periodic_coverage_triggers_historical_retry(
             )
 
         assert calls == [("binance_usdm.basis", "XRPUSDT")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_exception", "terminal_status"),
+    (
+        ("empty", BasisPollError, "INVALID_RESPONSE"),
+        ("http", httpx.HTTPStatusError, "HTTP_ERROR"),
+    ),
+)
+async def test_basis_failure_recovers_only_inside_epoch_contract_window(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+    expected_exception: type[Exception],
+    terminal_status: str,
+) -> None:
+    recovery_time = EPOCH + dt.timedelta(hours=1)
+    clock = iter((RECEIVED, RECEIVED, recovery_time, recovery_time))
+    monkeypatch.setattr(collector_module, "utc_now", lambda: next(clock))
+    interval_start = EPOCH - dt.timedelta(hours=4)
+    calls = 0
+
+    def basis_row(event_time: dt.datetime) -> dict[str, object]:
+        return {
+            "basis": str(event_time.timestamp()),
+            "contractType": "PERPETUAL",
+            "pair": "XRPUSDT",
+            "timestamp": int(event_time.timestamp() * 1000),
+        }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert "startTime" not in request.url.params
+            if failure_kind == "empty":
+                return httpx.Response(200, json=[])
+            return httpx.Response(503, text="provider unavailable")
+
+        assert request.url.params["startTime"] == str(
+            int(interval_start.timestamp() * 1000)
+        )
+        assert request.url.params["endTime"] == str(int(EPOCH.timestamp() * 1000) - 1)
+        return httpx.Response(
+            200,
+            json=[
+                basis_row(interval_start - dt.timedelta(minutes=5)),
+                *[
+                    basis_row(interval_start + dt.timedelta(minutes=5 * index))
+                    for index in range(48)
+                ],
+                basis_row(EPOCH),
+            ],
+        )
+
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path,
+                symbols=("XRPUSDT",),
+                collector_instance_id="replica-a",
+            ),
+            store,
+        )
+        ledger, finalizer = _finalizer(store, policy=policy)
+        collector.epoch_policy = policy
+        collector.epoch_ledger = ledger
+        collector.epoch_finalizer = finalizer
+        async with httpx.AsyncClient(
+            base_url="https://fapi.binance.com",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            with pytest.raises(expected_exception):
+                await collector._poll_family(client, "basis")  # noqa: SLF001
+            await collector._retry_incomplete_epoch(  # noqa: SLF001
+                client,
+                EPOCH,
+                recovery_time,
+            )
+
+        rows = list(
+            store._db.execute(  # noqa: SLF001
+                """
+                SELECT event_time
+                FROM pit_records
+                WHERE source = 'binance_usdm.basis'
+                ORDER BY event_time
+                """
+            )
+        )
+        assert len(rows) == 48
+        assert rows[0]["event_time"] == "2026-07-28T04:00:00.000000Z"
+        assert rows[-1]["event_time"] == "2026-07-28T07:55:00.000000Z"
+        assert finalizer.preview("XRPUSDT", EPOCH).final_status == FINAL_COMPLETE
+        statuses = [
+            row["terminal_status"]
+            for row in store._db.execute(  # noqa: SLF001
+                "SELECT terminal_status FROM collector_attempts ORDER BY append_id"
+            )
+        ]
+        assert statuses == [terminal_status, "SUCCESS"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basis_recovery_never_starts_at_or_after_deadline(tmp_path) -> None:
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("deadline-expired recovery must not call the provider")
+
+    with AppendOnlyPITStore(tmp_path) as store:
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path,
+                symbols=("XRPUSDT",),
+                collector_instance_id="replica-a",
+            ),
+            store,
+        )
+        ledger, finalizer = _finalizer(store, policy=policy)
+        collector.epoch_policy = policy
+        collector.epoch_ledger = ledger
+        collector.epoch_finalizer = finalizer
+        async with httpx.AsyncClient(
+            base_url="https://fapi.binance.com",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            await collector._retry_incomplete_epoch(  # noqa: SLF001
+                client,
+                EPOCH,
+                finalize_at(EPOCH),
+            )
+
+        attempt = store._db.execute(  # noqa: SLF001
+            "SELECT terminal_status, request_identity_json FROM collector_attempts"
+        ).fetchone()
+        assert attempt["terminal_status"] == "DEADLINE_EXPIRED"
+        assert json.loads(attempt["request_identity_json"]) == {
+            "method": "GET",
+            "source_name": "binance_usdm.basis",
+            "symbol": "XRPUSDT",
+            "target": "deadline-recovery",
+        }
 
 
 @pytest.mark.unit
@@ -701,6 +855,88 @@ async def test_retry_failures_are_logged_counted_and_preserve_diagnostics(
             assert "500 Internal Server Error" in attempt["error_message"]
             assert "httpx.HTTPStatusError" in attempt["error_traceback"]
             assert attempt["response_body_summary"] == "provider failed: incident-247"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collector_start_stamps_runtime_code_hash(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    code_hash = "a" * 40
+    monkeypatch.setattr(collector_module, "runtime_code_hash", lambda: code_hash)
+    monkeypatch.setattr(collector_module, "utc_now", lambda: RECEIVED)
+
+    with AppendOnlyPITStore(tmp_path) as store:
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path,
+                symbols=("XRPUSDT",),
+                collector_instance_id="replica-a",
+            ),
+            store,
+        )
+        collector.stop.set()
+        await collector.run()
+
+        stamp = store._db.execute(  # noqa: SLF001
+            "SELECT * FROM collector_process_versions"
+        ).fetchone()
+        assert stamp["collector_instance_id"] == "replica-a"
+        assert stamp["run_id"] == collector.run_id
+        assert stamp["started_at"] == "2026-07-28T07:01:00.000000Z"
+        assert stamp["code_hash"] == code_hash
+        assert stamp["collector_version"] == collector_module.COLLECTOR_VERSION
+
+
+@pytest.mark.unit
+def test_watchdog_availability_detects_deployed_head_mismatch(tmp_path) -> None:
+    expected_code_hash = "a" * 40
+    stores: list[AppendOnlyPITStore] = []
+    try:
+        for name, code_hash in (("a", expected_code_hash), ("b", "b" * 40)):
+            store = AppendOnlyPITStore(tmp_path / name)
+            stores.append(store)
+            ledger = EpochLedger(store._db, POLICY)  # noqa: SLF001
+            ledger.append_process_version(
+                collector_instance_id=f"replica-{name}",
+                run_id=f"run-{name}",
+                started_at=RECEIVED,
+                code_hash=code_hash,
+                collector_version=collector_module.COLLECTOR_VERSION,
+            )
+            ledger.append_heartbeat(
+                collector_instance_id=f"replica-{name}",
+                run_id=f"run-{name}",
+                observed_at=RECEIVED,
+                health={"ok": True},
+            )
+
+        report = availability_report(
+            [store.path for store in stores],
+            POLICY,
+            observed_at=RECEIVED + dt.timedelta(seconds=30),
+            stale_after_seconds=60,
+            expected_code_hash=expected_code_hash,
+        )
+
+        assert report["healthy_replica_count"] == 1
+        assert report["version_stamp_match"] is False
+        assert report["unstamped_artifacts"] == []
+        assert report["version_mismatches"] == [
+            {
+                "actual_code_hash": "b" * 40,
+                "artifact": str(stores[1].path),
+                "expected_code_hash": expected_code_hash,
+            }
+        ]
+        assert [replica["status"] for replica in report["replicas"]] == [
+            "HEALTHY",
+            "VERSION_MISMATCH",
+        ]
+    finally:
+        for store in stores:
+            store.close()
 
 
 @pytest.mark.unit

@@ -354,6 +354,23 @@ class EpochLedger:
                 study_id, policy_hash, collector_instance_id, append_id
             );
 
+        CREATE TABLE IF NOT EXISTS collector_process_versions (
+            append_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version_stamp_id TEXT NOT NULL UNIQUE,
+            study_id TEXT NOT NULL,
+            policy_hash TEXT NOT NULL,
+            collector_instance_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            code_hash TEXT NOT NULL,
+            collector_version TEXT NOT NULL,
+            UNIQUE (study_id, policy_hash, collector_instance_id, run_id)
+        );
+        CREATE INDEX IF NOT EXISTS ix_collector_process_version_latest
+            ON collector_process_versions (
+                study_id, policy_hash, collector_instance_id, append_id
+            );
+
         CREATE TABLE IF NOT EXISTS collector_alert_events (
             append_id INTEGER PRIMARY KEY AUTOINCREMENT,
             alert_event_id TEXT NOT NULL UNIQUE,
@@ -377,6 +394,7 @@ class EpochLedger:
             + _trigger_sql("symbol_epoch_finalizations")
             + _trigger_sql("late_only_corrections")
             + _trigger_sql("collector_heartbeats")
+            + _trigger_sql("collector_process_versions")
             + _trigger_sql("collector_alert_events")
         )
         attempt_columns = {
@@ -577,6 +595,35 @@ class EpochLedger:
                 iso_utc(observed_at),
                 sha256_text(health_json),
                 health_json,
+            ),
+        )
+        self.db.commit()
+
+    def append_process_version(
+        self,
+        *,
+        collector_instance_id: str,
+        run_id: str,
+        started_at: dt.datetime,
+        code_hash: str,
+        collector_version: str,
+    ) -> None:
+        self.db.execute(
+            """
+            INSERT INTO collector_process_versions (
+                version_stamp_id, study_id, policy_hash, collector_instance_id,
+                run_id, started_at, code_hash, collector_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                uuid.uuid4().hex,
+                self.policy.study_id,
+                self.policy.policy_hash,
+                collector_instance_id,
+                run_id,
+                iso_utc(started_at),
+                code_hash,
+                collector_version,
             ),
         )
         self.db.commit()
@@ -1275,46 +1322,109 @@ def latest_heartbeat(path: Path, policy: EpochPolicy) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+def latest_process_version(
+    path: Path,
+    policy: EpochPolicy,
+    *,
+    run_id: str | None = None,
+) -> dict[str, Any] | None:
+    path = path.expanduser().resolve()
+    if not path.is_file():
+        return None
+    uri = f"file:{urllib.parse.quote(str(path))}?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True) as connection:
+            connection.row_factory = sqlite3.Row
+            sql = """
+                SELECT * FROM collector_process_versions
+                WHERE study_id = ? AND policy_hash = ?
+            """
+            params = [policy.study_id, policy.policy_hash]
+            if run_id is not None:
+                sql += " AND run_id = ?"
+                params.append(run_id)
+            sql += " ORDER BY append_id DESC LIMIT 1"
+            row = connection.execute(sql, params).fetchone()
+    except sqlite3.Error:
+        return None
+    return dict(row) if row is not None else None
+
+
 def availability_report(
     artifact_paths: Sequence[Path],
     policy: EpochPolicy,
     *,
     observed_at: dt.datetime,
     stale_after_seconds: float,
+    expected_code_hash: str | None = None,
 ) -> dict[str, Any]:
     replicas: list[dict[str, Any]] = []
     fresh_instance_ids: set[str] = set()
     instance_path_counts: dict[str, int] = defaultdict(int)
+    unstamped_artifacts: list[str] = []
+    version_mismatches: list[dict[str, str]] = []
     for path in sorted(
         {item.expanduser().resolve() for item in artifact_paths}, key=str
     ):
         heartbeat = latest_heartbeat(path, policy)
         if heartbeat is None:
             replicas.append({"artifact": str(path), "status": "UNAVAILABLE"})
+            if expected_code_hash is not None:
+                unstamped_artifacts.append(str(path))
             continue
         age = (observed_at - parse_utc(heartbeat["observed_at"])).total_seconds()
         status = "HEALTHY" if 0 <= age <= stale_after_seconds else "STALE"
+        version = latest_process_version(path, policy, run_id=heartbeat["run_id"])
+        if expected_code_hash is not None:
+            if version is None:
+                status = "VERSION_UNSTAMPED"
+                unstamped_artifacts.append(str(path))
+            elif version["code_hash"] != expected_code_hash:
+                status = "VERSION_MISMATCH"
+                version_mismatches.append(
+                    {
+                        "actual_code_hash": version["code_hash"],
+                        "artifact": str(path),
+                        "expected_code_hash": expected_code_hash,
+                    }
+                )
         if status == "HEALTHY":
             fresh_instance_ids.add(heartbeat["collector_instance_id"])
             instance_path_counts[heartbeat["collector_instance_id"]] += 1
-        replicas.append(
-            {
-                "age_seconds": age,
-                "artifact": str(path),
-                "collector_instance_id": heartbeat["collector_instance_id"],
-                "observed_at": heartbeat["observed_at"],
-                "status": status,
-            }
-        )
+        replica = {
+            "age_seconds": age,
+            "artifact": str(path),
+            "collector_instance_id": heartbeat["collector_instance_id"],
+            "observed_at": heartbeat["observed_at"],
+            "status": status,
+        }
+        if version is not None:
+            replica.update(
+                {
+                    "code_hash": version["code_hash"],
+                    "collector_version": version["collector_version"],
+                    "version_run_id": version["run_id"],
+                    "version_started_at": version["started_at"],
+                }
+            )
+        replicas.append(replica)
     return {
         "duplicate_collector_instance_ids": sorted(
             instance_id
             for instance_id, count in instance_path_counts.items()
             if count > 1
         ),
+        "expected_code_hash": expected_code_hash,
         "healthy_replica_count": len(fresh_instance_ids),
         "observed_at": iso_utc(observed_at),
         "replicas": replicas,
+        "unstamped_artifacts": sorted(set(unstamped_artifacts)),
+        "version_mismatches": version_mismatches,
+        "version_stamp_match": (
+            None
+            if expected_code_hash is None
+            else not unstamped_artifacts and not version_mismatches
+        ),
     }
 
 
