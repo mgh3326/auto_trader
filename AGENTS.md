@@ -1,99 +1,55 @@
-# PROJECT KNOWLEDGE BASE
+# AGENTS.md — 외부 에이전트(Codex 등) 진입점
 
-**Generated:** 2026-02-17 12:32 KST
-**Commit:** 6b23e7b
-**Branch:** main
+> **이 파일은 얇은 포인터다. 정본은 `CLAUDE.md`.**
+> 작업을 시작하기 전에 리포지토리 루트의 `CLAUDE.md`를 **전부** 읽어라. 아키텍처, 명령어,
+> 표면별 계약(레저/브로커/MCP), 런북 맵은 모두 거기에 있고, 이 파일과 충돌하면 `CLAUDE.md`가
+> 이긴다. 아래 하드룰은 `CLAUDE.md`에서 추린 요약이며, `CLAUDE.md`를 읽지 못한 경우에도
+> 절대 위반하면 안 되는 최소 집합이다.
 
-## OVERVIEW
-Auto Trader is a Python 3.13+ multi-runtime system for market data ingestion, AI analysis, and trade execution.
-Primary processes are FastAPI (`app/main.py`), TaskIQ worker/scheduler, MCP server (`app/mcp_server/main.py`), and websocket monitor processes.
+## 하드룰 — 절대 위반 금지
 
-## STRUCTURE
-```text
-auto_trader/
-├── app/                      # runtime code (api, auth, services, jobs/tasks, mcp, monitoring)
-├── tests/                    # pytest suites and fixtures
-├── scripts/                  # deploy, migration, health, environment utilities
-├── alembic/                  # migration env + revision history
-├── data/                     # loader modules + static market reference assets
-├── blog/                     # internal docs plus supplemental script/test assets
-├── docs/                     # plans and operational notes
-└── docker-compose*.yml       # local/prod/migration stack definitions
-```
+1. **런타임 LLM 경계 (ROB-501)**: `app/**` 런타임 코드에 in-process LLM provider
+   (Gemini/OpenAI/Grok 등) import·인스턴스화 금지. LLM 판단은 out-of-process MCP consumer 몫.
+   정적 가드 테스트(`tests/services/action_report/snapshot_backed/test_no_internal_llm_imports.py`)가
+   이를 스캔한다.
+2. **브랜치 보호**: `main`·`production` 직접 push 금지. 모든 코드 변경은 feature branch + PR.
+3. **Worktree 규칙**: canonical repo `/Users/mgh3326/work/auto_trader`는 항상 `main` 체크아웃 고정.
+   코드 변경은 `/Users/mgh3326/work/auto_trader.<issue-id>` worktree에서 수행.
+   머지된 브랜치 위에 계속 커밋 금지 — follow-up은 최신 `origin/main` 기준 새 브랜치로 시작.
+4. **브로커 실행 표면은 전부 default-disabled**: demo/mock/live 실행 경로는 env 게이트
+   (예: `BINANCE_SPOT_DEMO_ENABLED`, `KIWOOM_MOCK_ENABLED`, `TOSS_API_ENABLED`) +
+   per-call `confirm=True` 이중 게이트 뒤에 있다. **게이트 완화, 호스트 allowlist 확장,
+   fail-closed→fail-open 전환, 하드 인바리언트 상수(레버리지 1x, notional cap, 동시 포지션
+   상한 등) 변경 금지.** 이런 변경이 필요해 보이면 멈추고 운영자에게 보고하라.
+5. **레저 쓰기는 서비스 레이어 경유만**: `alpaca_paper_order_ledger`,
+   `binance_demo_order_ledger`, `kis_live_order_ledger`, `live_order_ledger`,
+   `toss_live_order_ledger` 등 주문 레저에 직접 SQL INSERT/UPDATE/DELETE 금지.
+   fill 기록은 evidence-first — 브로커 증거 없이 `filled` 마킹 금지.
+6. **스케줄러 등록 금지**: 신규 TaskIQ/cron/Prefect 스케줄 연결은 명시 승인 없이 금지.
+   기본은 scheduleless 출고(CLI/수동 lever만).
+7. **심볼 형식**: DB 기준은 `.` 구분(`BRK.B`). 변환은 `app/core/symbol.py`
+   (`to_kis_symbol`/`to_yahoo_symbol`/`to_db_symbol`)만 사용하고 직접 문자열 치환 금지.
+8. **검증·보고 규율**: 완료 주장 전 관련 테스트를 실제 실행하고 결과 원문을 보고하라.
+   실패·스킵을 성공으로 보고 금지. push 완료 주장은 `git ls-remote`로 대조 가능해야 한다.
+9. **Secrets**: API 키·토큰 repo 커밋 금지. 로그·보고에 secret 값 출력 금지
+   (missing env는 key 이름만 보고).
 
-## WHERE TO LOOK
-| Task | Location | Notes |
-|------|----------|-------|
-| API lifecycle and router wiring | `app/main.py` | App creation, router includes, middleware, exception handling |
-| Background execution | `app/core/taskiq_broker.py`, `app/core/scheduler.py`, `app/tasks/` | Broker/scheduler wiring and scheduled task declarations |
-| Domain business logic | `app/services/` | Provider clients and trading/holdings/orchestration services |
-| MCP server behavior | `app/mcp_server/` and `app/mcp_server/tooling/` | Process bootstrap + tool registration and handlers |
-| Monitoring and notifications | `app/monitoring/` | Sentry integration and Telegram trade notifications |
-| ORM + API DTO boundaries | `app/models/`, `app/schemas/` | SQLAlchemy models vs Pydantic transport schemas |
-| Test contracts and fixtures | `tests/` and `tests/conftest.py` | Strict markers/config and shared fixture bootstrap |
-| Deployment and migration flow | `scripts/`, `docker-compose.prod.yml`, `docker-compose.migration.yml` | Operator-facing deploy/migrate/health workflows |
+## 최소 명령어
 
-## CODE MAP
-| Symbol | Type | Location | Refs | Role |
-|--------|------|----------|------|------|
-| `create_app` | Function | `app/main.py` | API runtime target (`app.main:api`) | FastAPI app bootstrap and lifecycle wiring |
-| `broker` | Variable | `app/core/taskiq_broker.py` | API + scheduler + tasks | TaskIQ broker and worker middleware |
-| `sched` | Variable | `app/core/scheduler.py` | `make taskiq-scheduler` | Periodic schedule execution |
-| `register_all_tools` | Function | `app/mcp_server/tooling/registry.py` | MCP bootstrap + tests | MCP tool registration orchestrator |
-| `get_trade_notifier` | Function | `app/monitoring/trade_notifier.py` | API + worker + services/jobs | Singleton notifier lifecycle and delivery |
-| `KISClient` | Class | `app/services/kis.py` | services/jobs/routers/mcp | KIS integration backbone |
-
-## CONVENTIONS
-- Toolchain source of truth is `pyproject.toml`, `Makefile`, and CI workflows.
-- Runtime baseline is Python 3.13+; dependency and command execution use `uv`.
-- Formatting/lint/type checks are Ruff + ty.
-- Test suite uses strict pytest markers/config (`slow`, `integration`, `unit`) with `--cov-fail-under=50`.
-- Keep task declarations in `app/tasks/`; job orchestration stays in `app/jobs/`.
-- Keep MCP behavior changes synchronized with `app/mcp_server/README.md` and tests.
-
-## ANTI-PATTERNS (THIS PROJECT)
-- Do not hardcode credentials/secrets in code or scripts.
-- Do not keep default/example secrets in production environments.
-- Do not add new usage of deprecated tick-size helper (`app/mcp_server/tick_size.py:_get_tick_size`).
-- Do not add `@broker.task(...)` directly in `app/jobs/`.
-- Do not embed heavy business logic directly in router handlers.
-
-## UNIQUE STYLES
-- Multi-runtime repository: API, worker/scheduler, MCP process, and websocket monitors all coexist.
-- Root keeps only stable operator entrypoints (`manage_users.py`, `websocket_monitor.py`, `kis_websocket_monitor.py`, `upbit_websocket_monitor.py`); ad-hoc debug/one-off scripts are intentionally removed.
-- Production compose is host-network oriented and includes a migration profile workflow.
-- KR/US symbol universes are DB-backed (`kr_symbol_universe`, `us_symbol_universe`) and synced via `app/services/kr_symbol_universe_service.py` and `app/services/us_symbol_universe_service.py`.
-
-## COMMANDS
 ```bash
-# setup and local runtime
-make install-dev
-make dev
-make taskiq-worker
-make taskiq-scheduler
-uv run python -m app.mcp_server.main
-python websocket_monitor.py --mode both
-
-# quality and tests
-make test
-make test-unit
-make test-integration
-make lint
-make security
-
-# migration and deploy operations
-uv run alembic upgrade head
-bash scripts/migration-check.sh
-bash scripts/migrate.sh
-bash scripts/deploy.sh --manual-migrate --health-check
-docker compose -f docker-compose.prod.yml --profile migration up migration
-bash scripts/healthcheck.sh
-python manage_users.py list
+uv sync --all-groups        # 의존성 (test/dev 포함)
+make test                   # 테스트 (make test-unit / make test-integration)
+make lint                   # Ruff + ty
+make format                 # 포맷팅
+uv run alembic upgrade head # DB 마이그레이션
 ```
 
-## NOTES
-- Some docs still contain older Celery phrasing; runtime execution is TaskIQ-based.
-- Deployment and migration scripts include interactive/safety checks; do not assume non-interactive behavior.
-- `tests/` is canonical pytest discovery root; root/blog `test_*.py` files are supplemental scripts.
-- For very large files (`app/services/kis.py`, large `tests/test_mcp_*.py`), prefer targeted reads/searches.
-- Child AGENTS files under `app/` and `data/` provide tighter local rules and override where needed.
+## 더 읽을 것
+
+- `CLAUDE.md` — 정본 (아키텍처, 표면별 계약, 워크플로우, 문제 해결 전체)
+- `docs/runbooks/` — 실행 표면별 런북 (smoke CLI, reconcile, 활성화 절차)
+
+## 유지 규약
+
+`CLAUDE.md`에 새 안전 경계·계약이 추가되면 이 파일의 하드룰 요약도 같은 PR에서 갱신한다.
+이 파일이 `CLAUDE.md`와 어긋나면 그 자체가 버그다.
