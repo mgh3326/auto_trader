@@ -127,7 +127,11 @@ class WatchValidityReviewService:
             alerts = await repo.list_active_alerts(market=market, valid_at=now_utc)
             for alert in alerts:
                 stats.alerts_seen += 1
-                item = await repo.get_item_by_uuid(alert.source_item_uuid)
+                item = (
+                    await repo.get_item_by_uuid(alert.source_item_uuid)
+                    if alert.source_item_uuid is not None
+                    else None
+                )
                 stored = item.watch_recommendation if item is not None else None
 
                 current_price = await self._current_price(alert)

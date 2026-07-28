@@ -55,7 +55,7 @@ class InvestLinks(BaseModel):
     Hermes prepends its configured Invest base URL when rendering.
     """
 
-    report_path: str
+    report_path: str | None
     stock_path: str
     event_anchor: str | None = None
     alert_anchor: str | None = None
@@ -153,7 +153,11 @@ def build_invest_links(
     event_uuid: Any | None = None,
     alert_uuid: Any | None = None,
 ) -> InvestLinks:
-    report_path = f"/invest/reports/{source_report_uuid}"
+    report_path = (
+        f"/invest/reports/{source_report_uuid}"
+        if source_report_uuid is not None
+        else None
+    )
     stock_path = (
         f"/invest/stocks/{quote(str(market).lower(), safe='')}"
         f"/{quote(str(symbol), safe='')}"
@@ -163,12 +167,12 @@ def build_invest_links(
         stock_path=stock_path,
         event_anchor=(
             f"{report_path}#watch-event-{event_uuid}"
-            if event_uuid is not None
+            if report_path is not None and event_uuid is not None
             else None
         ),
         alert_anchor=(
             f"{report_path}#watch-alert-{alert_uuid}"
-            if alert_uuid is not None
+            if report_path is not None and alert_uuid is not None
             else None
         ),
     )
@@ -263,8 +267,8 @@ class ReviewTriggerPayload(BaseModel):
 
     event_uuid: UUID
     alert_uuid: UUID
-    source_report_uuid: UUID
-    source_item_uuid: UUID
+    source_report_uuid: UUID | None
+    source_item_uuid: UUID | None
     correlation_id: str
     kst_date: str
     market: MarketLiteral

@@ -72,8 +72,8 @@ async def test_list_active_watches_impl_returns_rationale_and_filters(
     db_session.add(
         InvestmentWatchAlert(
             idempotency_key=f"rob517:list-active:{uuid.uuid4()}",
-            source_report_uuid=uuid.uuid4(),
-            source_item_uuid=uuid.uuid4(),
+            source_report_uuid=None,
+            source_item_uuid=None,
             market="kr",
             target_kind="asset",
             symbol="005930",
@@ -102,7 +102,7 @@ async def test_list_active_watches_impl_returns_rationale_and_filters(
     ]
     assert len(matching) >= 1
     assert matching[0]["symbol"] == "005930"
-    assert matching[0]["source_item_uuid"]
+    assert matching[0]["source_item_uuid"] is None
 
 
 @pytest.mark.asyncio
@@ -554,8 +554,8 @@ async def test_get_operating_briefing_reads_active_watch_and_session_context(
     db_session.add(
         InvestmentWatchAlert(
             idempotency_key=f"rob517:briefing-active:{uuid.uuid4()}",
-            source_report_uuid=uuid.uuid4(),
-            source_item_uuid=uuid.uuid4(),
+            source_report_uuid=None,
+            source_item_uuid=None,
             market="us",
             target_kind="asset",
             symbol="AAPL",

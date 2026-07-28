@@ -202,6 +202,20 @@ def test_build_invest_links_without_event_uuid_omits_event_anchor() -> None:
     assert links.stock_path == "/invest/stocks/kr/005930"
 
 
+def test_build_invest_links_without_report_omits_report_anchors() -> None:
+    links = build_invest_links(
+        market="us",
+        symbol="NVDA",
+        source_report_uuid=None,
+        event_uuid=_EVENT_UUID,
+        alert_uuid=_ALERT_UUID,
+    )
+    assert links.report_path is None
+    assert links.event_anchor is None
+    assert links.alert_anchor is None
+    assert links.stock_path == "/invest/stocks/us/NVDA"
+
+
 def test_build_invest_links_quotes_symbol() -> None:
     links = build_invest_links(
         market="us", symbol="BRK.B", source_report_uuid=_REPORT_UUID

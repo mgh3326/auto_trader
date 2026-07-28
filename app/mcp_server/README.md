@@ -1402,6 +1402,11 @@ Response includes `active_watches[]` with `symbol`, `operator`, `threshold`, `va
 Creates an active row in `review.investment_watch_alerts` without creating an
 investment report or report item.
 
+Because a direct watch has no report/item source, its `source_report_uuid` and
+`source_item_uuid` are `null`. Do not synthesize or look up a report for these
+rows; use the alert's immutable rationale, checklist, max-action, and condition
+snapshot. Report-activated watches continue to carry real source UUIDs.
+
 Parameters:
 - `created_by`: required provenance label. Use `tradingcodex` from the
   `tradingcodex_execution` profile.

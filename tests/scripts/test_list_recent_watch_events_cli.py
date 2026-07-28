@@ -1,9 +1,10 @@
 import json
+import uuid
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from scripts.list_recent_watch_events import collect, main
+from scripts.list_recent_watch_events import _source_report_link_state, collect, main
 from tests._watch_events_helpers import mk_watch_event, utc_at
 
 
@@ -24,6 +25,7 @@ async def test_collect_returns_serializable_delivered_events(session: AsyncSessi
         "symbol",
         "market",
         "source_report_uuid",
+        "source_report_link_state",
         "metric",
         "operator",
         "threshold",
@@ -31,6 +33,7 @@ async def test_collect_returns_serializable_delivered_events(session: AsyncSessi
         "delivered_at",
         "kst_date",
     }
+    assert ev["source_report_link_state"] == "not_applicable_direct_watch"
 
 
 def test_main_bad_since_emits_error_json_and_nonzero(capsys):
@@ -40,3 +43,8 @@ def test_main_bad_since_emits_error_json_and_nonzero(capsys):
     payload = json.loads(out)
     assert payload["success"] is False
     assert "error" in payload
+
+
+def test_uuid5_source_is_classified_as_legacy_placeholder() -> None:
+    source_uuid = uuid.uuid5(uuid.NAMESPACE_URL, "legacy-direct-watch")
+    assert _source_report_link_state(source_uuid) == "legacy_direct_watch_placeholder"

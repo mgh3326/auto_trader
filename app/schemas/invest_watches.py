@@ -35,7 +35,7 @@ class WatchAlertRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     alert_uuid: UUID
-    source_report_uuid: UUID
+    source_report_uuid: UUID | None
     market: Literal["kr", "us", "crypto"]
     symbol: str = Field(min_length=1)
     symbol_name: str | None = None

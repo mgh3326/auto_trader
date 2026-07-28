@@ -942,8 +942,8 @@ class InvestmentWatchAlertResponse(BaseModel):
     """Single ``investment_watch_alerts`` row."""
 
     alert_uuid: UUID
-    source_report_uuid: UUID
-    source_item_uuid: UUID
+    source_report_uuid: UUID | None
+    source_item_uuid: UUID | None
     market: MarketLiteral
     target_kind: TargetKindLiteral
     symbol: str
@@ -982,8 +982,8 @@ class InvestmentWatchEventResponse(BaseModel):
 
     event_uuid: UUID
     alert_id: int | None
-    source_report_uuid: UUID
-    source_item_uuid: UUID
+    source_report_uuid: UUID | None
+    source_item_uuid: UUID | None
     market: MarketLiteral
     target_kind: TargetKindLiteral
     symbol: str

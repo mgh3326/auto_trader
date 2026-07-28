@@ -508,11 +508,23 @@ class InvestmentWatchAlert(Base):
     )
     idempotency_key: Mapped[str] = mapped_column(Text, nullable=False)
 
-    source_report_uuid: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=False
+    source_report_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(
+            "review.investment_reports.report_uuid",
+            name="fk_investment_watch_alerts_source_report_uuid",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
     )
-    source_item_uuid: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=False
+    source_item_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(
+            "review.investment_report_items.item_uuid",
+            name="fk_investment_watch_alerts_source_item_uuid",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
     )
 
     market: Mapped[str] = mapped_column(Text, nullable=False)
@@ -589,10 +601,10 @@ class InvestmentWatchEvent(Base):
     ``action_mode``) so it remains audit-useful after the source alert
     is removed.
 
-    ``source_report_uuid`` / ``source_item_uuid`` are logical audit links
-    (no FK on purpose) — the snapshot fields above are the canonical
-    record. Plan 2's service layer validates source existence/consistency
-    at write time.
+    ``source_report_uuid`` / ``source_item_uuid`` are nullable logical audit
+    links (no FK on purpose) — direct watches have no report/item, and event
+    snapshots must survive deletion of a linked report. The snapshot fields
+    above are the canonical record.
     """
 
     __tablename__ = "investment_watch_events"
@@ -667,12 +679,8 @@ class InvestmentWatchEvent(Base):
     alert_id: Mapped[int | None] = mapped_column(
         ForeignKey("review.investment_watch_alerts.id", ondelete="SET NULL")
     )
-    source_report_uuid: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=False
-    )
-    source_item_uuid: Mapped[uuid.UUID] = mapped_column(
-        PG_UUID(as_uuid=True), nullable=False
-    )
+    source_report_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    source_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
 
     # Immutable trigger-identity snapshot copied from the source alert at
     # event creation. Must survive alert deletion.

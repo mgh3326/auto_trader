@@ -173,7 +173,10 @@ async def test_investment_watch_create_direct_persists_active_alert(
     assert response["alert"]["symbol"] == "005930"
     assert response["alert"]["metadata"]["created_by"] == "tradingcodex"
     assert response["alert"]["metadata"]["source_tool"] == "investment_watch_create"
+    assert response["alert"]["metadata"]["source_link"] == "direct_without_report"
     assert response["alert"]["metadata"]["source"] == "tcx-smoke"
+    assert response["alert"]["source_report_uuid"] is None
+    assert response["alert"]["source_item_uuid"] is None
 
 
 @pytest.mark.asyncio
@@ -545,7 +548,6 @@ async def test_activate_watch_rejects_condition_override(
 async def test_list_active_watches_filters_market_symbol_and_expiry(
     session: AsyncSession,
 ) -> None:
-    import uuid
     from datetime import UTC, datetime, timedelta
 
     from app.core.db import AsyncSessionLocal
@@ -555,8 +557,8 @@ async def test_list_active_watches_filters_market_symbol_and_expiry(
     now = datetime(2026, 6, 11, 3, 0, tzinfo=UTC)
     active_future = InvestmentWatchAlert(
         idempotency_key="rob517:active:005930",
-        source_report_uuid=uuid.uuid4(),
-        source_item_uuid=uuid.uuid4(),
+        source_report_uuid=None,
+        source_item_uuid=None,
         market="kr",
         target_kind="asset",
         symbol="005930",
@@ -574,8 +576,8 @@ async def test_list_active_watches_filters_market_symbol_and_expiry(
     )
     active_expired = InvestmentWatchAlert(
         idempotency_key="rob517:expired:005930",
-        source_report_uuid=uuid.uuid4(),
-        source_item_uuid=uuid.uuid4(),
+        source_report_uuid=None,
+        source_item_uuid=None,
         market="kr",
         target_kind="asset",
         symbol="005930",
@@ -593,8 +595,8 @@ async def test_list_active_watches_filters_market_symbol_and_expiry(
     )
     inactive = InvestmentWatchAlert(
         idempotency_key="rob517:triggered:005930",
-        source_report_uuid=uuid.uuid4(),
-        source_item_uuid=uuid.uuid4(),
+        source_report_uuid=None,
+        source_item_uuid=None,
         market="kr",
         target_kind="asset",
         symbol="005930",

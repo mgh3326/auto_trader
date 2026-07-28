@@ -14,9 +14,18 @@ import asyncio
 import json
 import sys
 from datetime import datetime
+from uuid import UUID
 
 from app.core.db import AsyncSessionLocal
 from app.services.investment_reports.repository import InvestmentReportsRepository
+
+
+def _source_report_link_state(source_report_uuid: UUID | None) -> str:
+    if source_report_uuid is None:
+        return "not_applicable_direct_watch"
+    if source_report_uuid.version == 5:
+        return "legacy_direct_watch_placeholder"
+    return "report_lookup_required"
 
 
 def _parse_since(value: str | None) -> datetime | None:
@@ -48,6 +57,9 @@ async def collect(
                 "source_report_uuid": str(e.source_report_uuid)
                 if e.source_report_uuid
                 else None,
+                "source_report_link_state": _source_report_link_state(
+                    e.source_report_uuid
+                ),
                 "metric": e.metric,
                 "operator": e.operator,
                 "threshold": str(e.threshold),
