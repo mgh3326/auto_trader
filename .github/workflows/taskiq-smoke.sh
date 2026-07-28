@@ -28,6 +28,7 @@ child_status=0
 shutdown_requested=false
 term_sent=false
 kill_sent=false
+cleanup_failure_status=0
 
 leader_is_running() {
   jobs -pr | grep -Fxq "$process_id"
@@ -64,7 +65,7 @@ terminate_and_reap() {
       reap_child
     fi
     if ! process_group_exists; then
-      return 0
+      break
     fi
     sleep "$term_grace_interval"
   done
@@ -76,8 +77,6 @@ terminate_and_reap() {
     fi
   fi
 
-  reap_child
-
   for ((poll = 1; poll <= term_grace_polls; poll++)); do
     if ! process_group_exists; then
       break
@@ -85,16 +84,33 @@ terminate_and_reap() {
     sleep "$term_grace_interval"
   done
 
+  if process_group_exists; then
+    echo "$label process group $process_group_id remains after KILL fallback " \
+      "(TERM sent: $term_sent; KILL sent: $kill_sent; child status pending reap)." >&2
+    cleanup_failure_status=1
+  fi
+
+  # Always wait for the direct child. When KILL does not clear the group within
+  # the bounded polls, emit the failure first so a blocked wait is not silent.
+  reap_child
+
+  if ((cleanup_failure_status != 0)); then
+    return "$cleanup_failure_status"
+  fi
   return 0
 }
 
 # shellcheck disable=SC2329  # Invoked by the EXIT trap.
 cleanup_on_exit() {
   local status=$?
+  local cleanup_status=0
 
   trap - EXIT INT TERM
   if [[ -n "$process_id" ]]; then
-    terminate_and_reap
+    terminate_and_reap || cleanup_status=$?
+  fi
+  if ((status == 0 && cleanup_status != 0)); then
+    status=$cleanup_status
   fi
   exit "$status"
 }
@@ -119,7 +135,14 @@ process_id=$!
 process_group_id=$process_id
 
 finish_after_readiness() {
-  terminate_and_reap
+  local cleanup_status=0
+
+  terminate_and_reap || cleanup_status=$?
+  if ((cleanup_status != 0)); then
+    tail -n 200 "$log_path" || true
+    exit "$cleanup_status"
+  fi
+
   if ((child_status == 0)) ||
     { [[ "$shutdown_requested" == true && "$term_sent" == true ]] &&
       ((child_status == 143)); } ||
@@ -139,7 +162,9 @@ for ((poll = 1; poll <= readiness_polls; poll++)); do
   fi
 
   if ! leader_is_running; then
-    terminate_and_reap
+    if ! terminate_and_reap; then
+      echo "$label cleanup failed before readiness." >&2
+    fi
     if grep -Fq "$ready_marker" "$log_path"; then
       finish_after_readiness
     fi
@@ -151,7 +176,9 @@ for ((poll = 1; poll <= readiness_polls; poll++)); do
   sleep "$readiness_interval"
 done
 
-terminate_and_reap
+if ! terminate_and_reap; then
+  echo "$label cleanup failed after readiness timeout." >&2
+fi
 echo "$label did not become ready within ${readiness_polls} readiness polls."
 tail -n 200 "$log_path" || true
 exit 1
