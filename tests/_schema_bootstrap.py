@@ -63,7 +63,8 @@ from sqlalchemy import text
 # v30: persistent-schema typed dispatch/card constraints and attempt nullability.
 # v31: Alpaca paper lab account_mode CHECK expansions.
 # v32 (ROB-1103): nullable direct-watch source links + future-write FKs.
-SCHEMA_BOOTSTRAP_VERSION = 32
+# v33 (ROB-1115): strategy_learning_events ORM table + append-only triggers.
+SCHEMA_BOOTSTRAP_VERSION = 33
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1233,6 +1234,26 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "CREATE TRIGGER trg_backtest_runs_trial_immutable "
     "BEFORE UPDATE OR DELETE ON research.backtest_runs "
     "FOR EACH ROW EXECUTE FUNCTION research.reject_backtest_trial_mutation()",
+    # ---- ROB-1115: strategy learning memory is immutable including TRUNCATE.
+    "CREATE OR REPLACE FUNCTION "
+    "research.reject_strategy_learning_event_mutation() "
+    "RETURNS trigger AS $$ BEGIN "
+    "RAISE EXCEPTION "
+    "'research.strategy_learning_events is append-only/immutable; % rejected', TG_OP "
+    "USING ERRCODE = 'restrict_violation'; "
+    "END; $$ LANGUAGE plpgsql",
+    "DROP TRIGGER IF EXISTS trg_strategy_learning_events_immutable "
+    "ON research.strategy_learning_events",
+    "CREATE TRIGGER trg_strategy_learning_events_immutable "
+    "BEFORE UPDATE OR DELETE ON research.strategy_learning_events "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "research.reject_strategy_learning_event_mutation()",
+    "DROP TRIGGER IF EXISTS trg_strategy_learning_events_truncate_immutable "
+    "ON research.strategy_learning_events",
+    "CREATE TRIGGER trg_strategy_learning_events_truncate_immutable "
+    "BEFORE TRUNCATE ON research.strategy_learning_events "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "research.reject_strategy_learning_event_mutation()",
     # ---- ROB-848: immutable paper-validation audit + experiment hash binding
     # Tables/checks/FKs are owned by the ORM metadata above; these PostgreSQL
     # trigger functions are non-ORM DDL and mirror the Alembic revision.

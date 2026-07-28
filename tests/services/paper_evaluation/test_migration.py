@@ -124,6 +124,11 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                     text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
                 )
             await connection.run_sync(Base.metadata.create_all)
+            # Base metadata includes the current head, while this test stamps
+            # ROB-850 and replays every later migration.
+            await connection.execute(
+                text("DROP TABLE research.strategy_learning_events")
+            )
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 
