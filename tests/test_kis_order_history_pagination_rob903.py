@@ -127,12 +127,18 @@ class TestOverseasDisplayPaginationRob903:
         sleep_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_default_paginates_exhaustively_reconcile_invariant(self):
+    async def test_default_paginates_exhaustively_reconcile_invariant(
+        self, monkeypatch
+    ):
         """RECONCILE LOCK: defaults must keep exhaustive pagination — a duplicate
         cursor still runs to max_pages and raises, exactly as today."""
         instance, parent = _make_overseas_client()
         parent._request_with_rate_limit = AsyncMock(
             side_effect=[_dup_cursor_page(f"NK{i}") for i in range(500)]
+        )
+        sleep_mock = AsyncMock()
+        monkeypatch.setattr(
+            "app.services.brokers.kis.overseas_orders.asyncio.sleep", sleep_mock
         )
 
         with pytest.raises(RuntimeError, match="truncated"):
@@ -140,6 +146,8 @@ class TestOverseasDisplayPaginationRob903:
                 start_date="20260317", end_date="20260317", max_pages=100
             )
         assert parent._request_with_rate_limit.call_count == 100
+        assert sleep_mock.await_count == 99
+        assert all(call.args == (0.1,) for call in sleep_mock.await_args_list)
 
     @pytest.mark.asyncio
     async def test_default_delay_still_sleeps_between_pages(self, monkeypatch):
@@ -199,7 +207,9 @@ class TestDomesticDisplayPaginationRob903:
         assert result == [{"odno": "001", "pdno": "005930"}]
 
     @pytest.mark.asyncio
-    async def test_default_paginates_exhaustively_reconcile_invariant(self):
+    async def test_default_paginates_exhaustively_reconcile_invariant(
+        self, monkeypatch
+    ):
         instance, parent = _make_domestic_client()
         parent._request_with_rate_limit = AsyncMock(
             side_effect=[
@@ -212,12 +222,18 @@ class TestDomesticDisplayPaginationRob903:
                 for i in range(500)
             ]
         )
+        sleep_mock = AsyncMock()
+        monkeypatch.setattr(
+            "app.services.brokers.kis.domestic_orders.asyncio.sleep", sleep_mock
+        )
 
         with pytest.raises(RuntimeError, match="truncated"):
             await instance.inquire_daily_order_domestic(
                 start_date="20260317", end_date="20260317", max_pages=100
             )
         assert parent._request_with_rate_limit.call_count == 100
+        assert sleep_mock.await_count == 99
+        assert all(call.args == (0.1,) for call in sleep_mock.await_args_list)
 
 
 @pytest.mark.unit

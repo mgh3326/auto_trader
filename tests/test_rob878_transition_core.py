@@ -995,8 +995,10 @@ async def test_sibling_transitions_preserve_both_projection_updates(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_operation", ["save", "transition"])
 async def test_save_and_transition_share_lock_order_and_keep_projection(
     db_session: AsyncSession,
+    first_operation: str,
 ) -> None:
     from app.services.trade_journal.retrospective_action_repository import (
         RetrospectiveActionRepository,
@@ -1006,6 +1008,8 @@ async def test_save_and_transition_share_lock_order_and_keep_projection(
     )
 
     parent_id, action_id = await _seed_action(db_session, position=0)
+    first_holds_lock = asyncio.Event()
+    release_first = asyncio.Event()
 
     async def save() -> None:
         async with AsyncSessionLocal() as session:
@@ -1018,7 +1022,8 @@ async def test_save_and_transition_share_lock_order_and_keep_projection(
                         "action": "action-0",
                         "owner": None,
                         "issue_id": None,
-                        "status": "open",
+                        # Save must preserve a status concurrently owned by the
+                        # transition API, not replay a stale open snapshot.
                         "due_kst_date": None,
                         "custom": "preserve-0",
                     }
@@ -1026,6 +1031,9 @@ async def test_save_and_transition_share_lock_order_and_keep_projection(
                 "user:save",
                 control_mode="canonical",
             )
+            if first_operation == "save":
+                first_holds_lock.set()
+                await release_first.wait()
             await session.commit()
 
     async def transition() -> None:
@@ -1040,12 +1048,22 @@ async def test_save_and_transition_share_lock_order_and_keep_projection(
                 reason=None,
                 evidence=None,
             )
+            if first_operation == "transition":
+                first_holds_lock.set()
+                await release_first.wait()
             await session.commit()
 
-    outcomes = await asyncio.wait_for(
-        asyncio.gather(save(), transition(), return_exceptions=True), timeout=8
-    )
-    assert not any(isinstance(outcome, BaseException) for outcome in outcomes)
+    # Let gather propagate the original exception and traceback. Returning
+    # exceptions here previously reduced a useful DB/lock failure to a boolean
+    # assertion with no indication of which concurrent path failed.
+    operations = {"save": save, "transition": transition}
+    second_operation = "transition" if first_operation == "save" else "save"
+    first_task = asyncio.create_task(operations[first_operation]())
+    await asyncio.wait_for(first_holds_lock.wait(), timeout=3)
+    second_task = asyncio.create_task(operations[second_operation]())
+    await asyncio.sleep(0.1)
+    release_first.set()
+    await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=8)
     row = await _load_action(db_session, action_id)
     assert row.status == "in_progress" and row.version == 2
     projection = await _projection(db_session, parent_id)

@@ -11,13 +11,13 @@ install-dev: ## Install development dependencies
 	uv sync --all-groups
 
 test: ## Run all tests (excludes live)
-	uv run pytest tests/ -v -m "not live"
+	uv run pytest tests/ -q -ra -m "not live"
 
-test-unit: ## Run unit tests only (excludes integration and live)
-	uv run pytest tests/ -v -m "not integration and not live"
+test-unit: ## Run positively marked unit tests (excludes slow and live)
+	uv run pytest tests/ -q -ra -m "unit and not integration and not slow and not live"
 
 test-integration: ## Run integration tests only (excludes live)
-	uv run pytest tests/ -v -m "integration and not live"
+	uv run pytest tests/ -q -ra -m "integration and not live"
 
 test-services-split: ## Run split service tests for former test_services.py scope
 	uv run pytest --no-cov -q \
@@ -25,22 +25,21 @@ test-services-split: ## Run split service tests for former test_services.py scop
 		tests/test_services_kis_client.py \
 		tests/test_services_kis_market_data.py \
 		tests/test_services_kis_logging.py \
-		tests/test_services_stock_info.py \
-		tests/test_services_gemini.py \
 		tests/test_services_dart.py \
 		tests/test_services_yahoo.py
 
 test-cov: ## Run tests with coverage report (excludes live)
-	uv run pytest tests/ -v -m "not live" --cov=app --cov-report=html --cov-report=term-missing
+	uv run pytest tests/ -q -ra -m "not live" --cov=app --cov-report=html --cov-report=term-missing
 
-test-fast: ## Run tests without coverage (faster, excludes live)
-	uv run pytest tests/ -v -m "not live" --no-cov
+test-fast: ## Run the bounded parallel unit development loop
+	uv run pytest tests/ -q -ra -m "unit and not integration and not slow and not live" \
+		--no-cov --maxfail=1 -n 4 --dist=loadfile
 
 test-watch: ## Run tests in watch mode (excludes live)
-	uv run pytest tests/ -v -m "not live" -f
+	uv run pytest tests/ -q -ra -m "not live" -f
 
 test-live: ## Run live API tests only (requires external network)
-	uv run pytest tests/ -v -m "integration and live" --run-live --no-cov
+	uv run pytest tests/ -q -ra -m "integration and live" --run-live --no-cov
 lint: ## Run linting checks (Ruff + ty)
 	uv run ruff check app/ tests/ research/ scripts/
 	uv run ruff format --check app/ tests/ research/ scripts/

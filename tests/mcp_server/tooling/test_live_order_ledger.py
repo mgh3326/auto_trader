@@ -2,6 +2,8 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.mark.unit
 def test_live_order_ledger_model_shape():

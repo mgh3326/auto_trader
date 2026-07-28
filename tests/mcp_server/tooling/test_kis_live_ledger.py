@@ -4,6 +4,8 @@ import pytest_asyncio
 
 from app.models.review import KISLiveOrderLedger
 
+pytestmark = pytest.mark.integration
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def clean_kis_live_ledger(db_session):

@@ -29,6 +29,9 @@ from app.services.research_db_write_guard import (
     research_write_opt_in_enabled,
     resolve_research_db_target,
 )
+from tests.services.research._db_guard_test_policy import (
+    current_research_test_db_policy,
+)
 
 _DISPOSABLE_TARGET = ResearchDbTarget(host="localhost", database_name="test_db")
 _POLICY = ResearchDbPolicy.of(_DISPOSABLE_TARGET)
@@ -135,6 +138,64 @@ def test_default_research_db_policy_only_authorizes_the_one_known_local_target()
     assert not policy.authorizes(
         ResearchDbTarget(host="prod-primary.internal.example", database_name="test_db")
     )
+
+
+def test_pytest_worker_policy_authorizes_only_the_exact_run_owned_target(monkeypatch):
+    worker_database = "test_db_run_123_gw2"
+    monkeypatch.setenv("AUTO_TRADER_XDIST_DATABASE_NAME", worker_database)
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        f"postgresql+asyncpg://postgres:postgres@localhost:5432/{worker_database}",
+    )
+
+    policy = current_research_test_db_policy()
+
+    assert policy.authorizes(
+        ResearchDbTarget(host="localhost", database_name=worker_database)
+    )
+    assert not policy.authorizes(
+        ResearchDbTarget(host="localhost", database_name="test_db")
+    )
+    assert not policy.authorizes(
+        ResearchDbTarget(host="localhost", database_name="test_db_run_123_gw3")
+    )
+    assert not policy.authorizes(
+        ResearchDbTarget(
+            host="prod-primary.internal.example", database_name=worker_database
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("database_url", "worker_database"),
+    [
+        (
+            "postgresql+asyncpg://postgres:postgres@prod.example:5432/"
+            "test_db_run_123_gw2",
+            "test_db_run_123_gw2",
+        ),
+        (
+            "postgresql+asyncpg://postgres:postgres@localhost:5432/production",
+            "production",
+        ),
+        (
+            "postgresql+asyncpg://postgres:postgres@localhost:5432/test_db_run_123_gw2",
+            "test_db_run_123_gw3",
+        ),
+        (
+            "postgresql+asyncpg://postgres:postgres@localhost:5432/test_db-unsafe",
+            "test_db-unsafe",
+        ),
+    ],
+)
+def test_pytest_worker_policy_rejects_non_owned_targets(
+    monkeypatch, database_url, worker_database
+):
+    monkeypatch.setenv("AUTO_TRADER_XDIST_DATABASE_NAME", worker_database)
+    monkeypatch.setenv("DATABASE_URL", database_url)
+
+    with pytest.raises(RuntimeError):
+        current_research_test_db_policy()
 
 
 @pytest.mark.parametrize("raw", ["1", "true", "True", "TRUE", "yes", "on"])

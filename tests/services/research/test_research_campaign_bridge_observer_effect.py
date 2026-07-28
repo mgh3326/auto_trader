@@ -82,12 +82,12 @@ from app.services.research_campaign_bridge import (
     record_attempt,
     register_campaign_experiments,
 )
-from app.services.research_db_write_guard import ResearchDbPolicy, ResearchDbTarget
 from research_contracts.canonical_hash import canonical_json, canonical_sha256
-
-_POLICY = ResearchDbPolicy.of(
-    ResearchDbTarget(host="localhost", database_name="test_db")
+from tests.services.research._db_guard_test_policy import (
+    current_research_test_db_policy,
 )
+
+_POLICY = current_research_test_db_policy()
 _SYMBOLS = ("BTCUSDT", "XRPUSDT", "DOGEUSDT", "SOLUSDT")
 
 # -- REAL frozen production campaign identity (never fabricated) ----------

@@ -206,7 +206,7 @@ def test_schema_content_hash_is_stable_and_hex():
 # Task 3: the bootstrap barrier must record the current schema hash.          #
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-async def test_bootstrap_sentinel_present_after_session():
+async def test_bootstrap_sentinel_present_after_session(_bootstrap_test_schema):
     """The barrier must have recorded the current schema hash exactly once."""
     from sqlalchemy import text
 

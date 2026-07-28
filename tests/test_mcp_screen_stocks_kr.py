@@ -25,6 +25,7 @@ from tests._mcp_screen_stocks_support import (
 )
 
 pytest_plugins = ("tests._mcp_screen_stocks_support",)
+pytestmark = pytest.mark.usefixtures("_mock_crypto_external_sources")
 
 __all__ = [
     "TestScreenStocksKR",
