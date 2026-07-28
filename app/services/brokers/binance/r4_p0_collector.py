@@ -15,6 +15,7 @@ import json
 import logging
 import random
 import sqlite3
+import traceback
 import urllib.parse
 import uuid
 from collections import Counter
@@ -575,6 +576,21 @@ class BinanceR4P0Collector:
         self.stop.set()
 
     async def _status_loop(self) -> None:
+        try:
+            await self._status_loop_body()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.failure_counts["status_supervisor"] += 1
+            log.exception(
+                "collector.supervisor.failed lane=status error=%s detail=%r",
+                type(exc).__name__,
+                str(exc),
+            )
+            self.stop.set()
+            raise
+
+    async def _status_loop_body(self) -> None:
         while True:
             await asyncio.sleep(self.config.status_seconds)
             observed_at = utc_now()
@@ -623,6 +639,21 @@ class BinanceR4P0Collector:
                 )
 
     async def _epoch_supervisor(self) -> None:
+        try:
+            await self._epoch_supervisor_body()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.failure_counts["epoch_supervisor"] += 1
+            log.exception(
+                "collector.supervisor.failed lane=epoch error=%s detail=%r",
+                type(exc).__name__,
+                str(exc),
+            )
+            self.stop.set()
+            raise
+
+    async def _epoch_supervisor_body(self) -> None:
         async with httpx.AsyncClient(
             base_url=REST_BASE_URL,
             timeout=httpx.Timeout(10.0),
@@ -802,9 +833,19 @@ class BinanceR4P0Collector:
                         symbol=symbol,
                         decision_epoch=epoch,
                     )
-                except Exception:
+                except Exception as exc:
                     # The request-level immutable attempt row already contains
                     # the terminal failure. Other missing sources still retry.
+                    self.failure_counts["epoch_retry"] += 1
+                    log.exception(
+                        "collector.epoch_retry.failed source=%s symbol=%s "
+                        "decision_epoch=%s error=%s detail=%r",
+                        source,
+                        symbol,
+                        iso_utc(epoch),
+                        type(exc).__name__,
+                        str(exc),
+                    )
                     continue
 
     async def _ws_supervisor(self, lane: str) -> None:
@@ -888,6 +929,8 @@ class BinanceR4P0Collector:
                     response_sha256=None,
                     terminal_status="TRANSPORT_ERROR",
                     error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    error_traceback=traceback.format_exc(),
                     attempt_id=(
                         None if connected_at is not None else connect_attempt_id
                     ),
@@ -896,10 +939,12 @@ class BinanceR4P0Collector:
                 delay = min(60.0, 1.0 * (2 ** min(failure_attempt, 6)))
                 delay *= random.uniform(0.8, 1.2)
                 failure_attempt += 1
-                log.error(
-                    "collector.ws.disconnected reconnect_id=%s error=%s backoff_s=%.2f",
+                log.exception(
+                    "collector.ws.disconnected reconnect_id=%s error=%s "
+                    "detail=%r backoff_s=%.2f",
                     reconnect_id,
                     type(exc).__name__,
+                    str(exc),
                     delay,
                 )
                 await asyncio.sleep(delay)
@@ -1060,7 +1105,7 @@ class BinanceR4P0Collector:
                     delay = min(interval, 2.0 * (2 ** min(failure_attempt, 5)))
                     delay *= random.uniform(0.8, 1.2)
                     failure_attempt += 1
-                    log.error(
+                    log.exception(
                         "collector.poll.failed family=%s error=%s detail=%r backoff_s=%.2f",
                         family,
                         type(exc).__name__,
@@ -1131,73 +1176,118 @@ class BinanceR4P0Collector:
         path = "/futures/data/basis"
         assert_rest_target(path)
         started = utc_now()
-        response = await client.get(
-            path,
-            params={
-                "pair": symbol,
-                "contractType": "PERPETUAL",
-                "period": "5m",
-                # Re-read a bounded 8h20m window so a later successful request
-                # can repair transient holes before epoch finalization.
-                "limit": BASIS_RECOVERY_LIMIT,
-            },
+        params = {
+            "pair": symbol,
+            "contractType": "PERPETUAL",
+            "period": "5m",
+            # Re-read a bounded 8h20m window so a later successful request
+            # can repair transient holes before epoch finalization.
+            "limit": BASIS_RECOVERY_LIMIT,
+        }
+        target_epoch = decision_epoch_for_event(started)
+        attempt_id = self._begin_rest_attempt(
+            decision_epoch=target_epoch,
+            attempted_at=started,
+            path=path,
+            params=params,
+            symbol=symbol,
+            sources=("binance_usdm.basis",),
         )
-        completed = utc_now()
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise ValueError(
-                f"invalid JSON shape from allowlisted path {path} symbol={symbol}"
-            )
-        if not payload:
-            raise MissingBasisDataError(
-                f"no basis observations from allowlisted path {path} symbol={symbol}"
-            )
-
-        rows: list[tuple[int, Mapping[str, Any], str]] = []
-        for item in payload:
-            if not isinstance(item, dict):
+        response_hash: str | None = None
+        response_body_summary: str | None = None
+        completed = started
+        inserted_count = 0
+        try:
+            response = await client.get(path, params=params)
+            completed = utc_now()
+            response_hash = sha256_bytes(response.content)
+            response_body_summary = self._response_body_summary(response.content)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list):
                 raise ValueError(
-                    f"invalid basis row from allowlisted path {path} symbol={symbol}"
+                    f"invalid JSON shape from allowlisted path {path} symbol={symbol}"
                 )
-            pair = str(item.get("pair") or "").upper()
-            contract_type = str(item.get("contractType") or "").upper()
-            timestamp = item.get("timestamp")
-            event_time = epoch_ms(timestamp)
-            if pair != symbol or contract_type != "PERPETUAL" or event_time is None:
-                raise ValueError(
-                    f"invalid basis identity from allowlisted path {path} "
-                    f"symbol={symbol} pair={pair!r} contractType={contract_type!r} "
-                    f"timestamp={timestamp!r}"
+            if not payload:
+                raise MissingBasisDataError(
+                    f"no basis observations from allowlisted path {path} symbol={symbol}"
                 )
-            rows.append((int(timestamp), item, event_time))
 
-        collection_floor = self.store.first_event_time("binance_usdm.basis", symbol)
-        if collection_floor is None:
-            # This collector is not the seed-backfill lane. On first sight of a
-            # symbol, retain only the latest venue row and establish the live
-            # collection floor.
-            rows = [max(rows, key=lambda row: row[0])]
-        else:
-            rows = [row for row in rows if row[2] >= collection_floor]
+            rows: list[tuple[int, Mapping[str, Any], str]] = []
+            for item in payload:
+                if not isinstance(item, dict):
+                    raise ValueError(
+                        f"invalid basis row from allowlisted path {path} symbol={symbol}"
+                    )
+                pair = str(item.get("pair") or "").upper()
+                contract_type = str(item.get("contractType") or "").upper()
+                timestamp = item.get("timestamp")
+                event_time = epoch_ms(timestamp)
+                if pair != symbol or contract_type != "PERPETUAL" or event_time is None:
+                    raise ValueError(
+                        f"invalid basis identity from allowlisted path {path} "
+                        f"symbol={symbol} pair={pair!r} "
+                        f"contractType={contract_type!r} timestamp={timestamp!r}"
+                    )
+                rows.append((int(timestamp), item, event_time))
 
-        reconnect_id = f"{self.run_id}:rest:{path}"
-        for timestamp, item, event_time in sorted(rows, key=lambda row: row[0]):
-            inserted = self.store.append(
-                source="binance_usdm.basis",
+            collection_floor = self.store.first_event_time("binance_usdm.basis", symbol)
+            if collection_floor is None:
+                # This collector is not the seed-backfill lane. On first sight
+                # of a symbol, retain only the latest venue row and establish
+                # the live collection floor.
+                rows = [max(rows, key=lambda row: row[0])]
+            else:
+                rows = [row for row in rows if row[2] >= collection_floor]
+
+            reconnect_id = f"{self.run_id}:rest:{path}"
+            for timestamp, item, event_time in sorted(rows, key=lambda row: row[0]):
+                inserted = self.store.append(
+                    source="binance_usdm.basis",
+                    symbol=symbol,
+                    raw_payload=item,
+                    local_receive_time=completed,
+                    run_id=self.run_id,
+                    event_time=event_time,
+                    transaction_time=None,
+                    request_started_at=iso_utc(started),
+                    request_completed_at=iso_utc(completed),
+                    sequence_or_trade_id=str(timestamp),
+                    gap_detected=False,
+                    reconnect_id=reconnect_id,
+                )
+                self._count_result("binance_usdm.basis", inserted)
+                inserted_count += int(inserted)
+        except Exception as exc:
+            self._append_rest_attempt(
+                decision_epoch=target_epoch,
+                attempted_at=started,
+                completed_at=completed,
+                path=path,
+                params=params,
                 symbol=symbol,
-                raw_payload=item,
-                local_receive_time=completed,
-                run_id=self.run_id,
-                event_time=event_time,
-                transaction_time=None,
-                request_started_at=iso_utc(started),
-                request_completed_at=iso_utc(completed),
-                sequence_or_trade_id=str(timestamp),
-                gap_detected=False,
-                reconnect_id=reconnect_id,
+                sources=("binance_usdm.basis",),
+                response_hash=response_hash,
+                terminal_status=self._attempt_failure_status(exc),
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                error_traceback=traceback.format_exc(),
+                response_body_summary=response_body_summary,
+                attempt_id=attempt_id,
             )
-            self._count_result("binance_usdm.basis", inserted)
+            raise
+        self._append_rest_attempt(
+            decision_epoch=target_epoch,
+            attempted_at=started,
+            completed_at=completed,
+            path=path,
+            params=params,
+            symbol=symbol,
+            sources=("binance_usdm.basis",),
+            response_hash=response_hash,
+            terminal_status=("SUCCESS" if inserted_count else "EXACT_DUPLICATE"),
+            attempt_id=attempt_id,
+        )
 
     async def _rest_premium_kline(
         self,
@@ -1220,11 +1310,13 @@ class BinanceR4P0Collector:
             sources=("binance_usdm.premiumIndexKline1m",),
         )
         response_hash: str | None = None
+        response_body_summary: str | None = None
         completed = started
         try:
             response = await client.get(path, params=params)
             completed = utc_now()
             response_hash = sha256_bytes(response.content)
+            response_body_summary = self._response_body_summary(response.content)
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, list):
@@ -1268,6 +1360,9 @@ class BinanceR4P0Collector:
                 response_hash=response_hash,
                 terminal_status=self._attempt_failure_status(exc),
                 error_type=type(exc).__name__,
+                error_message=str(exc),
+                error_traceback=traceback.format_exc(),
+                response_body_summary=response_body_summary,
                 attempt_id=attempt_id,
             )
             raise
@@ -1307,6 +1402,7 @@ class BinanceR4P0Collector:
             sources=output_sources,
         )
         response_hash: str | None = None
+        response_body_summary: str | None = None
         completed = started
         inserted_any = False
         all_duplicates = True
@@ -1314,6 +1410,7 @@ class BinanceR4P0Collector:
             response = await client.get(path, params=params)
             completed = utc_now()
             response_hash = sha256_bytes(response.content)
+            response_body_summary = self._response_body_summary(response.content)
             response.raise_for_status()
             payload = response.json()
             if isinstance(payload, str) or not isinstance(payload, (dict, list)):
@@ -1367,6 +1464,9 @@ class BinanceR4P0Collector:
                 response_hash=response_hash,
                 terminal_status=self._attempt_failure_status(exc),
                 error_type=type(exc).__name__,
+                error_message=str(exc),
+                error_traceback=traceback.format_exc(),
+                response_body_summary=response_body_summary,
                 attempt_id=attempt_id,
             )
             raise
@@ -1451,12 +1551,14 @@ class BinanceR4P0Collector:
             sources=(source,),
         )
         response_hash: str | None = None
+        response_body_summary: str | None = None
         completed = started
         inserted_count = 0
         try:
             response = await client.get(path, params=params)
             completed = utc_now()
             response_hash = sha256_bytes(response.content)
+            response_body_summary = self._response_body_summary(response.content)
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, list):
@@ -1515,6 +1617,9 @@ class BinanceR4P0Collector:
                 response_hash=response_hash,
                 terminal_status=self._attempt_failure_status(exc),
                 error_type=type(exc).__name__,
+                error_message=str(exc),
+                error_traceback=traceback.format_exc(),
+                response_body_summary=response_body_summary,
                 attempt_id=attempt_id,
             )
             raise
@@ -1539,6 +1644,13 @@ class BinanceR4P0Collector:
             return "TRANSPORT_ERROR"
         return "INVALID_RESPONSE"
 
+    @staticmethod
+    def _response_body_summary(content: bytes, *, limit: int = 4096) -> str:
+        decoded = content[:limit].decode("utf-8", errors="replace")
+        if len(content) > limit:
+            return f"{decoded}…[truncated {len(content) - limit} bytes]"
+        return decoded
+
     def _append_rest_attempt(
         self,
         *,
@@ -1552,6 +1664,9 @@ class BinanceR4P0Collector:
         response_hash: str | None,
         terminal_status: str,
         error_type: str | None = None,
+        error_message: str | None = None,
+        error_traceback: str | None = None,
+        response_body_summary: str | None = None,
         attempt_id: str | None = None,
     ) -> None:
         request_identity = self._rest_request_identity(
@@ -1569,6 +1684,9 @@ class BinanceR4P0Collector:
             response_sha256=response_hash,
             terminal_status=terminal_status,
             error_type=error_type,
+            error_message=error_message,
+            error_traceback=error_traceback,
+            response_body_summary=response_body_summary,
             attempt_id=attempt_id,
         )
 

@@ -7,6 +7,7 @@ import sqlite3
 import httpx
 import pytest
 
+from app.services.brokers.binance import r4_p0_collector as collector_module
 from app.services.brokers.binance.r4_p0_collector import (
     AppendOnlyPITStore,
     BinanceR4P0Collector,
@@ -21,6 +22,7 @@ from app.services.brokers.binance.r4_p0_hardening import (
     EpochLedger,
     EpochPolicy,
     RawPITReader,
+    RawPITReadError,
     availability_report,
     decision_epoch_for_event,
     finalization_report,
@@ -38,19 +40,31 @@ POLICY = EpochPolicy(
 )
 
 
-def _payload(source: str, value: str = "10") -> dict[str, str]:
+def _payload(
+    source: str,
+    value: str = "10",
+    *,
+    timestamp: int = 1785222000000,
+) -> dict[str, str]:
     if source == "binance_usdm.openInterestHist":
         return {
             "sumOpenInterest": value,
             "symbol": "XRPUSDT",
-            "timestamp": "1785222000000",
+            "timestamp": str(timestamp),
+        }
+    if source == "binance_usdm.basis":
+        return {
+            "basis": value,
+            "contractType": "PERPETUAL",
+            "pair": "XRPUSDT",
+            "timestamp": str(timestamp),
         }
     return {
         "buySellRatio": value,
         "buyVol": "20",
         "sellVol": "2",
         "symbol": "XRPUSDT",
-        "timestamp": "1785222000000",
+        "timestamp": str(timestamp),
     }
 
 
@@ -61,14 +75,16 @@ def _append(
     value: str = "10",
     received: dt.datetime = RECEIVED,
     sequence: str = "1785222000000",
+    event_time: dt.datetime = dt.datetime(2026, 7, 28, 7, tzinfo=dt.UTC),
 ) -> None:
+    timestamp = int(event_time.timestamp() * 1000)
     assert store.append(
         source=source,
         symbol="XRPUSDT",
-        raw_payload=_payload(source, value),
+        raw_payload=_payload(source, value, timestamp=timestamp),
         local_receive_time=received,
         run_id="replica:test",
-        event_time="2026-07-28T07:00:00.000000Z",
+        event_time=event_time.isoformat().replace("+00:00", "Z"),
         transaction_time=None,
         request_started_at="2026-07-28T07:00:59.000000Z",
         request_completed_at="2026-07-28T07:01:00.000000Z",
@@ -76,6 +92,23 @@ def _append(
         gap_detected=False,
         reconnect_id="replica:test:rest",
     )
+
+
+def _append_complete_periodic_source(
+    store: AppendOnlyPITStore,
+    source: str,
+    *,
+    observations: int = 48,
+) -> None:
+    interval_start = EPOCH - dt.timedelta(hours=4)
+    for index in range(observations):
+        event_time = interval_start + dt.timedelta(minutes=5 * index)
+        _append(
+            store,
+            source,
+            sequence=str(int(event_time.timestamp() * 1000)),
+            event_time=event_time,
+        )
 
 
 def _append_agg(store: AppendOnlyPITStore, *, gap: bool) -> None:
@@ -135,7 +168,7 @@ def test_finalizer_is_deterministic_across_input_order(tmp_path) -> None:
         root = tmp_path / str(index)
         with AppendOnlyPITStore(root) as store:
             for source in sources:
-                _append(store, source)
+                _append_complete_periodic_source(store, source)
             _, finalizer = _finalizer(store)
             preview = finalizer.preview("XRPUSDT", EPOCH)
             result = finalizer.finalize(
@@ -160,7 +193,7 @@ def test_finalizer_is_deterministic_across_input_order(tmp_path) -> None:
 def test_finalizer_missing_and_conflict_are_fail_closed(tmp_path) -> None:
     missing_root = tmp_path / "missing"
     with AppendOnlyPITStore(missing_root) as store:
-        _append(store, POLICY.required_sources[0])
+        _append_complete_periodic_source(store, POLICY.required_sources[0])
         _, finalizer = _finalizer(store)
         result = finalizer.finalize("XRPUSDT", EPOCH, observed_at=finalize_at(EPOCH))
         assert result.final_status == FINAL_MISSING
@@ -169,7 +202,7 @@ def test_finalizer_missing_and_conflict_are_fail_closed(tmp_path) -> None:
     conflict_root = tmp_path / "conflict"
     with AppendOnlyPITStore(conflict_root) as store:
         for source in POLICY.required_sources:
-            _append(store, source)
+            _append_complete_periodic_source(store, source)
         _append(
             store,
             POLICY.required_sources[0],
@@ -180,6 +213,81 @@ def test_finalizer_missing_and_conflict_are_fail_closed(tmp_path) -> None:
         result = finalizer.finalize("XRPUSDT", EPOCH, observed_at=finalize_at(EPOCH))
         assert result.final_status == FINAL_CONFLICT
         assert result.conflict_sources == (POLICY.required_sources[0],)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("observations", [1, 24, 47, 48])
+def test_periodic_source_requires_full_epoch_coverage(tmp_path, observations) -> None:
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+    )
+    with AppendOnlyPITStore(tmp_path / str(observations)) as store:
+        _append_complete_periodic_source(
+            store,
+            "binance_usdm.basis",
+            observations=observations,
+        )
+        _, finalizer = _finalizer(store, policy=policy)
+        preview = finalizer.preview("XRPUSDT", EPOCH)
+
+        if observations == 48:
+            assert preview.final_status == FINAL_COMPLETE
+            assert preview.invalid_sources == ()
+        else:
+            assert preview.final_status == FINAL_MISSING
+            assert preview.missing_sources == ()
+            assert preview.invalid_sources == ("binance_usdm.basis",)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_partial_periodic_coverage_triggers_historical_retry(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        _append_complete_periodic_source(
+            store,
+            "binance_usdm.basis",
+            observations=24,
+        )
+        _, finalizer = _finalizer(store, policy=policy)
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path,
+                symbols=("XRPUSDT",),
+                collector_instance_id="replica-a",
+            ),
+            store,
+        )
+        collector.epoch_policy = policy
+        collector.epoch_finalizer = finalizer
+        calls: list[tuple[str, str]] = []
+
+        async def retry_history(
+            _client,
+            *,
+            source: str,
+            symbol: str,
+            decision_epoch: dt.datetime,
+        ) -> None:
+            assert decision_epoch == EPOCH
+            calls.append((source, symbol))
+
+        monkeypatch.setattr(collector, "_rest_epoch_history", retry_history)
+        async with httpx.AsyncClient() as client:
+            await collector._retry_incomplete_epoch(  # noqa: SLF001
+                client,
+                EPOCH,
+                EPOCH + dt.timedelta(hours=1),
+            )
+
+        assert calls == [("binance_usdm.basis", "XRPUSDT")]
 
 
 @pytest.mark.unit
@@ -208,7 +316,7 @@ def test_independent_replica_covers_same_identity_gap(tmp_path) -> None:
 def test_finalization_ignores_late_payload_and_records_late_only(tmp_path) -> None:
     with AppendOnlyPITStore(tmp_path) as store:
         for source in POLICY.required_sources:
-            _append(store, source)
+            _append_complete_periodic_source(store, source)
         ledger, finalizer = _finalizer(store)
         original = finalizer.finalize("XRPUSDT", EPOCH, observed_at=finalize_at(EPOCH))
         _append(
@@ -243,7 +351,7 @@ def test_finalization_ignores_late_payload_and_records_late_only(tmp_path) -> No
 def test_attempt_and_finalization_tables_reject_update_delete(tmp_path) -> None:
     with AppendOnlyPITStore(tmp_path) as store:
         for source in POLICY.required_sources:
-            _append(store, source)
+            _append_complete_periodic_source(store, source)
         ledger, finalizer = _finalizer(store)
         ledger.ensure_open_rows(EPOCH, "replica-a", RECEIVED)
         ledger.append_attempt(
@@ -290,7 +398,7 @@ def test_replica_finalizations_are_deduplicated_and_divergence_is_visible(
             store = AppendOnlyPITStore(tmp_path / name)
             stores.append(store)
             for source in POLICY.required_sources:
-                _append(store, source)
+                _append_complete_periodic_source(store, source)
             _, finalizer = _finalizer(store)
             finalizer.finalize("XRPUSDT", EPOCH, observed_at=finalize_at(EPOCH))
             paths.append(store.path)
@@ -398,6 +506,131 @@ async def test_invalid_retry_response_keeps_hash_and_terminal_failure(
         assert attempt["terminal_status"] == "INVALID_RESPONSE"
         assert attempt["response_sha256"]
         assert attempt["error_type"] == "ValueError"
+        assert attempt["error_message"] == (
+            "empty historical response from /futures/data/openInterestHist"
+        )
+        assert "ValueError: empty historical response" in attempt["error_traceback"]
+        assert attempt["response_body_summary"] == "[]"
+
+
+@pytest.mark.unit
+def test_rows_for_epoch_surfaces_unreadable_replica(tmp_path) -> None:
+    with AppendOnlyPITStore(tmp_path / "local") as store:
+        replica = tmp_path / "replica.sqlite3"
+        replica.write_text("copy still in progress", encoding="utf-8")
+        reader = RawPITReader(store._db, store.path, (replica,))  # noqa: SLF001
+
+        with pytest.raises(
+            RawPITReadError,
+            match="failed to read replica PIT artifact.*file is not a database",
+        ):
+            reader.rows_for_epoch(
+                symbol="XRPUSDT",
+                decision_epoch=EPOCH,
+                received_by=finalize_at(EPOCH),
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_epoch_supervisor_failure_is_logged_counted_and_stops(
+    tmp_path,
+    monkeypatch,
+    caplog,
+) -> None:
+    with AppendOnlyPITStore(tmp_path) as store:
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path,
+                symbols=("XRPUSDT",),
+                collector_instance_id="replica-a",
+            ),
+            store,
+        )
+        now = finalize_at(EPOCH)
+        monkeypatch.setattr(collector_module, "utc_now", lambda: now)
+        monkeypatch.setattr(
+            collector_module,
+            "scheduled_epochs",
+            lambda _start, _end: (EPOCH,),
+        )
+
+        async def fail_finalize(
+            _epoch: dt.datetime,
+            _observed_at: dt.datetime,
+        ) -> None:
+            raise RuntimeError("injected finalizer failure")
+
+        monkeypatch.setattr(collector, "_finalize_epoch", fail_finalize)
+        with (
+            caplog.at_level("ERROR", logger="r4_p0_collector"),
+            pytest.raises(RuntimeError, match="injected finalizer failure"),
+        ):
+            await collector._epoch_supervisor()  # noqa: SLF001
+
+        assert collector.stop.is_set()
+        assert collector.failure_counts == {"epoch_supervisor": 1}
+        record = caplog.records[-1]
+        assert "detail='injected finalizer failure'" in record.getMessage()
+        assert record.exc_info is not None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_retry_failures_are_logged_counted_and_preserve_diagnostics(
+    tmp_path,
+    caplog,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="provider failed: incident-247")
+
+    with AppendOnlyPITStore(tmp_path) as store:
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path,
+                symbols=("XRPUSDT",),
+                collector_instance_id="replica-a",
+            ),
+            store,
+        )
+        async with httpx.AsyncClient(
+            base_url="https://fapi.binance.com",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            with caplog.at_level("ERROR", logger="r4_p0_collector"):
+                await collector._retry_incomplete_epoch(  # noqa: SLF001
+                    client,
+                    EPOCH,
+                    EPOCH + dt.timedelta(hours=1),
+                )
+
+        attempts = list(
+            store._db.execute(  # noqa: SLF001
+                """
+                SELECT terminal_status, error_type, error_message,
+                       error_traceback, response_body_summary
+                FROM collector_attempts ORDER BY append_id
+                """
+            )
+        )
+        assert len(attempts) == 4
+        assert collector.failure_counts == {"epoch_retry": 4}
+        assert (
+            len(
+                [
+                    record
+                    for record in caplog.records
+                    if "collector.epoch_retry.failed" in record.getMessage()
+                ]
+            )
+            == 4
+        )
+        for attempt in attempts:
+            assert attempt["terminal_status"] == "HTTP_ERROR"
+            assert attempt["error_type"] == "HTTPStatusError"
+            assert "500 Internal Server Error" in attempt["error_message"]
+            assert "httpx.HTTPStatusError" in attempt["error_traceback"]
+            assert attempt["response_body_summary"] == "provider failed: incident-247"
 
 
 @pytest.mark.unit

@@ -335,6 +335,27 @@ async def test_basis_empty_response_is_missing_without_starving_other_symbols(
             "XRPUSDT",
         ]
         assert {row["event_time"] for row in rows} == {"2026-07-26T01:00:00.000000Z"}
+        attempts = list(
+            store._db.execute(  # noqa: SLF001
+                """
+                SELECT request_identity_json, terminal_status, error_type,
+                       error_message, error_traceback, response_body_summary
+                FROM collector_attempts ORDER BY append_id
+                """
+            )
+        )
+        assert len(attempts) == len(symbols)
+        failed = [row for row in attempts if row["terminal_status"] != "SUCCESS"]
+        assert len(failed) == 1
+        assert failed[0]["terminal_status"] == "INVALID_RESPONSE"
+        assert failed[0]["error_type"] == "MissingBasisDataError"
+        assert "DOGEUSDT" in failed[0]["error_message"]
+        assert "MissingBasisDataError" in failed[0]["error_traceback"]
+        assert failed[0]["response_body_summary"] == "[]"
+        identities = [json.loads(row["request_identity_json"]) for row in attempts]
+        assert all(
+            identity["sources"] == ["binance_usdm.basis"] for identity in identities
+        )
 
 
 @pytest.mark.unit
@@ -395,6 +416,23 @@ async def test_basis_replays_recent_rows_to_repair_transient_gap(tmp_path) -> No
         ]
         assert collector.session_counts["binance_usdm.basis"] == 3
         assert collector.duplicate_counts["binance_usdm.basis"] == 1
+        attempts = list(
+            store._db.execute(  # noqa: SLF001
+                """
+                SELECT terminal_status, request_identity_json
+                FROM collector_attempts ORDER BY append_id
+                """
+            )
+        )
+        assert [row["terminal_status"] for row in attempts] == [
+            "SUCCESS",
+            "SUCCESS",
+        ]
+        assert all(
+            json.loads(row["request_identity_json"])["sources"]
+            == ["binance_usdm.basis"]
+            for row in attempts
+        )
 
 
 @pytest.mark.unit

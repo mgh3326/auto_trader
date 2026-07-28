@@ -31,7 +31,7 @@ DEFAULT_POLICY_HASH: Final = (
     "b3ee7db2f4cd8f76522a9c66ca8201177a01c24bbbd3876f53da4fb2f7c14a94"
 )
 DEFAULT_T0: Final = dt.datetime(2026, 7, 27, tzinfo=dt.UTC)
-FINALIZER_VERSION: Final = "r4-p0-epoch-finalizer.v1"
+FINALIZER_VERSION: Final = "r4-p0-epoch-finalizer.v2"
 
 FINAL_COMPLETE: Final = "FINAL_COMPLETE"
 FINAL_MISSING: Final = "FINAL_MISSING"
@@ -64,6 +64,12 @@ SOURCE_SCHEMA_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "binance_usdm.premiumIndex": ("markPrice", "indexPrice"),
     "binance_usdm.premiumIndexKline1m": (),
     "binance_usdm.predictedFunding": ("lastFundingRate",),
+}
+SOURCE_CADENCE_SECONDS: Final[dict[str, int]] = {
+    "binance_usdm.basis": 5 * 60,
+    "binance_usdm.openInterestHist": 5 * 60,
+    "binance_usdm.premiumIndexKline1m": 60,
+    "binance_usdm.takerLongShortRatio": 5 * 60,
 }
 
 
@@ -173,6 +179,11 @@ class EpochPolicy:
                         source: SOURCE_SCHEMA_FIELDS.get(source, ())
                         for source in self.required_sources
                     },
+                    "source_cadence_seconds": {
+                        source: SOURCE_CADENCE_SECONDS[source]
+                        for source in self.required_sources
+                        if source in SOURCE_CADENCE_SECONDS
+                    },
                     "symbols": self.symbols,
                 }
             )
@@ -267,7 +278,10 @@ class EpochLedger:
                     'DEADLINE_EXPIRED'
                 )
             ),
-            error_type TEXT
+            error_type TEXT,
+            error_message TEXT,
+            error_traceback TEXT,
+            response_body_summary TEXT
         );
         CREATE INDEX IF NOT EXISTS ix_collector_attempt_epoch
             ON collector_attempts (
@@ -365,6 +379,19 @@ class EpochLedger:
             + _trigger_sql("collector_heartbeats")
             + _trigger_sql("collector_alert_events")
         )
+        attempt_columns = {
+            row["name"]
+            for row in self.db.execute("PRAGMA table_info(collector_attempts)")
+        }
+        for column in (
+            "error_message",
+            "error_traceback",
+            "response_body_summary",
+        ):
+            if column not in attempt_columns:
+                self.db.execute(
+                    f"ALTER TABLE collector_attempts ADD COLUMN {column} TEXT"
+                )
         self.db.commit()
 
     def ensure_open_rows(
@@ -467,6 +494,9 @@ class EpochLedger:
         response_sha256: str | None,
         terminal_status: str,
         error_type: str | None = None,
+        error_message: str | None = None,
+        error_traceback: str | None = None,
+        response_body_summary: str | None = None,
         attempt_id: str | None = None,
     ) -> str:
         if terminal_status not in TERMINAL_STATUSES:
@@ -496,8 +526,9 @@ class EpochLedger:
                 attempt_id, study_id, policy_hash, collector_instance_id,
                 decision_epoch_utc, finalize_at, attempted_at, completed_at,
                 request_identity_sha256, request_identity_json,
-                response_sha256, terminal_status, error_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                response_sha256, terminal_status, error_type, error_message,
+                error_traceback, response_body_summary
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 attempt_id,
@@ -513,6 +544,9 @@ class EpochLedger:
                 response_sha256,
                 terminal_status,
                 error_type,
+                error_message,
+                error_traceback,
+                response_body_summary,
             ),
         )
         self.db.commit()
@@ -666,6 +700,10 @@ class EpochLedger:
         self.db.commit()
 
 
+class RawPITReadError(RuntimeError):
+    """A required local or replica PIT artifact could not be read."""
+
+
 class RawPITReader:
     """Deterministically merge the local raw ledger and read-only replicas."""
 
@@ -727,27 +765,37 @@ class RawPITReader:
         interval_start = iso_utc(decision_epoch - dt.timedelta(hours=EPOCH_HOURS))
         interval_end = iso_utc(decision_epoch)
         deadline = iso_utc(received_by) if received_by is not None else None
-        rows = self._query(
-            self.local_connection,
-            symbol=symbol,
-            interval_start=interval_start,
-            interval_end=interval_end,
-            deadline=deadline,
-        )
+        try:
+            rows = self._query(
+                self.local_connection,
+                symbol=symbol,
+                interval_start=interval_start,
+                interval_end=interval_end,
+                deadline=deadline,
+            )
+        except sqlite3.Error as exc:
+            raise RawPITReadError(
+                f"failed to read local PIT artifact {self.local_path}: {exc}"
+            ) from exc
         for path in self.replica_paths:
             if not path.is_file():
                 continue
             uri = f"file:{urllib.parse.quote(str(path))}?mode=ro"
-            with sqlite3.connect(uri, uri=True) as replica:
-                rows.extend(
-                    self._query(
-                        replica,
-                        symbol=symbol,
-                        interval_start=interval_start,
-                        interval_end=interval_end,
-                        deadline=deadline,
+            try:
+                with sqlite3.connect(uri, uri=True) as replica:
+                    rows.extend(
+                        self._query(
+                            replica,
+                            symbol=symbol,
+                            interval_start=interval_start,
+                            interval_end=interval_end,
+                            deadline=deadline,
+                        )
                     )
-                )
+            except sqlite3.Error as exc:
+                raise RawPITReadError(
+                    f"failed to read replica PIT artifact {path}: {exc}"
+                ) from exc
         return rows
 
 
@@ -816,6 +864,24 @@ def _source_identity(row: Mapping[str, Any]) -> str:
     return sha256_text(canonical_json(identity))
 
 
+def _observation_slot(
+    event_time: Any,
+    *,
+    interval_start: dt.datetime,
+    cadence_seconds: int,
+) -> int | None:
+    if not isinstance(event_time, str):
+        return None
+    try:
+        observed_at = parse_utc(event_time)
+    except ValueError:
+        return None
+    offset_seconds = (observed_at - interval_start).total_seconds()
+    if not 0 <= offset_seconds < EPOCH_SECONDS:
+        return None
+    return int(offset_seconds // cadence_seconds)
+
+
 class DeterministicEpochFinalizer:
     def __init__(self, ledger: EpochLedger, raw_reader: RawPITReader) -> None:
         self.ledger = ledger
@@ -832,6 +898,7 @@ class DeterministicEpochFinalizer:
         str,
     ]:
         deadline = finalize_at(decision_epoch)
+        interval_start = decision_epoch - dt.timedelta(hours=EPOCH_HOURS)
         rows = self.raw_reader.rows_for_epoch(
             symbol=symbol,
             decision_epoch=decision_epoch,
@@ -853,6 +920,7 @@ class DeterministicEpochFinalizer:
             valid_evidence: set[tuple[str, str]] = set()
             invalid_evidence: set[tuple[str, str]] = set()
             gap_flags: dict[tuple[str, str], set[bool]] = defaultdict(set)
+            evidence_slots: dict[tuple[str, str], int] = {}
             for row in source_rows:
                 identity = _source_identity(row)
                 payload_hash = str(row["raw_payload_sha256"])
@@ -871,6 +939,15 @@ class DeterministicEpochFinalizer:
                     invalid_evidence.add(evidence_key)
                 else:
                     valid_evidence.add(evidence_key)
+                    cadence_seconds = SOURCE_CADENCE_SECONDS.get(source)
+                    if cadence_seconds is not None:
+                        slot = _observation_slot(
+                            row.get("event_time"),
+                            interval_start=interval_start,
+                            cadence_seconds=cadence_seconds,
+                        )
+                        if slot is not None:
+                            evidence_slots[evidence_key] = slot
             uncovered_gaps = sorted(
                 [identity, payload_hash]
                 for (identity, payload_hash), flags in gap_flags.items()
@@ -879,23 +956,59 @@ class DeterministicEpochFinalizer:
             conflicting_ids = sorted(
                 identity for identity, hashes in identities.items() if len(hashes) > 1
             )
+            cadence_seconds = SOURCE_CADENCE_SECONDS.get(source)
+            expected_observations = (
+                EPOCH_SECONDS // cadence_seconds
+                if cadence_seconds is not None
+                else None
+            )
+            covered_slots = sorted(
+                {
+                    slot
+                    for evidence_key, slot in evidence_slots.items()
+                    if evidence_key in valid_evidence
+                    and gap_flags[evidence_key] != {True}
+                }
+            )
+            missing_slots = (
+                sorted(set(range(expected_observations)) - set(covered_slots))
+                if expected_observations is not None
+                else []
+            )
             if conflicting_ids:
                 conflicts.append(source)
                 state = "CONFLICT"
             elif not source_rows:
                 missing.append(source)
                 state = "MISSING"
-            elif invalid_evidence or uncovered_gaps or not valid_evidence:
+            elif (
+                invalid_evidence
+                or uncovered_gaps
+                or not valid_evidence
+                or missing_slots
+            ):
                 invalid.append(source)
                 state = "INVALID"
             else:
                 state = "COMPLETE"
             source_evidence[source] = {
                 "conflicting_source_identities": conflicting_ids,
+                "covered_observation_count": (
+                    len(covered_slots) if expected_observations is not None else None
+                ),
+                "expected_observation_count": expected_observations,
                 "invalid_source_identity_payload_hashes": [
                     [identity, payload_hash]
                     for identity, payload_hash in sorted(invalid_evidence)
                 ],
+                "missing_observation_slots": [
+                    iso_utc(
+                        interval_start + dt.timedelta(seconds=slot * cadence_seconds)
+                    )
+                    for slot in missing_slots
+                ]
+                if cadence_seconds is not None
+                else [],
                 "source_identity_payload_hashes": [
                     [identity, payload_hash]
                     for identity, payload_hash in sorted(evidence_rows)

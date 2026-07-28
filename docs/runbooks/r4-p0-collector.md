@@ -109,7 +109,8 @@ UPDATE/DELETE rejection triggers:
 - `collector_attempts`: the matching terminal row for each completed REST
   request or websocket connection attempt, including `attempted_at`, canonical
   request identity and its hash, response SHA-256 when a response exists, and
-  terminal status.
+  terminal status. Failures also retain the exception class, message, formatted
+  traceback, and a bounded response-body summary.
 - `symbol_epoch_finalizations`: the one-shot three-way result and canonical
   evaluator input/hash.
 - `late_only_corrections`: observations received after the deadline. These
@@ -119,9 +120,9 @@ UPDATE/DELETE rejection triggers:
   delivery attempts are not overwritten.
 
 The `source_manifest_hash` is computed from the sorted required-source matrix,
-source schema requirements, and the three sealed signal symbols. The policy
-hash is the R4.1 combined seal hash. A mismatch therefore cannot silently
-reuse another finalization key.
+source schema and cadence requirements, and the three sealed signal symbols.
+The policy hash is the R4.1 combined seal hash. A mismatch therefore cannot
+silently reuse another finalization key.
 
 `bookTicker` is stored as one snapshot per symbol per second (the P0 contract
 allows either every change or 1s snapshots); raw aggTrade, forceOrder snapshots,
@@ -176,7 +177,11 @@ The precedence is fixed:
 1. Any same-source-identity/different-payload conflict produces
    `FINAL_CONFLICT`.
 2. Otherwise any absent, non-finite, schema-invalid, hash-invalid, or
-   PIT-invalid required source produces `FINAL_MISSING`.
+   PIT-invalid required source produces `FINAL_MISSING`. The bounded-history
+   periodic sources must also cover every expected interval slot: 48 rows for
+   each 5-minute source and 240 completed rows for the 1-minute premium-index
+   kline source. A source with only partial slot coverage is invalid, even when
+   it has one or more valid rows.
 3. Otherwise the result is `FINAL_COMPLETE`.
 
 `finalized_at` is the logical deadline, while `recorded_at` preserves actual
@@ -201,13 +206,16 @@ history:
 Websocket PIT receive time, book/depth continuity, instantaneous OI, and live
 premium/funding snapshots cannot be recreated honestly after the fact. The
 supervisor therefore does not relabel a later snapshot as an earlier one.
-Those sources rely on independent live replicas. Missing/invalid recoverable
-sources are retried only while `now < finalize_at`; the finalizer never waits
-past the deadline.
+Those sources rely on independent live replicas. Missing, invalid, and
+partial-coverage recoverable sources are retried only while
+`now < finalize_at`; the finalizer never waits past the deadline.
 
 Each request, including invalid responses and transport/HTTP failures, appends
 a terminal attempt row. The raw response body SHA-256 is retained even when
-JSON/schema validation fails.
+JSON/schema validation fails. Retry failures increment collector health failure
+counts and emit an ERROR record with message and traceback. An unexpected
+epoch/status supervisor exception is fail-stop: it is counted, logged with a
+traceback, sets the collector stop event, and is re-raised.
 
 ## Two collectors and an independent watchdog
 
