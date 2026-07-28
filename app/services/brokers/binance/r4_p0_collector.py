@@ -58,6 +58,7 @@ PIT_COLUMNS: Final = (
     "reconnect_id",
 )
 COLLECTOR_VERSION: Final = "r4-p0-collector.v2"
+BASIS_RECOVERY_LIMIT: Final = 100
 EXPECTED_SOURCES: Final = frozenset(
     {
         "binance_usdm.aggTrade",
@@ -77,6 +78,14 @@ SPARSE_SOURCES: Final = frozenset({"binance_usdm.forceOrder"})
 REQUIRED_ACTIVE_SOURCES: Final = EXPECTED_SOURCES - SPARSE_SOURCES
 
 log = logging.getLogger("r4_p0_collector")
+
+
+class MissingBasisDataError(ValueError):
+    """The venue returned no usable basis observation for a requested symbol."""
+
+
+class BasisPollError(RuntimeError):
+    """One or more symbols failed without starving the remaining basis polls."""
 
 
 def utc_now() -> dt.datetime:
@@ -264,6 +273,17 @@ class AppendOnlyPITStore:
             (source, symbol),
         ).fetchone()
         return row is not None
+
+    def first_event_time(self, source: str, symbol: str) -> str | None:
+        row = self._db.execute(
+            """
+            SELECT MIN(event_time) AS event_time
+            FROM pit_records
+            WHERE source = ? AND symbol = ?
+            """,
+            (source, symbol),
+        ).fetchone()
+        return row["event_time"] if row is not None else None
 
     def append(
         self,
@@ -725,14 +745,18 @@ class BinanceR4P0Collector:
                     delay *= random.uniform(0.8, 1.2)
                     failure_attempt += 1
                     log.error(
-                        "collector.poll.failed family=%s error=%s backoff_s=%.2f",
+                        "collector.poll.failed family=%s error=%s detail=%r backoff_s=%.2f",
                         family,
                         type(exc).__name__,
+                        str(exc),
                         delay,
                     )
                     await asyncio.sleep(delay)
 
     async def _poll_family(self, client: httpx.AsyncClient, family: str) -> None:
+        if family == "basis":
+            await self._poll_basis_family(client)
+            return
         for symbol in self.config.symbols:
             if family == "open_interest":
                 await self._rest_get(
@@ -761,19 +785,6 @@ class BinanceR4P0Collector:
                     ),
                 )
                 await self._rest_premium_kline(client, symbol=symbol)
-            elif family == "basis":
-                await self._rest_get(
-                    client,
-                    path="/futures/data/basis",
-                    params={
-                        "pair": symbol,
-                        "contractType": "PERPETUAL",
-                        "period": "5m",
-                        "limit": 1,
-                    },
-                    symbol=symbol,
-                    outputs=(("binance_usdm.basis", None),),
-                )
             elif family == "taker":
                 await self._rest_get(
                     client,
@@ -784,6 +795,93 @@ class BinanceR4P0Collector:
                 )
             else:
                 raise ValueError(f"unknown poll family: {family}")
+
+    async def _poll_basis_family(self, client: httpx.AsyncClient) -> None:
+        failures: list[tuple[str, Exception]] = []
+        for symbol in self.config.symbols:
+            try:
+                await self._rest_basis(client, symbol=symbol)
+            except asyncio.CancelledError:
+                raise
+            except MissingBasisDataError as exc:
+                failures.append((symbol, exc))
+        if failures:
+            detail = "; ".join(
+                f"{symbol}={type(exc).__name__}({exc})" for symbol, exc in failures
+            )
+            raise BasisPollError(f"basis poll incomplete: {detail}")
+
+    async def _rest_basis(self, client: httpx.AsyncClient, *, symbol: str) -> None:
+        path = "/futures/data/basis"
+        assert_rest_target(path)
+        started = utc_now()
+        response = await client.get(
+            path,
+            params={
+                "pair": symbol,
+                "contractType": "PERPETUAL",
+                "period": "5m",
+                # Re-read a bounded 8h20m window so a later successful request
+                # can repair transient holes before epoch finalization.
+                "limit": BASIS_RECOVERY_LIMIT,
+            },
+        )
+        completed = utc_now()
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ValueError(
+                f"invalid JSON shape from allowlisted path {path} symbol={symbol}"
+            )
+        if not payload:
+            raise MissingBasisDataError(
+                f"no basis observations from allowlisted path {path} symbol={symbol}"
+            )
+
+        rows: list[tuple[int, Mapping[str, Any], str]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"invalid basis row from allowlisted path {path} symbol={symbol}"
+                )
+            pair = str(item.get("pair") or "").upper()
+            contract_type = str(item.get("contractType") or "").upper()
+            timestamp = item.get("timestamp")
+            event_time = epoch_ms(timestamp)
+            if pair != symbol or contract_type != "PERPETUAL" or event_time is None:
+                raise ValueError(
+                    f"invalid basis identity from allowlisted path {path} "
+                    f"symbol={symbol} pair={pair!r} contractType={contract_type!r} "
+                    f"timestamp={timestamp!r}"
+                )
+            rows.append((int(timestamp), item, event_time))
+
+        collection_floor = self.store.first_event_time("binance_usdm.basis", symbol)
+        if collection_floor is None:
+            # This collector is not the seed-backfill lane. On first sight of a
+            # symbol, retain only the latest venue row and establish the live
+            # collection floor.
+            rows = [max(rows, key=lambda row: row[0])]
+        else:
+            rows = [row for row in rows if row[2] >= collection_floor]
+
+        reconnect_id = f"{self.run_id}:rest:{path}"
+        for timestamp, item, event_time in sorted(rows, key=lambda row: row[0]):
+            inserted = self.store.append(
+                source="binance_usdm.basis",
+                symbol=symbol,
+                raw_payload=item,
+                local_receive_time=completed,
+                run_id=self.run_id,
+                event_time=event_time,
+                transaction_time=None,
+                request_started_at=iso_utc(started),
+                request_completed_at=iso_utc(completed),
+                sequence_or_trade_id=str(timestamp),
+                gap_detected=False,
+                reconnect_id=reconnect_id,
+            )
+            self._count_result("binance_usdm.basis", inserted)
 
     async def _rest_premium_kline(
         self, client: httpx.AsyncClient, *, symbol: str

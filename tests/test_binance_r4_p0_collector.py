@@ -8,8 +8,10 @@ import httpx
 import pytest
 
 from app.services.brokers.binance.r4_p0_collector import (
+    BASIS_RECOVERY_LIMIT,
     PIT_COLUMNS,
     AppendOnlyPITStore,
+    BasisPollError,
     BinanceR4P0Collector,
     CollectorConfig,
     assert_rest_target,
@@ -272,3 +274,172 @@ async def test_open_interest_family_keeps_current_and_bounded_history(tmp_path) 
             "2026-07-26T01:00:00.000000Z"
         )
         assert set(PIT_COLUMNS).issubset(samples["binance_usdm.openInterestHist"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basis_empty_response_is_missing_without_starving_other_symbols(
+    tmp_path,
+) -> None:
+    timestamp = 1785027600000
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        symbol = request.url.params["pair"]
+        requested.append(symbol)
+        assert request.url.params["limit"] == str(BASIS_RECOVERY_LIMIT)
+        if symbol == "DOGEUSDT":
+            return httpx.Response(200, json=[])
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "pair": symbol,
+                    "contractType": "PERPETUAL",
+                    "timestamp": timestamp,
+                    "basis": "0.1",
+                }
+            ],
+        )
+
+    symbols = ("XRPUSDT", "DOGEUSDT", "SOLUSDT", "BTCUSDT")
+    with AppendOnlyPITStore(tmp_path) as store:
+        collector = BinanceR4P0Collector(
+            CollectorConfig(artifact_root=tmp_path, symbols=symbols),
+            store,
+        )
+        async with httpx.AsyncClient(
+            base_url="https://fapi.binance.com",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            with pytest.raises(
+                BasisPollError,
+                match=r"DOGEUSDT=MissingBasisDataError",
+            ):
+                await collector._poll_family(client, "basis")  # noqa: SLF001
+
+        assert requested == list(symbols)
+        rows = list(
+            store._db.execute(  # noqa: SLF001
+                """
+                SELECT symbol, event_time
+                FROM pit_records
+                WHERE source = 'binance_usdm.basis'
+                ORDER BY symbol
+                """
+            )
+        )
+        assert [row["symbol"] for row in rows] == [
+            "BTCUSDT",
+            "SOLUSDT",
+            "XRPUSDT",
+        ]
+        assert {row["event_time"] for row in rows} == {"2026-07-26T01:00:00.000000Z"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basis_replays_recent_rows_to_repair_transient_gap(tmp_path) -> None:
+    initial_timestamp = 1785027000000
+    recovery_timestamps = (
+        1785026700000,
+        initial_timestamp,
+        1785027300000,
+        1785027600000,
+    )
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        timestamps = (initial_timestamp,) if calls == 1 else recovery_timestamps
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "pair": "XRPUSDT",
+                    "contractType": "PERPETUAL",
+                    "timestamp": timestamp,
+                    "basis": str(timestamp),
+                }
+                for timestamp in timestamps
+            ],
+        )
+
+    with AppendOnlyPITStore(tmp_path) as store:
+        collector = BinanceR4P0Collector(
+            CollectorConfig(artifact_root=tmp_path, symbols=("XRPUSDT",)),
+            store,
+        )
+        async with httpx.AsyncClient(
+            base_url="https://fapi.binance.com",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            await collector._poll_family(client, "basis")  # noqa: SLF001
+            await collector._poll_family(client, "basis")  # noqa: SLF001
+
+        rows = list(
+            store._db.execute(  # noqa: SLF001
+                """
+                SELECT event_time
+                FROM pit_records
+                WHERE source = 'binance_usdm.basis'
+                ORDER BY event_time
+                """
+            )
+        )
+        assert [row["event_time"] for row in rows] == [
+            "2026-07-26T00:50:00.000000Z",
+            "2026-07-26T00:55:00.000000Z",
+            "2026-07-26T01:00:00.000000Z",
+        ]
+        assert collector.session_counts["binance_usdm.basis"] == 3
+        assert collector.duplicate_counts["binance_usdm.basis"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_basis_conflicting_replay_preserves_both_payloads(tmp_path) -> None:
+    timestamp = 1785027600000
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "pair": "XRPUSDT",
+                    "contractType": "PERPETUAL",
+                    "timestamp": timestamp,
+                    "basis": str(calls),
+                }
+            ],
+        )
+
+    with AppendOnlyPITStore(tmp_path) as store:
+        collector = BinanceR4P0Collector(
+            CollectorConfig(artifact_root=tmp_path, symbols=("XRPUSDT",)),
+            store,
+        )
+        async with httpx.AsyncClient(
+            base_url="https://fapi.binance.com",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            await collector._poll_family(client, "basis")  # noqa: SLF001
+            await collector._poll_family(client, "basis")  # noqa: SLF001
+
+        rows = list(
+            store._db.execute(  # noqa: SLF001
+                """
+                SELECT event_time, raw_payload_sha256
+                FROM pit_records
+                WHERE source = 'binance_usdm.basis'
+                ORDER BY append_id
+                """
+            )
+        )
+        assert len(rows) == 2
+        assert rows[0]["event_time"] == rows[1]["event_time"]
+        assert rows[0]["raw_payload_sha256"] != rows[1]["raw_payload_sha256"]
