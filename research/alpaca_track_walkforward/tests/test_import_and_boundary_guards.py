@@ -208,6 +208,8 @@ def test_all_h4_source_modules_are_accounted_for():
         "provider_evidence.py",
         "run_manifest.py",
         "runner.py",
+        "synthetic_corpus.py",
+        "terminal_status.py",
         "trade_ledger.py",
         "wf_seal_consumption.py",
     }

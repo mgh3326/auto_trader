@@ -49,6 +49,27 @@ def test_current_seal_is_truthful_structural_incomplete_not_fake_success() -> No
     )
 
 
+def test_materialized_h4_terminal_artifact_produces_a_distinct_usable_seal() -> None:
+    historical = authority.build_current_seal()
+    resealed = authority.build_materialized_seal()
+
+    assert historical.semantic_hash == (
+        "b57a600c347b377e93565435502c6c9988063342d514eb26a0fcc1f6811556ef"
+    )
+    assert resealed.semantic_hash != historical.semantic_hash
+    assert resealed.report.cells == 128
+    assert resealed.report.structural_incomplete == 0
+    assert resealed.report.performance_usable is True
+    assert {trial.current_status for trial in resealed.trials} == {"executed"}
+    assert all(
+        cell.status == "executed"
+        and cell.observation_count is not None
+        and cell.unobserved_reason is None
+        for trial in resealed.trials
+        for cell in trial.cells
+    )
+
+
 def test_committed_current_report_is_exact_deterministic_generator_output() -> None:
     committed = (_PACKAGE / "sealed_reports" / "rob-1064-current.json").read_bytes()
     generated = authority.build_current_seal().to_bytes()
@@ -56,6 +77,18 @@ def test_committed_current_report_is_exact_deterministic_generator_output() -> N
     assert committed == generated
     parsed = json.loads(committed)
     assert parsed["semantic_hash"] == authority.build_current_seal().semantic_hash
+
+
+def test_committed_reseal_is_exact_deterministic_generator_output() -> None:
+    committed = (
+        _PACKAGE / "sealed_reports" / "rob-1064-run-2026-07-29-h4-terminal-v1.json"
+    ).read_bytes()
+    generated = authority.build_materialized_seal().to_bytes()
+
+    assert committed == generated
+    parsed = json.loads(committed)
+    assert parsed["report"]["structural_incomplete"] == 0
+    assert parsed["report"]["performance_usable"] is True
 
 
 def test_reexecution_is_byte_identical() -> None:
