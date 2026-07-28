@@ -24,6 +24,7 @@ class FillVerdict(StrEnum):
     PARTIAL = "partial"
     PENDING = "pending"
     EXPIRED = "expired"
+    CANCELLED = "cancelled"
     NONE = "none"
     UNSUPPORTED = "unsupported"
 

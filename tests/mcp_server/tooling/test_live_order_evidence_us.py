@@ -143,6 +143,41 @@ async def test_us_adapter_classifies_expired_day_order_from_broker_terminal_shap
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_us_adapter_classifies_explicit_cancel_evidence_as_cancelled() -> None:
+    from app.mcp_server.tooling import live_order_evidence as ev
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import FillVerdict
+
+    class _Row:
+        symbol = "AAPL"
+        exchange = "NASD"
+        order_no = "US-CANCELLED-1"
+
+    broker_order = _row(
+        odno="US-CANCELLED-1",
+        ft_ord_qty="1",
+        ft_ccld_qty="0",
+        nccs_qty="0",
+        rvse_cncl_dvsn_name="취소",
+    )
+    with (
+        patch.object(ev, "_create_live_kis_client", return_value=object()),
+        patch.object(
+            ev, "_build_us_exchange_candidates", new=AsyncMock(return_value=["NASD"])
+        ),
+        patch.object(
+            ev,
+            "_find_us_order_in_recent_history",
+            new=AsyncMock(return_value=(broker_order, "NASD")),
+        ),
+    ):
+        evidence = await ev.UsOverseasEvidenceAdapter().fetch_evidence(_Row())
+
+    assert evidence.verdict == FillVerdict.CANCELLED
+    assert evidence.reason_code == "cancelled"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_us_adapter_keeps_actual_open_order_pending() -> None:
     from app.mcp_server.tooling import live_order_evidence as ev
     from app.services.brokers.kis.mock_scalping_exec.fill_evidence import FillVerdict

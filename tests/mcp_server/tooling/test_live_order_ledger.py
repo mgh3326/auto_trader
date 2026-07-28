@@ -214,25 +214,83 @@ async def test_reconcile_cancelled_no_journal():
         indicators_snapshot=None,
     )
     row = await ll._load_live_ledger_row(lid)
-    none_ev = FillEvidence(FillVerdict.NONE, Decimal("0"), None, None, "cancelled", "")
+    cancelled = FillEvidence(
+        FillVerdict.CANCELLED, Decimal("0"), None, None, "cancelled", ""
+    )
 
     class _Adapter:
         broker = "kis"
-        fetch_evidence = AsyncMock(return_value=none_ev)
+        fetch_evidence = AsyncMock(return_value=cancelled)
 
     with (
         patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
         patch.object(ll, "_save_order_fill", new=AsyncMock()) as m_fill,
         patch.object(ll, "_create_trade_journal_for_buy", new=AsyncMock()) as m_buy,
     ):
+        preview = await ll._reconcile_one_live_row(row, dry_run=True)
+        before = await ll._load_live_ledger_row(lid)
         out = await ll._reconcile_one_live_row(row, dry_run=False)
 
-    assert out["verdict"] == "none"
+    assert preview["verdict"] == "cancelled"
+    assert preview["action"] == "would_mark_cancelled"
+    assert before.status == "accepted"
+    assert out["verdict"] == "cancelled"
+    assert out["action"] == "marked_cancelled"
     m_fill.assert_not_awaited()
     m_buy.assert_not_awaited()
     after = await ll._load_live_ledger_row(lid)
     assert after.status == "cancelled"
     assert after.journal_id is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_reconcile_none_is_fail_closed_and_keeps_ledger_open(dry_run):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from app.mcp_server.tooling import live_order_ledger as ll
+    from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+        EvidenceCategory,
+        FillEvidence,
+        FillVerdict,
+    )
+
+    row = SimpleNamespace(
+        id=496,
+        order_no="US-NO-EVIDENCE",
+        broker="kis",
+        market="us",
+        symbol="AAPL",
+    )
+    no_evidence = FillEvidence(
+        FillVerdict.NONE,
+        None,
+        None,
+        EvidenceCategory.DATA_PRECONDITION,
+        "no_matching_order",
+        "no daily-execution row for odno=US-NO-EVIDENCE",
+    )
+
+    class _Adapter:
+        broker = "kis"
+        fetch_evidence = AsyncMock(return_value=no_evidence)
+
+    with (
+        patch.object(ll, "get_evidence_adapter", return_value=_Adapter()),
+        patch.object(ll, "_update_live_ledger_outcome", new=AsyncMock()) as update,
+        patch.object(ll, "_converge_proposal_rung", new=AsyncMock()) as converge,
+    ):
+        out = await ll._reconcile_one_live_row(row, dry_run=dry_run)
+
+    assert out["verdict"] == "none"
+    assert out["action"] == "noop_no_evidence"
+    assert out["requires_manual_review"] is True
+    assert out["reason_code"] == "no_matching_order"
+    assert "no daily-execution row" in out["reason"]
+    update.assert_not_awaited()
+    converge.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -1325,16 +1383,19 @@ async def test_reconcile_cancel_converges_proposal_rung(db_session):
     pid = await _seed_resting_proposal(order_no=order_no, correlation_id=corr)
     lid = await _save_crypto_ledger(order_no=order_no, correlation_id=corr)
     row = await ll._load_live_ledger_row(lid)
-    none_ev = FillEvidence(FillVerdict.NONE, Decimal("0"), None, None, "cancelled", "")
+    cancelled = FillEvidence(
+        FillVerdict.CANCELLED, Decimal("0"), None, None, "cancelled", ""
+    )
 
     class _Adapter:
         broker = "upbit"
-        fetch_evidence = AsyncMock(return_value=none_ev)
+        fetch_evidence = AsyncMock(return_value=cancelled)
 
     with patch.object(ll, "get_evidence_adapter", return_value=_Adapter()):
         out = await ll._reconcile_one_live_row(row, dry_run=False)
 
-    assert out["verdict"] == "none"
+    assert out["verdict"] == "cancelled"
+    assert out["action"] == "marked_cancelled"
     assert await _read_rung_state(pid) == "cancelled"
 
 

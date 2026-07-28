@@ -18,6 +18,7 @@ from app.mcp_server.tooling.orders_modify_cancel import (
     _normalize_kis_overseas_order,
 )
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
+    EvidenceCategory,
     FillEvidence,
     FillVerdict,
     classify_fill_evidence,
@@ -93,7 +94,7 @@ class UsOverseasEvidenceAdapter:
                 )
             if normalized_status == "cancelled":
                 return FillEvidence(
-                    FillVerdict.NONE,
+                    FillVerdict.CANCELLED,
                     Decimal("0"),
                     None,
                     None,
@@ -150,6 +151,15 @@ class UpbitEvidenceAdapter:
                 verdict.value,
                 f"upbit {row.order_no} {verdict.value} {executed}@{avg}",
             )
+        if executed > 0:
+            return FillEvidence(
+                FillVerdict.NONE,
+                executed,
+                None,
+                EvidenceCategory.CODE,
+                "missing_fill_price",
+                f"upbit {row.order_no} has executed volume without a fill price",
+            )
         if state == "wait":
             return FillEvidence(
                 FillVerdict.PENDING,
@@ -159,14 +169,22 @@ class UpbitEvidenceAdapter:
                 "pending",
                 f"upbit {row.order_no} waiting",
             )
-        # done/cancel with zero executed → 미체결 종료
+        if state == "cancel":
+            return FillEvidence(
+                FillVerdict.CANCELLED,
+                Decimal("0"),
+                None,
+                None,
+                "cancelled",
+                f"upbit {row.order_no} cancelled unfilled",
+            )
         return FillEvidence(
             FillVerdict.NONE,
             Decimal("0"),
             None,
-            None,
-            "cancelled",
-            f"upbit {row.order_no} ended unfilled",
+            EvidenceCategory.DATA_PRECONDITION,
+            "unexpected_order_state",
+            f"upbit {row.order_no} returned unexpected state={state!r}",
         )
 
 
