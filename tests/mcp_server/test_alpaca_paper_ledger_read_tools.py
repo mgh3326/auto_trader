@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -223,6 +224,8 @@ async def test_execution_preflight_check_returns_blocking_report(monkeypatch):
     result = await mod.alpaca_paper_execution_preflight_check(
         limit=20,
         open_orders=[{"id": "order-1", "status": "new", "symbol": "BTCUSD"}],
+        positions=[],
+        broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
     )
 
     assert result["success"] is True
@@ -231,6 +234,76 @@ async def test_execution_preflight_check_returns_blocking_report(monkeypatch):
     assert result["should_block"] is True
     assert result["anomalies"][0]["check_id"] == "unexpected_open_orders"
     mock_svc.list_recent.assert_awaited_once_with(limit=20)
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_execution_preflight_check_blocks_on_empty_broker_snapshot(monkeypatch):
+    """ROB-1130: no snapshot must not pass as positions=0."""
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    mock_svc = _mock_svc(rows=[])
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
+
+    result = await mod.alpaca_paper_execution_preflight_check(limit=20)
+
+    assert result["should_block"] is True
+    assert result["status"] == "blocked"
+    finding = next(
+        a for a in result["anomalies"] if a["check_id"] == "broker_snapshot_unverified"
+    )
+    assert finding["severity"] == "block"
+    assert finding["details"]["reasons"] == {
+        "positions": "snapshot_missing",
+        "open_orders": "snapshot_missing",
+    }
+    assert "positions" not in result["counts"]
+    assert result["broker_snapshot"]["positions"]["provided"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_execution_preflight_check_passes_on_attested_empty_snapshot(monkeypatch):
+    """ROB-1130: a genuinely queried flat account keeps the normal pass path."""
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    mock_svc = _mock_svc(rows=[])
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
+
+    result = await mod.alpaca_paper_execution_preflight_check(
+        limit=20,
+        open_orders=[],
+        positions=[],
+        broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+    )
+
+    assert result["should_block"] is False
+    assert result["status"] == "pass"
+    assert result["counts"]["positions"] == 0
+    assert result["broker_snapshot"]["positions"]["verified"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_execution_preflight_check_reflects_held_position(monkeypatch):
+    """ROB-1130: a real snapshot with a holding must surface the holding."""
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    mock_svc = _mock_svc(rows=[])
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
+
+    result = await mod.alpaca_paper_execution_preflight_check(
+        limit=20,
+        open_orders=[],
+        positions=[{"symbol": "UBER", "qty": "1", "asset_class": "us_equity"}],
+        broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+    )
+
+    assert result["should_block"] is True
+    assert result["counts"]["positions"] == 1
+    check_ids = {a["check_id"] for a in result["anomalies"]}
+    assert "residual_position_exists" in check_ids
+    assert "broker_snapshot_unverified" not in check_ids
 
 
 @pytest.mark.asyncio
@@ -280,6 +353,8 @@ async def test_execution_preflight_check_invalid_inputs_raise():
         await alpaca_paper_execution_preflight_check(limit=0)
     with pytest.raises(ValueError, match="stale_after_minutes must be >= 1"):
         await alpaca_paper_execution_preflight_check(stale_after_minutes=0)
+    with pytest.raises(ValueError, match="snapshot_max_age_minutes must be >= 1"):
+        await alpaca_paper_execution_preflight_check(snapshot_max_age_minutes=0)
 
 
 # ---------------------------------------------------------------------------
