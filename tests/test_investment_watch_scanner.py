@@ -624,7 +624,7 @@ async def test_scan_market_triggers_on_zone_inside(
 async def test_scan_calls_auto_execute_for_auto_execute_mock(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    await _seed_active_kr_alert(session, action_mode="auto_execute_mock")
+    alert = await _seed_active_kr_alert(session, action_mode="auto_execute_mock")
 
     async def _fake_current_value(**_kwargs) -> float:
         return 25.0  # below 30 → triggered
@@ -635,7 +635,20 @@ async def test_scan_calls_auto_execute_for_auto_execute_mock(
     captured: list = []
 
     async def _fake_maybe_auto_execute(db, *, alert, correlation_id, kst_date, **kw):
-        captured.append({"symbol": alert.symbol, "cid": correlation_id})
+        outcome_before_execution = await db.scalar(
+            sa.text(
+                "SELECT outcome FROM review.investment_watch_events "
+                "WHERE correlation_id = :correlation_id"
+            ),
+            {"correlation_id": correlation_id},
+        )
+        captured.append(
+            {
+                "symbol": alert.symbol,
+                "cid": correlation_id,
+                "outcome_before_execution": outcome_before_execution,
+            }
+        )
         return {"executed": False, "skipped": "stubbed"}
 
     monkeypatch.setattr(scanner_module, "maybe_auto_execute", _fake_maybe_auto_execute)
@@ -647,6 +660,65 @@ async def test_scan_calls_auto_execute_for_auto_execute_mock(
     assert summary["triggered"] == 1, summary
     assert len(captured) == 1, captured
     assert captured[0]["symbol"] == "005930"
+    assert captured[0]["outcome_before_execution"] == "pending"
+
+    event_outcome = await session.scalar(
+        sa.text(
+            "SELECT outcome FROM review.investment_watch_events "
+            "WHERE alert_id = :alert_id"
+        ),
+        {"alert_id": alert.id},
+    )
+    assert event_outcome == "failed"
+    assert stub.calls[0].outcome == "failed"
+
+
+@pytest.mark.asyncio
+async def test_scan_records_executed_only_after_positive_execution_evidence(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alert = await _seed_active_kr_alert(
+        session,
+        action_mode="auto_execute_mock",
+        client_item_key="watch-executed-evidence",
+    )
+
+    async def _fake_current_value(**_kwargs) -> float:
+        return 25.0
+
+    monkeypatch.setattr(scanner_module, "is_market_open", lambda _market: True)
+    monkeypatch.setattr(scanner_module, "get_current_value", _fake_current_value)
+
+    outcomes_seen_by_executor: list[str | None] = []
+
+    async def _fake_maybe_auto_execute(db, *, correlation_id, **_kwargs):
+        outcomes_seen_by_executor.append(
+            await db.scalar(
+                sa.text(
+                    "SELECT outcome FROM review.investment_watch_events "
+                    "WHERE correlation_id = :correlation_id"
+                ),
+                {"correlation_id": correlation_id},
+            )
+        )
+        return {"executed": True, "correlation_id": correlation_id}
+
+    monkeypatch.setattr(scanner_module, "maybe_auto_execute", _fake_maybe_auto_execute)
+
+    stub = _StubHermesClient()
+    summary = await InvestmentWatchScanner(hermes_client=stub).scan_market("kr")
+
+    assert summary["triggered"] == 1
+    assert outcomes_seen_by_executor == ["pending"]
+    event_outcome = await session.scalar(
+        sa.text(
+            "SELECT outcome FROM review.investment_watch_events "
+            "WHERE alert_id = :alert_id"
+        ),
+        {"alert_id": alert.id},
+    )
+    assert event_outcome == "executed"
+    assert stub.calls[0].outcome == "executed"
 
 
 # --- ROB-500 Tests ---
