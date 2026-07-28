@@ -253,9 +253,6 @@ def _visibility_predicate(account_mode: str | None):
     return TradeRetrospective.account_mode.not_in(_MOCK_ACCOUNT_MODES)
 
 
-
-
-
 async def _retrospectives(
     db: AsyncSession, symbol: str, account_mode: str | None = None
 ) -> tuple[list[str], list[dict[str, Any]]]:

@@ -377,9 +377,7 @@ async def test_default_decision_history_excludes_mock_lessons(
         db_session, symbol=raw, market="kr", account_mode="kis_mock"
     )
     assert ctx_mock is not None
-    assert (
-        "ROB-1092 mock stop lesson excluded by default" in ctx_mock["prior_lessons"]
-    )
+    assert "ROB-1092 mock stop lesson excluded by default" in ctx_mock["prior_lessons"]
 
 
 @pytest.mark.asyncio
@@ -418,7 +416,3 @@ async def test_decision_history_excludes_all_mock_account_modes_in_default(
     )
     assert ctx_alpaca is not None
     assert ctx_alpaca["prior_lessons"] == ["alpaca_paper lesson"]
-
-
-
-
