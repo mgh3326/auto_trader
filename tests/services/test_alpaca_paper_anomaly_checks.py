@@ -133,6 +133,202 @@ def test_previous_buy_filled_without_linked_sell_blocks():
     assert "previous_buy_filled_sell_missing" in _check_ids(report)
 
 
+# ---------------------------------------------------------------------------
+# ROB-1129: open position vs missing sell leg
+# ---------------------------------------------------------------------------
+
+
+def _blocking_check_ids(report):
+    return {
+        a.check_id
+        for a in report.anomalies
+        if a.severity == PaperExecutionAnomalySeverity.block
+    }
+
+
+def _anomaly(report, check_id):
+    return next(a for a in report.anomalies if a.check_id == check_id)
+
+
+@pytest.mark.unit
+def test_open_position_buy_without_sell_leg_is_info_not_block():
+    """A filled buy whose symbol is still held is a normal open position."""
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="rob73-ac562d42b1d3ec16",
+                side="buy",
+                lifecycle_state="filled",
+                execution_symbol="UBER",
+                signal_symbol="UBER",
+                filled_qty="4",
+            )
+        ],
+        positions=[{"symbol": "UBER", "qty": "5", "asset_class": "us_equity"}],
+    )
+
+    assert "previous_buy_filled_sell_missing" not in _check_ids(report)
+    open_finding = _anomaly(report, "open_position_without_sell_leg")
+    assert open_finding.severity == PaperExecutionAnomalySeverity.info
+    assert open_finding.details["count"] == 1
+    # The only remaining blocker is the flat-account residual gate, which is a
+    # separate design assumption and not part of the ROB-1129 pairing defect.
+    assert _blocking_check_ids(report) == {"residual_position_exists"}
+
+
+@pytest.mark.unit
+def test_holding_state_buy_without_broker_position_still_blocks():
+    """Ledger says holding, broker says flat -> the sell leg was never recorded."""
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="rob73-ac4103900976a38d",
+                side="buy",
+                lifecycle_state="filled",
+                execution_symbol="DPZ",
+                signal_symbol="DPZ",
+                filled_qty="1",
+            )
+        ],
+        positions=[{"symbol": "UBER", "qty": "5", "asset_class": "us_equity"}],
+    )
+
+    assert report.should_block is True
+    finding = _anomaly(report, "previous_buy_filled_sell_missing")
+    assert [r["reason"] for r in finding.details["rows"]] == [
+        "holding_state_without_open_position"
+    ]
+
+
+@pytest.mark.unit
+def test_completed_roundtrip_state_without_sell_leg_blocks_even_when_held():
+    """closed/final_reconciled asserts the roundtrip ended, so a sell row is required."""
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="buy-closed-without-sell",
+                side="buy",
+                lifecycle_state="closed",
+                execution_symbol="UBER",
+                signal_symbol="UBER",
+            )
+        ],
+        positions=[{"symbol": "UBER", "qty": "5", "asset_class": "us_equity"}],
+    )
+
+    assert report.should_block is True
+    finding = _anomaly(report, "previous_buy_filled_sell_missing")
+    assert [r["reason"] for r in finding.details["rows"]] == [
+        "completed_state_without_sell_leg"
+    ]
+    assert "open_position_without_sell_leg" not in _check_ids(report)
+
+
+@pytest.mark.unit
+def test_missing_position_snapshot_keeps_unlinked_buy_blocked():
+    """Without a snapshot the two cases are indistinguishable -> stay blocked."""
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _row(
+                client_order_id="rob73-ac562d42b1d3ec16",
+                side="buy",
+                lifecycle_state="filled",
+                execution_symbol="UBER",
+                signal_symbol="UBER",
+            )
+        ],
+        positions=[],
+    )
+
+    assert report.should_block is True
+    finding = _anomaly(report, "previous_buy_filled_sell_missing")
+    assert [r["reason"] for r in finding.details["rows"]] == [
+        "position_snapshot_unverified"
+    ]
+
+
+def _rob1129_measured_buy_legs():
+    """The nine buy rows measured as `previous_buy_filled_sell_missing` on 07-28.
+
+    Source: ~/work/herdr-inbox/alpaca-paper-block-proposal-2026-07-28.md §2-A.
+    Every row carries its own lifecycle_correlation_id equal to its
+    client_order_id, which is why payload-based buy/sell pairing never matches.
+    """
+    measured = [
+        ("rob73-93bc5d4b6ba0ac6e", "ISRG", "1"),
+        ("rob73-ac562d42b1d3ec16", "UBER", "4"),
+        ("rob73-3ccf09a984c7758e", "WDC", "1"),
+        ("rob73-47a669297ff57cb3", "F", "1"),
+        ("rob73-a8691ab4f782af06", "ROST", "1"),
+        ("rob73-1862fd0d16137ff6", "OLED", "0.0614"),
+        ("rob73-ac4103900976a38d", "DPZ", "1"),
+        ("rob73-c9726ec2359bd763", "AMC", "1"),
+        ("rob73-08ebbf8c64e2dd93", "ISRG", "0.014"),
+    ]
+    return [
+        _row(
+            client_order_id=client_order_id,
+            lifecycle_correlation_id=client_order_id,
+            side="buy",
+            lifecycle_state="filled",
+            order_status="filled",
+            execution_symbol=symbol,
+            signal_symbol=symbol,
+            filled_qty=filled_qty,
+            position_snapshot=None,
+        )
+        for client_order_id, symbol, filled_qty in measured
+    ]
+
+
+@pytest.mark.unit
+def test_rob1129_measured_ledger_drops_five_false_positive_open_positions():
+    """Regression fixture for the 07-28 measurement: 9 findings -> 4 real ones.
+
+    Positions are the live broker holdings measured the same day. ISRG, UBER,
+    WDC and OLED are still held, so those five buy legs are open positions.
+    F, ROST, DPZ and AMC are flat at the broker, so their missing sell legs are
+    real ledger defects and must keep blocking.
+    """
+    report = build_paper_execution_preflight_report(
+        ledger_rows=_rob1129_measured_buy_legs(),
+        positions=[
+            {"symbol": "ISRG", "qty": "1.014", "asset_class": "us_equity"},
+            {"symbol": "UBER", "qty": "5", "asset_class": "us_equity"},
+            {"symbol": "WDC", "qty": "1", "asset_class": "us_equity"},
+            {"symbol": "OLED", "qty": "0.0614", "asset_class": "us_equity"},
+            {"symbol": "BSX", "qty": "1", "asset_class": "us_equity"},
+            {"symbol": "HCA", "qty": "1", "asset_class": "us_equity"},
+            {"symbol": "CPNG", "qty": "1", "asset_class": "us_equity"},
+        ],
+        now=datetime(2026, 7, 28, 14, 0, tzinfo=UTC),
+    )
+
+    open_finding = _anomaly(report, "open_position_without_sell_leg")
+    assert open_finding.severity == PaperExecutionAnomalySeverity.info
+    assert open_finding.details["count"] == 5
+    assert {r["client_order_id"] for r in open_finding.details["rows"]} == {
+        "rob73-93bc5d4b6ba0ac6e",  # ISRG 07-24
+        "rob73-08ebbf8c64e2dd93",  # ISRG 07-17 tranche
+        "rob73-ac562d42b1d3ec16",  # UBER
+        "rob73-3ccf09a984c7758e",  # WDC
+        "rob73-1862fd0d16137ff6",  # OLED
+    }
+
+    missing_finding = _anomaly(report, "previous_buy_filled_sell_missing")
+    assert missing_finding.severity == PaperExecutionAnomalySeverity.block
+    assert missing_finding.details["count"] == 4
+    assert {r["client_order_id"] for r in missing_finding.details["rows"]} == {
+        "rob73-47a669297ff57cb3",  # F 07-23
+        "rob73-a8691ab4f782af06",  # ROST 07-21
+        "rob73-ac4103900976a38d",  # DPZ 07-20
+        "rob73-c9726ec2359bd763",  # AMC 07-20
+    }
+    assert {r["reason"] for r in missing_finding.details["rows"]} == {
+        "holding_state_without_open_position"
+    }
+
+
 @pytest.mark.unit
 def test_linked_sell_prevents_missing_sell_anomaly():
     report = build_paper_execution_preflight_report(

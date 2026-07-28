@@ -73,6 +73,15 @@ _CANONICAL_FILLED_LEDGER_STATES = frozenset(
 )
 _FILLED_STATES = frozenset({"filled", "partially_filled"})
 _BUY_REQUIRES_LINKED_SELL_STATES = _FILLED_STATES | _CANONICAL_FILLED_LEDGER_STATES
+# States in which a buy leg legitimately holds an open position and therefore
+# has no sell leg yet. Reaching one of these states is not evidence that a sell
+# is missing; only a contradiction against the live position snapshot is.
+_BUY_OPEN_POSITION_STATES = frozenset(
+    {"filled", "partially_filled", "position_reconciled"}
+)
+# States that assert the roundtrip already finished. A completed buy leg with no
+# sell row is a genuine missing-leg defect regardless of current holdings.
+_BUY_COMPLETED_ROUNDTRIP_STATES = frozenset({"closed", "final_reconciled"})
 _TERMINAL_STATES = frozenset({"filled", "canceled"})
 _TERMINAL_PREVIEW_SIBLING_STATES = frozenset({"final_reconciled", "closed", "canceled"})
 _SELL_SOURCE_KEYS = frozenset(
@@ -239,6 +248,39 @@ def _position_qty(position: dict[str, Any]) -> Decimal:
     )
 
 
+def _position_symbol(position: dict[str, Any]) -> str:
+    return _normalize_symbol(
+        position.get("symbol")
+        or position.get("asset_symbol")
+        or position.get("execution_symbol")
+    )
+
+
+def _held_position_symbols(positions: Iterable[dict[str, Any]]) -> set[str]:
+    """Normalized symbols with a non-zero quantity in the position snapshot."""
+    held: set[str] = set()
+    for position in positions:
+        if _position_qty(position) == Decimal("0"):
+            continue
+        symbol = _position_symbol(position)
+        if symbol:
+            held.add(symbol)
+    return held
+
+
+def _ledger_row_broker_symbol(row: Any) -> str:
+    """Broker-side symbol for a ledger row.
+
+    ``execution_symbol`` is the symbol the order was actually placed with, so it
+    is the only field comparable to a broker position snapshot. ``signal_symbol``
+    is only used when the execution symbol is missing, because signal symbols use
+    a different namespace for crypto (``KRW-BTC`` vs ``BTCUSD``).
+    """
+    return _normalize_symbol(_get(row, "execution_symbol")) or _normalize_symbol(
+        _get(row, "signal_symbol")
+    )
+
+
 def _latest_preview_time(row: Any) -> datetime | None:
     candidates = [
         _get(row, "approval_bridge_generated_at"),
@@ -305,7 +347,9 @@ def build_paper_execution_preflight_report(
         open_orders: Read-only broker open-order snapshot already fetched by
             the caller. Non-terminal rows block a new cycle.
         positions: Read-only position snapshot already fetched by the caller.
-            Any non-zero quantity blocks a new cycle.
+            Any non-zero quantity blocks a new cycle. The snapshot is also the
+            evidence used to tell a still-open buy leg apart from a buy whose
+            sell leg was never recorded (ROB-1129).
         approval_packet: Optional preview/approval packet being considered for
             execution. Used for duplicate, stale, and symbol checks.
         expected_signal_symbol: Optional symbol from the signal artifact.
@@ -410,29 +454,76 @@ def build_paper_execution_preflight_report(
         )
 
     # 4. Previous buy filled but no linked sell exists.
+    #
+    # ROB-1129: reaching a filled/reconciled state is NOT by itself evidence
+    # that a sell leg is missing. A buy that is still holding an open position
+    # legitimately has no sell row yet, and reporting it as an anomaly turned
+    # normal open positions into preflight blockers. The live position snapshot
+    # is the only thing that separates the two cases:
+    #
+    #   holding state + symbol still held    -> open position, expected (info)
+    #   holding state + symbol not held      -> broker closed it, ledger did not
+    #                                           record the sell leg (block)
+    #   closed/final_reconciled + no sell    -> ledger claims the roundtrip
+    #                                           finished with no sell row (block)
+    #
+    # Trusting the snapshot is a separate concern; when no snapshot is available
+    # the row stays a blocker rather than being assumed open (fail-closed).
     sell_source_ids = {
         source_id
         for row in ledger
         if str(_get(row, "side") or "").lower() == "sell"
         for source_id in _source_client_order_ids(row)
     }
-    filled_buys_missing_sell = []
+    held_symbols = _held_position_symbols(position_rows)
+    positions_verified = bool(position_rows)
+    open_position_buys: list[Any] = []
+    unresolved_buys: list[dict[str, Any]] = []
     for row in ledger:
         side = str(_get(row, "side") or "").lower()
         state = str(_get(row, "lifecycle_state") or "").lower()
         client_id = str(_get(row, "client_order_id") or "").strip()
-        if (
-            side == "buy"
-            and state in _BUY_REQUIRES_LINKED_SELL_STATES
-            and client_id not in sell_source_ids
-        ):
-            filled_buys_missing_sell.append(row)
-    if filled_buys_missing_sell:
+        if side != "buy" or state not in _BUY_REQUIRES_LINKED_SELL_STATES:
+            continue
+        if client_id in sell_source_ids:
+            continue
+        if state in _BUY_COMPLETED_ROUNDTRIP_STATES:
+            unresolved_buys.append(
+                {"reason": "completed_state_without_sell_leg", **_row_ref(row)}
+            )
+            continue
+        if not positions_verified:
+            unresolved_buys.append(
+                {"reason": "position_snapshot_unverified", **_row_ref(row)}
+            )
+            continue
+        symbol = _ledger_row_broker_symbol(row)
+        if symbol and symbol in held_symbols:
+            open_position_buys.append(row)
+        else:
+            unresolved_buys.append(
+                {"reason": "holding_state_without_open_position", **_row_ref(row)}
+            )
+
+    if open_position_buys:
+        add(
+            "open_position_without_sell_leg",
+            PaperExecutionAnomalySeverity.info,
+            "Filled buy has no sell leg because the position is still open",
+            {
+                "count": len(open_position_buys),
+                "rows": [_row_ref(r) for r in open_position_buys[:10]],
+            },
+        )
+    if unresolved_buys:
         add(
             "previous_buy_filled_sell_missing",
             PaperExecutionAnomalySeverity.block,
             "A previous filled buy has no linked sell ledger row",
-            {"rows": [_row_ref(r) for r in filled_buys_missing_sell[:10]]},
+            {
+                "count": len(unresolved_buys),
+                "rows": unresolved_buys[:10],
+            },
         )
 
     # 5. Sell filled but final position not closed.
