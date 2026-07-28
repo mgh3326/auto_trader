@@ -28,7 +28,10 @@ from tests._mcp_screen_stocks_support import (
     mock_yfinance_screen,
     test_screen_stocks_smoke,
 )
-from tests._mcp_tooling_support import _mock_crypto_external_sources
+from tests._mcp_tooling_support import (
+    _mock_crypto_external_sources,
+    fake_crypto_tvscreener_module,
+)
 
 pytestmark = pytest.mark.usefixtures("_mock_crypto_external_sources")
 
@@ -43,6 +46,7 @@ __all__ = [
     "mock_valuation_data",
     "mock_yfinance_screen",
     "_mock_crypto_external_sources",
+    "fake_crypto_tvscreener_module",
 ]
 
 

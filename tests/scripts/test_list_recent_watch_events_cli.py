@@ -1,11 +1,21 @@
 import json
 import uuid
+from collections.abc import AsyncIterator
 
 import pytest
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from scripts.list_recent_watch_events import _source_report_link_state, collect, main
 from tests._watch_events_helpers import mk_watch_event, utc_at
+
+
+@pytest_asyncio.fixture(name="session")
+async def _committed_session(
+    committed_investment_reports_session: AsyncSession,
+) -> AsyncIterator[AsyncSession]:
+    """Expose committed rows to the CLI's independent database session."""
+    yield committed_investment_reports_session
 
 
 @pytest.mark.asyncio

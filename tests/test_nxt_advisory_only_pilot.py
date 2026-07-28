@@ -24,10 +24,12 @@ the full path through Plans 3 and 4 honours it.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,6 +52,14 @@ from app.services.investment_reports.ingestion import (
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.investment_reports.watch_activation import WatchActivationService
 from tests._investment_reports_helpers import future_datetime
+
+
+@pytest_asyncio.fixture(name="session")
+async def _committed_session(
+    committed_investment_reports_session: AsyncSession,
+) -> AsyncIterator[AsyncSession]:
+    """Expose committed rows to the scanner's independent database sessions."""
+    yield committed_investment_reports_session
 
 
 @dataclass

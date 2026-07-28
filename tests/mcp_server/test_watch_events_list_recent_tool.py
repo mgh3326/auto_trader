@@ -1,6 +1,9 @@
 """ROB-602 Task 3: investment_watch_events_list_recent MCP 도구 테스트."""
 
+from collections.abc import AsyncIterator
+
 import pytest
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp_server.tooling.investment_reports_handlers import (
@@ -9,6 +12,14 @@ from app.mcp_server.tooling.investment_reports_handlers import (
 from tests._watch_events_helpers import mk_watch_event, utc_at
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest_asyncio.fixture(name="session")
+async def _committed_session(
+    committed_investment_reports_session: AsyncSession,
+) -> AsyncIterator[AsyncSession]:
+    """Expose committed rows to the tool's independent database session."""
+    yield committed_investment_reports_session
 
 
 async def test_tool_returns_delivered_events_json(session: AsyncSession):
