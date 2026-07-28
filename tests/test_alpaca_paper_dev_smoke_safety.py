@@ -20,6 +20,8 @@ from app.mcp_server.tooling.alpaca_paper_orders import (
     set_alpaca_paper_orders_service_factory,
 )
 
+pytestmark = pytest.mark.integration
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_smoke_rows():

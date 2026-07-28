@@ -42,8 +42,8 @@ INVESTMENT_REPORTS_TEST_LOCK_ID = 265_202_605
 
 
 @pytest_asyncio.fixture
-async def session() -> AsyncSession:
-    """Per-test AsyncSession against the real PostgreSQL test_db.
+async def session(_bootstrap_test_schema) -> AsyncSession:
+    """Per-test AsyncSession against the current PostgreSQL test database.
 
     Schema is owned by the session-scoped ``_bootstrap_test_schema`` barrier
     (ROB-723) — this fixture performs no DDL. Between tests it TRUNCATEs the

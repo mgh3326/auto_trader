@@ -28,6 +28,8 @@ from app.services.brokers.alpaca.schemas import Order
 from tests._mcp_tooling_support import DummyMCP
 from tests.test_mcp_alpaca_paper_tools import FakeAlpacaPaperService
 
+pytestmark = pytest.mark.integration
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_manual_ledger_rows():

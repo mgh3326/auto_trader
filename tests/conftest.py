@@ -5,6 +5,7 @@ Pytest configuration and common fixtures for auto-trader tests.
 import asyncio
 import contextlib
 import os
+import re
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
@@ -22,6 +23,22 @@ import pytest_asyncio
 # dependency — and no-ops on the rare non-posix host.
 _ALPACA_PAPER_DB_LOCK_PATH = (
     Path(tempfile.gettempdir()) / "auto_trader_alpaca_paper_db_suite.lock"
+)
+_DEFAULT_TEST_DATABASE_URL = (
+    "postgresql+asyncpg://postgres:postgres@localhost:5432/test_db"
+)
+_XDIST_DATABASE_NAME_ENV = "AUTO_TRADER_XDIST_DATABASE_NAME"
+_XDIST_BASE_DATABASE_URL_ENV = "AUTO_TRADER_XDIST_BASE_DATABASE_URL"
+_DATABASE_FIXTURE_NAMES = frozenset(
+    {
+        "db_session",
+        "session",
+        "investment_reports_cleanup_lock",
+        "retrospective_action_control_lock",
+        "toss_ledger_cleanup_lock",
+        "binance_demo_reservation_lock",
+        "binance_demo_smoke_ledger_isolation",
+    }
 )
 
 
@@ -86,7 +103,7 @@ def _ensure_test_env() -> None:
         "TOP_N": "30",
         "DROP_PCT": "-3.0",
         "CRON": "0 * * * *",
-        "DATABASE_URL": "postgresql+asyncpg://postgres:postgres@localhost:5432/test_db",
+        "DATABASE_URL": _DEFAULT_TEST_DATABASE_URL,
         "REDIS_URL": "redis://localhost:6379/0",
         "REDIS_MAX_CONNECTIONS": "10",
         "REDIS_SOCKET_TIMEOUT": "5",
@@ -106,9 +123,23 @@ def _ensure_test_env() -> None:
 
     # Force overwrite DATABASE_URL to ensure tests use the correct test database
     # regardless of what's in env.example (which may contain placeholder values)
-    os.environ["DATABASE_URL"] = (
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/test_db"
-    )
+    os.environ["DATABASE_URL"] = _DEFAULT_TEST_DATABASE_URL
+
+    # Each xdist worker gets its own PostgreSQL database. File-based distribution
+    # prevents two workers from running one file, but it does not isolate table
+    # rows: broad cleanup and fixed-key fixtures in different files can still
+    # delete or duplicate one another's data. A run-unique database removes that
+    # race while leaving ordinary serial pytest runs on the conventional test_db.
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker_id and worker_id != "master":
+        run_uid = os.environ.get("PYTEST_XDIST_TESTRUNUID", "local")
+        safe_suffix = re.sub(r"[^a-zA-Z0-9_]", "_", f"{run_uid}_{worker_id}")
+        database_name = f"test_db_{safe_suffix[:55]}"
+        os.environ[_XDIST_DATABASE_NAME_ENV] = database_name
+        os.environ[_XDIST_BASE_DATABASE_URL_ENV] = _DEFAULT_TEST_DATABASE_URL
+        os.environ["DATABASE_URL"] = (
+            _DEFAULT_TEST_DATABASE_URL.rsplit("/", 1)[0] + f"/{database_name}"
+        )
 
     # ROB-469 PR2: force tests onto NullPool. Production defaults to the async queue
     # pool (DB_POOL_CLASS=queue), but pytest-asyncio uses a fresh event loop PER TEST,
@@ -434,8 +465,9 @@ def auth_mock_session():
 
 
 @pytest.fixture
-def auth_test_client(auth_mock_session):
+def auth_test_client(auth_mock_session, reset_auth_mock_db):
     """FastAPI test client with mocked database for auth tests."""
+    assert reset_auth_mock_db is auth_mock_session
     from fastapi.testclient import TestClient
 
     from app.core.db import get_db
@@ -449,7 +481,7 @@ def auth_test_client(auth_mock_session):
     del api.dependency_overrides[get_db]
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def reset_auth_mock_db(auth_mock_session):
     """Reset auth mock database before each test."""
     auth_mock_session.reset_mock()
@@ -561,26 +593,97 @@ def pytest_collection_modifyitems(config, items):
     - `pytest --collect-only -m "not live"` shows what fast gate will run
     - `pytest --collect-only -m "live" --run-live` shows live test set
     """
-    if not config.getoption("--run-live"):
-        # Skip live tests by default (mark as skip, not deselect)
-        # This makes the skip visible in test output
-        skip_live = pytest.mark.skip(reason="Live test: use --run-live to execute")
-        for item in items:
-            if item.get_closest_marker("live"):
-                item.add_marker(skip_live)
+    skip_live = pytest.mark.skip(reason="Live test: use --run-live to execute")
+    for item in items:
+        # A test requesting a real database fixture is integration by
+        # construction. Keep that invariant centralized so legacy file-level
+        # ``unit`` marks cannot accidentally put DB tests in the fast loop.
+        if _DATABASE_FIXTURE_NAMES.intersection(item.fixturenames):
+            item.add_marker(pytest.mark.integration)
+
+        if not config.getoption("--run-live") and item.get_closest_marker("live"):
+            item.add_marker(skip_live)
+
+
+async def _ensure_xdist_test_database() -> None:
+    """Create the current worker's isolated database before its first DB test."""
+    database_name = os.environ.get(_XDIST_DATABASE_NAME_ENV)
+    if not database_name:
+        return
+    if not re.fullmatch(r"[A-Za-z0-9_]+", database_name):
+        raise RuntimeError("refusing unsafe xdist database name")
+
+    import asyncpg
+    from sqlalchemy.engine import make_url
+
+    base_url = make_url(os.environ[_XDIST_BASE_DATABASE_URL_ENV])
+    admin = await asyncpg.connect(
+        user=base_url.username,
+        password=base_url.password,
+        host=base_url.host,
+        port=base_url.port,
+        database="postgres",
+    )
+    try:
+        exists = await admin.fetchval(
+            "SELECT 1 FROM pg_database WHERE datname = $1", database_name
+        )
+        if not exists:
+            await admin.execute(f'CREATE DATABASE "{database_name}"')
+    finally:
+        await admin.close()
+
+
+async def _drop_xdist_test_database() -> None:
+    """Drop only the validated, run-owned xdist database."""
+    database_name = os.environ.get(_XDIST_DATABASE_NAME_ENV)
+    if not database_name:
+        return
+    if not re.fullmatch(r"test_db_[A-Za-z0-9_]+", database_name):
+        raise RuntimeError("refusing to drop an unowned xdist database")
+
+    import asyncpg
+    from sqlalchemy.engine import make_url
+
+    base_url = make_url(os.environ[_XDIST_BASE_DATABASE_URL_ENV])
+    admin = await asyncpg.connect(
+        user=base_url.username,
+        password=base_url.password,
+        host=base_url.host,
+        port=base_url.port,
+        database="postgres",
+    )
+    try:
+        await admin.execute(f'DROP DATABASE IF EXISTS "{database_name}" WITH (FORCE)')
+    finally:
+        await admin.close()
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
-async def _bootstrap_test_schema():
-    """ROB-723: apply the test schema exactly once, before any test body.
+async def _bootstrap_test_schema(request: pytest.FixtureRequest):
+    """Apply the test schema once, before the first database-backed test.
 
-    Under xdist ``--dist=loadfile`` every worker enters this session-scoped
-    autouse fixture before running its first test. The first worker to win the
-    advisory lock runs the full DDL while all other workers block on the lock
-    (barrier); subsequent workers see the content-hash sentinel and skip all
-    DDL. Result: schema DDL (AccessExclusive) never overlaps another worker's
-    test-body SELECT, closing the deadlock window.
+    ROB-723's advisory-lock + sentinel DDL barrier remains intact. The fixture
+    is now an explicit dependency of database fixtures, so pure unit/static
+    tests do not connect to PostgreSQL. Under xdist each worker first creates
+    its own run-owned database, which also isolates test rows and broad cleanup.
     """
+    selected_items = request.session.items
+    requires_database = any(
+        item.get_closest_marker("integration")
+        or _DATABASE_FIXTURE_NAMES.intersection(item.fixturenames)
+        for item in selected_items
+    )
+    if not requires_database:
+        # Pure unit/static selections are a DB-free contract. Legacy direct-DB
+        # files remain covered by their integration marker, while explicit DB
+        # fixtures also force this barrier even if a marker is accidentally
+        # omitted.
+        yield
+        return
+
+    await _ensure_xdist_test_database()
+
     from sqlalchemy import text
 
     from app.core.db import engine
@@ -631,20 +734,24 @@ async def _bootstrap_test_schema():
                     {"lock_id": INVESTMENT_REPORTS_TEST_LOCK_ID},
                 )
 
-    await run_with_deadlock_retry(_bootstrap_once)
-    yield
+    try:
+        await run_with_deadlock_retry(_bootstrap_once)
+        yield
+    finally:
+        if os.environ.get(_XDIST_DATABASE_NAME_ENV):
+            await engine.dispose()
+            await _drop_xdist_test_database()
 
 
 # Database fixtures for integration tests
 
 
 @pytest_asyncio.fixture
-async def db_session():
-    """Async session against the shared test_db.
+async def db_session(_bootstrap_test_schema):
+    """Async session against the current test database.
 
-    Schema is owned by the session-scoped ``_bootstrap_test_schema`` barrier
-    (ROB-723); this fixture performs no DDL — that is what previously overlapped
-    other xdist workers' test bodies and deadlocked.
+    Schema is owned by the explicit session-scoped bootstrap dependency; this
+    fixture performs no DDL. Xdist workers use isolated databases.
     """
     from app.core.db import AsyncSessionLocal
 
@@ -718,7 +825,7 @@ async def investment_reports_cleanup_lock(db_session):
 
 
 @pytest_asyncio.fixture
-async def retrospective_action_control_lock():
+async def retrospective_action_control_lock(_bootstrap_test_schema):
     """Serialize tests that mutate the global retrospective-action authority.
 
     The ROB-878/880 migration and cutover contracts intentionally change the
@@ -999,7 +1106,7 @@ async def seed_summary_sell_005930(db_session):
 
 
 @pytest_asyncio.fixture
-async def toss_ledger_cleanup_lock():
+async def toss_ledger_cleanup_lock(_bootstrap_test_schema):
     """Serialize tests that globally delete/scan ``review.toss_live_order_ledger``.
 
     Several toss-ledger test files run an autouse pre-clean that issues a
@@ -1033,7 +1140,7 @@ async def toss_ledger_cleanup_lock():
 
 
 @pytest_asyncio.fixture
-async def binance_demo_reservation_lock():
+async def binance_demo_reservation_lock(_bootstrap_test_schema):
     """Serialize files that COMMIT open-root rows to ``binance_demo_order_ledger``.
 
     ROB-844 makes ``reserve_root_planned`` commit the planned root so the claim

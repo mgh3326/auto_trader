@@ -62,6 +62,7 @@ def test_evidence_payload_forbids_unknown_keys():
         ItemEvidencePayload(source="s", bogus_field="x")
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_structured_evidence_round_trips_through_ingestion(session) -> None:
     """create→저장→read에서 structured_evidence/item_freshness가 노출된다."""
@@ -105,6 +106,7 @@ async def test_structured_evidence_round_trips_through_ingestion(session) -> Non
     assert snap["item_freshness"] == "fresh"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_no_evidence_leaves_snapshot_keys_absent(session) -> None:
     """evidence 미지정 시 reserved key를 추가하지 않는다(기존 동작 무변화)."""
@@ -257,6 +259,7 @@ def test_item_rejects_caller_supplied_trade_setup_reserved_key():
     assert "reserved evidence_snapshot keys" in str(exc.value)
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_trade_plan_fields_round_trip_through_evidence_snapshot(session) -> None:
     from app.schemas.investment_reports import IngestReportRequest
@@ -348,6 +351,7 @@ async def _ingest_single_item_report(
     return items[0].evidence_snapshot or {}
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_trade_setup_attached_for_long_buy(session) -> None:
     snap = await _ingest_single_item_report(
@@ -368,6 +372,7 @@ async def test_trade_setup_attached_for_long_buy(session) -> None:
     assert snap["trade_setup"]["headline"]["rr_ratio"] == "1.60"
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_trade_setup_skipped_for_sell_exit(session) -> None:
     """Pure long sell-exit — R:R is not the right frame (ROB-691 realized P/L)."""
@@ -388,6 +393,7 @@ async def test_trade_setup_skipped_for_sell_exit(session) -> None:
     assert "trade_setup" not in snap
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_trade_setup_skipped_on_fail_closed_price_mismatch(session) -> None:
     """Long direction but stop above entry — inconsistent triangle, fail-closed
@@ -409,6 +415,7 @@ async def test_trade_setup_skipped_on_fail_closed_price_mismatch(session) -> Non
     assert "trade_setup" not in snap
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_trade_setup_explicit_short_direction(session) -> None:
     snap = await _ingest_single_item_report(
@@ -496,6 +503,7 @@ def test_evidence_snapshot_invalidation_triggers_key_alone_is_not_a_conflict():
     assert item.evidence_snapshot["invalidation_triggers"] == ["raw only"]
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_trade_setup_skipped_when_target_price_missing(session) -> None:
     snap = await _ingest_single_item_report(

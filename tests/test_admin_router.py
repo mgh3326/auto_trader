@@ -16,9 +16,11 @@ def _user(uid=1, role=UserRole.admin, is_active=True):
 
 
 @pytest.fixture(autouse=True)
-def override_refresh_side_effect(auth_mock_session):
+def override_refresh_side_effect(auth_mock_session, reset_auth_mock_db):
     # Override the module-level refresh side-effect from conftest.py
     # to preserve user IDs instead of forcing them to 1.
+    assert reset_auth_mock_db is auth_mock_session
+
     def custom_refresh(instance):
         if not getattr(instance, "id", None):
             instance.id = 1

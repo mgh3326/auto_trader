@@ -15,7 +15,7 @@ from app.models.execution_ledger import ExecutionLedger
 from app.models.review import TossLiveOrderLedger
 from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
 
-pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 pytestmark.append(pytest.mark.usefixtures("toss_ledger_cleanup_lock"))
 
 

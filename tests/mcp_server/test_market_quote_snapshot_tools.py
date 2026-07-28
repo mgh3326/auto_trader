@@ -22,7 +22,13 @@ pytestmark = [pytest.mark.asyncio]
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean_db():
+async def _clean_db(request: pytest.FixtureRequest):
+    if request.node.get_closest_marker("unit") and not request.node.get_closest_marker(
+        "integration"
+    ):
+        yield
+        return
+
     stmt = delete(MarketQuoteSnapshot).where(
         MarketQuoteSnapshot.symbol.in_(["MOCKSNAP", "KRW-BTC"])
     )
