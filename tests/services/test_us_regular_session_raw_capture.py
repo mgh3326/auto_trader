@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -24,6 +25,19 @@ class FixtureClient:
         return response
 
 
+class OrderedFixtureClient(FixtureClient):
+    async def get(self, url: str, **kwargs: object) -> httpx.Response:
+        self.calls.append((url, kwargs))
+        # Yield every quote request so all three are scheduled before any returns.
+        await asyncio.sleep(0)
+        return self.responses.get(
+            url,
+            httpx.Response(
+                200, json={"quote": {"bp": 100, "t": "2026-07-29T15:55:00Z"}}
+            ),
+        )
+
+
 def test_write_append_only_never_overwrites(tmp_path: Path) -> None:
     target = tmp_path / "artifact.json"
     capture_module._write_append_only(target, b"first")
@@ -38,8 +52,13 @@ def test_secret_redaction_covers_headers_and_json_body(
     monkeypatch.setenv("ALPACA_PAPER_API_KEY", "super-secret-key")
     response = httpx.Response(
         403,
-        headers={"x-request-id": "safe", "set-cookie": "bad"},
-        json={"message": "token=private-token", "api_key": "do-not-save"},
+        headers={"x-request-id": "safe", "set-cookie": "bad", "x-appkey": "no-save"},
+        json={
+            "message": "token=private-token",
+            "api_key": "do-not-save",
+            "appkey": "also-do-not-save",
+            "x_appkey": "still-do-not-save",
+        },
     )
     client = FixtureClient(
         {"https://data.alpaca.markets/v2/stocks/AAPL/quotes/latest": response}
@@ -51,7 +70,32 @@ def test_secret_redaction_covers_headers_and_json_body(
     assert "super-secret-key" not in text
     assert "private-token" not in text
     assert "do-not-save" not in text
+    assert "also-do-not-save" not in text
+    assert "still-do-not-save" not in text
+    assert "no-save" not in text
     assert "set-cookie" not in text.lower()
+
+
+def test_raw_and_sanitized_body_hashes_are_preserved_separately(tmp_path: Path) -> None:
+    raw = b'{"appkey":"redact-me","value":1}'
+    response = httpx.Response(200, content=raw)
+    client = FixtureClient(
+        {"https://data.alpaca.markets/v2/stocks/AAPL/quotes/latest": response}
+    )
+    record = json.loads(
+        asyncio.run(
+            capture_module.capture(
+                symbols=("AAPL",), artifact_root=tmp_path, client=client
+            )
+        )[0].read_text()
+    )
+    assert record["raw_response_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert (
+        record["stored_body_sha256"]
+        == hashlib.sha256(record["body"].encode()).hexdigest()
+    )
+    assert record["raw_response_sha256"] != record["stored_body_sha256"]
+    assert "redact-me" not in record["body"]
 
 
 def test_alpaca_sip_entitlement_is_unavailable_without_fallback(tmp_path: Path) -> None:
@@ -154,11 +198,9 @@ def test_provider_outcome_taxonomy(status: int, payload: object, expected: str) 
 def test_u06_shadow_is_observation_only_and_has_hypothetical_price(
     tmp_path: Path,
 ) -> None:
-    client = FixtureClient()
+    client = OrderedFixtureClient()
     paths = asyncio.run(
-        capture_module.capture(
-            symbols=("AAPL",), artifact_root=tmp_path, u06_shadow=True, client=client
-        )
+        capture_module.capture(artifact_root=tmp_path, u06_shadow=True, client=client)
     )
     quote = json.loads(
         next(path for path in paths if "latest_quote" in path.name).read_text()
@@ -172,6 +214,91 @@ def test_u06_shadow_is_observation_only_and_has_hypothetical_price(
     source = Path(capture_module.__file__).read_text()
     assert "execution_client" not in source
     assert "orders" not in source
+    assert [url.split("/")[-3] for url, _ in client.calls[:3]] == [
+        "AAPL",
+        "IBM",
+        "SPY",
+    ]
+    assert all("quotes/latest" in url for url, _ in client.calls[:3])
+    assert capture_module.U06_DEADLINE_SECONDS < 140
+
+
+def test_kis_exchange_codes_are_explicit_and_not_nas_for_all_symbols() -> None:
+    assert capture_module.KIS_US_EXCHANGE_CODES == {
+        "AAPL": "NAS",
+        "IBM": "NYS",
+        "SPY": "AMS",
+    }
+    requests = [
+        next(
+            request
+            for request in capture_module._requests_for(symbol, date(2026, 7, 29))
+            if request.provider == "kis"
+        )
+        for symbol in capture_module.DEFAULT_SYMBOLS
+    ]
+    assert [request.params["EXCD"] for request in requests] == ["NAS", "NYS", "AMS"]
+
+
+def test_manifest_and_exit_are_nonzero_for_missing_credentials_or_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key in (
+        "ALPACA_PAPER_API_KEY",
+        "ALPACA_PAPER_API_SECRET",
+        "KIS_APP_KEY",
+        "KIS_APP_SECRET",
+        "KIS_ACCESS_TOKEN",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    run = asyncio.run(
+        capture_module.capture_run(
+            symbols=("AAPL",), artifact_root=tmp_path, client=FixtureClient()
+        )
+    )
+    manifest = json.loads(run.manifest_path.read_text())
+    assert run.exit_code == 2
+    assert manifest["exit_code"] == 2
+    assert manifest["preflight_missing_credentials"]["alpaca"] == [
+        "ALPACA_PAPER_API_KEY",
+        "ALPACA_PAPER_API_SECRET",
+    ]
+    assert manifest["coverage_missing_or_unsuccessful"] == []
+    assert run.manifest_path.exists()
+
+
+def test_manifest_exit_is_nonzero_for_provider_coverage_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key in (
+        "ALPACA_PAPER_API_KEY",
+        "ALPACA_PAPER_API_SECRET",
+        "KIS_APP_KEY",
+        "KIS_APP_SECRET",
+        "KIS_ACCESS_TOKEN",
+    ):
+        monkeypatch.setenv(key, "fixture-value")
+    client = FixtureClient(
+        {
+            "https://data.alpaca.markets/v2/stocks/AAPL/quotes/latest": httpx.Response(
+                403,
+                json={
+                    "message": "subscription does not permit querying recent SIP data"
+                },
+            )
+        }
+    )
+    run = asyncio.run(
+        capture_module.capture_run(
+            symbols=("AAPL",), artifact_root=tmp_path, client=client
+        )
+    )
+    manifest = json.loads(run.manifest_path.read_text())
+    assert run.exit_code == 2
+    assert manifest["preflight_missing_credentials"] == {}
+    assert manifest["coverage_missing_or_unsuccessful"] == [
+        {"provider": "alpaca", "product": "latest_quote", "symbol": "AAPL"}
+    ]
 
 
 def test_timezone_conversion_uses_zoneinfo_not_hard_coded_offset() -> None:

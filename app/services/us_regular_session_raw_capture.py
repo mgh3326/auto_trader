@@ -6,6 +6,7 @@ an operator-facing observation tool, not a trading surface.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
@@ -22,11 +24,14 @@ import httpx
 from app.core.symbol import to_kis_symbol, to_yahoo_symbol
 
 DEFAULT_SYMBOLS = ("AAPL", "IBM", "SPY")
+KIS_US_EXCHANGE_CODES = MappingProxyType({"AAPL": "NAS", "IBM": "NYS", "SPY": "AMS"})
+U06_DEADLINE_SECONDS = 60
 _SENSITIVE = re.compile(
-    r"(authorization|cookie|token|secret|api[-_]?key|password)", re.I
+    r"(authorization|cookie|token|secret|(?:x-)?app[-_]?key|api[-_]?key|password)",
+    re.I,
 )
 _VALUE_SECRET = re.compile(
-    r"(?i)(bearer\s+)[^\s,;]+|((?:token|secret|api[-_]?key|password)=)[^&\s,;]+"
+    r"(?i)(bearer\s+)[^\s,;]+|((?:token|secret|(?:x-)?app[-_]?key|api[-_]?key|password)=)[^&\s,;]+"
 )
 _NEW_YORK = ZoneInfo("America/New_York")
 _SEOUL = ZoneInfo("Asia/Seoul")
@@ -46,6 +51,13 @@ class CaptureRequest:
     feed: str | None
     params: dict[str, str]
     headers: dict[str, str]
+
+
+@dataclass(frozen=True)
+class CaptureRun:
+    artifact_paths: list[Path]
+    manifest_path: Path
+    exit_code: int
 
 
 def _utc_now() -> datetime:
@@ -217,7 +229,8 @@ async def _attempt(
         "feed": request.feed,
         "session_label": session_label,
         "outcome": outcome,
-        "body_sha256": hashlib.sha256(body_bytes).hexdigest(),
+        "raw_response_sha256": hashlib.sha256(raw).hexdigest(),
+        "stored_body_sha256": hashlib.sha256(body_bytes).hexdigest(),
         "body_encoding": encoding,
         "body": body,
         "transport_error": transport_error,
@@ -256,9 +269,10 @@ def _requests_for(symbol: str, historical_sip_date: date) -> list[CaptureRequest
         "authorization": f"Bearer {os.getenv('KIS_ACCESS_TOKEN', '')}",
         "tr_id": "HHDFS76950200",
     }
+    kis_exchange = KIS_US_EXCHANGE_CODES[symbol]
     kis_params = {
         "AUTH": "",
-        "EXCD": "NAS",
+        "EXCD": kis_exchange,
         "SYMB": to_kis_symbol(symbol),
         "NMIN": "1",
         "PINC": "1",
@@ -354,6 +368,155 @@ def historical_sip_opening_window_params(trading_date: date) -> dict[str, str]:
     }
 
 
+def missing_credentials() -> dict[str, list[str]]:
+    """Return missing names only; credential values never enter diagnostics."""
+    required = {
+        "alpaca": ("ALPACA_PAPER_API_KEY", "ALPACA_PAPER_API_SECRET"),
+        "kis": ("KIS_APP_KEY", "KIS_APP_SECRET", "KIS_ACCESS_TOKEN"),
+    }
+    return {
+        provider: [name for name in names if not os.getenv(name)]
+        for provider, names in required.items()
+        if any(not os.getenv(name) for name in names)
+    }
+
+
+def _manifest(
+    *,
+    run_dir: Path,
+    artifact_paths: list[Path],
+    requests: list[CaptureRequest],
+    preflight_missing: dict[str, list[str]],
+    deadline_exceeded: bool,
+) -> dict[str, Any]:
+    records = [json.loads(path.read_text(encoding="utf-8")) for path in artifact_paths]
+    by_key = {(row["provider"], row["product"], row["symbol"]): row for row in records}
+    missing_or_unsuccessful = [
+        {
+            "provider": request.provider,
+            "product": request.product,
+            "symbol": request.symbol,
+        }
+        for request in requests
+        if by_key.get((request.provider, request.product, request.symbol), {}).get(
+            "outcome"
+        )
+        != "success"
+    ]
+    exit_code = (
+        0
+        if not preflight_missing
+        and not deadline_exceeded
+        and not missing_or_unsuccessful
+        else 2
+    )
+    return {
+        "schema_version": "rob1161.raw-capture-manifest.v1",
+        "run_dir": str(run_dir),
+        "preflight_missing_credentials": preflight_missing,
+        "u06_deadline_seconds": U06_DEADLINE_SECONDS,
+        "u06_deadline_exceeded": deadline_exceeded,
+        "artifact_paths": [str(path) for path in artifact_paths],
+        "coverage_required_success": [
+            {
+                "provider": request.provider,
+                "product": request.product,
+                "symbol": request.symbol,
+            }
+            for request in requests
+        ],
+        "coverage_missing_or_unsuccessful": missing_or_unsuccessful,
+        "exit_code": exit_code,
+        "statement": "Nonzero exit records unavailable/auth/error/empty or missing credential coverage; it does not trigger a provider fallback.",
+    }
+
+
+async def capture_run(
+    *,
+    symbols: tuple[str, ...] = DEFAULT_SYMBOLS,
+    artifact_root: Path = Path("artifacts/us-regular-session-raw-capture"),
+    session_label: str | None = None,
+    u06_shadow: bool = False,
+    historical_sip_date: date | None = None,
+    client: AsyncGetClient | None = None,
+) -> CaptureRun:
+    """Capture a run, write its append-only manifest, and provide a deterministic exit."""
+    if any(symbol not in KIS_US_EXCHANGE_CODES for symbol in symbols):
+        raise ValueError(
+            "Unsupported symbol: KIS exchange code must be explicitly mapped"
+        )
+    if u06_shadow and symbols != DEFAULT_SYMBOLS:
+        raise ValueError("U06 shadow requires exactly AAPL IBM SPY SIP quotes")
+    label = session_label or ("u06_shadow" if u06_shadow else default_session_label())
+    run_dir = (
+        artifact_root
+        / f"run-{_utc_now().strftime('%Y%m%dT%H%M%S%fZ')}-{uuid.uuid4().hex[:12]}"
+    )
+    opening_date = historical_sip_date or _utc_now().astimezone(_NEW_YORK).date()
+    requests = [
+        item for symbol in symbols for item in _requests_for(symbol, opening_date)
+    ]
+    quote_requests = [
+        item
+        for item in requests
+        if item.provider == "alpaca" and item.product == "latest_quote"
+    ]
+    remaining_requests = [item for item in requests if item not in quote_requests]
+    preflight_missing = missing_credentials()
+    artifact_paths: list[Path] = []
+    deadline_exceeded = False
+
+    async def execute(active_client: AsyncGetClient) -> None:
+        nonlocal deadline_exceeded
+
+        async def run_requests(items: list[CaptureRequest]) -> list[Path]:
+            return list(
+                await asyncio.gather(
+                    *[
+                        _attempt(
+                            active_client,
+                            item,
+                            artifact_dir=run_dir,
+                            session_label=label,
+                            u06_shadow=u06_shadow,
+                        )
+                        for item in items
+                    ]
+                )
+            )
+
+        try:
+            if u06_shadow:
+                async with asyncio.timeout(U06_DEADLINE_SECONDS):
+                    # The three SIP quotes start together before any other provider/product.
+                    artifact_paths.extend(await run_requests(quote_requests))
+                    artifact_paths.extend(await run_requests(remaining_requests))
+            else:
+                artifact_paths.extend(await run_requests(requests))
+        except TimeoutError:
+            deadline_exceeded = True
+
+    if client is not None:
+        await execute(client)
+    else:
+        async with httpx.AsyncClient(follow_redirects=False) as http_client:
+            await execute(http_client)
+    manifest = _manifest(
+        run_dir=run_dir,
+        artifact_paths=artifact_paths,
+        requests=requests,
+        preflight_missing=preflight_missing,
+        deadline_exceeded=deadline_exceeded,
+    )
+    manifest_path = run_dir / "manifest.json"
+    _write_append_only(
+        manifest_path,
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True).encode()
+        + b"\n",
+    )
+    return CaptureRun(artifact_paths, manifest_path, manifest["exit_code"])
+
+
 async def capture(
     *,
     symbols: tuple[str, ...] = DEFAULT_SYMBOLS,
@@ -364,33 +527,12 @@ async def capture(
     client: AsyncGetClient | None = None,
 ) -> list[Path]:
     """Perform independent GET observations and return append-only artifact paths."""
-    label = session_label or ("u06_shadow" if u06_shadow else default_session_label())
-    run_dir = (
-        artifact_root
-        / f"run-{_utc_now().strftime('%Y%m%dT%H%M%S%fZ')}-{uuid.uuid4().hex[:12]}"
+    run = await capture_run(
+        symbols=symbols,
+        artifact_root=artifact_root,
+        session_label=session_label,
+        u06_shadow=u06_shadow,
+        historical_sip_date=historical_sip_date,
+        client=client,
     )
-    opening_date = historical_sip_date or _utc_now().astimezone(_NEW_YORK).date()
-    if client is not None:
-        return [
-            await _attempt(
-                client,
-                item,
-                artifact_dir=run_dir,
-                session_label=label,
-                u06_shadow=u06_shadow,
-            )
-            for symbol in symbols
-            for item in _requests_for(symbol, opening_date)
-        ]
-    async with httpx.AsyncClient(follow_redirects=False) as http_client:
-        return [
-            await _attempt(
-                http_client,
-                item,
-                artifact_dir=run_dir,
-                session_label=label,
-                u06_shadow=u06_shadow,
-            )
-            for symbol in symbols
-            for item in _requests_for(symbol, opening_date)
-        ]
+    return run.artifact_paths
