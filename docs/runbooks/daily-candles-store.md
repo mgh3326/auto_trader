@@ -87,7 +87,9 @@ uv run python scripts/backfill_daily_candles.py --market crypto --symbols KRW-BT
 Symbol format notes:
 - KR: plain numeric code (`005930`), no exchange prefix.
 - US: DB-canonical dot notation (`BRK.B`). The CLI/service translates to KIS slash notation (`BRK/B`) or Yahoo hyphen notation (`BRK-B`) internally.
-- Crypto: full Upbit market string (`KRW-BTC`), including the quote-currency prefix.
+- Crypto: full Upbit market string (`KRW-BTC` or `USDT-ETH`), including the
+  quote-currency prefix. The CLI derives `upbit_krw` or `upbit_usdt` from each
+  symbol; a conflicting explicit `--partition` fails closed.
 
 ---
 

@@ -22,7 +22,10 @@ def test_upbit_daily_candle_partition_is_canonical(symbol: str, expected: str) -
     assert upbit_daily_candle_partition(symbol) == expected
 
 
-@pytest.mark.parametrize("symbol", ["BTC", "BTC-ETH", "BINANCE:BTCUSDT", "", "KRW-"])
+@pytest.mark.parametrize(
+    "symbol",
+    ["BTC", "BTC-ETH", "BINANCE:BTCUSDT", "", "KRW-", "KRW-BTC/USD"],
+)
 def test_upbit_daily_candle_partition_rejects_ambiguous_symbols(symbol: str) -> None:
     with pytest.raises(ValueError, match="KRW-/USDT-"):
         upbit_daily_candle_partition(symbol)

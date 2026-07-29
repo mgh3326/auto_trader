@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
+
 _SUPPORTED_UPBIT_QUOTE_CURRENCIES = frozenset({"KRW", "USDT"})
+_UPBIT_BASE_ASSET = re.compile(r"[A-Z0-9]+")
 
 
 def upbit_daily_candle_partition(symbol: str) -> str:
@@ -19,6 +22,7 @@ def upbit_daily_candle_partition(symbol: str) -> str:
         separator != "-"
         or not base
         or "-" in base
+        or _UPBIT_BASE_ASSET.fullmatch(base) is None
         or quote not in _SUPPORTED_UPBIT_QUOTE_CURRENCIES
     ):
         raise ValueError("Upbit daily-candle symbols must use a KRW-/USDT- market code")

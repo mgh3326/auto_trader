@@ -23,6 +23,7 @@ from app.services.daily_candles.constants import (
     DAILY_CANDLE_BACKFILL_BARS_KR,
     DAILY_CANDLE_BACKFILL_BARS_US,
 )
+from app.services.daily_candles.crypto_identity import upbit_daily_candle_partition
 from app.services.daily_candles.repository import MarketKey
 from app.services.daily_candles.sync_service import (
     SyncTarget,
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 _MARKET_DEFAULTS = {
     "kr": (MarketKey.KR, DAILY_CANDLE_BACKFILL_BARS_KR, "KRX"),
     "us": (MarketKey.US, DAILY_CANDLE_BACKFILL_BARS_US, "NASD"),
-    "crypto": (MarketKey.CRYPTO, DAILY_CANDLE_BACKFILL_BARS_CRYPTO, "KRW"),
+    "crypto": (MarketKey.CRYPTO, DAILY_CANDLE_BACKFILL_BARS_CRYPTO, None),
 }
 
 
@@ -50,21 +51,47 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--partition",
         default=None,
-        help="exchange (US) / venue (KR) / market (crypto). Defaults: NASD / KRX / KRW.",
+        help=(
+            "exchange (US) / venue (KR) / canonical crypto partition. "
+            "Defaults: NASD / KRX / symbol-derived upbit_krw or upbit_usdt."
+        ),
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
 
+def _partition_for_symbol(
+    *, market: MarketKey, symbol: str, requested_partition: str | None
+) -> str:
+    if market != MarketKey.CRYPTO:
+        if not requested_partition:
+            raise ValueError("Non-crypto backfill requires a partition")
+        return requested_partition
+
+    canonical = upbit_daily_candle_partition(symbol)
+    if requested_partition is not None and requested_partition != canonical:
+        raise ValueError(
+            "Crypto --partition must match the symbol-derived canonical partition: "
+            f"symbol={symbol!r}, partition={requested_partition!r}, "
+            f"expected={canonical!r}"
+        )
+    return canonical
+
+
 async def _amain(args: argparse.Namespace) -> int:
     market_key, default_bars, default_partition = _MARKET_DEFAULTS[args.market]
     horizon = args.horizon_bars if args.horizon_bars is not None else default_bars
-    partition = args.partition or default_partition
+    requested_partition = args.partition or default_partition
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
 
     svc = await _build_default_service()
     try:
         for symbol in symbols:
+            partition = _partition_for_symbol(
+                market=market_key,
+                symbol=symbol,
+                requested_partition=requested_partition,
+            )
             target = SyncTarget(market=market_key, symbol=symbol, partition=partition)
             if args.dry_run:
                 logger.info("DRY RUN - would sync %s", target)

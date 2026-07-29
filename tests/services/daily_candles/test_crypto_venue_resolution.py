@@ -52,6 +52,60 @@ async def test_crypto_instrument_id_resolution_with_upbit_venue(
 
 
 @pytest.mark.asyncio
+async def test_crypto_instrument_id_resolution_with_upbit_usdt_partition(
+    db_session: AsyncSession,
+) -> None:
+    inst = CryptoInstrument(
+        venue="upbit",
+        product="spot",
+        venue_symbol="USDT-ROBSOL",
+        base_asset="ROBSOL",
+        quote_asset="USDT",
+        status="active",
+    )
+    db_session.add(inst)
+    await db_session.flush()
+
+    repo = DailyCandlesRepository(session=db_session)
+    resolved = await repo.resolve_crypto_instrument_ids(
+        symbols=["USDT-ROBSOL"], partition="upbit_usdt"
+    )
+    assert resolved == {"USDT-ROBSOL": inst.id}
+
+    candle_time = dt.datetime(2026, 7, 29, tzinfo=dt.UTC)
+    inserted = await repo.upsert_rows(
+        market=MarketKey.CRYPTO,
+        rows=[
+            DailyCandleRow(
+                time_utc=candle_time,
+                symbol="USDT-ROBSOL",
+                partition="upbit_usdt",
+                open=100.0,
+                high=110.0,
+                low=90.0,
+                close=105.0,
+                adj_close=None,
+                volume=12.0,
+                value=1260.0,
+                source="upbit",
+            )
+        ],
+    )
+    await db_session.flush()
+    fetched = await repo.fetch_range(
+        market=MarketKey.CRYPTO,
+        symbol="USDT-ROBSOL",
+        partition="upbit_usdt",
+        start=candle_time,
+        end=candle_time,
+    )
+
+    assert inserted == 1
+    assert [row.symbol for row in fetched] == ["USDT-ROBSOL"]
+    assert [row.partition for row in fetched] == ["upbit_usdt"]
+
+
+@pytest.mark.asyncio
 async def test_crypto_instrument_id_resolution_warning_when_venue_is_krw(
     db_session: AsyncSession, caplog: pytest.LogCaptureFixture
 ) -> None:

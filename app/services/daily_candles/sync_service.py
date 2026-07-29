@@ -207,6 +207,13 @@ class DailyCandleSyncService:
     async def _sync_crypto(
         self, target: SyncTarget, horizon_bars: int
     ) -> SyncOneResult:
+        canonical_partition = upbit_daily_candle_partition(target.symbol)
+        if target.partition != canonical_partition:
+            raise ValueError(
+                "Crypto daily-candle target partition must match its canonical "
+                f"Upbit symbol identity: symbol={target.symbol!r}, "
+                f"partition={target.partition!r}, expected={canonical_partition!r}"
+            )
         frame = await self._upbit(market=target.symbol, days=horizon_bars)
         rows = frame_to_rows(
             frame, symbol=target.symbol, partition=target.partition, source="upbit"

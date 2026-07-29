@@ -178,6 +178,34 @@ async def test_crypto_universe_uses_canonical_upbit_partition() -> None:
 
 
 @pytest.mark.asyncio
+async def test_crypto_sync_rejects_partition_that_disagrees_with_symbol() -> None:
+    repo = MagicMock()
+    repo.session = MagicMock()
+    repo.upsert_rows = AsyncMock()
+    upbit_fetcher = AsyncMock()
+    svc = DailyCandleSyncService(
+        repository=repo,
+        kis_kr_fetcher=AsyncMock(),
+        kis_us_fetcher=AsyncMock(),
+        yahoo_us_fetcher=AsyncMock(),
+        upbit_crypto_fetcher=upbit_fetcher,
+    )
+
+    with pytest.raises(ValueError, match="must match"):
+        await svc.sync_one(
+            target=SyncTarget(
+                market=MarketKey.CRYPTO,
+                symbol="USDT-ETH",
+                partition="upbit_krw",
+            ),
+            horizon_bars=30,
+        )
+
+    upbit_fetcher.assert_not_awaited()
+    repo.upsert_rows.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_service_close_awaits_callbacks():
     repo = MagicMock()
     repo.session = MagicMock()
