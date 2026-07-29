@@ -32,7 +32,19 @@ Profile → tool surface mapping
   Default research/read-only surface plus internal DB paper simulator tools.
 
 "kiwoom" (McpProfile.KIWOOM):
-  Default research/read-only surface plus typed kiwoom_mock_* variants.
+  Default research/read-only surface plus BOTH typed Kiwoom mock namespaces:
+  the eight KR kiwoom_mock_* tools and — unconditionally, unlike DEFAULT's
+  ROB-867 ``kiwoom_mock_us_enabled`` gate — the seven US kiwoom_mock_us_*
+  tools, four of which are mutations. Prefer "kiwoom_kr" for any KR-only
+  session (ROB-1159).
+
+"kiwoom_kr" (McpProfile.KIWOOM_KR):
+  ROB-1159 least-privilege KR-only split of "kiwoom". Default research/read-only
+  surface plus EXACTLY the eight KR kiwoom_mock_* tools (including the ROB-1155
+  kiwoom_mock_get_order_detail kt00007 read). The whole kiwoom_mock_us_*
+  namespace is physically absent — the US module is never imported and the KR
+  registrar runs through an allowlist proxy. KR order-path behavior is
+  byte-identical to "kiwoom"; only the registered set is narrower.
 
 "shadow-replay" (McpProfile.SHADOW_REPLAY):
   ROB-697 M1 — frozen-context replay ONLY. Registers EXACTLY
@@ -414,6 +426,20 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         )
 
         register_kiwoom_us(mcp)
+    elif profile is McpProfile.KIWOOM_KR:
+        # ROB-1159 — KR-only Kiwoom mock surface. Same shared read-only
+        # research/account block as KIWOOM above, but the kiwoom_mock_us_*
+        # namespace (4 mutations + 3 reads) is physically absent: this branch
+        # never imports orders_kiwoom_us_variants, and the KR registrar runs
+        # through an allowlist proxy so any future non-KR tool added inside it
+        # is dropped instead of widening this profile. KR order-path behavior
+        # (KRX pinning, dry_run/confirm double gate) is unchanged — only the
+        # registered set differs.
+        from app.mcp_server.tooling.kiwoom_kr_registration import (
+            register_kiwoom_kr_tools,
+        )
+
+        register_kiwoom_kr_tools(mcp)
     elif profile is McpProfile.CRYPTO:
         # Crypto live trading enters through the generic account_mode order
         # tools (the only MCP entry point for Upbit orders, with ROB-407

@@ -14,6 +14,7 @@ from app.models.invest_screener_snapshot import InvestScreenerSnapshot
 from app.models.investor_flow_snapshot import InvestorFlowSnapshot
 from app.models.kr_symbol_universe import KRSymbolUniverse
 from app.models.market_events import MarketEventIngestionPartition
+from app.models.market_quote_snapshot import MarketQuoteSnapshot
 from app.models.news import NewsArticle, NewsArticleRelatedSymbol, NewsIngestionRun
 from app.models.us_symbol_universe import USSymbolUniverse
 from app.routers.dependencies import get_authenticated_user
@@ -112,10 +113,40 @@ async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
             KRSymbolUniverse.symbol.in_(["900201", "900202"])
         )
     )
+    await db_session.execute(
+        sa.delete(MarketQuoteSnapshot).where(MarketQuoteSnapshot.symbol == "900299")
+    )
     await db_session.commit()
 
     db_session.add_all(
         [
+            # ROB-1159: the `quotes` surface is derived from a MARKET-WIDE
+            # aggregate over `market_quote_snapshots` (see
+            # MarketQuoteSnapshotsRepository.coverage_counts — it groups every
+            # kr symbol, not just the `symbols=` argument below). The global test
+            # DB keeps committed rows for the whole session, so peer suites that
+            # commit a *fresh* kr quote (e.g.
+            # tests/test_market_quote_snapshots_latest_prices.py) used to flip
+            # this surface to `fresh`/`monitor` whenever shuffle put them first.
+            #
+            # Own the state we assert instead of inheriting it: one stale row on
+            # a symbol no other suite ever writes pins stale_symbols >= 1, so
+            # _state_from_counts can only return "stale" (no foreign fresh rows)
+            # or "partial" (some foreign fresh rows) — never "fresh", never
+            # "missing" — regardless of execution order.
+            #
+            # A table-wide `DELETE FROM market_quote_snapshots` is deliberately
+            # NOT used: it cannot exclude concurrently committed foreign rows
+            # under READ COMMITTED and it row-locks a table peer suites need
+            # (same rationale as
+            # tests/services/invest_view_model/test_watch_panel_service.py).
+            MarketQuoteSnapshot(
+                market="kr",
+                symbol="900299",
+                source="kis",
+                snapshot_at=now - dt.timedelta(hours=6),
+                price=Decimal("1000"),
+            ),
             KRSymbolUniverse(
                 symbol="900201", name="ROB192 Fresh", exchange="KOSPI", is_active=True
             ),
@@ -217,7 +248,10 @@ async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
     assert by_surface[("holdings", "kr")].state == "fresh"
     assert by_surface[("pending_orders", "kr")].state == "fresh"
     assert by_surface[("orderbook_nxt_capability", "kr")].state == "missing"
-    assert by_surface[("quotes", "kr")].state != "provider_unwired"
+    # ROB-1159: seeded stale-only row above ⇒ deterministic non-fresh state.
+    # "stale" when no peer suite committed a fresh kr quote, "partial" when one
+    # did; both are the same actionability branch.
+    assert by_surface[("quotes", "kr")].state in {"stale", "partial"}
     assert by_surface[("ohlcv", "kr")].state == "missing"
     assert by_surface[("valuation_fundamentals", "kr")].state != "provider_unwired"
     assert by_surface[("screener_snapshots", "kr")].actionability.priority == "medium"
@@ -228,10 +262,16 @@ async def test_build_invest_coverage_reports_fresh_partial_and_provider_unwired(
     assert (
         by_surface[("orderbook_nxt_capability", "kr")].actionability.priority == "high"
     )
-    assert by_surface[("quotes", "kr")].actionability.action in {
-        "backfill_candidate",
-        "repair_read_model",
-    }
+    # missing ⇒ backfill_candidate is anchored here, on a surface this test
+    # asserts as `missing` above, so pinning `quotes` to the stale branch does
+    # not drop coverage of the missing branch (ROB-1156 regression guard).
+    assert (
+        by_surface[("orderbook_nxt_capability", "kr")].actionability.action
+        == "backfill_candidate"
+    )
+    assert by_surface[("quotes", "kr")].actionability.action == "repair_read_model"
+    assert by_surface[("quotes", "kr")].actionability.priority == "medium"
+    assert by_surface[("quotes", "kr")].counts.stale >= 1
     assert by_surface[("quotes", "kr")].actionability.queue == "market-quote-snapshots"
     assert by_surface[("quotes", "kr")].actionability.approvalGates == [
         "production_db_write_approval"
