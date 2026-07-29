@@ -46,19 +46,54 @@ class _PlaceOutcome:
 def _normalize_place_result(result: Any) -> _PlaceOutcome:
     """Interpret the order function's normalized result truthfully (ROB-843).
 
-    A non-dict result or an explicit ``success=False`` is a failure — never a
-    silent executed=True. The stable reason/detail is preserved from the
-    normalized native contract so the watch intent records why it failed.
+    Executed requires broker acceptance, a non-preview response, a broker order
+    id, and explicit durable-tracking availability. ``ledger_id=None`` alone is
+    not a failure: ROB-843's benign on-conflict path re-checks the existing
+    native row and returns ``ledger_tracking_unavailable=False`` without the id.
     """
     if not isinstance(result, dict):
         return _PlaceOutcome(False, "malformed_result", str(result)[:200])
-    if result.get("success"):
-        return _PlaceOutcome(True)
-    reason = result.get("reason") or result.get("status") or "order_failed"
     detail = (
         result.get("detail") or result.get("response_message") or result.get("message")
     )
-    return _PlaceOutcome(False, str(reason), str(detail) if detail else None)
+    normalized_detail = str(detail) if detail else None
+
+    if result.get("success") is not True:
+        reason = result.get("reason") or result.get("status") or "order_failed"
+        return _PlaceOutcome(False, str(reason), normalized_detail)
+    if result.get("dry_run") is not False:
+        reason = (
+            "dry_run_result"
+            if result.get("dry_run") is True
+            else "invalid_dry_run_flag"
+        )
+        return _PlaceOutcome(False, reason, normalized_detail)
+
+    order_no = result.get("order_no")
+    if not isinstance(order_no, str) or not order_no.strip():
+        return _PlaceOutcome(False, "missing_broker_order_id", normalized_detail)
+
+    tracking_unavailable = result.get("ledger_tracking_unavailable")
+    if tracking_unavailable is not False:
+        reason = (
+            "ledger_tracking_unavailable"
+            if tracking_unavailable is True
+            else "invalid_ledger_tracking_flag"
+        )
+        return _PlaceOutcome(False, reason, normalized_detail)
+
+    # ROB-1140 R1: explicit None is the ROB-843 benign-conflict signal; a
+    # missing key is a malformed contract and must not collapse into that case.
+    if "ledger_id" not in result:
+        return _PlaceOutcome(False, "missing_ledger_id", normalized_detail)
+
+    ledger_id = result["ledger_id"]
+    if ledger_id is not None and (
+        not isinstance(ledger_id, int) or isinstance(ledger_id, bool) or ledger_id <= 0
+    ):
+        return _PlaceOutcome(False, "invalid_ledger_id", normalized_detail)
+
+    return _PlaceOutcome(True)
 
 
 async def _default_place_order_fn(**kwargs):
