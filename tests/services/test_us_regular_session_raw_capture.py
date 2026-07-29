@@ -38,6 +38,25 @@ class OrderedFixtureClient(FixtureClient):
         )
 
 
+class HangingFixtureClient(FixtureClient):
+    async def get(self, url: str, **kwargs: object) -> httpx.Response:
+        self.calls.append((url, kwargs))
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+@pytest.fixture(autouse=True)
+def _configured_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "ALPACA_PAPER_API_KEY",
+        "ALPACA_PAPER_API_SECRET",
+        "KIS_APP_KEY",
+        "KIS_APP_SECRET",
+        "KIS_ACCESS_TOKEN",
+    ):
+        monkeypatch.setenv(key, "fixture-value")
+
+
 def test_write_append_only_never_overwrites(tmp_path: Path) -> None:
     target = tmp_path / "artifact.json"
     capture_module._write_append_only(target, b"first")
@@ -251,9 +270,10 @@ def test_manifest_and_exit_are_nonzero_for_missing_credentials_or_coverage(
         "KIS_ACCESS_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
+    client = FixtureClient()
     run = asyncio.run(
         capture_module.capture_run(
-            symbols=("AAPL",), artifact_root=tmp_path, client=FixtureClient()
+            symbols=("AAPL",), artifact_root=tmp_path, client=client
         )
     )
     manifest = json.loads(run.manifest_path.read_text())
@@ -263,7 +283,11 @@ def test_manifest_and_exit_are_nonzero_for_missing_credentials_or_coverage(
         "ALPACA_PAPER_API_KEY",
         "ALPACA_PAPER_API_SECRET",
     ]
-    assert manifest["coverage_missing_or_unsuccessful"] == []
+    assert client.calls == []
+    assert len(manifest["terminal_timeline"]) == 5
+    assert {entry["outcome"] for entry in manifest["terminal_timeline"]} == {
+        "preflight_blocked"
+    }
     assert run.manifest_path.exists()
 
 
@@ -296,9 +320,52 @@ def test_manifest_exit_is_nonzero_for_provider_coverage_failure(
     manifest = json.loads(run.manifest_path.read_text())
     assert run.exit_code == 2
     assert manifest["preflight_missing_credentials"] == {}
-    assert manifest["coverage_missing_or_unsuccessful"] == [
-        {"provider": "alpaca", "product": "latest_quote", "symbol": "AAPL"}
+    assert [
+        {key: entry[key] for key in ("provider", "product", "symbol", "outcome")}
+        for entry in manifest["coverage_missing_or_unsuccessful"]
+    ] == [
+        {
+            "provider": "alpaca",
+            "product": "latest_quote",
+            "symbol": "AAPL",
+            "outcome": "unavailable",
+        }
     ]
+
+
+def test_u06_deadline_preserves_terminal_timeline_for_all_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(capture_module, "U06_DEADLINE_SECONDS", 0.01)
+    client = HangingFixtureClient()
+    run = asyncio.run(
+        capture_module.capture_run(
+            artifact_root=tmp_path, u06_shadow=True, client=client
+        )
+    )
+    manifest = json.loads(run.manifest_path.read_text())
+    assert run.exit_code == 2
+    assert manifest["u06_deadline_exceeded"] is True
+    assert manifest["run_started_utc"] <= manifest["run_finished_utc"]
+    assert manifest["deadline_utc"]
+    assert len(manifest["terminal_timeline"]) == 15
+    assert (
+        len(
+            {
+                (row["provider"], row["product"], row["symbol"])
+                for row in manifest["terminal_timeline"]
+            }
+        )
+        == 15
+    )
+    assert manifest["outcome_counts"] == {
+        "deadline_cancelled": 3,
+        "not_started_deadline": 12,
+    }
+    assert len(run.artifact_paths) == 3
+    assert {json.loads(path.read_text())["outcome"] for path in run.artifact_paths} == {
+        "deadline_cancelled"
+    }
 
 
 def test_timezone_conversion_uses_zoneinfo_not_hard_coded_offset() -> None:

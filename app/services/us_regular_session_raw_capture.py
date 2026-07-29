@@ -13,7 +13,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
@@ -180,6 +180,57 @@ def _write_append_only(path: Path, data: bytes) -> None:
         artifact.write(data)
 
 
+def _attempt_record(
+    *,
+    request: CaptureRequest,
+    started: datetime,
+    finished: datetime,
+    status: int | None,
+    response_headers: dict[str, str],
+    raw: bytes,
+    outcome: str,
+    transport_error: str | None,
+    session_label: str,
+    u06_shadow: bool,
+) -> dict[str, Any]:
+    body, encoding = _sanitize_body(raw)
+    body_bytes = body.encode("utf-8")
+    record: dict[str, Any] = {
+        "schema_version": "rob1161.raw-capture.v1",
+        "provider": request.provider,
+        "product": request.product,
+        "endpoint": request.endpoint,
+        "version": request.version or "UNKNOWN",
+        "request_params": request.params,
+        "response_status": status,
+        "response_headers": response_headers,
+        "provider_timestamp_raw": _provider_timestamp(body),
+        "local_request_started_utc": _iso(started),
+        "local_receive_completed_utc": _iso(finished),
+        "symbol": request.symbol,
+        "feed": request.feed,
+        "session_label": session_label,
+        "outcome": outcome,
+        "raw_response_sha256": hashlib.sha256(raw).hexdigest(),
+        "stored_body_sha256": hashlib.sha256(body_bytes).hexdigest(),
+        "body_encoding": encoding,
+        "body": body,
+        "transport_error": transport_error,
+    }
+    if (
+        u06_shadow
+        and request.provider == "alpaca"
+        and request.product == "latest_quote"
+    ):
+        record["u06_shadow"] = _u06_fields(body, finished)
+    if request.provider == "alpaca" and request.product == "historical_1m_bars":
+        record["historical_reread"] = {
+            "window_label": "09:30-09:36 America/New_York",
+            "statement": "Historical reread only; it does not establish first appearance or decision-time availability.",
+        }
+    return record
+
+
 async def _attempt(
     client: AsyncGetClient,
     request: CaptureRequest,
@@ -205,47 +256,49 @@ async def _attempt(
             _safe_headers(response.headers),
             response.content,
         )
+    except asyncio.CancelledError:
+        finished = _utc_now()
+        record = _attempt_record(
+            request=request,
+            started=started,
+            finished=finished,
+            status=None,
+            response_headers={},
+            raw=b"",
+            outcome="deadline_cancelled",
+            transport_error="deadline_cancelled",
+            session_label=session_label,
+            u06_shadow=u06_shadow,
+        )
+        target = artifact_dir / (
+            f"{request.provider}-{request.product}-{request.symbol}-{uuid.uuid4().hex}.json"
+        )
+        _write_append_only(
+            target,
+            json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True).encode()
+            + b"\n",
+        )
+        raise
     except httpx.HTTPError as exc:
         transport_error = f"{type(exc).__name__}: {str(exc)}"
     received = _utc_now()
-    body, encoding = _sanitize_body(raw)
-    body_bytes = body.encode("utf-8")
     outcome = _classification(
-        status, body, alpaca_sip=request.provider == "alpaca" and request.feed == "sip"
+        status,
+        _sanitize_body(raw)[0],
+        alpaca_sip=request.provider == "alpaca" and request.feed == "sip",
     )
-    record: dict[str, Any] = {
-        "schema_version": "rob1161.raw-capture.v1",
-        "provider": request.provider,
-        "product": request.product,
-        "endpoint": request.endpoint,
-        "version": request.version or "UNKNOWN",
-        "request_params": request.params,
-        "response_status": status,
-        "response_headers": response_headers,
-        "provider_timestamp_raw": _provider_timestamp(body),
-        "local_request_started_utc": _iso(started),
-        "local_receive_completed_utc": _iso(received),
-        "symbol": request.symbol,
-        "feed": request.feed,
-        "session_label": session_label,
-        "outcome": outcome,
-        "raw_response_sha256": hashlib.sha256(raw).hexdigest(),
-        "stored_body_sha256": hashlib.sha256(body_bytes).hexdigest(),
-        "body_encoding": encoding,
-        "body": body,
-        "transport_error": transport_error,
-    }
-    if (
-        u06_shadow
-        and request.provider == "alpaca"
-        and request.product == "latest_quote"
-    ):
-        record["u06_shadow"] = _u06_fields(body, received)
-    if request.provider == "alpaca" and request.product == "historical_1m_bars":
-        record["historical_reread"] = {
-            "window_label": "09:30-09:36 America/New_York",
-            "statement": "Historical reread only; it does not establish first appearance or decision-time availability.",
-        }
+    record = _attempt_record(
+        request=request,
+        started=started,
+        finished=received,
+        status=status,
+        response_headers=response_headers,
+        raw=raw,
+        outcome=outcome,
+        transport_error=transport_error,
+        session_label=session_label,
+        u06_shadow=u06_shadow,
+    )
     filename = (
         f"{request.provider}-{request.product}-{request.symbol}-{uuid.uuid4().hex}.json"
     )
@@ -388,20 +441,45 @@ def _manifest(
     requests: list[CaptureRequest],
     preflight_missing: dict[str, list[str]],
     deadline_exceeded: bool,
+    run_started: datetime,
+    run_finished: datetime,
+    deadline_at: datetime | None,
 ) -> dict[str, Any]:
     records = [json.loads(path.read_text(encoding="utf-8")) for path in artifact_paths]
     by_key = {(row["provider"], row["product"], row["symbol"]): row for row in records}
-    missing_or_unsuccessful = [
+    required = [
         {
             "provider": request.provider,
             "product": request.product,
             "symbol": request.symbol,
         }
         for request in requests
-        if by_key.get((request.provider, request.product, request.symbol), {}).get(
-            "outcome"
-        )
-        != "success"
+    ]
+    terminal_timeline: list[dict[str, Any]] = []
+    for request, identity in zip(requests, required, strict=True):
+        record = by_key.get((request.provider, request.product, request.symbol))
+        if record is None:
+            terminal_timeline.append(
+                {
+                    **identity,
+                    "outcome": "not_started_deadline"
+                    if deadline_exceeded
+                    else "preflight_blocked",
+                    "local_request_started_utc": None,
+                    "terminal_utc": _iso(run_finished),
+                }
+            )
+        else:
+            terminal_timeline.append(
+                {
+                    **identity,
+                    "outcome": record["outcome"],
+                    "local_request_started_utc": record["local_request_started_utc"],
+                    "terminal_utc": record["local_receive_completed_utc"],
+                }
+            )
+    missing_or_unsuccessful = [
+        entry for entry in terminal_timeline if entry["outcome"] != "success"
     ]
     exit_code = (
         0
@@ -413,19 +491,20 @@ def _manifest(
     return {
         "schema_version": "rob1161.raw-capture-manifest.v1",
         "run_dir": str(run_dir),
+        "run_started_utc": _iso(run_started),
+        "run_finished_utc": _iso(run_finished),
+        "deadline_utc": _iso(deadline_at) if deadline_at else None,
         "preflight_missing_credentials": preflight_missing,
         "u06_deadline_seconds": U06_DEADLINE_SECONDS,
         "u06_deadline_exceeded": deadline_exceeded,
         "artifact_paths": [str(path) for path in artifact_paths],
-        "coverage_required_success": [
-            {
-                "provider": request.provider,
-                "product": request.product,
-                "symbol": request.symbol,
-            }
-            for request in requests
-        ],
+        "coverage_required_success": required,
         "coverage_missing_or_unsuccessful": missing_or_unsuccessful,
+        "terminal_timeline": terminal_timeline,
+        "outcome_counts": {
+            outcome: sum(entry["outcome"] == outcome for entry in terminal_timeline)
+            for outcome in sorted({entry["outcome"] for entry in terminal_timeline})
+        },
         "exit_code": exit_code,
         "statement": "Nonzero exit records unavailable/auth/error/empty or missing credential coverage; it does not trigger a provider fallback.",
     }
@@ -448,9 +527,10 @@ async def capture_run(
     if u06_shadow and symbols != DEFAULT_SYMBOLS:
         raise ValueError("U06 shadow requires exactly AAPL IBM SPY SIP quotes")
     label = session_label or ("u06_shadow" if u06_shadow else default_session_label())
+    run_started = _utc_now()
     run_dir = (
         artifact_root
-        / f"run-{_utc_now().strftime('%Y%m%dT%H%M%S%fZ')}-{uuid.uuid4().hex[:12]}"
+        / f"run-{run_started.strftime('%Y%m%dT%H%M%S%fZ')}-{uuid.uuid4().hex[:12]}"
     )
     opening_date = historical_sip_date or _utc_now().astimezone(_NEW_YORK).date()
     requests = [
@@ -465,6 +545,29 @@ async def capture_run(
     preflight_missing = missing_credentials()
     artifact_paths: list[Path] = []
     deadline_exceeded = False
+    deadline_at = (
+        run_started + timedelta(seconds=U06_DEADLINE_SECONDS) if u06_shadow else None
+    )
+
+    if preflight_missing:
+        run_finished = _utc_now()
+        manifest = _manifest(
+            run_dir=run_dir,
+            artifact_paths=artifact_paths,
+            requests=requests,
+            preflight_missing=preflight_missing,
+            deadline_exceeded=False,
+            run_started=run_started,
+            run_finished=run_finished,
+            deadline_at=deadline_at,
+        )
+        manifest_path = run_dir / "manifest.json"
+        _write_append_only(
+            manifest_path,
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True).encode()
+            + b"\n",
+        )
+        return CaptureRun(artifact_paths, manifest_path, manifest["exit_code"])
 
     async def execute(active_client: AsyncGetClient) -> None:
         nonlocal deadline_exceeded
@@ -501,12 +604,20 @@ async def capture_run(
     else:
         async with httpx.AsyncClient(follow_redirects=False) as http_client:
             await execute(http_client)
+    # A deadline cancels gather before it returns results; recover terminal
+    # artifacts synchronously written by each cancelled attempt.
+    if deadline_exceeded:
+        artifact_paths = sorted(run_dir.glob("*.json")) if run_dir.exists() else []
+    run_finished = _utc_now()
     manifest = _manifest(
         run_dir=run_dir,
         artifact_paths=artifact_paths,
         requests=requests,
         preflight_missing=preflight_missing,
         deadline_exceeded=deadline_exceeded,
+        run_started=run_started,
+        run_finished=run_finished,
+        deadline_at=deadline_at,
     )
     manifest_path = run_dir / "manifest.json"
     _write_append_only(
