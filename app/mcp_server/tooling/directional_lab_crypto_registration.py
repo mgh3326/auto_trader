@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from app.core.db import AsyncSessionLocal
 from app.mcp_server.tooling.analysis_readonly_registration import (
-    ANALYSIS_READONLY_TOOL_NAMES,
     _AllowlistedMCP,
     _register_persistence_tools,
 )
@@ -35,15 +34,30 @@ if TYPE_CHECKING:
 _F = TypeVar("_F", bound=Callable[..., Any])
 DIRECTIONAL_LAB_CRYPTO_STRATEGY = "directional-lab"
 
-# The analysis profile's generic holding/account-routing tools are deliberately
-# excluded: they could select an arbitrary paper account. This profile exposes
-# only identity-bound paper reads below.
-DIRECTIONAL_LAB_CRYPTO_RESEARCH_TOOL_NAMES = ANALYSIS_READONLY_TOOL_NAMES - {
-    "get_holdings",
-    "toss_get_positions",
-    "suggest_order_account",
-    "get_intraday_investor_flow",
-    "analysis_bundle_get",
+# This is intentionally independent of ANALYSIS_READONLY_TOOL_NAMES. The
+# directional-lab crypto prompt is a distinct, identity-bound consumer: keep
+# its actual read/bootstrap/persistence contract explicit and reviewable.
+DIRECTIONAL_LAB_CRYPTO_RESEARCH_TOOL_NAMES = {
+    "get_operating_briefing",
+    "route_request",
+    "get_trading_policy",
+    "screen_stocks_snapshot",
+    "screen_stocks",
+    "get_top_stocks",
+    "get_market_index",
+    "get_crypto_fear_greed",
+    "get_kimchi_premium",
+    "get_crypto_funding_rate",
+    "get_correlation",
+    "analyze_stock_batch",
+    "get_quote",
+    "get_ohlcv",
+    "get_orderbook",
+    "forecast_save",
+    "analysis_artifact_save",
+    "analysis_artifact_get",
+    "session_context_append",
+    "session_context_get_recent",
 }
 DIRECTIONAL_LAB_CRYPTO_PAPER_TOOL_NAMES = {
     "list_paper_accounts",

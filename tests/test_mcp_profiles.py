@@ -241,6 +241,33 @@ class TestDirectionalLabCryptoProfile:
         mcp = _build_mcp(McpProfile.DIRECTIONAL_LAB_CRYPTO)
         assert set(mcp.tools) == DIRECTIONAL_LAB_CRYPTO_TOOL_NAMES
 
+    def test_registers_prompt_required_crypto_read_subset_only(self) -> None:
+        mcp = _build_mcp(McpProfile.DIRECTIONAL_LAB_CRYPTO)
+        required = {
+            "screen_stocks_snapshot",
+            "screen_stocks",
+            "get_top_stocks",
+            "get_market_index",
+            "get_crypto_fear_greed",
+            "get_kimchi_premium",
+            "get_crypto_funding_rate",
+            "get_correlation",
+            "analyze_stock_batch",
+            "get_quote",
+            "get_ohlcv",
+            "get_orderbook",
+            "get_operating_briefing",
+            "route_request",
+            "get_trading_policy",
+            "forecast_save",
+            "analysis_artifact_save",
+            "analysis_artifact_get",
+            "session_context_append",
+            "session_context_get_recent",
+        }
+        assert required <= mcp.tools.keys()
+        assert "get_krx_session_health" not in mcp.tools
+
     def test_live_and_other_venue_surfaces_are_physically_absent(self) -> None:
         mcp = _build_mcp(McpProfile.DIRECTIONAL_LAB_CRYPTO)
         forbidden = (
