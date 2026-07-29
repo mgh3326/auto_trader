@@ -352,7 +352,9 @@ class TestDirectionalLabCryptoProfile:
             "quantity": Decimal("0.01234568"),
             "thesis": "thesis",
             "cash_krw": 1000000.0,
-            "amount_krw": 1234.568,
+            "requested_amount_krw": None,
+            "requested_quantity": 0.012345678,
+            "estimated_notional_krw": 1234.568,
             "intent": {
                 "strategy": "directional-lab",
                 "thesis": "thesis",
@@ -363,6 +365,13 @@ class TestDirectionalLabCryptoProfile:
                 "artifact_uuid": None,
             },
         }
+
+        amount_preview = await place(amount_krw=500000, **base)
+        assert amount_preview["success"] is True
+        assert amount_preview["preview"]["requested_amount_krw"] == 500000
+        assert amount_preview["preview"]["requested_quantity"] is None
+        assert amount_preview["preview"]["quantity"] == Decimal("5")
+        assert amount_preview["preview"]["estimated_notional_krw"] == 500000.0
 
         for override, expected in (
             ({"side": "hold"}, "Unsupported order side"),

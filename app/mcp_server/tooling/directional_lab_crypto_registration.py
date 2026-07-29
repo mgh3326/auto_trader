@@ -206,7 +206,9 @@ def register_directional_lab_crypto_tools(mcp: FastMCP) -> None:
                 if not preview.get("success"):
                     return preview
                 canonical = preview["preview"]
-                canonical["amount_krw"] = float(
+                canonical["requested_amount_krw"] = amount_krw
+                canonical["requested_quantity"] = quantity
+                canonical["estimated_notional_krw"] = float(
                     Decimal(str(canonical["limit_price"]))
                     * Decimal(str(canonical["quantity"]))
                 )
