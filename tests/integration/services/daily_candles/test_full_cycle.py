@@ -1,24 +1,18 @@
 """Integration tests: daily candle store upsert / fetch round-trip and
 source-precedence invariant.
 
-These tests connect directly to the dev Timescale container (port 5434,
-db auto_trader) because the test-suite conftest force-overrides DATABASE_URL
-to test_db at port 5432, which does not contain the hypertable schema.
-We read the real DATABASE_URL from the .env file before the conftest
-applies its override.
+The candle tables have no ORM models, so the shared test-schema bootstrap
+creates their production-compatible relational shape in the run-owned
+PostgreSQL database before these tests execute.
 """
 
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
-import pytest_asyncio
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.services.daily_candles.repository import (
     DailyCandleRow,
@@ -33,58 +27,11 @@ _SYMBOL_KR = f"TSTKR{_TEST_SUFFIX}"
 _SYMBOL_US = f"TSTUS{_TEST_SUFFIX}"
 
 
-def _find_dotenv_path() -> Path | None:
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "pyproject.toml").is_file():
-            candidate = parent / ".env"
-            return candidate if candidate.is_file() else None
-    return None
-
-
-def _read_dev_database_url() -> str | None:
-    """Read DATABASE_URL from the .env file (not the test-overridden env var).
-
-    The conftest force-sets DATABASE_URL to test_db at port 5432.  Integration
-    tests that exercise Timescale hypertables must use the real dev DB at port
-    5434.  We read .env directly to recover the original URL.
-    """
-    env_path = _find_dotenv_path()
-    if env_path is None:
-        return None
-    with env_path.open(encoding="utf-8") as f:
-        for raw_line in f:
-            line = raw_line.strip()
-            if line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            if key.strip() == "DATABASE_URL":
-                return value.strip()
-    return None
-
-
-_DEV_DB_URL = _read_dev_database_url() or os.environ.get("DEV_DATABASE_URL")
-
-
-@pytest_asyncio.fixture
-async def dev_session():
-    """Async session against an explicitly configured dev Timescale database."""
-    if not _DEV_DB_URL:
-        pytest.skip(
-            "DEV_DATABASE_URL or local .env DATABASE_URL is required for live Timescale integration tests"
-        )
-
-    engine = create_async_engine(_DEV_DB_URL, echo=False)
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as session:
-        yield session
-    await engine.dispose()
-
-
 @pytest.mark.integration
 class TestFullCycle:
     @pytest.mark.asyncio
-    async def test_upsert_then_fetch_round_trip(self, dev_session):
-        repo = DailyCandlesRepository(session=dev_session)
+    async def test_upsert_then_fetch_round_trip(self, db_session):
+        repo = DailyCandlesRepository(session=db_session)
         rows = [
             DailyCandleRow(
                 time_utc=datetime(2026, 5, d, tzinfo=UTC),
@@ -103,7 +50,7 @@ class TestFullCycle:
         ]
         try:
             inserted = await repo.upsert_rows(market=MarketKey.KR, rows=rows)
-            await dev_session.commit()
+            await db_session.commit()
             # rowcount for batch ON CONFLICT upserts is not reliable across
             # drivers (asyncpg returns 0 for bulk execute) — assert non-negative.
             assert inserted >= 0
@@ -117,20 +64,20 @@ class TestFullCycle:
             assert len(fetched) == 5
             assert all(r.source == "kis" for r in fetched)
         except Exception:
-            await dev_session.rollback()
+            await db_session.rollback()
             raise
         finally:
             # Rollback any aborted transaction before cleanup.
-            await dev_session.rollback()
-            await dev_session.execute(
+            await db_session.rollback()
+            await db_session.execute(
                 text("DELETE FROM public.kr_candles_1d WHERE symbol = :symbol"),
                 {"symbol": _SYMBOL_KR},
             )
-            await dev_session.commit()
+            await db_session.commit()
 
     @pytest.mark.asyncio
-    async def test_yahoo_fallback_does_not_clobber_kis(self, dev_session):
-        repo = DailyCandlesRepository(session=dev_session)
+    async def test_yahoo_fallback_does_not_clobber_kis(self, db_session):
+        repo = DailyCandlesRepository(session=db_session)
         t = datetime(2026, 5, 14, tzinfo=UTC)
         kis_row = DailyCandleRow(
             time_utc=t,
@@ -160,9 +107,9 @@ class TestFullCycle:
         )
         try:
             await repo.upsert_rows(market=MarketKey.US, rows=[kis_row])
-            await dev_session.commit()
+            await db_session.commit()
             await repo.upsert_rows(market=MarketKey.US, rows=[yahoo_row])
-            await dev_session.commit()
+            await db_session.commit()
 
             fetched = await repo.fetch_recent(
                 market=MarketKey.US,
@@ -174,28 +121,28 @@ class TestFullCycle:
             assert fetched[0].source == "kis"
             assert fetched[0].close == pytest.approx(100.5)  # KIS row not clobbered
         except Exception:
-            await dev_session.rollback()
+            await db_session.rollback()
             raise
         finally:
             # Rollback any aborted transaction before cleanup.
-            await dev_session.rollback()
-            await dev_session.execute(
+            await db_session.rollback()
+            await db_session.execute(
                 text(
                     "DELETE FROM public.us_candles_1d "
                     "WHERE symbol = :symbol AND exchange = :exchange AND time = :t"
                 ),
                 {"symbol": _SYMBOL_US, "exchange": "NASD", "t": t},
             )
-            await dev_session.commit()
+            await db_session.commit()
 
     @pytest.mark.asyncio
-    async def test_fetch_recent_bounded_window_matches_unbounded(self, dev_session):
+    async def test_fetch_recent_bounded_window_matches_unbounded(self, db_session):
         """ROB-812: the bounded time predicate must not drop rows vs an
-        unbounded LIMIT.  Insert 250 daily rows (>2 chunks of 90 days), then
+        unbounded LIMIT. Insert a 250-row daily history, then
         assert fetch_recent(count=200) returns exactly the newest 200 rows."""
         from datetime import UTC, datetime, timedelta
 
-        repo = DailyCandlesRepository(session=dev_session)
+        repo = DailyCandlesRepository(session=db_session)
         base = datetime(2026, 1, 1, tzinfo=UTC)
         rows = [
             DailyCandleRow(
@@ -211,11 +158,11 @@ class TestFullCycle:
                 value=15.0,
                 source="test",
             )
-            for i in range(250)  # 250 days => spans >2 chunks (90d each)
+            for i in range(250)
         ]
         try:
             await repo.upsert_rows(market=MarketKey.KR, rows=rows)
-            await dev_session.commit()
+            await db_session.commit()
 
             fetched = await repo.fetch_recent(
                 market=MarketKey.KR,
@@ -227,7 +174,7 @@ class TestFullCycle:
             # Unbounded reference (no time predicate) — the source of truth.
             ref = (
                 (
-                    await dev_session.execute(
+                    await db_session.execute(
                         text(
                             "SELECT time FROM public.kr_candles_1d "
                             "WHERE symbol=:s AND venue='KRX' "
@@ -245,12 +192,12 @@ class TestFullCycle:
             fetched_times = {r.time_utc for r in fetched}
             assert fetched_times == set(ref)
         except Exception:
-            await dev_session.rollback()
+            await db_session.rollback()
             raise
         finally:
-            await dev_session.rollback()
-            await dev_session.execute(
+            await db_session.rollback()
+            await db_session.execute(
                 text("DELETE FROM public.kr_candles_1d WHERE symbol = :symbol"),
                 {"symbol": _SYMBOL_KR},
             )
-            await dev_session.commit()
+            await db_session.commit()

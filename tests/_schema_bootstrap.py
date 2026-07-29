@@ -64,7 +64,9 @@ from sqlalchemy import text
 # v31: Alpaca paper lab account_mode CHECK expansions.
 # v32 (ROB-1103): nullable direct-watch source links + future-write FKs.
 # v33 (ROB-1115): strategy_learning_events ORM table + append-only triggers.
-SCHEMA_BOOTSTRAP_VERSION = 33
+# v34 (ROB-1171): non-ORM kr/us_candles_1d tables used by repository
+# integration tests.
+SCHEMA_BOOTSTRAP_VERSION = 34
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -624,6 +626,50 @@ _PAPER_EVALUATION_TRIGGER_DDL: tuple[str, ...] = (
 _DDL_STATEMENTS: tuple[str, ...] = (
     *_PAPER_COHORT_TRIGGER_DDL,
     *_PAPER_EVALUATION_TRIGGER_DDL,
+    # ---- daily candle repository tables (non-ORM production hypertables) ----
+    # The test PostgreSQL instance does not need Timescale chunking to verify
+    # repository SQL semantics, but it does need the production column,
+    # constraint, and index contract.
+    "CREATE TABLE IF NOT EXISTS public.kr_candles_1d ("
+    "time TIMESTAMPTZ NOT NULL, "
+    "symbol TEXT NOT NULL, "
+    "venue TEXT NOT NULL, "
+    "open NUMERIC NOT NULL, "
+    "high NUMERIC NOT NULL, "
+    "low NUMERIC NOT NULL, "
+    "close NUMERIC NOT NULL, "
+    "volume NUMERIC NOT NULL, "
+    "value NUMERIC NOT NULL, "
+    "source TEXT NOT NULL, "
+    "ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(), "
+    "CONSTRAINT ck_kr_candles_1d_venue CHECK (venue IN ('KRX', 'NTX')), "
+    "CONSTRAINT uq_kr_candles_1d_time_symbol_venue "
+    "UNIQUE (time, symbol, venue))",
+    "CREATE INDEX IF NOT EXISTS ix_kr_candles_1d_symbol_venue_time_desc "
+    "ON public.kr_candles_1d (symbol, venue, time DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_kr_candles_1d_source_time "
+    "ON public.kr_candles_1d (source, time DESC)",
+    "CREATE TABLE IF NOT EXISTS public.us_candles_1d ("
+    "time TIMESTAMPTZ NOT NULL, "
+    "symbol TEXT NOT NULL, "
+    "exchange TEXT NOT NULL, "
+    "open NUMERIC NOT NULL, "
+    "high NUMERIC NOT NULL, "
+    "low NUMERIC NOT NULL, "
+    "close NUMERIC NOT NULL, "
+    "adj_close NUMERIC, "
+    "volume NUMERIC NOT NULL, "
+    "value NUMERIC NOT NULL, "
+    "source TEXT NOT NULL, "
+    "ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(), "
+    "CONSTRAINT ck_us_candles_1d_exchange "
+    "CHECK (exchange IN ('NASD', 'NYSE', 'AMEX')), "
+    "CONSTRAINT uq_us_candles_1d_time_symbol_exchange "
+    "UNIQUE (time, symbol, exchange))",
+    "CREATE INDEX IF NOT EXISTS ix_us_candles_1d_symbol_exchange_time_desc "
+    "ON public.us_candles_1d (symbol, exchange, time DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_us_candles_1d_source_time "
+    "ON public.us_candles_1d (source, time DESC)",
     # ---- market_events / us_symbol_universe ----
     "ALTER TABLE market_events ADD COLUMN IF NOT EXISTS currency TEXT",
     "ALTER TABLE us_symbol_universe ADD COLUMN IF NOT EXISTS is_common_stock BOOLEAN",
