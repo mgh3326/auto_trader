@@ -388,6 +388,68 @@ def _mock_crypto_external_sources(monkeypatch: pytest.MonkeyPatch):
     )
 
 
+@pytest.fixture
+def _mock_kr_screen_external_sources(monkeypatch: pytest.MonkeyPatch):
+    """Default-fake the three live network boundaries of KR screening.
+
+    ROB-1144: the KRX/Naver/Finnhub calls below are reached by *every* KR
+    ``screen_stocks`` invocation, and both production call sites swallow the
+    exception (``except Exception: pass`` in ``screening.kr._screen_kr`` and
+    ``_normalize_kr_results``; ``asyncio.gather(return_exceptions=True)`` in
+    ``_fetch_screen_enrichment_payload``). So an un-faked test does not fail —
+    it just silently performs real DNS + HTTP against data.krx.co.kr,
+    api.finnhub.io and finance.naver.com, which is what made
+    ``test_kr_etf_has_asset_type_and_category`` a ~30s flake.
+
+    Deliberately faked at the *leaf providers*, not at the orchestrators:
+
+    * ``fetch_valuation_all_cached`` is patched on ``screening.kr`` (the binding
+      both call sites use), so a test that verifies valuation merge or
+      valuation-failure handling overrides it with its own mock and keeps
+      exercising the real merge code. Fixtures run before the test body, so a
+      per-test ``monkeypatch.setattr`` always wins over this default.
+    * ``_fetch_screen_enrichment_kr`` is **not** patched. Faking that
+      orchestrator would delete the coverage of its partial-failure and
+      both-providers-failed warning paths. Instead its two leaf providers are
+      patched, so those tests override the same two leaves and still run the
+      real orchestrator.
+
+    Only ``sector`` and ``consensus`` are read out of the two provider payloads
+    (see ``_fetch_screen_enrichment_payload``), so empty dicts are a faithful
+    stand-in for "provider returned nothing" and change no assertion.
+    """
+
+    async def mock_fetch_valuation_all_cached(
+        market: str = "ALL", **kwargs: Any
+    ) -> dict[str, dict[str, Any]]:
+        del market, kwargs
+        return {}
+
+    async def mock_fetch_company_profile_finnhub(symbol: str) -> dict[str, Any]:
+        del symbol
+        return {}
+
+    async def mock_fetch_investment_opinions_naver(
+        symbol: str, limit: int, window_months: int = 12
+    ) -> dict[str, Any]:
+        del symbol, limit, window_months
+        return {}
+
+    monkeypatch.setattr(
+        screening_kr, "fetch_valuation_all_cached", mock_fetch_valuation_all_cached
+    )
+    monkeypatch.setattr(
+        fundamentals_sources_naver,
+        "_fetch_company_profile_finnhub",
+        mock_fetch_company_profile_finnhub,
+    )
+    monkeypatch.setattr(
+        fundamentals_sources_naver,
+        "_fetch_investment_opinions_naver",
+        mock_fetch_investment_opinions_naver,
+    )
+
+
 def _patch_runtime_attr(
     monkeypatch: pytest.MonkeyPatch, attr_name: str, value: object
 ) -> None:
