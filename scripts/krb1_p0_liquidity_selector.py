@@ -3,6 +3,12 @@
 
 The command performs SELECT queries plus KIS quotation GETs only. It has no
 order, preview, cancel, journal, scheduler, or database-write surface.
+
+Gate evidence is read from the append-only chains produced by
+``scripts/krb1_p0_metadata_snapshot_capture.py`` (AC1) and
+``scripts/krb1_p0_completed_session_oneshot.py`` (AC2). Reference-price exception
+evidence comes from the fail-closed adapter (AC4), which has no success branch
+while no authoritative KRX/KIS source is wired.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ import asyncio
 import datetime as dt
 import json
 from decimal import Decimal
+from pathlib import Path
 
 import exchange_calendars as xcals
 from sqlalchemy import text
@@ -19,15 +26,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.services.brokers.kis.client import KISClient
+from app.services.krb1_completion_manifest import (
+    CompletionManifest,
+    load_latest_completion_manifest,
+)
+from app.services.krb1_evidence_chain import EvidenceChainError
+from app.services.krb1_metadata_authority import (
+    MetadataAuthoritySnapshot,
+    compute_raw_payload_sha256,
+    load_latest_metadata_snapshot,
+)
+from app.services.krb1_p0_journal import canonical_json_bytes
 from app.services.krb1_p0_liquidity_selector import (
     CandleRow,
     CompletedBarEvidence,
     Market,
-    QuoteTimestampEvidence,
+    QuoteTimestampCapture,
     SelectorInput,
     UniverseRow,
     select_krb1_p0_liquidity_candidates,
 )
+from app.services.krb1_quote_timestamp_capture import build_quote_timestamp_capture
+from app.services.krb1_reference_exception_adapter import (
+    fetch_reference_price_exceptions,
+)
+
+DEFAULT_STORE_DIR = Path("var/research/krb1/p0_gate_evidence")
+METADATA_SNAPSHOT_FILENAME = "toss_metadata_snapshot.jsonl"
+COMPLETION_MANIFEST_FILENAME = "completion_manifest.jsonl"
+MARKETS: tuple[Market, Market] = ("KOSPI", "KOSDAQ")
 
 
 def _date_arg(value: str) -> dt.date:
@@ -43,7 +70,7 @@ def _aware_datetime_arg(value: str) -> dt.datetime:
     except ValueError as exc:
         raise argparse.ArgumentTypeError("expected ISO-8601 datetime") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise argparse.ArgumentTypeError("decision-at must be timezone-aware")
+        raise argparse.ArgumentTypeError("decision-at must include a UTC offset")
     return parsed
 
 
@@ -73,10 +100,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=_aware_datetime_arg,
         required=True,
         help=(
-            "ISO-8601 tz-aware decision clock. Evidence after this clock "
-            "cannot prove the decision."
+            "Decision clock (ISO-8601 with offset). Every evidence clock must be "
+            "at or before this instant; later evidence cannot prove this decision."
         ),
     )
+    parser.add_argument("--store-dir", type=Path, default=DEFAULT_STORE_DIR)
     parser.add_argument(
         "--compact",
         action="store_true",
@@ -167,10 +195,10 @@ async def _load_db_input(
                 if row["krx_trading_suspended"] is not None
                 else None
             ),
-            db_sync_source=(
+            metadata_source=(
                 "toss_openapi" if row["toss_master_updated_at"] is not None else None
             ),
-            db_sync_observed_at=row["toss_master_updated_at"],
+            metadata_as_of=row["toss_master_updated_at"],
         )
         for row in universe_result.mappings().all()
     )
@@ -213,12 +241,56 @@ async def _load_db_input(
         expected_universe_counts=expected_counts,
         universe_rows=universe_rows,
         candle_rows=candle_rows,
-        metadata_authority_snapshots=(),
-        external_universe_denominators=(),
-        universe_denominator_source_unavailable_reason=(
-            "external_universe_denominator_source_not_wired"
-        ),
     )
+
+
+def _load_gate_evidence(
+    store_dir: Path, *, as_of_session: dt.date
+) -> tuple[
+    tuple[MetadataAuthoritySnapshot, ...],
+    tuple[CompletionManifest, ...],
+    list[dict[str, str]],
+]:
+    """Read append-only gate evidence. A verification failure is never ignored."""
+    snapshots: list[MetadataAuthoritySnapshot] = []
+    manifests: list[CompletionManifest] = []
+    errors: list[dict[str, str]] = []
+    for market in MARKETS:
+        try:
+            snapshot = load_latest_metadata_snapshot(
+                store_dir / METADATA_SNAPSHOT_FILENAME, market=market
+            )
+        except (EvidenceChainError, KeyError, ValueError) as exc:
+            errors.append(
+                {
+                    "market": market,
+                    "stream": "toss_metadata_snapshot",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                }
+            )
+        else:
+            if snapshot is not None:
+                snapshots.append(snapshot)
+        try:
+            manifest = load_latest_completion_manifest(
+                store_dir / COMPLETION_MANIFEST_FILENAME,
+                market=market,
+                session_date=as_of_session,
+            )
+        except (EvidenceChainError, KeyError, ValueError) as exc:
+            errors.append(
+                {
+                    "market": market,
+                    "stream": "completion_manifest",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                }
+            )
+        else:
+            if manifest is not None:
+                manifests.append(manifest)
+    return tuple(snapshots), tuple(manifests), errors
 
 
 def _rank_head_symbols(result: dict[str, object]) -> list[str]:
@@ -226,7 +298,7 @@ def _rank_head_symbols(result: dict[str, object]) -> list[str]:
     if not isinstance(market_results, dict):
         return []
     symbols: list[str] = []
-    for market in ("KOSPI", "KOSDAQ"):
+    for market in MARKETS:
         market_result = market_results.get(market)
         if not isinstance(market_result, dict):
             continue
@@ -247,11 +319,11 @@ async def _fetch_raw_upstream_evidence(
     as_of_session: dt.date,
 ) -> tuple[
     tuple[CompletedBarEvidence, ...],
-    tuple[QuoteTimestampEvidence, ...],
+    tuple[QuoteTimestampCapture, ...],
     list[dict[str, str]],
 ]:
     completed: list[CompletedBarEvidence] = []
-    quotes: list[QuoteTimestampEvidence] = []
+    quotes: list[QuoteTimestampCapture] = []
     errors: list[dict[str, str]] = []
     client = KISClient()
     for symbol in symbols:
@@ -264,7 +336,6 @@ async def _fetch_raw_upstream_evidence(
                     symbol=symbol,
                     endpoint=str(daily.get("endpoint") or ""),
                     tr_id=str(daily.get("tr_id") or ""),
-                    raw_symbol=daily.get("stck_shrn_iscd"),
                     raw_business_date=daily.get("stck_bsop_date"),
                     raw_close=daily.get("stck_clpr"),
                     raw_volume=daily.get("acml_vol"),
@@ -284,15 +355,13 @@ async def _fetch_raw_upstream_evidence(
         try:
             quote = await client.inquire_price_raw_evidence(symbol, "J")
             quotes.append(
-                QuoteTimestampEvidence(
+                build_quote_timestamp_capture(
                     symbol=symbol,
-                    endpoint=str(quote.get("endpoint") or ""),
-                    tr_id=str(quote.get("tr_id") or ""),
-                    raw_symbol=quote.get("stck_shrn_iscd"),
-                    raw_business_date=quote.get("stck_bsop_date"),
-                    raw_execution_time=quote.get("stck_cntg_hour"),
-                    raw_last_price=quote.get("stck_prpr"),
+                    raw_payload=quote,
                     captured_at=dt.datetime.now(dt.UTC),
+                    raw_payload_sha256=compute_raw_payload_sha256(
+                        canonical_json_bytes(dict(quote))
+                    ),
                 )
             )
         except Exception as exc:
@@ -307,20 +376,12 @@ async def _fetch_raw_upstream_evidence(
     return tuple(completed), tuple(quotes), errors
 
 
-def _unavailable_reference_source() -> dict[str, object]:
-    return {
-        "status": "unprovable",
-        "reason": "authoritative_target_session_reference_exception_source_not_wired",
-        "required_scope": "all_pre_reference_eligible_symbols",
-        "fallback_forbidden": True,
-    }
-
-
 async def run(
     *,
     as_of_session: dt.date,
     target_session: dt.date,
     decision_at: dt.datetime,
+    store_dir: Path,
 ) -> dict[str, object]:
     async with AsyncSessionLocal() as session:
         selector_input = await _load_db_input(
@@ -330,11 +391,31 @@ async def run(
             decision_at=decision_at,
         )
 
+    snapshots, manifests, evidence_errors = _load_gate_evidence(
+        store_dir, as_of_session=as_of_session
+    )
+    selector_input = SelectorInput(
+        as_of_session=selector_input.as_of_session,
+        target_session=selector_input.target_session,
+        decision_at=selector_input.decision_at,
+        expected_universe_counts=selector_input.expected_universe_counts,
+        universe_rows=selector_input.universe_rows,
+        candle_rows=selector_input.candle_rows,
+        metadata_snapshots=snapshots,
+        completion_manifests=manifests,
+    )
     initial = select_krb1_p0_liquidity_candidates(selector_input)
     head_symbols = _rank_head_symbols(initial)
     completed, quotes, upstream_errors = await _fetch_raw_upstream_evidence(
         symbols=head_symbols,
         as_of_session=as_of_session,
+    )
+    # The adapter is a fail-closed stub: it returns no records and names the
+    # unwired source. This is not operator-overridable.
+    reference_fetch = fetch_reference_price_exceptions(
+        symbols=head_symbols,
+        target_session=target_session,
+        decision_at=decision_at,
     )
     final_input = SelectorInput(
         as_of_session=selector_input.as_of_session,
@@ -343,24 +424,20 @@ async def run(
         expected_universe_counts=selector_input.expected_universe_counts,
         universe_rows=selector_input.universe_rows,
         candle_rows=selector_input.candle_rows,
-        # Intentionally empty until an authoritative, target-session-effective
-        # source is wired. This is not operator-overridable.
-        reference_exception_evidence=(),
-        reference_source_unavailable_reason=(
-            "authoritative_target_session_reference_exception_source_not_wired"
-        ),
+        reference_price_exception_records=reference_fetch.records,
         completed_bar_evidence=completed,
         quote_timestamp_evidence=quotes,
-        metadata_authority_snapshots=selector_input.metadata_authority_snapshots,
-        external_universe_denominators=selector_input.external_universe_denominators,
-        universe_denominator_source_unavailable_reason=(
-            selector_input.universe_denominator_source_unavailable_reason
-        ),
+        metadata_snapshots=snapshots,
+        completion_manifests=manifests,
+        reference_source_unavailable_reason=reference_fetch.reason,
     )
     result = select_krb1_p0_liquidity_candidates(final_input)
     result["source_availability"] = {
-        "reference_price_exception": _unavailable_reference_source(),
+        "reference_price_exception": reference_fetch.as_evidence(),
         "raw_upstream_errors": upstream_errors,
+        "gate_evidence_stream_errors": evidence_errors,
+        "metadata_snapshot_markets": sorted(row.market for row in snapshots),
+        "completion_manifest_markets": sorted(row.market for row in manifests),
     }
     result["diagnostic_raw_observations"] = {
         "not_a_selection": True,
@@ -378,18 +455,7 @@ async def run(
             }
             for row in completed
         ],
-        "quote_timestamp_evidence": [
-            {
-                "symbol": row.symbol,
-                "endpoint": row.endpoint,
-                "tr_id": row.tr_id,
-                "stck_shrn_iscd": row.raw_symbol,
-                "stck_bsop_date": row.raw_business_date,
-                "stck_cntg_hour": row.raw_execution_time,
-                "stck_prpr": row.raw_last_price,
-            }
-            for row in quotes
-        ],
+        "quote_timestamp_evidence": [row.as_canonical() for row in quotes],
     }
     return result
 
@@ -398,6 +464,7 @@ def _data_load_failure(
     *,
     as_of_session: dt.date,
     target_session: dt.date,
+    decision_at: dt.datetime,
     exc: Exception,
 ) -> dict[str, object]:
     return {
@@ -407,6 +474,7 @@ def _data_load_failure(
         "fallback_used": False,
         "as_of_session": as_of_session.isoformat(),
         "target_session": target_session.isoformat(),
+        "decision_at": decision_at.isoformat(),
         "selected_candidates": [],
         "fail_close_reasons": [
             {
@@ -428,11 +496,13 @@ async def main(argv: list[str] | None = None) -> int:
             as_of_session=args.as_of_session,
             target_session=target_session,
             decision_at=args.decision_at,
+            store_dir=args.store_dir,
         )
     except Exception as exc:
         result = _data_load_failure(
             as_of_session=args.as_of_session,
             target_session=target_session,
+            decision_at=args.decision_at,
             exc=exc,
         )
     print(
