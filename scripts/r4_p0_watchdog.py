@@ -15,6 +15,7 @@ import os
 import signal
 import time
 from collections.abc import Sequence
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -30,17 +31,23 @@ from app.services.brokers.binance.r4_p0_hardening import (
     AlertDispatcher,
     EpochLedger,
     EpochPolicy,
+    StudyManifest,
+    assert_artifact_manifest_compatible,
     availability_report,
     finalization_report,
     floor_epoch,
     iso_utc,
     latest_heartbeat,
     latest_process_version,
+    load_study_manifest,
 )
 
 ENABLED_ENV = "R4_P0_WATCHDOG_ENABLED"
 ALERT_WEBHOOKS_ENV = "R4_P0_ALERT_WEBHOOK_URLS"
+STUDY_MANIFEST_ENV = "R4_P0_STUDY_MANIFEST"
+STUDY_MANIFEST_SHA256_ENV = "R4_P0_STUDY_MANIFEST_SHA256"
 DEFAULT_STATE_ROOT = "~/work/herdr-artifacts/r4-p0-watchdog"
+WATCHDOG_VERSION = "r4-p0-watchdog.v2"
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -66,6 +73,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--state-root",
         default=DEFAULT_STATE_ROOT,
         help="local append-only watchdog alert ledger",
+    )
+    parser.add_argument(
+        "--study-manifest",
+        default=os.getenv(STUDY_MANIFEST_ENV),
+        help="absolute path to the sealed, effective-dated study manifest",
+    )
+    parser.add_argument(
+        "--study-manifest-sha256",
+        default=os.getenv(STUDY_MANIFEST_SHA256_ENV),
+        help="externally supplied SHA-256 pin for the canonical manifest JSON",
     )
     parser.add_argument("--interval-seconds", type=float, default=15.0)
     parser.add_argument("--stale-after-seconds", type=float, default=120.0)
@@ -93,6 +110,25 @@ def _policy() -> EpochPolicy:
     return EpochPolicy(
         required_sources=tuple(sorted(REQUIRED_ACTIVE_SOURCES)),
         symbols=tuple(sorted(SIGNAL_SYMBOLS)),
+    )
+
+
+def _load_manifest(args: argparse.Namespace, *, required: bool) -> StudyManifest | None:
+    if args.study_manifest is None and args.study_manifest_sha256 is None:
+        if required:
+            raise SystemExit(
+                "--run requires --study-manifest and --study-manifest-sha256"
+            )
+        return None
+    if args.study_manifest is None or args.study_manifest_sha256 is None:
+        raise SystemExit(
+            "--study-manifest and --study-manifest-sha256 must be supplied together"
+        )
+    return load_study_manifest(
+        Path(args.study_manifest),
+        expected_sha256=args.study_manifest_sha256,
+        expected_sources=tuple(sorted(REQUIRED_ACTIVE_SOURCES)),
+        expected_symbols=tuple(sorted(SIGNAL_SYMBOLS)),
     )
 
 
@@ -180,10 +216,12 @@ def t0_preflight_report(
     }
 
 
-async def _watch(args: argparse.Namespace) -> int:
-    policy = _policy()
+async def _watch(args: argparse.Namespace, manifest: StudyManifest) -> int:
+    policy = manifest.epoch_policy
     expected_code_hash = runtime_code_hash()
     artifact_paths = tuple(Path(path) for path in args.artifact)
+    for artifact_path in artifact_paths:
+        assert_artifact_manifest_compatible(artifact_path, manifest)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -193,8 +231,17 @@ async def _watch(args: argparse.Namespace) -> int:
         Path(args.state_root),
         artifact_filename="r4_p0_watchdog.sqlite3",
         lock_filename=".watchdog.lock",
+        study_manifest=manifest,
     ) as store:
         ledger = EpochLedger(store._db, policy)  # noqa: SLF001
+        ledger.append_process_version(
+            collector_instance_id="r4-p0-watchdog",
+            run_id=uuid.uuid4().hex,
+            started_at=utc_now(),
+            code_hash=expected_code_hash,
+            collector_version=WATCHDOG_VERSION,
+            study_manifest_sha256=manifest.content_sha256,
+        )
         dispatcher = AlertDispatcher(ledger, _alert_webhook_urls())
         while not stop.is_set():
             now = utc_now()
@@ -204,17 +251,18 @@ async def _watch(args: argparse.Namespace) -> int:
                 observed_at=now,
                 stale_after_seconds=args.stale_after_seconds,
                 expected_code_hash=expected_code_hash,
+                expected_study_manifest_sha256=manifest.content_sha256,
             )
             if not availability["version_stamp_match"]:
                 await dispatcher.emit(
                     alert_key=(
-                        "COLLECTOR_VERSION_MISMATCH:"
+                        "COLLECTOR_PROVENANCE_MISMATCH:"
                         f"{policy.study_id}:{policy.policy_hash}:"
                         f"{int(now.timestamp()) // 900}"
                     ),
                     severity="CRITICAL",
                     payload={
-                        "alert_type": "COLLECTOR_VERSION_MISMATCH",
+                        "alert_type": "COLLECTOR_PROVENANCE_MISMATCH",
                         **availability,
                     },
                     now=now,
@@ -272,6 +320,7 @@ async def _watch(args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    manifest = _load_manifest(args, required=args.run)
     formatter = logging.Formatter(fmt="%(asctime)sZ %(levelname)s %(message)s")
     formatter.converter = time.gmtime
     handler = logging.StreamHandler()
@@ -302,6 +351,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "broker_mutation": False,
         "database_write": bool(args.run),
         "expected_code_hash": runtime_code_hash(),
+        "study_manifest": (
+            None
+            if manifest is None
+            else {
+                "content_sha256": manifest.content_sha256,
+                "policy_hash": manifest.contract_hash,
+                "study_id": manifest.study_id,
+                "t0": manifest.t0.isoformat(),
+            }
+        ),
         "minimum_healthy_replicas": args.minimum_healthy_replicas,
         "mode": "run" if args.run else "dry_run",
         "network": bool(args.run and _alert_webhook_urls()),
@@ -311,6 +370,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.run:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
+    assert manifest is not None
     if os.getenv(ENABLED_ENV, "").strip().lower() != "true":
         raise SystemExit(f"refusing --run: set {ENABLED_ENV}=true explicitly")
     if args.minimum_healthy_replicas < 2 or len(artifacts) < 2:
@@ -322,7 +382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"--run requires {ALERT_WEBHOOKS_ENV}; "
             "use --allow-log-only-alerts only for explicit validation"
         )
-    return asyncio.run(_watch(args))
+    return asyncio.run(_watch(args, manifest))
 
 
 if __name__ == "__main__":

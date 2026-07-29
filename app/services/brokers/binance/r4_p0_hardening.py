@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 import sqlite3
 import urllib.parse
 import uuid
@@ -32,6 +33,33 @@ DEFAULT_POLICY_HASH: Final = (
 )
 DEFAULT_T0: Final = dt.datetime(2026, 7, 27, tzinfo=dt.UTC)
 FINALIZER_VERSION: Final = "r4-p0-epoch-finalizer.v2"
+STUDY_MANIFEST_SCHEMA_VERSION: Final = "r4-p0-study-manifest.v1"
+
+_SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
+_STUDY_ID_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_STUDY_MANIFEST_KEYS: Final = frozenset(
+    {
+        "schema_version",
+        "effective_at",
+        "study_id",
+        "contract_hash",
+        "t0",
+        "required_sources",
+        "symbols",
+        "source_manifest_hash",
+    }
+)
+_ARTIFACT_EVIDENCE_TABLES: Final = (
+    "pit_records",
+    "epoch_source_events",
+    "collector_attempt_starts",
+    "collector_attempts",
+    "symbol_epoch_finalizations",
+    "late_only_corrections",
+    "collector_heartbeats",
+    "collector_process_versions",
+    "collector_alert_events",
+)
 
 FINAL_COMPLETE: Final = "FINAL_COMPLETE"
 FINAL_MISSING: Final = "FINAL_MISSING"
@@ -136,6 +164,24 @@ def scheduled_epochs(
         current += dt.timedelta(hours=EPOCH_HOURS)
 
 
+def first_fully_observed_epoch(observation_start: dt.datetime) -> dt.datetime:
+    """Return the first epoch whose complete source interval follows a start.
+
+    Decision epoch ``e`` consumes ``[e-4h, e)``.  A probe that starts between
+    boundaries must therefore skip both the in-progress interval and its
+    decision epoch.  A probe that starts exactly on a boundary may use the
+    interval beginning at that boundary.
+    """
+
+    if observation_start.tzinfo is None:
+        raise ValueError("observation_start must be timezone-aware")
+    observation_start = observation_start.astimezone(dt.UTC)
+    interval_start = floor_epoch(observation_start)
+    if interval_start != observation_start:
+        interval_start += dt.timedelta(hours=EPOCH_HOURS)
+    return interval_start + dt.timedelta(hours=EPOCH_HOURS)
+
+
 def _trigger_sql(table: str) -> str:
     return f"""
     CREATE TRIGGER IF NOT EXISTS {table}_no_update
@@ -166,6 +212,10 @@ class EpochPolicy:
             raise ValueError("required_sources must be unique and sorted")
         if tuple(sorted(set(self.symbols))) != self.symbols:
             raise ValueError("symbols must be unique and sorted")
+        if not _STUDY_ID_RE.fullmatch(self.study_id):
+            raise ValueError("study_id must be a stable non-empty identifier")
+        if not _SHA256_RE.fullmatch(self.policy_hash):
+            raise ValueError("policy_hash must be 64 lowercase hex characters")
         if self.t0.tzinfo is None or floor_epoch(self.t0) != self.t0:
             raise ValueError("t0 must be an aware UTC four-hour boundary")
 
@@ -188,6 +238,389 @@ class EpochPolicy:
                 }
             )
         )
+
+
+class StudyManifestError(ValueError):
+    """A pinned study manifest is missing, malformed, or inconsistent."""
+
+
+class ArtifactManifestMismatch(RuntimeError):
+    """An artifact is unbound, or bound to a different study manifest."""
+
+
+@dataclass(frozen=True, slots=True)
+class StudyManifest:
+    schema_version: str
+    effective_at: dt.datetime
+    study_id: str
+    contract_hash: str
+    t0: dt.datetime
+    required_sources: tuple[str, ...]
+    symbols: tuple[str, ...]
+    source_manifest_hash: str
+    canonical_payload_json: str
+    content_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != STUDY_MANIFEST_SCHEMA_VERSION:
+            raise StudyManifestError("study manifest schema is not supported")
+        if not _SHA256_RE.fullmatch(self.content_sha256):
+            raise StudyManifestError(
+                "study manifest content hash must be 64 lowercase hex characters"
+            )
+        try:
+            payload = json.loads(self.canonical_payload_json)
+        except json.JSONDecodeError as exc:
+            raise StudyManifestError(
+                "canonical study manifest payload is not valid JSON"
+            ) from exc
+        if canonical_json(payload) != self.canonical_payload_json:
+            raise StudyManifestError(
+                "study manifest payload must use canonical JSON encoding"
+            )
+        if (
+            not isinstance(payload, dict)
+            or frozenset(payload) != _STUDY_MANIFEST_KEYS
+            or payload["schema_version"] != self.schema_version
+            or payload["study_id"] != self.study_id
+            or payload["contract_hash"] != self.contract_hash
+            or _manifest_utc(payload["effective_at"], "effective_at")
+            != self.effective_at
+            or _manifest_utc(payload["t0"], "t0") != self.t0
+            or tuple(payload["required_sources"]) != self.required_sources
+            or tuple(payload["symbols"]) != self.symbols
+            or payload["source_manifest_hash"] != self.source_manifest_hash
+        ):
+            raise StudyManifestError(
+                "canonical study manifest payload does not match typed fields"
+            )
+        if sha256_text(self.canonical_payload_json) != self.content_sha256:
+            raise StudyManifestError(
+                "canonical study manifest payload does not match its content hash"
+            )
+        policy = EpochPolicy(
+            required_sources=self.required_sources,
+            symbols=self.symbols,
+            study_id=self.study_id,
+            policy_hash=self.contract_hash,
+            t0=self.t0,
+        )
+        if policy.source_manifest_hash != self.source_manifest_hash:
+            raise StudyManifestError(
+                "study manifest source hash does not match its source matrix"
+            )
+        if self.effective_at.tzinfo is None or self.effective_at > self.t0:
+            raise StudyManifestError(
+                "study manifest effective_at must be aware and no later than t0"
+            )
+
+    @property
+    def epoch_policy(self) -> EpochPolicy:
+        return EpochPolicy(
+            required_sources=self.required_sources,
+            symbols=self.symbols,
+            study_id=self.study_id,
+            policy_hash=self.contract_hash,
+            t0=self.t0,
+        )
+
+
+def _manifest_utc(value: Any, field: str) -> dt.datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise StudyManifestError(f"{field} must be an explicit UTC Z timestamp")
+    try:
+        parsed = parse_utc(value)
+    except (TypeError, ValueError) as exc:
+        raise StudyManifestError(f"{field} is not a valid UTC timestamp") from exc
+    return parsed
+
+
+def parse_study_manifest(
+    payload: Any,
+    *,
+    expected_sha256: str,
+    expected_sources: Sequence[str],
+    expected_symbols: Sequence[str],
+) -> StudyManifest:
+    """Validate one externally pinned, effective-dated study manifest."""
+
+    if not isinstance(payload, dict):
+        raise StudyManifestError("study manifest must be a JSON object")
+    keys = frozenset(payload)
+    if keys != _STUDY_MANIFEST_KEYS:
+        missing = sorted(_STUDY_MANIFEST_KEYS - keys)
+        extra = sorted(keys - _STUDY_MANIFEST_KEYS)
+        raise StudyManifestError(
+            f"study manifest keys differ (missing={missing}, extra={extra})"
+        )
+    if not _SHA256_RE.fullmatch(expected_sha256):
+        raise StudyManifestError(
+            "study manifest pin must be 64 lowercase hex characters"
+        )
+
+    canonical_payload = canonical_json(payload)
+    content_sha256 = sha256_text(canonical_payload)
+    if content_sha256 != expected_sha256:
+        raise StudyManifestError(
+            "study manifest content hash does not match the external pin"
+        )
+
+    if payload["schema_version"] != STUDY_MANIFEST_SCHEMA_VERSION:
+        raise StudyManifestError(
+            f"unsupported study manifest schema: {payload['schema_version']!r}"
+        )
+    study_id = payload["study_id"]
+    if not isinstance(study_id, str) or not _STUDY_ID_RE.fullmatch(study_id):
+        raise StudyManifestError("study_id must be a stable non-empty identifier")
+    contract_hash = payload["contract_hash"]
+    if not isinstance(contract_hash, str) or not _SHA256_RE.fullmatch(contract_hash):
+        raise StudyManifestError("contract_hash must be 64 lowercase hex characters")
+    source_manifest_hash = payload["source_manifest_hash"]
+    if not isinstance(source_manifest_hash, str) or not _SHA256_RE.fullmatch(
+        source_manifest_hash
+    ):
+        raise StudyManifestError(
+            "source_manifest_hash must be 64 lowercase hex characters"
+        )
+
+    effective_at = _manifest_utc(payload["effective_at"], "effective_at")
+    t0 = _manifest_utc(payload["t0"], "t0")
+    if floor_epoch(t0) != t0:
+        raise StudyManifestError("t0 must be an exact UTC four-hour boundary")
+    if effective_at > t0:
+        raise StudyManifestError("effective_at must not be later than t0")
+
+    required_sources_value = payload["required_sources"]
+    symbols_value = payload["symbols"]
+    if not isinstance(required_sources_value, list) or not all(
+        isinstance(item, str) for item in required_sources_value
+    ):
+        raise StudyManifestError("required_sources must be a JSON string array")
+    if not isinstance(symbols_value, list) or not all(
+        isinstance(item, str) for item in symbols_value
+    ):
+        raise StudyManifestError("symbols must be a JSON string array")
+    required_sources = tuple(required_sources_value)
+    symbols = tuple(symbols_value)
+    sealed_sources = tuple(sorted(set(expected_sources)))
+    sealed_symbols = tuple(sorted(set(expected_symbols)))
+    if required_sources != sealed_sources:
+        raise StudyManifestError(
+            "required_sources must exactly match the sealed collector source set"
+        )
+    if symbols != sealed_symbols:
+        raise StudyManifestError(
+            "symbols must exactly match the sealed signal-symbol set"
+        )
+
+    policy = EpochPolicy(
+        required_sources=required_sources,
+        symbols=symbols,
+        study_id=study_id,
+        policy_hash=contract_hash,
+        t0=t0,
+    )
+    if source_manifest_hash != policy.source_manifest_hash:
+        raise StudyManifestError(
+            "source_manifest_hash does not match the sealed source matrix"
+        )
+    return StudyManifest(
+        schema_version=STUDY_MANIFEST_SCHEMA_VERSION,
+        effective_at=effective_at,
+        study_id=study_id,
+        contract_hash=contract_hash,
+        t0=t0,
+        required_sources=required_sources,
+        symbols=symbols,
+        source_manifest_hash=source_manifest_hash,
+        canonical_payload_json=canonical_payload,
+        content_sha256=content_sha256,
+    )
+
+
+def load_study_manifest(
+    path: Path,
+    *,
+    expected_sha256: str,
+    expected_sources: Sequence[str],
+    expected_symbols: Sequence[str],
+) -> StudyManifest:
+    """Load a manifest from an absolute path and validate its external pin."""
+
+    if not path.is_absolute():
+        raise StudyManifestError("study manifest path must be absolute")
+    resolved = path.expanduser().resolve()
+    try:
+        raw = resolved.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise StudyManifestError(f"cannot read study manifest: {resolved}") from exc
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise StudyManifestError(
+                    f"study manifest contains duplicate JSON key: {key}"
+                )
+            result[key] = value
+        return result
+
+    try:
+        payload = json.loads(raw, object_pairs_hook=reject_duplicate_keys)
+    except json.JSONDecodeError as exc:
+        raise StudyManifestError("study manifest is not valid JSON") from exc
+    return parse_study_manifest(
+        payload,
+        expected_sha256=expected_sha256,
+        expected_sources=expected_sources,
+        expected_symbols=expected_symbols,
+    )
+
+
+def _manifest_binding_values(manifest: StudyManifest) -> tuple[str, ...]:
+    return (
+        manifest.study_id,
+        manifest.contract_hash,
+        iso_utc(manifest.t0),
+        manifest.source_manifest_hash,
+        manifest.content_sha256,
+        manifest.canonical_payload_json,
+    )
+
+
+def _manifest_binding_row_matches(row: sqlite3.Row, manifest: StudyManifest) -> bool:
+    return tuple(
+        row[field]
+        for field in (
+            "study_id",
+            "policy_hash",
+            "t0",
+            "source_manifest_hash",
+            "study_manifest_sha256",
+            "study_manifest_json",
+        )
+    ) == _manifest_binding_values(manifest)
+
+
+def _table_has_rows(connection: sqlite3.Connection, table: str) -> bool:
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if exists is None:
+        return False
+    return (
+        connection.execute(  # noqa: S608 - table comes from a closed internal tuple.
+            f"SELECT 1 FROM {table} LIMIT 1"
+        ).fetchone()
+        is not None
+    )
+
+
+def _artifact_has_evidence(connection: sqlite3.Connection) -> bool:
+    return any(
+        _table_has_rows(connection, table) for table in _ARTIFACT_EVIDENCE_TABLES
+    )
+
+
+def assert_connection_manifest_compatible(
+    connection: sqlite3.Connection,
+    manifest: StudyManifest,
+) -> None:
+    """Validate the binding on the exact SQLite handle used for a read."""
+
+    connection.row_factory = sqlite3.Row
+    binding_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type = 'table' "
+        "AND name = 'collector_study_manifest_binding'"
+    ).fetchone()
+    if binding_exists is not None:
+        row = connection.execute(
+            "SELECT * FROM collector_study_manifest_binding WHERE binding_id = 1"
+        ).fetchone()
+        if row is not None:
+            if not _manifest_binding_row_matches(row, manifest):
+                raise ArtifactManifestMismatch(
+                    "artifact is bound to a different study manifest"
+                )
+            return
+    if _artifact_has_evidence(connection):
+        raise ArtifactManifestMismatch(
+            "legacy or unbound artifact contains evidence; use a fresh artifact root"
+        )
+
+
+def assert_artifact_manifest_compatible(
+    artifact_path: Path, manifest: StudyManifest
+) -> None:
+    """Read-only preflight before an existing artifact is opened for writing."""
+
+    artifact_path = artifact_path.expanduser().resolve()
+    if not artifact_path.exists() or artifact_path.stat().st_size == 0:
+        return
+    uri = f"file:{urllib.parse.quote(str(artifact_path))}?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True) as connection:
+            assert_connection_manifest_compatible(connection, manifest)
+    except sqlite3.Error as exc:
+        raise ArtifactManifestMismatch(
+            f"cannot verify artifact manifest binding: {artifact_path}"
+        ) from exc
+
+
+def _configure_manifest_binding(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS collector_study_manifest_binding (
+            binding_id INTEGER PRIMARY KEY CHECK (binding_id = 1),
+            study_id TEXT NOT NULL,
+            policy_hash TEXT NOT NULL,
+            t0 TEXT NOT NULL,
+            source_manifest_hash TEXT NOT NULL,
+            study_manifest_sha256 TEXT NOT NULL,
+            study_manifest_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        """
+        + _trigger_sql("collector_study_manifest_binding")
+    )
+
+
+def bind_study_manifest(
+    connection: sqlite3.Connection,
+    manifest: StudyManifest,
+    *,
+    recorded_at: dt.datetime,
+) -> None:
+    """Bind one empty local artifact to exactly one immutable manifest."""
+
+    connection.row_factory = sqlite3.Row
+    _configure_manifest_binding(connection)
+    row = connection.execute(
+        "SELECT * FROM collector_study_manifest_binding WHERE binding_id = 1"
+    ).fetchone()
+    if row is not None:
+        if not _manifest_binding_row_matches(row, manifest):
+            raise ArtifactManifestMismatch(
+                "artifact is bound to a different study manifest"
+            )
+        connection.commit()
+        return
+    if _artifact_has_evidence(connection):
+        raise ArtifactManifestMismatch(
+            "unbound artifact already contains evidence; use a fresh artifact root"
+        )
+    connection.execute(
+        """
+        INSERT INTO collector_study_manifest_binding (
+            binding_id, study_id, policy_hash, t0, source_manifest_hash,
+            study_manifest_sha256, study_manifest_json, recorded_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (*_manifest_binding_values(manifest), iso_utc(recorded_at)),
+    )
+    connection.commit()
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,6 +802,7 @@ class EpochLedger:
             code_hash TEXT NOT NULL,
             collector_version TEXT NOT NULL,
             t0_utc TEXT,
+            study_manifest_sha256 TEXT,
             UNIQUE (study_id, policy_hash, collector_instance_id, run_id)
         );
         CREATE INDEX IF NOT EXISTS ix_collector_process_version_latest
@@ -429,6 +863,11 @@ class EpochLedger:
             ON collector_process_versions (study_id, policy_hash, t0_utc)
             """
         )
+        if "study_manifest_sha256" not in process_version_columns:
+            self.db.execute(
+                "ALTER TABLE collector_process_versions "
+                "ADD COLUMN study_manifest_sha256 TEXT"
+            )
         self.db.commit()
 
     def validate_t0_startup(self, *, started_at: dt.datetime) -> None:
@@ -697,13 +1136,21 @@ class EpochLedger:
         started_at: dt.datetime,
         code_hash: str,
         collector_version: str,
+        study_manifest_sha256: str | None = None,
     ) -> None:
+        if study_manifest_sha256 is not None and not _SHA256_RE.fullmatch(
+            study_manifest_sha256
+        ):
+            raise ValueError(
+                "study_manifest_sha256 must be 64 lowercase hex characters"
+            )
         self.db.execute(
             """
             INSERT INTO collector_process_versions (
                 version_stamp_id, study_id, policy_hash, collector_instance_id,
-                run_id, started_at, code_hash, collector_version, t0_utc
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                run_id, started_at, code_hash, collector_version, t0_utc,
+                study_manifest_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 uuid.uuid4().hex,
@@ -715,6 +1162,7 @@ class EpochLedger:
                 code_hash,
                 collector_version,
                 iso_utc(self.policy.t0),
+                study_manifest_sha256,
             ),
         )
         self.db.commit()
@@ -850,9 +1298,11 @@ class RawPITReader:
         local_connection: sqlite3.Connection,
         local_path: Path,
         replica_paths: Sequence[Path] = (),
+        study_manifest: StudyManifest | None = None,
     ) -> None:
         self.local_connection = local_connection
         self.local_path = local_path.resolve()
+        self.study_manifest = study_manifest
         self.replica_paths = tuple(
             sorted(
                 {
@@ -921,6 +1371,11 @@ class RawPITReader:
             uri = f"file:{urllib.parse.quote(str(path))}?mode=ro"
             try:
                 with sqlite3.connect(uri, uri=True) as replica:
+                    if self.study_manifest is not None:
+                        assert_connection_manifest_compatible(
+                            replica,
+                            self.study_manifest,
+                        )
                     rows.extend(
                         self._query(
                             replica,
@@ -930,7 +1385,7 @@ class RawPITReader:
                             deadline=deadline,
                         )
                     )
-            except sqlite3.Error as exc:
+            except (ArtifactManifestMismatch, sqlite3.Error) as exc:
                 raise RawPITReadError(
                     f"failed to read replica PIT artifact {path}: {exc}"
                 ) from exc
@@ -1448,37 +1903,88 @@ def availability_report(
     observed_at: dt.datetime,
     stale_after_seconds: float,
     expected_code_hash: str | None = None,
+    expected_study_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
+    if expected_study_manifest_sha256 is not None and not _SHA256_RE.fullmatch(
+        expected_study_manifest_sha256
+    ):
+        raise ValueError(
+            "expected_study_manifest_sha256 must be 64 lowercase hex characters"
+        )
     replicas: list[dict[str, Any]] = []
     fresh_instance_ids: set[str] = set()
     instance_path_counts: dict[str, int] = defaultdict(int)
     unstamped_artifacts: list[str] = []
     version_mismatches: list[dict[str, str]] = []
+    manifest_mismatches: list[dict[str, str | None]] = []
     for path in sorted(
         {item.expanduser().resolve() for item in artifact_paths}, key=str
     ):
         heartbeat = latest_heartbeat(path, policy)
         if heartbeat is None:
             replicas.append({"artifact": str(path), "status": "UNAVAILABLE"})
-            if expected_code_hash is not None:
+            if (
+                expected_code_hash is not None
+                or expected_study_manifest_sha256 is not None
+            ):
                 unstamped_artifacts.append(str(path))
             continue
         age = (observed_at - parse_utc(heartbeat["observed_at"])).total_seconds()
         status = "HEALTHY" if 0 <= age <= stale_after_seconds else "STALE"
         version = latest_process_version(path, policy, run_id=heartbeat["run_id"])
-        if expected_code_hash is not None:
+        if expected_code_hash is not None or expected_study_manifest_sha256 is not None:
             if version is None:
                 status = "VERSION_UNSTAMPED"
                 unstamped_artifacts.append(str(path))
-            elif version["code_hash"] != expected_code_hash:
-                status = "VERSION_MISMATCH"
-                version_mismatches.append(
-                    {
-                        "actual_code_hash": version["code_hash"],
-                        "artifact": str(path),
-                        "expected_code_hash": expected_code_hash,
-                    }
+            else:
+                code_mismatch = (
+                    expected_code_hash is not None
+                    and version["code_hash"] != expected_code_hash
                 )
+                actual_manifest_sha256 = (
+                    version["study_manifest_sha256"]
+                    if "study_manifest_sha256" in version
+                    else None
+                )
+                manifest_unstamped = (
+                    expected_study_manifest_sha256 is not None
+                    and actual_manifest_sha256 is None
+                )
+                manifest_mismatch = (
+                    expected_study_manifest_sha256 is not None
+                    and actual_manifest_sha256 is not None
+                    and actual_manifest_sha256 != expected_study_manifest_sha256
+                )
+                if code_mismatch:
+                    version_mismatches.append(
+                        {
+                            "actual_code_hash": version["code_hash"],
+                            "artifact": str(path),
+                            "expected_code_hash": expected_code_hash,
+                        }
+                    )
+                if manifest_mismatch:
+                    manifest_mismatches.append(
+                        {
+                            "actual_study_manifest_sha256": (actual_manifest_sha256),
+                            "artifact": str(path),
+                            "expected_study_manifest_sha256": (
+                                expected_study_manifest_sha256
+                            ),
+                        }
+                    )
+                if manifest_unstamped:
+                    unstamped_artifacts.append(str(path))
+                if code_mismatch and manifest_mismatch:
+                    status = "VERSION_AND_MANIFEST_MISMATCH"
+                elif code_mismatch and manifest_unstamped:
+                    status = "VERSION_MISMATCH_AND_UNSTAMPED"
+                elif code_mismatch:
+                    status = "VERSION_MISMATCH"
+                elif manifest_mismatch:
+                    status = "MANIFEST_MISMATCH"
+                elif manifest_unstamped:
+                    status = "VERSION_UNSTAMPED"
         if status == "HEALTHY":
             fresh_instance_ids.add(heartbeat["collector_instance_id"])
             instance_path_counts[heartbeat["collector_instance_id"]] += 1
@@ -1494,6 +2000,11 @@ def availability_report(
                 {
                     "code_hash": version["code_hash"],
                     "collector_version": version["collector_version"],
+                    "study_manifest_sha256": (
+                        version["study_manifest_sha256"]
+                        if "study_manifest_sha256" in version
+                        else None
+                    ),
                     "version_run_id": version["run_id"],
                     "version_started_at": version["started_at"],
                 }
@@ -1506,15 +2017,21 @@ def availability_report(
             if count > 1
         ),
         "expected_code_hash": expected_code_hash,
+        "expected_study_manifest_sha256": expected_study_manifest_sha256,
         "healthy_replica_count": len(fresh_instance_ids),
+        "manifest_mismatches": manifest_mismatches,
         "observed_at": iso_utc(observed_at),
         "replicas": replicas,
         "unstamped_artifacts": sorted(set(unstamped_artifacts)),
         "version_mismatches": version_mismatches,
         "version_stamp_match": (
             None
-            if expected_code_hash is None
-            else not unstamped_artifacts and not version_mismatches
+            if (expected_code_hash is None and expected_study_manifest_sha256 is None)
+            else (
+                not unstamped_artifacts
+                and not version_mismatches
+                and not manifest_mismatches
+            )
         ),
     }
 

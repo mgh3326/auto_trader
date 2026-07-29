@@ -19,19 +19,28 @@ from pathlib import Path
 from app.services.brokers.binance.r4_p0_collector import (
     COLLECTOR_VERSION,
     PIT_COLUMNS,
+    REQUIRED_ACTIVE_SOURCES,
     REST_PATH_ALLOWLIST,
+    SIGNAL_SYMBOLS,
     SYMBOLS,
     AppendOnlyPITStore,
     BinanceR4P0Collector,
     CollectorConfig,
     redact_sample,
     runtime_code_hash,
+    utc_now,
+)
+from app.services.brokers.binance.r4_p0_hardening import (
+    StudyManifest,
+    load_study_manifest,
 )
 
 ENABLED_ENV = "R4_P0_COLLECTOR_ENABLED"
 ARTIFACT_ENV = "R4_P0_ARTIFACT_ROOT"
 COLLECTOR_ID_ENV = "R4_P0_COLLECTOR_ID"
 ALERT_WEBHOOKS_ENV = "R4_P0_ALERT_WEBHOOK_URLS"
+STUDY_MANIFEST_ENV = "R4_P0_STUDY_MANIFEST"
+STUDY_MANIFEST_SHA256_ENV = "R4_P0_STUDY_MANIFEST_SHA256"
 DEFAULT_ARTIFACT_ROOT = "~/work/herdr-artifacts/r4-p0-collector"
 
 
@@ -55,6 +64,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--artifact-root",
         default=os.getenv(ARTIFACT_ENV, DEFAULT_ARTIFACT_ROOT),
+    )
+    parser.add_argument(
+        "--study-manifest",
+        default=os.getenv(STUDY_MANIFEST_ENV),
+        help="absolute path to the sealed, effective-dated study manifest",
+    )
+    parser.add_argument(
+        "--study-manifest-sha256",
+        default=os.getenv(STUDY_MANIFEST_SHA256_ENV),
+        help="externally supplied SHA-256 pin for the canonical manifest JSON",
     )
     parser.add_argument("--status-seconds", type=float, default=30.0)
     parser.add_argument(
@@ -104,7 +123,28 @@ def _alert_webhook_urls() -> tuple[str, ...]:
     )
 
 
-def _dry_run_payload(args: argparse.Namespace) -> dict[str, object]:
+def _load_manifest(args: argparse.Namespace, *, required: bool) -> StudyManifest | None:
+    if args.study_manifest is None and args.study_manifest_sha256 is None:
+        if required:
+            raise SystemExit(
+                "network modes require --study-manifest and --study-manifest-sha256"
+            )
+        return None
+    if args.study_manifest is None or args.study_manifest_sha256 is None:
+        raise SystemExit(
+            "--study-manifest and --study-manifest-sha256 must be supplied together"
+        )
+    return load_study_manifest(
+        Path(args.study_manifest),
+        expected_sha256=args.study_manifest_sha256,
+        expected_sources=tuple(sorted(REQUIRED_ACTIVE_SOURCES)),
+        expected_symbols=tuple(sorted(SIGNAL_SYMBOLS)),
+    )
+
+
+def _dry_run_payload(
+    args: argparse.Namespace, manifest: StudyManifest | None
+) -> dict[str, object]:
     return {
         "mode": "dry_run",
         "network": False,
@@ -125,6 +165,18 @@ def _dry_run_payload(args: argparse.Namespace) -> dict[str, object]:
         ],
         "minimum_healthy_replicas": args.minimum_healthy_replicas,
         "alert_webhook_count": len(_alert_webhook_urls()),
+        "study_manifest_required_for_network": True,
+        "study_manifest": (
+            None
+            if manifest is None
+            else {
+                "content_sha256": manifest.content_sha256,
+                "effective_at": manifest.effective_at.isoformat(),
+                "policy_hash": manifest.contract_hash,
+                "study_id": manifest.study_id,
+                "t0": manifest.t0.isoformat(),
+            }
+        ),
         "arm": f"{ENABLED_ENV}=true plus --run",
     }
 
@@ -137,18 +189,22 @@ def _offline_audit(root: Path) -> int:
         return 0 if result["ok"] else 1
 
 
-async def _run_collector(args: argparse.Namespace) -> int:
+async def _run_collector(args: argparse.Namespace, manifest: StudyManifest) -> int:
     root = Path(args.artifact_root)
+    epoch_observation_start = utc_now() if args.probe else None
     config = CollectorConfig(
         artifact_root=root,
+        epoch_policy=manifest.epoch_policy,
+        study_manifest=manifest,
         duration_seconds=args.duration,
         status_seconds=args.status_seconds,
         collector_instance_id=args.collector_id,
         replica_artifacts=tuple(Path(path) for path in args.replica_artifact),
-        alert_webhook_urls=_alert_webhook_urls(),
+        alert_webhook_urls=() if args.probe else _alert_webhook_urls(),
         minimum_healthy_replicas=(1 if args.probe else args.minimum_healthy_replicas),
+        epoch_observation_start=epoch_observation_start,
     )
-    with AppendOnlyPITStore(root) as store:
+    with AppendOnlyPITStore(root, study_manifest=manifest) as store:
         collector = BinanceR4P0Collector(config, store)
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -176,9 +232,20 @@ def main() -> int:
         if args.run or args.probe:
             raise SystemExit("--audit cannot be combined with network modes")
         return _offline_audit(Path(args.artifact_root))
+    manifest = _load_manifest(
+        args,
+        required=bool(args.run or args.probe),
+    )
     if not args.run and not args.probe:
-        print(json.dumps(_dry_run_payload(args), ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                _dry_run_payload(args, manifest),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
+    assert manifest is not None
     if args.probe:
         if args.duration is None or not 1 <= args.duration <= 180:
             raise SystemExit("--probe requires --duration between 1 and 180 seconds")
@@ -208,7 +275,7 @@ def main() -> int:
             )
     if args.duration is not None and args.duration <= 0:
         raise SystemExit("--duration must be positive")
-    return asyncio.run(_run_collector(args))
+    return asyncio.run(_run_collector(args, manifest))
 
 
 if __name__ == "__main__":

@@ -4,12 +4,14 @@ import datetime as dt
 import json
 import sqlite3
 from collections import Counter
+from pathlib import Path
 
 import httpx
 import pytest
 
 from app.services.brokers.binance import r4_p0_collector as collector_module
 from app.services.brokers.binance.r4_p0_collector import (
+    REQUIRED_ACTIVE_SOURCES,
     AppendOnlyPITStore,
     BasisPollError,
     BinanceR4P0Collector,
@@ -19,17 +21,28 @@ from app.services.brokers.binance.r4_p0_hardening import (
     FINAL_COMPLETE,
     FINAL_CONFLICT,
     FINAL_MISSING,
+    STUDY_MANIFEST_SCHEMA_VERSION,
     AlertDispatcher,
+    ArtifactManifestMismatch,
     DeterministicEpochFinalizer,
     EpochLedger,
     EpochPolicy,
     RawPITReader,
     RawPITReadError,
     T0StartupGateError,
+    StudyManifest,
+    StudyManifestError,
+    assert_artifact_manifest_compatible,
     availability_report,
+    canonical_json,
     decision_epoch_for_event,
     finalization_report,
     finalize_at,
+    first_fully_observed_epoch,
+    iso_utc,
+    load_study_manifest,
+    parse_study_manifest,
+    sha256_text,
 )
 
 EPOCH = dt.datetime(2026, 7, 28, 8, tzinfo=dt.UTC)
@@ -41,6 +54,50 @@ POLICY = EpochPolicy(
     ),
     symbols=("XRPUSDT",),
 )
+
+
+def _collector_manifest() -> StudyManifest:
+    sources = tuple(sorted(REQUIRED_ACTIVE_SOURCES))
+    symbols = ("XRPUSDT",)
+    policy = EpochPolicy(
+        required_sources=sources,
+        symbols=symbols,
+        study_id="TEST-R4-P0",
+        policy_hash="a" * 64,
+        t0=dt.datetime(2026, 7, 27, tzinfo=dt.UTC),
+    )
+    payload = {
+        "schema_version": STUDY_MANIFEST_SCHEMA_VERSION,
+        "effective_at": "2026-07-26T00:00:00Z",
+        "study_id": policy.study_id,
+        "contract_hash": policy.policy_hash,
+        "t0": "2026-07-27T00:00:00Z",
+        "required_sources": list(policy.required_sources),
+        "symbols": list(policy.symbols),
+        "source_manifest_hash": policy.source_manifest_hash,
+    }
+    return parse_study_manifest(
+        payload,
+        expected_sha256=sha256_text(canonical_json(payload)),
+        expected_sources=sources,
+        expected_symbols=symbols,
+    )
+
+
+COLLECTOR_MANIFEST = _collector_manifest()
+
+
+def _manifest_payload() -> dict[str, object]:
+    return json.loads(COLLECTOR_MANIFEST.canonical_payload_json)
+
+
+def _manifest_from_payload(payload: dict[str, object]) -> StudyManifest:
+    return parse_study_manifest(
+        payload,
+        expected_sha256=sha256_text(canonical_json(payload)),
+        expected_sources=tuple(sorted(REQUIRED_ACTIVE_SOURCES)),
+        expected_symbols=("XRPUSDT",),
+    )
 
 
 def _payload(
@@ -70,6 +127,148 @@ def _payload(
         "symbol": symbol,
         "timestamp": str(timestamp),
     }
+
+
+@pytest.mark.unit
+def test_load_study_manifest_accepts_exact_canonical_pin(tmp_path) -> None:
+    payload = _manifest_payload()
+    pin = sha256_text(canonical_json(payload))
+    path = tmp_path / "study-manifest.json"
+    path.write_text(
+        json.dumps(
+            dict(reversed(tuple(payload.items()))),
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_study_manifest(
+        path,
+        expected_sha256=pin,
+        expected_sources=tuple(sorted(REQUIRED_ACTIVE_SOURCES)),
+        expected_symbols=("XRPUSDT",),
+    )
+
+    assert loaded.study_id == COLLECTOR_MANIFEST.study_id
+    assert loaded.epoch_policy == COLLECTOR_MANIFEST.epoch_policy
+    assert loaded.t0 == dt.datetime(2026, 7, 27, tzinfo=dt.UTC)
+    assert loaded.source_manifest_hash == COLLECTOR_MANIFEST.source_manifest_hash
+    assert loaded.content_sha256 == pin
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        (lambda value: value.pop("t0"), "keys differ"),
+        (
+            lambda value: value.__setitem__("extra", True),
+            "keys differ",
+        ),
+        (
+            lambda value: value.__setitem__("schema_version", "v0"),
+            "unsupported study manifest schema",
+        ),
+        (
+            lambda value: value.__setitem__("study_id", ""),
+            "study_id",
+        ),
+        (
+            lambda value: value.__setitem__("contract_hash", "A" * 64),
+            "contract_hash",
+        ),
+        (
+            lambda value: value.__setitem__("t0", "2026-07-27T01:00:00Z"),
+            "four-hour boundary",
+        ),
+        (
+            lambda value: value.__setitem__("effective_at", "2026-07-28T00:00:00Z"),
+            "effective_at",
+        ),
+        (
+            lambda value: value.__setitem__(
+                "required_sources",
+                list(reversed(value["required_sources"])),
+            ),
+            "required_sources",
+        ),
+        (
+            lambda value: value.__setitem__("symbols", ["XRPUSDT", "XRPUSDT"]),
+            "symbols",
+        ),
+        (
+            lambda value: value.__setitem__("source_manifest_hash", "b" * 64),
+            "source_manifest_hash",
+        ),
+    ),
+)
+def test_parse_study_manifest_rejects_invalid_contract(
+    mutation,
+    message: str,
+) -> None:
+    payload = _manifest_payload()
+    mutation(payload)
+    with pytest.raises(StudyManifestError, match=message):
+        _manifest_from_payload(payload)
+
+
+@pytest.mark.unit
+def test_load_study_manifest_rejects_pin_path_and_duplicate_keys(tmp_path) -> None:
+    payload = _manifest_payload()
+    path = tmp_path / "study-manifest.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(StudyManifestError, match="path must be absolute"):
+        load_study_manifest(
+            dt_path := Path("relative-study-manifest.json"),
+            expected_sha256=COLLECTOR_MANIFEST.content_sha256,
+            expected_sources=tuple(sorted(REQUIRED_ACTIVE_SOURCES)),
+            expected_symbols=("XRPUSDT",),
+        )
+    assert not dt_path.is_absolute()
+
+    with pytest.raises(StudyManifestError, match="content hash"):
+        load_study_manifest(
+            path,
+            expected_sha256="f" * 64,
+            expected_sources=tuple(sorted(REQUIRED_ACTIVE_SOURCES)),
+            expected_symbols=("XRPUSDT",),
+        )
+    with pytest.raises(StudyManifestError, match="64 lowercase hex"):
+        load_study_manifest(
+            path,
+            expected_sha256="F" * 64,
+            expected_sources=tuple(sorted(REQUIRED_ACTIVE_SOURCES)),
+            expected_symbols=("XRPUSDT",),
+        )
+
+    duplicate = COLLECTOR_MANIFEST.canonical_payload_json.replace(
+        '"study_id":"TEST-R4-P0"',
+        '"study_id":"TEST-R4-P0","study_id":"DUPLICATE"',
+    )
+    path.write_text(duplicate, encoding="utf-8")
+    with pytest.raises(StudyManifestError, match="duplicate JSON key: study_id"):
+        load_study_manifest(
+            path,
+            expected_sha256=sha256_text(duplicate),
+            expected_sources=tuple(sorted(REQUIRED_ACTIVE_SOURCES)),
+            expected_symbols=("XRPUSDT",),
+        )
+
+
+@pytest.mark.unit
+def test_first_fully_observed_epoch() -> None:
+    boundary = dt.datetime(2026, 7, 30, tzinfo=dt.UTC)
+    assert first_fully_observed_epoch(boundary) == boundary + dt.timedelta(hours=4)
+    assert first_fully_observed_epoch(
+        boundary + dt.timedelta(microseconds=1)
+    ) == boundary + dt.timedelta(hours=8)
+    assert first_fully_observed_epoch(
+        boundary + dt.timedelta(hours=3, minutes=59, seconds=59)
+    ) == boundary + dt.timedelta(hours=8)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        first_fully_observed_epoch(boundary.replace(tzinfo=None))
 
 
 def _append(
@@ -225,6 +424,120 @@ def test_decision_epoch_uses_half_open_boundary() -> None:
 
 
 @pytest.mark.unit
+def test_manifest_binding_is_singleton_append_only_and_restart_safe(tmp_path) -> None:
+    with AppendOnlyPITStore(tmp_path, study_manifest=COLLECTOR_MANIFEST) as store:
+        row = store._db.execute(  # noqa: SLF001
+            "SELECT * FROM collector_study_manifest_binding"
+        ).fetchone()
+        assert row["study_manifest_sha256"] == COLLECTOR_MANIFEST.content_sha256
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            store._db.execute(  # noqa: SLF001
+                "UPDATE collector_study_manifest_binding SET study_id = 'changed'"
+            )
+        store._db.rollback()  # noqa: SLF001
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            store._db.execute(  # noqa: SLF001
+                "DELETE FROM collector_study_manifest_binding"
+            )
+        store._db.rollback()  # noqa: SLF001
+
+    with AppendOnlyPITStore(tmp_path, study_manifest=COLLECTOR_MANIFEST) as restarted:
+        count = restarted._db.execute(  # noqa: SLF001
+            "SELECT COUNT(*) FROM collector_study_manifest_binding"
+        ).fetchone()[0]
+        assert count == 1
+
+    alternate_payload = _manifest_payload()
+    alternate_payload["contract_hash"] = "b" * 64
+    alternate = _manifest_from_payload(alternate_payload)
+    with pytest.raises(ArtifactManifestMismatch, match="different"):
+        AppendOnlyPITStore(tmp_path, study_manifest=alternate)
+
+
+@pytest.mark.unit
+def test_manifest_binding_rejects_legacy_evidence_without_mutation(tmp_path) -> None:
+    now = dt.datetime(2026, 7, 28, 7, tzinfo=dt.UTC)
+    with AppendOnlyPITStore(tmp_path) as legacy:
+        assert legacy.append(
+            source="binance_usdm.aggTrade",
+            symbol="XRPUSDT",
+            raw_payload={"a": 1, "p": "1", "q": "1"},
+            local_receive_time=now,
+            run_id="legacy",
+            event_time="2026-07-28T07:00:00.000000Z",
+            transaction_time="2026-07-28T07:00:00.000000Z",
+            request_started_at=None,
+            request_completed_at=None,
+            sequence_or_trade_id="1",
+            gap_detected=False,
+            reconnect_id="legacy",
+        )
+        before = tuple(
+            legacy._db.execute(  # noqa: SLF001
+                "SELECT COUNT(*), MIN(raw_payload_sha256) FROM pit_records"
+            ).fetchone()
+        )
+
+    with pytest.raises(ArtifactManifestMismatch, match="unbound"):
+        assert_artifact_manifest_compatible(
+            tmp_path / "r4_p0_collector.sqlite3",
+            COLLECTOR_MANIFEST,
+        )
+    with pytest.raises(ArtifactManifestMismatch, match="unbound"):
+        AppendOnlyPITStore(tmp_path, study_manifest=COLLECTOR_MANIFEST)
+
+    with sqlite3.connect(tmp_path / "r4_p0_collector.sqlite3") as connection:
+        after = connection.execute(
+            "SELECT COUNT(*), MIN(raw_payload_sha256) FROM pit_records"
+        ).fetchone()
+        binding_table = connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' "
+            "AND name = 'collector_study_manifest_binding'"
+        ).fetchone()
+    assert after == before
+    assert binding_table is None
+
+
+@pytest.mark.unit
+def test_raw_reader_revalidates_replica_manifest_at_each_open(tmp_path) -> None:
+    local_root = tmp_path / "local"
+    replica_root = tmp_path / "late-replica"
+    replica_path = replica_root / "r4_p0_collector.sqlite3"
+    with AppendOnlyPITStore(local_root, study_manifest=COLLECTOR_MANIFEST) as local:
+        reader = RawPITReader(
+            local._db,  # noqa: SLF001
+            local.path,
+            (replica_path,),
+            study_manifest=COLLECTOR_MANIFEST,
+        )
+        assert (
+            reader.rows_for_epoch(
+                symbol="XRPUSDT",
+                decision_epoch=EPOCH,
+                received_by=finalize_at(EPOCH),
+            )
+            == []
+        )
+
+        alternate_payload = _manifest_payload()
+        alternate_payload["contract_hash"] = "b" * 64
+        alternate = _manifest_from_payload(alternate_payload)
+        with AppendOnlyPITStore(replica_root, study_manifest=alternate) as replica:
+            _append(replica, "binance_usdm.openInterestHist")
+
+        with pytest.raises(
+            RawPITReadError,
+            match="different study manifest",
+        ):
+            reader.rows_for_epoch(
+                symbol="XRPUSDT",
+                decision_epoch=EPOCH,
+                received_by=finalize_at(EPOCH),
+            )
+
+
+@pytest.mark.unit
 def test_finalizer_is_deterministic_across_input_order(tmp_path) -> None:
     hashes: list[str] = []
     for index, sources in enumerate(
@@ -318,7 +631,7 @@ async def test_partial_periodic_coverage_triggers_historical_retry(
         required_sources=("binance_usdm.basis",),
         symbols=("XRPUSDT",),
     )
-    with AppendOnlyPITStore(tmp_path) as store:
+    with AppendOnlyPITStore(tmp_path, study_manifest=COLLECTOR_MANIFEST) as store:
         _append_complete_periodic_source(
             store,
             "binance_usdm.basis",
@@ -327,6 +640,8 @@ async def test_partial_periodic_coverage_triggers_historical_retry(
         collector = BinanceR4P0Collector(
             CollectorConfig(
                 artifact_root=tmp_path,
+                epoch_policy=COLLECTOR_MANIFEST.epoch_policy,
+                study_manifest=COLLECTOR_MANIFEST,
                 symbols=("XRPUSDT",),
                 collector_instance_id="replica-a",
             ),
@@ -740,10 +1055,12 @@ async def test_basis_failure_recovers_only_inside_epoch_contract_window(
         required_sources=("binance_usdm.basis",),
         symbols=("XRPUSDT",),
     )
-    with AppendOnlyPITStore(tmp_path) as store:
+    with AppendOnlyPITStore(tmp_path, study_manifest=COLLECTOR_MANIFEST) as store:
         collector = BinanceR4P0Collector(
             CollectorConfig(
                 artifact_root=tmp_path,
+                epoch_policy=COLLECTOR_MANIFEST.epoch_policy,
+                study_manifest=COLLECTOR_MANIFEST,
                 symbols=("XRPUSDT",),
                 collector_instance_id="replica-a",
             ),
@@ -796,10 +1113,12 @@ async def test_basis_recovery_never_starts_at_or_after_deadline(tmp_path) -> Non
     def handler(_request: httpx.Request) -> httpx.Response:
         raise AssertionError("deadline-expired recovery must not call the provider")
 
-    with AppendOnlyPITStore(tmp_path) as store:
+    with AppendOnlyPITStore(tmp_path, study_manifest=COLLECTOR_MANIFEST) as store:
         collector = BinanceR4P0Collector(
             CollectorConfig(
                 artifact_root=tmp_path,
+                epoch_policy=COLLECTOR_MANIFEST.epoch_policy,
+                study_manifest=COLLECTOR_MANIFEST,
                 symbols=("XRPUSDT",),
                 collector_instance_id="replica-a",
             ),
@@ -1025,10 +1344,12 @@ async def test_historical_retry_appends_terminal_attempt(tmp_path) -> None:
             ],
         )
 
-    with AppendOnlyPITStore(tmp_path) as store:
+    with AppendOnlyPITStore(tmp_path, study_manifest=COLLECTOR_MANIFEST) as store:
         collector = BinanceR4P0Collector(
             CollectorConfig(
                 artifact_root=tmp_path,
+                epoch_policy=COLLECTOR_MANIFEST.epoch_policy,
+                study_manifest=COLLECTOR_MANIFEST,
                 symbols=("XRPUSDT",),
                 collector_instance_id="replica-a",
             ),
@@ -1096,10 +1417,12 @@ async def test_taker_history_shift_restores_full_epoch_coverage(
         required_sources=("binance_usdm.takerLongShortRatio",),
         symbols=("XRPUSDT",),
     )
-    with AppendOnlyPITStore(tmp_path) as store:
+    with AppendOnlyPITStore(tmp_path, study_manifest=COLLECTOR_MANIFEST) as store:
         collector = BinanceR4P0Collector(
             CollectorConfig(
                 artifact_root=tmp_path,
+                epoch_policy=COLLECTOR_MANIFEST.epoch_policy,
+                study_manifest=COLLECTOR_MANIFEST,
                 symbols=("XRPUSDT",),
                 collector_instance_id="replica-a",
             ),
@@ -1136,10 +1459,12 @@ async def test_invalid_retry_response_keeps_hash_and_terminal_failure(
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=[])
 
-    with AppendOnlyPITStore(tmp_path) as store:
+    with AppendOnlyPITStore(tmp_path, study_manifest=COLLECTOR_MANIFEST) as store:
         collector = BinanceR4P0Collector(
             CollectorConfig(
                 artifact_root=tmp_path,
+                epoch_policy=COLLECTOR_MANIFEST.epoch_policy,
+                study_manifest=COLLECTOR_MANIFEST,
                 symbols=("XRPUSDT",),
                 collector_instance_id="replica-a",
             ),
@@ -1194,10 +1519,12 @@ async def test_epoch_supervisor_failure_is_logged_counted_and_stops(
     monkeypatch,
     caplog,
 ) -> None:
-    with AppendOnlyPITStore(tmp_path) as store:
+    with AppendOnlyPITStore(tmp_path, study_manifest=COLLECTOR_MANIFEST) as store:
         collector = BinanceR4P0Collector(
             CollectorConfig(
                 artifact_root=tmp_path,
+                epoch_policy=COLLECTOR_MANIFEST.epoch_policy,
+                study_manifest=COLLECTOR_MANIFEST,
                 symbols=("XRPUSDT",),
                 collector_instance_id="replica-a",
             ),
@@ -1240,10 +1567,12 @@ async def test_retry_failures_are_logged_counted_and_preserve_diagnostics(
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, text="provider failed: incident-247")
 
-    with AppendOnlyPITStore(tmp_path) as store:
+    with AppendOnlyPITStore(tmp_path, study_manifest=COLLECTOR_MANIFEST) as store:
         collector = BinanceR4P0Collector(
             CollectorConfig(
                 artifact_root=tmp_path,
+                epoch_policy=COLLECTOR_MANIFEST.epoch_policy,
+                study_manifest=COLLECTOR_MANIFEST,
                 symbols=("XRPUSDT",),
                 collector_instance_id="replica-a",
             ),
@@ -1300,11 +1629,13 @@ async def test_collector_start_stamps_runtime_code_hash(
     monkeypatch.setattr(collector_module, "runtime_code_hash", lambda: code_hash)
     monkeypatch.setattr(collector_module, "utc_now", lambda: started_at)
 
-    with AppendOnlyPITStore(tmp_path) as store:
+    with AppendOnlyPITStore(tmp_path, study_manifest=COLLECTOR_MANIFEST) as store:
         _append(store, "binance_usdm.openInterestHist")
         collector = BinanceR4P0Collector(
             CollectorConfig(
                 artifact_root=tmp_path,
+                epoch_policy=COLLECTOR_MANIFEST.epoch_policy,
+                study_manifest=COLLECTOR_MANIFEST,
                 symbols=("XRPUSDT",),
                 collector_instance_id="replica-a",
             ),
@@ -1722,6 +2053,7 @@ def test_process_version_t0_additive_migration_preserves_legacy_rows(tmp_path) -
         assert all("USE TEMP B-TREE" not in detail for detail in plan_details)
     finally:
         connection.close()
+        assert stamp["study_manifest_sha256"] == COLLECTOR_MANIFEST.content_sha256
 
 
 @pytest.mark.unit
@@ -1739,6 +2071,7 @@ def test_watchdog_availability_detects_deployed_head_mismatch(tmp_path) -> None:
                 started_at=RECEIVED,
                 code_hash=code_hash,
                 collector_version=collector_module.COLLECTOR_VERSION,
+                study_manifest_sha256="c" * 64,
             )
             ledger.append_heartbeat(
                 collector_instance_id=f"replica-{name}",
@@ -1753,11 +2086,13 @@ def test_watchdog_availability_detects_deployed_head_mismatch(tmp_path) -> None:
             observed_at=RECEIVED + dt.timedelta(seconds=30),
             stale_after_seconds=60,
             expected_code_hash=expected_code_hash,
+            expected_study_manifest_sha256="c" * 64,
         )
 
         assert report["healthy_replica_count"] == 1
         assert report["version_stamp_match"] is False
         assert report["unstamped_artifacts"] == []
+        assert report["manifest_mismatches"] == []
         assert report["version_mismatches"] == [
             {
                 "actual_code_hash": "b" * 40,
@@ -1768,6 +2103,116 @@ def test_watchdog_availability_detects_deployed_head_mismatch(tmp_path) -> None:
         assert [replica["status"] for replica in report["replicas"]] == [
             "HEALTHY",
             "VERSION_MISMATCH",
+        ]
+    finally:
+        for store in stores:
+            store.close()
+
+
+@pytest.mark.unit
+def test_availability_reports_manifest_code_and_legacy_stamps(tmp_path) -> None:
+    expected_code_hash = "a" * 40
+    expected_manifest_hash = "c" * 64
+    stores: list[AppendOnlyPITStore] = []
+    try:
+        for name, code_hash in (
+            ("manifest-only", expected_code_hash),
+            ("both", "b" * 40),
+        ):
+            store = AppendOnlyPITStore(tmp_path / name)
+            stores.append(store)
+            ledger = EpochLedger(store._db, POLICY)  # noqa: SLF001
+            ledger.append_process_version(
+                collector_instance_id=f"replica-{name}",
+                run_id=f"run-{name}",
+                started_at=RECEIVED,
+                code_hash=code_hash,
+                collector_version=collector_module.COLLECTOR_VERSION,
+                study_manifest_sha256="d" * 64,
+            )
+            ledger.append_heartbeat(
+                collector_instance_id=f"replica-{name}",
+                run_id=f"run-{name}",
+                observed_at=RECEIVED,
+                health={"ok": True},
+            )
+
+        legacy_path = tmp_path / "legacy.sqlite3"
+        with sqlite3.connect(legacy_path) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE collector_heartbeats (
+                    append_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    study_id TEXT NOT NULL,
+                    policy_hash TEXT NOT NULL,
+                    collector_instance_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    observed_at TEXT NOT NULL
+                );
+                CREATE TABLE collector_process_versions (
+                    append_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    study_id TEXT NOT NULL,
+                    policy_hash TEXT NOT NULL,
+                    collector_instance_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    code_hash TEXT NOT NULL,
+                    collector_version TEXT NOT NULL
+                );
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO collector_heartbeats (
+                    study_id, policy_hash, collector_instance_id,
+                    run_id, observed_at
+                ) VALUES (?, ?, 'replica-legacy', 'run-legacy', ?)
+                """,
+                (POLICY.study_id, POLICY.policy_hash, iso_utc(RECEIVED)),
+            )
+            connection.execute(
+                """
+                INSERT INTO collector_process_versions (
+                    study_id, policy_hash, collector_instance_id, run_id,
+                    started_at, code_hash, collector_version
+                ) VALUES (?, ?, 'replica-legacy', 'run-legacy', ?, ?, ?)
+                """,
+                (
+                    POLICY.study_id,
+                    POLICY.policy_hash,
+                    iso_utc(RECEIVED),
+                    expected_code_hash,
+                    collector_module.COLLECTOR_VERSION,
+                ),
+            )
+
+        report = availability_report(
+            [stores[0].path, stores[1].path, legacy_path],
+            POLICY,
+            observed_at=RECEIVED + dt.timedelta(seconds=30),
+            stale_after_seconds=60,
+            expected_code_hash=expected_code_hash,
+            expected_study_manifest_sha256=expected_manifest_hash,
+        )
+
+        assert report["healthy_replica_count"] == 0
+        assert report["version_stamp_match"] is False
+        assert report["unstamped_artifacts"] == [str(legacy_path)]
+        assert {item["artifact"] for item in report["manifest_mismatches"]} == {
+            str(stores[0].path),
+            str(stores[1].path),
+        }
+        assert report["version_mismatches"] == [
+            {
+                "actual_code_hash": "b" * 40,
+                "artifact": str(stores[1].path),
+                "expected_code_hash": expected_code_hash,
+            }
+        ]
+        assert [replica["status"] for replica in report["replicas"]] == [
+            "VERSION_AND_MANIFEST_MISMATCH",
+            "VERSION_UNSTAMPED",
+            "MANIFEST_MISMATCH",
         ]
     finally:
         for store in stores:
