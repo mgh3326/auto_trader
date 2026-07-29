@@ -185,6 +185,15 @@ both broker snapshots plus a fresh `broker_snapshot_fetched_at`; missing,
 unattested, stale, or future-dated evidence remains a blocker.
 
 New source-bound sell paths persist `preview_payload.source_buy_client_order_id`.
+The checker treats that persisted key and the recognized historical aliases as
+one provenance set. Conflicting source IDs are ambiguous and block; an explicit
+source that does not resolve to exactly one buy is never reassigned through the
+legacy fallback. One or more terminal `filled` source sells close a buy only
+when they occur no earlier than the buy and their positive finite filled
+quantities sum exactly to the source buy's filled quantity. Incomplete,
+overfilled, missing/invalid-quantity, non-terminal, or impossible-chronology
+source evidence blocks.
+
 Historical execution rows created before that contract have independent
 `client_order_id` / `lifecycle_correlation_id` values. For those rows only, the
 checker accepts a one-to-one legacy match when broker symbol and positive
@@ -197,7 +206,11 @@ position snapshot proves the unmatched buy quantity is still open.
 reservation evidence, not a post-fill close snapshot. A filled sell is closed
 only by a stored post-fill zero snapshot or a fresh verified broker snapshot
 showing that symbol flat. A non-zero or malformed current quantity remains
-blocking.
+blocking. Every fresh broker position row must have a symbol and a finite,
+parseable quantity; a missing/invalid row is a standalone blocker even when the
+ledger is empty. Current-flat evidence is considered only for sells whose
+lifecycle and broker order status both prove a terminal fill. Partial or
+otherwise non-terminal sell lifecycle evidence remains blocking.
 
 ---
 

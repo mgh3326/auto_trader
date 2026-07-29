@@ -1377,3 +1377,291 @@ def test_rob1129_mutation_nonflat_sell_still_blocks():
     assert finding.details["rows"][0]["reason"] == (
         "verified_current_broker_position_nonzero"
     )
+
+
+# ---------------------------------------------------------------------------
+# ROB-1129 adversarial verifier follow-up: eight formerly false-PASS boundaries
+# ---------------------------------------------------------------------------
+
+_ROB1129_VERIFY_NOW = datetime(2026, 7, 30, 0, 0, tzinfo=UTC)
+_ROB1129_VERIFY_BUY_AT = datetime(2026, 7, 29, 23, 0, tzinfo=UTC)
+_ROB1129_VERIFY_SELL_AT = datetime(2026, 7, 29, 23, 1, tzinfo=UTC)
+
+
+def _rob1129_verify_report(*, ledger_rows=(), positions=()):
+    return build_paper_execution_preflight_report(
+        ledger_rows=ledger_rows,
+        positions=positions,
+        positions_fetched_at=_ROB1129_VERIFY_NOW,
+        open_orders=[],
+        open_orders_fetched_at=_ROB1129_VERIFY_NOW,
+        now=_ROB1129_VERIFY_NOW,
+    )
+
+
+def _rob1129_verify_buy(**kwargs):
+    values = {
+        "client_order_id": "buy-1",
+        "lifecycle_correlation_id": "buy-1",
+        "execution_symbol": "AAPL",
+        "signal_symbol": "AAPL",
+        "filled_qty": "1",
+        "created_at": _ROB1129_VERIFY_BUY_AT,
+    }
+    values.update(kwargs)
+    return _row(**values)
+
+
+def _rob1129_verify_sell(**kwargs):
+    values = {
+        "client_order_id": "sell-1",
+        "lifecycle_correlation_id": "sell-1",
+        "side": "sell",
+        "execution_symbol": "AAPL",
+        "signal_symbol": "AAPL",
+        "filled_qty": "1",
+        "position_snapshot": {
+            "snapshot_kind": "sell_claim_baseline",
+            "qty": "1",
+        },
+        "created_at": _ROB1129_VERIFY_SELL_AT,
+    }
+    values.update(kwargs)
+    return _row(**values)
+
+
+@pytest.mark.unit
+def test_rob1129_refuted_ambiguous_actual_plus_recognized_source_blocks():
+    report = _rob1129_verify_report(
+        ledger_rows=[
+            _rob1129_verify_buy(),
+            _rob1129_verify_sell(
+                preview_payload={"source_buy_client_order_id": "buy-other"},
+                raw_responses={"payload": {"source_client_order_id": "buy-1"}},
+            ),
+        ]
+    )
+
+    finding = _anomaly(report, "sell_source_evidence_invalid")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert finding.details["rows"][0]["reason"] == "ambiguous_source_buy_ids"
+
+
+@pytest.mark.unit
+def test_rob1129_refuted_broker_qty_missing_blocks():
+    report = _rob1129_verify_report(positions=[{"symbol": "AAPL", "qty": None}])
+
+    finding = _anomaly(report, "broker_position_snapshot_malformed")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert finding.details["rows"][0]["reason"] == "position_qty_missing"
+    assert "preflight_clean" not in _check_ids(report)
+
+
+@pytest.mark.unit
+def test_rob1129_refuted_broker_qty_invalid_blocks():
+    report = _rob1129_verify_report(positions=[{"symbol": "AAPL", "qty": "bad"}])
+
+    finding = _anomaly(report, "broker_position_snapshot_malformed")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert finding.details["rows"][0]["reason"] == "position_qty_invalid"
+    assert "preflight_clean" not in _check_ids(report)
+
+
+@pytest.mark.unit
+def test_rob1129_refuted_source_partial_qty_blocks():
+    report = _rob1129_verify_report(
+        ledger_rows=[
+            _rob1129_verify_buy(),
+            _rob1129_verify_sell(
+                filled_qty="0.4",
+                preview_payload={"source_buy_client_order_id": "buy-1"},
+            ),
+        ]
+    )
+
+    finding = _anomaly(report, "sell_source_evidence_invalid")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert finding.details["rows"][0]["reason"] == "source_sell_qty_incomplete"
+
+
+@pytest.mark.unit
+def test_rob1129_refuted_source_sell_before_buy_blocks():
+    report = _rob1129_verify_report(
+        ledger_rows=[
+            _rob1129_verify_buy(),
+            _rob1129_verify_sell(
+                created_at=_ROB1129_VERIFY_BUY_AT - timedelta(minutes=1),
+                preview_payload={"source_buy_client_order_id": "buy-1"},
+            ),
+        ]
+    )
+
+    finding = _anomaly(report, "sell_source_evidence_invalid")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert finding.details["rows"][0]["reason"] == "source_sell_before_buy"
+
+
+@pytest.mark.unit
+def test_rob1129_refuted_filled_state_partial_order_status_blocks():
+    report = _rob1129_verify_report(
+        ledger_rows=[
+            _rob1129_verify_sell(
+                lifecycle_state="filled",
+                order_status="partially_filled",
+                filled_qty="0.4",
+            )
+        ]
+    )
+
+    finding = _anomaly(report, "ledger_order_fill_mismatch")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert finding.details["rows"][0]["reason"] == (
+        "filled_lifecycle_without_terminal_order_status"
+    )
+    assert "sell_closed_by_current_position_snapshot" not in _check_ids(report)
+
+
+@pytest.mark.unit
+def test_rob1129_refuted_partial_state_partial_order_status_blocks():
+    report = _rob1129_verify_report(
+        ledger_rows=[
+            _rob1129_verify_sell(
+                lifecycle_state="partially_filled",
+                order_status="partially_filled",
+                filled_qty="0.4",
+            )
+        ]
+    )
+
+    finding = _anomaly(report, "ledger_order_fill_mismatch")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert finding.details["rows"][0]["reason"] == ("sell_lifecycle_not_terminal")
+    assert "preflight_clean" not in _check_ids(report)
+
+
+@pytest.mark.unit
+def test_rob1129_refuted_persisted_key_wrong_source_blocks():
+    report = _rob1129_verify_report(
+        ledger_rows=[
+            _rob1129_verify_buy(),
+            _rob1129_verify_sell(
+                preview_payload={"source_buy_client_order_id": "buy-other"}
+            ),
+        ]
+    )
+
+    finding = _anomaly(report, "sell_source_evidence_invalid")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert finding.details["rows"][0]["reason"] == "source_buy_not_found"
+    assert "legacy_buy_sell_match" not in _check_ids(report)
+
+
+@pytest.mark.unit
+def test_rob1129_source_partial_sells_must_sum_exactly_to_buy_qty():
+    first_sell = _rob1129_verify_sell(
+        client_order_id="sell-partial-1",
+        filled_qty="0.4",
+        preview_payload={"source_buy_client_order_id": "buy-1"},
+    )
+    second_sell = _rob1129_verify_sell(
+        client_order_id="sell-partial-2",
+        filled_qty="0.6",
+        created_at=_ROB1129_VERIFY_SELL_AT + timedelta(minutes=1),
+        preview_payload={"source_buy_client_order_id": "buy-1"},
+    )
+
+    exact = _rob1129_verify_report(
+        ledger_rows=[_rob1129_verify_buy(), first_sell, second_sell]
+    )
+    assert exact.should_block is False
+    assert "sell_source_evidence_invalid" not in _check_ids(exact)
+    assert "previous_buy_filled_sell_missing" not in _check_ids(exact)
+
+    overfilled = _rob1129_verify_report(
+        ledger_rows=[
+            _rob1129_verify_buy(),
+            first_sell,
+            _rob1129_verify_sell(
+                client_order_id="sell-partial-over",
+                filled_qty="0.7",
+                created_at=_ROB1129_VERIFY_SELL_AT + timedelta(minutes=1),
+                preview_payload={"source_buy_client_order_id": "buy-1"},
+            ),
+        ]
+    )
+    finding = _anomaly(overfilled, "sell_source_evidence_invalid")
+    assert finding.details["rows"][0]["reason"] == "source_sell_qty_exceeds_buy"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("position", "reason"),
+    [
+        ({"qty": "1"}, "position_symbol_missing"),
+        ({"symbol": "AAPL", "qty": "NaN"}, "position_qty_invalid"),
+        ({"symbol": "AAPL", "qty": "Infinity"}, "position_qty_invalid"),
+    ],
+)
+def test_rob1129_every_malformed_position_row_blocks(position, reason):
+    report = _rob1129_verify_report(positions=[position])
+
+    finding = _anomaly(report, "broker_position_snapshot_malformed")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert finding.details["rows"][0]["reason"] == reason
+
+
+@pytest.mark.unit
+def test_rob1129_new_evidence_blockers_are_not_downgraded_by_legacy_flag():
+    report = build_paper_execution_preflight_report(
+        ledger_rows=[
+            _rob1129_verify_buy(),
+            _rob1129_verify_sell(
+                filled_qty="0.4",
+                preview_payload={"source_buy_client_order_id": "buy-1"},
+            ),
+            _rob1129_verify_sell(
+                client_order_id="sell-partial-lifecycle",
+                lifecycle_state="partially_filled",
+                order_status="partially_filled",
+                filled_qty="0.2",
+                created_at=_ROB1129_VERIFY_SELL_AT + timedelta(minutes=1),
+            ),
+        ],
+        positions=[{"symbol": "AAPL", "qty": "bad"}],
+        positions_fetched_at=_ROB1129_VERIFY_NOW,
+        open_orders=[],
+        open_orders_fetched_at=_ROB1129_VERIFY_NOW,
+        now=_ROB1129_VERIFY_NOW,
+        legacy_cycle_blockers_as_warnings=True,
+    )
+
+    assert report.should_block is True
+    severities = {finding.check_id: finding.severity for finding in report.anomalies}
+    assert severities["broker_position_snapshot_malformed"] == (
+        PaperExecutionAnomalySeverity.block
+    )
+    assert severities["sell_source_evidence_invalid"] == (
+        PaperExecutionAnomalySeverity.block
+    )
+    assert severities["ledger_order_fill_mismatch"] == (
+        PaperExecutionAnomalySeverity.block
+    )
+
+
+@pytest.mark.unit
+def test_rob1129_stored_post_fill_zero_current_nonzero_still_blocks():
+    report = _rob1129_verify_report(
+        ledger_rows=[
+            _rob1129_verify_sell(
+                position_snapshot={
+                    "snapshot_kind": "post_fill",
+                    "qty": "0",
+                }
+            )
+        ],
+        positions=[{"symbol": "AAPL", "qty": "1"}],
+    )
+
+    finding = _anomaly(report, "residual_position_exists")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert report.should_block is True
