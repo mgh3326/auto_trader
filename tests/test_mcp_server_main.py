@@ -62,6 +62,7 @@ def _load_main_module(
     account_read: bool = False,
     tradingcodex_execution: bool = False,
     paper_execution: bool = False,
+    directional_lab_crypto: bool = False,
     paper_execution_enabled: bool = False,
     kiwoom: bool = False,
     unrelated_profile: bool = False,
@@ -146,11 +147,14 @@ def _load_main_module(
     account_read_profile = _FakeProfileMember("account_read")
     tradingcodex_execution_profile = _FakeProfileMember("tradingcodex_execution")
     paper_execution_profile = _FakeProfileMember("paper_execution")
+    directional_lab_crypto_profile = _FakeProfileMember("directional-lab-crypto")
     default_profile = _FakeProfileMember("default")
     kiwoom_profile = _FakeProfileMember("kiwoom")
     unrelated_profile_member = _FakeProfileMember("crypto")
     if paper_execution:
         resolved_profile = paper_execution_profile
+    elif directional_lab_crypto:
+        resolved_profile = directional_lab_crypto_profile
     elif tradingcodex_execution:
         resolved_profile = tradingcodex_execution_profile
     elif account_read:
@@ -166,6 +170,7 @@ def _load_main_module(
         ACCOUNT_READ=account_read_profile,
         TRADINGCODEX_EXECUTION=tradingcodex_execution_profile,
         PAPER_EXECUTION=paper_execution_profile,
+        DIRECTIONAL_LAB_CRYPTO=directional_lab_crypto_profile,
         DEFAULT=default_profile,
         KIWOOM=kiwoom_profile,
     )
@@ -648,3 +653,14 @@ class TestMcpServerMain:
 
         assert module._mcp_profile.value == "paper_execution"
         assert _FakeFastMCP.init_count == 1
+
+    def test_directional_lab_crypto_profile_requires_auth_before_fastmcp(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+        with pytest.raises(
+            RuntimeError,
+            match="MCP_PROFILE=directional-lab-crypto requires non-empty MCP_AUTH_TOKEN",
+        ):
+            _load_main_module(monkeypatch, directional_lab_crypto=True)
+        assert _FakeFastMCP.init_count == 0

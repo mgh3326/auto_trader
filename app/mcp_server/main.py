@@ -59,6 +59,7 @@ def _validate_profile_auth_token(
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
         McpProfile.PAPER_EXECUTION,
+        McpProfile.DIRECTIONAL_LAB_CRYPTO,
     }
     if profile in token_required_profiles and not (token or "").strip():
         raise RuntimeError(

@@ -2340,6 +2340,7 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | Account read | `account_read` | TradingCodex account adapter allowlist only: existing KIS/Toss account reads plus `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`, and `kiwoom_mock_get_order_history`. Kiwoom and all other mutations remain physically absent. |
 | TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
 | Canonical paper execution | `paper_execution` | ROB-845 façade + ROB-848 validation + ROB-849 operator kill switch. Default-off and auth-required; no generic, venue-native, or live tools. |
+| Directional-lab crypto | `directional-lab-crypto` | Auth-required exact allowlist for crypto directional-lab research, forecast/artifact persistence, identity-bound DB-paper account/holdings/pending reads, and confirm-gated paper limit placement/reconcile/single cancel. Live Upbit, Binance Demo, Alpaca, and paper account create/reset/delete are physically absent. |
 
 Generic `live_reconcile_orders` is evidence-first: `none` returns
 `noop_no_evidence` with `requires_manual_review=true` and leaves the ledger open.

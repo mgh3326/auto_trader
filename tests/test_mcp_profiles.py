@@ -31,6 +31,11 @@ from app.mcp_server.tooling.analysis_readonly_registration import (
     ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES,
     ANALYSIS_READONLY_TOOL_NAMES,
 )
+from app.mcp_server.tooling.directional_lab_crypto_registration import (
+    DIRECTIONAL_LAB_CRYPTO_PAPER_TOOL_NAMES,
+    DIRECTIONAL_LAB_CRYPTO_TOOL_NAMES,
+    validate_directional_lab_crypto_account_identity,
+)
 from app.mcp_server.tooling.market_quote_snapshot_tools import (
     MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
 )
@@ -229,6 +234,60 @@ class TestCryptoProfile:
         assert KIS_MOCK_ORDER_TOOL_NAMES.isdisjoint(mcp.tools.keys())
 
 
+class TestDirectionalLabCryptoProfile:
+    def test_registers_exact_dedicated_allowlist(self) -> None:
+        mcp = _build_mcp(McpProfile.DIRECTIONAL_LAB_CRYPTO)
+        assert set(mcp.tools) == DIRECTIONAL_LAB_CRYPTO_TOOL_NAMES
+
+    def test_live_and_other_venue_surfaces_are_physically_absent(self) -> None:
+        mcp = _build_mcp(McpProfile.DIRECTIONAL_LAB_CRYPTO)
+        forbidden = (
+            _LEGACY_ORDER_TOOL_NAMES
+            | KIS_LIVE_ORDER_TOOL_NAMES
+            | KIS_MOCK_ORDER_TOOL_NAMES
+            | LIVE_RECONCILE_TOOL_NAMES
+            | KIWOOM_MOCK_TOOL_NAMES
+            | KIWOOM_MOCK_US_TOOL_NAMES
+            | _US_PAPER_TOOL_NAMES
+            | PAPER_ACCOUNT_TOOL_NAMES
+        ) - DIRECTIONAL_LAB_CRYPTO_PAPER_TOOL_NAMES
+        assert forbidden.isdisjoint(mcp.tools)
+        assert DIRECTIONAL_LAB_CRYPTO_PAPER_TOOL_NAMES.isdisjoint(
+            _build_mcp(McpProfile.CRYPTO).tools
+        )
+
+    @pytest.mark.parametrize(
+        ("account_id", "account_name", "strategy_name", "expected"),
+        [
+            (8, "lab", "wrong", "strategy_name_mismatch"),
+            (9, "lab", "directional-lab", "account_id_mismatch"),
+            (8, "other", "directional-lab", "account_name_mismatch"),
+        ],
+    )
+    def test_account_identity_mismatches_fail_closed(
+        self, account_id: int, account_name: str, strategy_name: str, expected: str
+    ) -> None:
+        account = type(
+            "Account",
+            (),
+            {
+                "id": 8,
+                "name": "lab",
+                "strategy_name": "directional-lab",
+                "is_active": True,
+            },
+        )()
+        assert (
+            validate_directional_lab_crypto_account_identity(
+                account,
+                account_id=account_id,
+                account_name=account_name,
+                strategy_name=strategy_name,
+            )
+            == expected
+        )
+
+
 class TestKiwoomProfile:
     def test_registers_kiwoom_mock_tools(self) -> None:
         mcp = _build_mcp(McpProfile.KIWOOM)
@@ -337,6 +396,7 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     # Default-off profile: the direct registry exposes zero tools until the
     # dedicated feature flag is explicitly enabled.
     McpProfile.PAPER_EXECUTION: set(),
+    McpProfile.DIRECTIONAL_LAB_CRYPTO: set(PAPER_LIMIT_ORDER_TOOL_NAMES),
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -387,6 +447,7 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
         McpProfile.PAPER_EXECUTION,
+        McpProfile.DIRECTIONAL_LAB_CRYPTO,
     )
 ]
 
@@ -912,6 +973,12 @@ class TestResolveMcpProfile:
 
     def test_paper_execution(self) -> None:
         assert resolve_mcp_profile("paper_execution") is McpProfile.PAPER_EXECUTION
+
+    def test_directional_lab_crypto(self) -> None:
+        assert (
+            resolve_mcp_profile("directional-lab-crypto")
+            is McpProfile.DIRECTIONAL_LAB_CRYPTO
+        )
 
     def test_invalid_string_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown MCP_PROFILE"):

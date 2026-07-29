@@ -21,6 +21,7 @@ class McpProfile(StrEnum):
     ACCOUNT_READ = "account_read"
     TRADINGCODEX_EXECUTION = "tradingcodex_execution"
     PAPER_EXECUTION = "paper_execution"
+    DIRECTIONAL_LAB_CRYPTO = "directional-lab-crypto"
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:

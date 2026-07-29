@@ -108,6 +108,9 @@ from app.mcp_server.tooling.analysis_readonly_registration import (
     register_analysis_readonly_tools,
 )
 from app.mcp_server.tooling.analysis_registration import register_analysis_tools
+from app.mcp_server.tooling.directional_lab_crypto_registration import (
+    register_directional_lab_crypto_tools,
+)
 from app.mcp_server.tooling.downside_watch_registration import (
     register_downside_watch_tools,
 )
@@ -257,6 +260,13 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
             register_paper_execution_tools(mcp)
             register_paper_validation_tools(mcp)
             register_paper_cohort_control_tools(mcp)
+        return
+
+    if profile is McpProfile.DIRECTIONAL_LAB_CRYPTO:
+        # ROB-1164: dedicated allowlist. This must stay before the broad
+        # registrations: no live Upbit, Binance, Alpaca, or account lifecycle
+        # tool can become reachable through this profile.
+        register_directional_lab_crypto_tools(mcp)
         return
 
     # Always: side-effect-free research + read-only tools
