@@ -91,6 +91,9 @@ async def _preview_place(
     from app.mcp_server.tooling.shared import resolve_market_type
     from app.services.paper_fills import snap_limit_down
 
+    if side not in {"buy", "sell"}:
+        return {"success": False, "error": f"Unsupported order side: {side!r}"}
+
     pts_factory = PaperLimitOrderService
     svc = pts_factory(db)
     account = await svc.pts.get_account(account_id)

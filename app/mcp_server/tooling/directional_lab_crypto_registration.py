@@ -19,6 +19,7 @@ from app.mcp_server.tooling.market_data_registration import register_market_data
 from app.mcp_server.tooling.operating_briefing_registration import (
     register_operating_briefing_tools,
 )
+from app.mcp_server.tooling.paper_limit_order_handler import _preview_place
 from app.mcp_server.tooling.route_request_registration import (
     register_route_request_tools,
 )
@@ -192,7 +193,33 @@ def register_directional_lab_crypto_tools(mcp: FastMCP) -> None:
             if failure:
                 return failure
             if dry_run:
-                return {"success": True, "dry_run": True, "account_id": account_id}
+                preview = await _preview_place(
+                    db=db,
+                    account_id=account_id,
+                    symbol=symbol,
+                    side=side,
+                    limit_price=limit_price,
+                    quantity=quantity,
+                    amount_krw=amount_krw,
+                    thesis=thesis,
+                )
+                if not preview.get("success"):
+                    return preview
+                canonical = preview["preview"]
+                canonical["amount_krw"] = float(
+                    Decimal(str(canonical["limit_price"]))
+                    * Decimal(str(canonical["quantity"]))
+                )
+                canonical["intent"] = {
+                    "strategy": DIRECTIONAL_LAB_CRYPTO_STRATEGY,
+                    "thesis": thesis,
+                    "target_price": target_price,
+                    "stop_loss": stop_loss,
+                    "probability": probability,
+                    "review_date": review_date,
+                    "artifact_uuid": artifact_uuid,
+                }
+                return preview
             return await PaperLimitOrderService(db).place_limit_order(
                 account_id=account_id,
                 symbol=symbol,

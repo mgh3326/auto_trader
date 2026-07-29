@@ -8,6 +8,8 @@ Verifies that:
 
 from __future__ import annotations
 
+from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -286,6 +288,101 @@ class TestDirectionalLabCryptoProfile:
             )
             == expected
         )
+
+    @pytest.mark.asyncio
+    async def test_paper_limit_preview_is_canonical_and_fail_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import app.mcp_server.tooling.directional_lab_crypto_registration as lab
+        import app.mcp_server.tooling.paper_limit_order_handler as limit
+
+        active = SimpleNamespace(
+            id=8,
+            name="lab",
+            strategy_name="directional-lab",
+            is_active=True,
+            cash_krw=Decimal("1000000"),
+        )
+
+        class Session:
+            async def __aenter__(self) -> object:
+                return object()
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+        class TradingService:
+            def __init__(self, db: object) -> None:
+                del db
+
+            async def get_account_by_name(self, name: str) -> object | None:
+                return active if name == active.name else None
+
+        class LimitService:
+            def __init__(self, db: object) -> None:
+                del db
+                self.pts = SimpleNamespace(get_account=self.get_account)
+
+            async def get_account(self, account_id: int) -> object | None:
+                return active if account_id == active.id else None
+
+        monkeypatch.setattr(lab, "AsyncSessionLocal", Session)
+        monkeypatch.setattr(lab, "PaperTradingService", TradingService)
+        monkeypatch.setattr(limit, "PaperLimitOrderService", LimitService)
+        mcp = _build_mcp(McpProfile.DIRECTIONAL_LAB_CRYPTO)
+        place = mcp.tools["paper_place_limit_order"]
+        base = {
+            "account_id": 8,
+            "account_name": "lab",
+            "strategy_name": "directional-lab",
+            "symbol": "KRW-BTC",
+            "side": "buy",
+            "limit_price": 100_001.0,
+        }
+
+        preview = await place(quantity=0.012345678, thesis="thesis", **base)
+        assert preview["success"] is True
+        assert preview["dry_run"] is True
+        assert preview["preview"] == {
+            "account_id": 8,
+            "symbol": "KRW-BTC",
+            "side": "buy",
+            "order_type": "limit",
+            "limit_price": Decimal("100000"),
+            "quantity": Decimal("0.01234568"),
+            "thesis": "thesis",
+            "cash_krw": 1000000.0,
+            "amount_krw": 1234.568,
+            "intent": {
+                "strategy": "directional-lab",
+                "thesis": "thesis",
+                "target_price": None,
+                "stop_loss": None,
+                "probability": None,
+                "review_date": None,
+                "artifact_uuid": None,
+            },
+        }
+
+        for override, expected in (
+            ({"side": "hold"}, "Unsupported order side"),
+            ({}, "Either quantity or amount_krw must be provided"),
+            (
+                {"symbol": "AAPL", "quantity": 1},
+                "Resting-limit sim only supports crypto",
+            ),
+        ):
+            result = await place(**(base | override))
+            assert result["success"] is False
+            assert expected in result["error"]
+
+        active.is_active = False
+        inactive = await place(quantity=1, **base)
+        assert inactive == {
+            "success": False,
+            "error": "account_inactive",
+            "fail_closed": True,
+        }
 
 
 class TestKiwoomProfile:
