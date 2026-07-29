@@ -1,3 +1,13 @@
+> **🪦 TOMBSTONE (ROB-1147, 2026-07-29) — 이 계획은 실행하면 안 된다.**
+> 이 문서가 계획했던 실행 표면(`binance_demo_scalping_submit_decision` MCP 도구, 그
+> 도구가 배선하는 `session_tag`/`signal_snapshot` executor 인자, 관련 registry.py
+> 등록 블록, `docs/runbooks/binance-demo-scalping-llm-session.md` 런북)은 ROB-1147에서
+> **전부 제거되었다**. 아래 본문은 역사적 스냅샷(2026-06-22 작성 시점 계획)이며, 여기
+> 적힌 커맨드·코드·`git commit`·MCP 도구 호출을 지금 실행하지 마라. `session_tag`
+> 배선의 대상이었던 `DemoScalpingExecutor`(executor.py) 자체는 ROB-845 paper adapter의
+> 하드 의존이라 계속 존재하지만, 이 문서가 다루는 LLM 결정 주입 도구/게이트/런북은
+> 더 이상 코드에 없다.
+
 # Binance Demo 스캘핑 LLM 결정 주입 (Phase 3, D-PR1) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

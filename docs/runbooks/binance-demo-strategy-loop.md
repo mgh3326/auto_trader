@@ -8,13 +8,16 @@ strategy-agnostic infrastructure — the S3 signal-engine adapter
 (ROB-980) is **not** wired here; the default plugin (`NullStrategy`)
 never emits a signal.
 
-This lane shares the `demo-fapi.binance.com` execution client, the
-`binance_demo_order_ledger` table, and (in production) the Demo API
-credentials with the ROB-298 smoke CLI (`scripts/binance_futures_demo_smoke.py`)
-and the ROB-307/ROB-841/ROB-844 demo-scalping executor
-(`app/jobs/binance_demo_scalping_runner.py`). See §5 for the shared-account
-interference implications before running `--confirm` in an environment
-where those are also active.
+This lane shares the `demo-fapi.binance.com` execution client and the
+`binance_demo_order_ledger` table with the ROB-298 smoke CLI
+(`scripts/binance_futures_demo_smoke.py`). The ROB-307/ROB-841/ROB-844
+demo-scalping scheduler/LLM-handler/WS-daemon lane that used to also share
+this account was removed (ROB-1147); the underlying `DemoScalpingExecutor`
+was kept only as a direct dependency of the ROB-845 paper-execution adapter
+(`app/services/brokers/binance/paper_adapter.py`), which is a separate,
+non-scheduled execution path. See §5 for what remains of the shared-account
+interference discussion before running `--confirm` in an environment where
+the ROB-845 paper adapter is also active.
 
 ---
 
@@ -147,9 +150,15 @@ mid-lifecycle — investigate the ledger row before retrying).
 
 The Demo API credentials (`BINANCE_DEMO_API_KEY`/`_SECRET`) and the
 `demo-fapi.binance.com` account are **shared** across every consumer of
-this repo's Futures Demo lane: this loop, the ROB-298 smoke CLI, and —
-in production — the ROB-307/841/844 demo-scalping executor
-(`BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED`). The kill switch and
+this repo's Futures Demo lane: this loop and the ROB-298 smoke CLI. The
+ROB-307/841/844 demo-scalping scheduler tick
+(`BINANCE_DEMO_SCALPING_SCHEDULER_ENABLED`) that used to also place real
+orders against this account was removed (ROB-1147) — it was the concrete
+scenario this section originally warned about (scalping placing a futures
+order and permanently blocking this lane's account-wide flat gate). The
+ROB-845 paper-execution adapter still reuses the same `DemoScalpingExecutor`
+class for its own (non-scheduled, spot-only) round trips, so the same
+shared-account caveat below still applies to it. The kill switch and
 `reserve_root_planned` exposure-slot cap only see **this process's own
 local database's** `binance_demo_order_ledger` rows — they do **not**
 know about broker-side state opened by a different process against the
