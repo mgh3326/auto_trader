@@ -8,6 +8,7 @@ they are passed through untransformed for the parent project to consume.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Protocol
 
 from app.services.brokers.kiwoom import constants
@@ -169,14 +170,71 @@ class KiwoomDomesticAccountClient:
     async def get_order_detail(
         self,
         *,
-        order_no: str,
+        order_date: str | None = None,
+        qry_tp: str = constants.ACCOUNT_ORDER_DETAIL_QRY_TP_DEFAULT,
+        symbol: str | None = None,
+        from_order_no: str | None = None,
+        dmst_stex_tp: str = constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
         cont_yn: str | None = None,
         next_key: str | None = None,
     ) -> dict[str, Any]:
+        """Read kt00007 (계좌별주문체결내역상세요청) with the official body.
+
+        ROB-1155 — the previous implementation sent ``{"ord_no": ...}``: a field
+        that does not exist in kt00007's official request table, while omitting
+        all four Required=Y fields. Official body (verified 2026-07-29 against
+        https://openapi.kiwoom.com/m/guide/apiguide?apiId=kt00007&jobTp=FS_JOB_TP&jobTpCode=08
+        and the local extraction of the same doc) is exactly these 7 fields:
+
+            ord_dt (N) · qry_tp (Y) · stk_bond_tp (Y) · sell_tp (Y)
+            stk_cd (N) · fr_ord_no (N) · dmst_stex_tp (Y)
+
+        Optional fields are sent as empty strings, matching the official Request
+        Example (which spells out ``"ord_dt": ""`` rather than omitting the key);
+        key-omission and empty-string are not documented as equivalent.
+
+        ``from_order_no`` maps to ``fr_ord_no``, whose official semantics are
+        "start order number — earlier orders are excluded". It is a lower bound,
+        NOT an exact match, so single-order lookups must filter the response rows
+        on ``ord_no`` locally (see ``kiwoom_mock_get_order_detail``).
+
+        ``dmst_stex_tp`` accepts only ACCOUNT_READ_VENUE_ALLOWLIST ({KRX, NXT}).
+        This is a read-only observation argument: the order path (kt10000-kt10003)
+        is untouched and stays KRX-pinned.
+        """
+        venue = str(dmst_stex_tp).strip().upper()
+        if venue not in constants.ACCOUNT_READ_VENUE_ALLOWLIST:
+            raise ValueError(
+                "kt00007 read venue must be one of "
+                f"{sorted(constants.ACCOUNT_READ_VENUE_ALLOWLIST)}; got {dmst_stex_tp!r}"
+            )
+        query_type = str(qry_tp).strip()
+        if query_type not in constants.ACCOUNT_ORDER_DETAIL_QRY_TYPES:
+            raise ValueError(
+                "kt00007 qry_tp must be one of "
+                f"{sorted(constants.ACCOUNT_ORDER_DETAIL_QRY_TYPES)}; got {qry_tp!r}"
+            )
+        ord_dt = "" if order_date is None else str(order_date).strip()
+        if ord_dt and not re.fullmatch(r"[0-9]{8}", ord_dt):
+            raise ValueError(f"kt00007 order_date must be YYYYMMDD; got {order_date!r}")
+        stk_cd = "" if symbol is None else normalize_krx_symbol(symbol)
+        fr_ord_no = "" if from_order_no is None else str(from_order_no).strip()
+        if fr_ord_no and not re.fullmatch(r"[0-9]+", fr_ord_no):
+            raise ValueError(
+                f"kt00007 from_order_no must be numeric; got {from_order_no!r}"
+            )
         return await self._client.post_api(
             api_id=constants.ACCOUNT_ORDER_DETAIL_API_ID,
             path=ACCOUNT_PATH,
-            body={"ord_no": str(order_no).strip()},
+            body={
+                "ord_dt": ord_dt,
+                "qry_tp": query_type,
+                "stk_bond_tp": constants.ACCOUNT_ORDER_DETAIL_STK_BOND_TP_DEFAULT,
+                "sell_tp": constants.ACCOUNT_ORDER_DETAIL_SELL_TP_DEFAULT,
+                "stk_cd": stk_cd,
+                "fr_ord_no": fr_ord_no,
+                "dmst_stex_tp": venue,
+            },
             cont_yn=cont_yn,
             next_key=next_key,
         )

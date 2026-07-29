@@ -40,6 +40,34 @@ def test_kt00009_order_status_defaults():
     assert k.ACCOUNT_ORDER_MRKT_TP_DEFAULT == "0"
 
 
+def test_kt00007_order_detail_official_values():
+    # ROB-1155 — official kt00007 qry_tp enum: "1:주문순, 2:역순, 3:미체결,
+    # 4:체결내역만". Defaults for the two other Required=Y scope fields are 전체.
+    assert k.ACCOUNT_ORDER_DETAIL_QRY_TP_ORDER_SEQUENCE == "1"
+    assert k.ACCOUNT_ORDER_DETAIL_QRY_TP_REVERSE == "2"
+    assert k.ACCOUNT_ORDER_DETAIL_QRY_TP_UNFILLED == "3"
+    assert k.ACCOUNT_ORDER_DETAIL_QRY_TP_FILLED == "4"
+    assert k.ACCOUNT_ORDER_DETAIL_QRY_TYPES == frozenset({"1", "2", "3", "4"})
+    assert k.ACCOUNT_ORDER_DETAIL_QRY_TP_DEFAULT == "1"
+    assert k.ACCOUNT_ORDER_DETAIL_STK_BOND_TP_DEFAULT == "0"
+    assert k.ACCOUNT_ORDER_DETAIL_SELL_TP_DEFAULT == "0"
+    # kt00007's response list key differs from kt00009's acnt_ord_cntr_prst_array.
+    assert k.ACCOUNT_ORDER_DETAIL_LIST_KEY == "acnt_ord_cntr_prps_dtl"
+
+
+def test_read_venue_allowlist_does_not_relax_the_order_krx_pin():
+    # ROB-1155 hard invariant — the read-only observation allowlist is a separate
+    # constant from the order-path exchange boundary. NXT is observable but stays
+    # a rejected ORDER exchange; "%" and SOR are not observable either.
+    assert k.ACCOUNT_READ_VENUE_ALLOWLIST == frozenset({"KRX", "NXT"})
+    assert k.ACCOUNT_READ_VENUE_KRX == k.MOCK_EXCHANGE_KRX == "KRX"
+    assert k.ACCOUNT_READ_VENUE_NXT == "NXT"
+    assert k.MOCK_REJECTED_EXCHANGES == frozenset({"NXT", "SOR"})
+    assert "NXT" in k.MOCK_REJECTED_EXCHANGES
+    assert "SOR" not in k.ACCOUNT_READ_VENUE_ALLOWLIST
+    assert "%" not in k.ACCOUNT_READ_VENUE_ALLOWLIST
+
+
 def test_kt00001_deposit_qry_tp_is_general_query_two():
     # ROB-891 — Official kt00001 (예수금상세현황) body is exactly {"qry_tp": "2"}.
     # "2" is 일반조회, used for current orderable cash. Must NOT reuse

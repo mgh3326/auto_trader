@@ -221,6 +221,87 @@ def normalize_orders(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return orders
 
 
+def normalize_order_detail(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Parse kt00007 ``acnt_ord_cntr_prps_dtl`` rows (ROB-1155).
+
+    Deliberately a kt00007-only sibling of :func:`normalize_orders` rather than a
+    generalization of it: kt00009 returns ``acnt_ord_cntr_prst_array`` with
+    ``mdfy_cncl_tp``, while kt00007 returns ``acnt_ord_cntr_prps_dtl`` with
+    ``mdfy_cncl`` plus ``ord_remnq`` (주문잔량) and a per-row ``dmst_stex_tp``.
+    Widening the shared normalizer would put the already-shipped kt00009 read
+    surface at regression risk for no gain.
+
+    Evidence preserved beyond kt00009's shape:
+
+    * ``remaining_quantity`` — broker-reported ``ord_remnq``, not derived.
+    * ``unfilled_quantity`` — ``ord_qty - cntr_qty``, derived, for cross-checking.
+    * ``remaining_quantity_consistent`` — whether the two agree. A partial cancel
+      legitimately leaves ``ord_remnq`` below the unfilled amount, so a mismatch
+      in that direction is surfaced as a flag rather than an error.
+    * ``venue`` — raw per-row ``dmst_stex_tp``. Required=N in the official
+      response table, so ``None`` when the broker omits it; never fabricated.
+      This is the only field that can answer "which venue did the broker record
+      this order on", so it is passed through untransformed.
+    * ``change_type`` — raw ``mdfy_cncl`` text.
+
+    Fail-close on malformed evidence: missing list, non-mapping rows, non-numeric
+    ``ord_no``, missing/negative integers, non-positive ``ord_qty``, fills above
+    the ordered quantity, or a remaining quantity above the unfilled quantity
+    (arithmetically impossible).
+    """
+
+    orders: list[dict[str, Any]] = []
+    for row in _required_rows(payload, constants.ACCOUNT_ORDER_DETAIL_LIST_KEY):
+        ordered_quantity = _required_non_negative_int(row, "ord_qty")
+        filled_quantity = _required_non_negative_int(row, "cntr_qty")
+        remaining_quantity = _required_non_negative_int(row, "ord_remnq")
+        if ordered_quantity <= 0:
+            raise KiwoomMockEvidenceError("Kiwoom order quantity must be positive")
+        if filled_quantity > ordered_quantity:
+            raise KiwoomMockEvidenceError(
+                "Kiwoom filled quantity exceeds ordered quantity"
+            )
+        unfilled_quantity = ordered_quantity - filled_quantity
+        if remaining_quantity > unfilled_quantity:
+            raise KiwoomMockEvidenceError(
+                "Kiwoom remaining quantity exceeds unfilled quantity"
+            )
+
+        change_type = str(row.get("mdfy_cncl") or "").strip()
+        change_type_key = change_type.lower()
+        if "취소" in change_type or "cancel" in change_type_key:
+            status = "cancelled"
+        elif filled_quantity == 0:
+            status = "open"
+        elif filled_quantity < ordered_quantity:
+            status = "partially_filled"
+        else:
+            status = "filled"
+
+        raw_venue = row.get("dmst_stex_tp")
+        venue = str(raw_venue).strip() if raw_venue is not None else ""
+
+        orders.append(
+            {
+                "order_id": _required_order_id(row),
+                "symbol": _normalize_kr_symbol(row),
+                "status": status,
+                "ordered_quantity": ordered_quantity,
+                "ordered_price": _required_non_negative_int(row, "ord_uv"),
+                "filled_quantity": filled_quantity,
+                "average_price": _required_non_negative_int(row, "cntr_uv"),
+                "remaining_quantity": remaining_quantity,
+                "unfilled_quantity": unfilled_quantity,
+                "remaining_quantity_consistent": (
+                    remaining_quantity == unfilled_quantity
+                ),
+                "change_type": change_type or None,
+                "venue": venue or None,
+            }
+        )
+    return orders
+
+
 def redact_broker_response(payload: dict[str, Any]) -> dict[str, Any]:
     def is_sensitive_key(value: Any) -> bool:
         parts = _key_parts(value)
@@ -335,6 +416,7 @@ __all__ = [
     "build_mock_provenance",
     "normalize_deposit",
     "normalize_orderable_cash",
+    "normalize_order_detail",
     "normalize_orders",
     "normalize_positions",
     "redact_broker_response",

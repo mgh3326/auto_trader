@@ -61,6 +61,7 @@ from app.mcp_server.tooling.paper_limit_order_handler import (
 )
 from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.tradingcodex_execution_registration import (
+    KIWOOM_MOCK_EXECUTION_TOOL_NAMES,
     TRADINGCODEX_EXECUTION_FORBIDDEN_TOOL_NAMES,
     TRADINGCODEX_EXECUTION_TOOL_NAMES,
 )
@@ -321,7 +322,11 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
         "kis_live_place_order",
         "kis_live_cancel_order",
         "kis_live_get_order_history",
-        *KIWOOM_MOCK_TOOL_NAMES,
+        # ROB-1155 — the explicit tradingcodex allowlist, NOT the full
+        # KIWOOM_MOCK_TOOL_NAMES set: kiwoom_mock_get_order_detail (kt00007) is
+        # registered on the KIWOOM profile only and must stay out of this
+        # privileged profile unless added deliberately.
+        *KIWOOM_MOCK_EXECUTION_TOOL_NAMES,
         "toss_preview_order",
         "toss_place_order",
         "toss_cancel_order",
@@ -575,6 +580,17 @@ class TestAccountReadProfile:
             "kiwoom_mock_get_orderable_cash",
             "kiwoom_mock_get_order_history",
         }
+
+    def test_kt00007_order_detail_is_deliberately_absent(self) -> None:
+        # ROB-1155 — kiwoom_mock_get_order_detail is a pure read but is NOT on
+        # this profile by design: ACCOUNT_READ_TOOL_NAMES is unioned into
+        # TRADINGCODEX_EXECUTION_TOOL_NAMES, so listing it here would silently
+        # widen that privileged profile as well. Absence here is a decision, not
+        # an oversight; KR-B1 reaches the tool via MCP_PROFILE=kiwoom.
+        mcp = _build_mcp(McpProfile.ACCOUNT_READ)
+        assert "kiwoom_mock_get_order_detail" not in mcp.tools
+        assert "kiwoom_mock_get_order_detail" in KIWOOM_MOCK_TOOL_NAMES
+        assert "kiwoom_mock_get_order_detail" in _build_mcp(McpProfile.KIWOOM).tools
 
     def test_expected_account_read_tools_are_present(self) -> None:
         mcp = _build_mcp(McpProfile.ACCOUNT_READ)

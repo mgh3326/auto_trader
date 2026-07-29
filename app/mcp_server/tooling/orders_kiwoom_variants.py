@@ -33,6 +33,7 @@ from app.services.brokers.kiwoom.normalization import (
     KiwoomMockEvidenceError,
     build_mock_provenance,
     normalize_deposit,
+    normalize_order_detail,
     normalize_orders,
     normalize_positions,
     redact_broker_response,
@@ -65,8 +66,19 @@ KIWOOM_MOCK_TOOL_NAMES: set[str] = {
     "kiwoom_mock_cancel_order",
     "kiwoom_mock_modify_order",
     "kiwoom_mock_get_order_history",
+    "kiwoom_mock_get_order_detail",
     "kiwoom_mock_get_positions",
     "kiwoom_mock_get_orderable_cash",
+}
+
+# ROB-1155 — kt00007 read scope -> official qry_tp. The official values are
+# "1:주문순, 2:역순, 3:미체결, 4:체결내역만"; these names keep the MCP surface
+# self-describing without leaking Kiwoom enum digits into prompts.
+_ORDER_DETAIL_SCOPES: dict[str, str] = {
+    "all": constants.ACCOUNT_ORDER_DETAIL_QRY_TP_ORDER_SEQUENCE,
+    "all_reverse": constants.ACCOUNT_ORDER_DETAIL_QRY_TP_REVERSE,
+    "unfilled": constants.ACCOUNT_ORDER_DETAIL_QRY_TP_UNFILLED,
+    "filled": constants.ACCOUNT_ORDER_DETAIL_QRY_TP_FILLED,
 }
 
 _SAFE_ORDER_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -234,6 +246,58 @@ def _finalize_normalized_read_response(
         response["success"] = False
         response["error"] = exc.code
         response["error_detail"] = str(exc)
+    return response
+
+
+def _finalize_order_detail_read_response(
+    base: dict[str, Any],
+    broker_response: dict[str, Any],
+    *,
+    order_id: str | None,
+) -> dict[str, Any]:
+    """kt00007-only sibling of :func:`_finalize_normalized_read_response`.
+
+    ROB-1155 — a separate finalizer, not a widening of the shared one. The shared
+    finalizer pins ``result_key`` to ``positions``/``orders`` and hardcodes which
+    normalizer to call; injecting a callable there would put the already-shipped
+    kt00009 / kt00018 read paths on the diff. This duplicates only the
+    provenance + error-envelope shape and leaves those paths byte-identical.
+
+    ``order_id`` filtering is local and exact. ``fr_ord_no`` narrows the broker
+    query to "this order number and later" (official semantics), so the broker
+    response is a superset; without the local filter a single-order lookup would
+    silently report unrelated later orders. ``matched_order_count`` is reported
+    so a caller can tell "not found" from "found".
+    """
+
+    response = _finalize_broker_response(base, broker_response)
+    response["provenance"] = build_mock_provenance(
+        constants.ACCOUNT_ORDER_DETAIL_API_ID
+    )
+    response["orders"] = []
+    if not response["success"]:
+        response["error"] = "kiwoom_mock_broker_error"
+        return response
+    try:
+        validate_mock_response_provenance(broker_response)
+        orders = normalize_order_detail(broker_response)
+    except KiwoomMockEvidenceError as exc:
+        response["success"] = False
+        response["error"] = exc.code
+        response["error_detail"] = str(exc)
+        return response
+
+    response["broker_order_count"] = len(orders)
+    if order_id is not None:
+        orders = [row for row in orders if row["order_id"] == order_id]
+    response["orders"] = orders
+    response["matched_order_count"] = len(orders)
+    # CP6 evidence: which venue the broker actually recorded each row on, as
+    # opposed to the venue we requested. Both are echoed so a mismatch is visible
+    # without re-reading the raw broker_response.
+    response["response_venues"] = sorted(
+        {row["venue"] for row in orders if row["venue"]}
+    )
     return response
 
 
@@ -603,6 +667,75 @@ async def _kiwoom_mock_order_history_impl(**kwargs: Any) -> dict[str, Any]:
     )
 
 
+async def _kiwoom_mock_order_detail_impl(**kwargs: Any) -> dict[str, Any]:
+    """kt00007 read-only order-detail lookup (ROB-1155).
+
+    Read-only by construction: builds ONLY a ``KiwoomDomesticAccountClient`` and
+    never a ``KiwoomDomesticOrderClient``, so no place/modify/cancel code path is
+    reachable from here.
+    """
+
+    order_id_raw = kwargs.get("order_id")
+    order_id = None if order_id_raw is None else str(order_id_raw).strip()
+    scope = str(kwargs.get("scope") or "all")
+    venue = str(kwargs.get("venue") or constants.ACCOUNT_READ_VENUE_KRX).strip().upper()
+    order_date = kwargs.get("order_date")
+    symbol_raw = kwargs.get("symbol")
+    symbol = None if symbol_raw is None else normalize_krx_symbol(symbol_raw)
+    qry_tp = _ORDER_DETAIL_SCOPES[scope]
+
+    extra: dict[str, Any] = {
+        "order_id": order_id,
+        "requested_scope": scope,
+        "requested_qry_tp": qry_tp,
+        "requested_venue": venue,
+        "order_date": None if order_date is None else str(order_date).strip(),
+        **({"symbol": symbol} if symbol is not None else {}),
+    }
+
+    try:
+        client = KiwoomMockClient.from_app_settings()
+        account_client = KiwoomDomesticAccountClient(cast(Any, client))
+        broker_response = await account_client.get_order_detail(
+            order_date=order_date,
+            qry_tp=qry_tp,
+            symbol=symbol,
+            from_order_no=order_id,
+            dmst_stex_tp=venue,
+        )
+    except ValueError as exc:
+        # Locally raised official-contract validation (venue/qry_tp/date/order
+        # number shape). Never dispatched, so it is not a transport failure.
+        return _stable_read_failure(
+            result_key="orders",
+            result_value=[],
+            api_id=constants.ACCOUNT_ORDER_DETAIL_API_ID,
+            error="kiwoom_mock_request_invalid",
+            error_detail=str(exc),
+            extra=extra,
+        )
+    except Exception as exc:  # noqa: BLE001 - MCP tools fail closed with JSON
+        return _stable_read_failure(
+            result_key="orders",
+            result_value=[],
+            api_id=constants.ACCOUNT_ORDER_DETAIL_API_ID,
+            error="kiwoom_mock_transport_error",
+            error_detail=(
+                f"kiwoom_mock_get_order_detail transport failed: {type(exc).__name__}"
+            ),
+            extra=extra,
+        )
+    return _finalize_order_detail_read_response(
+        {
+            "source": "kiwoom",
+            "account_mode": ACCOUNT_MODE_KIWOOM_MOCK,
+            **extra,
+        },
+        broker_response,
+        order_id=order_id,
+    )
+
+
 async def _kiwoom_mock_positions_impl(**kwargs: Any) -> dict[str, Any]:
     cont_yn = kwargs.get("cont_yn")
     next_key = kwargs.get("next_key")
@@ -911,6 +1044,89 @@ def register(mcp: FastMCP) -> None:
                 error_detail=str(guard["error"]),
             )
         return await _kiwoom_mock_order_history_impl(cont_yn=cont_yn, next_key=next_key)
+
+    @mcp.tool(
+        name="kiwoom_mock_get_order_detail",
+        description=(
+            "Read Kiwoom mock order/fill DETAIL via kt00007 (read-only). Tracks a "
+            "single known order number, or scopes to unfilled/filled rows. "
+            "venue='NXT' is an observation-only argument; order placement stays "
+            "KRX-pinned."
+        ),
+    )
+    async def kiwoom_mock_get_order_detail(
+        order_id: str | None = None,
+        order_date: str | None = None,
+        scope: Literal["all", "all_reverse", "unfilled", "filled"] = "all",
+        symbol: str | None = None,
+        venue: Literal["KRX", "NXT"] = "KRX",
+    ) -> dict[str, Any]:
+        api_id = constants.ACCOUNT_ORDER_DETAIL_API_ID
+        extra: dict[str, Any] = {
+            "order_id": order_id,
+            "requested_scope": scope,
+            "requested_venue": venue,
+        }
+        if (guard := _mock_config_error()) is not None:
+            return _stable_read_failure(
+                result_key="orders",
+                result_value=[],
+                api_id=api_id,
+                error="kiwoom_mock_config_invalid",
+                error_detail=str(guard["error"]),
+                extra=extra,
+            )
+        if order_id is not None and (guard := _order_id_error(order_id)) is not None:
+            return _stable_read_failure(
+                result_key="orders",
+                result_value=[],
+                api_id=api_id,
+                error="kiwoom_mock_order_id_invalid",
+                error_detail=str(guard["error"]),
+                extra=extra,
+            )
+        if symbol is not None and (guard := _symbol_error(symbol)) is not None:
+            return _stable_read_failure(
+                result_key="orders",
+                result_value=[],
+                api_id=api_id,
+                error="kiwoom_mock_symbol_invalid",
+                error_detail=str(guard["error"]),
+                extra={**extra, "symbol": symbol},
+            )
+        # Read-only venue allowlist, deliberately NOT _exchange_error: that guard
+        # enforces the KRX-only ORDER boundary and must stay untouched (ROB-1155).
+        if str(venue).strip().upper() not in constants.ACCOUNT_READ_VENUE_ALLOWLIST:
+            return _stable_read_failure(
+                result_key="orders",
+                result_value=[],
+                api_id=api_id,
+                error="kiwoom_mock_read_venue_invalid",
+                error_detail=(
+                    "kiwoom_mock_get_order_detail venue must be one of "
+                    f"{sorted(constants.ACCOUNT_READ_VENUE_ALLOWLIST)}; got {venue!r}"
+                ),
+                extra=extra,
+            )
+        if scope not in _ORDER_DETAIL_SCOPES:
+            return _stable_read_failure(
+                result_key="orders",
+                result_value=[],
+                api_id=api_id,
+                error="kiwoom_mock_read_scope_invalid",
+                error_detail=(
+                    "kiwoom_mock_get_order_detail scope must be one of "
+                    f"{sorted(_ORDER_DETAIL_SCOPES)}; got {scope!r}"
+                ),
+                extra=extra,
+            )
+        return await _kiwoom_mock_order_detail_impl(
+            order_id=order_id,
+            order_date=order_date,
+            scope=scope,
+            symbol=symbol,
+            venue=venue,
+        )
 
     @mcp.tool(
         name="kiwoom_mock_get_positions",
