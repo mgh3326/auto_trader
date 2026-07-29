@@ -125,7 +125,8 @@ UPDATE/DELETE rejection triggers:
   never rewrite a finalization.
 - `collector_heartbeats`: append-only replica liveness evidence.
 - `collector_process_versions`: one append-only startup stamp per run with the
-  exact Git commit hash and collector version loaded by that process.
+  exact Git commit hash, collector version, and precommitted `t0_utc` loaded by
+  that process.
 - `collector_alert_events`: alert creation and each delivery result; failed
   delivery attempts are not overwritten.
 
@@ -221,6 +222,10 @@ supervisor therefore does not relabel a later snapshot as an earlier one.
 Those sources rely on independent live replicas. Missing, invalid, and
 partial-coverage recoverable sources are retried only while
 `now < finalize_at`; the finalizer never waits past the deadline.
+Retry eligibility is evaluated from that collector's local artifact only.
+Finalization and `EPOCH_DEADLINE_RISK` remain based on the local+peer union.
+This prevents one replica from hiding a recoverable hole in the other without
+changing the immutable union verdict.
 
 Each request, including invalid responses and transport/HTTP failures, appends
 a terminal attempt row. The raw response body SHA-256 is retained even when
@@ -257,6 +262,43 @@ to each current heartbeat `run_id`. Missing stamps and hash mismatches are
 `COLLECTOR_VERSION_MISMATCH`, remove that replica from the healthy count, and
 fail the rehearsal version gate. A checkout without resolvable Git metadata
 fails closed rather than starting an unstamped collector.
+
+## Precommitted T0 procedure
+
+T0 is not selected after startup verification. That would be circular: changing
+the module constant creates a new commit and code hash, invalidating the
+verification that was just performed. The operator sequence is fixed:
+
+1. Commit `DEFAULT_T0`, `DEFAULT_STUDY_ID`, and `DEFAULT_POLICY_HASH` first,
+   choosing a sufficiently distant UTC four-hour boundary.
+2. Start both hosts from that exact fixed commit.
+3. Before `T0-4h`, run the one-shot read-only preflight against both collector
+   artifacts:
+
+   ```bash
+   uv run python -m scripts.r4_p0_watchdog --t0-preflight \
+     --artifact /path/to/host-a/r4_p0_collector.sqlite3 \
+     --artifact /path/to/host-b/r4_p0_collector.sqlite3
+   ```
+
+4. Proceed only when the JSON reports `ok: true`: verification time
+   `V <= T0-4h`, every current process stamp matches the deployed code hash,
+   at least two distinct replicas are healthy, and every stamp has the
+   committed T0.
+5. If any gate fails, do not retroactively adjust or reuse that T0. Precommit a
+   new commit and a new T0, restart both hosts from that commit, and repeat the
+   verification.
+
+`--t0-preflight` does not require `R4_P0_WATCHDOG_ENABLED`; it opens collector
+artifacts with SQLite `mode=ro`, performs one check, creates no watchdog state,
+does no network I/O, and exits nonzero when a gate is closed.
+
+Collector startup enforces the same contract before collection tasks or network
+clients start. For the same `(study_id, policy_hash)`, a non-null stored
+`t0_utc` that differs from the configured T0 is rejected. A completely fresh
+artifact (`pit_records` has zero rows) is also rejected when startup is later
+than `T0-4h`. An artifact with existing PIT rows is treated as a restart and is
+not blocked by the warm-up check, while the stored-T0 check still applies.
 
 The alert path is:
 
