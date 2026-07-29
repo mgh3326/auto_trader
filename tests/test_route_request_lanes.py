@@ -72,6 +72,7 @@ def test_action_taxonomy_is_disjoint_and_total():
         L.PREVIEW_REVALIDATION_TOOLS,
         L.RECONCILE_TOOLS,
         L.STATUS_HELPER_TOOLS,
+        L.DB_PERSISTENCE_MUTATION_TOOLS,
     )
     for left, right in combinations(action_classes, 2):
         assert left.isdisjoint(right)

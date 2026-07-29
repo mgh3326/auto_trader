@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
+from pydantic import Field
 from sqlalchemy import select
 
 from app.core.db import AsyncSessionLocal
@@ -10,7 +11,13 @@ from app.jobs.market_quote_snapshots import (
     MarketQuoteSnapshotBuildRequest,
     run_market_quote_snapshot_build,
 )
+from app.mcp_server.profiles import McpProfile
+from app.mcp_server.tooling.shared import is_us_equity_symbol
 from app.models.market_quote_snapshot import MarketQuoteSnapshot
+from app.services.trade_journal.forecast_service import (
+    ForecastValidationError,
+    get_forecast,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -22,6 +29,21 @@ MARKET_QUOTE_SNAPSHOT_TOOL_NAMES: set[str] = {
     "market_quote_snapshot_latest",
     "market_quote_snapshot_ensure",
 }
+MARKET_QUOTE_SNAPSHOT_READONLY_TOOL_NAMES: frozenset[str] = frozenset(
+    {"market_quote_snapshot_latest"}
+)
+US_FORECAST_MARKET_QUOTE_SNAPSHOT_TOOL_NAMES: frozenset[str] = frozenset(
+    {"us_forecast_market_quote_snapshot_ensure"}
+)
+MARKET_QUOTE_SNAPSHOT_MUTATION_TOOL_NAMES: frozenset[str] = frozenset(
+    {"market_quote_snapshot_ensure"} | US_FORECAST_MARKET_QUOTE_SNAPSHOT_TOOL_NAMES
+)
+
+_DIRECTIONAL_LAB_CREATED_BY = "directional-lab"
+_NONBLANK_EXACT_STRING = Annotated[
+    str,
+    Field(min_length=1, pattern=r".*\S.*"),
+]
 
 
 async def check_submit_ready(
@@ -268,6 +290,120 @@ async def market_quote_snapshot_ensure(market: str, symbol: str) -> dict[str, An
     }
 
 
+def _forecast_quote_failure(error: str, detail: str) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error": error,
+        "detail": detail,
+    }
+
+
+async def _ensure_us_forecast_market_quote_snapshot(
+    forecast_id: str,
+    correlation_id: str,
+    *,
+    runtime_profile: McpProfile,
+) -> dict[str, Any]:
+    """Ensure US quote evidence bound to one persisted directional-lab forecast.
+
+    ``runtime_profile`` is supplied by the registry-owned closure, never by the
+    MCP caller.  The forecast's exact ``correlation_id`` is the persisted run
+    binding because ``trade_forecasts`` has no stronger guaranteed run/session
+    identity field.  ``forecast_target`` direction/entry-mode fields are not
+    enforced here because they are not guaranteed by the persisted forecast
+    schema.
+    """
+    if runtime_profile is not McpProfile.US_PAPER:
+        return _forecast_quote_failure(
+            "wrong_mcp_profile",
+            "us_forecast_market_quote_snapshot_ensure requires MCP_PROFILE=us-paper",
+        )
+    if not isinstance(forecast_id, str) or not forecast_id.strip():
+        return _forecast_quote_failure(
+            "invalid_forecast_id",
+            "forecast_id must be a non-blank UUID string",
+        )
+    if not isinstance(correlation_id, str) or not correlation_id.strip():
+        return _forecast_quote_failure(
+            "invalid_correlation_id",
+            "correlation_id must be a non-blank exact persisted value",
+        )
+
+    try:
+        async with AsyncSessionLocal() as db:
+            forecast = await get_forecast(db, forecast_id)
+    except ForecastValidationError:
+        return _forecast_quote_failure(
+            "invalid_forecast_id",
+            "forecast_id must be a valid UUID",
+        )
+    except Exception:
+        return _forecast_quote_failure(
+            "forecast_lookup_failed",
+            "forecast lookup failed closed",
+        )
+
+    if forecast is None:
+        return _forecast_quote_failure(
+            "forecast_not_found",
+            "no persisted forecast matches forecast_id",
+        )
+    if forecast.status != "open":
+        return _forecast_quote_failure(
+            "forecast_not_open",
+            "forecast status must be exactly open",
+        )
+    if forecast.created_by != _DIRECTIONAL_LAB_CREATED_BY:
+        return _forecast_quote_failure(
+            "forecast_created_by_mismatch",
+            "forecast created_by must be exactly directional-lab",
+        )
+
+    instrument_type = (
+        forecast.instrument_type.value
+        if hasattr(forecast.instrument_type, "value")
+        else str(forecast.instrument_type)
+    )
+    if instrument_type != "equity_us":
+        return _forecast_quote_failure(
+            "forecast_instrument_type_mismatch",
+            "forecast instrument_type must be exactly equity_us",
+        )
+    if forecast.correlation_id != correlation_id:
+        return _forecast_quote_failure(
+            "forecast_correlation_mismatch",
+            "correlation_id must exactly match the persisted forecast",
+        )
+
+    stored_symbol = forecast.symbol
+    if not isinstance(stored_symbol, str):
+        return _forecast_quote_failure(
+            "invalid_forecast_symbol",
+            "persisted forecast symbol is not a valid US equity symbol",
+        )
+    symbol = stored_symbol.strip().upper()
+    if not is_us_equity_symbol(symbol):
+        return _forecast_quote_failure(
+            "invalid_forecast_symbol",
+            "persisted forecast symbol is not a valid US equity symbol",
+        )
+
+    result = await market_quote_snapshot_ensure(market="us", symbol=symbol)
+    if result.get("success") and (
+        result.get("market") != "us" or result.get("symbol") != symbol
+    ):
+        return _forecast_quote_failure(
+            "snapshot_binding_mismatch",
+            "ensured quote snapshot did not match the persisted forecast identity",
+        )
+    return {
+        **result,
+        "forecast_id": str(forecast.forecast_id),
+        "correlation_id": forecast.correlation_id,
+        "forecast_bound": True,
+    }
+
+
 def register_market_quote_snapshot_tools(mcp: FastMCP) -> None:
     """Register market quote snapshot MCP tools."""
     _ = mcp.tool(
@@ -278,3 +414,33 @@ def register_market_quote_snapshot_tools(mcp: FastMCP) -> None:
         name="market_quote_snapshot_ensure",
         description="Ensure a fresh quote snapshot (age < 5m) exists for a market and symbol. Reuses if fresh, builds if stale.",
     )(market_quote_snapshot_ensure)
+
+
+def register_us_forecast_market_quote_snapshot_tool(
+    mcp: FastMCP,
+    *,
+    runtime_profile: McpProfile,
+) -> None:
+    """Register the forecast-bound quote mutation only on the US paper profile."""
+    if runtime_profile is not McpProfile.US_PAPER:
+        return
+
+    async def us_forecast_market_quote_snapshot_ensure(
+        forecast_id: _NONBLANK_EXACT_STRING,
+        correlation_id: _NONBLANK_EXACT_STRING,
+    ) -> dict[str, Any]:
+        return await _ensure_us_forecast_market_quote_snapshot(
+            forecast_id,
+            correlation_id,
+            runtime_profile=runtime_profile,
+        )
+
+    _ = mcp.tool(
+        name="us_forecast_market_quote_snapshot_ensure",
+        description=(
+            "Ensure a trusted US quote snapshot for the symbol stored on one open "
+            "directional-lab equity_us forecast. The caller supplies only the "
+            "forecast UUID and its exact persisted correlation_id; market, symbol, "
+            "price, source, and runtime profile remain server-owned."
+        ),
+    )(us_forecast_market_quote_snapshot_ensure)

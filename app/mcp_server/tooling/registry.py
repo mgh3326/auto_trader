@@ -145,6 +145,7 @@ from app.mcp_server.tooling.market_brief_registration import (
 from app.mcp_server.tooling.market_data_registration import register_market_data_tools
 from app.mcp_server.tooling.market_quote_snapshot_tools import (
     register_market_quote_snapshot_tools,
+    register_us_forecast_market_quote_snapshot_tool,
 )
 from app.mcp_server.tooling.mirror_counterfactual_registration import (
     register_mirror_counterfactual_tools,
@@ -431,6 +432,10 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         register_alpaca_paper_automated_orders_tools(mcp)
         register_alpaca_paper_ledger_read_tools(mcp)
         register_market_quote_snapshot_tools(mcp)
+        register_us_forecast_market_quote_snapshot_tool(
+            mcp,
+            runtime_profile=profile,
+        )
     elif profile is McpProfile.DB_PAPER:
         register_paper_account_tools(mcp)
         register_paper_analytics_tools(mcp)

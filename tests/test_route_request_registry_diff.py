@@ -26,7 +26,8 @@ from app.mcp_server.tooling.alpaca_paper_automated_orders import (
 )
 from app.mcp_server.tooling.alpaca_paper_preview import ALPACA_PAPER_PREVIEW_TOOL_NAMES
 from app.mcp_server.tooling.market_quote_snapshot_tools import (
-    MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
+    MARKET_QUOTE_SNAPSHOT_MUTATION_TOOL_NAMES,
+    MARKET_QUOTE_SNAPSHOT_READONLY_TOOL_NAMES,
 )
 from app.mcp_server.tooling.order_proposal_tools import ORDER_PROPOSAL_TOOL_NAMES
 from app.mcp_server.tooling.orders_kiwoom_us_variants import (
@@ -36,6 +37,7 @@ from app.mcp_server.tooling.orders_kiwoom_us_variants import (
 from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.route_request_lanes import (
     ALL_KNOWN_TOOLS,
+    DB_PERSISTENCE_MUTATION_TOOLS,
     DIRECT_BROKER_MUTATION_TOOLS,
     LANE_SEQUENCES,
     MUTATION_TOOLS,
@@ -105,6 +107,7 @@ def test_mutation_action_taxonomy_is_disjoint_and_total():
         PREVIEW_REVALIDATION_TOOLS,
         RECONCILE_TOOLS,
         STATUS_HELPER_TOOLS,
+        DB_PERSISTENCE_MUTATION_TOOLS,
     )
     for left, right in combinations(action_classes, 2):
         assert left.isdisjoint(right)
@@ -164,6 +167,12 @@ def test_registered_direct_surfaces_are_classified_across_route_profiles(
     assert "alpaca_paper_automated_submit_order" in DIRECT_BROKER_MUTATION_TOOLS
     assert "alpaca_paper_automated_preview_order" in PREVIEW_REVALIDATION_TOOLS
     assert ALPACA_PAPER_AUTOMATED_TOOL_NAMES <= MUTATION_TOOLS
+    assert (
+        MARKET_QUOTE_SNAPSHOT_MUTATION_TOOL_NAMES
+        == DB_PERSISTENCE_MUTATION_TOOLS
+        <= MUTATION_TOOLS
+    )
+    assert MARKET_QUOTE_SNAPSHOT_READONLY_TOOL_NAMES <= READ_ONLY_ADVISORY_TOOLS
 
 
 def test_every_default_tool_is_classified():
@@ -206,7 +215,7 @@ def test_read_only_bucket_has_no_phantom_tools():
         *ALPACA_PAPER_PREVIEW_TOOL_NAMES,
         *US_DUAL_PAPER_TOOL_NAMES,
         *KIWOOM_MOCK_US_READ_TOOL_NAMES,
-        *MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
+        *MARKET_QUOTE_SNAPSHOT_READONLY_TOOL_NAMES,
         *ORDER_PROPOSAL_READ_TOOLS,
     }
     phantom = READ_ONLY_ADVISORY_TOOLS - default - _FLAG_GATED_OR_OPTIONAL

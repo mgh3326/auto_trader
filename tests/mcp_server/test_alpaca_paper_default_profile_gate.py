@@ -27,6 +27,7 @@ from app.mcp_server.tooling.alpaca_paper_orders import ALPACA_PAPER_MUTATING_TOO
 from app.mcp_server.tooling.alpaca_paper_preview import ALPACA_PAPER_PREVIEW_TOOL_NAMES
 from app.mcp_server.tooling.market_quote_snapshot_tools import (
     MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
+    US_FORECAST_MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
 )
 from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.us_dual_paper import US_DUAL_PAPER_TOOL_NAMES
@@ -88,6 +89,7 @@ def test_automated_orders_never_registered_in_default_when_gate_on(
     assert not leaked, (
         f"automated order tools must not surface in DEFAULT: {sorted(leaked)}"
     )
+    assert US_FORECAST_MARKET_QUOTE_SNAPSHOT_TOOL_NAMES.isdisjoint(tools)
 
 
 @pytest.mark.unit
@@ -104,6 +106,10 @@ def test_us_paper_profile_unchanged_regardless_of_flag(
     mcp = DummyMCP()
     register_all_tools(cast(Any, mcp), profile=McpProfile.US_PAPER)
     tools = set(mcp.tools.keys())
-    expected = _DEFAULT_ALPACA_TOOL_NAMES | ALPACA_PAPER_AUTOMATED_TOOL_NAMES
+    expected = (
+        _DEFAULT_ALPACA_TOOL_NAMES
+        | ALPACA_PAPER_AUTOMATED_TOOL_NAMES
+        | US_FORECAST_MARKET_QUOTE_SNAPSHOT_TOOL_NAMES
+    )
     missing = expected - tools
     assert not missing, f"US_PAPER surface regressed: {sorted(missing)}"

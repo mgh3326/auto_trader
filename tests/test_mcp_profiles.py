@@ -38,6 +38,7 @@ from app.mcp_server.tooling.kiwoom_kr_registration import (
 )
 from app.mcp_server.tooling.market_quote_snapshot_tools import (
     MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
+    US_FORECAST_MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
 )
 from app.mcp_server.tooling.order_proposal_tools import ORDER_PROPOSAL_TOOL_NAMES
 from app.mcp_server.tooling.orders_kis_variants import (
@@ -80,7 +81,11 @@ _ALPACA_PAPER_TOOL_NAMES = (
     | ALPACA_PAPER_MUTATING_TOOL_NAMES
     | MARKET_QUOTE_SNAPSHOT_TOOL_NAMES
 )
-_US_PAPER_TOOL_NAMES = _ALPACA_PAPER_TOOL_NAMES | US_DUAL_PAPER_TOOL_NAMES
+_US_PAPER_TOOL_NAMES = (
+    _ALPACA_PAPER_TOOL_NAMES
+    | US_DUAL_PAPER_TOOL_NAMES
+    | US_FORECAST_MARKET_QUOTE_SNAPSHOT_TOOL_NAMES
+)
 _DB_PAPER_TOOL_NAMES = (
     PAPER_ACCOUNT_TOOL_NAMES | PAPER_ANALYTICS_TOOL_NAMES | PAPER_JOURNAL_TOOL_NAMES
 )

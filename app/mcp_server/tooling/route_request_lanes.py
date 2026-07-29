@@ -19,7 +19,8 @@ from app.mcp_server.tooling.alpaca_paper_automated_orders import (
 from app.mcp_server.tooling.alpaca_paper_orders import ALPACA_PAPER_MUTATING_TOOL_NAMES
 from app.mcp_server.tooling.alpaca_paper_preview import ALPACA_PAPER_PREVIEW_TOOL_NAMES
 from app.mcp_server.tooling.market_quote_snapshot_tools import (
-    MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
+    MARKET_QUOTE_SNAPSHOT_MUTATION_TOOL_NAMES,
+    MARKET_QUOTE_SNAPSHOT_READONLY_TOOL_NAMES,
 )
 from app.mcp_server.tooling.mirror_counterfactual_registration import (
     MIRROR_COUNTERFACTUAL_TOOL_NAMES,
@@ -253,6 +254,10 @@ RECONCILE_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+DB_PERSISTENCE_MUTATION_TOOLS: frozenset[str] = frozenset(
+    MARKET_QUOTE_SNAPSHOT_MUTATION_TOOL_NAMES
+)
+
 # These are read/status/non-broker helper tools that remain in MUTATION_TOOLS
 # because that legacy bucket predates the action taxonomy.
 STATUS_HELPER_TOOLS: frozenset[str] = frozenset(
@@ -288,6 +293,7 @@ _LEGACY_MUTATION_TOOLS: frozenset[str] = frozenset(
     | KIWOOM_MOCK_TOOL_NAMES
     | KIWOOM_MOCK_US_MUTATION_TOOL_NAMES
     | MIRROR_COUNTERFACTUAL_TOOL_NAMES
+    | DB_PERSISTENCE_MUTATION_TOOLS
     # ROB-908/ROB-953: Alpaca paper confirm-gated mutations — submit/cancel plus
     # alpaca_paper_reconcile_orders, which reads the broker read-only but WRITES
     # lifecycle state to review.alpaca_paper_order_ledger. Flag-
@@ -387,7 +393,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         *ALPACA_PAPER_READONLY_TOOL_NAMES,
         *ALPACA_PAPER_PREVIEW_TOOL_NAMES,
         *US_DUAL_PAPER_TOOL_NAMES,
-        *MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
+        *MARKET_QUOTE_SNAPSHOT_READONLY_TOOL_NAMES,
         *ORDER_PROPOSAL_READ_TOOLS,
         "route_request",
         "analysis_artifact_get",

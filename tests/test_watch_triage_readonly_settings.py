@@ -39,6 +39,8 @@ KNOWN_MUTATION_TOOLS = frozenset(
         "alpaca_paper_automated_submit_order",
         "alpaca_paper_cancel_order",
         "alpaca_paper_reconcile_orders",
+        "market_quote_snapshot_ensure",
+        "us_forecast_market_quote_snapshot_ensure",
         "paper_execution_preview_order",
         "paper_execution_submit_order",
         "paper_execution_cancel_order",

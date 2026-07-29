@@ -609,6 +609,7 @@ _FUNNEL_TOOL_STAGES: dict[str, frozenset[str]] = {
             "investment_report_prepare_intraday_context",
             "market_quote_snapshot_ensure",
             "market_quote_snapshot_latest",
+            "us_forecast_market_quote_snapshot_ensure",
             "screen_stocks",
             "screen_stocks_snapshot",
             "sell_ladder_fill_preview",
