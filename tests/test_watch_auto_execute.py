@@ -60,9 +60,53 @@ def _make_place_spy():
 
     async def _spy(**kwargs):
         calls.append(kwargs)
-        return {"success": True, "order_no": "X1"}
+        return {
+            "success": True,
+            "dry_run": False,
+            "order_no": "X1",
+            "ledger_id": 101,
+            "ledger_tracking_unavailable": False,
+        }
 
     return _spy, calls
+
+
+class _FakeInsertResult:
+    def scalar_one_or_none(self):
+        return 101
+
+
+class _FakeDb:
+    """Capture SQL statements without opening a database connection."""
+
+    def __init__(self):
+        self.statements = []
+        self.commit_count = 0
+
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return _FakeInsertResult()
+
+    async def commit(self):
+        self.commit_count += 1
+
+
+def _assert_failed_intent_update(
+    db: _FakeDb,
+    *,
+    correlation_id: str,
+    reason: str,
+    failure_detail: str,
+) -> None:
+    assert len(db.statements) == 2
+    update_params = db.statements[1].compile().params
+    assert update_params["lifecycle_state"] == "failed"
+    assert update_params["execution_allowed"] is False
+    assert update_params["blocked_by"] == reason
+    assert update_params["blocking_reasons"] == [reason]
+    assert update_params["preview_line"]["failure_detail"] == failure_detail
+    assert update_params["correlation_id_1"] == correlation_id
+    assert db.commit_count == 2
 
 
 @pytest.mark.asyncio
@@ -112,6 +156,114 @@ async def test_happy_path_places_order(db_session: AsyncSession, monkeypatch):
     row = await _intent_for(db_session, cid)
     assert row.lifecycle_state == "previewed"
     assert row.execution_allowed is True
+
+
+@pytest.mark.asyncio
+async def test_broker_order_without_ledger_row_fails_intent(monkeypatch):
+    """ROB-1140/ROB-843 P1: an accepted broker order with zero native ledger
+    rows keeps the write-ahead reservation unresolved and must not be executed."""
+    monkeypatch.setattr(
+        watch_auto_execute.settings, "WATCH_AUTO_EXECUTE_MOCK_ENABLED", True
+    )
+    calls = []
+    detail = "KIS mock order accepted but ledger insert returned no id"
+
+    async def _accepted_but_untracked(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "dry_run": False,
+            "order_no": "0001234567",
+            "ledger_id": None,
+            "ledger_tracking_unavailable": True,
+            "message": detail,
+        }
+
+    db = _FakeDb()
+    alert = _alert(_good_max_action())
+    cid = f"corr-{uuid.uuid4().hex}"
+    outcome = await watch_auto_execute.maybe_auto_execute(
+        db,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
+        place_order_fn=_accepted_but_untracked,
+    )
+
+    assert outcome == {
+        "executed": False,
+        "reason": "ledger_tracking_unavailable",
+        "detail": detail,
+        "correlation_id": cid,
+    }
+    assert len(calls) == 1
+    assert calls[0]["dry_run"] is False
+    _assert_failed_intent_update(
+        db,
+        correlation_id=cid,
+        reason="ledger_tracking_unavailable",
+        failure_detail=detail,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dry_run_preview_fails_intent_instead_of_executing(monkeypatch):
+    """ROB-1140: success-shaped preview evidence is never an execution."""
+    monkeypatch.setattr(
+        watch_auto_execute.settings, "WATCH_AUTO_EXECUTE_MOCK_ENABLED", True
+    )
+    calls = []
+    detail = "Order preview (dry_run=True)"
+
+    async def _preview(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "dry_run": True,
+            "order_no": None,
+            "ledger_id": None,
+            "ledger_tracking_unavailable": False,
+            "message": detail,
+        }
+
+    db = _FakeDb()
+    alert = _alert(_good_max_action())
+    cid = f"corr-{uuid.uuid4().hex}"
+    outcome = await watch_auto_execute.maybe_auto_execute(
+        db,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
+        place_order_fn=_preview,
+    )
+
+    assert outcome == {
+        "executed": False,
+        "reason": "dry_run_result",
+        "detail": detail,
+        "correlation_id": cid,
+    }
+    assert len(calls) == 1
+    _assert_failed_intent_update(
+        db,
+        correlation_id=cid,
+        reason="dry_run_result",
+        failure_detail=detail,
+    )
+
+
+def test_rob843_existing_native_row_without_returned_id_stays_durable():
+    """ROB-843 P1 benign conflicts already proved a native row exists."""
+    outcome = watch_auto_execute._normalize_place_result(
+        {
+            "success": True,
+            "dry_run": False,
+            "order_no": "0001234567",
+            "ledger_id": None,
+            "ledger_tracking_unavailable": False,
+        }
+    )
+    assert outcome.executed is True
 
 
 @pytest.mark.asyncio
