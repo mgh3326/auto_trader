@@ -268,10 +268,21 @@ derive_lifecycle_state = _derive_lifecycle_state
 # ---------------------------------------------------------------------------
 @dataclass
 class ApprovalProvenance:
+    """Provenance metadata merged into a ledger row's insert values.
+
+    ROB-1152: ``execution_asset_class`` is intentionally NOT a field here.
+    Every caller of ``claim_submit``/``reserve_sell_and_claim``/``record_preview``
+    already carries ``execution_asset_class`` as a required first-class keyword
+    argument; those functions previously spread this dataclass's dict LAST,
+    so a default ``ApprovalProvenance()`` (all fields ``None``) silently
+    overwrote the caller's explicit ``execution_asset_class`` with ``NULL`` on
+    every insert. Keep asset-class provenance out of this dataclass so the
+    explicit parameter is always the single source of truth.
+    """
+
     candidate_uuid: uuid.UUID | None = None
     signal_symbol: str | None = None
     signal_venue: str | None = None
-    execution_asset_class: str | None = None
     workflow_stage: str | None = None
     purpose: str | None = None
     briefing_artifact_run_uuid: uuid.UUID | None = None
@@ -302,7 +313,6 @@ def from_approval_bridge(
         candidate_uuid=candidate.candidate_uuid,
         signal_symbol=candidate.signal_symbol,
         signal_venue=candidate.signal_venue,
-        execution_asset_class=candidate.execution_asset_class,
         workflow_stage=candidate.workflow_stage,
         purpose=candidate.purpose,
         briefing_artifact_run_uuid=briefing_run_uuid,
@@ -1163,7 +1173,6 @@ class AlpacaPaperLedgerService:
         return {
             "signal_symbol": prov.signal_symbol,
             "signal_venue": prov.signal_venue,
-            "execution_asset_class": prov.execution_asset_class,
             "workflow_stage": prov.workflow_stage,
             "purpose": prov.purpose,
             "briefing_artifact_run_uuid": prov.briefing_artifact_run_uuid,

@@ -225,7 +225,6 @@ def build_smoke_payload(
     provenance = ApprovalProvenance(
         signal_symbol=mapping.signal_symbol,
         signal_venue=mapping.signal_venue,
-        execution_asset_class=mapping.asset_class,
         workflow_stage="crypto_always_open",
         purpose="paper_plumbing_smoke",
     )
@@ -333,6 +332,7 @@ async def validate_preview_and_confirm_false(
             client_order_id=payload.client_order_id,
             execution_symbol=payload.execution_symbol,
             execution_venue=payload.execution_venue,
+            execution_asset_class=payload.asset_class,
             instrument_type=InstrumentType.crypto,
             side="buy",
             order_type="limit",
