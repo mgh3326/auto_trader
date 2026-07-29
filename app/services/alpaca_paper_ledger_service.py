@@ -1194,6 +1194,7 @@ class AlpacaPaperLedgerService:
         lifecycle_correlation_id: str | None = None,
         execution_symbol: str,
         execution_venue: str,
+        execution_asset_class: str | None = None,
         instrument_type: InstrumentType,
         side: str,
         order_type: str = "limit",
@@ -1222,6 +1223,7 @@ class AlpacaPaperLedgerService:
             "lifecycle_state": LIFECYCLE_PLANNED,
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
+            "execution_asset_class": execution_asset_class,
             "instrument_type": instrument_type,
             "side": side,
             "order_type": order_type,
@@ -1340,6 +1342,7 @@ class AlpacaPaperLedgerService:
         lifecycle_correlation_id: str | None = None,
         execution_symbol: str,
         execution_venue: str,
+        execution_asset_class: str | None = None,
         instrument_type: InstrumentType,
         side: str,
         order_type: str = "limit",
@@ -1391,6 +1394,7 @@ class AlpacaPaperLedgerService:
             "terminalized_at": _initial_terminalized_at(lc_state),
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
+            "execution_asset_class": execution_asset_class,
             "instrument_type": instrument_type,
             "side": side,
             "order_type": order_type,
@@ -1770,6 +1774,7 @@ class AlpacaPaperLedgerService:
         lifecycle_correlation_id: str | None = None,
         execution_symbol: str,
         execution_venue: str,
+        execution_asset_class: str | None = None,
         instrument_type: InstrumentType,
         side: str = "sell",
         order_type: str = "limit",
@@ -1809,6 +1814,7 @@ class AlpacaPaperLedgerService:
             "lifecycle_state": LIFECYCLE_SELL_VALIDATED,
             "execution_symbol": execution_symbol,
             "execution_venue": execution_venue,
+            "execution_asset_class": execution_asset_class,
             "instrument_type": instrument_type,
             "side": side,
             "order_type": order_type,
@@ -1960,6 +1966,97 @@ class AlpacaPaperLedgerService:
 
         await self._db.commit()
         return await self._require_row(client_order_id)
+
+    # ------------------------------------------------------------------
+    # ROB-1152: service-layer backfill for execution_asset_class
+    # ------------------------------------------------------------------
+    _BACKFILL_INSTRUMENT_TYPE_TO_ASSET_CLASS: dict[InstrumentType, str] = {
+        InstrumentType.crypto: "crypto",
+        InstrumentType.equity_us: "us_equity",
+    }
+
+    async def backfill_execution_asset_class_from_instrument_type(
+        self, *, dry_run: bool = True
+    ) -> dict[str, Any]:
+        """Derive NULL ``execution_asset_class`` from the same row's ``instrument_type``.
+
+        AGENTS.md #5 requires ledger writes to go through the service layer
+        rather than a bare ``op.execute(...)`` SQL string in a migration -- this
+        is that service-layer entry point (ROB-1152 review finding). It uses
+        the ORM ``update(...).values(...)`` construct (no raw SQL string), is
+        scoped to every account_mode (not just ``self._account_mode``), and is
+        NOT auto-invoked by any migration, scheduler, or import side effect
+        (AGENTS.md #6). An operator runs it explicitly via
+        ``scripts/backfill_alpaca_paper_execution_asset_class.py``.
+
+        Only NULL rows whose ``instrument_type`` is in the verified mapping
+        (crypto -> 'crypto', equity_us -> 'us_equity'; ROB-1152 investigation,
+        2026-07-29 -- 38/38 existing rows conform, 0 exceptions) are touched.
+        Any row with an ``instrument_type`` outside this mapping is left NULL
+        and reported separately rather than guessed.
+
+        ``dry_run=True`` (default) computes the exact row count that WOULD be
+        updated without writing or committing anything. ``dry_run=False``
+        performs and commits the update.
+        """
+        mapping = self._BACKFILL_INSTRUMENT_TYPE_TO_ASSET_CLASS
+
+        per_instrument_type: dict[str, int] = {}
+        ids_by_asset_class: dict[str, list[int]] = {}
+        for instrument_type, asset_class in mapping.items():
+            id_stmt = select(AlpacaPaperOrderLedger.id).where(
+                AlpacaPaperOrderLedger.execution_asset_class.is_(None),
+                AlpacaPaperOrderLedger.instrument_type == instrument_type,
+            )
+            matched_ids = list((await self._db.execute(id_stmt)).scalars().all())
+            ids_by_asset_class[asset_class] = matched_ids
+            per_instrument_type[asset_class] = len(matched_ids)
+
+        unmapped_stmt = select(func.count(AlpacaPaperOrderLedger.id)).where(
+            AlpacaPaperOrderLedger.execution_asset_class.is_(None),
+            AlpacaPaperOrderLedger.instrument_type.not_in(mapping.keys()),
+        )
+        unmapped_count = (await self._db.execute(unmapped_stmt)).scalar_one()
+        planned_total = sum(per_instrument_type.values())
+
+        if dry_run:
+            return {
+                "dry_run": True,
+                "would_update": planned_total,
+                "by_asset_class": dict(per_instrument_type),
+                "left_null_unmapped_instrument_type": unmapped_count,
+            }
+
+        updated_ids: list[int] = []
+        for asset_class, matched_ids in ids_by_asset_class.items():
+            if not matched_ids:
+                continue
+            # Scoped by AlpacaPaperOrderLedger.id (the primary key), exactly
+            # like every other lifecycle update in this service (see
+            # test_lifecycle_update_statements_scope_by_primary_key) -- the
+            # only difference from a single-row lifecycle update is that this
+            # id set was computed by the SELECT above rather than being one
+            # caller-supplied client_order_id's row.
+            stmt = (
+                update(AlpacaPaperOrderLedger)
+                .where(
+                    AlpacaPaperOrderLedger.id.in_(matched_ids),
+                    AlpacaPaperOrderLedger.execution_asset_class.is_(None),
+                )
+                .values(execution_asset_class=asset_class)
+                .returning(AlpacaPaperOrderLedger.id)
+            )
+            result = await self._db.execute(stmt)
+            updated_ids.extend(result.scalars().all())
+        await self._db.commit()
+
+        return {
+            "dry_run": False,
+            "updated": len(updated_ids),
+            "by_asset_class": dict(per_instrument_type),
+            "left_null_unmapped_instrument_type": unmapped_count,
+            "updated_ids": updated_ids,
+        }
 
 
 __all__ = [
