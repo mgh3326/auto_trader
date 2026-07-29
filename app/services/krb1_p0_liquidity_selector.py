@@ -28,6 +28,9 @@ KIS_DAILY_TR_ID = "FHKST03010100"
 # intentionally narrow so a caller-supplied generic screener cannot satisfy the
 # gate. Wiring a real source is a separate reviewed change.
 AUTHORITATIVE_REFERENCE_EXCEPTION_SOURCES = frozenset({"krx_official_base_price"})
+AUTHORITATIVE_METADATA_SOURCES = frozenset({"toss_openapi"})
+KST = dt.timezone(dt.timedelta(hours=9))
+KRX_DAILY_COMPLETION_CUTOFF = dt.time(15, 35)
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +83,7 @@ class CompletedBarEvidence:
     raw_close: str | None
     raw_volume: str | None
     raw_value: str | None
+    observed_at: dt.datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +195,35 @@ def _parse_nonnegative_int_string(value: str | None) -> int | None:
     return int(value)
 
 
+def _observed_after_daily_completion(
+    observed_at: dt.datetime,
+    session_date: dt.date,
+) -> bool:
+    if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+        return False
+    observed_kst = observed_at.astimezone(KST)
+    return observed_kst.date() > session_date or (
+        observed_kst.date() == session_date
+        and observed_kst.time().replace(tzinfo=None) >= KRX_DAILY_COMPLETION_CUTOFF
+    )
+
+
+def _completed_bar_matches(
+    candle: CandleRow,
+    evidence: CompletedBarEvidence,
+) -> bool:
+    return (
+        evidence.symbol == candle.symbol
+        and evidence.endpoint == KIS_DAILY_ENDPOINT
+        and evidence.tr_id == KIS_DAILY_TR_ID
+        and evidence.raw_business_date == candle.session_date.strftime("%Y%m%d")
+        and _parse_nonnegative_int_string(evidence.raw_close) == candle.close
+        and _parse_nonnegative_int_string(evidence.raw_volume) == candle.volume
+        and _parse_nonnegative_int_string(evidence.raw_value) == candle.value
+        and _observed_after_daily_completion(evidence.observed_at, candle.session_date)
+    )
+
+
 def _index_unique(
     rows: tuple[object, ...],
     *,
@@ -259,20 +292,7 @@ def _completed_bar_gate(
             required_endpoint=KIS_DAILY_ENDPOINT,
             required_tr_id=KIS_DAILY_TR_ID,
         )
-    parsed_close = _parse_nonnegative_int_string(evidence.raw_close)
-    parsed_volume = _parse_nonnegative_int_string(evidence.raw_volume)
-    parsed_value = _parse_nonnegative_int_string(evidence.raw_value)
-    expected_date = candle.session_date.strftime("%Y%m%d")
-    matches = (
-        evidence.symbol == candle.symbol
-        and evidence.endpoint == KIS_DAILY_ENDPOINT
-        and evidence.tr_id == KIS_DAILY_TR_ID
-        and evidence.raw_business_date == expected_date
-        and parsed_close == candle.close
-        and parsed_volume == candle.volume
-        and parsed_value == candle.value
-    )
-    if not matches:
+    if not _completed_bar_matches(candle, evidence):
         return _gate(
             "unprovable",
             "selected_completed_bar_raw_evidence_mismatch",
@@ -443,12 +463,14 @@ def select_krb1_p0_liquidity_candidates(
             for row in active_rows
             if row.metadata_as_of is None
             or row.metadata_as_of.date() < selector_input.as_of_session
+            or row.metadata_source not in AUTHORITATIVE_METADATA_SOURCES
         )
         if stale_metadata:
             gates["metadata_authority_as_of"] = _gate(
                 "unprovable",
                 "metadata_not_authoritative_as_of_selection_session",
                 required_as_of=selector_input.as_of_session.isoformat(),
+                required_authoritative_sources=sorted(AUTHORITATIVE_METADATA_SOURCES),
                 stale_count=len(stale_metadata),
                 stale_examples=_examples(stale_metadata),
             )
@@ -457,6 +479,7 @@ def select_krb1_p0_liquidity_candidates(
                 "proven",
                 "metadata_authoritative_as_of_selection_session",
                 required_as_of=selector_input.as_of_session.isoformat(),
+                authoritative_sources=sorted(AUTHORITATIVE_METADATA_SOURCES),
                 checked_count=len(active_rows),
             )
 
@@ -564,6 +587,47 @@ def select_krb1_p0_liquidity_candidates(
                 checked_count=len(coverage_symbols),
             )
 
+        missing_completed_evidence = sorted(coverage_symbols - set(completed_index))
+        invalid_completed_evidence: list[str] = []
+        if coverage_proven:
+            for symbol in sorted(coverage_symbols & set(completed_index)):
+                candle = candle_index.get(symbol)
+                evidence = completed_index[symbol]
+                if (
+                    not isinstance(candle, CandleRow)
+                    or not isinstance(evidence, CompletedBarEvidence)
+                    or not _completed_bar_matches(candle, evidence)
+                ):
+                    invalid_completed_evidence.append(symbol)
+        if (
+            not coverage_proven
+            or missing_completed_evidence
+            or invalid_completed_evidence
+        ):
+            gates["completed_session_raw_completion"] = _gate(
+                "unprovable",
+                "full_universe_raw_daily_completion_unproven",
+                required_endpoint=KIS_DAILY_ENDPOINT,
+                required_tr_id=KIS_DAILY_TR_ID,
+                required_observation_cutoff_kst="15:35:00",
+                expected_count=len(coverage_symbols),
+                missing_count=len(missing_completed_evidence),
+                missing_examples=_examples(missing_completed_evidence),
+                invalid_count=len(invalid_completed_evidence),
+                invalid_examples=_examples(invalid_completed_evidence),
+                coverage_prerequisite_proven=coverage_proven,
+                ingested_at_alone_is_insufficient=True,
+            )
+        else:
+            gates["completed_session_raw_completion"] = _gate(
+                "proven",
+                "full_universe_raw_daily_completion_proven",
+                endpoint=KIS_DAILY_ENDPOINT,
+                tr_id=KIS_DAILY_TR_ID,
+                required_observation_cutoff_kst="15:35:00",
+                checked_count=len(coverage_symbols),
+            )
+
         preliminary_symbols = {row.symbol for row in preliminary}
         missing_reference = sorted(preliminary_symbols - set(reference_index))
         invalid_reference: list[str] = []
@@ -577,6 +641,12 @@ def select_krb1_p0_liquidity_candidates(
                 or evidence.is_exception is None
                 or evidence.source not in AUTHORITATIVE_REFERENCE_EXCEPTION_SOURCES
                 or evidence.source_as_of.date() < selector_input.target_session
+                or _parse_nonnegative_int_string(evidence.raw_reference_price)
+                in {
+                    None,
+                    0,
+                }
+                or not evidence.raw_reason_code
             ):
                 invalid_reference.append(symbol)
         if missing_reference or invalid_reference or not preliminary_symbols:

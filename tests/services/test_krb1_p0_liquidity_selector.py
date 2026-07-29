@@ -82,6 +82,7 @@ def _completed(candle: CandleRow) -> CompletedBarEvidence:
         raw_close=str(candle.close),
         raw_volume=str(candle.volume),
         raw_value=str(candle.value),
+        observed_at=INGESTED_AT,
     )
 
 
@@ -229,6 +230,48 @@ def test_completed_session_row_absence_fails_closed() -> None:
     _assert_fail_closed(result, "completed_session_full_universe_coverage_unproven")
 
 
+def test_nonselected_rows_without_raw_completion_evidence_fail_closed() -> None:
+    selector_input = _base_input()
+    candles = tuple(
+        replace(
+            row,
+            ingested_at=dt.datetime(2026, 7, 29, 7, 40, tzinfo=KST),
+        )
+        if row.symbol in {"000002", "100001"}
+        else row
+        for row in selector_input.candle_rows
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(
+            selector_input,
+            candle_rows=candles,
+            completed_bar_evidence=tuple(
+                row
+                for row in selector_input.completed_bar_evidence
+                if row.symbol in {"000001", "100002"}
+            ),
+        )
+    )
+    _assert_fail_closed(result, "full_universe_raw_daily_completion_unproven")
+
+
+def test_forming_daily_raw_observation_before_cutoff_fails_closed() -> None:
+    selector_input = _base_input()
+    completed = tuple(
+        replace(
+            row,
+            observed_at=dt.datetime(2026, 7, 29, 14, 0, tzinfo=KST),
+        )
+        if row.symbol == "000002"
+        else row
+        for row in selector_input.completed_bar_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, completed_bar_evidence=completed)
+    )
+    _assert_fail_closed(result, "full_universe_raw_daily_completion_unproven")
+
+
 def test_metadata_null_fails_closed() -> None:
     selector_input = _base_input()
     universe = tuple(
@@ -248,6 +291,18 @@ def test_stale_metadata_fails_closed() -> None:
             row,
             metadata_as_of=dt.datetime(2026, 7, 28, 8, 47, tzinfo=KST),
         )
+        for row in selector_input.universe_rows
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, universe_rows=universe)
+    )
+    _assert_fail_closed(result, "metadata_not_authoritative_as_of_selection_session")
+
+
+def test_unrecognized_metadata_source_fails_closed() -> None:
+    selector_input = _base_input()
+    universe = tuple(
+        replace(row, metadata_source="caller_claim") if row.symbol == "000001" else row
         for row in selector_input.universe_rows
     )
     result = select_krb1_p0_liquidity_candidates(
@@ -291,6 +346,20 @@ def test_reference_price_exception_unprovable_fails_closed() -> None:
                 if row.symbol != "000001"
             ),
         )
+    )
+    _assert_fail_closed(result, "target_session_reference_price_exception_unproven")
+
+
+def test_reference_exception_boolean_without_raw_provenance_fails_closed() -> None:
+    selector_input = _base_input()
+    references = tuple(
+        replace(row, raw_reference_price=None, raw_reason_code=None)
+        if row.symbol == "000001"
+        else row
+        for row in selector_input.reference_exception_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, reference_exception_evidence=references)
     )
     _assert_fail_closed(result, "target_session_reference_price_exception_unproven")
 

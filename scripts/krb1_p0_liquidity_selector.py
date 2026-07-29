@@ -242,6 +242,7 @@ async def _fetch_raw_upstream_evidence(
                     raw_close=daily.get("stck_clpr"),
                     raw_volume=daily.get("acml_vol"),
                     raw_value=daily.get("acml_tr_pbmn"),
+                    observed_at=dt.datetime.now(dt.UTC),
                 )
             )
         except Exception as exc:
@@ -334,6 +335,7 @@ async def run(
                 "stck_clpr": row.raw_close,
                 "acml_vol": row.raw_volume,
                 "acml_tr_pbmn": row.raw_value,
+                "observed_at": row.observed_at.isoformat(),
             }
             for row in completed
         ],

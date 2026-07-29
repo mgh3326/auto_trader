@@ -32,6 +32,12 @@ timestamp gate를 각각 `proven` 또는 `unprovable`로 출력한다. quote tim
 원시 `stck_bsop_date`와 `stck_cntg_hour`만 인정한다. wrapper의 `price_as_of`나
 `price_freshness`는 gate를 통과시키지 못한다.
 
+완료세션은 row 존재나 `ingested_at`만으로 증명하지 않는다. coverage universe 전
+종목의 KIS raw 일봉(`stck_bsop_date`, `stck_clpr`, `acml_vol`,
+`acml_tr_pbmn`)이 DB row와 일치하고, 각 응답의 관측 provenance가 당일 15:35 KST
+이후여야 한다. 전수 evidence를 효율적으로 공급하는 authoritative batch source가
+배선되기 전에는 이 gate가 `unprovable`인 것이 정상이다.
+
 지정가는 정수 연산만 사용한다.
 
 ```text
