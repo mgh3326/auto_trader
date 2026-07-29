@@ -160,11 +160,21 @@ scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 별도 커밋(미포함), 기본 플러그인 `NullStrategy`는 항상 `None`.
 
 - **패키지**: `app/services/brokers/binance/demo_strategy_loop/` — `bars.py`(H1 재사용 + 1m fetch),
-  `strategy.py`(`Signal`/`StrategyPlugin`/`NullStrategy`), `kill_switch.py`(최대동시포지션1 +
+  `strategy.py`(`Signal`/`StrategyPlugin`/`NullStrategy`/`LastBarDirectionStrategy`),
+  `registry.py`(ROB-1145 `--strategy` 셀렉터), `kill_switch.py`(최대동시포지션1 +
   연속 SL/UTC일), `sizing.py`, `execution.py`(open MARKET + reduceOnly close round-trip, ROB-298
   smoke CLI와 동일 lifecycle), `correlation.py`, `orchestrator.py`(`run_tick`)
 - **CLI**: `scripts/binance_demo_strategy_loop.py` (default-disabled, `--once`/`--loop`/
   `--paper-signal`/`--readiness`) — `--paper-signal`이 ROB-993 e2e 스모크 경로(주문 1건 데모 왕복)
+- **전략 셀렉터(ROB-1145)**: `--strategy <key>` — 기본 `null`(=`NullStrategy`, 신호 0건, 제거되지 않음),
+  opt-in `last-bar-direction`(=`LastBarDirectionStrategy`). 미등록 키는 `UnknownStrategyKey`로
+  자격증명 읽기·HTTP·DB **이전에** fail-closed(exit 1). 플러그인은 `(symbol, side)`만 제안 —
+  하드 인바리언트는 전부 하류(`sizing`/`kill_switch`/`execution`)에 있고 플러그인에서 도달 불가.
+  `last-bar-direction`은 **알파가 아니라 인프라 증명**(직전 완결 4h bar의 close vs open 방향, 파라미터·
+  상태·룩백 없음, 기대수익 주장 없음 — ROB-316 OOS gross-negative 교훈 때문에 기본값이 아니다).
+- **`--readiness` 범위(ROB-1145 실측)**: `BINANCE_DEMO_STRATEGY_LOOP_ENABLED` + `--strategy` 키만
+  검사한다. **자격증명을 전혀 확인하지 않는다** — readiness exit 0은 `BINANCE_DEMO_API_*` 해석·
+  계정 도달 가능성의 증거가 아니다. 그 확인은 `scripts.binance_futures_demo_smoke --preflight`(서명 read).
 - **env**: `BINANCE_DEMO_STRATEGY_LOOP_ENABLED`(기본 false) — 기존 `BINANCE_FUTURES_DEMO_*`
   자격증명/호스트 allowlist 그대로 상속, 신규 자격증명 표면 없음
 - **kill switch**: env 게이트 + 동시 포지션 1 상한(`count_open_lifecycles` 재사용) + 연속 SL 2회/UTC일

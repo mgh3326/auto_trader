@@ -97,6 +97,16 @@ end-to-end, which is exactly the ROB-993 verification AC ("페이퍼
 **No new credential surface** — this loop reuses `BinanceFuturesDemoExecutionClient.from_env()`
 unchanged.
 
+> **`--readiness` scope (measured 2026-07-29, ROB-1145).** `--readiness`
+> asserts **only** `BINANCE_DEMO_STRATEGY_LOOP_ENABLED` (plus, since
+> ROB-1145, the `--strategy` key). It performs **no credential
+> resolution** — a `--readiness` exit 0 is *not* evidence that
+> `BINANCE_DEMO_API_*` resolves or that the Demo account is reachable,
+> and its exit 1 with the flag unset means only "master gate off".
+> To verify the credential path, run the ROB-298 signed read instead:
+> `uv run python -m scripts.binance_futures_demo_smoke --preflight`
+> (expect `can_trade: true` + a redacted `api_key_fingerprint`).
+
 ---
 
 ## 4. CLI modes
@@ -107,6 +117,7 @@ uv run python -m scripts.binance_demo_strategy_loop --once
 uv run python -m scripts.binance_demo_strategy_loop --once --confirm
 uv run python -m scripts.binance_demo_strategy_loop --loop --poll-interval-seconds 300
 uv run python -m scripts.binance_demo_strategy_loop --paper-signal --confirm
+uv run python -m scripts.binance_demo_strategy_loop --once --strategy last-bar-direction
 ```
 
 | Mode | HTTP/DB | Purpose |
@@ -118,8 +129,9 @@ uv run python -m scripts.binance_demo_strategy_loop --paper-signal --confirm
 | `--paper-signal` | bars skipped; execution if `--confirm` | Injects a canned `Signal` (`--paper-symbol`/`--paper-side`), bypassing bar-fetch + strategy. **This is the ROB-993 e2e smoke path.** |
 
 Shared flags: `--symbols` (default `XRPUSDT,DOGEUSDT,SOLUSDT`), `--leverage`
-(default 1, only 1 accepted), `--confirm` (operator gate — without it every
-mode is dry-run, zero broker mutation).
+(default 1, only 1 accepted), `--strategy` (plugin key, default `null` —
+see §4.1), `--confirm` (operator gate — without it every mode is dry-run,
+zero broker mutation).
 
 **No CLI flag exists for leg notional, max concurrent positions, or
 consecutive-SL limit.** Per the ROB-993 adversarial review
@@ -138,8 +150,57 @@ status — grep-friendly, mirrors the ROB-298 smoke CLI's evidence convention.
 
 **Exit codes**: `0` clean (disabled / no signal / dry-run / kill-switch
 gated / reconciled round trip), `1` operator misconfiguration (missing
-env/credentials), `2` runtime failure (broker/ledger anomaly raised
-mid-lifecycle — investigate the ledger row before retrying).
+env/credentials, **unknown `--strategy` key**), `2` runtime failure
+(broker/ledger anomaly raised mid-lifecycle — investigate the ledger row
+before retrying).
+
+### 4.1 `--strategy` selector (ROB-1145)
+
+Before ROB-1145 the plugin was hardcoded at the CLI call site
+(`strategy=NullStrategy()`), so swapping a plugin meant editing code.
+`--strategy <key>` now resolves through
+`app/services/brokers/binance/demo_strategy_loop/registry.py`.
+
+| Key | Plugin | Emits a signal? |
+|---|---|---|
+| `null` (**default**) | `NullStrategy` | Never. Unchanged ROB-993 posture. |
+| `last-bar-direction` | `LastBarDirectionStrategy` | Yes — opt-in only. |
+
+Properties the registry deliberately holds:
+
+* **`null` remains the default.** Passing no `--strategy` keeps the loop
+  incapable of placing an order. `NullStrategy` was not removed.
+* **Unknown key fails closed** (`UnknownStrategyKey`, exit 1) *before*
+  `from_env()` reads credentials and before any HTTP/DB — a typo stops
+  the run rather than silently trading a different strategy.
+* **A plugin is not a safety dial.** It can only propose
+  `(symbol, side)`. Leg notional `[6, 10]` USDT, max concurrent
+  positions `1`, consecutive-SL cap `2`, 1x leverage, the reduceOnly
+  close and the `demo-fapi.binance.com` allowlist are all enforced
+  downstream (`sizing` / `kill_switch` / `execution`) and are unreachable
+  from a plugin. `--readiness` reports the resolved plugin plus every
+  registered key, with no HTTP and no credentials.
+
+#### `last-bar-direction` — infrastructure proof, NOT an alpha
+
+The rule, in full: pick the first symbol of `("XRPUSDT", "DOGEUSDT",
+"SOLUSDT")` that is in the canonical futures-demo allowlist **and** has a
+complete 4h bar whose `close_ts == decision_ts`; then `close > open` →
+`BUY`, `close < open` → `SELL`, `close == open` → no signal. No lookback
+beyond that single bar, no parameters, no thresholds, no state.
+
+It exists to answer one question — *does the loop place an order on its
+own?* — and it makes **no claim of expected return**. ROB-316 (an OOS
+gross-negative micro-breakout signal) is precisely why this is labelled
+infra proof and why it is not the default. A real strategy with an
+expected-return claim is separate work and additionally needs the
+position-hold / TP-SL state machine that §6 lists as missing.
+
+Consequence worth stating plainly: with `--loop --strategy
+last-bar-direction --confirm`, the loop opens and immediately
+reduceOnly-closes a `[6, 10]` USDT leg on essentially every 4h bar close
+where the decision bar is not exactly flat (≤6 round trips/UTC day). That
+is intended for a Demo account and is not a strategy result.
 
 ---
 

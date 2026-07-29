@@ -7,11 +7,19 @@ XRP/DOGE/SOL). Strategy-pluggable: the default plugin is ``NullStrategy``
 (always no signal) — the S3 signal-engine adapter (ROB-980) is a separate,
 later commit, deliberately not wired here.
 
+ROB-1145 replaced the hardcoded ``NullStrategy()`` call site with a
+``--strategy <key>`` selector backed by
+``app.services.brokers.binance.demo_strategy_loop.registry``. The default
+is unchanged (``null``); ``last-bar-direction`` is an opt-in
+infrastructure-proof plugin (no expected-return claim — see its
+docstring), and an unknown key fails closed before any HTTP/DB.
+
 Modes (mutually exclusive; default with no flag prints guidance):
 
   1. **default-disabled** — ``BINANCE_DEMO_STRATEGY_LOOP_ENABLED`` unset
      or false: one log line, exit 0, zero HTTP/DB.
-  2. ``--readiness`` — no-secret env readiness report. No HTTP, no
+  2. ``--readiness`` — no-secret env readiness report (including the
+     resolved ``--strategy`` plugin and the registered keys). No HTTP, no
      credentials required.
   3. ``--once`` — one tick: fetch 1m bars, aggregate to 4h (H1 semantics),
      evaluate the strategy, act on a signal if any (dry-run unless
@@ -164,6 +172,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="--paper-signal side (default: BUY).",
     )
     parser.add_argument(
+        "--strategy",
+        default=None,
+        help=(
+            "Strategy plugin key (default: null — NullStrategy, never "
+            "emits a signal). Registered keys are listed by "
+            "--readiness. An unknown key is refused before any HTTP/DB."
+        ),
+    )
+    parser.add_argument(
         "--confirm",
         action="store_true",
         help=(
@@ -245,16 +262,28 @@ async def _run_tick(
         assert_demo_only,
         run_tick,
     )
+    from app.services.brokers.binance.demo_strategy_loop.registry import (
+        UnknownStrategyKey,
+        build_strategy,
+    )
     from app.services.brokers.binance.demo_strategy_loop.sizing import (
         LEG_NOTIONAL_CAP_MAX_USDT,
     )
-    from app.services.brokers.binance.demo_strategy_loop.strategy import NullStrategy
     from app.services.brokers.binance.futures_demo.errors import (
         BinanceFuturesDemoMissingCredentials,
     )
     from app.services.brokers.binance.futures_demo.execution_client import (
         BinanceFuturesDemoExecutionClient,
     )
+
+    # ROB-1145: resolve the plugin BEFORE constructing any client — an
+    # unknown --strategy key must fail closed with zero HTTP/DB, not after
+    # credentials have been read.
+    try:
+        strategy = build_strategy(getattr(args, "strategy", None))
+    except UnknownStrategyKey as exc:
+        logger.error("strategy loop refused: %s", exc)
+        return 1, None
 
     try:
         execution = BinanceFuturesDemoExecutionClient.from_env()
@@ -286,7 +315,7 @@ async def _run_tick(
         async with AsyncSessionLocal() as session:
             ledger = BinanceDemoLedgerService(session)
             outcome = await run_tick(
-                strategy=NullStrategy(),
+                strategy=strategy,
                 execution=execution,
                 ledger=ledger,
                 session=session,
@@ -345,14 +374,34 @@ async def _run_loop(args: argparse.Namespace) -> int:
 
 async def _run(args: argparse.Namespace) -> int:
     if getattr(args, "readiness", False):
+        from app.services.brokers.binance.demo_strategy_loop.registry import (
+            DEFAULT_STRATEGY_KEY,
+            UnknownStrategyKey,
+            available_strategy_keys,
+            build_strategy,
+        )
+
         enabled = _truthy(os.environ.get("BINANCE_DEMO_STRATEGY_LOOP_ENABLED"))
+        requested = getattr(args, "strategy", None)
+        strategy_error: str | None = None
+        try:
+            strategy_id = build_strategy(requested).strategy_id
+        except UnknownStrategyKey as exc:
+            strategy_id = None
+            strategy_error = str(exc)
         _evidence(
             {
                 "event": "strategy_loop_env_readiness",
                 "BINANCE_DEMO_STRATEGY_LOOP_ENABLED": enabled,
                 "symbols": args.symbols,
+                "strategy_requested": requested or DEFAULT_STRATEGY_KEY,
+                "strategy_id": strategy_id,
+                "strategy_error": strategy_error,
+                "strategy_keys_available": list(available_strategy_keys()),
             }
         )
+        if strategy_error is not None:
+            return 1
         return 0 if enabled else 1
 
     # Hard invariant: default-disabled. Checked AFTER argparse (so --help
