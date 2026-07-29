@@ -122,10 +122,33 @@ async def test_screen_stocks_smoke(monkeypatch):
     async def mock_fetch_etf_all_cached():
         return []
 
+    async def mock_fetch_valuation_all_cached(market):
+        return {}
+
+    async def mock_fetch_screen_enrichment_kr(symbol: str) -> dict[str, Any]:
+        return {}
+
     _patch_runtime_attr(
         monkeypatch, "fetch_stock_all_cached", mock_fetch_stock_all_cached
     )
     _patch_runtime_attr(monkeypatch, "fetch_etf_all_cached", mock_fetch_etf_all_cached)
+    # ROB: non-deterministic ~30s KRX network call otherwise (real
+    # fetch_valuation_all_cached hit from screening_kr's advanced-filter path).
+    # The call is wrapped in try/except upstream, so it never failed this test
+    # — it just made duration flaky. Smoke test only checks response shape, not
+    # valuation merge, so an empty fake is a faithful stand-in.
+    _patch_runtime_attr(
+        monkeypatch, "fetch_valuation_all_cached", mock_fetch_valuation_all_cached
+    )
+    # ROB: screen_stocks_unified always runs equity enrichment for market="kr",
+    # which otherwise hits real Naver/Finnhub per row (_fetch_screen_enrichment_kr).
+    # Same non-determinism class as the valuation call above — fake it too so the
+    # smoke test has no live network dependency left.
+    monkeypatch.setattr(
+        screening_enrichment,
+        "_fetch_screen_enrichment_kr",
+        mock_fetch_screen_enrichment_kr,
+    )
 
     result = await tools["screen_stocks"](market="kr", limit=5)
 

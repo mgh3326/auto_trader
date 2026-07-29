@@ -9,6 +9,7 @@ from app.mcp_server.tooling.screening import kr as screening_kr
 from app.mcp_server.tooling.screening import us as screening_us
 from tests._mcp_tooling_support import (
     _mock_crypto_external_sources,
+    _mock_kr_screen_external_sources,
     build_tools,
     mock_krx_etfs,
     mock_krx_stocks,
@@ -18,13 +19,17 @@ from tests._mcp_tooling_support import (
 
 __all__ = [
     "_mock_crypto_external_sources",
+    "_mock_kr_screen_external_sources",
     "mock_krx_etfs",
     "mock_krx_stocks",
     "mock_upbit_coins",
     "mock_yfinance_screen",
 ]
 
-pytestmark = pytest.mark.usefixtures("_mock_crypto_external_sources")
+pytestmark = [
+    pytest.mark.usefixtures("_mock_crypto_external_sources"),
+    pytest.mark.usefixtures("_mock_kr_screen_external_sources"),
+]
 
 
 class TestScreenStocksRsiLogging:

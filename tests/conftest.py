@@ -41,6 +41,7 @@ _DATABASE_FIXTURE_NAMES = frozenset(
     {
         "db_session",
         "session",
+        "committed_investment_reports_session",
         "investment_reports_cleanup_lock",
         "retrospective_action_control_lock",
         "toss_ledger_cleanup_lock",
@@ -507,7 +508,7 @@ def auth_test_client(auth_mock_session, reset_auth_mock_db):
 @pytest.fixture
 def reset_auth_mock_db(auth_mock_session):
     """Reset auth mock database before each test."""
-    auth_mock_session.reset_mock()
+    auth_mock_session.reset_mock(side_effect=True)
 
     # Default behavior for execute: return a mock result
     mock_result = MagicMock()

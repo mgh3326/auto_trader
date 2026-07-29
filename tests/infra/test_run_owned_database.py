@@ -19,6 +19,7 @@ def _clear_database_env(monkeypatch: pytest.MonkeyPatch) -> None:
         owned_db.OWNER_TOKEN_ENV,
         owned_db.SHARED_DATABASE_ENV,
         owned_db.TEST_DATABASE_URL_ENV,
+        "DATABASE_URL",
         "PYTEST_XDIST_WORKER",
     ):
         monkeypatch.delenv(name, raising=False)

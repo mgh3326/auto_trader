@@ -31,7 +31,6 @@ from app.models.review import (
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.usefixtures("investment_reports_cleanup_lock"),
     pytest.mark.usefixtures("retrospective_action_control_lock"),
 ]
 
@@ -163,7 +162,6 @@ async def _clear_actions(db: AsyncSession) -> None:
 @pytest_asyncio.fixture(autouse=True)
 async def _cleanup(
     db_session: AsyncSession,
-    investment_reports_cleanup_lock: AsyncSession,
     retrospective_action_control_lock,
 ):
     """Clean up retrospectives, actions, and reset control mode before each test."""
