@@ -44,6 +44,10 @@ def test_account_routing_tool_names_register():
 # ROB-760 — account_read is also a physical allowlist profile: it must expose
 # exactly the account-sync read surface pinned in tests/test_mcp_profiles.py,
 # without route/advisory tools.
+# ROB-1164 — directional-lab-crypto binds every paper action to the account
+# id/name/strategy supplied by its own lookup. The generic recommendation tool
+# could select an arbitrary account, so its intentional absence is pinned in
+# TestDirectionalLabCryptoProfile rather than treated as a registry regression.
 _READ_PROFILES = [
     p
     for p in McpProfile
@@ -52,6 +56,7 @@ _READ_PROFILES = [
         McpProfile.SHADOW_REPLAY,
         McpProfile.ACCOUNT_READ,
         McpProfile.PAPER_EXECUTION,
+        McpProfile.DIRECTIONAL_LAB_CRYPTO,
     )
 ]
 

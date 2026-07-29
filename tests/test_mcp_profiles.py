@@ -257,6 +257,7 @@ class TestDirectionalLabCryptoProfile:
         assert DIRECTIONAL_LAB_CRYPTO_PAPER_TOOL_NAMES.isdisjoint(
             _build_mcp(McpProfile.CRYPTO).tools
         )
+        assert "suggest_order_account" not in mcp.tools
 
     @pytest.mark.parametrize(
         ("account_id", "account_name", "strategy_name", "expected"),
