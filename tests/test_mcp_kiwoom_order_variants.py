@@ -30,6 +30,7 @@ EXPECTED_TOOL_NAMES = {
     "kiwoom_mock_cancel_order",
     "kiwoom_mock_modify_order",
     "kiwoom_mock_get_order_history",
+    "kiwoom_mock_get_order_detail",
     "kiwoom_mock_get_positions",
     "kiwoom_mock_get_orderable_cash",
 }
@@ -41,7 +42,7 @@ def _register(mcp: DummyMCP) -> None:
     orders_kiwoom_variants.register(mcp)
 
 
-def test_all_seven_tools_register():
+def test_all_eight_tools_register():
     mcp = DummyMCP()
     _register(mcp)
     assert EXPECTED_TOOL_NAMES.issubset(set(mcp.tools))
@@ -956,6 +957,13 @@ def _patch_fake_kiwoom_account_client(monkeypatch, mod, payloads):
             calls.append({"method": "order_status", **kwargs})
             return payloads.get("order_status", {"return_code": 0})
 
+        async def get_order_detail(self, **kwargs):
+            calls.append({"method": "order_detail", **kwargs})
+            return payloads.get(
+                "order_detail",
+                {"return_code": 0, "acnt_ord_cntr_prps_dtl": []},
+            )
+
     monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
     monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
     monkeypatch.setattr(
@@ -1693,6 +1701,7 @@ async def test_registered_order_history_recursively_redacts_aliases_and_passthro
     [
         ("kiwoom_mock_get_positions", "positions", "kt00018"),
         ("kiwoom_mock_get_order_history", "orders", "kt00009"),
+        ("kiwoom_mock_get_order_detail", "orders", "kt00007"),
     ],
 )
 async def test_registered_reads_config_failure_has_stable_envelope(
@@ -1752,6 +1761,7 @@ async def test_registered_cash_config_failure_has_stable_source(
     [
         ("kiwoom_mock_get_positions", "positions", "kt00018"),
         ("kiwoom_mock_get_order_history", "orders", "kt00009"),
+        ("kiwoom_mock_get_order_detail", "orders", "kt00007"),
     ],
 )
 async def test_registered_reads_transport_exception_has_stable_envelope(
@@ -1772,6 +1782,9 @@ async def test_registered_reads_transport_exception_has_stable_envelope(
             raise RuntimeError("transport secret must not escape")
 
         async def get_order_status(self, **kwargs):  # noqa: ARG002
+            raise RuntimeError("transport secret must not escape")
+
+        async def get_order_detail(self, **kwargs):  # noqa: ARG002
             raise RuntimeError("transport secret must not escape")
 
     monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
@@ -1797,6 +1810,7 @@ async def test_registered_reads_transport_exception_has_stable_envelope(
     [
         ("kiwoom_mock_get_positions", "positions", "kt00018", "balance"),
         ("kiwoom_mock_get_order_history", "orders", "kt00009", "order_status"),
+        ("kiwoom_mock_get_order_detail", "orders", "kt00007", "order_detail"),
     ],
 )
 async def test_registered_reads_broker_failure_has_stable_envelope(
@@ -1864,6 +1878,409 @@ async def test_registered_order_history_rejects_malformed_official_order_id(
         api_id="kt00009",
         error="kiwoom_mock_evidence_invalid",
     )
+
+
+# ---------------------------------------------------------------------------
+# ROB-1155 — kt00007 read-only order-detail tool
+# ---------------------------------------------------------------------------
+
+_DETAIL_ROW = {
+    "ord_no": "0000050",
+    "stk_cd": "A005930",
+    "ord_qty": "0000000010",
+    "ord_uv": "0000072300",
+    "cntr_qty": "0000000004",
+    "cntr_uv": "0000072000",
+    "ord_remnq": "0000000006",
+    "mdfy_cncl": "",
+    "dmst_stex_tp": "KRX",
+}
+
+
+def _detail_payload(*rows: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "return_code": 0,
+        "return_msg": "조회가 완료되었습니다",
+        "acnt_ord_cntr_prps_dtl": list(rows) or [dict(_DETAIL_ROW)],
+    }
+
+
+def _patch_detail(monkeypatch, mod, payload: dict[str, Any] | None = None):
+    return _patch_fake_kiwoom_account_client(
+        monkeypatch,
+        mod,
+        payloads={
+            "orderable_amount": {"return_code": 0},
+            "balance": {"return_code": 0},
+            "order_status": {"return_code": 0},
+            "order_detail": payload if payload is not None else _detail_payload(),
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_order_detail_sends_official_kt00007_scope_and_echoes_request(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_detail(monkeypatch, mod)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"](
+        order_id="0000050", order_date="20260729", scope="filled", symbol="005930"
+    )
+
+    detail_call = next(c for c in calls if c.get("method") == "order_detail")
+    assert detail_call["order_date"] == "20260729"
+    assert detail_call["qry_tp"] == "4"  # official: 4:체결내역만
+    assert detail_call["symbol"] == "005930"
+    assert detail_call["from_order_no"] == "0000050"
+    assert detail_call["dmst_stex_tp"] == "KRX"
+
+    assert response["success"] is True
+    assert response["provenance"]["api_id"] == "kt00007"
+    assert response["requested_scope"] == "filled"
+    assert response["requested_qry_tp"] == "4"
+    assert response["requested_venue"] == "KRX"
+    assert response["order_id"] == "0000050"
+    assert response["order_date"] == "20260729"
+
+
+@pytest.mark.asyncio
+async def test_order_detail_normalizes_rows_and_preserves_remnq_and_venue(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_detail(monkeypatch, mod)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"]()
+
+    assert response["orders"] == [
+        {
+            "order_id": "0000050",
+            "symbol": "005930",
+            "status": "partially_filled",
+            "ordered_quantity": 10,
+            "ordered_price": 72_300,
+            "filled_quantity": 4,
+            "average_price": 72_000,
+            "remaining_quantity": 6,
+            "unfilled_quantity": 6,
+            "remaining_quantity_consistent": True,
+            "change_type": None,
+            "venue": "KRX",
+        }
+    ]
+    assert response["response_venues"] == ["KRX"]
+
+
+@pytest.mark.asyncio
+async def test_order_detail_filters_to_the_exact_order_number(monkeypatch):
+    # fr_ord_no is a LOWER BOUND per the official docs ("이전 주문은 조회되지
+    # 않음"), so the broker legitimately returns later orders too. Without the
+    # local exact filter a single-order lookup would report unrelated orders.
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_detail(
+        monkeypatch,
+        mod,
+        _detail_payload(
+            dict(_DETAIL_ROW),
+            {**_DETAIL_ROW, "ord_no": "0000051", "stk_cd": "A000660"},
+            {**_DETAIL_ROW, "ord_no": "0000052", "stk_cd": "A035420"},
+        ),
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"](order_id="0000050")
+
+    assert [row["order_id"] for row in response["orders"]] == ["0000050"]
+    assert response["broker_order_count"] == 3
+    assert response["matched_order_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_order_detail_without_order_id_returns_every_row(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_detail(
+        monkeypatch,
+        mod,
+        _detail_payload(
+            dict(_DETAIL_ROW),
+            {**_DETAIL_ROW, "ord_no": "0000051", "stk_cd": "A000660"},
+        ),
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"]()
+
+    assert [row["order_id"] for row in response["orders"]] == ["0000050", "0000051"]
+    assert response["matched_order_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_order_detail_unmatched_order_id_is_success_with_zero_matches(
+    monkeypatch,
+):
+    # "Broker answered, order not in the window" must be distinguishable from
+    # "read failed" — success stays True and the count says zero.
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_detail(monkeypatch, mod)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"](order_id="9999999")
+
+    assert response["success"] is True
+    assert response["orders"] == []
+    assert response["broker_order_count"] == 1
+    assert response["matched_order_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_order_detail_reports_response_venue_mismatch_evidence(monkeypatch):
+    # CP6: requested venue vs the venue the broker actually recorded are both
+    # surfaced, so a mismatch is visible without re-parsing broker_response.
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_detail(
+        monkeypatch,
+        mod,
+        _detail_payload(
+            {**_DETAIL_ROW, "dmst_stex_tp": "NXT"},
+            {**_DETAIL_ROW, "ord_no": "0000051", "dmst_stex_tp": "KRX"},
+        ),
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"](venue="KRX")
+
+    assert response["requested_venue"] == "KRX"
+    assert response["response_venues"] == ["KRX", "NXT"]
+
+
+@pytest.mark.asyncio
+async def test_order_detail_accepts_nxt_as_a_read_only_observation_venue(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_detail(monkeypatch, mod)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"](venue="NXT")
+
+    detail_call = next(c for c in calls if c.get("method") == "order_detail")
+    assert detail_call["dmst_stex_tp"] == "NXT"
+    assert response["success"] is True
+    assert response["requested_venue"] == "NXT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("venue", ["%", "SOR", "sor", "", "ALL"])
+async def test_order_detail_rejects_venues_outside_the_read_allowlist(
+    monkeypatch, venue
+):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_detail(monkeypatch, mod)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"](venue=venue)
+
+    _assert_stable_read_failure(
+        response,
+        result_key="orders",
+        api_id="kt00007",
+        error="kiwoom_mock_read_venue_invalid",
+    )
+    assert not [c for c in calls if c.get("method") == "order_detail"]
+
+
+@pytest.mark.asyncio
+async def test_order_detail_rejects_unknown_scope(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_detail(monkeypatch, mod)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"](scope="everything")
+
+    _assert_stable_read_failure(
+        response,
+        result_key="orders",
+        api_id="kt00007",
+        error="kiwoom_mock_read_scope_invalid",
+    )
+    assert not [c for c in calls if c.get("method") == "order_detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_order_id", ["   ", "12 34", "../123", "123?x=1", "12/34"])
+async def test_order_detail_rejects_unsafe_order_ids(monkeypatch, bad_order_id):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_detail(monkeypatch, mod)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"](order_id=bad_order_id)
+
+    _assert_stable_read_failure(
+        response,
+        result_key="orders",
+        api_id="kt00007",
+        error="kiwoom_mock_order_id_invalid",
+    )
+    assert not [c for c in calls if c.get("method") == "order_detail"]
+
+
+@pytest.mark.asyncio
+async def test_order_detail_rejects_non_krx_symbol(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    calls = _patch_detail(monkeypatch, mod)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"](symbol="AAPL")
+
+    _assert_stable_read_failure(
+        response,
+        result_key="orders",
+        api_id="kt00007",
+        error="kiwoom_mock_symbol_invalid",
+    )
+    assert not [c for c in calls if c.get("method") == "order_detail"]
+
+
+@pytest.mark.asyncio
+async def test_order_detail_rejects_malformed_order_date_without_dispatch(monkeypatch):
+    # The client raises ValueError locally, so the request is provably never
+    # dispatched — classified as request-invalid, not transport failure.
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    monkeypatch.setattr(mod, "_mock_config_error", lambda: None)
+    mcp = DummyMCP()
+    _register(mcp)
+
+    class FakeKiwoomMockClient:
+        @classmethod
+        def from_app_settings(cls):
+            return cls()
+
+    monkeypatch.setattr(mod, "KiwoomMockClient", FakeKiwoomMockClient, raising=False)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"](order_date="2026-07-29")
+
+    _assert_stable_read_failure(
+        response,
+        result_key="orders",
+        api_id="kt00007",
+        error="kiwoom_mock_request_invalid",
+    )
+
+
+@pytest.mark.asyncio
+async def test_order_detail_fails_closed_on_live_provenance(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_detail(
+        monkeypatch,
+        mod,
+        {
+            "return_code": 0,
+            "provenance": {"environment": "live", "host": "api.kiwoom.com"},
+            "acnt_ord_cntr_prps_dtl": [],
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"]()
+
+    _assert_stable_read_failure(
+        response,
+        result_key="orders",
+        api_id="kt00007",
+        error="kiwoom_mock_provenance_conflict",
+    )
+
+
+@pytest.mark.asyncio
+async def test_order_detail_redacts_account_identifiers(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_detail(
+        monkeypatch,
+        mod,
+        {
+            "return_code": 0,
+            "acnt_no": "12345678-01",
+            "authorization": "Bearer super-secret",
+            "acnt_ord_cntr_prps_dtl": [dict(_DETAIL_ROW)],
+        },
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"]()
+
+    rendered = str(response)
+    assert "12345678-01" not in rendered
+    assert "super-secret" not in rendered
+    assert response["broker_response"]["acnt_no"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_order_detail_fails_closed_on_malformed_rows(monkeypatch):
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_detail(
+        monkeypatch, mod, _detail_payload({**_DETAIL_ROW, "ord_no": "ORD-50"})
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"]()
+
+    _assert_stable_read_failure(
+        response,
+        result_key="orders",
+        api_id="kt00007",
+        error="kiwoom_mock_evidence_invalid",
+    )
+
+
+@pytest.mark.asyncio
+async def test_order_detail_never_constructs_an_order_client(monkeypatch):
+    # Read-only by construction: the kt00007 path must not be able to reach
+    # place/modify/cancel.
+    from app.mcp_server.tooling import orders_kiwoom_variants as mod
+
+    _patch_detail(monkeypatch, mod)
+
+    def exploded_order_client(*_args, **_kwargs):
+        raise AssertionError("read tool must never build an order client")
+
+    monkeypatch.setattr(
+        mod, "KiwoomDomesticOrderClient", exploded_order_client, raising=False
+    )
+    mcp = DummyMCP()
+    _register(mcp)
+
+    response = await mcp.tools["kiwoom_mock_get_order_detail"](order_id="0000050")
+
+    assert response["success"] is True
 
 
 # ---------------------------------------------------------------------------

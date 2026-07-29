@@ -49,6 +49,14 @@ KIWOOM_MOCK_ACCOUNT_READ_TOOL_NAMES: set[str] = {
     "kiwoom_mock_get_positions",
     "kiwoom_mock_get_orderable_cash",
     "kiwoom_mock_get_order_history",
+    # ROB-1155 — kiwoom_mock_get_order_detail (kt00007) is deliberately NOT
+    # listed. It is a pure read, but this set is unioned into
+    # TRADINGCODEX_EXECUTION_TOOL_NAMES, so adding it here would silently widen
+    # that privileged profile too — exactly what the boundary comment in
+    # tradingcodex_execution_registration.py forbids. KR-B1's forced profile is
+    # MCP_PROFILE=kiwoom, which registers the whole Kiwoom registrar, so the
+    # tool is reachable where it is needed without touching either restricted
+    # profile. Widening these two is a separate, explicit decision.
 }
 
 ACCOUNT_READ_TOOL_NAMES: set[str] = {

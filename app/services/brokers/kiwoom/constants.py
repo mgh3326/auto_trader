@@ -88,6 +88,57 @@ ACCOUNT_ORDER_QRY_TP_DEFAULT = "0"  # kt00009 조회구분(전체)
 # MOCK_REJECTED_EXCHANGES={"NXT","SOR"}이 그 경계를 강제한다. "%"(전체)는 NXT/SOR
 # 결과까지 섞어 그 fail-closed 경계를 사실상 무력화하므로 선택하지 않는다.
 
+# ROB-1155 (2026-07-29) — kt00007(계좌별주문체결내역상세요청) 공식 요청 body.
+# 공식 문서 https://openapi.kiwoom.com/m/guide/apiguide?apiId=kt00007&jobTp=FS_JOB_TP&jobTpCode=08
+# (2026-07-29 직접 확인 + 로컬 추출본
+#  ~/Downloads/kiwoom_api_docs/kt00007_계좌별주문체결내역상세요청.md 교차 확인)의
+# 요청 Body 표는 다음 7필드다. `ord_no`는 요청 필드에 **없다**.
+#   ord_dt        Required=N  주문일자 YYYYMMDD
+#   qry_tp        Required=Y  "1:주문순, 2:역순, 3:미체결, 4:체결내역만"
+#   stk_bond_tp   Required=Y  "0:전체, 1:주식, 2:채권"
+#   sell_tp       Required=Y  "0:전체, 1:매도, 2:매수"
+#   stk_cd        Required=N  종목코드 (전체 조회는 빈값 '')
+#   fr_ord_no     Required=N  시작주문번호 (입력 시 이전 주문 제외, 전체 조회는 빈값 '')
+#   dmst_stex_tp  Required=Y  "%:(전체), KRX, NXT, SOR"
+# 공식 Request Example은 optional 3필드를 **빈 문자열로 명시 전송**한다:
+#   {"ord_dt":"", "qry_tp":"1", "stk_bond_tp":"0", "sell_tp":"0",
+#    "stk_cd":"005930", "fr_ord_no":"", "dmst_stex_tp":"%"}
+# 교정 전 구현은 `{"ord_no": ...}` 단일 필드만 보냈다 — Required=Y 4필드가 모두
+# 누락되고 존재하지 않는 필드를 보내는 계약 불일치였다(return_code 2 구조).
+ACCOUNT_ORDER_DETAIL_QRY_TP_ORDER_SEQUENCE = "1"  # 주문순
+ACCOUNT_ORDER_DETAIL_QRY_TP_REVERSE = "2"  # 역순
+ACCOUNT_ORDER_DETAIL_QRY_TP_UNFILLED = "3"  # 미체결
+ACCOUNT_ORDER_DETAIL_QRY_TP_FILLED = "4"  # 체결내역만
+ACCOUNT_ORDER_DETAIL_QRY_TYPES: frozenset[str] = frozenset(
+    {
+        ACCOUNT_ORDER_DETAIL_QRY_TP_ORDER_SEQUENCE,
+        ACCOUNT_ORDER_DETAIL_QRY_TP_REVERSE,
+        ACCOUNT_ORDER_DETAIL_QRY_TP_UNFILLED,
+        ACCOUNT_ORDER_DETAIL_QRY_TP_FILLED,
+    }
+)
+ACCOUNT_ORDER_DETAIL_QRY_TP_DEFAULT = ACCOUNT_ORDER_DETAIL_QRY_TP_ORDER_SEQUENCE
+ACCOUNT_ORDER_DETAIL_STK_BOND_TP_DEFAULT = "0"  # 전체
+ACCOUNT_ORDER_DETAIL_SELL_TP_DEFAULT = "0"  # 전체
+ACCOUNT_ORDER_DETAIL_LIST_KEY = "acnt_ord_cntr_prps_dtl"
+
+# ROB-1155 — 관측(read-only) 전용 거래소 allowlist.
+# 🔴 주문 경로와 완전히 분리된 상수다. 주문(kt10000~kt10003)은 계속
+# MOCK_EXCHANGE_KRX 고정이고 MOCK_REJECTED_EXCHANGES={"NXT","SOR"}가 그 경계를
+# 강제한다 — 이 allowlist는 그 상수들을 건드리지 않으며 주문 경로에서 참조되지
+# 않는다. CP6("주문이 실제로 어느 venue에 기록됐는가")은 KRX 요청만으로는
+# 관측할 수 없으므로 kt00007 조회에만 NXT 요청을 허용한다. 공식 문서가 허용하는
+# "%"(전체)와 "SOR"은 의도적으로 제외한다: "%"는 fail-closed 경계를 흐리고,
+# SOR은 현재 관측 필요가 없다.
+# ⚠️ 공식 문서는 mockapi.kiwoom.com을 "KRX만 지원가능"으로 표기한다. 이 allowlist는
+# "NXT 요청을 만들 수 있음"까지만 보장하고, 모의서버가 NXT 조회를 실제로 지원하는지
+# 또는 빈 결과가 미이월인지 미지원인지는 증명하지 않는다.
+ACCOUNT_READ_VENUE_KRX = MOCK_EXCHANGE_KRX
+ACCOUNT_READ_VENUE_NXT = "NXT"
+ACCOUNT_READ_VENUE_ALLOWLIST: frozenset[str] = frozenset(
+    {ACCOUNT_READ_VENUE_KRX, ACCOUNT_READ_VENUE_NXT}
+)
+
 # ROB-460 — Kiwoom REST account-cash reads also require dmst_stex_tp (국내거래소구분).
 # 2026-06-09 live: get_positions(kt00018)·get_orderable_cash returned return_code 2
 # (필수입력 파라미터=dmst_stex_tp). Unlike the qry_tp/stk_bond_tp convention-defaults,
@@ -98,8 +149,10 @@ ACCOUNT_ORDER_QRY_TP_DEFAULT = "0"  # kt00009 조회구분(전체)
 # it is no longer sent on those endpoints.
 # ROB-1088 (2026-07-28) — kt00009 order-history reads DO require dmst_stex_tp per
 # the official docs (see the ROB-1088 block above); "KRX" is reused here for that
-# endpoint too, on top of the already-applied kt00018 usage. kt00007 remains
-# untouched (not yet called by this codebase).
+# endpoint too, on top of the already-applied kt00018 usage.
+# ROB-1155 (2026-07-29) — kt00007 order-detail reads also require dmst_stex_tp
+# (Required=Y, official doc). This same "KRX" default applies there; the read-only
+# venue override is bounded by ACCOUNT_READ_VENUE_ALLOWLIST above.
 ACCOUNT_DMST_STEX_TP_DEFAULT = MOCK_EXCHANGE_KRX  # "KRX" — 국내거래소구분
 
 # ---------------------------------------------------------------------------

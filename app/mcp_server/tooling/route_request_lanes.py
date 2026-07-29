@@ -262,6 +262,10 @@ STATUS_HELPER_TOOLS: frozenset[str] = frozenset(
         "kis_live_get_order_history",
         "kis_mock_get_order_history",
         "kiwoom_mock_get_order_history",
+        # ROB-1155: kt00007 read-only order-detail lookup. Lands in the legacy
+        # MUTATION_TOOLS bucket only because KIWOOM_MOCK_TOOL_NAMES is unioned in
+        # wholesale; it never calls the order client.
+        "kiwoom_mock_get_order_detail",
         "kiwoom_mock_get_orderable_cash",
         "kiwoom_mock_get_positions",
         "toss_get_order_history",

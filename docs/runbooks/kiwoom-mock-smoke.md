@@ -40,8 +40,9 @@ these boundaries:
   필요가 입증되지 않았다(작동 중인 엔드포인트에 추측 파라미터를 더해 회귀시키지 않음).
   **이 판단은 ROB-1088(2026-07-28)에서 뒤집혔다** — kt00009는 공식 문서 확인 결과
   `dmst_stex_tp`를 포함한 5필드 전부가 Required=Y이며, 현재 코드는 5필드를 모두
-  보낸다(kt00007은 여전히 코드가 호출하지 않으므로 미해당). 아래 ROB-1111/ROB-1088
-  블록 참고.
+  보낸다. **kt00007도 ROB-1155(2026-07-29)에서 교정됐다** — 공식 요청 표의 7필드
+  (`ord_dt`/`qry_tp`/`stk_bond_tp`/`sell_tp`/`stk_cd`/`fr_ord_no`/`dmst_stex_tp`)를
+  보내며 그중 `dmst_stex_tp`는 Required=Y다. 아래 ROB-1111/ROB-1088 블록 참고.
   아래 smoke 체크리스트로 4개 read 도구를 한 번에 검증하여 잔여 누락을 선제 포착한다.
 - **ROB-899 — confirmed place preflight/dispatch client reuse:** confirmed place는
   preflight와 broker POST가 하나의 request-scoped `KiwoomMockClient`를 재사용하며,
@@ -169,12 +170,39 @@ stays deferred). To pick a conservative buy limit well below market that will
 | kt00001 | no-symbol 예수금/주문가능현금 | `qry_tp=2` | `ord_alow_amt` |
 | kt00010 | symbol/side/price 주문가능금액 | `stk_cd`, `trde_tp`, `uv` | `ord_alowa` |
 | kt00009 | 주문 이력 | `stk_bond_tp=0`, `mrkt_tp=0`, `sell_tp=0`, `qry_tp=0`, `dmst_stex_tp=KRX` | `acnt_ord_cntr_prst_array` |
+| kt00007 | 주문 체결 내역 상세 | `ord_dt=""`, `qry_tp=1`, `stk_bond_tp=0`, `sell_tp=0`, `stk_cd=""`, `fr_ord_no=""`, `dmst_stex_tp=KRX` | `acnt_ord_cntr_prps_dtl` |
 
 - 어떤 도구든 `필수입력 파라미터=<name>`(`return_code 2`)가 나오면 그 `<name>`을
   기록하고 해당 broker API 본문에 추가하는 follow-up을 연다(추측 금지, 증명된 누락만).
 - kt00009는 ROB-418(`stk_bond_tp`)·ROB-1111(`mrkt_tp`)·ROB-1088(공식 문서 확정,
   `sell_tp`/`qry_tp`/`dmst_stex_tp`)로 완전히 5필드 공식 계약을 만족하도록 복구됐다
-  — 위 ROB-1111/ROB-1088 경고 참고. kt00007은 코드가 아직 호출하지 않으므로 미해당.
+  — 위 ROB-1111/ROB-1088 경고 참고.
+- **ROB-1155(2026-07-29) — kt00007 공식 body 교정 + read-only MCP 노출:**
+  교정 전 `get_order_detail()`은 `{"ord_no": ...}` 단일 필드를 보냈다. `ord_no`는
+  kt00007 공식 요청 표에 **없는 필드**이고 Required=Y 4개(`qry_tp`/`stk_bond_tp`/
+  `sell_tp`/`dmst_stex_tp`)가 모두 빠져 있었다(→ `return_code 2` 구조). 지금은 위
+  표의 7필드를 보내며 optional 3필드는 공식 Request Example대로 빈 문자열로
+  **명시 전송**한다(키 생략 ≠ 빈 문자열; 문서에 등가라는 기재 없음).
+  - 신규 read 도구 `kiwoom_mock_get_order_detail` — `MCP_PROFILE=kiwoom`에만 등록된다.
+    `account_read`/`tradingcodex_execution` 제한 profile에는 **의도적으로 미노출**
+    (`ACCOUNT_READ_TOOL_NAMES`가 tradingcodex allowlist에 union되므로 전자에 넣으면
+    후자가 조용히 넓어진다).
+  - `scope` → 공식 `qry_tp`: `all`=1(주문순) · `all_reverse`=2(역순) ·
+    `unfilled`=3(미체결) · `filled`=4(체결내역만).
+  - `order_id`는 broker 쪽 `fr_ord_no`(**시작**주문번호 = 하한, exact match 아님)로
+    전달되고 **정확 일치 필터는 로컬**에서 한다. 응답의 `broker_order_count` vs
+    `matched_order_count`로 "창 안에 없음"과 "조회 실패"를 구분한다.
+  - `venue`는 **관측 전용** 인자이며 `{KRX, NXT}`만 받는다(`ACCOUNT_READ_VENUE_ALLOWLIST`).
+    🔴 주문 경로(kt10000-kt10003)의 `dmst_stex_tp=KRX` 고정과 `MOCK_REJECTED_EXCHANGES=
+    {NXT, SOR}`는 **불변**이고 이 allowlist는 주문 경로에서 참조되지 않는다. 공식
+    값인 `%`(전체)·`SOR`은 의도적으로 제외했다.
+  - 응답은 요청 venue와 broker가 기록한 행별 venue를 **양쪽 다** echo한다
+    (`requested_venue` / `response_venues`, 행 단위 `venue`) — CP6 판단 근거.
+  - ⚠️ **공식 문서는 mock 도메인을 "KRX만 지원가능"으로 표기한다. 이 교정은 "공식
+    계약에 맞는 요청을 보낸다"까지만 보장하고, 모의서버가 kt00007을 실제로
+    지원하는지·NXT 조회가 동작하는지는 증명하지 않는다.** 실지원 판정은 과거
+    주문번호로 하는 read-only broker smoke(`return_code`·요청 scope·응답 venue
+    원문 보존)와 그 결과에 대한 운영자 판단이 있어야 한다.
 - **US 경로(`kiwoom_mock_us_*`)는 kt00009/mrkt_tp와 무관하다** — `ust21050`/
   `ust21070`/`ust21510`/`ust21160` 등 별도 TR family를 쓰며 어떤 US 코드도
   `ACCOUNT_ORDER_STATUS_API_ID`("kt00009")를 참조하지 않는다(ROB-1088, 2026-07-28

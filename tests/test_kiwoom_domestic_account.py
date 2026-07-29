@@ -227,16 +227,146 @@ async def test_get_order_status_dmst_stex_tp_never_nxt_or_sor():
 
 
 @pytest.mark.asyncio
-async def test_get_order_detail_uses_kt00007():
+async def test_get_order_detail_body_is_exactly_the_official_seven_fields():
+    # ROB-1155 — pins the exact kt00007 wire body to the official contract.
+    # Official request table (verified 2026-07-29 against
+    # https://openapi.kiwoom.com/m/guide/apiguide?apiId=kt00007&jobTp=FS_JOB_TP&jobTpCode=08
+    # and the local extraction of the same doc) is 7 fields:
+    #   ord_dt(N) qry_tp(Y) stk_bond_tp(Y) sell_tp(Y) stk_cd(N) fr_ord_no(N)
+    #   dmst_stex_tp(Y)
+    # The previous implementation sent {"ord_no": ...} — a field that does not
+    # exist in this TR's request table — and omitted all four Required=Y fields.
     fake = FakeClient()
     acct = KiwoomDomesticAccountClient(fake)
-    await acct.get_order_detail(order_no="0000111222")
+    await acct.get_order_detail()
     call = fake.calls[-1]
     assert call["api_id"] == constants.ACCOUNT_ORDER_DETAIL_API_ID
-    assert call["body"]["ord_no"] == "0000111222"
-    # ROB-460 boundary — kt00007 order-detail read left untouched (not proven to
-    # need dmst_stex_tp; not exercised by the bug). Smoke-validated follow-up.
-    assert "dmst_stex_tp" not in call["body"]
+    assert call["body"] == {
+        "ord_dt": "",
+        "qry_tp": constants.ACCOUNT_ORDER_DETAIL_QRY_TP_DEFAULT,
+        "stk_bond_tp": constants.ACCOUNT_ORDER_DETAIL_STK_BOND_TP_DEFAULT,
+        "sell_tp": constants.ACCOUNT_ORDER_DETAIL_SELL_TP_DEFAULT,
+        "stk_cd": "",
+        "fr_ord_no": "",
+        "dmst_stex_tp": constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
+    }
+    # ord_no is NOT an official kt00007 request field.
+    assert "ord_no" not in call["body"]
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_sends_optional_fields_as_empty_strings():
+    # ROB-1155 — the official Request Example spells the optional fields out as
+    # "" rather than omitting the keys; key-omission is not documented as
+    # equivalent to an empty value, so we mirror the example.
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_order_detail()
+    body = fake.calls[-1]["body"]
+    for key in ("ord_dt", "stk_cd", "fr_ord_no"):
+        assert key in body
+        assert body[key] == ""
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_maps_optional_inputs_onto_official_fields():
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_order_detail(
+        order_date="20260729",
+        qry_tp=constants.ACCOUNT_ORDER_DETAIL_QRY_TP_FILLED,
+        symbol="005930",
+        from_order_no="0000123",
+        cont_yn="Y",
+        next_key="page-2",
+    )
+    call = fake.calls[-1]
+    assert call["body"] == {
+        "ord_dt": "20260729",
+        "qry_tp": "4",
+        "stk_bond_tp": constants.ACCOUNT_ORDER_DETAIL_STK_BOND_TP_DEFAULT,
+        "sell_tp": constants.ACCOUNT_ORDER_DETAIL_SELL_TP_DEFAULT,
+        "stk_cd": "005930",
+        "fr_ord_no": "0000123",
+        "dmst_stex_tp": constants.ACCOUNT_DMST_STEX_TP_DEFAULT,
+    }
+    assert call["cont_yn"] == "Y"
+    assert call["next_key"] == "page-2"
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_defaults_to_krx():
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_order_detail()
+    assert fake.calls[-1]["body"]["dmst_stex_tp"] == constants.MOCK_EXCHANGE_KRX
+
+
+@pytest.mark.asyncio
+async def test_get_order_detail_allows_nxt_for_read_only_observation():
+    # ROB-1155 — kt00007 is a read-only observation surface, so NXT is a legal
+    # query scope (CP6 needs to see which venue the broker recorded). This does
+    # NOT relax the order path: see
+    # test_order_krx_pin_is_unaffected_by_read_venue_allowlist below.
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    await acct.get_order_detail(dmst_stex_tp="NXT")
+    assert fake.calls[-1]["body"]["dmst_stex_tp"] == "NXT"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("venue", ["%", "SOR", "", "krx-nxt", "ALL", None])
+async def test_get_order_detail_rejects_venues_outside_the_read_allowlist(venue):
+    # ROB-1155 — "%"(전체) and SOR are official kt00007 values but deliberately
+    # NOT allowlisted: "%" would blend every venue into a surface whose safety
+    # boundary is per-venue, and SOR has no observation need.
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    with pytest.raises(ValueError):
+        await acct.get_order_detail(dmst_stex_tp=venue)
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("qry_tp", ["0", "5", "", "unfilled", None])
+async def test_get_order_detail_rejects_qry_tp_outside_official_values(qry_tp):
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    with pytest.raises(ValueError):
+        await acct.get_order_detail(qry_tp=qry_tp)
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order_date", ["2026-07-29", "2026072", "abcdefgh"])
+async def test_get_order_detail_rejects_malformed_order_date(order_date):
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    with pytest.raises(ValueError):
+        await acct.get_order_detail(order_date=order_date)
+    assert fake.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("from_order_no", ["12a", "0000123/../x", "12 34"])
+async def test_get_order_detail_rejects_non_numeric_from_order_no(from_order_no):
+    fake = FakeClient()
+    acct = KiwoomDomesticAccountClient(fake)
+    with pytest.raises(ValueError):
+        await acct.get_order_detail(from_order_no=from_order_no)
+    assert fake.calls == []
+
+
+def test_order_krx_pin_is_unaffected_by_read_venue_allowlist():
+    # ROB-1155 hard invariant — the read-only venue allowlist must never leak
+    # into the order path. NXT/SOR stay rejected exchanges for orders, and the
+    # order-side default stays KRX.
+    assert constants.ACCOUNT_READ_VENUE_ALLOWLIST == frozenset({"KRX", "NXT"})
+    assert constants.MOCK_REJECTED_EXCHANGES == frozenset({"NXT", "SOR"})
+    assert constants.MOCK_EXCHANGE_KRX == "KRX"
+    assert "NXT" in constants.MOCK_REJECTED_EXCHANGES
+    assert "SOR" not in constants.ACCOUNT_READ_VENUE_ALLOWLIST
+    assert "%" not in constants.ACCOUNT_READ_VENUE_ALLOWLIST
 
 
 @pytest.mark.asyncio
