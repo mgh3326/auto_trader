@@ -2722,9 +2722,10 @@ With all mock vars missing, the `hermes-paper-kis` profile is effectively read-o
 
 ### Binance Demo scalping auto-order lane (removed, ROB-1147)
 
-The `binance_demo_scalping_submit_decision` MCP tool (LLM decision-injection,
-ROB-841) and the scheduler tick / WS daemon / daily review automation it
-shared a feature flag with were removed. The read-only
+The LLM decision-injection MCP tool (registered only when
+`settings.binance_demo_scalping_enabled` is true, ROB-841) and the
+scheduler tick / WS daemon / daily review automation it shared a feature
+flag with were removed. The read-only
 `binance_demo_ledger_status` tool (ROB-907) is unaffected and remains
 registered under the same `settings.binance_demo_scalping_enabled` flag. The
 underlying `DemoScalpingExecutor` (and its `demo_scalping`/`demo_scalping_exec`

@@ -205,7 +205,7 @@ async def test_negative_stale_age_seconds_raises():
 
 
 # ---------------------------------------------------------------------------
-# Registry gate — same DEFAULT-profile flag as binance_demo_scalping_submit_decision
+# Registry gate — DEFAULT-profile flag (settings.binance_demo_scalping_enabled)
 # ---------------------------------------------------------------------------
 
 
@@ -227,3 +227,51 @@ def test_tool_present_when_gate_on(monkeypatch: pytest.MonkeyPatch) -> None:
     mcp = DummyMCP()
     register_all_tools(cast(Any, mcp), profile=McpProfile.DEFAULT)
     assert _TOOL in set(mcp.tools.keys())
+
+
+# ---------------------------------------------------------------------------
+# ROB-1147 deletion invariant — the removed mutation-path submit-decision tool
+# must stay physically absent across every MCP profile, even with the shared
+# capability gate on. This pins the "removed, not just unregistered on one
+# profile" guarantee that test_binance_demo_scalping_registry_gate.py (deleted
+# alongside the tool it tested) used to cover only for McpProfile.DEFAULT.
+# ---------------------------------------------------------------------------
+
+_REMOVED_TOOL = "binance_demo_scalping_submit_decision"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("profile", list(McpProfile))
+def test_removed_submit_decision_tool_absent_across_all_profiles_gate_on(
+    profile: McpProfile, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        registry_mod.settings, "binance_demo_scalping_enabled", True, raising=False
+    )
+    # PAPER_EXECUTION additionally requires its own dedicated enable flag to
+    # register anything at all; flip it on too so this profile's tool set is
+    # actually populated rather than trivially empty.
+    monkeypatch.setattr(
+        registry_mod.settings, "PAPER_EXECUTION_ENABLED", True, raising=False
+    )
+    mcp = DummyMCP()
+    register_all_tools(cast(Any, mcp), profile=profile)
+    assert _REMOVED_TOOL not in set(mcp.tools.keys()), (
+        f"removed tool {_REMOVED_TOOL!r} resurfaced on profile {profile.value!r}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("profile", list(McpProfile))
+def test_removed_submit_decision_tool_absent_across_all_profiles_gate_off(
+    profile: McpProfile, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        registry_mod.settings, "binance_demo_scalping_enabled", False, raising=False
+    )
+    monkeypatch.setattr(
+        registry_mod.settings, "PAPER_EXECUTION_ENABLED", False, raising=False
+    )
+    mcp = DummyMCP()
+    register_all_tools(cast(Any, mcp), profile=profile)
+    assert _REMOVED_TOOL not in set(mcp.tools.keys())

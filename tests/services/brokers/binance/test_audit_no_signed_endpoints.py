@@ -109,15 +109,11 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # persistence only (no HTTP/WS, no signed surface); references Binance
         # solely via the ``binance_demo`` account-scope literal + docstring.
         "app/models/scalping_reviews.py",
-        # ROB-307 PR4 — Demo scalping scheduler orchestration lane
-        # (app/jobs/binance_demo_scalping_runner.py,
-        # app/tasks/binance_demo_scalping_tasks.py) was removed (ROB-1147)
-        # along with the daily review automation
-        # (app/jobs/binance_demo_scalping_review.py,
-        # app/flows/binance_demo_scalping_review_flow.py) and the LLM
-        # decision-injection MCP tool
-        # (app/mcp_server/tooling/binance_demo_scalping_handler.py). The
-        # remaining executor/analytics/reference modules (still allow-listed
+        # ROB-307 PR4 — the Demo scalping scheduler/task orchestration lane,
+        # the daily review automation, and the LLM decision-injection MCP
+        # tool were removed (ROB-1147); their allow-list entries went with
+        # them. The remaining executor/analytics/reference modules (still
+        # allow-listed
         # below) are reused directly by the ROB-845 paper adapter, so they
         # were kept.
         # ROB-844 — scheduleless abandoned-root reconciliation orchestration.
