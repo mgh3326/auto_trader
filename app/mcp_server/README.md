@@ -574,15 +574,18 @@ no direct DB backfill.
 
 The broker snapshot is fail-closed (ROB-1130). `open_orders` and `positions` must
 both be supplied together with `broker_snapshot_fetched_at`, the time the
-snapshot was read from the broker:
+snapshot was read from the broker, and `broker_snapshot_account_mode`, the
+account those reads were taken from:
 
 ```python
-positions = await alpaca_paper_list_positions()
-open_orders = await alpaca_paper_list_orders(status="open")
+positions = await alpaca_paper_list_positions(account_mode="alpaca_paper")
+open_orders = await alpaca_paper_list_orders(status="open", account_mode="alpaca_paper")
 report = await alpaca_paper_execution_preflight_check(
+    account_mode="alpaca_paper",
     positions=positions["positions"],
     open_orders=open_orders["orders"],
     broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+    broker_snapshot_account_mode=positions["account_mode"],
 )
 ```
 
@@ -594,6 +597,17 @@ account held positions. `counts.positions` and `counts.open_orders` are now
 omitted rather than reported as `0` when the snapshot cannot be verified, and
 `broker_snapshot` carries the per-kind `provided` / `verified` / `reason` state.
 This blocker is never downgraded by `legacy_cycle_blockers_as_warnings`.
+
+Two further shapes of "empty means flat" are also blocked rather than passed:
+
+- Passing the whole MCP response envelope (or any mapping/string) instead of the
+  row list — `positions={...}` normalizes to an empty list and would otherwise
+  read as a flat account. Reason: `snapshot_container_not_a_row_list`.
+- A snapshot read from the other paper account. `alpaca_paper` and
+  `alpaca_paper_lab` use different credentials and hold different inventory, so
+  an unattested or mismatched `broker_snapshot_account_mode` blocks with reason
+  `snapshot_account_unattested` / `snapshot_account_mismatch`, and
+  `broker_snapshot.account` reports `expected` vs `attested`.
 
 Buy legs that hold an open position are no longer reported as missing sell legs
 (ROB-1129). A filled/reconciled buy with no linked sell row is classified against

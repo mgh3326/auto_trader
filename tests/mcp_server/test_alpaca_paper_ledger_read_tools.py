@@ -226,6 +226,7 @@ async def test_execution_preflight_check_returns_blocking_report(monkeypatch):
         open_orders=[{"id": "order-1", "status": "new", "symbol": "BTCUSD"}],
         positions=[],
         broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+        broker_snapshot_account_mode="alpaca_paper",
     )
 
     assert result["success"] is True
@@ -275,12 +276,14 @@ async def test_execution_preflight_check_passes_on_attested_empty_snapshot(monke
         open_orders=[],
         positions=[],
         broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+        broker_snapshot_account_mode="alpaca_paper",
     )
 
     assert result["should_block"] is False
     assert result["status"] == "pass"
     assert result["counts"]["positions"] == 0
     assert result["broker_snapshot"]["positions"]["verified"] is True
+    assert result["broker_snapshot"]["account"]["verified"] is True
 
 
 @pytest.mark.asyncio
@@ -297,6 +300,7 @@ async def test_execution_preflight_check_reflects_held_position(monkeypatch):
         open_orders=[],
         positions=[{"symbol": "UBER", "qty": "1", "asset_class": "us_equity"}],
         broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+        broker_snapshot_account_mode="alpaca_paper",
     )
 
     assert result["should_block"] is True
@@ -304,6 +308,100 @@ async def test_execution_preflight_check_reflects_held_position(monkeypatch):
     check_ids = {a["check_id"] for a in result["anomalies"]}
     assert "residual_position_exists" in check_ids
     assert "broker_snapshot_unverified" not in check_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_execution_preflight_check_blocks_snapshot_from_other_account(
+    monkeypatch,
+):
+    """ROB-1130: a fresh snapshot of the lab account cannot clear the default one."""
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    mock_svc = _mock_svc(rows=[])
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
+
+    result = await mod.alpaca_paper_execution_preflight_check(
+        limit=20,
+        account_mode="alpaca_paper",
+        open_orders=[],
+        positions=[],
+        broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+        broker_snapshot_account_mode="alpaca_paper_lab",
+    )
+
+    assert result["should_block"] is True
+    assert result["status"] == "blocked"
+    finding = next(
+        a for a in result["anomalies"] if a["check_id"] == "broker_snapshot_unverified"
+    )
+    assert finding["details"]["account"] == {
+        "expected": "alpaca_paper",
+        "attested": "alpaca_paper_lab",
+        "verified": False,
+        "reason": "snapshot_account_mismatch",
+    }
+    assert "positions" not in result["counts"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_execution_preflight_check_blocks_snapshot_without_account_attestation(
+    monkeypatch,
+):
+    """ROB-1130: whose snapshot it is must be stated, not assumed."""
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    mock_svc = _mock_svc(rows=[])
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
+
+    result = await mod.alpaca_paper_execution_preflight_check(
+        limit=20,
+        open_orders=[],
+        positions=[],
+        broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+    )
+
+    assert result["should_block"] is True
+    finding = next(
+        a for a in result["anomalies"] if a["check_id"] == "broker_snapshot_unverified"
+    )
+    assert finding["details"]["account"]["reason"] == "snapshot_account_unattested"
+    assert "positions" not in result["counts"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_execution_preflight_check_blocks_response_envelope_snapshot(monkeypatch):
+    """ROB-1130: passing the whole read response must not read as a flat account."""
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    mock_svc = _mock_svc(rows=[])
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
+
+    positions_response = {
+        "success": True,
+        "account_mode": "alpaca_paper",
+        "count": 1,
+        "positions": [{"symbol": "UBER", "qty": "1"}],
+    }
+
+    result = await mod.alpaca_paper_execution_preflight_check(
+        limit=20,
+        open_orders=[],
+        positions=positions_response,  # type: ignore[arg-type]
+        broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+        broker_snapshot_account_mode="alpaca_paper",
+    )
+
+    assert result["should_block"] is True
+    finding = next(
+        a for a in result["anomalies"] if a["check_id"] == "broker_snapshot_unverified"
+    )
+    assert finding["details"]["reasons"]["positions"] == (
+        "snapshot_container_not_a_row_list"
+    )
+    assert "positions" not in result["counts"]
 
 
 @pytest.mark.asyncio
