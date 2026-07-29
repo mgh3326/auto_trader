@@ -45,6 +45,7 @@ DIRECTIONAL_LAB_CRYPTO_RESEARCH_TOOL_NAMES = {
     "screen_stocks",
     "get_top_stocks",
     "get_market_index",
+    "get_fx_rate",
     "get_crypto_fear_greed",
     "get_kimchi_premium",
     "get_crypto_funding_rate",
