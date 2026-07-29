@@ -11,6 +11,14 @@ from app.services.trade_journal.aggregates import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_scoreboard_cache():
+    """Keep module-global scoreboard cache state within one test."""
+    agg._scoreboard_cache.clear()
+    yield
+    agg._scoreboard_cache.clear()
+
+
 def _tm(
     pnl_pct, r, tag="pullback_long", tag_source="strategy_key", link="symbol_window"
 ):
