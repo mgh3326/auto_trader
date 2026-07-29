@@ -39,27 +39,33 @@ US 모듈을 **import하지 않는다**. 추가로 KR registrar를 restricted pr
 cancel/modify 본문은 모두 기존 `orders_kiwoom_variants` / `app/services/brokers/kiwoom/`
 코드를 그대로 재사용한다(해당 파일 diff 0줄).
 
-## 기동 (per-session)
+## 기동 (per-session, ROB-1173 strict stdio)
 
 ```bash
-MCP_PROFILE=kiwoom_kr \
-MCP_PORT=8771 \
-MCP_AUTH_TOKEN="$MCP_KIWOOM_KR_AUTH_TOKEN" \
-uv run python -m app.mcp_server.main
+scripts/mock_session_mcp.py run \
+  --profile kiwoom_kr \
+  --session-id "<bounded-session-id>" \
+  --client claude \
+  -- claude --model opus --dangerously-skip-permissions
 ```
 
+- wrapper는 session별 mode-0600 JSON을 만들고 stdio server 하나만 넣는다. Claude
+  argv에는 `--mcp-config <그 JSON>`과 `--strict-mcp-config`가 강제로 들어간다.
+  Claude 종료 뒤 JSON과 stdio child가 같이 정리된다. 상세 계약과 실제 tool-list 검증은
+  `docs/runbooks/mock-session-mcp.md`를 따른다.
 - **network transport(`streamable-http`/`sse`)에서 토큰이 비면 FastMCP 생성 전에
-  기동 실패한다.** 로컬 `MCP_TYPE=stdio` 개발 경로만 tokenless 허용.
+  기동 실패한다.** ROB-1173 mock session은 network transport나 TCP 8771을 쓰지 않는다.
+  로컬 `MCP_TYPE=stdio` 경로만 tokenless 허용한다.
 - `KIWOOM_MOCK_ENABLED=true`인 경우 기동 시점에 mock 자격증명 전부 + base URL이
   정확히 `https://mockapi.kiwoom.com`이어야 한다. 아니면 **누락 키 이름을 명시하며
   기동 거부**한다(`kiwoom` profile은 이 검사가 없어 첫 도구 호출까지 지연됐다).
 - `KIWOOM_MOCK_ENABLED=false`면 도구는 등록되지만 호출 시점에 fail-closed —
   `kiwoom` profile과 동일한 동작이다.
 
-클라이언트(세션) 쪽에는 별도 등록이 필요하다. Codex라면 `~/.codex/config.toml`에
-`url` 엔트리(`http://127.0.0.1:<port>/mcp` + `bearer_token_env_var`), harness가
-in-process MCP 등록을 못 하면 `scripts/templates/mcp_call.sh.tmpl` 렌더 후 curl
-JSON-RPC 브리지를 쓴다(`app/mcp_server/README.md` "Codex/Claude 접속" 절).
+과거 mock spawn은 `MCP_PROFILE=kiwoom` env만 pane에 넘겨 전역 full MCP config가
+계속 선택될 수 있었다. 이 env를 profile 적용 증거로 사용하지 않는다. 실제 Claude argv,
+생성 JSON, connected `tools/list`를 모두 확인해야 한다. profile-isolated adapter가 없는
+Codex/Kiro mock lane은 full/default로 fallback하지 않고 spawn 전에 실패한다.
 
 ## 🔴 배포 체인 판정 — `MCP_PROFILE_PORTS`에 넣지 않는다
 
