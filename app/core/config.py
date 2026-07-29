@@ -329,9 +329,10 @@ class Settings(BaseSettings):
     # ROB-321 PR4b: per-run order-mutation gate for the scalping daemon. Without
     # it the daemon dry-runs (preview only, no mock order, no ledger write).
     kis_mock_scalping_ws_confirm: bool = False
-    # Phase 2 — daily demo scalping review + buy&hold benchmark flow (default-off).
-    binance_demo_scalping_review_flow_enabled: bool = False
-    # Phase 3 — gate for the LLM decision-injection MCP tool (default-off).
+    # Master capability gate for the remaining Binance Demo scalping surfaces
+    # (ROB-907 read-only ledger status tool; ROB-844 root-reservation
+    # reconcile task). The scheduler/executor/LLM-decision auto-order
+    # orchestration lane that also read this flag was removed (ROB-1147).
     binance_demo_scalping_enabled: bool = False
     # ROB-845 — isolated canonical Binance Demo / Alpaca Paper experiment
     # façade. The dedicated MCP profile must remain physically absent unless

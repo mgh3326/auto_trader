@@ -191,7 +191,6 @@ DIRECT_BROKER_MUTATION_TOOLS: frozenset[str] = frozenset(
         "alpaca_paper_cancel_order",
         "alpaca_paper_automated_submit_order",
         "alpaca_paper_submit_order",
-        "binance_demo_scalping_submit_decision",
         "cancel_order",
         "kis_live_cancel_order",
         "kis_live_modify_order",
@@ -296,9 +295,6 @@ _LEGACY_MUTATION_TOOLS: frozenset[str] = frozenset(
     | frozenset(ALPACA_PAPER_MUTATING_TOOL_NAMES)
     | frozenset(
         {
-            # ROB-907: default-gated Binance Demo submit can place a broker
-            # round-trip when dry_run=false + confirm=true.
-            "binance_demo_scalping_submit_decision",
             # ROB-703: paper resting-limit sim mutations (paper-table writes only,
             # no live/Upbit broker mutation). paper_list_pending_orders is read-only
             # and lives in READ_ONLY_ADVISORY_TOOLS.
@@ -399,9 +395,8 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "analyze_stock",
         "analyze_stock_batch",
         # ROB-907: read-only Demo ledger status (flag-gated —
-        # settings.binance_demo_scalping_enabled — like binance_demo_scalping_
-        # submit_decision itself, which is a mutation tool and lives outside
-        # this bucket).
+        # settings.binance_demo_scalping_enabled). The mutation-path submit
+        # tool this once shared a gate comment with was removed (ROB-1147).
         "binance_demo_ledger_status",
         "execution_ledger_fill_events_list_recent",
         "forecast_resolve",

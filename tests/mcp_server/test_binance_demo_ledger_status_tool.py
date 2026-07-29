@@ -1,9 +1,10 @@
 """ROB-907 — tests for the read-only binance_demo_ledger_status MCP tool.
 
 No broker call, no DB write. The ledger service is mocked; these tests
-exercise response shape, limit/validation guards, and the same DEFAULT-
-profile flag gate (settings.binance_demo_scalping_enabled) as the existing
-binance_demo_scalping_submit_decision tool.
+exercise response shape, limit/validation guards, and the DEFAULT-profile
+flag gate (settings.binance_demo_scalping_enabled). The mutation-path
+submit-decision tool that once shared this gate comment was removed
+(ROB-1147); this read-only tool is unaffected and keeps the same gate.
 """
 
 from __future__ import annotations

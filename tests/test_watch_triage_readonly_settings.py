@@ -17,7 +17,6 @@ KNOWN_MUTATION_TOOLS = frozenset(
         "paper_place_limit_order",
         "paper_cancel_pending_order",
         "paper_reconcile_orders",
-        "binance_demo_scalping_submit_decision",
         "buy_ladder_fill_preview",
         "sell_ladder_fill_preview",
         "set_user_setting",

@@ -64,7 +64,6 @@
       "mcp__auto_trader_local__paper_place_limit_order",
       "mcp__auto_trader_local__paper_cancel_pending_order",
       "mcp__auto_trader_local__paper_reconcile_orders",
-      "mcp__auto_trader_local__binance_demo_scalping_submit_decision",
       "mcp__auto_trader_local__buy_ladder_fill_preview",
       "mcp__auto_trader_local__sell_ladder_fill_preview",
       "mcp__auto_trader_local__set_user_setting",

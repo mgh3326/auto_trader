@@ -358,16 +358,15 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
 
             register_kiwoom_us(mcp)
         if settings.binance_demo_scalping_enabled:
+            # ROB-1147: the mutation-path scalping submit-decision tool was
+            # removed with the rest of the demo-scalping auto-order
+            # orchestration lane. This read-only ledger status tool (ROB-907)
+            # is unrelated to that lane (no executor/scheduler import) and
+            # stays gated on the same flag for Demo-scalping observability.
             from app.mcp_server.tooling.binance_demo_ledger_status_read import (
                 register_binance_demo_ledger_status_tool,
             )
-            from app.mcp_server.tooling.binance_demo_scalping_handler import (
-                register_binance_demo_scalping_tools,
-            )
 
-            register_binance_demo_scalping_tools(mcp)
-            # ROB-907: read-only ledger status alongside the scalping submit
-            # tool — same gate, since both are Demo-scalping observability.
             register_binance_demo_ledger_status_tool(mcp)
         # ROB-908: surface the Alpaca paper surface in the operator DEFAULT
         # session so the mock_alpaca lane (account/positions/ledger reads,
