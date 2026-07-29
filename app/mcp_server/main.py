@@ -66,9 +66,9 @@ def _validate_profile_auth_token(
         )
     if mcp_type not in {"streamable-http", "sse"} or (token or "").strip():
         return
-    if profile is McpProfile.KIWOOM:
+    if profile in {McpProfile.KIWOOM, McpProfile.KIWOOM_KR}:
         raise RuntimeError(
-            "MCP_PROFILE=kiwoom requires non-empty MCP_AUTH_TOKEN "
+            f"MCP_PROFILE={profile.value} requires non-empty MCP_AUTH_TOKEN "
             "for network transports"
         )
     if profile is McpProfile.DEFAULT and bool(
@@ -91,6 +91,12 @@ def _validate_profile_runtime_settings(profile: McpProfile) -> None:
     restricted_profiles = {
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
+        # ROB-1159 — the KR-only Kiwoom profile is mock-pinned by construction,
+        # so it fails closed at startup on incomplete mock config or a base URL
+        # that is not the mock host, instead of only at first tool call. This
+        # tightening applies to the new profile only; MCP_PROFILE=kiwoom startup
+        # behavior is deliberately left unchanged.
+        McpProfile.KIWOOM_KR,
     }
     if profile in restricted_profiles and bool(
         getattr(settings, "kiwoom_mock_enabled", False)
