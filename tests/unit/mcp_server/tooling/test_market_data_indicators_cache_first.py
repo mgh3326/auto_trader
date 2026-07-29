@@ -1,8 +1,10 @@
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
 import pytest
+
+from app.services.daily_candles.repository import MarketKey
 
 
 def _make_row(
@@ -26,6 +28,111 @@ def _make_row(
 
 
 class TestCacheFirstReadPath:
+    @pytest.mark.asyncio
+    async def test_crypto_db_hit_uses_canonical_upbit_partition(self):
+        from app.mcp_server.tooling.market_data_indicators import (
+            _fetch_ohlcv_for_indicators,
+        )
+
+        rows = [
+            _make_row(
+                "KRW-BTC",
+                "upbit_krw",
+                datetime.now(UTC) - timedelta(days=i),
+                100_000_000.0 + i,
+                source="upbit",
+            )
+            for i in range(10)
+        ]
+        session = MagicMock()
+
+        class SessionFactory:
+            async def __aenter__(self) -> object:
+                return session
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+        fetch_recent = AsyncMock(return_value=list(reversed(rows)))
+        with (
+            patch("app.core.db.AsyncSessionLocal", return_value=SessionFactory()),
+            patch(
+                "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
+                new=fetch_recent,
+            ),
+            patch(
+                "app.mcp_server.tooling.market_data_indicators._cache_is_fresh_crypto",
+                return_value=True,
+            ),
+            patch(
+                "app.mcp_server.tooling.market_data_indicators.upbit_service.fetch_ohlcv",
+                new=AsyncMock(),
+            ) as upbit_fetch,
+        ):
+            df = await _fetch_ohlcv_for_indicators("KRW-BTC", "crypto", count=10)
+
+        assert len(df) == 10
+        fetch_recent.assert_awaited_once_with(
+            market=MarketKey.CRYPTO,
+            symbol="KRW-BTC",
+            partition="upbit_krw",
+            count=10,
+        )
+        upbit_fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_crypto_live_miss_writes_canonical_upbit_partition(self):
+        from app.mcp_server.tooling.market_data_indicators import (
+            _fetch_ohlcv_for_indicators,
+        )
+
+        frame = pd.DataFrame(
+            {
+                "date": pd.date_range("2026-06-01", periods=2, freq="D"),
+                "open": [100.0, 101.0],
+                "high": [102.0, 103.0],
+                "low": [99.0, 100.0],
+                "close": [101.0, 102.0],
+                "volume": [10.0, 11.0],
+                "value": [1010.0, 1122.0],
+            }
+        )
+        session = MagicMock()
+        session.commit = AsyncMock()
+
+        class SessionFactory:
+            async def __aenter__(self) -> object:
+                return session
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+        upsert = AsyncMock(return_value=2)
+        with (
+            patch("app.core.db.AsyncSessionLocal", return_value=SessionFactory()),
+            patch(
+                "app.services.daily_candles.repository.DailyCandlesRepository.fetch_recent",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch(
+                "app.services.daily_candles.repository.DailyCandlesRepository.upsert_rows",
+                new=upsert,
+            ),
+            patch(
+                "app.mcp_server.tooling.market_data_indicators.upbit_service.fetch_ohlcv",
+                new=AsyncMock(return_value=frame),
+            ),
+        ):
+            df = await _fetch_ohlcv_for_indicators("KRW-BTC", "crypto", count=2)
+
+        assert len(df) == 2
+        upsert.assert_awaited_once()
+        assert upsert.await_args.kwargs["market"] is MarketKey.CRYPTO
+        assert {row.partition for row in upsert.await_args.kwargs["rows"]} == {
+            "upbit_krw"
+        }
+        session.commit.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_kr_db_hit_skips_external_api(self):
         """When DB has fresh, sufficient rows, KIS is not called."""

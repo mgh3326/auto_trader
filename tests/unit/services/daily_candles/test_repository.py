@@ -3,11 +3,29 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.services.daily_candles.crypto_identity import upbit_daily_candle_partition
 from app.services.daily_candles.repository import (
     DailyCandleRow,
     DailyCandlesRepository,
     MarketKey,
 )
+
+
+@pytest.mark.parametrize(
+    ("symbol", "expected"),
+    [
+        ("KRW-BTC", "upbit_krw"),
+        ("usdt-eth", "upbit_usdt"),
+    ],
+)
+def test_upbit_daily_candle_partition_is_canonical(symbol: str, expected: str) -> None:
+    assert upbit_daily_candle_partition(symbol) == expected
+
+
+@pytest.mark.parametrize("symbol", ["BTC", "BTC-ETH", "BINANCE:BTCUSDT", "", "KRW-"])
+def test_upbit_daily_candle_partition_rejects_ambiguous_symbols(symbol: str) -> None:
+    with pytest.raises(ValueError, match="KRW-/USDT-"):
+        upbit_daily_candle_partition(symbol)
 
 
 def _row(

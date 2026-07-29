@@ -21,6 +21,7 @@ from typing import Any
 import pandas as pd
 
 from app.services.daily_candles.converters import frame_to_rows
+from app.services.daily_candles.crypto_identity import upbit_daily_candle_partition
 from app.services.daily_candles.repository import (
     DailyCandleRow,
     DailyCandlesRepository,
@@ -287,7 +288,11 @@ class DailyCandleSyncService:
             )
             result = await session.execute(sql)
             return [
-                SyncTarget(market=MarketKey.CRYPTO, symbol=row.market, partition="KRW")
+                SyncTarget(
+                    market=MarketKey.CRYPTO,
+                    symbol=row.market,
+                    partition=upbit_daily_candle_partition(row.market),
+                )
                 for row in result
             ]
         raise ValueError(f"Unknown market: {market}")
