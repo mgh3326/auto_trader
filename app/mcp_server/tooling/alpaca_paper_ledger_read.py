@@ -151,6 +151,7 @@ async def alpaca_paper_execution_preflight_check(
     open_orders: list[dict[str, Any]] | None = None,
     positions: list[dict[str, Any]] | None = None,
     broker_snapshot_fetched_at: str | None = None,
+    broker_snapshot_account_mode: str | None = None,
     snapshot_max_age_minutes: int = DEFAULT_SNAPSHOT_MAX_AGE_MINUTES,
     approval_packet: dict[str, Any] | None = None,
     expected_signal_symbol: str | None = None,
@@ -174,10 +175,13 @@ async def alpaca_paper_execution_preflight_check(
     Broker snapshots are fail-closed (ROB-1130). ``open_orders`` and
     ``positions`` must both be supplied together with
     ``broker_snapshot_fetched_at``, the time the snapshot was read from the
-    broker. A missing, empty-but-unattested, stale, or unparseable snapshot is
-    reported as a ``broker_snapshot_unverified`` blocker instead of passing as
-    ``positions=0``. Fetch them with ``alpaca_paper_list_positions`` and
-    ``alpaca_paper_list_orders(status="open")`` immediately before this call.
+    broker, and ``broker_snapshot_account_mode``, the account it was read from.
+    A missing, empty-but-unattested, wrong-shaped, stale, unparseable, or
+    other-account snapshot is reported as a ``broker_snapshot_unverified``
+    blocker instead of passing as ``positions=0``. Fetch them with
+    ``alpaca_paper_list_positions`` and
+    ``alpaca_paper_list_orders(status="open")`` immediately before this call and
+    pass the ``account_mode`` those reads echo back.
 
     When a correlation/candidate/client/briefing scope is provided directly or
     via approval_packet, stale and symbol-context checks evaluate only rows in
@@ -249,6 +253,8 @@ async def alpaca_paper_execution_preflight_check(
         open_orders_fetched_at=broker_snapshot_fetched_at,
         positions_fetched_at=broker_snapshot_fetched_at,
         snapshot_max_age_minutes=snapshot_max_age_minutes,
+        expected_account_mode=selected_account_mode,
+        snapshot_account_mode=broker_snapshot_account_mode,
         approval_packet=approval_packet,
         expected_signal_symbol=expected_signal_symbol,
         expected_execution_symbol=expected_execution_symbol,
@@ -399,10 +405,11 @@ def register_alpaca_paper_ledger_read_tools(mcp: FastMCP) -> None:
         description=(
             "Read-only Alpaca Paper execution anomaly preflight. Returns "
             "severity-classified findings and should_block for cycle runners. "
-            "Broker snapshots are fail-closed: pass open_orders, positions and "
-            "broker_snapshot_fetched_at from reads taken immediately before the "
-            "call, otherwise the gate blocks with broker_snapshot_unverified "
-            "rather than passing as positions=0. "
+            "Broker snapshots are fail-closed: pass open_orders, positions, "
+            "broker_snapshot_fetched_at and broker_snapshot_account_mode from "
+            "reads taken immediately before the call, otherwise the gate blocks "
+            "with broker_snapshot_unverified rather than passing as "
+            "positions=0. "
             "Supports direct or approval_packet-derived correlation/client/"
             "candidate/briefing/session scope to avoid unrelated ledger rows. "
             "No broker mutation and no repair writes."

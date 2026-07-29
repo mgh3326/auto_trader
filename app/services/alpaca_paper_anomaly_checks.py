@@ -8,7 +8,7 @@ snapshots, and the service returns an operator-readable preflight report.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -183,6 +183,26 @@ def _packet_value(packet: Any, key: str) -> Any:
 def _scope_value(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+
+def _clean_lower(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    return text or None
+
+
+def _snapshot_rows(value: Any) -> list[Any] | None:
+    """Row list for a caller-supplied broker snapshot.
+
+    ``None`` means the snapshot was never fetched. A mapping/string container is
+    not a row sequence (ROB-1130) — handing over the whole MCP response envelope
+    must never let its keys be read as broker rows — so it degrades to an empty
+    but unusable list that ``_verify_broker_snapshot`` reports as unverified.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (Mapping, str, bytes)):
+        return []
+    return list(value)
 
 
 def _preflight_scope_from_packet(packet: Any) -> dict[str, str]:
@@ -632,6 +652,7 @@ def _cleanup_required_row_ref(row: Any) -> dict[str, Any]:
 def _verify_broker_snapshot(
     *,
     rows: list[dict[str, Any]] | None,
+    container: Any = None,
     fetched_at: Any,
     checked_at: datetime,
     max_age_minutes: int,
@@ -642,6 +663,11 @@ def _verify_broker_snapshot(
     also state when the snapshot was fetched, otherwise "positions=0 because we
     looked" is indistinguishable from "positions=0 because we did not look" and
     the gate silently passes while the account holds positions.
+
+    ``container`` is the value as the caller passed it, before list
+    normalization. A mapping or string is not a broker row sequence: handing the
+    whole MCP response envelope (or an empty ``{}``) to the gate would otherwise
+    normalize to ``[]`` and read as a genuinely flat account.
     """
     state: dict[str, Any] = {
         "provided": rows is not None,
@@ -652,6 +678,11 @@ def _verify_broker_snapshot(
     }
     if rows is None:
         state["reason"] = "snapshot_missing"
+        return state
+    if isinstance(container, (Mapping, str, bytes)):
+        # e.g. positions={"success": True, "positions": [...]} or positions={}.
+        state["count"] = None
+        state["reason"] = "snapshot_container_not_a_row_list"
         return state
     if fetched_at is None or (isinstance(fetched_at, str) and not fetched_at.strip()):
         state["reason"] = "snapshot_not_attested"
@@ -671,6 +702,42 @@ def _verify_broker_snapshot(
     return state
 
 
+def _verify_snapshot_account(
+    *,
+    expected_account_mode: str | None,
+    snapshot_account_mode: str | None,
+) -> dict[str, Any]:
+    """Classify whether the snapshot is attested to the account being gated.
+
+    ROB-1130: the required pre-gate reads are positions, open orders **and the
+    account identity** they were read from. Two Alpaca paper account modes
+    (``alpaca_paper`` and ``alpaca_paper_lab``) use different credentials and
+    hold different inventory, so a fresh, correctly attested snapshot of the
+    *other* account still reads as "this account is flat".
+    """
+    expected = _clean_lower(expected_account_mode)
+    attested = _clean_lower(snapshot_account_mode)
+    state: dict[str, Any] = {
+        "expected": expected,
+        "attested": attested,
+        "verified": False,
+        "reason": None,
+    }
+    if not expected:
+        # No gated account declared: identity cannot be checked and is not
+        # claimed. Only non-authorizing callers reach this branch.
+        state["reason"] = "account_scope_not_declared"
+        return state
+    if not attested:
+        state["reason"] = "snapshot_account_unattested"
+        return state
+    if attested != expected:
+        state["reason"] = "snapshot_account_mismatch"
+        return state
+    state["verified"] = True
+    return state
+
+
 def build_paper_execution_preflight_report(
     *,
     ledger_rows: Iterable[Any] = (),
@@ -680,6 +747,8 @@ def build_paper_execution_preflight_report(
     positions_fetched_at: datetime | str | None = None,
     snapshot_max_age_minutes: int = DEFAULT_SNAPSHOT_MAX_AGE_MINUTES,
     snapshot_evidence_required: bool = True,
+    expected_account_mode: str | None = None,
+    snapshot_account_mode: str | None = None,
     approval_packet: dict[str, Any] | None = None,
     expected_signal_symbol: str | None = None,
     expected_execution_symbol: str | None = None,
@@ -711,6 +780,15 @@ def build_paper_execution_preflight_report(
             unparseable broker snapshot is a blocker. Historical audit report
             builders that are not authorizing an order may set this to False;
             it does not downgrade any other blocker.
+        expected_account_mode: The Alpaca paper account being gated. Order
+            gates must declare it so the snapshot can be checked against the
+            account it authorizes (ROB-1130). When omitted, snapshot account
+            identity is reported as not declared and the positions snapshot is
+            not treated as account evidence.
+        snapshot_account_mode: The account the caller actually read the
+            snapshot from, as echoed by ``alpaca_paper_list_positions`` /
+            ``alpaca_paper_list_orders``. A different account's fresh snapshot
+            is not evidence about this account.
         approval_packet: Optional preview/approval packet being considered for
             execution. Used for duplicate, stale, and symbol checks.
         expected_signal_symbol: Optional symbol from the signal artifact.
@@ -730,8 +808,8 @@ def build_paper_execution_preflight_report(
         raise ValueError("snapshot_max_age_minutes must be >= 1")
     checked_at = _as_aware_utc(now) or datetime.now(UTC)
     unscoped_ledger = list(ledger_rows)
-    orders = list(open_orders) if open_orders is not None else None
-    position_rows = list(positions) if positions is not None else None
+    orders = _snapshot_rows(open_orders)
+    position_rows = _snapshot_rows(positions)
     packet = approval_packet or {}
     preflight_scope = _preflight_scope_from_packet(packet)
     ledger = [
@@ -754,12 +832,14 @@ def build_paper_execution_preflight_report(
     snapshot_state: dict[str, Any] = {
         "positions": _verify_broker_snapshot(
             rows=position_rows,
+            container=positions,
             fetched_at=positions_fetched_at,
             checked_at=checked_at,
             max_age_minutes=snapshot_max_age_minutes,
         ),
         "open_orders": _verify_broker_snapshot(
             rows=orders,
+            container=open_orders,
             fetched_at=open_orders_fetched_at,
             checked_at=checked_at,
             max_age_minutes=snapshot_max_age_minutes,
@@ -767,6 +847,21 @@ def build_paper_execution_preflight_report(
         "max_age_minutes": snapshot_max_age_minutes,
         "evidence_required": snapshot_evidence_required,
     }
+    account_state = _verify_snapshot_account(
+        expected_account_mode=expected_account_mode,
+        snapshot_account_mode=snapshot_account_mode,
+    )
+    snapshot_state["account"] = account_state
+    # An unverified account identity invalidates both snapshot kinds: a fresh,
+    # well-formed snapshot of a different Alpaca paper account still reads as
+    # "this account is flat". Marking the kinds unverified keeps one blocker
+    # path and stops the counts from reporting someone else's zero.
+    if not account_state["verified"] and expected_account_mode is not None:
+        for kind in _SNAPSHOT_KINDS:
+            kind_state = snapshot_state[kind]
+            if kind_state["verified"]:
+                kind_state["verified"] = False
+                kind_state["reason"] = account_state["reason"]
     unverified_kinds = [
         kind for kind in _SNAPSHOT_KINDS if not snapshot_state[kind]["verified"]
     ]
@@ -785,11 +880,14 @@ def build_paper_execution_preflight_report(
                 "required_reads": [
                     "alpaca_paper_list_positions",
                     "alpaca_paper_list_orders(status=open)",
+                    "account identity (account_mode echoed by those reads)",
                 ],
                 "remediation": (
                     "Fetch the broker snapshot immediately before the gate and "
-                    "pass it together with the time it was fetched."
+                    "pass it together with the time it was fetched and the "
+                    "account_mode it was read from."
                 ),
+                "account": account_state,
                 "snapshot": {kind: snapshot_state[kind] for kind in _SNAPSHOT_KINDS},
             },
         )
