@@ -1,5 +1,14 @@
 # Binance Demo 스캘핑 LLM 결정 주입 (Phase 3 / Design)
 
+> **🪦 TOMBSTONE (ROB-1147, 2026-07-29) — 이 문서는 역사적 스냅샷이며 현재 유효하지 않다.**
+> 아래 `**상태**: 승인됨`과 "Phase 1/2 merged·라이브"는 2026-06-22 작성 시점 기준이다.
+> 이 스펙이 설계한 `binance_demo_scalping_submit_decision` MCP 도구와 §3.2의 실행
+> 절차(dry_run/confirm 호출 포함)는 ROB-1147에서 **제거되었다** — 지금 이 도구는
+> 존재하지 않고, 아래 운영 절차를 실행해도 안 된다. §3.1의 `session_tag`/`signal_snapshot`
+> executor 배선 자체는 `DemoScalpingExecutor`(ROB-845 paper adapter가 계속 재사용하는
+> 실행 코어)에 남아 있으나, 이 문서가 다루는 LLM 결정 주입 표면(도구·게이트·런북)은
+> 삭제됐다. 아래 본문은 그 삭제 이전 설계를 그대로 보존한 기록일 뿐이다.
+
 - **작성일**: 2026-06-22
 - **상태**: 승인됨 (브레인스토밍 → 스펙)
 - **브랜치**: `feature/binance-demo-scalping-llm-decision`
