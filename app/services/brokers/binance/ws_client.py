@@ -15,6 +15,7 @@ Open items lean adopted (per ROB-285 plan §Open items):
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import random
@@ -77,9 +78,15 @@ def _assert_url_host_allowed(url: str, *, allowed: frozenset[str]) -> None:
 class BinancePublicWSClient:
     """Read-only WS subscriber for Binance combined streams."""
 
-    def __init__(self, *, url: str) -> None:
+    def __init__(self, *, url: str, close_timeout: float | None = None) -> None:
         _assert_url_host_allowed(url, allowed=PUBLIC_HOSTS)
+        if close_timeout is not None and close_timeout <= 0:
+            raise ValueError("close_timeout must be greater than zero")
         self._url = url
+        # ``None`` preserves websockets' existing default close behavior.
+        # Short-lived callers such as the smoke CLI may inject a bounded
+        # shutdown budget without changing production/library consumers.
+        self._close_timeout = close_timeout
         self._ws: Any = None
 
     async def __aenter__(self) -> BinancePublicWSClient:
@@ -87,8 +94,22 @@ class BinancePublicWSClient:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
-        if self._ws is not None:
+        if self._ws is None:
+            return
+        if self._close_timeout is None:
             await self._ws.close()
+            return
+        try:
+            async with asyncio.timeout(self._close_timeout):
+                await self._ws.close()
+        except TimeoutError:
+            # The close coroutine was cancelled at the caller-provided
+            # deadline. Abort the underlying transport so a slow peer cannot
+            # keep the smoke process alive until websockets' default 10s
+            # closing-handshake timeout.
+            transport = getattr(self._ws, "transport", None)
+            if transport is not None:
+                transport.abort()
 
     async def events(self, *, stop_after: int | None = None) -> AsyncIterator[WsEvent]:
         emitted = 0

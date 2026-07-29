@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 import scripts.binance_public_smoke as smoke
+from app.services.brokers.binance import ws_client as ws_client_module
 from app.services.brokers.binance.errors import BinanceLiveHostBlocked
 
 
@@ -40,6 +41,7 @@ class _FakeRestClient:
 @dataclass
 class _WSState:
     event_count: int
+    close_timeout: float | None = None
     entered: bool = False
     exited: bool = False
     iterator_closed: bool = False
@@ -49,8 +51,14 @@ class _WSState:
 
 def _fake_ws_client(state: _WSState) -> type:
     class _FakeWSClient:
-        def __init__(self, *, url: str) -> None:
+        def __init__(
+            self,
+            *,
+            url: str,
+            close_timeout: float | None = None,
+        ) -> None:
             self.url = url
+            state.close_timeout = close_timeout
 
         async def __aenter__(self) -> _FakeWSClient:
             state.entered = True
@@ -125,6 +133,7 @@ async def test_zero_event_timeout_is_bounded_secret_free_and_cleans_up(
     assert state.stalled is True
     assert state.stall_cancelled is True
     assert state.iterator_closed is True
+    assert state.close_timeout == smoke._WS_CLOSE_TIMEOUT_SECONDS
     assert (
         "WS FAIL: no events received before --duration=0.02 seconds elapsed"
         in caplog.text
@@ -176,3 +185,77 @@ async def test_three_events_finish_normally_and_close_iterator_and_context(
     assert state.iterator_closed is True
     assert "WS duration elapsed" not in caplog.text
     assert "received 3 WS events" in caplog.text
+
+
+@dataclass
+class _SlowCloseState:
+    iterator_cancelled: bool = False
+    iterator_closed: bool = False
+    close_started: bool = False
+    close_cancelled: bool = False
+    transport_aborted: bool = False
+
+
+class _SlowCloseTransport:
+    def __init__(self, state: _SlowCloseState) -> None:
+        self._state = state
+
+    def abort(self) -> None:
+        self._state.transport_aborted = True
+
+
+class _SlowClosingSocket:
+    def __init__(self, state: _SlowCloseState) -> None:
+        self._state = state
+        self.transport = _SlowCloseTransport(state)
+
+    def __aiter__(self):
+        return self._messages()
+
+    async def _messages(self):
+        try:
+            await asyncio.Event().wait()
+            yield ""
+        except asyncio.CancelledError:
+            self._state.iterator_cancelled = True
+            raise
+        finally:
+            self._state.iterator_closed = True
+
+    async def close(self) -> None:
+        self._state.close_started = True
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self._state.close_cancelled = True
+            raise
+
+
+@pytest.mark.asyncio
+async def test_zero_event_slow_close_has_wall_clock_bound_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _SlowCloseState()
+    socket = _SlowClosingSocket(state)
+
+    async def _connect(*args: Any, **kwargs: Any) -> _SlowClosingSocket:
+        return socket
+
+    monkeypatch.setattr(smoke, "BinancePublicRestClient", _FakeRestClient)
+    monkeypatch.setattr(ws_client_module.websockets, "connect", _connect)
+    monkeypatch.setattr(smoke, "_WS_CLOSE_TIMEOUT_SECONDS", 0.02)
+
+    started_at = asyncio.get_running_loop().time()
+    result = await asyncio.wait_for(
+        smoke._run(_args(duration=0.02)),
+        timeout=0.5,
+    )
+    elapsed = asyncio.get_running_loop().time() - started_at
+
+    assert result == 4
+    assert elapsed < 0.25
+    assert state.iterator_cancelled is True
+    assert state.iterator_closed is True
+    assert state.close_started is True
+    assert state.close_cancelled is True
+    assert state.transport_aborted is True

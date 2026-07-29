@@ -28,10 +28,13 @@ import datetime as dt
 import logging
 import sys
 from contextlib import aclosing
+from typing import Final
 
 from app.services.brokers.binance.errors import BinanceLiveHostBlocked
 from app.services.brokers.binance.rest_client import BinancePublicRestClient
 from app.services.brokers.binance.ws_client import BinancePublicWSClient
+
+_WS_CLOSE_TIMEOUT_SECONDS: Final[float] = 1.0
 
 
 def _parse_args() -> argparse.Namespace:
@@ -46,7 +49,10 @@ def _parse_args() -> argparse.Namespace:
         "--duration",
         type=int,
         default=15,
-        help="WS subscribe duration in seconds",
+        help=(
+            "WS receive duration in seconds "
+            f"(plus at most {_WS_CLOSE_TIMEOUT_SECONDS:g}s shutdown cleanup)"
+        ),
     )
     p.add_argument("--dry-run", action="store_true", default=True)
     p.add_argument("--no-dry-run", dest="dry_run", action="store_false")
@@ -113,7 +119,10 @@ async def _run(args: argparse.Namespace) -> int:
     received = 0
     try:
         async with asyncio.timeout(args.duration):
-            async with BinancePublicWSClient(url=url) as ws:
+            async with BinancePublicWSClient(
+                url=url,
+                close_timeout=_WS_CLOSE_TIMEOUT_SECONDS,
+            ) as ws:
                 async with aclosing(ws.events()) as events:
                     async for event in events:
                         log.info(f"ws event: {event}")
