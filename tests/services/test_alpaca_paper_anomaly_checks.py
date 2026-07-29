@@ -283,15 +283,60 @@ def _rob1129_measured_buy_legs():
     client_order_id, which is why payload-based buy/sell pairing never matches.
     """
     measured = [
-        ("rob73-93bc5d4b6ba0ac6e", "ISRG", "1"),
-        ("rob73-ac562d42b1d3ec16", "UBER", "4"),
-        ("rob73-3ccf09a984c7758e", "WDC", "1"),
-        ("rob73-47a669297ff57cb3", "F", "1"),
-        ("rob73-a8691ab4f782af06", "ROST", "1"),
-        ("rob73-1862fd0d16137ff6", "OLED", "0.0614"),
-        ("rob73-ac4103900976a38d", "DPZ", "1"),
-        ("rob73-c9726ec2359bd763", "AMC", "1"),
-        ("rob73-08ebbf8c64e2dd93", "ISRG", "0.014"),
+        (
+            "rob73-93bc5d4b6ba0ac6e",
+            "ISRG",
+            "1",
+            datetime(2026, 7, 24, 14, 10, 27, tzinfo=UTC),
+        ),
+        (
+            "rob73-ac562d42b1d3ec16",
+            "UBER",
+            "4",
+            datetime(2026, 7, 24, 14, 10, 16, tzinfo=UTC),
+        ),
+        (
+            "rob73-3ccf09a984c7758e",
+            "WDC",
+            "1",
+            datetime(2026, 7, 24, 14, 10, 3, tzinfo=UTC),
+        ),
+        (
+            "rob73-47a669297ff57cb3",
+            "F",
+            "0.353",
+            datetime(2026, 7, 23, 13, 43, 38, tzinfo=UTC),
+        ),
+        (
+            "rob73-a8691ab4f782af06",
+            "ROST",
+            "0.0217",
+            datetime(2026, 7, 21, 13, 55, 11, tzinfo=UTC),
+        ),
+        (
+            "rob73-1862fd0d16137ff6",
+            "OLED",
+            "0.0614",
+            datetime(2026, 7, 21, 13, 55, 8, tzinfo=UTC),
+        ),
+        (
+            "rob73-ac4103900976a38d",
+            "DPZ",
+            "0.0145",
+            datetime(2026, 7, 20, 13, 34, 38, tzinfo=UTC),
+        ),
+        (
+            "rob73-c9726ec2359bd763",
+            "AMC",
+            "2.12",
+            datetime(2026, 7, 20, 13, 33, 59, tzinfo=UTC),
+        ),
+        (
+            "rob73-08ebbf8c64e2dd93",
+            "ISRG",
+            "0.014",
+            datetime(2026, 7, 17, 13, 51, 3, tzinfo=UTC),
+        ),
     ]
     return [
         _row(
@@ -304,8 +349,9 @@ def _rob1129_measured_buy_legs():
             signal_symbol=symbol,
             filled_qty=filled_qty,
             position_snapshot=None,
+            created_at=created_at,
         )
-        for client_order_id, symbol, filled_qty in measured
+        for client_order_id, symbol, filled_qty, created_at in measured
     ]
 
 
@@ -899,7 +945,7 @@ def test_scoped_preflight_still_blocks_symbol_mismatch_inside_same_correlation()
 
 @pytest.mark.unit
 def test_preflight_does_not_flag_canceled_state_as_anomaly():
-    # Check that a canceled row does not trigger unexpected anomalies
+    """A canceled sell is not an anomaly row, but also is not fill evidence."""
     report = build_paper_execution_preflight_report(
         ledger_rows=[
             _row(
@@ -919,9 +965,12 @@ def test_preflight_does_not_flag_canceled_state_as_anomaly():
         **_verified_snapshot(),
     )
 
-    assert report.status == "pass"
-    assert report.should_block is False
+    assert report.status == "blocked"
+    assert report.should_block is True
     assert "ledger_anomaly_row" not in _check_ids(report)
+    finding = _anomaly(report, "previous_buy_filled_sell_missing")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert finding.details["rows"][0]["client_order_id"] == "buy-reconciled"
 
 
 # ---------------------------------------------------------------------------
@@ -1159,17 +1208,52 @@ def _rob1129_measured_sell_legs():
 
     Source: ~/work/herdr-inbox/alpaca-paper-block-proposal-2026-07-28.md 2-B.
     Their stored `position_snapshot` is the pre-fill sell_claim_baseline rather
-    than a post-fill re-read, which is a separate defect from the buy/sell
-    pairing one and is deliberately left untouched by the ROB-1129 fix.
+    than a post-fill re-read. It therefore cannot prove that a filled sell left
+    a residual position.
     """
     measured = [
-        ("rob73-ce5159550b11e626", "F"),
-        ("rob73-abc306c7599f4b63", "F"),
-        ("rob73-cce8e0d3264fb86d", "ROST"),
-        ("rob73-9dd2e832f0e9dd05", "REGN"),
-        ("rob73-2b58a4ff9b6645ff", "F"),
-        ("rob73-e37deae38a423090", "DPZ"),
-        ("rob73-6623cf6a1009e34c", "AMC"),
+        (
+            "rob73-ce5159550b11e626",
+            "F",
+            "0.26999594",
+            datetime(2026, 7, 27, 14, 4, 18, tzinfo=UTC),
+        ),
+        (
+            "rob73-abc306c7599f4b63",
+            "F",
+            "0.353",
+            datetime(2026, 7, 23, 13, 43, 57, tzinfo=UTC),
+        ),
+        (
+            "rob73-cce8e0d3264fb86d",
+            "ROST",
+            "0.0217",
+            datetime(2026, 7, 23, 13, 42, 19, tzinfo=UTC),
+        ),
+        (
+            "rob73-9dd2e832f0e9dd05",
+            "REGN",
+            "1",
+            datetime(2026, 7, 23, 13, 42, 6, tzinfo=UTC),
+        ),
+        (
+            "rob73-2b58a4ff9b6645ff",
+            "F",
+            "0.34371125",
+            datetime(2026, 7, 22, 14, 25, 53, tzinfo=UTC),
+        ),
+        (
+            "rob73-e37deae38a423090",
+            "DPZ",
+            "0.0145",
+            datetime(2026, 7, 20, 19, 39, 9, tzinfo=UTC),
+        ),
+        (
+            "rob73-6623cf6a1009e34c",
+            "AMC",
+            "2.12",
+            datetime(2026, 7, 20, 19, 39, 6, tzinfo=UTC),
+        ),
     ]
     return [
         _row(
@@ -1180,31 +1264,43 @@ def _rob1129_measured_sell_legs():
             order_status="filled",
             execution_symbol=symbol,
             signal_symbol=symbol,
-            filled_qty="1",
-            position_snapshot={"qty": "1"},
+            filled_qty=filled_qty,
+            position_snapshot={
+                "qty": filled_qty,
+                "snapshot_kind": "sell_claim_baseline",
+            },
+            created_at=created_at,
         )
-        for client_order_id, symbol in measured
+        for client_order_id, symbol, filled_qty, created_at in measured
+    ]
+
+
+def _rob1129_current_positions():
+    """07-30 read-only broker snapshot (8 positions, MCP read-only surface)."""
+    return [
+        {"symbol": "BSX", "qty": "5", "asset_class": "us_equity"},
+        {"symbol": "BTCUSD", "qty": "0.000824864", "asset_class": "crypto"},
+        {"symbol": "CPNG", "qty": "1", "asset_class": "us_equity"},
+        {"symbol": "HCA", "qty": "1", "asset_class": "us_equity"},
+        {"symbol": "ISRG", "qty": "1.014", "asset_class": "us_equity"},
+        {"symbol": "UBER", "qty": "5", "asset_class": "us_equity"},
+        {"symbol": "WDC", "qty": "1", "asset_class": "us_equity"},
+        {"symbol": "OLED", "qty": "0.0614", "asset_class": "us_equity"},
     ]
 
 
 @pytest.mark.unit
-def test_rob1129_stage_one_does_not_release_the_account_block():
-    """Both fixes together shrink the findings but the account still blocks.
+def test_rob1129_current_16_rows_classify_without_pairing_false_blocks():
+    """Replay the 16 rows against the 07-30 read-only broker state.
 
-    Fixing the checker removes the five false positives and fixing the snapshot
-    input makes the holdings visible. What remains is real: four buy legs the
-    broker already closed, seven sell legs whose ledger rows never advanced, and
-    the flat-account residual gate. Advancing those rows needs the stage 2/3
-    tooling, not a checker change.
+    Five buys are still open, four buys have exact later sell fills despite
+    missing source-link provenance, and all seven sells are flat in the current
+    broker snapshot. The account remains blocked by the independent residual
+    position gate; no blocker is downgraded or bypassed.
     """
     report = build_paper_execution_preflight_report(
         ledger_rows=_rob1129_measured_buy_legs() + _rob1129_measured_sell_legs(),
-        positions=[
-            {"symbol": "ISRG", "qty": "1.014", "asset_class": "us_equity"},
-            {"symbol": "UBER", "qty": "5", "asset_class": "us_equity"},
-            {"symbol": "WDC", "qty": "1", "asset_class": "us_equity"},
-            {"symbol": "OLED", "qty": "0.0614", "asset_class": "us_equity"},
-        ],
+        positions=_rob1129_current_positions(),
         positions_fetched_at=_ROB1130_NOW,
         open_orders=[],
         open_orders_fetched_at=_ROB1130_NOW,
@@ -1212,13 +1308,72 @@ def test_rob1129_stage_one_does_not_release_the_account_block():
     )
 
     assert report.should_block is True
-    assert _blocking_check_ids(report) == {
-        "residual_position_exists",
-        "previous_buy_filled_sell_missing",
-        "sell_filled_position_not_closed",
-    }
+    assert _blocking_check_ids(report) == {"residual_position_exists"}
     assert _anomaly(report, "open_position_without_sell_leg").details["count"] == 5
-    assert _anomaly(report, "previous_buy_filled_sell_missing").details["count"] == 4
-    assert len(_anomaly(report, "sell_filled_position_not_closed").details["rows"]) == 7
+    legacy_matches = _anomaly(report, "legacy_buy_sell_match")
+    assert legacy_matches.details["count"] == 4
+    assert {
+        row["buy"]["client_order_id"] for row in legacy_matches.details["rows"]
+    } == {
+        "rob73-47a669297ff57cb3",
+        "rob73-a8691ab4f782af06",
+        "rob73-ac4103900976a38d",
+        "rob73-c9726ec2359bd763",
+    }
+    closed_sells = _anomaly(report, "sell_closed_by_current_position_snapshot")
+    assert closed_sells.details["count"] == 7
+    assert "previous_buy_filled_sell_missing" not in _check_ids(report)
+    assert "sell_filled_position_not_closed" not in _check_ids(report)
     # No bypass: the test-mode downgrade flag stays off and untouched.
     assert report.broker_snapshot["evidence_required"] is True
+
+
+@pytest.mark.unit
+def test_rob1129_mutation_missing_sell_still_blocks():
+    """Fixture-only mutation: remove DPZ's sell and keep DPZ broker-flat."""
+    rows = _rob1129_measured_buy_legs() + [
+        row
+        for row in _rob1129_measured_sell_legs()
+        if row.client_order_id != "rob73-e37deae38a423090"
+    ]
+
+    report = build_paper_execution_preflight_report(
+        ledger_rows=rows,
+        positions=_rob1129_current_positions(),
+        positions_fetched_at=_ROB1130_NOW,
+        open_orders=[],
+        open_orders_fetched_at=_ROB1130_NOW,
+        now=_ROB1130_NOW,
+    )
+
+    finding = _anomaly(report, "previous_buy_filled_sell_missing")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert [row["client_order_id"] for row in finding.details["rows"]] == [
+        "rob73-ac4103900976a38d"
+    ]
+    assert finding.details["rows"][0]["reason"] == (
+        "holding_state_without_open_position"
+    )
+
+
+@pytest.mark.unit
+def test_rob1129_mutation_nonflat_sell_still_blocks():
+    """Fixture-only mutation: current DPZ residual disproves sell closure."""
+    report = build_paper_execution_preflight_report(
+        ledger_rows=_rob1129_measured_buy_legs() + _rob1129_measured_sell_legs(),
+        positions=_rob1129_current_positions()
+        + [{"symbol": "DPZ", "qty": "0.001", "asset_class": "us_equity"}],
+        positions_fetched_at=_ROB1130_NOW,
+        open_orders=[],
+        open_orders_fetched_at=_ROB1130_NOW,
+        now=_ROB1130_NOW,
+    )
+
+    finding = _anomaly(report, "sell_filled_position_not_closed")
+    assert finding.severity == PaperExecutionAnomalySeverity.block
+    assert [row["client_order_id"] for row in finding.details["rows"]] == [
+        "rob73-e37deae38a423090"
+    ]
+    assert finding.details["rows"][0]["reason"] == (
+        "verified_current_broker_position_nonzero"
+    )

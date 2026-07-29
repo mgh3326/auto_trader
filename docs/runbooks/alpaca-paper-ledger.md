@@ -178,6 +178,27 @@ alpaca_paper_ledger_get_by_correlation(lifecycle_correlation_id)
 alpaca_paper_roundtrip_report(lifecycle_correlation_id=None, client_order_id=None, candidate_uuid=None, briefing_artifact_run_uuid=None, open_orders=None, positions=None)
 ```
 
+### Execution preflight lifecycle evidence (ROB-1129 / ROB-1130)
+
+`alpaca_paper_execution_preflight_check` is fail-closed and read-only. Supply
+both broker snapshots plus a fresh `broker_snapshot_fetched_at`; missing,
+unattested, stale, or future-dated evidence remains a blocker.
+
+New source-bound sell paths persist `preview_payload.source_buy_client_order_id`.
+Historical execution rows created before that contract have independent
+`client_order_id` / `lifecycle_correlation_id` values. For those rows only, the
+checker accepts a one-to-one legacy match when broker symbol and positive
+`filled_qty` are exactly equal and the filled sell is no earlier than the buy.
+Different quantity, missing chronology, non-filled/canceled sell, ambiguous
+source IDs, or sell reuse does not match and remains blocking unless the fresh
+position snapshot proves the unmatched buy quantity is still open.
+
+`position_snapshot.snapshot_kind="sell_claim_baseline"` is pre-submit
+reservation evidence, not a post-fill close snapshot. A filled sell is closed
+only by a stored post-fill zero snapshot or a fresh verified broker snapshot
+showing that symbol flat. A non-zero or malformed current quantity remains
+blocking.
+
 ---
 
 ## Profile exposure (ROB-908 — DEFAULT-profile flag)
