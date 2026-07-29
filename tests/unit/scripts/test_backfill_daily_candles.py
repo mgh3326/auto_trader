@@ -90,3 +90,36 @@ async def test_crypto_backfill_builds_symbol_specific_canonical_targets(
         ),
     ]
     service.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "symbols",
+    [
+        "KRW-BTC,USDT-ETH",
+        "KRW-BTC,KRW-BTC/USD",
+    ],
+)
+async def test_crypto_backfill_preflights_all_targets_before_service_or_sync(
+    monkeypatch: pytest.MonkeyPatch,
+    symbols: str,
+) -> None:
+    import scripts.backfill_daily_candles as cli
+
+    service_factory = AsyncMock()
+    monkeypatch.setattr(cli, "_build_default_service", service_factory)
+    args = cli._build_parser().parse_args(
+        [
+            "--market",
+            "crypto",
+            "--symbols",
+            symbols,
+            "--partition",
+            "upbit_krw",
+        ]
+    )
+
+    with pytest.raises(ValueError):
+        await cli._amain(args)
+
+    service_factory.assert_not_awaited()

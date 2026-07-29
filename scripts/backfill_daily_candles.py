@@ -83,23 +83,29 @@ async def _amain(args: argparse.Namespace) -> int:
     horizon = args.horizon_bars if args.horizon_bars is not None else default_bars
     requested_partition = args.partition or default_partition
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
-
-    svc = await _build_default_service()
-    try:
-        for symbol in symbols:
-            partition = _partition_for_symbol(
+    targets = [
+        SyncTarget(
+            market=market_key,
+            symbol=symbol,
+            partition=_partition_for_symbol(
                 market=market_key,
                 symbol=symbol,
                 requested_partition=requested_partition,
-            )
-            target = SyncTarget(market=market_key, symbol=symbol, partition=partition)
+            ),
+        )
+        for symbol in symbols
+    ]
+
+    svc = await _build_default_service()
+    try:
+        for target in targets:
             if args.dry_run:
                 logger.info("DRY RUN - would sync %s", target)
                 continue
             result = await svc.sync_one(target=target, horizon_bars=horizon)
             logger.info(
                 "backfill done symbol=%s upserted=%d fallback=%s",
-                symbol,
+                target.symbol,
                 result.rows_upserted,
                 result.fallback_used,
             )
