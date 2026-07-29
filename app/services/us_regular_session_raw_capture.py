@@ -12,7 +12,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
@@ -228,6 +228,11 @@ async def _attempt(
         and request.product == "latest_quote"
     ):
         record["u06_shadow"] = _u06_fields(body, received)
+    if request.provider == "alpaca" and request.product == "historical_1m_bars":
+        record["historical_reread"] = {
+            "window_label": "09:30-09:36 America/New_York",
+            "statement": "Historical reread only; it does not establish first appearance or decision-time availability.",
+        }
     filename = (
         f"{request.provider}-{request.product}-{request.symbol}-{uuid.uuid4().hex}.json"
     )
@@ -240,7 +245,7 @@ async def _attempt(
     return target
 
 
-def _requests_for(symbol: str) -> list[CaptureRequest]:
+def _requests_for(symbol: str, historical_sip_date: date) -> list[CaptureRequest]:
     alpaca_headers = {
         "APCA-API-KEY-ID": os.getenv("ALPACA_PAPER_API_KEY", ""),
         "APCA-API-SECRET-KEY": os.getenv("ALPACA_PAPER_API_SECRET", ""),
@@ -284,6 +289,16 @@ def _requests_for(symbol: str) -> list[CaptureRequest]:
             alpaca_headers,
         ),
         CaptureRequest(
+            "alpaca",
+            "historical_1m_bars",
+            f"https://data.alpaca.markets/v2/stocks/{symbol}/bars",
+            "v2",
+            symbol,
+            "sip",
+            historical_sip_opening_window_params(historical_sip_date),
+            alpaca_headers,
+        ),
+        CaptureRequest(
             "kis",
             "overseas_1m",
             "https://openapi.koreainvestment.com:9443/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice",
@@ -322,12 +337,30 @@ def kst_window_description() -> str:
     return _iso(date)
 
 
+def historical_sip_opening_window_params(trading_date: date) -> dict[str, str]:
+    """Build the 09:30–09:36 ET retrospective window without a fixed UTC offset.
+
+    ``end`` is 09:37 so a provider with an end-exclusive bar range can return
+    the seven 1-minute bars labelled 09:30 through 09:36.  This is a historical
+    reread only, never evidence of first appearance or decision-time access.
+    """
+    start = datetime.combine(trading_date, time(9, 30), tzinfo=_NEW_YORK)
+    end = datetime.combine(trading_date, time(9, 37), tzinfo=_NEW_YORK)
+    return {
+        "timeframe": "1Min",
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "feed": "sip",
+    }
+
+
 async def capture(
     *,
     symbols: tuple[str, ...] = DEFAULT_SYMBOLS,
     artifact_root: Path = Path("artifacts/us-regular-session-raw-capture"),
     session_label: str | None = None,
     u06_shadow: bool = False,
+    historical_sip_date: date | None = None,
     client: AsyncGetClient | None = None,
 ) -> list[Path]:
     """Perform independent GET observations and return append-only artifact paths."""
@@ -336,6 +369,7 @@ async def capture(
         artifact_root
         / f"run-{_utc_now().strftime('%Y%m%dT%H%M%S%fZ')}-{uuid.uuid4().hex[:12]}"
     )
+    opening_date = historical_sip_date or _utc_now().astimezone(_NEW_YORK).date()
     if client is not None:
         return [
             await _attempt(
@@ -346,7 +380,7 @@ async def capture(
                 u06_shadow=u06_shadow,
             )
             for symbol in symbols
-            for item in _requests_for(symbol)
+            for item in _requests_for(symbol, opening_date)
         ]
     async with httpx.AsyncClient(follow_redirects=False) as http_client:
         return [
@@ -358,5 +392,5 @@ async def capture(
                 u06_shadow=u06_shadow,
             )
             for symbol in symbols
-            for item in _requests_for(symbol)
+            for item in _requests_for(symbol, opening_date)
         ]

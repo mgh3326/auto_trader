@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import httpx
@@ -70,8 +70,71 @@ def test_alpaca_sip_entitlement_is_unavailable_without_fallback(tmp_path: Path) 
     quote = next(row for row in records if row["product"] == "latest_quote")
     assert quote["outcome"] == "unavailable"
     alpaca_calls = [call for call in client.calls if "alpaca" in call[0]]
-    assert len(alpaca_calls) == 2
-    assert all(call[1]["params"] == {"feed": "sip"} for call in alpaca_calls)
+    assert len(alpaca_calls) == 3
+    assert all(call[1]["params"].get("feed") == "sip" for call in alpaca_calls)
+    assert all("iex" not in call[0].lower() for call in client.calls)
+
+
+def test_recent_sip_unavailable_and_historical_sip_success_are_separate_attempts(
+    tmp_path: Path,
+) -> None:
+    base = "https://data.alpaca.markets/v2/stocks/AAPL"
+    client = FixtureClient(
+        {
+            f"{base}/quotes/latest": httpx.Response(
+                403,
+                json={
+                    "message": "subscription does not permit querying recent SIP data"
+                },
+            ),
+            f"{base}/bars/latest": httpx.Response(
+                403,
+                json={
+                    "message": "subscription does not permit querying recent SIP data"
+                },
+            ),
+            f"{base}/bars": httpx.Response(
+                200,
+                json={
+                    "bars": [
+                        {"t": f"2026-07-29T09:{minute:02}:00-04:00"}
+                        for minute in range(30, 37)
+                    ]
+                },
+            ),
+        }
+    )
+    paths = asyncio.run(
+        capture_module.capture(
+            symbols=("AAPL",),
+            artifact_root=tmp_path,
+            historical_sip_date=date(2026, 7, 29),
+            client=client,
+        )
+    )
+    records = {
+        json.loads(path.read_text())["product"]: json.loads(path.read_text())
+        for path in paths
+    }
+    assert records["latest_quote"]["outcome"] == "unavailable"
+    assert records["latest_bar"]["outcome"] == "unavailable"
+    historical = records["historical_1m_bars"]
+    assert historical["outcome"] == "success"
+    assert historical["request_params"] == {
+        "timeframe": "1Min",
+        "start": "2026-07-29T09:30:00-04:00",
+        "end": "2026-07-29T09:37:00-04:00",
+        "feed": "sip",
+    }
+    assert (
+        "does not establish first appearance"
+        in historical["historical_reread"]["statement"]
+    )
+    assert all(
+        call[1]["params"].get("feed") == "sip"
+        for call in client.calls
+        if "alpaca" in call[0]
+    )
     assert all("iex" not in call[0].lower() for call in client.calls)
 
 
@@ -120,3 +183,6 @@ def test_timezone_conversion_uses_zoneinfo_not_hard_coded_offset() -> None:
         != winter_et.astimezone(capture_module._SEOUL).hour
     )
     assert capture_module.kst_window_description() == "2026-07-29T19:54:50Z"
+    assert capture_module.historical_sip_opening_window_params(date(2026, 1, 29))[
+        "start"
+    ].endswith("-05:00")
