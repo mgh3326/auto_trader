@@ -82,7 +82,12 @@ def _normalize_place_result(result: Any) -> _PlaceOutcome:
         )
         return _PlaceOutcome(False, reason, normalized_detail)
 
-    ledger_id = result.get("ledger_id")
+    # ROB-1140 R1: explicit None is the ROB-843 benign-conflict signal; a
+    # missing key is a malformed contract and must not collapse into that case.
+    if "ledger_id" not in result:
+        return _PlaceOutcome(False, "missing_ledger_id", normalized_detail)
+
+    ledger_id = result["ledger_id"]
     if ledger_id is not None and (
         not isinstance(ledger_id, int) or isinstance(ledger_id, bool) or ledger_id <= 0
     ):

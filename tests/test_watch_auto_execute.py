@@ -96,7 +96,7 @@ def _assert_failed_intent_update(
     *,
     correlation_id: str,
     reason: str,
-    failure_detail: str,
+    failure_detail: str | None,
 ) -> None:
     assert len(db.statements) == 2
     update_params = db.statements[1].compile().params
@@ -252,7 +252,50 @@ async def test_dry_run_preview_fails_intent_instead_of_executing(monkeypatch):
     )
 
 
-def test_rob843_existing_native_row_without_returned_id_stays_durable():
+@pytest.mark.asyncio
+async def test_missing_ledger_id_key_fails_intent_instead_of_benign_null(monkeypatch):
+    """ROB-1140 R1: a missing key is malformed, unlike explicit null from the
+    ROB-843 benign-conflict path."""
+    monkeypatch.setattr(
+        watch_auto_execute.settings, "WATCH_AUTO_EXECUTE_MOCK_ENABLED", True
+    )
+    place_result = {
+        "success": True,
+        "dry_run": False,
+        "order_no": "0001234567",
+        "ledger_tracking_unavailable": False,
+    }
+
+    async def _missing_ledger_id(**_kwargs):
+        return place_result
+
+    db = _FakeDb()
+    alert = _alert(_good_max_action())
+    cid = f"corr-{uuid.uuid4().hex}"
+    outcome = await watch_auto_execute.maybe_auto_execute(
+        db,
+        alert=alert,
+        correlation_id=cid,
+        kst_date="2026-06-01",
+        place_order_fn=_missing_ledger_id,
+    )
+
+    assert "ledger_id" not in place_result
+    assert outcome == {
+        "executed": False,
+        "reason": "missing_ledger_id",
+        "detail": None,
+        "correlation_id": cid,
+    }
+    _assert_failed_intent_update(
+        db,
+        correlation_id=cid,
+        reason="missing_ledger_id",
+        failure_detail=None,
+    )
+
+
+def test_rob843_explicit_null_ledger_id_conflict_stays_durable():
     """ROB-843 P1 benign conflicts already proved a native row exists."""
     outcome = watch_auto_execute._normalize_place_result(
         {
@@ -264,6 +307,21 @@ def test_rob843_existing_native_row_without_returned_id_stays_durable():
         }
     )
     assert outcome.executed is True
+
+
+def test_invalid_non_null_ledger_id_is_rejected_separately():
+    """Invalid non-null ids are neither missing nor benign explicit null."""
+    outcome = watch_auto_execute._normalize_place_result(
+        {
+            "success": True,
+            "dry_run": False,
+            "order_no": "0001234567",
+            "ledger_id": 0,
+            "ledger_tracking_unavailable": False,
+        }
+    )
+    assert outcome.executed is False
+    assert outcome.reason == "invalid_ledger_id"
 
 
 @pytest.mark.asyncio
