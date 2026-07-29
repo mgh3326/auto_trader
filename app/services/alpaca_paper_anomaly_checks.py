@@ -95,6 +95,7 @@ _TERMINAL_STATES = frozenset({"filled", "canceled"})
 _TERMINAL_PREVIEW_SIBLING_STATES = frozenset({"final_reconciled", "closed", "canceled"})
 _SELL_SOURCE_KEYS = frozenset(
     {
+        "source_buy_client_order_id",
         "source_client_order_id",
         "source_order_client_order_id",
         "previous_buy_client_order_id",
@@ -116,13 +117,14 @@ def _iso(value: Any) -> Any:
     return value
 
 
-def _decimal(value: Any) -> Decimal:
+def _strict_decimal(value: Any) -> Decimal | None:
     if value is None or value == "":
-        return Decimal("0")
+        return None
     try:
-        return Decimal(str(value))
+        decimal = Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
-        return Decimal("0")
+        return None
+    return decimal if decimal.is_finite() else None
 
 
 def _normalize_symbol(symbol: Any) -> str:
@@ -248,15 +250,6 @@ def _is_open_order(order: dict[str, Any]) -> bool:
     return status not in {"filled", "canceled", "cancelled", "expired", "rejected"}
 
 
-def _position_qty(position: dict[str, Any]) -> Decimal:
-    return _decimal(
-        position.get("qty")
-        or position.get("quantity")
-        or position.get("position_qty")
-        or position.get("available")
-    )
-
-
 def _position_symbol(position: dict[str, Any]) -> str:
     return _normalize_symbol(
         position.get("symbol")
@@ -265,16 +258,75 @@ def _position_symbol(position: dict[str, Any]) -> str:
     )
 
 
-def _held_position_symbols(positions: Iterable[dict[str, Any]]) -> set[str]:
-    """Normalized symbols with a non-zero quantity in the position snapshot."""
-    held: set[str] = set()
-    for position in positions:
-        if _position_qty(position) == Decimal("0"):
+def _strict_position_qty(position: dict[str, Any]) -> Decimal | None:
+    raw_qty = next(
+        (
+            position[key]
+            for key in ("qty", "quantity", "position_qty", "available")
+            if key in position and position[key] not in (None, "")
+        ),
+        None,
+    )
+    return _strict_decimal(raw_qty)
+
+
+def _position_snapshot_issues(positions: Iterable[Any]) -> list[dict[str, Any]]:
+    """Return standalone schema defects in a caller-supplied position snapshot."""
+    issues: list[dict[str, Any]] = []
+    for index, position in enumerate(positions):
+        if not isinstance(position, dict):
+            issues.append({"index": index, "reason": "position_row_not_object"})
             continue
         symbol = _position_symbol(position)
-        if symbol:
-            held.add(symbol)
-    return held
+        if not symbol:
+            issues.append({"index": index, "reason": "position_symbol_missing"})
+            continue
+        raw_qty = next(
+            (
+                position[key]
+                for key in ("qty", "quantity", "position_qty", "available")
+                if key in position and position[key] not in (None, "")
+            ),
+            None,
+        )
+        if raw_qty is None:
+            issues.append(
+                {
+                    "index": index,
+                    "reason": "position_qty_missing",
+                    "symbol": symbol,
+                }
+            )
+            continue
+        if _strict_decimal(raw_qty) is None:
+            issues.append(
+                {
+                    "index": index,
+                    "reason": "position_qty_invalid",
+                    "symbol": symbol,
+                }
+            )
+    return issues
+
+
+def _position_qty_by_symbol(
+    positions: Iterable[Any],
+) -> tuple[dict[str, Decimal], set[str]]:
+    """Aggregate a broker position snapshot by normalized execution symbol."""
+    quantities: dict[str, Decimal] = {}
+    invalid_symbols: set[str] = set()
+    for position in positions:
+        if not isinstance(position, dict):
+            continue
+        symbol = _position_symbol(position)
+        if not symbol:
+            continue
+        qty = _strict_position_qty(position)
+        if qty is None:
+            invalid_symbols.add(symbol)
+            continue
+        quantities[symbol] = quantities.get(symbol, Decimal("0")) + qty
+    return quantities, invalid_symbols
 
 
 def _ledger_row_broker_symbol(row: Any) -> str:
@@ -288,6 +340,247 @@ def _ledger_row_broker_symbol(row: Any) -> str:
     return _normalize_symbol(_get(row, "execution_symbol")) or _normalize_symbol(
         _get(row, "signal_symbol")
     )
+
+
+def _ledger_row_created_at(row: Any) -> datetime | None:
+    return _as_aware_utc(_parse_datetime(_get(row, "created_at")))
+
+
+def _is_filled_sell_evidence(row: Any) -> bool:
+    """Return whether a ledger row proves that a sell filled at the broker."""
+    return (
+        str(_get(row, "side") or "").lower() == "sell"
+        and str(_get(row, "lifecycle_state") or "").lower()
+        in _CANONICAL_FILLED_LEDGER_STATES
+        and str(_get(row, "order_status") or "").lower() == "filled"
+        and (filled_qty := _strict_decimal(_get(row, "filled_qty"))) is not None
+        and filled_qty > Decimal("0")
+    )
+
+
+def _match_filled_buys_to_sells(
+    ledger: Iterable[Any],
+) -> tuple[set[int], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Match filled buys to completed sells without inventing shared identities.
+
+    Current submit paths persist ``source_buy_client_order_id`` on source-bound
+    sells. The ROB-1129 historical rows predate that contract: every leg has its
+    own correlation/client ID and no source field. For those rows only, use a
+    conservative one-to-one fallback requiring the same broker symbol, exactly
+    equal positive filled quantity, and a sell timestamp at or after the buy.
+
+    A sell with any explicit source ID is never reassigned by the legacy
+    fallback, and each sell can discharge at most one buy.
+    """
+    rows = list(ledger)
+    buys = [
+        row
+        for row in rows
+        if str(_get(row, "side") or "").lower() == "buy"
+        and str(_get(row, "lifecycle_state") or "").lower()
+        in _BUY_REQUIRES_LINKED_SELL_STATES
+    ]
+    all_sells = [row for row in rows if str(_get(row, "side") or "").lower() == "sell"]
+    sells = [row for row in all_sells if _is_filled_sell_evidence(row)]
+    used_sell_tokens: set[int] = set()
+    matched_buy_tokens: set[int] = set()
+    legacy_matches: list[dict[str, Any]] = []
+    source_issues: list[dict[str, Any]] = []
+
+    buys_by_client_id: dict[str, list[Any]] = {}
+    for buy in buys:
+        client_id = str(_get(buy, "client_order_id") or "").strip()
+        if client_id:
+            buys_by_client_id.setdefault(client_id, []).append(buy)
+
+    # Strong path: all explicit source evidence is reserved from the legacy
+    # fallback. A source buy is complete only when one or more terminal filled
+    # sells consume exactly its positive filled quantity after the buy timestamp.
+    valid_source_sells: dict[int, list[tuple[Any, Decimal]]] = {}
+    source_buys: dict[int, Any] = {}
+    invalid_source_buy_tokens: set[int] = set()
+    for sell in all_sells:
+        source_ids = _source_client_order_ids(sell)
+        if not source_ids:
+            continue
+        used_sell_tokens.add(id(sell))
+        if len(source_ids) != 1:
+            source_issues.append(
+                {
+                    "reason": "ambiguous_source_buy_ids",
+                    "source_buy_client_order_ids": sorted(source_ids),
+                    "sell": _row_ref(sell),
+                }
+            )
+            continue
+        source_id = next(iter(source_ids))
+        source_candidates = buys_by_client_id.get(source_id, [])
+        if len(source_candidates) != 1:
+            source_issues.append(
+                {
+                    "reason": (
+                        "source_buy_not_found"
+                        if not source_candidates
+                        else "source_buy_ambiguous"
+                    ),
+                    "source_buy_client_order_id": source_id,
+                    "sell": _row_ref(sell),
+                }
+            )
+            continue
+        buy = source_candidates[0]
+        buy_token = id(buy)
+        source_buys[buy_token] = buy
+        buy_symbol = _ledger_row_broker_symbol(buy)
+        sell_symbol = _ledger_row_broker_symbol(sell)
+        if not buy_symbol or buy_symbol != sell_symbol:
+            invalid_source_buy_tokens.add(buy_token)
+            source_issues.append(
+                {
+                    "reason": "source_sell_symbol_mismatch",
+                    "source_buy_client_order_id": source_id,
+                    "buy": _row_ref(buy),
+                    "sell": _row_ref(sell),
+                }
+            )
+            continue
+        buy_created_at = _ledger_row_created_at(buy)
+        sell_created_at = _ledger_row_created_at(sell)
+        if buy_created_at is None or sell_created_at is None:
+            invalid_source_buy_tokens.add(buy_token)
+            source_issues.append(
+                {
+                    "reason": "source_chronology_missing",
+                    "source_buy_client_order_id": source_id,
+                    "buy": _row_ref(buy),
+                    "sell": _row_ref(sell),
+                }
+            )
+            continue
+        if sell_created_at < buy_created_at:
+            invalid_source_buy_tokens.add(buy_token)
+            source_issues.append(
+                {
+                    "reason": "source_sell_before_buy",
+                    "source_buy_client_order_id": source_id,
+                    "buy": _row_ref(buy),
+                    "sell": _row_ref(sell),
+                }
+            )
+            continue
+        sell_qty = _strict_decimal(_get(sell, "filled_qty"))
+        if sell_qty is None or sell_qty <= Decimal("0"):
+            invalid_source_buy_tokens.add(buy_token)
+            source_issues.append(
+                {
+                    "reason": "source_sell_qty_invalid",
+                    "source_buy_client_order_id": source_id,
+                    "sell": _row_ref(sell),
+                }
+            )
+            continue
+        if not _is_filled_sell_evidence(sell):
+            invalid_source_buy_tokens.add(buy_token)
+            source_issues.append(
+                {
+                    "reason": "source_sell_not_terminal_filled",
+                    "source_buy_client_order_id": source_id,
+                    "sell": _row_ref(sell),
+                }
+            )
+            continue
+        valid_source_sells.setdefault(buy_token, []).append((sell, sell_qty))
+
+    for buy_token, buy in source_buys.items():
+        buy_qty = _strict_decimal(_get(buy, "filled_qty"))
+        if buy_qty is None or buy_qty <= Decimal("0"):
+            invalid_source_buy_tokens.add(buy_token)
+            source_issues.append(
+                {
+                    "reason": "source_buy_qty_invalid",
+                    "buy": _row_ref(buy),
+                }
+            )
+            continue
+        total_sell_qty = sum(
+            (qty for _, qty in valid_source_sells.get(buy_token, [])),
+            start=Decimal("0"),
+        )
+        if buy_token in invalid_source_buy_tokens:
+            continue
+        if total_sell_qty < buy_qty:
+            source_issues.append(
+                {
+                    "reason": "source_sell_qty_incomplete",
+                    "buy_filled_qty": str(buy_qty),
+                    "source_sell_filled_qty": str(total_sell_qty),
+                    "buy": _row_ref(buy),
+                }
+            )
+            continue
+        if total_sell_qty > buy_qty:
+            source_issues.append(
+                {
+                    "reason": "source_sell_qty_exceeds_buy",
+                    "buy_filled_qty": str(buy_qty),
+                    "source_sell_filled_qty": str(total_sell_qty),
+                    "buy": _row_ref(buy),
+                }
+            )
+            continue
+        matched_buy_tokens.add(buy_token)
+
+    # Legacy path: exact economic identity plus chronology, one sell per buy.
+    def _sort_key(row: Any) -> tuple[datetime, str]:
+        return (
+            _ledger_row_created_at(row) or datetime.max.replace(tzinfo=UTC),
+            str(_get(row, "client_order_id") or ""),
+        )
+
+    for buy in sorted(buys, key=_sort_key):
+        if id(buy) in matched_buy_tokens:
+            continue
+        buy_symbol = _ledger_row_broker_symbol(buy)
+        buy_qty = _strict_decimal(_get(buy, "filled_qty"))
+        buy_created_at = _ledger_row_created_at(buy)
+        if (
+            not buy_symbol
+            or buy_qty is None
+            or buy_qty <= Decimal("0")
+            or buy_created_at is None
+        ):
+            continue
+
+        candidate = next(
+            (
+                sell
+                for sell in sorted(sells, key=_sort_key)
+                if id(sell) not in used_sell_tokens
+                and not _source_client_order_ids(sell)
+                and _ledger_row_broker_symbol(sell) == buy_symbol
+                and _strict_decimal(_get(sell, "filled_qty")) == buy_qty
+                and (
+                    (sell_created_at := _ledger_row_created_at(sell)) is not None
+                    and sell_created_at >= buy_created_at
+                )
+            ),
+            None,
+        )
+        if candidate is None:
+            continue
+        matched_buy_tokens.add(id(buy))
+        used_sell_tokens.add(id(candidate))
+        legacy_matches.append(
+            {
+                "match_basis": "legacy_exact_symbol_qty_chronology",
+                "symbol": buy_symbol,
+                "filled_qty": str(buy_qty),
+                "buy": _row_ref(buy),
+                "sell": _row_ref(candidate),
+            }
+        )
+
+    return matched_buy_tokens, legacy_matches, source_issues
 
 
 def _latest_preview_time(row: Any) -> datetime | None:
@@ -501,13 +794,26 @@ def build_paper_execution_preflight_report(
             },
         )
 
+    position_rows = position_rows if position_rows is not None else []
+    malformed_positions = _position_snapshot_issues(position_rows)
+    if malformed_positions:
+        add(
+            "broker_position_snapshot_malformed",
+            PaperExecutionAnomalySeverity.block,
+            "Broker position snapshot contains a row with missing or invalid "
+            "symbol/quantity evidence",
+            {
+                "count": len(malformed_positions),
+                "rows": malformed_positions[:10],
+            },
+        )
+
     positions_are_evidence = (
         snapshot_state["positions"]["verified"]
         if snapshot_evidence_required
         else bool(position_rows)
-    )
+    ) and not malformed_positions
     orders = orders if orders is not None else []
-    position_rows = position_rows if position_rows is not None else []
 
     # 1. Unexpected open orders.
     open_snapshot = [o for o in orders if _is_open_order(o)]
@@ -532,7 +838,13 @@ def build_paper_execution_preflight_report(
         )
 
     # 2. Residual positions before a new cycle.
-    residual_positions = [p for p in position_rows if _position_qty(p) != Decimal("0")]
+    residual_positions: list[tuple[dict[str, Any], Decimal]] = []
+    for position in position_rows:
+        if not isinstance(position, dict):
+            continue
+        qty = _strict_position_qty(position)
+        if qty is not None and qty != Decimal("0"):
+            residual_positions.append((position, qty))
     if residual_positions:
         add(
             "residual_position_exists",
@@ -545,10 +857,10 @@ def build_paper_execution_preflight_report(
                 "positions": [
                     {
                         "symbol": p.get("symbol"),
-                        "qty": str(_position_qty(p)),
+                        "qty": str(qty),
                         "asset_class": p.get("asset_class"),
                     }
-                    for p in residual_positions
+                    for p, qty in residual_positions
                 ],
             },
         )
@@ -577,7 +889,7 @@ def build_paper_execution_preflight_report(
             },
         )
 
-    # 4. Previous buy filled but no linked sell exists.
+    # 4. Previous buy filled but no completed sell evidence exists.
     #
     # ROB-1129: reaching a filled/reconciled state is NOT by itself evidence
     # that a sell leg is missing. A buy that is still holding an open position
@@ -585,31 +897,65 @@ def build_paper_execution_preflight_report(
     # normal open positions into preflight blockers. The live position snapshot
     # is the only thing that separates the two cases:
     #
-    #   holding state + symbol still held    -> open position, expected (info)
-    #   holding state + symbol not held      -> broker closed it, ledger did not
-    #                                           record the sell leg (block)
-    #   closed/final_reconciled + no sell    -> ledger claims the roundtrip
-    #                                           finished with no sell row (block)
+    #   completed sell evidence              -> closed leg, expected
+    #   unmatched buy + enough held quantity -> open position, expected (info)
+    #   unmatched buy + insufficient holding -> unresolved lifecycle (block)
     #
     # Trusting the snapshot is a separate concern; when no snapshot is available
     # the row stays a blocker rather than being assumed open (fail-closed).
-    sell_source_ids = {
-        source_id
-        for row in ledger
-        if str(_get(row, "side") or "").lower() == "sell"
-        for source_id in _source_client_order_ids(row)
-    }
-    held_symbols = _held_position_symbols(position_rows)
+    (
+        matched_buy_tokens,
+        legacy_buy_sell_matches,
+        source_evidence_issues,
+    ) = _match_filled_buys_to_sells(ledger)
+    if source_evidence_issues:
+        add(
+            "sell_source_evidence_invalid",
+            PaperExecutionAnomalySeverity.block,
+            "Explicit sell source evidence is ambiguous, incomplete, or "
+            "inconsistent with the source buy",
+            {
+                "count": len(source_evidence_issues),
+                "rows": source_evidence_issues[:10],
+            },
+        )
+    if legacy_buy_sell_matches:
+        add(
+            "legacy_buy_sell_match",
+            PaperExecutionAnomalySeverity.info,
+            "Historical buy and sell legs have exact fill evidence despite missing "
+            "source-link provenance",
+            {
+                "count": len(legacy_buy_sell_matches),
+                "rows": legacy_buy_sell_matches[:10],
+            },
+        )
+
+    remaining_position_qty, invalid_position_symbols = _position_qty_by_symbol(
+        position_rows
+    )
     positions_verified = positions_are_evidence
     open_position_buys: list[Any] = []
     unresolved_buys: list[dict[str, Any]] = []
-    for row in ledger:
+    buy_rows = [
+        row
+        for row in ledger
+        if str(_get(row, "side") or "").lower() == "buy"
+        and str(_get(row, "lifecycle_state") or "").lower()
+        in _BUY_REQUIRES_LINKED_SELL_STATES
+    ]
+    buy_rows.sort(
+        key=lambda row: (
+            _ledger_row_created_at(row) or datetime.max.replace(tzinfo=UTC),
+            str(_get(row, "client_order_id") or ""),
+        )
+    )
+    for row in buy_rows:
         side = str(_get(row, "side") or "").lower()
         state = str(_get(row, "lifecycle_state") or "").lower()
-        client_id = str(_get(row, "client_order_id") or "").strip()
         if side != "buy" or state not in _BUY_REQUIRES_LINKED_SELL_STATES:
             continue
-        if client_id in sell_source_ids:
+        if id(row) in matched_buy_tokens:
             continue
         if state in _BUY_COMPLETED_ROUNDTRIP_STATES:
             unresolved_buys.append(
@@ -622,11 +968,32 @@ def build_paper_execution_preflight_report(
             )
             continue
         symbol = _ledger_row_broker_symbol(row)
-        if symbol and symbol in held_symbols:
-            open_position_buys.append(row)
-        else:
+        filled_qty = _strict_decimal(_get(row, "filled_qty"))
+        available_qty = remaining_position_qty.get(symbol, Decimal("0"))
+        if filled_qty is None or filled_qty <= Decimal("0"):
             unresolved_buys.append(
-                {"reason": "holding_state_without_open_position", **_row_ref(row)}
+                {"reason": "holding_state_filled_qty_invalid", **_row_ref(row)}
+            )
+            continue
+        if (
+            symbol
+            and symbol not in invalid_position_symbols
+            and available_qty >= filled_qty
+        ):
+            open_position_buys.append(row)
+            remaining_position_qty[symbol] = available_qty - filled_qty
+        else:
+            reason = (
+                "holding_state_without_open_position"
+                if available_qty == Decimal("0")
+                else "holding_state_without_sufficient_open_position"
+            )
+            unresolved_buys.append(
+                {
+                    "reason": reason,
+                    "broker_position_qty_remaining": str(available_qty),
+                    **_row_ref(row),
+                }
             )
 
     if open_position_buys:
@@ -651,33 +1018,115 @@ def build_paper_execution_preflight_report(
         )
 
     # 5. Sell filled but final position not closed.
-    sells_not_closed = []
+    #
+    # ``sell_claim_baseline`` is captured before submit and proves only that the
+    # quantity was available to sell. It is not a post-fill position snapshot.
+    # Prefer a stored post-fill zero snapshot; otherwise require a verified,
+    # current broker snapshot to prove the symbol is flat. A current non-zero
+    # position remains blocking because a later re-entry cannot be distinguished
+    # without stronger lifecycle provenance.
+    sells_closed_by_current_snapshot: list[dict[str, Any]] = []
+    sells_not_closed: list[dict[str, Any]] = []
+    current_position_qty, invalid_position_symbols = _position_qty_by_symbol(
+        position_rows
+    )
     for row in ledger:
-        side = str(_get(row, "side") or "").lower()
-        state = str(_get(row, "lifecycle_state") or "").lower()
-        if side != "sell" or state != "filled":
+        if not _is_filled_sell_evidence(row):
             continue
         snapshot = _get(row, "position_snapshot") or {}
-        if not isinstance(snapshot, dict) or _position_qty(snapshot) != Decimal("0"):
-            sells_not_closed.append(row)
+        snapshot_kind = (
+            str(snapshot.get("snapshot_kind") or "")
+            if isinstance(snapshot, dict)
+            else ""
+        )
+        if (
+            isinstance(snapshot, dict)
+            and snapshot_kind != "sell_claim_baseline"
+            and _strict_position_qty(snapshot) == Decimal("0")
+        ):
+            continue
+        if not positions_verified:
+            sells_not_closed.append(
+                {"reason": "position_snapshot_unverified", **_row_ref(row)}
+            )
+            continue
+        symbol = _ledger_row_broker_symbol(row)
+        if not symbol:
+            sells_not_closed.append(
+                {"reason": "execution_symbol_missing", **_row_ref(row)}
+            )
+            continue
+        if symbol in invalid_position_symbols:
+            sells_not_closed.append(
+                {"reason": "broker_position_qty_invalid", **_row_ref(row)}
+            )
+            continue
+        broker_qty = current_position_qty.get(symbol, Decimal("0"))
+        if broker_qty == Decimal("0"):
+            sells_closed_by_current_snapshot.append(
+                {
+                    "reason": "verified_current_broker_position_flat",
+                    "stored_snapshot_kind": snapshot_kind or None,
+                    **_row_ref(row),
+                }
+            )
+        else:
+            sells_not_closed.append(
+                {
+                    "reason": "verified_current_broker_position_nonzero",
+                    "broker_position_qty": str(broker_qty),
+                    "stored_snapshot_kind": snapshot_kind or None,
+                    **_row_ref(row),
+                }
+            )
+    if sells_closed_by_current_snapshot:
+        add(
+            "sell_closed_by_current_position_snapshot",
+            PaperExecutionAnomalySeverity.info,
+            "Filled sell is closed by a verified current flat broker position",
+            {
+                "count": len(sells_closed_by_current_snapshot),
+                "rows": sells_closed_by_current_snapshot[:10],
+            },
+        )
     if sells_not_closed:
         add(
             "sell_filled_position_not_closed",
             PaperExecutionAnomalySeverity.block,
-            "A filled sell does not have a zero final position snapshot",
-            {"rows": [_row_ref(r) for r in sells_not_closed[:10]]},
+            "A filled sell lacks verified evidence that its final position is closed",
+            {"rows": sells_not_closed[:10]},
         )
 
     # 6. Ledger/order/fill mismatches.
     mismatches = []
     for row in ledger:
+        side = str(_get(row, "side") or "").lower()
         state = str(_get(row, "lifecycle_state") or "").lower()
         order_status = str(_get(row, "order_status") or "").lower()
-        filled_qty = _decimal(_get(row, "filled_qty"))
-        if state == "filled" and filled_qty <= Decimal("0"):
+        filled_qty = _strict_decimal(_get(row, "filled_qty"))
+        if state == "filled" and (filled_qty is None or filled_qty <= Decimal("0")):
             mismatches.append(
                 {"reason": "filled_state_without_filled_qty", **_row_ref(row)}
             )
+        if side == "sell":
+            if state == "filled" and order_status != "filled":
+                mismatches.append(
+                    {
+                        "reason": "filled_lifecycle_without_terminal_order_status",
+                        **_row_ref(row),
+                    }
+                )
+            elif state in _CANONICAL_FILLED_LEDGER_STATES and order_status != "filled":
+                mismatches.append(
+                    {
+                        "reason": "completed_sell_without_terminal_order_status",
+                        **_row_ref(row),
+                    }
+                )
+            elif state in _OPEN_LEDGER_STATES:
+                mismatches.append(
+                    {"reason": "sell_lifecycle_not_terminal", **_row_ref(row)}
+                )
         if (
             order_status == "filled"
             and state
