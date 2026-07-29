@@ -157,6 +157,11 @@ class KISClient(BaseKISClient):
     async def inquire_price(self, code: str, market: str = "J") -> DataFrame:
         return await self._market_data.inquire_price(code, market)
 
+    async def inquire_price_raw_evidence(
+        self, code: str, market: str = "J"
+    ) -> dict[str, Any]:
+        return await self._market_data.inquire_price_raw_evidence(code, market)
+
     async def inquire_execution_strength(
         self, code: str, market: str = "J"
     ) -> dict[str, Any]:
@@ -189,6 +194,16 @@ class KISClient(BaseKISClient):
     ) -> pd.DataFrame:
         return await self._market_data.inquire_daily_itemchartprice(
             code, market, n, adj, period, end_date, per_call_days
+        )
+
+    async def inquire_daily_itemchartprice_raw_evidence(
+        self,
+        code: str,
+        session_date: datetime.date,
+        market: str = "J",
+    ) -> dict[str, Any]:
+        return await self._market_data.inquire_daily_itemchartprice_raw_evidence(
+            code, session_date, market
         )
 
     async def inquire_daily_itemchartprice_unclamped(

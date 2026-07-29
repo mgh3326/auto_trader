@@ -188,6 +188,37 @@ class DomesticMarketDataMixin(MarketDataBase):
 
     # ── Price & Orderbook ──
 
+    async def inquire_price_raw_evidence(
+        self, code: str, market: str = "J"
+    ) -> dict[str, Any]:
+        """Return selected raw KIS quote fields without timestamp fabrication.
+
+        Unlike :meth:`inquire_price`, this evidence surface never substitutes the
+        local date/time when ``stck_bsop_date`` or ``stck_cntg_hour`` is absent.
+        Consumers that require a broker-origin timestamp must fail closed on
+        missing raw fields.
+        """
+        js = await self._request_with_token_retry(
+            tr_id=constants.DOMESTIC_PRICE_TR,
+            url=self._kis_url(constants.DOMESTIC_PRICE_URL),
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_INPUT_ISCD": code.zfill(6),
+            },
+            api_name="inquire_price_raw_evidence",
+        )
+        output = js.get("output")
+        if not isinstance(output, dict):
+            raise RuntimeError("inquire_price_raw_evidence: missing valid output dict")
+        return {
+            "endpoint": constants.DOMESTIC_PRICE_URL,
+            "tr_id": constants.DOMESTIC_PRICE_TR,
+            "stck_shrn_iscd": output.get("stck_shrn_iscd"),
+            "stck_bsop_date": output.get("stck_bsop_date"),
+            "stck_cntg_hour": output.get("stck_cntg_hour"),
+            "stck_prpr": output.get("stck_prpr"),
+        }
+
     async def inquire_price(self, code: str, market: str = "J") -> DataFrame:
         """
         단일 종목 현재가·기본정보 조회
@@ -538,6 +569,51 @@ class DomesticMarketDataMixin(MarketDataBase):
             end = oldest - datetime.timedelta(days=1)
 
         return self._build_domestic_daily_frame(rows, n)
+
+    async def inquire_daily_itemchartprice_raw_evidence(
+        self,
+        code: str,
+        session_date: datetime.date,
+        market: str = "J",
+    ) -> dict[str, Any]:
+        """Return one exact-session KIS daily row without numeric coercion."""
+        session_text = session_date.strftime("%Y%m%d")
+        js = await self._request_with_token_retry(
+            tr_id=constants.DOMESTIC_DAILY_CHART_TR,
+            url=self._kis_url(constants.DOMESTIC_DAILY_CHART_URL),
+            params={
+                "FID_COND_MRKT_DIV_CODE": market,
+                "FID_INPUT_ISCD": code.zfill(6),
+                "FID_PERIOD_DIV_CODE": "D",
+                "FID_ORG_ADJ_PRC": "0",
+                "FID_INPUT_DATE_1": session_text,
+                "FID_INPUT_DATE_2": session_text,
+            },
+            api_name="inquire_daily_itemchartprice_raw_evidence",
+        )
+        output = js.get("output2") or js.get("output") or []
+        if not isinstance(output, list) or not all(
+            isinstance(row, dict) for row in output
+        ):
+            raise RuntimeError(
+                "inquire_daily_itemchartprice_raw_evidence: "
+                "missing valid output2/output list"
+            )
+        matching = [row for row in output if row.get("stck_bsop_date") == session_text]
+        if len(matching) > 1:
+            raise RuntimeError(
+                "inquire_daily_itemchartprice_raw_evidence: "
+                "duplicate exact-session rows"
+            )
+        row = matching[0] if matching else {}
+        return {
+            "endpoint": constants.DOMESTIC_DAILY_CHART_URL,
+            "tr_id": constants.DOMESTIC_DAILY_CHART_TR,
+            "stck_bsop_date": row.get("stck_bsop_date"),
+            "stck_clpr": row.get("stck_clpr"),
+            "acml_vol": row.get("acml_vol"),
+            "acml_tr_pbmn": row.get("acml_tr_pbmn"),
+        }
 
     async def inquire_daily_itemchartprice_unclamped(
         self,
