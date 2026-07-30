@@ -168,3 +168,127 @@ def test_oneshot_cli_requires_an_offset_aware_decision_clock() -> None:
         ["--as-of-session", "2026-07-29", "--decision-at", "2026-07-29T18:00:00+09:00"]
     )
     assert args.decision_at == DECISION_AT
+
+
+# ───────── A1/A2: no local clock may be dressed up as provider authority ─────────
+
+METADATA_CAPTURE = Path("scripts/krb1_p0_metadata_snapshot_capture.py")
+PROVIDER_CLOCK_PARAMS = frozenset(
+    {"provider_clock", "published_at", "effective_session"}
+)
+LOCAL_CLOCK_NAMES = frozenset({"retrieved_at", "now", "utcnow", "captured_at"})
+
+
+def test_metadata_capture_never_synthesizes_a_provider_clock() -> None:
+    """🔴 The capture path must extract the provider clock, never derive it."""
+    tree = ast.parse(METADATA_CAPTURE.read_text())
+
+    # No provider-clock argument may be fed a local clock or a now() call.
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg not in PROVIDER_CLOCK_PARAMS:
+                continue
+            value = keyword.value
+            if isinstance(value, ast.Name) and value.id in LOCAL_CLOCK_NAMES:
+                offenders.append(f"{keyword.arg}={value.id}")
+            if isinstance(value, ast.Call):
+                target = value.func
+                if isinstance(target, ast.Attribute) and target.attr in {
+                    "now",
+                    "utcnow",
+                }:
+                    offenders.append(f"{keyword.arg}=<clock call>")
+    assert not offenders, offenders
+
+    # The only sanctioned builder is the extractor.
+    called = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "extract_provider_authority_clock" in called
+    assert "ProviderAuthorityClock" not in called, (
+        "capture must not construct a provider clock directly"
+    )
+
+
+def test_metadata_capture_dropped_the_retrieval_as_authority_labels() -> None:
+    """The old substitution and its label must be gone from executable code.
+
+    Historical mentions inside docstrings are fine — that is where the defect is
+    documented — so only non-docstring string constants are inspected.
+    """
+    tree = ast.parse(METADATA_CAPTURE.read_text())
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(
+            node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+        ):
+            doc = ast.get_docstring(node, clean=False)
+            if doc is not None:
+                docstrings.add(doc)
+    literals = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value not in docstrings
+    }
+    assert "http_retrieval" not in literals
+    assert "authority_clock_source" not in literals
+    assert "metadata_as_of" not in literals
+
+    source_calls = [
+        keyword.arg
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+    ]
+    assert "metadata_as_of" not in source_calls
+    assert "provider_clock" in source_calls
+
+
+def test_metadata_capture_uses_a_local_clock_only_for_retrieval() -> None:
+    """``datetime.now`` may only produce the retrieval clock or the ``now`` argument."""
+    tree = ast.parse(METADATA_CAPTURE.read_text())
+    clock_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"now", "utcnow"}
+    ]
+    assert clock_calls, "capture still needs a retrieval clock"
+
+    allowed_assign_targets = {"retrieved_at"}
+    allowed_keywords = {"now"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and _is_clock_call(node.value):
+            targets = {
+                target.id for target in node.targets if isinstance(target, ast.Name)
+            }
+            assert targets <= allowed_assign_targets, targets
+        if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                if _contains_clock_call(keyword.value):
+                    assert keyword.arg in allowed_keywords, keyword.arg
+
+
+def _is_clock_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"now", "utcnow"}
+    )
+
+
+def _contains_clock_call(node: ast.AST) -> bool:
+    return any(
+        isinstance(child, ast.Call)
+        and isinstance(child.func, ast.Attribute)
+        and child.func.attr in {"now", "utcnow"}
+        for child in ast.walk(node)
+    )

@@ -1,12 +1,31 @@
-"""End-to-end: the three blocked gates become provable, the unwired source still blocks.
+"""End-to-end (offline): evidence written through the real append-only services.
 
-Offline (no DB, no network): evidence is written through the real append-only
-service layer, read back with chain verification, and fed to the selector.
+History: an earlier version of this file asserted
+``metadata + completion gates are now provable``. The ROB-1172 correction (08:33)
+established that both of those propositions were wrong —
+
+* a consumer retrieval clock is not a provider authority clock (A1), and
+* a local full-universe exact reconcile is not provider finality (pending A3).
+
+That assertion was therefore removed rather than adjusted: keeping it would have
+frozen the wrong contract into the test suite.
+
+What this file asserts now:
+
+* metadata authority stays ``unprovable`` unless the *provider* sent a clock, and
+  becomes ``proven`` when it did — so the block is attributable to the provider,
+  not to broken gate logic;
+* the run fails closed while the authoritative base-price source is unwired.
+
+🔴 It deliberately makes **no** assertion about the completion gates in either
+direction. Splitting completion into local-reconcile vs provider-finality is A3,
+which is blocked on the B5 scope decision (#1729 ownership).
 """
 
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -18,7 +37,9 @@ from app.services.krb1_completion_manifest import (
     build_completion_manifest,
     load_latest_completion_manifest,
 )
+from app.services.krb1_evidence_chain import EvidenceChainError
 from app.services.krb1_metadata_authority import (
+    ProviderAuthorityClock,
     SymbolMetadata,
     append_metadata_snapshot,
     load_latest_metadata_snapshot,
@@ -28,13 +49,13 @@ from app.services.krb1_p0_liquidity_selector import (
     CompletedBarEvidence,
     QuoteTimestampCapture,
     SelectorInput,
+    UniverseRow,
     select_krb1_p0_liquidity_candidates,
 )
 from app.services.krb1_reference_exception_adapter import (
     FAIL_CLOSED_REASON,
     fetch_reference_price_exceptions,
 )
-from app.services.krb1_reference_price_evidence import ReferencePriceExceptionRecord
 
 pytestmark = pytest.mark.unit
 
@@ -42,6 +63,7 @@ KST = dt.timezone(dt.timedelta(hours=9))
 AS_OF = dt.date(2026, 7, 29)
 TARGET = dt.date(2026, 7, 30)
 DECISION_AT = dt.datetime(2026, 7, 29, 18, 0, tzinfo=KST)
+PUBLISHED_AT = dt.datetime(2026, 7, 29, 16, 20, tzinfo=KST)
 RETRIEVED_AT = dt.datetime(2026, 7, 29, 17, 0, tzinfo=KST)
 OBSERVED_AT = dt.datetime(2026, 7, 29, 16, 30, tzinfo=KST)
 FINALIZED_AT = dt.datetime(2026, 7, 29, 16, 45, tzinfo=KST)
@@ -49,6 +71,20 @@ MARKETS = ("KOSPI", "KOSDAQ")
 UNIVERSE = {"KOSPI": ("000001", "000002"), "KOSDAQ": ("100001", "100002")}
 CLOSES = {"000001": 10_003, "000002": 20_003, "100001": 30_003, "100002": 40_003}
 VALUES = {"000001": 2_000, "000002": 1_000, "100001": 3_000, "100002": 4_000}
+KIS_DAILY_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+KIS_DAILY_TR_ID = "FHKST03010100"
+
+
+def _provider_clock() -> ProviderAuthorityClock:
+    """A declared provider clock. The wired Toss surface sends none (A1)."""
+    return ProviderAuthorityClock(
+        published_at=PUBLISHED_AT,
+        published_at_field="publishedAt",
+        published_at_raw=PUBLISHED_AT.isoformat(),
+        effective_session=AS_OF,
+        effective_session_field="effectiveSession",
+        effective_session_raw=AS_OF.isoformat(),
+    )
 
 
 def _candle(symbol: str) -> CandleRow:
@@ -68,10 +104,8 @@ def _candle(symbol: str) -> CandleRow:
     )
 
 
-def _selector_input(store: Path, **overrides: object) -> SelectorInput:
-    from app.services.krb1_p0_liquidity_selector import UniverseRow
-
-    universe = tuple(
+def _universe() -> tuple[UniverseRow, ...]:
+    return tuple(
         UniverseRow(
             symbol=symbol,
             name=f"name-{symbol}",
@@ -88,34 +122,44 @@ def _selector_input(store: Path, **overrides: object) -> SelectorInput:
         for market in MARKETS
         for symbol in UNIVERSE[market]
     )
+
+
+def _selector_input(
+    store: Path,
+    *,
+    provider_clock: ProviderAuthorityClock | None,
+    **overrides: object,
+) -> SelectorInput:
+    universe = _universe()
     candles = tuple(
         _candle(symbol) for market in MARKETS for symbol in UNIVERSE[market]
     )
-
     snapshot_path = store / "toss_metadata_snapshot.jsonl"
     manifest_path = store / "completion_manifest.jsonl"
+
     for market in MARKETS:
-        append_metadata_snapshot(
-            snapshot_path,
-            source="toss_openapi",
-            market=market,
-            rows=tuple(
-                SymbolMetadata(
-                    symbol=row.symbol,
-                    exchange=row.exchange,
-                    security_type=row.security_type,
-                    is_common_share=row.is_common_share,
-                    listing_status=row.listing_status,
-                    list_date=row.list_date,
-                    krx_trading_suspended=row.krx_trading_suspended,
-                )
-                for row in universe
-                if row.exchange == market
-            ),
-            raw_payload=b'{"result":[{"symbol":"000001"}]}',
-            metadata_as_of=RETRIEVED_AT,
-            retrieved_at=RETRIEVED_AT,
-        )
+        if provider_clock is not None:
+            append_metadata_snapshot(
+                snapshot_path,
+                source="toss_openapi",
+                market=market,
+                rows=tuple(
+                    SymbolMetadata(
+                        symbol=row.symbol,
+                        exchange=row.exchange,
+                        security_type=row.security_type,
+                        is_common_share=row.is_common_share,
+                        listing_status=row.listing_status,
+                        list_date=row.list_date,
+                        krx_trading_suspended=row.krx_trading_suspended,
+                    )
+                    for row in universe
+                    if row.exchange == market
+                ),
+                raw_payload=b'{"result":[{"symbol":"000001"}]}',
+                provider_clock=provider_clock,
+                retrieved_at=RETRIEVED_AT,
+            )
         market_candles = [row for row in candles if row.symbol in UNIVERSE[market]]
         append_completion_manifest(
             manifest_path,
@@ -126,11 +170,8 @@ def _selector_input(store: Path, **overrides: object) -> SelectorInput:
                 raw_bars=[
                     RawDailyBar(
                         symbol=row.symbol,
-                        endpoint=(
-                            "/uapi/domestic-stock/v1/quotations/"
-                            "inquire-daily-itemchartprice"
-                        ),
-                        tr_id="FHKST03010100",
+                        endpoint=KIS_DAILY_ENDPOINT,
+                        tr_id=KIS_DAILY_TR_ID,
                         raw_business_date="20260729",
                         raw_open=str(row.open),
                         raw_high=str(row.high),
@@ -186,10 +227,8 @@ def _selector_input(store: Path, **overrides: object) -> SelectorInput:
         completed_bar_evidence=tuple(
             CompletedBarEvidence(
                 symbol=row.symbol,
-                endpoint=(
-                    "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
-                ),
-                tr_id="FHKST03010100",
+                endpoint=KIS_DAILY_ENDPOINT,
+                tr_id=KIS_DAILY_TR_ID,
                 raw_business_date="20260729",
                 raw_close=str(row.close),
                 raw_volume=str(row.volume),
@@ -214,8 +253,6 @@ def _selector_input(store: Path, **overrides: object) -> SelectorInput:
         metadata_snapshots=snapshots,
         completion_manifests=manifests,
     )
-    from dataclasses import replace
-
     return replace(base, **overrides)  # type: ignore[arg-type]
 
 
@@ -227,7 +264,7 @@ def _gate(result: dict[str, object], market: str, gate: str) -> dict[str, object
     return gates[gate]  # type: ignore[return-value]
 
 
-def test_metadata_and_completion_gates_are_now_provable(tmp_path: Path) -> None:
+def _fail_closed_run(store: Path, *, provider_clock: ProviderAuthorityClock | None):
     fetched = fetch_reference_price_exceptions(
         symbols=[symbol for market in MARKETS for symbol in UNIVERSE[market]],
         target_session=TARGET,
@@ -235,74 +272,66 @@ def test_metadata_and_completion_gates_are_now_provable(tmp_path: Path) -> None:
     )
     result = select_krb1_p0_liquidity_candidates(
         _selector_input(
-            tmp_path,
+            store,
+            provider_clock=provider_clock,
             reference_price_exception_records=fetched.records,
             reference_source_unavailable_reason=fetched.reason,
         )
     )
-
-    for market in MARKETS:
-        assert _gate(result, market, "metadata_authority_as_of")["status"] == "proven"
-        assert (
-            _gate(result, market, "metadata_authority_snapshot")["status"] == "proven"
-        )
-        assert (
-            _gate(result, market, "completed_session_raw_completion")["status"]
-            == "proven"
-        )
-        assert (
-            _gate(result, market, "completed_session_completion_manifest")["status"]
-            == "proven"
-        )
-
-    # The only remaining blocker is the unwired authoritative base-price source.
-    assert result["status"] == "fail_closed"
-    assert result["selected_candidates"] == []
-    blocking_gates = {
-        item["gate"]
-        for item in result["fail_close_reasons"]  # type: ignore[union-attr]
-    }
-    assert blocking_gates == {
-        "reference_price_exception_coverage",
-        "ranked_candidate",
-        "completed_close",
-        "selected_quote_raw_timestamp",
-        "two_market_selection",
-    }
-    for market in MARKETS:
-        gate = _gate(result, market, "reference_price_exception_coverage")
-        assert gate["reason"] == "target_session_reference_price_exception_unproven"
-        assert gate["evidence"]["source_unavailable_reason"] == FAIL_CLOSED_REASON  # type: ignore[index]
+    return result, fetched
 
 
-def test_wiring_an_authoritative_source_completes_the_selection(
+def test_metadata_authority_stays_unprovable_without_a_provider_clock(
     tmp_path: Path,
 ) -> None:
-    """The remaining block is attributable to the source, not to a broken gate."""
-    records = tuple(
-        ReferencePriceExceptionRecord(
-            symbol=symbol,
-            effective_session=TARGET,
-            is_exception=False,
-            source="krx_official_base_price",
-            published_at=dt.datetime(2026, 7, 29, 16, 0, tzinfo=KST),
-            retrieved_at=RETRIEVED_AT,
-            raw_reference_price=str(CLOSES[symbol]),
-            raw_reason_code="NORMAL",
-            raw_payload_sha256="d" * 64,
+    """🔴 A1: nothing we do locally can make the metadata gate pass."""
+    result, _fetched = _fail_closed_run(tmp_path, provider_clock=None)
+
+    for market in MARKETS:
+        gate = _gate(result, market, "metadata_authority_snapshot")
+        assert gate["status"] == "unprovable"
+        assert gate["reason"] == "authoritative_metadata_snapshot_missing"
+    assert result["status"] == "fail_closed"
+    assert result["selected_candidates"] == []
+
+
+def test_metadata_authority_is_provable_once_the_provider_sends_a_clock(
+    tmp_path: Path,
+) -> None:
+    """Attributability: the gate logic works, so the block is the provider's silence."""
+    result, fetched = _fail_closed_run(tmp_path, provider_clock=_provider_clock())
+
+    for market in MARKETS:
+        gate = _gate(result, market, "metadata_authority_snapshot")
+        assert gate["status"] == "proven"
+        assert gate["evidence"]["snapshot"]["provider_clock"]["published_at_field"] == (
+            "publishedAt"
         )
-        for market in MARKETS
-        for symbol in UNIVERSE[market]
-    )
+        assert gate["evidence"]["snapshot"]["retrieval_clock_is_not_authority"] is True
 
-    result = select_krb1_p0_liquidity_candidates(
-        _selector_input(tmp_path, reference_price_exception_records=records)
-    )
+    # The run still fails closed: the authoritative base-price source is unwired.
+    assert result["status"] == "fail_closed"
+    assert result["selected_candidates"] == []
+    for market in MARKETS:
+        reference = _gate(result, market, "reference_price_exception_coverage")
+        assert reference["status"] == "unprovable"
+        assert reference["evidence"]["source_unavailable_reason"] == FAIL_CLOSED_REASON
+    assert fetched.records == ()
 
-    assert result["status"] == "selected", result["fail_close_reasons"]
-    selected = {
-        str(row["market"]): row
-        for row in result["selected_candidates"]  # type: ignore[union-attr]
-    }
-    assert selected["KOSPI"]["universe_row"]["symbol"] == "000001"
-    assert selected["KOSDAQ"]["universe_row"]["symbol"] == "100002"
+
+def test_appended_evidence_is_chain_verified_on_read(tmp_path: Path) -> None:
+    """The selector consumes evidence only through verified append-only reads."""
+    _selector_input(tmp_path, provider_clock=_provider_clock())
+    snapshot_path = tmp_path / "toss_metadata_snapshot.jsonl"
+
+    loaded = load_latest_metadata_snapshot(snapshot_path, market="KOSPI")
+    assert loaded is not None
+    assert loaded.chain_index >= 2
+    assert loaded.provider_clock == _provider_clock()
+
+    tampered = snapshot_path.read_bytes().replace(
+        b'"symbol_count":2', b'"symbol_count":3'
+    )
+    snapshot_path.write_bytes(tampered)
+    with pytest.raises(EvidenceChainError):
+        load_latest_metadata_snapshot(snapshot_path, market="KOSPI")

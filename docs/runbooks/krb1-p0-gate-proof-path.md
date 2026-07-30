@@ -34,24 +34,45 @@ ENV_FILE=.env.prod uv run python -m scripts.krb1_p0_metadata_snapshot_capture \
   --decision-at 2026-07-29T18:00:00+09:00
 ```
 
-- Toss `GET /api/v1/stocks` 원문(파싱 전)을 배치로 받아 canonical 직렬화 후 sha256.
-- 보존: `raw_payload_sha256` · `raw_payload_bytes` · `metadata_as_of`(권위 시계) ·
-  `retrieved_at`(회수 시계) · `universe_metadata_hash` · symbol_count.
+🔴 **회수 시각은 권위 시계가 아니다 (2026-07-30 08:33 교정).** 초기 구현은 provider clock
+부재를 `metadata_as_of = retrieved_at` 로 메우고 `authority_clock_source=http_retrieval`
+라벨을 붙였다. 그러면 **07-28 vintage 본문을 07-29 에 GET 만 해도 07-29 기준 권위로
+통과**한다 — 이 gate 가 잡아야 할 stale 그 자체다. 라벨은 권위를 만들지 않는다.
+
+지금 계약:
+
+- 권위 시계는 **provider 응답 필드에서만** 나온다. `ProviderAuthorityClock` 은
+  publication 시각·effective session 각각의 **필드명 + 원문 문자열**을 함께 보존하고,
+  로컬 시계로는 구성 자체가 불가능하다(빈 필드명·naive 시각 거부).
+- 추출은 `extract_provider_authority_clock()` 뿐이며 **envelope 레벨만** 본다. 행 단위
+  clock 은 universe-scope 권위가 아니므로 거부한다.
+- `PROVIDER_PUBLISHED_AT_FIELDS` / `PROVIDER_EFFECTIVE_SESSION_FIELDS` 는 **빈 집합**이다.
+  wired Toss `/api/v1/stocks` 투영(`TossStockInfo`)에 publication/effective 시계가 없고
+  `parse_toss_response` 가 envelope 을 bare row list 로 풀어버린다. 따라서 이 capture 는
+  현재 **fail-closed 가 정상**이며(`provider_authority_clock_absent`) 아무것도 append 하지
+  않는다. 두 집합을 채우는 것은 provider 계약을 실측 확인한 뒤의 **별도 리뷰 변경**이고
+  설정 토글이 아니다.
+- 보존 항목: `raw_payload_sha256` · `raw_payload_bytes` · provider clock(필드명·원문 포함) ·
+  `retrieved_at`(회수 시계, `retrieval_clock_is_not_authority: true` 로 라벨) ·
+  `universe_metadata_hash` · `symbol_count` · chain provenance.
 - 저장: `var/research/krb1/p0_gate_evidence/toss_metadata_snapshot.jsonl`
   (hash-chain append-only, 봉인 캠페인 저널과 **별도 genesis**).
+- 저장 스키마는 `krb1.p0_3.metadata_authority.v2`. v1 row(회수-시계-권위)를 읽으면
+  **예외로 거부**한다 — 조용히 읽으면 결함이 되살아난다.
 - gate `metadata_authority_snapshot` 강제 조건:
 
 ```
 source in {toss_openapi}
+provider clock 존재 (부재 → metadata_snapshot_provider_authority_clock_missing)
 universe_metadata_hash == 선택 시점 metadata 행에서 재계산한 hash
-as_of_session <= metadata_as_of.date()
-metadata_as_of <= retrieved_at <= decision_at        ← 🔴 상한
+as_of_session <= provider_effective_session <= decision_at 날짜   (하한: provider 세션 기준)
+provider_published_at <= retrieved_at <= decision_at              ← 🔴 상한
 chain provenance (stream_id / chain_index >= 2 / chain_hash) 존재
 ```
 
 - gate `metadata_authority_as_of` 는 행 단위로도 상한을 본다
   (`metadata_as_of_after_decision_at`). naive 시계는 실패로 취급한다.
-- Toss 가 비활성(`TOSS_API_ENABLED` 미설정)이면 capture 는 아무것도 append 하지 않고
+- Toss 가 비활성(`TOSS_API_ENABLED` 미설정)이면 capture 는
   `toss_authoritative_master_source_unavailable` 로 fail-closed 한다.
 
 ## 2. AC2 — completion manifest (KIS raw daily ↔ DB exact reconcile)
@@ -156,7 +177,7 @@ ENV_FILE=.env.prod uv run python -m scripts.krb1_p0_quote_timestamp_capture \
 
 ```
 1) 장중(선택)  quote_timestamp_capture           — GET-only, ROB-1121 원문 확보
-2) 15:35 이후  completed_session_oneshot         — 전수 raw + completion manifest
+2) 15:35 이후  completed_session_oneshot         — 전수 raw + local reconcile manifest
 3) decision 전 metadata_snapshot_capture          — Toss 권위 snapshot
 4) 결정 시점   krb1_p0_liquidity_selector --decision-at ...
 ```
@@ -164,6 +185,28 @@ ENV_FILE=.env.prod uv run python -m scripts.krb1_p0_quote_timestamp_capture \
 selector 는 1~3 의 append-only 증거를 읽어 gate 를 판정한다. 하나라도 없거나 시계가
 `decision_at` 을 넘으면 `selected_candidates=[]` + exit 2 다. **fallback·수동 종목·
 volume-rank 대체는 금지다.**
+
+## 6.1 🔴 미해결로 남은 것 (2026-07-30 08:33 교정)
+
+이 문서는 **A1·A2 반영분까지**다. 다음 두 건은 아직 닫히지 않았고, 운영자 결정 대기다.
+
+```
+A3  completion 을 local_reconcile / provider_finality 로 분리
+    → §2 의 exact reconcile 은 local consistency·coverage 증거다.
+      provider 가 정규장 row 를 확정본으로 선언했다는 계약·end marker·correction
+      semantics 는 만들지 못한다. 현재 wired 표면에 그 필드가 없다
+      (RawDailyBar 에 revision/finality 자리 없음, rt_cd 는 전송 성공코드).
+      → completed_session 계열 gate 의 proven 을 finality 증명으로 읽지 마라.
+    상태: B5(#1729 소유 gate 스코프) 결정 대기
+
+A4  기준가 evidence 를 actual numeric price 와 determination method 로 분리
+    (NORMAL_PRIOR_CLOSE / PRECOMPUTED_THEORETICAL / TARGET_DAY_OPENING_CALL / UNKNOWN)
+    → 현재 §3 은 모든 record 에 raw_reference_price 를 요구한다. target-day opening
+      call 로 기준가가 정해지는 종목(감자·재상장·변경상장)은 전일 18:00 에 숫자가
+      존재하지 않으므로, 그런 종목이 1건이라도 eligible 하면 시장 전체가 영구
+      unprovable 이다.
+    상태: B1~B3(숫자 면제·제외 vs fail-close·UNKNOWN 처분) 운영자 amendment 대기
+```
 
 ## 7. 안전 경계
 

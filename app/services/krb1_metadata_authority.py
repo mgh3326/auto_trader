@@ -1,21 +1,33 @@
 """AC1 — authoritative Toss metadata snapshots with a decision-clock upper bound.
 
 The 07-29 selector run could not prove that the market/product metadata it read
-was authoritative *as of that decision*. Two holes caused it:
+was authoritative *as of that decision*. Three holes caused it:
 
 1. metadata provenance was a mutable column (``toss_master_updated_at``) with no
    preserved raw payload, no payload hash, and no record of when *we* retrieved
-   it; and
-2. the gate only had a lower bound. ``metadata_as_of >= as_of_session`` alone
-   accepts a snapshot stamped *after* the decision, which would let a 07-30
-   master refresh retroactively justify a 07-29 decision.
+   it;
+2. the gate only had a lower bound, so a snapshot stamped *after* the decision
+   could retroactively justify it; and
+3. (ROB-1172 correction, 08:33) the first fix substituted our retrieval clock for
+   the provider clock. A consumer retrieval time is a different clock from a
+   provider publication/effective time, and labelling it
+   ``authority_clock_source=http_retrieval`` does not create originating
+   point-in-time authority. With that substitution a 07-28-vintage master body
+   retrieved on 07-29 was accepted as authoritative for 07-29 — which is exactly
+   the staleness this gate exists to catch.
 
-This module closes both. A snapshot is an append-only record (raw payload hash +
-upstream authority clock + our retrieval clock + universe hash), and the gate
-enforces both bounds:
+So authority now has to come from the provider or not at all:
 
-    as_of_session <= metadata_as_of.date()      (lower bound: not stale)
-    metadata_as_of <= retrieved_at <= decision_at   (upper bound: not retroactive)
+    provider_effective_session >= as_of_session          (lower bound: not stale)
+    provider_published_at <= retrieved_at <= decision_at (upper bound: not retroactive)
+
+``retrieved_at`` is still recorded — it bounds when we could have known — but it
+can never *stand in* for the provider clock. A snapshot without a provider-origin
+clock is ``unprovable``, and :class:`ProviderAuthorityClock` can only be built
+from named provider response fields (see
+:func:`extract_provider_authority_clock`), never synthesized from a local clock.
+This mirrors the quote path, which accepts only KIS' own ``stck_bsop_date`` /
+``stck_cntg_hour`` and keeps wrapper timestamps as labelled non-evidence.
 
 Filling metadata in later is not proof of the state at ``decision_at``.
 
@@ -44,7 +56,7 @@ from app.services.krb1_gate_result import (
 )
 from app.services.krb1_p0_journal import canonical_json_bytes, compute_row_hash
 
-SCHEMA_VERSION = "krb1.p0_3.metadata_authority.v1"
+SCHEMA_VERSION = "krb1.p0_3.metadata_authority.v2"
 METADATA_SNAPSHOT_RECORD_TYPE = "TOSS_AUTHORITATIVE_METADATA_SNAPSHOT"
 METADATA_SNAPSHOT_STREAM_ID = "krb1.p0_3.toss_metadata_snapshot"
 
@@ -52,6 +64,18 @@ METADATA_SNAPSHOT_STREAM_ID = "krb1.p0_3.toss_metadata_snapshot"
 # derived table cannot satisfy this gate; widening the set is a separate reviewed
 # change.
 AUTHORITATIVE_METADATA_SOURCES = frozenset({"toss_openapi"})
+
+# Provider response field names that may carry an authority clock. Both sets are
+# EMPTY on purpose: no field in the wired Toss ``/api/v1/stocks`` projection
+# carries a publication or effective clock (``TossStockInfo`` in
+# app/services/brokers/toss/dto.py has none, and ``parse_toss_response`` unwraps
+# the envelope to a bare row list), so extraction returns ``None`` and capture
+# fails closed. Populating either set requires verified provider-contract
+# evidence and is a separate reviewed change — it is not configuration.
+PROVIDER_PUBLISHED_AT_FIELDS: frozenset[str] = frozenset()
+PROVIDER_EFFECTIVE_SESSION_FIELDS: frozenset[str] = frozenset()
+
+PROVIDER_AUTHORITY_CLOCK_ABSENT = "provider_authority_clock_absent"
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +103,94 @@ class SymbolMetadata:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderAuthorityClock:
+    """A clock that the provider itself stated, with the field it came from.
+
+    Every component is provider-origin: the parsed value, the raw string exactly
+    as received, and the response field name. A local clock cannot be dressed up
+    as one of these — construction refuses empty field names and raw values, and
+    the only sanctioned builder is :func:`extract_provider_authority_clock`.
+    """
+
+    published_at: dt.datetime
+    published_at_field: str
+    published_at_raw: str
+    effective_session: dt.date
+    effective_session_field: str
+    effective_session_raw: str
+
+    def __post_init__(self) -> None:
+        if not is_aware(self.published_at):
+            raise ValueError("provider published_at must be timezone-aware")
+        for name, value in (
+            ("published_at_field", self.published_at_field),
+            ("published_at_raw", self.published_at_raw),
+            ("effective_session_field", self.effective_session_field),
+            ("effective_session_raw", self.effective_session_raw),
+        ):
+            if type(value) is not str or not value.strip():
+                raise ValueError(
+                    f"{name} must name provider-origin evidence; "
+                    "a retrieval clock is not a provider clock"
+                )
+
+    def as_canonical(self) -> dict[str, Any]:
+        return {
+            "effective_session": self.effective_session.isoformat(),
+            "effective_session_field": self.effective_session_field,
+            "effective_session_raw": self.effective_session_raw,
+            "published_at": self.published_at.isoformat(),
+            "published_at_field": self.published_at_field,
+            "published_at_raw": self.published_at_raw,
+        }
+
+
+def extract_provider_authority_clock(
+    payload: object,
+    *,
+    published_at_fields: frozenset[str] = PROVIDER_PUBLISHED_AT_FIELDS,
+    effective_session_fields: frozenset[str] = PROVIDER_EFFECTIVE_SESSION_FIELDS,
+) -> ProviderAuthorityClock | None:
+    """Extract a provider authority clock, or ``None`` when the provider sent none.
+
+    Only declared provider field names are read, and both a publication clock and
+    an effective session must be present — one without the other proves nothing
+    about which session the master state applies to. A bare row list (what the
+    wired Toss surface returns) carries no envelope clock, so it yields ``None``.
+    """
+    if not isinstance(payload, Mapping):
+        return None
+    published_at_key = _first_present(payload, published_at_fields)
+    effective_session_key = _first_present(payload, effective_session_fields)
+    if published_at_key is None or effective_session_key is None:
+        return None
+    published_raw = str(payload[published_at_key])
+    effective_raw = str(payload[effective_session_key])
+    try:
+        published_at = dt.datetime.fromisoformat(published_raw)
+        effective_session = dt.date.fromisoformat(effective_raw[:10])
+    except ValueError:
+        return None
+    if published_at.tzinfo is None or published_at.utcoffset() is None:
+        return None
+    return ProviderAuthorityClock(
+        published_at=published_at,
+        published_at_field=published_at_key,
+        published_at_raw=published_raw,
+        effective_session=effective_session,
+        effective_session_field=effective_session_key,
+        effective_session_raw=effective_raw,
+    )
+
+
+def _first_present(payload: Mapping[str, Any], keys: frozenset[str]) -> str | None:
+    for key in sorted(keys):
+        if key in payload and payload[key] is not None:
+            return key
+    return None
+
+
+@dataclass(frozen=True, slots=True)
 class MetadataAuthoritySnapshot:
     """One append-only authoritative metadata snapshot."""
 
@@ -88,7 +200,7 @@ class MetadataAuthoritySnapshot:
     raw_payload_sha256: str
     raw_payload_bytes: int
     symbol_count: int
-    metadata_as_of: dt.datetime
+    provider_clock: ProviderAuthorityClock | None
     retrieved_at: dt.datetime
     stream_id: str
     chain_index: int
@@ -100,9 +212,12 @@ class MetadataAuthoritySnapshot:
                 "chain_hash": self.chain_hash,
                 "chain_index": self.chain_index,
                 "market": self.market,
-                "metadata_as_of": self.metadata_as_of,
+                "provider_clock": (
+                    self.provider_clock.as_canonical() if self.provider_clock else None
+                ),
                 "raw_payload_bytes": self.raw_payload_bytes,
                 "raw_payload_sha256": self.raw_payload_sha256,
+                "retrieval_clock_is_not_authority": True,
                 "retrieved_at": self.retrieved_at,
                 "source": self.source,
                 "stream_id": self.stream_id,
@@ -147,8 +262,10 @@ def evaluate_metadata_authority(
     """Gate: is the metadata authoritative *and* pre-decision for this market?"""
     required = {
         "required_authoritative_sources": sorted(AUTHORITATIVE_METADATA_SOURCES),
-        "required_metadata_as_of_at_or_after": as_of_session.isoformat(),
+        "required_provider_effective_session_at_or_after": as_of_session.isoformat(),
         "required_clock_upper_bound_decision_at": normalize_evidence(decision_at),
+        "required_provider_origin_clock": True,
+        "retrieval_clock_cannot_substitute_for_provider_clock": True,
         "late_backfill_is_not_proof_of_state_at_decision_at": True,
     }
     if not is_aware(decision_at):
@@ -203,7 +320,25 @@ def evaluate_metadata_authority(
             required_stream_id=METADATA_SNAPSHOT_STREAM_ID,
             **required,
         )
-    if not (is_aware(snapshot.metadata_as_of) and is_aware(snapshot.retrieved_at)):
+
+    # 🔴 The authority clock must be provider-origin. Our retrieval clock bounds
+    # when we could have known, never what the provider asserted; a payload body
+    # of any vintage can be retrieved today, so "we fetched it today" proves
+    # nothing about the master state for this session (ROB-1172 correction 08:33).
+    provider_clock = snapshot.provider_clock
+    if provider_clock is None:
+        return unprovable(
+            "metadata_snapshot_provider_authority_clock_missing",
+            market=market,
+            snapshot=snapshot.as_evidence(),
+            provider_clock_absent_reason=PROVIDER_AUTHORITY_CLOCK_ABSENT,
+            declared_provider_published_at_fields=sorted(PROVIDER_PUBLISHED_AT_FIELDS),
+            declared_provider_effective_session_fields=sorted(
+                PROVIDER_EFFECTIVE_SESSION_FIELDS
+            ),
+            **required,
+        )
+    if not is_aware(snapshot.retrieved_at) or not is_aware(provider_clock.published_at):
         return unprovable(
             "metadata_snapshot_clock_not_timezone_aware",
             market=market,
@@ -232,9 +367,9 @@ def evaluate_metadata_authority(
 
     # 🔴 Upper bound. Without this a 07-30 snapshot could justify a 07-29
     # decision, which is exactly the retroactive path this AC exists to close.
-    if snapshot.metadata_as_of > decision_at:
+    if provider_clock.published_at > decision_at:
         return unprovable(
-            "metadata_snapshot_as_of_after_decision_at",
+            "metadata_snapshot_provider_published_after_decision_at",
             market=market,
             snapshot=snapshot.as_evidence(),
             **required,
@@ -246,16 +381,26 @@ def evaluate_metadata_authority(
             snapshot=snapshot.as_evidence(),
             **required,
         )
-    if snapshot.metadata_as_of > snapshot.retrieved_at:
+    if provider_clock.published_at > snapshot.retrieved_at:
         return unprovable(
-            "metadata_snapshot_as_of_after_retrieval_clock",
+            "metadata_snapshot_published_after_retrieval_clock",
             market=market,
             snapshot=snapshot.as_evidence(),
             **required,
         )
-    if to_kst(snapshot.metadata_as_of).date() < as_of_session:
+    # 🔴 Lower bound now reads the *provider's* effective session. Previously it
+    # read a clock that capture set to the retrieval time, so it degenerated to
+    # "we fetched today" and a 07-28-vintage body passed.
+    if provider_clock.effective_session < as_of_session:
         return unprovable(
-            "metadata_snapshot_as_of_before_selection_session",
+            "metadata_snapshot_provider_effective_session_before_selection_session",
+            market=market,
+            snapshot=snapshot.as_evidence(),
+            **required,
+        )
+    if provider_clock.effective_session > to_kst(decision_at).date():
+        return unprovable(
+            "metadata_snapshot_provider_effective_session_after_decision_at",
             market=market,
             snapshot=snapshot.as_evidence(),
             **required,
@@ -275,19 +420,30 @@ def snapshot_row(
     market: str,
     rows: tuple[SymbolMetadata, ...],
     raw_payload: bytes,
-    metadata_as_of: dt.datetime,
+    provider_clock: ProviderAuthorityClock,
     retrieved_at: dt.datetime,
 ) -> dict[str, Any]:
-    """Canonical append-only row for one authoritative metadata snapshot."""
-    if not (is_aware(metadata_as_of) and is_aware(retrieved_at)):
-        raise ValueError("metadata_as_of and retrieved_at must be timezone-aware")
+    """Canonical append-only row for one authoritative metadata snapshot.
+
+    ``provider_clock`` is not optional: a row cannot be built without a
+    provider-origin clock, so no capture path can persist a snapshot whose
+    authority is really just its retrieval time.
+    """
+    if not isinstance(provider_clock, ProviderAuthorityClock):
+        raise ValueError(
+            "provider_clock must be a ProviderAuthorityClock extracted from the "
+            "provider payload; a retrieval clock cannot substitute for it"
+        )
+    if not is_aware(retrieved_at):
+        raise ValueError("retrieved_at must be timezone-aware")
     return {
         "market": market,
-        "metadata_as_of": metadata_as_of.isoformat(),
+        "provider_clock": provider_clock.as_canonical(),
         "raw_payload_bytes": len(raw_payload),
         "raw_payload_sha256": compute_raw_payload_sha256(raw_payload),
         "recorded_at": retrieved_at.isoformat(),
         "record_type": METADATA_SNAPSHOT_RECORD_TYPE,
+        "retrieval_clock_is_not_authority": True,
         "retrieved_at": retrieved_at.isoformat(),
         "schema_version": SCHEMA_VERSION,
         "source": source,
@@ -303,7 +459,7 @@ def append_metadata_snapshot(
     market: str,
     rows: tuple[SymbolMetadata, ...],
     raw_payload: bytes,
-    metadata_as_of: dt.datetime,
+    provider_clock: ProviderAuthorityClock,
     retrieved_at: dt.datetime,
 ) -> MetadataAuthoritySnapshot:
     """Persist one snapshot append-only and return it with chain provenance."""
@@ -313,7 +469,7 @@ def append_metadata_snapshot(
         market=market,
         rows=rows,
         raw_payload=raw_payload,
-        metadata_as_of=metadata_as_of,
+        provider_clock=provider_clock,
         retrieved_at=retrieved_at,
     )
     record = append_record(
@@ -337,8 +493,29 @@ def snapshot_from_row(
     chain_index: int,
     chain_hash: str,
 ) -> MetadataAuthoritySnapshot:
-    """Rehydrate a snapshot from a persisted append-only row."""
+    """Rehydrate a snapshot from a persisted append-only row.
+
+    An unknown schema version raises instead of being coerced: a v1 row carries a
+    retrieval-clock-as-authority field that this contract no longer accepts, and
+    silently reading it would resurrect the defect.
+    """
     canonical_json_bytes(dict(row))
+    version = str(row.get("schema_version"))
+    if version != SCHEMA_VERSION:
+        raise ValueError(
+            f"metadata snapshot schema_version {version!r} is not {SCHEMA_VERSION!r}"
+        )
+    clock_row = row["provider_clock"]
+    if not isinstance(clock_row, Mapping):
+        raise ValueError("metadata snapshot row has no provider_clock object")
+    provider_clock = ProviderAuthorityClock(
+        published_at=dt.datetime.fromisoformat(str(clock_row["published_at"])),
+        published_at_field=str(clock_row["published_at_field"]),
+        published_at_raw=str(clock_row["published_at_raw"]),
+        effective_session=dt.date.fromisoformat(str(clock_row["effective_session"])),
+        effective_session_field=str(clock_row["effective_session_field"]),
+        effective_session_raw=str(clock_row["effective_session_raw"]),
+    )
     return MetadataAuthoritySnapshot(
         source=str(row["source"]),
         market=str(row["market"]),
@@ -346,7 +523,7 @@ def snapshot_from_row(
         raw_payload_sha256=str(row["raw_payload_sha256"]),
         raw_payload_bytes=int(row["raw_payload_bytes"]),
         symbol_count=int(row["symbol_count"]),
-        metadata_as_of=dt.datetime.fromisoformat(str(row["metadata_as_of"])),
+        provider_clock=provider_clock,
         retrieved_at=dt.datetime.fromisoformat(str(row["retrieved_at"])),
         stream_id=stream_id,
         chain_index=chain_index,
@@ -379,14 +556,19 @@ __all__ = [
     "AUTHORITATIVE_METADATA_SOURCES",
     "METADATA_SNAPSHOT_RECORD_TYPE",
     "METADATA_SNAPSHOT_STREAM_ID",
+    "PROVIDER_AUTHORITY_CLOCK_ABSENT",
+    "PROVIDER_EFFECTIVE_SESSION_FIELDS",
+    "PROVIDER_PUBLISHED_AT_FIELDS",
     "SCHEMA_VERSION",
     "MetadataAuthoritySnapshot",
+    "ProviderAuthorityClock",
     "SymbolMetadata",
     "append_metadata_snapshot",
     "load_latest_metadata_snapshot",
     "compute_raw_payload_sha256",
     "compute_universe_metadata_hash",
     "evaluate_metadata_authority",
+    "extract_provider_authority_clock",
     "snapshot_from_row",
     "snapshot_row",
 ]

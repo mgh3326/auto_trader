@@ -1,19 +1,31 @@
 #!/usr/bin/env python3
-"""Capture an authoritative Toss metadata snapshot append-only (ROB-1172 AC1).
+"""Capture an authoritative Toss metadata snapshot append-only (ROB-1172 AC1/A2).
 
 Read/GET-only: one read-only DB transaction for the universe scope plus Toss
 ``GET /api/v1/stocks`` batches. The raw response body is hashed as received, and
-the row preserves both clocks that matter:
+two *different* clocks are kept apart:
 
-* ``metadata_as_of`` — when the authority's statement was current;
-* ``retrieved_at`` — when we fetched it.
+* the **provider** clock — publication time and effective session, extracted only
+  from named provider response fields; and
+* the **retrieval** clock — when we fetched it.
 
-The selector gate then requires ``metadata_as_of <= retrieved_at <= decision_at``,
-so a snapshot captured after the decision can never justify that decision. Run
-this *before* ``--decision-at``; running it later fails closed by design.
+🔴 The retrieval clock never stands in for the provider clock. An earlier version
+of this command set ``metadata_as_of = retrieved_at`` and labelled it
+``authority_clock_source=http_retrieval``; that made a 07-28-vintage master body
+retrieved on 07-29 look authoritative for 07-29, which is the staleness the gate
+exists to catch (ROB-1172 correction 08:33). Now, when the provider sends no
+clock, this command appends nothing and fails closed with
+``provider_authority_clock_absent``.
 
-Toss reads stay behind the existing ``TOSS_API_ENABLED`` gate — when Toss is
-disabled this command fails closed and appends nothing. No order, preview,
+No field in the wired Toss projection is known to carry such a clock
+(``TossStockInfo`` has none and ``parse_toss_response`` unwraps the envelope to a
+bare row list), so this command is expected to fail closed until a provider
+contract is verified and declared in
+``app.services.krb1_metadata_authority.PROVIDER_PUBLISHED_AT_FIELDS`` /
+``PROVIDER_EFFECTIVE_SESSION_FIELDS``. That is a reviewed change, not a config
+toggle.
+
+Toss reads stay behind the existing ``TOSS_API_ENABLED`` gate. No order, preview,
 cancel, DB write, or scheduler surface is reachable.
 
 Usage::
@@ -29,19 +41,26 @@ import argparse
 import asyncio
 import datetime as dt
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
+from app.services import krb1_metadata_authority
 from app.services.brokers.toss.client import TossReadClient
 from app.services.krb1_evidence_chain import EvidenceChainError
 from app.services.krb1_gate_result import KST
 from app.services.krb1_metadata_authority import (
     METADATA_SNAPSHOT_STREAM_ID,
+    PROVIDER_AUTHORITY_CLOCK_ABSENT,
+    PROVIDER_EFFECTIVE_SESSION_FIELDS,
+    PROVIDER_PUBLISHED_AT_FIELDS,
+    ProviderAuthorityClock,
     SymbolMetadata,
     append_metadata_snapshot,
+    extract_provider_authority_clock,
 )
 from app.services.krb1_p0_journal import canonical_json_bytes
 
@@ -50,6 +69,11 @@ SNAPSHOT_FILENAME = "toss_metadata_snapshot.jsonl"
 TOSS_AUTHORITATIVE_SOURCE = "toss_openapi"
 BATCH_SIZE = 200
 MARKETS = ("KOSPI", "KOSDAQ")
+
+
+def _utc_now() -> dt.datetime:
+    """The local retrieval clock. Injectable so runs are reproducible in tests."""
+    return dt.datetime.now(dt.UTC)
 
 
 def _date_arg(value: str) -> dt.date:
@@ -135,14 +159,19 @@ async def _load_universe(
 
 async def _fetch_raw_master(
     client: TossReadClient, symbols: list[str]
-) -> tuple[bytes, int, list[dict[str, str]]]:
-    """Return the concatenated canonical raw payload and per-batch errors."""
+) -> tuple[bytes, int, list[dict[str, str]], ProviderAuthorityClock | None]:
+    """Return the concatenated raw payload, batch count, errors, provider clock.
+
+    The provider clock is only ever *extracted* from the payload. There is no
+    branch that derives it from the local clock.
+    """
     payloads: list[object] = []
     errors: list[dict[str, str]] = []
+    provider_clock: ProviderAuthorityClock | None = None
     for start in range(0, len(symbols), BATCH_SIZE):
         batch = symbols[start : start + BATCH_SIZE]
         try:
-            payloads.append(await client.stocks_raw(batch))
+            payload = await client.stocks_raw(batch)
         except Exception as exc:  # noqa: BLE001 - recorded, never swallowed
             errors.append(
                 {
@@ -152,8 +181,21 @@ async def _fetch_raw_master(
                     "message": str(exc),
                 }
             )
+            continue
+        payloads.append(payload)
+        if provider_clock is None:
+            # Allowlists are read at call time from the service module so the
+            # declared provider contract stays one reviewed constant, not a
+            # duplicated literal here.
+            provider_clock = extract_provider_authority_clock(
+                payload,
+                published_at_fields=krb1_metadata_authority.PROVIDER_PUBLISHED_AT_FIELDS,
+                effective_session_fields=(
+                    krb1_metadata_authority.PROVIDER_EFFECTIVE_SESSION_FIELDS
+                ),
+            )
     raw = canonical_json_bytes({"batches": payloads})
-    return raw, len(payloads), errors
+    return raw, len(payloads), errors, provider_clock
 
 
 async def run(
@@ -162,6 +204,7 @@ async def run(
     decision_at: dt.datetime,
     store_dir: Path,
     now: dt.datetime,
+    clock: Callable[[], dt.datetime] = _utc_now,
 ) -> dict[str, object]:
     base = {
         "schema_version": "krb1.p0_3.metadata_snapshot_capture.v1",
@@ -198,7 +241,9 @@ async def run(
     for market in MARKETS:
         rows = tuple(universe[market])
         symbols = [row.symbol for row in rows]
-        raw_payload, batch_count, errors = await _fetch_raw_master(client, symbols)
+        raw_payload, batch_count, errors, provider_clock = await _fetch_raw_master(
+            client, symbols
+        )
         if errors or not batch_count:
             markets[market] = {
                 "status": "fail_closed",
@@ -208,7 +253,27 @@ async def run(
                 "error_examples": errors[:20],
             }
             continue
-        retrieved_at = dt.datetime.now(dt.UTC)
+        # 🔴 No provider clock, no snapshot. The retrieval clock below is recorded
+        # as a retrieval clock only; it is never promoted to authority.
+        if provider_clock is None:
+            markets[market] = {
+                "status": "fail_closed",
+                "reason": PROVIDER_AUTHORITY_CLOCK_ABSENT,
+                "batch_count": batch_count,
+                "declared_provider_published_at_fields": sorted(
+                    PROVIDER_PUBLISHED_AT_FIELDS
+                ),
+                "declared_provider_effective_session_fields": sorted(
+                    PROVIDER_EFFECTIVE_SESSION_FIELDS
+                ),
+                "note": (
+                    "consumer retrieval time is a different clock from provider "
+                    "publication/effective time and cannot substitute for it"
+                ),
+                "appended": False,
+            }
+            continue
+        retrieved_at = clock()
         if retrieved_at > decision_at:
             markets[market] = {
                 "status": "fail_closed",
@@ -223,14 +288,10 @@ async def run(
                 market=market,
                 rows=rows,
                 raw_payload=raw_payload,
-                # No server-side authority clock exists on this endpoint, so the
-                # retrieval clock is the authority clock: the payload was current
-                # at the moment the authority returned it. Recorded explicitly
-                # rather than inferred.
-                metadata_as_of=retrieved_at,
+                provider_clock=provider_clock,
                 retrieved_at=retrieved_at,
             )
-        except EvidenceChainError as exc:
+        except (EvidenceChainError, ValueError) as exc:
             markets[market] = {
                 "status": "fail_closed",
                 "reason": "metadata_snapshot_append_rejected",
@@ -239,7 +300,10 @@ async def run(
             continue
         markets[market] = {
             "status": "captured",
-            "authority_clock_source": "http_retrieval",
+            "provider_clock_fields": {
+                "published_at": provider_clock.published_at_field,
+                "effective_session": provider_clock.effective_session_field,
+            },
             "batch_count": batch_count,
             "snapshot": snapshot.as_evidence(),
         }

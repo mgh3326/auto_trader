@@ -18,6 +18,7 @@ from app.services.krb1_completion_manifest import (
 from app.services.krb1_metadata_authority import (
     METADATA_SNAPSHOT_STREAM_ID,
     MetadataAuthoritySnapshot,
+    ProviderAuthorityClock,
     SymbolMetadata,
     compute_universe_metadata_hash,
 )
@@ -38,7 +39,8 @@ AS_OF = dt.date(2026, 7, 29)
 TARGET = dt.date(2026, 7, 30)
 KST = dt.timezone(dt.timedelta(hours=9))
 DECISION_AT = dt.datetime(2026, 7, 29, 18, 0, tzinfo=KST)
-METADATA_AS_OF = dt.datetime(2026, 7, 29, 17, 0, tzinfo=KST)
+METADATA_PUBLISHED_AT = dt.datetime(2026, 7, 29, 16, 30, tzinfo=KST)
+METADATA_RETRIEVED_AT = dt.datetime(2026, 7, 29, 17, 0, tzinfo=KST)
 REFERENCE_PUBLISHED_AT = dt.datetime(2026, 7, 29, 16, 0, tzinfo=KST)
 REFERENCE_RETRIEVED_AT = dt.datetime(2026, 7, 29, 17, 30, tzinfo=KST)
 INGESTED_AT = dt.datetime(2026, 7, 29, 16, 30, tzinfo=KST)
@@ -61,7 +63,7 @@ def _universe(symbol: str, market: str) -> UniverseRow:
         list_date=dt.date(2020, 1, 2),
         krx_trading_suspended=False,
         metadata_source="toss_openapi",
-        metadata_as_of=METADATA_AS_OF,
+        metadata_as_of=METADATA_RETRIEVED_AT,
     )
 
 
@@ -121,6 +123,19 @@ def _quote(symbol: str) -> QuoteTimestampCapture:
     )
 
 
+def _provider_clock() -> ProviderAuthorityClock:
+    """Provider-origin clock. The wired Toss surface sends none (A1); tests inject
+    a declared one so the *other* gates stay reachable."""
+    return ProviderAuthorityClock(
+        published_at=METADATA_PUBLISHED_AT,
+        published_at_field="publishedAt",
+        published_at_raw=METADATA_PUBLISHED_AT.isoformat(),
+        effective_session=AS_OF,
+        effective_session_field="effectiveSession",
+        effective_session_raw=AS_OF.isoformat(),
+    )
+
+
 def _metadata_snapshot(
     market: str, rows: tuple[UniverseRow, ...]
 ) -> MetadataAuthoritySnapshot:
@@ -144,8 +159,8 @@ def _metadata_snapshot(
         raw_payload_sha256=SHA_STUB,
         raw_payload_bytes=4_096,
         symbol_count=len(market_rows),
-        metadata_as_of=METADATA_AS_OF,
-        retrieved_at=METADATA_AS_OF,
+        provider_clock=_provider_clock(),
+        retrieved_at=METADATA_RETRIEVED_AT,
         stream_id=METADATA_SNAPSHOT_STREAM_ID,
         chain_index=2,
         chain_hash=SHA_STUB,
@@ -494,17 +509,60 @@ def test_missing_metadata_authority_snapshot_fails_closed() -> None:
     _assert_fail_closed(result, "authoritative_metadata_snapshot_missing")
 
 
-def test_metadata_snapshot_taken_after_decision_at_fails_closed() -> None:
+def test_metadata_snapshot_published_after_decision_at_fails_closed() -> None:
     selector_input = _base_input()
     late = dt.datetime(2026, 7, 30, 9, 0, tzinfo=KST)
     snapshots = tuple(
-        replace(snapshot, metadata_as_of=late, retrieved_at=late)
+        replace(
+            snapshot,
+            provider_clock=replace(
+                _provider_clock(), published_at=late, published_at_raw=late.isoformat()
+            ),
+            retrieved_at=late,
+        )
         for snapshot in selector_input.metadata_snapshots
     )
     result = select_krb1_p0_liquidity_candidates(
         replace(selector_input, metadata_snapshots=snapshots)
     )
-    _assert_fail_closed(result, "metadata_snapshot_as_of_after_decision_at")
+    _assert_fail_closed(
+        result, "metadata_snapshot_provider_published_after_decision_at"
+    )
+
+
+def test_metadata_snapshot_without_provider_clock_fails_closed() -> None:
+    """🔴 A1: our retrieval clock cannot stand in for the provider's."""
+    selector_input = _base_input()
+    snapshots = tuple(
+        replace(snapshot, provider_clock=None)
+        for snapshot in selector_input.metadata_snapshots
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, metadata_snapshots=snapshots)
+    )
+    _assert_fail_closed(result, "metadata_snapshot_provider_authority_clock_missing")
+
+
+def test_metadata_snapshot_stale_provider_session_fails_closed() -> None:
+    selector_input = _base_input()
+    snapshots = tuple(
+        replace(
+            snapshot,
+            provider_clock=replace(
+                _provider_clock(),
+                effective_session=dt.date(2026, 7, 28),
+                effective_session_raw="2026-07-28",
+            ),
+        )
+        for snapshot in selector_input.metadata_snapshots
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, metadata_snapshots=snapshots)
+    )
+    _assert_fail_closed(
+        result,
+        "metadata_snapshot_provider_effective_session_before_selection_session",
+    )
 
 
 def test_metadata_snapshot_universe_hash_mismatch_fails_closed() -> None:
