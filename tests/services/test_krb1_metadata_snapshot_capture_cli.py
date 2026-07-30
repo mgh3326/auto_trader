@@ -158,6 +158,8 @@ def test_capture_records_the_provider_clock_once_a_contract_is_declared(
         frozenset({"effectiveSession"}),
     )
     wired(CLOCKED_PAYLOAD)
+    # The declared contract is what makes the write boundary accept this clock;
+    # a locally named one is refused by snapshot_row (F4a).
 
     result = asyncio.run(
         capture.run(

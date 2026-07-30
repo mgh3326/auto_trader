@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import krb1_metadata_authority
 from app.services.krb1_evidence_chain import EvidenceChainError, verify_stream
 from app.services.krb1_metadata_authority import (
     AUTHORITATIVE_METADATA_SOURCES,
@@ -20,6 +21,7 @@ from app.services.krb1_metadata_authority import (
     PROVIDER_AUTHORITY_CLOCK_ABSENT,
     PROVIDER_EFFECTIVE_SESSION_FIELDS,
     PROVIDER_PUBLISHED_AT_FIELDS,
+    RETIRED_AUTHORITY_ROW_FIELDS,
     SCHEMA_VERSION,
     MetadataAuthoritySnapshot,
     ProviderAuthorityClock,
@@ -49,6 +51,26 @@ MARKET = "KOSPI"
 # the service module are empty), which is why capture fails closed today.
 DECLARED_PUBLISHED_FIELDS = frozenset({"publishedAt"})
 DECLARED_EFFECTIVE_FIELDS = frozenset({"effectiveSession"})
+
+
+@pytest.fixture(autouse=True)
+def _declared_provider_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declare a hypothetical provider contract for the reachable-path tests.
+
+    The wired surface declares nothing (D1), so without this the field-name
+    cross-check masks every other assertion in this file. Tests that specifically
+    exercise the undeclared-field refusal clear these back to empty.
+    """
+    monkeypatch.setattr(
+        krb1_metadata_authority,
+        "PROVIDER_PUBLISHED_AT_FIELDS",
+        DECLARED_PUBLISHED_FIELDS,
+    )
+    monkeypatch.setattr(
+        krb1_metadata_authority,
+        "PROVIDER_EFFECTIVE_SESSION_FIELDS",
+        DECLARED_EFFECTIVE_FIELDS,
+    )
 
 
 def _rows() -> tuple[SymbolMetadata, ...]:
@@ -549,3 +571,275 @@ def test_naive_retrieval_clock_is_rejected_at_the_write_boundary(
 
 def test_load_returns_none_for_absent_stream(tmp_path: Path) -> None:
     assert load_latest_metadata_snapshot(tmp_path / "nope.jsonl", market=MARKET) is None
+
+
+# ───────── F4a: the field name must be in the declared provider contract ─────────
+
+
+def test_a_locally_named_clock_is_refused_even_when_well_formed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 p8Z F4a: labelling a retrieval clock as provider evidence must not pass.
+
+    The clock below is tz-aware, non-blank in every field, ordered correctly, and
+    would have been ``proven`` before the cross-check. Its only defect is that
+    ``retrieved_at`` is not a declared provider field.
+    """
+    clock = _provider_clock(
+        published_at_field="retrieved_at",
+        published_at_raw=RETRIEVED_AT.isoformat(),
+        published_at=RETRIEVED_AT,
+    )
+    gate = _evaluate(_snapshot(provider_clock=clock))
+
+    assert gate.status == "unprovable"
+    assert gate.reason == "metadata_snapshot_provider_clock_field_not_declared"
+    assert gate.evidence["undeclared_fields"] == ["retrieved_at"]
+
+
+def test_with_no_declared_contract_nothing_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production state: both allowlists empty -> no clock can be admitted."""
+    monkeypatch.setattr(
+        krb1_metadata_authority, "PROVIDER_PUBLISHED_AT_FIELDS", frozenset()
+    )
+    monkeypatch.setattr(
+        krb1_metadata_authority, "PROVIDER_EFFECTIVE_SESSION_FIELDS", frozenset()
+    )
+    gate = _evaluate(_snapshot())
+    assert gate.status == "unprovable"
+    assert gate.reason == "metadata_snapshot_provider_clock_field_not_declared"
+
+
+def test_snapshot_row_refuses_an_undeclared_field_name() -> None:
+    """The write boundary refuses it too, so capture cannot persist a fake."""
+    with pytest.raises(ValueError):
+        snapshot_row(
+            source="toss_openapi",
+            market=MARKET,
+            rows=_rows(),
+            raw_payload=RAW_PAYLOAD,
+            provider_clock=_provider_clock(published_at_field="retrieved_at"),
+            retrieved_at=RETRIEVED_AT,
+        )
+
+
+def test_append_refuses_an_undeclared_field_name_without_creating_a_stream(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "toss_metadata_snapshot.jsonl"
+    with pytest.raises(ValueError):
+        append_metadata_snapshot(
+            path,
+            source="toss_openapi",
+            market=MARKET,
+            rows=_rows(),
+            raw_payload=RAW_PAYLOAD,
+            provider_clock=_provider_clock(effective_session_field="today"),
+            retrieved_at=RETRIEVED_AT,
+        )
+    assert not path.exists()
+
+
+# ───────── F2: kill the five mutants that survived the adversarial review ─────────
+
+
+def test_effective_session_upper_bound_is_the_decision_clock_not_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 V-M1: with decision_at on 07-30, a 07-30-effective master is admissible.
+
+    Every earlier fixture had ``to_kst(decision_at).date() == as_of_session``, so
+    nothing distinguished "bounded by the decision clock" from "bounded by the
+    selection session".
+    """
+    decision_at = dt.datetime(2026, 7, 30, 8, 0, tzinfo=KST)
+    clock = _provider_clock(
+        effective_session=dt.date(2026, 7, 30), effective_session_raw="2026-07-30"
+    )
+    gate = _evaluate(
+        _snapshot(provider_clock=clock, retrieved_at=decision_at),
+        decision_at=decision_at,
+    )
+    assert gate.status == "proven", gate.reason
+
+    beyond = _provider_clock(
+        effective_session=dt.date(2026, 7, 31), effective_session_raw="2026-07-31"
+    )
+    later = _evaluate(
+        _snapshot(provider_clock=beyond, retrieved_at=decision_at),
+        decision_at=decision_at,
+    )
+    assert later.status == "unprovable"
+    assert later.reason == (
+        "metadata_snapshot_provider_effective_session_after_decision_at"
+    )
+
+
+def test_decision_clock_date_is_normalised_to_kst() -> None:
+    """🔴 V-M2: a non-KST decision offset must be converted before comparing dates.
+
+    ``2026-07-29T18:00:00+00:00`` is 2026-07-30 03:00 KST, so a 07-30-effective
+    master is within the decision clock. Comparing ``decision_at.date()`` raw
+    would reject it.
+    """
+    decision_at = dt.datetime(2026, 7, 29, 18, 0, tzinfo=dt.UTC)
+    clock = _provider_clock(
+        published_at=dt.datetime(2026, 7, 29, 16, 0, tzinfo=KST),
+        published_at_raw="2026-07-29T16:00:00+09:00",
+        effective_session=dt.date(2026, 7, 30),
+        effective_session_raw="2026-07-30",
+    )
+    gate = _evaluate(
+        _snapshot(provider_clock=clock, retrieved_at=decision_at),
+        decision_at=decision_at,
+    )
+    assert gate.status == "proven", gate.reason
+
+
+def test_v1_row_carrying_a_provider_clock_is_still_refused() -> None:
+    """🔴 V-M3: the version guard must reject, not the missing-key KeyError.
+
+    The previous anchor used a v1 row with no ``provider_clock`` key, so a reader
+    that skipped the version check still failed with ``KeyError`` and the test
+    passed for the wrong reason.
+    """
+    row = snapshot_row(
+        source="toss_openapi",
+        market=MARKET,
+        rows=_rows(),
+        raw_payload=RAW_PAYLOAD,
+        provider_clock=_provider_clock(),
+        retrieved_at=RETRIEVED_AT,
+    )
+    row["schema_version"] = "krb1.p0_3.metadata_authority.v1"
+
+    with pytest.raises(ValueError, match="schema_version"):
+        snapshot_from_row(
+            row,
+            stream_id=METADATA_SNAPSHOT_STREAM_ID,
+            chain_index=2,
+            chain_hash="c" * 64,
+        )
+
+
+@pytest.mark.parametrize("retired_field", sorted(RETIRED_AUTHORITY_ROW_FIELDS))
+def test_a_v2_labelled_row_carrying_a_retired_authority_field_is_refused(
+    retired_field: str,
+) -> None:
+    """A v1 row wearing a v2 label — the version string alone is not proof."""
+    row = snapshot_row(
+        source="toss_openapi",
+        market=MARKET,
+        rows=_rows(),
+        raw_payload=RAW_PAYLOAD,
+        provider_clock=_provider_clock(),
+        retrieved_at=RETRIEVED_AT,
+    )
+    row[retired_field] = RETRIEVED_AT.isoformat()
+
+    with pytest.raises(ValueError, match="retired"):
+        snapshot_from_row(
+            row,
+            stream_id=METADATA_SNAPSHOT_STREAM_ID,
+            chain_index=2,
+            chain_hash="c" * 64,
+        )
+
+
+def test_two_declared_fields_present_is_a_source_conflict() -> None:
+    """🔴 V-M4: no precedence is specified, so ambiguity must fail closed."""
+    payload = {
+        "publishedAt": "2026-07-29T16:30:00+09:00",
+        "publishedAtAlt": "2026-07-29T09:00:00+09:00",
+        "effectiveSession": "2026-07-29",
+    }
+    assert (
+        extract_provider_authority_clock(
+            payload,
+            published_at_fields=frozenset({"publishedAt", "publishedAtAlt"}),
+            effective_session_fields=DECLARED_EFFECTIVE_FIELDS,
+        )
+        is None
+    )
+    # One present out of two declared is unambiguous and still works.
+    del payload["publishedAtAlt"]
+    assert (
+        extract_provider_authority_clock(
+            payload,
+            published_at_fields=frozenset({"publishedAt", "publishedAtAlt"}),
+            effective_session_fields=DECLARED_EFFECTIVE_FIELDS,
+        )
+        is not None
+    )
+
+
+@pytest.mark.parametrize(
+    "effective_raw",
+    [
+        "2026-07-29T22:00:00-05:00",
+        "2026-07-29T00:00:00+09:00",
+        "2026-07-29 ",
+        "26-07-29",
+    ],
+)
+def test_effective_session_must_be_a_bare_date(effective_raw: str) -> None:
+    """🔴 V-M5: truncating a timestamp would assign a session by dropping the offset.
+
+    ``2026-07-29T22:00:00-05:00`` is 2026-07-30 12:00 KST; reading it as session
+    2026-07-29 would silently widen the staleness bound by a day.
+    """
+    assert (
+        extract_provider_authority_clock(
+            {
+                "publishedAt": "2026-07-29T16:30:00+09:00",
+                "effectiveSession": effective_raw,
+            },
+            published_at_fields=DECLARED_PUBLISHED_FIELDS,
+            effective_session_fields=DECLARED_EFFECTIVE_FIELDS,
+        )
+        is None
+    )
+
+
+# ───────── F5: documented (not changed) semantics of a mixed-version chain ─────────
+
+
+def test_a_legacy_row_in_the_chain_makes_the_market_unprovable(tmp_path: Path) -> None:
+    """Documented behaviour: a v1 row masks later valid rows, and that is fail-closed.
+
+    Skipping the legacy row would widen what passes, so the loader still raises and
+    the caller records it as a stream error -> no snapshot -> gate unprovable. The
+    remedy is operational (start a new stream), not a tolerant reader.
+    """
+    from app.services.krb1_evidence_chain import append_record, open_stream
+
+    path = tmp_path / "toss_metadata_snapshot.jsonl"
+    open_stream(path, stream_id=METADATA_SNAPSHOT_STREAM_ID)
+    legacy = {
+        "market": MARKET,
+        "metadata_as_of": RETRIEVED_AT.isoformat(),
+        "recorded_at": RETRIEVED_AT.isoformat(),
+        "record_type": "TOSS_AUTHORITATIVE_METADATA_SNAPSHOT",
+        "schema_version": "krb1.p0_3.metadata_authority.v1",
+        "source": "toss_openapi",
+    }
+    append_record(
+        path,
+        stream_id=METADATA_SNAPSHOT_STREAM_ID,
+        record_type="TOSS_AUTHORITATIVE_METADATA_SNAPSHOT",
+        row=legacy,
+    )
+    append_metadata_snapshot(
+        path,
+        source="toss_openapi",
+        market=MARKET,
+        rows=_rows(),
+        raw_payload=RAW_PAYLOAD,
+        provider_clock=_provider_clock(),
+        retrieved_at=RETRIEVED_AT + dt.timedelta(minutes=5),
+    )
+
+    with pytest.raises(ValueError):
+        load_latest_metadata_snapshot(path, market=MARKET)

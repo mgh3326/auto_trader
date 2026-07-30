@@ -68,8 +68,13 @@ class UniverseRow:
     listing_status: str | None
     list_date: dt.date | None
     krx_trading_suspended: bool | None
-    metadata_source: str | None
-    metadata_as_of: dt.datetime | None
+    # 🔴 Retrieval provenance, never authority (ROB-1172 D4). These describe *our*
+    # sync of the master into the database (`kr_symbol_universe.toss_master_updated_at`),
+    # not anything the provider asserted. The authority claim lives entirely in
+    # ``metadata_authority_snapshot``; a gate that reads these as authority is
+    # saying "we synced today", which is the substitution A1 removed.
+    db_sync_source: str | None
+    db_sync_observed_at: dt.datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,8 +259,8 @@ def _metadata_missing_fields(row: UniverseRow) -> list[str]:
         "listing_status": row.listing_status,
         "list_date": row.list_date,
         "krx_trading_suspended": row.krx_trading_suspended,
-        "metadata_source": row.metadata_source,
-        "metadata_as_of": row.metadata_as_of,
+        "db_sync_source": row.db_sync_source,
+        "db_sync_observed_at": row.db_sync_observed_at,
     }
     return [key for key, value in required.items() if value is None]
 
@@ -314,6 +319,93 @@ def _completed_bar_gate(
         candle=_row_dict(candle),
         raw_evidence=_row_dict(evidence),
         required_observation_upper_bound_decision_at=decision_at.isoformat(),
+    )
+
+
+def _row_sync_provenance_gate(
+    *,
+    active_rows: list[UniverseRow],
+    market: str,
+    as_of_session: dt.date,
+    decision_at: dt.datetime,
+    decision_at_comparable: bool,
+    snapshot_gate: dict[str, object],
+) -> dict[str, object]:
+    """Row-level DB sync provenance. Explicitly **not** an authority claim.
+
+    What this can prove: we recorded when and from where the master rows were
+    synced into the database, that clock is comparable, and it precedes the
+    decision. What it cannot prove — and no longer claims — is that the provider
+    asserted anything about the session; that is
+    ``metadata_authority_snapshot``'s job, and this gate refuses to pass unless
+    that gate is proven.
+    """
+    common = {
+        "sync_clock_is_retrieval_provenance_not_authority": True,
+        "authority_claim_delegated_to": "metadata_authority_snapshot",
+        "required_sync_clock_upper_bound_decision_at": _iso(decision_at),
+        "required_sync_clock_at_or_after": as_of_session.isoformat(),
+        "market": market,
+    }
+    if snapshot_gate.get("status") != "proven":
+        return _gate(
+            "unprovable",
+            "metadata_row_authority_requires_provider_snapshot",
+            provider_snapshot_reason=snapshot_gate.get("reason"),
+            **common,
+        )
+    missing = sorted(
+        row.symbol
+        for row in active_rows
+        if row.db_sync_observed_at is None or not row.db_sync_source
+    )
+    if missing:
+        return _gate(
+            "unprovable",
+            "metadata_row_sync_provenance_missing",
+            missing_count=len(missing),
+            missing_examples=_examples(missing),
+            **common,
+        )
+    unusable = sorted(
+        row.symbol
+        for row in active_rows
+        if row.db_sync_observed_at is not None
+        and (
+            not decision_at_comparable
+            or row.db_sync_observed_at.tzinfo is None
+            or row.db_sync_observed_at.utcoffset() is None
+            or row.db_sync_observed_at > decision_at
+        )
+    )
+    if unusable:
+        return _gate(
+            "unprovable",
+            "metadata_row_sync_clock_after_decision_at",
+            retroactive_count=len(unusable),
+            retroactive_examples=_examples(unusable),
+            late_backfill_is_not_proof_of_state_at_decision_at=True,
+            **common,
+        )
+    stale = sorted(
+        row.symbol
+        for row in active_rows
+        if row.db_sync_observed_at is not None
+        and to_kst(row.db_sync_observed_at).date() < as_of_session
+    )
+    if stale:
+        return _gate(
+            "unprovable",
+            "metadata_row_sync_clock_stale_for_selection_session",
+            stale_count=len(stale),
+            stale_examples=_examples(stale),
+            **common,
+        )
+    return _gate(
+        "proven",
+        "metadata_row_sync_provenance_within_decision_clock",
+        checked_count=len(active_rows),
+        **common,
     )
 
 
@@ -482,56 +574,6 @@ def select_krb1_p0_liquidity_candidates(
                 missing_count=0,
             )
 
-        stale_metadata = sorted(
-            row.symbol
-            for row in active_rows
-            if row.metadata_as_of is None
-            or row.metadata_as_of.date() < selector_input.as_of_session
-            or row.metadata_source not in AUTHORITATIVE_METADATA_SOURCES
-        )
-        # 🔴 Upper bound on the per-row authority clock. A row stamped after the
-        # decision cannot prove the metadata state at that decision, no matter
-        # how authoritative the source is. A non-comparable decision clock is
-        # treated as failing, never as passing.
-        retroactive_metadata = sorted(
-            row.symbol
-            for row in active_rows
-            if row.metadata_as_of is not None
-            and (
-                not decision_at_comparable
-                or row.metadata_as_of.tzinfo is None
-                or row.metadata_as_of.utcoffset() is None
-                or row.metadata_as_of > decision_at
-            )
-        )
-        if stale_metadata:
-            gates["metadata_authority_as_of"] = _gate(
-                "unprovable",
-                "metadata_not_authoritative_as_of_selection_session",
-                required_as_of=selector_input.as_of_session.isoformat(),
-                required_authoritative_sources=sorted(AUTHORITATIVE_METADATA_SOURCES),
-                stale_count=len(stale_metadata),
-                stale_examples=_examples(stale_metadata),
-            )
-        elif retroactive_metadata:
-            gates["metadata_authority_as_of"] = _gate(
-                "unprovable",
-                "metadata_as_of_after_decision_at",
-                required_clock_upper_bound_decision_at=_iso(decision_at),
-                retroactive_count=len(retroactive_metadata),
-                retroactive_examples=_examples(retroactive_metadata),
-                late_backfill_is_not_proof_of_state_at_decision_at=True,
-            )
-        else:
-            gates["metadata_authority_as_of"] = _gate(
-                "proven",
-                "metadata_authoritative_as_of_selection_session",
-                required_as_of=selector_input.as_of_session.isoformat(),
-                required_clock_upper_bound_decision_at=_iso(decision_at),
-                authoritative_sources=sorted(AUTHORITATIVE_METADATA_SOURCES),
-                checked_count=len(active_rows),
-            )
-
         gates["metadata_authority_snapshot"] = evaluate_metadata_authority(
             snapshot=metadata_snapshot_index.get(market),
             market=market,
@@ -550,6 +592,25 @@ def select_krb1_p0_liquidity_candidates(
             as_of_session=selector_input.as_of_session,
             decision_at=decision_at,
         ).as_dict()
+
+        # 🔴 D4: the sibling gate no longer treats our DB sync clock as authority.
+        # It used to require `row.metadata_as_of >= as_of_session` and accept
+        # `metadata_source == "toss_openapi"` — but that clock is
+        # `kr_symbol_universe.toss_master_updated_at` (when *we* synced) and the
+        # source label was derived from that same column being non-null, so the
+        # check was tautological. Its `proven` therefore asserted
+        # "metadata authoritative as of the selection session" on the strength of
+        # "we synced today". Authority is now delegated to the provider snapshot
+        # gate; what remains here is retrieval provenance, bounded above by the
+        # decision clock, and it is labelled as such in the evidence.
+        gates["metadata_authority_as_of"] = _row_sync_provenance_gate(
+            active_rows=active_rows,
+            market=market,
+            as_of_session=selector_input.as_of_session,
+            decision_at=decision_at,
+            decision_at_comparable=decision_at_comparable,
+            snapshot_gate=gates["metadata_authority_snapshot"],
+        )
 
         if missing_metadata:
             coverage_rows: list[UniverseRow] = []
@@ -935,7 +996,12 @@ def select_krb1_p0_liquidity_candidates(
         "decision_at": _iso(selector_input.decision_at),
         "evidence_clock_contract": {
             "upper_bound": "every evidence clock must be <= decision_at",
-            "metadata": "metadata_as_of <= retrieved_at <= decision_at",
+            "metadata": (
+                "provider_published_at <= retrieved_at <= decision_at "
+                "AND as_of_session <= provider_effective_session "
+                "<= decision_at date (KST); the DB sync clock is retrieval "
+                "provenance and never authority"
+            ),
             "completion_manifest": (
                 "observed_at in [session 15:35 KST, decision_at] "
                 "and finalized_at <= decision_at"

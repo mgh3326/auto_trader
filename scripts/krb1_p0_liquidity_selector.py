@@ -195,10 +195,15 @@ async def _load_db_input(
                 if row["krx_trading_suspended"] is not None
                 else None
             ),
-            metadata_source=(
-                "toss_openapi" if row["toss_master_updated_at"] is not None else None
+            # Retrieval provenance only (ROB-1172 D4). This names the DB column we
+            # read; it is not a provider assertion, and the authority gate no
+            # longer accepts it as one.
+            db_sync_source=(
+                "db.kr_symbol_universe.toss_master_updated_at"
+                if row["toss_master_updated_at"] is not None
+                else None
             ),
-            metadata_as_of=row["toss_master_updated_at"],
+            db_sync_observed_at=row["toss_master_updated_at"],
         )
         for row in universe_result.mappings().all()
     )

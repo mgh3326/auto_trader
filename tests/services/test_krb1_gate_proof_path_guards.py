@@ -177,42 +177,104 @@ PROVIDER_CLOCK_PARAMS = frozenset(
     {"provider_clock", "published_at", "effective_session"}
 )
 LOCAL_CLOCK_NAMES = frozenset({"retrieved_at", "now", "utcnow", "captured_at"})
+# 🔴 The adversarial review (p8Z F3) bypassed the name-based checks three ways:
+# a dotted call, a getattr with an assembled attribute name, and a renamed local
+# fed through a dict literal. The load-bearing defence is now the declared
+# field-name cross-check in the service layer (see
+# test_capture_cannot_persist_a_locally_named_clock below); these AST checks are
+# defence in depth, and they now also refuse the constructs that made those
+# bypasses possible.
+INDIRECTION_BUILTINS = frozenset({"getattr", "globals", "vars", "eval", "exec"})
+
+
+def _called_names(tree: ast.AST) -> set[str]:
+    """Every callee spelling in the module: bare, dotted, and getattr-assembled."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            names.add(func.id)
+        elif isinstance(func, ast.Attribute):
+            names.add(func.attr)
+            names.add(ast.unparse(func))
+        elif isinstance(func, ast.Call):
+            # e.g. getattr(mod, "Name")(...) — record the inner spelling too.
+            names.add(ast.unparse(func))
+    return names
 
 
 def test_metadata_capture_never_synthesizes_a_provider_clock() -> None:
     """🔴 The capture path must extract the provider clock, never derive it."""
     tree = ast.parse(METADATA_CAPTURE.read_text())
 
-    # No provider-clock argument may be fed a local clock or a now() call.
+    # No provider-clock argument may be fed a local clock or a now() call,
+    # whether passed as a keyword or splatted from a dict.
     offenders: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         for keyword in node.keywords:
+            value = keyword.value
+            if keyword.arg is None:
+                # **kwargs / **{...} hides keyword names from this check entirely.
+                offenders.append("**splat into a call")
+                continue
             if keyword.arg not in PROVIDER_CLOCK_PARAMS:
                 continue
-            value = keyword.value
             if isinstance(value, ast.Name) and value.id in LOCAL_CLOCK_NAMES:
                 offenders.append(f"{keyword.arg}={value.id}")
-            if isinstance(value, ast.Call):
-                target = value.func
-                if isinstance(target, ast.Attribute) and target.attr in {
-                    "now",
-                    "utcnow",
-                }:
-                    offenders.append(f"{keyword.arg}=<clock call>")
+            if _contains_clock_call(value):
+                offenders.append(f"{keyword.arg}=<clock call>")
     assert not offenders, offenders
 
-    # The only sanctioned builder is the extractor.
-    called = {
-        node.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    }
+    # The only sanctioned builder is the extractor, under any spelling.
+    called = _called_names(tree)
     assert "extract_provider_authority_clock" in called
-    assert "ProviderAuthorityClock" not in called, (
-        "capture must not construct a provider clock directly"
+    assert not [name for name in called if "ProviderAuthorityClock" in name], called
+
+    # No dynamic indirection that would hide a construction from this scan.
+    assert not [name for name in called if name in INDIRECTION_BUILTINS], called
+    assert not [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.Add)
+        and isinstance(node.left, ast.Constant)
+        and isinstance(node.left.value, str)
+    ], "string-assembled identifiers are not allowed in the capture path"
+
+
+def test_capture_cannot_persist_a_locally_named_clock() -> None:
+    """🔴 F3 structural backstop: the bypasses die at value validation.
+
+    Even a capture path that fully evades the AST scan cannot persist a clock,
+    because the write boundary requires the field names to be in the declared
+    provider contract — and the wired contract declares none.
+    """
+    from app.services.krb1_metadata_authority import (
+        ProviderAuthorityClock,
+        snapshot_row,
     )
+
+    synthesized = ProviderAuthorityClock(
+        published_at=dt.datetime(2026, 7, 29, 17, 0, tzinfo=KST),
+        published_at_field="retrieved_at",
+        published_at_raw="2026-07-29T17:00:00+09:00",
+        effective_session=SESSION,
+        effective_session_field="today",
+        effective_session_raw=SESSION.isoformat(),
+    )
+    with pytest.raises(ValueError, match="declared provider contract"):
+        snapshot_row(
+            source="toss_openapi",
+            market="KOSPI",
+            rows=(),
+            raw_payload=b"{}",
+            provider_clock=synthesized,
+            retrieved_at=dt.datetime(2026, 7, 29, 17, 0, tzinfo=KST),
+        )
 
 
 def test_metadata_capture_dropped_the_retrieval_as_authority_labels() -> None:

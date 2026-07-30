@@ -30,6 +30,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import krb1_metadata_authority
 from app.services.krb1_completion_manifest import (
     DbDailyBar,
     RawDailyBar,
@@ -75,6 +76,23 @@ KIS_DAILY_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchart
 KIS_DAILY_TR_ID = "FHKST03010100"
 
 
+DECLARED_PUBLISHED = frozenset({"publishedAt"})
+DECLARED_EFFECTIVE = frozenset({"effectiveSession"})
+
+
+@pytest.fixture(autouse=True)
+def _declared_provider_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hypothetical declared contract; the wired surface declares none (D1)."""
+    monkeypatch.setattr(
+        krb1_metadata_authority, "PROVIDER_PUBLISHED_AT_FIELDS", DECLARED_PUBLISHED
+    )
+    monkeypatch.setattr(
+        krb1_metadata_authority,
+        "PROVIDER_EFFECTIVE_SESSION_FIELDS",
+        DECLARED_EFFECTIVE,
+    )
+
+
 def _provider_clock() -> ProviderAuthorityClock:
     """A declared provider clock. The wired Toss surface sends none (A1)."""
     return ProviderAuthorityClock(
@@ -116,8 +134,8 @@ def _universe() -> tuple[UniverseRow, ...]:
             listing_status="ACTIVE",
             list_date=dt.date(2020, 1, 2),
             krx_trading_suspended=False,
-            metadata_source="toss_openapi",
-            metadata_as_of=RETRIEVED_AT,
+            db_sync_source="db.kr_symbol_universe.toss_master_updated_at",
+            db_sync_observed_at=RETRIEVED_AT,
         )
         for market in MARKETS
         for symbol in UNIVERSE[market]
@@ -312,6 +330,15 @@ def test_metadata_authority_is_provable_once_the_provider_sends_a_clock(
     # The run still fails closed: the authoritative base-price source is unwired.
     assert result["status"] == "fail_closed"
     assert result["selected_candidates"] == []
+    # F6-lite: the blocking set must be observable. Membership only — this makes no
+    # claim about the completion gates in either direction (A3 pending B5).
+    blocking = {
+        str(item["gate"])
+        for item in result["fail_close_reasons"]  # type: ignore[union-attr]
+    }
+    assert "reference_price_exception_coverage" in blocking
+    assert "metadata_authority_snapshot" not in blocking
+    assert "metadata_authority_as_of" not in blocking
     for market in MARKETS:
         reference = _gate(result, market, "reference_price_exception_coverage")
         assert reference["status"] == "unprovable"

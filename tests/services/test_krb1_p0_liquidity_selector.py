@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services import krb1_metadata_authority
 from app.services.krb1_completion_manifest import (
     COMPLETION_MANIFEST_STREAM_ID,
     CompletionManifest,
@@ -49,6 +50,27 @@ FINALIZED_AT = dt.datetime(2026, 7, 29, 17, 0, tzinfo=KST)
 SHA_STUB = "a" * 64
 KIS_DAILY_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
 KIS_DAILY_TR_ID = "FHKST03010100"
+DECLARED_PUBLISHED = frozenset({"publishedAt"})
+DECLARED_EFFECTIVE = frozenset({"effectiveSession"})
+
+
+@pytest.fixture(autouse=True)
+def _declared_provider_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declare a hypothetical provider clock contract for these tests only.
+
+    D1 established that no wired Toss market-data endpoint declares a publication
+    or effective-session field, so the module allowlists are empty and the
+    metadata snapshot gate is unprovable in production. Without this fixture every
+    other gate in this file would be masked by that single fail-close.
+    """
+    monkeypatch.setattr(
+        krb1_metadata_authority, "PROVIDER_PUBLISHED_AT_FIELDS", DECLARED_PUBLISHED
+    )
+    monkeypatch.setattr(
+        krb1_metadata_authority,
+        "PROVIDER_EFFECTIVE_SESSION_FIELDS",
+        DECLARED_EFFECTIVE,
+    )
 
 
 def _universe(symbol: str, market: str) -> UniverseRow:
@@ -62,8 +84,8 @@ def _universe(symbol: str, market: str) -> UniverseRow:
         listing_status="ACTIVE",
         list_date=dt.date(2020, 1, 2),
         krx_trading_suspended=False,
-        metadata_source="toss_openapi",
-        metadata_as_of=METADATA_RETRIEVED_AT,
+        db_sync_source="db.kr_symbol_universe.toss_master_updated_at",
+        db_sync_observed_at=METADATA_RETRIEVED_AT,
     )
 
 
@@ -461,44 +483,130 @@ def test_metadata_null_fails_closed() -> None:
     _assert_fail_closed(result, "active_universe_market_product_metadata_missing")
 
 
-def test_stale_metadata_fails_closed() -> None:
+def test_stale_db_sync_clock_fails_closed() -> None:
+    """The prod-observed value: toss_master_updated_at = 2026-07-28 08:47 KST."""
     selector_input = _base_input()
     universe = tuple(
         replace(
             row,
-            metadata_as_of=dt.datetime(2026, 7, 28, 8, 47, tzinfo=KST),
+            db_sync_observed_at=dt.datetime(2026, 7, 28, 8, 47, tzinfo=KST),
         )
         for row in selector_input.universe_rows
     )
     result = select_krb1_p0_liquidity_candidates(
         _with_evidence(selector_input, universe_rows=universe)
     )
-    _assert_fail_closed(result, "metadata_not_authoritative_as_of_selection_session")
+    _assert_fail_closed(result, "metadata_row_sync_clock_stale_for_selection_session")
 
 
-def test_metadata_as_of_after_decision_at_fails_closed() -> None:
-    """🔴 The upper bound: a 07-30 master cannot justify a 07-29 decision."""
+def test_db_sync_clock_after_decision_at_fails_closed() -> None:
+    """🔴 The upper bound: a 07-30 sync cannot justify a 07-29 decision."""
     selector_input = _base_input()
     universe = tuple(
-        replace(row, metadata_as_of=dt.datetime(2026, 7, 30, 8, 47, tzinfo=KST))
+        replace(row, db_sync_observed_at=dt.datetime(2026, 7, 30, 8, 47, tzinfo=KST))
         for row in selector_input.universe_rows
     )
     result = select_krb1_p0_liquidity_candidates(
         _with_evidence(selector_input, universe_rows=universe)
     )
-    _assert_fail_closed(result, "metadata_as_of_after_decision_at")
+    _assert_fail_closed(result, "metadata_row_sync_clock_after_decision_at")
 
 
-def test_naive_metadata_clock_fails_closed() -> None:
+def test_naive_db_sync_clock_fails_closed() -> None:
     selector_input = _base_input()
     universe = tuple(
-        replace(row, metadata_as_of=dt.datetime(2026, 7, 29, 17, 0))
+        replace(row, db_sync_observed_at=dt.datetime(2026, 7, 29, 17, 0))
         for row in selector_input.universe_rows
     )
     result = select_krb1_p0_liquidity_candidates(
         _with_evidence(selector_input, universe_rows=universe)
     )
-    _assert_fail_closed(result, "metadata_as_of_after_decision_at")
+    _assert_fail_closed(result, "metadata_row_sync_clock_after_decision_at")
+
+
+# ───────────── D4: the sibling gate no longer sells sync as authority ─────────────
+
+
+def test_row_gate_refuses_authority_without_a_provider_snapshot() -> None:
+    """🔴 p8Z F1 anchor: provider clock absent -> BOTH metadata gates unprovable.
+
+    Before D4 this configuration produced
+    `metadata_authority_as_of = proven / metadata_authoritative_as_of_selection_session`
+    while the snapshot gate failed closed — an evidence artifact asserting
+    authority that nothing had established.
+    """
+    selector_input = _base_input()
+    snapshots = tuple(
+        replace(snapshot, provider_clock=None)
+        for snapshot in selector_input.metadata_snapshots
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, metadata_snapshots=snapshots)
+    )
+
+    _assert_fail_closed(result, "metadata_row_authority_requires_provider_snapshot")
+    for market in ("KOSPI", "KOSDAQ"):
+        gates = result["market_results"][market]["gates"]  # type: ignore[index]
+        row_gate = gates["metadata_authority_as_of"]
+        assert row_gate["status"] == "unprovable"
+        assert (
+            row_gate["evidence"]["sync_clock_is_retrieval_provenance_not_authority"]
+            is True
+        )
+        assert row_gate["evidence"]["authority_claim_delegated_to"] == (
+            "metadata_authority_snapshot"
+        )
+
+
+def test_row_gate_refuses_when_provider_says_the_master_is_stale() -> None:
+    """🔴 p8Z F1 PROBE C: provider says 07-28 while our sync column says today."""
+    selector_input = _base_input()
+    snapshots = tuple(
+        replace(
+            snapshot,
+            provider_clock=replace(
+                _provider_clock(),
+                effective_session=dt.date(2026, 7, 28),
+                effective_session_raw="2026-07-28",
+            ),
+        )
+        for snapshot in selector_input.metadata_snapshots
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, metadata_snapshots=snapshots)
+    )
+
+    _assert_fail_closed(result, "metadata_row_authority_requires_provider_snapshot")
+    for market in ("KOSPI", "KOSDAQ"):
+        gates = result["market_results"][market]["gates"]  # type: ignore[index]
+        assert gates["metadata_authority_as_of"]["status"] == "unprovable"
+        assert gates["metadata_authority_snapshot"]["reason"] == (
+            "metadata_snapshot_provider_effective_session_before_selection_session"
+        )
+
+
+def test_row_gate_requires_recorded_sync_provenance() -> None:
+    selector_input = _base_input()
+    universe = tuple(
+        replace(row, db_sync_source=None) if row.symbol == "000001" else row
+        for row in selector_input.universe_rows
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        _with_evidence(selector_input, universe_rows=universe)
+    )
+    # A null provenance label is first caught by the completeness gate; the row
+    # provenance gate names it too once metadata is otherwise complete.
+    _assert_fail_closed(result, "active_universe_market_product_metadata_missing")
+
+
+def test_evidence_contract_string_no_longer_cites_the_retired_rule() -> None:
+    result = select_krb1_p0_liquidity_candidates(_base_input())
+    contract = result["evidence_clock_contract"]
+    assert isinstance(contract, dict)
+    metadata_rule = str(contract["metadata"])
+    assert "provider_published_at" in metadata_rule
+    assert "provider_effective_session" in metadata_rule
+    assert "metadata_as_of <= retrieved_at" not in metadata_rule
 
 
 def test_missing_metadata_authority_snapshot_fails_closed() -> None:

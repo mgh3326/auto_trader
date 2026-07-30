@@ -77,6 +77,12 @@ PROVIDER_EFFECTIVE_SESSION_FIELDS: frozenset[str] = frozenset()
 
 PROVIDER_AUTHORITY_CLOCK_ABSENT = "provider_authority_clock_absent"
 
+# v1 stored the retrieval clock in this field and called it authority. A row that
+# still carries it is refused on rehydrate even if it claims the v2 schema.
+RETIRED_AUTHORITY_ROW_FIELDS: frozenset[str] = frozenset(
+    {"metadata_as_of", "authority_clock_source"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class SymbolMetadata:
@@ -148,8 +154,8 @@ class ProviderAuthorityClock:
 def extract_provider_authority_clock(
     payload: object,
     *,
-    published_at_fields: frozenset[str] = PROVIDER_PUBLISHED_AT_FIELDS,
-    effective_session_fields: frozenset[str] = PROVIDER_EFFECTIVE_SESSION_FIELDS,
+    published_at_fields: frozenset[str] | None = None,
+    effective_session_fields: frozenset[str] | None = None,
 ) -> ProviderAuthorityClock | None:
     """Extract a provider authority clock, or ``None`` when the provider sent none.
 
@@ -157,18 +163,40 @@ def extract_provider_authority_clock(
     an effective session must be present — one without the other proves nothing
     about which session the master state applies to. A bare row list (what the
     wired Toss surface returns) carries no envelope clock, so it yields ``None``.
+
+    Two refusals worth naming, because both were unfixed mutation survivors:
+
+    * **Ambiguity.** If more than one declared field is present for either clock,
+      there is no specified precedence, so this returns ``None`` instead of
+      silently picking one. Conflicting candidate clocks are a source conflict.
+    * **Session widening.** ``effective_session`` must be a bare ``YYYY-MM-DD``
+      date. Truncating a timestamp to its first ten characters would assign a
+      session by discarding the offset — ``2026-07-29T22:00:00-05:00`` is
+      2026-07-30 in KST — so a datetime value is refused rather than coerced.
     """
+    declared_published = (
+        PROVIDER_PUBLISHED_AT_FIELDS
+        if published_at_fields is None
+        else published_at_fields
+    )
+    declared_effective = (
+        PROVIDER_EFFECTIVE_SESSION_FIELDS
+        if effective_session_fields is None
+        else effective_session_fields
+    )
     if not isinstance(payload, Mapping):
         return None
-    published_at_key = _first_present(payload, published_at_fields)
-    effective_session_key = _first_present(payload, effective_session_fields)
+    published_at_key = _single_present(payload, declared_published)
+    effective_session_key = _single_present(payload, declared_effective)
     if published_at_key is None or effective_session_key is None:
         return None
     published_raw = str(payload[published_at_key])
     effective_raw = str(payload[effective_session_key])
+    if not _is_bare_iso_date(effective_raw):
+        return None
     try:
         published_at = dt.datetime.fromisoformat(published_raw)
-        effective_session = dt.date.fromisoformat(effective_raw[:10])
+        effective_session = dt.date.fromisoformat(effective_raw)
     except ValueError:
         return None
     if published_at.tzinfo is None or published_at.utcoffset() is None:
@@ -183,11 +211,23 @@ def extract_provider_authority_clock(
     )
 
 
-def _first_present(payload: Mapping[str, Any], keys: frozenset[str]) -> str | None:
-    for key in sorted(keys):
-        if key in payload and payload[key] is not None:
-            return key
-    return None
+def _is_bare_iso_date(value: str) -> bool:
+    """True only for an exact ``YYYY-MM-DD`` string."""
+    if len(value) != 10:
+        return False
+    try:
+        dt.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _single_present(payload: Mapping[str, Any], keys: frozenset[str]) -> str | None:
+    """Return the one present declared key, or ``None`` if zero or many are present."""
+    present = sorted(key for key in keys if key in payload and payload[key] is not None)
+    if len(present) != 1:
+        return None
+    return present[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,13 +298,27 @@ def evaluate_metadata_authority(
     rows: tuple[SymbolMetadata, ...],
     as_of_session: dt.date,
     decision_at: dt.datetime,
+    declared_published_at_fields: frozenset[str] | None = None,
+    declared_effective_session_fields: frozenset[str] | None = None,
 ) -> GateResult:
     """Gate: is the metadata authoritative *and* pre-decision for this market?"""
+    declared_published = (
+        PROVIDER_PUBLISHED_AT_FIELDS
+        if declared_published_at_fields is None
+        else declared_published_at_fields
+    )
+    declared_effective = (
+        PROVIDER_EFFECTIVE_SESSION_FIELDS
+        if declared_effective_session_fields is None
+        else declared_effective_session_fields
+    )
     required = {
         "required_authoritative_sources": sorted(AUTHORITATIVE_METADATA_SOURCES),
         "required_provider_effective_session_at_or_after": as_of_session.isoformat(),
         "required_clock_upper_bound_decision_at": normalize_evidence(decision_at),
         "required_provider_origin_clock": True,
+        "required_declared_published_at_fields": sorted(declared_published),
+        "required_declared_effective_session_fields": sorted(declared_effective),
         "retrieval_clock_cannot_substitute_for_provider_clock": True,
         "late_backfill_is_not_proof_of_state_at_decision_at": True,
     }
@@ -345,6 +399,28 @@ def evaluate_metadata_authority(
             snapshot=snapshot.as_evidence(),
             **required,
         )
+    # 🔴 The clock must come from a *declared* provider field. Without this the
+    # invariant "a retrieval clock is not an authority clock" is enforced only by
+    # naming convention: anyone can label a local clock
+    # ``published_at_field="retrieved_at"`` and pass. Cross-checking the field name
+    # against the declared contract is what makes the naming load-bearing, and it
+    # also kills every AST-guard bypass at value-validation time.
+    undeclared = sorted(
+        name
+        for name, allowed in (
+            (provider_clock.published_at_field, declared_published),
+            (provider_clock.effective_session_field, declared_effective),
+        )
+        if name not in allowed
+    )
+    if undeclared:
+        return unprovable(
+            "metadata_snapshot_provider_clock_field_not_declared",
+            market=market,
+            snapshot=snapshot.as_evidence(),
+            undeclared_fields=undeclared,
+            **required,
+        )
 
     computed_hash = compute_universe_metadata_hash(market, rows)
     if snapshot.symbol_count != len(rows):
@@ -422,17 +498,43 @@ def snapshot_row(
     raw_payload: bytes,
     provider_clock: ProviderAuthorityClock,
     retrieved_at: dt.datetime,
+    declared_published_at_fields: frozenset[str] | None = None,
+    declared_effective_session_fields: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Canonical append-only row for one authoritative metadata snapshot.
 
-    ``provider_clock`` is not optional: a row cannot be built without a
-    provider-origin clock, so no capture path can persist a snapshot whose
-    authority is really just its retrieval time.
+    ``provider_clock`` is not optional and its field names are cross-checked
+    against the declared provider contract, so a capture path cannot persist a
+    snapshot whose authority is really its retrieval time — however the clock was
+    constructed, and whatever it is named.
     """
     if not isinstance(provider_clock, ProviderAuthorityClock):
         raise ValueError(
             "provider_clock must be a ProviderAuthorityClock extracted from the "
             "provider payload; a retrieval clock cannot substitute for it"
+        )
+    declared_published = (
+        PROVIDER_PUBLISHED_AT_FIELDS
+        if declared_published_at_fields is None
+        else declared_published_at_fields
+    )
+    declared_effective = (
+        PROVIDER_EFFECTIVE_SESSION_FIELDS
+        if declared_effective_session_fields is None
+        else declared_effective_session_fields
+    )
+    undeclared = sorted(
+        name
+        for name, allowed in (
+            (provider_clock.published_at_field, declared_published),
+            (provider_clock.effective_session_field, declared_effective),
+        )
+        if name not in allowed
+    )
+    if undeclared:
+        raise ValueError(
+            "provider clock field names are not in the declared provider contract: "
+            f"{undeclared}"
         )
     if not is_aware(retrieved_at):
         raise ValueError("retrieved_at must be timezone-aware")
@@ -461,9 +563,10 @@ def append_metadata_snapshot(
     raw_payload: bytes,
     provider_clock: ProviderAuthorityClock,
     retrieved_at: dt.datetime,
+    declared_published_at_fields: frozenset[str] | None = None,
+    declared_effective_session_fields: frozenset[str] | None = None,
 ) -> MetadataAuthoritySnapshot:
     """Persist one snapshot append-only and return it with chain provenance."""
-    open_stream(path, stream_id=METADATA_SNAPSHOT_STREAM_ID)
     row = snapshot_row(
         source=source,
         market=market,
@@ -471,7 +574,10 @@ def append_metadata_snapshot(
         raw_payload=raw_payload,
         provider_clock=provider_clock,
         retrieved_at=retrieved_at,
+        declared_published_at_fields=declared_published_at_fields,
+        declared_effective_session_fields=declared_effective_session_fields,
     )
+    open_stream(path, stream_id=METADATA_SNAPSHOT_STREAM_ID)
     record = append_record(
         path,
         stream_id=METADATA_SNAPSHOT_STREAM_ID,
@@ -504,6 +610,14 @@ def snapshot_from_row(
     if version != SCHEMA_VERSION:
         raise ValueError(
             f"metadata snapshot schema_version {version!r} is not {SCHEMA_VERSION!r}"
+        )
+    # A row that still carries the retired retrieval-as-authority field is a v1 row
+    # wearing a v2 label. Refuse it even though the version string says v2.
+    retired = sorted(key for key in RETIRED_AUTHORITY_ROW_FIELDS if key in row)
+    if retired:
+        raise ValueError(
+            f"metadata snapshot row carries retired authority fields {retired}; "
+            "it cannot be read under the provider-origin contract"
         )
     clock_row = row["provider_clock"]
     if not isinstance(clock_row, Mapping):
@@ -559,6 +673,7 @@ __all__ = [
     "PROVIDER_AUTHORITY_CLOCK_ABSENT",
     "PROVIDER_EFFECTIVE_SESSION_FIELDS",
     "PROVIDER_PUBLISHED_AT_FIELDS",
+    "RETIRED_AUTHORITY_ROW_FIELDS",
     "SCHEMA_VERSION",
     "MetadataAuthoritySnapshot",
     "ProviderAuthorityClock",

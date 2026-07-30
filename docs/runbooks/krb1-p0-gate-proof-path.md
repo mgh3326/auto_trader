@@ -70,8 +70,25 @@ provider_published_at <= retrieved_at <= decision_at              ← 🔴 상�
 chain provenance (stream_id / chain_index >= 2 / chain_hash) 존재
 ```
 
-- gate `metadata_authority_as_of` 는 행 단위로도 상한을 본다
-  (`metadata_as_of_after_decision_at`). naive 시계는 실패로 취급한다.
+- gate `metadata_authority_as_of` 는 **권위 gate 가 아니다** (D4). 이 gate 가 보는
+  `db_sync_observed_at` 은 DB `kr_symbol_universe.toss_master_updated_at`, 즉 **우리가 마스터를
+  동기화한 시각**이다. 이전 구현은 이 값의 하한(`>= as_of_session`)과
+  "그 컬럼이 non-null 이면 source=toss_openapi" 라는 **동어반복** 검사로
+  `metadata_authoritative_as_of_selection_session` 을 출고했다 — 실제로 증명한 것은
+  "우리가 오늘 sync 했다" 뿐이었다. 지금은:
+  ```
+  권위 판정은 metadata_authority_snapshot 로 위임 (그 gate 가 proven 이 아니면 이 gate 도 막힌다)
+  db_sync_observed_at 은 retrieval provenance 로만 기록 (sync_clock_is_retrieval_provenance_not_authority)
+  상한 db_sync_observed_at <= decision_at · 하한 >= as_of_session (권위 아닌 가용성 조건)
+  ```
+  사유: `metadata_row_authority_requires_provider_snapshot` ·
+  `metadata_row_sync_provenance_missing` · `metadata_row_sync_clock_after_decision_at` ·
+  `metadata_row_sync_clock_stale_for_selection_session`.
+- provider clock 의 **필드명**은 선언된 allowlist 에 있어야 한다 (`..._field_not_declared`).
+  이 교차검증이 없으면 "회수 시계는 권위가 아니다"가 명명 관습으로만 지켜진다 —
+  누구나 `published_at_field="retrieved_at"` 로 라벨만 붙여 통과시킬 수 있었다.
+  extractor 는 선언 필드가 **2개 이상 존재하면 source conflict 로 fail-close** 하고,
+  effective session 은 **bare YYYY-MM-DD 만** 인정한다(타임스탬프 절단 금지).
 - Toss 가 비활성(`TOSS_API_ENABLED` 미설정)이면 capture 는
   `toss_authoritative_master_source_unavailable` 로 fail-closed 한다.
 
@@ -185,6 +202,19 @@ ENV_FILE=.env.prod uv run python -m scripts.krb1_p0_quote_timestamp_capture \
 selector 는 1~3 의 append-only 증거를 읽어 gate 를 판정한다. 하나라도 없거나 시계가
 `decision_at` 을 넘으면 `selected_candidates=[]` + exit 2 다. **fallback·수동 종목·
 volume-rank 대체는 금지다.**
+
+## 6.0 D1 판정 — Toss 에는 적격 metadata source 가 없다 (2026-07-30)
+
+canonical OpenAPI(`https://openapi.tossinvest.com/openapi-docs/latest/openapi.json`,
+3.1.0 / v1.2.5, 27 paths) 전수 조사 결과 **`NO_ADMISSIBLE_TOSS_SOURCE`**.
+market-data/stock-info/market-info 14개 endpoint 어느 것도 같은 full-universe metadata
+snapshot 안에서 publication clock · effective session · revision/PIT · positive/negative
+coverage 를 함께 제공하지 않는다. 전 스키마(70개)에서 publication/effective/revision 계열
+property 는 `InvestorTradingRecord.updatedAt`(투자자 매매대금) ·
+`ExchangeRateResponse.validFrom/validUntil`(환율) 둘뿐이고, `StockInfo` 의 날짜 필드는
+`listDate`/`delistDate`(상장·폐지일) 뿐이다 — D1 이 대체 증거로 명시 기각한 값이다.
+→ `PROVIDER_*_FIELDS` 는 빈 집합 유지. 근거는
+`~/work/herdr-inbox/rob1172-d1d2d4d5-2026-07-30.md` §D1.
 
 ## 6.1 🔴 미해결로 남은 것 (2026-07-30 08:33 교정)
 
