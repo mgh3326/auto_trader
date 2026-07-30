@@ -20,10 +20,12 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from dotenv import dotenv_values
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SAFE_MOCK_PROFILES = frozenset(
@@ -38,10 +40,49 @@ SUPPORTED_CLIENT = "claude"
 UNSUPPORTED_MOCK_CLIENTS = frozenset({"codex", "kiro"})
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _CLAUDE_MCP_FLAGS = frozenset({"--mcp-config", "--strict-mcp-config"})
+_CLAUDE_MCP_OVERRIDE_FLAGS = _CLAUDE_MCP_FLAGS | frozenset({"--no-strict-mcp-config"})
+_TERM_GRACE_SECONDS = 1.0
+_KILL_GRACE_SECONDS = 1.0
+_PROFILE_ALLOWED_BROKER_SCOPES: dict[str, frozenset[str]] = {
+    "hermes-paper-kis": frozenset({"kis_mock"}),
+    "kiwoom_kr": frozenset({"kiwoom_kr"}),
+    "us-paper": frozenset({"alpaca_paper"}),
+}
+_BROKER_ENV_SCOPES: tuple[tuple[str, str], ...] = (
+    ("KIWOOM_MOCK_US_", "kiwoom_us"),
+    ("KIWOOM_MOCK_", "kiwoom_kr"),
+    ("KIWOOM_", "kiwoom_other"),
+    ("KIS_MOCK_", "kis_mock"),
+    ("KIS_", "kis_other"),
+    ("ALPACA_PAPER_", "alpaca_paper"),
+    ("ALPACA_", "alpaca_other"),
+    ("APCA_", "alpaca_other"),
+    ("BINANCE_", "binance"),
+    ("TOSS_", "toss"),
+    ("UPBIT_", "upbit"),
+)
+# These legacy Settings fields are required at model construction even when the
+# selected MCP profile cannot register their broker order surfaces. Empty,
+# launcher-owned placeholders satisfy schema construction without inheriting
+# the real foreign credentials.
+_REQUIRED_FOREIGN_SETTINGS_PLACEHOLDERS = frozenset(
+    {
+        "KIS_APP_KEY",
+        "KIS_APP_SECRET",
+        "UPBIT_ACCESS_KEY",
+        "UPBIT_SECRET_KEY",
+    }
+)
 
 
 class MockSessionMcpError(RuntimeError):
     """Fail-closed mock-session configuration error."""
+
+
+class _ForwardedClientSignal(Exception):
+    def __init__(self, signum: int) -> None:
+        super().__init__(signum)
+        self.signum = signum
 
 
 def validate_mock_profile(profile: str) -> str:
@@ -153,8 +194,60 @@ def session_config(
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def _broker_env_scope(name: str) -> str | None:
+    upper_name = name.upper()
+    for prefix, scope in _BROKER_ENV_SCOPES:
+        if upper_name.startswith(prefix):
+            return scope
+    return None
+
+
+def _env_file_values(source_env: Mapping[str, str]) -> dict[str, str]:
+    configured_path = source_env.get("ENV_FILE", ".env").strip()
+    if not configured_path or configured_path == os.devnull:
+        return {}
+    env_path = Path(configured_path)
+    if not env_path.is_absolute():
+        env_path = REPO_ROOT / env_path
+    if not env_path.is_file():
+        return {}
+    return {
+        key: value
+        for key, value in dotenv_values(env_path).items()
+        if value is not None
+    }
+
+
+def build_profile_environment(
+    *,
+    profile: str,
+    source_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build the inherited env while excluding every foreign broker scope."""
+    approved_profile = validate_mock_profile(profile)
+    ambient = dict(os.environ if source_env is None else source_env)
+    merged = _env_file_values(ambient)
+    merged.update(ambient)
+    allowed_scopes = _PROFILE_ALLOWED_BROKER_SCOPES[approved_profile]
+    child_env = {
+        name: value
+        for name, value in merged.items()
+        if (scope := _broker_env_scope(name)) is None or scope in allowed_scopes
+    }
+    for name in _REQUIRED_FOREIGN_SETTINGS_PLACEHOLDERS:
+        if _broker_env_scope(name) not in allowed_scopes:
+            child_env[name] = ""
+    # Settings must not reopen the repo-wide .env after this profile filter.
+    child_env["ENV_FILE"] = os.devnull
+    child_env["MCP_PROFILE"] = approved_profile
+    child_env["MCP_TYPE"] = "stdio"
+    for network_setting in ("MCP_HOST", "MCP_PORT", "MCP_PATH"):
+        child_env.pop(network_setting, None)
+    return child_env
+
+
 def build_claude_argv(command: Sequence[str], config_path: Path) -> list[str]:
-    """Append the two mandatory flags to the exact Claude client argv."""
+    """Place launcher-owned top-level flags immediately after the executable."""
     if not command:
         raise MockSessionMcpError("Claude command is required")
     executable_name = Path(command[0]).name
@@ -162,37 +255,79 @@ def build_claude_argv(command: Sequence[str], config_path: Path) -> list[str]:
         raise MockSessionMcpError(
             f"Claude adapter requires a `claude` executable, got {executable_name!r}"
         )
-    conflicting = _CLAUDE_MCP_FLAGS.intersection(command)
+    conflicting = {
+        token
+        for token in command[1:]
+        if token in _CLAUDE_MCP_OVERRIDE_FLAGS
+        or any(token.startswith(f"{flag}=") for flag in _CLAUDE_MCP_OVERRIDE_FLAGS)
+    }
     if conflicting:
         flags = ", ".join(sorted(conflicting))
         raise MockSessionMcpError(
             f"caller-supplied MCP flags refused; launcher owns: {flags}"
         )
     return [
-        *command,
+        command[0],
         "--mcp-config",
         str(config_path),
         "--strict-mcp-config",
+        *command[1:],
     ]
 
 
-def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
+def _process_group_exists(process_group_id: int) -> bool:
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        os.killpg(process_group_id, 0)
     except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_for_process_group_exit(process_group_id: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _process_group_exists(process_group_id):
+            return True
+        time.sleep(0.02)
+    return not _process_group_exists(process_group_id)
+
+
+def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
+    process_group_id = process.pid
+    process.poll()
+    if not _process_group_exists(process_group_id):
+        process.wait(timeout=0)
         return
 
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        try:
-            os.killpg(process.pid, 0)
-        except ProcessLookupError:
-            return
-        time.sleep(0.05)
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        os.killpg(process_group_id, signal.SIGTERM)
     except ProcessLookupError:
+        process.wait(timeout=0)
         return
+
+    try:
+        process.wait(timeout=_TERM_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+    if _wait_for_process_group_exit(process_group_id, _TERM_GRACE_SECONDS):
+        process.wait(timeout=0)
+        return
+
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        process.wait(timeout=0)
+        return
+    try:
+        process.wait(timeout=_KILL_GRACE_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        raise MockSessionMcpError(
+            f"Claude child pid {process.pid} could not be reaped after SIGKILL"
+        ) from exc
+    if not _wait_for_process_group_exit(process_group_id, _KILL_GRACE_SECONDS):
+        raise MockSessionMcpError(
+            f"Claude process group {process_group_id} survived SIGKILL"
+        )
 
 
 def launch_claude(
@@ -212,52 +347,58 @@ def launch_claude(
         session_id=approved_session_id,
     ) as config_path:
         argv = build_claude_argv(command, config_path)
-        process = subprocess.Popen(argv, start_new_session=True)
-        print(
-            json.dumps(
-                {
-                    "event": "mock_mcp_client_started",
-                    "client": SUPPORTED_CLIENT,
-                    "profile": approved_profile,
-                    "session_id": approved_session_id,
-                    "pid": process.pid,
-                    "argv_contract": [
-                        Path(argv[0]).name,
-                        "--mcp-config",
-                        str(config_path),
-                        "--strict-mcp-config",
-                    ],
-                    "server_count": 1,
-                    "transport": "stdio",
-                },
-                sort_keys=True,
-            ),
-            file=sys.stderr,
-            flush=True,
+        process = subprocess.Popen(
+            argv,
+            env=build_profile_environment(profile=approved_profile),
+            start_new_session=True,
         )
-
         forwarded_signal: int | None = None
-
-        def _forward(signum: int, _frame: object) -> None:
-            nonlocal forwarded_signal
-            forwarded_signal = signum
-            if process.poll() is None:
-                try:
-                    os.killpg(process.pid, signum)
-                except ProcessLookupError:
-                    pass
-
-        previous_handlers = {
-            signum: signal.signal(signum, _forward)
-            for signum in (signal.SIGINT, signal.SIGTERM)
-        }
+        previous_handlers: dict[int, Any] = {}
         try:
+            print(
+                json.dumps(
+                    {
+                        "event": "mock_mcp_client_started",
+                        "client": SUPPORTED_CLIENT,
+                        "profile": approved_profile,
+                        "session_id": approved_session_id,
+                        "pid": process.pid,
+                        "argv_contract": [
+                            Path(argv[0]).name,
+                            "--mcp-config",
+                            str(config_path),
+                            "--strict-mcp-config",
+                        ],
+                        "server_count": 1,
+                        "transport": "stdio",
+                    },
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+
+            def _forward(signum: int, _frame: object) -> None:
+                if process.poll() is None:
+                    try:
+                        os.killpg(process.pid, signum)
+                    except ProcessLookupError:
+                        pass
+                raise _ForwardedClientSignal(signum)
+
+            for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                previous_handlers[signum] = signal.signal(signum, _forward)
             return_code = process.wait()
+        except _ForwardedClientSignal as exc:
+            forwarded_signal = exc.signum
+            return_code = 128 + exc.signum
         finally:
-            for signum, handler in previous_handlers.items():
-                signal.signal(signum, handler)
-            _terminate_process_group(process)
-        if forwarded_signal is not None and return_code < 0:
+            try:
+                _terminate_process_group(process)
+            finally:
+                for signum, handler in previous_handlers.items():
+                    signal.signal(signum, handler)
+        if forwarded_signal is not None:
             return 128 + forwarded_signal
         return return_code
 
@@ -266,11 +407,13 @@ def _serve_stdio(*, profile: str, session_id: str) -> int:
     """Bootstrap the MCP server only after the strict profile is validated."""
     approved_profile = validate_mock_profile(profile)
     approved_session_id = validate_session_id(session_id)
-    os.environ["MCP_PROFILE"] = approved_profile
-    os.environ["MCP_TYPE"] = "stdio"
+    child_env = build_profile_environment(
+        profile=approved_profile,
+        source_env=os.environ,
+    )
+    os.environ.clear()
+    os.environ.update(child_env)
     os.environ["AUTO_TRADER_MCP_SESSION_ID"] = approved_session_id
-    for network_setting in ("MCP_HOST", "MCP_PORT", "MCP_PATH"):
-        os.environ.pop(network_setting, None)
     os.chdir(REPO_ROOT)
 
     from app.mcp_server.main import main
@@ -289,7 +432,7 @@ async def connected_tool_names(*, profile: str, session_id: str) -> list[str]:
     parameters = StdioServerParameters(
         command=server["command"],
         args=server["args"],
-        env=dict(os.environ),
+        env=build_profile_environment(profile=profile),
         cwd=REPO_ROOT,
     )
     names: list[str] = []

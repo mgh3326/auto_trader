@@ -274,9 +274,15 @@ class TestKiwoomKrProfile:
         assert KIWOOM_MOCK_US_TOOL_NAMES.isdisjoint(mcp.tools.keys())
 
     def test_does_not_register_forbidden_surfaces(self) -> None:
+        from app.mcp_server.tooling.route_request_lanes import (
+            DIRECT_BROKER_MUTATION_TOOLS,
+        )
+
         mcp = _build_mcp(McpProfile.KIWOOM_KR)
         leaked = KIWOOM_KR_FORBIDDEN_TOOL_NAMES & mcp.tools.keys()
         assert not leaked, f"kiwoom_kr leaked forbidden tools: {sorted(leaked)}"
+        allowed_direct = KIWOOM_KR_TOOL_NAMES & DIRECT_BROKER_MUTATION_TOOLS
+        assert mcp.tools.keys() & DIRECT_BROKER_MUTATION_TOOLS == allowed_direct
 
     def test_keeps_kt00007_order_detail_read(self) -> None:
         # ROB-1155's kiwoom_mock_get_order_detail is the reason this profile
@@ -286,6 +292,10 @@ class TestKiwoomKrProfile:
         assert "kiwoom_mock_get_order_detail" in mcp.tools
 
     def test_keeps_kr_order_surface_intact(self) -> None:
+        from app.mcp_server.tooling.mirror_counterfactual_registration import (
+            MIRROR_COUNTERFACTUAL_TOOL_NAMES,
+        )
+
         # The split narrows registration only; the KR place/cancel/modify
         # surface a KR session needs stays present and identical to KIWOOM's.
         kiwoom = _build_mcp(McpProfile.KIWOOM)
@@ -298,10 +308,9 @@ class TestKiwoomKrProfile:
         }
         assert kr_names <= kiwoom_kr.tools.keys()
         assert KIWOOM_MOCK_TOOL_NAMES <= kiwoom_kr.tools.keys()
-        # Drop-in replacement: kiwoom_kr's surface is kiwoom's minus the US
-        # namespace, nothing else.
+        # ROB-1173 also removes the shared KIS mock mirror broker mutation.
         assert kiwoom.tools.keys() - kiwoom_kr.tools.keys() == (
-            KIWOOM_MOCK_US_TOOL_NAMES
+            KIWOOM_MOCK_US_TOOL_NAMES | MIRROR_COUNTERFACTUAL_TOOL_NAMES
         )
         assert kiwoom_kr.tools.keys() - kiwoom.tools.keys() == set()
 

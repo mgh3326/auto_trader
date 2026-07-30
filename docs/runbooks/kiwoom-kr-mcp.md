@@ -19,13 +19,15 @@ DEFAULT profile에서는 US namespace가 `settings.kiwoom_mock_us_enabled`(ROB-8
 게이트(`dry_run=False` + `confirm=True`, mock config fail-closed)는 그대로 살아
 있지만 **profile 등록 자체가 least-privilege 위반**이다.
 
-`kiwoom_kr`은 그 profile에서 US namespace만 뺀 것이다.
+`kiwoom_kr`은 그 profile에서 US namespace와 별도 KIS mock broker mutation을 뺀
+KR Kiwoom 전용 표면이다.
 
 | | `kiwoom` | `kiwoom_kr` |
 |---|---|---|
 | 공용 read-only research/account 표면 | O | O (동일) |
 | KR `kiwoom_mock_*` (8) | O | O (동일, `kiwoom_mock_get_order_detail` 포함) |
 | US `kiwoom_mock_us_*` (7, mutation 4) | O | **없음** |
+| KIS mock mirror mutation (`kis_mock_mirror_execute_report`) | O | **없음** |
 | network transport `MCP_AUTH_TOKEN` 필수 | O | O |
 | 기동 시 mock config·mock host 강제 | X | **O** (아래) |
 
@@ -50,8 +52,10 @@ scripts/mock_session_mcp.py run \
 ```
 
 - wrapper는 session별 mode-0600 JSON을 만들고 stdio server 하나만 넣는다. Claude
-  argv에는 `--mcp-config <그 JSON>`과 `--strict-mcp-config`가 강제로 들어간다.
-  Claude 종료 뒤 JSON과 stdio child가 같이 정리된다. 상세 계약과 실제 tool-list 검증은
+  executable 바로 뒤에 `--mcp-config <그 JSON>`과 `--strict-mcp-config`를
+  강제로 넣는다. profile-filtered env는 `KIWOOM_MOCK_*`만 유지하고 다른 broker
+  credential scope를 제거한다. 정상/비정상 종료 모두 stdio child를 bounded
+  TERM→KILL→reap한 뒤 JSON을 지운다. 상세 계약과 실제 tool-list 검증은
   `docs/runbooks/mock-session-mcp.md`를 따른다.
 - **network transport(`streamable-http`/`sse`)에서 토큰이 비면 FastMCP 생성 전에
   기동 실패한다.** ROB-1173 mock session은 network transport나 TCP 8771을 쓰지 않는다.
@@ -113,7 +117,8 @@ uv run pytest tests/test_mcp_kiwoom_kr_profile.py tests/test_mcp_profiles.py \
   도구를 등록하려 해도 드롭), KR 주문 경로 불변(KRX 고정, place body).
 - `tests/test_mcp_profiles.py::TestKiwoomKrProfile` — profile 등록 결과에
   `kiwoom_mock_us_*`가 **없음**(prefix 기반 + 고정 집합 양쪽), `kiwoom` 표면과의
-  차집합이 정확히 US namespace임, kt00007 read 유지.
+  차집합이 US namespace + KIS mock mirror mutation임, 중앙 broker mutation 계약상
+  KR 3개(place/modify/cancel) 외 direct mutation 0, kt00007 read 유지.
 - `tests/test_mcp_profiles.py::TestOrderSurfaceMatrix` — `_ORDER_SURFACE_MATRIX`에
   `kiwoom_kr → KIWOOM_MOCK_TOOL_NAMES` 집합 **동등성**으로 고정(추가·삭제 양방향 탐지).
 - `tests/test_mcp_server_main.py` — network transport 토큰 필수, mock config 불완전/

@@ -3,13 +3,19 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
+import signal
+import socket
 import stat
 import subprocess
+import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
 
+from scripts import mock_session_mcp
 from scripts.mock_session_mcp import (
     MockSessionMcpError,
     build_claude_argv,
@@ -48,6 +54,20 @@ FORBIDDEN_CREDENTIAL_MARKERS = {
     "secret_key",
     "token",
 }
+
+
+def _assert_kiwoom_kr_connected_surface(names: set[str]) -> None:
+    from app.mcp_server.tooling.route_request_lanes import (
+        DIRECT_BROKER_MUTATION_TOOLS,
+    )
+
+    kiwoom_names = {name for name in names if name.startswith("kiwoom_mock")}
+    assert kiwoom_names == EXPECTED_KIWOOM_KR_TOOLS
+    assert not any(name.startswith("kiwoom_mock_us_") for name in names)
+    assert not any(name.startswith(("kis_live_", "toss_")) for name in names)
+    assert FORBIDDEN_GENERIC_ORDER_TOOLS.isdisjoint(names)
+    allowed_direct = EXPECTED_KIWOOM_KR_TOOLS & DIRECT_BROKER_MUTATION_TOOLS
+    assert names & DIRECT_BROKER_MUTATION_TOOLS == allowed_direct
 
 
 @pytest.mark.parametrize("profile", ["", "unknown", "default", "kiwoom"])
@@ -100,13 +120,186 @@ def test_claude_argv_forces_owned_strict_flags(tmp_path: Path) -> None:
         ["/opt/test/bin/claude", "--model", "opus"],
         config_path,
     )
-    assert argv[-3:] == [
+    assert argv[:4] == [
+        "/opt/test/bin/claude",
         "--mcp-config",
         str(config_path),
         "--strict-mcp-config",
     ]
+    assert argv[4:] == ["--model", "opus"]
     assert argv.count("--mcp-config") == 1
     assert argv.count("--strict-mcp-config") == 1
+
+
+def test_claude_top_level_flags_precede_read_only_subcommand(tmp_path: Path) -> None:
+    config_path = tmp_path / "mcp.json"
+    argv = build_claude_argv(
+        ["/opt/test/bin/claude", "mcp", "list"],
+        config_path,
+    )
+    assert argv == [
+        "/opt/test/bin/claude",
+        "--mcp-config",
+        str(config_path),
+        "--strict-mcp-config",
+        "mcp",
+        "list",
+    ]
+
+
+@pytest.mark.parametrize(
+    "caller_flags",
+    [
+        ["--mcp-config", "/tmp/foreign.json"],
+        ["--mcp-config=/tmp/foreign.json"],
+        ["--strict-mcp-config"],
+        ["--strict-mcp-config=true"],
+        ["--no-strict-mcp-config"],
+    ],
+)
+def test_caller_mcp_overrides_are_refused(
+    tmp_path: Path,
+    caller_flags: list[str],
+) -> None:
+    with pytest.raises(MockSessionMcpError, match="caller-supplied MCP flags refused"):
+        build_claude_argv(
+            ["/opt/test/bin/claude", *caller_flags, "mcp", "list"],
+            tmp_path / "mcp.json",
+        )
+
+
+def test_kiwoom_child_env_removes_other_broker_credentials(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / "profile.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "KIWOOM_MOCK_APP_SECRET=ROB1173_ALLOWED_CANARY",
+                "KIWOOM_MOCK_US_APP_SECRET=ROB1173_FOREIGN_US_CANARY",
+                "KIS_MOCK_APP_SECRET=ROB1173_FOREIGN_KIS_CANARY",
+                "TOSS_API_CLIENT_SECRET=ROB1173_FOREIGN_TOSS_CANARY",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    child_env = mock_session_mcp.build_profile_environment(
+        profile="kiwoom_kr",
+        source_env={
+            "ENV_FILE": str(env_file),
+            "PATH": os.environ.get("PATH", ""),
+            "BINANCE_FUTURES_DEMO_API_SECRET": "ROB1173_FOREIGN_BINANCE_CANARY",
+        },
+    )
+
+    assert "KIWOOM_MOCK_APP_SECRET" in child_env
+    assert "KIWOOM_MOCK_US_APP_SECRET" not in child_env
+    assert "KIS_MOCK_APP_SECRET" not in child_env
+    assert "TOSS_API_CLIENT_SECRET" not in child_env
+    assert "BINANCE_FUTURES_DEMO_API_SECRET" not in child_env
+    assert child_env["ENV_FILE"] == os.devnull
+    assert not any(value.startswith("ROB1173_FOREIGN_") for value in child_env.values())
+
+
+def test_serve_stdio_applies_profile_env_boundary_before_server_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, bool] = {}
+    fake_main = types.ModuleType("app.mcp_server.main")
+
+    def capture_environment() -> None:
+        captured.update(
+            {
+                "target_present": "KIWOOM_MOCK_APP_SECRET" in os.environ,
+                "kiwoom_us_present": "KIWOOM_MOCK_US_APP_SECRET" in os.environ,
+                "kis_present": "KIS_MOCK_APP_SECRET" in os.environ,
+                "toss_present": "TOSS_API_CLIENT_SECRET" in os.environ,
+                "env_file_disabled": os.environ.get("ENV_FILE") == os.devnull,
+            }
+        )
+
+    fake_main.main = capture_environment
+    monkeypatch.setitem(sys.modules, "app.mcp_server.main", fake_main)
+    original_env = dict(os.environ)
+    original_cwd = Path.cwd()
+    try:
+        os.environ.update(
+            {
+                "ENV_FILE": os.devnull,
+                "KIWOOM_MOCK_APP_SECRET": "ROB1173_ALLOWED_CHILD_CANARY",
+                "KIWOOM_MOCK_US_APP_SECRET": "ROB1173_FOREIGN_US_CHILD_CANARY",
+                "KIS_MOCK_APP_SECRET": "ROB1173_FOREIGN_KIS_CHILD_CANARY",
+                "TOSS_API_CLIENT_SECRET": "ROB1173_FOREIGN_TOSS_CHILD_CANARY",
+            }
+        )
+        assert (
+            mock_session_mcp._serve_stdio(
+                profile="kiwoom_kr",
+                session_id="profile-env-child",
+            )
+            == 0
+        )
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
+        os.chdir(original_cwd)
+
+    assert captured == {
+        "target_present": True,
+        "kiwoom_us_present": False,
+        "kis_present": False,
+        "toss_present": False,
+        "env_file_disabled": True,
+    }
+
+
+def test_post_popen_exception_cleans_child_before_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "exception-state.json"
+    fake_claude = _write_stubborn_claude(tmp_path, state_path)
+    monkeypatch.setenv("ENV_FILE", os.devnull)
+    monkeypatch.setenv("ROB1173_TEST_STATE_FILE", str(state_path))
+    real_popen = subprocess.Popen
+    state: dict[str, object] | None = None
+
+    def spawn_and_wait(
+        argv: list[str],
+        **kwargs: object,
+    ) -> subprocess.Popen[str]:
+        process = real_popen(argv, **kwargs)
+        published = _wait_for_probe_state(state_path)
+        assert Path(str(published["config_path"])).exists()
+        return process
+
+    real_json_dumps = json.dumps
+    dump_calls = 0
+
+    def fail_audit_json(*args: object, **kwargs: object) -> str:
+        nonlocal dump_calls
+        dump_calls += 1
+        if dump_calls == 2:
+            raise RuntimeError("post-Popen audit failure")
+        return real_json_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(mock_session_mcp.subprocess, "Popen", spawn_and_wait)
+    monkeypatch.setattr(mock_session_mcp.json, "dumps", fail_audit_json)
+    try:
+        with pytest.raises(RuntimeError, match="post-Popen audit failure"):
+            mock_session_mcp.launch_claude(
+                profile="kiwoom_kr",
+                session_id="post-popen-exception",
+                client="claude",
+                command=[str(fake_claude)],
+            )
+        state = _wait_for_probe_state(state_path)
+        assert not _pid_exists(int(state["pid"]))
+        assert not _listener_accepts(int(state["port"]))
+        assert not Path(str(state["config_path"])).exists()
+    finally:
+        _cleanup_probe(None, state)
 
 
 @pytest.mark.integration
@@ -119,11 +312,14 @@ def test_connected_kiwoom_kr_tool_list_is_exact_and_excludes_other_orders() -> N
             )
         )
     )
-    kiwoom_names = {name for name in names if name.startswith("kiwoom_mock")}
-    assert kiwoom_names == EXPECTED_KIWOOM_KR_TOOLS
-    assert not any(name.startswith("kiwoom_mock_us_") for name in names)
-    assert not any(name.startswith(("kis_live_", "toss_")) for name in names)
-    assert FORBIDDEN_GENERIC_ORDER_TOOLS.isdisjoint(names)
+    _assert_kiwoom_kr_connected_surface(names)
+
+
+def test_central_contract_rejects_nonlocal_broker_alias() -> None:
+    with pytest.raises(AssertionError):
+        _assert_kiwoom_kr_connected_surface(
+            EXPECTED_KIWOOM_KR_TOOLS | {"kis_mock_cancel_order"}
+        )
 
 
 @pytest.mark.integration
@@ -148,23 +344,45 @@ def test_concurrent_profiles_do_not_cross_contaminate() -> None:
     assert "kis_mock_place_order" not in kiwoom_names
 
 
-def _pids_for_session(session_id: str) -> set[int]:
+def _process_census() -> dict[int, tuple[int, str]]:
     result = subprocess.run(
-        ["pgrep", "-f", f"mock_session_mcp.py _serve-stdio .*{session_id}"],
-        check=False,
+        ["ps", "-axo", "pid=,ppid=,comm="],
+        check=True,
         capture_output=True,
         text=True,
     )
-    return {
-        int(line)
-        for line in result.stdout.splitlines()
-        if line.strip().isdigit() and int(line) != os.getpid()
-    }
+    census: dict[int, tuple[int, str]] = {}
+    for line in result.stdout.splitlines():
+        fields = line.strip().split(maxsplit=2)
+        if len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit():
+            census[int(fields[0])] = (int(fields[1]), fields[2])
+    return census
+
+
+def _descendant_pids(
+    parent_pid: int,
+    census: dict[int, tuple[int, str]],
+) -> set[int]:
+    descendants: set[int] = set()
+    frontier = {parent_pid}
+    while frontier:
+        children = {
+            pid
+            for pid, (ppid, comm) in census.items()
+            if ppid in frontier and Path(comm).name != "ps"
+        }
+        children -= descendants
+        if not children:
+            break
+        descendants |= children
+        frontier = children
+    return descendants
 
 
 @pytest.mark.integration
 def test_stdio_child_has_no_listener_and_no_orphan_after_session_exit() -> None:
     session_id = "orphan-proof-rob1173"
+    before = _descendant_pids(os.getpid(), _process_census())
 
     async def _observe() -> tuple[set[int], dict[int, str]]:
         from mcp import ClientSession, StdioServerParameters
@@ -181,7 +399,7 @@ def test_stdio_child_has_no_listener_and_no_orphan_after_session_exit() -> None:
         async with stdio_client(params) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
-                pids = _pids_for_session(session_id)
+                pids = _descendant_pids(os.getpid(), _process_census()) - before
                 assert pids
                 listeners: dict[int, str] = {}
                 for pid in pids:
@@ -206,9 +424,151 @@ def test_stdio_child_has_no_listener_and_no_orphan_after_session_exit() -> None:
     assert all(not output.strip() for output in listeners.values())
 
     deadline = time.monotonic() + 5
-    remaining = _pids_for_session(session_id)
+    remaining = child_pids & _process_census().keys()
     while remaining and time.monotonic() < deadline:
         time.sleep(0.05)
-        remaining = _pids_for_session(session_id)
+        remaining = child_pids & _process_census().keys()
     assert not remaining
     assert child_pids
+
+
+def _write_stubborn_claude(tmp_path: Path, state_path: Path) -> Path:
+    executable = tmp_path / "claude"
+    executable.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import sys
+import time
+
+for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(signum, signal.SIG_IGN)
+config_index = sys.argv.index("--mcp-config") + 1
+listener = socket.socket()
+listener.bind(("127.0.0.1", 0))
+listener.listen()
+Path(os.environ["ROB1173_TEST_STATE_FILE"]).write_text(
+    json.dumps(
+        {
+            "pid": os.getpid(),
+            "port": listener.getsockname()[1],
+            "config_path": sys.argv[config_index],
+        }
+    ),
+    encoding="utf-8",
+)
+while True:
+    time.sleep(60)
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    return executable
+
+
+def _wait_for_probe_state(state_path: Path) -> dict[str, object]:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            return json.loads(state_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(0.02)
+    raise AssertionError("fake Claude did not publish lifecycle state")
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _listener_accepts(port: int) -> bool:
+    with socket.socket() as probe:
+        probe.settimeout(0.1)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _cleanup_probe(
+    wrapper: subprocess.Popen[str] | None,
+    state: dict[str, object] | None,
+) -> None:
+    if wrapper is not None and wrapper.poll() is None:
+        try:
+            os.killpg(wrapper.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        wrapper.wait(timeout=5)
+    if state is None:
+        return
+    child_pid = int(state["pid"])
+    if _pid_exists(child_pid):
+        try:
+            os.killpg(child_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    config_path = Path(str(state["config_path"]))
+    temp_dir = config_path.parent
+    if temp_dir.name.startswith("auto-trader-"):
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "signum",
+    [signal.SIGHUP, signal.SIGTERM],
+    ids=["sighup", "sigterm-stubborn-child"],
+)
+def test_wrapper_signal_cleanup_is_bounded_and_leak_free(
+    tmp_path: Path,
+    signum: signal.Signals,
+) -> None:
+    state_path = tmp_path / "state.json"
+    fake_claude = _write_stubborn_claude(tmp_path, state_path)
+    env = dict(os.environ)
+    env["ENV_FILE"] = os.devnull
+    env["ROB1173_TEST_STATE_FILE"] = str(state_path)
+    wrapper: subprocess.Popen[str] | None = None
+    state: dict[str, object] | None = None
+    try:
+        wrapper = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(mock_session_mcp.__file__).resolve()),
+                "run",
+                "--profile",
+                "kiwoom_kr",
+                "--session-id",
+                f"lifecycle-{signum.name.lower()}",
+                "--client",
+                "claude",
+                "--",
+                str(fake_claude),
+            ],
+            cwd=Path(__file__).resolve().parents[2],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        state = _wait_for_probe_state(state_path)
+        assert _listener_accepts(int(state["port"]))
+        wrapper.send_signal(signum)
+        try:
+            return_code = wrapper.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pytest.fail("wrapper did not bound shutdown for a stubborn child")
+        assert return_code == 128 + int(signum)
+
+        deadline = time.monotonic() + 2
+        while _pid_exists(int(state["pid"])) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not _pid_exists(int(state["pid"]))
+        assert not _listener_accepts(int(state["port"]))
+        assert not Path(str(state["config_path"])).exists()
+    finally:
+        _cleanup_probe(wrapper, state)

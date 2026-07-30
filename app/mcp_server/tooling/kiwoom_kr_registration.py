@@ -12,13 +12,16 @@ KIWOOM branch has no such gate, so selecting that profile *physically exposes*
 the US mutation surface even for a session that only needs KR reads/orders
 (for example KR-B1, whose forced profile it is).
 
-``MCP_PROFILE=kiwoom_kr`` is that profile minus the whole US namespace:
+``MCP_PROFILE=kiwoom_kr`` is that profile minus the whole US namespace and
+every foreign direct broker mutation:
 
 - Same shared read-only research/account surface (this profile does **not**
   early-return before the "Always" block), so it is a drop-in replacement for
   ``kiwoom`` in a KR session.
 - Exactly the eight KR ``kiwoom_mock_*`` tools as its order surface, including
   the ROB-1155 ``kiwoom_mock_get_order_detail`` (kt00007) read.
+- The broad shared block's KIS mock mirror executor is physically absent; the
+  central direct-broker-mutation contract guards against future foreign aliases.
 - ``orders_kiwoom_us_variants`` is never imported here, and the KR registrar is
   additionally driven through ``_AllowlistedMCP`` so a *future* US (or any
   other unlisted) registration added inside ``orders_kiwoom_variants.register``
@@ -64,7 +67,7 @@ KIWOOM_KR_TOOL_NAMES: set[str] = set(KIWOOM_MOCK_TOOL_NAMES)
 
 # Never registered on this profile. The US namespace (both its four mutations
 # and its three reads) is the point of the split; the other broker order
-# surfaces are excluded exactly as they are on MCP_PROFILE=kiwoom.
+# surfaces are excluded from this KR-only profile.
 KIWOOM_KR_FORBIDDEN_TOOL_NAMES: set[str] = (
     KIWOOM_MOCK_US_TOOL_NAMES
     | ORDER_TOOL_NAMES

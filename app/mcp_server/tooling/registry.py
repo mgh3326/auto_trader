@@ -322,7 +322,11 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     register_trade_retrospective_tools(mcp)
     register_forecast_tools(mcp)
     register_trading_scoreboard_tools(mcp)
-    register_mirror_counterfactual_tools(mcp)
+    # ROB-1173: this is a direct KIS mock broker mutation despite its report
+    # name. The KR-only Kiwoom profile must not inherit it from the broad shared
+    # block; its only broker mutation surface is the typed Kiwoom KR namespace.
+    if profile is not McpProfile.KIWOOM_KR:
+        register_mirror_counterfactual_tools(mcp)
     # ROB-713 — setup-tagged trade-journal aggregates; read-only, registered
     # unconditionally like the forecast tools it parallels.
 
