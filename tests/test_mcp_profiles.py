@@ -33,8 +33,8 @@ from app.mcp_server.tooling.analysis_readonly_registration import (
 )
 from app.mcp_server.tooling.kiwoom_kr_registration import (
     KIWOOM_KR_EXCLUDED_US_MUTATION_TOOL_NAMES,
-    KIWOOM_KR_FORBIDDEN_TOOL_NAMES,
     KIWOOM_KR_TOOL_NAMES,
+    kiwoom_kr_profile_tool_names,
 )
 from app.mcp_server.tooling.market_quote_snapshot_tools import (
     MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
@@ -273,14 +273,13 @@ class TestKiwoomKrProfile:
         mcp = _build_mcp(McpProfile.KIWOOM_KR)
         assert KIWOOM_MOCK_US_TOOL_NAMES.isdisjoint(mcp.tools.keys())
 
-    def test_does_not_register_forbidden_surfaces(self) -> None:
+    def test_matches_closed_world_and_known_mutation_contract(self) -> None:
         from app.mcp_server.tooling.route_request_lanes import (
             DIRECT_BROKER_MUTATION_TOOLS,
         )
 
         mcp = _build_mcp(McpProfile.KIWOOM_KR)
-        leaked = KIWOOM_KR_FORBIDDEN_TOOL_NAMES & mcp.tools.keys()
-        assert not leaked, f"kiwoom_kr leaked forbidden tools: {sorted(leaked)}"
+        assert set(mcp.tools) == kiwoom_kr_profile_tool_names()
         allowed_direct = KIWOOM_KR_TOOL_NAMES & DIRECT_BROKER_MUTATION_TOOLS
         assert mcp.tools.keys() & DIRECT_BROKER_MUTATION_TOOLS == allowed_direct
 

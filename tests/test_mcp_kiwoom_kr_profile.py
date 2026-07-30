@@ -12,13 +12,24 @@ from typing import Any, cast
 
 import pytest
 
+from app.core.config import settings
 from app.mcp_server.profiles import McpProfile, resolve_mcp_profile
-from app.mcp_server.tooling import kiwoom_kr_registration
+from app.mcp_server.tooling import kiwoom_kr_registration, registry
+from app.mcp_server.tooling.analysis_bundle_handlers import ANALYSIS_BUNDLE_TOOL_NAMES
+from app.mcp_server.tooling.investment_hermes_handlers import (
+    INVESTMENT_HERMES_TOOL_NAMES,
+)
+from app.mcp_server.tooling.investment_snapshots_registration import (
+    INVESTMENT_SNAPSHOTS_TOOL_NAMES,
+)
 from app.mcp_server.tooling.kiwoom_kr_registration import (
+    KIWOOM_KR_BASE_PROFILE_TOOL_NAMES,
     KIWOOM_KR_EXCLUDED_US_MUTATION_TOOL_NAMES,
     KIWOOM_KR_TOOL_NAMES,
+    kiwoom_kr_profile_tool_names,
     register_kiwoom_kr_tools,
 )
+from app.mcp_server.tooling.order_proposal_tools import ORDER_PROPOSAL_TOOL_NAMES
 from app.mcp_server.tooling.orders_kiwoom_us_variants import (
     KIWOOM_MOCK_US_MUTATION_TOOL_NAMES,
     KIWOOM_MOCK_US_TOOL_NAMES,
@@ -116,6 +127,84 @@ class TestRegistrarRegistersOnlyKrTools:
 
         assert "kiwoom_mock_place_order" in mcp.tools
         assert "kiwoom_mock_us_place_order" not in mcp.tools
+
+
+class TestWholeProfileClosedWorld:
+    def test_base_inventory_is_exactly_118_tools(self) -> None:
+        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 118
+
+    def test_current_profile_matches_active_exact_set(self) -> None:
+        mcp = DummyMCP()
+        registry.register_all_tools(cast(Any, mcp), profile=McpProfile.KIWOOM_KR)
+        assert set(mcp.tools) == kiwoom_kr_profile_tool_names()
+
+    def test_unclassified_shared_broker_alias_is_dropped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A shared registrar cannot widen KR outside the profile exact set."""
+        original_register = registry.register_market_data_tools
+
+        def _register_with_shadow_alias(mcp: Any) -> None:
+            original_register(mcp)
+
+            @mcp.tool(
+                name="kis_mock_shadow_place_order",
+                description="unclassified verifier mutation",
+            )
+            def _shadow_tool() -> None:  # pragma: no cover - registration only
+                return None
+
+        monkeypatch.setattr(
+            registry,
+            "register_market_data_tools",
+            _register_with_shadow_alias,
+        )
+        mcp = DummyMCP()
+        registry.register_all_tools(cast(Any, mcp), profile=McpProfile.KIWOOM_KR)
+
+        assert "kis_mock_shadow_place_order" not in mcp.tools
+        assert set(mcp.tools) == kiwoom_kr_profile_tool_names()
+
+    @pytest.mark.parametrize(
+        ("enabled_setting", "expected_optional_names"),
+        [
+            (
+                "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED",
+                ANALYSIS_BUNDLE_TOOL_NAMES,
+            ),
+            (
+                "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED",
+                INVESTMENT_HERMES_TOOL_NAMES
+                | {"investment_report_generate_from_bundle"},
+            ),
+            (
+                "INVESTMENT_SNAPSHOTS_MCP_ENABLED",
+                INVESTMENT_SNAPSHOTS_TOOL_NAMES,
+            ),
+            ("ORDER_PROPOSALS_ENABLED", ORDER_PROPOSAL_TOOL_NAMES),
+        ],
+    )
+    def test_optional_gates_expand_only_their_reviewed_exact_sets(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        enabled_setting: str,
+        expected_optional_names: set[str],
+    ) -> None:
+        optional_settings = {
+            "ANALYSIS_SNAPSHOT_BUNDLES_MCP_ENABLED",
+            "SNAPSHOT_BACKED_REPORT_GENERATOR_ENABLED",
+            "INVESTMENT_SNAPSHOTS_MCP_ENABLED",
+            "ORDER_PROPOSALS_ENABLED",
+        }
+        for setting_name in optional_settings:
+            monkeypatch.setattr(settings, setting_name, setting_name == enabled_setting)
+
+        mcp = DummyMCP()
+        registry.register_all_tools(cast(Any, mcp), profile=McpProfile.KIWOOM_KR)
+
+        assert set(mcp.tools) == (
+            set(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) | expected_optional_names
+        )
 
 
 class TestKrOrderPathUnchanged:

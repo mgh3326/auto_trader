@@ -47,6 +47,10 @@ wrapper가 실제 Claude executable 바로 뒤(모든 subcommand보다 앞)에 �
 실패한다. config는 wrapper가 살아 있는 동안만 존재한다.
 정상 종료뿐 아니라 SIGINT/SIGTERM/SIGHUP, post-`Popen` exception, TERM 무시
 child에서도 bounded TERM→KILL→reap을 끝낸 뒤 삭제한다.
+spawn critical section에서는 config/child 생성 전에 세 신호를 block하고 handler를
+설치한다. child는 exec 직전 parent의 원래 signal mask를 복원하며, parent는 `Popen`
+assignment로 child process-group 참조를 확보한 뒤에만 mask를 복원한다. 그 사이
+pending된 신호는 handler가 기록하고 group forward + bounded cleanup 경로가 처리한다.
 
 현재 운영 `/Users/mgh3326/bin/herdr-spawn`은 Git 밖의 unversioned 파일이다.
 실측 live script의 mock 분기는 `:27`에서 `MCP_PROFILE` env만 넘기며 이 seam을
@@ -92,15 +96,17 @@ uv run python scripts/mock_session_mcp.py verify \
 
 출력 전문에서 다음을 확인한다.
 
-1. `kiwoom_mock_*` namespace가 아래 정확히 8개다.
+1. feature gate 4개가 기본값(false)일 때 connected 전체가 profile-owned
+   closed-world exact set 118개와 동일하다. 각 optional gate는 별도 명시 집합만
+   추가한다. 등록 함수나 중앙 mutation 상수 어느 쪽에도 없는 신규 이름은 전체
+   profile registration proxy에서 drop된다.
+2. `kiwoom_mock_*` namespace가 아래 정확히 8개다.
    `preview_order`, `place_order`, `cancel_order`, `modify_order`,
    `get_order_history`, `get_order_detail`, `get_positions`,
    `get_orderable_cash`.
-2. `kiwoom_mock_us_*`, `kis_live_*`, `toss_*`가 없다.
-3. generic order `place_order`, `cancel_order`, `modify_order`,
-   `get_order_history`, `live_reconcile_orders`가 없다.
-4. 중앙 `DIRECT_BROKER_MUTATION_TOOLS` 계약과 교차했을 때 위 KR namespace에 속한
-   mutation 외에는 0개다. 특히 `kis_mock_mirror_execute_report`가 없다.
+3. 중앙 `DIRECT_BROKER_MUTATION_TOOLS` 계약과 교차했을 때 위 KR namespace에 속한
+   mutation 외에는 0개다. 특히 `kis_mock_mirror_execute_report`가 없다. 이 교차는
+   추가 관측 증거이고, 보안 경계는 앞의 전체 exact set이다.
 
 테스트:
 
@@ -110,6 +116,8 @@ uv run pytest tests/scripts/test_mock_session_mcp.py -vv -s
 
 이 테스트는 고정 seed를 사용하지 않는다. 난수 기반 판단이 없고 session id도 상수다.
 두 profile의 stdio child를 동시에 연결해 namespace 교차오염이 없는지 확인한다.
-SIGHUP, post-`Popen` exception, TERM 무시 child fault에서 process/listener/config가
-모두 0이 되는지와, 실제 stdio child 종료 후 PID/PPID/comm census에 orphan이 없는지를
-확인한다.
+`Popen` hook 내부의 assignment 전 SIGHUP, 일반 SIGHUP, post-`Popen` exception,
+TERM 무시 child fault에서 process/listener/config가 모두 0이 되는지 확인한다.
+exact hook은 parent의 managed signal 3개가 block됐고 child mask에는 남지 않았음도
+고정한다. cooperative child는 forwarded SIGHUP을 실제 수신한다. 실제 stdio child
+종료 후 orphan 여부는 PID/PPID/comm census만 사용한다.

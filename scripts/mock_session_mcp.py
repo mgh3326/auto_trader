@@ -43,6 +43,13 @@ _CLAUDE_MCP_FLAGS = frozenset({"--mcp-config", "--strict-mcp-config"})
 _CLAUDE_MCP_OVERRIDE_FLAGS = _CLAUDE_MCP_FLAGS | frozenset({"--no-strict-mcp-config"})
 _TERM_GRACE_SECONDS = 1.0
 _KILL_GRACE_SECONDS = 1.0
+_SIGNAL_POLL_SECONDS = 0.05
+_FORWARDED_SIGNAL_GRACE_SECONDS = 0.25
+_MANAGED_CLIENT_SIGNALS = (
+    signal.SIGHUP,
+    signal.SIGTERM,
+    signal.SIGINT,
+)
 _PROFILE_ALLOWED_BROKER_SCOPES: dict[str, frozenset[str]] = {
     "hermes-paper-kis": frozenset({"kis_mock"}),
     "kiwoom_kr": frozenset({"kiwoom_kr"}),
@@ -77,12 +84,6 @@ _REQUIRED_FOREIGN_SETTINGS_PLACEHOLDERS = frozenset(
 
 class MockSessionMcpError(RuntimeError):
     """Fail-closed mock-session configuration error."""
-
-
-class _ForwardedClientSignal(Exception):
-    def __init__(self, signum: int) -> None:
-        super().__init__(signum)
-        self.signum = signum
 
 
 def validate_mock_profile(profile: str) -> str:
@@ -330,6 +331,16 @@ def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
         )
 
 
+def _forward_process_group_signal(
+    process: subprocess.Popen[Any],
+    signum: int,
+) -> None:
+    try:
+        os.killpg(process.pid, signum)
+    except ProcessLookupError:
+        pass
+
+
 def launch_claude(
     *,
     profile: str,
@@ -342,65 +353,101 @@ def launch_claude(
     approved_session_id = validate_session_id(session_id)
     validate_client(client)
 
-    with session_config(
-        profile=approved_profile,
-        session_id=approved_session_id,
-    ) as config_path:
-        argv = build_claude_argv(command, config_path)
-        process = subprocess.Popen(
-            argv,
-            env=build_profile_environment(profile=approved_profile),
-            start_new_session=True,
-        )
-        forwarded_signal: int | None = None
-        previous_handlers: dict[int, Any] = {}
-        try:
-            print(
-                json.dumps(
-                    {
-                        "event": "mock_mcp_client_started",
-                        "client": SUPPORTED_CLIENT,
-                        "profile": approved_profile,
-                        "session_id": approved_session_id,
-                        "pid": process.pid,
-                        "argv_contract": [
-                            Path(argv[0]).name,
-                            "--mcp-config",
-                            str(config_path),
-                            "--strict-mcp-config",
-                        ],
-                        "server_count": 1,
-                        "transport": "stdio",
-                    },
-                    sort_keys=True,
-                ),
-                file=sys.stderr,
-                flush=True,
+    pending_signal: int | None = None
+    child_return_code: int | None = None
+    process: subprocess.Popen[Any] | None = None
+    previous_handlers: dict[int, Any] = {}
+    previous_signal_mask = signal.pthread_sigmask(
+        signal.SIG_BLOCK,
+        _MANAGED_CLIENT_SIGNALS,
+    )
+    signals_blocked = True
+
+    def _record_signal(signum: int, _frame: object) -> None:
+        nonlocal pending_signal
+        if pending_signal is None:
+            pending_signal = signum
+
+    def _restore_child_signal_mask() -> None:
+        # Popen executes this in its single-threaded fork child immediately
+        # before exec. Restore the mask that existed before the parent entered
+        # its spawn critical section; Claude must not inherit our temporary
+        # SIGHUP/SIGTERM/SIGINT block.
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
+
+    try:
+        for signum in _MANAGED_CLIENT_SIGNALS:
+            previous_handlers[signum] = signal.signal(signum, _record_signal)
+
+        with session_config(
+            profile=approved_profile,
+            session_id=approved_session_id,
+        ) as config_path:
+            argv = build_claude_argv(command, config_path)
+            child_env = build_profile_environment(profile=approved_profile)
+            process = subprocess.Popen(
+                argv,
+                env=child_env,
+                start_new_session=True,
+                preexec_fn=_restore_child_signal_mask,
             )
-
-            def _forward(signum: int, _frame: object) -> None:
-                if process.poll() is None:
-                    try:
-                        os.killpg(process.pid, signum)
-                    except ProcessLookupError:
-                        pass
-                raise _ForwardedClientSignal(signum)
-
-            for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-                previous_handlers[signum] = signal.signal(signum, _forward)
-            return_code = process.wait()
-        except _ForwardedClientSignal as exc:
-            forwarded_signal = exc.signum
-            return_code = 128 + exc.signum
-        finally:
             try:
-                _terminate_process_group(process)
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
+                signals_blocked = False
+                if pending_signal is None:
+                    print(
+                        json.dumps(
+                            {
+                                "event": "mock_mcp_client_started",
+                                "client": SUPPORTED_CLIENT,
+                                "profile": approved_profile,
+                                "session_id": approved_session_id,
+                                "pid": process.pid,
+                                "argv_contract": [
+                                    Path(argv[0]).name,
+                                    "--mcp-config",
+                                    str(config_path),
+                                    "--strict-mcp-config",
+                                ],
+                                "server_count": 1,
+                                "transport": "stdio",
+                            },
+                            sort_keys=True,
+                        ),
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                while pending_signal is None and child_return_code is None:
+                    try:
+                        child_return_code = process.wait(timeout=_SIGNAL_POLL_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        pass
+                if pending_signal is not None:
+                    _forward_process_group_signal(
+                        process,
+                        pending_signal,
+                    )
+                    try:
+                        child_return_code = process.wait(
+                            timeout=_FORWARDED_SIGNAL_GRACE_SECONDS
+                        )
+                    except subprocess.TimeoutExpired:
+                        pass
             finally:
-                for signum, handler in previous_handlers.items():
-                    signal.signal(signum, handler)
-        if forwarded_signal is not None:
-            return 128 + forwarded_signal
-        return return_code
+                _terminate_process_group(process)
+    finally:
+        try:
+            if signals_blocked:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_signal_mask)
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
+
+    if pending_signal is not None:
+        return 128 + pending_signal
+    if process is None or child_return_code is None:
+        raise MockSessionMcpError("Claude child exited without a return code")
+    return child_return_code
 
 
 def _serve_stdio(*, profile: str, session_id: str) -> int:

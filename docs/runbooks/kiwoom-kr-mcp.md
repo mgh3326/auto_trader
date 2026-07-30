@@ -32,9 +32,11 @@ KR Kiwoom 전용 표면이다.
 | 기동 시 mock config·mock host 강제 | X | **O** (아래) |
 
 `kiwoom_kr` 등록 경로는 `app/mcp_server/tooling/kiwoom_kr_registration.py`이며
-US 모듈을 **import하지 않는다**. 추가로 KR registrar를 restricted profile들과 같은
-`_AllowlistedMCP` 프록시로 감싼다 — 나중에 KR registrar 안에 비-KR 도구가 추가되어도
-등록 시점에 걸러진다(회귀 테스트가 이 필터가 load-bearing임을 고정한다).
+US registrar를 **호출하지 않는다**. US exported name set은 negative contract
+evidence로만 import한다. 전체 shared profile registration을 독립된 closed-world
+exact set 프록시로 감싸며, KR registrar 자체도 8-name exact set으로 다시 감싼다.
+따라서 중앙 mutation 목록에도 없는 새 foreign alias가 shared/KR registrar 어디에
+추가되더라도 등록 시점에 drop된다.
 
 🔴 **주문 경로는 불변이다.** 이 작업은 "무엇을 등록할지"만 바꾼다. `dmst_stex_tp="KRX"`
 고정, `MOCK_REJECTED_EXCHANGES={NXT, SOR}`, `dry_run`/`confirm` 이중 게이트, place/
@@ -55,7 +57,8 @@ scripts/mock_session_mcp.py run \
   executable 바로 뒤에 `--mcp-config <그 JSON>`과 `--strict-mcp-config`를
   강제로 넣는다. profile-filtered env는 `KIWOOM_MOCK_*`만 유지하고 다른 broker
   credential scope를 제거한다. 정상/비정상 종료 모두 stdio child를 bounded
-  TERM→KILL→reap한 뒤 JSON을 지운다. 상세 계약과 실제 tool-list 검증은
+  TERM→KILL→reap한 뒤 JSON을 지운다. spawn 전 parent signal block, child exec 전
+  원래 mask 복원, assignment 후 parent unblock 계약과 실제 tool-list 검증은
   `docs/runbooks/mock-session-mcp.md`를 따른다.
 - **network transport(`streamable-http`/`sse`)에서 토큰이 비면 FastMCP 생성 전에
   기동 실패한다.** ROB-1173 mock session은 network transport나 TCP 8771을 쓰지 않는다.
@@ -113,12 +116,14 @@ uv run pytest tests/test_mcp_kiwoom_kr_profile.py tests/test_mcp_profiles.py \
 ```
 
 - `tests/test_mcp_kiwoom_kr_profile.py` — 이름 집합(KR 8개 / 제외되는 US mutation
-  4개), registrar가 KR만 등록, **allowlist 필터가 load-bearing임**(registrar가 US
-  도구를 등록하려 해도 드롭), KR 주문 경로 불변(KRX 고정, place body).
+  4개), 전체 기본 inventory 118개 exact, optional gate별 명시 확장,
+  **closed-world 필터가 load-bearing임**(중앙 상수 밖
+  `kis_mock_shadow_place_order`도 shared registrar에서 드롭), KR registrar가 KR만
+  등록, 주문 경로 불변(KRX 고정, place body).
 - `tests/test_mcp_profiles.py::TestKiwoomKrProfile` — profile 등록 결과에
-  `kiwoom_mock_us_*`가 **없음**(prefix 기반 + 고정 집합 양쪽), `kiwoom` 표면과의
-  차집합이 US namespace + KIS mock mirror mutation임, 중앙 broker mutation 계약상
-  KR 3개(place/modify/cancel) 외 direct mutation 0, kt00007 read 유지.
+  전체 active exact set과의 동등성, `kiwoom` 표면과의 차집합이 US namespace + KIS
+  mock mirror mutation임, 중앙 broker mutation 계약상 KR
+  3개(place/modify/cancel) 외 direct mutation 0, kt00007 read 유지.
 - `tests/test_mcp_profiles.py::TestOrderSurfaceMatrix` — `_ORDER_SURFACE_MATRIX`에
   `kiwoom_kr → KIWOOM_MOCK_TOOL_NAMES` 집합 **동등성**으로 고정(추가·삭제 양방향 탐지).
 - `tests/test_mcp_server_main.py` — network transport 토큰 필수, mock config 불완전/

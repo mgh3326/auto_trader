@@ -42,9 +42,10 @@ Profile → tool surface mapping
   ROB-1159 least-privilege KR-only split of "kiwoom". Default research/read-only
   surface plus EXACTLY the eight KR kiwoom_mock_* tools (including the ROB-1155
   kiwoom_mock_get_order_detail kt00007 read). The whole kiwoom_mock_us_*
-  namespace is physically absent — the US module is never imported and the KR
-  registrar runs through an allowlist proxy. KR order-path behavior is
-  byte-identical to "kiwoom"; only the registered set is narrower.
+  namespace is physically absent — the US registrar is never invoked, and both
+  the whole profile and KR registrar run through closed-world exact-set
+  proxies. KR order-path behavior is byte-identical to "kiwoom"; only the
+  registered set is narrower.
 
 "shadow-replay" (McpProfile.SHADOW_REPLAY):
   ROB-697 M1 — frozen-context replay ONLY. Registers EXACTLY
@@ -271,6 +272,17 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
             register_paper_cohort_control_tools(mcp)
         return
 
+    if profile is McpProfile.KIWOOM_KR:
+        # ROB-1173: constrain the entire profile before any shared registrar
+        # runs. This exact-set registration proxy is independent of central
+        # mutation-name lists, so an unclassified foreign alias is dropped
+        # fail-closed even when it is newly introduced in an "Always" registrar.
+        from app.mcp_server.tooling.kiwoom_kr_registration import (
+            restrict_kiwoom_kr_profile_tools,
+        )
+
+        mcp = restrict_kiwoom_kr_profile_tools(mcp)
+
     # Always: side-effect-free research + read-only tools
     register_market_data_tools(mcp)
     register_fundamentals_tools(mcp)
@@ -434,10 +446,10 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # ROB-1159 — KR-only Kiwoom mock surface. Same shared read-only
         # research/account block as KIWOOM above, but the kiwoom_mock_us_*
         # namespace (4 mutations + 3 reads) is physically absent: this branch
-        # never imports orders_kiwoom_us_variants, and the KR registrar runs
-        # through an allowlist proxy so any future non-KR tool added inside it
-        # is dropped instead of widening this profile. KR order-path behavior
-        # (KRX pinning, dry_run/confirm double gate) is unchanged — only the
+        # never invokes its registrar. The entire profile and the KR registrar
+        # run through nested exact-set proxies, so any future unreviewed tool is
+        # dropped instead of widening this profile. KR order-path behavior (KRX
+        # pinning, dry_run/confirm double gate) is unchanged — only the
         # registered set differs.
         from app.mcp_server.tooling.kiwoom_kr_registration import (
             register_kiwoom_kr_tools,

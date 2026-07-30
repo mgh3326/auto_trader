@@ -15,6 +15,9 @@ from pathlib import Path
 
 import pytest
 
+from app.mcp_server.tooling.kiwoom_kr_registration import (
+    kiwoom_kr_profile_tool_names,
+)
 from scripts import mock_session_mcp
 from scripts.mock_session_mcp import (
     MockSessionMcpError,
@@ -36,13 +39,6 @@ EXPECTED_KIWOOM_KR_TOOLS = {
     "kiwoom_mock_place_order",
     "kiwoom_mock_preview_order",
 }
-FORBIDDEN_GENERIC_ORDER_TOOLS = {
-    "cancel_order",
-    "get_order_history",
-    "live_reconcile_orders",
-    "modify_order",
-    "place_order",
-}
 FORBIDDEN_CREDENTIAL_MARKERS = {
     "api_key",
     "api_secret",
@@ -61,11 +57,9 @@ def _assert_kiwoom_kr_connected_surface(names: set[str]) -> None:
         DIRECT_BROKER_MUTATION_TOOLS,
     )
 
+    assert names == kiwoom_kr_profile_tool_names()
     kiwoom_names = {name for name in names if name.startswith("kiwoom_mock")}
     assert kiwoom_names == EXPECTED_KIWOOM_KR_TOOLS
-    assert not any(name.startswith("kiwoom_mock_us_") for name in names)
-    assert not any(name.startswith(("kis_live_", "toss_")) for name in names)
-    assert FORBIDDEN_GENERIC_ORDER_TOOLS.isdisjoint(names)
     allowed_direct = EXPECTED_KIWOOM_KR_TOOLS & DIRECT_BROKER_MUTATION_TOOLS
     assert names & DIRECT_BROKER_MUTATION_TOOLS == allowed_direct
 
@@ -302,6 +296,57 @@ def test_post_popen_exception_cleans_child_before_config(
         _cleanup_probe(None, state)
 
 
+def test_parent_signal_mask_restore_exception_cleans_post_popen_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_process = types.SimpleNamespace(pid=998_1173)
+    terminated: list[object] = []
+    config_path: Path | None = None
+    real_pthread_sigmask = signal.pthread_sigmask
+    parent_restore_calls = 0
+
+    def fake_popen(
+        argv: list[str],
+        **_kwargs: object,
+    ) -> object:
+        nonlocal config_path
+        config_path = Path(argv[argv.index("--mcp-config") + 1])
+        assert config_path.exists()
+        return fake_process
+
+    def fail_first_parent_restore(
+        how: signal.Sigmasks,
+        mask: set[signal.Signals] | tuple[signal.Signals, ...],
+    ) -> set[signal.Signals]:
+        nonlocal parent_restore_calls
+        if how == signal.SIG_SETMASK:
+            parent_restore_calls += 1
+            if parent_restore_calls == 1:
+                raise RuntimeError("parent signal-mask restore failure")
+        return real_pthread_sigmask(how, mask)
+
+    monkeypatch.setattr(mock_session_mcp.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        mock_session_mcp,
+        "_terminate_process_group",
+        terminated.append,
+    )
+    monkeypatch.setattr(signal, "pthread_sigmask", fail_first_parent_restore)
+
+    with pytest.raises(RuntimeError, match="parent signal-mask restore failure"):
+        mock_session_mcp.launch_claude(
+            profile="kiwoom_kr",
+            session_id="mask-restore-exception",
+            client="claude",
+            command=["/opt/test/bin/claude"],
+        )
+
+    assert terminated == [fake_process]
+    assert parent_restore_calls == 2
+    assert config_path is not None
+    assert not config_path.exists()
+
+
 @pytest.mark.integration
 def test_connected_kiwoom_kr_tool_list_is_exact_and_excludes_other_orders() -> None:
     names = set(
@@ -318,7 +363,14 @@ def test_connected_kiwoom_kr_tool_list_is_exact_and_excludes_other_orders() -> N
 def test_central_contract_rejects_nonlocal_broker_alias() -> None:
     with pytest.raises(AssertionError):
         _assert_kiwoom_kr_connected_surface(
-            EXPECTED_KIWOOM_KR_TOOLS | {"kis_mock_cancel_order"}
+            kiwoom_kr_profile_tool_names() | {"kis_mock_cancel_order"}
+        )
+
+
+def test_closed_world_rejects_unclassified_broker_alias() -> None:
+    with pytest.raises(AssertionError):
+        _assert_kiwoom_kr_connected_surface(
+            kiwoom_kr_profile_tool_names() | {"kis_mock_shadow_place_order"}
         )
 
 
@@ -446,6 +498,7 @@ import time
 
 for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
     signal.signal(signum, signal.SIG_IGN)
+blocked_signals = signal.pthread_sigmask(signal.SIG_BLOCK, set())
 config_index = sys.argv.index("--mcp-config") + 1
 listener = socket.socket()
 listener.bind(("127.0.0.1", 0))
@@ -456,6 +509,11 @@ Path(os.environ["ROB1173_TEST_STATE_FILE"]).write_text(
             "pid": os.getpid(),
             "port": listener.getsockname()[1],
             "config_path": sys.argv[config_index],
+            "blocked_managed_signals": sorted(
+                int(signum)
+                for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
+                if signum in blocked_signals
+            ),
         }
     ),
     encoding="utf-8",
@@ -467,6 +525,118 @@ while True:
     )
     executable.chmod(0o700)
     return executable
+
+
+def _write_signal_observing_claude(tmp_path: Path, state_path: Path) -> Path:
+    executable = tmp_path / "claude"
+    executable.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import sys
+import time
+
+config_index = sys.argv.index("--mcp-config") + 1
+listener = socket.socket()
+listener.bind(("127.0.0.1", 0))
+listener.listen()
+blocked_signals = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+state_path = Path(os.environ["ROB1173_TEST_STATE_FILE"])
+state = {
+    "pid": os.getpid(),
+    "port": listener.getsockname()[1],
+    "config_path": sys.argv[config_index],
+    "blocked_managed_signals": sorted(
+        int(signum)
+        for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
+        if signum in blocked_signals
+    ),
+    "received_signal": None,
+}
+
+
+def publish() -> None:
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def handle(signum, _frame) -> None:
+    state["received_signal"] = signum
+    publish()
+    listener.close()
+    raise SystemExit(0)
+
+
+for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+    signal.signal(signum, handle)
+publish()
+while True:
+    time.sleep(60)
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    return executable
+
+
+def _write_popen_gap_harness(tmp_path: Path) -> Path:
+    harness = tmp_path / "popen-gap-harness.py"
+    harness.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+from scripts import mock_session_mcp
+
+real_popen = subprocess.Popen
+state_path = Path(os.environ["ROB1173_TEST_STATE_FILE"])
+
+
+def spawn_then_sighup(argv, **kwargs):
+    parent_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    process = real_popen(argv, **kwargs)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            break
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(0.02)
+    else:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=5)
+        raise RuntimeError("fake Claude did not publish lifecycle state")
+    state["parent_blocked_managed_signals_during_popen"] = sorted(
+        int(signum)
+        for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
+        if signum in parent_mask
+    )
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    os.kill(os.getpid(), signal.SIGHUP)
+    return process
+
+
+mock_session_mcp.subprocess.Popen = spawn_then_sighup
+raise SystemExit(
+    mock_session_mcp.launch_claude(
+        profile="kiwoom_kr",
+        session_id="popen-assignment-gap",
+        client="claude",
+        command=[sys.argv[1]],
+    )
+)
+""",
+        encoding="utf-8",
+    )
+    harness.chmod(0o700)
+    return harness
 
 
 def _wait_for_probe_state(state_path: Path) -> dict[str, object]:
@@ -515,6 +685,110 @@ def _cleanup_probe(
     temp_dir = config_path.parent
     if temp_dir.name.startswith("auto-trader-"):
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def test_sighup_in_popen_assignment_gap_is_bounded_and_leak_free(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "popen-gap-state.json"
+    fake_claude = _write_stubborn_claude(tmp_path, state_path)
+    harness = _write_popen_gap_harness(tmp_path)
+    env = dict(os.environ)
+    env["ENV_FILE"] = os.devnull
+    env["ROB1173_TEST_STATE_FILE"] = str(state_path)
+    wrapper: subprocess.Popen[str] | None = None
+    state: dict[str, object] | None = None
+    started = time.monotonic()
+    try:
+        wrapper = subprocess.Popen(
+            [sys.executable, str(harness), str(fake_claude)],
+            cwd=Path(__file__).resolve().parents[2],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        wrapper.wait(timeout=7)
+        elapsed = time.monotonic() - started
+        state = _wait_for_probe_state(state_path)
+        observed = {
+            "rc": wrapper.returncode,
+            "child_alive_after_parent_exit": _pid_exists(int(state["pid"])),
+            "listener_alive_after_parent_exit": _listener_accepts(int(state["port"])),
+            "config_exists_after_parent_exit": Path(str(state["config_path"])).exists(),
+            "parent_blocked_managed_signals_during_popen": state[
+                "parent_blocked_managed_signals_during_popen"
+            ],
+            "child_blocked_managed_signals": state["blocked_managed_signals"],
+        }
+        assert elapsed < 7
+        assert observed == {
+            "rc": 128 + int(signal.SIGHUP),
+            "child_alive_after_parent_exit": False,
+            "listener_alive_after_parent_exit": False,
+            "config_exists_after_parent_exit": False,
+            "parent_blocked_managed_signals_during_popen": sorted(
+                int(signum) for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT)
+            ),
+            "child_blocked_managed_signals": [],
+        }
+    finally:
+        _cleanup_probe(wrapper, state)
+
+
+@pytest.mark.parametrize(
+    "signum",
+    [signal.SIGHUP, signal.SIGTERM, signal.SIGINT],
+    ids=["sighup", "sigterm", "sigint"],
+)
+def test_wrapper_restores_child_signal_mask_and_forwards_managed_signal(
+    tmp_path: Path,
+    signum: signal.Signals,
+) -> None:
+    state_path = tmp_path / f"forwarded-{signum.name.lower()}-state.json"
+    fake_claude = _write_signal_observing_claude(tmp_path, state_path)
+    env = dict(os.environ)
+    env["ENV_FILE"] = os.devnull
+    env["ROB1173_TEST_STATE_FILE"] = str(state_path)
+    wrapper: subprocess.Popen[str] | None = None
+    state: dict[str, object] | None = None
+    try:
+        wrapper = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(mock_session_mcp.__file__).resolve()),
+                "run",
+                "--profile",
+                "kiwoom_kr",
+                "--session-id",
+                f"signal-mask-forwarding-{signum.name.lower()}",
+                "--client",
+                "claude",
+                "--",
+                str(fake_claude),
+            ],
+            cwd=Path(__file__).resolve().parents[2],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            start_new_session=True,
+        )
+        state = _wait_for_probe_state(state_path)
+        assert state["blocked_managed_signals"] == []
+        assert _listener_accepts(int(state["port"]))
+
+        wrapper.send_signal(signum)
+        assert wrapper.wait(timeout=5) == 128 + int(signum)
+        state = _wait_for_probe_state(state_path)
+
+        assert state["received_signal"] == int(signum)
+        assert not _pid_exists(int(state["pid"]))
+        assert not _listener_accepts(int(state["port"]))
+        assert not Path(str(state["config_path"])).exists()
+    finally:
+        _cleanup_probe(wrapper, state)
 
 
 @pytest.mark.parametrize(
