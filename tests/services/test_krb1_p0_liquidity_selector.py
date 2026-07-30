@@ -1239,6 +1239,19 @@ def test_m06_duplicate_evidence_rows_are_anchored() -> None:
     )
     _assert_fail_closed(dup_quotes, "duplicate_symbol_evidence_rows")
 
+    dup_metadata = select_krb1_p0_liquidity_candidates(
+        replace(
+            selector_input,
+            metadata_snapshots=selector_input.metadata_snapshots
+            + (selector_input.metadata_snapshots[0],),
+        )
+    )
+    _assert_fail_closed(dup_metadata, "duplicate_symbol_evidence_rows")
+    duplicate_map = dup_metadata["global_gates"]["unique_evidence_rows"]["evidence"][
+        "duplicates"
+    ]
+    assert duplicate_map["metadata_snapshot"] == ["KOSPI"]
+
 
 @pytest.mark.parametrize(
     "mutation",

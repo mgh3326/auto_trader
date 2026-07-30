@@ -458,6 +458,89 @@ def test_a_detail_whose_identity_disagrees_with_its_symbol_blocks() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("variant", "expected_defect"),
+    [
+        ("raw_missing", "provider_identity_raw_not_mapping"),
+        ("raw_none", "provider_identity_raw_not_mapping"),
+        ("raw_empty", "provider_identity_fields_absent"),
+        ("raw_list", "provider_identity_raw_not_mapping"),
+        ("provider_symbol_empty", "provider_identity_symbol_not_nonempty_string"),
+        ("provider_symbol_int", "provider_identity_symbol_not_nonempty_string"),
+        ("disclaimer_false", "request_context_disclaimer_not_true"),
+        ("disclaimer_string", "request_context_disclaimer_not_true"),
+    ],
+)
+def test_only_positive_provider_identity_shapes_can_pass(
+    variant: str, expected_defect: str
+) -> None:
+    """Closed-world invariant: unlisted malformed shapes get no implicit pass."""
+    manifest = _persisted(_manifest())
+    details: list[dict[str, object]] = []
+    for original in manifest.details:
+        detail: dict[str, object] = dict(original)
+        raw = dict(original["raw"])
+        if variant == "raw_missing":
+            detail.pop("raw")
+        elif variant == "raw_none":
+            detail["raw"] = None
+        elif variant == "raw_empty":
+            detail["raw"] = {}
+        elif variant == "raw_list":
+            detail["raw"] = []
+        elif variant == "provider_symbol_empty":
+            detail["raw"] = {**raw, "provider_raw_symbol": ""}
+        elif variant == "provider_symbol_int":
+            detail["raw"] = {**raw, "provider_raw_symbol": 5930}
+        elif variant == "disclaimer_false":
+            detail["raw"] = {
+                **raw,
+                "request_context_symbol_is_not_identity": False,
+            }
+        elif variant == "disclaimer_string":
+            detail["raw"] = {
+                **raw,
+                "request_context_symbol_is_not_identity": "true",
+            }
+        else:  # pragma: no cover - the parametrization is the closed case list
+            raise AssertionError(f"unknown test variant: {variant}")
+        details.append(detail)
+    forged_details = tuple(details)
+    forged = replace(
+        manifest,
+        details=forged_details,
+        manifest_hash=compute_manifest_hash(forged_details),
+    )
+
+    gate = _evaluate(forged)
+
+    assert gate.status == "unprovable"
+    assert gate.reason == "completion_manifest_provider_identity_unproven"
+    assert {item["defect"] for item in gate.evidence["identity_defects"]} == {
+        expected_defect
+    }
+
+
+def test_r2_m06_nonmapping_match_raw_is_refused_after_chain_round_trip(
+    tmp_path: Path,
+) -> None:
+    """Anchor the verifier's exact writer/chain/reader ``raw=None`` bypass."""
+    path = tmp_path / "completion_manifest.jsonl"
+    manifest = _manifest()
+    details = tuple({**detail, "raw": None} for detail in manifest.details)
+    forged = replace(
+        manifest,
+        details=details,
+        manifest_hash=compute_manifest_hash(details),
+    )
+
+    stored = append_completion_manifest(path, forged)
+
+    assert stored.chain_index == 2
+    with pytest.raises(ValueError, match="positively prove provider identity"):
+        load_latest_completion_manifest(path, market=MARKET, session_date=SESSION)
+
+
 def test_stripping_the_details_does_not_vacuously_prove_the_manifest() -> None:
     """Details are the evidence; a row without them cannot be re-checked."""
     manifest = replace(_persisted(_manifest()), details=(), failures=())

@@ -407,6 +407,27 @@ def test_provider_effective_session_after_decision_is_unprovable() -> None:
     )
 
 
+def test_provider_effective_session_after_selection_before_decision_is_unprovable() -> (
+    None
+):
+    """A target-day clock cannot stand in for the exact selection-session clock."""
+    next_session = dt.date(2026, 7, 30)
+    preopen_decision = dt.datetime(2026, 7, 30, 8, 0, tzinfo=KST)
+    gate = _evaluate(
+        _snapshot(
+            provider_clock=_provider_clock(
+                effective_session=next_session,
+                effective_session_raw=next_session.isoformat(),
+            )
+        ),
+        decision_at=preopen_decision,
+    )
+    assert gate.status == "unprovable"
+    assert gate.reason == (
+        "metadata_snapshot_provider_effective_session_after_selection_session"
+    )
+
+
 def test_naive_decision_clock_is_unprovable() -> None:
     gate = _evaluate(_snapshot(), decision_at=dt.datetime(2026, 7, 29, 18, 0))
     assert gate.status == "unprovable"
@@ -620,15 +641,8 @@ def test_append_refuses_an_undeclared_field_name_without_creating_a_stream(
 # ───────── F2: kill the five mutants that survived the adversarial review ─────────
 
 
-def test_effective_session_upper_bound_is_the_decision_clock_not_the_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """🔴 V-M1: with decision_at on 07-30, a 07-30-effective master is admissible.
-
-    Every earlier fixture had ``to_kst(decision_at).date() == as_of_session``, so
-    nothing distinguished "bounded by the decision clock" from "bounded by the
-    selection session".
-    """
+def test_effective_session_must_equal_selection_session_even_before_decision() -> None:
+    """A later effective session is not evidence for the selected session."""
     decision_at = dt.datetime(2026, 7, 30, 8, 0, tzinfo=KST)
     clock = _provider_clock(
         effective_session=dt.date(2026, 7, 30), effective_session_raw="2026-07-30"
@@ -637,7 +651,10 @@ def test_effective_session_upper_bound_is_the_decision_clock_not_the_session(
         _snapshot(provider_clock=clock, retrieved_at=decision_at),
         decision_at=decision_at,
     )
-    assert gate.status == "proven", gate.reason
+    assert gate.status == "unprovable"
+    assert gate.reason == (
+        "metadata_snapshot_provider_effective_session_after_selection_session"
+    )
 
     beyond = _provider_clock(
         effective_session=dt.date(2026, 7, 31), effective_session_raw="2026-07-31"
@@ -652,13 +669,8 @@ def test_effective_session_upper_bound_is_the_decision_clock_not_the_session(
     )
 
 
-def test_decision_clock_date_is_normalised_to_kst() -> None:
-    """🔴 V-M2: a non-KST decision offset must be converted before comparing dates.
-
-    ``2026-07-29T18:00:00+00:00`` is 2026-07-30 03:00 KST, so a 07-30-effective
-    master is within the decision clock. Comparing ``decision_at.date()`` raw
-    would reject it.
-    """
+def test_non_kst_decision_clock_does_not_widen_effective_session_equality() -> None:
+    """A KST-next-day decision still requires the exact selection session."""
     decision_at = dt.datetime(2026, 7, 29, 18, 0, tzinfo=dt.UTC)
     clock = _provider_clock(
         published_at=dt.datetime(2026, 7, 29, 16, 0, tzinfo=KST),
@@ -670,7 +682,10 @@ def test_decision_clock_date_is_normalised_to_kst() -> None:
         _snapshot(provider_clock=clock, retrieved_at=decision_at),
         decision_at=decision_at,
     )
-    assert gate.status == "proven", gate.reason
+    assert gate.status == "unprovable"
+    assert gate.reason == (
+        "metadata_snapshot_provider_effective_session_after_selection_session"
+    )
 
 
 def test_v1_row_carrying_a_provider_clock_is_still_refused() -> None:

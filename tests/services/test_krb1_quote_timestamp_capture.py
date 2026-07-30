@@ -99,6 +99,14 @@ def test_raw_broker_timestamp_is_proven() -> None:
             {"captured_at": dt.datetime(2026, 7, 29, 20, 0, tzinfo=KST)},
             "capture_clock_after_decision_at",
         ),
+        (
+            {"captured_at": dt.datetime(2026, 7, 29, 15, 40)},
+            "capture_clock_not_timezone_aware",
+        ),
+        (
+            {"raw_execution_time": "154100"},
+            "raw_execution_time_after_capture_clock",
+        ),
     ],
 )
 def test_defects_block_with_named_reasons(

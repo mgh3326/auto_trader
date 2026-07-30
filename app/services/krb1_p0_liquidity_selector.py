@@ -513,9 +513,10 @@ def select_krb1_p0_liquidity_candidates(
     quote_index, quote_duplicates = _index_unique(
         selector_input.quote_timestamp_evidence
     )
-    metadata_snapshot_index = {
-        snapshot.market: snapshot for snapshot in selector_input.metadata_snapshots
-    }
+    metadata_snapshot_index, metadata_snapshot_duplicates = _index_unique(
+        selector_input.metadata_snapshots,
+        symbol_getter="market",
+    )
     manifest_index = {
         manifest.market: manifest for manifest in selector_input.completion_manifests
     }
@@ -530,6 +531,7 @@ def select_krb1_p0_liquidity_candidates(
         "reference_exception": reference_duplicates,
         "completed_bar": completed_duplicates,
         "quote_timestamp": quote_duplicates,
+        "metadata_snapshot": metadata_snapshot_duplicates,
     }
     global_gates: dict[str, dict[str, object]] = {}
     if selector_input.target_session <= selector_input.as_of_session:
@@ -1151,8 +1153,8 @@ def select_krb1_p0_liquidity_candidates(
             "upper_bound": "every evidence clock must be <= decision_at",
             "metadata": (
                 "provider_published_at <= retrieved_at <= decision_at "
-                "AND as_of_session <= provider_effective_session "
-                "<= decision_at date (KST); the DB sync clock is retrieval "
+                "AND provider_effective_session == as_of_session; "
+                "the DB sync clock is retrieval "
                 "provenance and never authority"
             ),
             "completion_local_reconcile": (

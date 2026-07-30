@@ -372,48 +372,97 @@ def build_completion_manifest(
     )
 
 
+def _match_detail_identity_defect(
+    detail: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return why one claimed match does not positively prove provider identity."""
+    symbol = detail.get("symbol")
+    evidence_symbol = symbol if type(symbol) is str else repr(symbol)
+    if type(symbol) is not str or not symbol:
+        return {
+            "symbol": evidence_symbol,
+            "defect": "detail_symbol_not_nonempty_string",
+        }
+    if detail.get("status") != MATCH:
+        return {"symbol": symbol, "defect": "detail_does_not_claim_match"}
+    raw = detail.get("raw")
+    if not isinstance(raw, Mapping):
+        return {"symbol": symbol, "defect": "provider_identity_raw_not_mapping"}
+    missing = sorted(REQUIRED_DETAIL_IDENTITY_FIELDS - set(raw))
+    if missing:
+        return {
+            "symbol": symbol,
+            "defect": "provider_identity_fields_absent",
+            "missing_fields": missing,
+        }
+    provider_raw_symbol = raw.get("provider_raw_symbol")
+    if provider_raw_symbol is None:
+        return {"symbol": symbol, "defect": "provider_identity_missing"}
+    if type(provider_raw_symbol) is not str or not provider_raw_symbol:
+        return {
+            "symbol": symbol,
+            "defect": "provider_identity_symbol_not_nonempty_string",
+        }
+    if provider_raw_symbol != symbol:
+        return {
+            "symbol": symbol,
+            "defect": "provider_identity_mismatch",
+            "provider_raw_symbol": provider_raw_symbol,
+        }
+    if raw.get("request_context_symbol_is_not_identity") is not True:
+        return {
+            "symbol": symbol,
+            "defect": "request_context_disclaimer_not_true",
+        }
+    return None
+
+
 def _detail_identity_defects(
     details: Iterable[Mapping[str, Any]],
+    *,
+    expected_symbols: Iterable[str],
 ) -> list[dict[str, Any]]:
-    """Symbols whose persisted detail does not carry provider-origin identity.
+    """Prove the closed-world exact set of provider-identified match details.
 
-    Read at gate time, not only at build time: a manifest reaches the gate from an
-    append-only row, so the reader has to re-establish what the builder claimed.
-    Without this the identity requirement lives only in
-    :func:`reconcile_symbol`, and every record written before that check existed
-    stays proven forever (ROB-1172 F-INT-02).
+    Passing is defined positively: every expected symbol has exactly one detail,
+    that detail claims ``match``, and its raw Mapping contains a non-empty provider
+    symbol of the right type that equals the detail symbol plus the explicit
+    request-context disclaimer. Missing, extra, duplicate, non-Mapping, empty, or
+    type-confused shapes therefore cannot become a new implicit allow case.
     """
+    expected = set(expected_symbols)
+    seen: set[str] = set()
     defects: list[dict[str, Any]] = []
-    for detail in details:
-        symbol = str(detail.get("symbol"))
-        raw = detail.get("raw")
-        if not isinstance(raw, Mapping):
-            # A detail with no raw response is already a failure status; the
-            # reconcile counters handle it.
-            continue
-        missing = sorted(REQUIRED_DETAIL_IDENTITY_FIELDS - set(raw))
-        if missing:
+    for position, detail in enumerate(details):
+        symbol = detail.get("symbol")
+        if type(symbol) is not str or not symbol:
             defects.append(
                 {
-                    "symbol": symbol,
-                    "defect": "provider_identity_fields_absent",
-                    "missing_fields": missing,
+                    "symbol": repr(symbol),
+                    "defect": "detail_symbol_not_nonempty_string",
+                    "detail_index": position,
                 }
             )
             continue
-        if detail.get("status") != MATCH:
-            continue
-        provider_raw_symbol = raw.get("provider_raw_symbol")
-        if provider_raw_symbol is None:
-            defects.append({"symbol": symbol, "defect": "provider_identity_missing"})
-        elif str(provider_raw_symbol) != symbol:
+        if symbol not in expected:
             defects.append(
                 {
                     "symbol": symbol,
-                    "defect": "provider_identity_mismatch",
-                    "provider_raw_symbol": str(provider_raw_symbol),
+                    "defect": "provider_identity_detail_outside_expected_set",
                 }
             )
+            continue
+        if symbol in seen:
+            defects.append(
+                {"symbol": symbol, "defect": "provider_identity_detail_duplicate"}
+            )
+            continue
+        seen.add(symbol)
+        defect = _match_detail_identity_defect(detail)
+        if defect is not None:
+            defects.append(defect)
+    for symbol in sorted(expected - seen):
+        defects.append({"symbol": symbol, "defect": "provider_identity_detail_missing"})
     return defects
 
 
@@ -506,21 +555,6 @@ def evaluate_completion_manifest(
             uncovered_symbols=examples(uncovered),
             **required,
         )
-    # 🔴 F-INT-02: re-establish provider-origin identity at read time. The builder's
-    # check protects new records; this protects the gate from every record written
-    # before that check existed.
-    identity_defects = _detail_identity_defects(manifest.details)
-    if identity_defects:
-        return unprovable(
-            "completion_manifest_provider_identity_unproven",
-            manifest=manifest.as_evidence(),
-            identity_defects=[
-                normalize_evidence(item) for item in identity_defects[:20]
-            ],
-            identity_defect_count=len(identity_defects),
-            request_context_symbol_is_not_identity=True,
-            **required,
-        )
     if (
         manifest.stream_id != COMPLETION_MANIFEST_STREAM_ID
         or type(manifest.chain_index) is not int
@@ -545,6 +579,24 @@ def evaluate_completion_manifest(
             failure_symbols=examples(
                 [str(item.get("symbol")) for item in manifest.failures]
             ),
+            **required,
+        )
+    # 🔴 F-INT-02: counters only establish that the writer claimed a reconcile.
+    # Before promotion, independently prove the closed-world exact set of
+    # provider-origin identities from the persisted detail values.
+    identity_defects = _detail_identity_defects(
+        manifest.details,
+        expected_symbols=expected,
+    )
+    if identity_defects:
+        return unprovable(
+            "completion_manifest_provider_identity_unproven",
+            manifest=manifest.as_evidence(),
+            identity_defects=[
+                normalize_evidence(item) for item in identity_defects[:20]
+            ],
+            identity_defect_count=len(identity_defects),
+            request_context_symbol_is_not_identity=True,
             **required,
         )
     if manifest.first_observed_at is None or manifest.last_observed_at is None:
@@ -693,15 +745,14 @@ def manifest_from_row(
         raise ValueError("manifest row is missing finalized_at")
     details = tuple(dict(item) for item in row.get("details") or ())
     for detail in details:
-        raw_detail = detail.get("raw")
-        if not isinstance(raw_detail, Mapping):
+        if detail.get("status") != MATCH:
             continue
-        missing = sorted(REQUIRED_DETAIL_IDENTITY_FIELDS - set(raw_detail))
-        if missing:
+        defect = _match_detail_identity_defect(detail)
+        if defect is not None:
             raise ValueError(
-                f"completion manifest detail for {detail.get('symbol')!r} is missing "
-                f"provider identity fields {missing}; it predates the "
-                "provider-origin identity contract and cannot be rehydrated"
+                f"completion manifest match detail for {detail.get('symbol')!r} "
+                "does not positively prove provider identity: "
+                f"{defect['defect']}"
             )
     failures = tuple(item for item in details if item.get("status") != MATCH)
     return CompletionManifest(

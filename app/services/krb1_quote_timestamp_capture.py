@@ -286,10 +286,24 @@ def evaluate_quote_timestamp_capture(
             raw_evidence=evidence,
             **required,
         )
-    if is_aware(capture.captured_at) and capture.captured_at > decision_at:
+    if not is_aware(capture.captured_at):
+        return unprovable(
+            "selected_quote_actual_raw_timestamp_unproven",
+            defect="capture_clock_not_timezone_aware",
+            raw_evidence=evidence,
+            **required,
+        )
+    if capture.captured_at > decision_at:
         return unprovable(
             "selected_quote_actual_raw_timestamp_unproven",
             defect="capture_clock_after_decision_at",
+            raw_evidence=evidence,
+            **required,
+        )
+    if raw_observed > capture.captured_at:
+        return unprovable(
+            "selected_quote_actual_raw_timestamp_unproven",
+            defect="raw_execution_time_after_capture_clock",
             raw_evidence=evidence,
             **required,
         )

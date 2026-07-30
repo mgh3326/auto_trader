@@ -18,7 +18,7 @@ was authoritative *as of that decision*. Three holes caused it:
 
 So authority now has to come from the provider or not at all:
 
-    provider_effective_session >= as_of_session          (lower bound: not stale)
+    provider_effective_session == as_of_session          (exact session identity)
     provider_published_at <= retrieved_at <= decision_at (upper bound: not retroactive)
 
 ``retrieved_at`` is still recorded — it bounds when we could have known — but it
@@ -320,7 +320,7 @@ def evaluate_metadata_authority(
     declared_effective = PROVIDER_EFFECTIVE_SESSION_FIELDS
     required = {
         "required_authoritative_sources": sorted(AUTHORITATIVE_METADATA_SOURCES),
-        "required_provider_effective_session_at_or_after": as_of_session.isoformat(),
+        "required_provider_effective_session_equal_to": as_of_session.isoformat(),
         "required_clock_upper_bound_decision_at": normalize_evidence(decision_at),
         "required_provider_origin_clock": True,
         "required_declared_published_at_fields": sorted(declared_published),
@@ -483,6 +483,13 @@ def evaluate_metadata_authority(
     if provider_clock.effective_session > to_kst(decision_at).date():
         return unprovable(
             "metadata_snapshot_provider_effective_session_after_decision_at",
+            market=market,
+            snapshot=snapshot.as_evidence(),
+            **required,
+        )
+    if provider_clock.effective_session > as_of_session:
+        return unprovable(
+            "metadata_snapshot_provider_effective_session_after_selection_session",
             market=market,
             snapshot=snapshot.as_evidence(),
             **required,
