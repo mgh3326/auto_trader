@@ -342,6 +342,10 @@ async def _fetch_raw_upstream_evidence(
                     symbol=symbol,
                     endpoint=str(daily.get("endpoint") or ""),
                     tr_id=str(daily.get("tr_id") or ""),
+                    # 🔴 Provider-origin identity only. The KIS daily response has
+                    # no symbol field, so this stays None and the gate fails
+                    # closed; the requested symbol must never be injected here.
+                    raw_symbol=daily.get("stck_shrn_iscd"),
                     raw_business_date=daily.get("stck_bsop_date"),
                     raw_close=daily.get("stck_clpr"),
                     raw_volume=daily.get("acml_vol"),

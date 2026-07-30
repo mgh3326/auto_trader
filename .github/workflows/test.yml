@@ -267,14 +267,16 @@ jobs:
     - name: Install dependencies
       run: uv sync --group dev
 
-    # ROB-1158 r2: this step used to end both scanners with `|| true`, and the
+    # ROB-1158 r2 / ROB-1172 F-06: this step used to end both scanners with
+    # `|| true`, and the
     # Safety invocation was additionally malformed — `safety check` rejects
     # `--output safety-report.json` ("not one of 'screen','text','json','bare',
-    # 'html'"), exited 2, and wrote no report. The report path is now
-    # `--save-json` (stdout carries a deprecation banner, so redirecting it would
-    # not produce parseable JSON), and both exit codes are captured and surfaced;
-    # `continue-on-error` keeps the job advisory (it is not a required check)
-    # without laundering the result into a green tick.
+    # 'html'"), exited 2, and wrote no report. So the job reported success while one
+    # scanner had not run at all and the other's findings were discarded. The report
+    # path is now `--save-json` (stdout carries a deprecation banner, so redirecting
+    # it would not produce parseable JSON), and both exit codes are captured and
+    # surfaced; `continue-on-error` keeps the job advisory (it is not a required
+    # check) without laundering the result into a green tick.
     - name: Run security checks
       id: security-scan
       continue-on-error: true

@@ -57,6 +57,7 @@ def _raw(db: DbDailyBar, **overrides: object) -> RawDailyBar:
         symbol=db.symbol,
         endpoint=KIS_DAILY_ENDPOINT,
         tr_id=KIS_DAILY_TR_ID,
+        raw_symbol=db.symbol,
         raw_business_date="20260729",
         raw_open=str(db.open),
         raw_high=str(db.high),

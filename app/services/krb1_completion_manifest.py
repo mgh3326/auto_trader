@@ -68,11 +68,18 @@ MATCH = "match"
 
 @dataclass(frozen=True, slots=True)
 class RawDailyBar:
-    """One KIS daily response row, kept as returned (strings, never coerced)."""
+    """One KIS daily response row, kept as returned (strings, never coerced).
+
+    ``symbol`` is the symbol we requested (request context). ``raw_symbol`` is the
+    identity the *provider* stated in the same response; the KIS daily payload has
+    no such field, so it is ``None`` and reconciliation refuses the row rather than
+    substituting the request context (ROB-1172 E1/F-02).
+    """
 
     symbol: str
     endpoint: str
     tr_id: str
+    raw_symbol: str | None
     raw_business_date: str | None
     raw_open: str | None
     raw_high: str | None
@@ -96,6 +103,8 @@ class RawDailyBar:
             "stck_lwpr": self.raw_low,
             "stck_oprc": self.raw_open,
             "symbol": self.symbol,
+            "provider_raw_symbol": self.raw_symbol,
+            "request_context_symbol_is_not_identity": True,
             "tr_id": self.tr_id,
         }
 
@@ -217,6 +226,10 @@ def reconcile_symbol(
     if raw is None:
         return "raw_response_missing", detail
     detail["raw"] = raw.as_canonical()
+    if raw.raw_symbol is None:
+        return "provider_identity_missing", detail
+    if raw.raw_symbol != db.symbol:
+        return "provider_identity_mismatch", detail
     if raw.endpoint != KIS_DAILY_ENDPOINT:
         return "endpoint_mismatch", detail
     if raw.tr_id != KIS_DAILY_TR_ID:

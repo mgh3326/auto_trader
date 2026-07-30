@@ -196,6 +196,8 @@ async def _sweep_raw_daily(
                 symbol=symbol,
                 endpoint=str(payload.get("endpoint") or ""),
                 tr_id=str(payload.get("tr_id") or ""),
+                # Provider-origin identity only; absent in this TR (F-02).
+                raw_symbol=payload.get("stck_shrn_iscd"),
                 raw_business_date=payload.get("stck_bsop_date"),
                 raw_open=payload.get("stck_oprc"),
                 raw_high=payload.get("stck_hgpr"),

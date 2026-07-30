@@ -99,9 +99,17 @@ class CandleRow:
 
 @dataclass(frozen=True, slots=True)
 class CompletedBarEvidence:
+    # ``symbol`` is the symbol we *requested*: request context, not identity.
     symbol: str
     endpoint: str
     tr_id: str
+    # 🔴 ``raw_symbol`` must come from the provider response. #1729 accepted the
+    # requested symbol as the evidence identity, which means the response never
+    # confirmed which instrument it described — we filled that in ourselves. The
+    # KIS daily response carries no symbol field, so this is ``None`` in practice
+    # and the gate stays unprovable. That is the correct state, not a bug to patch
+    # with the request context (E1).
+    raw_symbol: str | None
     raw_business_date: str | None
     raw_close: str | None
     raw_volume: str | None
@@ -231,6 +239,10 @@ def _completed_bar_matches(
         or evidence.observed_at > decision_at
     ):
         return False
+    if evidence.raw_symbol is None or evidence.raw_symbol != candle.symbol:
+        # Provider-origin identity absent (or disagreeing) -> unprovable. The
+        # requested symbol cannot stand in for it.
+        return False
     return (
         evidence.symbol == candle.symbol
         and evidence.endpoint == KIS_DAILY_ENDPOINT
@@ -311,6 +323,15 @@ def _completed_bar_gate(
             symbol=candle.symbol,
             required_endpoint=KIS_DAILY_ENDPOINT,
             required_tr_id=KIS_DAILY_TR_ID,
+        )
+    if evidence.raw_symbol is None:
+        return _gate(
+            "unprovable",
+            "selected_completed_bar_provider_identity_missing",
+            candle=_row_dict(candle),
+            raw_evidence=_row_dict(evidence),
+            request_context_symbol_is_not_identity=True,
+            required_raw_field="provider-origin symbol in the same daily response",
         )
     if not _completed_bar_matches(candle, evidence, decision_at):
         return _gate(
@@ -541,12 +562,40 @@ def select_krb1_p0_liquidity_candidates(
         gates: dict[str, dict[str, object]] = {}
         expected_count = selector_input.expected_universe_counts.get(market)
         actual_count = len(rows)
-        if expected_count is None or expected_count != actual_count:
+        # 🔴 F-04: the expected denominator must not come from the same read as the
+        # rows it validates. #1729's CLI took count(*) and the rows from one
+        # transaction on one table, so a truncated universe shrank both sides
+        # together and still proved "full coverage" — the count proved itself.
+        # The independent basis available here is the append-only metadata snapshot:
+        # captured earlier, hash-chained, and bound to the provider payload. Its
+        # symbol_count is what the denominator must agree with.
+        sealed_snapshot = metadata_snapshot_index.get(market)
+        sealed_count = sealed_snapshot.symbol_count if sealed_snapshot else None
+        if sealed_count is None:
+            gates["universe_snapshot_coverage"] = _gate(
+                "unprovable",
+                "universe_denominator_has_no_sealed_basis",
+                expected_count=expected_count,
+                actual_count=actual_count,
+                required_basis="append-only metadata snapshot symbol_count",
+                same_transaction_count_is_not_independent_evidence=True,
+            )
+        elif expected_count is None or expected_count != actual_count:
             gates["universe_snapshot_coverage"] = _gate(
                 "unprovable",
                 "full_universe_snapshot_coverage_mismatch",
                 expected_count=expected_count,
                 actual_count=actual_count,
+                sealed_count=sealed_count,
+            )
+        elif sealed_count != actual_count:
+            gates["universe_snapshot_coverage"] = _gate(
+                "unprovable",
+                "universe_denominator_disagrees_with_sealed_basis",
+                expected_count=expected_count,
+                actual_count=actual_count,
+                sealed_count=sealed_count,
+                same_transaction_count_is_not_independent_evidence=True,
             )
         else:
             gates["universe_snapshot_coverage"] = _gate(
@@ -554,6 +603,8 @@ def select_krb1_p0_liquidity_candidates(
                 "full_universe_snapshot_coverage_proven",
                 expected_count=expected_count,
                 actual_count=actual_count,
+                sealed_count=sealed_count,
+                denominator_basis="append-only metadata snapshot symbol_count",
             )
 
         active_rows = [row for row in rows if row.is_active]
@@ -754,6 +805,7 @@ def select_krb1_p0_liquidity_candidates(
                 coverage_prerequisite_proven=coverage_proven,
                 ingested_at_alone_is_insufficient=True,
                 local_match_is_not_provider_finality=True,
+                request_context_symbol_is_not_identity=True,
             )
         else:
             gates["completed_session_raw_completion"] = _gate(

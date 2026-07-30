@@ -145,6 +145,10 @@ def _completed(candle: CandleRow) -> CompletedBarEvidence:
         symbol=candle.symbol,
         endpoint=KIS_DAILY_ENDPOINT,
         tr_id=KIS_DAILY_TR_ID,
+        # Hypothetical provider-origin identity. The wired KIS daily response has
+        # none (F-02), so production stays unprovable; the fixture supplies one so
+        # the other gates remain reachable.
+        raw_symbol=candle.symbol,
         raw_business_date="20260729",
         raw_close=str(candle.close),
         raw_volume=str(candle.volume),
@@ -226,6 +230,7 @@ def _manifest(
                 symbol=row.symbol,
                 endpoint=KIS_DAILY_ENDPOINT,
                 tr_id=KIS_DAILY_TR_ID,
+                raw_symbol=row.symbol,
                 raw_business_date="20260729",
                 raw_open=str(row.open),
                 raw_high=str(row.high),
@@ -1126,3 +1131,302 @@ def test_opening_call_symbol_is_never_estimated_or_awaited() -> None:
         replace(selector_input, reference_price_exception_records=records)
     )
     _assert_fail_closed(result, "target_session_reference_price_exception_unproven")
+
+
+# ───────── #1729 F-05: anchors for the mutants that survived that review ─────────
+#
+# Each test below kills a specific mutant the adversarial review applied to the
+# #1729 selector without any test noticing. The mutant IDs are quoted so the
+# mapping stays traceable.
+
+
+def test_m05_session_order_failure_is_anchored() -> None:
+    """M05: target_session must follow as_of_session."""
+    selector_input = _base_input()
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, target_session=AS_OF)
+    )
+    _assert_fail_closed(result, "target_session_must_follow_as_of_session")
+
+    earlier = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, target_session=dt.date(2026, 7, 28))
+    )
+    _assert_fail_closed(earlier, "target_session_must_follow_as_of_session")
+
+
+def test_m06_duplicate_evidence_rows_are_anchored() -> None:
+    """M06: duplicate symbol evidence must fail closed, per evidence family."""
+    selector_input = _base_input()
+
+    dup_candles = select_krb1_p0_liquidity_candidates(
+        replace(
+            selector_input,
+            candle_rows=selector_input.candle_rows + (selector_input.candle_rows[0],),
+        )
+    )
+    _assert_fail_closed(dup_candles, "duplicate_symbol_evidence_rows")
+
+    dup_universe = select_krb1_p0_liquidity_candidates(
+        replace(
+            selector_input,
+            universe_rows=selector_input.universe_rows
+            + (selector_input.universe_rows[0],),
+        )
+    )
+    _assert_fail_closed(dup_universe, "duplicate_symbol_evidence_rows")
+
+    dup_quotes = select_krb1_p0_liquidity_candidates(
+        replace(
+            selector_input,
+            quote_timestamp_evidence=selector_input.quote_timestamp_evidence
+            + (selector_input.quote_timestamp_evidence[0],),
+        )
+    )
+    _assert_fail_closed(dup_quotes, "duplicate_symbol_evidence_rows")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"close": 0},
+        {"open": -1},
+        {"high": 0},
+        {"low": -5},
+        {"volume": -1},
+        {"value": -1},
+        {"source": ""},
+    ],
+)
+def test_m12_candle_row_integrity_is_anchored(mutation: dict[str, object]) -> None:
+    """M12: a structurally invalid completed row must fail closed."""
+    selector_input = _base_input()
+    candles = tuple(
+        replace(row, **mutation) if row.symbol == "000002" else row  # type: ignore[arg-type]
+        for row in selector_input.candle_rows
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        _with_evidence(
+            selector_input,
+            candle_rows=candles,
+            completed_bar_evidence=tuple(_completed(row) for row in candles),
+        )
+    )
+
+    assert result["status"] == "fail_closed"
+    reasons = {str(item["reason"]) for item in result["fail_close_reasons"]}  # type: ignore[union-attr]
+    assert reasons & {
+        "completed_session_row_integrity_unproven",
+        "local_full_universe_exact_reconcile_unproven",
+        "full_universe_raw_daily_local_match_unproven",
+    }, reasons
+
+
+def test_m18_two_market_guard_is_anchored() -> None:
+    """M18: one market alone can never produce a selection."""
+    selector_input = _base_input()
+    kospi_only = tuple(
+        row for row in selector_input.universe_rows if row.exchange == "KOSPI"
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        _with_evidence(
+            selector_input,
+            universe_rows=kospi_only,
+            candle_rows=tuple(
+                row
+                for row in selector_input.candle_rows
+                if row.symbol in {item.symbol for item in kospi_only}
+            ),
+            expected_universe_counts={"KOSPI": 2, "KOSDAQ": 0},
+            quote_timestamp_evidence=tuple(_quote(row.symbol) for row in kospi_only),
+            completed_bar_evidence=tuple(
+                _completed(row)
+                for row in selector_input.candle_rows
+                if row.symbol in {item.symbol for item in kospi_only}
+            ),
+            reference_price_exception_records=tuple(
+                _reference(row.symbol) for row in kospi_only
+            ),
+        )
+    )
+
+    assert result["status"] == "fail_closed"
+    assert result["selected_candidates"] == []
+    reasons = {str(item["reason"]) for item in result["fail_close_reasons"]}  # type: ignore[union-attr]
+    assert "both_markets_must_be_fully_proven" in reasons
+
+
+def test_m20_quote_provider_identity_check_is_anchored() -> None:
+    """M20: the quote's raw symbol must match the selected symbol."""
+    selector_input = _base_input()
+    quotes = tuple(
+        replace(row, raw_symbol="999999") if row.symbol == "000001" else row
+        for row in selector_input.quote_timestamp_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, quote_timestamp_evidence=quotes)
+    )
+    _assert_fail_closed(result, "selected_quote_actual_raw_timestamp_unproven")
+
+    absent = tuple(
+        replace(row, raw_symbol=None) if row.symbol == "000001" else row
+        for row in selector_input.quote_timestamp_evidence
+    )
+    _assert_fail_closed(
+        select_krb1_p0_liquidity_candidates(
+            replace(selector_input, quote_timestamp_evidence=absent)
+        ),
+        "selected_quote_actual_raw_timestamp_unproven",
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"endpoint": "/uapi/domestic-stock/v1/quotations/inquire-price"},
+        {"endpoint": ""},
+        {"tr_id": "FHKST01010100"},
+        {"tr_id": ""},
+    ],
+)
+def test_m21_completed_endpoint_and_tr_checks_are_anchored(
+    mutation: dict[str, object],
+) -> None:
+    """M21: completion evidence from the wrong endpoint/TR must not count."""
+    selector_input = _base_input()
+    evidence = tuple(
+        replace(row, **mutation)  # type: ignore[arg-type]
+        for row in selector_input.completed_bar_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, completed_bar_evidence=evidence)
+    )
+    _assert_fail_closed(result, "full_universe_raw_daily_local_match_unproven")
+
+
+def test_m22_reference_authoritative_source_check_is_anchored() -> None:
+    """M22: a non-authoritative reference source must fail closed at run level."""
+    selector_input = _base_input()
+    for source in ("generic_screener", "operator_assertion", "", "toss_openapi"):
+        records = tuple(
+            replace(row, source=source)
+            for row in selector_input.reference_price_exception_records
+        )
+        result = select_krb1_p0_liquidity_candidates(
+            replace(selector_input, reference_price_exception_records=records)
+        )
+        _assert_fail_closed(result, "target_session_reference_price_exception_unproven")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"endpoint": "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"},
+        {"endpoint": ""},
+        {"tr_id": "FHKST03010230"},
+        {"tr_id": ""},
+        {"http_method": "POST"},
+    ],
+)
+def test_m24_quote_endpoint_and_tr_checks_are_anchored(
+    mutation: dict[str, object],
+) -> None:
+    """M24: quote evidence from the wrong endpoint/TR/method must not count."""
+    selector_input = _base_input()
+    quotes = tuple(
+        replace(row, **mutation)  # type: ignore[arg-type]
+        for row in selector_input.quote_timestamp_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, quote_timestamp_evidence=quotes)
+    )
+    _assert_fail_closed(result, "selected_quote_actual_raw_timestamp_unproven")
+
+
+# ───────── #1729 F-02/F-04: the two proof-semantics violations ─────────
+
+
+def test_f02_request_context_symbol_cannot_stand_in_for_provider_identity() -> None:
+    """🔴 F-02: completion evidence without a provider-origin symbol fails closed.
+
+    This is the shape #1729 accepted: ``symbol`` is the value we asked for, so an
+    evidence row carrying only that has never been confirmed by the response.
+    """
+    selector_input = _base_input()
+    evidence = tuple(
+        replace(row, raw_symbol=None) for row in selector_input.completed_bar_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, completed_bar_evidence=evidence)
+    )
+
+    _assert_fail_closed(result, "full_universe_raw_daily_local_match_unproven")
+    gates = result["market_results"]["KOSPI"]["gates"]  # type: ignore[index]
+    assert (
+        gates["completed_session_raw_completion"]["evidence"][
+            "request_context_symbol_is_not_identity"
+        ]
+        is True
+    )
+
+
+def test_f02_mismatched_provider_identity_fails_closed() -> None:
+    selector_input = _base_input()
+    evidence = tuple(
+        replace(row, raw_symbol="999999")
+        for row in selector_input.completed_bar_evidence
+    )
+    _assert_fail_closed(
+        select_krb1_p0_liquidity_candidates(
+            replace(selector_input, completed_bar_evidence=evidence)
+        ),
+        "full_universe_raw_daily_local_match_unproven",
+    )
+
+
+def test_f04_self_consistent_truncated_universe_fails_closed() -> None:
+    """🔴 F-04: one row per market with a matching count must not prove coverage.
+
+    #1729 read the denominator and the rows from the same transaction, so this
+    input produced ``selected``. The denominator now has to agree with the sealed
+    append-only snapshot.
+    """
+    selector_input = _base_input()
+    truncated = tuple(
+        row
+        for row in selector_input.universe_rows
+        if row.symbol in {"000001", "100001"}
+    )
+    candles = tuple(
+        row for row in selector_input.candle_rows if row.symbol in {"000001", "100001"}
+    )
+    # Self-consistent: expected == actual == 1 per market, exactly what a truncated
+    # DB read would produce. The sealed snapshot still says 2.
+    result = select_krb1_p0_liquidity_candidates(
+        replace(
+            selector_input,
+            universe_rows=truncated,
+            candle_rows=candles,
+            expected_universe_counts={"KOSPI": 1, "KOSDAQ": 1},
+            completed_bar_evidence=tuple(_completed(row) for row in candles),
+            quote_timestamp_evidence=tuple(_quote(row.symbol) for row in truncated),
+            reference_price_exception_records=tuple(
+                _reference(row.symbol) for row in truncated
+            ),
+        )
+    )
+
+    _assert_fail_closed(result, "universe_denominator_disagrees_with_sealed_basis")
+    gates = result["market_results"]["KOSPI"]["gates"]  # type: ignore[index]
+    evidence = gates["universe_snapshot_coverage"]["evidence"]
+    assert evidence["expected_count"] == 1
+    assert evidence["actual_count"] == 1
+    assert evidence["sealed_count"] == 2
+    assert evidence["same_transaction_count_is_not_independent_evidence"] is True
+
+
+def test_f04_denominator_without_a_sealed_basis_fails_closed() -> None:
+    selector_input = _base_input()
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, metadata_snapshots=())
+    )
+    _assert_fail_closed(result, "universe_denominator_has_no_sealed_basis")
