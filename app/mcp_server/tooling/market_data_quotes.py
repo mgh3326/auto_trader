@@ -474,7 +474,9 @@ async def _apply_nxt_quote_overlay(
     quote["regular_session_data_state"] = data_state
     quote["data_state"] = DATA_STATE_FRESH
     _annotate_nxt_session_change(quote, session=session, krx_prev_close=krx_prev_close)
-    _annotate_kr_price_freshness(quote, now_kst())
+    # ROB-1121: NXT orderbook overlay에는 provider 체결 timestamp가 없다.
+    # 벽시계를 as_of로 위장하지 않고 unavailable/fail-closed로 표현.
+    _annotate_kr_price_freshness(quote, None)
     return True
 
 
@@ -615,8 +617,14 @@ async def _search_master_data(
 
 
 def _parse_price_as_of(value: Any) -> datetime.datetime | None:
-    """Parse a provider timestamp without turning integer indexes into epoch data."""
+    """Parse a provider timestamp without turning integer indexes into epoch data.
+
+    ROB-1121: Reject timezone-naive datetime objects at the freshness boundary.
+    Provider timestamps must be timezone-aware (or constructed as KST-aware).
+    """
     if value is None:
+        return None
+    if isinstance(value, datetime.datetime) and value.tzinfo is None:
         return None
     try:
         timestamp = pd.Timestamp(value)
@@ -624,19 +632,34 @@ def _parse_price_as_of(value: Any) -> datetime.datetime | None:
         return None
     if pd.isna(timestamp) or timestamp.value <= 0:
         return None
-    return timestamp.to_pydatetime()
+    dt = timestamp.to_pydatetime()
+    if dt.tzinfo is None:
+        return None
+    return dt.astimezone(_KST)
 
 
 def _kr_price_as_of_from_frame(df: pd.DataFrame) -> datetime.datetime | None:
     """Read a real candle date; RangeIndex values are not timestamps."""
     if df.empty:
         return None
+    val = None
     row_value = df.iloc[-1].get("date")
     if row_value is not None and not pd.isna(row_value):
-        return _parse_price_as_of(row_value)
-    if isinstance(df.index, pd.DatetimeIndex):
-        return _parse_price_as_of(df.index[-1])
-    return None
+        val = row_value
+    elif isinstance(df.index, pd.DatetimeIndex):
+        val = df.index[-1]
+    if val is None:
+        return None
+    try:
+        timestamp = pd.Timestamp(val)
+        if pd.isna(timestamp) or timestamp.value <= 0:
+            return None
+        dt = timestamp.to_pydatetime()
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_KST)
+        return dt
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _annotate_kr_price_freshness(
@@ -727,6 +750,12 @@ async def _fetch_kr_live_quote(symbol: str) -> dict[str, Any] | None:
 
     공유 _fetch_quote_equity_kr(orders/portfolio 사용)는 건드리지 않는다.
     실패/빈응답이면 None (호출자가 일봉으로 fallback).
+
+    ROB-1121:
+    - provider timestamp(체결일자+시각)가 부재하면 price_as_of를 None으로 두고
+      freshness는 downstream _annotate_kr_price_freshness가 unavailable/fail-closed
+      로 표현한다. 날짜만 있을 때 자정을 합성하지 않는다.
+    - provider timestamp와 무관한 호출/수신 시각은 fetched_at으로만 보존.
     """
     kis = KISClient()
     try:
@@ -740,12 +769,20 @@ async def _fetch_kr_live_quote(symbol: str) -> dict[str, Any] | None:
     as_of: datetime.datetime | None = None
     date_val = row.get("date")
     time_val = row.get("time")
-    if date_val is not None:
-        d = pd.Timestamp(date_val).to_pydatetime()
-        if time_val is not None:
-            as_of = datetime.datetime.combine(d.date(), time_val)
-        else:
-            as_of = d
+    # ROB-1121: date/time 중 하나라도 provider가 주지 않으면 합성하지 않는다.
+    # provider timestamp는 KST-aware로 생성한다.
+    if (
+        date_val is not None
+        and not pd.isna(date_val)
+        and isinstance(time_val, datetime.time)
+        and not pd.isna(time_val)
+    ):
+        try:
+            d = pd.Timestamp(date_val).to_pydatetime()
+        except (TypeError, ValueError, OverflowError):
+            d = None
+        if d is not None:
+            as_of = datetime.datetime.combine(d.date(), time_val, tzinfo=_KST)
 
     return {
         "symbol": symbol,
@@ -758,6 +795,7 @@ async def _fetch_kr_live_quote(symbol: str) -> dict[str, Any] | None:
         "value": row.get("value"),
         "source": "kis",
         "price_as_of": as_of.isoformat() if as_of is not None else None,
+        "fetched_at": now_kst().isoformat(),
     }
 
 
@@ -1456,7 +1494,8 @@ async def _get_quote_impl(
         # previous_close used for gap calculations.
         data_state = kr_market_data_state()
         quote = await _fetch_quote_equity_kr(symbol)
-        tradability = (await get_kr_nxt_tradability([symbol])).get(symbol)
+        tradability_map = await get_kr_nxt_tradability([symbol])
+        tradability = tradability_map.get(symbol)
         if tradability is not None:
             quote.update(tradability.public_fields())
         if await _apply_nxt_quote_overlay(symbol, quote, data_state=data_state):
