@@ -224,3 +224,50 @@ async def test_kr_quote_keeps_kis_price_when_no_overlay(monkeypatch):
     assert quote["price"] == 168300.0
     assert "price_source" not in quote
     assert quote["is_stale_price"] is False  # today's KIS as_of, unchanged
+
+
+@pytest.mark.asyncio
+async def test_kr_malformed_live_timestamp_does_not_fallback_to_fresh_daily(
+    monkeypatch,
+):
+    """AC3 / Finding 1: malformed provider date/time in live quote must remain unavailable
+
+    and must not collapse into same-day daily OHLCV fallback that would evaluate fresh.
+    """
+    today = pd.Timestamp(datetime.now(KST).date())
+    same_day_ohlcv = pd.DataFrame(
+        {
+            "open": [100.0],
+            "high": [110.0],
+            "low": [90.0],
+            "close": [105.0],
+            "volume": [1000],
+            "value": [105000.0],
+        },
+        index=[today],
+    )
+
+    async def fake_live_malformed(symbol):
+        return {
+            "symbol": symbol,
+            "instrument_type": "equity_kr",
+            "price": 105.0,
+            "open": 100.0,
+            "high": 110.0,
+            "low": 90.0,
+            "volume": 1000,
+            "value": 105000,
+            "source": "kis",
+            "price_as_of": None,
+            "fetched_at": datetime.now(KST).isoformat(),
+        }
+
+    monkeypatch.setattr(analysis_analyze, "_fetch_kr_live_quote", fake_live_malformed)
+    quote = await analysis_analyze._resolve_kr_quote("012450", same_day_ohlcv)
+
+    assert quote is not None
+    assert quote["price_as_of"] is None
+    assert quote["is_stale_price"] is True
+    assert quote["price_freshness"] == "unavailable"
+    assert quote["price_usable"] is False
+    assert quote["price_unavailable_reason"] == "missing_price_asof"
