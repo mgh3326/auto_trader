@@ -423,38 +423,66 @@ class EpochLedger:
             self.db.execute(
                 "ALTER TABLE collector_process_versions ADD COLUMN t0_utc TEXT"
             )
+        self.db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_collector_process_version_t0
+            ON collector_process_versions (study_id, policy_hash, t0_utc)
+            """
+        )
         self.db.commit()
 
     def validate_t0_startup(self, *, started_at: dt.datetime) -> None:
         """Fail closed before collection starts if the committed T0 is unsafe."""
 
         configured_t0 = iso_utc(self.policy.t0)
-        identity_stamp_rows = self.db.execute(
+        mismatched_stamp = self.db.execute(
             """
-            SELECT t0_utc
-            FROM collector_process_versions
-            WHERE study_id = ? AND policy_hash = ?
-            ORDER BY append_id
+            SELECT t0_utc FROM (
+                SELECT t0_utc
+                FROM collector_process_versions
+                WHERE study_id = ? AND policy_hash = ? AND t0_utc < ?
+                LIMIT 1
+            )
+            UNION ALL
+            SELECT t0_utc FROM (
+                SELECT t0_utc
+                FROM collector_process_versions
+                WHERE study_id = ? AND policy_hash = ? AND t0_utc > ?
+                LIMIT 1
+            )
+            LIMIT 1
             """,
-            (self.policy.study_id, self.policy.policy_hash),
-        ).fetchall()
-        stored_t0_values = sorted(
-            {row["t0_utc"] for row in identity_stamp_rows if row["t0_utc"] is not None}
-        )
-        mismatched_t0_values = [
-            stored_t0 for stored_t0 in stored_t0_values if stored_t0 != configured_t0
-        ]
-        if mismatched_t0_values:
+            (
+                self.policy.study_id,
+                self.policy.policy_hash,
+                configured_t0,
+                self.policy.study_id,
+                self.policy.policy_hash,
+                configured_t0,
+            ),
+        ).fetchone()
+        if mismatched_stamp is not None:
             raise T0StartupGateError(
                 "G-T0-A refused collector startup: "
-                f"stored_t0={','.join(mismatched_t0_values)} "
+                f"stored_t0={mismatched_stamp['t0_utc']} "
                 f"configured_t0={configured_t0}"
             )
 
         has_pit_records = (
             self.db.execute("SELECT 1 FROM pit_records LIMIT 1").fetchone() is not None
         )
-        has_current_identity_stamp = bool(identity_stamp_rows)
+        has_current_identity_stamp = (
+            self.db.execute(
+                """
+                SELECT 1
+                FROM collector_process_versions
+                WHERE study_id = ? AND policy_hash = ?
+                LIMIT 1
+                """,
+                (self.policy.study_id, self.policy.policy_hash),
+            ).fetchone()
+            is not None
+        )
         has_any_process_stamp = (
             self.db.execute(
                 "SELECT 1 FROM collector_process_versions LIMIT 1"
