@@ -205,18 +205,20 @@ class DomesticMarketDataMixin(MarketDataBase):
             api_name="inquire_price",
         )
         out = js["output"]  # 단일 dict
-        trade_date_str = out.get("stck_bsop_date")  # 예: '20250805'
-        if trade_date_str:
-            trade_date = pd.to_datetime(trade_date_str, format="%Y%m%d")
-        else:  # 필드가 없으면 오늘 날짜
-            trade_date = pd.Timestamp(datetime.date.today())
 
-        # ── ② 체결 시각 ──
+        # ROB-1121: provider가 주지 않은 local trade time 합성 금지.
+        # stck_bsop_date / stck_cntg_hour|time 부재 시 None을 유지하고,
+        # 호출부는 호출 시각을 별도 observed_at/fetched_at으로만 태깅한다.
+        trade_date_str = out.get("stck_bsop_date")  # 예: '20250805'
+        trade_date = (
+            pd.to_datetime(trade_date_str, format="%Y%m%d") if trade_date_str else None
+        )
+
         time_str = out.get("stck_cntg_hour") or out.get("stck_cntg_time")  # 'HHMMSS'
-        if time_str:
-            trade_time = pd.to_datetime(time_str, format="%H%M%S").time()
-        else:
-            trade_time = datetime.datetime.now().time()  # 필드가 없으면 현재 시각
+        trade_time = (
+            pd.to_datetime(time_str, format="%H%M%S").time() if time_str else None
+        )
+
         row = {
             "code": out["stck_shrn_iscd"],
             "date": trade_date,

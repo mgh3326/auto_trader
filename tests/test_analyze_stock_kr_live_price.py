@@ -9,6 +9,8 @@ from app.mcp_server.tooling import analysis_analyze
 
 KST = ZoneInfo("Asia/Seoul")
 
+pytestmark = [pytest.mark.integration]
+
 
 @pytest.fixture(autouse=True)
 def _no_nxt_overlay_by_default(monkeypatch):
@@ -134,9 +136,12 @@ async def test_kr_quote_overlays_nxt_price_in_premarket(monkeypatch):
 
     assert quote["price"] == 173500.0
     assert quote["price_source"] == "nxt_expected_price"
-    assert quote["is_stale_price"] is False  # overlay price is fresh
-    # price_as_of refreshed to the live NXT fetch time (today, not yesterday)
-    assert quote["price_as_of"].startswith(str(today.date()))
+    # ROB-1121: NXT orderbook overlay에는 provider 체결 timestamp가 없으므로
+    # freshness를 unavailable/fail-closed로 표현. 벽시계를 as_of로 위장하지 않는다.
+    assert quote["is_stale_price"] is True
+    assert quote["price_freshness"] == "unavailable"
+    assert quote["price_usable"] is False
+    assert quote["price_as_of"] is None
 
 
 @pytest.mark.asyncio

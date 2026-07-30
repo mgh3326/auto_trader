@@ -474,7 +474,9 @@ async def _apply_nxt_quote_overlay(
     quote["regular_session_data_state"] = data_state
     quote["data_state"] = DATA_STATE_FRESH
     _annotate_nxt_session_change(quote, session=session, krx_prev_close=krx_prev_close)
-    _annotate_kr_price_freshness(quote, now_kst())
+    # ROB-1121: NXT orderbook overlay에는 provider 체결 timestamp가 없다.
+    # 벽시계를 as_of로 위장하지 않고 unavailable/fail-closed로 표현.
+    _annotate_kr_price_freshness(quote, None)
     return True
 
 
@@ -727,6 +729,12 @@ async def _fetch_kr_live_quote(symbol: str) -> dict[str, Any] | None:
 
     공유 _fetch_quote_equity_kr(orders/portfolio 사용)는 건드리지 않는다.
     실패/빈응답이면 None (호출자가 일봉으로 fallback).
+
+    ROB-1121:
+    - provider timestamp(체결일자+시각)가 부재하면 price_as_of를 None으로 두고
+      freshness는 downstream _annotate_kr_price_freshness가 unavailable/fail-closed
+      로 표현한다. 날짜만 있을 때 자정을 합성하지 않는다.
+    - provider timestamp와 무관한 호출/수신 시각은 fetched_at으로만 보존.
     """
     kis = KISClient()
     try:
@@ -740,12 +748,10 @@ async def _fetch_kr_live_quote(symbol: str) -> dict[str, Any] | None:
     as_of: datetime.datetime | None = None
     date_val = row.get("date")
     time_val = row.get("time")
-    if date_val is not None:
+    # ROB-1121: date/time 중 하나라도 provider가 주지 않으면 합성하지 않는다.
+    if date_val is not None and not pd.isna(date_val) and time_val is not None:
         d = pd.Timestamp(date_val).to_pydatetime()
-        if time_val is not None:
-            as_of = datetime.datetime.combine(d.date(), time_val)
-        else:
-            as_of = d
+        as_of = datetime.datetime.combine(d.date(), time_val)
 
     return {
         "symbol": symbol,
@@ -758,6 +764,7 @@ async def _fetch_kr_live_quote(symbol: str) -> dict[str, Any] | None:
         "value": row.get("value"),
         "source": "kis",
         "price_as_of": as_of.isoformat() if as_of is not None else None,
+        "fetched_at": now_kst().isoformat(),
     }
 
 

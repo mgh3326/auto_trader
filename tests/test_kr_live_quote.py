@@ -52,10 +52,12 @@ async def test_fetch_kr_live_quote_parses_price_and_as_of(monkeypatch):
     assert quote["source"] == "kis"
     assert quote["instrument_type"] == "equity_kr"
     assert quote["price_as_of"] == "2026-06-01T09:30:00"
+    assert quote["fetched_at"] is not None
 
 
 @pytest.mark.asyncio
-async def test_fetch_kr_live_quote_as_of_without_time_uses_date(monkeypatch):
+async def test_fetch_kr_live_quote_as_of_without_time_is_unavailable(monkeypatch):
+    # ROB-1121: provider가 time을 주지 않으면 날짜만으로 자정을 합성하지 않는다.
     df = pd.DataFrame(
         [
             {
@@ -76,7 +78,35 @@ async def test_fetch_kr_live_quote_as_of_without_time_uses_date(monkeypatch):
     quote = await market_data_quotes._fetch_kr_live_quote("012450")
 
     assert quote is not None
-    assert quote["price_as_of"] == "2026-06-01T00:00:00"
+    assert quote["price_as_of"] is None
+    assert quote["fetched_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_fetch_kr_live_quote_as_of_missing_date_time_is_unavailable(monkeypatch):
+    # ROB-1121: provider가 date와 time 둘 다 주지 않으면 price_as_of는 None.
+    df = pd.DataFrame(
+        [
+            {
+                "date": None,
+                "time": None,
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1225000.0,
+                "volume": 1,
+                "value": 1,
+            }
+        ],
+        index=["012450"],
+    )
+    monkeypatch.setattr(market_data_quotes, "KISClient", _make_kis(df))
+
+    quote = await market_data_quotes._fetch_kr_live_quote("012450")
+
+    assert quote is not None
+    assert quote["price_as_of"] is None
+    assert quote["fetched_at"] is not None
 
 
 @pytest.mark.asyncio

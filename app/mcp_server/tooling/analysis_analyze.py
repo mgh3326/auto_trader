@@ -120,10 +120,14 @@ async def _resolve_kr_quote(
         # ROB-725: during NXT premarket/after-hours the KRX regular quote is the
         # prior close — overlay the live NXT price so current_price + S/R
         # distance_pct track the real market.
+        # ROB-1121: overlay 낸 NXT orderbook에는 provider 체결 timestamp가 없으므로
+        # overlay 적용 시 unavailable/fail-closed로 다시 태그한다.
+        # _apply_nxt_quote_overlay 낸부에서도 동일하게 처리하지만, caller 측에서
+        # 한 번 더 보장하면 커스텀 overlay mock 등에서 누락을 막는다.
         if await _apply_nxt_quote_overlay(
             symbol, quote, data_state=kr_market_data_state()
         ):
-            _annotate_kr_price_freshness(quote, now_kst(), trading_date=trading_date)
+            _annotate_kr_price_freshness(quote, None, trading_date=trading_date)
         return quote
 
     live = await _fetch_kr_live_quote(symbol)
