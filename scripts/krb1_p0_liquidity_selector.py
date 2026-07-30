@@ -37,6 +37,16 @@ def _date_arg(value: str) -> dt.date:
         raise argparse.ArgumentTypeError("expected YYYY-MM-DD") from exc
 
 
+def _aware_datetime_arg(value: str) -> dt.datetime:
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected ISO-8601 datetime") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise argparse.ArgumentTypeError("decision-at must be timezone-aware")
+    return parsed
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -56,6 +66,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Order-lifetime measurement session (YYYY-MM-DD). "
             "Defaults to the next XKRX session."
+        ),
+    )
+    parser.add_argument(
+        "--decision-at",
+        type=_aware_datetime_arg,
+        required=True,
+        help=(
+            "ISO-8601 tz-aware decision clock. Evidence after this clock "
+            "cannot prove the decision."
         ),
     )
     parser.add_argument(
@@ -87,6 +106,7 @@ async def _load_db_input(
     *,
     as_of_session: dt.date,
     target_session: dt.date,
+    decision_at: dt.datetime,
 ) -> SelectorInput:
     # Must be the first statement in this transaction. It makes accidental SQL
     # mutation fail at the database boundary in addition to the CLI having none.
@@ -147,10 +167,10 @@ async def _load_db_input(
                 if row["krx_trading_suspended"] is not None
                 else None
             ),
-            metadata_source=(
+            db_sync_source=(
                 "toss_openapi" if row["toss_master_updated_at"] is not None else None
             ),
-            metadata_as_of=row["toss_master_updated_at"],
+            db_sync_observed_at=row["toss_master_updated_at"],
         )
         for row in universe_result.mappings().all()
     )
@@ -189,9 +209,15 @@ async def _load_db_input(
     return SelectorInput(
         as_of_session=as_of_session,
         target_session=target_session,
+        decision_at=decision_at,
         expected_universe_counts=expected_counts,
         universe_rows=universe_rows,
         candle_rows=candle_rows,
+        metadata_authority_snapshots=(),
+        external_universe_denominators=(),
+        universe_denominator_source_unavailable_reason=(
+            "external_universe_denominator_source_not_wired"
+        ),
     )
 
 
@@ -238,6 +264,7 @@ async def _fetch_raw_upstream_evidence(
                     symbol=symbol,
                     endpoint=str(daily.get("endpoint") or ""),
                     tr_id=str(daily.get("tr_id") or ""),
+                    raw_symbol=daily.get("stck_shrn_iscd"),
                     raw_business_date=daily.get("stck_bsop_date"),
                     raw_close=daily.get("stck_clpr"),
                     raw_volume=daily.get("acml_vol"),
@@ -265,6 +292,7 @@ async def _fetch_raw_upstream_evidence(
                     raw_business_date=quote.get("stck_bsop_date"),
                     raw_execution_time=quote.get("stck_cntg_hour"),
                     raw_last_price=quote.get("stck_prpr"),
+                    captured_at=dt.datetime.now(dt.UTC),
                 )
             )
         except Exception as exc:
@@ -292,12 +320,14 @@ async def run(
     *,
     as_of_session: dt.date,
     target_session: dt.date,
+    decision_at: dt.datetime,
 ) -> dict[str, object]:
     async with AsyncSessionLocal() as session:
         selector_input = await _load_db_input(
             session,
             as_of_session=as_of_session,
             target_session=target_session,
+            decision_at=decision_at,
         )
 
     initial = select_krb1_p0_liquidity_candidates(selector_input)
@@ -309,14 +339,23 @@ async def run(
     final_input = SelectorInput(
         as_of_session=selector_input.as_of_session,
         target_session=selector_input.target_session,
+        decision_at=selector_input.decision_at,
         expected_universe_counts=selector_input.expected_universe_counts,
         universe_rows=selector_input.universe_rows,
         candle_rows=selector_input.candle_rows,
         # Intentionally empty until an authoritative, target-session-effective
         # source is wired. This is not operator-overridable.
         reference_exception_evidence=(),
+        reference_source_unavailable_reason=(
+            "authoritative_target_session_reference_exception_source_not_wired"
+        ),
         completed_bar_evidence=completed,
         quote_timestamp_evidence=quotes,
+        metadata_authority_snapshots=selector_input.metadata_authority_snapshots,
+        external_universe_denominators=selector_input.external_universe_denominators,
+        universe_denominator_source_unavailable_reason=(
+            selector_input.universe_denominator_source_unavailable_reason
+        ),
     )
     result = select_krb1_p0_liquidity_candidates(final_input)
     result["source_availability"] = {
@@ -362,7 +401,7 @@ def _data_load_failure(
     exc: Exception,
 ) -> dict[str, object]:
     return {
-        "schema_version": "krb1.p0_3.liquidity_selector.evidence.v1",
+        "schema_version": "krb1.p0_3.liquidity_selector.evidence.v2",
         "status": "fail_closed",
         "read_only": True,
         "fallback_used": False,
@@ -388,6 +427,7 @@ async def main(argv: list[str] | None = None) -> int:
         result = await run(
             as_of_session=args.as_of_session,
             target_session=target_session,
+            decision_at=args.decision_at,
         )
     except Exception as exc:
         result = _data_load_failure(

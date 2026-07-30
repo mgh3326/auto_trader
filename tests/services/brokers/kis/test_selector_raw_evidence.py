@@ -59,6 +59,11 @@ async def test_daily_raw_evidence_returns_only_exact_session_row(
 
     assert result["stck_bsop_date"] == "20260729"
     assert result["stck_clpr"] == "70000"
+    assert result["stck_oprc"] is None
+    assert result["stck_hgpr"] is None
+    assert result["stck_lwpr"] is None
+    assert result["stck_shrn_iscd"] is None
+    assert "rt_cd" in result
     call = request.await_args
     assert call is not None
     assert call.kwargs["params"]["FID_INPUT_DATE_1"] == "20260729"

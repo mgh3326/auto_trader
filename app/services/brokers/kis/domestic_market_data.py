@@ -576,7 +576,12 @@ class DomesticMarketDataMixin(MarketDataBase):
         session_date: datetime.date,
         market: str = "J",
     ) -> dict[str, Any]:
-        """Return one exact-session KIS daily row without numeric coercion."""
+        """Return one exact-session KIS daily row without numeric coercion.
+
+        Raw OHLCV plus traded value are returned as received so a completion
+        manifest can reconcile them against stored rows without float coercion
+        (ROB-1158 r2).
+        """
         session_text = session_date.strftime("%Y%m%d")
         js = await self._request_with_token_retry(
             tr_id=constants.DOMESTIC_DAILY_CHART_TR,
@@ -609,7 +614,12 @@ class DomesticMarketDataMixin(MarketDataBase):
         return {
             "endpoint": constants.DOMESTIC_DAILY_CHART_URL,
             "tr_id": constants.DOMESTIC_DAILY_CHART_TR,
+            "rt_cd": js.get("rt_cd"),
+            "stck_shrn_iscd": row.get("stck_shrn_iscd"),
             "stck_bsop_date": row.get("stck_bsop_date"),
+            "stck_oprc": row.get("stck_oprc"),
+            "stck_hgpr": row.get("stck_hgpr"),
+            "stck_lwpr": row.get("stck_lwpr"),
             "stck_clpr": row.get("stck_clpr"),
             "acml_vol": row.get("acml_vol"),
             "acml_tr_pbmn": row.get("acml_tr_pbmn"),
