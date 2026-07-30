@@ -134,7 +134,7 @@ def test_build_smoke_payload_separates_signal_and_execution() -> None:
     assert payload.order_request["side"] == "buy"
     assert payload.order_request["type"] == "limit"
     assert payload.provenance.signal_symbol == "KRW-BTC"
-    assert payload.provenance.execution_asset_class == "crypto"
+    assert payload.asset_class == "crypto"
 
 
 def test_build_smoke_payload_rejects_unsupported_signal_symbol() -> None:

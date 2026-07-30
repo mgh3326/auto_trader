@@ -95,7 +95,7 @@ def test_from_approval_bridge_full_inputs():
     assert prov.candidate_uuid == candidate.candidate_uuid
     assert prov.signal_symbol == "KRW-BTC"
     assert prov.signal_venue == "upbit"
-    assert prov.execution_asset_class == "crypto"
+    assert not hasattr(prov, "execution_asset_class")
     assert prov.workflow_stage == "crypto_weekend"
     assert prov.purpose == "paper_plumbing_smoke"
     assert prov.briefing_artifact_run_uuid == briefing.run_uuid

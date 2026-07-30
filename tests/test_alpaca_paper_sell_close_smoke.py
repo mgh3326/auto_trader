@@ -246,7 +246,6 @@ def test_validate_sell_close_preflight_fails_closed(
         provenance=smoke.ApprovalProvenance(
             signal_symbol=source.signal_symbol,
             signal_venue=source.signal_venue,
-            execution_asset_class="crypto",
             workflow_stage="rob86_guarded_sell_close",
             purpose="paper_sell_close_smoke",
         ),

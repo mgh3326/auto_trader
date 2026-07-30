@@ -53,10 +53,12 @@ KIWOOM_MOCK_ACCOUNT_READ_TOOL_NAMES: set[str] = {
     # listed. It is a pure read, but this set is unioned into
     # TRADINGCODEX_EXECUTION_TOOL_NAMES, so adding it here would silently widen
     # that privileged profile too — exactly what the boundary comment in
-    # tradingcodex_execution_registration.py forbids. KR-B1's forced profile is
-    # MCP_PROFILE=kiwoom, which registers the whole Kiwoom registrar, so the
-    # tool is reachable where it is needed without touching either restricted
-    # profile. Widening these two is a separate, explicit decision.
+    # tradingcodex_execution_registration.py forbids. KR-B1 reaches the tool via
+    # the kiwoom-family profiles (MCP_PROFILE=kiwoom, or the ROB-1159 KR-only
+    # MCP_PROFILE=kiwoom_kr, which registers the same KR registrar without the
+    # kiwoom_mock_us_* namespace), so it is available where it is needed without
+    # touching either restricted profile. Widening these two is a separate,
+    # explicit decision.
 }
 
 ACCOUNT_READ_TOOL_NAMES: set[str] = {

@@ -574,15 +574,18 @@ no direct DB backfill.
 
 The broker snapshot is fail-closed (ROB-1130). `open_orders` and `positions` must
 both be supplied together with `broker_snapshot_fetched_at`, the time the
-snapshot was read from the broker:
+snapshot was read from the broker, and `broker_snapshot_account_mode`, the
+account those reads were taken from:
 
 ```python
-positions = await alpaca_paper_list_positions()
-open_orders = await alpaca_paper_list_orders(status="open")
+positions = await alpaca_paper_list_positions(account_mode="alpaca_paper")
+open_orders = await alpaca_paper_list_orders(status="open", account_mode="alpaca_paper")
 report = await alpaca_paper_execution_preflight_check(
+    account_mode="alpaca_paper",
     positions=positions["positions"],
     open_orders=open_orders["orders"],
     broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+    broker_snapshot_account_mode=positions["account_mode"],
 )
 ```
 
@@ -594,6 +597,17 @@ account held positions. `counts.positions` and `counts.open_orders` are now
 omitted rather than reported as `0` when the snapshot cannot be verified, and
 `broker_snapshot` carries the per-kind `provided` / `verified` / `reason` state.
 This blocker is never downgraded by `legacy_cycle_blockers_as_warnings`.
+
+Two further shapes of "empty means flat" are also blocked rather than passed:
+
+- Passing the whole MCP response envelope (or any mapping/string) instead of the
+  row list — `positions={...}` normalizes to an empty list and would otherwise
+  read as a flat account. Reason: `snapshot_container_not_a_row_list`.
+- A snapshot read from the other paper account. `alpaca_paper` and
+  `alpaca_paper_lab` use different credentials and hold different inventory, so
+  an unattested or mismatched `broker_snapshot_account_mode` blocks with reason
+  `snapshot_account_unattested` / `snapshot_account_mismatch`, and
+  `broker_snapshot.account` reports `expected` vs `attested`.
 
 Buy legs that hold an open position are no longer reported as missing sell legs
 (ROB-1129). A filled/reconciled buy with no linked sell row is classified against
@@ -2307,7 +2321,8 @@ Environment variables:
 - `MCP_CALLER_AGENT_ID` : DEV/stdio only — MUST NOT be set in production HTTP deployments (re-opens caller spoofing vector)
 
 For `streamable-http` and `sse`, startup fails before FastMCP construction when
-`MCP_PROFILE=kiwoom` has no non-empty `MCP_AUTH_TOKEN`. The same fail-closed
+`MCP_PROFILE=kiwoom` or `MCP_PROFILE=kiwoom_kr` has no non-empty
+`MCP_AUTH_TOKEN`. The same fail-closed
 rule applies to the default profile when `KIWOOM_MOCK_US_ENABLED=true` exposes
 the Kiwoom US mutation tools. An explicitly selected local `stdio` development
 transport may remain tokenless; changing that process to a network transport
@@ -2335,7 +2350,8 @@ The `MCP_PROFILE` env var selects which tool subset is registered at startup.
 | Crypto | `crypto` | Default read-only/research surface plus crypto-only tools (`get_crypto_fear_greed`, `get_crypto_market_regime`, `get_upbit_index`, ...) **plus** the generic `place_order`/`cancel_order`/`modify_order`/`get_order_history` (crypto live entry point) and `live_reconcile_orders`; typed `kis_live_*`/`kis_mock_*` are absent |
 | US paper | `us-paper` | Default read-only/research surface plus Alpaca paper and `us_dual_paper_*` tools; no KIS/generic order tools |
 | DB paper simulator | `db-paper` | Default read-only/research surface plus internal `paper.paper_*` simulator account, analytics, and journal bridge tools; no KIS/generic order tools |
-| Kiwoom mock | `kiwoom` | Default read-only/research surface plus typed `kiwoom_mock_*` variants only (no KIS/generic order tools) |
+| Kiwoom mock | `kiwoom` | Default read-only/research surface plus **both** typed Kiwoom mock namespaces (no KIS/generic order tools): the eight KR `kiwoom_mock_*` tools and — unconditionally, unlike DEFAULT's `KIWOOM_MOCK_US_ENABLED` gate — the seven US `kiwoom_mock_us_*` tools, four of which are mutations. Prefer `kiwoom_kr` for a KR-only session (ROB-1159). |
+| Kiwoom mock KR-only | `kiwoom_kr` | ROB-1159 least-privilege split of `kiwoom`: default read-only/research surface plus **exactly** the eight KR `kiwoom_mock_*` tools (`kiwoom_mock_get_order_detail` included). The whole `kiwoom_mock_us_*` namespace is physically absent — the US module is never imported and the KR registrar runs through the same allowlist proxy the restricted profiles use. Requires `MCP_AUTH_TOKEN` on network transports, and (when `KIWOOM_MOCK_ENABLED=true`) complete mock credentials plus the exact `https://mockapi.kiwoom.com` base URL at startup. |
 | Analysis readonly | `analysis_readonly` | Codex/headless read/analysis allowlist only: `get_operating_briefing`, `route_request`, `get_trading_policy`, selected quote/fundamental/analysis tools, `suggest_order_account`, `get_holdings`, `toss_get_positions`, and explicitly labeled analysis persistence. No order/cancel/modify/reconcile/preview/settings/watch/admin/manual-holdings mutation tools are registered. |
 | Account read | `account_read` | TradingCodex account adapter allowlist only: existing KIS/Toss account reads plus `kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`, and `kiwoom_mock_get_order_history`. Kiwoom and all other mutations remain physically absent. |
 | TradingCodex execution | `tradingcodex_execution` | Reviewed TradingCodex BrokerAdapter allowlist: existing account/advisory/learning/execution tools plus the seven mock-pinned typed `kiwoom_mock_*` tools. Requires a dedicated auth token and required approval-hash modes; no Kiwoom live or generic unscoped Kiwoom order surface is registered. |
@@ -2720,32 +2736,17 @@ Each typed tool rejects any `account_mode` value other than its own pinned mode.
 
 With all mock vars missing, the `hermes-paper-kis` profile is effectively read-only KIS — the safe state for a misconfigured paper deployment.
 
-### Binance Demo scalping — server-derived market conditions (ROB-841)
+### Binance Demo scalping auto-order lane (removed, ROB-1147)
 
-`binance_demo_scalping_submit_decision` (registered only when
-`settings.binance_demo_scalping_enabled` is true) accepts an LLM/MCP decision
-but **never** accepts caller-supplied spread or data-age. Before any risk check,
-the handler derives a `MarketConditions` snapshot **server-side** from the
-Demo-host bookTicker + latest 1m kline (`build_market_conditions`), and only that
-server-observed snapshot feeds the existing risk gates.
-
-- **Fail-closed**: if the bookTicker/kline provider fails, the kline is
-  empty/malformed, its timestamp is missing, or the quote is invalid (crossed or
-  non-positive), the tool returns `status="market_conditions_unavailable"` and
-  places **no order** — zero broker submit and zero ledger read/write. The
-  executor preflight also fails closed (`market_conditions_unavailable`) if a
-  caller omits the snapshot; the old `spread_bps=0`/`data_age_seconds=0`
-  synthesis (which silently disarmed the gates) is removed.
-- **Existing threshold reason codes are unchanged**: an over-threshold snapshot
-  is rejected as `stale_data` (`data_age_seconds > max_data_age_seconds`) or
-  `spread_too_wide` (`spread_bps > max_spread_bps`).
-- **Dry-run parity**: `dry_run=True` runs the same server-derived market/risk
-  preflight and returns the same judgment (`planned` / `blocked` /
-  `market_conditions_unavailable`, plus the observed `market_conditions`), but
-  performs no broker mutation and inserts no ledger row. A real Demo order still
-  requires `dry_run=false` **and** `confirm=true`.
-- Demo-host allowlist, notional/daily-loss/cooldown caps, and the broker-native
-  ledger/reconcile contract are unchanged.
+The LLM decision-injection MCP tool (registered only when
+`settings.binance_demo_scalping_enabled` is true, ROB-841) and the
+scheduler tick / WS daemon / daily review automation it shared a feature
+flag with were removed. The read-only
+`binance_demo_ledger_status` tool (ROB-907) is unaffected and remains
+registered under the same `settings.binance_demo_scalping_enabled` flag. The
+underlying `DemoScalpingExecutor` (and its `demo_scalping`/`demo_scalping_exec`
+support modules) were kept — they are reused directly by the ROB-845
+`BinanceSpotDemoPaperAdapter` in the production paper-execution registry.
 
 ### Kiwoom mock US-equity order tools (ROB-867)
 

@@ -109,13 +109,13 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # persistence only (no HTTP/WS, no signed surface); references Binance
         # solely via the ``binance_demo`` account-scope literal + docstring.
         "app/models/scalping_reviews.py",
-        # ROB-307 PR4 — Demo scalping scheduler orchestration. These
-        # *orchestrate* the in-package Demo adapters (executor/clients) and
-        # perform no signed HTTP themselves (the HMAC chokepoints stay inside
-        # spot_demo/ + futures_demo/). They reference "Binance" only via
-        # imports + the BINANCE_DEMO_SCALPING_* env-flag names.
-        "app/jobs/binance_demo_scalping_runner.py",
-        "app/tasks/binance_demo_scalping_tasks.py",
+        # ROB-307 PR4 — the Demo scalping scheduler/task orchestration lane,
+        # the daily review automation, and the LLM decision-injection MCP
+        # tool were removed (ROB-1147); their allow-list entries went with
+        # them. The remaining executor/analytics/reference modules (still
+        # allow-listed
+        # below) are reused directly by the ROB-845 paper adapter, so they
+        # were kept.
         # ROB-844 — scheduleless abandoned-root reconciliation orchestration.
         # The job only composes the existing in-package signed read clients with
         # the ledger reconciler; HMAC/HTTP remains inside the adapter package.
@@ -124,22 +124,11 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         "app/jobs/binance_demo_root_reservation_reconciliation.py",
         "app/tasks/binance_demo_root_reservation_reconcile_tasks.py",
         "app/tasks/__init__.py",
-        # Phase 2 — Demo scalping daily review + buy&hold benchmark automation.
-        # Orchestration only: the job rolls scalp_trade_analytics into the review
-        # draft and computes the benchmark via the in-package adapters; the flow
-        # is a thin Prefect wrapper; config holds the default-off env flag. No
-        # signed HTTP/WS — references "Binance" via imports + the
-        # BINANCE_DEMO_SCALPING_REVIEW_FLOW_ENABLED flag name only.
-        "app/jobs/binance_demo_scalping_review.py",
-        "app/flows/binance_demo_scalping_review_flow.py",
         "app/core/config.py",
-        # Phase 3 — LLM decision-injection MCP tool. Deterministic executor of an
-        # LLM-submitted decision (no signed HTTP itself; reuses futures_demo via
-        # execute_monitored). References "Binance" via imports + tool name only.
-        "app/mcp_server/tooling/binance_demo_scalping_handler.py",
-        # Phase 3 — registry.py conditionally imports the Phase 3 MCP handler
-        # under settings.binance_demo_scalping_enabled; references "Binance" only
-        # via the import path + settings flag name (no HTTP/WS surface).
+        # Phase 3 — registry.py conditionally imports the ROB-907 read-only
+        # ledger status tool under settings.binance_demo_scalping_enabled;
+        # references "Binance" only via the import path + settings flag name
+        # (no HTTP/WS surface).
         "app/mcp_server/tooling/registry.py",
         # ROB-845 — canonical paper-execution contracts and evidence vocabulary.
         # These files mention Binance only as a capability/signal venue and

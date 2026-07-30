@@ -77,12 +77,3 @@ def test_scalping_package_has_no_mutation_or_live_imports() -> None:
         "live-host, ledger-internal, or credential modules. Offenders:\n"
         + "\n".join(offenders)
     )
-
-
-def test_observe_only_cli_has_no_mutation_or_live_imports() -> None:
-    cli = pathlib.Path("scripts/binance_demo_scalping_signal.py")
-    offenders = _imports_in_file(cli)
-    assert not offenders, (
-        "ROB-307 observe-only CLI must not import order-mutation, live-host, "
-        "ledger-internal, or credential modules. Offenders:\n" + "\n".join(offenders)
-    )

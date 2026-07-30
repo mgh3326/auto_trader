@@ -209,6 +209,10 @@ class FinalizationInvariantError(RuntimeError):
     """Raised when immutable finalization disagrees with reconstructed input."""
 
 
+class T0StartupGateError(RuntimeError):
+    """Raised when a collector would violate the precommitted T0 contract."""
+
+
 class EpochLedger:
     """Append-only operational ledger sharing the raw collector connection."""
 
@@ -364,6 +368,7 @@ class EpochLedger:
             started_at TEXT NOT NULL,
             code_hash TEXT NOT NULL,
             collector_version TEXT NOT NULL,
+            t0_utc TEXT,
             UNIQUE (study_id, policy_hash, collector_instance_id, run_id)
         );
         CREATE INDEX IF NOT EXISTS ix_collector_process_version_latest
@@ -410,7 +415,92 @@ class EpochLedger:
                 self.db.execute(
                     f"ALTER TABLE collector_attempts ADD COLUMN {column} TEXT"
                 )
+        process_version_columns = {
+            row["name"]
+            for row in self.db.execute("PRAGMA table_info(collector_process_versions)")
+        }
+        if "t0_utc" not in process_version_columns:
+            self.db.execute(
+                "ALTER TABLE collector_process_versions ADD COLUMN t0_utc TEXT"
+            )
+        self.db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_collector_process_version_t0
+            ON collector_process_versions (study_id, policy_hash, t0_utc)
+            """
+        )
         self.db.commit()
+
+    def validate_t0_startup(self, *, started_at: dt.datetime) -> None:
+        """Fail closed before collection starts if the committed T0 is unsafe."""
+
+        configured_t0 = iso_utc(self.policy.t0)
+        mismatched_stamp = self.db.execute(
+            """
+            SELECT t0_utc FROM (
+                SELECT t0_utc
+                FROM collector_process_versions
+                WHERE study_id = ? AND policy_hash = ? AND t0_utc < ?
+                LIMIT 1
+            )
+            UNION ALL
+            SELECT t0_utc FROM (
+                SELECT t0_utc
+                FROM collector_process_versions
+                WHERE study_id = ? AND policy_hash = ? AND t0_utc > ?
+                LIMIT 1
+            )
+            LIMIT 1
+            """,
+            (
+                self.policy.study_id,
+                self.policy.policy_hash,
+                configured_t0,
+                self.policy.study_id,
+                self.policy.policy_hash,
+                configured_t0,
+            ),
+        ).fetchone()
+        if mismatched_stamp is not None:
+            raise T0StartupGateError(
+                "G-T0-A refused collector startup: "
+                f"stored_t0={mismatched_stamp['t0_utc']} "
+                f"configured_t0={configured_t0}"
+            )
+
+        has_pit_records = (
+            self.db.execute("SELECT 1 FROM pit_records LIMIT 1").fetchone() is not None
+        )
+        has_current_identity_stamp = (
+            self.db.execute(
+                """
+                SELECT 1
+                FROM collector_process_versions
+                WHERE study_id = ? AND policy_hash = ?
+                LIMIT 1
+                """,
+                (self.policy.study_id, self.policy.policy_hash),
+            ).fetchone()
+            is not None
+        )
+        has_any_process_stamp = (
+            self.db.execute(
+                "SELECT 1 FROM collector_process_versions LIMIT 1"
+            ).fetchone()
+            is not None
+        )
+        is_legacy_v2_restart = not has_any_process_stamp and has_pit_records
+        t0_minus_4h = self.policy.t0 - dt.timedelta(hours=EPOCH_HOURS)
+        is_warmup_ready = started_at <= t0_minus_4h
+        if not (is_warmup_ready or has_current_identity_stamp or is_legacy_v2_restart):
+            raise T0StartupGateError(
+                "G-T0-B refused fresh-artifact startup: "
+                f"started_at={iso_utc(started_at)} "
+                f"t0_minus_4h={iso_utc(t0_minus_4h)}; "
+                "warm-up cutoff 초과, 현재 study_id/policy_hash stamp 없음, "
+                "stamp 없는 legacy v2 artifact 재기동에도 해당하지 않음; "
+                "기존 T0 를 바꾸지 말고 새 커밋·새 T0 를 사전 고정하라"
+            )
 
     def ensure_open_rows(
         self, decision_epoch: dt.datetime, collector_instance_id: str, now: dt.datetime
@@ -612,8 +702,8 @@ class EpochLedger:
             """
             INSERT INTO collector_process_versions (
                 version_stamp_id, study_id, policy_hash, collector_instance_id,
-                run_id, started_at, code_hash, collector_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                run_id, started_at, code_hash, collector_version, t0_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 uuid.uuid4().hex,
@@ -624,6 +714,7 @@ class EpochLedger:
                 iso_utc(started_at),
                 code_hash,
                 collector_version,
+                iso_utc(self.policy.t0),
             ),
         )
         self.db.commit()

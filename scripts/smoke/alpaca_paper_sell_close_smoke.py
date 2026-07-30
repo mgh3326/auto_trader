@@ -357,7 +357,6 @@ async def build_sell_close_payload(
     provenance = ApprovalProvenance(
         signal_symbol=source.signal_symbol,
         signal_venue=source.signal_venue,
-        execution_asset_class="crypto",
         workflow_stage="rob86_guarded_sell_close",
         purpose="paper_sell_close_smoke",
     )
@@ -478,6 +477,7 @@ async def validate_sell_close_preview_and_confirm_false(
             client_order_id=payload.client_order_id,
             execution_symbol=payload.execution_symbol,
             execution_venue=payload.execution_venue,
+            execution_asset_class="crypto",
             instrument_type=InstrumentType.crypto,
             side="sell",
             order_type="limit",

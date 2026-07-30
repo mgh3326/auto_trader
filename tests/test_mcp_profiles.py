@@ -31,6 +31,11 @@ from app.mcp_server.tooling.analysis_readonly_registration import (
     ANALYSIS_READONLY_FORBIDDEN_TOOL_NAMES,
     ANALYSIS_READONLY_TOOL_NAMES,
 )
+from app.mcp_server.tooling.kiwoom_kr_registration import (
+    KIWOOM_KR_EXCLUDED_US_MUTATION_TOOL_NAMES,
+    KIWOOM_KR_FORBIDDEN_TOOL_NAMES,
+    KIWOOM_KR_TOOL_NAMES,
+)
 from app.mcp_server.tooling.market_quote_snapshot_tools import (
     MARKET_QUOTE_SNAPSHOT_TOOL_NAMES,
 )
@@ -240,6 +245,73 @@ class TestKiwoomProfile:
         assert KIWOOM_MOCK_US_TOOL_NAMES <= mcp.tools.keys()
 
 
+class TestKiwoomKrProfile:
+    """ROB-1159 — MCP_PROFILE=kiwoom_kr is MCP_PROFILE=kiwoom minus the whole
+    kiwoom_mock_us_* namespace (4 mutations + 3 reads)."""
+
+    def test_registers_exact_kr_kiwoom_namespace(self) -> None:
+        mcp = _build_mcp(McpProfile.KIWOOM_KR)
+        # Prefix-based, so a future kiwoom_mock_us_* (or any other new
+        # kiwoom_mock_*) registration leaking into this profile fails here even
+        # if the frozen name sets are also updated.
+        registered = {name for name in mcp.tools if name.startswith("kiwoom_mock")}
+        assert registered == KIWOOM_KR_TOOL_NAMES
+        assert KIWOOM_KR_TOOL_NAMES == KIWOOM_MOCK_TOOL_NAMES
+
+    def test_us_mutation_tools_are_absent(self) -> None:
+        mcp = _build_mcp(McpProfile.KIWOOM_KR)
+        assert KIWOOM_KR_EXCLUDED_US_MUTATION_TOOL_NAMES == {
+            "kiwoom_mock_us_preview_order",
+            "kiwoom_mock_us_place_order",
+            "kiwoom_mock_us_modify_order",
+            "kiwoom_mock_us_cancel_order",
+        }
+        leaked = KIWOOM_KR_EXCLUDED_US_MUTATION_TOOL_NAMES & mcp.tools.keys()
+        assert not leaked, f"kiwoom_kr leaked US mutation tools: {sorted(leaked)}"
+
+    def test_whole_us_namespace_is_absent(self) -> None:
+        mcp = _build_mcp(McpProfile.KIWOOM_KR)
+        assert KIWOOM_MOCK_US_TOOL_NAMES.isdisjoint(mcp.tools.keys())
+
+    def test_does_not_register_forbidden_surfaces(self) -> None:
+        mcp = _build_mcp(McpProfile.KIWOOM_KR)
+        leaked = KIWOOM_KR_FORBIDDEN_TOOL_NAMES & mcp.tools.keys()
+        assert not leaked, f"kiwoom_kr leaked forbidden tools: {sorted(leaked)}"
+
+    def test_keeps_kt00007_order_detail_read(self) -> None:
+        # ROB-1155's kiwoom_mock_get_order_detail is the reason this profile
+        # exists: it is registered on kiwoom-family profiles only, and KR-B1
+        # should reach it without also getting the US mutation surface.
+        mcp = _build_mcp(McpProfile.KIWOOM_KR)
+        assert "kiwoom_mock_get_order_detail" in mcp.tools
+
+    def test_keeps_kr_order_surface_intact(self) -> None:
+        # The split narrows registration only; the KR place/cancel/modify
+        # surface a KR session needs stays present and identical to KIWOOM's.
+        kiwoom = _build_mcp(McpProfile.KIWOOM)
+        kiwoom_kr = _build_mcp(McpProfile.KIWOOM_KR)
+        kr_names = {
+            "kiwoom_mock_preview_order",
+            "kiwoom_mock_place_order",
+            "kiwoom_mock_cancel_order",
+            "kiwoom_mock_modify_order",
+        }
+        assert kr_names <= kiwoom_kr.tools.keys()
+        assert KIWOOM_MOCK_TOOL_NAMES <= kiwoom_kr.tools.keys()
+        # Drop-in replacement: kiwoom_kr's surface is kiwoom's minus the US
+        # namespace, nothing else.
+        assert kiwoom.tools.keys() - kiwoom_kr.tools.keys() == (
+            KIWOOM_MOCK_US_TOOL_NAMES
+        )
+        assert kiwoom_kr.tools.keys() - kiwoom.tools.keys() == set()
+
+    def test_kiwoom_profile_still_registers_us_namespace(self) -> None:
+        # The split is additive: MCP_PROFILE=kiwoom is deliberately unchanged by
+        # ROB-1159, so a regression there is a separate, explicit decision.
+        mcp = _build_mcp(McpProfile.KIWOOM)
+        assert KIWOOM_MOCK_US_TOOL_NAMES <= mcp.tools.keys()
+
+
 class TestKiwoomUsDefaultProfileGate:
     def test_registers_us_namespace_when_enabled(self, monkeypatch) -> None:
         monkeypatch.setattr(settings, "kiwoom_mock_us_enabled", True)
@@ -295,6 +367,8 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     McpProfile.US_PAPER: set(_ALPACA_MUTATING) | ALPACA_PAPER_AUTOMATED_TOOL_NAMES,
     McpProfile.DB_PAPER: set(),
     McpProfile.KIWOOM: KIWOOM_MOCK_TOOL_NAMES | KIWOOM_MOCK_US_TOOL_NAMES,
+    # ROB-1159 — KR-only split: the US namespace is physically absent.
+    McpProfile.KIWOOM_KR: set(KIWOOM_MOCK_TOOL_NAMES),
     # ROB-697 M1 — shadow-replay registers zero order/mutation tools by design
     # (frozen-context read + policy + route_request only, early-return).
     McpProfile.SHADOW_REPLAY: set(),

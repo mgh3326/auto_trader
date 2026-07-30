@@ -16,6 +16,9 @@ class McpProfile(StrEnum):
     US_PAPER = "us-paper"
     DB_PAPER = "db-paper"
     KIWOOM = "kiwoom"
+    # ROB-1159 — least-privilege split of KIWOOM: KR namespace only, the whole
+    # kiwoom_mock_us_* namespace (4 mutations + 3 reads) physically absent.
+    KIWOOM_KR = "kiwoom_kr"
     SHADOW_REPLAY = "shadow-replay"
     ANALYSIS_READONLY = "analysis_readonly"
     ACCOUNT_READ = "account_read"

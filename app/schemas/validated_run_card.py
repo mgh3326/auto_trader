@@ -40,7 +40,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.json_safe import sanitize_non_finite
 
 RUN_CARD_SCHEMA = "validated_run_card.v1"
-GATE_SCHEMA = "validated_signal_gate.v1"
 
 #: Source label stamped on a report item's ``evidence_snapshot`` entry.
 EVIDENCE_SOURCE = "validated_run_card"

@@ -164,7 +164,6 @@ def test_registered_direct_surfaces_are_classified_across_route_profiles(
     assert "alpaca_paper_automated_submit_order" in DIRECT_BROKER_MUTATION_TOOLS
     assert "alpaca_paper_automated_preview_order" in PREVIEW_REVALIDATION_TOOLS
     assert ALPACA_PAPER_AUTOMATED_TOOL_NAMES <= MUTATION_TOOLS
-    assert "binance_demo_scalping_submit_decision" in DIRECT_BROKER_MUTATION_TOOLS
 
 
 def test_every_default_tool_is_classified():

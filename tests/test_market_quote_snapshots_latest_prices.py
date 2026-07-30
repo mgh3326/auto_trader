@@ -55,7 +55,18 @@ async def _seed(db_session):
             ),
         ]
     )
-    await db_session.commit()
+    # ROB-1159: flush, do NOT commit. `db_session` has no rollback teardown, so a
+    # commit here leaks these rows into the session-scoped test database for the
+    # rest of the run. Two of them (`005930`/`034020` at ~now) are FRESH kr
+    # quotes, which flips every market-wide `market_quote_snapshots` aggregate —
+    # e.g. the `quotes` surface in invest_coverage_service.build_invest_coverage,
+    # which groups all kr symbols — to `fresh`. `AAPL` collides with the
+    # Alpaca-paper suites' committed quote rows the same way (see the
+    # `_serialize_alpaca_paper_db_suites` note in tests/conftest.py).
+    #
+    # These four tests only read back through the same session, so an in-transaction
+    # flush is sufficient and the rows are rolled back when the session closes.
+    await db_session.flush()
     return repo
 
 
