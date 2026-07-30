@@ -125,7 +125,8 @@ UPDATE/DELETE rejection triggers:
   never rewrite a finalization.
 - `collector_heartbeats`: append-only replica liveness evidence.
 - `collector_process_versions`: one append-only startup stamp per run with the
-  exact Git commit hash and collector version loaded by that process.
+  exact Git commit hash, collector version, and precommitted `t0_utc` loaded by
+  that process.
 - `collector_alert_events`: alert creation and each delivery result; failed
   delivery attempts are not overwritten.
 
@@ -221,6 +222,10 @@ supervisor therefore does not relabel a later snapshot as an earlier one.
 Those sources rely on independent live replicas. Missing, invalid, and
 partial-coverage recoverable sources are retried only while
 `now < finalize_at`; the finalizer never waits past the deadline.
+Retry eligibility is evaluated from that collector's local artifact only.
+Finalization and `EPOCH_DEADLINE_RISK` remain based on the local+peer union.
+This prevents one replica from hiding a recoverable hole in the other without
+changing the immutable union verdict.
 
 Each request, including invalid responses and transport/HTTP failures, appends
 a terminal attempt row. The raw response body SHA-256 is retained even when
@@ -257,6 +262,57 @@ to each current heartbeat `run_id`. Missing stamps and hash mismatches are
 `COLLECTOR_VERSION_MISMATCH`, remove that replica from the healthy count, and
 fail the rehearsal version gate. A checkout without resolvable Git metadata
 fails closed rather than starting an unstamped collector.
+
+## Precommitted T0 procedure
+
+T0 is not selected after startup verification. That would be circular: changing
+the module constant creates a new commit and code hash, invalidating the
+verification that was just performed. The operator sequence is fixed:
+
+1. Commit `DEFAULT_T0`, `DEFAULT_STUDY_ID`, and `DEFAULT_POLICY_HASH` first,
+   choosing a sufficiently distant UTC four-hour boundary.
+2. Start both hosts from that exact fixed commit. A new
+   `(DEFAULT_STUDY_ID, DEFAULT_POLICY_HASH)` run must use fresh artifact roots;
+   never reuse PIT rows from another study or policy as warm-up evidence.
+3. Before `T0-4h`, run the one-shot read-only preflight against both collector
+   artifacts:
+
+   ```bash
+   uv run python -m scripts.r4_p0_watchdog --t0-preflight \
+     --artifact /path/to/host-a/r4_p0_collector.sqlite3 \
+     --artifact /path/to/host-b/r4_p0_collector.sqlite3
+   ```
+
+4. Proceed only when the JSON reports `ok: true`: verification time
+   `V <= T0-4h`, every current process stamp matches the deployed code hash,
+   at least two distinct replicas are healthy, and every stamp has the
+   committed T0.
+5. If any gate fails, do not retroactively adjust or reuse that T0. Precommit a
+   new commit containing a new `DEFAULT_T0`, `DEFAULT_STUDY_ID`, and
+   `DEFAULT_POLICY_HASH`, restart both hosts from that commit with fresh
+   artifact roots, and repeat the verification.
+
+`--t0-preflight` does not require `R4_P0_WATCHDOG_ENABLED`; it opens collector
+artifacts with SQLite `mode=ro`, performs one check, creates no watchdog state,
+does no network I/O, and exits nonzero when a gate is closed.
+
+Collector startup applies two hard gates before collection tasks or network
+clients start; the four-gate preflight above remains a required operator check
+and is not replaced by startup. For the same `(study_id, policy_hash)`, every
+non-null stored `t0_utc` is checked and a value that differs from the configured
+T0 is rejected. Startup passes the warm-up gate when it is no later than
+`T0-4h`, or when a process stamp exists for the current `(study_id,
+policy_hash)`. A narrow compatibility exception also permits a ledger-before-
+stamp v2 artifact when it has PIT rows but no process-version stamp for any
+study. Once any process stamp exists, PIT rows from another study or policy do
+not bypass the warm-up gate.
+
+The v2 compatibility exception cannot identify which study produced its
+unscoped PIT rows. Reusing such an artifact for a new study after `T0-4h` can
+therefore still pass startup. This is an intentional residual needed to preserve
+restartability of the operational pre-stamp artifact. The operator hard rule is
+that every new study/policy run uses a fresh artifact root; the read-only
+four-gate preflight remains mandatory before proceeding.
 
 The alert path is:
 

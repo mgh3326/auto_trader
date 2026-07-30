@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sqlite3
+from collections import Counter
 
 import httpx
 import pytest
@@ -24,6 +25,7 @@ from app.services.brokers.binance.r4_p0_hardening import (
     EpochPolicy,
     RawPITReader,
     RawPITReadError,
+    T0StartupGateError,
     availability_report,
     decision_epoch_for_event,
     finalization_report,
@@ -46,25 +48,26 @@ def _payload(
     value: str = "10",
     *,
     timestamp: int = 1785222000000,
+    symbol: str = "XRPUSDT",
 ) -> dict[str, str]:
     if source == "binance_usdm.openInterestHist":
         return {
             "sumOpenInterest": value,
-            "symbol": "XRPUSDT",
+            "symbol": symbol,
             "timestamp": str(timestamp),
         }
     if source == "binance_usdm.basis":
         return {
             "basis": value,
             "contractType": "PERPETUAL",
-            "pair": "XRPUSDT",
+            "pair": symbol,
             "timestamp": str(timestamp),
         }
     return {
         "buySellRatio": value,
         "buyVol": "20",
         "sellVol": "2",
-        "symbol": "XRPUSDT",
+        "symbol": symbol,
         "timestamp": str(timestamp),
     }
 
@@ -77,12 +80,13 @@ def _append(
     received: dt.datetime = RECEIVED,
     sequence: str = "1785222000000",
     event_time: dt.datetime = dt.datetime(2026, 7, 28, 7, tzinfo=dt.UTC),
+    symbol: str = "XRPUSDT",
 ) -> None:
     timestamp = int(event_time.timestamp() * 1000)
     assert store.append(
         source=source,
-        symbol="XRPUSDT",
-        raw_payload=_payload(source, value, timestamp=timestamp),
+        symbol=symbol,
+        raw_payload=_payload(source, value, timestamp=timestamp, symbol=symbol),
         local_receive_time=received,
         run_id="replica:test",
         event_time=event_time.isoformat().replace("+00:00", "Z"),
@@ -100,6 +104,7 @@ def _append_complete_periodic_source(
     source: str,
     *,
     observations: int = 48,
+    symbol: str = "XRPUSDT",
 ) -> None:
     interval_start = EPOCH - dt.timedelta(hours=4)
     for index in range(observations):
@@ -109,6 +114,7 @@ def _append_complete_periodic_source(
             source,
             sequence=str(int(event_time.timestamp() * 1000)),
             event_time=event_time,
+            symbol=symbol,
         )
 
 
@@ -145,6 +151,67 @@ def _finalizer(
     ledger = EpochLedger(store._db, policy)  # noqa: SLF001
     reader = RawPITReader(store._db, store.path, replicas)  # noqa: SLF001
     return ledger, DeterministicEpochFinalizer(ledger, reader)
+
+
+def _configure_collector_policy(
+    collector: BinanceR4P0Collector,
+    store: AppendOnlyPITStore,
+    policy: EpochPolicy,
+    *,
+    replicas: tuple = (),
+) -> tuple[DeterministicEpochFinalizer, DeterministicEpochFinalizer]:
+    ledger = EpochLedger(store._db, policy)  # noqa: SLF001
+    union_reader = RawPITReader(store._db, store.path, replicas)  # noqa: SLF001
+    local_reader = RawPITReader(store._db, store.path, ())  # noqa: SLF001
+    union_finalizer = DeterministicEpochFinalizer(ledger, union_reader)
+    local_finalizer = DeterministicEpochFinalizer(ledger, local_reader)
+    collector.epoch_policy = policy
+    collector.epoch_ledger = ledger
+    collector.raw_reader = union_reader
+    collector.epoch_finalizer = union_finalizer
+    collector.local_raw_reader = local_reader
+    collector.local_epoch_finalizer = local_finalizer
+    return union_finalizer, local_finalizer
+
+
+def _append_complete_recoverable_source(
+    store: AppendOnlyPITStore,
+    source: str,
+    symbol: str,
+) -> None:
+    interval_start = EPOCH - dt.timedelta(hours=4)
+    cadence_minutes = 1 if source == "binance_usdm.premiumIndexKline1m" else 5
+    observations = 240 if cadence_minutes == 1 else 48
+    for index in range(observations):
+        event_time = interval_start + dt.timedelta(minutes=cadence_minutes * index)
+        timestamp = int(event_time.timestamp() * 1000)
+        payload: object
+        if source == "binance_usdm.premiumIndexKline1m":
+            payload = [
+                timestamp - 59_999,
+                "1",
+                "2",
+                "0.5",
+                "1.5",
+                "3",
+                timestamp,
+            ]
+        else:
+            payload = _payload(source, timestamp=timestamp, symbol=symbol)
+        assert store.append(
+            source=source,
+            symbol=symbol,
+            raw_payload=payload,
+            local_receive_time=EPOCH + dt.timedelta(hours=1),
+            run_id="replica:peer",
+            event_time=event_time.isoformat().replace("+00:00", "Z"),
+            transaction_time=None,
+            request_started_at="2026-07-28T08:59:59.000000Z",
+            request_completed_at="2026-07-28T09:00:00.000000Z",
+            sequence_or_trade_id=str(timestamp),
+            gap_detected=False,
+            reconnect_id="replica:peer:rest",
+        )
 
 
 @pytest.mark.unit
@@ -257,7 +324,6 @@ async def test_partial_periodic_coverage_triggers_historical_retry(
             "binance_usdm.basis",
             observations=24,
         )
-        _, finalizer = _finalizer(store, policy=policy)
         collector = BinanceR4P0Collector(
             CollectorConfig(
                 artifact_root=tmp_path,
@@ -266,8 +332,7 @@ async def test_partial_periodic_coverage_triggers_historical_retry(
             ),
             store,
         )
-        collector.epoch_policy = policy
-        collector.epoch_finalizer = finalizer
+        _configure_collector_policy(collector, store, policy)
         calls: list[tuple[str, str]] = []
 
         async def retry_history(
@@ -289,6 +354,331 @@ async def test_partial_periodic_coverage_triggers_historical_retry(
             )
 
         assert calls == [("binance_usdm.basis", "XRPUSDT")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_local_47_peer_1_union_complete_still_retries_without_ledger_write(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+    )
+    recovery_time = EPOCH + dt.timedelta(hours=1)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        missing_time = EPOCH - dt.timedelta(minutes=5)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "basis": "1",
+                    "contractType": "PERPETUAL",
+                    "pair": "XRPUSDT",
+                    "timestamp": int(missing_time.timestamp() * 1000),
+                }
+            ],
+        )
+
+    monkeypatch.setattr(collector_module, "utc_now", lambda: recovery_time)
+    with (
+        AppendOnlyPITStore(tmp_path / "local") as local_store,
+        AppendOnlyPITStore(tmp_path / "peer") as peer_store,
+    ):
+        _append_complete_periodic_source(
+            local_store,
+            "binance_usdm.basis",
+            observations=47,
+        )
+        missing_time = EPOCH - dt.timedelta(minutes=5)
+        _append(
+            peer_store,
+            "binance_usdm.basis",
+            event_time=missing_time,
+            sequence=str(int(missing_time.timestamp() * 1000)),
+        )
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path / "local",
+                symbols=("XRPUSDT",),
+                collector_instance_id="replica-a",
+                replica_artifacts=(peer_store.path,),
+            ),
+            local_store,
+        )
+        union_finalizer, local_finalizer = _configure_collector_policy(
+            collector,
+            local_store,
+            policy,
+            replicas=(peer_store.path,),
+        )
+        assert local_finalizer.preview("XRPUSDT", EPOCH).final_status == FINAL_MISSING
+        assert union_finalizer.preview("XRPUSDT", EPOCH).final_status == FINAL_COMPLETE
+        rows_before = local_store._db.execute(  # noqa: SLF001
+            "SELECT COUNT(*) FROM symbol_epoch_finalizations"
+        ).fetchone()[0]
+
+        async with httpx.AsyncClient(
+            base_url="https://fapi.binance.com",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            await collector._retry_incomplete_epoch(  # noqa: SLF001
+                client,
+                EPOCH,
+                recovery_time,
+            )
+
+        rows_after = local_store._db.execute(  # noqa: SLF001
+            "SELECT COUNT(*) FROM symbol_epoch_finalizations"
+        ).fetchone()[0]
+        assert rows_before == rows_after == 0
+        assert len(requests) == 1
+        assert requests[0].url.path == "/futures/data/basis"
+        assert requests[0].url.params["pair"] == "XRPUSDT"
+        assert requests[0].url.params["limit"] == "500"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_production_init_wires_retry_to_local_only_reader(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recovery_time = EPOCH + dt.timedelta(hours=1)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=[])
+
+    monkeypatch.setattr(
+        collector_module,
+        "REQUIRED_ACTIVE_SOURCES",
+        frozenset({"binance_usdm.basis"}),
+    )
+    monkeypatch.setattr(collector_module, "utc_now", lambda: recovery_time)
+    with (
+        AppendOnlyPITStore(tmp_path / "local") as local_store,
+        AppendOnlyPITStore(tmp_path / "peer") as peer_store,
+    ):
+        _append_complete_periodic_source(
+            local_store,
+            "binance_usdm.basis",
+            observations=47,
+        )
+        missing_time = EPOCH - dt.timedelta(minutes=5)
+        _append(
+            peer_store,
+            "binance_usdm.basis",
+            event_time=missing_time,
+            sequence=str(int(missing_time.timestamp() * 1000)),
+        )
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path / "local",
+                symbols=("XRPUSDT",),
+                collector_instance_id="replica-a",
+                replica_artifacts=(peer_store.path,),
+            ),
+            local_store,
+        )
+
+        assert collector.raw_reader.replica_paths == (peer_store.path.resolve(),)
+        assert collector.local_raw_reader.replica_paths == ()
+        assert (
+            collector.epoch_finalizer.preview("XRPUSDT", EPOCH).final_status
+            == FINAL_COMPLETE
+        )
+        assert (
+            collector.local_epoch_finalizer.preview("XRPUSDT", EPOCH).final_status
+            == FINAL_MISSING
+        )
+
+        async with httpx.AsyncClient(
+            base_url="https://fapi.binance.com",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            await collector._retry_incomplete_epoch(  # noqa: SLF001
+                client,
+                EPOCH,
+                recovery_time,
+            )
+
+        finalization_rows = local_store._db.execute(  # noqa: SLF001
+            "SELECT COUNT(*) FROM symbol_epoch_finalizations"
+        ).fetchone()[0]
+        assert len(requests) == 1
+        assert requests[0].url.path == "/futures/data/basis"
+        assert requests[0].url.params["pair"] == "XRPUSDT"
+        assert requests[0].url.params["limit"] == "500"
+        assert finalization_rows == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_local_47_peer_1_finalization_remains_union_complete(tmp_path) -> None:
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+    )
+    with (
+        AppendOnlyPITStore(tmp_path / "local") as local_store,
+        AppendOnlyPITStore(tmp_path / "peer") as peer_store,
+    ):
+        _append_complete_periodic_source(
+            local_store,
+            "binance_usdm.basis",
+            observations=47,
+        )
+        missing_time = EPOCH - dt.timedelta(minutes=5)
+        _append(
+            peer_store,
+            "binance_usdm.basis",
+            event_time=missing_time,
+            sequence=str(int(missing_time.timestamp() * 1000)),
+        )
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path / "local",
+                symbols=("XRPUSDT",),
+                collector_instance_id="replica-a",
+                replica_artifacts=(peer_store.path,),
+            ),
+            local_store,
+        )
+        union_finalizer, _ = _configure_collector_policy(
+            collector,
+            local_store,
+            policy,
+            replicas=(peer_store.path,),
+        )
+        preview = union_finalizer.preview("XRPUSDT", EPOCH)
+        assert preview.final_status == FINAL_COMPLETE
+
+        await collector._finalize_epoch(EPOCH, finalize_at(EPOCH))  # noqa: SLF001
+
+        row = local_store._db.execute(  # noqa: SLF001
+            """
+            SELECT final_status, evaluation_hash
+            FROM symbol_epoch_finalizations
+            """
+        ).fetchone()
+        assert row["final_status"] == FINAL_COMPLETE
+        assert row["evaluation_hash"] == preview.evaluation_hash
+        await collector._alert_deadline_risk(  # noqa: SLF001
+            EPOCH,
+            finalize_at(EPOCH) - dt.timedelta(minutes=30),
+        )
+        assert (
+            local_store._db.execute(  # noqa: SLF001
+                "SELECT COUNT(*) FROM collector_alert_events"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_bounded_retry_request_count_union_vs_local(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sources = tuple(
+        sorted(
+            {
+                "binance_usdm.basis",
+                "binance_usdm.openInterestHist",
+                "binance_usdm.premiumIndexKline1m",
+                "binance_usdm.takerLongShortRatio",
+            }
+        )
+    )
+    symbols = ("DOGEUSDT", "SOLUSDT", "XRPUSDT")
+    policy = EpochPolicy(required_sources=sources, symbols=symbols)
+    recovery_time = EPOCH + dt.timedelta(hours=1)
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(200, json=[])
+
+    monkeypatch.setattr(collector_module, "utc_now", lambda: recovery_time)
+    with (
+        AppendOnlyPITStore(tmp_path / "local") as local_store,
+        AppendOnlyPITStore(tmp_path / "peer") as peer_store,
+    ):
+        for symbol in symbols:
+            for source in sources:
+                _append_complete_recoverable_source(peer_store, source, symbol)
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path / "local",
+                symbols=symbols,
+                collector_instance_id="replica-a",
+                replica_artifacts=(peer_store.path,),
+            ),
+            local_store,
+        )
+        union_finalizer, local_finalizer = _configure_collector_policy(
+            collector,
+            local_store,
+            policy,
+            replicas=(peer_store.path,),
+        )
+        assert all(
+            union_finalizer.preview(symbol, EPOCH).final_status == FINAL_COMPLETE
+            for symbol in symbols
+        )
+
+        async with httpx.AsyncClient(
+            base_url="https://fapi.binance.com",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            collector.local_epoch_finalizer = union_finalizer
+            await collector._retry_incomplete_epoch(  # noqa: SLF001
+                client,
+                EPOCH,
+                recovery_time,
+            )
+            union_request_count = len(paths)
+
+            collector.local_epoch_finalizer = local_finalizer
+            await collector._retry_incomplete_epoch(  # noqa: SLF001
+                client,
+                EPOCH,
+                recovery_time,
+            )
+            local_request_count = len(paths) - union_request_count
+
+        assert union_request_count == 0
+        assert local_request_count == len(sources) * len(symbols) == 12
+        assert Counter(paths) == {
+            "/fapi/v1/premiumIndexKlines": 3,
+            "/futures/data/basis": 3,
+            "/futures/data/openInterestHist": 3,
+            "/futures/data/takerlongshortRatio": 3,
+        }
+        measurement = {
+            "cycle_seconds": 30,
+            "union_requests_per_cycle": union_request_count,
+            "local_requests_per_cycle": local_request_count,
+            "increase_per_cycle": local_request_count - union_request_count,
+            "local_requests_per_hour": local_request_count * 120,
+            "local_requests_per_4h": local_request_count * 480,
+        }
+        assert measurement == {
+            "cycle_seconds": 30,
+            "union_requests_per_cycle": 0,
+            "local_requests_per_cycle": 12,
+            "increase_per_cycle": 12,
+            "local_requests_per_hour": 1440,
+            "local_requests_per_4h": 5760,
+        }
+        print(json.dumps(measurement, sort_keys=True))
 
 
 @pytest.mark.unit
@@ -359,10 +749,7 @@ async def test_basis_failure_recovers_only_inside_epoch_contract_window(
             ),
             store,
         )
-        ledger, finalizer = _finalizer(store, policy=policy)
-        collector.epoch_policy = policy
-        collector.epoch_ledger = ledger
-        collector.epoch_finalizer = finalizer
+        finalizer, _ = _configure_collector_policy(collector, store, policy)
         async with httpx.AsyncClient(
             base_url="https://fapi.binance.com",
             transport=httpx.MockTransport(handler),
@@ -418,10 +805,7 @@ async def test_basis_recovery_never_starts_at_or_after_deadline(tmp_path) -> Non
             ),
             store,
         )
-        ledger, finalizer = _finalizer(store, policy=policy)
-        collector.epoch_policy = policy
-        collector.epoch_ledger = ledger
-        collector.epoch_finalizer = finalizer
+        _, finalizer = _configure_collector_policy(collector, store, policy)
         async with httpx.AsyncClient(
             base_url="https://fapi.binance.com",
             transport=httpx.MockTransport(handler),
@@ -499,6 +883,54 @@ def test_finalization_ignores_late_payload_and_records_late_only(tmp_path) -> No
             "SELECT correction_status FROM late_only_corrections"
         ).fetchone()
         assert row["correction_status"] == "LATE_ONLY"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_production_finalize_records_peer_late_payload_from_union_reader(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        collector_module,
+        "REQUIRED_ACTIVE_SOURCES",
+        frozenset({"binance_usdm.basis"}),
+    )
+    with (
+        AppendOnlyPITStore(tmp_path / "local") as local_store,
+        AppendOnlyPITStore(tmp_path / "peer") as peer_store,
+    ):
+        _append_complete_periodic_source(local_store, "binance_usdm.basis")
+        _append(
+            peer_store,
+            "binance_usdm.basis",
+            received=finalize_at(EPOCH) + dt.timedelta(seconds=1),
+            event_time=EPOCH - dt.timedelta(minutes=5),
+            sequence="peer-late-only",
+        )
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path / "local",
+                symbols=("XRPUSDT",),
+                collector_instance_id="replica-a",
+                replica_artifacts=(peer_store.path,),
+            ),
+            local_store,
+        )
+
+        await collector._finalize_epoch(EPOCH, finalize_at(EPOCH))  # noqa: SLF001
+
+        correction = local_store._db.execute(  # noqa: SLF001
+            """
+            SELECT correction_status, raw_record_id
+            FROM late_only_corrections
+            """
+        ).fetchone()
+        peer_record_id = peer_store._db.execute(  # noqa: SLF001
+            "SELECT record_id FROM pit_records"
+        ).fetchone()["record_id"]
+        assert correction["correction_status"] == "LATE_ONLY"
+        assert correction["raw_record_id"] == peer_record_id
 
 
 @pytest.mark.unit
@@ -864,10 +1296,12 @@ async def test_collector_start_stamps_runtime_code_hash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     code_hash = "a" * 40
+    started_at = dt.datetime(2026, 7, 26, 20, tzinfo=dt.UTC)
     monkeypatch.setattr(collector_module, "runtime_code_hash", lambda: code_hash)
-    monkeypatch.setattr(collector_module, "utc_now", lambda: RECEIVED)
+    monkeypatch.setattr(collector_module, "utc_now", lambda: started_at)
 
     with AppendOnlyPITStore(tmp_path) as store:
+        _append(store, "binance_usdm.openInterestHist")
         collector = BinanceR4P0Collector(
             CollectorConfig(
                 artifact_root=tmp_path,
@@ -884,9 +1318,358 @@ async def test_collector_start_stamps_runtime_code_hash(
         ).fetchone()
         assert stamp["collector_instance_id"] == "replica-a"
         assert stamp["run_id"] == collector.run_id
-        assert stamp["started_at"] == "2026-07-28T07:01:00.000000Z"
+        assert stamp["started_at"] == "2026-07-26T20:00:00.000000Z"
         assert stamp["code_hash"] == code_hash
         assert stamp["collector_version"] == collector_module.COLLECTOR_VERSION
+        assert stamp["t0_utc"] == "2026-07-27T00:00:00.000000Z"
+        with pytest.raises(
+            sqlite3.IntegrityError,
+            match="collector_process_versions is append-only",
+        ):
+            store._db.execute(  # noqa: SLF001
+                "UPDATE collector_process_versions SET t0_utc = NULL"
+            )
+        store._db.rollback()  # noqa: SLF001
+
+
+@pytest.mark.unit
+def test_t0_gate_a_rejects_retroactive_change_with_both_values(tmp_path) -> None:
+    original_policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+        study_id="study-t0-a",
+        policy_hash="policy-t0-a",
+        t0=EPOCH,
+    )
+    changed_policy = EpochPolicy(
+        required_sources=original_policy.required_sources,
+        symbols=original_policy.symbols,
+        study_id=original_policy.study_id,
+        policy_hash=original_policy.policy_hash,
+        t0=EPOCH + dt.timedelta(hours=4),
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        ledger = EpochLedger(store._db, original_policy)  # noqa: SLF001
+        ledger.append_process_version(
+            collector_instance_id="replica-a",
+            run_id="run-a",
+            started_at=EPOCH - dt.timedelta(hours=8),
+            code_hash="a" * 40,
+            collector_version=collector_module.COLLECTOR_VERSION,
+        )
+        changed_ledger = EpochLedger(store._db, changed_policy)  # noqa: SLF001
+
+        with pytest.raises(T0StartupGateError) as error:
+            changed_ledger.validate_t0_startup(started_at=EPOCH - dt.timedelta(hours=8))
+
+        assert "stored_t0=2026-07-28T08:00:00.000000Z" in str(error.value)
+        assert "configured_t0=2026-07-28T12:00:00.000000Z" in str(error.value)
+
+
+@pytest.mark.unit
+def test_t0_gate_a_checks_every_stamp_not_only_latest(tmp_path) -> None:
+    original_policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+        study_id="study-t0-all-stamps",
+        policy_hash="policy-t0-all-stamps",
+        t0=EPOCH,
+    )
+    current_policy = EpochPolicy(
+        required_sources=original_policy.required_sources,
+        symbols=original_policy.symbols,
+        study_id=original_policy.study_id,
+        policy_hash=original_policy.policy_hash,
+        t0=EPOCH + dt.timedelta(hours=4),
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        EpochLedger(store._db, original_policy).append_process_version(  # noqa: SLF001
+            collector_instance_id="replica-a",
+            run_id="older-mismatched-run",
+            started_at=EPOCH - dt.timedelta(hours=8),
+            code_hash="a" * 40,
+            collector_version=collector_module.COLLECTOR_VERSION,
+        )
+        current_ledger = EpochLedger(store._db, current_policy)  # noqa: SLF001
+        current_ledger.append_process_version(
+            collector_instance_id="replica-a",
+            run_id="latest-matching-run",
+            started_at=EPOCH - dt.timedelta(hours=7),
+            code_hash="a" * 40,
+            collector_version=collector_module.COLLECTOR_VERSION,
+        )
+
+        with pytest.raises(T0StartupGateError) as error:
+            current_ledger.validate_t0_startup(started_at=EPOCH - dt.timedelta(hours=6))
+
+        assert "stored_t0=2026-07-28T08:00:00.000000Z" in str(error.value)
+        assert "configured_t0=2026-07-28T12:00:00.000000Z" in str(error.value)
+
+
+@pytest.mark.unit
+def test_t0_gate_a_ignores_legacy_null_stamp(tmp_path) -> None:
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+        study_id="study-t0-null",
+        policy_hash="policy-t0-null",
+        t0=EPOCH,
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        ledger = EpochLedger(store._db, policy)  # noqa: SLF001
+        ledger.db.execute(
+            """
+            INSERT INTO collector_process_versions (
+                version_stamp_id, study_id, policy_hash, collector_instance_id,
+                run_id, started_at, code_hash, collector_version, t0_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                "legacy-null",
+                policy.study_id,
+                policy.policy_hash,
+                "replica-a",
+                "legacy-run",
+                "2026-07-28T00:00:00.000000Z",
+                "a" * 40,
+                collector_module.COLLECTOR_VERSION,
+            ),
+        )
+        ledger.db.commit()
+
+        ledger.validate_t0_startup(started_at=EPOCH - dt.timedelta(hours=4))
+
+
+@pytest.mark.unit
+def test_t0_gate_b_rejects_late_start_for_fresh_artifact(tmp_path) -> None:
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+        t0=EPOCH,
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        ledger = EpochLedger(store._db, policy)  # noqa: SLF001
+
+        with pytest.raises(
+            T0StartupGateError,
+            match="기존 T0 를 바꾸지 말고 새 커밋·새 T0 를 사전 고정하라",
+        ):
+            ledger.validate_t0_startup(
+                started_at=EPOCH - dt.timedelta(hours=4) + dt.timedelta(seconds=1)
+            )
+
+
+@pytest.mark.unit
+def test_t0_gate_b_allows_timely_start_for_fresh_artifact(tmp_path) -> None:
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+        t0=EPOCH,
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        ledger = EpochLedger(store._db, policy)  # noqa: SLF001
+
+        ledger.validate_t0_startup(started_at=EPOCH - dt.timedelta(hours=4))
+
+
+@pytest.mark.unit
+def test_t0_gate_b_allows_start_before_warmup_cutoff(tmp_path) -> None:
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+        t0=EPOCH,
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        ledger = EpochLedger(store._db, policy)  # noqa: SLF001
+
+        ledger.validate_t0_startup(started_at=EPOCH - dt.timedelta(hours=4, seconds=1))
+
+
+@pytest.mark.unit
+def test_t0_gate_b_allows_late_restart_with_current_identity_stamp(tmp_path) -> None:
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+        t0=EPOCH,
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        ledger = EpochLedger(store._db, policy)  # noqa: SLF001
+        ledger.append_process_version(
+            collector_instance_id="replica-a",
+            run_id="existing-run",
+            started_at=EPOCH - dt.timedelta(hours=5),
+            code_hash="a" * 40,
+            collector_version=collector_module.COLLECTOR_VERSION,
+        )
+
+        ledger.validate_t0_startup(started_at=EPOCH + dt.timedelta(days=1))
+
+
+@pytest.mark.unit
+def test_t0_gate_b_allows_legacy_v2_pit_rows_without_any_stamp(tmp_path) -> None:
+    policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+        study_id="study-operational-legacy",
+        policy_hash="policy-operational-legacy",
+        t0=EPOCH,
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        _append(store, "binance_usdm.basis")
+        ledger = EpochLedger(store._db, policy)  # noqa: SLF001
+
+        ledger.validate_t0_startup(started_at=EPOCH + dt.timedelta(days=1))
+
+        ledger.append_process_version(
+            collector_instance_id="replica-a",
+            run_id="first-stamped-restart",
+            started_at=EPOCH + dt.timedelta(days=1),
+            code_hash="a" * 40,
+            collector_version=collector_module.COLLECTOR_VERSION,
+        )
+        ledger.validate_t0_startup(started_at=EPOCH + dt.timedelta(days=2))
+
+
+@pytest.mark.unit
+def test_t0_gate_b_rejects_new_identity_reusing_stale_pit_rows(tmp_path) -> None:
+    old_policy = EpochPolicy(
+        required_sources=("binance_usdm.basis",),
+        symbols=("XRPUSDT",),
+        study_id="study-old",
+        policy_hash="policy-old",
+        t0=EPOCH,
+    )
+    new_policy = EpochPolicy(
+        required_sources=old_policy.required_sources,
+        symbols=old_policy.symbols,
+        study_id="study-new",
+        policy_hash="policy-new",
+        t0=EPOCH + dt.timedelta(days=23),
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        _append(store, "binance_usdm.basis")
+        EpochLedger(store._db, old_policy).append_process_version(  # noqa: SLF001
+            collector_instance_id="replica-a",
+            run_id="old-run",
+            started_at=EPOCH - dt.timedelta(hours=5),
+            code_hash="a" * 40,
+            collector_version=collector_module.COLLECTOR_VERSION,
+        )
+        new_ledger = EpochLedger(store._db, new_policy)  # noqa: SLF001
+
+        with pytest.raises(T0StartupGateError, match="G-T0-B") as error:
+            new_ledger.validate_t0_startup(
+                started_at=new_policy.t0 + dt.timedelta(hours=6)
+            )
+
+        assert "현재 study_id/policy_hash stamp 없음" in str(error.value)
+        assert "새 커밋·새 T0" in str(error.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_t0_startup_gate_runs_before_collection_or_network(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    network_calls = 0
+
+    async def forbidden_network(*_args, **_kwargs) -> None:
+        nonlocal network_calls
+        network_calls += 1
+        raise AssertionError("collection task started before T0 gate")
+
+    monkeypatch.setattr(
+        collector_module,
+        "utc_now",
+        lambda: dt.datetime(2026, 7, 30, tzinfo=dt.UTC),
+    )
+    with AppendOnlyPITStore(tmp_path) as store:
+        collector = BinanceR4P0Collector(
+            CollectorConfig(
+                artifact_root=tmp_path,
+                symbols=("XRPUSDT",),
+                collector_instance_id="replica-a",
+            ),
+            store,
+        )
+        monkeypatch.setattr(collector, "_ws_supervisor", forbidden_network)
+        monkeypatch.setattr(collector, "_poll_loop", forbidden_network)
+
+        with pytest.raises(T0StartupGateError, match="G-T0-B"):
+            await collector.run()
+
+        assert network_calls == 0
+        assert (
+            store._db.execute(  # noqa: SLF001
+                "SELECT COUNT(*) FROM collector_process_versions"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            store._db.execute(  # noqa: SLF001
+                "SELECT COUNT(*) FROM collector_attempt_starts"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+@pytest.mark.unit
+def test_process_version_t0_additive_migration_preserves_legacy_rows(tmp_path) -> None:
+    database_path = tmp_path / "legacy.sqlite3"
+    connection = sqlite3.connect(database_path)
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE collector_process_versions (
+            append_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version_stamp_id TEXT NOT NULL UNIQUE,
+            study_id TEXT NOT NULL,
+            policy_hash TEXT NOT NULL,
+            collector_instance_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            code_hash TEXT NOT NULL,
+            collector_version TEXT NOT NULL,
+            UNIQUE (study_id, policy_hash, collector_instance_id, run_id)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO collector_process_versions (
+            version_stamp_id, study_id, policy_hash, collector_instance_id,
+            run_id, started_at, code_hash, collector_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "legacy-stamp",
+            POLICY.study_id,
+            POLICY.policy_hash,
+            "replica-a",
+            "legacy-run",
+            "2026-07-26T00:00:00.000000Z",
+            "a" * 40,
+            collector_module.COLLECTOR_VERSION,
+        ),
+    )
+    connection.commit()
+
+    try:
+        EpochLedger(connection, POLICY)
+        columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(collector_process_versions)"
+            )
+        }
+        row = connection.execute(
+            "SELECT version_stamp_id, t0_utc FROM collector_process_versions"
+        ).fetchone()
+        assert "t0_utc" in columns
+        assert dict(row) == {"version_stamp_id": "legacy-stamp", "t0_utc": None}
+    finally:
+        connection.close()
 
 
 @pytest.mark.unit

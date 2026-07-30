@@ -550,6 +550,10 @@ class BinanceR4P0Collector:
         self.epoch_finalizer = DeterministicEpochFinalizer(
             self.epoch_ledger, self.raw_reader
         )
+        self.local_raw_reader = RawPITReader(store._db, store.path, ())
+        self.local_epoch_finalizer = DeterministicEpochFinalizer(
+            self.epoch_ledger, self.local_raw_reader
+        )
         self.alert_dispatcher = AlertDispatcher(
             self.epoch_ledger, config.alert_webhook_urls
         )
@@ -559,6 +563,7 @@ class BinanceR4P0Collector:
 
     async def run(self) -> None:
         started_at = utc_now()
+        self.epoch_ledger.validate_t0_startup(started_at=started_at)
         self.epoch_ledger.append_process_version(
             collector_instance_id=self.config.collector_instance_id,
             run_id=self.run_id,
@@ -865,7 +870,7 @@ class BinanceR4P0Collector:
             "binance_usdm.takerLongShortRatio",
         }
         for symbol in self.epoch_policy.symbols:
-            preview = self.epoch_finalizer.preview(symbol, epoch)
+            preview = self.local_epoch_finalizer.preview(symbol, epoch)
             retry_sources = sorted(
                 (set(preview.missing_sources) | set(preview.invalid_sources))
                 & recoverable
