@@ -20,6 +20,22 @@ def _empty_day_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=constants.DAY_FRAME_COLUMNS)
 
 
+def _parse_kis_provider_date(value: Any) -> pd.Timestamp | None:
+    """Parse a raw KIS date without discarding the rest of the quote evidence."""
+    if value is None or value == "":
+        return None
+    parsed = pd.to_datetime(value, format="%Y%m%d", errors="coerce")
+    return None if pd.isna(parsed) else parsed
+
+
+def _parse_kis_provider_time(value: Any) -> datetime.time | None:
+    """Parse a raw KIS clock value; malformed/non-finite values stay unavailable."""
+    if value is None or value == "":
+        return None
+    parsed = pd.to_datetime(value, format="%H%M%S", errors="coerce")
+    return None if pd.isna(parsed) else parsed.time()
+
+
 def _validate_daily_itemchartprice_chunk(chunk: list[dict[str, Any]]) -> None:
     if not isinstance(chunk, list):
         raise RuntimeError(
@@ -210,14 +226,10 @@ class DomesticMarketDataMixin(MarketDataBase):
         # stck_bsop_date / stck_cntg_hour|time 부재 시 None을 유지하고,
         # 호출부는 호출 시각을 별도 observed_at/fetched_at으로만 태깅한다.
         trade_date_str = out.get("stck_bsop_date")  # 예: '20250805'
-        trade_date = (
-            pd.to_datetime(trade_date_str, format="%Y%m%d") if trade_date_str else None
-        )
+        trade_date = _parse_kis_provider_date(trade_date_str)
 
         time_str = out.get("stck_cntg_hour") or out.get("stck_cntg_time")  # 'HHMMSS'
-        trade_time = (
-            pd.to_datetime(time_str, format="%H%M%S").time() if time_str else None
-        )
+        trade_time = _parse_kis_provider_time(time_str)
 
         row = {
             "code": out["stck_shrn_iscd"],

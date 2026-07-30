@@ -635,7 +635,7 @@ def _parse_price_as_of(value: Any) -> datetime.datetime | None:
     dt = timestamp.to_pydatetime()
     if dt.tzinfo is None:
         return None
-    return dt
+    return dt.astimezone(_KST)
 
 
 def _kr_price_as_of_from_frame(df: pd.DataFrame) -> datetime.datetime | None:
@@ -771,9 +771,18 @@ async def _fetch_kr_live_quote(symbol: str) -> dict[str, Any] | None:
     time_val = row.get("time")
     # ROB-1121: date/time 중 하나라도 provider가 주지 않으면 합성하지 않는다.
     # provider timestamp는 KST-aware로 생성한다.
-    if date_val is not None and not pd.isna(date_val) and time_val is not None:
-        d = pd.Timestamp(date_val).to_pydatetime()
-        as_of = datetime.datetime.combine(d.date(), time_val, tzinfo=_KST)
+    if (
+        date_val is not None
+        and not pd.isna(date_val)
+        and isinstance(time_val, datetime.time)
+        and not pd.isna(time_val)
+    ):
+        try:
+            d = pd.Timestamp(date_val).to_pydatetime()
+        except (TypeError, ValueError, OverflowError):
+            d = None
+        if d is not None:
+            as_of = datetime.datetime.combine(d.date(), time_val, tzinfo=_KST)
 
     return {
         "symbol": symbol,
@@ -1485,11 +1494,8 @@ async def _get_quote_impl(
         # previous_close used for gap calculations.
         data_state = kr_market_data_state()
         quote = await _fetch_quote_equity_kr(symbol)
-        try:
-            tradability_map = await get_kr_nxt_tradability([symbol])
-            tradability = tradability_map.get(symbol)
-        except Exception:
-            tradability = None
+        tradability_map = await get_kr_nxt_tradability([symbol])
+        tradability = tradability_map.get(symbol)
         if tradability is not None:
             quote.update(tradability.public_fields())
         if await _apply_nxt_quote_overlay(symbol, quote, data_state=data_state):
