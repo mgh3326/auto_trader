@@ -116,6 +116,20 @@ def test_t0_preflight_fails_v_after_warmup_cutoff(tmp_path) -> None:
 
 
 @pytest.mark.unit
+def test_t0_preflight_allows_v_exactly_at_warmup_cutoff(tmp_path) -> None:
+    boundary = T0 - dt.timedelta(hours=4)
+    paths = [
+        _write_replica(tmp_path / "a", name="a", heartbeat_at=boundary),
+        _write_replica(tmp_path / "b", name="b", heartbeat_at=boundary),
+    ]
+
+    report = _report(paths, verified_at=boundary)
+
+    assert report["gates"]["v_le_t0_minus_4h"] is True
+    assert report["ok"] is True
+
+
+@pytest.mark.unit
 def test_t0_preflight_fails_code_hash_mismatch(tmp_path) -> None:
     paths = [
         _write_replica(tmp_path / "a", name="a"),

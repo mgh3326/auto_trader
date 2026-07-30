@@ -26,6 +26,7 @@ from app.services.brokers.binance.r4_p0_collector import (
     utc_now,
 )
 from app.services.brokers.binance.r4_p0_hardening import (
+    EPOCH_HOURS,
     AlertDispatcher,
     EpochLedger,
     EpochPolicy,
@@ -148,7 +149,7 @@ def t0_preflight_report(
         )
 
     configured_t0 = iso_utc(policy.t0)
-    t0_minus_4h = policy.t0 - dt.timedelta(hours=4)
+    t0_minus_4h = policy.t0 - dt.timedelta(hours=EPOCH_HOURS)
     gates = {
         "v_le_t0_minus_4h": verified_at <= t0_minus_4h,
         "code_hash_match_all": len(replicas) >= 2

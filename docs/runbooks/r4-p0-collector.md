@@ -271,7 +271,9 @@ verification that was just performed. The operator sequence is fixed:
 
 1. Commit `DEFAULT_T0`, `DEFAULT_STUDY_ID`, and `DEFAULT_POLICY_HASH` first,
    choosing a sufficiently distant UTC four-hour boundary.
-2. Start both hosts from that exact fixed commit.
+2. Start both hosts from that exact fixed commit. A new
+   `(DEFAULT_STUDY_ID, DEFAULT_POLICY_HASH)` run must use fresh artifact roots;
+   never reuse PIT rows from another study or policy as warm-up evidence.
 3. Before `T0-4h`, run the one-shot read-only preflight against both collector
    artifacts:
 
@@ -286,19 +288,31 @@ verification that was just performed. The operator sequence is fixed:
    at least two distinct replicas are healthy, and every stamp has the
    committed T0.
 5. If any gate fails, do not retroactively adjust or reuse that T0. Precommit a
-   new commit and a new T0, restart both hosts from that commit, and repeat the
-   verification.
+   new commit containing a new `DEFAULT_T0`, `DEFAULT_STUDY_ID`, and
+   `DEFAULT_POLICY_HASH`, restart both hosts from that commit with fresh
+   artifact roots, and repeat the verification.
 
 `--t0-preflight` does not require `R4_P0_WATCHDOG_ENABLED`; it opens collector
 artifacts with SQLite `mode=ro`, performs one check, creates no watchdog state,
 does no network I/O, and exits nonzero when a gate is closed.
 
-Collector startup enforces the same contract before collection tasks or network
-clients start. For the same `(study_id, policy_hash)`, a non-null stored
-`t0_utc` that differs from the configured T0 is rejected. A completely fresh
-artifact (`pit_records` has zero rows) is also rejected when startup is later
-than `T0-4h`. An artifact with existing PIT rows is treated as a restart and is
-not blocked by the warm-up check, while the stored-T0 check still applies.
+Collector startup applies two hard gates before collection tasks or network
+clients start; the four-gate preflight above remains a required operator check
+and is not replaced by startup. For the same `(study_id, policy_hash)`, every
+non-null stored `t0_utc` is checked and a value that differs from the configured
+T0 is rejected. Startup passes the warm-up gate when it is no later than
+`T0-4h`, or when a process stamp exists for the current `(study_id,
+policy_hash)`. A narrow compatibility exception also permits a ledger-before-
+stamp v2 artifact when it has PIT rows but no process-version stamp for any
+study. Once any process stamp exists, PIT rows from another study or policy do
+not bypass the warm-up gate.
+
+The v2 compatibility exception cannot identify which study produced its
+unscoped PIT rows. Reusing such an artifact for a new study after `T0-4h` can
+therefore still pass startup. This is an intentional residual needed to preserve
+restartability of the operational pre-stamp artifact. The operator hard rule is
+that every new study/policy run uses a fresh artifact root; the read-only
+four-gate preflight remains mandatory before proceeding.
 
 The alert path is:
 

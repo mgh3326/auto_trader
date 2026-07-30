@@ -429,16 +429,18 @@ class EpochLedger:
         """Fail closed before collection starts if the committed T0 is unsafe."""
 
         configured_t0 = iso_utc(self.policy.t0)
-        stored_rows = self.db.execute(
+        identity_stamp_rows = self.db.execute(
             """
-            SELECT DISTINCT t0_utc
+            SELECT t0_utc
             FROM collector_process_versions
-            WHERE study_id = ? AND policy_hash = ? AND t0_utc IS NOT NULL
-            ORDER BY t0_utc
+            WHERE study_id = ? AND policy_hash = ?
+            ORDER BY append_id
             """,
             (self.policy.study_id, self.policy.policy_hash),
         ).fetchall()
-        stored_t0_values = [row["t0_utc"] for row in stored_rows]
+        stored_t0_values = sorted(
+            {row["t0_utc"] for row in identity_stamp_rows if row["t0_utc"] is not None}
+        )
         mismatched_t0_values = [
             stored_t0 for stored_t0 in stored_t0_values if stored_t0 != configured_t0
         ]
@@ -452,12 +454,23 @@ class EpochLedger:
         has_pit_records = (
             self.db.execute("SELECT 1 FROM pit_records LIMIT 1").fetchone() is not None
         )
+        has_current_identity_stamp = bool(identity_stamp_rows)
+        has_any_process_stamp = (
+            self.db.execute(
+                "SELECT 1 FROM collector_process_versions LIMIT 1"
+            ).fetchone()
+            is not None
+        )
+        is_legacy_v2_restart = not has_any_process_stamp and has_pit_records
         t0_minus_4h = self.policy.t0 - dt.timedelta(hours=EPOCH_HOURS)
-        if not has_pit_records and started_at > t0_minus_4h:
+        is_warmup_ready = started_at <= t0_minus_4h
+        if not (is_warmup_ready or has_current_identity_stamp or is_legacy_v2_restart):
             raise T0StartupGateError(
                 "G-T0-B refused fresh-artifact startup: "
                 f"started_at={iso_utc(started_at)} "
                 f"t0_minus_4h={iso_utc(t0_minus_4h)}; "
+                "warm-up cutoff 초과, 현재 study_id/policy_hash stamp 없음, "
+                "stamp 없는 legacy v2 artifact 재기동에도 해당하지 않음; "
                 "기존 T0 를 바꾸지 말고 새 커밋·새 T0 를 사전 고정하라"
             )
 
