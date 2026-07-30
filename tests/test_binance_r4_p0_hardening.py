@@ -1666,8 +1666,60 @@ def test_process_version_t0_additive_migration_preserves_legacy_rows(tmp_path) -
         row = connection.execute(
             "SELECT version_stamp_id, t0_utc FROM collector_process_versions"
         ).fetchone()
+        indexes = {
+            index["name"]
+            for index in connection.execute(
+                "PRAGMA index_list(collector_process_versions)"
+            )
+        }
+        index_columns = tuple(
+            index["name"]
+            for index in connection.execute(
+                "PRAGMA index_info(ix_collector_process_version_t0)"
+            )
+        )
+        plan_details = [
+            plan["detail"]
+            for plan in connection.execute(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT t0_utc FROM (
+                    SELECT t0_utc
+                    FROM collector_process_versions
+                    WHERE study_id = ? AND policy_hash = ? AND t0_utc < ?
+                    LIMIT 1
+                )
+                UNION ALL
+                SELECT t0_utc FROM (
+                    SELECT t0_utc
+                    FROM collector_process_versions
+                    WHERE study_id = ? AND policy_hash = ? AND t0_utc > ?
+                    LIMIT 1
+                )
+                LIMIT 1
+                """,
+                (
+                    POLICY.study_id,
+                    POLICY.policy_hash,
+                    "2026-07-27T00:00:00.000000Z",
+                    POLICY.study_id,
+                    POLICY.policy_hash,
+                    "2026-07-27T00:00:00.000000Z",
+                ),
+            )
+        ]
         assert "t0_utc" in columns
         assert dict(row) == {"version_stamp_id": "legacy-stamp", "t0_utc": None}
+        assert "ix_collector_process_version_t0" in indexes
+        assert index_columns == ("study_id", "policy_hash", "t0_utc")
+        assert (
+            sum(
+                "USING COVERING INDEX ix_collector_process_version_t0" in detail
+                for detail in plan_details
+            )
+            == 2
+        )
+        assert all("USE TEMP B-TREE" not in detail for detail in plan_details)
     finally:
         connection.close()
 
