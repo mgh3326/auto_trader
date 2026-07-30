@@ -51,6 +51,9 @@ from app.services.krb1_quote_timestamp_capture import build_quote_timestamp_capt
 from app.services.krb1_reference_exception_adapter import (
     fetch_reference_price_exceptions,
 )
+from app.services.krb1_universe_denominator import (
+    fetch_external_universe_denominator,
+)
 
 DEFAULT_STORE_DIR = Path("var/research/krb1/p0_gate_evidence")
 METADATA_SNAPSHOT_FILENAME = "toss_metadata_snapshot.jsonl"
@@ -432,6 +435,14 @@ async def run(
         session_date=as_of_session,
         decision_at=decision_at,
     )
+    # 🔴 F-INT-03: no external listed-instrument count is wired (ROB-1175), so the
+    # coverage denominator has no basis outside our own read and the run reports it
+    # as unprovable.
+    denominator_fetch = fetch_external_universe_denominator(
+        market="KOSPI",
+        session_date=as_of_session,
+        decision_at=decision_at,
+    )
     final_input = SelectorInput(
         as_of_session=selector_input.as_of_session,
         target_session=selector_input.target_session,
@@ -446,11 +457,13 @@ async def run(
         completion_manifests=manifests,
         reference_source_unavailable_reason=reference_fetch.reason,
         finality_source_unavailable_reason=finality_fetch.reason,
+        universe_denominator_source_unavailable_reason=denominator_fetch.reason,
     )
     result = select_krb1_p0_liquidity_candidates(final_input)
     result["source_availability"] = {
         "reference_price_exception": reference_fetch.as_evidence(),
         "provider_daily_finality": finality_fetch.as_evidence(),
+        "external_universe_denominator": denominator_fetch.as_evidence(),
         "raw_upstream_errors": upstream_errors,
         "gate_evidence_stream_errors": evidence_errors,
         "metadata_snapshot_markets": sorted(row.market for row in snapshots),

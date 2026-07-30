@@ -14,10 +14,13 @@ from pathlib import Path
 
 import pytest
 
+from app.services import krb1_completion_finality as finality_module
 from app.services.krb1_completion_finality import (
+    ADMISSIBLE_FINALITY_SOURCES,
     FAIL_CLOSED_REASON,
     FINALITY_SOURCE_WIRED,
     FORBIDDEN_CROSS_DOMAIN_SOURCES,
+    REFUSED_SELF_ASSERTED_SOURCES,
     FinalityFetchResult,
     ProviderFinalityAttestation,
     ProviderFinalityNotWired,
@@ -35,13 +38,30 @@ DECLARED_AT = dt.datetime(2026, 7, 29, 16, 40, tzinfo=KST)
 RETRIEVED_AT = dt.datetime(2026, 7, 29, 16, 50, tzinfo=KST)
 MARKET = "KOSPI"
 MODULE = Path("app/services/krb1_completion_finality.py")
+HYPOTHETICAL_SOURCE = "krx_official_daily_finality"
+
+
+@pytest.fixture
+def wired_finality_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Grant a hypothetical wired finality source, for these tests only.
+
+    🔴 Test-only seam, deliberately a monkeypatch of module attributes rather than
+    a parameter: production has no way to reach it (ROB-1172 F-INT-01/F-INT-04).
+    Without it every assertion about a *later* check would be masked by the
+    unwired-source refusal, and a gate that can never pass cannot be shown to
+    block for the right reason.
+    """
+    monkeypatch.setattr(finality_module, "FINALITY_SOURCE_WIRED", True)
+    monkeypatch.setattr(
+        finality_module, "ADMISSIBLE_FINALITY_SOURCES", frozenset({HYPOTHETICAL_SOURCE})
+    )
 
 
 def _attestation(**overrides: object) -> ProviderFinalityAttestation:
     base = ProviderFinalityAttestation(
         market=MARKET,
         session_date=SESSION,
-        source="krx_official_daily_finality",
+        source=HYPOTHETICAL_SOURCE,
         revision="1",
         declared_final_at=DECLARED_AT,
         retrieved_at=RETRIEVED_AT,
@@ -65,7 +85,9 @@ def _evaluate(attestations, **kwargs):
 # ───────────── the promotion this split exists to prevent ─────────────
 
 
-def test_a_perfect_local_reconcile_does_not_prove_finality() -> None:
+def test_a_perfect_local_reconcile_does_not_prove_finality(
+    wired_finality_contract: None,
+) -> None:
     """🔴 local_reconcile_proven=True and still unprovable."""
     gate = _evaluate([], local_reconcile_proven=True)
 
@@ -94,6 +116,24 @@ def test_the_stub_is_the_only_wired_source_and_it_blocks() -> None:
         local_reconcile_proven=True,
     )
     assert again.attestations == ()
+    assert gate.status == "unprovable"
+    # The unwired refusal is checked first, so it is the attributed defect here.
+    # The stub's own reason is what blocks once a source is hypothetically wired;
+    # see test_a_wired_but_unavailable_source_still_blocks.
+    assert gate.evidence["defect"] == "provider_finality_source_not_wired"
+    assert gate.evidence["provider_finality_source_wired"] is False
+
+
+def test_a_wired_but_unavailable_source_still_blocks(
+    wired_finality_contract: None,
+) -> None:
+    gate, fetched = evaluate_with_stub(
+        market=MARKET,
+        session_date=SESSION,
+        decision_at=DECISION_AT,
+        local_reconcile_proven=True,
+    )
+    assert fetched.attestations == ()
     assert gate.status == "unprovable"
     assert gate.evidence["defect"] == "provider_finality_source_unavailable"
     assert gate.evidence["source_unavailable_reason"] == FAIL_CLOSED_REASON
@@ -147,7 +187,7 @@ def test_module_never_references_the_forbidden_domain_as_a_source() -> None:
 # ───────────── satisfiability, so the block is attributable ─────────────
 
 
-def test_a_real_attestation_would_prove_it() -> None:
+def test_a_real_attestation_would_prove_it(wired_finality_contract: None) -> None:
     gate = _evaluate([_attestation()])
     assert gate.status == "proven"
     assert gate.reason == "completed_session_provider_finality_proven"
@@ -175,14 +215,14 @@ def test_a_real_attestation_would_prove_it() -> None:
     ],
 )
 def test_attestation_clock_defects_block(
-    overrides: dict[str, object], defect: str
+    overrides: dict[str, object], defect: str, wired_finality_contract: None
 ) -> None:
     gate = _evaluate([_attestation(**overrides)])
     assert gate.status == "unprovable"
     assert gate.evidence["defect"] == defect
 
 
-def test_scope_and_conflict_defects_block() -> None:
+def test_scope_and_conflict_defects_block(wired_finality_contract: None) -> None:
     assert (
         _evaluate([_attestation(market="KOSDAQ")]).evidence["defect"]
         == "no_attestation_for_market_session"
@@ -209,3 +249,95 @@ def test_attestation_requires_provider_origin_fields() -> None:
             _attestation(**override)
     with pytest.raises(ValueError):
         _attestation(declared_final_at=dt.datetime(2026, 7, 29, 16, 40))
+
+
+# ───── F-INT-01: the three elements of the verifier's bypass, each anchored ─────
+
+
+def test_unwired_source_means_no_input_can_prove_finality() -> None:
+    """🔴 Element 1 of the verifier's repro: ``FINALITY_SOURCE_WIRED=False``.
+
+    A stub that only stops the *fetch* path is decoration. If a hand-built
+    attestation handed in at the value boundary can still reach ``proven``, the
+    selector's evidence asserts a provider guarantee that no provider gave — which
+    is the whole defect the A3 split exists to remove.
+    """
+    assert FINALITY_SOURCE_WIRED is False
+    assert ADMISSIBLE_FINALITY_SOURCES == frozenset()
+
+    gate = _evaluate([_attestation()])
+
+    assert gate.status == "unprovable"
+    assert gate.reason == "completed_session_provider_finality_unproven"
+    assert gate.evidence["defect"] == "provider_finality_source_not_wired"
+    assert gate.evidence["provider_finality_source_wired"] is False
+    assert gate.evidence["attestation_count"] == 1
+
+
+def test_operator_attestation_cannot_be_built_or_admitted() -> None:
+    """🔴 Element 2: the rejected fallback.
+
+    ROB-1172 E1/D1: "operator attestation is not adopted — an operator signature
+    cannot create the external fact of a provider publication/effective clock."
+    The verifier reached ``proven`` with ``source='operator_attestation'``, so the
+    source is refused at construction *and* at the gate.
+    """
+    assert "operator_attestation" in REFUSED_SELF_ASSERTED_SOURCES
+    for source in sorted(REFUSED_SELF_ASSERTED_SOURCES):
+        with pytest.raises(ProviderFinalityNotWired):
+            _attestation(source=source)
+
+
+def test_operator_attestation_is_refused_by_the_gate_not_only_the_constructor(
+    wired_finality_contract: None,
+) -> None:
+    """Construction is one layer; the verdict must refuse it independently."""
+    forged = _attestation()
+    object.__setattr__(forged, "source", "operator_attestation")
+
+    gate = _evaluate([forged])
+
+    assert gate.status == "unprovable"
+    assert gate.evidence["defect"] == "finality_source_self_asserted_or_cross_domain"
+    assert gate.evidence["operator_attestation_is_not_provider_evidence"] is True
+
+
+def test_malformed_payload_hash_is_refused_at_construction_and_at_the_gate(
+    wired_finality_contract: None,
+) -> None:
+    """🔴 Element 3: ``raw_payload_sha256='not-a-sha256'`` passed unexamined.
+
+    A digest that is not a digest binds the attestation to no payload at all.
+    """
+    for bad in ("not-a-sha256", "", "A" * 63, "z" * 64, "a" * 65):
+        with pytest.raises(ValueError):
+            _attestation(raw_payload_sha256=bad)
+
+    forged = _attestation()
+    object.__setattr__(forged, "raw_payload_sha256", "not-a-sha256")
+    gate = _evaluate([forged])
+
+    assert gate.status == "unprovable"
+    assert gate.evidence["defect"] == "raw_payload_sha256_malformed"
+
+
+def test_source_admissibility_is_an_allowlist_so_unenumerated_names_cannot_leak(
+    wired_finality_contract: None,
+) -> None:
+    """Enumerating bad sources leaks; enumerating good ones does not.
+
+    The named refusals above keep the rejected decisions attributable, but the
+    load-bearing closure is that anything not admitted is refused.
+    """
+    gate = _evaluate([_attestation(source="some_source_nobody_reviewed")])
+
+    assert gate.status == "unprovable"
+    assert gate.evidence["defect"] == "finality_source_not_admissible"
+    assert gate.evidence["required_admissible_sources"] == [HYPOTHETICAL_SOURCE]
+
+
+def test_the_shipped_module_admits_nothing() -> None:
+    """Production state, stated once so a widening diff has to change this line."""
+    assert ADMISSIBLE_FINALITY_SOURCES == frozenset()
+    assert FINALITY_SOURCE_WIRED is False
+    assert "operator_attestation" in REFUSED_SELF_ASSERTED_SOURCES

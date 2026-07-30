@@ -279,6 +279,53 @@ A4  기준가 evidence 를 actual numeric price 와 determination method 로 분
     상태: B1~B3(숫자 면제·제외 vs fail-close·UNKNOWN 처분) 운영자 amendment 대기
 ```
 
+## 6.4 F-INT-01~04 반영 — 통합 적대검증 회송 수정 (2026-07-30)
+
+통합 적대검증(`verify-rob1744-integrated-2026-07-30.md`)이 4건의 HIGH 거짓 통과를 냈다.
+전부 **통과 조건을 넓히지 않고 막는 방향**으로 닫았다.
+
+```
+F-INT-01  기각된 operator attestation 이 provider finality 를 proven 으로 만들었다
+   (FINALITY_SOURCE_WIRED=False · raw_payload_sha256='not-a-sha256' 인데 proven)
+   → ① FINALITY_SOURCE_WIRED=False 면 어떤 입력도 proven 불가 (값 경계 포함)
+     ② ADMISSIBLE_FINALITY_SOURCES = 빈 집합(allowlist) +
+        REFUSED_SELF_ASSERTED_SOURCES 에 operator_attestation 명시 거부
+        — 생성 시점(ProviderFinalityNotWired)과 gate 판정 양쪽에서
+     ③ raw_payload_sha256 은 64자 hex 만 — 생성 시점 ValueError + gate defect
+   E1/D1 근거: 운영자 서명은 provider publication/effective clock 이라는 외부 사실을
+   만들지 못한다. 별도 study/amendment 없이 fallback 사용 금지.
+
+F-INT-02  identity 없는 completion manifest v1 을 reader 가 계속 proven 으로 읽었다
+   (⑦ canonical regression 과 같은 원인: detail shape 를 바꾸고 schema label 유지)
+   → SCHEMA_VERSION v1 → v2. universe/manifest hash 에 schema_version 이 들어가므로
+     v1 record 는 애초에 새 계약을 만족할 수 없다. 추가로
+     ① manifest_from_row 가 v1/미지 label 을 ValueError 로 거부 (RETIRED_SCHEMA_VERSIONS)
+     ② detail 마다 provider_raw_symbol / request_context_symbol_is_not_identity 필수
+     ③ evaluate_completion_manifest 가 **읽기 시점에** identity 를 재확인
+        (detail 없음·불완전·null identity·symbol 불일치 → unprovable)
+   소급 승격 없음. 기존 v1 stream 은 운영상 새 stream 으로 시작한다(§6.1 F5 와 동일).
+
+F-INT-03  sealed denominator 의 **최초 생성**이 이미 잘린 DB 를 자기증명했다
+   → app/services/krb1_universe_denominator.py 신설. 새 gate
+     universe_denominator_external_basis 가 market 별로 외부 상장종목수 attestation 을
+     요구하고, 그것이 sealed_count·actual_count 와 모두 일치해야 proven 이다.
+     🔴 외부 근거(KRX 공식 종목수)는 ROB-1175 별건이라 **아무 source 도 배선하지 않았다**:
+     EXTERNAL_DENOMINATOR_SOURCE_WIRED=False · 빈 allowlist ·
+     REFUSED_SELF_REFERENTIAL_SOURCES(우리 rows·sealed count·operator) 거부.
+     즉 지금은 항상 unprovable — 없는 증거를 만들지 않고 막았다.
+     sealing 은 "언제 알았는지"를 증명하고 "그게 전체였는지"는 증명하지 않는다.
+
+F-INT-04  D1 의 빈 allowlist 를 새 public 경계가 인자로 교체할 수 있었다
+   → evaluate_metadata_authority · snapshot_row · append_metadata_snapshot ·
+     extract_provider_authority_clock 의 declared_*_fields 인자 **제거**.
+     계약은 모듈 상수(PROVIDER_PUBLISHED_AT_FIELDS / PROVIDER_EFFECTIVE_SESSION_FIELDS)뿐.
+     test 전용 seam = monkeypatch(모듈 속성) — 프로덕션 호출 경로에는 존재하지 않는다.
+     signature 가드 테스트가 field/allowlist/declared 파라미터 재도입을 막는다.
+```
+
+회귀 앵커: 신규 mutant 12종(P01~P12) 전부 CAUGHT, CONTROL SURVIVED. 검증자 신규 mutant
+`N06_F02_MANIFEST` 는 SURVIVED → CAUGHT 로 전환됐고, #1729 계열 11종은 그대로 CAUGHT.
+
 ## 7. 안전 경계
 
 ```

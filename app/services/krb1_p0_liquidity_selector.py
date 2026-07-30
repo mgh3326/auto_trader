@@ -12,6 +12,10 @@ gates that blocked the 07-29 run now have proof paths:
 
 * metadata authority — :mod:`app.services.krb1_metadata_authority`
 * full-universe completion — :mod:`app.services.krb1_completion_manifest`
+  (local reconcile) plus :mod:`app.services.krb1_completion_finality`
+  (provider finality; unwired, so it blocks)
+* full-universe denominator — :mod:`app.services.krb1_universe_denominator`
+  (external listed count; unwired, so it blocks)
 * target-session base price — :mod:`app.services.krb1_reference_price_evidence`
   behind the fail-closed :mod:`app.services.krb1_reference_exception_adapter`
 """
@@ -50,6 +54,10 @@ from app.services.krb1_reference_price_evidence import (
     evaluate_reference_price_exception_coverage,
     excluded_pending_opening_call_symbols,
     is_tradable_reference_price,
+)
+from app.services.krb1_universe_denominator import (
+    ExternalUniverseDenominator,
+    evaluate_universe_denominator,
 )
 
 Market = Literal["KOSPI", "KOSDAQ"]
@@ -133,8 +141,10 @@ class SelectorInput:
     metadata_snapshots: tuple[MetadataAuthoritySnapshot, ...] = ()
     completion_manifests: tuple[CompletionManifest, ...] = ()
     provider_finality_attestations: tuple[ProviderFinalityAttestation, ...] = ()
+    external_universe_denominators: tuple[ExternalUniverseDenominator, ...] = ()
     reference_source_unavailable_reason: str | None = None
     finality_source_unavailable_reason: str | None = None
+    universe_denominator_source_unavailable_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -606,6 +616,26 @@ def select_krb1_p0_liquidity_candidates(
                 sealed_count=sealed_count,
                 denominator_basis="append-only metadata snapshot symbol_count",
             )
+
+        # 🔴 F-INT-03: the sealed snapshot above catches a truncation that happens
+        # *after* a snapshot exists. It cannot catch the first snapshot: if the
+        # database was already short when it was captured, expected == actual ==
+        # sealed and every number agrees. Sealing records when we knew a number, not
+        # that the number was the whole market — so full coverage additionally
+        # requires a denominator from outside our own read. No such source is wired
+        # (ROB-1175), so this gate fails closed and the run reports the denominator
+        # as unprovable instead of notarizing its own shortfall.
+        gates["universe_denominator_external_basis"] = evaluate_universe_denominator(
+            denominators=selector_input.external_universe_denominators,
+            market=market,
+            session_date=selector_input.as_of_session,
+            decision_at=decision_at,
+            sealed_count=sealed_count,
+            actual_count=actual_count,
+            source_unavailable_reason=(
+                selector_input.universe_denominator_source_unavailable_reason
+            ),
+        ).as_dict()
 
         active_rows = [row for row in rows if row.is_active]
         missing_metadata = [

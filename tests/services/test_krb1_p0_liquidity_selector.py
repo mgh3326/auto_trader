@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from app.services import krb1_metadata_authority
+from app.services import krb1_completion_finality, krb1_metadata_authority
+from app.services import krb1_universe_denominator as denominator_module
 from app.services.krb1_completion_finality import ProviderFinalityAttestation
 from app.services.krb1_completion_manifest import (
     COMPLETION_MANIFEST_STREAM_ID,
@@ -34,6 +35,7 @@ from app.services.krb1_p0_liquidity_selector import (
     select_krb1_p0_liquidity_candidates,
     tick_floor_exact,
 )
+from app.services.krb1_universe_denominator import ExternalUniverseDenominator
 
 pytestmark = pytest.mark.unit
 
@@ -53,16 +55,25 @@ KIS_DAILY_ENDPOINT = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchart
 KIS_DAILY_TR_ID = "FHKST03010100"
 DECLARED_PUBLISHED = frozenset({"publishedAt"})
 DECLARED_EFFECTIVE = frozenset({"effectiveSession"})
+HYPOTHETICAL_FINALITY_SOURCE = "krx_official_daily_finality"
+HYPOTHETICAL_DENOMINATOR_SOURCE = "krx_official_listed_instrument_count"
 
 
 @pytest.fixture(autouse=True)
 def _declared_provider_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Declare a hypothetical provider clock contract for these tests only.
+    """Declare hypothetical provider contracts for these tests only.
 
-    D1 established that no wired Toss market-data endpoint declares a publication
-    or effective-session field, so the module allowlists are empty and the
-    metadata snapshot gate is unprovable in production. Without this fixture every
-    other gate in this file would be masked by that single fail-close.
+    🔴 Test-only seam (monkeypatched module attributes, never a parameter — see
+    ROB-1172 F-INT-04). Three separate sources are unwired in production:
+
+    * no wired Toss market-data endpoint declares a publication or
+      effective-session field (D1), so the metadata allowlists are empty;
+    * no wired surface attests daily-OHLCV finality (A3/F-INT-01); and
+    * no external listed-instrument count is available (F-INT-03; ROB-1175).
+
+    Each one alone fails the whole run closed, which is the correct production
+    state. Without these hypotheticals every other gate in this file would be
+    masked by those fail-closes and nothing else could be attributed.
     """
     monkeypatch.setattr(
         krb1_metadata_authority, "PROVIDER_PUBLISHED_AT_FIELDS", DECLARED_PUBLISHED
@@ -71,6 +82,18 @@ def _declared_provider_contract(monkeypatch: pytest.MonkeyPatch) -> None:
         krb1_metadata_authority,
         "PROVIDER_EFFECTIVE_SESSION_FIELDS",
         DECLARED_EFFECTIVE,
+    )
+    monkeypatch.setattr(krb1_completion_finality, "FINALITY_SOURCE_WIRED", True)
+    monkeypatch.setattr(
+        krb1_completion_finality,
+        "ADMISSIBLE_FINALITY_SOURCES",
+        frozenset({HYPOTHETICAL_FINALITY_SOURCE}),
+    )
+    monkeypatch.setattr(denominator_module, "EXTERNAL_DENOMINATOR_SOURCE_WIRED", True)
+    monkeypatch.setattr(
+        denominator_module,
+        "ADMISSIBLE_EXTERNAL_DENOMINATOR_SOURCES",
+        frozenset({HYPOTHETICAL_DENOMINATOR_SOURCE}),
     )
 
 
@@ -115,12 +138,34 @@ def _finality(market: str) -> ProviderFinalityAttestation:
     return ProviderFinalityAttestation(
         market=market,
         session_date=AS_OF,
-        source="krx_official_daily_finality",
+        source=HYPOTHETICAL_FINALITY_SOURCE,
         revision="1",
         declared_final_at=dt.datetime(2026, 7, 29, 16, 40, tzinfo=KST),
         retrieved_at=dt.datetime(2026, 7, 29, 16, 50, tzinfo=KST),
         correction_policy="corrections republished with an incremented revision",
         raw_payload_sha256="f" * 64,
+    )
+
+
+def _denominator(
+    market: str, rows: tuple[UniverseRow, ...]
+) -> ExternalUniverseDenominator:
+    """Hypothetical external listed-instrument count.
+
+    🔴 It is derived from the fixture universe here only so the *other* gates stay
+    reachable. That is exactly what makes it hypothetical: in production the count
+    has to come from a source that is not our database, and none is wired
+    (F-INT-03), so the gate blocks. A test that needs a real disagreement builds
+    the denominator explicitly instead of calling this.
+    """
+    return ExternalUniverseDenominator(
+        market=market,
+        session_date=AS_OF,
+        source=HYPOTHETICAL_DENOMINATOR_SOURCE,
+        listed_count=len([row for row in rows if row.exchange == market]),
+        published_at=dt.datetime(2026, 7, 29, 16, 0, tzinfo=KST),
+        retrieved_at=dt.datetime(2026, 7, 29, 16, 10, tzinfo=KST),
+        raw_payload_sha256="b" * 64,
     )
 
 
@@ -281,6 +326,13 @@ def _with_evidence(selector_input: SelectorInput, **overrides: object) -> Select
             _manifest(market, updated.universe_rows, updated.candle_rows)
             for market in ("KOSPI", "KOSDAQ")
         ),
+        external_universe_denominators=tuple(
+            _denominator(market, updated.universe_rows)
+            for market in ("KOSPI", "KOSDAQ")
+            # An empty market has no listed count to attest; the two-market guard
+            # and the denominator gate both block it, which is the point.
+            if any(row.exchange == market for row in updated.universe_rows)
+        ),
     )
 
 
@@ -317,6 +369,9 @@ def _base_input() -> SelectorInput:
         ),
         provider_finality_attestations=tuple(
             _finality(market) for market in ("KOSPI", "KOSDAQ")
+        ),
+        external_universe_denominators=tuple(
+            _denominator(market, universe) for market in ("KOSPI", "KOSDAQ")
         ),
     )
 
@@ -1430,3 +1485,136 @@ def test_f04_denominator_without_a_sealed_basis_fails_closed() -> None:
         replace(selector_input, metadata_snapshots=())
     )
     _assert_fail_closed(result, "universe_denominator_has_no_sealed_basis")
+
+
+# ───── F-INT-03: the coverage denominator needs a basis outside our own read ─────
+
+
+def test_first_snapshot_of_an_already_truncated_universe_fails_closed() -> None:
+    """🔴 F-INT-03: sealing a short read does not make it the whole market.
+
+    ``test_f04_self_consistent_truncated_universe_fails_closed`` covers a truncation
+    that happens *after* a snapshot exists — sealed=2 vs actual=1. This is the case
+    it cannot cover: the database was already short when the very first snapshot was
+    captured, so capture read 1 row, requested that 1 symbol, hashed that payload
+    and sealed count 1. expected == actual == sealed == 1 and the coverage gate is
+    satisfied. The external listed count is what disagrees.
+    """
+    selector_input = _base_input()
+    truncated = tuple(
+        row
+        for row in selector_input.universe_rows
+        if row.symbol in {"000001", "100001"}
+    )
+    candles = tuple(
+        row for row in selector_input.candle_rows if row.symbol in {"000001", "100001"}
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(
+            _with_evidence(
+                selector_input,
+                universe_rows=truncated,
+                candle_rows=candles,
+                expected_universe_counts={"KOSPI": 1, "KOSDAQ": 1},
+                completed_bar_evidence=tuple(_completed(row) for row in candles),
+                quote_timestamp_evidence=tuple(_quote(row.symbol) for row in truncated),
+                reference_price_exception_records=tuple(
+                    _reference(row.symbol) for row in truncated
+                ),
+            ),
+            # The external source still reports the real market size. Our numbers
+            # all agree with each other and all disagree with it.
+            external_universe_denominators=tuple(
+                _denominator(market, selector_input.universe_rows)
+                for market in ("KOSPI", "KOSDAQ")
+            ),
+        )
+    )
+
+    _assert_fail_closed(result, "universe_denominator_external_basis_unproven")
+    for market in ("KOSPI", "KOSDAQ"):
+        gates = result["market_results"][market]["gates"]  # type: ignore[index]
+        coverage = gates["universe_snapshot_coverage"]
+        external = gates["universe_denominator_external_basis"]
+        # The self-consistent numbers really are self-consistent...
+        assert coverage["status"] == "proven"
+        assert coverage["evidence"]["sealed_count"] == 1
+        # ...and that is not coverage.
+        assert external["status"] == "unprovable"
+        assert (
+            external["evidence"]["defect"]
+            == "universe_denominator_disagrees_with_external_basis"
+        )
+        assert external["evidence"]["sealed_count_is_not_external_basis"] is True
+
+
+def test_no_external_denominator_means_coverage_is_unprovable() -> None:
+    """Production state: nothing attests the listed count, so the run blocks."""
+    result = select_krb1_p0_liquidity_candidates(
+        replace(_base_input(), external_universe_denominators=())
+    )
+
+    _assert_fail_closed(result, "universe_denominator_external_basis_unproven")
+    gates = result["market_results"]["KOSPI"]["gates"]  # type: ignore[index]
+    assert (
+        gates["universe_denominator_external_basis"]["evidence"]["defect"]
+        == "no_external_denominator_for_market_session"
+    )
+
+
+def test_the_shipped_denominator_source_is_unwired_so_no_input_proves_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 With the real module constants, even a well-formed denominator blocks."""
+    monkeypatch.setattr(denominator_module, "EXTERNAL_DENOMINATOR_SOURCE_WIRED", False)
+    monkeypatch.setattr(
+        denominator_module,
+        "ADMISSIBLE_EXTERNAL_DENOMINATOR_SOURCES",
+        frozenset(),
+    )
+
+    result = select_krb1_p0_liquidity_candidates(_base_input())
+
+    _assert_fail_closed(result, "universe_denominator_external_basis_unproven")
+    gates = result["market_results"]["KOSPI"]["gates"]  # type: ignore[index]
+    evidence = gates["universe_denominator_external_basis"]["evidence"]
+    assert evidence["defect"] == "external_denominator_source_not_wired"
+    assert evidence["first_snapshot_of_a_truncated_universe_is_self_proving"] is True
+
+
+def test_a_self_referential_denominator_source_is_refused() -> None:
+    """Our own sealed count relabelled as an external basis is still our own count."""
+    for source in ("metadata_snapshot_symbol_count", "db_universe_rows"):
+        with pytest.raises(denominator_module.ExternalDenominatorNotWired):
+            ExternalUniverseDenominator(
+                market="KOSPI",
+                session_date=AS_OF,
+                source=source,
+                listed_count=2,
+                published_at=dt.datetime(2026, 7, 29, 16, 0, tzinfo=KST),
+                retrieved_at=dt.datetime(2026, 7, 29, 16, 10, tzinfo=KST),
+                raw_payload_sha256="b" * 64,
+            )
+
+
+def test_finality_attestation_injection_cannot_bypass_the_unwired_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 F-INT-01 at the selector boundary: the verifier's A3_SELECTOR probe.
+
+    With the real module constants, handing well-formed attestations straight to
+    the selector input must not produce ``selected``.
+    """
+    monkeypatch.setattr(krb1_completion_finality, "FINALITY_SOURCE_WIRED", False)
+    monkeypatch.setattr(
+        krb1_completion_finality, "ADMISSIBLE_FINALITY_SOURCES", frozenset()
+    )
+
+    result = select_krb1_p0_liquidity_candidates(_base_input())
+
+    _assert_fail_closed(result, "completed_session_provider_finality_unproven")
+    gates = result["market_results"]["KOSPI"]["gates"]  # type: ignore[index]
+    assert (
+        gates["completed_session_provider_finality"]["evidence"]["defect"]
+        == "provider_finality_source_not_wired"
+    )

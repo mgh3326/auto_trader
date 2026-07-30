@@ -31,6 +31,21 @@ This mirrors the quote path, which accepts only KIS' own ``stck_bsop_date`` /
 
 Filling metadata in later is not proof of the state at ``decision_at``.
 
+🔴 ROB-1172 F-INT-04 (2026-07-30): the declared-field contract is a module constant
+and is **not** a function parameter. A refactor briefly exposed
+``declared_published_at_fields`` / ``declared_effective_session_fields`` as optional
+keyword arguments on the public evaluator, snapshot builder, appender, and clock
+extractor, which let a caller substitute its own field names for D1's empty
+allowlist and reach ``proven``. Those parameters are gone. Tests that need a
+hypothetical contract monkeypatch the module attributes; that seam exists only
+under pytest and no production call site can pass one.
+
+🔴 ROB-1172 F-INT-03: ``symbol_count`` here is the number of rows *we* read. It
+seals what our database said at capture time, which is what makes a later silent
+truncation detectable — but it is not an external denominator, so it cannot prove
+the database was complete when the snapshot was first written. That claim belongs
+to :mod:`app.services.krb1_universe_denominator`, which fails closed.
+
 Pure evaluation; the only side effect available here is an append to the
 service-layer evidence chain.
 """
@@ -151,18 +166,22 @@ class ProviderAuthorityClock:
         }
 
 
-def extract_provider_authority_clock(
-    payload: object,
-    *,
-    published_at_fields: frozenset[str] | None = None,
-    effective_session_fields: frozenset[str] | None = None,
-) -> ProviderAuthorityClock | None:
+def extract_provider_authority_clock(payload: object) -> ProviderAuthorityClock | None:
     """Extract a provider authority clock, or ``None`` when the provider sent none.
 
     Only declared provider field names are read, and both a publication clock and
     an effective session must be present — one without the other proves nothing
     about which session the master state applies to. A bare row list (what the
     wired Toss surface returns) carries no envelope clock, so it yields ``None``.
+
+    🔴 The declared contract is :data:`PROVIDER_PUBLISHED_AT_FIELDS` /
+    :data:`PROVIDER_EFFECTIVE_SESSION_FIELDS` and nothing else. ROB-1172 F-INT-04:
+    the first refactor exposed these as optional keyword arguments, which let a
+    caller *replace* the empty D1 contract with field names of its own and reach
+    ``proven``. An allowlist a caller can supply is not an allowlist. Tests that
+    need a hypothetical contract monkeypatch the module attributes — a test-only
+    seam that no production call site can reach — and there is no production
+    parameter for it.
 
     Two refusals worth naming, because both were unfixed mutation survivors:
 
@@ -174,16 +193,8 @@ def extract_provider_authority_clock(
       session by discarding the offset — ``2026-07-29T22:00:00-05:00`` is
       2026-07-30 in KST — so a datetime value is refused rather than coerced.
     """
-    declared_published = (
-        PROVIDER_PUBLISHED_AT_FIELDS
-        if published_at_fields is None
-        else published_at_fields
-    )
-    declared_effective = (
-        PROVIDER_EFFECTIVE_SESSION_FIELDS
-        if effective_session_fields is None
-        else effective_session_fields
-    )
+    declared_published = PROVIDER_PUBLISHED_AT_FIELDS
+    declared_effective = PROVIDER_EFFECTIVE_SESSION_FIELDS
     if not isinstance(payload, Mapping):
         return None
     published_at_key = _single_present(payload, declared_published)
@@ -298,20 +309,15 @@ def evaluate_metadata_authority(
     rows: tuple[SymbolMetadata, ...],
     as_of_session: dt.date,
     decision_at: dt.datetime,
-    declared_published_at_fields: frozenset[str] | None = None,
-    declared_effective_session_fields: frozenset[str] | None = None,
 ) -> GateResult:
-    """Gate: is the metadata authoritative *and* pre-decision for this market?"""
-    declared_published = (
-        PROVIDER_PUBLISHED_AT_FIELDS
-        if declared_published_at_fields is None
-        else declared_published_at_fields
-    )
-    declared_effective = (
-        PROVIDER_EFFECTIVE_SESSION_FIELDS
-        if declared_effective_session_fields is None
-        else declared_effective_session_fields
-    )
+    """Gate: is the metadata authoritative *and* pre-decision for this market?
+
+    🔴 The declared provider-clock contract is read from the module constants only
+    (ROB-1172 F-INT-04). There is no caller override: a gate whose allowlist is an
+    argument is not a gate.
+    """
+    declared_published = PROVIDER_PUBLISHED_AT_FIELDS
+    declared_effective = PROVIDER_EFFECTIVE_SESSION_FIELDS
     required = {
         "required_authoritative_sources": sorted(AUTHORITATIVE_METADATA_SOURCES),
         "required_provider_effective_session_at_or_after": as_of_session.isoformat(),
@@ -498,31 +504,22 @@ def snapshot_row(
     raw_payload: bytes,
     provider_clock: ProviderAuthorityClock,
     retrieved_at: dt.datetime,
-    declared_published_at_fields: frozenset[str] | None = None,
-    declared_effective_session_fields: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Canonical append-only row for one authoritative metadata snapshot.
 
     ``provider_clock`` is not optional and its field names are cross-checked
     against the declared provider contract, so a capture path cannot persist a
     snapshot whose authority is really its retrieval time — however the clock was
-    constructed, and whatever it is named.
+    constructed, and whatever it is named. The contract is the module constant;
+    a caller cannot supply one (ROB-1172 F-INT-04).
     """
     if not isinstance(provider_clock, ProviderAuthorityClock):
         raise ValueError(
             "provider_clock must be a ProviderAuthorityClock extracted from the "
             "provider payload; a retrieval clock cannot substitute for it"
         )
-    declared_published = (
-        PROVIDER_PUBLISHED_AT_FIELDS
-        if declared_published_at_fields is None
-        else declared_published_at_fields
-    )
-    declared_effective = (
-        PROVIDER_EFFECTIVE_SESSION_FIELDS
-        if declared_effective_session_fields is None
-        else declared_effective_session_fields
-    )
+    declared_published = PROVIDER_PUBLISHED_AT_FIELDS
+    declared_effective = PROVIDER_EFFECTIVE_SESSION_FIELDS
     undeclared = sorted(
         name
         for name, allowed in (
@@ -563,8 +560,6 @@ def append_metadata_snapshot(
     raw_payload: bytes,
     provider_clock: ProviderAuthorityClock,
     retrieved_at: dt.datetime,
-    declared_published_at_fields: frozenset[str] | None = None,
-    declared_effective_session_fields: frozenset[str] | None = None,
 ) -> MetadataAuthoritySnapshot:
     """Persist one snapshot append-only and return it with chain provenance."""
     row = snapshot_row(
@@ -574,8 +569,6 @@ def append_metadata_snapshot(
         raw_payload=raw_payload,
         provider_clock=provider_clock,
         retrieved_at=retrieved_at,
-        declared_published_at_fields=declared_published_at_fields,
-        declared_effective_session_fields=declared_effective_session_fields,
     )
     open_stream(path, stream_id=METADATA_SNAPSHOT_STREAM_ID)
     record = append_record(

@@ -14,6 +14,9 @@ from app.services.krb1_completion_manifest import (
     KIS_DAILY_ENDPOINT,
     KIS_DAILY_TR_ID,
     MATCH,
+    REQUIRED_DETAIL_IDENTITY_FIELDS,
+    RETIRED_SCHEMA_VERSIONS,
+    SCHEMA_VERSION,
     CompletionManifest,
     DbDailyBar,
     RawDailyBar,
@@ -23,6 +26,8 @@ from app.services.krb1_completion_manifest import (
     compute_universe_hash,
     evaluate_completion_manifest,
     load_latest_completion_manifest,
+    manifest_from_row,
+    manifest_row,
     reconcile_symbol,
 )
 from app.services.krb1_evidence_chain import verify_stream
@@ -361,3 +366,165 @@ def test_append_only_manifest_round_trip(tmp_path: Path) -> None:
 def test_build_rejects_naive_clocks() -> None:
     with pytest.raises(ValueError):
         _manifest(finalized_at=dt.datetime(2026, 7, 29, 17, 0))
+
+
+# ───── F-INT-02 / N06: provider identity is required at build *and* read time ─────
+
+
+@pytest.mark.parametrize(
+    ("raw_symbol", "expected"),
+    [
+        (None, "provider_identity_missing"),
+        ("000000", "provider_identity_mismatch"),
+        ("", "provider_identity_mismatch"),
+    ],
+)
+def test_reconcile_refuses_a_row_without_provider_origin_identity(
+    raw_symbol: str | None, expected: str
+) -> None:
+    """🔴 N06 anchor. The mutant that deleted both of these checks survived.
+
+    ``symbol`` is the symbol we asked for; ``provider_raw_symbol`` is what the
+    response said it was. #1729 filled the second from the first, so the evidence
+    never confirmed which instrument it described (E1). With no anchor here, that
+    substitution can come back silently.
+    """
+    db = _db(SYMBOLS[0])
+    status, detail = reconcile_symbol(
+        raw=_raw(db, raw_symbol=raw_symbol),
+        db=db,
+        session_date=SESSION,
+        decision_at=DECISION_AT,
+    )
+    assert status == expected
+    assert detail["raw"]["provider_raw_symbol"] == raw_symbol
+    assert detail["raw"]["request_context_symbol_is_not_identity"] is True
+
+
+def test_identity_less_rows_cannot_reach_a_proven_manifest() -> None:
+    db_bars = [_db(symbol) for symbol in SYMBOLS]
+    manifest = _persisted(
+        _manifest(raw_bars=[_raw(row, raw_symbol=None) for row in db_bars])
+    )
+
+    assert manifest.reconciled_count == 0
+    gate = _evaluate(manifest)
+    assert gate.status == "unprovable"
+    assert gate.reason == "local_full_universe_exact_reconcile_unproven"
+
+
+def test_the_gate_re_establishes_identity_from_the_persisted_details() -> None:
+    """🔴 F-INT-02: the reader must not trust that the writer checked.
+
+    A manifest reaches the gate as an append-only row. If only
+    :func:`reconcile_symbol` enforces identity, every record written before that
+    check existed stays ``proven`` forever — which is exactly what the verifier
+    demonstrated with a pre-fix-shape manifest.
+    """
+    manifest = _persisted(_manifest())
+    details = tuple(
+        {**detail, "raw": {**detail["raw"], "provider_raw_symbol": None}}
+        for detail in manifest.details
+    )
+    forged = replace(
+        manifest, details=details, manifest_hash=compute_manifest_hash(details)
+    )
+
+    gate = _evaluate(forged)
+
+    assert gate.status == "unprovable"
+    assert gate.reason == "completion_manifest_provider_identity_unproven"
+    assert gate.evidence["identity_defect_count"] == len(SYMBOLS)
+    assert {item["defect"] for item in gate.evidence["identity_defects"]} == {
+        "provider_identity_missing"
+    }
+
+
+def test_a_detail_whose_identity_disagrees_with_its_symbol_blocks() -> None:
+    manifest = _persisted(_manifest())
+    details = tuple(
+        {**detail, "raw": {**detail["raw"], "provider_raw_symbol": "999999"}}
+        for detail in manifest.details
+    )
+    forged = replace(
+        manifest, details=details, manifest_hash=compute_manifest_hash(details)
+    )
+
+    gate = _evaluate(forged)
+
+    assert gate.reason == "completion_manifest_provider_identity_unproven"
+    assert {item["defect"] for item in gate.evidence["identity_defects"]} == {
+        "provider_identity_mismatch"
+    }
+
+
+def test_stripping_the_details_does_not_vacuously_prove_the_manifest() -> None:
+    """Details are the evidence; a row without them cannot be re-checked."""
+    manifest = replace(_persisted(_manifest()), details=(), failures=())
+
+    gate = _evaluate(manifest)
+
+    assert gate.status == "unprovable"
+    assert gate.reason == "completion_manifest_details_missing"
+
+
+def test_schema_version_is_v2_and_v1_is_retired() -> None:
+    """🔴 The canonical regression: the detail shape changed under a v1 label.
+
+    ROB-1172 added ``provider_raw_symbol`` to the detail shape while leaving
+    ``SCHEMA_VERSION`` at v1, which retroactively promoted every identity-less
+    record already in the chain. The operator condition was "bump the schema version
+    and do not retro-promote existing v1 evidence".
+    """
+    assert SCHEMA_VERSION == "krb1.p0_3.completion_manifest.v2"
+    assert RETIRED_SCHEMA_VERSIONS == frozenset({"krb1.p0_3.completion_manifest.v1"})
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["krb1.p0_3.completion_manifest.v1", "krb1.p0_3.completion_manifest.v0", "", None],
+)
+def test_a_legacy_labelled_row_is_refused_on_rehydrate(label: str | None) -> None:
+    row = manifest_row(_manifest())
+    row["schema_version"] = label
+
+    with pytest.raises(ValueError, match="schema_version"):
+        manifest_from_row(
+            row,
+            stream_id=COMPLETION_MANIFEST_STREAM_ID,
+            chain_index=2,
+            chain_hash="e" * 64,
+        )
+
+
+def test_a_v2_labelled_row_with_the_v1_detail_shape_is_refused() -> None:
+    """The label is not the contract: identity keys must actually be there."""
+    row = manifest_row(_manifest())
+    for detail in row["details"]:
+        raw = detail.get("raw")
+        if isinstance(raw, dict):
+            for key in sorted(REQUIRED_DETAIL_IDENTITY_FIELDS):
+                raw.pop(key, None)
+    row["manifest_hash"] = compute_manifest_hash(row["details"])
+
+    with pytest.raises(ValueError, match="provider identity"):
+        manifest_from_row(
+            row,
+            stream_id=COMPLETION_MANIFEST_STREAM_ID,
+            chain_index=2,
+            chain_hash="e" * 64,
+        )
+
+
+def test_a_well_formed_v2_row_still_round_trips_to_proven() -> None:
+    """Satisfiability, so the refusals above are attributable rather than blanket."""
+    row = manifest_row(_manifest())
+    loaded = manifest_from_row(
+        row,
+        stream_id=COMPLETION_MANIFEST_STREAM_ID,
+        chain_index=2,
+        chain_hash="e" * 64,
+    )
+
+    assert row["schema_version"] == SCHEMA_VERSION
+    assert _evaluate(loaded).status == "proven"

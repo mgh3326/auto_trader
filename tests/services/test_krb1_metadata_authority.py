@@ -204,11 +204,7 @@ def test_extract_is_satisfiable_once_a_provider_contract_is_declared() -> None:
         "effectiveSession": "2026-07-29",
         "result": [{"symbol": "005930"}],
     }
-    clock = extract_provider_authority_clock(
-        payload,
-        published_at_fields=DECLARED_PUBLISHED_FIELDS,
-        effective_session_fields=DECLARED_EFFECTIVE_FIELDS,
-    )
+    clock = extract_provider_authority_clock(payload)
     assert clock is not None
     assert clock.published_at_field == "publishedAt"
     assert clock.published_at_raw == "2026-07-29T16:30:00+09:00"
@@ -229,28 +225,14 @@ def test_a_per_row_clock_is_not_a_universe_scope_authority_clock() -> None:
         "effectiveSession": "2026-07-29",
     }
     for payload in ([row_with_clock], {"result": [row_with_clock]}):
-        assert (
-            extract_provider_authority_clock(
-                payload,
-                published_at_fields=DECLARED_PUBLISHED_FIELDS,
-                effective_session_fields=DECLARED_EFFECTIVE_FIELDS,
-            )
-            is None
-        )
+        assert extract_provider_authority_clock(payload) is None
 
 
 def test_extract_requires_both_clocks() -> None:
     only_published = {"publishedAt": "2026-07-29T16:30:00+09:00"}
     only_effective = {"effectiveSession": "2026-07-29"}
     for payload in (only_published, only_effective):
-        assert (
-            extract_provider_authority_clock(
-                payload,
-                published_at_fields=DECLARED_PUBLISHED_FIELDS,
-                effective_session_fields=DECLARED_EFFECTIVE_FIELDS,
-            )
-            is None
-        )
+        assert extract_provider_authority_clock(payload) is None
 
 
 @pytest.mark.parametrize(
@@ -262,14 +244,7 @@ def test_extract_requires_both_clocks() -> None:
     ],
 )
 def test_extract_rejects_unusable_provider_values(raw: dict[str, str]) -> None:
-    assert (
-        extract_provider_authority_clock(
-            raw,
-            published_at_fields=DECLARED_PUBLISHED_FIELDS,
-            effective_session_fields=DECLARED_EFFECTIVE_FIELDS,
-        )
-        is None
-    )
+    assert extract_provider_authority_clock(raw) is None
 
 
 def test_snapshot_row_cannot_be_built_without_a_provider_clock() -> None:
@@ -748,31 +723,24 @@ def test_a_v2_labelled_row_carrying_a_retired_authority_field_is_refused(
         )
 
 
-def test_two_declared_fields_present_is_a_source_conflict() -> None:
+def test_two_declared_fields_present_is_a_source_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """🔴 V-M4: no precedence is specified, so ambiguity must fail closed."""
+    monkeypatch.setattr(
+        krb1_metadata_authority,
+        "PROVIDER_PUBLISHED_AT_FIELDS",
+        frozenset({"publishedAt", "publishedAtAlt"}),
+    )
     payload = {
         "publishedAt": "2026-07-29T16:30:00+09:00",
         "publishedAtAlt": "2026-07-29T09:00:00+09:00",
         "effectiveSession": "2026-07-29",
     }
-    assert (
-        extract_provider_authority_clock(
-            payload,
-            published_at_fields=frozenset({"publishedAt", "publishedAtAlt"}),
-            effective_session_fields=DECLARED_EFFECTIVE_FIELDS,
-        )
-        is None
-    )
+    assert extract_provider_authority_clock(payload) is None
     # One present out of two declared is unambiguous and still works.
     del payload["publishedAtAlt"]
-    assert (
-        extract_provider_authority_clock(
-            payload,
-            published_at_fields=frozenset({"publishedAt", "publishedAtAlt"}),
-            effective_session_fields=DECLARED_EFFECTIVE_FIELDS,
-        )
-        is not None
-    )
+    assert extract_provider_authority_clock(payload) is not None
 
 
 @pytest.mark.parametrize(
@@ -795,9 +763,7 @@ def test_effective_session_must_be_a_bare_date(effective_raw: str) -> None:
             {
                 "publishedAt": "2026-07-29T16:30:00+09:00",
                 "effectiveSession": effective_raw,
-            },
-            published_at_fields=DECLARED_PUBLISHED_FIELDS,
-            effective_session_fields=DECLARED_EFFECTIVE_FIELDS,
+            }
         )
         is None
     )
@@ -843,3 +809,94 @@ def test_a_legacy_row_in_the_chain_makes_the_market_unprovable(tmp_path: Path) -
 
     with pytest.raises(ValueError):
         load_latest_metadata_snapshot(path, market=MARKET)
+
+
+# ───── F-INT-04: the declared contract is a constant, not a caller argument ─────
+
+
+def test_no_public_function_accepts_a_caller_declared_field_contract() -> None:
+    """🔴 F-INT-04 anchor: the allowlist must not be reachable as a parameter.
+
+    D1's empty allowlist held in the shipped CLI, but the refactor exposed
+    ``declared_published_at_fields`` / ``declared_effective_session_fields`` on the
+    public evaluator, row builder, appender, and extractor. A caller could hand in
+    its own field names and reach ``proven`` with the module contract still empty —
+    a second door next to the one A1 closed. There is no such parameter now, and
+    re-adding one has to break this test.
+    """
+    import inspect
+
+    for func in (
+        krb1_metadata_authority.evaluate_metadata_authority,
+        krb1_metadata_authority.snapshot_row,
+        krb1_metadata_authority.append_metadata_snapshot,
+        krb1_metadata_authority.extract_provider_authority_clock,
+    ):
+        names = set(inspect.signature(func).parameters)
+        offending = sorted(
+            name
+            for name in names
+            if "field" in name or "allowlist" in name or "declared" in name
+        )
+        assert not offending, f"{func.__name__} exposes a contract seam: {offending}"
+
+
+@pytest.mark.parametrize(
+    ("func", "kwargs"),
+    [
+        (
+            "evaluate_metadata_authority",
+            {
+                "snapshot": None,
+                "market": MARKET,
+                "rows": (),
+                "as_of_session": AS_OF,
+                "decision_at": DECISION_AT,
+            },
+        ),
+        (
+            "extract_provider_authority_clock",
+            {},
+        ),
+    ],
+)
+def test_injecting_a_field_contract_is_a_type_error(
+    func: str, kwargs: dict[str, object]
+) -> None:
+    """The verifier's D4 bypass, run verbatim in shape: it no longer type-checks."""
+    target = getattr(krb1_metadata_authority, func)
+    args = ({"publishedAt": "x"},) if func == "extract_provider_authority_clock" else ()
+    with pytest.raises(TypeError):
+        target(
+            *args,
+            **kwargs,
+            declared_published_at_fields=DECLARED_PUBLISHED_FIELDS,
+            declared_effective_session_fields=DECLARED_EFFECTIVE_FIELDS,
+        )
+    with pytest.raises(TypeError):
+        target(
+            *args,
+            **kwargs,
+            published_at_fields=DECLARED_PUBLISHED_FIELDS,
+            effective_session_fields=DECLARED_EFFECTIVE_FIELDS,
+        )
+
+
+def test_the_test_only_seam_is_monkeypatch_and_it_is_not_a_production_path() -> None:
+    """The hypothetical contract exists only because tests rewrite the module attr.
+
+    Nothing under ``app/`` or ``scripts/`` assigns these names, so production reads
+    the reviewed empty constants; the autouse fixture in this file is the only
+    writer, and it is confined to the test process.
+    """
+    for path in sorted(Path("app").rglob("*.py")) + sorted(
+        Path("scripts").rglob("*.py")
+    ):
+        text = path.read_text()
+        for name in (
+            "PROVIDER_PUBLISHED_AT_FIELDS",
+            "PROVIDER_EFFECTIVE_SESSION_FIELDS",
+        ):
+            assert f"{name} =" not in text or path == Path(
+                "app/services/krb1_metadata_authority.py"
+            ), f"{path} rewrites the declared provider contract"

@@ -20,6 +20,15 @@ end-of-session marker. So this module is a typed ``UNPROVABLE`` stub with the sa
 shape as the reference-exception adapter — it cannot be talked into producing a
 pass, and the selector fails closed.
 
+🔴 ROB-1172 F-INT-01 (2026-07-30): the first version of this split only made the
+*fetch* path fail closed. The value boundary still accepted a hand-built
+attestation, so an ``operator_attestation`` with ``raw_payload_sha256`` set to
+``"not-a-sha256"`` reached ``proven`` while ``FINALITY_SOURCE_WIRED`` was ``False``.
+That is the rejected fallback wearing evidence clothing. The gate now refuses it
+three independent ways — unwired source, inadmissible/self-asserted source name,
+malformed payload digest — and the first two of those also refuse *every* other
+input, which is what an unwired stub has to mean.
+
 🔴 Toss ``investor-trading.updatedAt`` is **not** a candidate here. It carries real
 provisional/final semantics, but only for the KRX investor-trading-amount domain;
 using it for daily OHLCV would be a cross-domain substitution. Wiring a KRX
@@ -36,6 +45,7 @@ from typing import Any, Final, Literal, Protocol, runtime_checkable
 from app.services.krb1_gate_result import (
     GateResult,
     is_aware,
+    is_sha256_hex,
     normalize_evidence,
     proven,
     unprovable,
@@ -50,6 +60,33 @@ FINALITY_SOURCE_WIRED: Final[bool] = False
 
 FAIL_CLOSED_REASON: Final[str] = "provider_daily_ohlcv_finality_source_not_wired"
 FAIL_CLOSED_STATUS: Final[str] = "unprovable"
+
+#: Sources admissible as daily-OHLCV finality evidence. **EMPTY on purpose.** This
+#: is the load-bearing closure: admissibility is an allowlist, so an unenumerated
+#: source cannot leak through — anything not listed here is refused, and nothing is
+#: listed. Populating it requires a verified provider finality contract in a
+#: separate reviewed change. It is not configuration.
+ADMISSIBLE_FINALITY_SOURCES: frozenset[str] = frozenset()
+
+#: 🔴 Named refusals for sources that were *explicitly rejected*, so the rejection
+#: is attributable rather than merely implied by the empty allowlist above.
+#: ROB-1172 E1/D1 (2026-07-30): "operator attestation is not adopted — an operator
+#: signature cannot create the external fact of a provider publication/effective
+#: clock. Not usable as a fallback unless re-tabled by a separate study."
+#: An operator-signed row is a statement about us, not about the provider.
+REFUSED_SELF_ASSERTED_SOURCES: Final[frozenset[str]] = frozenset(
+    {
+        "analyst_attestation",
+        "db_reconcile",
+        "human_attestation",
+        "local_reconcile",
+        "manual_attestation",
+        "operator",
+        "operator_attestation",
+        "operator_signature",
+        "self_attestation",
+    }
+)
 
 #: Domains whose finality semantics must never be reused for daily OHLCV.
 FORBIDDEN_CROSS_DOMAIN_SOURCES: Final[frozenset[str]] = frozenset(
@@ -85,6 +122,13 @@ class ProviderFinalityAttestation:
                 f"{self.source!r} carries finality semantics for a different domain "
                 "and cannot attest daily OHLCV finality"
             )
+        # 🔴 The rejected fallback. An operator signature is evidence about the
+        # operator, not about the provider clock, so it cannot be built at all.
+        if self.source in REFUSED_SELF_ASSERTED_SOURCES:
+            raise ProviderFinalityNotWired(
+                f"{self.source!r} is self-asserted: it cannot create the external "
+                "fact of a provider finality declaration (ROB-1172 E1/D1)"
+            )
         if not is_aware(self.declared_final_at) or not is_aware(self.retrieved_at):
             raise ValueError("finality clocks must be timezone-aware")
         for name, value in (
@@ -94,6 +138,12 @@ class ProviderFinalityAttestation:
         ):
             if type(value) is not str or not value.strip():
                 raise ValueError(f"{name} must be provider-origin, non-empty evidence")
+        # A hash that is not a hash binds the attestation to nothing.
+        if not is_sha256_hex(self.raw_payload_sha256):
+            raise ValueError(
+                "raw_payload_sha256 must be a 64-character SHA-256 hex digest of "
+                "the raw provider payload"
+            )
 
     def as_evidence(self) -> dict[str, Any]:
         return normalize_evidence(
@@ -203,12 +253,28 @@ def evaluate_provider_finality(
     ``local_reconcile_proven`` is accepted only to be *recorded*. It can never
     substitute for an attestation — that substitution is the defect this split
     exists to remove — so it is reported in the evidence and ignored by the verdict.
+
+    🔴 Three independent layers block a fabricated attestation, because a single
+    layer is one mutation away from a false pass (ROB-1172 F-INT-01):
+
+    1. ``FINALITY_SOURCE_WIRED`` is ``False``, so *no* input can be proven. That is
+       what the unwired stub means; a value-boundary caller must not be able to
+       reach a pass the wired adapter cannot reach.
+    2. the source must be in :data:`ADMISSIBLE_FINALITY_SOURCES`, which is empty,
+       and must not be a named self-asserted/cross-domain refusal.
+    3. ``raw_payload_sha256`` must be a real digest, so the attestation is bound to
+       a payload rather than to free text.
     """
+    candidates = tuple(attestations)
     required = {
         "required_provider_attestation": True,
         "local_reconcile_is_not_provider_finality": True,
         "local_reconcile_proven": bool(local_reconcile_proven),
+        "provider_finality_source_wired": FINALITY_SOURCE_WIRED,
+        "required_admissible_sources": sorted(ADMISSIBLE_FINALITY_SOURCES),
+        "refused_self_asserted_sources": sorted(REFUSED_SELF_ASSERTED_SOURCES),
         "forbidden_cross_domain_sources": sorted(FORBIDDEN_CROSS_DOMAIN_SOURCES),
+        "operator_attestation_is_not_provider_evidence": True,
         "required_clock_upper_bound_decision_at": normalize_evidence(decision_at),
         "session_date": session_date.isoformat(),
         "market": market,
@@ -216,6 +282,17 @@ def evaluate_provider_finality(
     if not is_aware(decision_at):
         return unprovable(
             "provider_finality_decision_clock_not_timezone_aware", **required
+        )
+    # 🔴 Layer 1. While no provider finality source is wired there is no input that
+    # can prove this gate — including an attestation handed in at the value
+    # boundary. The stub exists to make the claim unreachable, not merely unfetched.
+    if not FINALITY_SOURCE_WIRED:
+        return unprovable(
+            "completed_session_provider_finality_unproven",
+            defect="provider_finality_source_not_wired",
+            attestation_count=len(candidates),
+            submitted_sources=sorted({item.source for item in candidates}),
+            **required,
         )
     if source_unavailable_reason is not None:
         return unprovable(
@@ -226,7 +303,7 @@ def evaluate_provider_finality(
         )
     matching = [
         attestation
-        for attestation in attestations
+        for attestation in candidates
         if attestation.market == market and attestation.session_date == session_date
     ]
     if not matching:
@@ -243,6 +320,33 @@ def evaluate_provider_finality(
             **required,
         )
     attestation = matching[0]
+    # 🔴 Layer 2. Admissibility is an allowlist, so an unenumerated source cannot
+    # leak through; the named refusals keep the rejected fallbacks attributable.
+    if (
+        attestation.source in REFUSED_SELF_ASSERTED_SOURCES
+        or attestation.source in FORBIDDEN_CROSS_DOMAIN_SOURCES
+    ):
+        return unprovable(
+            "completed_session_provider_finality_unproven",
+            defect="finality_source_self_asserted_or_cross_domain",
+            attestation=attestation.as_evidence(),
+            **required,
+        )
+    if attestation.source not in ADMISSIBLE_FINALITY_SOURCES:
+        return unprovable(
+            "completed_session_provider_finality_unproven",
+            defect="finality_source_not_admissible",
+            attestation=attestation.as_evidence(),
+            **required,
+        )
+    # 🔴 Layer 3. Unbound text is not a payload hash.
+    if not is_sha256_hex(attestation.raw_payload_sha256):
+        return unprovable(
+            "completed_session_provider_finality_unproven",
+            defect="raw_payload_sha256_malformed",
+            attestation=attestation.as_evidence(),
+            **required,
+        )
     if attestation.declared_final_at > decision_at:
         return unprovable(
             "completed_session_provider_finality_unproven",
@@ -294,10 +398,12 @@ def evaluate_with_stub(
 
 
 __all__ = [
+    "ADMISSIBLE_FINALITY_SOURCES",
     "FAIL_CLOSED_REASON",
     "FAIL_CLOSED_STATUS",
     "FINALITY_SOURCE_WIRED",
     "FORBIDDEN_CROSS_DOMAIN_SOURCES",
+    "REFUSED_SELF_ASSERTED_SOURCES",
     "SCHEMA_VERSION",
     "FinalityFetchResult",
     "ProviderFinalityAttestation",

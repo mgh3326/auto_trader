@@ -28,6 +28,13 @@ toggle.
 Toss reads stay behind the existing ``TOSS_API_ENABLED`` gate. No order, preview,
 cancel, DB write, or scheduler surface is reachable.
 
+🔴 ROB-1172 F-INT-03: the ``symbol_count`` sealed here is the number of rows *this
+database* held at capture time. Sealing it makes a later silent truncation
+detectable, but it cannot prove the database was complete when the first snapshot
+was written — a short read seals a short count and every number agrees. The
+selector therefore requires a separate external listed-instrument count
+(:mod:`app.services.krb1_universe_denominator`), which is unwired and blocks.
+
 Usage::
 
     ENV_FILE=.env.prod uv run python -m scripts.krb1_p0_metadata_snapshot_capture \\
@@ -55,8 +62,6 @@ from app.services.krb1_gate_result import KST
 from app.services.krb1_metadata_authority import (
     METADATA_SNAPSHOT_STREAM_ID,
     PROVIDER_AUTHORITY_CLOCK_ABSENT,
-    PROVIDER_EFFECTIVE_SESSION_FIELDS,
-    PROVIDER_PUBLISHED_AT_FIELDS,
     ProviderAuthorityClock,
     SymbolMetadata,
     append_metadata_snapshot,
@@ -184,16 +189,10 @@ async def _fetch_raw_master(
             continue
         payloads.append(payload)
         if provider_clock is None:
-            # Allowlists are read at call time from the service module so the
-            # declared provider contract stays one reviewed constant, not a
-            # duplicated literal here.
-            provider_clock = extract_provider_authority_clock(
-                payload,
-                published_at_fields=krb1_metadata_authority.PROVIDER_PUBLISHED_AT_FIELDS,
-                effective_session_fields=(
-                    krb1_metadata_authority.PROVIDER_EFFECTIVE_SESSION_FIELDS
-                ),
-            )
+            # The declared provider contract lives in one reviewed module constant
+            # (ROB-1172 F-INT-04); there is no argument for it here, so this call
+            # site cannot widen it.
+            provider_clock = extract_provider_authority_clock(payload)
     raw = canonical_json_bytes({"batches": payloads})
     return raw, len(payloads), errors, provider_clock
 
@@ -261,10 +260,10 @@ async def run(
                 "reason": PROVIDER_AUTHORITY_CLOCK_ABSENT,
                 "batch_count": batch_count,
                 "declared_provider_published_at_fields": sorted(
-                    PROVIDER_PUBLISHED_AT_FIELDS
+                    krb1_metadata_authority.PROVIDER_PUBLISHED_AT_FIELDS
                 ),
                 "declared_provider_effective_session_fields": sorted(
-                    PROVIDER_EFFECTIVE_SESSION_FIELDS
+                    krb1_metadata_authority.PROVIDER_EFFECTIVE_SESSION_FIELDS
                 ),
                 "note": (
                     "consumer retrieval time is a different clock from provider "

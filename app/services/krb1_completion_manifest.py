@@ -52,9 +52,24 @@ from app.services.krb1_gate_result import (
 )
 from app.services.krb1_p0_journal import compute_row_hash
 
-SCHEMA_VERSION = "krb1.p0_3.completion_manifest.v1"
+SCHEMA_VERSION = "krb1.p0_3.completion_manifest.v2"
 COMPLETION_MANIFEST_RECORD_TYPE = "KIS_COMPLETED_SESSION_COMPLETION_MANIFEST"
 COMPLETION_MANIFEST_STREAM_ID = "krb1.p0_3.completion_manifest"
+
+# 🔴 ROB-1172 F-INT-02 / canonical regression: v1 details carried no provider
+# identity, so a v1 manifest proved that *some* rows matched without ever proving
+# which instrument the provider described. The identity requirement was added to
+# the detail shape while the schema label stayed v1, which retroactively promoted
+# every pre-existing v1 record. The label is now v2 and — because SCHEMA_VERSION is
+# hashed into both the universe hash and the manifest hash — a v1 record can no
+# longer satisfy this contract. Rehydrate refuses it explicitly rather than
+# depending on a hash mismatch alone.
+REQUIRED_DETAIL_IDENTITY_FIELDS: frozenset[str] = frozenset(
+    {"provider_raw_symbol", "request_context_symbol_is_not_identity"}
+)
+RETIRED_SCHEMA_VERSIONS: frozenset[str] = frozenset(
+    {"krb1.p0_3.completion_manifest.v1"}
+)
 
 # Exact endpoint/TR the manifest is allowed to be built from. Cross-checked
 # against app.services.brokers.kis.constants by a guard test.
@@ -357,6 +372,51 @@ def build_completion_manifest(
     )
 
 
+def _detail_identity_defects(
+    details: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Symbols whose persisted detail does not carry provider-origin identity.
+
+    Read at gate time, not only at build time: a manifest reaches the gate from an
+    append-only row, so the reader has to re-establish what the builder claimed.
+    Without this the identity requirement lives only in
+    :func:`reconcile_symbol`, and every record written before that check existed
+    stays proven forever (ROB-1172 F-INT-02).
+    """
+    defects: list[dict[str, Any]] = []
+    for detail in details:
+        symbol = str(detail.get("symbol"))
+        raw = detail.get("raw")
+        if not isinstance(raw, Mapping):
+            # A detail with no raw response is already a failure status; the
+            # reconcile counters handle it.
+            continue
+        missing = sorted(REQUIRED_DETAIL_IDENTITY_FIELDS - set(raw))
+        if missing:
+            defects.append(
+                {
+                    "symbol": symbol,
+                    "defect": "provider_identity_fields_absent",
+                    "missing_fields": missing,
+                }
+            )
+            continue
+        if detail.get("status") != MATCH:
+            continue
+        provider_raw_symbol = raw.get("provider_raw_symbol")
+        if provider_raw_symbol is None:
+            defects.append({"symbol": symbol, "defect": "provider_identity_missing"})
+        elif str(provider_raw_symbol) != symbol:
+            defects.append(
+                {
+                    "symbol": symbol,
+                    "defect": "provider_identity_mismatch",
+                    "provider_raw_symbol": str(provider_raw_symbol),
+                }
+            )
+    return defects
+
+
 def evaluate_completion_manifest(
     *,
     manifest: CompletionManifest | None,
@@ -375,6 +435,9 @@ def evaluate_completion_manifest(
         "required_universe_hash": expected_hash,
         "required_symbol_count": len(expected),
         "required_clock_upper_bound_decision_at": normalize_evidence(decision_at),
+        "required_schema_version": SCHEMA_VERSION,
+        "required_detail_identity_fields": sorted(REQUIRED_DETAIL_IDENTITY_FIELDS),
+        "retired_schema_versions": sorted(RETIRED_SCHEMA_VERSIONS),
         "row_count_and_ingested_at_do_not_prove_completed_session": True,
         # 🔴 A3: this axis proves local consistency + coverage only. Provider
         # finality is a separate gate; see krb1_completion_finality.
@@ -419,12 +482,43 @@ def evaluate_completion_manifest(
             manifest=manifest.as_evidence(),
             **required,
         )
-    if manifest.details and compute_manifest_hash(manifest.details) != (
-        manifest.manifest_hash
-    ):
+    # 🔴 Details are the evidence, not an annex. A row that dropped them cannot be
+    # re-checked for provider identity, so an empty detail set is unprovable rather
+    # than vacuously clean.
+    if not manifest.details:
+        return unprovable(
+            "completion_manifest_details_missing",
+            manifest=manifest.as_evidence(),
+            **required,
+        )
+    if compute_manifest_hash(manifest.details) != manifest.manifest_hash:
         return unprovable(
             "completion_manifest_detail_hash_mismatch",
             manifest=manifest.as_evidence(),
+            **required,
+        )
+    detail_symbols = {str(item.get("symbol")) for item in manifest.details}
+    uncovered = sorted(set(expected) - detail_symbols)
+    if uncovered:
+        return unprovable(
+            "completion_manifest_details_incomplete",
+            manifest=manifest.as_evidence(),
+            uncovered_symbols=examples(uncovered),
+            **required,
+        )
+    # 🔴 F-INT-02: re-establish provider-origin identity at read time. The builder's
+    # check protects new records; this protects the gate from every record written
+    # before that check existed.
+    identity_defects = _detail_identity_defects(manifest.details)
+    if identity_defects:
+        return unprovable(
+            "completion_manifest_provider_identity_unproven",
+            manifest=manifest.as_evidence(),
+            identity_defects=[
+                normalize_evidence(item) for item in identity_defects[:20]
+            ],
+            identity_defect_count=len(identity_defects),
+            request_context_symbol_is_not_identity=True,
             **required,
         )
     if (
@@ -572,7 +666,23 @@ def manifest_from_row(
     chain_index: int,
     chain_hash: str,
 ) -> CompletionManifest:
-    """Rehydrate a manifest from a persisted append-only row."""
+    """Rehydrate a manifest from a persisted append-only row.
+
+    🔴 An unknown or retired ``schema_version`` raises instead of being coerced. A
+    v1 row was written before provider identity was required, so reading it under
+    the v2 contract would retroactively promote evidence that never proved which
+    instrument the provider described (ROB-1172 F-INT-02). Identity keys are also
+    required per detail, so a v2-labelled row carrying the v1 detail shape is
+    refused too — the label alone is not the contract.
+    """
+    version = str(row.get("schema_version"))
+    if version != SCHEMA_VERSION:
+        raise ValueError(
+            f"completion manifest schema_version {version!r} is not "
+            f"{SCHEMA_VERSION!r}; retired versions "
+            f"{sorted(RETIRED_SCHEMA_VERSIONS)} carry no provider identity and are "
+            "not promotable"
+        )
 
     def _clock(key: str) -> dt.datetime | None:
         raw = row.get(key)
@@ -582,6 +692,17 @@ def manifest_from_row(
     if finalized_at is None:
         raise ValueError("manifest row is missing finalized_at")
     details = tuple(dict(item) for item in row.get("details") or ())
+    for detail in details:
+        raw_detail = detail.get("raw")
+        if not isinstance(raw_detail, Mapping):
+            continue
+        missing = sorted(REQUIRED_DETAIL_IDENTITY_FIELDS - set(raw_detail))
+        if missing:
+            raise ValueError(
+                f"completion manifest detail for {detail.get('symbol')!r} is missing "
+                f"provider identity fields {missing}; it predates the "
+                "provider-origin identity contract and cannot be rehydrated"
+            )
     failures = tuple(item for item in details if item.get("status") != MATCH)
     return CompletionManifest(
         market=str(row["market"]),
@@ -636,6 +757,8 @@ __all__ = [
     "KIS_DAILY_TR_ID",
     "KRX_DAILY_COMPLETION_CUTOFF",
     "MATCH",
+    "REQUIRED_DETAIL_IDENTITY_FIELDS",
+    "RETIRED_SCHEMA_VERSIONS",
     "SCHEMA_VERSION",
     "CompletionManifest",
     "DbDailyBar",
