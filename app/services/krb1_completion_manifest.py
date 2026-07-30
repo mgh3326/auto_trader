@@ -1,4 +1,11 @@
-"""AC2 — KIS raw daily vs DB exact-reconcile completion manifest.
+"""AC2 — KIS raw daily vs DB exact **local** reconcile manifest.
+
+🔴 Scope (A3, 2026-07-30): this module proves *local* agreement — the stored row
+matches the raw response field for field, the whole universe is covered, and the
+observations sit inside the allowed window. It does **not** prove that the provider
+declared this revision final; that claim lives in
+:mod:`app.services.krb1_completion_finality` and fails closed while unwired.
+Reason strings say ``local_..._reconcile`` for exactly that reason.
 
 ``row_count`` and ``ingested_at`` do not prove a completed session: the 07-29
 pre-open snapshot had 32 rows with ``volume=0`` stamped at 07:40 KST, and the
@@ -356,6 +363,9 @@ def evaluate_completion_manifest(
         "required_symbol_count": len(expected),
         "required_clock_upper_bound_decision_at": normalize_evidence(decision_at),
         "row_count_and_ingested_at_do_not_prove_completed_session": True,
+        # 🔴 A3: this axis proves local consistency + coverage only. Provider
+        # finality is a separate gate; see krb1_completion_finality.
+        "local_reconcile_is_not_provider_finality": True,
     }
     if not is_aware(decision_at):
         return unprovable(
@@ -423,7 +433,7 @@ def evaluate_completion_manifest(
         or manifest.extra_count
     ):
         return unprovable(
-            "full_universe_raw_daily_exact_reconcile_unproven",
+            "local_full_universe_exact_reconcile_unproven",
             manifest=manifest.as_evidence(),
             failure_symbols=examples(
                 [str(item.get("symbol")) for item in manifest.failures]
@@ -472,7 +482,7 @@ def evaluate_completion_manifest(
             **required,
         )
     return proven(
-        "full_universe_raw_daily_exact_reconcile_proven",
+        "local_full_universe_exact_reconcile_proven",
         manifest=manifest.as_evidence(),
         **required,
     )

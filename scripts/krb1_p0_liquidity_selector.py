@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
 from app.services.brokers.kis.client import KISClient
+from app.services.krb1_completion_finality import fetch_provider_finality
 from app.services.krb1_completion_manifest import (
     CompletionManifest,
     load_latest_completion_manifest,
@@ -415,11 +416,16 @@ async def run(
         symbols=head_symbols,
         as_of_session=as_of_session,
     )
-    # The adapter is a fail-closed stub: it returns no records and names the
-    # unwired source. This is not operator-overridable.
+    # Both adapters are fail-closed stubs: they return nothing and name the unwired
+    # source. Neither is operator-overridable.
     reference_fetch = fetch_reference_price_exceptions(
         symbols=head_symbols,
         target_session=target_session,
+        decision_at=decision_at,
+    )
+    finality_fetch = fetch_provider_finality(
+        market="KOSPI",
+        session_date=as_of_session,
         decision_at=decision_at,
     )
     final_input = SelectorInput(
@@ -435,10 +441,12 @@ async def run(
         metadata_snapshots=snapshots,
         completion_manifests=manifests,
         reference_source_unavailable_reason=reference_fetch.reason,
+        finality_source_unavailable_reason=finality_fetch.reason,
     )
     result = select_krb1_p0_liquidity_candidates(final_input)
     result["source_availability"] = {
         "reference_price_exception": reference_fetch.as_evidence(),
+        "provider_daily_finality": finality_fetch.as_evidence(),
         "raw_upstream_errors": upstream_errors,
         "gate_evidence_stream_errors": evidence_errors,
         "metadata_snapshot_markets": sorted(row.market for row in snapshots),

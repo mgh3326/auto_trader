@@ -115,7 +115,8 @@ def test_full_reconcile_is_proven() -> None:
     assert manifest.mismatch_count == 0
     assert manifest.missing_count == 0
     assert gate.status == "proven"
-    assert gate.reason == "full_universe_raw_daily_exact_reconcile_proven"
+    assert gate.reason == "local_full_universe_exact_reconcile_proven"
+    assert gate.evidence["local_reconcile_is_not_provider_finality"] is True
     assert (
         gate.evidence["row_count_and_ingested_at_do_not_prove_completed_session"]
         is True
@@ -130,7 +131,7 @@ def test_missing_raw_response_is_recorded_and_blocks() -> None:
     assert manifest.reconciled_count == 1
     gate = _evaluate(manifest)
     assert gate.status == "unprovable"
-    assert gate.reason == "full_universe_raw_daily_exact_reconcile_unproven"
+    assert gate.reason == "local_full_universe_exact_reconcile_unproven"
     assert "005930" in gate.evidence["failure_symbols"]
 
 

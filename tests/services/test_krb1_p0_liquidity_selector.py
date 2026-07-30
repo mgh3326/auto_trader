@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from app.services import krb1_metadata_authority
+from app.services.krb1_completion_finality import ProviderFinalityAttestation
 from app.services.krb1_completion_manifest import (
     COMPLETION_MANIFEST_STREAM_ID,
     CompletionManifest,
@@ -105,18 +106,38 @@ def _candle(symbol: str, *, value: int, close: int) -> CandleRow:
     )
 
 
-def _reference(symbol: str, *, is_exception: bool = False):
-    return ReferencePriceExceptionRecord(
+def _finality(market: str) -> ProviderFinalityAttestation:
+    """Hypothetical provider finality attestation.
+
+    No wired source produces one (A3), so the stub fails closed in production; the
+    fixture injects one to keep the other gates reachable.
+    """
+    return ProviderFinalityAttestation(
+        market=market,
+        session_date=AS_OF,
+        source="krx_official_daily_finality",
+        revision="1",
+        declared_final_at=dt.datetime(2026, 7, 29, 16, 40, tzinfo=KST),
+        retrieved_at=dt.datetime(2026, 7, 29, 16, 50, tzinfo=KST),
+        correction_policy="corrections republished with an incremented revision",
+        raw_payload_sha256="f" * 64,
+    )
+
+
+def _reference(symbol: str, *, is_exception: bool = False, **overrides: object):
+    base = ReferencePriceExceptionRecord(
         symbol=symbol,
         effective_session=TARGET,
         is_exception=is_exception,
         source="krx_official_base_price",
         published_at=REFERENCE_PUBLISHED_AT,
         retrieved_at=REFERENCE_RETRIEVED_AT,
+        determination_method="NORMAL_PRIOR_CLOSE",
         raw_reference_price="10000",
         raw_reason_code="NORMAL",
         raw_payload_sha256=SHA_STUB,
     )
+    return replace(base, **overrides) if overrides else base
 
 
 def _completed(candle: CandleRow) -> CompletedBarEvidence:
@@ -289,6 +310,9 @@ def _base_input() -> SelectorInput:
         completion_manifests=tuple(
             _manifest(market, universe, candles) for market in ("KOSPI", "KOSDAQ")
         ),
+        provider_finality_attestations=tuple(
+            _finality(market) for market in ("KOSPI", "KOSDAQ")
+        ),
     )
 
 
@@ -337,7 +361,7 @@ def test_selected_candidate_carries_gate_proof_provenance() -> None:
     assert result["status"] == "selected", result["fail_close_reasons"]
     candidate = _selected_by_market(result)["KOSPI"]
     snapshot = candidate["metadata_authority_snapshot"]
-    manifest = candidate["completion_manifest"]
+    manifest = candidate["local_reconcile_manifest"]
     assert isinstance(snapshot, dict)
     assert isinstance(manifest, dict)
     assert snapshot["stream_id"] == METADATA_SNAPSHOT_STREAM_ID
@@ -438,7 +462,7 @@ def test_nonselected_rows_without_raw_completion_evidence_fail_closed() -> None:
             ),
         )
     )
-    _assert_fail_closed(result, "full_universe_raw_daily_completion_unproven")
+    _assert_fail_closed(result, "full_universe_raw_daily_local_match_unproven")
 
 
 def test_forming_daily_raw_observation_before_cutoff_fails_closed() -> None:
@@ -455,7 +479,7 @@ def test_forming_daily_raw_observation_before_cutoff_fails_closed() -> None:
     result = select_krb1_p0_liquidity_candidates(
         replace(selector_input, completed_bar_evidence=completed)
     )
-    _assert_fail_closed(result, "full_universe_raw_daily_completion_unproven")
+    _assert_fail_closed(result, "full_universe_raw_daily_local_match_unproven")
 
 
 def test_daily_raw_observation_after_decision_at_fails_closed() -> None:
@@ -468,7 +492,7 @@ def test_daily_raw_observation_after_decision_at_fails_closed() -> None:
     result = select_krb1_p0_liquidity_candidates(
         replace(selector_input, completed_bar_evidence=completed)
     )
-    _assert_fail_closed(result, "full_universe_raw_daily_completion_unproven")
+    _assert_fail_closed(result, "full_universe_raw_daily_local_match_unproven")
 
 
 def test_metadata_null_fails_closed() -> None:
@@ -947,3 +971,158 @@ def test_selector_source_has_no_float_literals_or_true_division() -> None:
 def test_tick_floor_rejects_float_negative_and_bool(bad_price: object) -> None:
     with pytest.raises(ValueError):
         tick_floor_exact(bad_price, "KOSPI")  # type: ignore[arg-type]
+
+
+# ───────── A3: the two completion axes are separate at the run level ─────────
+
+
+def test_local_reconcile_alone_does_not_produce_a_selection() -> None:
+    """🔴 E3: a clean full-universe local reconcile must not be promoted.
+
+    Both local axes stay proven, and the run still fails closed because no provider
+    declared the daily revision final.
+    """
+    selector_input = _base_input()
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, provider_finality_attestations=())
+    )
+
+    _assert_fail_closed(result, "completed_session_provider_finality_unproven")
+    for market in ("KOSPI", "KOSDAQ"):
+        gates = result["market_results"][market]["gates"]  # type: ignore[index]
+        assert gates["completed_session_local_reconcile"]["status"] == "proven"
+        assert gates["completed_session_raw_completion"]["status"] == "proven"
+        finality = gates["completed_session_provider_finality"]
+        assert finality["status"] == "unprovable"
+        assert finality["evidence"]["local_reconcile_proven"] is True
+        assert finality["evidence"]["local_reconcile_is_not_provider_finality"] is True
+
+
+def test_local_axes_no_longer_claim_completion_in_their_reasons() -> None:
+    """The evidence artifact must not say 'completion proven' for a local match."""
+    result = select_krb1_p0_liquidity_candidates(_base_input())
+    gates = result["market_results"]["KOSPI"]["gates"]  # type: ignore[index]
+
+    assert gates["completed_session_raw_completion"]["reason"] == (
+        "full_universe_raw_daily_local_match_proven"
+    )
+    assert gates["completed_session_local_reconcile"]["reason"] == (
+        "local_full_universe_exact_reconcile_proven"
+    )
+    contract = result["evidence_clock_contract"]
+    assert isinstance(contract, dict)
+    assert "completion_provider_finality" in contract
+    assert "local reconcile can never substitute" in str(
+        contract["completion_provider_finality"]
+    )
+
+
+def test_unwired_finality_source_reason_fails_closed() -> None:
+    selector_input = _base_input()
+    result = select_krb1_p0_liquidity_candidates(
+        replace(
+            selector_input,
+            provider_finality_attestations=(),
+            finality_source_unavailable_reason=(
+                "provider_daily_ohlcv_finality_source_not_wired"
+            ),
+        )
+    )
+    _assert_fail_closed(result, "completed_session_provider_finality_unproven")
+
+
+# ───────── A4: determination method drives exclusion, not estimation ─────────
+
+
+def test_opening_call_symbol_is_excluded_when_it_is_not_rank_one() -> None:
+    """KOSPI rank #1 is 000001 (value 2000); 000002 is #2 and gets excluded."""
+    selector_input = _base_input()
+    records = tuple(
+        _reference(
+            row.symbol,
+            determination_method="TARGET_DAY_OPENING_CALL",
+            raw_reference_price=None,
+        )
+        if row.symbol == "000002"
+        else _reference(row.symbol)
+        for row in selector_input.universe_rows
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, reference_price_exception_records=records)
+    )
+
+    assert result["status"] == "selected", result["fail_close_reasons"]
+    assert _selected_by_market(result)["KOSPI"]["universe_row"]["symbol"] == "000001"
+    counts = result["market_results"]["KOSPI"]["counts"]  # type: ignore[index]
+    assert counts["excluded_pending_opening_call"] == 1
+
+
+def test_global_rank_one_excluded_fails_closed_without_promoting_rank_two() -> None:
+    """🔴 E4: no automatic #2 promotion in this sealed child."""
+    selector_input = _base_input()
+    records = tuple(
+        _reference(
+            row.symbol,
+            determination_method="TARGET_DAY_OPENING_CALL",
+            raw_reference_price=None,
+        )
+        if row.symbol == "000001"
+        else _reference(row.symbol)
+        for row in selector_input.universe_rows
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, reference_price_exception_records=records)
+    )
+
+    _assert_fail_closed(result, "global_rank_one_excluded_pending_opening_call")
+    gate = result["market_results"]["KOSPI"]["gates"]["ranked_candidate"]  # type: ignore[index]
+    assert gate["evidence"]["global_rank_one"] == "000001"
+    assert gate["evidence"]["automatic_promotion_of_rank_two_forbidden"] is True
+    assert (
+        gate["evidence"]["positively_proven_subset_ranking_requires_future_child"]
+        is True
+    )
+    # 000002 must not appear as a candidate anywhere.
+    assert result["selected_candidates"] == []
+
+
+def test_unknown_determination_method_fails_the_run() -> None:
+    """🔴 E4: UNKNOWN is run-level fail-close, not an exclusion."""
+    selector_input = _base_input()
+    records = tuple(
+        _reference(row.symbol, determination_method="UNKNOWN")
+        if row.symbol == "100002"
+        else _reference(row.symbol)
+        for row in selector_input.universe_rows
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, reference_price_exception_records=records)
+    )
+
+    _assert_fail_closed(result, "target_session_reference_price_exception_unproven")
+    gate = result["market_results"]["KOSDAQ"]["gates"][  # type: ignore[index]
+        "reference_price_exception_coverage"
+    ]
+    assert {
+        "symbol": "100002",
+        "defect": "determination_method_unknown",
+    } in gate["evidence"]["defect_examples"]
+
+
+def test_opening_call_symbol_is_never_estimated_or_awaited() -> None:
+    """A record that carries a number it should not have yet is a defect."""
+    selector_input = _base_input()
+    records = tuple(
+        _reference(
+            row.symbol,
+            determination_method="TARGET_DAY_OPENING_CALL",
+            raw_reference_price="10000",
+        )
+        if row.symbol == "000002"
+        else _reference(row.symbol)
+        for row in selector_input.universe_rows
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, reference_price_exception_records=records)
+    )
+    _assert_fail_closed(result, "target_session_reference_price_exception_unproven")

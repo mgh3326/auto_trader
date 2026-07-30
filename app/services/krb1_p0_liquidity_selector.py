@@ -22,6 +22,10 @@ import datetime as dt
 from dataclasses import asdict, dataclass
 from typing import Literal
 
+from app.services.krb1_completion_finality import (
+    ProviderFinalityAttestation,
+    evaluate_provider_finality,
+)
 from app.services.krb1_completion_manifest import (
     KIS_DAILY_ENDPOINT,
     KIS_DAILY_TR_ID,
@@ -44,6 +48,7 @@ from app.services.krb1_reference_price_evidence import (
     AUTHORITATIVE_REFERENCE_EXCEPTION_SOURCES,
     ReferencePriceExceptionRecord,
     evaluate_reference_price_exception_coverage,
+    excluded_pending_opening_call_symbols,
     is_tradable_reference_price,
 )
 
@@ -119,7 +124,9 @@ class SelectorInput:
     quote_timestamp_evidence: tuple[QuoteTimestampCapture, ...] = ()
     metadata_snapshots: tuple[MetadataAuthoritySnapshot, ...] = ()
     completion_manifests: tuple[CompletionManifest, ...] = ()
+    provider_finality_attestations: tuple[ProviderFinalityAttestation, ...] = ()
     reference_source_unavailable_reason: str | None = None
+    finality_source_unavailable_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -735,7 +742,7 @@ def select_krb1_p0_liquidity_candidates(
         ):
             gates["completed_session_raw_completion"] = _gate(
                 "unprovable",
-                "full_universe_raw_daily_completion_unproven",
+                "full_universe_raw_daily_local_match_unproven",
                 required_endpoint=KIS_DAILY_ENDPOINT,
                 required_tr_id=KIS_DAILY_TR_ID,
                 required_observation_cutoff_kst="15:35:00",
@@ -746,23 +753,42 @@ def select_krb1_p0_liquidity_candidates(
                 invalid_examples=_examples(invalid_completed_evidence),
                 coverage_prerequisite_proven=coverage_proven,
                 ingested_at_alone_is_insufficient=True,
+                local_match_is_not_provider_finality=True,
             )
         else:
             gates["completed_session_raw_completion"] = _gate(
                 "proven",
-                "full_universe_raw_daily_completion_proven",
+                "full_universe_raw_daily_local_match_proven",
                 endpoint=KIS_DAILY_ENDPOINT,
                 tr_id=KIS_DAILY_TR_ID,
                 required_observation_cutoff_kst="15:35:00",
                 checked_count=len(coverage_symbols),
+                local_match_is_not_provider_finality=True,
             )
 
-        gates["completed_session_completion_manifest"] = evaluate_completion_manifest(
+        gates["completed_session_local_reconcile"] = evaluate_completion_manifest(
             manifest=manifest_index.get(market),
             market=market,
             session_date=selector_input.as_of_session,
             universe_symbols=coverage_symbols,
             decision_at=decision_at,
+        ).as_dict()
+
+        # 🔴 A3: the second axis. Local agreement above says the stored rows match
+        # the raw response; it says nothing about the provider declaring this
+        # revision final. Absent an attestation this fails closed, and no amount of
+        # local reconciliation can substitute for it.
+        gates["completed_session_provider_finality"] = evaluate_provider_finality(
+            attestations=selector_input.provider_finality_attestations,
+            market=market,
+            session_date=selector_input.as_of_session,
+            decision_at=decision_at,
+            local_reconcile_proven=(
+                gates["completed_session_local_reconcile"]["status"] == "proven"
+            ),
+            source_unavailable_reason=(
+                selector_input.finality_source_unavailable_reason
+            ),
         ).as_dict()
 
         preliminary_symbols = {row.symbol for row in preliminary}
@@ -808,6 +834,50 @@ def select_krb1_p0_liquidity_candidates(
         reference_gate_proven = (
             gates["reference_price_exception_coverage"]["status"] == "proven"
         )
+        # 🔴 A4/E4: symbols whose base price is set by the target session's opening
+        # call leave the ranking population. In this sealed child, if the *global*
+        # rank #1 is one of them the run fails closed — promoting #2 would silently
+        # change the selection rule from "rank #1 of the eligible universe" to
+        # "rank #1 of the positively-proven subset", which is a different contract
+        # reserved for a future pre-registered child.
+        deferred_symbols = set(
+            excluded_pending_opening_call_symbols(
+                records=tuple(
+                    record
+                    for record in selector_input.reference_price_exception_records
+                    if record.symbol in preliminary_symbols
+                ),
+                target_session=selector_input.target_session,
+                decision_at=decision_at,
+            )
+        )
+        global_rank_one = (
+            pre_reference_ranked[0][0].symbol if pre_reference_ranked else None
+        )
+        if global_rank_one is not None and global_rank_one in deferred_symbols:
+            gates["ranked_candidate"] = _gate(
+                "unprovable",
+                "global_rank_one_excluded_pending_opening_call",
+                market=market,
+                global_rank_one=global_rank_one,
+                excluded_pending_opening_call=_examples(sorted(deferred_symbols)),
+                automatic_promotion_of_rank_two_forbidden=True,
+                positively_proven_subset_ranking_requires_future_child=True,
+            )
+            market_results[market] = {
+                "gates": gates,
+                "counts": {
+                    "universe": len(rows),
+                    "active": len(active_rows),
+                    "coverage_universe": len(coverage_rows),
+                    "pre_reference_eligible": len(preliminary),
+                    "post_reference_eligible": 0,
+                    "excluded_pending_opening_call": len(deferred_symbols),
+                },
+                "pre_reference_rank_head": pre_reference_head,
+            }
+            continue
+
         final_ranked: list[tuple[UniverseRow, CandleRow]] = []
         if reference_gate_proven:
             for row in preliminary:
@@ -879,7 +949,7 @@ def select_krb1_p0_liquidity_candidates(
                         if market in metadata_snapshot_index
                         else None
                     ),
-                    "completion_manifest": (
+                    "local_reconcile_manifest": (
                         manifest_index[market].as_evidence()
                         if market in manifest_index
                         else None
@@ -941,6 +1011,7 @@ def select_krb1_p0_liquidity_candidates(
                 "coverage_universe": len(coverage_rows),
                 "pre_reference_eligible": len(preliminary),
                 "post_reference_eligible": len(final_ranked),
+                "excluded_pending_opening_call": len(deferred_symbols),
             },
             "pre_reference_rank_head": pre_reference_head,
         }
@@ -1002,9 +1073,14 @@ def select_krb1_p0_liquidity_candidates(
                 "<= decision_at date (KST); the DB sync clock is retrieval "
                 "provenance and never authority"
             ),
-            "completion_manifest": (
+            "completion_local_reconcile": (
                 "observed_at in [session 15:35 KST, decision_at] "
-                "and finalized_at <= decision_at"
+                "and finalized_at <= decision_at; local agreement only"
+            ),
+            "completion_provider_finality": (
+                "provider must declare the daily revision final with "
+                "declared_final_at <= retrieved_at <= decision_at; "
+                "local reconcile can never substitute for it"
             ),
             "reference_price": (
                 "effective_session == target_session "
@@ -1037,6 +1113,7 @@ __all__ = [
     "CandleRow",
     "CompletedBarEvidence",
     "CompletionManifest",
+    "ProviderFinalityAttestation",
     "MARKETS",
     "MetadataAuthoritySnapshot",
     "QUOTE_EVIDENCE_AT_OR_AFTER",

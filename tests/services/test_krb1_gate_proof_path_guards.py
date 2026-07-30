@@ -22,6 +22,7 @@ SERVICE_MODULES = (
     Path("app/services/krb1_evidence_chain.py"),
     Path("app/services/krb1_metadata_authority.py"),
     Path("app/services/krb1_completion_manifest.py"),
+    Path("app/services/krb1_completion_finality.py"),
     Path("app/services/krb1_reference_price_evidence.py"),
     Path("app/services/krb1_reference_exception_adapter.py"),
     Path("app/services/krb1_quote_timestamp_capture.py"),

@@ -39,6 +39,7 @@ def _record(symbol: str) -> ReferencePriceExceptionRecord:
         source="krx_official_base_price",
         published_at=dt.datetime(2026, 7, 29, 16, 0, tzinfo=KST),
         retrieved_at=dt.datetime(2026, 7, 29, 17, 0, tzinfo=KST),
+        determination_method="NORMAL_PRIOR_CLOSE",
         raw_reference_price="10000",
         raw_reason_code="NORMAL",
         raw_payload_sha256="b" * 64,

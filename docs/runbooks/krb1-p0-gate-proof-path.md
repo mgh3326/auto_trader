@@ -187,7 +187,11 @@ ENV_FILE=.env.prod uv run python -m scripts.krb1_p0_quote_timestamp_capture \
   `wrapper_price_as_of_is_not_raw_broker_timestamp`,
   `wrapper_price_as_of_tracks_local_capture_clock`).
   `compute_is_stale` 은 `as_of.date() != trading_date` 비교라 장중 항상 fresh 다.
-- gate 는 원문 시각이 `>= 15:30 KST` 이고 `<= decision_at` 일 때만 proven.
+- gate 는 원문 시각이 `>= 15:30:00 KST` (inclusive) 이고 `<= decision_at` 일 때만 proven.
+  🔴 **이 하한의 의미 (E2)**: close 이후 quote observation 의 **최소 시각**일 뿐이다.
+  provider finality 도, daily completion 도 증명하지 않는다. C5 의 15:35 one-shot cutoff
+  (완료 batch 적재 시각)와도, §6.2 의 provider-finality 축과도 **분리해서** 읽어야 한다.
+  세 값은 서로 대체하지 않는다.
 - 저장: `var/research/krb1/p0_gate_evidence/quote_timestamp_capture.jsonl`.
 
 ## 6. 실행 순서
@@ -215,6 +219,43 @@ property 는 `InvestorTradingRecord.updatedAt`(투자자 매매대금) ·
 `listDate`/`delistDate`(상장·폐지일) 뿐이다 — D1 이 대체 증거로 명시 기각한 값이다.
 → `PROVIDER_*_FIELDS` 는 빈 집합 유지. 근거는
 `~/work/herdr-inbox/rob1172-d1d2d4d5-2026-07-30.md` §D1.
+
+## 6.2 A3 반영 — completion 은 두 축이다 (2026-07-30 E3)
+
+```
+completed_session_local_reconcile     DB ↔ raw daily 의 exact local 비교 + coverage + 관측창
+completed_session_provider_finality   provider 가 그 daily revision 을 final 이라 보증한 증거
+```
+🔴 **local reconcile 은 provider finality 가 아니다.** 두 비교 대상 모두 "이것이 확정본이다"라고
+말한 적 없는 표면을 우리가 읽은 값이므로, 둘이 일치한다는 것은 일관성의 증거일 뿐이다.
+그래서 사유 문자열도 `local_full_universe_exact_reconcile_proven` ·
+`full_universe_raw_daily_local_match_proven` 로 정정했다 — "completion 증명" 을 주장하지 않는다.
+
+provider finality attestation 은 `app/services/krb1_completion_finality.py` 의 **fail-closed
+stub** 이 담당하며 배선된 source 가 없어 항상 `unprovable` 이다
+(`provider_daily_ohlcv_finality_source_not_wired`). attestation 은 revision 식별자와
+correction policy 를 함께 요구한다 — 그것 없이는 "final" 에 의미가 없다.
+
+🔴 Toss `investor-trading.updatedAt` 은 **쓸 수 없다**. 실제로 잠정↔확정 의미를 갖지만
+KRX 투자자 매매대금 도메인 한정이며, daily OHLCV 에 쓰는 것은 도메인 혼용이다.
+`FORBIDDEN_CROSS_DOMAIN_SOURCES` 로 생성 자체를 거부한다. KRX 공식 operational source 배선은
+별도 source-contract 이슈다.
+
+## 6.3 A4 반영 — 기준가 numeric 과 determination method 분리 (2026-07-30 E4)
+
+```
+NORMAL_PRIOR_CLOSE · PRECOMPUTED_THEORETICAL   numeric reference price 필수
+TARGET_DAY_OPENING_CALL                        method 는 positive classification.
+   decision cutoff 까지 숫자가 없으면 ranking 전 제외 — 🔴 기다리지도, 추정하지도 않는다
+   숫자를 갖고 있으면 오히려 defect
+   (numeric_reference_price_before_opening_call_determination)
+UNKNOWN · 미인식 method · source conflict       run-level fail-close
+```
+🔴 **현 sealed child 에서는 global rank #1 이 제외되면 run fail-close 다**
+(`global_rank_one_excluded_pending_opening_call`). #2 자동 승격 금지 —
+"positively-proven subset 내 rank #1" 은 별도 사전등록·hash 를 가진 미래 append-only child
+에서만 가능하다. is_exception=True 로 인한 제외는 ROB-1158 봉인 규칙 그대로 유지한다
+(그건 증명 실패가 아니라 권위가 확인한 예외이므로 애초에 eligible population 밖이다).
 
 ## 6.1 🔴 미해결로 남은 것 (2026-07-30 08:33 교정)
 

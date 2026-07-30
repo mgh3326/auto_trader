@@ -9,10 +9,14 @@ import pytest
 
 from app.services.krb1_reference_price_evidence import (
     AUTHORITATIVE_REFERENCE_EXCEPTION_SOURCES,
+    NUMERIC_DEFERRED_METHODS,
+    NUMERIC_REQUIRED_METHODS,
     OUTCOME_RULE,
+    RUN_FAIL_CLOSE_METHODS,
     ReferencePriceExceptionRecord,
     classify_record,
     evaluate_reference_price_exception_coverage,
+    excluded_pending_opening_call_symbols,
     is_tradable_reference_price,
 )
 
@@ -36,6 +40,7 @@ def _record(symbol: str, **overrides: object) -> ReferencePriceExceptionRecord:
         source="krx_official_base_price",
         published_at=PUBLISHED_AT,
         retrieved_at=RETRIEVED_AT,
+        determination_method="NORMAL_PRIOR_CLOSE",
         raw_reference_price="70000",
         raw_reason_code="NORMAL",
         raw_payload_sha256=SHA,
@@ -181,3 +186,94 @@ def test_exception_flag_controls_tradability_not_the_gate() -> None:
     assert is_tradable_reference_price(excepted) is False
     assert is_tradable_reference_price(_record(SYMBOLS[1])) is True
     assert is_tradable_reference_price(_record(SYMBOLS[1], is_exception=None)) is False
+
+
+# ───────────────── A4: numeric price vs determination method ─────────────────
+
+
+def test_determination_method_catalogue() -> None:
+    assert NUMERIC_REQUIRED_METHODS == frozenset(
+        {"NORMAL_PRIOR_CLOSE", "PRECOMPUTED_THEORETICAL"}
+    )
+    assert NUMERIC_DEFERRED_METHODS == frozenset({"TARGET_DAY_OPENING_CALL"})
+    assert RUN_FAIL_CLOSE_METHODS == frozenset({"UNKNOWN"})
+
+
+@pytest.mark.parametrize("method", sorted(NUMERIC_REQUIRED_METHODS))
+def test_numeric_price_is_required_for_precomputed_methods(method: str) -> None:
+    proven = _record(SYMBOLS[0], determination_method=method)
+    assert (
+        classify_record(proven, target_session=TARGET, decision_at=DECISION_AT)
+        == "proven"
+    )
+    without = _record(SYMBOLS[0], determination_method=method, raw_reference_price=None)
+    assert (
+        classify_record(without, target_session=TARGET, decision_at=DECISION_AT)
+        == "raw_reference_price_missing"
+    )
+
+
+def test_opening_call_method_is_excluded_not_failed() -> None:
+    """🔴 The number does not exist on the prior evening — that is not a proof failure."""
+    record = _record(
+        SYMBOLS[0],
+        determination_method="TARGET_DAY_OPENING_CALL",
+        raw_reference_price=None,
+    )
+    assert (
+        classify_record(record, target_session=TARGET, decision_at=DECISION_AT)
+        == "excluded_pending_opening_call"
+    )
+    assert is_tradable_reference_price(record) is False
+
+    gate = _evaluate([record, _record(SYMBOLS[1])])
+    assert gate.status == "proven", gate.evidence
+    assert gate.evidence["excluded_pending_opening_call"] == [SYMBOLS[0]]
+    assert gate.evidence["numeric_price_not_awaited_or_estimated"] is True
+
+
+def test_opening_call_record_carrying_a_number_is_a_defect() -> None:
+    """A number that should not exist yet means the classification is inconsistent."""
+    record = _record(
+        SYMBOLS[0],
+        determination_method="TARGET_DAY_OPENING_CALL",
+        raw_reference_price="70000",
+    )
+    assert (
+        classify_record(record, target_session=TARGET, decision_at=DECISION_AT)
+        == "numeric_reference_price_before_opening_call_determination"
+    )
+    assert _evaluate([record, _record(SYMBOLS[1])]).status == "unprovable"
+
+
+@pytest.mark.parametrize(
+    ("method", "defect"),
+    [
+        ("UNKNOWN", "determination_method_unknown"),
+        ("SOMETHING_ELSE", "determination_method_unrecognized"),
+    ],
+)
+def test_unresolved_method_fails_the_run(method: str, defect: str) -> None:
+    """🔴 UNKNOWN / unrecognized is run-level fail-close, never an exclusion."""
+    record = _record(SYMBOLS[0], determination_method=method)
+    assert (
+        classify_record(record, target_session=TARGET, decision_at=DECISION_AT)
+        == defect
+    )
+    gate = _evaluate([record, _record(SYMBOLS[1])])
+    assert gate.status == "unprovable"
+    assert {"symbol": SYMBOLS[0], "defect": defect} in gate.evidence["defect_examples"]
+
+
+def test_excluded_symbol_helper_lists_only_deferred_methods() -> None:
+    records = [
+        _record(
+            SYMBOLS[0],
+            determination_method="TARGET_DAY_OPENING_CALL",
+            raw_reference_price=None,
+        ),
+        _record(SYMBOLS[1]),
+    ]
+    assert excluded_pending_opening_call_symbols(
+        records=records, target_session=TARGET, decision_at=DECISION_AT
+    ) == (SYMBOLS[0],)

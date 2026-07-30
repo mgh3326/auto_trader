@@ -1,7 +1,8 @@
 # AC5 quote timestamp source 계약 (ROB-1172 D2) — 구현 전 고정본
 
 ```
-상태        계약 고정만. 코드 미구현. gate source 교체는 계약 테스트 + 적대검증 통과 후.
+🔴 판정      AC5_IDENTITY_UNPROVABLE (2026-07-30 E1). 이 source 로 교체하지 않는다.
+상태        계약 고정만. 코드 미구현. gate source 교체는 identity 확보 + 적대검증 통과 후.
 승인 근거    codex-mock D2 조건부 승인 (2026-07-30T10:11:42+09:00)
 우선 source  FHKST03010230 (당일분봉, inquire-time-dailychartprice)
 🔴 금지      FHKST01010300 단독 · local date 결합 · 다른 endpoint 의 date/time 결합 · wrapper timestamp
@@ -49,19 +50,34 @@ output1 에도 종목코드 없음              (있는 것은 hts_kor_isnm = �
 요청했다"는 우리 쪽 주장이고, provider 가 확인해 준 identity 가 아니다 — A1 에서 폐기한
 치환과 같은 종류의 논리다.
 
-고정 규칙:
+🔴 **E1 판정 (2026-07-30, 운영자 결정)**: 이전 판의 규칙 2~4(이름 anchor 를 identity 로 인정)는
+**철회한다.** 운영자 판정:
+
+> `hts_kor_isnm` exact match SHALL be recorded only as corroborating weak-name evidence
+> and SHALL NOT establish security-code identity. If no official stable identifier or
+> provider-guaranteed request-response binding is found, AC5 remains UNPROVABLE;
+> no name-based or cross-endpoint fallback is permitted.
+
+4단계 bounded investigation 결과 (원문: `~/work/herdr-inbox/rob1172-a3a4-2026-07-30.md` §1):
 
 ```
-1. 요청 symbol 은 request-side provenance 로만 기록한다 (requested_symbol).
-2. provider-origin identity anchor 는 output1.hts_kor_isnm 뿐이다 (한글 종목명).
-   이를 DB kr_symbol_universe.name 과 exact 일치로 교차검증한다.
-   불일치 · 부재 → identity unproven → fail-close.
-3. 🔴 이름 교차검증은 "약한 anchor" 임을 evidence 에 명시한다
-   (name_identity_is_weaker_than_code_identity: true).
-   동명 종목 가능성을 부정하지 않는다.
-4. 🔴 이름 교차검증만으로 code identity 를 주장하지 않는다. 필요하면 code identity 를
-   제공하는 별도 TR 로의 이중 확인이 후속 과제다 (이번 계약에 포함하지 않음).
+1. raw response 전 필드 전수      envelope 5 · output1 8 · output2 8 (120행)
+                                 🔴 공식 schema 는 확인 실패 — KIS 포털이 JS 셸(script 69개,
+                                    본문에 FHKST03010230·gt_uid 0건)
+2. body 의 stable code field      부재. 응답 본문 전체에 "005930" 문자열 0건
+3. provider 보증 request↔response 결속   확인 불가
+   - 우리는 client txn-id 를 보내지 않는다 (headers: appkey/appsecret/authorization/custtype/tr_id)
+   - 응답 header 의 gt_uid 는 **서버 생성**이고 symbol 을 담지 않는다
+     (헤더에도 "005930" 0건). tr_id 는 TR 종류 echo. x-oracle-dms-* 는 infra 추적 ID
+   - gt_uid 로 요청 파라미터를 조회할 배선·문서 없음 → 결국 "우리가 보관한 request 를
+     우리가 믿는" self-asserted provenance 로 환원된다 (A1 이 폐기한 형태)
+   - provider 보증 문구를 공식 문서에서 확인하지 못함
+4. 같은 payload/결속 transaction 에 4요소   symbol identity **false** / price·date·time true
 ```
+
+결론: `AC5_IDENTITY_UNPROVABLE` 유지. 이름 기반 승격 · local date 보충 ·
+cross-endpoint identity/timestamp 조합 전부 하지 않았다. weak anchor 를 쓰려면 **별도
+amendment** 로 운영자 승인을 다시 받아야 한다.
 
 ## 3. 고정 규칙 — latest-row · empty/gap · 상한
 
@@ -98,15 +114,21 @@ raw hash       sha256(canonical_json_bytes({"endpoint","tr_id","params","output1
 🔴 v2 는 endpoint/tr_id 가 FHKST03010230 인 행만 인정한다.
 ```
 
-## 5. 남은 결정 (구현 전 필요)
+## 5. 결정 결과
 
 ```
-D2-a  hts_kor_isnm 이름 교차검증을 identity 로 인정할지 — 이름 anchor 의 강도 판단은
-      계약 결정이다. 인정하지 않으면 이 source 도 identity unprovable 로 fail-close 된다.
-      (내 권고: 인정하되 weak anchor 라벨 + code identity 이중확인을 후속 과제로)
-D2-b  완료세션 증거로 쓸 때의 하한(15:30) 유지 여부 — 분봉은 15:30 이후 행이 존재하므로
-      기존 하한을 그대로 쓰면 된다. 변경 불필요로 판단하나 확인 요청.
+D2-a  ✗ 불승인 (E1) — weak-name anchor 는 identity 가 아니다. AC5_IDENTITY_UNPROVABLE 유지
+D2-b  ✓ 하한 15:30:00 KST inclusive 유지 (E2). 변경 없음.
+      의미: close 이후 quote observation 의 최소 시각일 뿐 provider finality·daily completion
+      을 증명하지 않는다. C5 의 15:35 one-shot cutoff 및 provider-finality 축과 분리한다.
 ```
 
-🔴 위 두 결정 전에는 gate source 를 교체하지 않는다. 이 문서는 계약 고정본이고,
-구현·계약 테스트·적대검증은 별도 단계다.
+### 이 source 를 열 수 있는 유일한 경로
+
+```
+① 응답에 stable security code 를 담는 다른 TR 을 찾는다 (같은 레코드에 date/time/price 포함)
+② provider 가 request↔response 결속을 **문서로 보증**하는 식별자를 찾는다
+   (client 가 보낸 txn-id 를 응답이 되돌려주고, 그 결속을 공식 문서가 명시)
+③ 위 둘이 없으면 AC5 는 계속 UNPROVABLE — 이름·local date·cross-endpoint 조합 금지
+```
+🔴 이 문서는 계약 고정본이고, 구현·계약 테스트·적대검증은 별도 단계다. 현재는 ③ 상태다.
