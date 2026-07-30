@@ -12,7 +12,8 @@ selector다. 정상 전략의 `DV20 → M60 → top2` selector와 별개이며 �
 ```bash
 ENV_FILE=.env.prod uv run python -m scripts.krb1_p0_liquidity_selector \
   --as-of-session 2026-07-29 \
-  --target-session 2026-07-30
+  --target-session 2026-07-30 \
+  --decision-at 2026-07-29T18:00:00+09:00
 ```
 
 `--target-session`을 생략하면 XKRX calendar의 다음 세션을 결정적으로 사용한다.

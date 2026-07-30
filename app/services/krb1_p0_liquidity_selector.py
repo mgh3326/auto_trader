@@ -35,6 +35,7 @@ KIS_DAILY_TR_ID = "FHKST03010100"
 # gate. Wiring a real source is a separate reviewed change.
 AUTHORITATIVE_REFERENCE_EXCEPTION_SOURCES = frozenset({"krx_official_base_price"})
 AUTHORITATIVE_METADATA_SOURCES = frozenset({"toss_openapi"})
+AUTHORITATIVE_UNIVERSE_DENOMINATOR_SOURCES = frozenset({"krx_official_listed_count"})
 KST = dt.timezone(dt.timedelta(hours=9))
 KRX_DAILY_COMPLETION_CUTOFF = dt.time(15, 35)
 KRX_SESSION_OPEN = dt.time(9, 0)
@@ -413,6 +414,31 @@ def _quote_timestamp_gate(
             wrapper_fields_are_insufficient=True,
             required_capture_upper_bound_decision_at=_iso(decision_at),
         )
+    captured_valid = (
+        evidence.captured_at is not None
+        and _is_aware(evidence.captured_at)
+        and evidence.captured_at <= decision_at
+    )
+    raw_execution_dt: dt.datetime | None = None
+    if (
+        raw_date
+        and raw_time
+        and len(raw_date) == 8
+        and len(raw_time) == 6
+        and _valid_hhmmss(raw_time)
+    ):
+        try:
+            raw_execution_dt = dt.datetime.strptime(
+                raw_date + raw_time, "%Y%m%d%H%M%S"
+            ).replace(tzinfo=KST)
+        except ValueError:
+            raw_execution_dt = None
+
+    raw_dt_valid = (
+        raw_execution_dt is not None
+        and raw_execution_dt <= decision_at
+        and (evidence.captured_at is None or raw_execution_dt <= evidence.captured_at)
+    )
     raw_fields_proven = (
         evidence.symbol == symbol
         and evidence.raw_symbol == symbol
@@ -422,11 +448,10 @@ def _quote_timestamp_gate(
         and _valid_hhmmss(raw_time)
         and raw_time is not None
         and raw_time >= "153000"
+        and captured_valid
+        and raw_dt_valid
     )
-    captured_too_late = evidence.captured_at is not None and (
-        not _is_aware(evidence.captured_at) or evidence.captured_at > decision_at
-    )
-    if not raw_fields_proven or captured_too_late:
+    if not raw_fields_proven:
         return _gate(
             "unprovable",
             "selected_quote_actual_raw_timestamp_unproven",
@@ -549,6 +574,13 @@ def _metadata_authority_snapshot_gate(
             provider_effective_session=_iso(snapshot.provider_effective_session),
             **common,
         )
+    if snapshot.provider_effective_session > as_of_session:
+        return _gate(
+            "unprovable",
+            "metadata_snapshot_provider_effective_session_after_selection_session",
+            provider_effective_session=_iso(snapshot.provider_effective_session),
+            **common,
+        )
     if not _is_aware(snapshot.retrieved_at) or snapshot.retrieved_at > decision_at:
         return _gate(
             "unprovable",
@@ -655,6 +687,7 @@ def _universe_denominator_gate(
     *,
     market: str,
     as_of_session: dt.date,
+    decision_at: dt.datetime,
     actual_count: int,
     expected_count: int | None,
     external_denominators: tuple[ExternalUniverseDenominator, ...],
@@ -664,6 +697,7 @@ def _universe_denominator_gate(
     common = {
         "market": market,
         "required_as_of_session": as_of_session.isoformat(),
+        "required_clock_upper_bound_decision_at": _iso(decision_at),
         "same_transaction_count_is_not_independent_evidence": True,
     }
     if unavailable_reason:
@@ -674,6 +708,12 @@ def _universe_denominator_gate(
             source_unavailable_reason=unavailable_reason,
             **common,
         )
+    if not _is_aware(decision_at):
+        return _gate(
+            "unprovable",
+            "decision_at_must_be_timezone_aware",
+            **common,
+        )
     market_denominators = [d for d in external_denominators if d.market == market]
     if not market_denominators:
         return _gate(
@@ -682,9 +722,67 @@ def _universe_denominator_gate(
             defect="no_external_denominator_for_market_session",
             **common,
         )
+    if len(market_denominators) > 1:
+        return _gate(
+            "unprovable",
+            "universe_denominator_external_basis_unproven",
+            defect="duplicate_external_denominator_for_market",
+            **common,
+        )
     denominator = market_denominators[0]
-    if denominator.listed_count != actual_count or (
-        expected_count is not None and denominator.listed_count != expected_count
+    if denominator.source not in AUTHORITATIVE_UNIVERSE_DENOMINATOR_SOURCES:
+        return _gate(
+            "unprovable",
+            "universe_denominator_source_not_authoritative",
+            source=denominator.source,
+            authoritative_sources=sorted(AUTHORITATIVE_UNIVERSE_DENOMINATOR_SOURCES),
+            **common,
+        )
+    if denominator.session_date != as_of_session:
+        return _gate(
+            "unprovable",
+            "universe_denominator_session_mismatch",
+            session_date=_iso(denominator.session_date),
+            **common,
+        )
+    if denominator.published_at is None or not _is_aware(denominator.published_at):
+        return _gate(
+            "unprovable",
+            "universe_denominator_published_at_missing_or_naive",
+            **common,
+        )
+    if denominator.published_at > decision_at:
+        return _gate(
+            "unprovable",
+            "universe_denominator_published_after_decision_at",
+            published_at=denominator.published_at.isoformat(),
+            **common,
+        )
+    if denominator.retrieved_at is None or not _is_aware(denominator.retrieved_at):
+        return _gate(
+            "unprovable",
+            "universe_denominator_retrieved_at_missing_or_naive",
+            **common,
+        )
+    if denominator.retrieved_at > decision_at:
+        return _gate(
+            "unprovable",
+            "universe_denominator_retrieved_after_decision_at",
+            retrieved_at=denominator.retrieved_at.isoformat(),
+            **common,
+        )
+    if denominator.published_at > denominator.retrieved_at:
+        return _gate(
+            "unprovable",
+            "universe_denominator_published_after_retrieved",
+            published_at=denominator.published_at.isoformat(),
+            retrieved_at=denominator.retrieved_at.isoformat(),
+            **common,
+        )
+    if (
+        denominator.listed_count <= 0
+        or denominator.listed_count != actual_count
+        or (expected_count is not None and denominator.listed_count != expected_count)
     ):
         return _gate(
             "unprovable",
@@ -818,6 +916,7 @@ def select_krb1_p0_liquidity_candidates(
         gates["universe_snapshot_coverage"] = _universe_denominator_gate(
             market=market,
             as_of_session=selector_input.as_of_session,
+            decision_at=selector_input.decision_at,
             actual_count=actual_count,
             expected_count=expected_count,
             external_denominators=selector_input.external_universe_denominators,
@@ -993,21 +1092,15 @@ def select_krb1_p0_liquidity_candidates(
                 or evidence.effective_session != selector_input.target_session
                 or evidence.is_exception is None
                 or evidence.source not in AUTHORITATIVE_REFERENCE_EXCEPTION_SOURCES
-                or evidence.source_as_of.date() < selector_input.target_session
-                or (
-                    evidence.published_at is not None
-                    and (
-                        not _is_aware(evidence.published_at)
-                        or evidence.published_at > selector_input.decision_at
-                    )
-                )
-                or (
-                    evidence.retrieved_at is not None
-                    and (
-                        not _is_aware(evidence.retrieved_at)
-                        or evidence.retrieved_at > selector_input.decision_at
-                    )
-                )
+                or not _is_aware(evidence.source_as_of)
+                or evidence.source_as_of.date() != selector_input.target_session
+                or evidence.published_at is None
+                or not _is_aware(evidence.published_at)
+                or evidence.published_at > selector_input.decision_at
+                or evidence.retrieved_at is None
+                or not _is_aware(evidence.retrieved_at)
+                or evidence.retrieved_at > selector_input.decision_at
+                or evidence.published_at > evidence.retrieved_at
                 or _parse_nonnegative_int_string(evidence.raw_reference_price)
                 in {
                     None,
@@ -1262,6 +1355,7 @@ def select_krb1_p0_liquidity_candidates(
 
 __all__ = [
     "AUTHORITATIVE_REFERENCE_EXCEPTION_SOURCES",
+    "AUTHORITATIVE_UNIVERSE_DENOMINATOR_SOURCES",
     "CandleRow",
     "CompletedBarEvidence",
     "ExternalUniverseDenominator",

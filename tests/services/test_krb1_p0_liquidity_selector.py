@@ -923,3 +923,147 @@ def test_selector_source_has_no_float_literals_or_true_division() -> None:
 def test_tick_floor_rejects_float_negative_and_bool(bad_price: object) -> None:
     with pytest.raises(ValueError):
         tick_floor_exact(bad_price, "KOSPI")  # type: ignore[arg-type]
+
+
+def test_f03_reference_availability_clocks_absent_fails_closed() -> None:
+    selector_input = _base_input()
+    refs = tuple(
+        replace(row, published_at=None, retrieved_at=None)
+        for row in selector_input.reference_exception_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, reference_exception_evidence=refs)
+    )
+    _assert_fail_closed(result, "target_session_reference_price_exception_unproven")
+
+
+def test_f03_reference_published_after_decision_fails_closed() -> None:
+    selector_input = _base_input()
+    late_clock = dt.datetime(2026, 8, 30, 12, 0, tzinfo=KST)
+    refs = tuple(
+        replace(row, published_at=late_clock)
+        for row in selector_input.reference_exception_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, reference_exception_evidence=refs)
+    )
+    _assert_fail_closed(result, "target_session_reference_price_exception_unproven")
+
+
+def test_f03_reference_published_after_retrieved_fails_closed() -> None:
+    selector_input = _base_input()
+    refs = tuple(
+        replace(
+            row,
+            published_at=dt.datetime(2026, 7, 29, 17, 0, tzinfo=KST),
+            retrieved_at=dt.datetime(2026, 7, 29, 16, 0, tzinfo=KST),
+        )
+        for row in selector_input.reference_exception_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, reference_exception_evidence=refs)
+    )
+    _assert_fail_closed(result, "target_session_reference_price_exception_unproven")
+
+
+def test_f03_quote_capture_absent_fails_closed() -> None:
+    selector_input = _base_input()
+    quotes = tuple(
+        replace(row, captured_at=None)
+        for row in selector_input.quote_timestamp_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, quote_timestamp_evidence=quotes)
+    )
+    _assert_fail_closed(result, "selected_quote_actual_raw_timestamp_unproven")
+
+
+def test_f03_quote_raw_time_after_decision_fails_closed() -> None:
+    selector_input = _base_input()
+    quotes = tuple(
+        replace(row, raw_execution_time="235959")
+        for row in selector_input.quote_timestamp_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, quote_timestamp_evidence=quotes)
+    )
+    _assert_fail_closed(result, "selected_quote_actual_raw_timestamp_unproven")
+
+
+def test_f03_quote_raw_time_after_captured_fails_closed() -> None:
+    selector_input = _base_input()
+    quotes = tuple(
+        replace(
+            row,
+            raw_execution_time="173000",
+            captured_at=dt.datetime(2026, 7, 29, 17, 0, tzinfo=KST),
+        )
+        for row in selector_input.quote_timestamp_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, quote_timestamp_evidence=quotes)
+    )
+    _assert_fail_closed(result, "selected_quote_actual_raw_timestamp_unproven")
+
+
+def test_f03_metadata_future_effective_session_fails_closed() -> None:
+    selector_input = _base_input()
+    snapshots = tuple(
+        replace(row, provider_effective_session=dt.date(2026, 8, 30))
+        for row in selector_input.metadata_authority_snapshots
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, metadata_authority_snapshots=snapshots)
+    )
+    _assert_fail_closed(
+        result,
+        "metadata_snapshot_provider_effective_session_after_selection_session",
+    )
+
+
+def test_f04_disguised_self_transaction_denominator_fails_closed() -> None:
+    selector_input = _base_input()
+    denoms = tuple(
+        replace(row, source="same_transaction_db_count")
+        for row in selector_input.external_universe_denominators
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, external_universe_denominators=denoms)
+    )
+    _assert_fail_closed(result, "universe_denominator_source_not_authoritative")
+
+
+def test_f04_denominator_session_mismatch_fails_closed() -> None:
+    selector_input = _base_input()
+    denoms = tuple(
+        replace(row, session_date=dt.date(2026, 1, 1))
+        for row in selector_input.external_universe_denominators
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, external_universe_denominators=denoms)
+    )
+    _assert_fail_closed(result, "universe_denominator_session_mismatch")
+
+
+def test_f04_denominator_published_after_decision_fails_closed() -> None:
+    selector_input = _base_input()
+    late_clock = dt.datetime(2026, 8, 30, 12, 0, tzinfo=KST)
+    denoms = tuple(
+        replace(row, published_at=late_clock)
+        for row in selector_input.external_universe_denominators
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, external_universe_denominators=denoms)
+    )
+    _assert_fail_closed(result, "universe_denominator_published_after_decision_at")
+
+
+def test_f04_denominator_duplicate_fails_closed() -> None:
+    selector_input = _base_input()
+    denoms = selector_input.external_universe_denominators + (
+        _external_denominator("KOSPI", 2),
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, external_universe_denominators=denoms)
+    )
+    _assert_fail_closed(result, "universe_denominator_external_basis_unproven")
