@@ -1116,3 +1116,30 @@ def test_f03_metadata_published_after_retrieved_fails_closed() -> None:
         replace(selector_input, metadata_authority_snapshots=snapshots)
     )
     _assert_fail_closed(result, "metadata_snapshot_published_after_retrieved")
+
+
+def test_f03_metadata_published_at_retrieved_at_equality_is_selected() -> None:
+    selector_input = _base_input()
+    snapshots = tuple(
+        replace(row, provider_published_at=row.retrieved_at)
+        for row in selector_input.metadata_authority_snapshots
+    )
+
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, metadata_authority_snapshots=snapshots)
+    )
+
+    assert result["status"] == "selected"
+    assert [row["universe_row"]["symbol"] for row in result["selected_candidates"]] == [
+        "000001",
+        "100002",
+    ]
+
+
+def test_emitted_metadata_clock_contract_matches_enforcement() -> None:
+    result = select_krb1_p0_liquidity_candidates(_base_input())
+
+    assert result["evidence_clock_contract"]["metadata"] == (
+        "provider_published_at <= retrieved_at <= decision_at; "
+        "provider_effective_session == as_of_session"
+    )

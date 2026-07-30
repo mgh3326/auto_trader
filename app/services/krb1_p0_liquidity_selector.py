@@ -1371,7 +1371,7 @@ def select_krb1_p0_liquidity_candidates(
         },
         "evidence_clock_contract": {
             "late_backfill_is_not_proof_of_state_at_decision_at": True,
-            "metadata": "provider_published_at <= provider_effective_session <= decision_at; retrieved_at <= decision_at",
+            "metadata": "provider_published_at <= retrieved_at <= decision_at; provider_effective_session == as_of_session",
             "completion": "observed_at <= decision_at; raw_symbol from provider response",
             "reference": "published_at <= decision_at; retrieved_at <= decision_at",
             "quote": "captured_at <= decision_at; raw business_date/time from provider response",
