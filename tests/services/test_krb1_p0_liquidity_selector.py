@@ -1067,3 +1067,52 @@ def test_f04_denominator_duplicate_fails_closed() -> None:
         replace(selector_input, external_universe_denominators=denoms)
     )
     _assert_fail_closed(result, "universe_denominator_external_basis_unproven")
+
+
+def test_f03_quote_naive_capture_fails_closed() -> None:
+    selector_input = _base_input()
+    naive_capture = dt.datetime(2026, 7, 29, 15, 35)
+    quotes = tuple(
+        replace(row, captured_at=naive_capture)
+        for row in selector_input.quote_timestamp_evidence
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, quote_timestamp_evidence=quotes)
+    )
+    _assert_fail_closed(result, "selected_quote_actual_raw_timestamp_unproven")
+
+
+@pytest.mark.parametrize("order", ["valid_first", "future_first"])
+def test_f03_metadata_valid_then_future_duplicate_fails_closed(order: str) -> None:
+    selector_input = _base_input()
+    kospi_valid = selector_input.metadata_authority_snapshots[0]
+    kosdaq_valid = selector_input.metadata_authority_snapshots[1]
+    kospi_future = replace(
+        kospi_valid,
+        provider_effective_session=dt.date(2026, 8, 30),
+    )
+    if order == "valid_first":
+        snapshots = (kospi_valid, kospi_future, kosdaq_valid)
+    else:
+        snapshots = (kospi_future, kospi_valid, kosdaq_valid)
+
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, metadata_authority_snapshots=snapshots)
+    )
+    _assert_fail_closed(result, "metadata_authority_snapshot_ambiguous_duplicate")
+
+
+def test_f03_metadata_published_after_retrieved_fails_closed() -> None:
+    selector_input = _base_input()
+    snapshots = tuple(
+        replace(
+            row,
+            provider_published_at=dt.datetime(2026, 7, 29, 17, 0, tzinfo=KST),
+            retrieved_at=dt.datetime(2026, 7, 29, 16, 0, tzinfo=KST),
+        )
+        for row in selector_input.metadata_authority_snapshots
+    )
+    result = select_krb1_p0_liquidity_candidates(
+        replace(selector_input, metadata_authority_snapshots=snapshots)
+    )
+    _assert_fail_closed(result, "metadata_snapshot_published_after_retrieved")

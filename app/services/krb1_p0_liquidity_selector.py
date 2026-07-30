@@ -437,7 +437,11 @@ def _quote_timestamp_gate(
     raw_dt_valid = (
         raw_execution_dt is not None
         and raw_execution_dt <= decision_at
-        and (evidence.captured_at is None or raw_execution_dt <= evidence.captured_at)
+        and (
+            evidence.captured_at is None
+            or not _is_aware(evidence.captured_at)
+            or raw_execution_dt <= evidence.captured_at
+        )
     )
     raw_fields_proven = (
         evidence.symbol == symbol
@@ -540,6 +544,13 @@ def _metadata_authority_snapshot_gate(
             authoritative_sources=sorted(AUTHORITATIVE_METADATA_SOURCES),
             **common,
         )
+    if len(market_snapshots) > 1:
+        return _gate(
+            "unprovable",
+            "metadata_authority_snapshot_ambiguous_duplicate",
+            snapshot_count=len(market_snapshots),
+            **common,
+        )
     snapshot = market_snapshots[0]
     if snapshot.source not in AUTHORITATIVE_METADATA_SOURCES:
         return _gate(
@@ -581,10 +592,24 @@ def _metadata_authority_snapshot_gate(
             provider_effective_session=_iso(snapshot.provider_effective_session),
             **common,
         )
-    if not _is_aware(snapshot.retrieved_at) or snapshot.retrieved_at > decision_at:
+    if snapshot.retrieved_at is None or not _is_aware(snapshot.retrieved_at):
+        return _gate(
+            "unprovable",
+            "metadata_snapshot_retrieved_at_missing_or_naive",
+            **common,
+        )
+    if snapshot.retrieved_at > decision_at:
         return _gate(
             "unprovable",
             "metadata_snapshot_retrieved_after_decision_at",
+            retrieved_at=snapshot.retrieved_at.isoformat(),
+            **common,
+        )
+    if snapshot.provider_published_at > snapshot.retrieved_at:
+        return _gate(
+            "unprovable",
+            "metadata_snapshot_published_after_retrieved",
+            provider_published_at=snapshot.provider_published_at.isoformat(),
             retrieved_at=snapshot.retrieved_at.isoformat(),
             **common,
         )
@@ -822,6 +847,10 @@ def select_krb1_p0_liquidity_candidates(
     quote_index, quote_duplicates = _index_unique(
         selector_input.quote_timestamp_evidence
     )
+    metadata_index, metadata_duplicates = _index_unique(
+        selector_input.metadata_authority_snapshots,
+        symbol_getter="market",
+    )
 
     duplicate_evidence = {
         "universe": universe_duplicates,
@@ -829,6 +858,7 @@ def select_krb1_p0_liquidity_candidates(
         "reference_exception": reference_duplicates,
         "completed_bar": completed_duplicates,
         "quote_timestamp": quote_duplicates,
+        "metadata_authority": metadata_duplicates,
     }
     global_gates: dict[str, dict[str, object]] = {}
     global_gates["decision_clock"] = _decision_clock_gate(selector_input)
