@@ -3,7 +3,10 @@
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Example only. ROB-1108 does not load or register this service. -->
+  <!--
+    Documentation-only template. The repository does not load or register it.
+    Never install it with any REPLACE_WITH_* placeholder still present.
+  -->
   <key>Label</key>
   <string>com.robinco.auto-trader.r4-p0-collector</string>
   <key>ProgramArguments</key>
@@ -14,6 +17,10 @@
     <string>-m</string>
     <string>scripts.r4_p0_collector</string>
     <string>--run</string>
+    <string>--study-manifest</string>
+    <string>/REPLACE_WITH_ABSOLUTE_STUDY_MANIFEST_PATH</string>
+    <string>--study-manifest-sha256</string>
+    <string>REPLACE_WITH_EXTERNAL_64_LOWERCASE_HEX_STUDY_MANIFEST_SHA256</string>
     <string>--collector-id</string>
     <string>__UNIQUE_HOST_COLLECTOR_ID__</string>
     <string>--artifact-root</string>

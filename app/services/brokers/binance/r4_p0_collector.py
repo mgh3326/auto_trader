@@ -37,9 +37,13 @@ from app.services.brokers.binance.r4_p0_hardening import (
     EpochPolicy,
     FinalizationInvariantError,
     RawPITReader,
+    StudyManifest,
+    assert_artifact_manifest_compatible,
     availability_report,
+    bind_study_manifest,
     decision_epoch_for_event,
     finalize_at,
+    first_fully_observed_epoch,
     scheduled_epochs,
     sha256_bytes,
 )
@@ -75,7 +79,7 @@ PIT_COLUMNS: Final = (
     "gap_detected",
     "reconnect_id",
 )
-COLLECTOR_VERSION: Final = "r4-p0-collector.v4"
+COLLECTOR_VERSION: Final = "r4-p0-collector.v5"
 BASIS_RECOVERY_LIMIT: Final = 100
 # Binance's taker ratio endpoint maps requested boundaries to the preceding
 # 5-minute buckets ([S-5m, E-5m]); the other epoch-history endpoints use their
@@ -228,6 +232,8 @@ def build_ws_urls(symbols: Sequence[str] = SYMBOLS) -> dict[str, str]:
 @dataclass(frozen=True, slots=True)
 class CollectorConfig:
     artifact_root: Path
+    epoch_policy: EpochPolicy
+    study_manifest: StudyManifest
     duration_seconds: float | None = None
     oi_poll_seconds: float = 60.0
     premium_poll_seconds: float = 60.0
@@ -243,6 +249,27 @@ class CollectorConfig:
     deadline_risk_seconds: float = 60.0 * 60.0
     heartbeat_stale_seconds: float = 120.0
     minimum_healthy_replicas: int = 1
+    epoch_observation_start: dt.datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.epoch_policy != self.study_manifest.epoch_policy:
+            raise ValueError(
+                "collector policy must come from the pinned study manifest"
+            )
+        policy_symbols = tuple(sorted(set(self.symbols).intersection(SIGNAL_SYMBOLS)))
+        if self.epoch_policy.symbols != policy_symbols:
+            raise ValueError(
+                "collector signal symbols must match the pinned study manifest"
+            )
+        if self.epoch_policy.required_sources != tuple(sorted(REQUIRED_ACTIVE_SOURCES)):
+            raise ValueError(
+                "collector sources must match the sealed active source set"
+            )
+        if (
+            self.epoch_observation_start is not None
+            and self.epoch_observation_start.tzinfo is None
+        ):
+            raise ValueError("epoch_observation_start must be timezone-aware")
 
 
 class AppendOnlyPITStore:
@@ -255,11 +282,13 @@ class AppendOnlyPITStore:
         collector_version: str = COLLECTOR_VERSION,
         artifact_filename: str = "r4_p0_collector.sqlite3",
         lock_filename: str = ".collector.lock",
+        study_manifest: StudyManifest | None = None,
     ) -> None:
         self.root = root.expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / artifact_filename
         self.collector_version = collector_version
+        self.study_manifest = study_manifest
         self._lock_file = (self.root / lock_filename).open("a+")
         try:
             fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -268,9 +297,24 @@ class AppendOnlyPITStore:
             raise RuntimeError(
                 f"collector artifact is already locked: {self.root}"
             ) from exc
-        self._db = sqlite3.connect(self.path)
-        self._db.row_factory = sqlite3.Row
-        self._configure()
+        try:
+            if study_manifest is not None:
+                assert_artifact_manifest_compatible(self.path, study_manifest)
+            self._db = sqlite3.connect(self.path)
+            self._db.row_factory = sqlite3.Row
+            self._configure()
+            if study_manifest is not None:
+                bind_study_manifest(
+                    self._db,
+                    study_manifest,
+                    recorded_at=dt.datetime.now(tz=dt.UTC),
+                )
+        except BaseException:
+            database = getattr(self, "_db", None)
+            if database is not None:
+                database.close()
+            self._lock_file.close()
+            raise
 
     def _configure(self) -> None:
         self._db.execute("PRAGMA journal_mode=WAL")
@@ -536,23 +580,46 @@ class BinanceR4P0Collector:
         self._previous_sequence: dict[tuple[str, str], int] = {}
         self._seen_on_connection: set[tuple[str, str, str]] = set()
         self._last_book_snapshot: dict[str, dt.datetime] = {}
-        policy_symbols = tuple(sorted(set(config.symbols).intersection(SIGNAL_SYMBOLS)))
-        self.epoch_policy = EpochPolicy(
-            required_sources=tuple(sorted(REQUIRED_ACTIVE_SOURCES)),
-            symbols=policy_symbols,
-        )
+        if (
+            store.study_manifest is None
+            or store.study_manifest.content_sha256
+            != config.study_manifest.content_sha256
+        ):
+            raise ValueError(
+                "collector store must be bound to the configured study manifest"
+            )
+        for replica_path in config.replica_artifacts:
+            assert_artifact_manifest_compatible(
+                replica_path,
+                config.study_manifest,
+            )
+        self.study_manifest = config.study_manifest
+        self.epoch_policy = config.epoch_policy
+        self.epoch_start = self.epoch_policy.t0
+        if config.epoch_observation_start is not None:
+            self.epoch_start = max(
+                self.epoch_start,
+                first_fully_observed_epoch(config.epoch_observation_start),
+            )
         self.epoch_ledger = EpochLedger(store._db, self.epoch_policy)
         self.raw_reader = RawPITReader(
             store._db,
             store.path,
             config.replica_artifacts,
+            study_manifest=self.study_manifest,
         )
         self.epoch_finalizer = DeterministicEpochFinalizer(
-            self.epoch_ledger, self.raw_reader
+            self.epoch_ledger,
+            self.raw_reader,
+            collector_instance_id=self.config.collector_instance_id,
+            run_id=self.run_id,
         )
         self.local_raw_reader = RawPITReader(store._db, store.path, ())
         self.local_epoch_finalizer = DeterministicEpochFinalizer(
-            self.epoch_ledger, self.local_raw_reader
+            self.epoch_ledger,
+            self.local_raw_reader,
+            collector_instance_id=self.config.collector_instance_id,
+            run_id=self.run_id,
         )
         self.alert_dispatcher = AlertDispatcher(
             self.epoch_ledger, config.alert_webhook_urls
@@ -570,11 +637,17 @@ class BinanceR4P0Collector:
             started_at=started_at,
             code_hash=self.code_hash,
             collector_version=COLLECTOR_VERSION,
+            study_manifest_sha256=self.study_manifest.content_sha256,
         )
         log.info(
-            "collector.start run_id=%s code_hash=%s symbols=%s artifact=%s",
+            "collector.start run_id=%s code_hash=%s manifest_sha256=%s "
+            "study_id=%s t0=%s epoch_start=%s symbols=%s artifact=%s",
             self.run_id,
             self.code_hash,
+            self.study_manifest.content_sha256,
+            self.epoch_policy.study_id,
+            iso_utc(self.epoch_policy.t0),
+            iso_utc(self.epoch_start),
             ",".join(self.config.symbols),
             self.store.path,
         )
@@ -633,6 +706,11 @@ class BinanceR4P0Collector:
             "duplicate_counts": dict(self.duplicate_counts),
             "code_hash": self.code_hash,
             "collector_version": COLLECTOR_VERSION,
+            "study_id": self.epoch_policy.study_id,
+            "policy_hash": self.epoch_policy.policy_hash,
+            "study_manifest_sha256": self.study_manifest.content_sha256,
+            "t0": iso_utc(self.epoch_policy.t0),
+            "epoch_start": iso_utc(self.epoch_start),
         }
 
     async def _duration_timer(self) -> None:
@@ -681,6 +759,7 @@ class BinanceR4P0Collector:
                 observed_at=observed_at,
                 stale_after_seconds=self.config.heartbeat_stale_seconds,
                 expected_code_hash=self.code_hash,
+                expected_study_manifest_sha256=(self.study_manifest.content_sha256),
             )
             if (
                 availability["healthy_replica_count"]
@@ -728,7 +807,7 @@ class BinanceR4P0Collector:
         ) as client:
             while not self.stop.is_set():
                 now = utc_now()
-                for epoch in scheduled_epochs(self.epoch_policy.t0, now):
+                for epoch in scheduled_epochs(self.epoch_start, now):
                     epoch_text = iso_utc(epoch)
                     assert epoch_text is not None
                     if epoch_text not in self._opened_epochs:
@@ -744,7 +823,7 @@ class BinanceR4P0Collector:
                 retry_epoch = decision_epoch_for_event(now) - dt.timedelta(hours=4)
                 retry_deadline = finalize_at(retry_epoch)
                 if (
-                    retry_epoch >= self.epoch_policy.t0
+                    retry_epoch >= self.epoch_start
                     and retry_epoch <= now < retry_deadline
                 ):
                     due = (

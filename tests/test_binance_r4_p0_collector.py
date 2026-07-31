@@ -3,6 +3,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sqlite3
+from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -11,6 +13,9 @@ from app.services.brokers.binance import r4_p0_collector as collector_module
 from app.services.brokers.binance.r4_p0_collector import (
     BASIS_RECOVERY_LIMIT,
     PIT_COLUMNS,
+    REQUIRED_ACTIVE_SOURCES,
+    SIGNAL_SYMBOLS,
+    SYMBOLS,
     AppendOnlyPITStore,
     BasisPollError,
     BinanceR4P0Collector,
@@ -19,6 +24,73 @@ from app.services.brokers.binance.r4_p0_collector import (
     assert_ws_target,
     build_ws_urls,
 )
+from app.services.brokers.binance.r4_p0_hardening import (
+    FINAL_MISSING,
+    STUDY_MANIFEST_SCHEMA_VERSION,
+    ArtifactManifestMismatch,
+    EpochPolicy,
+    StudyManifest,
+    canonical_json,
+    finalize_at,
+    parse_study_manifest,
+    sha256_text,
+)
+
+
+def _test_manifest(
+    symbols: tuple[str, ...] = tuple(sorted(SIGNAL_SYMBOLS)),
+    *,
+    study_id: str = "TEST-R4-P0",
+    policy_hash: str = "a" * 64,
+    t0: dt.datetime = dt.datetime(2026, 7, 27, tzinfo=dt.UTC),
+) -> StudyManifest:
+    sources = tuple(sorted(REQUIRED_ACTIVE_SOURCES))
+    policy = EpochPolicy(
+        required_sources=sources,
+        symbols=tuple(sorted(symbols)),
+        study_id=study_id,
+        policy_hash=policy_hash,
+        t0=t0,
+    )
+    t0_text = t0.isoformat().replace("+00:00", "Z")
+    effective_at_text = (t0 - dt.timedelta(days=1)).isoformat().replace("+00:00", "Z")
+    payload = {
+        "schema_version": STUDY_MANIFEST_SCHEMA_VERSION,
+        "effective_at": effective_at_text,
+        "study_id": policy.study_id,
+        "contract_hash": policy.policy_hash,
+        "t0": t0_text,
+        "required_sources": list(policy.required_sources),
+        "symbols": list(policy.symbols),
+        "source_manifest_hash": policy.source_manifest_hash,
+    }
+    pin = sha256_text(canonical_json(payload))
+    return parse_study_manifest(
+        payload,
+        expected_sha256=pin,
+        expected_sources=sources,
+        expected_symbols=policy.symbols,
+    )
+
+
+def _collector_config(
+    root: Path,
+    *,
+    symbols: tuple[str, ...] = SYMBOLS,
+    **kwargs: Any,
+) -> tuple[CollectorConfig, StudyManifest]:
+    signal_symbols = tuple(sorted(set(symbols).intersection(SIGNAL_SYMBOLS)))
+    manifest = _test_manifest(signal_symbols)
+    return (
+        CollectorConfig(
+            artifact_root=root,
+            epoch_policy=manifest.epoch_policy,
+            study_manifest=manifest,
+            symbols=symbols,
+            **kwargs,
+        ),
+        manifest,
+    )
 
 
 @pytest.mark.unit
@@ -86,8 +158,8 @@ def test_store_is_append_only_deduplicated_and_auditable(tmp_path) -> None:
 
 @pytest.mark.unit
 def test_websocket_payloads_keep_exchange_and_receive_times(tmp_path) -> None:
-    config = CollectorConfig(artifact_root=tmp_path)
-    with AppendOnlyPITStore(tmp_path) as store:
+    config, manifest = _collector_config(tmp_path)
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
         collector = BinanceR4P0Collector(config, store)
         collector._handle_ws_raw(  # noqa: SLF001
             json.dumps(
@@ -119,9 +191,9 @@ def test_websocket_payloads_keep_exchange_and_receive_times(tmp_path) -> None:
 
 @pytest.mark.unit
 def test_restart_marks_first_new_connection_record_as_gap(tmp_path) -> None:
-    config = CollectorConfig(artifact_root=tmp_path)
+    config, manifest = _collector_config(tmp_path)
     received = dt.datetime(2026, 7, 26, 1, 2, 4, tzinfo=dt.UTC)
-    with AppendOnlyPITStore(tmp_path) as store:
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
         first = BinanceR4P0Collector(config, store)
         first._handle_ws_raw(  # noqa: SLF001
             json.dumps(
@@ -141,7 +213,7 @@ def test_restart_marks_first_new_connection_record_as_gap(tmp_path) -> None:
             request_completed=received,
             reconnect_id="run-1:ws:1",
         )
-    with AppendOnlyPITStore(tmp_path) as store:
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
         second = BinanceR4P0Collector(config, store)
         second._handle_ws_raw(  # noqa: SLF001
             json.dumps(
@@ -171,12 +243,182 @@ def test_restart_marks_first_new_connection_record_as_gap(tmp_path) -> None:
 
 @pytest.mark.unit
 def test_health_fails_closed_for_zero_row_required_sources(tmp_path) -> None:
-    with AppendOnlyPITStore(tmp_path) as store:
-        collector = BinanceR4P0Collector(CollectorConfig(artifact_root=tmp_path), store)
+    config, manifest = _collector_config(tmp_path)
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
+        collector = BinanceR4P0Collector(config, store)
         health = collector.health()
         assert not health["ok"]
         assert "binance_usdm.aggTrade" in health["missing_required_sources"]
         assert health["missing_sparse_sources"] == ["binance_usdm.forceOrder"]
+
+
+@pytest.mark.unit
+def test_collector_uses_injected_manifest_policy_not_defaults(tmp_path) -> None:
+    t0 = dt.datetime(2026, 7, 30, 8, tzinfo=dt.UTC)
+    manifest = _test_manifest(
+        ("XRPUSDT",),
+        study_id="TEST-INJECTED-STUDY",
+        policy_hash="b" * 64,
+        t0=t0,
+    )
+    config = CollectorConfig(
+        artifact_root=tmp_path,
+        epoch_policy=manifest.epoch_policy,
+        study_manifest=manifest,
+        symbols=("XRPUSDT",),
+    )
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
+        collector = BinanceR4P0Collector(config, store)
+        health = collector.health()
+
+    assert collector.epoch_policy == manifest.epoch_policy
+    assert collector.epoch_start == t0
+    assert health["study_id"] == "TEST-INJECTED-STUDY"
+    assert health["policy_hash"] == "b" * 64
+    assert health["study_manifest_sha256"] == manifest.content_sha256
+    assert health["t0"] == "2026-07-30T08:00:00.000000Z"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_probe_observation_bound_blocks_historical_epoch_paths(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = dt.datetime(2026, 7, 30, 13, 17, tzinfo=dt.UTC)
+    manifest = _test_manifest(("XRPUSDT",))
+    config = CollectorConfig(
+        artifact_root=tmp_path,
+        epoch_policy=manifest.epoch_policy,
+        study_manifest=manifest,
+        symbols=("XRPUSDT",),
+        epoch_observation_start=now,
+    )
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
+        collector = BinanceR4P0Collector(config, store)
+        retry_calls = 0
+
+        async def no_retry(*_args, **_kwargs) -> None:
+            nonlocal retry_calls
+            retry_calls += 1
+
+        async def stop_after_iteration(_seconds: float) -> None:
+            collector.stop.set()
+
+        monkeypatch.setattr(collector_module, "utc_now", lambda: now)
+        monkeypatch.setattr(collector, "_retry_incomplete_epoch", no_retry)
+        monkeypatch.setattr(collector_module.asyncio, "sleep", stop_after_iteration)
+
+        await collector._epoch_supervisor_body()  # noqa: SLF001
+
+        assert collector.epoch_start == dt.datetime(2026, 7, 30, 20, tzinfo=dt.UTC)
+        assert retry_calls == 0
+        assert (
+            store._db.execute(  # noqa: SLF001
+                "SELECT COUNT(*) FROM epoch_source_events"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            store._db.execute(  # noqa: SLF001
+                "SELECT COUNT(*) FROM symbol_epoch_finalizations"
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            store._db.execute(  # noqa: SLF001
+                "SELECT COUNT(*) FROM collector_alert_events"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_operational_epoch_start_preserves_missing_finalization_alert(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = dt.datetime(2026, 7, 30, 8, tzinfo=dt.UTC)
+    now = finalize_at(t0)
+    manifest = _test_manifest(("XRPUSDT",), t0=t0)
+    config = CollectorConfig(
+        artifact_root=tmp_path,
+        epoch_policy=manifest.epoch_policy,
+        study_manifest=manifest,
+        symbols=("XRPUSDT",),
+    )
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
+        collector = BinanceR4P0Collector(config, store)
+
+        async def no_retry(*_args, **_kwargs) -> None:
+            return None
+
+        async def stop_after_iteration(_seconds: float) -> None:
+            collector.stop.set()
+
+        monkeypatch.setattr(collector_module, "utc_now", lambda: now)
+        monkeypatch.setattr(collector, "_retry_incomplete_epoch", no_retry)
+        monkeypatch.setattr(collector_module.asyncio, "sleep", stop_after_iteration)
+
+        await collector._epoch_supervisor_body()  # noqa: SLF001
+        collector.stop.clear()
+        await collector._epoch_supervisor_body()  # noqa: SLF001
+
+        finalizations = list(
+            store._db.execute(  # noqa: SLF001
+                "SELECT final_status FROM symbol_epoch_finalizations"
+            )
+        )
+        alerts = list(
+            store._db.execute(  # noqa: SLF001
+                """
+                SELECT payload_json FROM collector_alert_events
+                WHERE event_type = 'ALERT_RAISED'
+                """
+            )
+        )
+
+    assert [row["final_status"] for row in finalizations] == [FINAL_MISSING]
+    assert len(alerts) == 1
+    assert json.loads(alerts[0]["payload_json"])["alert_type"] == (
+        "DATA_INTEGRITY_FAIL"
+    )
+
+
+@pytest.mark.unit
+def test_collector_rejects_mismatched_local_and_replica_manifests(
+    tmp_path,
+) -> None:
+    expected = _test_manifest(("XRPUSDT",))
+    alternate = _test_manifest(("XRPUSDT",), policy_hash="b" * 64)
+    config = CollectorConfig(
+        artifact_root=tmp_path / "local",
+        epoch_policy=expected.epoch_policy,
+        study_manifest=expected,
+        symbols=("XRPUSDT",),
+    )
+    with AppendOnlyPITStore(
+        tmp_path / "local", study_manifest=alternate
+    ) as wrong_local:
+        with pytest.raises(ValueError, match="bound"):
+            BinanceR4P0Collector(config, wrong_local)
+
+    replica_root = tmp_path / "replica"
+    with AppendOnlyPITStore(replica_root, study_manifest=alternate) as replica:
+        replica_path = replica.path
+    replica_config = CollectorConfig(
+        artifact_root=tmp_path / "expected-local",
+        epoch_policy=expected.epoch_policy,
+        study_manifest=expected,
+        symbols=("XRPUSDT",),
+        replica_artifacts=(replica_path,),
+    )
+    with AppendOnlyPITStore(
+        tmp_path / "expected-local", study_manifest=expected
+    ) as local:
+        with pytest.raises(ArtifactManifestMismatch, match="different"):
+            BinanceR4P0Collector(replica_config, local)
 
 
 @pytest.mark.unit
@@ -206,8 +448,9 @@ async def test_premium_kline_persists_only_a_completed_period(tmp_path) -> None:
         assert request.url.path == "/fapi/v1/premiumIndexKlines"
         return httpx.Response(200, json=[closed, active])
 
-    with AppendOnlyPITStore(tmp_path) as store:
-        collector = BinanceR4P0Collector(CollectorConfig(artifact_root=tmp_path), store)
+    config, manifest = _collector_config(tmp_path)
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
+        collector = BinanceR4P0Collector(config, store)
         async with httpx.AsyncClient(
             base_url="https://fapi.binance.com",
             transport=httpx.MockTransport(handler),
@@ -271,9 +514,10 @@ async def test_premium_kline_long_poll_recovers_every_completed_slot(
             json=[kline(1), kline(2), kline(3), kline(4)],
         )
 
-    with AppendOnlyPITStore(tmp_path) as store:
+    config, manifest = _collector_config(tmp_path, symbols=("XRPUSDT",))
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
         collector = BinanceR4P0Collector(
-            CollectorConfig(artifact_root=tmp_path, symbols=("XRPUSDT",)),
+            config,
             store,
         )
         async with httpx.AsyncClient(
@@ -340,9 +584,10 @@ async def test_open_interest_family_keeps_current_and_bounded_history(tmp_path) 
             ],
         )
 
-    with AppendOnlyPITStore(tmp_path) as store:
+    config, manifest = _collector_config(tmp_path, symbols=("XRPUSDT",))
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
         collector = BinanceR4P0Collector(
-            CollectorConfig(artifact_root=tmp_path, symbols=("XRPUSDT",)),
+            config,
             store,
         )
         async with httpx.AsyncClient(
@@ -388,9 +633,10 @@ async def test_basis_empty_response_is_missing_without_starving_other_symbols(
         )
 
     symbols = ("XRPUSDT", "DOGEUSDT", "SOLUSDT", "BTCUSDT")
-    with AppendOnlyPITStore(tmp_path) as store:
+    config, manifest = _collector_config(tmp_path, symbols=symbols)
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
         collector = BinanceR4P0Collector(
-            CollectorConfig(artifact_root=tmp_path, symbols=symbols),
+            config,
             store,
         )
         async with httpx.AsyncClient(
@@ -472,9 +718,10 @@ async def test_basis_replays_recent_rows_to_repair_transient_gap(tmp_path) -> No
             ],
         )
 
-    with AppendOnlyPITStore(tmp_path) as store:
+    config, manifest = _collector_config(tmp_path, symbols=("XRPUSDT",))
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
         collector = BinanceR4P0Collector(
-            CollectorConfig(artifact_root=tmp_path, symbols=("XRPUSDT",)),
+            config,
             store,
         )
         async with httpx.AsyncClient(
@@ -541,9 +788,10 @@ async def test_basis_conflicting_replay_preserves_both_payloads(tmp_path) -> Non
             ],
         )
 
-    with AppendOnlyPITStore(tmp_path) as store:
+    config, manifest = _collector_config(tmp_path, symbols=("XRPUSDT",))
+    with AppendOnlyPITStore(tmp_path, study_manifest=manifest) as store:
         collector = BinanceR4P0Collector(
-            CollectorConfig(artifact_root=tmp_path, symbols=("XRPUSDT",)),
+            config,
             store,
         )
         async with httpx.AsyncClient(

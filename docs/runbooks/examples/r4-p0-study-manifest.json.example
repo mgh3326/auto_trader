@@ -1,0 +1,25 @@
+{
+  "schema_version": "r4-p0-study-manifest.v1",
+  "effective_at": "REPLACE_WITH_APPROVED_EFFECTIVE_AT_UTC_Z",
+  "study_id": "REPLACE_WITH_APPROVED_STUDY_ID",
+  "contract_hash": "REPLACE_WITH_APPROVED_64_LOWERCASE_HEX_CONTRACT_HASH",
+  "t0": "REPLACE_WITH_APPROVED_T0_UTC_FOUR_HOUR_BOUNDARY",
+  "required_sources": [
+    "binance_usdm.aggTrade",
+    "binance_usdm.basis",
+    "binance_usdm.bookTicker",
+    "binance_usdm.depth5",
+    "binance_usdm.openInterest",
+    "binance_usdm.openInterestHist",
+    "binance_usdm.predictedFunding",
+    "binance_usdm.premiumIndex",
+    "binance_usdm.premiumIndexKline1m",
+    "binance_usdm.takerLongShortRatio"
+  ],
+  "symbols": [
+    "DOGEUSDT",
+    "SOLUSDT",
+    "XRPUSDT"
+  ],
+  "source_manifest_hash": "REPLACE_WITH_COMPUTED_64_LOWERCASE_HEX_SOURCE_MANIFEST_HASH"
+}

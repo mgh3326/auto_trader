@@ -5,7 +5,7 @@ writes the production database and is not registered with TaskIQ, cron, or
 Prefect. ROB-1108 adds epoch finalization, deadline recovery, independent
 replica awareness, and fail-fast alerting without changing feature, score,
 candidate, or stage-decision logic. DFC-4H 1.5 advances the collector to
-`r4-p0-collector.v4`.
+`r4-p0-collector.v5`.
 
 ## Hard boundary
 
@@ -60,6 +60,40 @@ contract window. A loop longer than 60 seconds therefore replays every missed
 completed slot instead of keeping only the newest row. The epoch supervisor
 remains the recovery path for a slot in the just-closed window.
 
+## Pinned study manifest
+
+Every network mode is fail-closed on one externally pinned study manifest:
+
+- Collector `--run` and `--probe` require
+  `--study-manifest /REPLACE_WITH_ABSOLUTE_STUDY_MANIFEST_PATH` and
+  `--study-manifest-sha256` with
+  `REPLACE_WITH_EXTERNAL_64_LOWERCASE_HEX_STUDY_MANIFEST_SHA256`.
+- Watchdog `--run` requires the same two arguments and the same approved
+  manifest content/pin as every collector artifact it watches.
+- `--study-manifest` must resolve from an absolute path. Relative paths are
+  rejected.
+- `--study-manifest-sha256` is a detached, externally supplied 64-character
+  lowercase SHA-256 pin over the canonical manifest JSON. It is not a field
+  copied from or trusted from inside the manifest.
+
+The committed
+[`examples/r4-p0-study-manifest.json.example`](examples/r4-p0-study-manifest.json.example)
+shows only the required shape. It is deliberately non-runnable: governance
+values such as the study ID, contract/source hashes, effective time, and `T0`
+are explicit `REPLACE_WITH_*` invalid placeholders. Do not substitute plausible
+values. An operator-approved manifest and its independently controlled pin must
+be supplied out of band.
+
+Every `REPLACE_WITH_*` token in the commands and plist templates below is also
+an invalid sentinel, not a runnable default.
+
+Each collector artifact database and the watchdog state database is bound to
+exactly one immutable manifest on first use. Reopening it with different
+manifest content or a different pin fails closed; a legacy/unbound database
+that already contains evidence also cannot be adopted. Start a fresh
+`--artifact-root` or `--state-root` for a newly approved manifest, and never mix
+collector artifacts from different manifests in one watchdog run.
+
 ## Modes
 
 With no mode flag the command prints its contract and makes no network or disk
@@ -74,6 +108,8 @@ The bounded validation mode is explicit and capped at 180 seconds:
 ```bash
 uv run python -m scripts.r4_p0_collector \
   --probe --duration 60 \
+  --study-manifest /REPLACE_WITH_ABSOLUTE_STUDY_MANIFEST_PATH \
+  --study-manifest-sha256 REPLACE_WITH_EXTERNAL_64_LOWERCASE_HEX_STUDY_MANIFEST_SHA256 \
   --artifact-root /tmp/r4-p0-validation
 ```
 
@@ -86,6 +122,8 @@ export R4_P0_ARTIFACT_ROOT="$HOME/work/herdr-artifacts/r4-p0-collector"
 export R4_P0_COLLECTOR_ID="r4-p0-host-a"
 export R4_P0_ALERT_WEBHOOK_URLS="https://alerts.example.invalid/r4"
 uv run python -m scripts.r4_p0_collector --run \
+  --study-manifest /REPLACE_WITH_ABSOLUTE_STUDY_MANIFEST_PATH \
+  --study-manifest-sha256 REPLACE_WITH_EXTERNAL_64_LOWERCASE_HEX_STUDY_MANIFEST_SHA256 \
   --replica-artifact /path/to/host-b/r4_p0_collector.sqlite3 \
   --minimum-healthy-replicas 2
 ```
@@ -99,6 +137,14 @@ manual validation. Webhook values are read from the environment, not command
 arguments, so they are not exposed in the process list.
 
 `--probe` remains a bounded single-replica validation and does not claim HA.
+It does not inherit alert webhooks: configured
+`R4_P0_ALERT_WEBHOOK_URLS` values are ignored and the probe runs with an empty
+webhook set. Probe epoch accounting starts only at the first decision epoch
+whose complete four-hour source interval begins at or after the probe's
+observation start. An in-progress interval is never presented as fully
+observed. This probe-only observation floor does not change operational
+behavior: collector `--run` remains anchored to the approved manifest `T0`,
+not to the process start time.
 
 ## Storage and restart contract
 
@@ -106,6 +152,11 @@ The artifact is `r4_p0_collector.sqlite3` in WAL mode with `synchronous=FULL`.
 All persistence uses INSERT; database triggers reject UPDATE and DELETE.
 `record_id` is a semantic unique key, so replayed websocket events and
 unchanged REST periods are ignored after restart.
+
+The collector artifact and the watchdog's `r4_p0_watchdog.sqlite3` state ledger
+each persist their one-manifest binding. That binding includes the canonical
+manifest, its detached pin, study/policy identity, source-manifest hash, and
+`T0`; it cannot be updated or deleted.
 
 ROB-1108 and DFC-4H 1.5 add eight tables to the same local artifact. Every table has
 UPDATE/DELETE rejection triggers:
@@ -119,14 +170,16 @@ UPDATE/DELETE rejection triggers:
   request identity and its hash, response SHA-256 when a response exists, and
   terminal status. Failures also retain the exception class, message, formatted
   traceback, and a bounded response-body summary.
-- `symbol_epoch_finalizations`: the one-shot three-way result and canonical
-  evaluator input/hash.
+- `symbol_epoch_finalizations`: the one-shot three-way result, canonical
+  evaluator input/hash, and immutable `(collector_instance_id, run_id)`
+  producer binding. The binding is provenance only and is excluded from the
+  evaluation hash; legacy or NULL producer bindings cannot satisfy readiness.
 - `late_only_corrections`: observations received after the deadline. These
   never rewrite a finalization.
 - `collector_heartbeats`: append-only replica liveness evidence.
 - `collector_process_versions`: one append-only startup stamp per run with the
-  exact Git commit hash, collector version, and precommitted `t0_utc` loaded by
-  that process.
+  exact Git commit hash, collector version, precommitted `t0_utc`, and pinned
+  study-manifest SHA-256 loaded by that process.
 - `collector_alert_events`: alert creation and each delivery result; failed
   delivery attempts are not overwritten.
 
@@ -169,6 +222,33 @@ process returns nonzero if any required source had neither an insert nor a
 deduplicated response. `forceOrder` is reported separately as a sparse,
 event-driven source and is not treated as failed merely because no liquidation
 occurred during a short run.
+
+The fixed seven-day readiness auditor is a separate, offline, read-only check.
+It requires exactly the two host artifacts and the same externally pinned
+manifest used by both collectors:
+
+```bash
+uv run python -m scripts.r4_p0_readiness \
+  --artifact /path/to/host-a/r4_p0_collector.sqlite3 \
+  --artifact /path/to/host-b/r4_p0_collector.sqlite3 \
+  --study-manifest /REPLACE_WITH_ABSOLUTE_STUDY_MANIFEST_PATH \
+  --study-manifest-sha256 REPLACE_WITH_EXTERNAL_64_LOWERCASE_HEX_STUDY_MANIFEST_SHA256 \
+  --expected-code-hash REPLACE_WITH_DEPLOYED_40_OR_64_LOWERCASE_HEX_GIT_HASH
+```
+
+The auditor opens both SQLite files with SQLite immutable read-only access; it
+performs no network, broker, ledger, watchdog-state, or operational-database
+write. A live/uncheckpointed WAL is treated conservatively as unreadable. Its fixed
+contract is 7 days, 42 four-hour decision epochs, 126 symbol-epochs per host,
+and 1,260 source cells per host. Every host must independently witness every
+one of its 126 symbol-epochs as `FINAL_COMPLETE` with matching evaluation
+identity/hash and complete source evidence. A union of host A and host B rows
+does not satisfy an individual-host gate. Each 5-minute periodic source must
+show 48/48 slots per symbol-epoch; `premiumIndexKline1m` must show 240/240
+completed rows. The report also fails on any promoted late correction,
+missing/conflict finalization, heartbeat continuity gap, process/code/version/
+manifest/topology drift, or readiness-failing alert. Proceed only with JSON
+`ok: true` and zero missing, conflict, late-promotion, and integrity issues.
 
 ## Deterministic epoch finalizer
 
@@ -242,6 +322,13 @@ share a writable SQLite file. Each process reads the other artifact through a
 read-only replicated/mounted path; deterministic source-identity merge removes
 byte-identical duplicates and exposes conflicting payloads.
 
+Finalization evidence is host-specific. The watchdog records a witness for each
+artifact, including its current collector instance/run and the symbols finalized
+by that artifact. It pages on any missing individual witness or duplicate
+collector topology even when the union of both artifacts appears complete.
+For one raw source identity, byte-identical replicas deduplicate; different
+canonical payload hashes are `FINAL_CONFLICT` and remain fail-closed.
+
 A third process on an independent host watches both heartbeat/finalization
 ledgers. It pages when fewer than two replicas are fresh or when a due epoch
 has no matching finalization within the configured grace:
@@ -250,18 +337,26 @@ has no matching finalization within the configured grace:
 export R4_P0_WATCHDOG_ENABLED=true
 export R4_P0_ALERT_WEBHOOK_URLS="https://alerts.example.invalid/r4"
 uv run python -m scripts.r4_p0_watchdog --run \
+  --study-manifest /REPLACE_WITH_ABSOLUTE_STUDY_MANIFEST_PATH \
+  --study-manifest-sha256 REPLACE_WITH_EXTERNAL_64_LOWERCASE_HEX_STUDY_MANIFEST_SHA256 \
   --artifact /path/to/host-a/r4_p0_collector.sqlite3 \
   --artifact /path/to/host-b/r4_p0_collector.sqlite3 \
   --minimum-healthy-replicas 2
 ```
 
+Before entering its loop, the watchdog verifies that both collector artifacts
+and its own state database are bound to the supplied manifest. Any mismatch
+fails closed.
+
 At collector startup, `git rev-parse HEAD` is resolved from the loaded source
-tree and written to `collector_process_versions` before collection tasks start.
-The watchdog resolves its own deployed HEAD and compares it with the stamp tied
-to each current heartbeat `run_id`. Missing stamps and hash mismatches are
-`COLLECTOR_VERSION_MISMATCH`, remove that replica from the healthy count, and
-fail the rehearsal version gate. A checkout without resolvable Git metadata
-fails closed rather than starting an unstamped collector.
+tree and written to `collector_process_versions` with the loaded
+study-manifest SHA-256 before collection tasks start. The watchdog compares both
+its deployed HEAD and the supplied manifest SHA-256 with the stamp tied to each
+current heartbeat `run_id`. A missing stamp, code-hash mismatch, missing
+manifest stamp, or manifest-SHA mismatch makes that replica non-healthy, emits
+`COLLECTOR_PROVENANCE_MISMATCH`, and fails the rehearsal provenance gate. A
+checkout without resolvable Git metadata fails closed rather than starting an
+unstamped collector.
 
 ## Precommitted T0 procedure
 
@@ -280,7 +375,9 @@ verification that was just performed. The operator sequence is fixed:
    ```bash
    uv run python -m scripts.r4_p0_watchdog --t0-preflight \
      --artifact /path/to/host-a/r4_p0_collector.sqlite3 \
-     --artifact /path/to/host-b/r4_p0_collector.sqlite3
+     --artifact /path/to/host-b/r4_p0_collector.sqlite3 \
+     --study-manifest /REPLACE_WITH_ABSOLUTE_STUDY_MANIFEST_PATH \
+     --study-manifest-sha256 REPLACE_WITH_EXTERNAL_64_LOWERCASE_HEX_STUDY_MANIFEST_SHA256
    ```
 
 4. Proceed only when the JSON reports `ok: true`: verification time
@@ -292,9 +389,11 @@ verification that was just performed. The operator sequence is fixed:
    `DEFAULT_POLICY_HASH`, restart both hosts from that commit with fresh
    artifact roots, and repeat the verification.
 
-`--t0-preflight` does not require `R4_P0_WATCHDOG_ENABLED`; it opens collector
-artifacts with SQLite `mode=ro`, performs one check, creates no watchdog state,
-does no network I/O, and exits nonzero when a gate is closed.
+`--t0-preflight` requires the same pinned manifest pair but does not require
+`R4_P0_WATCHDOG_ENABLED`; it opens collector artifacts with SQLite `mode=ro`,
+performs one check, creates no watchdog state, does no network I/O, and exits
+nonzero when a gate is closed. The manifest hash gate is in addition to the
+existing V/T0, code-hash, healthy-replica, and stamped-T0 gates.
 
 Collector startup applies two hard gates before collection tasks or network
 clients start; the four-gate preflight above remains a required operator check
@@ -321,17 +420,19 @@ epoch deadline risk (last hour) -> append-only alert ledger -> CRITICAL/WARNING 
                                                      \-> HTTPS webhook(s)
 final MISSING/CONFLICT --------> DATA_INTEGRITY_FAIL through the same path
 stale replica/finalizer --------> independent watchdog through the same path
-missing/mismatched code stamp --> COLLECTOR_VERSION_MISMATCH through the same path
+code/manifest stamp mismatch ---> COLLECTOR_PROVENANCE_MISMATCH through the same path
 ```
 
 Logging is formatted in real UTC before adding the `Z` suffix. Webhook delivery
 success/failure is appended separately, so an outage cannot erase its own
 alert history.
 
-No scheduler or service registration is part of this change. After manual
-fault injection, operators may install the example `KeepAlive` launchd
-templates in `ops/native/plists/examples/`; merely committing those templates
-does not load or deploy them.
+No scheduler or service registration is part of this change. The example
+`KeepAlive` plists in `ops/native/plists/examples/` are documentation-only,
+unrendered templates; the repository does not load or deploy them. This
+runbook intentionally provides no `launchctl`, TaskIQ, cron, or Prefect
+registration step. Rendering or installation requires a separate, explicit
+operator-approved change.
 
 ## Manual pre-arm verification
 
@@ -344,15 +445,26 @@ uv run pytest \
 
 uv run python -m scripts.r4_p0_collector \
   --probe --duration 60 \
+  --study-manifest /REPLACE_WITH_ABSOLUTE_STUDY_MANIFEST_PATH \
+  --study-manifest-sha256 REPLACE_WITH_EXTERNAL_64_LOWERCASE_HEX_STUDY_MANIFEST_SHA256 \
   --artifact-root /tmp/r4-p0-host-a
 
 uv run python -m scripts.r4_p0_watchdog \
   --artifact /tmp/r4-p0-host-a/r4_p0_collector.sqlite3 \
-  --artifact /tmp/r4-p0-host-b/r4_p0_collector.sqlite3
+  --artifact /tmp/r4-p0-host-b/r4_p0_collector.sqlite3 \
+  --study-manifest /REPLACE_WITH_ABSOLUTE_STUDY_MANIFEST_PATH \
+  --study-manifest-sha256 REPLACE_WITH_EXTERNAL_64_LOWERCASE_HEX_STUDY_MANIFEST_SHA256
 ```
 
-Before T_WEEK0, the operator-owned one-week rehearsal must use the same source
-manifest, two-host topology, finalizer, and alert route. Acceptance is 100%
+Run the readiness auditor after the rehearsal window closes and before any
+operator decision packet is considered complete. It is an evidence check, not
+the rehearsal itself; it does not create a study ID, choose T0, start a
+collector, or rescue/backfill a past artifact.
+
+Before T_WEEK0, the operator-owned one-week rehearsal must use the same
+externally pinned study manifest, two-host topology, finalizer, and alert route.
+Acceptance is 100%
 `FINAL_COMPLETE`, zero `FINAL_MISSING`, zero `FINAL_CONFLICT`, zero stalled
-finalizers, a matching process-version stamp on both current collector run IDs,
-and demonstrated page delivery under injected process/host loss.
+finalizers, matching code-hash and manifest-SHA process-version stamps on both
+current collector run IDs, and demonstrated page delivery under injected
+process/host loss.
