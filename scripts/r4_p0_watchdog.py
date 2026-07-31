@@ -14,8 +14,8 @@ import logging
 import os
 import signal
 import time
-from collections.abc import Sequence
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -139,18 +139,27 @@ def t0_preflight_report(
     verified_at: dt.datetime,
     expected_code_hash: str,
     stale_after_seconds: float,
+    study_manifest: StudyManifest | None = None,
 ) -> dict[str, Any]:
     """Read collector artifacts once, without creating any local state."""
 
     paths = tuple(
         sorted({path.expanduser().resolve() for path in artifact_paths}, key=str)
     )
+    if study_manifest is not None:
+        if study_manifest.epoch_policy != policy:
+            raise ValueError("T0 preflight policy must come from the pinned manifest")
+        for path in paths:
+            assert_artifact_manifest_compatible(path, study_manifest)
     availability = availability_report(
         paths,
         policy,
         observed_at=verified_at,
         stale_after_seconds=stale_after_seconds,
         expected_code_hash=expected_code_hash,
+        expected_study_manifest_sha256=(
+            study_manifest.content_sha256 if study_manifest is not None else None
+        ),
     )
     availability_by_path = {
         replica["artifact"]: replica for replica in availability["replicas"]
@@ -174,6 +183,11 @@ def t0_preflight_report(
                     else None
                 ),
                 "code_hash": version["code_hash"] if version is not None else None,
+                "study_manifest_sha256": (
+                    version.get("study_manifest_sha256")
+                    if version is not None
+                    else None
+                ),
                 "stamped_t0_utc": (
                     version.get("t0_utc") if version is not None else None
                 ),
@@ -194,12 +208,27 @@ def t0_preflight_report(
         "stamped_t0_matches_all": len(replicas) >= 2
         and all(replica["stamped_t0_utc"] == configured_t0 for replica in replicas),
     }
+    if study_manifest is not None:
+        gates["manifest_hash_match_all"] = len(replicas) >= 2 and all(
+            replica["study_manifest_sha256"] == study_manifest.content_sha256
+            for replica in replicas
+        )
     ok = all(gates.values())
     return {
         "t0_utc": configured_t0,
         "t0_minus_4h": iso_utc(t0_minus_4h),
         "verified_at": iso_utc(verified_at),
         "expected_code_hash": expected_code_hash,
+        "study_manifest": (
+            None
+            if study_manifest is None
+            else {
+                "content_sha256": study_manifest.content_sha256,
+                "policy_hash": study_manifest.contract_hash,
+                "study_id": study_manifest.study_id,
+                "t0": iso_utc(study_manifest.t0),
+            }
+        ),
         "replicas": replicas,
         "gates": gates,
         "ok": ok,
@@ -213,6 +242,105 @@ def t0_preflight_report(
             if ok
             else "기존 T0 를 소급 변경하지 말고 새 커밋과 새 T0 를 사전 고정하라"
         ),
+    }
+
+
+async def _watch_once(
+    *,
+    artifact_paths: Sequence[Path],
+    policy: EpochPolicy,
+    manifest: StudyManifest,
+    expected_code_hash: str,
+    stale_after_seconds: float,
+    finalizer_grace_seconds: float,
+    minimum_healthy_replicas: int,
+    dispatcher: AlertDispatcher,
+    now: dt.datetime,
+) -> dict[str, Any]:
+    """Run one production watchdog detection cycle and return its evidence."""
+
+    availability = availability_report(
+        artifact_paths,
+        policy,
+        observed_at=now,
+        stale_after_seconds=stale_after_seconds,
+        expected_code_hash=expected_code_hash,
+        expected_study_manifest_sha256=manifest.content_sha256,
+    )
+    emitted_alert_types: list[str] = []
+    if not availability["version_stamp_match"]:
+        await dispatcher.emit(
+            alert_key=(
+                "COLLECTOR_PROVENANCE_MISMATCH:"
+                f"{policy.study_id}:{policy.policy_hash}:"
+                f"{int(now.timestamp()) // 900}"
+            ),
+            severity="CRITICAL",
+            payload={
+                "alert_type": "COLLECTOR_PROVENANCE_MISMATCH",
+                **availability,
+            },
+            now=now,
+        )
+        emitted_alert_types.append("COLLECTOR_PROVENANCE_MISMATCH")
+    if availability["healthy_replica_count"] < minimum_healthy_replicas:
+        await dispatcher.emit(
+            alert_key=(
+                "COLLECTOR_REDUNDANCY_LOST:"
+                f"{policy.study_id}:{policy.policy_hash}:"
+                f"{int(now.timestamp()) // 900}"
+            ),
+            severity="CRITICAL",
+            payload={
+                "alert_type": "COLLECTOR_REDUNDANCY_LOST",
+                "minimum_healthy_replicas": minimum_healthy_replicas,
+                **availability,
+            },
+            now=now,
+        )
+        emitted_alert_types.append("COLLECTOR_REDUNDANCY_LOST")
+
+    finalization: dict[str, Any] | None = None
+    latest_due = floor_epoch(now) - dt.timedelta(hours=4)
+    due_at = latest_due + dt.timedelta(
+        hours=4,
+        seconds=finalizer_grace_seconds,
+    )
+    if latest_due >= policy.t0 and now >= due_at:
+        finalization = finalization_report(
+            artifact_paths,
+            policy,
+            decision_epoch=latest_due,
+            study_manifest=manifest,
+        )
+        if (
+            finalization["missing_symbols"]
+            or finalization["divergent_symbols"]
+            or finalization["non_complete_symbols"]
+            or not finalization["all_replicas_witnessed"]
+            or not finalization["topology_ok"]
+        ):
+            await dispatcher.emit(
+                alert_key=(
+                    "FINALIZER_STALLED:"
+                    f"{policy.study_id}:{policy.policy_hash}:"
+                    f"{finalization['decision_epoch_utc']}"
+                ),
+                severity="CRITICAL",
+                payload={
+                    "alert_type": "FINALIZER_STALLED",
+                    "finalizer_grace_seconds": finalizer_grace_seconds,
+                    "policy_hash": policy.policy_hash,
+                    "study_id": policy.study_id,
+                    **finalization,
+                },
+                now=now,
+            )
+            emitted_alert_types.append("FINALIZER_STALLED")
+    return {
+        "availability": availability,
+        "emitted_alert_types": emitted_alert_types,
+        "finalization": finalization,
     }
 
 
@@ -244,73 +372,17 @@ async def _watch(args: argparse.Namespace, manifest: StudyManifest) -> int:
         )
         dispatcher = AlertDispatcher(ledger, _alert_webhook_urls())
         while not stop.is_set():
-            now = utc_now()
-            availability = availability_report(
-                artifact_paths,
-                policy,
-                observed_at=now,
-                stale_after_seconds=args.stale_after_seconds,
+            await _watch_once(
+                artifact_paths=artifact_paths,
+                policy=policy,
+                manifest=manifest,
                 expected_code_hash=expected_code_hash,
-                expected_study_manifest_sha256=manifest.content_sha256,
+                stale_after_seconds=args.stale_after_seconds,
+                finalizer_grace_seconds=args.finalizer_grace_seconds,
+                minimum_healthy_replicas=args.minimum_healthy_replicas,
+                dispatcher=dispatcher,
+                now=utc_now(),
             )
-            if not availability["version_stamp_match"]:
-                await dispatcher.emit(
-                    alert_key=(
-                        "COLLECTOR_PROVENANCE_MISMATCH:"
-                        f"{policy.study_id}:{policy.policy_hash}:"
-                        f"{int(now.timestamp()) // 900}"
-                    ),
-                    severity="CRITICAL",
-                    payload={
-                        "alert_type": "COLLECTOR_PROVENANCE_MISMATCH",
-                        **availability,
-                    },
-                    now=now,
-                )
-            if availability["healthy_replica_count"] < args.minimum_healthy_replicas:
-                await dispatcher.emit(
-                    alert_key=(
-                        "COLLECTOR_REDUNDANCY_LOST:"
-                        f"{policy.study_id}:{policy.policy_hash}:"
-                        f"{int(now.timestamp()) // 900}"
-                    ),
-                    severity="CRITICAL",
-                    payload={
-                        "alert_type": "COLLECTOR_REDUNDANCY_LOST",
-                        "minimum_healthy_replicas": (args.minimum_healthy_replicas),
-                        **availability,
-                    },
-                    now=now,
-                )
-
-            latest_due = floor_epoch(now) - dt.timedelta(hours=4)
-            due_at = latest_due + dt.timedelta(
-                hours=4,
-                seconds=args.finalizer_grace_seconds,
-            )
-            if latest_due >= policy.t0 and now >= due_at:
-                report = finalization_report(
-                    artifact_paths,
-                    policy,
-                    decision_epoch=latest_due,
-                )
-                if report["missing_symbols"] or report["divergent_symbols"]:
-                    await dispatcher.emit(
-                        alert_key=(
-                            "FINALIZER_STALLED:"
-                            f"{policy.study_id}:{policy.policy_hash}:"
-                            f"{report['decision_epoch_utc']}"
-                        ),
-                        severity="CRITICAL",
-                        payload={
-                            "alert_type": "FINALIZER_STALLED",
-                            "finalizer_grace_seconds": (args.finalizer_grace_seconds),
-                            "policy_hash": policy.policy_hash,
-                            "study_id": policy.study_id,
-                            **report,
-                        },
-                        now=now,
-                    )
             try:
                 await asyncio.wait_for(stop.wait(), timeout=args.interval_seconds)
             except TimeoutError:
@@ -320,7 +392,7 @@ async def _watch(args: argparse.Namespace, manifest: StudyManifest) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    manifest = _load_manifest(args, required=args.run)
+    manifest = _load_manifest(args, required=args.run or args.t0_preflight)
     formatter = logging.Formatter(fmt="%(asctime)sZ %(levelname)s %(message)s")
     formatter.converter = time.gmtime
     handler = logging.StreamHandler()
@@ -337,10 +409,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise SystemExit("--stale-after-seconds must be positive")
         report = t0_preflight_report(
             tuple(Path(path) for path in artifacts),
-            _policy(),
+            manifest.epoch_policy,
             verified_at=utc_now(),
             expected_code_hash=runtime_code_hash(),
             stale_after_seconds=args.stale_after_seconds,
+            study_manifest=manifest,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["ok"] else 1

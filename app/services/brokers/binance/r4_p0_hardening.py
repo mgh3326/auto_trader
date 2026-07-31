@@ -2041,35 +2041,80 @@ def finalization_report(
     policy: EpochPolicy,
     *,
     decision_epoch: dt.datetime,
+    study_manifest: StudyManifest | None = None,
 ) -> dict[str, Any]:
     """Read finalization rows from replicas without mutating any collector DB."""
 
+    if study_manifest is not None and study_manifest.epoch_policy != policy:
+        raise ValueError("finalization policy must come from the pinned manifest")
     rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     unavailable_artifacts: list[str] = []
+    replica_witnesses: list[dict[str, Any]] = []
     for path in sorted(
         {item.expanduser().resolve() for item in artifact_paths}, key=str
     ):
+        witness: dict[str, Any] = {
+            "artifact": str(path),
+            "collector_instance_id": None,
+            "run_id": None,
+            "status": "UNAVAILABLE",
+            "witnessed_symbols": [],
+            "missing_symbols": list(policy.symbols),
+            "finalizations": [],
+        }
         if not path.is_file():
             unavailable_artifacts.append(str(path))
+            replica_witnesses.append(witness)
             continue
         uri = f"file:{urllib.parse.quote(str(path))}?mode=ro"
         try:
             with sqlite3.connect(uri, uri=True) as connection:
                 connection.row_factory = sqlite3.Row
+                if study_manifest is not None:
+                    assert_connection_manifest_compatible(connection, study_manifest)
                 rows = connection.execute(
                     """
                     SELECT symbol, final_status, evaluation_hash, recorded_at
                     FROM symbol_epoch_finalizations
                     WHERE study_id = ? AND policy_hash = ?
+                      AND source_manifest_hash = ?
                       AND decision_epoch_utc = ?
                     """,
                     (
                         policy.study_id,
                         policy.policy_hash,
+                        policy.source_manifest_hash,
                         iso_utc(decision_epoch),
                     ),
                 )
-                for row in rows:
+                artifact_rows = [dict(row) for row in rows]
+                witnessed_symbols = sorted({row["symbol"] for row in artifact_rows})
+                witness["finalizations"] = sorted(
+                    artifact_rows,
+                    key=lambda item: (item["symbol"], item["evaluation_hash"]),
+                )
+                witness["witnessed_symbols"] = witnessed_symbols
+                witness["missing_symbols"] = sorted(
+                    set(policy.symbols) - set(witnessed_symbols)
+                )
+                witness["status"] = (
+                    "COMPLETE" if not witness["missing_symbols"] else "PARTIAL"
+                )
+                heartbeat = connection.execute(
+                    """
+                    SELECT collector_instance_id, run_id
+                    FROM collector_heartbeats
+                    WHERE study_id = ? AND policy_hash = ?
+                    ORDER BY append_id DESC LIMIT 1
+                    """,
+                    (policy.study_id, policy.policy_hash),
+                ).fetchone()
+                if heartbeat is not None:
+                    witness["collector_instance_id"] = heartbeat[
+                        "collector_instance_id"
+                    ]
+                    witness["run_id"] = heartbeat["run_id"]
+                for row in artifact_rows:
                     key = (row["symbol"], row["evaluation_hash"])
                     rows_by_key[key] = {
                         "evaluation_hash": row["evaluation_hash"],
@@ -2077,8 +2122,12 @@ def finalization_report(
                         "recorded_at": row["recorded_at"],
                         "symbol": row["symbol"],
                     }
-        except sqlite3.Error:
+        except (ArtifactManifestMismatch, sqlite3.Error) as exc:
             unavailable_artifacts.append(str(path))
+            witness["status"] = "READ_ERROR"
+            witness["error_type"] = type(exc).__name__
+            witness["error_message"] = str(exc)
+        replica_witnesses.append(witness)
     rows = sorted(
         rows_by_key.values(),
         key=lambda item: (
@@ -2092,10 +2141,38 @@ def finalization_report(
         for symbol in policy.symbols
         if len({row["evaluation_hash"] for row in rows if row["symbol"] == symbol}) > 1
     )
+    non_complete_symbols = sorted(
+        {row["symbol"] for row in rows if row["final_status"] != FINAL_COMPLETE}
+    )
+    witnessed_replica_count = sum(
+        witness["status"] == "COMPLETE" for witness in replica_witnesses
+    )
+    collector_instance_ids = sorted(
+        {
+            witness["collector_instance_id"]
+            for witness in replica_witnesses
+            if witness["collector_instance_id"]
+        }
+    )
+    topology_ok = (
+        len(replica_witnesses) >= 2
+        and len(collector_instance_ids) == len(replica_witnesses)
+        and all(witness["collector_instance_id"] for witness in replica_witnesses)
+    )
     return {
         "decision_epoch_utc": iso_utc(decision_epoch),
+        "all_replicas_witnessed": (
+            len(replica_witnesses) >= 2
+            and witnessed_replica_count == len(replica_witnesses)
+        ),
+        "distinct_collector_instance_ids": collector_instance_ids,
         "divergent_symbols": divergent_symbols,
         "finalizations": rows,
         "missing_symbols": sorted(set(policy.symbols) - symbols_present),
+        "non_complete_symbols": non_complete_symbols,
+        "replica_witnesses": replica_witnesses,
+        "topology_ok": topology_ok,
         "unavailable_artifacts": unavailable_artifacts,
+        "unwitnessed_replica_count": len(replica_witnesses) - witnessed_replica_count,
+        "witnessed_replica_count": witnessed_replica_count,
     }

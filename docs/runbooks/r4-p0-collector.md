@@ -221,6 +221,32 @@ deduplicated response. `forceOrder` is reported separately as a sparse,
 event-driven source and is not treated as failed merely because no liquidation
 occurred during a short run.
 
+The fixed seven-day readiness auditor is a separate, offline, read-only check.
+It requires exactly the two host artifacts and the same externally pinned
+manifest used by both collectors:
+
+```bash
+uv run python -m scripts.r4_p0_readiness \
+  --artifact /path/to/host-a/r4_p0_collector.sqlite3 \
+  --artifact /path/to/host-b/r4_p0_collector.sqlite3 \
+  --study-manifest /REPLACE_WITH_ABSOLUTE_STUDY_MANIFEST_PATH \
+  --study-manifest-sha256 REPLACE_WITH_EXTERNAL_64_LOWERCASE_HEX_STUDY_MANIFEST_SHA256 \
+  --expected-code-hash REPLACE_WITH_DEPLOYED_40_OR_64_LOWERCASE_HEX_GIT_HASH
+```
+
+The auditor opens both SQLite files with `mode=ro`; it performs no network,
+broker, ledger, watchdog-state, or operational-database write. Its fixed
+contract is 7 days, 42 four-hour decision epochs, 126 symbol-epochs per host,
+and 1,260 source cells per host. Every host must independently witness every
+one of its 126 symbol-epochs as `FINAL_COMPLETE` with matching evaluation
+identity/hash and complete source evidence. A union of host A and host B rows
+does not satisfy an individual-host gate. Each 5-minute periodic source must
+show 48/48 slots per symbol-epoch; `premiumIndexKline1m` must show 240/240
+completed rows. The report also fails on any promoted late correction,
+missing/conflict finalization, heartbeat continuity gap, process/code/version/
+manifest/topology drift, or readiness-failing alert. Proceed only with JSON
+`ok: true` and zero missing, conflict, late-promotion, and integrity issues.
+
 ## Deterministic epoch finalizer
 
 Decision epochs are the six UTC four-hour boundaries. For decision epoch `e`,
@@ -293,6 +319,13 @@ share a writable SQLite file. Each process reads the other artifact through a
 read-only replicated/mounted path; deterministic source-identity merge removes
 byte-identical duplicates and exposes conflicting payloads.
 
+Finalization evidence is host-specific. The watchdog records a witness for each
+artifact, including its current collector instance/run and the symbols finalized
+by that artifact. It pages on any missing individual witness or duplicate
+collector topology even when the union of both artifacts appears complete.
+For one raw source identity, byte-identical replicas deduplicate; different
+canonical payload hashes are `FINAL_CONFLICT` and remain fail-closed.
+
 A third process on an independent host watches both heartbeat/finalization
 ledgers. It pages when fewer than two replicas are fresh or when a due epoch
 has no matching finalization within the configured grace:
@@ -339,7 +372,9 @@ verification that was just performed. The operator sequence is fixed:
    ```bash
    uv run python -m scripts.r4_p0_watchdog --t0-preflight \
      --artifact /path/to/host-a/r4_p0_collector.sqlite3 \
-     --artifact /path/to/host-b/r4_p0_collector.sqlite3
+     --artifact /path/to/host-b/r4_p0_collector.sqlite3 \
+     --study-manifest /REPLACE_WITH_ABSOLUTE_STUDY_MANIFEST_PATH \
+     --study-manifest-sha256 REPLACE_WITH_EXTERNAL_64_LOWERCASE_HEX_STUDY_MANIFEST_SHA256
    ```
 
 4. Proceed only when the JSON reports `ok: true`: verification time
@@ -351,9 +386,11 @@ verification that was just performed. The operator sequence is fixed:
    `DEFAULT_POLICY_HASH`, restart both hosts from that commit with fresh
    artifact roots, and repeat the verification.
 
-`--t0-preflight` does not require `R4_P0_WATCHDOG_ENABLED`; it opens collector
-artifacts with SQLite `mode=ro`, performs one check, creates no watchdog state,
-does no network I/O, and exits nonzero when a gate is closed.
+`--t0-preflight` requires the same pinned manifest pair but does not require
+`R4_P0_WATCHDOG_ENABLED`; it opens collector artifacts with SQLite `mode=ro`,
+performs one check, creates no watchdog state, does no network I/O, and exits
+nonzero when a gate is closed. The manifest hash gate is in addition to the
+existing V/T0, code-hash, healthy-replica, and stamped-T0 gates.
 
 Collector startup applies two hard gates before collection tasks or network
 clients start; the four-gate preflight above remains a required operator check
@@ -411,8 +448,15 @@ uv run python -m scripts.r4_p0_collector \
 
 uv run python -m scripts.r4_p0_watchdog \
   --artifact /tmp/r4-p0-host-a/r4_p0_collector.sqlite3 \
-  --artifact /tmp/r4-p0-host-b/r4_p0_collector.sqlite3
+  --artifact /tmp/r4-p0-host-b/r4_p0_collector.sqlite3 \
+  --study-manifest /REPLACE_WITH_ABSOLUTE_STUDY_MANIFEST_PATH \
+  --study-manifest-sha256 REPLACE_WITH_EXTERNAL_64_LOWERCASE_HEX_STUDY_MANIFEST_SHA256
 ```
+
+Run the readiness auditor after the rehearsal window closes and before any
+operator decision packet is considered complete. It is an evidence check, not
+the rehearsal itself; it does not create a study ID, choose T0, start a
+collector, or rescue/backfill a past artifact.
 
 Before T_WEEK0, the operator-owned one-week rehearsal must use the same
 externally pinned study manifest, two-host topology, finalizer, and alert route.
