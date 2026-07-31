@@ -398,6 +398,17 @@ def _audit_replica(
         for symbol in manifest.symbols
     }
     try:
+        wal_path = path.with_name(f"{path.name}-wal")
+        try:
+            wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+        except OSError as exc:
+            raise ArtifactSchemaMismatch(
+                f"cannot inspect SQLite WAL sidecar: {wal_path}"
+            ) from exc
+        if wal_size:
+            raise ArtifactSchemaMismatch(
+                f"non-empty SQLite WAL sidecar requires a stable checkpoint: {wal_path}"
+            )
         with sqlite3.connect(_read_only_uri(path), uri=True) as connection:
             connection.row_factory = sqlite3.Row
             assert_connection_manifest_compatible(connection, manifest)

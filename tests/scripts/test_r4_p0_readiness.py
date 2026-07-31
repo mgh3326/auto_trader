@@ -445,6 +445,29 @@ def test_readiness_auditor_passes_fixed_contract_and_is_read_only(
 
 
 @pytest.mark.unit
+def test_readiness_rejects_nonempty_wal_without_mutating_sidecar(tmp_path) -> None:
+    manifest = _manifest()
+    paths = [
+        _write_rehearsal(tmp_path / "host-a", manifest, collector_instance_id="host-a"),
+        _write_rehearsal(tmp_path / "host-b", manifest, collector_instance_id="host-b"),
+    ]
+    wal_path = paths[0].with_name(f"{paths[0].name}-wal")
+    wal_path.write_bytes(b"uncheckpointed-test-wal")
+    before = _file_fingerprint(wal_path)
+
+    report = audit_readiness(
+        paths,
+        manifest,
+        expected_code_hash=EXPECTED_CODE_HASH,
+        observed_at=manifest.t0 + dt.timedelta(days=7),
+    )
+
+    assert report["ok"] is False
+    assert any("ArtifactSchemaMismatch" in issue for issue in report["issues"])
+    assert _file_fingerprint(wal_path) == before
+
+
+@pytest.mark.unit
 def test_readiness_api_and_cli_reject_before_t0_and_final_deadline(
     tmp_path,
     capsys: pytest.CaptureFixture[str],
