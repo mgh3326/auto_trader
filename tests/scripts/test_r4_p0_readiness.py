@@ -66,7 +66,13 @@ def _manifest() -> StudyManifest:
     )
 
 
-def _evaluation(manifest, symbol: str, epoch: dt.datetime) -> tuple[str, str]:
+def _evaluation(
+    manifest,
+    symbol: str,
+    epoch: dt.datetime,
+    *,
+    evaluation_variant: str = "c",
+) -> tuple[str, str]:
     evidence = {}
     for source in manifest.required_sources:
         if source in SOURCE_CADENCE_SECONDS:
@@ -81,10 +87,14 @@ def _evaluation(manifest, symbol: str, epoch: dt.datetime) -> tuple[str, str]:
             "expected_observation_count": expected,
             "invalid_source_identity_payload_hashes": [],
             "missing_observation_slots": [],
-            "source_identity_payload_hashes": [[f"{source}:identity", "c" * 64]],
+            "source_identity_payload_hashes": [
+                [f"{source}:identity", evaluation_variant * 64]
+            ],
             "state": "COMPLETE",
             "uncovered_gap_identity_payload_hashes": [],
-            "valid_source_identity_payload_hashes": [[f"{source}:identity", "c" * 64]],
+            "valid_source_identity_payload_hashes": [
+                [f"{source}:identity", evaluation_variant * 64]
+            ],
         }
     payload = {
         "decision_epoch_utc": iso_utc(epoch),
@@ -125,7 +135,12 @@ def _readiness_payload(source: str, timestamp: int) -> object:
     raise AssertionError(source)
 
 
-def _append_complete_readiness_raw(store: AppendOnlyPITStore, manifest) -> None:
+def _append_complete_readiness_raw(
+    store: AppendOnlyPITStore,
+    manifest,
+    *,
+    basis_value: str = "1",
+) -> None:
     rows: list[tuple[object, ...]] = []
     previous_by_partition: dict[str, str | None] = {}
     for index in range(READINESS_EPOCHS):
@@ -150,6 +165,13 @@ def _append_complete_readiness_raw(store: AppendOnlyPITStore, manifest) -> None:
                     )
                     timestamp = int(event_time.timestamp() * 1000)
                     raw_payload = _readiness_payload(source, timestamp)
+                    if (
+                        source == "binance_usdm.basis"
+                        and index == 0
+                        and symbol == manifest.symbols[0]
+                        and observation == 0
+                    ):
+                        raw_payload = {"basis": basis_value}
                     raw_text = canonical_json(raw_payload)
                     raw_hash = sha256_text(raw_text)
                     event_text = iso_utc(event_time)
@@ -238,6 +260,8 @@ def _write_rehearsal(
     finalization_instance_id: str | None = None,
     finalization_run_id: str | None = None,
     extra_decision_epochs: tuple[dt.datetime, ...] = (),
+    raw_basis_value: str = "1",
+    evaluation_variant: str = "c",
 ) -> Path:
     with AppendOnlyPITStore(root, study_manifest=manifest) as store:
         ledger = EpochLedger(store._db, manifest.epoch_policy)
@@ -285,7 +309,11 @@ def _write_rehearsal(
             heartbeat_run_id = restart_run_id
             finalization_run_id = restart_run_id
         if include_raw:
-            _append_complete_readiness_raw(store, manifest)
+            _append_complete_readiness_raw(
+                store,
+                manifest,
+                basis_value=raw_basis_value,
+            )
         for index in range(READINESS_EPOCHS):
             epoch = manifest.t0 + dt.timedelta(hours=index * 4)
             ledger.append_heartbeat(
@@ -307,6 +335,7 @@ def _write_rehearsal(
                     manifest,
                     symbol,
                     epoch,
+                    evaluation_variant=evaluation_variant,
                 )
                 ledger.append_finalization(
                     symbol=symbol,
@@ -329,6 +358,7 @@ def _write_rehearsal(
                     manifest,
                     symbol,
                     extra_epoch,
+                    evaluation_variant=evaluation_variant,
                 )
                 ledger.append_finalization(
                     symbol=symbol,
@@ -442,6 +472,133 @@ def test_readiness_auditor_passes_fixed_contract_and_is_read_only(
     assert exit_code == 0
     assert cli_report["ok"] is True
     assert cli_report["counts"]["source_cells_expected"] == 1260
+
+
+@pytest.mark.unit
+def test_readiness_rejects_cross_replica_raw_conflict_and_eval_divergence_api_and_cli(
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _manifest()
+    paths = [
+        _write_rehearsal(
+            tmp_path / "host-a",
+            manifest,
+            collector_instance_id="host-a",
+            include_raw=True,
+            include_restart=True,
+            raw_basis_value="1",
+            evaluation_variant="c",
+        ),
+        _write_rehearsal(
+            tmp_path / "host-b",
+            manifest,
+            collector_instance_id="host-b",
+            include_raw=True,
+            include_restart=True,
+            raw_basis_value="2",
+            evaluation_variant="d",
+        ),
+    ]
+    final_deadline = manifest.t0 + dt.timedelta(days=7)
+    report = audit_readiness(
+        paths,
+        manifest,
+        expected_code_hash=EXPECTED_CODE_HASH,
+        observed_at=final_deadline,
+    )
+
+    assert report["ok"] is False
+    assert report["counts"]["symbol_epochs_observed_per_replica"] == [126, 126]
+    assert report["counts"]["source_cells_observed_per_replica"] == [1260, 1260]
+    assert any(
+        issue.startswith("cross_replica_raw_payload_conflict:")
+        for issue in report["issues"]
+    )
+    assert any(
+        issue.startswith("cross_replica_evaluation_divergence:")
+        for issue in report["issues"]
+    )
+
+    manifest_path = tmp_path / "study-manifest.json"
+    manifest_path.write_text(manifest.canonical_payload_json, encoding="utf-8")
+    monkeypatch.setattr(readiness_cli, "utc_now", lambda: final_deadline)
+    exit_code = readiness_cli.main(_cli_argv(paths, manifest_path, manifest))
+    cli_report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert cli_report["ok"] is False
+    assert any(
+        issue.startswith("cross_replica_raw_payload_conflict:")
+        for issue in cli_report["issues"]
+    )
+    assert any(
+        issue.startswith("cross_replica_evaluation_divergence:")
+        for issue in cli_report["issues"]
+    )
+
+
+@pytest.mark.unit
+def test_readiness_rejects_cross_replica_evaluation_divergence_with_same_raw(
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _manifest()
+    paths = [
+        _write_rehearsal(
+            tmp_path / "host-a",
+            manifest,
+            collector_instance_id="host-a",
+            include_raw=True,
+            include_restart=True,
+            evaluation_variant="c",
+        ),
+        _write_rehearsal(
+            tmp_path / "host-b",
+            manifest,
+            collector_instance_id="host-b",
+            include_raw=True,
+            include_restart=True,
+            evaluation_variant="d",
+        ),
+    ]
+    final_deadline = manifest.t0 + dt.timedelta(days=7)
+    report = audit_readiness(
+        paths,
+        manifest,
+        expected_code_hash=EXPECTED_CODE_HASH,
+        observed_at=final_deadline,
+    )
+
+    assert report["ok"] is False
+    assert report["counts"]["source_cells_observed_per_replica"] == [1260, 1260]
+    assert any(
+        issue.startswith("cross_replica_evaluation_divergence:")
+        for issue in report["issues"]
+    )
+    assert not any(
+        issue.startswith("cross_replica_raw_payload_conflict:")
+        for issue in report["issues"]
+    )
+
+    manifest_path = tmp_path / "study-manifest.json"
+    manifest_path.write_text(manifest.canonical_payload_json, encoding="utf-8")
+    monkeypatch.setattr(readiness_cli, "utc_now", lambda: final_deadline)
+    exit_code = readiness_cli.main(_cli_argv(paths, manifest_path, manifest))
+    cli_report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert cli_report["ok"] is False
+    assert any(
+        issue.startswith("cross_replica_evaluation_divergence:")
+        for issue in cli_report["issues"]
+    )
+    assert not any(
+        issue.startswith("cross_replica_raw_payload_conflict:")
+        for issue in cli_report["issues"]
+    )
 
 
 @pytest.mark.unit

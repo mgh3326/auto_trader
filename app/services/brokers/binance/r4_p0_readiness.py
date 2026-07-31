@@ -205,6 +205,7 @@ def _validate_raw_source_cell(
     symbol: str,
     epoch: dt.datetime,
     deadline: dt.datetime,
+    raw_identity_payloads: dict[tuple[str, str, str], set[str]],
     issues: list[str],
 ) -> bool:
     """Recompute one source-cell verdict from immutable raw rows."""
@@ -248,6 +249,7 @@ def _validate_raw_source_cell(
             invalid_evidence.add(evidence_key)
             continue
         valid_evidence.add(evidence_key)
+        raw_identity_payloads[(source, symbol, identity)].add(payload_hash)
         cadence_seconds = SOURCE_CADENCE_SECONDS.get(source)
         if cadence_seconds is not None:
             slot = _observation_slot(
@@ -365,7 +367,14 @@ def _audit_replica(
     epochs: tuple[dt.datetime, ...],
     expected_code_hash: str | None,
     observed_at: dt.datetime,
-) -> tuple[dict[str, Any], list[str], set[str], set[str]]:
+) -> tuple[
+    dict[str, Any],
+    list[str],
+    set[str],
+    set[str],
+    dict[tuple[str, str, str], set[str]],
+    dict[tuple[str, str], set[str]],
+]:
     issues: list[str] = []
     report: dict[str, Any] = {
         "artifact": str(path),
@@ -385,10 +394,19 @@ def _audit_replica(
     }
     observed_code_hashes: set[str] = set()
     observed_versions: set[str] = set()
+    raw_identity_payloads: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    finalization_evaluation_hashes: dict[tuple[str, str], set[str]] = defaultdict(set)
 
     if not path.is_file():
         issues.append(f"artifact_unavailable:{path}")
-        return report, issues, observed_code_hashes, observed_versions
+        return (
+            report,
+            issues,
+            observed_code_hashes,
+            observed_versions,
+            raw_identity_payloads,
+            finalization_evaluation_hashes,
+        )
 
     start = manifest.t0
     end = manifest.t0 + dt.timedelta(days=READINESS_DAYS)
@@ -558,6 +576,10 @@ def _audit_replica(
                 if key in expected_by_key:
                     expected_key_counts[key] += 1
                     expected_deadline = finalize_at(expected_by_key[key])
+                    if row["final_status"] == FINAL_COMPLETE and isinstance(
+                        row["evaluation_hash"], str
+                    ):
+                        finalization_evaluation_hashes[key].add(row["evaluation_hash"])
                     _validate_finalization_timestamps(
                         row,
                         decision_epoch=expected_by_key[key],
@@ -697,6 +719,7 @@ def _audit_replica(
                             symbol=symbol,
                             epoch=epoch,
                             deadline=deadline,
+                            raw_identity_payloads=raw_identity_payloads,
                             issues=issues,
                         ):
                             report["source_cells"] += 1
@@ -735,14 +758,28 @@ def _audit_replica(
         report["status"] = "READ_ERROR"
         report["error_type"] = type(exc).__name__
         _add_issue(issues, f"artifact_read_error:{type(exc).__name__}")
-        return report, issues, observed_code_hashes, observed_versions
+        return (
+            report,
+            issues,
+            observed_code_hashes,
+            observed_versions,
+            raw_identity_payloads,
+            finalization_evaluation_hashes,
+        )
 
     if report["finalization_rows"] != READINESS_SYMBOL_EPOCHS:
         _add_issue(issues, "symbol_epoch_count_mismatch")
     if report["source_cells"] != READINESS_SOURCE_CELLS:
         _add_issue(issues, "source_cell_count_mismatch")
     report["status"] = "OK" if not issues else "FAIL"
-    return report, issues, observed_code_hashes, observed_versions
+    return (
+        report,
+        issues,
+        observed_code_hashes,
+        observed_versions,
+        raw_identity_payloads,
+        finalization_evaluation_hashes,
+    )
 
 
 def audit_readiness(
@@ -771,8 +808,17 @@ def audit_readiness(
     replicas: list[dict[str, Any]] = []
     all_code_hashes: set[str] = set()
     all_versions: set[str] = set()
+    raw_evidence_by_replica: list[dict[tuple[str, str, str], set[str]]] = []
+    evaluation_hashes_by_replica: list[dict[tuple[str, str], set[str]]] = []
     for path in paths:
-        report, replica_issues, code_hashes, versions = _audit_replica(
+        (
+            report,
+            replica_issues,
+            code_hashes,
+            versions,
+            raw_evidence,
+            evaluation_hashes,
+        ) = _audit_replica(
             path,
             manifest=manifest,
             epochs=epochs,
@@ -780,10 +826,45 @@ def audit_readiness(
             observed_at=observation_time,
         )
         replicas.append(report)
+        raw_evidence_by_replica.append(raw_evidence)
+        evaluation_hashes_by_replica.append(evaluation_hashes)
         for issue in replica_issues:
             _add_issue(issues, f"{path.name}:{issue}")
         all_code_hashes.update(code_hashes)
         all_versions.update(versions)
+
+    for left_index in range(len(paths)):
+        for right_index in range(left_index + 1, len(paths)):
+            shared_raw_keys = sorted(
+                set(raw_evidence_by_replica[left_index])
+                & set(raw_evidence_by_replica[right_index])
+            )
+            for source, symbol, identity in shared_raw_keys:
+                payload_hashes = (
+                    raw_evidence_by_replica[left_index][(source, symbol, identity)]
+                    | raw_evidence_by_replica[right_index][(source, symbol, identity)]
+                )
+                if len(payload_hashes) > 1:
+                    _add_issue(
+                        issues,
+                        "cross_replica_raw_payload_conflict:"
+                        f"{source}:{symbol}:{identity}",
+                    )
+
+            shared_finalization_keys = sorted(
+                set(evaluation_hashes_by_replica[left_index])
+                & set(evaluation_hashes_by_replica[right_index])
+            )
+            for epoch, symbol in shared_finalization_keys:
+                evaluation_hashes = (
+                    evaluation_hashes_by_replica[left_index][(epoch, symbol)]
+                    | evaluation_hashes_by_replica[right_index][(epoch, symbol)]
+                )
+                if len(evaluation_hashes) > 1:
+                    _add_issue(
+                        issues,
+                        f"cross_replica_evaluation_divergence:{symbol}@{epoch}",
+                    )
 
     all_instances = [
         instance_id
