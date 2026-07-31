@@ -64,6 +64,7 @@ _ARTIFACT_EVIDENCE_TABLES: Final = (
 FINAL_COMPLETE: Final = "FINAL_COMPLETE"
 FINAL_MISSING: Final = "FINAL_MISSING"
 FINAL_CONFLICT: Final = "FINAL_CONFLICT"
+FINALIZATION_PROVENANCE_COLUMNS: Final = frozenset({"collector_instance_id", "run_id"})
 FinalStatus = Literal["FINAL_COMPLETE", "FINAL_MISSING", "FINAL_CONFLICT"]
 
 TERMINAL_STATUSES: Final = frozenset(
@@ -246,6 +247,10 @@ class StudyManifestError(ValueError):
 
 class ArtifactManifestMismatch(RuntimeError):
     """An artifact is unbound, or bound to a different study manifest."""
+
+
+class ArtifactSchemaMismatch(RuntimeError):
+    """An artifact does not expose the immutable evidence schema we require."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -523,6 +528,27 @@ def _artifact_has_evidence(connection: sqlite3.Connection) -> bool:
     )
 
 
+def assert_finalization_provenance_schema(connection: sqlite3.Connection) -> None:
+    """Require the post-R3 immutable finalization producer binding columns."""
+
+    table_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'symbol_epoch_finalizations'"
+    ).fetchone()
+    if table_exists is None:
+        raise ArtifactSchemaMismatch("symbol_epoch_finalizations table is missing")
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(symbol_epoch_finalizations)")
+    }
+    missing = sorted(FINALIZATION_PROVENANCE_COLUMNS - columns)
+    if missing:
+        raise ArtifactSchemaMismatch(
+            "symbol_epoch_finalizations lacks immutable producer binding columns: "
+            + ", ".join(missing)
+        )
+
+
 def assert_connection_manifest_compatible(
     connection: sqlite3.Connection,
     manifest: StudyManifest,
@@ -656,6 +682,12 @@ class EpochLedger:
         self._configure()
 
     def _configure(self) -> None:
+        existing_finalization_table = self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'symbol_epoch_finalizations'"
+        ).fetchone()
+        if existing_finalization_table is not None:
+            assert_finalization_provenance_schema(self.db)
         tables = """
         CREATE TABLE IF NOT EXISTS epoch_source_events (
             append_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -736,6 +768,8 @@ class EpochLedger:
             finalize_at TEXT NOT NULL,
             finalized_at TEXT NOT NULL,
             recorded_at TEXT NOT NULL,
+            collector_instance_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
             final_status TEXT NOT NULL CHECK (
                 final_status IN (
                     'FINAL_COMPLETE', 'FINAL_MISSING', 'FINAL_CONFLICT'
@@ -1190,6 +1224,8 @@ class EpochLedger:
         symbol: str,
         decision_epoch: dt.datetime,
         recorded_at: dt.datetime,
+        collector_instance_id: str,
+        run_id: str,
         final_status: FinalStatus,
         missing_sources: Sequence[str],
         conflict_sources: Sequence[str],
@@ -1197,6 +1233,8 @@ class EpochLedger:
         evaluation_hash: str,
         evaluation_json: str,
     ) -> None:
+        if not collector_instance_id or not run_id:
+            raise ValueError("finalization producer binding is required")
         identity = canonical_json(
             {
                 "decision_epoch_utc": iso_utc(decision_epoch),
@@ -1206,16 +1244,19 @@ class EpochLedger:
             }
         )
         deadline = finalize_at(decision_epoch)
+        if recorded_at < deadline:
+            raise ValueError(f"cannot record finalization before {iso_utc(deadline)}")
         self.db.execute(
             """
             INSERT INTO symbol_epoch_finalizations (
                 finalization_id, study_id, policy_hash,
                 source_manifest_hash, symbol, decision_epoch_utc,
-                finalize_at, finalized_at, recorded_at, final_status,
+                finalize_at, finalized_at, recorded_at,
+                collector_instance_id, run_id, final_status,
                 missing_sources_json, conflict_sources_json,
                 invalid_sources_json, evaluation_hash, evaluation_json,
                 finalizer_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sha256_text(identity),
@@ -1227,6 +1268,8 @@ class EpochLedger:
                 iso_utc(deadline),
                 iso_utc(deadline),
                 iso_utc(recorded_at),
+                collector_instance_id,
+                run_id,
                 final_status,
                 canonical_json(list(missing_sources)),
                 canonical_json(list(conflict_sources)),
@@ -1476,9 +1519,22 @@ def _observation_slot(
 
 
 class DeterministicEpochFinalizer:
-    def __init__(self, ledger: EpochLedger, raw_reader: RawPITReader) -> None:
+    def __init__(
+        self,
+        ledger: EpochLedger,
+        raw_reader: RawPITReader,
+        *,
+        collector_instance_id: str | None = None,
+        run_id: str | None = None,
+    ) -> None:
+        if (collector_instance_id is None) != (run_id is None):
+            raise ValueError(
+                "collector_instance_id and run_id must be provided together"
+            )
         self.ledger = ledger
         self.raw_reader = raw_reader
+        self.collector_instance_id = collector_instance_id
+        self.run_id = run_id
 
     def _evaluate(
         self, symbol: str, decision_epoch: dt.datetime
@@ -1695,10 +1751,16 @@ class DeterministicEpochFinalizer:
                 invalid_sources=invalid,
                 inserted=False,
             )
+        if self.collector_instance_id is None or self.run_id is None:
+            raise FinalizationInvariantError(
+                "cannot insert finalization without producer binding"
+            )
         self.ledger.append_finalization(
             symbol=symbol,
             decision_epoch=decision_epoch,
             recorded_at=observed_at,
+            collector_instance_id=self.collector_instance_id,
+            run_id=self.run_id,
             final_status=status,
             missing_sources=missing,
             conflict_sources=conflicts,
@@ -1917,6 +1979,7 @@ def availability_report(
     unstamped_artifacts: list[str] = []
     version_mismatches: list[dict[str, str]] = []
     manifest_mismatches: list[dict[str, str | None]] = []
+    provenance_mismatches: list[dict[str, str]] = []
     for path in sorted(
         {item.expanduser().resolve() for item in artifact_paths}, key=str
     ):
@@ -1985,6 +2048,27 @@ def availability_report(
                     status = "MANIFEST_MISMATCH"
                 elif manifest_unstamped:
                     status = "VERSION_UNSTAMPED"
+        if version is not None:
+            try:
+                heartbeat_at = parse_utc(heartbeat["observed_at"])
+                started_at = parse_utc(version["started_at"])
+            except (TypeError, ValueError):
+                status = "VERSION_TEMPORAL_MISMATCH"
+                provenance_mismatches.append(
+                    {
+                        "artifact": str(path),
+                        "reason": "invalid_process_or_heartbeat_timestamp",
+                    }
+                )
+            else:
+                if started_at > heartbeat_at:
+                    status = "VERSION_TEMPORAL_MISMATCH"
+                    provenance_mismatches.append(
+                        {
+                            "artifact": str(path),
+                            "reason": "process_started_after_heartbeat",
+                        }
+                    )
         if status == "HEALTHY":
             fresh_instance_ids.add(heartbeat["collector_instance_id"])
             instance_path_counts[heartbeat["collector_instance_id"]] += 1
@@ -2020,6 +2104,7 @@ def availability_report(
         "expected_study_manifest_sha256": expected_study_manifest_sha256,
         "healthy_replica_count": len(fresh_instance_ids),
         "manifest_mismatches": manifest_mismatches,
+        "provenance_mismatches": provenance_mismatches,
         "observed_at": iso_utc(observed_at),
         "replicas": replicas,
         "unstamped_artifacts": sorted(set(unstamped_artifacts)),
@@ -2057,6 +2142,8 @@ def finalization_report(
             "artifact": str(path),
             "collector_instance_id": None,
             "run_id": None,
+            "run_ids": [],
+            "provenance_ok": False,
             "status": "UNAVAILABLE",
             "witnessed_symbols": [],
             "missing_symbols": list(policy.symbols),
@@ -2072,9 +2159,11 @@ def finalization_report(
                 connection.row_factory = sqlite3.Row
                 if study_manifest is not None:
                     assert_connection_manifest_compatible(connection, study_manifest)
+                assert_finalization_provenance_schema(connection)
                 rows = connection.execute(
                     """
-                    SELECT symbol, final_status, evaluation_hash, recorded_at
+                    SELECT append_id, symbol, final_status, evaluation_hash,
+                           recorded_at, collector_instance_id, run_id
                     FROM symbol_epoch_finalizations
                     WHERE study_id = ? AND policy_hash = ?
                       AND source_manifest_hash = ?
@@ -2100,20 +2189,54 @@ def finalization_report(
                 witness["status"] = (
                     "COMPLETE" if not witness["missing_symbols"] else "PARTIAL"
                 )
-                heartbeat = connection.execute(
+                process_rows = connection.execute(
                     """
-                    SELECT collector_instance_id, run_id
-                    FROM collector_heartbeats
+                    SELECT append_id, collector_instance_id, run_id, started_at
+                    FROM collector_process_versions
                     WHERE study_id = ? AND policy_hash = ?
-                    ORDER BY append_id DESC LIMIT 1
+                    ORDER BY append_id
                     """,
                     (policy.study_id, policy.policy_hash),
-                ).fetchone()
-                if heartbeat is not None:
-                    witness["collector_instance_id"] = heartbeat[
-                        "collector_instance_id"
-                    ]
-                    witness["run_id"] = heartbeat["run_id"]
+                )
+                process_by_pair = {
+                    (row["collector_instance_id"], row["run_id"]): row
+                    for row in process_rows
+                }
+                producer_pairs = {
+                    (row["collector_instance_id"], row["run_id"])
+                    for row in artifact_rows
+                    if row["collector_instance_id"] and row["run_id"]
+                }
+                producer_instances = {pair[0] for pair in producer_pairs}
+                all_rows_bound = all(
+                    row["collector_instance_id"] and row["run_id"]
+                    for row in artifact_rows
+                )
+                if all_rows_bound and len(producer_instances) == 1:
+                    witness["collector_instance_id"] = next(iter(producer_instances))
+                    witness["run_ids"] = sorted(pair[1] for pair in producer_pairs)
+                    if len(witness["run_ids"]) == 1:
+                        witness["run_id"] = witness["run_ids"][0]
+                    provenance_ok = True
+                    for row in artifact_rows:
+                        process = process_by_pair.get(
+                            (row["collector_instance_id"], row["run_id"])
+                        )
+                        if process is None:
+                            provenance_ok = False
+                            break
+                        try:
+                            if parse_utc(process["started_at"]) > parse_utc(
+                                row["recorded_at"]
+                            ):
+                                provenance_ok = False
+                                break
+                        except (TypeError, ValueError):
+                            provenance_ok = False
+                            break
+                    witness["provenance_ok"] = provenance_ok
+                if witness["status"] == "COMPLETE" and not witness["provenance_ok"]:
+                    witness["status"] = "PROVENANCE_ERROR"
                 for row in artifact_rows:
                     key = (row["symbol"], row["evaluation_hash"])
                     rows_by_key[key] = {
@@ -2122,7 +2245,7 @@ def finalization_report(
                         "recorded_at": row["recorded_at"],
                         "symbol": row["symbol"],
                     }
-        except (ArtifactManifestMismatch, sqlite3.Error) as exc:
+        except (ArtifactManifestMismatch, ArtifactSchemaMismatch, sqlite3.Error) as exc:
             unavailable_artifacts.append(str(path))
             witness["status"] = "READ_ERROR"
             witness["error_type"] = type(exc).__name__
@@ -2158,6 +2281,7 @@ def finalization_report(
         len(replica_witnesses) >= 2
         and len(collector_instance_ids) == len(replica_witnesses)
         and all(witness["collector_instance_id"] for witness in replica_witnesses)
+        and all(witness["provenance_ok"] for witness in replica_witnesses)
     )
     return {
         "decision_epoch_utc": iso_utc(decision_epoch),

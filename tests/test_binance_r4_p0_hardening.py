@@ -367,8 +367,38 @@ def _finalizer(
     replicas: tuple = (),
 ) -> tuple[EpochLedger, DeterministicEpochFinalizer]:
     ledger = EpochLedger(store._db, policy)  # noqa: SLF001
+    producer_instance_id = f"test-finalizer-{store.root.name}"
+    producer_run_id = f"test-run-{policy.study_id}"
+    if (
+        ledger.db.execute(
+            """
+        SELECT 1 FROM collector_process_versions
+        WHERE study_id = ? AND policy_hash = ?
+          AND collector_instance_id = ? AND run_id = ?
+        """,
+            (
+                policy.study_id,
+                policy.policy_hash,
+                producer_instance_id,
+                producer_run_id,
+            ),
+        ).fetchone()
+        is None
+    ):
+        ledger.append_process_version(
+            collector_instance_id=producer_instance_id,
+            run_id=producer_run_id,
+            started_at=policy.t0 - dt.timedelta(hours=4),
+            code_hash="a" * 40,
+            collector_version=collector_module.COLLECTOR_VERSION,
+        )
     reader = RawPITReader(store._db, store.path, replicas)  # noqa: SLF001
-    return ledger, DeterministicEpochFinalizer(ledger, reader)
+    return ledger, DeterministicEpochFinalizer(
+        ledger,
+        reader,
+        collector_instance_id=producer_instance_id,
+        run_id=producer_run_id,
+    )
 
 
 def _configure_collector_policy(
@@ -381,8 +411,18 @@ def _configure_collector_policy(
     ledger = EpochLedger(store._db, policy)  # noqa: SLF001
     union_reader = RawPITReader(store._db, store.path, replicas)  # noqa: SLF001
     local_reader = RawPITReader(store._db, store.path, ())  # noqa: SLF001
-    union_finalizer = DeterministicEpochFinalizer(ledger, union_reader)
-    local_finalizer = DeterministicEpochFinalizer(ledger, local_reader)
+    union_finalizer = DeterministicEpochFinalizer(
+        ledger,
+        union_reader,
+        collector_instance_id=collector.config.collector_instance_id,
+        run_id=collector.run_id,
+    )
+    local_finalizer = DeterministicEpochFinalizer(
+        ledger,
+        local_reader,
+        collector_instance_id=collector.config.collector_instance_id,
+        run_id=collector.run_id,
+    )
     collector.epoch_policy = policy
     collector.epoch_ledger = ledger
     collector.raw_reader = union_reader
@@ -1443,13 +1483,25 @@ def test_cross_replica_same_identity_different_payload_is_conflict_fail_closed(
             event_time=EPOCH - dt.timedelta(hours=4),
         )
         ledger = EpochLedger(local._db, policy)  # noqa: SLF001
+        ledger.append_process_version(
+            collector_instance_id="replica-a",
+            run_id="run-a",
+            started_at=EPOCH - dt.timedelta(hours=1),
+            code_hash="a" * 40,
+            collector_version=collector_module.COLLECTOR_VERSION,
+        )
         reader = RawPITReader(  # noqa: SLF001
             local._db,
             local.path,
             (replica.path,),
             study_manifest=manifest,
         )
-        finalizer = DeterministicEpochFinalizer(ledger, reader)
+        finalizer = DeterministicEpochFinalizer(
+            ledger,
+            reader,
+            collector_instance_id="replica-a",
+            run_id="run-a",
+        )
 
         result = finalizer.finalize(
             "XRPUSDT",

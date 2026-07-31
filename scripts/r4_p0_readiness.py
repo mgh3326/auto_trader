@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 from pathlib import Path
 
@@ -16,6 +17,10 @@ from app.services.brokers.binance.r4_p0_hardening import (
     load_study_manifest,
 )
 from app.services.brokers.binance.r4_p0_readiness import audit_readiness
+
+
+def utc_now() -> dt.datetime:
+    return dt.datetime.now(tz=dt.UTC)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -67,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.expected_code_hash is not None
                 else runtime_code_hash()
             ),
+            observed_at=utc_now(),
         )
     except StudyManifestError as exc:
         print(

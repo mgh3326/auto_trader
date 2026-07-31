@@ -170,8 +170,10 @@ UPDATE/DELETE rejection triggers:
   request identity and its hash, response SHA-256 when a response exists, and
   terminal status. Failures also retain the exception class, message, formatted
   traceback, and a bounded response-body summary.
-- `symbol_epoch_finalizations`: the one-shot three-way result and canonical
-  evaluator input/hash.
+- `symbol_epoch_finalizations`: the one-shot three-way result, canonical
+  evaluator input/hash, and immutable `(collector_instance_id, run_id)`
+  producer binding. The binding is provenance only and is excluded from the
+  evaluation hash; legacy or NULL producer bindings cannot satisfy readiness.
 - `late_only_corrections`: observations received after the deadline. These
   never rewrite a finalization.
 - `collector_heartbeats`: append-only replica liveness evidence.
@@ -234,8 +236,9 @@ uv run python -m scripts.r4_p0_readiness \
   --expected-code-hash REPLACE_WITH_DEPLOYED_40_OR_64_LOWERCASE_HEX_GIT_HASH
 ```
 
-The auditor opens both SQLite files with `mode=ro`; it performs no network,
-broker, ledger, watchdog-state, or operational-database write. Its fixed
+The auditor opens both SQLite files with SQLite immutable read-only access; it
+performs no network, broker, ledger, watchdog-state, or operational-database
+write. A live/uncheckpointed WAL is treated conservatively as unreadable. Its fixed
 contract is 7 days, 42 four-hour decision epochs, 126 symbol-epochs per host,
 and 1,260 source cells per host. Every host must independently witness every
 one of its 126 symbol-epochs as `FINAL_COMPLETE` with matching evaluation

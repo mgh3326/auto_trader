@@ -609,11 +609,17 @@ class BinanceR4P0Collector:
             study_manifest=self.study_manifest,
         )
         self.epoch_finalizer = DeterministicEpochFinalizer(
-            self.epoch_ledger, self.raw_reader
+            self.epoch_ledger,
+            self.raw_reader,
+            collector_instance_id=self.config.collector_instance_id,
+            run_id=self.run_id,
         )
         self.local_raw_reader = RawPITReader(store._db, store.path, ())
         self.local_epoch_finalizer = DeterministicEpochFinalizer(
-            self.epoch_ledger, self.local_raw_reader
+            self.epoch_ledger,
+            self.local_raw_reader,
+            collector_instance_id=self.config.collector_instance_id,
+            run_id=self.run_id,
         )
         self.alert_dispatcher = AlertDispatcher(
             self.epoch_ledger, config.alert_webhook_urls
