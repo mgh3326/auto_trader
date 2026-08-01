@@ -5,9 +5,13 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
-from app.mcp_server.tooling import analysis_analyze
+from app.mcp_server.tooling import analysis_analyze, market_data_quotes
+from app.services.brokers.kis.domestic_market_data import DomesticMarketDataMixin
+from tests._mcp_tooling_support import build_tools
 
 KST = ZoneInfo("Asia/Seoul")
+
+pytestmark = [pytest.mark.integration]
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +45,17 @@ def _ohlcv():
         },
         index=[yesterday],
     )
+
+
+class _RawKISPriceParser(DomesticMarketDataMixin):
+    def __init__(self, raw_output):
+        self._raw_output = raw_output
+
+    def _kis_url(self, path: str) -> str:
+        return f"https://mock.kis/{path}"
+
+    async def _request_with_token_retry(self, **kwargs):
+        return {"output": self._raw_output}
 
 
 @pytest.mark.asyncio
@@ -134,9 +149,12 @@ async def test_kr_quote_overlays_nxt_price_in_premarket(monkeypatch):
 
     assert quote["price"] == 173500.0
     assert quote["price_source"] == "nxt_expected_price"
-    assert quote["is_stale_price"] is False  # overlay price is fresh
-    # price_as_of refreshed to the live NXT fetch time (today, not yesterday)
-    assert quote["price_as_of"].startswith(str(today.date()))
+    # ROB-1121: NXT orderbook overlay에는 provider 체결 timestamp가 없으므로
+    # freshness를 unavailable/fail-closed로 표현. 벽시계를 as_of로 위장하지 않는다.
+    assert quote["is_stale_price"] is True
+    assert quote["price_freshness"] == "unavailable"
+    assert quote["price_usable"] is False
+    assert quote["price_as_of"] is None
 
 
 @pytest.mark.asyncio
@@ -219,3 +237,129 @@ async def test_kr_quote_keeps_kis_price_when_no_overlay(monkeypatch):
     assert quote["price"] == 168300.0
     assert "price_source" not in quote
     assert quote["is_stale_price"] is False  # today's KIS as_of, unchanged
+
+
+@pytest.mark.asyncio
+async def test_kr_malformed_live_timestamp_does_not_fallback_to_fresh_daily(
+    monkeypatch,
+):
+    """AC3 / Finding 1: malformed provider date/time in live quote must remain unavailable
+
+    and must not collapse into same-day daily OHLCV fallback that would evaluate fresh.
+    """
+    today = pd.Timestamp(datetime.now(KST).date())
+    same_day_ohlcv = pd.DataFrame(
+        {
+            "open": [100.0],
+            "high": [110.0],
+            "low": [90.0],
+            "close": [105.0],
+            "volume": [1000],
+            "value": [105000.0],
+        },
+        index=[today],
+    )
+
+    async def fake_live_malformed(symbol):
+        return {
+            "symbol": symbol,
+            "instrument_type": "equity_kr",
+            "price": 105.0,
+            "open": 100.0,
+            "high": 110.0,
+            "low": 90.0,
+            "volume": 1000,
+            "value": 105000,
+            "source": "kis",
+            "price_as_of": None,
+            "fetched_at": datetime.now(KST).isoformat(),
+        }
+
+    monkeypatch.setattr(analysis_analyze, "_fetch_kr_live_quote", fake_live_malformed)
+    quote = await analysis_analyze._resolve_kr_quote("012450", same_day_ohlcv)
+
+    assert quote is not None
+    assert quote["price_as_of"] is None
+    assert quote["is_stale_price"] is True
+    assert quote["price_freshness"] == "unavailable"
+    assert quote["price_usable"] is False
+    assert quote["price_unavailable_reason"] == "missing_price_asof"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_date", "raw_time"),
+    [
+        pytest.param("not-a-date", "093000", id="malformed-date-valid-time"),
+        pytest.param("20260601", "not-a-time", id="valid-date-malformed-time"),
+        pytest.param("20260601", "NaT", id="raw-nat-time"),
+    ],
+)
+async def test_registered_analyze_stock_preserves_malformed_live_clock_provenance(
+    monkeypatch,
+    raw_date,
+    raw_time,
+):
+    """Exercise raw KIS parser -> real live fetch -> registered MCP analyze_stock."""
+    raw_payload = {
+        "stck_shrn_iscd": "012450",
+        "stck_bsop_date": raw_date,
+        "stck_cntg_hour": raw_time,
+        "stck_oprc": "200",
+        "stck_hgpr": "230",
+        "stck_lwpr": "190",
+        "stck_prpr": "222",
+        "acml_vol": "10",
+        "acml_tr_pbmn": "2220",
+    }
+    parser = _RawKISPriceParser(raw_payload)
+    monkeypatch.setattr(market_data_quotes, "KISClient", lambda: parser)
+
+    same_day_ohlcv = pd.DataFrame(
+        {
+            "date": [pd.Timestamp("2026-06-01")],
+            "open": [100.0],
+            "high": [110.0],
+            "low": [90.0],
+            "close": [105.0],
+            "volume": [1000],
+            "value": [105000.0],
+        }
+    )
+
+    async def fake_ohlcv(symbol, market_type, count):
+        return same_day_ohlcv
+
+    async def no_tradability(symbols):
+        return {}
+
+    async def no_overlay(symbol, quote, *, data_state):
+        return False
+
+    async def no_market_tasks(
+        named_tasks,
+        normalized_symbol,
+        market_type,
+        loop,
+        refresh=False,
+    ):
+        return None
+
+    monkeypatch.setattr(analysis_analyze, "_fetch_ohlcv_for_indicators", fake_ohlcv)
+    monkeypatch.setattr(analysis_analyze, "get_kr_nxt_tradability", no_tradability)
+    monkeypatch.setattr(analysis_analyze, "_apply_nxt_quote_overlay", no_overlay)
+    monkeypatch.setattr(
+        analysis_analyze, "_append_common_tasks", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        analysis_analyze, "_append_market_specific_tasks", no_market_tasks
+    )
+
+    result = await build_tools()["analyze_stock"]("012450", market="kr")
+    quote = result["quote"]
+
+    assert quote["price"] == 222.0
+    assert quote["price_as_of"] is None
+    assert quote["price_freshness"] == "unavailable"
+    assert quote["price_usable"] is False
+    assert quote["price_unavailable_reason"] == "missing_price_asof"

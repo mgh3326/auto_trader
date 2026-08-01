@@ -4604,7 +4604,7 @@ async def test_analyze_stock_kr_reuses_preloaded_ohlcv_and_bundled_naver(monkeyp
         "volume": 1000000,
         "value": 75000000000.0,
         "source": "kis",
-        "price_as_of": "2024-01-01T00:00:00",
+        "price_as_of": "2024-01-01T00:00:00+09:00",
         "is_stale_price": True,
         "price_freshness": "stale",
         "price_usable": False,

@@ -267,12 +267,49 @@ jobs:
     - name: Install dependencies
       run: uv sync --group dev
 
+    # ROB-1158 r2: this step used to end both scanners with `|| true`, and the
+    # Safety invocation was additionally malformed — `safety check` rejects
+    # `--output safety-report.json` ("not one of 'screen','text','json','bare',
+    # 'html'"), exited 2, and wrote no report. The report path is now
+    # `--save-json` (stdout carries a deprecation banner, so redirecting it would
+    # not produce parseable JSON), and both exit codes are captured and surfaced;
+    # `continue-on-error` keeps the job advisory (it is not a required check)
+    # without laundering the result into a green tick.
     - name: Run security checks
+      id: security-scan
+      continue-on-error: true
       run: |
-        uv run bandit -r app/ -f json -o bandit-report.json || true
-        uv run safety check --json --output safety-report.json || true
+        set -o pipefail
+        status=0
+
+        uv run bandit -r app/ -f json -o bandit-report.json || bandit_exit=$?
+        bandit_exit=${bandit_exit:-0}
+        echo "bandit_exit=${bandit_exit}" >> "$GITHUB_OUTPUT"
+        echo "bandit raw exit: ${bandit_exit}"
+
+        uv run safety check --output json --save-json safety-report.json \
+          || safety_exit=$?
+        safety_exit=${safety_exit:-0}
+        echo "safety_exit=${safety_exit}" >> "$GITHUB_OUTPUT"
+        echo "safety raw exit: ${safety_exit}"
+
+        {
+          echo "### Security scan raw exit codes"
+          echo ""
+          echo "| scanner | exit |"
+          echo "|---|---|"
+          echo "| bandit | ${bandit_exit} |"
+          echo "| safety | ${safety_exit} |"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        if [ "${bandit_exit}" -ne 0 ] || [ "${safety_exit}" -ne 0 ]; then
+          echo "::warning::security scanners reported findings (bandit=${bandit_exit} safety=${safety_exit}); see uploaded reports"
+          status=1
+        fi
+        exit "${status}"
 
     - name: Upload security reports
+      if: always()
       uses: actions/upload-artifact@v6
       with:
         name: security-reports

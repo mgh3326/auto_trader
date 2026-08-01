@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 import sqlite3
 import urllib.parse
 import uuid
@@ -32,10 +33,38 @@ DEFAULT_POLICY_HASH: Final = (
 )
 DEFAULT_T0: Final = dt.datetime(2026, 7, 27, tzinfo=dt.UTC)
 FINALIZER_VERSION: Final = "r4-p0-epoch-finalizer.v2"
+STUDY_MANIFEST_SCHEMA_VERSION: Final = "r4-p0-study-manifest.v1"
+
+_SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
+_STUDY_ID_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_STUDY_MANIFEST_KEYS: Final = frozenset(
+    {
+        "schema_version",
+        "effective_at",
+        "study_id",
+        "contract_hash",
+        "t0",
+        "required_sources",
+        "symbols",
+        "source_manifest_hash",
+    }
+)
+_ARTIFACT_EVIDENCE_TABLES: Final = (
+    "pit_records",
+    "epoch_source_events",
+    "collector_attempt_starts",
+    "collector_attempts",
+    "symbol_epoch_finalizations",
+    "late_only_corrections",
+    "collector_heartbeats",
+    "collector_process_versions",
+    "collector_alert_events",
+)
 
 FINAL_COMPLETE: Final = "FINAL_COMPLETE"
 FINAL_MISSING: Final = "FINAL_MISSING"
 FINAL_CONFLICT: Final = "FINAL_CONFLICT"
+FINALIZATION_PROVENANCE_COLUMNS: Final = frozenset({"collector_instance_id", "run_id"})
 FinalStatus = Literal["FINAL_COMPLETE", "FINAL_MISSING", "FINAL_CONFLICT"]
 
 TERMINAL_STATUSES: Final = frozenset(
@@ -136,6 +165,24 @@ def scheduled_epochs(
         current += dt.timedelta(hours=EPOCH_HOURS)
 
 
+def first_fully_observed_epoch(observation_start: dt.datetime) -> dt.datetime:
+    """Return the first epoch whose complete source interval follows a start.
+
+    Decision epoch ``e`` consumes ``[e-4h, e)``.  A probe that starts between
+    boundaries must therefore skip both the in-progress interval and its
+    decision epoch.  A probe that starts exactly on a boundary may use the
+    interval beginning at that boundary.
+    """
+
+    if observation_start.tzinfo is None:
+        raise ValueError("observation_start must be timezone-aware")
+    observation_start = observation_start.astimezone(dt.UTC)
+    interval_start = floor_epoch(observation_start)
+    if interval_start != observation_start:
+        interval_start += dt.timedelta(hours=EPOCH_HOURS)
+    return interval_start + dt.timedelta(hours=EPOCH_HOURS)
+
+
 def _trigger_sql(table: str) -> str:
     return f"""
     CREATE TRIGGER IF NOT EXISTS {table}_no_update
@@ -166,6 +213,10 @@ class EpochPolicy:
             raise ValueError("required_sources must be unique and sorted")
         if tuple(sorted(set(self.symbols))) != self.symbols:
             raise ValueError("symbols must be unique and sorted")
+        if not _STUDY_ID_RE.fullmatch(self.study_id):
+            raise ValueError("study_id must be a stable non-empty identifier")
+        if not _SHA256_RE.fullmatch(self.policy_hash):
+            raise ValueError("policy_hash must be 64 lowercase hex characters")
         if self.t0.tzinfo is None or floor_epoch(self.t0) != self.t0:
             raise ValueError("t0 must be an aware UTC four-hour boundary")
 
@@ -190,6 +241,414 @@ class EpochPolicy:
         )
 
 
+class StudyManifestError(ValueError):
+    """A pinned study manifest is missing, malformed, or inconsistent."""
+
+
+class ArtifactManifestMismatch(RuntimeError):
+    """An artifact is unbound, or bound to a different study manifest."""
+
+
+class ArtifactSchemaMismatch(RuntimeError):
+    """An artifact does not expose the immutable evidence schema we require."""
+
+
+@dataclass(frozen=True, slots=True)
+class StudyManifest:
+    schema_version: str
+    effective_at: dt.datetime
+    study_id: str
+    contract_hash: str
+    t0: dt.datetime
+    required_sources: tuple[str, ...]
+    symbols: tuple[str, ...]
+    source_manifest_hash: str
+    canonical_payload_json: str
+    content_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != STUDY_MANIFEST_SCHEMA_VERSION:
+            raise StudyManifestError("study manifest schema is not supported")
+        if not _SHA256_RE.fullmatch(self.content_sha256):
+            raise StudyManifestError(
+                "study manifest content hash must be 64 lowercase hex characters"
+            )
+        try:
+            payload = json.loads(self.canonical_payload_json)
+        except json.JSONDecodeError as exc:
+            raise StudyManifestError(
+                "canonical study manifest payload is not valid JSON"
+            ) from exc
+        if canonical_json(payload) != self.canonical_payload_json:
+            raise StudyManifestError(
+                "study manifest payload must use canonical JSON encoding"
+            )
+        if (
+            not isinstance(payload, dict)
+            or frozenset(payload) != _STUDY_MANIFEST_KEYS
+            or payload["schema_version"] != self.schema_version
+            or payload["study_id"] != self.study_id
+            or payload["contract_hash"] != self.contract_hash
+            or _manifest_utc(payload["effective_at"], "effective_at")
+            != self.effective_at
+            or _manifest_utc(payload["t0"], "t0") != self.t0
+            or tuple(payload["required_sources"]) != self.required_sources
+            or tuple(payload["symbols"]) != self.symbols
+            or payload["source_manifest_hash"] != self.source_manifest_hash
+        ):
+            raise StudyManifestError(
+                "canonical study manifest payload does not match typed fields"
+            )
+        if sha256_text(self.canonical_payload_json) != self.content_sha256:
+            raise StudyManifestError(
+                "canonical study manifest payload does not match its content hash"
+            )
+        policy = EpochPolicy(
+            required_sources=self.required_sources,
+            symbols=self.symbols,
+            study_id=self.study_id,
+            policy_hash=self.contract_hash,
+            t0=self.t0,
+        )
+        if policy.source_manifest_hash != self.source_manifest_hash:
+            raise StudyManifestError(
+                "study manifest source hash does not match its source matrix"
+            )
+        if self.effective_at.tzinfo is None or self.effective_at > self.t0:
+            raise StudyManifestError(
+                "study manifest effective_at must be aware and no later than t0"
+            )
+
+    @property
+    def epoch_policy(self) -> EpochPolicy:
+        return EpochPolicy(
+            required_sources=self.required_sources,
+            symbols=self.symbols,
+            study_id=self.study_id,
+            policy_hash=self.contract_hash,
+            t0=self.t0,
+        )
+
+
+def _manifest_utc(value: Any, field: str) -> dt.datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise StudyManifestError(f"{field} must be an explicit UTC Z timestamp")
+    try:
+        parsed = parse_utc(value)
+    except (TypeError, ValueError) as exc:
+        raise StudyManifestError(f"{field} is not a valid UTC timestamp") from exc
+    return parsed
+
+
+def parse_study_manifest(
+    payload: Any,
+    *,
+    expected_sha256: str,
+    expected_sources: Sequence[str],
+    expected_symbols: Sequence[str],
+) -> StudyManifest:
+    """Validate one externally pinned, effective-dated study manifest."""
+
+    if not isinstance(payload, dict):
+        raise StudyManifestError("study manifest must be a JSON object")
+    keys = frozenset(payload)
+    if keys != _STUDY_MANIFEST_KEYS:
+        missing = sorted(_STUDY_MANIFEST_KEYS - keys)
+        extra = sorted(keys - _STUDY_MANIFEST_KEYS)
+        raise StudyManifestError(
+            f"study manifest keys differ (missing={missing}, extra={extra})"
+        )
+    if not _SHA256_RE.fullmatch(expected_sha256):
+        raise StudyManifestError(
+            "study manifest pin must be 64 lowercase hex characters"
+        )
+
+    canonical_payload = canonical_json(payload)
+    content_sha256 = sha256_text(canonical_payload)
+    if content_sha256 != expected_sha256:
+        raise StudyManifestError(
+            "study manifest content hash does not match the external pin"
+        )
+
+    if payload["schema_version"] != STUDY_MANIFEST_SCHEMA_VERSION:
+        raise StudyManifestError(
+            f"unsupported study manifest schema: {payload['schema_version']!r}"
+        )
+    study_id = payload["study_id"]
+    if not isinstance(study_id, str) or not _STUDY_ID_RE.fullmatch(study_id):
+        raise StudyManifestError("study_id must be a stable non-empty identifier")
+    contract_hash = payload["contract_hash"]
+    if not isinstance(contract_hash, str) or not _SHA256_RE.fullmatch(contract_hash):
+        raise StudyManifestError("contract_hash must be 64 lowercase hex characters")
+    source_manifest_hash = payload["source_manifest_hash"]
+    if not isinstance(source_manifest_hash, str) or not _SHA256_RE.fullmatch(
+        source_manifest_hash
+    ):
+        raise StudyManifestError(
+            "source_manifest_hash must be 64 lowercase hex characters"
+        )
+
+    effective_at = _manifest_utc(payload["effective_at"], "effective_at")
+    t0 = _manifest_utc(payload["t0"], "t0")
+    if floor_epoch(t0) != t0:
+        raise StudyManifestError("t0 must be an exact UTC four-hour boundary")
+    if effective_at > t0:
+        raise StudyManifestError("effective_at must not be later than t0")
+
+    required_sources_value = payload["required_sources"]
+    symbols_value = payload["symbols"]
+    if not isinstance(required_sources_value, list) or not all(
+        isinstance(item, str) for item in required_sources_value
+    ):
+        raise StudyManifestError("required_sources must be a JSON string array")
+    if not isinstance(symbols_value, list) or not all(
+        isinstance(item, str) for item in symbols_value
+    ):
+        raise StudyManifestError("symbols must be a JSON string array")
+    required_sources = tuple(required_sources_value)
+    symbols = tuple(symbols_value)
+    sealed_sources = tuple(sorted(set(expected_sources)))
+    sealed_symbols = tuple(sorted(set(expected_symbols)))
+    if required_sources != sealed_sources:
+        raise StudyManifestError(
+            "required_sources must exactly match the sealed collector source set"
+        )
+    if symbols != sealed_symbols:
+        raise StudyManifestError(
+            "symbols must exactly match the sealed signal-symbol set"
+        )
+
+    policy = EpochPolicy(
+        required_sources=required_sources,
+        symbols=symbols,
+        study_id=study_id,
+        policy_hash=contract_hash,
+        t0=t0,
+    )
+    if source_manifest_hash != policy.source_manifest_hash:
+        raise StudyManifestError(
+            "source_manifest_hash does not match the sealed source matrix"
+        )
+    return StudyManifest(
+        schema_version=STUDY_MANIFEST_SCHEMA_VERSION,
+        effective_at=effective_at,
+        study_id=study_id,
+        contract_hash=contract_hash,
+        t0=t0,
+        required_sources=required_sources,
+        symbols=symbols,
+        source_manifest_hash=source_manifest_hash,
+        canonical_payload_json=canonical_payload,
+        content_sha256=content_sha256,
+    )
+
+
+def load_study_manifest(
+    path: Path,
+    *,
+    expected_sha256: str,
+    expected_sources: Sequence[str],
+    expected_symbols: Sequence[str],
+) -> StudyManifest:
+    """Load a manifest from an absolute path and validate its external pin."""
+
+    if not path.is_absolute():
+        raise StudyManifestError("study manifest path must be absolute")
+    resolved = path.expanduser().resolve()
+    try:
+        raw = resolved.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise StudyManifestError(f"cannot read study manifest: {resolved}") from exc
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise StudyManifestError(
+                    f"study manifest contains duplicate JSON key: {key}"
+                )
+            result[key] = value
+        return result
+
+    try:
+        payload = json.loads(raw, object_pairs_hook=reject_duplicate_keys)
+    except json.JSONDecodeError as exc:
+        raise StudyManifestError("study manifest is not valid JSON") from exc
+    return parse_study_manifest(
+        payload,
+        expected_sha256=expected_sha256,
+        expected_sources=expected_sources,
+        expected_symbols=expected_symbols,
+    )
+
+
+def _manifest_binding_values(manifest: StudyManifest) -> tuple[str, ...]:
+    return (
+        manifest.study_id,
+        manifest.contract_hash,
+        iso_utc(manifest.t0),
+        manifest.source_manifest_hash,
+        manifest.content_sha256,
+        manifest.canonical_payload_json,
+    )
+
+
+def _manifest_binding_row_matches(row: sqlite3.Row, manifest: StudyManifest) -> bool:
+    return tuple(
+        row[field]
+        for field in (
+            "study_id",
+            "policy_hash",
+            "t0",
+            "source_manifest_hash",
+            "study_manifest_sha256",
+            "study_manifest_json",
+        )
+    ) == _manifest_binding_values(manifest)
+
+
+def _table_has_rows(connection: sqlite3.Connection, table: str) -> bool:
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if exists is None:
+        return False
+    return (
+        connection.execute(  # noqa: S608 - table comes from a closed internal tuple.
+            f"SELECT 1 FROM {table} LIMIT 1"
+        ).fetchone()
+        is not None
+    )
+
+
+def _artifact_has_evidence(connection: sqlite3.Connection) -> bool:
+    return any(
+        _table_has_rows(connection, table) for table in _ARTIFACT_EVIDENCE_TABLES
+    )
+
+
+def assert_finalization_provenance_schema(connection: sqlite3.Connection) -> None:
+    """Require the post-R3 immutable finalization producer binding columns."""
+
+    table_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'symbol_epoch_finalizations'"
+    ).fetchone()
+    if table_exists is None:
+        raise ArtifactSchemaMismatch("symbol_epoch_finalizations table is missing")
+    columns = {
+        row["name"]
+        for row in connection.execute("PRAGMA table_info(symbol_epoch_finalizations)")
+    }
+    missing = sorted(FINALIZATION_PROVENANCE_COLUMNS - columns)
+    if missing:
+        raise ArtifactSchemaMismatch(
+            "symbol_epoch_finalizations lacks immutable producer binding columns: "
+            + ", ".join(missing)
+        )
+
+
+def assert_connection_manifest_compatible(
+    connection: sqlite3.Connection,
+    manifest: StudyManifest,
+) -> None:
+    """Validate the binding on the exact SQLite handle used for a read."""
+
+    connection.row_factory = sqlite3.Row
+    binding_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type = 'table' "
+        "AND name = 'collector_study_manifest_binding'"
+    ).fetchone()
+    if binding_exists is not None:
+        row = connection.execute(
+            "SELECT * FROM collector_study_manifest_binding WHERE binding_id = 1"
+        ).fetchone()
+        if row is not None:
+            if not _manifest_binding_row_matches(row, manifest):
+                raise ArtifactManifestMismatch(
+                    "artifact is bound to a different study manifest"
+                )
+            return
+    if _artifact_has_evidence(connection):
+        raise ArtifactManifestMismatch(
+            "legacy or unbound artifact contains evidence; use a fresh artifact root"
+        )
+
+
+def assert_artifact_manifest_compatible(
+    artifact_path: Path, manifest: StudyManifest
+) -> None:
+    """Read-only preflight before an existing artifact is opened for writing."""
+
+    artifact_path = artifact_path.expanduser().resolve()
+    if not artifact_path.exists() or artifact_path.stat().st_size == 0:
+        return
+    uri = f"file:{urllib.parse.quote(str(artifact_path))}?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True) as connection:
+            assert_connection_manifest_compatible(connection, manifest)
+    except sqlite3.Error as exc:
+        raise ArtifactManifestMismatch(
+            f"cannot verify artifact manifest binding: {artifact_path}"
+        ) from exc
+
+
+def _configure_manifest_binding(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS collector_study_manifest_binding (
+            binding_id INTEGER PRIMARY KEY CHECK (binding_id = 1),
+            study_id TEXT NOT NULL,
+            policy_hash TEXT NOT NULL,
+            t0 TEXT NOT NULL,
+            source_manifest_hash TEXT NOT NULL,
+            study_manifest_sha256 TEXT NOT NULL,
+            study_manifest_json TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        );
+        """
+        + _trigger_sql("collector_study_manifest_binding")
+    )
+
+
+def bind_study_manifest(
+    connection: sqlite3.Connection,
+    manifest: StudyManifest,
+    *,
+    recorded_at: dt.datetime,
+) -> None:
+    """Bind one empty local artifact to exactly one immutable manifest."""
+
+    connection.row_factory = sqlite3.Row
+    _configure_manifest_binding(connection)
+    row = connection.execute(
+        "SELECT * FROM collector_study_manifest_binding WHERE binding_id = 1"
+    ).fetchone()
+    if row is not None:
+        if not _manifest_binding_row_matches(row, manifest):
+            raise ArtifactManifestMismatch(
+                "artifact is bound to a different study manifest"
+            )
+        connection.commit()
+        return
+    if _artifact_has_evidence(connection):
+        raise ArtifactManifestMismatch(
+            "unbound artifact already contains evidence; use a fresh artifact root"
+        )
+    connection.execute(
+        """
+        INSERT INTO collector_study_manifest_binding (
+            binding_id, study_id, policy_hash, t0, source_manifest_hash,
+            study_manifest_sha256, study_manifest_json, recorded_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (*_manifest_binding_values(manifest), iso_utc(recorded_at)),
+    )
+    connection.commit()
+
+
 @dataclass(frozen=True, slots=True)
 class FinalizationResult:
     study_id: str
@@ -209,6 +668,10 @@ class FinalizationInvariantError(RuntimeError):
     """Raised when immutable finalization disagrees with reconstructed input."""
 
 
+class T0StartupGateError(RuntimeError):
+    """Raised when a collector would violate the precommitted T0 contract."""
+
+
 class EpochLedger:
     """Append-only operational ledger sharing the raw collector connection."""
 
@@ -219,6 +682,12 @@ class EpochLedger:
         self._configure()
 
     def _configure(self) -> None:
+        existing_finalization_table = self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'symbol_epoch_finalizations'"
+        ).fetchone()
+        if existing_finalization_table is not None:
+            assert_finalization_provenance_schema(self.db)
         tables = """
         CREATE TABLE IF NOT EXISTS epoch_source_events (
             append_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -299,6 +768,8 @@ class EpochLedger:
             finalize_at TEXT NOT NULL,
             finalized_at TEXT NOT NULL,
             recorded_at TEXT NOT NULL,
+            collector_instance_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
             final_status TEXT NOT NULL CHECK (
                 final_status IN (
                     'FINAL_COMPLETE', 'FINAL_MISSING', 'FINAL_CONFLICT'
@@ -364,6 +835,8 @@ class EpochLedger:
             started_at TEXT NOT NULL,
             code_hash TEXT NOT NULL,
             collector_version TEXT NOT NULL,
+            t0_utc TEXT,
+            study_manifest_sha256 TEXT,
             UNIQUE (study_id, policy_hash, collector_instance_id, run_id)
         );
         CREATE INDEX IF NOT EXISTS ix_collector_process_version_latest
@@ -410,7 +883,97 @@ class EpochLedger:
                 self.db.execute(
                     f"ALTER TABLE collector_attempts ADD COLUMN {column} TEXT"
                 )
+        process_version_columns = {
+            row["name"]
+            for row in self.db.execute("PRAGMA table_info(collector_process_versions)")
+        }
+        if "t0_utc" not in process_version_columns:
+            self.db.execute(
+                "ALTER TABLE collector_process_versions ADD COLUMN t0_utc TEXT"
+            )
+        self.db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_collector_process_version_t0
+            ON collector_process_versions (study_id, policy_hash, t0_utc)
+            """
+        )
+        if "study_manifest_sha256" not in process_version_columns:
+            self.db.execute(
+                "ALTER TABLE collector_process_versions "
+                "ADD COLUMN study_manifest_sha256 TEXT"
+            )
         self.db.commit()
+
+    def validate_t0_startup(self, *, started_at: dt.datetime) -> None:
+        """Fail closed before collection starts if the committed T0 is unsafe."""
+
+        configured_t0 = iso_utc(self.policy.t0)
+        mismatched_stamp = self.db.execute(
+            """
+            SELECT t0_utc FROM (
+                SELECT t0_utc
+                FROM collector_process_versions
+                WHERE study_id = ? AND policy_hash = ? AND t0_utc < ?
+                LIMIT 1
+            )
+            UNION ALL
+            SELECT t0_utc FROM (
+                SELECT t0_utc
+                FROM collector_process_versions
+                WHERE study_id = ? AND policy_hash = ? AND t0_utc > ?
+                LIMIT 1
+            )
+            LIMIT 1
+            """,
+            (
+                self.policy.study_id,
+                self.policy.policy_hash,
+                configured_t0,
+                self.policy.study_id,
+                self.policy.policy_hash,
+                configured_t0,
+            ),
+        ).fetchone()
+        if mismatched_stamp is not None:
+            raise T0StartupGateError(
+                "G-T0-A refused collector startup: "
+                f"stored_t0={mismatched_stamp['t0_utc']} "
+                f"configured_t0={configured_t0}"
+            )
+
+        has_pit_records = (
+            self.db.execute("SELECT 1 FROM pit_records LIMIT 1").fetchone() is not None
+        )
+        has_current_identity_stamp = (
+            self.db.execute(
+                """
+                SELECT 1
+                FROM collector_process_versions
+                WHERE study_id = ? AND policy_hash = ?
+                LIMIT 1
+                """,
+                (self.policy.study_id, self.policy.policy_hash),
+            ).fetchone()
+            is not None
+        )
+        has_any_process_stamp = (
+            self.db.execute(
+                "SELECT 1 FROM collector_process_versions LIMIT 1"
+            ).fetchone()
+            is not None
+        )
+        is_legacy_v2_restart = not has_any_process_stamp and has_pit_records
+        t0_minus_4h = self.policy.t0 - dt.timedelta(hours=EPOCH_HOURS)
+        is_warmup_ready = started_at <= t0_minus_4h
+        if not (is_warmup_ready or has_current_identity_stamp or is_legacy_v2_restart):
+            raise T0StartupGateError(
+                "G-T0-B refused fresh-artifact startup: "
+                f"started_at={iso_utc(started_at)} "
+                f"t0_minus_4h={iso_utc(t0_minus_4h)}; "
+                "warm-up cutoff 초과, 현재 study_id/policy_hash stamp 없음, "
+                "stamp 없는 legacy v2 artifact 재기동에도 해당하지 않음; "
+                "기존 T0 를 바꾸지 말고 새 커밋·새 T0 를 사전 고정하라"
+            )
 
     def ensure_open_rows(
         self, decision_epoch: dt.datetime, collector_instance_id: str, now: dt.datetime
@@ -607,13 +1170,21 @@ class EpochLedger:
         started_at: dt.datetime,
         code_hash: str,
         collector_version: str,
+        study_manifest_sha256: str | None = None,
     ) -> None:
+        if study_manifest_sha256 is not None and not _SHA256_RE.fullmatch(
+            study_manifest_sha256
+        ):
+            raise ValueError(
+                "study_manifest_sha256 must be 64 lowercase hex characters"
+            )
         self.db.execute(
             """
             INSERT INTO collector_process_versions (
                 version_stamp_id, study_id, policy_hash, collector_instance_id,
-                run_id, started_at, code_hash, collector_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                run_id, started_at, code_hash, collector_version, t0_utc,
+                study_manifest_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 uuid.uuid4().hex,
@@ -624,6 +1195,8 @@ class EpochLedger:
                 iso_utc(started_at),
                 code_hash,
                 collector_version,
+                iso_utc(self.policy.t0),
+                study_manifest_sha256,
             ),
         )
         self.db.commit()
@@ -651,6 +1224,8 @@ class EpochLedger:
         symbol: str,
         decision_epoch: dt.datetime,
         recorded_at: dt.datetime,
+        collector_instance_id: str,
+        run_id: str,
         final_status: FinalStatus,
         missing_sources: Sequence[str],
         conflict_sources: Sequence[str],
@@ -658,6 +1233,8 @@ class EpochLedger:
         evaluation_hash: str,
         evaluation_json: str,
     ) -> None:
+        if not collector_instance_id or not run_id:
+            raise ValueError("finalization producer binding is required")
         identity = canonical_json(
             {
                 "decision_epoch_utc": iso_utc(decision_epoch),
@@ -667,16 +1244,19 @@ class EpochLedger:
             }
         )
         deadline = finalize_at(decision_epoch)
+        if recorded_at < deadline:
+            raise ValueError(f"cannot record finalization before {iso_utc(deadline)}")
         self.db.execute(
             """
             INSERT INTO symbol_epoch_finalizations (
                 finalization_id, study_id, policy_hash,
                 source_manifest_hash, symbol, decision_epoch_utc,
-                finalize_at, finalized_at, recorded_at, final_status,
+                finalize_at, finalized_at, recorded_at,
+                collector_instance_id, run_id, final_status,
                 missing_sources_json, conflict_sources_json,
                 invalid_sources_json, evaluation_hash, evaluation_json,
                 finalizer_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sha256_text(identity),
@@ -688,6 +1268,8 @@ class EpochLedger:
                 iso_utc(deadline),
                 iso_utc(deadline),
                 iso_utc(recorded_at),
+                collector_instance_id,
+                run_id,
                 final_status,
                 canonical_json(list(missing_sources)),
                 canonical_json(list(conflict_sources)),
@@ -759,9 +1341,11 @@ class RawPITReader:
         local_connection: sqlite3.Connection,
         local_path: Path,
         replica_paths: Sequence[Path] = (),
+        study_manifest: StudyManifest | None = None,
     ) -> None:
         self.local_connection = local_connection
         self.local_path = local_path.resolve()
+        self.study_manifest = study_manifest
         self.replica_paths = tuple(
             sorted(
                 {
@@ -830,6 +1414,11 @@ class RawPITReader:
             uri = f"file:{urllib.parse.quote(str(path))}?mode=ro"
             try:
                 with sqlite3.connect(uri, uri=True) as replica:
+                    if self.study_manifest is not None:
+                        assert_connection_manifest_compatible(
+                            replica,
+                            self.study_manifest,
+                        )
                     rows.extend(
                         self._query(
                             replica,
@@ -839,7 +1428,7 @@ class RawPITReader:
                             deadline=deadline,
                         )
                     )
-            except sqlite3.Error as exc:
+            except (ArtifactManifestMismatch, sqlite3.Error) as exc:
                 raise RawPITReadError(
                     f"failed to read replica PIT artifact {path}: {exc}"
                 ) from exc
@@ -930,9 +1519,22 @@ def _observation_slot(
 
 
 class DeterministicEpochFinalizer:
-    def __init__(self, ledger: EpochLedger, raw_reader: RawPITReader) -> None:
+    def __init__(
+        self,
+        ledger: EpochLedger,
+        raw_reader: RawPITReader,
+        *,
+        collector_instance_id: str | None = None,
+        run_id: str | None = None,
+    ) -> None:
+        if (collector_instance_id is None) != (run_id is None):
+            raise ValueError(
+                "collector_instance_id and run_id must be provided together"
+            )
         self.ledger = ledger
         self.raw_reader = raw_reader
+        self.collector_instance_id = collector_instance_id
+        self.run_id = run_id
 
     def _evaluate(
         self, symbol: str, decision_epoch: dt.datetime
@@ -1149,10 +1751,16 @@ class DeterministicEpochFinalizer:
                 invalid_sources=invalid,
                 inserted=False,
             )
+        if self.collector_instance_id is None or self.run_id is None:
+            raise FinalizationInvariantError(
+                "cannot insert finalization without producer binding"
+            )
         self.ledger.append_finalization(
             symbol=symbol,
             decision_epoch=decision_epoch,
             recorded_at=observed_at,
+            collector_instance_id=self.collector_instance_id,
+            run_id=self.run_id,
             final_status=status,
             missing_sources=missing,
             conflict_sources=conflicts,
@@ -1357,37 +1965,110 @@ def availability_report(
     observed_at: dt.datetime,
     stale_after_seconds: float,
     expected_code_hash: str | None = None,
+    expected_study_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
+    if expected_study_manifest_sha256 is not None and not _SHA256_RE.fullmatch(
+        expected_study_manifest_sha256
+    ):
+        raise ValueError(
+            "expected_study_manifest_sha256 must be 64 lowercase hex characters"
+        )
     replicas: list[dict[str, Any]] = []
     fresh_instance_ids: set[str] = set()
     instance_path_counts: dict[str, int] = defaultdict(int)
     unstamped_artifacts: list[str] = []
     version_mismatches: list[dict[str, str]] = []
+    manifest_mismatches: list[dict[str, str | None]] = []
+    provenance_mismatches: list[dict[str, str]] = []
     for path in sorted(
         {item.expanduser().resolve() for item in artifact_paths}, key=str
     ):
         heartbeat = latest_heartbeat(path, policy)
         if heartbeat is None:
             replicas.append({"artifact": str(path), "status": "UNAVAILABLE"})
-            if expected_code_hash is not None:
+            if (
+                expected_code_hash is not None
+                or expected_study_manifest_sha256 is not None
+            ):
                 unstamped_artifacts.append(str(path))
             continue
         age = (observed_at - parse_utc(heartbeat["observed_at"])).total_seconds()
         status = "HEALTHY" if 0 <= age <= stale_after_seconds else "STALE"
         version = latest_process_version(path, policy, run_id=heartbeat["run_id"])
-        if expected_code_hash is not None:
+        if expected_code_hash is not None or expected_study_manifest_sha256 is not None:
             if version is None:
                 status = "VERSION_UNSTAMPED"
                 unstamped_artifacts.append(str(path))
-            elif version["code_hash"] != expected_code_hash:
-                status = "VERSION_MISMATCH"
-                version_mismatches.append(
+            else:
+                code_mismatch = (
+                    expected_code_hash is not None
+                    and version["code_hash"] != expected_code_hash
+                )
+                actual_manifest_sha256 = (
+                    version["study_manifest_sha256"]
+                    if "study_manifest_sha256" in version
+                    else None
+                )
+                manifest_unstamped = (
+                    expected_study_manifest_sha256 is not None
+                    and actual_manifest_sha256 is None
+                )
+                manifest_mismatch = (
+                    expected_study_manifest_sha256 is not None
+                    and actual_manifest_sha256 is not None
+                    and actual_manifest_sha256 != expected_study_manifest_sha256
+                )
+                if code_mismatch:
+                    version_mismatches.append(
+                        {
+                            "actual_code_hash": version["code_hash"],
+                            "artifact": str(path),
+                            "expected_code_hash": expected_code_hash,
+                        }
+                    )
+                if manifest_mismatch:
+                    manifest_mismatches.append(
+                        {
+                            "actual_study_manifest_sha256": (actual_manifest_sha256),
+                            "artifact": str(path),
+                            "expected_study_manifest_sha256": (
+                                expected_study_manifest_sha256
+                            ),
+                        }
+                    )
+                if manifest_unstamped:
+                    unstamped_artifacts.append(str(path))
+                if code_mismatch and manifest_mismatch:
+                    status = "VERSION_AND_MANIFEST_MISMATCH"
+                elif code_mismatch and manifest_unstamped:
+                    status = "VERSION_MISMATCH_AND_UNSTAMPED"
+                elif code_mismatch:
+                    status = "VERSION_MISMATCH"
+                elif manifest_mismatch:
+                    status = "MANIFEST_MISMATCH"
+                elif manifest_unstamped:
+                    status = "VERSION_UNSTAMPED"
+        if version is not None:
+            try:
+                heartbeat_at = parse_utc(heartbeat["observed_at"])
+                started_at = parse_utc(version["started_at"])
+            except (TypeError, ValueError):
+                status = "VERSION_TEMPORAL_MISMATCH"
+                provenance_mismatches.append(
                     {
-                        "actual_code_hash": version["code_hash"],
                         "artifact": str(path),
-                        "expected_code_hash": expected_code_hash,
+                        "reason": "invalid_process_or_heartbeat_timestamp",
                     }
                 )
+            else:
+                if started_at > heartbeat_at:
+                    status = "VERSION_TEMPORAL_MISMATCH"
+                    provenance_mismatches.append(
+                        {
+                            "artifact": str(path),
+                            "reason": "process_started_after_heartbeat",
+                        }
+                    )
         if status == "HEALTHY":
             fresh_instance_ids.add(heartbeat["collector_instance_id"])
             instance_path_counts[heartbeat["collector_instance_id"]] += 1
@@ -1403,6 +2084,11 @@ def availability_report(
                 {
                     "code_hash": version["code_hash"],
                     "collector_version": version["collector_version"],
+                    "study_manifest_sha256": (
+                        version["study_manifest_sha256"]
+                        if "study_manifest_sha256" in version
+                        else None
+                    ),
                     "version_run_id": version["run_id"],
                     "version_started_at": version["started_at"],
                 }
@@ -1415,15 +2101,22 @@ def availability_report(
             if count > 1
         ),
         "expected_code_hash": expected_code_hash,
+        "expected_study_manifest_sha256": expected_study_manifest_sha256,
         "healthy_replica_count": len(fresh_instance_ids),
+        "manifest_mismatches": manifest_mismatches,
+        "provenance_mismatches": provenance_mismatches,
         "observed_at": iso_utc(observed_at),
         "replicas": replicas,
         "unstamped_artifacts": sorted(set(unstamped_artifacts)),
         "version_mismatches": version_mismatches,
         "version_stamp_match": (
             None
-            if expected_code_hash is None
-            else not unstamped_artifacts and not version_mismatches
+            if (expected_code_hash is None and expected_study_manifest_sha256 is None)
+            else (
+                not unstamped_artifacts
+                and not version_mismatches
+                and not manifest_mismatches
+            )
         ),
     }
 
@@ -1433,35 +2126,118 @@ def finalization_report(
     policy: EpochPolicy,
     *,
     decision_epoch: dt.datetime,
+    study_manifest: StudyManifest | None = None,
 ) -> dict[str, Any]:
     """Read finalization rows from replicas without mutating any collector DB."""
 
+    if study_manifest is not None and study_manifest.epoch_policy != policy:
+        raise ValueError("finalization policy must come from the pinned manifest")
     rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     unavailable_artifacts: list[str] = []
+    replica_witnesses: list[dict[str, Any]] = []
     for path in sorted(
         {item.expanduser().resolve() for item in artifact_paths}, key=str
     ):
+        witness: dict[str, Any] = {
+            "artifact": str(path),
+            "collector_instance_id": None,
+            "run_id": None,
+            "run_ids": [],
+            "provenance_ok": False,
+            "status": "UNAVAILABLE",
+            "witnessed_symbols": [],
+            "missing_symbols": list(policy.symbols),
+            "finalizations": [],
+        }
         if not path.is_file():
             unavailable_artifacts.append(str(path))
+            replica_witnesses.append(witness)
             continue
         uri = f"file:{urllib.parse.quote(str(path))}?mode=ro"
         try:
             with sqlite3.connect(uri, uri=True) as connection:
                 connection.row_factory = sqlite3.Row
+                if study_manifest is not None:
+                    assert_connection_manifest_compatible(connection, study_manifest)
+                assert_finalization_provenance_schema(connection)
                 rows = connection.execute(
                     """
-                    SELECT symbol, final_status, evaluation_hash, recorded_at
+                    SELECT append_id, symbol, final_status, evaluation_hash,
+                           recorded_at, collector_instance_id, run_id
                     FROM symbol_epoch_finalizations
                     WHERE study_id = ? AND policy_hash = ?
+                      AND source_manifest_hash = ?
                       AND decision_epoch_utc = ?
                     """,
                     (
                         policy.study_id,
                         policy.policy_hash,
+                        policy.source_manifest_hash,
                         iso_utc(decision_epoch),
                     ),
                 )
-                for row in rows:
+                artifact_rows = [dict(row) for row in rows]
+                witnessed_symbols = sorted({row["symbol"] for row in artifact_rows})
+                witness["finalizations"] = sorted(
+                    artifact_rows,
+                    key=lambda item: (item["symbol"], item["evaluation_hash"]),
+                )
+                witness["witnessed_symbols"] = witnessed_symbols
+                witness["missing_symbols"] = sorted(
+                    set(policy.symbols) - set(witnessed_symbols)
+                )
+                witness["status"] = (
+                    "COMPLETE" if not witness["missing_symbols"] else "PARTIAL"
+                )
+                process_rows = connection.execute(
+                    """
+                    SELECT append_id, collector_instance_id, run_id, started_at
+                    FROM collector_process_versions
+                    WHERE study_id = ? AND policy_hash = ?
+                    ORDER BY append_id
+                    """,
+                    (policy.study_id, policy.policy_hash),
+                )
+                process_by_pair = {
+                    (row["collector_instance_id"], row["run_id"]): row
+                    for row in process_rows
+                }
+                producer_pairs = {
+                    (row["collector_instance_id"], row["run_id"])
+                    for row in artifact_rows
+                    if row["collector_instance_id"] and row["run_id"]
+                }
+                producer_instances = {pair[0] for pair in producer_pairs}
+                all_rows_bound = all(
+                    row["collector_instance_id"] and row["run_id"]
+                    for row in artifact_rows
+                )
+                if all_rows_bound and len(producer_instances) == 1:
+                    witness["collector_instance_id"] = next(iter(producer_instances))
+                    witness["run_ids"] = sorted(pair[1] for pair in producer_pairs)
+                    if len(witness["run_ids"]) == 1:
+                        witness["run_id"] = witness["run_ids"][0]
+                    provenance_ok = True
+                    for row in artifact_rows:
+                        process = process_by_pair.get(
+                            (row["collector_instance_id"], row["run_id"])
+                        )
+                        if process is None:
+                            provenance_ok = False
+                            break
+                        try:
+                            if parse_utc(process["started_at"]) > parse_utc(
+                                row["recorded_at"]
+                            ):
+                                provenance_ok = False
+                                break
+                        except (TypeError, ValueError):
+                            provenance_ok = False
+                            break
+                    witness["provenance_ok"] = provenance_ok
+                if witness["status"] == "COMPLETE" and not witness["provenance_ok"]:
+                    witness["status"] = "PROVENANCE_ERROR"
+                for row in artifact_rows:
                     key = (row["symbol"], row["evaluation_hash"])
                     rows_by_key[key] = {
                         "evaluation_hash": row["evaluation_hash"],
@@ -1469,8 +2245,12 @@ def finalization_report(
                         "recorded_at": row["recorded_at"],
                         "symbol": row["symbol"],
                     }
-        except sqlite3.Error:
+        except (ArtifactManifestMismatch, ArtifactSchemaMismatch, sqlite3.Error) as exc:
             unavailable_artifacts.append(str(path))
+            witness["status"] = "READ_ERROR"
+            witness["error_type"] = type(exc).__name__
+            witness["error_message"] = str(exc)
+        replica_witnesses.append(witness)
     rows = sorted(
         rows_by_key.values(),
         key=lambda item: (
@@ -1484,10 +2264,39 @@ def finalization_report(
         for symbol in policy.symbols
         if len({row["evaluation_hash"] for row in rows if row["symbol"] == symbol}) > 1
     )
+    non_complete_symbols = sorted(
+        {row["symbol"] for row in rows if row["final_status"] != FINAL_COMPLETE}
+    )
+    witnessed_replica_count = sum(
+        witness["status"] == "COMPLETE" for witness in replica_witnesses
+    )
+    collector_instance_ids = sorted(
+        {
+            witness["collector_instance_id"]
+            for witness in replica_witnesses
+            if witness["collector_instance_id"]
+        }
+    )
+    topology_ok = (
+        len(replica_witnesses) >= 2
+        and len(collector_instance_ids) == len(replica_witnesses)
+        and all(witness["collector_instance_id"] for witness in replica_witnesses)
+        and all(witness["provenance_ok"] for witness in replica_witnesses)
+    )
     return {
         "decision_epoch_utc": iso_utc(decision_epoch),
+        "all_replicas_witnessed": (
+            len(replica_witnesses) >= 2
+            and witnessed_replica_count == len(replica_witnesses)
+        ),
+        "distinct_collector_instance_ids": collector_instance_ids,
         "divergent_symbols": divergent_symbols,
         "finalizations": rows,
         "missing_symbols": sorted(set(policy.symbols) - symbols_present),
+        "non_complete_symbols": non_complete_symbols,
+        "replica_witnesses": replica_witnesses,
+        "topology_ok": topology_ok,
         "unavailable_artifacts": unavailable_artifacts,
+        "unwitnessed_replica_count": len(replica_witnesses) - witnessed_replica_count,
+        "witnessed_replica_count": witnessed_replica_count,
     }

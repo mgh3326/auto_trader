@@ -382,6 +382,17 @@ def _two_row_kr_quote_df() -> pd.DataFrame:
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_kr_nxt_tradability(monkeypatch):
+    """Keep standalone quote tests independent of the shared NXT database."""
+    from app.mcp_server.tooling import market_data_quotes
+
+    async def no_tradability(symbols):
+        return {}
+
+    monkeypatch.setattr(market_data_quotes, "get_kr_nxt_tradability", no_tradability)
+
+
 def _nxt_quote_book(
     *,
     expected_price: int | None = None,
@@ -1632,6 +1643,34 @@ async def test_get_quote_kr_exposes_nxt_tradable(monkeypatch):
     assert result["nxt_tradable_reason"] == "stale_asof"
     assert result["nxt_tradable_source"] == "kr_symbol_universe"
     assert result["nxt_tradable_asof"] is not None
+
+
+@pytest.mark.asyncio
+async def test_registered_get_quote_surfaces_nxt_schema_fault(monkeypatch):
+    from app.mcp_server.tooling import market_data_quotes
+
+    tools = build_tools()
+    df = _single_row_df()
+
+    class DummyKISClient:
+        async def inquire_daily_itemchartprice(self, code, market, n):
+            return df
+
+    _patch_runtime_attr(monkeypatch, "KISClient", DummyKISClient)
+
+    async def schema_fault(symbols):
+        raise RuntimeError('relation "kr_symbol_universe" does not exist')
+
+    monkeypatch.setattr(market_data_quotes, "get_kr_nxt_tradability", schema_fault)
+
+    result = await tools["get_quote"]("005930", market="kr")
+
+    assert result == {
+        "error": 'relation "kr_symbol_universe" does not exist',
+        "source": "kis",
+        "symbol": "005930",
+        "instrument_type": "equity_kr",
+    }
 
 
 @pytest.mark.asyncio
