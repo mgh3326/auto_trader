@@ -14,10 +14,12 @@ from app.models.fill_observation import (
     FillObservation,
     FillProjectionCursor,
     FillProjectionOutbox,
+    FillSettlementEnrichment,
 )
 from app.services.fill_observation.contracts import (
     FillObservationIdentity,
     NormalizedBrokerFillEvidence,
+    NormalizedFillSettlement,
 )
 from app.services.fill_observation.identity import derive_projection_delivery_key
 
@@ -88,7 +90,7 @@ class FillObservationRepository:
             fee_total=evidence.fee_total,
             evidence_source=evidence.evidence_source,
             evidence_ref=evidence.evidence_ref,
-            evidence_hash=identity.evidence_hash,
+            fill_fact_hash=identity.fill_fact_hash,
             observed_at=evidence.observed_at,
             filled_at=evidence.filled_at,
             correlation_id=evidence.correlation_id,
@@ -113,6 +115,46 @@ class FillObservationRepository:
         self.session.add_all(outbox_rows)
         await self.session.flush()
         return observation, len(outbox_rows)
+
+    async def latest_settlement(
+        self,
+        fill_observation_id: int,
+    ) -> FillSettlementEnrichment | None:
+        """Return the highest settlement revision for one observation."""
+        return await self.session.scalar(
+            select(FillSettlementEnrichment)
+            .where(FillSettlementEnrichment.fill_observation_id == fill_observation_id)
+            .order_by(FillSettlementEnrichment.revision.desc())
+            .limit(1)
+        )
+
+    async def append_settlement(
+        self,
+        *,
+        fill_observation_id: int,
+        evidence: NormalizedBrokerFillEvidence,
+        settlement: NormalizedFillSettlement,
+        revision: int,
+    ) -> FillSettlementEnrichment:
+        """Append one settlement revision without touching the observation."""
+        enrichment = FillSettlementEnrichment(
+            fill_observation_id=fill_observation_id,
+            revision=revision,
+            settlement_hash=settlement.settlement_hash,
+            cumulative_quantity=settlement.cumulative_quantity,
+            reported_fill_quantity=settlement.reported_fill_quantity,
+            average_price=settlement.average_price,
+            last_fill_price=settlement.last_fill_price,
+            cumulative_notional=settlement.cumulative_notional,
+            fee_total=settlement.fee_total,
+            filled_at=settlement.filled_at,
+            evidence_source=evidence.evidence_source,
+            evidence_ref=evidence.evidence_ref,
+            observed_at=evidence.observed_at,
+        )
+        self.session.add(enrichment)
+        await self.session.flush()
+        return enrichment
 
 
 class FillProjectionRepository:

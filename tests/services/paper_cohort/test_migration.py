@@ -130,6 +130,7 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             for table in (
                 "fill_projection_cursors",
                 "fill_projection_outbox",
+                "fill_settlement_enrichments",
                 "fill_observations",
             ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))

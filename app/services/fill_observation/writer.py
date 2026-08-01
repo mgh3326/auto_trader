@@ -10,13 +10,15 @@ from typing import Protocol
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal
-from app.models.fill_observation import FillObservation
+from app.models.fill_observation import FillObservation, FillSettlementEnrichment
 from app.services.fill_observation.contracts import (
     BrokerFillEvidence,
     FillObservationIdentity,
     FillObservationWriteResult,
     FillObservationWriteStatus,
+    FillSettlementStatus,
     NormalizedBrokerFillEvidence,
+    NormalizedFillSettlement,
 )
 from app.services.fill_observation.errors import (
     FillObservationIdentityConflict,
@@ -56,6 +58,20 @@ class _ObservationRepository(Protocol):
         projection_names: tuple[str, ...],
     ) -> tuple[FillObservation, int]: ...
 
+    async def latest_settlement(
+        self,
+        fill_observation_id: int,
+    ) -> FillSettlementEnrichment | None: ...
+
+    async def append_settlement(
+        self,
+        *,
+        fill_observation_id: int,
+        evidence: NormalizedBrokerFillEvidence,
+        settlement: NormalizedFillSettlement,
+        revision: int,
+    ) -> FillSettlementEnrichment: ...
+
 
 def fill_observation_writer_enabled() -> bool:
     """Read the additive rollback flag; absence and unknown values are off."""
@@ -83,6 +99,34 @@ def _normalize_projection_names(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(normalized)
 
 
+async def _record_settlement(
+    repository: _ObservationRepository,
+    *,
+    fill_observation_id: int,
+    evidence: NormalizedBrokerFillEvidence,
+    settlement: NormalizedFillSettlement,
+) -> tuple[FillSettlementStatus, int | None]:
+    """Append a settlement revision only when the values actually changed.
+
+    This never updates the immutable observation and never produces a fill
+    delta. The caller already holds the order-scope advisory lock, so the
+    revision number is assigned under serialized access for the order.
+    """
+    if not settlement.has_values:
+        return FillSettlementStatus.ABSENT, None
+    latest = await repository.latest_settlement(fill_observation_id)
+    if latest is not None and latest.settlement_hash == settlement.settlement_hash:
+        return FillSettlementStatus.UNCHANGED, latest.revision
+    revision = 1 if latest is None else latest.revision + 1
+    await repository.append_settlement(
+        fill_observation_id=fill_observation_id,
+        evidence=evidence,
+        settlement=settlement,
+        revision=revision,
+    )
+    return FillSettlementStatus.RECORDED, revision
+
+
 async def _record_with_repository(
     repository: _ObservationRepository,
     *,
@@ -94,16 +138,26 @@ async def _record_with_repository(
     await repository.lock_order_scope(identity.order_lock_key)
     existing = await repository.find_by_identity(identity.value)
     if existing is not None:
-        if existing.evidence_hash != identity.evidence_hash:
+        if existing.fill_fact_hash != identity.fill_fact_hash:
             raise FillObservationIdentityConflict(
-                "fill observation identity already has different broker evidence"
+                "fill observation identity already has a different broker fill fact"
             )
+        # The stable fill fact matches, so this is the same fill re-observed.
+        # Settlement drift is preserved as a new revision instead of a conflict.
+        settlement_status, settlement_revision = await _record_settlement(
+            repository,
+            fill_observation_id=existing.id,
+            evidence=evidence,
+            settlement=identity.settlement,
+        )
         return FillObservationWriteResult(
             status=FillObservationWriteStatus.DUPLICATE,
             observation_identity=identity.value,
             observation_id=existing.id,
             fill_delta_quantity=Decimal(0),
             outbox_count=0,
+            settlement_status=settlement_status,
+            settlement_revision=settlement_revision,
         )
 
     if evidence.cumulative_quantity is not None:
@@ -131,12 +185,20 @@ async def _record_with_repository(
         fill_delta_quantity=delta,
         projection_names=projection_names,
     )
+    settlement_status, settlement_revision = await _record_settlement(
+        repository,
+        fill_observation_id=observation.id,
+        evidence=evidence,
+        settlement=identity.settlement,
+    )
     return FillObservationWriteResult(
         status=FillObservationWriteStatus.INSERTED,
         observation_identity=identity.value,
         observation_id=observation.id,
         fill_delta_quantity=delta,
         outbox_count=outbox_count,
+        settlement_status=settlement_status,
+        settlement_revision=settlement_revision,
     )
 
 

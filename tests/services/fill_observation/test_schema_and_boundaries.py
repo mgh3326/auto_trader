@@ -11,6 +11,7 @@ from app.models.fill_observation import (
     FillObservation,
     FillProjectionCursor,
     FillProjectionOutbox,
+    FillSettlementEnrichment,
 )
 
 pytestmark = pytest.mark.unit
@@ -52,6 +53,40 @@ def test_observation_has_no_mutable_updated_at_column() -> None:
     assert "cumulative_quantity" in FillObservation.__table__.columns
 
 
+def test_settlement_enrichment_is_append_only_and_revision_scoped() -> None:
+    table = FillSettlementEnrichment.__table__
+    assert table.schema == "review"
+    assert "updated_at" not in table.columns
+    assert "uq_fill_settlement_enrichment_revision" in _constraint_names(
+        FillSettlementEnrichment
+    )
+    for column in (
+        "fill_observation_id",
+        "revision",
+        "settlement_hash",
+        "fee_total",
+        "average_price",
+        "last_fill_price",
+        "cumulative_notional",
+        "filled_at",
+    ):
+        assert column in table.columns
+
+
+def test_settlement_service_never_updates_the_immutable_observation() -> None:
+    repository_source = (SERVICE_ROOT / "repository.py").read_text(encoding="utf-8")
+    writer_source = (SERVICE_ROOT / "writer.py").read_text(encoding="utf-8")
+
+    # Settlement is appended as a new revision row; nothing writes back onto an
+    # existing FillObservation instance or issues an UPDATE against it.
+    assert "append_settlement" in repository_source
+    assert "sqlalchemy import update" not in repository_source
+    assert "update(FillObservation)" not in repository_source
+    assert "existing." not in writer_source.replace("existing.id", "").replace(
+        "existing.fill_fact_hash", ""
+    )
+
+
 def test_migration_is_single_head_and_has_no_data_movement() -> None:
     source = MIGRATION.read_text(encoding="utf-8")
     assert 'revision: str = "20260801_rob1195_fillobs"' in source
@@ -76,9 +111,12 @@ def test_migration_enforces_append_only_and_non_destructive_rollback() -> None:
     assert "reject_fill_observation_mutation" in source
     assert "BEFORE UPDATE OR DELETE ON review.fill_observations" in source
     assert "BEFORE TRUNCATE ON review.fill_observations" in source
+    assert "BEFORE UPDATE OR DELETE ON review.fill_settlement_enrichments" in source
+    assert "BEFORE TRUNCATE ON review.fill_settlement_enrichments" in source
     assert "cannot downgrade: review.fill_observations contains" in source
-    assert "SCHEMA_BOOTSTRAP_VERSION = 34" in bootstrap
+    assert "SCHEMA_BOOTSTRAP_VERSION = 35" in bootstrap
     assert "reject_fill_observation_mutation" in bootstrap
+    assert "trg_fill_settlement_enrichments_immutable" in bootstrap
 
 
 def test_migration_contains_durable_retry_and_cursor_fields() -> None:
@@ -86,8 +124,12 @@ def test_migration_contains_durable_retry_and_cursor_fields() -> None:
     for required in (
         "fill_projection_outbox",
         "fill_projection_cursors",
+        "fill_settlement_enrichments",
         "uq_fill_projection_outbox_observation",
         "uq_fill_projection_outbox_delivery_key",
+        "uq_fill_settlement_enrichment_revision",
+        "fk_fill_settlement_enrichment_observation",
+        "settlement_hash",
         "attempt_count",
         "available_at",
         "lease_token",
@@ -154,6 +196,7 @@ def test_new_models_are_constructed_only_inside_service_repository() -> None:
         "FillObservation",
         "FillProjectionCursor",
         "FillProjectionOutbox",
+        "FillSettlementEnrichment",
     }
     allowed = Path("app/services/fill_observation/repository.py")
     violations: list[str] = []

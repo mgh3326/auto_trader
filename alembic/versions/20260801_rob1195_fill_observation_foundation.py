@@ -31,8 +31,8 @@ _IMMUTABILITY_DDL = (
     RETURNS trigger AS $$
     BEGIN
         RAISE EXCEPTION
-            'review.fill_observations is append-only/immutable; % rejected',
-            TG_OP
+            '%.% is append-only/immutable; % rejected',
+            TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP
             USING ERRCODE = 'restrict_violation';
     END;
     $$ LANGUAGE plpgsql
@@ -45,6 +45,17 @@ _IMMUTABILITY_DDL = (
     """
     CREATE TRIGGER trg_fill_observations_truncate_immutable
     BEFORE TRUNCATE ON review.fill_observations
+    FOR EACH STATEMENT EXECUTE FUNCTION
+        review.reject_fill_observation_mutation()
+    """,
+    """
+    CREATE TRIGGER trg_fill_settlement_enrichments_immutable
+    BEFORE UPDATE OR DELETE ON review.fill_settlement_enrichments
+    FOR EACH ROW EXECUTE FUNCTION review.reject_fill_observation_mutation()
+    """,
+    """
+    CREATE TRIGGER trg_fill_settlement_enrichments_truncate_immutable
+    BEFORE TRUNCATE ON review.fill_settlement_enrichments
     FOR EACH STATEMENT EXECUTE FUNCTION
         review.reject_fill_observation_mutation()
     """,
@@ -80,7 +91,7 @@ def upgrade() -> None:
         sa.Column("fee_total", sa.Numeric(38, 18), nullable=True),
         sa.Column("evidence_source", sa.String(64), nullable=False),
         sa.Column("evidence_ref", sa.Text(), nullable=False),
-        sa.Column("evidence_hash", sa.String(64), nullable=False),
+        sa.Column("fill_fact_hash", sa.String(64), nullable=False),
         sa.Column("observed_at", sa.TIMESTAMP(timezone=True), nullable=False),
         sa.Column("filled_at", sa.TIMESTAMP(timezone=True), nullable=True),
         sa.Column("correlation_id", sa.Text(), nullable=True),
@@ -95,7 +106,7 @@ def upgrade() -> None:
             name="uq_fill_observation_identity",
         ),
         sa.CheckConstraint(
-            f"observation_identity ~ '{_SHA256}' AND evidence_hash ~ '{_SHA256}'",
+            f"observation_identity ~ '{_SHA256}' AND fill_fact_hash ~ '{_SHA256}'",
             name=op.f("ck_fill_observation_hashes"),
         ),
         sa.CheckConstraint(
@@ -149,6 +160,70 @@ def upgrade() -> None:
         "ix_fill_observation_created_at",
         "fill_observations",
         [sa.text("created_at DESC"), sa.text("id DESC")],
+        schema=_SCHEMA,
+    )
+
+    op.create_table(
+        "fill_settlement_enrichments",
+        sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
+        sa.Column("fill_observation_id", sa.BigInteger(), nullable=False),
+        sa.Column("revision", sa.Integer(), nullable=False),
+        sa.Column("settlement_hash", sa.String(64), nullable=False),
+        sa.Column("cumulative_quantity", sa.Numeric(38, 18), nullable=True),
+        sa.Column("reported_fill_quantity", sa.Numeric(38, 18), nullable=True),
+        sa.Column("average_price", sa.Numeric(38, 18), nullable=True),
+        sa.Column("last_fill_price", sa.Numeric(38, 18), nullable=True),
+        sa.Column("cumulative_notional", sa.Numeric(38, 18), nullable=True),
+        sa.Column("fee_total", sa.Numeric(38, 18), nullable=True),
+        sa.Column("filled_at", sa.TIMESTAMP(timezone=True), nullable=True),
+        sa.Column("evidence_source", sa.String(64), nullable=False),
+        sa.Column("evidence_ref", sa.Text(), nullable=False),
+        sa.Column("observed_at", sa.TIMESTAMP(timezone=True), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.TIMESTAMP(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
+        sa.ForeignKeyConstraint(
+            ["fill_observation_id"],
+            ["review.fill_observations.id"],
+            ondelete="RESTRICT",
+            name="fk_fill_settlement_enrichment_observation",
+        ),
+        sa.UniqueConstraint(
+            "fill_observation_id",
+            "revision",
+            name="uq_fill_settlement_enrichment_revision",
+        ),
+        sa.CheckConstraint(
+            f"settlement_hash ~ '{_SHA256}'",
+            name=op.f("ck_fill_settlement_enrichment_hash"),
+        ),
+        sa.CheckConstraint(
+            "revision >= 1",
+            name=op.f("ck_fill_settlement_enrichment_revision"),
+        ),
+        sa.CheckConstraint(
+            "(cumulative_quantity IS NULL OR cumulative_quantity > 0) "
+            "AND (reported_fill_quantity IS NULL "
+            "OR reported_fill_quantity >= 0) "
+            "AND (average_price IS NULL OR average_price > 0) "
+            "AND (last_fill_price IS NULL OR last_fill_price > 0) "
+            "AND (cumulative_notional IS NULL OR cumulative_notional >= 0) "
+            "AND (fee_total IS NULL OR fee_total >= 0)",
+            name=op.f("ck_fill_settlement_enrichment_economics"),
+        ),
+        sa.CheckConstraint(
+            "btrim(evidence_source) <> '' AND btrim(evidence_ref) <> ''",
+            name=op.f("ck_fill_settlement_enrichment_nonblank_evidence"),
+        ),
+        schema=_SCHEMA,
+    )
+    op.create_index(
+        "ix_fill_settlement_enrichment_latest",
+        "fill_settlement_enrichments",
+        ["fill_observation_id", sa.text("revision DESC")],
         schema=_SCHEMA,
     )
 
@@ -334,6 +409,21 @@ def downgrade() -> None:
         schema=_SCHEMA,
     )
     op.drop_table("fill_projection_outbox", schema=_SCHEMA)
+    op.execute(
+        "DROP TRIGGER IF EXISTS "
+        "trg_fill_settlement_enrichments_truncate_immutable "
+        "ON review.fill_settlement_enrichments"
+    )
+    op.execute(
+        "DROP TRIGGER IF EXISTS trg_fill_settlement_enrichments_immutable "
+        "ON review.fill_settlement_enrichments"
+    )
+    op.drop_index(
+        "ix_fill_settlement_enrichment_latest",
+        table_name="fill_settlement_enrichments",
+        schema=_SCHEMA,
+    )
+    op.drop_table("fill_settlement_enrichments", schema=_SCHEMA)
     op.execute(
         "DROP TRIGGER IF EXISTS trg_fill_observations_truncate_immutable "
         "ON review.fill_observations"

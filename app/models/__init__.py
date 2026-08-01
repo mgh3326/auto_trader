@@ -13,6 +13,7 @@ from .fill_observation import (
     FillObservation,
     FillProjectionCursor,
     FillProjectionOutbox,
+    FillSettlementEnrichment,
 )
 from .financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
 from .invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
@@ -172,6 +173,7 @@ __all__ = [
     "FillObservation",
     "FillProjectionCursor",
     "FillProjectionOutbox",
+    "FillSettlementEnrichment",
     "CryptoCandle1d",
     "CryptoCandle1m",
     "CryptoInsightSnapshot",

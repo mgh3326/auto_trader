@@ -7,6 +7,8 @@ from app.services.fill_observation.contracts import (
     FillObservationWriteResult,
     FillObservationWriteStatus,
     FillProjectionDelivery,
+    FillSettlementStatus,
+    NormalizedFillSettlement,
 )
 from app.services.fill_observation.dual_read import FillObservationDualReader
 from app.services.fill_observation.errors import (
@@ -43,7 +45,9 @@ __all__ = [
     "FillProjectionDeliveryError",
     "FillProjectionLeaseMismatch",
     "FillProjectionQueue",
+    "FillSettlementStatus",
     "InvalidFillEvidence",
     "NonMonotonicFillCumulative",
+    "NormalizedFillSettlement",
     "fill_observation_writer_enabled",
 ]

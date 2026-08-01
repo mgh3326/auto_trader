@@ -14,11 +14,13 @@ from app.services.fill_observation.contracts import (
     BrokerFillEvidence,
     FillObservationIdentity,
     NormalizedBrokerFillEvidence,
+    NormalizedFillSettlement,
 )
 from app.services.fill_observation.errors import InvalidFillEvidence
 
 _IDENTITY_SCHEMA = "fill_observation_identity.v1"
-_EVIDENCE_SCHEMA = "fill_observation_evidence.v1"
+_FILL_FACT_SCHEMA = "fill_observation_fill_fact.v1"
+_SETTLEMENT_SCHEMA = "fill_observation_settlement.v1"
 _ORDER_SCOPE_SCHEMA = "fill_observation_order_scope.v1"
 _PARTITION_SCHEMA = "fill_projection_partition.v1"
 _DELIVERY_SCHEMA = "fill_projection_delivery.v1"
@@ -113,7 +115,11 @@ def normalize_fill_evidence(
 
     symbol = _required_text(evidence.symbol, field="symbol")
     if instrument_type is InstrumentType.equity_us:
-        symbol = to_db_symbol(symbol)
+        # US tickers are canonically dot-separated upper case (``BRK.B``).
+        # Case drift between two polls of the same order is representation, not
+        # a different fill fact. Only this branch touches the symbol, so crypto
+        # (``KRW-BTC``), KR, forex, and index symbols keep their exact meaning.
+        symbol = to_db_symbol(symbol).upper()
 
     side = _required_text(evidence.side, field="side", lower=True)
     if side not in {"buy", "sell"}:
@@ -194,7 +200,22 @@ def has_positive_fill(evidence: NormalizedBrokerFillEvidence) -> bool:
 def derive_fill_observation_identity(
     evidence: NormalizedBrokerFillEvidence,
 ) -> FillObservationIdentity:
-    """Derive stable identity, evidence fingerprint, and lock keys."""
+    """Derive stable identity, fill-fact fingerprint, settlement, and locks.
+
+    ``fill_fact_hash`` covers only the stable broker fill fact: the order scope,
+    the instrument facts, and exactly the quantity the identity is keyed on. A
+    contradiction there is a real conflict and stays fail-closed with zero write.
+
+    Everything a provider legitimately revises after the fill — fees, average or
+    last price, notional, settled ``filled_at``, and the quantity field the
+    identity is *not* keyed on — is carried in a separate settlement payload with
+    its own hash. Those never enter ``fill_fact_hash``:
+
+    - Under sequence identity the same fill is re-observed later while the
+      order's cumulative quantity has legitimately grown.
+    - Under cumulative identity the per-poll reported increment is a snapshot of
+      that poll, not a property of the cumulative state.
+    """
     if evidence.broker_fill_sequence is not None:
         identity_kind = "broker_fill_sequence"
         identity_value = evidence.broker_fill_sequence
@@ -218,25 +239,21 @@ def derive_fill_observation_identity(
             "identity_value": identity_value,
         }
     )
-    evidence_hash = _sha256(
-        {
-            "schema": _EVIDENCE_SCHEMA,
-            "order_scope": order_scope,
-            "instrument_type": evidence.instrument_type.value,
-            "symbol": evidence.symbol,
-            "side": evidence.side,
-            "currency": evidence.currency,
-            "broker_fill_sequence": evidence.broker_fill_sequence,
-            "cumulative_quantity": _decimal_text(evidence.cumulative_quantity),
-            "fill_quantity": _decimal_text(evidence.fill_quantity),
-            "average_price": _decimal_text(evidence.average_price),
-            "last_fill_price": _decimal_text(evidence.last_fill_price),
-            "cumulative_notional": _decimal_text(evidence.cumulative_notional),
-            "fee_total": _decimal_text(evidence.fee_total),
-            "filled_at": _datetime_text(evidence.filled_at),
-            "evidence_source": evidence.evidence_source,
-        }
-    )
+    fill_fact: dict[str, Any] = {
+        "schema": _FILL_FACT_SCHEMA,
+        "order_scope": order_scope,
+        "instrument_type": evidence.instrument_type.value,
+        "symbol": evidence.symbol,
+        "side": evidence.side,
+        "currency": evidence.currency,
+        "identity_kind": identity_kind,
+        "identity_value": identity_value,
+    }
+    if identity_kind == "broker_fill_sequence":
+        # The reported quantity is that sequence's own delta, so it is a stable
+        # fact. Under cumulative identity it is a per-poll snapshot instead.
+        fill_fact["fill_quantity"] = _decimal_text(evidence.fill_quantity)
+    fill_fact_hash = _sha256(fill_fact)
     partition_key = _sha256(
         {
             "schema": _PARTITION_SCHEMA,
@@ -246,9 +263,49 @@ def derive_fill_observation_identity(
     return FillObservationIdentity(
         value=observation_identity,
         kind=identity_kind,
-        evidence_hash=evidence_hash,
+        fill_fact_hash=fill_fact_hash,
+        settlement=derive_fill_settlement(
+            evidence,
+            observation_identity=observation_identity,
+        ),
         order_lock_key=_stable_signed_int64(order_scope),
         partition_key=partition_key,
+    )
+
+
+def derive_fill_settlement(
+    evidence: NormalizedBrokerFillEvidence,
+    *,
+    observation_identity: str,
+) -> NormalizedFillSettlement:
+    """Fingerprint the revisable post-trade values of one observed fill.
+
+    ``evidence_source``, ``evidence_ref``, and ``observed_at`` are provenance of
+    the poll rather than settlement values, so they stay out of the hash. That
+    keeps a repeated poll of unchanged settlement idempotent instead of
+    appending a revision per poll.
+    """
+    return NormalizedFillSettlement(
+        settlement_hash=_sha256(
+            {
+                "schema": _SETTLEMENT_SCHEMA,
+                "observation_identity": observation_identity,
+                "cumulative_quantity": _decimal_text(evidence.cumulative_quantity),
+                "fill_quantity": _decimal_text(evidence.fill_quantity),
+                "average_price": _decimal_text(evidence.average_price),
+                "last_fill_price": _decimal_text(evidence.last_fill_price),
+                "cumulative_notional": _decimal_text(evidence.cumulative_notional),
+                "fee_total": _decimal_text(evidence.fee_total),
+                "filled_at": _datetime_text(evidence.filled_at),
+            }
+        ),
+        cumulative_quantity=evidence.cumulative_quantity,
+        reported_fill_quantity=evidence.fill_quantity,
+        average_price=evidence.average_price,
+        last_fill_price=evidence.last_fill_price,
+        cumulative_notional=evidence.cumulative_notional,
+        fee_total=evidence.fee_total,
+        filled_at=evidence.filled_at,
     )
 
 
@@ -278,6 +335,7 @@ def derive_projection_lock_key(*, projection_name: str, partition_key: str) -> i
 
 __all__ = [
     "derive_fill_observation_identity",
+    "derive_fill_settlement",
     "derive_projection_delivery_key",
     "derive_projection_lock_key",
     "has_positive_fill",

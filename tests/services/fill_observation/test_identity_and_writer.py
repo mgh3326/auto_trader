@@ -12,6 +12,7 @@ from app.services.fill_observation import writer as writer_module
 from app.services.fill_observation.contracts import (
     BrokerFillEvidence,
     FillObservationWriteStatus,
+    FillSettlementStatus,
 )
 from app.services.fill_observation.errors import (
     FillObservationIdentityConflict,
@@ -61,11 +62,13 @@ class _FakeObservationRepository:
         *,
         recorded: Decimal = Decimal(0),
         existing: object | None = None,
+        settlements: list[SimpleNamespace] | None = None,
     ) -> None:
         self.recorded = recorded
         self.existing = existing
         self.lock_keys: list[int] = []
         self.appends: list[dict[str, object]] = []
+        self.settlements: list[SimpleNamespace] = list(settlements or [])
 
     async def lock_order_scope(self, lock_key: int) -> None:
         self.lock_keys.append(lock_key)
@@ -79,6 +82,34 @@ class _FakeObservationRepository:
     async def append(self, **kwargs: object) -> tuple[object, int]:
         self.appends.append(kwargs)
         return SimpleNamespace(id=91), len(kwargs["projection_names"])
+
+    async def latest_settlement(
+        self,
+        fill_observation_id: int,
+    ) -> SimpleNamespace | None:
+        rows = [
+            row
+            for row in self.settlements
+            if row.fill_observation_id == fill_observation_id
+        ]
+        return max(rows, key=lambda row: row.revision) if rows else None
+
+    async def append_settlement(
+        self,
+        *,
+        fill_observation_id: int,
+        evidence: object,
+        settlement: object,
+        revision: int,
+    ) -> SimpleNamespace:
+        row = SimpleNamespace(
+            fill_observation_id=fill_observation_id,
+            revision=revision,
+            settlement_hash=settlement.settlement_hash,  # type: ignore[attr-defined]
+            evidence=evidence,
+        )
+        self.settlements.append(row)
+        return row
 
 
 class _FakeWriterSession:
@@ -111,7 +142,7 @@ def test_identity_is_decimal_canonical_and_reobservation_stable() -> None:
 
     assert first.symbol == "BRK.B"
     assert first_identity.value == second_identity.value
-    assert first_identity.evidence_hash == second_identity.evidence_hash
+    assert first_identity.fill_fact_hash == second_identity.fill_fact_hash
     assert first_identity.order_lock_key == second_identity.order_lock_key
     assert -(2**63) <= first_identity.order_lock_key < 2**63
 
@@ -274,7 +305,14 @@ async def test_identical_identity_replay_is_zero_delta_and_zero_outbox() -> None
     evidence = normalize_fill_evidence(_evidence())
     identity = derive_fill_observation_identity(evidence)
     repository = _FakeObservationRepository(
-        existing=SimpleNamespace(id=17, evidence_hash=identity.evidence_hash)
+        existing=SimpleNamespace(id=17, fill_fact_hash=identity.fill_fact_hash),
+        settlements=[
+            SimpleNamespace(
+                fill_observation_id=17,
+                revision=1,
+                settlement_hash=identity.settlement.settlement_hash,
+            )
+        ],
     )
 
     result = await _record_with_repository(
@@ -288,7 +326,10 @@ async def test_identical_identity_replay_is_zero_delta_and_zero_outbox() -> None
     assert result.observation_id == 17
     assert result.fill_delta_quantity == 0
     assert result.outbox_count == 0
+    assert result.settlement_status is FillSettlementStatus.UNCHANGED
+    assert result.settlement_revision == 1
     assert repository.appends == []
+    assert len(repository.settlements) == 1
 
 
 @pytest.mark.asyncio
@@ -296,7 +337,7 @@ async def test_identity_payload_conflict_fails_closed_with_zero_write() -> None:
     evidence = normalize_fill_evidence(_evidence())
     identity = derive_fill_observation_identity(evidence)
     repository = _FakeObservationRepository(
-        existing=SimpleNamespace(id=17, evidence_hash="f" * 64)
+        existing=SimpleNamespace(id=17, fill_fact_hash="f" * 64)
     )
 
     with pytest.raises(FillObservationIdentityConflict):
@@ -308,6 +349,7 @@ async def test_identity_payload_conflict_fails_closed_with_zero_write() -> None:
         )
 
     assert repository.appends == []
+    assert repository.settlements == []
 
 
 @pytest.mark.asyncio
@@ -325,6 +367,221 @@ async def test_cumulative_regression_fails_closed_with_zero_write() -> None:
         )
 
     assert repository.appends == []
+
+
+@pytest.mark.parametrize(
+    "settlement_drift",
+    [
+        {"fee_total": Decimal("1.5")},
+        {"average_price": Decimal("430.31")},
+        {"last_fill_price": Decimal("430.40")},
+        {"cumulative_notional": Decimal("1075.75")},
+        {"filled_at": datetime(2026, 8, 1, 11, 59, 30, tzinfo=UTC)},
+        {"symbol": "brk-b"},
+    ],
+)
+def test_settlement_and_case_drift_keep_the_same_fill_fact(
+    settlement_drift: dict[str, object],
+) -> None:
+    first = derive_fill_observation_identity(normalize_fill_evidence(_evidence()))
+    second = derive_fill_observation_identity(
+        normalize_fill_evidence(_evidence(**settlement_drift))
+    )
+
+    assert first.value == second.value
+    assert first.fill_fact_hash == second.fill_fact_hash
+
+
+def test_us_symbol_case_drift_normalizes_without_touching_other_instruments() -> None:
+    assert normalize_fill_evidence(_evidence(symbol="brk-b")).symbol == "BRK.B"
+    assert normalize_fill_evidence(_evidence(symbol="aapl")).symbol == "AAPL"
+
+    crypto = normalize_fill_evidence(
+        _evidence(
+            broker="upbit",
+            venue="upbit",
+            instrument_type=InstrumentType.crypto,
+            symbol="krw-btc",
+            currency="KRW",
+        )
+    )
+    assert crypto.symbol == "krw-btc"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "changes_fill_fact"),
+    [
+        ({"side": "sell"}, True),
+        ({"symbol": "AAPL"}, True),
+        ({"currency": "krw"}, True),
+        ({"instrument_type": InstrumentType.equity_kr}, True),
+        ({"fee_total": Decimal("1.5")}, False),
+        ({"evidence_source": "websocket"}, False),
+    ],
+)
+def test_fill_fact_hash_covers_only_stable_broker_facts(
+    overrides: dict[str, object],
+    changes_fill_fact: bool,
+) -> None:
+    baseline = derive_fill_observation_identity(normalize_fill_evidence(_evidence()))
+    variant = derive_fill_observation_identity(
+        normalize_fill_evidence(_evidence(**overrides))
+    )
+
+    assert (baseline.fill_fact_hash != variant.fill_fact_hash) is changes_fill_fact
+
+
+def test_sequence_identity_ignores_cumulative_growth_in_the_fill_fact() -> None:
+    early = derive_fill_observation_identity(
+        normalize_fill_evidence(
+            _evidence(
+                broker_fill_sequence="fill-1",
+                cumulative_quantity="2.5",
+                fill_quantity="2.5",
+            )
+        )
+    )
+    later = derive_fill_observation_identity(
+        normalize_fill_evidence(
+            _evidence(
+                broker_fill_sequence="fill-1",
+                cumulative_quantity="10",
+                fill_quantity="2.5",
+            )
+        )
+    )
+    contradiction = derive_fill_observation_identity(
+        normalize_fill_evidence(
+            _evidence(
+                broker_fill_sequence="fill-1",
+                cumulative_quantity="10",
+                fill_quantity="9",
+            )
+        )
+    )
+
+    assert early.value == later.value == contradiction.value
+    assert early.fill_fact_hash == later.fill_fact_hash
+    assert early.settlement.settlement_hash != later.settlement.settlement_hash
+    # The sequence's own quantity is the fact it is keyed on, so a contradiction
+    # there is still a conflict.
+    assert contradiction.fill_fact_hash != early.fill_fact_hash
+
+
+def test_cumulative_identity_ignores_per_poll_reported_increment() -> None:
+    first = derive_fill_observation_identity(
+        normalize_fill_evidence(_evidence(fill_quantity="2.5"))
+    )
+    second = derive_fill_observation_identity(
+        normalize_fill_evidence(_evidence(fill_quantity=None))
+    )
+
+    assert first.value == second.value
+    assert first.fill_fact_hash == second.fill_fact_hash
+    assert first.settlement.settlement_hash != second.settlement.settlement_hash
+
+
+@pytest.mark.asyncio
+async def test_late_fee_settlement_is_a_revision_not_a_conflict() -> None:
+    booked = normalize_fill_evidence(_evidence(fee_total=Decimal(0)))
+    booked_identity = derive_fill_observation_identity(booked)
+    repository = _FakeObservationRepository(
+        existing=SimpleNamespace(id=17, fill_fact_hash=booked_identity.fill_fact_hash),
+        settlements=[
+            SimpleNamespace(
+                fill_observation_id=17,
+                revision=1,
+                settlement_hash=booked_identity.settlement.settlement_hash,
+            )
+        ],
+    )
+
+    settled = normalize_fill_evidence(
+        _evidence(fee_total=Decimal("1.5"), evidence_ref="another-poll:99")
+    )
+    settled_identity = derive_fill_observation_identity(settled)
+    result = await _record_with_repository(
+        repository,  # type: ignore[arg-type]
+        evidence=settled,
+        identity=settled_identity,
+        projection_names=("legacy_dual_read_validation.v1",),
+    )
+
+    assert result.status is FillObservationWriteStatus.DUPLICATE
+    assert result.fill_delta_quantity == 0
+    assert result.outbox_count == 0
+    assert result.settlement_status is FillSettlementStatus.RECORDED
+    assert result.settlement_revision == 2
+    assert repository.appends == []
+    assert [row.revision for row in repository.settlements] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_insert_records_the_first_settlement_revision() -> None:
+    evidence = normalize_fill_evidence(_evidence())
+    identity = derive_fill_observation_identity(evidence)
+    repository = _FakeObservationRepository()
+
+    result = await _record_with_repository(
+        repository,  # type: ignore[arg-type]
+        evidence=evidence,
+        identity=identity,
+        projection_names=("legacy_dual_read_validation.v1",),
+    )
+
+    assert result.status is FillObservationWriteStatus.INSERTED
+    assert result.settlement_status is FillSettlementStatus.RECORDED
+    assert result.settlement_revision == 1
+    assert repository.settlements[0].fill_observation_id == 91
+
+
+@pytest.mark.asyncio
+async def test_fill_without_settlement_values_records_no_revision() -> None:
+    evidence = normalize_fill_evidence(
+        replace(
+            _evidence(),
+            broker_fill_sequence="fill-seq-11",
+            cumulative_quantity=None,
+            fill_quantity=None,
+            average_price=None,
+            filled_at=None,
+        )
+    )
+    assert has_positive_fill(evidence) is False
+
+    with_quantity = normalize_fill_evidence(
+        replace(
+            _evidence(),
+            broker_fill_sequence="fill-seq-11",
+            cumulative_quantity=None,
+            fill_quantity=Decimal("3"),
+            average_price=None,
+            filled_at=None,
+        )
+    )
+    identity = derive_fill_observation_identity(with_quantity)
+    assert identity.settlement.has_values is True
+
+
+@pytest.mark.asyncio
+async def test_no_delta_reobservation_records_no_settlement_revision() -> None:
+    evidence = normalize_fill_evidence(
+        _evidence(broker_fill_sequence="new-sequence", cumulative_quantity="2.5")
+    )
+    identity = derive_fill_observation_identity(evidence)
+    repository = _FakeObservationRepository(recorded=Decimal("2.5"))
+
+    result = await _record_with_repository(
+        repository,  # type: ignore[arg-type]
+        evidence=evidence,
+        identity=identity,
+        projection_names=("legacy_dual_read_validation.v1",),
+    )
+
+    assert result.status is FillObservationWriteStatus.NO_DELTA
+    assert result.settlement_status is FillSettlementStatus.NOT_APPLICABLE
+    assert result.settlement_revision is None
+    assert repository.settlements == []
 
 
 @pytest.mark.asyncio

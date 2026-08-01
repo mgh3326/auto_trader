@@ -51,6 +51,10 @@ class FillObservation(Base):
 
     Rows are append-only at the database boundary. Re-observing an existing
     identity is handled by the service and never creates a second row.
+
+    The economic columns hold the settlement values as they were first observed
+    and never change. Later provider revisions are appended to
+    ``review.fill_settlement_enrichments`` instead of mutating this row.
     """
 
     __tablename__ = "fill_observations"
@@ -61,7 +65,7 @@ class FillObservation(Base):
         ),
         CheckConstraint(
             f"observation_identity ~ '{_SHA256_PATTERN}' "
-            f"AND evidence_hash ~ '{_SHA256_PATTERN}'",
+            f"AND fill_fact_hash ~ '{_SHA256_PATTERN}'",
             name=conv("ck_fill_observation_hashes"),
         ),
         CheckConstraint(
@@ -145,12 +149,86 @@ class FillObservation(Base):
     fee_total: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     evidence_source: Mapped[str] = mapped_column(String(64), nullable=False)
     evidence_ref: Mapped[str] = mapped_column(Text, nullable=False)
-    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    fill_fact_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False
     )
     filled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     correlation_id: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class FillSettlementEnrichment(Base):
+    """One durable revision of the post-trade values for a recorded fill.
+
+    Rows are append-only, so the full provider revision history is retained.
+    ``revision`` is dense and 1-based per observation; the highest revision is
+    the latest settlement the provider reported. A repeated poll whose values
+    equal the latest revision appends nothing.
+    """
+
+    __tablename__ = "fill_settlement_enrichments"
+    __table_args__ = (
+        UniqueConstraint(
+            "fill_observation_id",
+            "revision",
+            name="uq_fill_settlement_enrichment_revision",
+        ),
+        CheckConstraint(
+            f"settlement_hash ~ '{_SHA256_PATTERN}'",
+            name=conv("ck_fill_settlement_enrichment_hash"),
+        ),
+        CheckConstraint(
+            "revision >= 1",
+            name=conv("ck_fill_settlement_enrichment_revision"),
+        ),
+        CheckConstraint(
+            "(cumulative_quantity IS NULL OR cumulative_quantity > 0) "
+            "AND (reported_fill_quantity IS NULL "
+            "OR reported_fill_quantity >= 0) "
+            "AND (average_price IS NULL OR average_price > 0) "
+            "AND (last_fill_price IS NULL OR last_fill_price > 0) "
+            "AND (cumulative_notional IS NULL OR cumulative_notional >= 0) "
+            "AND (fee_total IS NULL OR fee_total >= 0)",
+            name=conv("ck_fill_settlement_enrichment_economics"),
+        ),
+        CheckConstraint(
+            "btrim(evidence_source) <> '' AND btrim(evidence_ref) <> ''",
+            name=conv("ck_fill_settlement_enrichment_nonblank_evidence"),
+        ),
+        Index(
+            "ix_fill_settlement_enrichment_latest",
+            "fill_observation_id",
+            text("revision DESC"),
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    fill_observation_id: Mapped[int] = mapped_column(
+        ForeignKey(
+            "review.fill_observations.id",
+            ondelete="RESTRICT",
+            name="fk_fill_settlement_enrichment_observation",
+        ),
+        nullable=False,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    settlement_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    cumulative_quantity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    reported_fill_quantity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    average_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    last_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    cumulative_notional: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    fee_total: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    filled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    evidence_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
@@ -299,4 +377,5 @@ __all__ = [
     "FillObservation",
     "FillProjectionCursor",
     "FillProjectionOutbox",
+    "FillSettlementEnrichment",
 ]
