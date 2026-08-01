@@ -9,6 +9,12 @@ from .crypto_insight_snapshot import CryptoInsightSnapshot
 from .crypto_instrument_health import CryptoInstrumentHealth
 from .crypto_instruments import CryptoInstrument
 from .execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
+from .fill_observation import (
+    FillObservation,
+    FillProjectionCursor,
+    FillProjectionOutbox,
+    FillSettlementEnrichment,
+)
 from .financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
 from .invest_crypto_screener_snapshot import InvestCryptoScreenerSnapshot
 from .invest_kr_fundamentals_snapshot import InvestKrFundamentalsSnapshot
@@ -164,6 +170,10 @@ __all__ = [
     "ScalpingReviewAction",
     "ExecutionLedger",
     "ExecutionLedgerReconcileRun",
+    "FillObservation",
+    "FillProjectionCursor",
+    "FillProjectionOutbox",
+    "FillSettlementEnrichment",
     "CryptoCandle1d",
     "CryptoCandle1m",
     "CryptoInsightSnapshot",

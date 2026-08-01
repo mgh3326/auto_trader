@@ -64,7 +64,10 @@ from sqlalchemy import text
 # v31: Alpaca paper lab account_mode CHECK expansions.
 # v32 (ROB-1103): nullable direct-watch source links + future-write FKs.
 # v33 (ROB-1115): strategy_learning_events ORM table + append-only triggers.
-SCHEMA_BOOTSTRAP_VERSION = 33
+# v34 (ROB-1195): fill_observations ORM tables + append-only triggers.
+# v35 (ROB-1195 S2): fill_settlement_enrichments ORM table + append-only
+# triggers, and a table-agnostic rejection message for the shared function.
+SCHEMA_BOOTSTRAP_VERSION = 35
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1312,6 +1315,39 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEFORE TRUNCATE ON research.strategy_learning_events "
     "FOR EACH STATEMENT EXECUTE FUNCTION "
     "research.reject_strategy_learning_event_mutation()",
+    # ---- ROB-1195: immutable broker-evidenced fill observations plus their
+    # append-only settlement revisions. Both tables share one rejection
+    # function, so the message is derived from the firing table.
+    "CREATE OR REPLACE FUNCTION review.reject_fill_observation_mutation() "
+    "RETURNS trigger AS $$ BEGIN "
+    "RAISE EXCEPTION "
+    "'%.% is append-only/immutable; % rejected', "
+    "TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP "
+    "USING ERRCODE = 'restrict_violation'; "
+    "END; $$ LANGUAGE plpgsql",
+    "DROP TRIGGER IF EXISTS trg_fill_observations_immutable "
+    "ON review.fill_observations",
+    "CREATE TRIGGER trg_fill_observations_immutable "
+    "BEFORE UPDATE OR DELETE ON review.fill_observations "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_fill_observation_mutation()",
+    "DROP TRIGGER IF EXISTS trg_fill_observations_truncate_immutable "
+    "ON review.fill_observations",
+    "CREATE TRIGGER trg_fill_observations_truncate_immutable "
+    "BEFORE TRUNCATE ON review.fill_observations "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_fill_observation_mutation()",
+    "DROP TRIGGER IF EXISTS trg_fill_settlement_enrichments_immutable "
+    "ON review.fill_settlement_enrichments",
+    "CREATE TRIGGER trg_fill_settlement_enrichments_immutable "
+    "BEFORE UPDATE OR DELETE ON review.fill_settlement_enrichments "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_fill_observation_mutation()",
+    "DROP TRIGGER IF EXISTS "
+    "trg_fill_settlement_enrichments_truncate_immutable "
+    "ON review.fill_settlement_enrichments",
+    "CREATE TRIGGER trg_fill_settlement_enrichments_truncate_immutable "
+    "BEFORE TRUNCATE ON review.fill_settlement_enrichments "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_fill_observation_mutation()",
     # ---- ROB-848: immutable paper-validation audit + experiment hash binding
     # Tables/checks/FKs are owned by the ORM metadata above; these PostgreSQL
     # trigger functions are non-ORM DDL and mirror the Alembic revision.

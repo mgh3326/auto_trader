@@ -128,6 +128,13 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # the ROB-849 boundary so later migrations are exercised instead
             # of colliding with tables that create_all already materialized.
             for table in (
+                "fill_projection_cursors",
+                "fill_projection_outbox",
+                "fill_settlement_enrichments",
+                "fill_observations",
+            ):
+                await connection.execute(text(f"DROP TABLE review.{table}"))
+            for table in (
                 "strategy_learning_events",
                 "evaluation_scorecards",
                 "evaluation_verdicts",
