@@ -1,0 +1,178 @@
+{
+  "schema_version": "execution-outcome-mapping-fixture/v1",
+  "outcome_fields": [
+    "request_validated",
+    "mutation_sent",
+    "broker_acceptance",
+    "tracking",
+    "local_recorded",
+    "reconcile_required",
+    "terminal_evidence"
+  ],
+  "mappings": {
+    "generic.dry_run_success": {
+      "surface": "generic",
+      "legacy_success_meaning": "request_handled",
+      "legacy_response_markers": ["success=true", "dry_run=true"],
+      "outcome": [true, false, "not_sent", "not_applicable", false, false, "none"]
+    },
+    "generic.send_outcome_unknown": {
+      "surface": "generic",
+      "legacy_success_meaning": "failure_with_unknown_acceptance",
+      "legacy_response_markers": [
+        "success=false",
+        "outcome_unknown=true",
+        "reconcile_tool=market_specific"
+      ],
+      "outcome": [true, true, "unknown", "unknown", false, true, "none"]
+    },
+    "generic.live_accepted_pending_fill": {
+      "surface": "generic",
+      "legacy_success_meaning": "broker_accepted_and_local_recorded",
+      "legacy_response_markers": [
+        "success=true",
+        "broker_status=accepted",
+        "fill_recorded=false"
+      ],
+      "outcome": [true, true, "accepted", "tracked", true, true, "none"]
+    },
+    "kis.live_accepted_pending_fill": {
+      "surface": "kis",
+      "legacy_success_meaning": "broker_accepted_and_local_recorded",
+      "legacy_response_markers": [
+        "success=true",
+        "broker_status=accepted",
+        "fill_recorded=false",
+        "order_id=present"
+      ],
+      "outcome": [true, true, "accepted", "tracked", true, true, "none"]
+    },
+    "kiwoom.submitted_tracked": {
+      "surface": "kiwoom",
+      "legacy_success_meaning": "broker_accepted",
+      "legacy_response_markers": [
+        "success=true",
+        "status=submitted",
+        "reconcile_required=false",
+        "order_id=present"
+      ],
+      "outcome": [true, true, "accepted", "tracked", false, false, "none"]
+    },
+    "kiwoom.accepted_untracked": {
+      "surface": "kiwoom",
+      "legacy_success_meaning": "broker_accepted",
+      "legacy_response_markers": [
+        "success=false",
+        "status=accepted_untracked",
+        "reconcile_required=true",
+        "retry_allowed=false"
+      ],
+      "outcome": [true, true, "accepted", "untracked", false, true, "none"]
+    },
+    "kiwoom.acceptance_uncertain": {
+      "surface": "kiwoom",
+      "legacy_success_meaning": "failure_with_unknown_acceptance",
+      "legacy_response_markers": [
+        "success=false",
+        "status=acceptance_uncertain",
+        "reconcile_required=true",
+        "retry_allowed=false"
+      ],
+      "outcome": [true, true, "unknown", "unknown", false, true, "none"]
+    },
+    "toss.accepted_recorded": {
+      "surface": "toss",
+      "legacy_success_meaning": "broker_accepted_and_local_recorded",
+      "legacy_response_markers": [
+        "success=true",
+        "mutation_sent=true",
+        "order_id=present",
+        "message=accepted_and_recorded_accepted_only"
+      ],
+      "outcome": [true, true, "accepted", "tracked", true, true, "none"]
+    },
+    "toss.http_rejected": {
+      "surface": "toss",
+      "legacy_success_meaning": "failure_with_definite_rejection",
+      "legacy_response_markers": [
+        "success=false",
+        "mutation_sent=true",
+        "status_code=4xx",
+        "code=broker_error_code"
+      ],
+      "outcome": [true, true, "rejected", "not_applicable", false, false, "none"]
+    },
+    "toss.transport_unknown": {
+      "surface": "toss",
+      "legacy_success_meaning": "failure_with_unknown_acceptance",
+      "legacy_response_markers": [
+        "success=false",
+        "mutation_sent=true",
+        "status_code=absent",
+        "error=transport_exception"
+      ],
+      "outcome": [true, true, "unknown", "unknown", false, true, "none"]
+    },
+    "alpaca.confirmation_preview": {
+      "surface": "alpaca",
+      "legacy_success_meaning": "request_handled",
+      "legacy_response_markers": [
+        "success=true",
+        "submitted=false",
+        "blocked_reason=confirmation_required"
+      ],
+      "outcome": [true, false, "not_sent", "not_applicable", false, false, "none"]
+    },
+    "alpaca.cancel_accepted_unconfirmed": {
+      "surface": "alpaca",
+      "legacy_success_meaning": "broker_accepted",
+      "legacy_response_markers": [
+        "success=true",
+        "cancel_requested=true",
+        "cancelled=false"
+      ],
+      "outcome": [true, true, "accepted", "tracked", false, true, "none"]
+    },
+    "alpaca.cancel_confirmed": {
+      "surface": "alpaca",
+      "legacy_success_meaning": "broker_accepted_and_local_recorded",
+      "legacy_response_markers": [
+        "success=true",
+        "cancel_requested=true",
+        "cancelled=true",
+        "lifecycle_synced=true"
+      ],
+      "outcome": [true, true, "accepted", "tracked", true, false, "cancelled"]
+    },
+    "binance.submit_new": {
+      "surface": "binance",
+      "legacy_success_meaning": "no_success_field",
+      "legacy_response_markers": [
+        "result=OrderSubmitResult",
+        "broker_order_id=present",
+        "status=NEW"
+      ],
+      "outcome": [true, true, "accepted", "tracked", false, true, "none"]
+    },
+    "binance.submit_partial_fill": {
+      "surface": "binance",
+      "legacy_success_meaning": "no_success_field",
+      "legacy_response_markers": [
+        "result=OrderSubmitResult",
+        "status=PARTIALLY_FILLED",
+        "executed_qty>0"
+      ],
+      "outcome": [true, true, "accepted", "tracked", false, true, "partial_fill"]
+    },
+    "binance.submit_filled_unrecorded": {
+      "surface": "binance",
+      "legacy_success_meaning": "no_success_field",
+      "legacy_response_markers": [
+        "result=OrderSubmitResult",
+        "status=FILLED",
+        "local_ledger_write=not_part_of_dto"
+      ],
+      "outcome": [true, true, "accepted", "tracked", false, true, "filled"]
+    }
+  }
+}
