@@ -126,6 +126,12 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.run_sync(Base.metadata.create_all)
             # Base metadata includes the current head, while this test stamps
             # ROB-850 and replays every later migration.
+            for table in (
+                "fill_projection_cursors",
+                "fill_projection_outbox",
+                "fill_observations",
+            ):
+                await connection.execute(text(f"DROP TABLE review.{table}"))
             await connection.execute(
                 text("DROP TABLE research.strategy_learning_events")
             )
