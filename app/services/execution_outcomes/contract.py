@@ -31,7 +31,12 @@ class BrokerAcceptance(StrEnum):
 
 
 class TrackingState(StrEnum):
-    """Whether an accepted mutation has a stable broker tracking identity."""
+    """Whether the relevant order lifecycle has a stable broker identity.
+
+    For a place command this normally describes the newly accepted order.  For
+    modify/cancel it may instead describe the pre-existing target order, even
+    when the new mutation is rejected or its acceptance remains unknown.
+    """
 
     NOT_APPLICABLE = "not_applicable"
     TRACKED = "tracked"
@@ -40,7 +45,7 @@ class TrackingState(StrEnum):
 
 
 class TerminalEvidence(StrEnum):
-    """Execution evidence observed after mutation dispatch.
+    """Execution evidence observed for the relevant order lifecycle.
 
     ``PARTIAL_FILL`` is intentionally represented here because the migration
     AC names this field ``terminal_evidence``.  It is *not* terminal: the
@@ -135,9 +140,11 @@ class MutationOutcome:
     """Orthogonal facts about one broker mutation attempt.
 
     The type intentionally has no ``success`` field.  Request handling,
-    dispatch, broker acceptance, tracking, local recording, reconciliation,
-    and execution evidence remain separate facts.  In particular,
-    ``ACCEPTED`` never implies ``FILLED``.
+    dispatch, broker acceptance, target/new-order lifecycle tracking, local
+    recording, reconciliation, and execution evidence remain separate facts.
+    In particular, ``ACCEPTED`` never implies ``FILLED``; conversely, a
+    rejected cancel/modify may still observe terminal evidence for its existing
+    target order.
     """
 
     request_validated: bool
@@ -179,42 +186,26 @@ class MutationOutcome:
         elif self.broker_acceptance is not BrokerAcceptance.NOT_SENT:
             raise ValueError("unsent mutation must have acceptance=not_sent")
 
-        if (
-            self.broker_acceptance
-            in {
-                BrokerAcceptance.NOT_SENT,
-                BrokerAcceptance.REJECTED,
-            }
-            and self.reconcile_required
-        ):
-            raise ValueError("definite not-sent/rejected outcomes do not reconcile")
-
         if self.broker_acceptance is BrokerAcceptance.UNKNOWN:
             if not self.reconcile_required:
                 raise ValueError("unknown acceptance requires reconciliation")
-            if self.terminal_evidence is not TerminalEvidence.NONE:
-                raise ValueError("unknown acceptance cannot claim execution evidence")
 
     def _validate_tracking(self) -> None:
         acceptance = self.broker_acceptance
         if acceptance is BrokerAcceptance.ACCEPTED:
             if self.tracking not in {TrackingState.TRACKED, TrackingState.UNTRACKED}:
                 raise ValueError("accepted mutation must be tracked or untracked")
-        elif acceptance is BrokerAcceptance.UNKNOWN:
-            if self.tracking is not TrackingState.UNKNOWN:
-                raise ValueError("unknown acceptance requires tracking=unknown")
-        elif self.tracking is not TrackingState.NOT_APPLICABLE:
-            raise ValueError("not-sent/rejected mutation has no tracking identity")
 
-        if self.tracking is TrackingState.UNTRACKED and not self.reconcile_required:
-            raise ValueError("accepted-untracked requires reconciliation")
+        if (
+            self.tracking in {TrackingState.UNTRACKED, TrackingState.UNKNOWN}
+            and not self.reconcile_required
+        ):
+            raise ValueError("untracked/unknown lifecycle requires reconciliation")
 
     def _validate_evidence(self) -> None:
         if self.terminal_evidence is not TerminalEvidence.NONE:
-            if self.broker_acceptance is not BrokerAcceptance.ACCEPTED:
-                raise ValueError("execution evidence requires broker acceptance")
-            if not self.mutation_sent:
-                raise ValueError("execution evidence requires a sent mutation")
+            if self.tracking is TrackingState.NOT_APPLICABLE:
+                raise ValueError("execution evidence requires lifecycle tracking")
 
         if self.terminal_evidence is TerminalEvidence.PARTIAL_FILL:
             if not self.reconcile_required:
@@ -241,7 +232,7 @@ class MutationOutcome:
             return OutcomeNextAction.RECONCILE
         if self.evidence_finality is EvidenceFinality.TERMINAL:
             return OutcomeNextAction.NONE
-        if self.broker_acceptance is BrokerAcceptance.ACCEPTED:
+        if self.tracking is TrackingState.TRACKED:
             return OutcomeNextAction.TRACK
         return OutcomeNextAction.REVIEW_NEW_COMMAND
 

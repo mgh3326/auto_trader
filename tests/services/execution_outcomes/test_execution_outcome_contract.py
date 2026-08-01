@@ -95,6 +95,19 @@ def test_unknown_acceptance_requires_reconcile_and_never_authorizes_resend() -> 
 
     assert outcome.next_action is OutcomeNextAction.RECONCILE
     assert outcome.automatic_resend_allowed is False
+
+    tracked_cancel_target = MutationOutcome(
+        request_validated=True,
+        mutation_sent=True,
+        broker_acceptance=BrokerAcceptance.UNKNOWN,
+        tracking=TrackingState.TRACKED,
+        local_recorded=False,
+        reconcile_required=True,
+        terminal_evidence=TerminalEvidence.NONE,
+    )
+    assert tracked_cancel_target.next_action is OutcomeNextAction.RECONCILE
+    assert tracked_cancel_target.automatic_resend_allowed is False
+
     with pytest.raises(ValueError, match="unknown acceptance requires reconciliation"):
         MutationOutcome(
             request_validated=True,
@@ -115,7 +128,7 @@ def test_accepted_untracked_requires_reconciliation() -> None:
 
     assert outcome.next_action is OutcomeNextAction.RECONCILE
     assert outcome.automatic_resend_allowed is False
-    with pytest.raises(ValueError, match="accepted-untracked requires reconciliation"):
+    with pytest.raises(ValueError, match="untracked/unknown lifecycle"):
         _accepted_outcome(tracking=TrackingState.UNTRACKED)
 
 
@@ -133,7 +146,7 @@ def test_partial_fill_is_explicitly_non_terminal_and_keeps_tracking() -> None:
         _accepted_outcome(evidence=TerminalEvidence.PARTIAL_FILL)
 
 
-def test_filled_requires_broker_acceptance_but_not_legacy_success() -> None:
+def test_filled_target_evidence_is_independent_of_mutation_acceptance() -> None:
     outcome = _accepted_outcome(
         local_recorded=True,
         evidence=TerminalEvidence.FILLED,
@@ -142,9 +155,21 @@ def test_filled_requires_broker_acceptance_but_not_legacy_success() -> None:
     assert outcome.evidence_finality is EvidenceFinality.TERMINAL
     assert outcome.next_action is OutcomeNextAction.NONE
     assert outcome.is_filled is True
-    with pytest.raises(
-        ValueError, match="execution evidence requires broker acceptance"
-    ):
+
+    rejected_cancel = MutationOutcome(
+        request_validated=True,
+        mutation_sent=True,
+        broker_acceptance=BrokerAcceptance.REJECTED,
+        tracking=TrackingState.TRACKED,
+        local_recorded=True,
+        reconcile_required=False,
+        terminal_evidence=TerminalEvidence.FILLED,
+    )
+    assert rejected_cancel.evidence_finality is EvidenceFinality.TERMINAL
+    assert rejected_cancel.next_action is OutcomeNextAction.NONE
+    assert rejected_cancel.is_filled is True
+
+    with pytest.raises(ValueError, match="requires lifecycle tracking"):
         MutationOutcome(
             request_validated=True,
             mutation_sent=True,
@@ -154,6 +179,47 @@ def test_filled_requires_broker_acceptance_but_not_legacy_success() -> None:
             reconcile_required=False,
             terminal_evidence=TerminalEvidence.FILLED,
         )
+
+
+def test_rejected_cancel_can_reconcile_tracked_already_filled_target() -> None:
+    """Freeze the current cancel-gateway already-filled counterexample.
+
+    ``orders_modify_cancel._is_kis_mock_unsupported`` treats already-filled as
+    a genuine mutation failure, and ``order_proposals.broker_gateway`` forwards
+    that rejection so its confirmation gate can inspect the target lifecycle.
+    The mutation rejection and target fill evidence therefore must coexist.
+    """
+
+    outcome = MutationOutcome(
+        request_validated=True,
+        mutation_sent=True,
+        broker_acceptance=BrokerAcceptance.REJECTED,
+        tracking=TrackingState.TRACKED,
+        local_recorded=False,
+        reconcile_required=True,
+        terminal_evidence=TerminalEvidence.FILLED,
+    )
+
+    assert outcome.broker_acceptance is BrokerAcceptance.REJECTED
+    assert outcome.tracking is TrackingState.TRACKED
+    assert outcome.evidence_finality is EvidenceFinality.TERMINAL
+    assert outcome.next_action is OutcomeNextAction.RECONCILE
+    assert outcome.automatic_resend_allowed is False
+
+
+def test_rejected_place_without_target_lifecycle_needs_no_reconcile() -> None:
+    outcome = MutationOutcome(
+        request_validated=True,
+        mutation_sent=True,
+        broker_acceptance=BrokerAcceptance.REJECTED,
+        tracking=TrackingState.NOT_APPLICABLE,
+        local_recorded=False,
+        reconcile_required=False,
+        terminal_evidence=TerminalEvidence.NONE,
+    )
+
+    assert outcome.next_action is OutcomeNextAction.REVIEW_NEW_COMMAND
+    assert outcome.automatic_resend_allowed is False
 
 
 def test_terminal_broker_evidence_not_recorded_locally_requires_reconcile() -> None:

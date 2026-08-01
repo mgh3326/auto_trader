@@ -88,6 +88,51 @@ def _outcome(
     )
 
 
+def _alpaca_cancel_mapping(
+    *,
+    mapping_id: str,
+    read_back_status: str,
+    order_status: str,
+    lifecycle_synced: bool,
+    evidence: TerminalEvidence,
+    reconcile_required: bool,
+    cancelled: bool = False,
+    note: str,
+) -> LegacyResponseMapping:
+    """Build one concrete Alpaca cancel/read-back marker combination."""
+
+    success_meaning = (
+        LegacySuccessMeaning.BROKER_ACCEPTED_AND_LOCAL_RECORDED
+        if lifecycle_synced
+        else LegacySuccessMeaning.BROKER_ACCEPTED
+    )
+    return LegacyResponseMapping(
+        mapping_id=mapping_id,
+        surface=BrokerSurface.ALPACA,
+        source_locator=(
+            "app/mcp_server/tooling/alpaca_paper_orders.py::alpaca_paper_cancel_order"
+        ),
+        legacy_response_markers=(
+            "success=true",
+            "cancel_requested=true",
+            f"cancelled={str(cancelled).lower()}",
+            f"read_back_status={read_back_status}",
+            f"order_status={order_status}",
+            f"lifecycle_synced={str(lifecycle_synced).lower()}",
+        ),
+        legacy_success_meaning=success_meaning,
+        outcome=_outcome(
+            mutation_sent=True,
+            acceptance=BrokerAcceptance.ACCEPTED,
+            tracking=TrackingState.TRACKED,
+            local_recorded=lifecycle_synced,
+            reconcile_required=reconcile_required,
+            evidence=evidence,
+        ),
+        note=note,
+    )
+
+
 CURRENT_RESPONSE_MAPPINGS = (
     LegacyResponseMapping(
         mapping_id="generic.dry_run_success",
@@ -134,6 +179,7 @@ CURRENT_RESPONSE_MAPPINGS = (
             "success=true",
             "broker_status=accepted",
             "fill_recorded=false",
+            "order_id=non_empty",
         ),
         legacy_success_meaning=(
             LegacySuccessMeaning.BROKER_ACCEPTED_AND_LOCAL_RECORDED
@@ -145,7 +191,29 @@ CURRENT_RESPONSE_MAPPINGS = (
             local_recorded=True,
             reconcile_required=True,
         ),
-        note="Accepted-only ledger recording is not fill evidence.",
+        note="A non-empty order id makes accepted-only recording trackable.",
+    ),
+    LegacyResponseMapping(
+        mapping_id="generic.live_accepted_untracked_pending_fill",
+        surface=BrokerSurface.GENERIC,
+        source_locator="app/mcp_server/tooling/live_order_ledger.py::_record_live_order",
+        legacy_response_markers=(
+            "success=true",
+            "broker_status=accepted",
+            "fill_recorded=false",
+            "order_id=absent",
+        ),
+        legacy_success_meaning=(
+            LegacySuccessMeaning.BROKER_ACCEPTED_AND_LOCAL_RECORDED
+        ),
+        outcome=_outcome(
+            mutation_sent=True,
+            acceptance=BrokerAcceptance.ACCEPTED,
+            tracking=TrackingState.UNTRACKED,
+            local_recorded=True,
+            reconcile_required=True,
+        ),
+        note="Accepted without a broker order id is recorded but untracked.",
     ),
     LegacyResponseMapping(
         mapping_id="kis.live_accepted_pending_fill",
@@ -325,51 +393,97 @@ CURRENT_RESPONSE_MAPPINGS = (
         ),
         note="Handler success with confirm=false is not broker acceptance.",
     ),
-    LegacyResponseMapping(
-        mapping_id="alpaca.cancel_accepted_unconfirmed",
-        surface=BrokerSurface.ALPACA,
-        source_locator=(
-            "app/mcp_server/tooling/alpaca_paper_orders.py::alpaca_paper_cancel_order"
-        ),
-        legacy_response_markers=(
-            "success=true",
-            "cancel_requested=true",
-            "cancelled=false",
-        ),
-        legacy_success_meaning=LegacySuccessMeaning.BROKER_ACCEPTED,
-        outcome=_outcome(
-            mutation_sent=True,
-            acceptance=BrokerAcceptance.ACCEPTED,
-            tracking=TrackingState.TRACKED,
-            local_recorded=False,
-            reconcile_required=True,
-        ),
-        note="DELETE acceptance is not terminal cancelled evidence.",
+    _alpaca_cancel_mapping(
+        mapping_id="alpaca.cancel_readback_unavailable",
+        read_back_status="unavailable",
+        order_status="absent",
+        lifecycle_synced=False,
+        evidence=TerminalEvidence.NONE,
+        reconcile_required=True,
+        note="DELETE was accepted, but unavailable read-back must reconcile.",
     ),
-    LegacyResponseMapping(
+    _alpaca_cancel_mapping(
+        mapping_id="alpaca.cancel_open_synced",
+        read_back_status="ok",
+        order_status="pending_cancel",
+        lifecycle_synced=True,
+        evidence=TerminalEvidence.NONE,
+        reconcile_required=True,
+        note="Known open target truth is recorded and remains non-terminal.",
+    ),
+    _alpaca_cancel_mapping(
+        mapping_id="alpaca.cancel_open_unsynced",
+        read_back_status="ok",
+        order_status="pending_cancel",
+        lifecycle_synced=False,
+        evidence=TerminalEvidence.NONE,
+        reconcile_required=True,
+        note="Known open target truth not recorded locally must reconcile.",
+    ),
+    _alpaca_cancel_mapping(
+        mapping_id="alpaca.cancel_partial_synced",
+        read_back_status="ok",
+        order_status="partially_filled",
+        lifecycle_synced=True,
+        evidence=TerminalEvidence.PARTIAL_FILL,
+        reconcile_required=True,
+        note="Recorded partial fill is non-terminal and keeps its reservation.",
+    ),
+    _alpaca_cancel_mapping(
+        mapping_id="alpaca.cancel_partial_unsynced",
+        read_back_status="ok",
+        order_status="partially_filled",
+        lifecycle_synced=False,
+        evidence=TerminalEvidence.PARTIAL_FILL,
+        reconcile_required=True,
+        note="Unrecorded partial fill must reconcile without claiming cancel.",
+    ),
+    _alpaca_cancel_mapping(
+        mapping_id="alpaca.cancel_filled_synced",
+        read_back_status="ok",
+        order_status="filled",
+        lifecycle_synced=True,
+        evidence=TerminalEvidence.FILLED,
+        reconcile_required=True,
+        note="Fill truth is recorded; position reflection still must reconcile.",
+    ),
+    _alpaca_cancel_mapping(
+        mapping_id="alpaca.cancel_filled_unsynced",
+        read_back_status="ok",
+        order_status="filled",
+        lifecycle_synced=False,
+        evidence=TerminalEvidence.FILLED,
+        reconcile_required=True,
+        note="Broker fill evidence not recorded locally must reconcile.",
+    ),
+    _alpaca_cancel_mapping(
+        mapping_id="alpaca.cancel_unknown_unsynced",
+        read_back_status="ok",
+        order_status="unrecognized",
+        lifecycle_synced=False,
+        evidence=TerminalEvidence.NONE,
+        reconcile_required=True,
+        note="Unknown read-back status preserves the target and fails closed.",
+    ),
+    _alpaca_cancel_mapping(
         mapping_id="alpaca.cancel_confirmed",
-        surface=BrokerSurface.ALPACA,
-        source_locator=(
-            "app/mcp_server/tooling/alpaca_paper_orders.py::alpaca_paper_cancel_order"
-        ),
-        legacy_response_markers=(
-            "success=true",
-            "cancel_requested=true",
-            "cancelled=true",
-            "lifecycle_synced=true",
-        ),
-        legacy_success_meaning=(
-            LegacySuccessMeaning.BROKER_ACCEPTED_AND_LOCAL_RECORDED
-        ),
-        outcome=_outcome(
-            mutation_sent=True,
-            acceptance=BrokerAcceptance.ACCEPTED,
-            tracking=TrackingState.TRACKED,
-            local_recorded=True,
-            reconcile_required=False,
-            evidence=TerminalEvidence.CANCELLED,
-        ),
+        read_back_status="ok",
+        order_status="canceled",
+        lifecycle_synced=True,
+        evidence=TerminalEvidence.CANCELLED,
+        reconcile_required=False,
+        cancelled=True,
         note="Only broker read-back status=canceled proves terminal cancellation.",
+    ),
+    _alpaca_cancel_mapping(
+        mapping_id="alpaca.cancel_confirmed_unsynced",
+        read_back_status="ok",
+        order_status="canceled",
+        lifecycle_synced=False,
+        evidence=TerminalEvidence.CANCELLED,
+        reconcile_required=True,
+        cancelled=True,
+        note="Confirmed cancellation not recorded locally must reconcile.",
     ),
     LegacyResponseMapping(
         mapping_id="binance.submit_new",
@@ -443,6 +557,11 @@ def _validate_catalog() -> None:
     ids = [entry.mapping_id for entry in CURRENT_RESPONSE_MAPPINGS]
     if len(ids) != len(set(ids)):
         raise RuntimeError("execution outcome mapping ids must be unique")
+    marker_sets = [
+        frozenset(entry.legacy_response_markers) for entry in CURRENT_RESPONSE_MAPPINGS
+    ]
+    if len(marker_sets) != len(set(marker_sets)):
+        raise RuntimeError("execution outcome marker combinations must be unique")
     surfaces = {entry.surface for entry in CURRENT_RESPONSE_MAPPINGS}
     if surfaces != set(BrokerSurface):
         raise RuntimeError("execution outcome catalog must cover every broker surface")
