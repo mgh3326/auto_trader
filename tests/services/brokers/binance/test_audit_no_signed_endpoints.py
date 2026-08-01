@@ -138,6 +138,10 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         "app/services/alpaca_paper_order_application.py",
         "app/services/brokers/alpaca/paper_adapter.py",
         "app/services/brokers/capabilities.py",
+        # ROB-1196 — declarative execution-outcome mapping table. Binance
+        # appears only in broker/status/source-locator strings; this file has
+        # no HTTP/WS, signing, credential, client, endpoint, or mutation code.
+        "app/services/execution_outcomes/mapping_catalog.py",
         # Lazy composition root only registers the in-package Demo adapter; it
         # contains no Binance HTTP, signing, credential, or endpoint behavior.
         "app/services/brokers/paper/composition.py",
