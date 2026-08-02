@@ -8,10 +8,11 @@ uses caller supplied lineage or gate timestamps.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Literal, Never
+from typing import Any, Literal, Never
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,9 @@ from app.models.paper_evaluation import EvaluationConfig as EvaluationConfigRow
 from app.models.paper_evaluation import EvaluationEpoch as EvaluationEpochRow
 from app.models.paper_validation import PaperValidationStateTransition
 from app.models.review import AlpacaPaperOrderLedger
+from app.services.invalid_sample_eligibility.service import (
+    InvalidSampleEligibilityService,
+)
 from app.services.paper_cohort.market_snapshot import CanonicalSnapshotPayload
 from app.services.paper_cohort.signals import (
     CanonicalTargetSignal,
@@ -634,6 +638,44 @@ class AuthoritativeEvidenceReader:
             _fail("out_of_order_evidence")
         return tuple(observations)
 
+    async def _trade_performance_excluded_row_ids(
+        self, rows: Sequence[Any]
+    ) -> frozenset[int]:
+        """ROB-1036 — native Alpaca row ids excluded from trade performance.
+
+        Returns **row ids**, never correlation ids, so ``_load_native`` stays
+        free of correlation-scoped vocabulary and its ROB-850 assignment-scoping
+        invariant is untouched: the rows considered here are exactly the ones the
+        assignment-scoped link query already produced. Nothing is *discovered* by
+        correlation id; an already-discovered row is merely filtered out.
+
+        Only an explicit ``trade_performance_exclude`` decision filters a row.
+        A lifecycle with no decision is ``UNIDENTIFIABLE`` and is left in place,
+        so this is additive: with no decisions on record the evidence set is
+        identical to before.
+        """
+
+        by_correlation: dict[str, list[int]] = {}
+        for link, *_rest in rows:
+            if link.venue == "binance":
+                continue
+            row = await self._session.get(
+                AlpacaPaperOrderLedger, link.native_ledger_row_id
+            )
+            key = None if row is None else row.lifecycle_correlation_id
+            if row is not None and key:
+                by_correlation.setdefault(key, []).append(row.id)
+        if not by_correlation:
+            return frozenset()
+        service = InvalidSampleEligibilityService(self._session)
+        excluded = await service.list_trade_performance_excluded(list(by_correlation))
+        return frozenset(
+            row_id
+            for key, row_ids in by_correlation.items()
+            if key in excluded
+            for row_id in row_ids
+        )
+
     async def _load_native(
         self,
         *,
@@ -679,6 +721,7 @@ class AuthoritativeEvidenceReader:
         fills: dict[str, list[NativeFill]] = {"binance": [], "alpaca": []}
         marks: dict[str, list[NativeMark]] = {"binance": [], "alpaca": []}
         native_keys: set[tuple[str, int]] = set()
+        excluded_row_ids = await self._trade_performance_excluded_row_ids(rows)
         for link, intent, decision, snapshot in rows:
             if link.venue == "binance":
                 row = await self._session.get(
@@ -689,6 +732,14 @@ class AuthoritativeEvidenceReader:
                 row = await self._session.get(
                     AlpacaPaperOrderLedger, link.native_ledger_row_id
                 )
+                # ROB-1036: a row whose lifecycle carries an explicit
+                # trade-performance exclusion never enters the PnL evidence set.
+                # An invalid sample stays a real operational record; it just
+                # stops being a performance data point. The excluded set is
+                # resolved by row id above, so this method performs no
+                # correlation-scoped discovery (ROB-850 invariant).
+                if row is not None and row.id in excluded_row_ids:
+                    continue
                 filled_at = (
                     None if row is None else _alpaca_filled_at(row.raw_responses)
                 )

@@ -113,6 +113,42 @@ Re-authoring the *identical* binding is idempotent.
 `status = 'closed' AND brier_score IS NOT NULL` is explicitly **not** an
 eligibility predicate.
 
+### 6-1. 🔴 OPEN — the legacy aggregate still admits UNIDENTIFIABLE
+
+The pre-existing `build_forecast_calibration_aggregate` — used by
+`mcp_server/tooling/forecast_tools.py`, `routers/invest_forecasts.py`, and
+`services/decision_history.py` — drops explicit `calibration_exclude` but still
+**admits forecasts with no decision**. That is semantically a default-include and
+does not satisfy §4.2-4/§4.2-5 on the surface that is actually consumed.
+
+It is left in place deliberately, not by oversight. Closing it makes every
+calibration surface return empty: there are zero decision rows, and §4.2-4
+forbids historical backfill, so nothing would ever repopulate them without a
+per-forecast operator decision. That is a product decision, escalated as
+`NEEDS_INFO`; see the round-3 worker report for the options and their blast radius.
+
+`tests/services/invalid_sample_eligibility/test_persistence.py::
+test_undecided_forecasts_strict_cohort_excludes_legacy_aggregate_admits` pins both
+behaviours side by side so the divergence stays visible until it is decided.
+
+### 6-2. Trade performance (ROB-1036 B2)
+
+`TradePerformanceEligibility` is wired into the real Alpaca PnL path:
+
+- `InvalidSampleEligibilityService.list_trade_performance_excluded(correlation_ids)`
+  resolves explicit `trade_performance_exclude` decisions.
+- `paper_evaluation/evidence.py` — `_trade_performance_excluded_row_ids()` turns
+  those into **native row ids**, and `_load_native` skips them when building
+  `alpaca_fills`. Row ids (not correlation ids) are used so the ROB-850
+  assignment-scoping guard on `_load_native` stays intact: nothing is discovered
+  by correlation id, an already-discovered row is merely filtered out.
+- `paper_evaluation/pnl.py` — `compute_alpaca_view(..., excluded_correlation_ids=…)`
+  skips both the correlation bucket and any individual row carrying an excluded
+  lifecycle id.
+
+Only an explicit `EXCLUDE` filters. An undecided lifecycle is `UNIDENTIFIABLE`
+and stays, so with no decisions on record the PnL inputs are unchanged.
+
 ## 7. Post-fill completion gate
 
 `evaluate_post_fill_completion(fill_evidence=…, position_effect=…)` returns
@@ -184,10 +220,12 @@ Verified in an isolated throwaway database by
 
 - Recording the actual UBER decision row is an **operator action**, not part of
   this change.
-- The trade-performance gate ships as the pure `partition_by_eligibility`
-  predicate. No cross-lifecycle PnL aggregate over the Alpaca paper ledger exists
-  in `main` today, so there is no second call site to wire; the next consumer
-  applies the same predicate.
+- **The legacy calibration aggregate's treatment of UNIDENTIFIABLE is undecided**
+  (§6-1). This is the one open operator decision in this change.
+- The trade-performance gate is wired into the Alpaca PnL path (§6-2). Other
+  aggregates (`trade_journal/aggregates.py`, keyed by symbol/tag over
+  `review.trades`) have no forecast/lifecycle identity to join on and are
+  untouched; a future consumer applies the same predicate.
 - Physical-account identity registration stays in `ROB-1204` and is untouched.
 - Fill-observation projection (`ROB-1195`) is a separate lane; this contract
   consumes fill/position evidence as typed inputs and does not duplicate it.

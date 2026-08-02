@@ -200,14 +200,17 @@ def test_removing_the_eligibility_filter_readmits_the_excluded_row() -> None:
 
     filtered = partition_by_eligibility(pairs, predicate=CALIBRATION_PREDICATE)
 
-    def mutant_partition(items, *, predicate):  # filter removed
-        return [row for row, _decision in items]
+    # The "mutant" is the unfiltered input itself — what an implementation that
+    # aggregated every closed+scored row would produce. Comparing the production
+    # function against its own input avoids defining a stand-in filter here.
+    # The authoritative source-level mutation lives in test_persistence.py
+    # (apply_eligibility_exclusion=False against the real SQL predicate).
+    unfiltered = [candidate for candidate, _ in pairs]
 
-    mutated = mutant_partition(pairs, predicate=CALIBRATION_PREDICATE)
-
+    assert unfiltered == [row]
     assert filtered.included == []
-    assert mutated == [row]
-    assert filtered.included != mutated
+    assert filtered.included != unfiltered
+    assert filtered.excluded == [row]
 
 
 def test_status_closed_plus_brier_alone_is_not_an_eligibility_predicate() -> None:

@@ -148,6 +148,39 @@ class InvalidSampleEligibilityService:
             for subject in subjects
         }
 
+    async def list_trade_performance_excluded(
+        self,
+        correlation_ids: Sequence[str],
+        *,
+        contract_version: str = CONTRACT_VERSION,
+    ) -> frozenset[str]:
+        """Lifecycle correlation ids explicitly excluded from trade performance.
+
+        Reports **only** an explicit ``trade_performance_exclude`` under
+        ``contract_version``. A missing decision is ``UNIDENTIFIABLE`` and is
+        deliberately *not* reported here: whether an undecided lifecycle belongs
+        in a PnL cohort is the caller's stated cohort policy, and this method
+        must not answer it silently in either direction.
+        """
+
+        unique = [ref for ref in dict.fromkeys(correlation_ids) if ref]
+        if not unique:
+            return frozenset()
+        subjects = [
+            EligibilitySubject(kind=EligibilitySubjectKind.TRADE_LIFECYCLE, ref=ref)
+            for ref in unique
+        ]
+        decisions = await self.get_decisions(
+            subjects, contract_version=contract_version
+        )
+        return frozenset(
+            subject.ref
+            for subject, decision in decisions.items()
+            if decision.contract_version == contract_version
+            and decision.trade_performance_eligibility
+            is TradePerformanceEligibility.EXCLUDE
+        )
+
     async def record_decision(
         self,
         *,

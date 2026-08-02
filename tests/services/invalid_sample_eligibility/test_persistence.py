@@ -458,11 +458,15 @@ async def test_post_fill_evidence_requires_a_persisted_binding(
 async def test_excluded_forecast_leaves_the_legacy_calibration_aggregate(
     db_session: AsyncSession,
 ) -> None:
+    """An explicit ``calibration_exclude`` drops out of the legacy aggregate.
+
+    This asserts only the exclusion guarantee. It deliberately does NOT assert
+    anything about how the legacy aggregate treats *undecided* forecasts — that
+    is the open ROB-1036 B1 question, pinned separately below.
+    """
+
     included = await _make_scored_forecast(db_session, created_by="claude")
     excluded = await _make_scored_forecast(db_session, created_by="claude")
-
-    before = await svc.build_forecast_calibration_aggregate(db_session)
-    assert before["groups"][0]["sample_size"] == 2
 
     service = InvalidSampleEligibilityService(db_session)
     await _record(
@@ -479,6 +483,57 @@ async def test_excluded_forecast_leaves_the_legacy_calibration_aggregate(
 
     remaining = await svc.list_scored_forecasts_for_calibration(db_session)
     assert [row.id for row in remaining] == [included.id]
+
+
+async def test_undecided_forecasts_strict_cohort_excludes_legacy_aggregate_admits(
+    db_session: AsyncSession,
+) -> None:
+    """🔴 KNOWN GAP (ROB-1036 B1) — the two surfaces disagree on UNIDENTIFIABLE.
+
+    Contract-correct behaviour is the strict cohort's: a forecast with no
+    eligibility decision is ``UNIDENTIFIABLE`` and does **not** enter a
+    calibration cohort (prompt.md §4.2-4/§4.2-5).
+
+    The pre-existing public aggregate — still used by
+    ``mcp_server/tooling/forecast_tools.py``, ``routers/invest_forecasts.py``
+    and ``services/decision_history.py`` — admits them, which is semantically a
+    default-include. Closing that gap makes every existing calibration surface
+    return empty (there are zero decision rows and §4.2-4 forbids backfill), so
+    it is an operator decision, escalated as NEEDS_INFO rather than taken here.
+
+    This test pins BOTH behaviours side by side so the divergence is visible and
+    machine-checked. When the operator decides, exactly one branch changes.
+    """
+
+    await _make_scored_forecast(db_session, created_by="claude")
+    await _make_scored_forecast(db_session, created_by="claude")
+    await db_session.commit()
+
+    # Contract-correct surface: undecided rows are held out of the cohort.
+    strict = await build_eligible_forecast_calibration_aggregate(
+        db_session,
+        contract_version=CONTRACT_VERSION,
+        predicate=CALIBRATION_PREDICATE,
+    )
+    assert strict["eligibility_counts"] == {
+        "included": 0,
+        "excluded": 0,
+        "unidentifiable": 2,
+    }
+    assert strict["groups"] == []
+
+    # Legacy surface: admits them. Asserted as the CURRENT, KNOWN-WRONG state —
+    # not as a correctness expectation.
+    legacy = await svc.build_forecast_calibration_aggregate(db_session)
+    legacy_sample_size = legacy["groups"][0]["sample_size"]
+    assert legacy_sample_size == 2, (
+        "legacy aggregate behaviour changed; if this is the ROB-1036 B1 fix, "
+        "update this pin and the strict/legacy divergence note"
+    )
+    assert legacy_sample_size != strict["eligibility_counts"]["included"], (
+        "the strict cohort and the legacy aggregate must be shown to disagree "
+        "while B1 is open"
+    )
 
 
 async def test_removing_the_sql_exclusion_readmits_the_excluded_forecast(
