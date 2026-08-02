@@ -811,7 +811,11 @@ class AuthoritativeEvidenceReader:
                 if (
                     row is None
                     or instrument is None
-                    or instrument.symbol != link.symbol
+                    # ``crypto_instruments`` names the exchange symbol
+                    # ``venue_symbol``; for a Binance spot instrument that is
+                    # the same notation the link carries (``BTCUSDT``), which is
+                    # why this is an equality check and not a mapping.
+                    or instrument.venue_symbol != link.symbol
                     or row.client_order_id != link.client_order_id
                     or str(row.broker_order_id) != link.broker_order_id
                     or row.lifecycle_state not in {"filled", "closed", "reconciled"}
