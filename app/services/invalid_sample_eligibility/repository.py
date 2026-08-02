@@ -2,8 +2,8 @@
 
 Service-internal. Import it from
 ``app.services.invalid_sample_eligibility.service`` only; the static boundary
-test rejects any other importer, mirroring the ROB-298 Binance demo ledger and
-ROB-816 order-proposal repository rules.
+test rejects any other importer, following the same service-private repository
+rule as ROB-298 and ROB-816.
 """
 
 from __future__ import annotations
