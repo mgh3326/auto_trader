@@ -64,7 +64,10 @@ from sqlalchemy import text
 # v31: Alpaca paper lab account_mode CHECK expansions.
 # v32 (ROB-1103): nullable direct-watch source links + future-write FKs.
 # v33 (ROB-1115): strategy_learning_events ORM table + append-only triggers.
-SCHEMA_BOOTSTRAP_VERSION = 33
+# v34 (ROB-1036): review.sample_eligibility_decisions /
+# invalid_sample_cleanup_bindings / invalid_sample_cleanup_lifecycle_events ORM
+# tables (create_all) + their append-only triggers mirrored below.
+SCHEMA_BOOTSTRAP_VERSION = 34
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1312,6 +1315,33 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEFORE TRUNCATE ON research.strategy_learning_events "
     "FOR EACH STATEMENT EXECUTE FUNCTION "
     "research.reject_strategy_learning_event_mutation()",
+    # ---- ROB-1036: invalid-sample eligibility tables are append-only.
+    # The tables themselves come from the ORM metadata above; these trigger
+    # functions are non-ORM DDL mirroring the Alembic revision.
+    "CREATE OR REPLACE FUNCTION review.reject_invalid_sample_mutation() "
+    "RETURNS trigger AS $$ BEGIN RAISE EXCEPTION "
+    "'review.% is append-only; % rejected', TG_TABLE_NAME, TG_OP "
+    "USING ERRCODE = 'restrict_violation'; END; $$ LANGUAGE plpgsql",
+    *tuple(
+        statement
+        for table in (
+            "sample_eligibility_decisions",
+            "invalid_sample_cleanup_bindings",
+            "invalid_sample_cleanup_lifecycle_events",
+        )
+        for statement in (
+            f"DROP TRIGGER IF EXISTS trg_rob1036_{table}_append_only ON review.{table}",
+            f"CREATE TRIGGER trg_rob1036_{table}_append_only "
+            f"BEFORE UPDATE OR DELETE ON review.{table} "
+            "FOR EACH ROW EXECUTE FUNCTION review.reject_invalid_sample_mutation()",
+            f"DROP TRIGGER IF EXISTS trg_rob1036_{table}_truncate_append_only "
+            f"ON review.{table}",
+            f"CREATE TRIGGER trg_rob1036_{table}_truncate_append_only "
+            f"BEFORE TRUNCATE ON review.{table} "
+            "FOR EACH STATEMENT EXECUTE FUNCTION "
+            "review.reject_invalid_sample_mutation()",
+        )
+    ),
     # ---- ROB-848: immutable paper-validation audit + experiment hash binding
     # Tables/checks/FKs are owned by the ORM metadata above; these PostgreSQL
     # trigger functions are non-ORM DDL and mirror the Alembic revision.

@@ -14,23 +14,29 @@ import datetime as dt
 import logging
 import math
 import uuid
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import Text, and_, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
 from app.core.symbol import to_db_symbol
 from app.core.timezone import now_kst
+from app.models.invalid_sample_eligibility import SampleEligibilityDecision
 from app.models.review import TradeForecast
 from app.models.trading import InstrumentType
 from app.services.daily_candles.repository import (
     DailyCandleRow,
     DailyCandlesRepository,
     MarketKey,
+)
+from app.services.invalid_sample_eligibility.contract import (
+    CalibrationEligibility,
+    EligibilitySubjectKind,
 )
 from app.services.trading_policy_service import policy_version_stamp
 
@@ -1350,6 +1356,89 @@ async def _fetch_calibration_rows(
     return list(result.scalars().all())
 
 
+def _explicit_calibration_exclusion_filter():
+    """ROB-1036: drop forecasts whose *latest* eligibility revision says EXCLUDE.
+
+    Scoped deliberately narrowly. A forecast with no decision on record is
+    untouched — this is not a historical backfill and never coerces a missing
+    decision to either INCLUDE or EXCLUDE. It only stops an explicitly excluded
+    invalid sample (the UBER cleanup case) from re-entering the calibration
+    aggregate through the legacy ``closed + scored`` predicate.
+    """
+
+    decision = SampleEligibilityDecision
+    subject_ref = cast(TradeForecast.forecast_id, Text)
+    latest_revision = (
+        select(func.max(decision.revision_no))
+        .where(
+            decision.subject_kind == EligibilitySubjectKind.FORECAST.value,
+            decision.subject_ref == subject_ref,
+        )
+        .correlate(TradeForecast)
+        .scalar_subquery()
+    )
+    excluded = (
+        select(decision.id)
+        .where(
+            decision.subject_kind == EligibilitySubjectKind.FORECAST.value,
+            decision.subject_ref == subject_ref,
+            decision.revision_no == latest_revision,
+            decision.calibration_eligibility == CalibrationEligibility.EXCLUDE.value,
+        )
+        .correlate(TradeForecast)
+        .exists()
+    )
+    return ~excluded
+
+
+async def list_scored_forecasts_for_calibration(
+    db: AsyncSession,
+    *,
+    created_by: str | None = None,
+    symbol: str | None = None,
+    instrument_type: str | None = None,
+    days: int | None = None,
+    apply_eligibility_exclusion: bool = True,
+) -> list[TradeForecast]:
+    """Closed + scored forecasts matching the cohort filters.
+
+    ``apply_eligibility_exclusion`` drops explicitly excluded samples at the SQL
+    edge. The eligibility-aware read model passes ``False`` because it partitions
+    every domain itself and must report the excluded/unidentifiable counts rather
+    than silently losing the rows.
+    """
+
+    filters = [
+        TradeForecast.status == "closed",
+        TradeForecast.brier_score.isnot(None),
+    ]
+    if apply_eligibility_exclusion:
+        filters.append(_explicit_calibration_exclusion_filter())
+    if created_by is not None:
+        filters.append(TradeForecast.created_by == created_by)
+    if symbol is not None:
+        filters.append(
+            TradeForecast.symbol
+            == _normalize_symbol_for_filter(symbol, instrument_type)
+        )
+    if instrument_type is not None:
+        filters.append(TradeForecast.instrument_type == instrument_type)
+    if days is not None:
+        filters.append(TradeForecast.resolved_at >= now_kst() - timedelta(days=days))
+
+    return await _fetch_calibration_rows(db, filters=filters)
+
+
+def aggregate_calibration_rows(
+    rows: Sequence[TradeForecast], *, group_by: str = "created_by"
+) -> dict[str, Any]:
+    """Pure Brier/hit-rate aggregation over an already-selected cohort."""
+
+    if group_by not in _GROUP_BY_FIELDS:
+        group_by = "created_by"
+    return _aggregate_calibration_groups(rows, group_by=group_by)
+
+
 async def build_forecast_calibration_aggregate(
     db: AsyncSession,
     *,
@@ -1365,28 +1454,29 @@ async def build_forecast_calibration_aggregate(
     ``model_label`` / KST ``day`` — the objective metric behind an operator's
     "does another LLM reach the same result" comparison. ``calibration_gap`` is
     ``avg_probability - hit_rate`` (positive = over-confident).
+
+    ROB-1036: forecasts carrying an explicit ``calibration_exclude`` decision are
+    dropped here too, so an invalid sample cannot re-enter through this legacy
+    entry point. Callers that need the excluded/unidentifiable counts should use
+    ``build_eligible_forecast_calibration_aggregate`` instead.
     """
     if group_by not in _GROUP_BY_FIELDS:
         group_by = "created_by"
 
-    filters = [
-        TradeForecast.status == "closed",
-        TradeForecast.brier_score.isnot(None),
-    ]
-    if created_by is not None:
-        filters.append(TradeForecast.created_by == created_by)
-    if symbol is not None:
-        filters.append(
-            TradeForecast.symbol
-            == _normalize_symbol_for_filter(symbol, instrument_type)
-        )
-    if instrument_type is not None:
-        filters.append(TradeForecast.instrument_type == instrument_type)
-    if days is not None:
-        filters.append(TradeForecast.resolved_at >= now_kst() - timedelta(days=days))
+    rows = await list_scored_forecasts_for_calibration(
+        db,
+        created_by=created_by,
+        symbol=symbol,
+        instrument_type=instrument_type,
+        days=days,
+        apply_eligibility_exclusion=True,
+    )
+    return _aggregate_calibration_groups(rows, group_by=group_by)
 
-    rows = await _fetch_calibration_rows(db, filters=filters)
 
+def _aggregate_calibration_groups(
+    rows: Sequence[TradeForecast], *, group_by: str
+) -> dict[str, Any]:
     groups: dict[str, list[TradeForecast]] = {}
     for r in rows:
         groups.setdefault(_group_key(r, group_by), []).append(r)
