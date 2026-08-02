@@ -648,6 +648,14 @@ class AuthoritativeEvidenceReader:
         tuple[NativeMark, ...],
         datetime,
     ]:
+        # The authoritative product for every native row in this evaluation.
+        # ``paper_run_order_links`` carries venue and symbol but no product, and
+        # the cohort row is the only lineage-bound source of it (DB CHECK
+        # ``market = 'spot'``).  Resolve it once and fail closed rather than
+        # letting a per-row default decide what a link "meant".
+        expected_product = cohort.market
+        if not expected_product:
+            _fail("missing_evidence", "cohort market missing")
         rows = (
             await self._session.execute(
                 select(
@@ -811,6 +819,19 @@ class AuthoritativeEvidenceReader:
                 if (
                     row is None
                     or instrument is None
+                    # ``crypto_instruments`` identity is the whole triple
+                    # ``(venue, product, venue_symbol)`` — the unique constraint
+                    # is on all three, so ``venue_symbol`` alone identifies
+                    # nothing.  ``binance/usdm_futures/BTCUSDT`` is a real row
+                    # shape (scripts/binance_futures_demo_smoke.py seeds it), so
+                    # a spot ledger row pointing at the futures instrument of
+                    # the same symbol would otherwise be accepted and book
+                    # cross-product fill evidence silently.  Bind the ledger row
+                    # and the instrument to the cohort's product, and the
+                    # instrument to the link's venue.
+                    or row.product != expected_product
+                    or instrument.venue != link.venue
+                    or instrument.product != expected_product
                     # ``crypto_instruments`` names the exchange symbol
                     # ``venue_symbol``; for a Binance spot instrument that is
                     # the same notation the link carries (``BTCUSDT``), which is

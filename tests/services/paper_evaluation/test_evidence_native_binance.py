@@ -30,6 +30,7 @@ from app.models.crypto_instruments import CryptoInstrument
 from app.models.paper_cohort import (
     PaperRunOrderLink,
     PaperValidationCohort,
+    PaperValidationCohortAssignment,
 )
 from app.models.paper_evaluation import EvaluationConfig as EvaluationConfigRow
 from app.models.paper_evaluation import EvaluationEpoch as EvaluationEpochRow
@@ -86,6 +87,9 @@ PAPER_START = CAPTURED_AT - timedelta(hours=1)
 FILLED_AT = CAPTURED_AT + timedelta(milliseconds=200)
 ALPACA_SYMBOL = {"BTCUSDT": "BTC/USD", "ETHUSDT": "ETH/USD"}
 COHORT_SYMBOLS = ("BTCUSDT", "ETHUSDT")
+# Demo hosts are product-disjoint (see CLAUDE.md ROB-298); keep the ledger row's
+# host consistent with its own discriminator.
+DEMO_HOST = {"spot": "demo-api.binance.com", "usdm_futures": "demo-fapi.binance.com"}
 
 
 def _evaluated_at() -> datetime:
@@ -134,25 +138,33 @@ class _Registry:
         return self.adapters[broker]
 
 
-async def _instrument_id(session: AsyncSession, venue_symbol: str) -> int:
-    """Resolve-or-create the ``(binance, spot, venue_symbol)`` identity.
+async def _instrument_id(
+    session: AsyncSession,
+    venue_symbol: str,
+    *,
+    venue: str = "binance",
+    product: str = "spot",
+) -> int:
+    """Resolve-or-create the ``(venue, product, venue_symbol)`` identity.
 
     Mirrors ``BinanceDemoLedgerRepository.resolve_or_create_instrument``: the
     triple is unique, so a row seeded by an earlier test must be reused rather
-    than duplicated.
+    than duplicated.  All three components are parameters because
+    ``venue_symbol`` on its own identifies nothing — ``binance/spot/BTCUSDT``
+    and ``binance/usdm_futures/BTCUSDT`` are different, equally valid rows.
     """
     existing = await session.scalar(
         select(CryptoInstrument).where(
-            CryptoInstrument.venue == "binance",
-            CryptoInstrument.product == "spot",
+            CryptoInstrument.venue == venue,
+            CryptoInstrument.product == product,
             CryptoInstrument.venue_symbol == venue_symbol,
         )
     )
     if existing is not None:
         return existing.id
     instrument = CryptoInstrument(
-        venue="binance",
-        product="spot",
+        venue=venue,
+        product=product,
         venue_symbol=venue_symbol,
         base_asset=venue_symbol.removesuffix("USDT"),
         quote_asset="USDT",
@@ -167,9 +179,10 @@ async def _instrument_id(session: AsyncSession, venue_symbol: str) -> int:
 class _LedgerBackedNativeResolver:
     """Materialise a real native ledger row for each submitted order.
 
-    ``instrument_venue_symbol`` maps the cohort symbol to the
-    ``crypto_instruments.venue_symbol`` the Binance ledger row points at, so a
-    test can bind a link to a deliberately wrong instrument.
+    ``instrument_venue`` / ``instrument_product`` / ``instrument_venue_symbol``
+    select which ``crypto_instruments`` row the Binance ledger row points at,
+    and ``ledger_product`` sets the ledger row's own discriminator, so a test
+    can make the identity wrong in exactly one component at a time.
     """
 
     session: AsyncSession
@@ -177,6 +190,9 @@ class _LedgerBackedNativeResolver:
     instrument_venue_symbol: dict[str, str] = field(
         default_factory=lambda: {symbol: symbol for symbol in COHORT_SYMBOLS}
     )
+    instrument_venue: str = "binance"
+    instrument_product: str = "spot"
+    ledger_product: str = "spot"
 
     async def resolve(
         self, venue: str, client_order_id: str, broker_order_id: str
@@ -186,10 +202,13 @@ class _LedgerBackedNativeResolver:
             row: BinanceDemoOrderLedger | AlpacaPaperOrderLedger = (
                 BinanceDemoOrderLedger(
                     instrument_id=await _instrument_id(
-                        self.session, self.instrument_venue_symbol[symbol]
+                        self.session,
+                        self.instrument_venue_symbol[symbol],
+                        venue=self.instrument_venue,
+                        product=self.instrument_product,
                     ),
-                    product="spot",
-                    venue_host="demo-api.binance.com",
+                    product=self.ledger_product,
+                    venue_host=DEMO_HOST[self.ledger_product],
                     client_order_id=client_order_id,
                     broker_order_id=broker_order_id,
                     side="BUY",
@@ -305,7 +324,12 @@ class _Lineage:
 
 
 async def _build_lineage(
-    session: AsyncSession, *, instrument_venue_symbol: dict[str, str] | None = None
+    session: AsyncSession,
+    *,
+    instrument_venue_symbol: dict[str, str] | None = None,
+    instrument_venue: str = "binance",
+    instrument_product: str = "spot",
+    ledger_product: str = "spot",
 ) -> _Lineage:
     """Run the production paper-active pipeline and seed the evaluation epoch."""
     nonce = uuid4().hex
@@ -415,6 +439,9 @@ async def _build_lineage(
                 if instrument_venue_symbol is not None
                 else {symbol: symbol for symbol in COHORT_SYMBOLS}
             ),
+            instrument_venue=instrument_venue,
+            instrument_product=instrument_product,
+            ledger_product=ledger_product,
         ),
         clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
         enablement=lambda _mode: True,
@@ -532,7 +559,13 @@ async def test_load_assembles_binance_fills_from_linked_instrument_identity(
         assert ledger is not None
         instrument = await db_session.get(CryptoInstrument, ledger.instrument_id)
         assert instrument is not None
-        assert instrument.venue_symbol == symbol
+        # The whole identity triple, not just the symbol.
+        assert (instrument.venue, instrument.product, instrument.venue_symbol) == (
+            "binance",
+            "spot",
+            symbol,
+        )
+        assert ledger.product == "spot"
     assert {fill.symbol for fill in evidence.alpaca_fills} == {"BTC/USD", "ETH/USD"}
 
 
@@ -561,6 +594,89 @@ async def test_load_rejects_binance_row_bound_to_another_symbols_instrument(
         )
     assert exc.value.reason_code == "cross_wired_evidence"
     assert str(exc.value) == "linked Binance row mismatch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ledger_product", "instrument_venue", "instrument_product"),
+    [
+        # The one the ROB-1205 r1 fix still admitted: a spot ledger row whose
+        # FK target is the USD-M futures instrument carrying the very same
+        # ``BTCUSDT``/``ETHUSDT`` venue_symbol. Both rows are legitimate —
+        # scripts/binance_futures_demo_smoke.py seeds exactly this shape — so
+        # ``venue_symbol`` alone cannot tell them apart, and accepting it books
+        # cross-product fill evidence with no crash to notice.
+        ("spot", "binance", "usdm_futures"),
+        # Same hole one component over: nothing in the schema stops a Binance
+        # ledger row's FK from landing on another venue's instrument.
+        ("spot", "upbit", "spot"),
+        # And the mirror image: a futures ledger row whose instrument is the
+        # correct spot one. Here every ``instrument`` field matches, so only the
+        # ledger row's own discriminator reveals that this fill did not happen
+        # in the cohort's market.
+        ("usdm_futures", "binance", "spot"),
+    ],
+    ids=[
+        "usdm_futures_instrument_same_symbol",
+        "other_venue_instrument_same_symbol",
+        "futures_ledger_row_in_spot_cohort",
+    ],
+)
+async def test_load_rejects_binance_row_bound_to_wrong_instrument_identity(
+    db_session: AsyncSession,
+    ledger_product: str,
+    instrument_venue: str,
+    instrument_product: str,
+) -> None:
+    """A spot cohort must not accept evidence off its ``(venue, product)``.
+
+    ``crypto_instruments`` is unique on ``(venue, product, venue_symbol)``, so
+    the reader must compare all three, and the ledger row's own ``product`` must
+    agree with the cohort's market as well.  Each case breaks exactly one
+    component and every one of them must fail closed.
+    """
+    lineage = await _build_lineage(
+        db_session,
+        instrument_venue=instrument_venue,
+        instrument_product=instrument_product,
+        ledger_product=ledger_product,
+    )
+    reader = AuthoritativeEvidenceReader(db_session)
+
+    with pytest.raises(EvaluationConfigError) as exc:
+        await reader.load(
+            evaluated_at=_evaluated_at(),
+            cohort_id=lineage.cohort_id,
+            assignment_id=lineage.assignment_id,
+        )
+    assert exc.value.reason_code == "cross_wired_evidence"
+    assert str(exc.value) == "linked Binance row mismatch"
+
+
+@pytest.mark.asyncio
+async def test_native_load_fails_closed_when_cohort_product_is_unresolvable(
+    db_session: AsyncSession,
+) -> None:
+    """No cohort product means no way to bind identity — refuse, don't guess.
+
+    ``paper_run_order_links`` carries venue and symbol but no product, so
+    ``cohort.market`` is the only lineage-bound source of it.  If it cannot be
+    resolved the reader must fail closed rather than fall back to assuming
+    ``spot``.
+    """
+    reader = AuthoritativeEvidenceReader(db_session)
+    with pytest.raises(EvaluationConfigError) as exc:
+        await reader._load_native(
+            assignment=PaperValidationCohortAssignment(
+                assignment_id="assignment-x",
+                cohort_id="cohort-x",
+            ),
+            cohort=PaperValidationCohort(cohort_id="cohort-x", market=None),
+            start=PAPER_START,
+            end=_evaluated_at(),
+        )
+    assert exc.value.reason_code == "missing_evidence"
+    assert str(exc.value) == "cohort market missing"
 
 
 @pytest.mark.asyncio
