@@ -193,6 +193,7 @@ class _LedgerBackedNativeResolver:
     instrument_venue: str = "binance"
     instrument_product: str = "spot"
     ledger_product: str = "spot"
+    filled_at: datetime = FILLED_AT
 
     async def resolve(
         self, venue: str, client_order_id: str, broker_order_id: str
@@ -220,9 +221,9 @@ class _LedgerBackedNativeResolver:
                     # instrument rows. A settled round trip is terminal anyway,
                     # and the reader accepts filled/closed/reconciled alike.
                     lifecycle_state="reconciled",
-                    filled_at=FILLED_AT,
-                    closed_at=FILLED_AT,
-                    reconciled_at=FILLED_AT,
+                    filled_at=self.filled_at,
+                    closed_at=self.filled_at,
+                    reconciled_at=self.filled_at,
                     extra_metadata={
                         "filled_qty": "1",
                         "filled_avg_price": "100",
@@ -252,7 +253,7 @@ class _LedgerBackedNativeResolver:
                 filled_avg_price=Decimal("100"),
                 fee_amount=Decimal("0"),
                 fee_currency="USD",
-                raw_responses={"filled_at": FILLED_AT.isoformat()},
+                raw_responses={"filled_at": self.filled_at.isoformat()},
             )
             kind = "alpaca_paper_order_ledger"
         self.session.add(row)
@@ -330,8 +331,17 @@ async def _build_lineage(
     instrument_venue: str = "binance",
     instrument_product: str = "spot",
     ledger_product: str = "spot",
+    filled_at: datetime = FILLED_AT,
 ) -> _Lineage:
-    """Run the production paper-active pipeline and seed the evaluation epoch."""
+    """Run the production paper-active pipeline and seed the evaluation epoch.
+
+    ``filled_at`` stamps both native ledger rows.  It is a parameter because
+    ``_load_native`` and ``PaperEvaluationPnL.compute_native_evidence_view``
+    want the fill on opposite sides of the venue mark — the loader drops a fill
+    later than the resolved as-of mark, while the P&L view needs a mark at or
+    before every fill to value the *other* symbol's open inventory.  The
+    default keeps this module's own lineage unchanged.
+    """
     nonce = uuid4().hex
     config = make_evaluation_config(min_observations=1, min_fills=1)
     experiment = ResearchStrategyExperiment(
@@ -442,6 +452,7 @@ async def _build_lineage(
             instrument_venue=instrument_venue,
             instrument_product=instrument_product,
             ledger_product=ledger_product,
+            filled_at=filled_at,
         ),
         clock=lambda: CAPTURED_AT + timedelta(milliseconds=300),
         enablement=lambda _mode: True,
