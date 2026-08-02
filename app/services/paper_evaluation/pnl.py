@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
@@ -478,13 +478,22 @@ class PaperEvaluationPnL:
         evaluated_at: datetime | None = None,
         native_marks: Mapping[str, Decimal] | None = None,
         benchmark_marks: Mapping[str, tuple[Decimal, Decimal]] | None = None,
+        excluded_correlation_ids: Collection[str] = (),
     ) -> ViewMetrics:
         """Compute View 2: Alpaca broker P&L (native USD).
 
         Reads execution rows via ``ledger.list_by_correlation_id``.
         Filters to ``record_kind='execution'`` and executed lifecycle states.
         Filters to ``currency='USD'``.
+
+        ROB-1036: ``excluded_correlation_ids`` drops lifecycles carrying an
+        explicit ``trade_performance_exclude`` decision, so an invalid sample
+        cannot re-enter the PnL aggregate. The caller resolves them through
+        ``InvalidSampleEligibilityService.list_trade_performance_excluded``;
+        this method stays free of DB access. The default is empty, so a caller
+        that supplies nothing gets exactly the previous behaviour.
         """
+        excluded = frozenset(excluded_correlation_ids)
         _EXECUTED_LIFECYCLE_STATES = frozenset(
             {
                 "submitted",
@@ -507,8 +516,12 @@ class PaperEvaluationPnL:
         turnover = _ZERO
 
         for corr_id in correlation_ids:
+            if corr_id in excluded:
+                continue
             rows = await ledger.list_by_correlation_id(corr_id)
             for row in rows:
+                if row.lifecycle_correlation_id in excluded:
+                    continue
                 if row.record_kind != _RECORD_KIND_EXECUTION:
                     if (
                         row.record_kind == "reconcile"

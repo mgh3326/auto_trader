@@ -22,9 +22,14 @@ from app.schemas.invest_forecasts import (
     VALID_INSTRUMENT_TYPES,
     CalibrationGroupRow,
     CalibrationResponse,
+    EligibilityCounts,
     ForecastListResponse,
     ForecastRow,
 )
+from app.services.invalid_sample_eligibility.cohort import (
+    COMPATIBILITY_CALIBRATION_COHORT,
+)
+from app.services.invalid_sample_eligibility.contract import CONTRACT_VERSION
 from app.services.trade_journal import forecast_service as fc_svc
 
 router = APIRouter(
@@ -55,6 +60,11 @@ async def get_forecast_calibration(
     _validate_instrument_type(instrument_type)
     result = await fc_svc.build_forecast_calibration_aggregate(
         db,
+        # ROB-1036 D-1 (option ②): the cohort is stated, not implied. It admits
+        # undecided samples so this endpoint keeps returning data, and the
+        # response reports the undecided count alongside the groups.
+        contract_version=CONTRACT_VERSION,
+        predicate=COMPATIBILITY_CALIBRATION_COHORT,
         group_by=group_by,
         created_by=created_by,
         symbol=symbol,
@@ -71,6 +81,10 @@ async def get_forecast_calibration(
         count=len(groups),
         groups=[CalibrationGroupRow(**g) for g in groups],
         as_of=datetime.now(UTC),
+        contract_version=result["contract_version"],
+        eligibility_cohort=result["eligibility_cohort"],
+        eligibility_stage=result["eligibility_stage"],
+        eligibility_counts=EligibilityCounts(**result["eligibility_counts"]),
     )
 
 

@@ -30,6 +30,10 @@ from app.models.review import (
     TradeRetrospective,
     TradeRetrospectiveAction,
 )
+from app.services.invalid_sample_eligibility.cohort import (
+    COMPATIBILITY_CALIBRATION_COHORT,
+)
+from app.services.invalid_sample_eligibility.contract import CONTRACT_VERSION
 from app.services.trade_journal.forecast_service import (
     _normalize_symbol_for_filter,
     build_forecast_calibration_aggregate,
@@ -116,12 +120,25 @@ async def build_decision_context(
     ):
         return None  # no signal — omit the field entirely
 
+    # ROB-1036 D-1 (option ②): both cohorts are stated explicitly and admit
+    # undecided samples, so these figures stay populated; the undecided count
+    # rides along in the folded payload.
     brier_symbol = _fold_brier(
         await build_forecast_calibration_aggregate(
-            db, symbol=norm, instrument_type=instrument_type
+            db,
+            contract_version=CONTRACT_VERSION,
+            predicate=COMPATIBILITY_CALIBRATION_COHORT,
+            symbol=norm,
+            instrument_type=instrument_type,
         )
     )
-    brier_global = _fold_brier(await build_forecast_calibration_aggregate(db))
+    brier_global = _fold_brier(
+        await build_forecast_calibration_aggregate(
+            db,
+            contract_version=CONTRACT_VERSION,
+            predicate=COMPATIBILITY_CALIBRATION_COHORT,
+        )
+    )
     realized_r = await _realized_r_by_tag(db, market, setup_tag, account_mode)
 
     ctx: dict[str, Any] = {
@@ -152,10 +169,22 @@ def _fold_brier(agg: dict[str, Any]) -> dict[str, Any]:
         if denom
         else None
     )
+    counts = agg.get("eligibility_counts") or {}
     return {
         "n": n,
         "mean_brier": round(mean, 4) if mean is not None else None,
         "flag": "insufficient_sample" if n < 10 else "ok",
+        # ROB-1036 D-1: this number feeds a live trading judgement, so how much
+        # of it rests on undecided samples travels with it. The counts stay
+        # separate — never folded into ``n``.
+        "contract_version": agg.get("contract_version"),
+        "eligibility_cohort": agg.get("eligibility_cohort"),
+        "eligibility_stage": agg.get("eligibility_stage"),
+        "eligibility_counts": {
+            "included": int(counts.get("included", 0)),
+            "excluded": int(counts.get("excluded", 0)),
+            "unidentifiable": int(counts.get("unidentifiable", 0)),
+        },
     }
 
 

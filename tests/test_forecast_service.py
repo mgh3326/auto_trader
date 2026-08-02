@@ -12,6 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.review import TradeForecast
 from app.services.daily_candles.repository import DailyCandleRow
+from app.services.invalid_sample_eligibility.cohort import (
+    COMPATIBILITY_CALIBRATION_COHORT,
+)
+from app.services.invalid_sample_eligibility.contract import CONTRACT_VERSION
 from app.services.trade_journal import forecast_service as svc
 
 pytestmark = [
@@ -926,7 +930,13 @@ async def test_no_claim_placeholder_auto_closes_without_score_and_leaves_due_que
     assert row.brier_score is None
     assert row.resolved_at is not None
     assert await svc.list_due_forecasts(db_session) == []
-    assert (await svc.build_forecast_calibration_aggregate(db_session))["groups"] == []
+    assert (
+        await svc.build_forecast_calibration_aggregate(
+            db_session,
+            contract_version=CONTRACT_VERSION,
+            predicate=COMPATIBILITY_CALIBRATION_COHORT,
+        )
+    )["groups"] == []
 
 
 @pytest.mark.asyncio
@@ -1034,7 +1044,10 @@ async def test_calibration_aggregate_groups_by_created_by(db_session: AsyncSessi
     await _make("gpt", 0.9, True)
 
     agg = await svc.build_forecast_calibration_aggregate(
-        db_session, group_by="created_by"
+        db_session,
+        contract_version=CONTRACT_VERSION,
+        predicate=COMPATIBILITY_CALIBRATION_COHORT,
+        group_by="created_by",
     )
     assert agg["group_by"] == "created_by"
     groups = {g["group"]: g for g in agg["groups"]}

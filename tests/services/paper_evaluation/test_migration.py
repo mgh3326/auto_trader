@@ -135,6 +135,14 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("DROP TABLE review.watch_order_intent_ledger")
             )
+            # ROB-1036 is likewise later than this boundary; its three
+            # append-only tables are already in Base.metadata.
+            for table in (
+                "invalid_sample_cleanup_lifecycle_events",
+                "invalid_sample_cleanup_bindings",
+                "sample_eligibility_decisions",
+            ):
+                await connection.execute(text(f"DROP TABLE review.{table}"))
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 

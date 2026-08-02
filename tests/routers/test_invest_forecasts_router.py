@@ -16,7 +16,25 @@ def _make_client(monkeypatch, *, calib=None, open_res=None, closed_res=None):
 
     async def _fake_calib(db, **kwargs):
         calls["calib"] = kwargs
-        return calib or {"group_by": kwargs.get("group_by", "created_by"), "groups": []}
+        # ROB-1036 D-1: the aggregate now returns the cohort provenance and the
+        # separated eligibility counts alongside the groups.
+        base = {
+            "contract_version": "uber-invalid-sample-eligibility.v1",
+            "eligibility_cohort": "calibration-compatibility",
+            "eligibility_stage": "rob-1036-d1-option-2-compatibility",
+            "eligibility_counts": {
+                "included": 0,
+                "excluded": 0,
+                "unidentifiable": 0,
+            },
+        }
+        if calib is not None:
+            return {**base, **calib}
+        return {
+            **base,
+            "group_by": kwargs.get("group_by", "created_by"),
+            "groups": [],
+        }
 
     async def _fake_open(db, **kwargs):
         calls["open"] = kwargs
