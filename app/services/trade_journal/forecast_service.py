@@ -34,9 +34,19 @@ from app.services.daily_candles.repository import (
     DailyCandlesRepository,
     MarketKey,
 )
+from app.services.invalid_sample_eligibility.cohort import (
+    EligibilityDomain,
+    EligibilityPredicate,
+    partition_by_eligibility,
+)
 from app.services.invalid_sample_eligibility.contract import (
     CalibrationEligibility,
+    EligibilityContractError,
+    EligibilitySubject,
     EligibilitySubjectKind,
+)
+from app.services.invalid_sample_eligibility.service import (
+    InvalidSampleEligibilityService,
 )
 from app.services.trading_policy_service import policy_version_stamp
 
@@ -1442,6 +1452,8 @@ def aggregate_calibration_rows(
 async def build_forecast_calibration_aggregate(
     db: AsyncSession,
     *,
+    contract_version: str,
+    predicate: EligibilityPredicate,
     group_by: str = "created_by",
     created_by: str | None = None,
     symbol: str | None = None,
@@ -1455,23 +1467,70 @@ async def build_forecast_calibration_aggregate(
     "does another LLM reach the same result" comparison. ``calibration_gap`` is
     ``avg_probability - hit_rate`` (positive = over-confident).
 
-    ROB-1036: forecasts carrying an explicit ``calibration_exclude`` decision are
-    dropped here too, so an invalid sample cannot re-enter through this legacy
-    entry point. Callers that need the excluded/unidentifiable counts should use
-    ``build_eligible_forecast_calibration_aggregate`` instead.
+    ROB-1036 D-1 (option ②): ``contract_version`` and ``predicate`` are required
+    keyword arguments with no defaults. ``status='closed' AND brier_score IS NOT
+    NULL`` is not, by itself, a cohort definition — a caller must say which
+    contract and which admitted values it is asking for, and the answer carries
+    that statement back (``eligibility_cohort`` / ``eligibility_stage``) so the
+    number stays attributable after the cohort definition changes.
+
+    The counts are reported **separately** — ``included`` / ``excluded`` /
+    ``unidentifiable`` are never summed into one "eligible" number. Under
+    ``COMPATIBILITY_CALIBRATION_COHORT`` the undecided rows are admitted *and*
+    counted, which is the whole point: the contamination is visible rather than
+    silent. See the termination condition in
+    ``app/services/invalid_sample_eligibility/cohort.py``.
     """
     if group_by not in _GROUP_BY_FIELDS:
         group_by = "created_by"
+    if predicate.contract_version != contract_version:
+        raise EligibilityContractError(
+            "predicate_contract_version_mismatch",
+            (
+                f"predicate is bound to {predicate.contract_version!r} but the "
+                f"cohort was requested for {contract_version!r}"
+            ),
+        )
+    if predicate.domain is not EligibilityDomain.CALIBRATION:
+        raise EligibilityContractError(
+            "wrong_predicate_domain",
+            "a calibration cohort requires an EligibilityDomain.CALIBRATION predicate",
+        )
 
+    # Fetched unfiltered: the partition is the authoritative classifier here and
+    # must see the excluded rows in order to count them.
     rows = await list_scored_forecasts_for_calibration(
         db,
         created_by=created_by,
         symbol=symbol,
         instrument_type=instrument_type,
         days=days,
-        apply_eligibility_exclusion=True,
+        apply_eligibility_exclusion=False,
     )
-    return _aggregate_calibration_groups(rows, group_by=group_by)
+    service = InvalidSampleEligibilityService(db)
+    subjects = [
+        EligibilitySubject(
+            kind=EligibilitySubjectKind.FORECAST, ref=str(row.forecast_id)
+        )
+        for row in rows
+    ]
+    decisions = await service.get_decisions(subjects, contract_version=contract_version)
+    partition = partition_by_eligibility(
+        [
+            (
+                row,
+                decisions[
+                    EligibilitySubject(
+                        kind=EligibilitySubjectKind.FORECAST, ref=str(row.forecast_id)
+                    )
+                ],
+            )
+            for row in rows
+        ],
+        predicate=predicate,
+    )
+    aggregate = _aggregate_calibration_groups(partition.admitted, group_by=group_by)
+    return {**aggregate, **partition.as_dict()}
 
 
 def _aggregate_calibration_groups(

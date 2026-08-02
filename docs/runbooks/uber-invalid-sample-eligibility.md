@@ -55,9 +55,9 @@ A subject with **no** decision row is `UNIDENTIFIABLE` in all four domains. Ther
 is no `COALESCE(..., INCLUDE)` and no historical backfill: the migration inserts
 zero rows, and `unidentifiable_decision()` is the only default.
 
-`UNIDENTIFIABLE` is *not* the same as `EXCLUDE`. The strict cohort builder admits
-neither; the legacy calibration aggregate drops only explicit `EXCLUDE`, so
-undecided legacy rows keep their existing behaviour (see §6).
+`UNIDENTIFIABLE` is *not* the same as `EXCLUDE`. An explicit `EXCLUDE` is held out
+by every cohort; an undecided row's treatment is a property of the cohort a
+caller names (see §6).
 
 ## 4. Append-only revisions
 
@@ -97,39 +97,78 @@ previously excluded subject once audit-grade evidence lands.
 
 Re-authoring the *identical* binding is idempotent.
 
-## 6. Read models
+## 6. Read models — cohorts (operator decision D-1, option ②)
 
-- `build_eligible_forecast_calibration_aggregate(db, *, contract_version, predicate, …)`
-  — both keyword arguments are **required with no default**. It returns the
-  normal calibration groups *plus* `eligibility_counts`
-  (`included`/`excluded`/`unidentifiable`), `eligibility_reasons`, and the
-  `contract_version`, so a filtered cohort can never be presented as complete.
-- `partition_by_eligibility(items, *, predicate)` — the pure gate, reused by
-  trade-performance / PnL consumers so they apply the same rule.
-- `build_forecast_calibration_aggregate(db, …)` (legacy entry point) now also
-  drops forecasts whose **latest** revision says `calibration_exclude`. Rows with
-  no decision are untouched — this is a re-entry guard, not a backfill.
+Every calibration call must **name its cohort**. There is no default:
 
-`status = 'closed' AND brier_score IS NOT NULL` is explicitly **not** an
-eligibility predicate.
+```python
+build_forecast_calibration_aggregate(
+    db, *, contract_version: str, predicate: EligibilityPredicate, ...
+)
+```
 
-### 6-1. 🔴 OPEN — the legacy aggregate still admits UNIDENTIFIABLE
+Both are keyword-only with no default, so `status = 'closed' AND brier_score IS
+NOT NULL` can never again stand in for a cohort definition. The result carries
+the cohort back:
 
-The pre-existing `build_forecast_calibration_aggregate` — used by
-`mcp_server/tooling/forecast_tools.py`, `routers/invest_forecasts.py`, and
-`services/decision_history.py` — drops explicit `calibration_exclude` but still
-**admits forecasts with no decision**. That is semantically a default-include and
-does not satisfy §4.2-4/§4.2-5 on the surface that is actually consumed.
+| field | meaning |
+|---|---|
+| `contract_version` | which eligibility contract was asked for |
+| `eligibility_cohort` | the cohort label that produced these numbers |
+| `eligibility_stage` | `rob-1036-d1-option-2-compatibility` or `rob-1036-decided-only` |
+| `eligibility_cohort_admits` | the exact admitted values |
+| `eligibility_counts` | `included` / `excluded` / `unidentifiable`, **kept separate** |
+| `eligibility_admitted_count` | how many rows entered the aggregate |
+| `eligibility_reasons` | per-value tally of what was held back |
 
-It is left in place deliberately, not by oversight. Closing it makes every
-calibration surface return empty: there are zero decision rows, and §4.2-4
-forbids historical backfill, so nothing would ever repopulate them without a
-per-forecast operator decision. That is a product decision, escalated as
-`NEEDS_INFO`; see the round-3 worker report for the options and their blast radius.
+🔴 The three counts are **never summed** into one "eligible" number. Under the
+compatibility cohort the undecided rows are admitted *and* counted, and showing
+that quantity is the entire reason this cohort exists.
 
-`tests/services/invalid_sample_eligibility/test_persistence.py::
-test_undecided_forecasts_strict_cohort_excludes_legacy_aggregate_admits` pins both
-behaviours side by side so the divergence stays visible until it is decided.
+### 6-1. The two shipped cohorts
+
+`COMPATIBILITY_CALIBRATION_COHORT` (`app/services/invalid_sample_eligibility/cohort.py`)
+admits `{INCLUDE, UNIDENTIFIABLE}`. It is what the three live call sites use:
+
+| call site | file:line |
+|---|---|
+| MCP `get_forecast_calibration` | `app/mcp_server/tooling/forecast_tools.py:213-217` |
+| `GET /trading/api/invest/forecasts/calibration` | `app/routers/invest_forecasts.py:61-67` |
+| decision-history running Brier | `app/services/decision_history.py:122-137` |
+
+`DECIDED_ONLY_CALIBRATION_COHORT` admits `{INCLUDE}` only — the end state. It is
+available today (`build_decided_only_forecast_calibration_aggregate`) so a caller
+that wants the fully-decided cohort can ask for it and the promotion is a
+one-line swap per call site.
+
+An explicit `calibration_exclude` is held out by **both**. Widening admission
+never resurrects an excluded sample.
+
+### 6-1-1. 🔴 This is a transitional stage, not the end state
+
+The compatibility cohort exists so the calibration surfaces keep working while
+the undecided population becomes visible. It is deliberately **not** presented as
+a final or "correct" configuration.
+
+**Termination condition** (also in `cohort.py`, next to the constant):
+
+1. every forecast in the scored population carries an explicit eligibility
+   decision recorded through `InvalidSampleEligibilityService` — recorded by an
+   operator, never by an automatic historical backfill (§4.2-4); **and**
+2. the reported `unidentifiable` count has been 0 for a full review cycle on the
+   cohorts an operator relies on.
+
+Then the call sites move to `DECIDED_ONLY_CALIBRATION_COHORT` and the
+compatibility cohort is deleted.
+
+**Promotion provenance.** Option ② is a superset of the end state — same
+machinery, wider admitted set — so no door is closed. Because every result is
+stamped with `eligibility_cohort` / `eligibility_stage` /
+`eligibility_cohort_admits`, a number produced during this stage stays
+distinguishable from a post-promotion number, and a before/after comparison
+report over the same population remains possible. Classification is independent
+of admission, so the counts mean the same thing under both cohorts and are
+directly comparable.
 
 ### 6-2. Trade performance (ROB-1036 B2)
 
@@ -220,8 +259,10 @@ Verified in an isolated throwaway database by
 
 - Recording the actual UBER decision row is an **operator action**, not part of
   this change.
-- **The legacy calibration aggregate's treatment of UNIDENTIFIABLE is undecided**
-  (§6-1). This is the one open operator decision in this change.
+- Operator decision **D-1 selected option ②** (2026-08-02): every calibration
+  call names its cohort, and the default cohort admits undecided samples while
+  reporting them separately (§6). The termination condition for that stage is in
+  §6-1-1 — this is transitional, not the end state.
 - The trade-performance gate is wired into the Alpaca PnL path (§6-2). Other
   aggregates (`trade_journal/aggregates.py`, keyed by symbol/tag over
   `review.trades`) have no forecast/lifecycle identity to join on and are

@@ -6,6 +6,7 @@ Runs against the isolated pytest database only (``tests/conftest.py`` pins
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -26,6 +27,14 @@ from app.services.invalid_sample_eligibility.binding import (
     CleanupBindingError,
     build_cleanup_binding,
 )
+from app.services.invalid_sample_eligibility.cohort import (
+    COMPATIBILITY_CALIBRATION_COHORT,
+    COMPATIBILITY_STAGE,
+    DECIDED_ONLY_CALIBRATION_COHORT,
+    DECIDED_ONLY_STAGE,
+    EligibilityDomain,
+    EligibilityPredicate,
+)
 from app.services.invalid_sample_eligibility.contract import (
     CONTRACT_VERSION,
     CalibrationEligibility,
@@ -42,11 +51,6 @@ from app.services.invalid_sample_eligibility.post_fill import (
     PostFillCompletionStatus,
     PostFillManualReviewReason,
 )
-from app.services.invalid_sample_eligibility.read_model import (
-    EligibilityDomain,
-    EligibilityPredicate,
-    build_eligible_forecast_calibration_aggregate,
-)
 from app.services.invalid_sample_eligibility.service import (
     InvalidSampleEligibilityService,
 )
@@ -59,11 +63,7 @@ pytestmark = [
 ]
 
 NOW = datetime(2026, 8, 2, 6, 0, tzinfo=UTC)
-CALIBRATION_PREDICATE = EligibilityPredicate(
-    contract_version=CONTRACT_VERSION,
-    domain=EligibilityDomain.CALIBRATION,
-    admitted=frozenset({CalibrationEligibility.INCLUDE}),
-)
+CALIBRATION_PREDICATE = DECIDED_ONLY_CALIBRATION_COHORT
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -455,14 +455,13 @@ async def test_post_fill_evidence_requires_a_persisted_binding(
 # --- §4.3-3/10: aggregates ------------------------------------------------
 
 
-async def test_excluded_forecast_leaves_the_legacy_calibration_aggregate(
+async def test_excluded_forecast_leaves_the_calibration_aggregate(
     db_session: AsyncSession,
 ) -> None:
-    """An explicit ``calibration_exclude`` drops out of the legacy aggregate.
+    """An explicit ``calibration_exclude`` is held out under every cohort.
 
-    This asserts only the exclusion guarantee. It deliberately does NOT assert
-    anything about how the legacy aggregate treats *undecided* forecasts — that
-    is the open ROB-1036 B1 question, pinned separately below.
+    The compatibility cohort widens what is *admitted*; it never resurrects an
+    explicitly excluded sample. The excluded row is reported in its own count.
     """
 
     included = await _make_scored_forecast(db_session, created_by="claude")
@@ -478,62 +477,131 @@ async def test_excluded_forecast_leaves_the_legacy_calibration_aggregate(
     )
     await db_session.commit()
 
-    after = await svc.build_forecast_calibration_aggregate(db_session)
+    after = await svc.build_forecast_calibration_aggregate(
+        db_session,
+        contract_version=CONTRACT_VERSION,
+        predicate=COMPATIBILITY_CALIBRATION_COHORT,
+    )
     assert after["groups"][0]["sample_size"] == 1
+    assert after["eligibility_counts"]["excluded"] == 1
 
     remaining = await svc.list_scored_forecasts_for_calibration(db_session)
     assert [row.id for row in remaining] == [included.id]
 
 
-async def test_undecided_forecasts_strict_cohort_excludes_legacy_aggregate_admits(
+async def test_undecided_admission_is_the_stated_contract_of_the_cohort(
     db_session: AsyncSession,
 ) -> None:
-    """🔴 KNOWN GAP (ROB-1036 B1) — the two surfaces disagree on UNIDENTIFIABLE.
+    """D-1 option ② — undecided rows are admitted *by contract*, and counted.
 
-    Contract-correct behaviour is the strict cohort's: a forecast with no
-    eligibility decision is ``UNIDENTIFIABLE`` and does **not** enter a
-    calibration cohort (prompt.md §4.2-4/§4.2-5).
+    This is the operator-approved behaviour, not an accident of the old
+    ``closed + scored`` predicate. The test therefore asserts the three things
+    that make it a contract rather than a coincidence:
 
-    The pre-existing public aggregate — still used by
-    ``mcp_server/tooling/forecast_tools.py``, ``routers/invest_forecasts.py``
-    and ``services/decision_history.py`` — admits them, which is semantically a
-    default-include. Closing that gap makes every existing calibration surface
-    return empty (there are zero decision rows and §4.2-4 forbids backfill), so
-    it is an operator decision, escalated as NEEDS_INFO rather than taken here.
+    1. the call **cannot be made without** naming a contract version and cohort;
+    2. the cohort's admitted set explicitly contains the UNIDENTIFIABLE value;
+    3. the undecided quantity is reported **separately** — never folded into the
+       included count or into a single "eligible" number.
 
-    This test pins BOTH behaviours side by side so the divergence is visible and
-    machine-checked. When the operator decides, exactly one branch changes.
+    The end-state cohort is available in the same call for comparison, so the
+    promotion path stays exercised.
     """
 
     await _make_scored_forecast(db_session, created_by="claude")
     await _make_scored_forecast(db_session, created_by="claude")
     await db_session.commit()
 
-    # Contract-correct surface: undecided rows are held out of the cohort.
-    strict = await build_eligible_forecast_calibration_aggregate(
+    # (1) contract_version and predicate are required, not defaulted.
+    signature = inspect.signature(svc.build_forecast_calibration_aggregate)
+    for name in ("contract_version", "predicate"):
+        parameter = signature.parameters[name]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is inspect.Parameter.empty
+    with pytest.raises(TypeError):
+        await svc.build_forecast_calibration_aggregate(db_session)  # type: ignore[call-arg]
+
+    # (2) the admission is declared in the cohort itself.
+    assert (
+        CalibrationEligibility.UNIDENTIFIABLE
+        in COMPATIBILITY_CALIBRATION_COHORT.admitted
+    )
+    assert COMPATIBILITY_CALIBRATION_COHORT.admits_unidentifiable is True
+
+    result = await svc.build_forecast_calibration_aggregate(
         db_session,
         contract_version=CONTRACT_VERSION,
-        predicate=CALIBRATION_PREDICATE,
+        predicate=COMPATIBILITY_CALIBRATION_COHORT,
     )
-    assert strict["eligibility_counts"] == {
+
+    # (3) admitted into the cohort AND reported as undecided, side by side.
+    assert result["groups"][0]["sample_size"] == 2
+    assert result["eligibility_counts"] == {
         "included": 0,
         "excluded": 0,
         "unidentifiable": 2,
     }
-    assert strict["groups"] == []
+    assert result["eligibility_admitted_count"] == 2
+    # The undecided quantity is not silently merged into "included".
+    assert result["eligibility_counts"]["included"] == 0
+    assert (
+        CalibrationEligibility.UNIDENTIFIABLE.value
+        in result["eligibility_cohort_admits"]
+    )
 
-    # Legacy surface: admits them. Asserted as the CURRENT, KNOWN-WRONG state —
-    # not as a correctness expectation.
-    legacy = await svc.build_forecast_calibration_aggregate(db_session)
-    legacy_sample_size = legacy["groups"][0]["sample_size"]
-    assert legacy_sample_size == 2, (
-        "legacy aggregate behaviour changed; if this is the ROB-1036 B1 fix, "
-        "update this pin and the strict/legacy divergence note"
+    # Provenance: the number is attributable to the cohort that produced it.
+    assert result["contract_version"] == CONTRACT_VERSION
+    assert result["eligibility_cohort"] == COMPATIBILITY_CALIBRATION_COHORT.label
+    assert result["eligibility_stage"] == COMPATIBILITY_STAGE
+
+    # The end-state cohort holds the same rows out, and says so in its own stamp.
+    decided_only = await svc.build_forecast_calibration_aggregate(
+        db_session,
+        contract_version=CONTRACT_VERSION,
+        predicate=DECIDED_ONLY_CALIBRATION_COHORT,
     )
-    assert legacy_sample_size != strict["eligibility_counts"]["included"], (
-        "the strict cohort and the legacy aggregate must be shown to disagree "
-        "while B1 is open"
+    assert decided_only["groups"] == []
+    assert decided_only["eligibility_counts"]["unidentifiable"] == 2
+    assert decided_only["eligibility_admitted_count"] == 0
+    assert decided_only["eligibility_stage"] == DECIDED_ONLY_STAGE
+    # Same classification, different admission — that is the whole difference.
+    assert decided_only["eligibility_counts"] == result["eligibility_counts"]
+
+
+async def test_cohort_provenance_distinguishes_two_results_over_same_rows(
+    db_session: AsyncSession,
+) -> None:
+    """Promotion prerequisite: two cohorts' outputs are never confusable.
+
+    Without this, a compatibility-stage number and an end-state number over the
+    same population could not be told apart afterwards and no before/after
+    comparison report would be possible.
+    """
+
+    await _make_scored_forecast(db_session, created_by="claude")
+    await db_session.commit()
+
+    compatibility = await svc.build_forecast_calibration_aggregate(
+        db_session,
+        contract_version=CONTRACT_VERSION,
+        predicate=COMPATIBILITY_CALIBRATION_COHORT,
     )
+    decided_only = await svc.build_forecast_calibration_aggregate(
+        db_session,
+        contract_version=CONTRACT_VERSION,
+        predicate=DECIDED_ONLY_CALIBRATION_COHORT,
+    )
+
+    assert compatibility["eligibility_cohort"] != decided_only["eligibility_cohort"]
+    assert compatibility["eligibility_stage"] != decided_only["eligibility_stage"]
+    assert (
+        compatibility["eligibility_cohort_admits"]
+        != decided_only["eligibility_cohort_admits"]
+    )
+    # Same contract, same rows classified identically — only admission differs.
+    assert compatibility["contract_version"] == decided_only["contract_version"]
+    assert compatibility["eligibility_counts"] == decided_only["eligibility_counts"]
+    assert compatibility["eligibility_admitted_count"] == 1
+    assert decided_only["eligibility_admitted_count"] == 0
 
 
 async def test_removing_the_sql_exclusion_readmits_the_excluded_forecast(
@@ -611,7 +679,7 @@ async def test_eligible_cohort_reports_counts_and_reasons(
     )
     await db_session.commit()
 
-    result = await build_eligible_forecast_calibration_aggregate(
+    result = await svc.build_forecast_calibration_aggregate(
         db_session,
         contract_version=CONTRACT_VERSION,
         predicate=CALIBRATION_PREDICATE,
@@ -634,7 +702,7 @@ async def test_eligible_cohort_rejects_a_mismatched_predicate(
     db_session: AsyncSession,
 ) -> None:
     with pytest.raises(EligibilityContractError) as excinfo:
-        await build_eligible_forecast_calibration_aggregate(
+        await svc.build_forecast_calibration_aggregate(
             db_session,
             contract_version="some-other-contract.v9",
             predicate=CALIBRATION_PREDICATE,
@@ -649,9 +717,10 @@ async def test_eligible_cohort_rejects_a_non_calibration_predicate(
         contract_version=CONTRACT_VERSION,
         domain=EligibilityDomain.TRADE_PERFORMANCE,
         admitted=frozenset({TradePerformanceEligibility.INCLUDE}),
+        label="trade-performance-test",
     )
     with pytest.raises(EligibilityContractError) as excinfo:
-        await build_eligible_forecast_calibration_aggregate(
+        await svc.build_forecast_calibration_aggregate(
             db_session,
             contract_version=CONTRACT_VERSION,
             predicate=trade_predicate,

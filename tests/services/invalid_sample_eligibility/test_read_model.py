@@ -11,6 +11,14 @@ from dataclasses import dataclass
 
 import pytest
 
+from app.services.invalid_sample_eligibility.cohort import (
+    COMPATIBILITY_CALIBRATION_COHORT,
+    DECIDED_ONLY_CALIBRATION_COHORT,
+    DECIDED_ONLY_TRADE_PERFORMANCE_COHORT,
+    EligibilityDomain,
+    EligibilityPredicate,
+    partition_by_eligibility,
+)
 from app.services.invalid_sample_eligibility.contract import (
     CONTRACT_VERSION,
     CalibrationEligibility,
@@ -24,11 +32,8 @@ from app.services.invalid_sample_eligibility.contract import (
     canonical_evidence_hash,
     unidentifiable_decision,
 )
-from app.services.invalid_sample_eligibility.read_model import (
-    EligibilityDomain,
-    EligibilityPredicate,
-    build_eligible_forecast_calibration_aggregate,
-    partition_by_eligibility,
+from app.services.trade_journal.forecast_service import (
+    build_forecast_calibration_aggregate,
 )
 
 pytestmark = pytest.mark.unit
@@ -68,16 +73,8 @@ def _decision(
     )
 
 
-CALIBRATION_PREDICATE = EligibilityPredicate(
-    contract_version=CONTRACT_VERSION,
-    domain=EligibilityDomain.CALIBRATION,
-    admitted=frozenset({CalibrationEligibility.INCLUDE}),
-)
-TRADE_PREDICATE = EligibilityPredicate(
-    contract_version=CONTRACT_VERSION,
-    domain=EligibilityDomain.TRADE_PERFORMANCE,
-    admitted=frozenset({TradePerformanceEligibility.INCLUDE}),
-)
+CALIBRATION_PREDICATE = DECIDED_ONLY_CALIBRATION_COHORT
+TRADE_PREDICATE = DECIDED_ONLY_TRADE_PERFORMANCE_COHORT
 
 
 # --- §4.3-3: excluded samples never re-enter -------------------------------
@@ -229,7 +226,7 @@ def test_status_closed_plus_brier_alone_is_not_an_eligibility_predicate() -> Non
 
 
 def test_contract_version_and_predicate_are_required_keyword_arguments() -> None:
-    signature = inspect.signature(build_eligible_forecast_calibration_aggregate)
+    signature = inspect.signature(build_forecast_calibration_aggregate)
     for name in ("contract_version", "predicate"):
         parameter = signature.parameters[name]
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
@@ -242,6 +239,7 @@ def test_predicate_rejects_a_cross_domain_admitted_value() -> None:
             contract_version=CONTRACT_VERSION,
             domain=EligibilityDomain.CALIBRATION,
             admitted=frozenset({TradePerformanceEligibility.INCLUDE}),
+            label="test-cohort",
         )
     assert excinfo.value.code == "cross_domain_predicate"
 
@@ -252,6 +250,7 @@ def test_predicate_rejects_an_empty_admitted_set() -> None:
             contract_version=CONTRACT_VERSION,
             domain=EligibilityDomain.CALIBRATION,
             admitted=frozenset(),
+            label="test-cohort",
         )
     assert excinfo.value.code == "empty_admitted_set"
 
@@ -262,5 +261,80 @@ def test_predicate_rejects_a_blank_contract_version() -> None:
             contract_version="  ",
             domain=EligibilityDomain.CALIBRATION,
             admitted=frozenset({CalibrationEligibility.INCLUDE}),
+            label="test-cohort",
         )
     assert excinfo.value.code == "missing_contract_version"
+
+
+# --- D-1 option ② at the pure layer ---------------------------------------
+
+
+def test_compatibility_cohort_admits_undecided_but_counts_them_separately() -> None:
+    """The undecided rows enter the cohort AND stay visible as their own count."""
+
+    included_row = FakeForecastRow("f-included")
+    excluded_row = FakeForecastRow("f-excluded")
+    undecided_row = FakeForecastRow("f-undecided")
+
+    partition = partition_by_eligibility(
+        [
+            (
+                included_row,
+                _decision("f-included", calibration=CalibrationEligibility.INCLUDE),
+            ),
+            (
+                excluded_row,
+                _decision("f-excluded", calibration=CalibrationEligibility.EXCLUDE),
+            ),
+            (undecided_row, unidentifiable_decision(_subject("f-undecided"))),
+        ],
+        predicate=COMPATIBILITY_CALIBRATION_COHORT,
+    )
+
+    # Admitted into the cohort: decided inclusions + undecided.
+    assert partition.admitted == [included_row, undecided_row]
+    # Classification is unchanged by the wider admission — the counts still
+    # separate the two, and the excluded row is still held out.
+    assert partition.counts == {"included": 1, "excluded": 1, "unidentifiable": 1}
+    assert excluded_row not in partition.admitted
+
+
+def test_the_two_cohorts_classify_identically_and_admit_differently() -> None:
+    """Only admission differs, so compatibility and end-state stay comparable."""
+
+    rows = [
+        (
+            FakeForecastRow("f-included"),
+            _decision("f-included", calibration=CalibrationEligibility.INCLUDE),
+        ),
+        (
+            FakeForecastRow("f-undecided"),
+            unidentifiable_decision(_subject("f-undecided")),
+        ),
+    ]
+
+    compatibility = partition_by_eligibility(
+        rows, predicate=COMPATIBILITY_CALIBRATION_COHORT
+    )
+    decided_only = partition_by_eligibility(
+        rows, predicate=DECIDED_ONLY_CALIBRATION_COHORT
+    )
+
+    assert compatibility.counts == decided_only.counts
+    assert len(compatibility.admitted) == 2
+    assert len(decided_only.admitted) == 1
+    assert compatibility.cohort_label != decided_only.cohort_label
+    assert compatibility.cohort_stage != decided_only.cohort_stage
+
+
+def test_an_explicit_exclusion_is_never_admitted_by_any_shipped_cohort() -> None:
+    for cohort in (COMPATIBILITY_CALIBRATION_COHORT, DECIDED_ONLY_CALIBRATION_COHORT):
+        assert CalibrationEligibility.EXCLUDE not in cohort.admitted
+
+
+def test_no_shipped_cohort_is_labelled_strict() -> None:
+    """D-1: this transitional stage must not be presented as a final state."""
+
+    for cohort in (COMPATIBILITY_CALIBRATION_COHORT, DECIDED_ONLY_CALIBRATION_COHORT):
+        assert "strict" not in cohort.label.lower()
+        assert "strict" not in cohort.stage.lower()

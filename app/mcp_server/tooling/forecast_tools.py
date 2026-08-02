@@ -9,6 +9,10 @@ from typing import Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.db import AsyncSessionLocal
+from app.services.invalid_sample_eligibility.cohort import (
+    COMPATIBILITY_CALIBRATION_COHORT,
+)
+from app.services.invalid_sample_eligibility.contract import CONTRACT_VERSION
 from app.services.trade_journal.forecast_service import (
     ForecastValidationError,
     build_forecast_calibration_aggregate,
@@ -209,6 +213,11 @@ async def get_forecast_calibration(
         async with _session_factory()() as db:
             result = await build_forecast_calibration_aggregate(
                 db,
+                # ROB-1036 D-1 (option ②): the cohort is stated, not implied.
+                # It admits undecided samples so this tool keeps working, and
+                # the response reports how many of those there were.
+                contract_version=CONTRACT_VERSION,
+                predicate=COMPATIBILITY_CALIBRATION_COHORT,
                 group_by=group_by,
                 created_by=created_by,
                 symbol=symbol,

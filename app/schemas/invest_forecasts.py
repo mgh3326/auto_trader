@@ -31,6 +31,21 @@ class CalibrationGroupRow(BaseModel):
     calibration_gap: float | None = None
 
 
+class EligibilityCounts(BaseModel):
+    """ROB-1036 D-1 — the three classification counts, reported separately.
+
+    They are never summed into a single "eligible" number: ``unidentifiable`` is
+    the undecided contamination currently admitted by the compatibility cohort,
+    and a caller has to be able to see it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    included: int = Field(ge=0)
+    excluded: int = Field(ge=0)
+    unidentifiable: int = Field(ge=0)
+
+
 class CalibrationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -42,6 +57,13 @@ class CalibrationResponse(BaseModel):
     count: int = Field(ge=0)
     groups: list[CalibrationGroupRow]
     as_of: datetime
+    # ROB-1036 D-1 provenance: which contract and cohort produced these numbers.
+    # Kept on the response so a value stays attributable after the cohort
+    # definition is promoted.
+    contract_version: str
+    eligibility_cohort: str
+    eligibility_stage: str
+    eligibility_counts: EligibilityCounts
 
 
 class ForecastRow(BaseModel):

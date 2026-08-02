@@ -30,6 +30,11 @@ from app.models.review import (
     TradeRetrospective,
 )
 from app.services.decision_history import build_decision_context
+from app.services.invalid_sample_eligibility.cohort import (
+    COMPATIBILITY_CALIBRATION_COHORT,
+    COMPATIBILITY_STAGE,
+)
+from app.services.invalid_sample_eligibility.contract import CONTRACT_VERSION
 from app.services.trade_journal.forecast_service import _normalize_symbol_for_filter
 
 # ROB-723: these tests use the global committing ``db_session`` and touch the
@@ -251,11 +256,28 @@ async def test_brier_insufficient_sample_and_empty_returns_none(
         "n": 0,
         "mean_brier": None,
         "flag": "insufficient_sample",
+        # ROB-1036 D-1: the cohort that produced the number rides along, and the
+        # eligibility counts stay separate from ``n``.
+        "contract_version": CONTRACT_VERSION,
+        "eligibility_cohort": COMPATIBILITY_CALIBRATION_COHORT.label,
+        "eligibility_stage": COMPATIBILITY_STAGE,
+        "eligibility_counts": {"included": 0, "excluded": 0, "unidentifiable": 0},
     }
     # global Brier aggregates ALL closed+scored forecasts DB-wide; other suites'
     # committed rows leak in under xdist, so assert STRUCTURE only, not the flag.
     g = ctx["running_brier_global"]
-    assert set(g.keys()) == {"n", "mean_brier", "flag"}
+    assert set(g.keys()) == {
+        "n",
+        "mean_brier",
+        "flag",
+        "contract_version",
+        "eligibility_cohort",
+        "eligibility_stage",
+        "eligibility_counts",
+    }
+    # The undecided quantity is reported on its own, never folded into ``n``.
+    assert set(g["eligibility_counts"]) == {"included", "excluded", "unidentifiable"}
+    assert g["eligibility_stage"] == COMPATIBILITY_STAGE
     assert isinstance(g["n"], int)
 
     # a symbol with no history anywhere → None (nothing to inject)
