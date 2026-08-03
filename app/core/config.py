@@ -255,6 +255,19 @@ class Settings(BaseSettings):
     kiwoom_base_url: str = "https://api.kiwoom.com"  # live disabled in this PR
     kiwoom_mock_access_token: str | None = None
 
+    # Kiwoom LIVE read-only market data (charts only). Disabled by default.
+    # 🔴 Minimal surface on purpose: app key, app secret, and base URL ONLY.
+    # No account number is exposed here — ``KiwoomLiveReadOnlyClient`` must not
+    # be able to reach an account, and an AST guard forbids the live module from
+    # naming ``kiwoom_account_no`` / ``KIWOOM_ACCOUNT_NO`` at all.
+    # ⚠️ That combination prevents *accidental* order/account reach and makes a
+    # regression statically detectable; it is not a structural impossibility
+    # proof, since the account number exists in the deployment env file.
+    kiwoom_live_marketdata_enabled: bool = False
+    kiwoom_live_app_key: str | None = None
+    kiwoom_live_app_secret: str | None = None
+    kiwoom_live_base_url: str = "https://api.kiwoom.com"
+
     # ROB-867: US-only Kiwoom mock namespace. Same mock host, separate
     # app_key/app_secret/account_no; never reads or falls back to KR settings.
     kiwoom_mock_us_enabled: bool = False
@@ -1093,6 +1106,23 @@ def validate_kiwoom_mock_config(settings_obj: Any = settings) -> list[str]:
         missing.append("KIWOOM_MOCK_APP_SECRET")
     if not _has_nonempty_value(getattr(settings_obj, "kiwoom_mock_account_no", None)):
         missing.append("KIWOOM_MOCK_ACCOUNT_NO")
+    return missing
+
+
+def validate_kiwoom_live_marketdata_config(settings_obj: Any = settings) -> list[str]:
+    """Return missing Kiwoom live read-only env names without exposing values.
+
+    Read-only chart access only. Deliberately does NOT check an account number:
+    the live read-only client has no account surface at all.
+    """
+
+    missing: list[str] = []
+    if not bool(getattr(settings_obj, "kiwoom_live_marketdata_enabled", False)):
+        missing.append("KIWOOM_LIVE_MARKETDATA_ENABLED")
+    if not _has_nonempty_value(getattr(settings_obj, "kiwoom_live_app_key", None)):
+        missing.append("KIWOOM_LIVE_APP_KEY")
+    if not _has_nonempty_value(getattr(settings_obj, "kiwoom_live_app_secret", None)):
+        missing.append("KIWOOM_LIVE_APP_SECRET")
     return missing
 
 

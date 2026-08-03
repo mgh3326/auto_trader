@@ -272,6 +272,28 @@ Kiwoom **모의투자** 전용 MCP order/account lifecycle. KR 7개 도구는 `a
 - **No secrets printed**: CLI는 missing env key **이름만** 보고, 값 출력 없음
 - **Cancel-before-submit**: `full` 모드는 cancel이 wired이기에만 실주문 제출; finally-block에서 항상 cancel 시도 후 reconcile
 
+### Kiwoom Live Read-Only Market Data (Stage 1)
+
+🔴 **레포에서 주문 가능한 live 호스트 `https://api.kiwoom.com` 에 붙는 유일한 클라이언트.** 차트만 읽으며 그 외에는 아무것도 못 한다.
+
+- **클라이언트**: `app/services/brokers/kiwoom/live_market_data.KiwoomLiveReadOnlyClient` (+ 전용 `KiwoomLiveReadOnlyAuthClient`). 🔴 `KiwoomMockClient`/`auth.KiwoomAuthClient` 를 **확장·수정하지 않으며 import 하지도 않는다** — mock 단언은 그대로다
+- **비교 하니스**: `app/services/brokers/kiwoom/chart_compare.py` — mock/live 필드 대조 + KIS 프로즌 샘플 3자 판정
+- **CLI**: `scripts/kiwoom_live_readonly_compare.py` (default-disabled, `--confirm-live-read` 필수)
+- **런북**: `docs/runbooks/kiwoom-live-readonly-marketdata.md`
+
+**안전 경계 (4층)**:
+- **Default-disabled**: `KIWOOM_LIVE_MARKETDATA_ENABLED=false` 기본. 🔴 게이트는 **생성자가 아니라 dispatch 시점** 검사 — `from_app_settings` 우회 직접 생성도 전송 불가
+- **allowlist**: api-id `ka10080/81/82/83` (차트 4종) + path `/api/dostk/chart` 만. 🔴 토큰 해석·소켓 오픈 **이전** 검사. 주문 TR(kt10000~kt10003)·계좌 TR 전부 거부
+- **호스트/경로 고정 + 전송 직전 재검증**: build 후 `send` 직전 `request.url.host`·`request.url.path` **둘 다** 재확인. 🔴 `follow_redirects=False` 를 OAuth·chart 양쪽에 **명시 고정**(httpx 기본값 의존 금지 — 3xx 는 검증 통과 요청이 다른 호스트로 갈 유일한 경로)
+- **계좌번호 부재 (3중)**: ① Settings live 표면은 `app_key`/`app_secret`/`base_url` **3개뿐**, `kiwoom_account_no` 없음 ② AST 가드가 신규 live 모듈에서 주문 상수·주문 모듈 import·`kiwoom_account_no`/`KIWOOM_ACCOUNT_NO` 참조를 **문자열 우회 포함** 금지 ③ 전용 env 파일에 `KIWOOM_ACCOUNT_NO` 를 넣지 않아 **프로세스 환경에 값이 아예 없음**
+- 🔴 **보장 강도 = "우발 방지 + 정적 검출"**. **"구조적 불가능"이 아니다** — 계좌번호는 배포 env 파일에 여전히 존재하고 Settings 한 줄이면 도달 가능해진다. AST 가드는 **그 한 줄을 빌드 실패로 만드는 장치**다
+- **자격증명**: 전용 최소 파일 `.env.kiwoom-readonly.native`(4키, ACCOUNT_NO·DATABASE_URL 없음). 🔴 `ENV_FILE=.env.prod` 금지(CLI가 파일명 `prod` 거부)
+- **Redis 격리**: OAuth 토큰 캐시는 `--redis-url` 로 일회용 인스턴스 지정 — 배포 공유 캐시에 쓰지 않는다
+- **Rate limit 실측(2026-08-03, mock)**: 2.0s/1.0s/0.5s OK · 0.2s/0.05s `HTTPStatusError` → 임계는 0.5~0.2초 사이, 운영 기본 **2.0초**
+- **스케줄러 등록 없음** — CLI 수동 실행만. 🔴 **Stage 2(대량 수집·DB 저장)는 별도 승인**
+
+**동일성 실측(2026-08-03, 20종목 × 일봉 600 + 5분봉 900)**: 행 커버리지 40/40 동일, 비교 셀 252,000 중 불일치 36(99.9857%) — 🔴 **전부 형성 중인 최신 봉**(장중 2초 시차)이며 **최신 봉 제외 시 100.000000%**. 상폐 `051170` 은 live 에서 1행 반환. KIS 3자 대조에서 068270 은 2026-06-03 경계로 223건 어긋나지만 **live·mock 결과가 동일**하며 원인은 수정주가 역산 **반올림 규칙 차이**(약 0.004%) — 어느 쪽이 옳은지는 `UNDETERMINED`. 함의: **Kiwoom↔KIS 과거 수정주가 완전일치 대조는 실패하므로 허용오차 필요**
+
 ### 토스증권 Open API (ROB-529)
 
 토스증권 Open API(`https://openapi.tossinvest.com`, OAuth2 Client Credentials, REST-only) 기반 KR/US **live** 브로커 + 시세·종목마스터·환율·캘린더 데이터 소스. 모의투자 없음(live 단일).
