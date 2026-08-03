@@ -84,22 +84,51 @@ def xnys_sessions(start: str, end: str) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(pd.to_datetime(sessions)).tz_localize(None).normalize()
 
 
-def validate(frame: pd.DataFrame) -> dict[str, object]:
-    """Structural invariants. These are counted and reported, never repaired."""
+def validate(frame: pd.DataFrame) -> tuple[dict[str, object], pd.DataFrame]:
+    """Structural invariants. These are counted and reported, never repaired.
+
+    🔴 Offending rows stay in the corpus — silently dropping them would hide a
+    real upstream defect. They are exported per symbol so a consumer can
+    exclude the affected tickers deliberately rather than unknowingly.
+    """
     duplicates = int(frame.duplicated(subset=["symbol", "session_date"]).sum())
 
     price = frame[["open", "high", "low", "close"]]
     high_ok = frame["high"] >= price.max(axis=1) - 1e-6
     low_ok = frame["low"] <= price.min(axis=1) + 1e-6
     positive = (price > 0).all(axis=1)
-    violations = int((~(high_ok & low_ok & positive)).sum())
+    bad = ~(high_ok & low_ok & positive)
+    violations = int(bad.sum())
     negative_volume = int((frame["volume"] < 0).sum())
 
-    return {
-        "duplicate_rows": duplicates,
-        "ohlc_invariant_violations": violations,
-        "negative_volume": negative_volume,
-    }
+    offenders = frame.loc[bad].copy()
+    offenders["nonpositive_price"] = ~positive.loc[bad]
+    offenders["high_below_max"] = ~high_ok.loc[bad]
+    offenders["low_above_min"] = ~low_ok.loc[bad]
+    summary = (
+        offenders.groupby("symbol")
+        .agg(
+            violation_rows=("session_date", "size"),
+            first_session=("session_date", "min"),
+            last_session=("session_date", "max"),
+            nonpositive_price_rows=("nonpositive_price", "sum"),
+            high_below_max_rows=("high_below_max", "sum"),
+            low_above_min_rows=("low_above_min", "sum"),
+        )
+        .reset_index()
+        .sort_values("violation_rows", ascending=False)
+    )
+
+    return (
+        {
+            "duplicate_rows": duplicates,
+            "ohlc_invariant_violations": violations,
+            "negative_volume": negative_volume,
+            "ohlc_violation_symbols": int(summary["symbol"].nunique()),
+            "ohlc_nonpositive_price_rows": int(offenders["nonpositive_price"].sum()),
+        },
+        summary,
+    )
 
 
 def coverage_and_gaps(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, float]:
@@ -278,13 +307,19 @@ def date_alignment_probe(
             index = aligned["pos"] + lag
             keep = aligned[(index >= 0) & (index < len(yf_group))]
             if keep.empty:
-                entry[f"close_match_lag_{lag:+d}"] = None
+                entry[f"exact_lag_{lag:+d}"] = None
+                entry[f"within_1pct_lag_{lag:+d}"] = None
                 continue
             other = yf_group.iloc[(keep["pos"] + lag).to_numpy()]
             rel = (
                 keep["close"].to_numpy() - other["close"].to_numpy()
             ).__abs__() / keep["close"].to_numpy()
-            entry[f"close_match_lag_{lag:+d}"] = round(float((rel < 1e-5).mean()), 4)
+            # Two tolerances tell different halves of the story: 1e-5 isolates
+            # the date-label offset alone, while 1% additionally absorbs the
+            # adjusted-vs-raw dividend factor, which is piecewise constant per
+            # symbol and so shows up as a partial exact-match rate.
+            entry[f"exact_lag_{lag:+d}"] = round(float((rel < 1e-5).mean()), 4)
+            entry[f"within_1pct_lag_{lag:+d}"] = round(float((rel < 0.01).mean()), 4)
         results.append(entry)
 
     return {
@@ -326,7 +361,7 @@ def main() -> int:
     frame = frame.drop_duplicates(subset=["symbol", "session_date"], keep="first")
     frame = frame.sort_values(["symbol", "session_date"]).reset_index(drop=True)
 
-    checks = validate(frame)
+    checks, ohlc_offenders = validate(frame)
     coverage, gaps, min_year_coverage = coverage_and_gaps(frame)
     off_calendar = off_calendar_rows(frame)
     truncated = truncated_symbols(frame)
@@ -354,6 +389,7 @@ def main() -> int:
     empty_symbols.to_csv(cfg.REPORTS_DIR / "empty_symbols.csv", index=False)
     error_symbols.to_csv(cfg.REPORTS_DIR / "error_symbols.csv", index=False)
     truncated.to_csv(cfg.REPORTS_DIR / "truncated_symbols.csv", index=False)
+    ohlc_offenders.to_csv(cfg.REPORTS_DIR / "ohlc_violation_symbols.csv", index=False)
     off_calendar.to_csv(cfg.REPORTS_DIR / "off_calendar_rows.csv", index=False)
     (cfg.REPORTS_DIR / "crosscheck_report.json").write_text(
         json.dumps(cross, indent=2, default=str), encoding="utf-8"
