@@ -10,14 +10,10 @@ This adapter is a **daily (1d)** harness binding:
 * every row's ``frequency`` value must equal ``CRYPTO_ADAPTER_FREQUENCY``
   (``"1d"``); hourly (or other) input raises ``CryptoFrequencyMismatchError``
 * ``frequency`` is carried on every ``CryptoBar``
-* label + frequency gates are attached to **corpus_id identity**
-  (``crypto-corpus-v1``) via the code registry
-  ``CORPUS_TABLE_LOAD_POLICY_BY_ID`` and run inside
-  ``schema_contract.validate_table_schema``. A contract JSON that omits
-  ``table_load_policy`` cannot disable them.
-* Caveat: arbitrary ``contract_path`` is a residual (raw-PyArrow class). Known
-  ``corpus_id`` still gets registry policy; unknown identity fails closed;
-  raw parquet outside the loader is not blocked by this package.
+* label + frequency gates attach to ``CorpusKind.CRYPTO_V1`` (internal committed
+  contract + registry). Callers cannot pass a contract file path.
+* Caveat: raw ``pyarrow`` outside this harness remains residual; supported
+  enum-selected loads always use the crypto committed contract.
 
 Bar time is ``open_time_utc`` (inclusive). ``close_time_utc`` is the exclusive
 end from the sealed builder. Session date is the UTC calendar day of the open.
@@ -42,7 +38,11 @@ from holdout_guard import (
 from loader import ManifestEntry
 from market_adapters.common import ContractBackedCorpusAdapter, parse_utc_timestamp
 from market_adapters.costs import CostModel
-from schema_contract import ContractTablePolicyError, enforce_table_load_policy
+from schema_contract import (
+    ContractTablePolicyError,
+    CorpusKind,
+    enforce_table_load_policy,
+)
 from terminal_events import TerminalEvent, force_exit_delisted_holdings
 
 from research.crypto_corpus.policy import (
@@ -95,14 +95,12 @@ CRYPTO_HOLDOUT_POLICY = HoldoutPolicy(
 UPBIT_KRW_COST = CostModel(fee_bp=5, slippage_bp_per_side=10)
 BINANCE_USDT_COST = CostModel(fee_bp=10, slippage_bp_per_side=10)
 
-# Structural attachment (not an exhaustive wrapper list — enumeration is the
-# failure mode). Any path that validates/loads via CRYPTO_SCHEMA_CONTRACT_PATH
-# inherits label+frequency gates from validate_table_schema.
+# Structural attachment: CorpusKind selects committed contract; no path kwarg.
 CRYPTO_STRUCTURAL_GATE_ATTACHMENT: tuple[str, ...] = (
-    "schema_contract.validate_table_schema->enforce_table_load_policy",
-    "loader.load_shard->validate_table_schema",
-    "ContractBackedCorpusAdapter.load_shard->loader.load_shard",
-    "CryptoVenueAdapter.load_shard|view_from_table|corpus.*->contract path",
+    "CorpusKind.CRYPTO_V1",
+    "schema_contract.validate_table_schema(corpus=...)",
+    "loader.load_shard(corpus=CorpusKind.CRYPTO_V1)",
+    "ContractBackedCorpusAdapter(corpus=CorpusKind.CRYPTO_V1)",
 )
 
 
@@ -178,7 +176,7 @@ def assert_crypto_table_frequency(
         enforce_table_load_policy(
             table,
             "ohlcv",
-            contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
+            corpus=CorpusKind.CRYPTO_V1,
         )
     except ContractTablePolicyError as exc:
         msg = str(exc)
@@ -324,9 +322,9 @@ class CryptoVenueAdapter:
 
     @property
     def corpus(self) -> ContractBackedCorpusAdapter:
-        """Shared contract-backed loader; crypto gates ride on the contract."""
+        """Shared loader bound to ``CorpusKind.CRYPTO_V1`` (no path input)."""
         return ContractBackedCorpusAdapter(
-            contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
+            corpus=CorpusKind.CRYPTO_V1,
             holdout_policy=self.holdout_policy,
         )
 

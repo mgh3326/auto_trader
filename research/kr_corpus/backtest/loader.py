@@ -47,7 +47,7 @@ from holdout_guard import (
     assert_range_not_holdout,
 )
 from schema_contract import (
-    CONTRACT_PATH,
+    CorpusKind,
     SchemaMismatchError,
     date_column_for,
     validate_table_schema,
@@ -213,13 +213,13 @@ def load_shard(
     *,
     allowed_window_start: date | str | None = None,
     allowed_window_end: date | str | None = None,
-    contract_path: Path | str = CONTRACT_PATH,
+    corpus: CorpusKind = CorpusKind.KR_V1,
     holdout_policy: HoldoutPolicy = DEFAULT_HOLDOUT_POLICY,
 ) -> pa.Table:
     """Load one parquet shard under manifest SHA-256 gate + holdout dual gate.
 
-    Reuses the single-buffer hash-then-parse discipline from
-    ``research/alpaca_track/persistence.py`` lines 87–100.
+    Schema and load policy are selected only by ``corpus: CorpusKind``.
+    There is no ``contract_path`` argument.
 
     Order:
     1. partition year date-gate (before any byte read — NICE-1)
@@ -252,7 +252,7 @@ def load_shard(
 
     table = pq.read_table(pa.BufferReader(data))
     try:
-        validate_table_schema(table, entry.dataset, contract_path=contract_path)
+        validate_table_schema(table, entry.dataset, corpus=corpus)
     except SchemaMismatchError as exc:
         raise LoaderError(str(exc)) from exc
 
@@ -265,7 +265,7 @@ def load_shard(
     _assert_no_holdout_rows(
         table,
         holdout_policy=holdout_policy,
-        contract_path=contract_path,
+        corpus=corpus,
         dataset=entry.dataset,
     )
 
@@ -291,11 +291,11 @@ def _assert_no_holdout_rows(
     table: pa.Table,
     *,
     holdout_policy: HoldoutPolicy,
-    contract_path: Path | str = CONTRACT_PATH,
+    corpus: CorpusKind = CorpusKind.KR_V1,
     dataset: str = "ohlcv",
 ) -> None:
     """Date-level holdout gate over every row date column from the contract."""
-    date_col = date_column_for(dataset, contract_path=contract_path)
+    date_col = date_column_for(dataset, corpus=corpus)
     if date_col not in table.column_names:
         raise LoaderError(f"table missing date column {date_col!r}")
     col = table.column(date_col)

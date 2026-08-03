@@ -14,7 +14,6 @@ from market_adapters.crypto import (
     BINANCE_USDT_COST,
     CRYPTO_ADAPTER_FREQUENCY,
     CRYPTO_HOLDOUT_POLICY,
-    CRYPTO_SCHEMA_CONTRACT_PATH,
     CRYPTO_STRUCTURAL_GATE_ATTACHMENT,
     QUOTE_CURRENCY_BY_VENUE,
     UPBIT_KRW_COST,
@@ -25,7 +24,7 @@ from market_adapters.crypto import (
     CryptoVenueMixError,
 )
 from pit import LookaheadViolation, assert_no_lookahead
-from schema_contract import ContractTablePolicyError
+from schema_contract import ContractTablePolicyError, CorpusKind
 
 from research.crypto_corpus.policy import UnlabeledParquetError, label_table_for_venue
 
@@ -277,12 +276,10 @@ def test_crypto_corpus_load_shard_also_enforces_label_and_frequency(tmp_path):
 
 
 def test_crypto_structural_gate_attachment_documented():
-    """Gates attach to contract validation — not an exhaustive wrapper list."""
+    """Gates attach via CorpusKind; no contract_path selector."""
+    assert any("CorpusKind.CRYPTO_V1" in s for s in CRYPTO_STRUCTURAL_GATE_ATTACHMENT)
     assert any("validate_table_schema" in s for s in CRYPTO_STRUCTURAL_GATE_ATTACHMENT)
     assert any("loader.load_shard" in s for s in CRYPTO_STRUCTURAL_GATE_ATTACHMENT)
-    assert any(
-        "ContractBackedCorpusAdapter" in s for s in CRYPTO_STRUCTURAL_GATE_ATTACHMENT
-    )
 
 
 def test_r3_unwrapped_contract_adapter_refuses_unlabeled_1h(tmp_path):
@@ -303,7 +300,7 @@ def test_r3_unwrapped_contract_adapter_refuses_unlabeled_1h(tmp_path):
         year=2024,
     )
     bare = ContractBackedCorpusAdapter(
-        contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
+        corpus=CorpusKind.CRYPTO_V1,
         holdout_policy=CRYPTO_HOLDOUT_POLICY,
     )
     with pytest.raises(UnlabeledParquetError):
@@ -330,7 +327,7 @@ def test_r3_bare_loader_load_shard_refuses_unlabeled_1h(tmp_path):
         bare_load_shard(
             tmp_path,
             entry,
-            contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
+            corpus=CorpusKind.CRYPTO_V1,
             holdout_policy=CRYPTO_HOLDOUT_POLICY,
         )
 
@@ -351,7 +348,7 @@ def test_r3_bare_paths_refuse_labeled_hourly(tmp_path):
         year=2024,
     )
     bare = ContractBackedCorpusAdapter(
-        contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
+        corpus=CorpusKind.CRYPTO_V1,
         holdout_policy=CRYPTO_HOLDOUT_POLICY,
     )
     with pytest.raises(ContractTablePolicyError):
@@ -360,7 +357,7 @@ def test_r3_bare_paths_refuse_labeled_hourly(tmp_path):
         bare_load_shard(
             tmp_path,
             entry,
-            contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
+            corpus=CorpusKind.CRYPTO_V1,
             holdout_policy=CRYPTO_HOLDOUT_POLICY,
         )
 

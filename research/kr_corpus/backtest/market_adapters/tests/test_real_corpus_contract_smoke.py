@@ -29,7 +29,7 @@ from market_adapters.us import (
     USMarketAdapter,
 )
 from pit import bars_from_table
-from schema_contract import CONTRACT_PATH, SchemaMismatchError, validate_table_schema
+from schema_contract import CorpusKind, SchemaMismatchError, validate_table_schema
 
 from research.crypto_corpus.policy import UnlabeledParquetError
 
@@ -67,7 +67,7 @@ def _bounded(path: Path, n: int = 10):
 
 def test_kr_real_original_loads_and_maps_without_imputing_null_value():
     table = _bounded(KR_ORIG, 10)
-    validate_table_schema(table, "ohlcv", contract_path=CONTRACT_PATH)
+    validate_table_schema(table, "ohlcv", corpus=CorpusKind.KR_V1)
     bars = bars_from_table(table)
     assert len(bars) == 10
     assert bars[0].symbol == "000020"
@@ -80,7 +80,7 @@ def test_kr_real_original_loads_and_maps_without_imputing_null_value():
 
 def test_kr_real_clamp_view_loads_with_extra_columns():
     table = _bounded(KR_CLAMP, 10)
-    validate_table_schema(table, "ohlcv", contract_path=CONTRACT_PATH)
+    validate_table_schema(table, "ohlcv", corpus=CorpusKind.KR_V1)
     assert all(
         c in table.column_names
         for c in ("clamped", "admitted", "clamp_delta_high", "clamp_delta_low")

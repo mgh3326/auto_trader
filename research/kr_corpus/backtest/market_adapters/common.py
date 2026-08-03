@@ -3,17 +3,21 @@
 Adapters use this thin object instead of reimplementing the KR harness guards:
 ``loader`` performs SHA-before-parse and row-date refusal, ``holdout_guard``
 performs case-fold/symlink/path traversal refusal, and ``schema_contract``
-performs schema + **corpus-identity table_load_policy** refusal.
+performs schema + corpus-kind table_load_policy refusal.
 
-Caveat (operator-confirmed residual — same class as raw PyArrow): a caller may
-pass an arbitrary ``contract_path``. Supported-path fail-closed guarantees:
+**Contract selection is enum-only.** Callers pass ``CorpusKind``; the committed
+contract path is resolved inside ``schema_contract.contract_path_for``. There is
+no public ``contract_path`` constructor argument or load keyword.
 
-* If the file claims a known ``corpus_id`` under ``SEALED_CORPUS_V1``, the
-  code registry policy for that corpus applies and cannot be stripped from the
-  JSON copy.
-* Completely custom/unknown identities fail at ``load_contract``.
-* Completely bypassing this module (raw ``pyarrow.parquet.read_table``) is out
-  of band and is not claimed to be blocked here.
+Caveat (accurate residual boundary):
+
+* **Blocked on supported paths:** any load through this adapter / ``loader``
+  with a ``CorpusKind`` uses the internal committed contract + registry policy
+  for that kind. Caller-supplied JSON paths are not accepted, so R4/R5 style
+  "temp contract with stripped policy / swapped corpus_id" cannot be fed in.
+* **Not claimed blocked:** raw ``pyarrow.parquet.read_table`` (or any code that
+  never calls this harness). That residual is the same class as always: out-of-
+  process or out-of-API reads are outside the harness trust boundary.
 """
 
 from __future__ import annotations
@@ -30,7 +34,13 @@ from holdout_guard import (
     assert_range_not_holdout,
 )
 from loader import ManifestEntry, load_manifest, load_shard
-from schema_contract import arrow_schema_for, load_contract, validate_table_schema
+from schema_contract import (
+    CorpusKind,
+    arrow_schema_for,
+    contract_path_for,
+    load_contract,
+    validate_table_schema,
+)
 
 __all__ = [
     "ContractBackedCorpusAdapter",
@@ -44,12 +54,7 @@ class TimestampContractError(ValueError):
 
 
 def parse_utc_timestamp(value: datetime | str) -> datetime:
-    """Parse and retain an aware UTC timestamp without local re-anchoring.
-
-    Contract rows carry ``timestamp_utc`` as an ISO-8601 string. A non-UTC
-    offset and a naive value are loud failures: silently interpreting either as
-    ET/KST would recreate the US daily-candle date-shift failure mode.
-    """
+    """Parse and retain an aware UTC timestamp without local re-anchoring."""
     if isinstance(value, str):
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -75,20 +80,25 @@ def parse_utc_timestamp(value: datetime | str) -> datetime:
 
 @dataclass(frozen=True)
 class ContractBackedCorpusAdapter:
-    """Bind a local schema declaration and holdout policy to shared loaders."""
+    """Bind a ``CorpusKind`` (not a file path) to shared loaders."""
 
-    contract_path: Path
+    corpus: CorpusKind
     holdout_policy: HoldoutPolicy
 
+    @property
+    def contract_path(self) -> Path:
+        """Committed path for this kind (read-only; not a constructor input)."""
+        return contract_path_for(self.corpus)
+
     def contract(self) -> dict:
-        return load_contract(self.contract_path)
+        return load_contract(self.corpus)
 
     def arrow_schema_for(self, dataset: str) -> pa.Schema:
-        return arrow_schema_for(dataset, contract_path=self.contract_path)
+        return arrow_schema_for(dataset, corpus=self.corpus)
 
     def validate_table_schema(self, table: pa.Table, dataset: str) -> None:
-        """Schema + any contract ``table_load_policy`` (labels, required values)."""
-        validate_table_schema(table, dataset, contract_path=self.contract_path)
+        """Schema + registry table_load_policy for this corpus kind."""
+        validate_table_schema(table, dataset, corpus=self.corpus)
 
     def assert_path_allowed(self, path: Path | str) -> Path:
         return assert_path_not_holdout(path, policy=self.holdout_policy)
@@ -115,16 +125,12 @@ class ContractBackedCorpusAdapter:
         allowed_window_start: date | str | None = None,
         allowed_window_end: date | str | None = None,
     ) -> pa.Table:
-        """Load via shared SHA-before-parse loader (inherits contract policy).
-
-        Contract ``table_load_policy`` is enforced inside
-        ``validate_table_schema`` for this adapter's ``contract_path``.
-        """
+        """Load via shared loader; schema/policy fixed by ``self.corpus``."""
         return load_shard(
             artifact_root,
             entry,
             allowed_window_start=allowed_window_start,
             allowed_window_end=allowed_window_end,
-            contract_path=self.contract_path,
+            corpus=self.corpus,
             holdout_policy=self.holdout_policy,
         )

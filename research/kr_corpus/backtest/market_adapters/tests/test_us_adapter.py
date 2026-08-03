@@ -101,7 +101,7 @@ def test_us_schema_rejects_trading_value_column():
 def test_us_contract_refuses_unlabeled_table_on_unwrapped_load(tmp_path):
     """US structural label gate: bare ContractBackedCorpusAdapter refuses strip."""
     from market_adapters.common import ContractBackedCorpusAdapter
-    from market_adapters.us import US_HOLDOUT_POLICY, US_SCHEMA_CONTRACT_PATH
+    from market_adapters.us import US_HOLDOUT_POLICY
     from schema_contract import ContractTablePolicyError
 
     from research.us_corpus.labeling import UnlabeledCorpusError  # noqa: F401
@@ -119,8 +119,10 @@ def test_us_contract_refuses_unlabeled_table_on_unwrapped_load(tmp_path):
         market="US",
         year=2024,
     )
+    from schema_contract import CorpusKind
+
     bare = ContractBackedCorpusAdapter(
-        contract_path=US_SCHEMA_CONTRACT_PATH,
+        corpus=CorpusKind.US_V1,
         holdout_policy=US_HOLDOUT_POLICY,
     )
     with pytest.raises(ContractTablePolicyError):

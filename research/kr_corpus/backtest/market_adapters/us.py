@@ -27,6 +27,7 @@ from loader import ManifestEntry
 from market_adapters.common import ContractBackedCorpusAdapter
 from market_adapters.costs import CostModel
 from membership import MembershipRow, membership_rows_from_table
+from schema_contract import CorpusKind
 from terminal_events import TerminalEvent, force_exit_delisted_holdings
 
 __all__ = [
@@ -136,7 +137,7 @@ class USMarketAdapter:
     @property
     def corpus(self) -> ContractBackedCorpusAdapter:
         return ContractBackedCorpusAdapter(
-            contract_path=US_SCHEMA_CONTRACT_PATH,
+            corpus=CorpusKind.US_V1,
             holdout_policy=self.holdout_policy,
         )
 
