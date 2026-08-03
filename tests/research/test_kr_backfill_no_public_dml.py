@@ -4,8 +4,16 @@ Coverage boundary: this AST guard folds the explicitly implemented static Python
 string forms below, then recognizes public or search_path-dependent INSERT,
 UPDATE, DELETE, MERGE, and table DDL. It permits only an *unqualified* CREATE
 TEMP[ORARY] TABLE, because PostgreSQL creates that relation in a per-session
-temporary schema rather than ``public``. A qualified ``public`` temporary table
-is still rejected.
+temporary schema rather than ``public``. The optional ``IF NOT EXISTS`` clause
+is consumed before checking the table target, so a qualified ``public``
+temporary table is still rejected with or without that clause. In this grammar,
+the only tokens between ``CREATE TEMP[ORARY]`` and the table name are ``TABLE``
+and optional ``IF NOT EXISTS``; ``OR REPLACE``, ``ONLY``, and ``UNLOGGED`` are
+not valid intervening CREATE TEMP TABLE syntax. ``GLOBAL``/``LOCAL`` precede
+``TEMP[ORARY]`` and ``UNLOGGED`` is an alternative pre-``TABLE`` modifier, so
+none is eligible for this narrow exemption. SQL comments can syntactically sit
+between tokens, but comment parsing remains an explicitly documented grammar
+gap rather than an exemption.
 
 It intentionally is not a SQL parser or an evaluator: runtime values (arguments,
 environment, imports, files, ORM metadata), unsupported expression operations
@@ -13,6 +21,9 @@ environment, imports, files, ORM metadata), unsupported expression operations
 and static SQL grammar gaps (comments between verb and target, COPY, SELECT INTO,
 bytes SQL, and DDL outside the listed grammar) can evade it. This is a targeted
 regression guard, not a claim that all possible database writes are prevented.
+R1 accidentally caught DML text in docstrings; R2 intentionally exempted true
+docstrings. That means deliberately retrieving ``__doc__`` to execute its text
+is a newly opened runtime-smuggling channel, outside this non-evaluator guard.
 It does not connect to a database or import database drivers.
 """
 
@@ -37,11 +48,16 @@ REGRESSION_FIXTURES = (
     "nested_fstring_local.py",
     "unqualified_target.py",
 )
+TEMP_PUBLIC_REGRESSION_FIXTURES = (
+    "t9_temp_if_not_exists_public.py",
+    "t10_temporary_if_not_exists_public.py",
+)
 
 _DML_OR_DDL = re.compile(
     r"""\b(?:
         INSERT\s+INTO|UPDATE|DELETE\s+FROM|MERGE\s+INTO|
-        CREATE\s+(?P<temporary>TEMP(?:ORARY)?\s+)?TABLE|ALTER\s+TABLE|
+        CREATE\s+(?P<temporary>TEMP(?:ORARY)?\s+)?TABLE
+            (?:\s+IF\s+NOT\s+EXISTS)?|ALTER\s+TABLE|
         DROP\s+TABLE|TRUNCATE(?:\s+TABLE)?
     )\s+(?P<table>(?:\"[^\"]+\"|[A-Za-z_][\w$]*)(?:\s*\.\s*(?:\"[^\"]+\"|[A-Za-z_][\w$]*))?)""",
     re.IGNORECASE | re.VERBOSE,
@@ -287,7 +303,11 @@ def test_only_unqualified_temporary_table_ddl_is_relaxed(tmp_path: Path) -> None
     temporary.write_text('SQL = "CREATE TEMP TABLE scratch (id integer)"\n')
     temporary_alias = tmp_path / "temporary_alias.py"
     temporary_alias.write_text('SQL = "CREATE TEMPORARY TABLE scratch (id integer)"\n')
-    assert_no_public_dml([temporary, temporary_alias])
+    temporary_if_missing = tmp_path / "temporary_if_missing.py"
+    temporary_if_missing.write_text(
+        'SQL = "CREATE TEMP TABLE IF NOT EXISTS scratch (id integer)"\n'
+    )
+    assert_no_public_dml([temporary, temporary_alias, temporary_if_missing])
 
     public_temporary = tmp_path / "public_temporary.py"
     public_temporary.write_text(
@@ -300,6 +320,12 @@ def test_only_unqualified_temporary_table_ddl_is_relaxed(tmp_path: Path) -> None
             AssertionError, match="public or search_path-dependent DML/DDL"
         ):
             assert_no_public_dml([unsafe_path])
+
+
+@pytest.mark.parametrize("fixture_name", TEMP_PUBLIC_REGRESSION_FIXTURES)
+def test_temp_if_not_exists_public_regressions_are_rejected(fixture_name: str) -> None:
+    with pytest.raises(AssertionError, match="public or search_path-dependent DML/DDL"):
+        assert_no_public_dml([FIXTURE_ROOT / fixture_name])
 
 
 def test_only_real_docstrings_are_exempt(tmp_path: Path) -> None:
