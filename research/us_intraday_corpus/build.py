@@ -59,13 +59,22 @@ class PhaseStats:
     ohlc_violations: int = 0
     units_done: int = 0
     units_resumed: int = 0
+    symbols_with_data_any_window: int = 0
+    zero_exploration_symbols: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "timeframe": self.timeframe,
             "symbols_attempted": self.symbols_attempted,
             "symbols_with_data": self.symbols_with_data,
+            "symbols_with_data_definition": (
+                "symbols having at least one EXPLORATION row; holdout-only "
+                "symbols are excluded because they are unusable for research"
+            ),
+            "symbols_with_data_any_window": self.symbols_with_data_any_window,
             "symbols_empty": self.symbols_empty,
+            "symbols_empty_definition": "symbols with zero exploration rows",
+            "zero_exploration_symbols": self.zero_exploration_symbols,
             "rows_exploration": self.rows_exploration,
             "rows_holdout": self.rows_holdout,
             "explicit_gap_count": len(self.gaps),
@@ -229,7 +238,8 @@ def run_phase(
     stats.symbols_attempted = len(symbols)
     now_utc = _dt.datetime.now(_dt.UTC)
     tf_minutes = 60 if timeframe == "1Hour" else 1
-    seen_with_data: set[str] = set()
+    seen_exploration: set[str] = set()
+    seen_any_window: set[str] = set()
 
     for year, start, end in year_windows():
         for batch_id, batch in enumerate(_chunks(symbols, batch_size)):
@@ -239,10 +249,13 @@ def run_phase(
                 # resumed run would see an empty set and fabricate a
                 # "no_bars_in_any_year" gap for every symbol it skipped.
                 try:
-                    seen_with_data.update(
-                        json.loads(marker.read_text(encoding="utf-8")).get(
-                            "symbols", []
-                        )
+                    _m = json.loads(marker.read_text(encoding="utf-8"))
+                    seen_any_window.update(_m.get("symbols", []))
+                    # Markers written before this field existed carry no
+                    # exploration list; fall back to the any-window set rather
+                    # than silently reporting zero exploration coverage.
+                    seen_exploration.update(
+                        _m.get("exploration_symbols", _m.get("symbols", []))
                     )
                 except (json.JSONDecodeError, OSError):
                     stats.gaps.append(
@@ -278,7 +291,16 @@ def run_phase(
                         ]
                         collected.extend(normalized)
                         if normalized:
-                            seen_with_data.add(sym)
+                            seen_any_window.add(sym)
+                            # A symbol whose only rows fall in the sealed
+                            # holdout window is NOT usable for exploration.
+                            # Counting it as "has data" is what let PSKY read
+                            # as ordinary coverage.
+                            if any(
+                                not config.is_holdout_date(r["session_date"])
+                                for r in normalized
+                            ):
+                                seen_exploration.add(sym)
                     # Keep a reference, do NOT snapshot here: `termination` is
                     # only set after the final yield resumes, so a snapshot
                     # taken inside the loop always reads "unstarted" and marks
@@ -309,13 +331,26 @@ def run_phase(
 
             stats.ohlc_violations += len(bars.ohlc_violations(collected))
             unit_symbols = sorted({r["symbol"] for r in collected})
+            unit_expl = sorted(
+                {
+                    r["symbol"]
+                    for r in collected
+                    if not config.is_holdout_date(r["session_date"])
+                }
+            )
             _route_and_write(collected, label, year, batch_id, stats)
 
             # Marker is written only after the parquet lands, so a crash between
             # the two re-does the unit rather than skipping it.
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text(
-                json.dumps({"rows": len(collected), "symbols": unit_symbols}),
+                json.dumps(
+                    {
+                        "rows": len(collected),
+                        "symbols": unit_symbols,
+                        "exploration_symbols": unit_expl,
+                    }
+                ),
                 encoding="utf-8",
             )
             stats.units_done += 1
@@ -329,14 +364,60 @@ def run_phase(
                     flush=True,
                 )
 
-    stats.symbols_with_data = len(seen_with_data)
-    stats.symbols_empty = len(symbols) - len(seen_with_data)
+    stats.symbols_with_data = len(seen_exploration)
+    stats.symbols_with_data_any_window = len(seen_any_window)
+    stats.symbols_empty = len(symbols) - len(seen_exploration)
+    stats.zero_exploration_symbols = sorted(set(symbols) - seen_exploration)
     for sym in symbols:
-        if sym not in seen_with_data:
+        if sym not in seen_any_window:
             stats.gaps.append(
                 {"symbol": sym, "timeframe": label, "reason": "no_bars_in_any_year"}
             )
     return stats
+
+
+def completeness_assessment(chains: list[dict[str, Any]]) -> dict[str, Any]:
+    """Derive the page-completeness claim from the chains themselves.
+
+    Emitted by every run so the shipped artifact contract is reproducible from
+    source rather than hand-written after the fact. When any chain failed to
+    terminate on a null token the claim is UNVERIFIED, and the substitute
+    arguments are recorded WITH their limitations -- argument B in particular
+    is unsound because annual chains are independent, so a chain truncated in
+    one year says nothing about another year completing normally.
+    """
+    incomplete = [c for c in chains if not c.get("complete")]
+    if chains and not incomplete:
+        return {
+            "PAGE_COMPLETENESS": "VERIFIED",
+            "basis": "every recorded chain terminated on a null next_page_token",
+            "chains_recorded": len(chains),
+            "chains_incomplete": 0,
+        }
+    return {
+        "PAGE_COMPLETENESS": "UNVERIFIED",
+        "completeness_resolution": "WEAKENED_CLAIM",
+        "chains_recorded": len(chains),
+        "chains_incomplete": len(incomplete),
+        "metric_status": (
+            "MIS_INSTRUMENTED_IN_THIS_RUN"
+            if chains and len(incomplete) == len(chains)
+            else "PARTIAL"
+        ),
+        "substitute_arguments_assessed": {
+            "A_row_reconciliation": "INTERNAL_CONSISTENCY_ONLY -- truncation lowers "
+            "the runner counter and the parquet count together",
+            "B_stop_then_resume": "WITHDRAWN_COUNTEREXAMPLE_EXISTS -- annual chains "
+            "are independent, so one year truncating is compatible with another "
+            "completing",
+            "C_checksum_and_access_log": "NOT_INDEPENDENT -- write-time digest "
+            "compared against write-time records is circular",
+        },
+        "what_would_actually_prove_it": (
+            "re-run collection with fixed instrumentation and capture the terminal "
+            "next_page_token=null per chain"
+        ),
+    }
 
 
 def write_checkpoint(name: str, payload: dict[str, Any]) -> None:
@@ -417,8 +498,30 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="build us-intraday-corpus-v1")
     parser.add_argument("--probe-only", action="store_true")
     parser.add_argument("--skip-1m", action="store_true")
-    parser.add_argument("--phase", choices=["1h", "1m", "both"], default="both")
+    # Scope C (operator decision, 2026-08-03): 1Min top-500 only. 1Hour is a
+    # recorded data gap, so the DEFAULT run must not silently collect it --
+    # the declared scope and the default code path have to agree.
+    parser.add_argument(
+        "--phase",
+        choices=["1h", "1m", "both"],
+        default="1m",
+        help="default 1m enforces SCOPE_DECISION=C_1M_TOP500_ONLY",
+    )
+    parser.add_argument(
+        "--override-scope-c",
+        action="store_true",
+        help="explicitly opt out of scope C to collect 1Hour (see config.HOUR_DATA_GAP)",
+    )
     args = parser.parse_args(argv)
+
+    if args.phase in ("1h", "both") and not args.override_scope_c:
+        print(
+            f"BLOCKED: scope is {config.SCOPE_DECISION} and 1Hour collection is a "
+            "recorded data gap (config.HOUR_DATA_GAP). Pass --override-scope-c to "
+            "collect it deliberately.",
+            flush=True,
+        )
+        return 2
 
     started = time.monotonic()
     finalize.load_registry()
@@ -475,11 +578,13 @@ def main(argv: list[str] | None = None) -> int:
         all_gaps += stats_1m.gaps
         all_chains += stats_1m.page_chains
 
+    assessment = completeness_assessment(all_chains)
     labels.write_labelled_json(
         config.REPORTS_DIR / "page_chain_integrity.json",
         {
+            **assessment,
             "chains_total": len(all_chains),
-            "incomplete": [c for c in all_chains if not c["complete"]],
+            "incomplete": [c for c in all_chains if not c["complete"]][:200],
             "chains": all_chains[:2000],
         },
     )
@@ -489,11 +594,42 @@ def main(argv: list[str] | None = None) -> int:
         fieldnames=["symbol", "timeframe", "reason"],
     )
 
-    verdict = "READY_FOR_RESEARCH" if not all_gaps else "BUILT_WITH_GAPS"
+    zero_expl = sorted(
+        {s for p in phases for s in p.get("zero_exploration_symbols", [])}
+    )
+    # A symbol with no exploration rows, or an unproven page-completeness
+    # claim, both mean the corpus is not unqualifiedly research-ready.
+    verdict = (
+        "READY_FOR_RESEARCH"
+        if not all_gaps
+        and not zero_expl
+        and assessment["PAGE_COMPLETENESS"] == "VERIFIED"
+        else "BUILT_WITH_GAPS"
+    )
     finalize.seal(
         terminal_verdict=verdict,
         body={
             "phases": phases,
+            "page_chain_integrity": {
+                **assessment,
+                "report": "reports/page_chain_integrity.json",
+            },
+            "coverage": {
+                "symbols_selected": sum(p["symbols_attempted"] for p in phases),
+                "symbols_with_exploration_data": sum(
+                    p["symbols_with_data"] for p in phases
+                ),
+                "symbols_with_zero_exploration_data": len(zero_expl),
+                "zero_exploration_symbols": zero_expl,
+                "symbols_with_data_in_ANY_window_including_holdout": sum(
+                    p["symbols_with_data_any_window"] for p in phases
+                ),
+                "reading_guide": (
+                    "The any-window count INCLUDES the sealed holdout. For "
+                    "exploration/backtest purposes use symbols_with_exploration_data; "
+                    "a holdout-only symbol is not ordinary coverage."
+                ),
+            },
             "budget_measurement": measurement,
             "budget_projection": projection,
             "requests_actual": client.counter.count,

@@ -8,13 +8,43 @@ US intraday (1Hour full universe / 1Min top-500) research corpus builder.
 > this corpus is biased **optimistic**. Never cite a number from it without this
 > label. `EXPLORATORY_BACKTEST_RESEARCH_ONLY`.
 
-## Status
+## Status — `BUILT_WITH_GAPS`
 
-**BLOCKED_PRECONDITION** — no bar data has been fetched. Alpaca market-data
-credentials are not reachable under the brief's constraints (see
-`events/worker-final.md`). Everything that does not require them is complete:
-the deterministic 1Min top-500 selection, and the full builder with its
-invariants under test.
+493,898,211 1Min rows for the top 500 US symbols, 2016-01-01 … 2026-07-31
+(409,638,229 exploration / 84,259,982 holdout), 52,114 requests, 9.28 h, 10 GiB.
+
+Read these three caveats before using it:
+
+> ### 🔴 `PAGE_COMPLETENESS = UNVERIFIED`
+> The page-chain instrument was broken during the shipped run (every chain
+> recorded `complete=false`), so **per-chain pagination completeness is not
+> established**. The substitute arguments do not close the gap: row
+> reconciliation is internal-consistency only, the "stop-then-resume implies no
+> truncation" argument is **withdrawn** (annual chains are independent, so a
+> counterexample exists), and the checksum/access-log evidence is circular
+> (write-time digests compared against write-time records). Proving it requires
+> re-running collection with the fixed instrumentation to capture the terminal
+> `next_page_token=null` per chain. See `reports/page_chain_integrity.json`.
+> Row-level checks (OHLC, duplicates, monotonicity, nulls) *did* pass on a full
+> exploration scan.
+
+> ### 🔴 Coverage is 499 of 500, not 500
+> `PSKY` has **zero exploration rows**; its only data lies inside the sealed
+> holdout. Any "500" figure is the any-window count and includes the holdout.
+
+> ### 🔴 Ticker identity is point-in-time
+> Alpaca serves point-in-time tickers while the universe file is retroactively
+> renamed, so joining on ticker across time can splice two different companies
+> together (`SNOW` in 2016 is Intrawest Resorts, not Snowflake). 6 of 500
+> symbols affected — see `reports/ticker_identity_caveats.csv`. This is a
+> **separate axis from survivorship bias** and the label does not defend
+> against it.
+
+**Scope C** (operator decision): 1Min top-500 only. 1Hour collection is dropped
+and recorded as a `DEFERRED_NOT_ABANDONED` data gap — it needs 130k–246k
+requests at the measured ≤416 rows/request, against a cap of 80,000. The
+top-500's hourly bars are not a gap: they are derivable locally by resampling
+this corpus's 1Min data.
 
 ## Layout
 
@@ -59,17 +89,28 @@ the exact `git rev-parse HEAD` the artifacts were generated from.
 # 1Min universe selection (no credentials needed; reads only exploration data)
 uv run python -m research.us_intraday_corpus.selection
 
-# measure the multi-symbol form + project the request budget, then stop
+# measure page geometry + project the request budget, then stop
 uv run python -m research.us_intraday_corpus.build --probe-only
 
-# full build (1Hour, then 1Min)
+# build under scope C -- 1Min top-500. This is the DEFAULT (--phase 1m).
 uv run python -m research.us_intraday_corpus.build
 
-# 1Hour only, sealing at the midpoint boundary
-uv run python -m research.us_intraday_corpus.build --skip-1m
+# 1Hour is a recorded data gap: collecting it requires an explicit opt-out
+uv run python -m research.us_intraday_corpus.build --phase 1h --override-scope-c
 
 uv run pytest research/us_intraday_corpus/tests/ -q
 ```
+
+Credentials come from the dedicated read-only file only
+(`ENV_FILE=…/.env.alpaca-data-readonly.native`); `.env.prod`, `.env.dev` and
+`.env` are refused by name.
+
+## Reading the data
+
+`loader.load_dataset(acknowledge_survivorship_bias=True)` is the sanctioned
+reader. The holdout is write-only: `loader.load_holdout()` always raises, and
+the guard resolves **inode identity** as well as canonical paths, so hardlink,
+symlink, case and `..` aliases of a sealed file are all refused.
 
 ## Boundaries
 

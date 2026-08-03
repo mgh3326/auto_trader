@@ -137,6 +137,107 @@ def test_holdout_digest_still_appears_in_checksums(artifact_root):
     assert stats["write_time_hashed"] == 1
 
 
+def test_every_enumerated_bypass_surface_is_blocked(artifact_root, monkeypatch):
+    """The full alias surface, enumerated rather than patched one form at a time.
+
+    Three rounds of review each found one more alias (`..`, then case/symlink,
+    then hardlink) because the guard was being fixed reactively. This test
+    enumerates the surface and asserts every entry raises, so a future
+    regression shows up as a named failure rather than a fresh discovery.
+
+    Hardlinks are why identity is anchored on the inode: a second directory
+    entry outside holdout/ points at the same inode, and no amount of
+    realpath/casefold work on the NAME can see that.
+    """
+    import os
+    import unicodedata
+
+    monkeypatch.setattr(config, "SISTER_HOLDOUT_DIR", artifact_root / "no-such-sister")
+    hold = config.HOLDOUT_DIR / "freq=1m"
+    hold.mkdir(parents=True, exist_ok=True)
+    sealed = hold / "p.parquet"
+    sealed.write_bytes(b"SEALED")
+    config.DATASET_DIR.mkdir(parents=True, exist_ok=True)
+    access_log.refresh_holdout_inodes()
+
+    os.symlink(config.HOLDOUT_DIR, artifact_root / "lnk")
+    os.symlink(artifact_root / "lnk", artifact_root / "lnk2")
+    os.link(sealed, artifact_root / "hard.parquet")
+    os.link(sealed, config.DATASET_DIR / "inside_dataset.parquet")
+    nfd = artifact_root / unicodedata.normalize("NFD", "hőldout_link")
+    os.symlink(config.HOLDOUT_DIR, nfd)
+
+    surfaces = {
+        "exact": sealed,
+        "dot_component": config.HOLDOUT_DIR / "." / "freq=1m" / "p.parquet",
+        "dotdot": config.DATASET_DIR / ".." / "holdout" / "freq=1m" / "p.parquet",
+        "redundant_separators": Path(
+            str(artifact_root) + "//holdout///freq=1m//p.parquet"
+        ),
+        "uppercase": Path(str(sealed).replace("/holdout/", "/HOLDOUT/")),
+        "mixed_case": Path(str(sealed).replace("/holdout/", "/HoLdOuT/")),
+        "symlink": artifact_root / "lnk" / "freq=1m" / "p.parquet",
+        "nested_symlink": artifact_root / "lnk2" / "freq=1m" / "p.parquet",
+        "dotdot_through_symlink": artifact_root
+        / "lnk"
+        / ".."
+        / "holdout"
+        / "freq=1m"
+        / "p.parquet",
+        "nfd_symlink": nfd / "freq=1m" / "p.parquet",
+        "hardlink_outside_holdout": artifact_root / "hard.parquet",
+        "hardlink_inside_dataset": config.DATASET_DIR / "inside_dataset.parquet",
+        "relative": Path(os.path.relpath(sealed, os.getcwd())),
+    }
+    leaks = []
+    for name, path in surfaces.items():
+        if not access_log.is_holdout_path(path):
+            leaks.append(f"{name}: not detected")
+            continue
+        try:
+            hashing.sha256_of_file(path)
+            leaks.append(f"{name}: hash guard leaked")
+        except access_log.HoldoutGuardViolation:
+            pass
+        except OSError:
+            pass
+        try:
+            loader.assert_not_holdout_path(path)
+            leaks.append(f"{name}: loader guard leaked")
+        except loader.HoldoutAccessDenied:
+            pass
+    assert not leaks, f"holdout guard bypassed by: {leaks}"
+
+    # Must not over-block: an ordinary dataset file stays readable.
+    ok = config.DATASET_DIR / "normal.parquet"
+    ok.write_bytes(b"open")
+    assert access_log.is_holdout_path(ok) is False
+    assert hashing.sha256_of_file(ok)
+
+
+def test_hardlink_made_after_cache_build_is_still_caught(artifact_root, monkeypatch):
+    """A hardlink created after the inode cache was built must not slip through.
+
+    `st_nlink > 1` forces a cache rebuild before a negative is trusted, so the
+    guard cannot be defeated by racing the cache.
+    """
+    import os
+
+    monkeypatch.setattr(config, "SISTER_HOLDOUT_DIR", artifact_root / "no-sister")
+    hold = config.HOLDOUT_DIR / "freq=1m"
+    hold.mkdir(parents=True, exist_ok=True)
+    sealed = hold / "p.parquet"
+    sealed.write_bytes(b"SEALED")
+
+    access_log.refresh_holdout_inodes()  # cache built BEFORE the alias exists
+    alias = artifact_root / "late.parquet"
+    os.link(sealed, alias)
+
+    assert access_log.is_holdout_path(alias)
+    with pytest.raises(access_log.HoldoutGuardViolation):
+        hashing.sha256_of_file(alias)
+
+
 def test_case_and_symlink_forms_cannot_bypass_the_holdout_guard(
     artifact_root, monkeypatch
 ):
@@ -491,6 +592,85 @@ def test_run_phase_records_a_completed_page_chain(artifact_root, _single_year_wi
     )
     assert chain["termination"] == "null_next_token"
     assert chain["pages"] == 2
+
+
+class _HoldoutOnlyClient:
+    """A PSKY-shaped symbol: every row falls inside the sealed holdout window."""
+
+    def __init__(self) -> None:
+        self.counter = alpaca_data.RequestCounter()
+
+    def iter_bars(self, symbols, timeframe, start, end):
+        chain = alpaca_data.PageChain(symbol=symbols[0], timeframe=timeframe)
+        chain.pages, chain.last_token = 1, None
+        yield (
+            {
+                "bars": {
+                    symbols[0]: [
+                        {
+                            "t": "2025-06-02T15:00:00Z",
+                            "o": 1.0,
+                            "h": 2.0,
+                            "l": 0.5,
+                            "c": 1.5,
+                            "v": 9,
+                            "n": 1,
+                            "vw": 1.2,
+                        }
+                    ]
+                },
+                "next_page_token": None,
+            },
+            chain,
+        )
+        chain.termination = "null_next_token"
+
+
+def test_holdout_only_symbol_is_not_counted_as_exploration_coverage(
+    artifact_root, monkeypatch
+):
+    """Source-level fix for the PSKY miscount, not just a corrected artifact.
+
+    `run_phase` used to add a symbol to "has data" on any row, including
+    holdout rows, so a holdout-only symbol reported symbols_with_data=1 /
+    symbols_empty=0 -- exactly the reading that let PSKY look like ordinary
+    exploration coverage.
+    """
+    monkeypatch.setattr(config, "START_DATE", _dt.date(2025, 1, 1))
+    monkeypatch.setattr(config, "CUTOFF_DATE", _dt.date(2025, 12, 31))
+
+    stats = build.run_phase(_HoldoutOnlyClient(), ["PSKY"], "1Min", "1m", 1).as_dict()
+
+    assert stats["rows_exploration"] == 0
+    assert stats["rows_holdout"] == 1
+    assert stats["symbols_with_data"] == 0, "holdout-only must not count as coverage"
+    assert stats["symbols_with_data_any_window"] == 1
+    assert stats["symbols_empty"] == 1
+    assert stats["zero_exploration_symbols"] == ["PSKY"]
+
+
+def test_scope_c_is_the_default_and_1hour_needs_an_explicit_override(capsys):
+    """The declared scope and the default code path must agree.
+
+    config declares SCOPE_DECISION=C_1M_TOP500_ONLY while `--phase` defaulted to
+    `both`, so an ordinary re-run would have collected the 1Hour data that the
+    manifest records as a deliberate gap.
+    """
+    assert build.main(["--phase", "1h"]) == 2
+    assert "scope is C_1M_TOP500_ONLY" in capsys.readouterr().out
+
+
+def test_completeness_assessment_is_emitted_from_code(artifact_root):
+    """The shipped UNVERIFIED contract must be reproducible from source."""
+    blind = [{"complete": False, "termination": "unstarted"}] * 3
+    out = build.completeness_assessment(blind)
+    assert out["PAGE_COMPLETENESS"] == "UNVERIFIED"
+    assert out["completeness_resolution"] == "WEAKENED_CLAIM"
+    assert out["metric_status"] == "MIS_INSTRUMENTED_IN_THIS_RUN"
+    assert "WITHDRAWN" in out["substitute_arguments_assessed"]["B_stop_then_resume"]
+
+    good = [{"complete": True, "termination": "null_next_token"}] * 3
+    assert build.completeness_assessment(good)["PAGE_COMPLETENESS"] == "VERIFIED"
 
 
 def test_old_snapshot_form_would_fail_the_regression_guard():

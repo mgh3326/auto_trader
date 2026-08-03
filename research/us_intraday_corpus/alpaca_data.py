@@ -41,29 +41,46 @@ def host_evidence_path():
 
 
 def record_host_evidence(host: str) -> None:
-    """Append `host` to the durable host-evidence file (idempotent)."""
+    """Record one request against `host` in the durable evidence file.
+
+    Called on EVERY request. Per-host counts make the file an actual request
+    log rather than a set of hosts seen once, which is what the earlier
+    first-sight-only version amounted to.
+    """
     import json
 
     path = host_evidence_path()
     try:
         existing = json.loads(path.read_text(encoding="utf-8"))
-        hosts = set(existing.get("hosts_contacted", []))
-        requests = int(existing.get("requests_observed", 0))
+        per_host = dict(existing.get("requests_per_host", {}))
+        total = int(existing.get("requests_observed") or 0)
+        provenance = existing.get("provenance", "RECORDED_AT_REQUEST_TIME")
+        prior = existing.get("prior_reconstructed_evidence")
     except (OSError, ValueError):
-        hosts, requests = set(), 0
-    hosts.add(host)
+        per_host, total, provenance, prior = {}, 0, "RECORDED_AT_REQUEST_TIME", None
+
+    # A file seeded post hoc must not silently absorb request-time records into
+    # the same provenance label -- keep the reconstructed claim beside the
+    # measured one instead of overwriting it.
+    if provenance == "RECONSTRUCTED_POST_HOC" and prior is None:
+        prior = {
+            "hosts_contacted": existing.get("hosts_contacted", []),
+            "provenance": "RECONSTRUCTED_POST_HOC",
+            "note": existing.get("why", ""),
+        }
+
+    per_host[host] = per_host.get(host, 0) + 1
+    total += 1
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "hosts_contacted": sorted(hosts),
-                "requests_observed": requests + 1,
-                "provenance": "RECORDED_AT_REQUEST_TIME",
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    payload = {
+        "hosts_contacted": sorted(per_host),
+        "requests_per_host": per_host,
+        "requests_observed": total,
+        "provenance": "RECORDED_AT_REQUEST_TIME",
+    }
+    if prior is not None:
+        payload["prior_reconstructed_evidence"] = prior
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def load_host_evidence() -> dict:
@@ -270,9 +287,11 @@ class AlpacaDataClient:
 
     def _get(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
         host = assert_data_host(url)
-        if host not in CONTACTED_HOSTS:
-            CONTACTED_HOSTS.add(host)
-            record_host_evidence(host)  # survives the collect -> seal boundary
+        CONTACTED_HOSTS.add(host)
+        # Record EVERY request, not just the first. Recording only on first
+        # sight preserved the host set but froze `requests_observed` at 1,
+        # which made "host and request evidence preserved" an overstatement.
+        record_host_evidence(host)
 
         backoff = 1.0
         for _attempt in range(8):

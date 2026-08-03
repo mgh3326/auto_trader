@@ -61,17 +61,89 @@ def canonical(path: Path) -> Path:
     return Path(os.path.realpath(str(path)))
 
 
+def _holdout_roots() -> tuple[Path, ...]:
+    return (config.HOLDOUT_DIR, config.SISTER_HOLDOUT_DIR)
+
+
+# Identity of every sealed file as (st_dev, st_ino).
+#
+# Path canonicalisation alone is structurally incapable of catching a HARDLINK:
+# a second directory entry outside holdout/ points at the same inode, and no
+# amount of realpath/casefold work on the *name* can see that. Identity is
+# therefore anchored on the inode, with the path check kept as a second layer
+# (it still covers paths that do not exist yet, i.e. the pre-write guard).
+_HOLDOUT_INODES: set[tuple[int, int]] = set()
+_INODE_CACHE_KEY: tuple[str, ...] | None = None
+
+
+def refresh_holdout_inodes() -> int:
+    """Rebuild the sealed-inode set. Returns how many inodes are tracked."""
+    global _INODE_CACHE_KEY
+    _HOLDOUT_INODES.clear()
+    for root in _holdout_roots():
+        resolved = canonical(root)
+        if not resolved.is_dir():
+            continue
+        for entry in resolved.rglob("*"):
+            try:
+                if entry.is_file():
+                    st = entry.stat()
+                    _HOLDOUT_INODES.add((st.st_dev, st.st_ino))
+            except OSError:
+                continue
+    _INODE_CACHE_KEY = tuple(str(r) for r in _holdout_roots())
+    return len(_HOLDOUT_INODES)
+
+
+def register_holdout_inode(path: Path) -> None:
+    """Track a freshly written sealed file so the guard sees it immediately."""
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return
+    _HOLDOUT_INODES.add((st.st_dev, st.st_ino))
+
+
+def _inode_is_sealed(path: Path) -> bool:
+    """True when `path` resolves to the same inode as a sealed file."""
+    try:
+        st = os.stat(str(path))  # follows symlinks
+    except OSError:
+        return False  # does not exist yet -> path layer decides
+    key = (st.st_dev, st.st_ino)
+
+    if _INODE_CACHE_KEY != tuple(str(r) for r in _holdout_roots()):
+        refresh_holdout_inodes()
+    if key in _HOLDOUT_INODES:
+        return True
+
+    # st_nlink > 1 means this inode has more than one directory entry, i.e.
+    # exactly the hardlink case. Rebuild once before trusting a negative.
+    if st.st_nlink > 1:
+        refresh_holdout_inodes()
+        return key in _HOLDOUT_INODES
+    return False
+
+
 def is_holdout_path(path: Path) -> bool:
-    """True if `path` lives under *any* holdout directory we must not read.
+    """True if `path` denotes a sealed holdout file, by identity or by name.
+
+    Two independent layers, because each catches what the other cannot:
+
+    * inode identity  -- catches hardlink aliases living outside holdout/
+    * canonical path  -- catches paths that do not exist yet (pre-write guard),
+                         and is symlink-resolved and case-insensitive
 
     Covers our own holdout and the sister corpus holdout, because §4 forbids
-    reading either. Comparison is symlink-resolved and case-insensitive so the
-    two bypass forms above are caught.
+    reading either.
     """
+    if _inode_is_sealed(path):
+        return True
+
     resolved = canonical(path)
     parts_cf = [p.casefold() for p in resolved.parts]
 
-    for holdout_root in (config.HOLDOUT_DIR, config.SISTER_HOLDOUT_DIR):
+    for holdout_root in _holdout_roots():
         root_parts = [p.casefold() for p in canonical(holdout_root).parts]
         if parts_cf[: len(root_parts)] == root_parts:
             return True

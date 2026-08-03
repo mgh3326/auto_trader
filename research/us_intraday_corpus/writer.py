@@ -68,6 +68,11 @@ def write_parquet_atomic(
     finally:
         os.close(dir_fd)
 
+    # Track the sealed inode immediately so a same-process read attempt (or a
+    # hardlink made to it) is caught without waiting for a cache rebuild.
+    if access_log.is_holdout_path(path):
+        access_log.register_holdout_inode(path)
+
     return WriteResult(
         path=path,
         sha256=digest,
