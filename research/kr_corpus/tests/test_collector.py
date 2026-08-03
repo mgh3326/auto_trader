@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -162,6 +163,10 @@ def test_empty_source_history_becomes_explicit_gap_without_forward_fill(tmp_path
     assert result.terminal_verdict == "BUILT_WITH_GAPS"
     final_root = Path(config.artifact_root) / "runs" / config.run_id
     assert (final_root / "gaps/market=KOSDAQ/year=2024/missing.parquet").is_file()
-    manifest = (final_root / "manifest.json").read_text(encoding="utf-8")
-    assert '"forward_fill_used": false' in manifest
-    assert '"source_fallback_used": false' in manifest
+    manifest = json.loads((final_root / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["forward_fill_used"] is False
+    assert manifest["source_fallback_used"] is False
+    assert "holdout_written_not_read" not in manifest
+    assert manifest["field_scopes"]["metrics"] == "main_plus_holdout"
+    assert manifest["adjusted_ohlcv_value"]["availability"] == "NULL"
+    assert manifest["holdout_custody"]["audit_measurement"].startswith("not emitted:")

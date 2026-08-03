@@ -87,7 +87,6 @@ class ArtifactWriter:
         self.main_state = main_state
         self.holdout_state = holdout_state
         self.holdout_write_count = 0
-        self.holdout_final_data_read_count = 0
         self._forbidden_text_values: tuple[bytes, ...] = ()
 
     def set_forbidden_text_values(self, values: tuple[str, ...]) -> None:

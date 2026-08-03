@@ -1172,9 +1172,6 @@ class CorpusCollector:
                 record.relative_path.startswith(("membership/", "dataset/", "gaps/"))
                 for record in self.holdout_state.files()
             )
-            holdout_written_not_read = (
-                holdout_data_written and self.writer.holdout_final_data_read_count == 0
-            )
             coverage_bar_met = bool(combined_coverage) and all(
                 row.ratio is not None
                 and row.ratio >= self.config.min_market_year_membership_bar_coverage
@@ -1217,6 +1214,14 @@ class CorpusCollector:
                 "coverage": [self._coverage_dict(row) for row in combined_coverage],
                 "minimum_market_year_coverage": minimum_coverage,
                 "explicit_gap_count": combined_gap_count,
+                "field_scopes": {
+                    "metrics": "main_plus_holdout",
+                    "coverage": "main_plus_holdout",
+                    "minimum_market_year_coverage": "main_plus_holdout",
+                    "explicit_gap_count": "main_plus_holdout",
+                    "gap_reason_counts": "main_plus_holdout",
+                    "crosscheck_mismatches": "main_plus_holdout",
+                },
                 "gap_reason_counts": {
                     "main": dict(self.main_state.gap_reason_counts()),
                     "holdout": dict(self.holdout_state.gap_reason_counts()),
@@ -1225,7 +1230,24 @@ class CorpusCollector:
                 "membership_snapshot_failures": self.membership_snapshot_failures,
                 "derived_common_stock_rows": 0,
                 "metrics": metrics,
-                "holdout_written_not_read": holdout_written_not_read,
+                "adjusted_ohlcv_value": {
+                    "availability": "NULL",
+                    "reason": (
+                        "pykrx adjusted OHLCV source does not provide turnover; "
+                        "the collector never synthesizes value from price_times_volume"
+                    ),
+                    "consumer_limitation": (
+                        "Do not use this corpus for value/turnover/liquidity filters"
+                    ),
+                },
+                "holdout_custody": {
+                    "final_data_read_policy": (
+                        "collector does not read final holdout data after generation"
+                    ),
+                    "audit_measurement": (
+                        "not emitted: no audited holdout-read wrapper is implemented"
+                    ),
+                },
                 "stop_reason": self.stop_reason,
             }
 
