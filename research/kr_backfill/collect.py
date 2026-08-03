@@ -34,17 +34,65 @@ from pathlib import Path
 from typing import Any
 
 import asyncpg
-from sources import (  # noqa: E402
-    KST,
-    FetchWindowClosed,
-    Pacer,
-    assert_fetch_window_open,
-    fetch_kis_minutes,
-    fetch_kiwoom_minutes,
-    fetch_toss_minutes,
-    in_regular_session,
-    now_kst,
-)
+
+try:
+    from .dual_surface import (
+        BACKOFF_PACE_SECONDS,
+        KiwoomSurfaceClient,
+        OverlapMismatch,
+        SurfaceAuthError,
+        SurfaceBackoffExhausted,
+        SurfaceContractError,
+        SurfaceManifest,
+        SurfacePacer,
+        assignment_sha256,
+        compare_overlap_exact,
+        http_status_from_exception,
+        read_assignment_csv,
+        validate_surface,
+        write_surface_manifest,
+    )
+except ImportError:  # pragma: no cover - direct CLI execution
+    from dual_surface import (
+        BACKOFF_PACE_SECONDS,
+        KiwoomSurfaceClient,
+        OverlapMismatch,
+        SurfaceAuthError,
+        SurfaceBackoffExhausted,
+        SurfaceContractError,
+        SurfaceManifest,
+        SurfacePacer,
+        assignment_sha256,
+        compare_overlap_exact,
+        http_status_from_exception,
+        read_assignment_csv,
+        validate_surface,
+        write_surface_manifest,
+    )
+try:
+    from .sources import (  # noqa: E402
+        KST,
+        FetchWindowClosed,
+        Pacer,
+        assert_fetch_window_open,
+        fetch_kis_minutes,
+        fetch_kiwoom_minutes,
+        fetch_toss_minutes,
+        in_regular_session,
+        now_kst,
+    )
+except ImportError:  # pragma: no cover - direct CLI execution
+    from sources import (  # noqa: E402
+        KST,
+        FetchWindowClosed,
+        Pacer,
+        assert_fetch_window_open,
+        fetch_kis_minutes,
+        fetch_kiwoom_minutes,
+        fetch_toss_minutes,
+        in_regular_session,
+        now_kst,
+    )
 
 VENUE = "KRX"
 
@@ -76,6 +124,19 @@ MAX_CONSECUTIVE_429 = 3
 @dataclass
 class StreamStats:
     source: str
+    symbols_total: int = 0
+    symbols_done: int = 0
+    calls: int = 0
+    rows_fetched: int = 0
+    rows_inserted: int = 0
+    rows_skipped_conflict: int = 0
+    errors: list[str] = field(default_factory=list)
+    stopped_reason: str | None = None
+
+
+@dataclass
+class SurfaceStats:
+    surface: str
     symbols_total: int = 0
     symbols_done: int = 0
     calls: int = 0
@@ -386,6 +447,432 @@ async def run_stream(
     return stats
 
 
+class OverlapVerifier:
+    """Run the deliberate two-surface sample at a fixed batch cadence."""
+
+    def __init__(
+        self,
+        *,
+        symbols: tuple[str, ...],
+        session_date: date,
+        clients: dict[str, KiwoomSurfaceClient],
+        pacers: dict[str, SurfacePacer],
+        log: ProgressLog,
+        stop_event: asyncio.Event,
+        every_batches: int = 50,
+    ) -> None:
+        if not symbols:
+            raise SurfaceContractError("dual-surface run requires overlap symbols")
+        if len(symbols) > 2:
+            raise SurfaceContractError("overlap sample is capped at two symbols")
+        if every_batches <= 0:
+            raise SurfaceContractError("overlap cadence must be positive")
+        self.symbols = symbols
+        self.session_date = session_date
+        self.clients = clients
+        self.pacers = pacers
+        self.log = log
+        self.stop_event = stop_event
+        self.every_batches = every_batches
+        self.completed_batches = 0
+        self._last_verified_batch = 0
+        self._lock = asyncio.Lock()
+
+    async def after_batch(self) -> None:
+        async with self._lock:
+            self.completed_batches += 1
+            if self.completed_batches % self.every_batches:
+                return
+            if self._last_verified_batch == self.completed_batches:
+                return
+            self._last_verified_batch = self.completed_batches
+            try:
+                evidence = []
+                for symbol in self.symbols:
+                    data: dict[str, dict] = {}
+                    for surface in ("mock", "live"):
+                        try:
+                            rows, _meta = await fetch_kiwoom_minutes(
+                                client=self.clients[surface],
+                                symbol=symbol,
+                                pacer=self.pacers[surface],
+                                max_pages=1,
+                                base_dt=self.session_date.strftime("%Y%m%d"),
+                            )
+                            self.pacers[surface].note_status(None)
+                        except Exception as exc:  # noqa: BLE001
+                            self.pacers[surface].note_exception(exc)
+                            raise
+                        data[surface] = {
+                            timestamp: values
+                            for timestamp, values in rows.items()
+                            if in_regular_session(timestamp)
+                        }
+                    evidence.append(
+                        compare_overlap_exact(symbol, data["mock"], data["live"])
+                    )
+            except Exception:
+                self.stop_event.set()
+                raise
+            self.log.write(
+                {
+                    "event": "overlap_check",
+                    "surface": "mock+live",
+                    "batch_number": self.completed_batches,
+                    "symbols": list(self.symbols),
+                    "evidence": evidence,
+                    "comparison": "exact integer equality including value",
+                    "mismatch_action": "stop_and_report",
+                }
+            )
+
+
+async def run_surface(
+    surface: str,
+    symbols: list[str],
+    client: KiwoomSurfaceClient,
+    pool: asyncpg.Pool,
+    ckpt: Checkpoint,
+    log: ProgressLog,
+    start_date: date,
+    end_date: date,
+    batch_id: str,
+    *,
+    overlap: OverlapVerifier,
+    stop_event: asyncio.Event,
+) -> SurfaceStats:
+    """Collect one immutable symbol partition for one Kiwoom surface."""
+
+    surface = validate_surface(surface)
+    stats = SurfaceStats(surface=surface, symbols_total=len(symbols))
+    pacer = overlap.pacers[surface]
+    start_dt = datetime.combine(start_date, datetime.min.time())
+
+    for symbol in symbols:
+        if stop_event.is_set():
+            stats.stopped_reason = "peer_surface_stopped"
+            return stats
+        state = ckpt.get(symbol)
+        if state.get("done"):
+            stats.symbols_done += 1
+            continue
+        cursor_dt = (
+            datetime.fromisoformat(state["oldest_reached"])
+            if state.get("oldest_reached")
+            else datetime.combine(end_date, datetime.max.time().replace(microsecond=0))
+        )
+        try:
+            while cursor_dt > start_dt:
+                if stop_event.is_set():
+                    stats.stopped_reason = "peer_surface_stopped"
+                    return stats
+                try:
+                    assert_fetch_window_open()
+                except FetchWindowClosed as exc:
+                    stats.stopped_reason = f"market_hours_freeze: {exc}"
+                    log.write(
+                        {
+                            "event": "paused_market_hours",
+                            "surface": surface,
+                            "symbol": symbol,
+                            "cursor": cursor_dt,
+                        }
+                    )
+                    ckpt.save()
+                    return stats
+
+                try:
+                    rows, meta = await fetch_kiwoom_minutes(
+                        client=client,
+                        symbol=symbol,
+                        pacer=pacer,
+                        max_pages=1,
+                        base_dt=cursor_dt.strftime("%Y%m%d"),
+                    )
+                    pacer.note_status(None)
+                except Exception as exc:  # noqa: BLE001
+                    status = http_status_from_exception(exc)
+                    try:
+                        pacer.note_exception(exc)
+                    except (SurfaceAuthError, SurfaceBackoffExhausted) as fatal:
+                        stop_event.set()
+                        stats.stopped_reason = str(fatal)
+                        log.write(
+                            {
+                                "event": "abort",
+                                "surface": surface,
+                                "symbol": symbol,
+                                "reason": str(fatal),
+                                "http_status": status,
+                            }
+                        )
+                        return stats
+                    if status == 429:
+                        # Retry this same page after the surface-local pacing
+                        # interval.  A peer surface has its own pacer/event
+                        # state and continues independently.
+                        log.write(
+                            {
+                                "event": "backoff",
+                                "surface": surface,
+                                "symbol": symbol,
+                                "http_status": 429,
+                                "interval_seconds": pacer.interval,
+                                "backoff_level": pacer.backoff_level,
+                                "auto_recovery": False,
+                            }
+                        )
+                        continue
+                    stats.errors.append(f"{symbol}: {type(exc).__name__}: {exc}")
+                    log.write(
+                        {
+                            "event": "fetch_error",
+                            "surface": surface,
+                            "symbol": symbol,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+                    break
+
+                stats.calls = pacer.calls
+                if not rows:
+                    state["done"] = True
+                    break
+
+                oldest = min(rows)
+                keep = {
+                    timestamp: values
+                    for timestamp, values in rows.items()
+                    if in_regular_session(timestamp)
+                    and start_dt
+                    <= timestamp
+                    <= datetime.combine(end_date, datetime.max.time())
+                }
+                stats.rows_fetched += len(rows)
+                inserted, skipped = await insert_bars(
+                    pool,
+                    symbol,
+                    keep,
+                    source="kiwoom",
+                    batch_id=batch_id,
+                )
+                stats.rows_inserted += inserted
+                stats.rows_skipped_conflict += skipped
+                state["rows_inserted"] = state.get("rows_inserted", 0) + inserted
+                state["rows_skipped"] = state.get("rows_skipped", 0) + skipped
+                log.write(
+                    {
+                        "event": "page",
+                        "surface": surface,
+                        "symbol": symbol,
+                        "range": [oldest.isoformat(), max(rows).isoformat()],
+                        "rows_fetched": len(rows),
+                        "rows_kept": len(keep),
+                        "rows_inserted": inserted,
+                        "rows_skipped_conflict": skipped,
+                        "calls_cumulative": pacer.calls,
+                        "batch_id": batch_id,
+                    }
+                )
+                if oldest >= cursor_dt:
+                    state["done"] = True
+                    break
+                cursor_dt = oldest - timedelta(minutes=1)
+                state["oldest_reached"] = cursor_dt.isoformat()
+                ckpt.save()
+                await overlap.after_batch()
+            else:
+                state["done"] = True
+        except (OverlapMismatch, SurfaceAuthError, SurfaceBackoffExhausted) as exc:
+            stop_event.set()
+            stats.stopped_reason = str(exc)
+            log.write({"event": "abort", "surface": surface, "reason": str(exc)})
+            ckpt.save()
+            return stats
+
+        if state.get("done"):
+            stats.symbols_done += 1
+        ckpt.save()
+    return stats
+
+
+def _load_env_file(path: Path, allowed_keys: set[str]) -> None:
+    """Load only surface keys; never print values or import a full env file."""
+
+    if not path.is_file():
+        raise FileNotFoundError(f"surface env file not found: {path}")
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in allowed_keys:
+            continue
+        value = value.strip().strip('"').strip("'")
+        os.environ[key] = value
+
+
+def _prepare_surface_env(mock_env_file: Path | None, live_env_file: Path) -> None:
+    if mock_env_file is not None:
+        _load_env_file(
+            mock_env_file,
+            {
+                "KIWOOM_MOCK_ENABLED",
+                "KIWOOM_MOCK_APP_KEY",
+                "KIWOOM_MOCK_APP_SECRET",
+                "KIWOOM_MOCK_ACCOUNT_NO",
+                "KIWOOM_MOCK_BASE_URL",
+            },
+        )
+    _load_env_file(
+        live_env_file,
+        {
+            "KIWOOM_LIVE_MARKETDATA_ENABLED",
+            "KIWOOM_LIVE_APP_KEY",
+            "KIWOOM_LIVE_APP_SECRET",
+            "KIWOOM_LIVE_BASE_URL",
+        },
+    )
+    # pydantic-settings reads this file for non-secret defaults.  The explicit
+    # environment values above win over dotenv values, and the path itself is
+    # recorded only as an operator input, never with credential contents.
+    os.environ["ENV_FILE"] = str(live_env_file)
+
+
+async def _run_dual_surface(args: argparse.Namespace) -> int:
+    rows = read_assignment_csv(args.split_csv)
+    by_surface: dict[str, list[str]] = {"mock": [], "live": []}
+    overlap_symbols: list[str] = []
+    by_symbol: dict[str, list[str]] = {}
+    for row in rows:
+        symbol = row["ticker"].strip()
+        surface = validate_surface(row["surface"].strip())
+        kind = row.get("assignment_kind", "bulk").strip() or "bulk"
+        by_symbol.setdefault(symbol, []).append(surface)
+        if kind == "bulk":
+            by_surface[surface].append(symbol)
+        elif symbol not in overlap_symbols:
+            overlap_symbols.append(symbol)
+    if not overlap_symbols:
+        raise SurfaceContractError(
+            "surface split has no explicit overlap sample; generate the artifact "
+            "with at least one assignment_kind=overlap symbol"
+        )
+
+    selected = [args.surface] if args.surface else ["mock", "live"]
+    for surface in selected:
+        validate_surface(surface)
+    if args.limit_symbols is not None:
+        by_surface = {
+            surface: values[: args.limit_symbols]
+            for surface, values in by_surface.items()
+        }
+
+    batch_id = f"kiwoom-dual-{now_kst():%Y%m%dT%H%M%S}"
+    job_events = args.job_dir / "events"
+    manifest = SurfaceManifest(
+        batch_id=batch_id,
+        assignment_path=str(args.split_csv),
+        assignment_sha256=assignment_sha256(args.split_csv),
+    )
+    manifest_path = job_events / "kiwoom_dual_surface_manifest.json"
+    write_surface_manifest(manifest_path, manifest)
+    summary = {
+        "status": "DRY_RUN_NO_WRITE" if not args.confirm_write else "READY_TO_RUN",
+        "batch_id": batch_id,
+        "assignment_path": str(args.split_csv),
+        "assignment_sha256": manifest.assignment_sha256,
+        "symbols_per_surface": {
+            surface: len(by_surface[surface]) for surface in selected
+        },
+        "overlap_symbols": overlap_symbols[:2],
+        "manifest_path": str(manifest_path),
+        "backoff_intervals": {
+            "mock": [2.0, *BACKOFF_PACE_SECONDS],
+            "live": [0.5, *BACKOFF_PACE_SECONDS],
+        },
+        "auto_recovery": False,
+    }
+    if not args.confirm_write:
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        return 0
+
+    # This is the only branch that creates clients.  No client is built by the
+    # dry-run path, so a planning invocation cannot accidentally call a host.
+    _prepare_surface_env(args.mock_env_file, args.live_env_file)
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+    from app.services.brokers.kiwoom.live_market_data import KiwoomLiveReadOnlyClient
+
+    raw_clients: dict[str, Any] = {
+        "mock": KiwoomMockClient.from_app_settings(),
+        "live": KiwoomLiveReadOnlyClient.from_app_settings(),
+    }
+    clients = {
+        surface: KiwoomSurfaceClient(surface, raw_clients[surface])
+        for surface in selected
+    }
+    pacers = {surface: SurfacePacer(surface) for surface in selected}
+    stop_event = asyncio.Event()
+    overlap = OverlapVerifier(
+        symbols=tuple(overlap_symbols[:2]),
+        session_date=date.fromisoformat(args.end_date),
+        clients={
+            surface: KiwoomSurfaceClient(surface, raw_clients[surface])
+            for surface in ("mock", "live")
+        },
+        pacers={surface: SurfacePacer(surface) for surface in ("mock", "live")},
+        log=ProgressLog(job_events / "progress.jsonl"),
+        stop_event=stop_event,
+    )
+    # Use the same pacers for bulk and overlap calls; every call is accounted
+    # against that surface's budget.
+    overlap.pacers.update(pacers)
+    pool = await asyncpg.create_pool(dsn(), min_size=2, max_size=6)
+    log = overlap.log
+    try:
+        results = await asyncio.gather(
+            *[
+                run_surface(
+                    surface,
+                    by_surface[surface],
+                    clients[surface],
+                    pool,
+                    Checkpoint(job_events / f"checkpoint_{surface}.json"),
+                    log,
+                    date.fromisoformat(args.start_date),
+                    date.fromisoformat(args.end_date),
+                    batch_id,
+                    overlap=overlap,
+                    stop_event=stop_event,
+                )
+                for surface in selected
+            ]
+        )
+    finally:
+        await pool.close()
+        for raw_client in raw_clients.values():
+            close = getattr(raw_client, "aclose", None) or getattr(
+                raw_client, "close", None
+            )
+            if close:
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
+        log.close()
+    summary["status"] = "COMPLETE"
+    summary["results"] = [result.__dict__ for result in results]
+    summary["calls_by_surface"] = {
+        surface: pacers[surface].calls for surface in selected
+    }
+    (job_events / "stage_b_dual_surface_summary.json").write_text(
+        json.dumps(summary, indent=2, ensure_ascii=False, default=str) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))
+    return 0
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--split-csv", required=True, type=Path)
@@ -393,6 +880,26 @@ async def main() -> int:
     ap.add_argument("--start-date", required=True)
     ap.add_argument("--end-date", required=True)
     ap.add_argument("--sources", default="toss,kiwoom,kis")
+    ap.add_argument(
+        "--surface",
+        choices=("mock", "live"),
+        default=None,
+        help="run one pre-assigned Kiwoom surface; a surface CSV selects dual mode",
+    )
+    ap.add_argument(
+        "--live-env-file",
+        type=Path,
+        default=Path(
+            "/Users/mgh3326/services/auto_trader/shared/.env.kiwoom-readonly.native"
+        ),
+        help="native four-key live read-only env file",
+    )
+    ap.add_argument(
+        "--mock-env-file",
+        type=Path,
+        default=None,
+        help="optional env file containing mock gate and credentials",
+    )
     ap.add_argument("--baseline-median-ms", type=float, default=2.127)
     ap.add_argument("--limit-symbols", type=int, default=None)
     ap.add_argument(
@@ -404,6 +911,18 @@ async def main() -> int:
 
     start_date = date.fromisoformat(args.start_date)
     end_date = date.fromisoformat(args.end_date)
+
+    # The generated dual artifact is self-describing.  Its `surface` column is
+    # the switch that prevents the old three-source loader from silently
+    # treating a mock/live split as a generic source split.
+    with args.split_csv.open(newline="", encoding="utf-8") as split_fh:
+        split_fields = set(csv.DictReader(split_fh).fieldnames or ())
+    if "surface" in split_fields:
+        return await _run_dual_surface(args)
+    if args.surface is not None:
+        raise SurfaceContractError(
+            "--surface requires a dual Kiwoom split CSV with a surface column"
+        )
     wanted = [s.strip() for s in args.sources.split(",") if s.strip()]
 
     assignment: dict[str, list[str]] = {s: [] for s in wanted}
