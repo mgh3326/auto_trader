@@ -16,6 +16,7 @@ writes an operational database.
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
@@ -31,6 +32,7 @@ from app.services.kis_mock_attribution import (
     MissingAttribution,
     record_signal,
     resolve_attribution,
+    validate_strategy,
 )
 from app.services.kis_mock_attribution_chain import (
     GAP_ORDER_MISSING,
@@ -107,6 +109,74 @@ async def test_placeholder_strategy_is_rejected_before_broker_post(
     assert result["success"] is False
     assert result["error_code"] == "placeholder_strategy"
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        "null\ufe0e",
+        "null\ufe0f",
+        "null\u034f",
+        "null\u0338",
+        "null\u20dd",
+    ],
+)
+async def test_verifier_pass_strings_are_blocked_before_broker_post(
+    placeholder, monkeypatch
+):
+    """Exact Mn/Me fixtures copied from verify-final.md §1 must not POST."""
+    calls: list[str] = []
+
+    async def broker_post(**kwargs):
+        calls.append("POST")
+        raise AssertionError("decorated placeholder reached the broker")
+
+    monkeypatch.setattr(order_execution, "_execute_order", broker_post)
+    result = await order_execution._execute_and_record(
+        **_execute_and_record_kwargs(strategy=placeholder)
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "placeholder_strategy"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("category", "placeholder"),
+    [
+        ("Mc", "null\u0903"),
+        ("Sk", "null^"),
+        ("Sm", "null+"),
+        ("So", "null\u00a6"),
+    ],
+)
+async def test_other_unicode_decoration_categories_are_rejected(category, placeholder):
+    """Every category found by the offline bypass probe is covered."""
+    assert unicodedata.category(placeholder[-1]) == category
+    with pytest.raises(InvalidStrategy):
+        validate_strategy(placeholder)
+
+
+async def test_unicode_mo_category_has_no_codepoints():
+    """Mo was probed explicitly; Python's Unicode database has none."""
+    assert not any(
+        unicodedata.category(chr(codepoint)) == "Mo" for codepoint in range(0x110000)
+    )
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        "한글 전략-v1",
+        "전략-한글-v1",
+        "café-v1",
+        "cafe\u0301-v1",
+    ],
+)
+async def test_unicode_valid_strategy_positive_controls_are_not_overblocked(strategy):
+    assert (
+        validate_strategy(strategy) == unicodedata.normalize("NFKC", strategy).strip()
+    )
 
 
 async def test_valid_strategy_reaches_broker_positive_control(monkeypatch, db_session):
