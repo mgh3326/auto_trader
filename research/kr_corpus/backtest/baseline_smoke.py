@@ -26,6 +26,12 @@ from datetime import date
 from typing import Any
 
 from holdout_guard import assert_date_not_holdout, assert_range_not_holdout
+from market_adapters.costs import (
+    KR_COST_PARAMS_DECLARED,
+    KR_COST_WIRED,
+    KRCostParamsUnsetError,
+    require_kr_cost_model,
+)
 from membership import MembershipRow, universe_at
 from pit import Bar, LookaheadViolation, assert_no_lookahead, bars_available_at
 from terminal_events import TerminalEvent, force_exit_delisted_holdings
@@ -37,6 +43,10 @@ __all__ = [
     "OpenLot",
     "SmokeResult",
     "run_value_rank_topn_d5",
+    "KR_COST_WIRED",
+    "KR_COST_PARAMS_DECLARED",
+    "KRCostParamsUnsetError",
+    "require_kr_cost_model",
 ]
 
 PIPELINE_SMOKE_LABEL = "PIPELINE_SMOKE_NOT_A_STRATEGY"
@@ -57,7 +67,10 @@ class SmokeResult:
     label: str = PIPELINE_SMOKE_LABEL
     baseline: str = BASELINE_NAME
     job_purpose: str = "BACKTEST_HARNESS_WIRING_ONLY"
-    schema_is_inferred_from_literals: bool = True
+    schema_origin: str = "SEALED_CORPUS_V1"
+    schema_is_inferred_from_literals: bool = False
+    kr_costs_wired: bool = KR_COST_WIRED
+    kr_cost_params_declared: bool = KR_COST_PARAMS_DECLARED
     sessions_processed: int = 0
     entries: int = 0
     exits: int = 0
@@ -71,7 +84,10 @@ class SmokeResult:
             "label": self.label,
             "baseline": self.baseline,
             "job_purpose": self.job_purpose,
+            "schema_origin": self.schema_origin,
             "schema_is_inferred_from_literals": self.schema_is_inferred_from_literals,
+            "kr_costs_wired": self.kr_costs_wired,
+            "kr_cost_params_declared": self.kr_cost_params_declared,
             "PIPELINE_SMOKE_NOT_A_STRATEGY": True,
             "sessions_processed": self.sessions_processed,
             "entries": self.entries,
@@ -170,8 +186,14 @@ def run_value_rank_topn_d5(
         open_lots = still_open
 
         # Entries: top-N by trading_value among investable with a bar today.
+        # Null trading_value is excluded (not imputed) — sealed KR value may be
+        # null; ranking requires a real exchange-reported figure.
         candidates = [
-            sym for sym in snap.symbols if sym in value_by_symbol and sym not in held
+            sym
+            for sym in snap.symbols
+            if sym in value_by_symbol
+            and sym not in held
+            and value_by_symbol[sym] is not None
         ]
         candidates.sort(key=lambda sym: value_by_symbol[sym], reverse=True)
         picks = candidates[:top_n]

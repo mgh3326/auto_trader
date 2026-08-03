@@ -1,14 +1,25 @@
 {
   "contract_id": "crypto-corpus-v1.harness-schema.v1",
-  "schema_origin": "INFERRED_FROM_LITERALS",
-  "schema_origin_note": "INFERRED_FROM_LITERALS: declared from the harness adapter brief, not a real crypto-corpus-v1 manifest. Stage B must contrast a terminal manifest and loud-fail on any mismatch; silent coercion is forbidden.",
-  "corpus_schema_source": "crypto adapter brief literals",
+  "schema_origin": "SEALED_CORPUS_V1",
+  "schema_origin_note": "Contrasted against sealed crypto-corpus-v1 labeled parquet (venue=upbit_krw KRW-1INCH 2024 + venue=binance_usdt_spot). Column names/types match research/crypto_corpus/builder.BAR_SCHEMA. Venues are the real strings upbit_krw and binance_usdt_spot (not a shortened binance_usdt).",
+  "corpus_schema_source": "sealed crypto-corpus-v1 labeled parquet + builder.BAR_SCHEMA",
   "frequency": "1d",
-  "timestamp_storage": "timestamp_utc is ISO-8601 aware UTC and is retained without local re-anchoring",
-  "session_date_derivation": "UTC calendar date from timestamp_utc",
+  "timestamp_storage": "open_time_utc and close_time_utc are timestamp[ms, tz=UTC]; close is exclusive end",
+  "session_date_derivation": "UTC calendar date from open_time_utc (bar open / inclusive start)",
+  "bar_time_column": "open_time_utc",
+  "bar_time_rationale": "builder stores open_ms as open_time_utc and close_exclusive_ms as close_time_utc (open+1d for 1d). Session/calendar day of a daily bar is the UTC date of the inclusive open, not the exclusive close.",
   "session_calendar": "24_7_UTC",
-  "venues_allowed": ["upbit_krw", "binance_usdt"],
-  "venue_rule": "Exactly one venue per adapter view and manifest load. Mixed venue rows or entries raise an exception.",
+  "venues_allowed": ["upbit_krw", "binance_usdt_spot"],
+  "venue_rule": "Exactly one venue per adapter view and manifest load. Mixed venue rows or entries raise an exception. Venue strings are not normalized away from sealed values.",
+  "quote_currency_by_venue": {
+    "upbit_krw": "KRW",
+    "binance_usdt_spot": "USDT"
+  },
+  "volume_mapping": {
+    "base_volume": "base asset units (e.g. coin quantity) — adapter volume field",
+    "quote_volume": "quote-currency notional (KRW or USDT by venue) — not a unitless trading_value",
+    "rationale": "builder maps Upbit candle_acc_trade_volume→base_volume, candle_acc_trade_price→quote_volume; Binance kline[5]→base_volume, kline[7]→quote_volume"
+  },
   "partition_keys": ["dataset", "market", "year"],
   "partition_layout": "dataset/market/year where market is exactly the bound venue",
   "windows": {
@@ -17,24 +28,62 @@
   },
   "datasets": {
     "ohlcv": {
-      "required_columns": ["symbol", "venue", "timestamp_utc", "session_date", "open", "high", "low", "close", "volume", "trading_value"],
+      "required_columns": [
+        "venue",
+        "symbol",
+        "frequency",
+        "bucket_timezone",
+        "open_time_utc",
+        "close_time_utc",
+        "open",
+        "high",
+        "low",
+        "close",
+        "base_volume",
+        "quote_volume",
+        "trade_count",
+        "source_candle_date_time_utc",
+        "source_candle_date_time_kst",
+        "source_open_time_ms",
+        "source_close_time_ms",
+        "source_timestamp_ms"
+      ],
+      "nullable_columns": [
+        "trade_count",
+        "source_candle_date_time_utc",
+        "source_candle_date_time_kst",
+        "source_open_time_ms",
+        "source_close_time_ms",
+        "source_timestamp_ms"
+      ],
+      "allow_extra_columns": false,
+      "date_column": "open_time_utc",
       "column_dtypes": {
-        "symbol": "string",
         "venue": "string",
-        "timestamp_utc": "string",
-        "session_date": "string",
+        "symbol": "string",
+        "frequency": "string",
+        "bucket_timezone": "string",
+        "open_time_utc": "timestamp_ms_utc",
+        "close_time_utc": "timestamp_ms_utc",
         "open": "float64",
         "high": "float64",
         "low": "float64",
         "close": "float64",
-        "volume": "float64",
-        "trading_value": "float64"
+        "base_volume": "float64",
+        "quote_volume": "float64",
+        "trade_count": "int64",
+        "source_candle_date_time_utc": "string",
+        "source_candle_date_time_kst": "string",
+        "source_open_time_ms": "int64",
+        "source_close_time_ms": "int64",
+        "source_timestamp_ms": "int64"
       },
       "notes": {
-        "session_date": "must equal UTC date(timestamp_utc); every UTC calendar day is valid",
+        "session_date": "derived as UTC date(open_time_utc); every UTC calendar day is valid for 24/7",
         "prelisting": "No pre-listing synthetic bars or zero-fill are allowed",
         "delist": "A held delisted symbol must liquidate at its last valid close",
-        "venue_bias": "upbit delisted history is unavailable while binance history is available; the code guard prohibits mixing them"
+        "venue_bias": "upbit delisted history is unavailable while binance history is available; the code guard prohibits mixing them",
+        "units": "quote_volume units equal quote_currency_by_venue[venue]; never FX-convert or flatten across venues"
       }
     }
   },

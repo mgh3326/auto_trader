@@ -30,15 +30,17 @@ def _write_ohlcv_shard(tmp_path, rel: str, rows: list[dict]) -> tuple[str, int]:
 
 def _sample_row(session: str = "2023-01-03") -> dict:
     return {
-        "symbol": "005930",
-        "session_date": session,
-        "open": 100.0,
-        "high": 101.0,
-        "low": 99.0,
-        "close": 100.5,
-        "volume": 1000.0,
-        "trading_value": 1e9,
+        "session": session,
         "market": "KOSPI",
+        "ticker": "005930",
+        "open": 100,
+        "high": 101,
+        "low": 99,
+        "close": 100,
+        "volume": 1000,
+        "value": 1_000_000_000,
+        "price_mode": "adjusted",
+        "source_product": "synthetic_fixture",
     }
 
 

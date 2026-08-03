@@ -1,8 +1,8 @@
 {
   "contract_id": "kr-corpus-v1.harness-schema.v1",
-  "schema_origin": "INFERRED_FROM_LITERALS",
-  "schema_origin_note": "INFERRED from kr-corpus-v1 brief §3 literals + harness Stage A needs (trading_value for value_rank baseline). NOT yet contrasted against a real terminal corpus manifest. Stage B must loud-fail on any mismatch; silent coercion is forbidden.",
-  "corpus_schema_source": "kr-corpus-v1 brief §3 literals",
+  "schema_origin": "SEALED_CORPUS_V1",
+  "schema_origin_note": "Contrasted against sealed kr-corpus-v1 run kr-corpus-v1-20260803-1001 dataset parquet (ticker=000020 original + clamp-admit-v1). Column names/types match the sealed corpus. Explicit harness mapping: ticker→symbol, session→session_date, value→trading_value (nullable exchange-reported 거래대금; nulls preserved, never imputed). OHLCV stay int64 (KRW integer ticks).",
+  "corpus_schema_source": "sealed kr-corpus-v1 parquet schema",
   "frequency": "1d",
   "price_mode": "adjusted",
   "timezone": "Asia/Seoul",
@@ -23,31 +23,45 @@
   "datasets": {
     "ohlcv": {
       "required_columns": [
-        "symbol",
-        "session_date",
+        "session",
+        "market",
+        "ticker",
         "open",
         "high",
         "low",
         "close",
         "volume",
-        "trading_value",
-        "market"
+        "value",
+        "price_mode",
+        "source_product"
       ],
+      "nullable_columns": ["value"],
+      "allow_extra_columns": true,
+      "date_column": "session",
       "column_dtypes": {
-        "symbol": "string",
-        "session_date": "string",
-        "open": "float64",
-        "high": "float64",
-        "low": "float64",
-        "close": "float64",
-        "volume": "float64",
-        "trading_value": "float64",
-        "market": "string"
+        "session": "string",
+        "market": "string",
+        "ticker": "string",
+        "open": "int64",
+        "high": "int64",
+        "low": "int64",
+        "close": "int64",
+        "volume": "int64",
+        "value": "int64",
+        "price_mode": "string",
+        "source_product": "string"
+      },
+      "harness_column_map": {
+        "ticker": "symbol",
+        "session": "session_date",
+        "value": "trading_value"
       },
       "notes": {
-        "session_date": "ISO date YYYY-MM-DD, Asia/Seoul session date",
-        "trading_value": "inferred field required by BASELINE_SMOKE=value_rank_topN_D5 (거래대금); may need remap if real corpus uses a different column name — that remap must be an explicit contract revision, not silent coercion",
-        "price_mode": "adjusted"
+        "session": "ISO date YYYY-MM-DD, Asia/Seoul XKRX session date (not UTC)",
+        "value": "Exchange-reported 거래대금 when present; nullable in sealed corpus. Maps to harness trading_value. Null preserved; imputation forbidden.",
+        "ohlcv_dtype": "int64 KRW integer ticks; harness Bar keeps int (no float cast)",
+        "allow_extra_columns": "true so clamp-admit derived view columns (clamped, admitted, …) pass the same ohlcv contract",
+        "price_mode": "adjusted in sealed corpus"
       }
     },
     "membership": {
@@ -58,6 +72,9 @@
         "member",
         "status"
       ],
+      "nullable_columns": [],
+      "allow_extra_columns": false,
+      "date_column": "session_date",
       "column_dtypes": {
         "symbol": "string",
         "session_date": "string",
@@ -69,7 +86,8 @@
       "notes": {
         "member": "true iff symbol is in the investable universe for that session_date",
         "status": "listed|delisted|suspended — delisted requires explicit terminal handling (silent drop forbidden)",
-        "pit": "universe at session t is built only from membership rows with session_date <= t; live DB universe flags are forbidden"
+        "pit": "universe at session t is built only from membership rows with session_date <= t; live DB universe flags are forbidden",
+        "scope": "Harness/fixture membership contract. Sealed kr-corpus membership parquet (session/ticker presence-only) is a separate follow-up mapping surface."
       }
     }
   },

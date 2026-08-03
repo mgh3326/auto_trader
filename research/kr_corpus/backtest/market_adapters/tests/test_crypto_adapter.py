@@ -1,8 +1,8 @@
-"""Crypto golden tests: UTC 24/7, venue isolation, costs, and delisting."""
+"""Crypto golden tests: UTC 24/7, venue isolation, units, and delisting."""
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -10,9 +10,10 @@ import pytest
 from loader import ManifestEntry, sha256_bytes
 from market_adapters.crypto import (
     BINANCE_USDT_COST,
+    QUOTE_CURRENCY_BY_VENUE,
     UPBIT_KRW_COST,
+    CryptoBar,
     CryptoPrelistingBarsUnavailable,
-    CryptoSessionDateMismatchError,
     CryptoVenueAdapter,
     CryptoVenueMixError,
 )
@@ -22,22 +23,35 @@ from pit import LookaheadViolation, assert_no_lookahead
 def _row(
     *,
     venue: str = "upbit_krw",
-    timestamp_utc: str = "2024-06-01T00:00:00+00:00",
-    session_date: str = "2024-06-01",
+    open_time_utc: datetime | None = None,
     symbol: str = "KRW-NEW",
     close: float = 100.0,
+    base_volume: float = 1000.0,
+    quote_volume: float | None = None,
 ) -> dict:
+    from datetime import timedelta
+
+    open_t = open_time_utc or datetime(2024, 6, 1, 0, 0, tzinfo=UTC)
+    close_t = open_t + timedelta(days=1)  # exclusive end
     return {
-        "symbol": symbol,
         "venue": venue,
-        "timestamp_utc": timestamp_utc,
-        "session_date": session_date,
+        "symbol": symbol,
+        "frequency": "1d",
+        "bucket_timezone": "UTC",
+        "open_time_utc": open_t,
+        "close_time_utc": close_t,
         "open": close,
         "high": close,
         "low": close,
         "close": close,
-        "volume": 1000.0,
-        "trading_value": close * 1000.0,
+        "base_volume": base_volume,
+        "quote_volume": close * base_volume if quote_volume is None else quote_volume,
+        "trade_count": None,
+        "source_candle_date_time_utc": open_t.strftime("%Y-%m-%dT%H:%M:%S"),
+        "source_candle_date_time_kst": None,
+        "source_open_time_ms": None,
+        "source_close_time_ms": None,
+        "source_timestamp_ms": None,
     }
 
 
@@ -52,7 +66,8 @@ def test_crypto_uses_24_7_utc_calendar_including_weekend():
     adapter = CryptoVenueAdapter("upbit_krw")
     view = adapter.view_from_table(_table(adapter, [_row()]))  # Saturday 2024-06-01
     assert view.bars[0].session_date == date(2024, 6, 1)
-    assert view.bars[0].timestamp_utc.date() == date(2024, 6, 1)
+    assert view.bars[0].open_time_utc.date() == date(2024, 6, 1)
+    assert view.bars[0].timestamp_utc == view.bars[0].open_time_utc
 
 
 def test_crypto_loads_single_venue_synthetic_fixture_through_shared_sha_loader(
@@ -78,11 +93,13 @@ def test_crypto_loads_single_venue_synthetic_fixture_through_shared_sha_loader(
     assert view.bars[0].symbol == "KRW-NEW"
 
 
-def test_crypto_rejects_non_utc_calendar_date_declaration():
+def test_crypto_bar_time_is_open_time_not_exclusive_close():
     adapter = CryptoVenueAdapter("upbit_krw")
-    table = _table(adapter, [_row(session_date="2024-05-31")])
-    with pytest.raises(CryptoSessionDateMismatchError):
-        adapter.view_from_table(table)
+    open_t = datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
+    view = adapter.view_from_table(_table(adapter, [_row(open_time_utc=open_t)]))
+    bar = view.bars[0]
+    assert bar.session_date == date(2024, 1, 1)
+    assert bar.close_time_utc.date() == date(2024, 1, 2)
 
 
 def test_crypto_lookahead_goes_red_on_future_row():
@@ -91,12 +108,8 @@ def test_crypto_lookahead_goes_red_on_future_row():
         _table(
             adapter,
             [
-                _row(
-                    timestamp_utc="2024-06-01T00:00:00+00:00", session_date="2024-06-01"
-                ),
-                _row(
-                    timestamp_utc="2024-06-02T00:00:00+00:00", session_date="2024-06-02"
-                ),
+                _row(open_time_utc=datetime(2024, 6, 1, tzinfo=UTC)),
+                _row(open_time_utc=datetime(2024, 6, 2, tzinfo=UTC)),
             ],
         )
     )
@@ -109,7 +122,10 @@ def test_crypto_venue_mix_is_exception_not_documentation_only():
     adapter = CryptoVenueAdapter("upbit_krw")
     table = _table(
         adapter,
-        [_row(venue="upbit_krw"), _row(venue="binance_usdt", symbol="BTCUSDT")],
+        [
+            _row(venue="upbit_krw"),
+            _row(venue="binance_usdt_spot", symbol="BTCUSDT"),
+        ],
     )
     with pytest.raises(CryptoVenueMixError) as exc_info:
         adapter.view_from_table(table)
@@ -119,15 +135,37 @@ def test_crypto_venue_mix_is_exception_not_documentation_only():
 def test_crypto_manifest_entry_from_other_venue_is_rejected_before_read(tmp_path):
     adapter = CryptoVenueAdapter("upbit_krw")
     entry = ManifestEntry(
-        relative_path="ohlcv/binance_usdt/2024/bars.parquet",
+        relative_path="ohlcv/binance_usdt_spot/2024/bars.parquet",
         file_sha256="0" * 64,
         row_count=0,
         dataset="ohlcv",
-        market="binance_usdt",
+        market="binance_usdt_spot",
         year=2024,
     )
     with pytest.raises(CryptoVenueMixError):
         adapter.load_shard(tmp_path, entry)
+
+
+def test_crypto_short_binance_usdt_alias_is_rejected():
+    """Sealed venue is binance_usdt_spot; shortened alias must not silently work."""
+    with pytest.raises(CryptoVenueMixError):
+        CryptoVenueAdapter("binance_usdt")  # type: ignore[arg-type]
+
+
+def test_crypto_units_and_volume_mapping():
+    upbit = CryptoVenueAdapter("upbit_krw")
+    view = upbit.view_from_table(
+        _table(upbit, [_row(base_volume=10.0, quote_volume=6500.0)])
+    )
+    bar = view.bars[0]
+    assert bar.volume == 10.0 == bar.base_volume
+    assert bar.quote_volume == 6500.0
+    assert bar.quote_currency == "KRW"
+    assert (
+        not hasattr(bar, "trading_value")
+        or "trading_value" not in CryptoBar.__dataclass_fields__
+    )
+    assert QUOTE_CURRENCY_BY_VENUE["binance_usdt_spot"] == "USDT"
 
 
 def test_crypto_costs_are_venue_specific_and_bidirectional():
@@ -149,28 +187,21 @@ def test_crypto_prelisting_has_no_synthetic_bar_and_delist_uses_last_valid_close
             adapter,
             [
                 _row(
-                    timestamp_utc="2024-06-02T00:00:00+00:00",
-                    session_date="2024-06-02",
-                    close=101.0,
-                ),
-                _row(
-                    timestamp_utc="2024-06-03T00:00:00+00:00",
-                    session_date="2024-06-03",
-                    close=123.45,
-                ),
+                    open_time_utc=datetime(2024, 6, 2, tzinfo=UTC),
+                    close=42.0,
+                )
             ],
         )
     )
-    assert view.bars_available_at("KRW-NEW", date(2024, 6, 1)) == ()
+    # Pre-listing: no bar on/before listing day.
     with pytest.raises(CryptoPrelistingBarsUnavailable):
         view.require_last_valid_bar("KRW-NEW", date(2024, 6, 1))
-
+    last = view.require_last_valid_bar("KRW-NEW", date(2024, 6, 2))
+    assert last.close == 42.0
     residual, events = view.liquidate_delisted(
-        session_date=date(2024, 6, 4),
-        held_symbols={"KRW-NEW", "KRW-OTHER"},
+        session_date=date(2024, 6, 2),
+        held_symbols={"KRW-NEW"},
         delisted_as_of=frozenset({"KRW-NEW"}),
     )
-    assert residual == {"KRW-OTHER"}
-    assert len(events) == 1
-    assert events[0].symbol == "KRW-NEW"
-    assert events[0].last_close == 123.45
+    assert "KRW-NEW" not in residual
+    assert events[0].last_close == 42.0

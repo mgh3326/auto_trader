@@ -4,7 +4,7 @@
 
 Research-only surface under `research/kr_corpus/backtest/`. Wires:
 
-* declared schema contract (`schema_contract.v1.json`) — **INFERRED_FROM_LITERALS**
+* declared schema contract (`schema_contract.v1.json`) — **SEALED_CORPUS_V1**
 * manifest SHA-256 gate before parquet parse
 * dual holdout refusal (path `HOLDOUT_DIR` + date `HOLDOUT_WINDOW`) as **exceptions**
 * PIT universe from membership snapshots only

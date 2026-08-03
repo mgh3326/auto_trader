@@ -1,16 +1,11 @@
-"""Declared schema contract for the KR backtest harness.
+"""Declared schema contract for the KR backtest harness and market adapters.
 
-SCHEMA_ORIGIN = INFERRED_FROM_LITERALS
+SCHEMA_ORIGIN = SEALED_CORPUS_V1
 
-This contract is **inferred** from the kr-corpus-v1 brief §3 literals
-(START_DATE / CUTOFF / MARKETS / FREQUENCY / PRICE_MODE / TIMEZONE /
-SESSION_CALENDAR / partition layout / membership-separate / window splits)
-plus the Stage A baseline smoke need for ``trading_value``.
-
-It is **not** reverse-engineered from a real terminal corpus manifest.
-When Stage B opens, real manifest + parquet schemas must be contrasted
-against this file; any mismatch is a **loud fail** with a difference list.
-Silent column inference / coercion is forbidden.
+Contracts declare the **sealed corpus** column names and types after contrast
+against real parquet. Adapters own an explicit mapping layer from those
+columns onto harness bar objects. Silent rename/coercion outside the declared
+``harness_column_map`` is forbidden.
 """
 
 from __future__ import annotations
@@ -27,17 +22,23 @@ __all__ = [
     "SchemaContractError",
     "SchemaMismatchError",
     "arrow_schema_for",
+    "date_column_for",
     "load_contract",
+    "types_compatible",
     "validate_table_schema",
 ]
 
-SCHEMA_ORIGIN = "INFERRED_FROM_LITERALS"
+SCHEMA_ORIGIN = "SEALED_CORPUS_V1"
 CONTRACT_PATH = Path(__file__).resolve().parent / "schema_contract.v1.json"
 
 _ARROW_DTYPE_MAP: dict[str, pa.DataType] = {
     "string": pa.string(),
+    "large_string": pa.large_string(),
     "float64": pa.float64(),
+    "int64": pa.int64(),
     "bool": pa.bool_(),
+    "timestamp_ms": pa.timestamp("ms"),
+    "timestamp_ms_utc": pa.timestamp("ms", tz="UTC"),
 }
 
 
@@ -46,15 +47,15 @@ class SchemaContractError(RuntimeError):
 
 
 class SchemaMismatchError(SchemaContractError):
-    """Parquet/table schema does not exactly match the declared contract."""
+    """Parquet/table schema does not match the declared contract."""
 
 
 def load_contract(contract_path: Path | str | None = None) -> dict[str, Any]:
     """Load a declared local JSON contract (source of truth for schema).
 
     ``CONTRACT_PATH`` remains the KR default. Market adapters pass a committed
-    inferred contract explicitly; this loader never discovers a schema from a
-    live corpus artifact.
+    sealed-corpus contract explicitly; this loader never discovers a schema
+    from a live corpus artifact at import time.
     """
     path = Path(contract_path) if contract_path is not None else CONTRACT_PATH
     raw = path.read_text(encoding="utf-8")
@@ -67,17 +68,35 @@ def load_contract(contract_path: Path | str | None = None) -> dict[str, Any]:
     return contract
 
 
+def _dataset_spec(
+    dataset: str, *, contract_path: Path | str | None = None
+) -> dict[str, Any]:
+    contract = load_contract(contract_path)
+    try:
+        return contract["datasets"][dataset]
+    except KeyError as exc:
+        raise SchemaContractError(f"unknown dataset {dataset!r}") from exc
+
+
+def date_column_for(dataset: str, *, contract_path: Path | str | None = None) -> str:
+    """Return the row-date column used by the holdout date gate."""
+    ds = _dataset_spec(dataset, contract_path=contract_path)
+    col = ds.get("date_column")
+    if not col:
+        raise SchemaContractError(
+            f"dataset {dataset!r} missing date_column in contract"
+        )
+    return str(col)
+
+
 def arrow_schema_for(
     dataset: str,
     *,
     contract_path: Path | str | None = None,
 ) -> pa.Schema:
-    """Exact Arrow schema pinned by the declared contract for ``dataset``."""
-    contract = load_contract(contract_path)
-    try:
-        ds = contract["datasets"][dataset]
-    except KeyError as exc:
-        raise SchemaContractError(f"unknown dataset {dataset!r}") from exc
+    """Arrow schema for required columns pinned by the declared contract."""
+    ds = _dataset_spec(dataset, contract_path=contract_path)
+    nullable = set(ds.get("nullable_columns") or [])
     fields: list[pa.Field] = []
     dtypes: dict[str, str] = ds["column_dtypes"]
     for name in ds["required_columns"]:
@@ -88,8 +107,26 @@ def arrow_schema_for(
             raise SchemaContractError(
                 f"unsupported dtype {dtype_name!r} for column {name!r}"
             ) from exc
-        fields.append(pa.field(name, arrow_type, nullable=False))
+        fields.append(pa.field(name, arrow_type, nullable=name in nullable))
     return pa.schema(fields)
+
+
+def types_compatible(expected: pa.DataType, actual: pa.DataType) -> bool:
+    """Return whether ``actual`` satisfies the contracted ``expected`` type.
+
+    string / large_string are interchangeable for sealed US large_string and
+    KR/crypto string columns. Timestamp equality requires matching unit and
+    timezone (including both-naive).
+    """
+    if expected.equals(actual):
+        return True
+    if (pa.types.is_string(expected) or pa.types.is_large_string(expected)) and (
+        pa.types.is_string(actual) or pa.types.is_large_string(actual)
+    ):
+        return True
+    if pa.types.is_timestamp(expected) and pa.types.is_timestamp(actual):
+        return expected.unit == actual.unit and expected.tz == actual.tz
+    return False
 
 
 def validate_table_schema(
@@ -98,33 +135,49 @@ def validate_table_schema(
     *,
     contract_path: Path | str | None = None,
 ) -> None:
-    """Refuse unless ``table.schema`` exactly matches the contract schema.
+    """Refuse unless required columns match the contract (extras policy-aware).
 
-    No silent column drop, rename, or dtype coercion.
+    No silent column drop, rename, or dtype coercion. Extra columns are
+    allowed only when the contract sets ``allow_extra_columns: true``.
+    Columns listed under ``forbidden_columns`` always fail (used to keep US
+    ``trading_value`` absent).
     """
-    expected = arrow_schema_for(dataset, contract_path=contract_path)
+    ds = _dataset_spec(dataset, contract_path=contract_path)
+    required: list[str] = list(ds["required_columns"])
+    nullable = set(ds.get("nullable_columns") or [])
+    allow_extra = bool(ds.get("allow_extra_columns", False))
+    forbidden = set(ds.get("forbidden_columns") or [])
+    dtypes: dict[str, str] = ds["column_dtypes"]
+
     actual = table.schema
-    # Exact name+type match; ignore metadata only.
-    if not actual.equals(expected, check_metadata=False):
-        diffs = _schema_diff(expected, actual)
-        raise SchemaMismatchError(f"schema mismatch for dataset={dataset!r}: {diffs}")
-
-
-def _schema_diff(expected: pa.Schema, actual: pa.Schema) -> list[str]:
-    diffs: list[str] = []
-    exp_names = list(expected.names)
     act_names = list(actual.names)
-    if exp_names != act_names:
-        diffs.append(f"columns expected={exp_names} actual={act_names}")
-    for name in exp_names:
+    diffs: list[str] = []
+
+    for name in forbidden:
+        if name in act_names:
+            diffs.append(
+                f"forbidden column {name!r} present (contract declares it absent)"
+            )
+
+    for name in required:
         if name not in act_names:
             diffs.append(f"missing column {name!r}")
             continue
-        exp_type = expected.field(name).type
-        act_type = actual.field(name).type
-        if exp_type != act_type:
-            diffs.append(f"dtype {name!r}: expected={exp_type} actual={act_type}")
-    for name in act_names:
-        if name not in exp_names:
-            diffs.append(f"unexpected column {name!r}")
-    return diffs
+        expected_type = _ARROW_DTYPE_MAP[dtypes[name]]
+        act_field = actual.field(name)
+        if not types_compatible(expected_type, act_field.type):
+            diffs.append(
+                f"dtype {name!r}: expected={expected_type} actual={act_field.type}"
+            )
+        # Nullability: contracted non-null must not be nullable in the file.
+        # Contracted nullable may be non-null or nullable.
+        if name not in nullable and act_field.nullable:
+            diffs.append(f"nullability {name!r}: expected non-null, actual nullable")
+
+    if not allow_extra:
+        unexpected = [n for n in act_names if n not in required]
+        if unexpected:
+            diffs.append(f"unexpected columns {unexpected}")
+
+    if diffs:
+        raise SchemaMismatchError(f"schema mismatch for dataset={dataset!r}: {diffs}")

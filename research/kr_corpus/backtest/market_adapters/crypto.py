@@ -1,15 +1,20 @@
-"""Venue-isolated crypto adapter for UTC-calendar fixture wiring.
+"""Venue-isolated crypto adapter for sealed crypto-corpus-v1 wiring.
 
 No API in this module accepts more than one venue. A view is bound to exactly
-one of ``upbit_krw`` or ``binance_usdt`` and raises on a mismatched manifest
-entry or row. This is a code guard against cross-sectional mixing of the
-documented biased/unbiased delisted-history universes.
+one of ``upbit_krw`` or ``binance_usdt_spot`` and raises on a mismatched
+manifest entry or row. Venue strings match the sealed corpus exactly — they
+are never shortened or cross-venue flattened.
+
+Bar time is ``open_time_utc`` (inclusive). ``close_time_utc`` is the exclusive
+end from the sealed builder. Session date is the UTC calendar day of the open.
+``volume`` is ``base_volume``; ``quote_volume`` keeps its venue quote currency
+via ``quote_currency`` (KRW or USDT). There is no unitless ``trading_value``.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -30,6 +35,7 @@ __all__ = [
     "CRYPTO_CALENDAR",
     "CRYPTO_HOLDOUT_POLICY",
     "CRYPTO_SCHEMA_CONTRACT_PATH",
+    "QUOTE_CURRENCY_BY_VENUE",
     "CryptoBar",
     "CryptoPrelistingBarsUnavailable",
     "CryptoSessionDateMismatchError",
@@ -41,8 +47,13 @@ __all__ = [
     "UPBIT_KRW_COST",
 ]
 
-CryptoVenue = Literal["upbit_krw", "binance_usdt"]
-_SUPPORTED_VENUES: frozenset[str] = frozenset({"upbit_krw", "binance_usdt"})
+CryptoVenue = Literal["upbit_krw", "binance_usdt_spot"]
+QuoteCurrency = Literal["KRW", "USDT"]
+_SUPPORTED_VENUES: frozenset[str] = frozenset({"upbit_krw", "binance_usdt_spot"})
+QUOTE_CURRENCY_BY_VENUE: dict[str, QuoteCurrency] = {
+    "upbit_krw": "KRW",
+    "binance_usdt_spot": "USDT",
+}
 CRYPTO_CALENDAR = "24_7_UTC"
 CRYPTO_SCHEMA_CONTRACT_PATH = (
     Path(__file__).resolve().parent / "contracts" / "crypto-corpus-v1.schema.json"
@@ -62,7 +73,7 @@ class CryptoVenueMixError(ValueError):
 
 
 class CryptoSessionDateMismatchError(ValueError):
-    """A declared UTC calendar day differs from the raw UTC timestamp date."""
+    """UTC open-day does not match a declared session or close boundary."""
 
 
 class CryptoTerminalPriceUnavailable(RuntimeError):
@@ -82,18 +93,44 @@ def _assert_supported_venue(venue: str) -> CryptoVenue:
     return venue  # type: ignore[return-value]
 
 
+def _as_utc_datetime(value: datetime | str) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            # Sealed parquet is tz=UTC; a naive value is still refused to avoid
+            # local re-anchoring.
+            raise CryptoSessionDateMismatchError(
+                "open/close_time_utc must be timezone-aware UTC"
+            )
+        return value.astimezone(UTC)
+    return parse_utc_timestamp(value)
+
+
 @dataclass(frozen=True)
 class CryptoBar:
+    """Single-venue crypto bar with explicit base/quote volume units."""
+
     symbol: str
     venue: CryptoVenue
-    timestamp_utc: datetime
+    open_time_utc: datetime
+    close_time_utc: datetime
     session_date: date
     open: float
     high: float
     low: float
     close: float
-    volume: float
-    trading_value: float
+    base_volume: float
+    quote_volume: float
+    quote_currency: QuoteCurrency
+
+    @property
+    def volume(self) -> float:
+        """Base-asset volume (sealed ``base_volume``)."""
+        return self.base_volume
+
+    @property
+    def timestamp_utc(self) -> datetime:
+        """Bar time = inclusive open (sealed bar-time decision)."""
+        return self.open_time_utc
 
 
 @dataclass(frozen=True)
@@ -192,6 +229,10 @@ class CryptoVenueAdapter:
             return UPBIT_KRW_COST
         return BINANCE_USDT_COST
 
+    @property
+    def quote_currency(self) -> QuoteCurrency:
+        return QUOTE_CURRENCY_BY_VENUE[self.venue]
+
     def load_manifest(self, manifest_path: Path | str) -> list[ManifestEntry]:
         entries = self.corpus.load_manifest(manifest_path)
         for entry in entries:
@@ -226,33 +267,28 @@ class CryptoVenueAdapter:
                 raise CryptoVenueMixError(
                     f"row {i} venue={row_venue!r} cannot enter {self.venue!r} view"
                 )
-            raw_utc = parse_utc_timestamp(data["timestamp_utc"][i])
-            derived = raw_utc.date()  # 24/7 UTC calendar day; no session calendar.
-            self.corpus.assert_date_allowed(derived)
-            try:
-                declared = date.fromisoformat(data["session_date"][i])
-            except (TypeError, ValueError) as exc:
+            open_utc = _as_utc_datetime(data["open_time_utc"][i])
+            close_utc = _as_utc_datetime(data["close_time_utc"][i])
+            if close_utc <= open_utc:
                 raise CryptoSessionDateMismatchError(
-                    f"row {i} session_date must be ISO UTC date, got "
-                    f"{data['session_date'][i]!r}"
-                ) from exc
-            if declared != derived:
-                raise CryptoSessionDateMismatchError(
-                    f"row {i} session_date={declared.isoformat()} differs from "
-                    f"UTC timestamp date {derived.isoformat()}"
+                    f"row {i} close_time_utc must be exclusive end after open_time_utc"
                 )
+            derived = open_utc.date()  # 24/7 UTC calendar day of bar open.
+            self.corpus.assert_date_allowed(derived)
             bars.append(
                 CryptoBar(
                     symbol=str(data["symbol"][i]),
                     venue=row_venue,
-                    timestamp_utc=raw_utc,
+                    open_time_utc=open_utc,
+                    close_time_utc=close_utc,
                     session_date=derived,
                     open=float(data["open"][i]),
                     high=float(data["high"][i]),
                     low=float(data["low"][i]),
                     close=float(data["close"][i]),
-                    volume=float(data["volume"][i]),
-                    trading_value=float(data["trading_value"][i]),
+                    base_volume=float(data["base_volume"][i]),
+                    quote_volume=float(data["quote_volume"][i]),
+                    quote_currency=QUOTE_CURRENCY_BY_VENUE[row_venue],
                 )
             )
         return CryptoVenueView(

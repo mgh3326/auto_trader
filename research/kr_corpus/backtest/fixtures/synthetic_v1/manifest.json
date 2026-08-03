@@ -1,7 +1,7 @@
 [
   {
     "dataset": "ohlcv",
-    "file_sha256": "939d46a6c5f301cf56c35f5971511167acdac9343012229c2a6a83d74da86e77",
+    "file_sha256": "cc8b27a174eb91797d848c40cbdff6e62af5ef43af113a763ec85b2c34935135",
     "market": "KOSDAQ",
     "relative_path": "ohlcv/KOSDAQ/2023/bars.parquet",
     "row_count": 66,
@@ -9,7 +9,7 @@
   },
   {
     "dataset": "ohlcv",
-    "file_sha256": "c2f7156a050e0475240e39e09cc15588c854cadd71e1c3b33e537b16c8666396",
+    "file_sha256": "4e57df83facf7001461def08c13c06d9091abbb94ee1da5dfb6ce655a14021d0",
     "market": "KOSPI",
     "relative_path": "ohlcv/KOSPI/2023/bars.parquet",
     "row_count": 99,

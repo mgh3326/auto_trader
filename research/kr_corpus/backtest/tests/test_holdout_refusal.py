@@ -341,15 +341,17 @@ def test_loader_refuses_table_containing_holdout_date(tmp_path):
     schema = arrow_schema_for("ohlcv")
     rows = [
         {
-            "symbol": "005930",
-            "session_date": "2025-01-01",  # holdout
-            "open": 1.0,
-            "high": 1.0,
-            "low": 1.0,
-            "close": 1.0,
-            "volume": 1.0,
-            "trading_value": 1.0,
+            "session": "2025-01-01",  # holdout
             "market": "KOSPI",
+            "ticker": "005930",
+            "open": 1,
+            "high": 1,
+            "low": 1,
+            "close": 1,
+            "volume": 1,
+            "value": 1,
+            "price_mode": "adjusted",
+            "source_product": "synthetic_fixture",
         }
     ]
     table = pa.Table.from_pylist(rows, schema=schema)

@@ -46,7 +46,12 @@ from holdout_guard import (
     assert_path_not_holdout,
     assert_range_not_holdout,
 )
-from schema_contract import CONTRACT_PATH, SchemaMismatchError, validate_table_schema
+from schema_contract import (
+    CONTRACT_PATH,
+    SchemaMismatchError,
+    date_column_for,
+    validate_table_schema,
+)
 from windows import EXPLORATION_WINDOW, parse_iso_date
 
 __all__ = [
@@ -257,7 +262,12 @@ def load_shard(
             f"manifest={entry.row_count} actual={table.num_rows}"
         )
 
-    _assert_no_holdout_rows(table, holdout_policy=holdout_policy)
+    _assert_no_holdout_rows(
+        table,
+        holdout_policy=holdout_policy,
+        contract_path=contract_path,
+        dataset=entry.dataset,
+    )
 
     # Optional caller window: still dual-gated against holdout.
     if allowed_window_start is not None and allowed_window_end is not None:
@@ -281,11 +291,14 @@ def _assert_no_holdout_rows(
     table: pa.Table,
     *,
     holdout_policy: HoldoutPolicy,
+    contract_path: Path | str = CONTRACT_PATH,
+    dataset: str = "ohlcv",
 ) -> None:
-    """Date-level holdout gate over every session_date in the table."""
-    if "session_date" not in table.column_names:
-        raise LoaderError("table missing session_date column")
-    col = table.column("session_date")
+    """Date-level holdout gate over every row date column from the contract."""
+    date_col = date_column_for(dataset, contract_path=contract_path)
+    if date_col not in table.column_names:
+        raise LoaderError(f"table missing date column {date_col!r}")
+    col = table.column(date_col)
     for i in range(len(col)):
         raw = col[i].as_py()
         try:
