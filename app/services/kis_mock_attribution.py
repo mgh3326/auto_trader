@@ -23,6 +23,8 @@ orders silently drops the denominator.
 
 from __future__ import annotations
 
+import logging
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -38,6 +40,7 @@ from app.models.review import KISMockSignalLedger
 from app.services.live_correlation import live_correlation_id
 
 ACCOUNT_SCOPE = "kis_mock"
+logger = logging.getLogger(__name__)
 
 # Lane labels derived from unambiguous execution context. These are real
 # attribution — each names exactly one code path that owns the order — not
@@ -46,6 +49,25 @@ ACCOUNT_SCOPE = "kis_mock"
 MIRROR_STRATEGY = "mock_counterfactual_mirror"
 MIRROR_SIGNAL_SOURCE = "mirror"
 DEFAULT_SIGNAL_SOURCE = "manual"
+
+# There is no repository-wide registry of strategy identifiers.  Keep this a
+# deliberately small, explicit denylist until one exists; an allowlist here
+# would invent a second source of truth and reject existing real strategies.
+KIS_MOCK_PLACEHOLDER_STRATEGIES = frozenset(
+    {
+        "null",
+        "none",
+        "undefined",
+        "nil",
+        "n/a",
+        "tbd",
+        "todo",
+        "test",
+        "unknown",
+        "-",
+        "?",
+    }
+)
 
 _DECISION_ORDER = "order"
 _DECISION_NO_ORDER = "no_order"
@@ -64,6 +86,19 @@ class MissingAttribution(Exception):
         )
 
 
+class InvalidStrategy(MissingAttribution):
+    """Raised when a supplied strategy is blank or a placeholder value."""
+
+    error_code = "placeholder_strategy"
+
+    def __init__(self, strategy: Any) -> None:
+        self.strategy = strategy
+        super().__init__(("strategy",))
+        self.args = (
+            "kis_mock order strategy is blank or a placeholder; refusing to send",
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class KisMockAttribution:
     """A complete attribution triple. Constructed only via resolve_attribution."""
@@ -78,6 +113,67 @@ def _clean(value: Any) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+_COMMON_CONFUSABLES = str.maketrans(
+    {
+        # Latin-looking Greek/Cyrillic characters used in NULL/NONE/etc.
+        "Ν": "N",
+        "ν": "n",
+        "Ο": "O",
+        "ο": "o",
+        "Ι": "I",
+        "ι": "i",
+        "Λ": "L",
+        "λ": "l",
+        "Ε": "E",
+        "ε": "e",
+        "Τ": "T",
+        "τ": "t",
+        "А": "A",
+        "а": "a",
+        "Е": "E",
+        "е": "e",
+        "О": "O",
+        "о": "o",
+        "Р": "P",
+        "р": "p",
+        "С": "C",
+        "с": "c",
+        "Х": "X",
+        "х": "x",
+        "У": "Y",
+        "у": "y",
+        "І": "I",
+        "і": "i",
+        "Ѕ": "S",
+        "ѕ": "s",
+    }
+)
+
+
+def _normalize_strategy_for_comparison(value: str) -> str:
+    """Canonicalize strategy text only for placeholder comparison.
+
+    NFKC folds fullwidth letters/spaces, ``casefold`` handles case variants,
+    and removing format/control characters prevents zero-width bypasses.
+    """
+    normalized = unicodedata.normalize("NFKC", value).translate(_COMMON_CONFUSABLES)
+    normalized = "".join(
+        char for char in normalized if unicodedata.category(char) not in {"Cc", "Cf"}
+    )
+    return normalized.strip().casefold()
+
+
+def validate_strategy(strategy: Any) -> str:
+    """Return a usable strategy or raise an exception; never substitute one."""
+    cleaned = _clean(strategy)
+    if cleaned is None or (
+        _normalize_strategy_for_comparison(cleaned) in KIS_MOCK_PLACEHOLDER_STRATEGIES
+    ):
+        logger.warning("kis_mock strategy rejected: blank or placeholder")
+        raise InvalidStrategy(strategy)
+    return unicodedata.normalize("NFKC", cleaned).strip()
 
 
 def _to_decimal(value: Any) -> Decimal | None:
@@ -134,11 +230,11 @@ def resolve_attribution(
     identifies the counterfactual-mirror lane on its own. Anything else without
     a strategy is unattributable and raises.
     """
-    resolved_strategy = _clean(strategy)
+    resolved_strategy = validate_strategy(strategy) if strategy is not None else None
     resolved_source = _clean(signal_source)
 
     if resolved_strategy is None and _clean(mirror_cohort) == "mock_counterfactual":
-        resolved_strategy = MIRROR_STRATEGY
+        resolved_strategy = validate_strategy(MIRROR_STRATEGY)
         resolved_source = resolved_source or MIRROR_SIGNAL_SOURCE
 
     missing: list[str] = []
