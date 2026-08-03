@@ -57,6 +57,40 @@ def git_head_sha(repo: Path | None = None) -> str:
     ).stdout.strip()
 
 
+def _host_evidence() -> dict[str, Any]:
+    """Host evidence that survives the collect -> seal process boundary.
+
+    Sealing runs in a different process from collection, so the in-memory
+    `CONTACTED_HOSTS` set is empty here and a naive `sorted(...)` produced an
+    empty list in the sealed manifest -- directly contradicting the run report.
+    Prefer the durable file; fall back to the in-memory set; and when neither is
+    available say so explicitly rather than emitting a bare `[]` that reads as
+    "no host was contacted".
+    """
+    durable = alpaca_data.load_host_evidence()
+    if durable.get("hosts_contacted"):
+        return {
+            "hosts": durable["hosts_contacted"],
+            "provenance": durable.get("provenance", "RECORDED_AT_REQUEST_TIME"),
+            "requests_observed": durable.get("requests_observed"),
+        }
+    if alpaca_data.CONTACTED_HOSTS:
+        return {
+            "hosts": sorted(alpaca_data.CONTACTED_HOSTS),
+            "provenance": "IN_PROCESS_ONLY",
+        }
+    return {
+        "hosts": [],
+        "provenance": "NOT_RECORDED_IN_THIS_PROCESS",
+        "note": (
+            "This sealing process issued no requests. An empty list here means "
+            "'no evidence captured in this process', NOT 'no host was ever "
+            "contacted' -- consult the run report and the durable host-evidence "
+            "file for the collecting process."
+        ),
+    }
+
+
 def _shippable_files() -> list[Path]:
     """All shipped artifacts EXCEPT holdout and staging.
 
@@ -144,7 +178,7 @@ def seal(
         "source_product": config.SOURCE_PRODUCT,
         "source_fallback_used": False,
         "data_host": config.DATA_HOST,
-        "alpaca_hosts_contacted": sorted(alpaca_data.CONTACTED_HOSTS),
+        "alpaca_hosts_contacted": _host_evidence(),
         "operating_db_reads": 0,
         "operating_db_writes": config.OPERATING_DB_WRITES,
         "broker_or_account_calls": config.BROKER_OR_ACCOUNT_CALLS,

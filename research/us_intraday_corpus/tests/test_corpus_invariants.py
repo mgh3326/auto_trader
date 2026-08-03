@@ -20,6 +20,7 @@ from research.us_intraday_corpus import (
     access_log,
     alpaca_data,
     bars,
+    build,
     config,
     finalize,
     hashing,
@@ -77,7 +78,7 @@ def test_holdout_digest_comes_from_write_not_reread(artifact_root):
     assert result.sha256 == hashing.sha256_of_bytes(path.read_bytes())
 
     # And hashing a holdout file by reading it is refused outright.
-    with pytest.raises(AssertionError, match="refusing to read holdout"):
+    with pytest.raises(access_log.HoldoutGuardViolation, match="refusing to read"):
         hashing.sha256_of_file(path)
 
 
@@ -134,6 +135,49 @@ def test_holdout_digest_still_appears_in_checksums(artifact_root):
     body, stats = finalize.build_checksums()
     assert result.sha256 in body
     assert stats["write_time_hashed"] == 1
+
+
+def test_case_and_symlink_forms_cannot_bypass_the_holdout_guard(
+    artifact_root, monkeypatch
+):
+    """Regression: `abspath` let two forms through the seal.
+
+    Cross-series verification found that `HOLDOUT/…` (uppercase, the same
+    directory on a case-insensitive filesystem) and `link -> holdout/…` both
+    returned False from `is_holdout_path`, so the hash guard and the loader
+    guard were bypassable. Detection must be symlink-resolved and
+    case-insensitive, and it must RAISE -- a silent skip is indistinguishable
+    from a guard that was never reached.
+    """
+    import os
+
+    hold = config.HOLDOUT_DIR / "freq=1m"
+    hold.mkdir(parents=True, exist_ok=True)
+    target = hold / "p.parquet"
+    target.write_bytes(b"sealed")
+    config.DATASET_DIR.mkdir(parents=True, exist_ok=True)
+
+    link = artifact_root / "sneaky"
+    os.symlink(config.HOLDOUT_DIR, link)
+
+    forms = {
+        "exact": target,
+        "dotdot": config.DATASET_DIR / ".." / "holdout" / "freq=1m" / "p.parquet",
+        "uppercase": artifact_root / "HOLDOUT" / "freq=1m" / "p.parquet",
+        "symlink": link / "freq=1m" / "p.parquet",
+    }
+    for name, path in forms.items():
+        assert access_log.is_holdout_path(path), f"{name} form bypassed detection"
+        with pytest.raises(access_log.HoldoutGuardViolation):
+            hashing.sha256_of_file(path)
+        with pytest.raises(loader.HoldoutAccessDenied):
+            loader.assert_not_holdout_path(path)
+
+    # A non-holdout path must remain usable -- the guard must not over-block.
+    ok = config.DATASET_DIR / "ok.parquet"
+    ok.write_bytes(b"open")
+    assert access_log.is_holdout_path(ok) is False
+    assert hashing.sha256_of_file(ok)
 
 
 def test_loader_refuses_holdout_on_both_axes():
@@ -370,45 +414,99 @@ def test_unfinished_bar_is_not_storable():
     assert bars.is_finished_bar(closed_bar, 60, now) is True
 
 
-def test_chain_snapshot_taken_inside_the_loop_is_premature():
-    """Regression: the `complete` flag was always False in the first 1Min run.
+class _TwoPageClient:
+    """Fake client yielding a 2-page chain that terminates on a null token."""
 
-    `termination` is only set after the final yield resumes, so a snapshot taken
-    inside the consuming loop reads "unstarted" and marks every chain
-    incomplete. The fix is to snapshot after the loop is exhausted. This test
-    pins both halves of that behaviour so the metric cannot silently go blind
-    again -- a page-chain check that always says "incomplete" gives no more
-    assurance than one that always says "complete".
+    def __init__(self) -> None:
+        self.counter = alpaca_data.RequestCounter()
+
+    def iter_bars(self, symbols, timeframe, start, end):
+        chain = alpaca_data.PageChain(symbol=",".join(symbols), timeframe=timeframe)
+        for page in range(2):
+            chain.pages += 1
+            token = "tok" if page == 0 else None
+            chain.last_token = token
+            day = 4 + page
+            payload = {
+                "bars": {
+                    symbols[0]: [
+                        {
+                            "t": f"2024-01-0{day}T15:00:00Z",
+                            "o": 1.0,
+                            "h": 2.0,
+                            "l": 0.5,
+                            "c": 1.5,
+                            "v": 10,
+                            "n": 2,
+                            "vw": 1.4,
+                        }
+                    ]
+                },
+                "next_page_token": token,
+            }
+            chain.rows += 1
+            yield payload, chain
+            if not token:
+                chain.termination = "null_next_token"
+                return
+
+
+def _old_run_phase_snapshot(client, symbols, timeframe):
+    """Replica of the PRE-FIX snapshot placement (inside the consuming loop).
+
+    Kept in the test suite on purpose: it is the fixture that proves the
+    assertion below can actually discriminate. Without it, a green test tells
+    us nothing about whether the old form would be caught.
     """
+    chain_dict = None
+    for _payload, chain in client.iter_bars(symbols, timeframe, "s", "e"):
+        chain_dict = chain.as_dict()  # <-- premature: termination not set yet
+    return chain_dict
 
-    class _FakeClient:
-        counter = alpaca_data.RequestCounter()
 
-        def iter_bars(self, symbols, timeframe, start, end):
-            chain = alpaca_data.PageChain(symbol=symbols[0], timeframe=timeframe)
-            for page in range(2):
-                chain.pages += 1
-                token = "tok" if page == 0 else None
-                chain.last_token = token
-                yield {"bars": {}, "next_page_token": token}, chain
-                if not token:
-                    chain.termination = "null_next_token"
-                    return
+@pytest.fixture()
+def _single_year_window(monkeypatch):
+    monkeypatch.setattr(config, "START_DATE", _dt.date(2024, 1, 1))
+    monkeypatch.setattr(config, "CUTOFF_DATE", _dt.date(2024, 12, 31))
+    monkeypatch.setattr(
+        config, "HOLDOUT", (_dt.date(2025, 1, 1), _dt.date(2026, 7, 31))
+    )
 
-    client = _FakeClient()
 
-    inside = None
-    for _payload, chain in client.iter_bars(["AAPL"], "1Min", "s", "e"):
-        inside = chain.as_dict()  # the old, premature snapshot
-    assert inside["complete"] is False, "premature snapshot cannot see termination"
+def test_run_phase_records_a_completed_page_chain(artifact_root, _single_year_window):
+    """Exercises the REAL build.run_phase -- this is the regression guard.
+
+    The previous version of this test built its own generator and never touched
+    `build.run_phase`, so it stayed green even when `run_phase` was reverted to
+    the broken form. It therefore protected nothing. This one drives the actual
+    production call site, so a regression in snapshot placement fails it.
+    """
+    stats = build.run_phase(_TwoPageClient(), ["AAPL"], "1Min", "1m", 1)
+
+    assert stats.page_chains, "run_phase must record a page chain"
+    chain = stats.page_chains[0]
+    assert chain["complete"] is True, (
+        "run_phase recorded an incomplete chain for a chain that terminated on a "
+        "null token -- the snapshot is being taken before termination is set"
+    )
+    assert chain["termination"] == "null_next_token"
+    assert chain["pages"] == 2
+
+
+def test_old_snapshot_form_would_fail_the_regression_guard():
+    """Proves the assertion above discriminates, instead of passing vacuously.
+
+    If this ever starts reporting complete=True, the guard above has lost its
+    teeth and both tests are worthless.
+    """
+    old = _old_run_phase_snapshot(_TwoPageClient(), ["AAPL"], "1Min")
+    assert old["complete"] is False
+    assert old["termination"] == "unstarted"
 
     live = None
-    for _payload, chain in client.iter_bars(["AAPL"], "1Min", "s", "e"):
+    for _payload, chain in _TwoPageClient().iter_bars(["AAPL"], "1Min", "s", "e"):
         live = chain
-    after = live.as_dict()  # the fixed, post-exhaustion snapshot
-    assert after["complete"] is True
-    assert after["termination"] == "null_next_token"
-    assert after["pages"] == 2
+    assert live.as_dict()["complete"] is True  # post-exhaustion snapshot
 
 
 def test_page_chain_marks_incomplete_when_not_exhausted():

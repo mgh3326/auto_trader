@@ -23,7 +23,58 @@ from urllib.parse import urlparse
 from . import config
 
 # Every host this process actually contacted. Reported verbatim.
+#
+# This is in-memory only, which was a real gap: the sealing step runs in a
+# separate process from collection, so it observed an empty set and the sealed
+# manifest ended up claiming no host was contacted while the run report said
+# otherwise. `record_host_evidence()` persists the observation so the evidence
+# survives a process boundary instead of being silently reset.
 CONTACTED_HOSTS: set[str] = set()
+
+HOST_EVIDENCE_FILENAME = "host_evidence.json"
+
+
+def host_evidence_path():
+    from . import config
+
+    return config.STAGING_DIR / HOST_EVIDENCE_FILENAME
+
+
+def record_host_evidence(host: str) -> None:
+    """Append `host` to the durable host-evidence file (idempotent)."""
+    import json
+
+    path = host_evidence_path()
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        hosts = set(existing.get("hosts_contacted", []))
+        requests = int(existing.get("requests_observed", 0))
+    except (OSError, ValueError):
+        hosts, requests = set(), 0
+    hosts.add(host)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "hosts_contacted": sorted(hosts),
+                "requests_observed": requests + 1,
+                "provenance": "RECORDED_AT_REQUEST_TIME",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def load_host_evidence() -> dict:
+    """Read durable host evidence; empty dict when none was recorded."""
+    import json
+
+    try:
+        return json.loads(host_evidence_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
 
 BARS_ENDPOINT = f"https://{config.DATA_HOST}/v2/stocks/bars"
 
@@ -219,7 +270,9 @@ class AlpacaDataClient:
 
     def _get(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
         host = assert_data_host(url)
-        CONTACTED_HOSTS.add(host)
+        if host not in CONTACTED_HOSTS:
+            CONTACTED_HOSTS.add(host)
+            record_host_evidence(host)  # survives the collect -> seal boundary
 
         backoff = 1.0
         for _attempt in range(8):

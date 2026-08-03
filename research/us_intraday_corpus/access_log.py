@@ -41,18 +41,58 @@ def record(mode: Mode, path: Path, note: str = "") -> None:
         handle.write(line + "\n")
 
 
+class HoldoutGuardViolation(RuntimeError):
+    """Raised when something attempts to reach a sealed holdout path."""
+
+
+def canonical(path: Path) -> Path:
+    """Fully canonical form of `path` for guard comparisons.
+
+    `os.path.abspath` was not enough. It normalises `..` but does **not**
+    resolve symlinks and does **not** account for case-insensitive filesystems,
+    so two forms slipped past the guard entirely:
+
+        HOLDOUT/…            (uppercase, same directory on macOS/APFS)
+        link -> holdout/…    (symlink pointing into the seal)
+
+    `os.path.realpath` resolves symlink components and works on paths that do
+    not exist yet, which matters because the guard also runs before a write.
+    """
+    return Path(os.path.realpath(str(path)))
+
+
 def is_holdout_path(path: Path) -> bool:
     """True if `path` lives under *any* holdout directory we must not read.
 
-    Covers both our own holdout and the sister corpus holdout, because §4
-    forbids reading either one.
+    Covers our own holdout and the sister corpus holdout, because §4 forbids
+    reading either. Comparison is symlink-resolved and case-insensitive so the
+    two bypass forms above are caught.
     """
-    resolved = Path(os.path.abspath(str(path)))
+    resolved = canonical(path)
+    parts_cf = [p.casefold() for p in resolved.parts]
+
     for holdout_root in (config.HOLDOUT_DIR, config.SISTER_HOLDOUT_DIR):
-        root = Path(os.path.abspath(str(holdout_root)))
-        if resolved == root or root in resolved.parents:
+        root_parts = [p.casefold() for p in canonical(holdout_root).parts]
+        if parts_cf[: len(root_parts)] == root_parts:
             return True
-    return "holdout" in resolved.parts
+
+    # Any component literally named "holdout", in any case, is treated as
+    # sealed. Deliberately broad: a false positive costs an explicit error,
+    # a false negative silently breaks the seal.
+    return "holdout" in parts_cf
+
+
+def assert_not_holdout(path: Path, action: str = "access") -> None:
+    """Raise if `path` is sealed. Never returns a filtered/None result.
+
+    Callers must not turn this into a silent skip: a guard that quietly drops
+    the offending path looks identical to one that was never reached.
+    """
+    if is_holdout_path(path):
+        raise HoldoutGuardViolation(
+            f"refusing to {action} sealed holdout path: {path} "
+            f"(canonical: {canonical(path)})"
+        )
 
 
 @contextmanager

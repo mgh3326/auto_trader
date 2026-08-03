@@ -70,9 +70,15 @@ def load_holdout(*_args, **_kwargs) -> Any:
 
 
 def assert_not_holdout_path(path: Path) -> None:
-    """Guard for ad-hoc scripts that build their own paths."""
+    """Guard for ad-hoc scripts that build their own paths.
+
+    Symlink- and case-resolved: `HOLDOUT/…` and `link -> holdout/…` both raise.
+    """
     if access_log.is_holdout_path(path):
-        raise HoldoutAccessDenied(f"{path} is inside a sealed holdout directory")
+        raise HoldoutAccessDenied(
+            f"{path} is inside a sealed holdout directory "
+            f"(canonical: {access_log.canonical(path)})"
+        )
 
 
 def assert_not_holdout_date(day: _dt.date) -> None:
