@@ -1,30 +1,32 @@
 """Prove the backfill upsert is non-destructive — on a throwaway database only.
 
-History: an earlier version of this file executed
-``INSERT INTO public.kr_candles_1m`` inside a transaction against the
-**operational** database and relied on a rollback sentinel. That was a real
-violation: a rolled-back INSERT is still an INSERT (WAL, locks, dead tuple), and
-the operational table must not be written at all. See
-``events/incident-public-dml-20260803.md``.
+Design: ``events/r3-design.md`` (written before this code).
 
-This version cannot reach an operational database:
+History, because it explains the shape of this file:
 
-* No ``public.*`` DML statement exists in this file. The backfill target is
-  ``research.kr_candles_1m`` (the storage decision moved it there), so a
-  ``public`` write has no reason to exist.
-* **The DML target database is generated here, not accepted from the caller.**
-  There is no argument that names it. The admin connection is forced to the
-  ``postgres`` maintenance database, so a caller cannot aim it at an
-  operational database either.
-* Before any DML, :func:`assert_scratch_target` interrogates the **live
-  connection** — ``current_database()``, a deny-list, the required scratch name
-  prefix, and a marker row written by this very run. String parsing of the DSN
-  is not treated as proof.
-* Any violation raises :class:`ScratchGuardViolation`. Nothing is skipped
-  quietly.
+* R1 executed ``INSERT INTO`` the operational ``kr_candles_1m`` inside a
+  transaction and rolled back. A rolled-back INSERT is still an INSERT.
+* R2 removed that, but introduced a marker table CREATE+INSERT in the ``public``
+  schema **and ran it before the guard**. Fixing a write by adding a write.
 
-The scratch database is built by running the real alembic migration, so the
-upsert is proven against the actual shipped DDL rather than a hand-copy.
+The invariant this version is built around is therefore not "remove the public
+writes" — that framing produced a new write each time — but:
+
+    **The guard is the first statement on the target connection, and the guard
+    only reads.**
+
+A marker table cannot survive that invariant: planting it *is* a write before
+the guard. So the marker is gone, and freshness is proven without writing:
+
+* ``CREATE DATABASE`` on the admin connection succeeds only if the name was
+  unused, so its success *is* the proof that the database is brand new.
+* On the target, the guard reads only: ``current_database()``, the server
+  address, that the database contains **zero user tables** (an operational
+  database never does), and that we own it.
+
+The emptiness check is the load-bearing one. A deny-list only stops databases
+whose names you thought of; "is this database empty" stops every database that
+is actually in use, including one reached through a misrouted proxy.
 """
 
 from __future__ import annotations
@@ -49,17 +51,27 @@ SOURCE = "KIWOOM"
 #: Only databases whose name starts with this may receive DML from this script.
 SCRATCH_PREFIX = "kr_dryrun_scratch_"
 
-#: Never a DML target, whatever else matches. Belt on top of the prefix rule.
+#: Never a DML target, whatever else matches.
 DENY_DATABASES = frozenset({"auto_trader", "postgres", "template0", "template1"})
 
-#: The maintenance database used to CREATE/DROP the scratch database. Forced —
-#: a caller cannot redirect the admin connection at an operational database.
+#: The maintenance database used to CREATE/DROP the scratch database.
 ADMIN_DATABASE = "postgres"
+
+#: Server is a module constant, NOT an argument. R2 let the caller choose
+#: host/port, which meant an operational cluster could be named as the admin
+#: server. Only the credentials remain injectable.
+SCRATCH_HOST = "127.0.0.1"
+SCRATCH_PORT = 5432
+
+#: Addresses the server may report. NULL means a unix socket, which is local by
+#: construction.
+LOOPBACK_ADDRESSES = frozenset({"127.0.0.1", "::1"})
 
 MIGRATION_REVISION = "20260803_research_kr_candles"
 MIGRATION_DOWN_REVISION = "20260802_rob1036_sample_elig"
 
-#: The statement under test. Targets research, never public.
+#: The statement under test. Targets research; the string "public" does not
+#: appear in any SQL this module sends to the target.
 BACKFILL_UPSERT_SQL = """
 INSERT INTO research.kr_candles_1m
     (time_utc, session_date_kst, symbol, venue, session_segment, source,
@@ -68,18 +80,42 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), $13)
 ON CONFLICT (time_utc, symbol, venue) DO NOTHING
 """
 
-MARKER_TABLE = "public._kr_dryrun_scratch_marker"
+#: Guard statement 1. Kept as a module constant so the order test can assert on
+#: identity rather than on a substring it re-types.
+GUARD_FIRST_SQL = "SELECT current_database()"
+GUARD_SERVER_ADDR_SQL = "SELECT host(inet_server_addr())"
+GUARD_EMPTY_DB_SQL = (
+    "SELECT count(*) FROM pg_class c "
+    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+    "WHERE c.relkind IN ('r', 'p', 'm') "
+    "AND n.nspname NOT IN ('pg_catalog', 'information_schema')"
+)
+GUARD_OWNER_SQL = (
+    "SELECT pg_get_userbyid(datdba) = current_user "
+    "FROM pg_database WHERE datname = current_database()"
+)
 
 
 class ScratchGuardViolation(RuntimeError):
     """Raised when the live connection is not a throwaway database of this run."""
 
 
-async def assert_scratch_target(
-    conn: asyncpg.Connection, expected_db: str, run_id: str
-) -> dict:
-    """Interrogate the live connection. Never trust the DSN string alone."""
-    actual = await conn.fetchval("SELECT current_database()")
+def _assert_loopback(addr: str | None, role: str) -> None:
+    """NULL means unix socket — local by construction — and is accepted."""
+    if addr is not None and addr not in LOOPBACK_ADDRESSES:
+        raise ScratchGuardViolation(
+            f"{role} connection is to a non-loopback server {addr!r}; "
+            f"this tool only ever talks to {SCRATCH_HOST}"
+        )
+
+
+async def assert_scratch_target(conn: asyncpg.Connection, expected_db: str) -> dict:
+    """The first thing that touches the target connection. Reads only.
+
+    Every check here is a SELECT. If this function ever needs to write in order
+    to decide, the design is wrong — that is exactly how R2 failed.
+    """
+    actual = await conn.fetchval(GUARD_FIRST_SQL)
 
     if actual in DENY_DATABASES:
         raise ScratchGuardViolation(f"deny-listed database as DML target: {actual!r}")
@@ -92,48 +128,42 @@ async def assert_scratch_target(
             f"connected to {actual!r} but this run created {expected_db!r}"
         )
 
-    marker_exists = await conn.fetchval(
-        f"SELECT to_regclass('{MARKER_TABLE}') IS NOT NULL"
-    )
-    if not marker_exists:
+    _assert_loopback(await conn.fetchval(GUARD_SERVER_ADDR_SQL), "target")
+
+    # The load-bearing check: a database in use is never empty.
+    user_tables = await conn.fetchval(GUARD_EMPTY_DB_SQL)
+    if user_tables != 0:
         raise ScratchGuardViolation(
-            f"{MARKER_TABLE} missing; not a scratch database of this run"
+            f"database {actual!r} already holds {user_tables} user table(s); "
+            f"a freshly created scratch database has none"
         )
 
-    marker_run = await conn.fetchval(f"SELECT run_id FROM {MARKER_TABLE}")
-    if marker_run != run_id:
-        raise ScratchGuardViolation(
-            f"marker run_id {marker_run!r} does not match this run {run_id!r}"
-        )
+    owned = await conn.fetchval(GUARD_OWNER_SQL)
+    if not owned:
+        raise ScratchGuardViolation(f"database {actual!r} is not owned by this role")
 
     return {
         "current_database": actual,
-        "prefix_ok": True,
         "deny_list_ok": True,
-        "marker_run_id_matches": True,
+        "prefix_ok": True,
+        "loopback_ok": True,
+        "database_was_empty": True,
+        "owned_by_this_role": True,
+        "statements_before_guard": 0,
     }
 
 
-def _admin_dsn(admin_url: str) -> str:
-    """Force the admin connection onto the maintenance database."""
-    from urllib.parse import urlsplit, urlunsplit
-
-    parts = urlsplit(admin_url.replace("postgresql+asyncpg://", "postgresql://"))
-    return urlunsplit((parts.scheme, parts.netloc, f"/{ADMIN_DATABASE}", "", ""))
-
-
-def _target_dsn(admin_url: str, database: str) -> str:
-    from urllib.parse import urlsplit, urlunsplit
-
-    parts = urlsplit(admin_url.replace("postgresql+asyncpg://", "postgresql://"))
-    return urlunsplit((parts.scheme, parts.netloc, f"/{database}", "", ""))
+def _dsn(database: str) -> str:
+    user = os.environ.get("SCRATCH_PG_USER", "postgres")
+    password = os.environ.get("SCRATCH_PG_PASSWORD", "postgres")
+    return f"postgresql://{user}:{password}@{SCRATCH_HOST}:{SCRATCH_PORT}/{database}"
 
 
 def _alembic(database_dsn: str, *args: str) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "DATABASE_URL": database_dsn.replace("postgresql://", "postgresql+asyncpg://"),
-        # Settings requires these; values are placeholders, never real secrets.
+        # Settings requires these; placeholders, never real secrets.
         "KIS_APP_KEY": "dryrun",
         "KIS_APP_SECRET": "dryrun",
         "OPENDART_API_KEY": "dryrun",
@@ -176,36 +206,23 @@ async def run_proof(conn: asyncpg.Connection) -> dict:
         )
         return int(status.split()[-1])
 
-    checks["first_insert_rows"] = await insert(*row)
-
-    stored = dict(
-        await conn.fetchrow(
-            "SELECT open, high, low, close, volume, value, source "
-            "FROM research.kr_candles_1m WHERE time_utc=$1 AND symbol=$2 AND venue=$3",
-            ts,
-            row[0],
-            VENUE,
-        )
+    read_sql = (
+        "SELECT open, high, low, close, volume, value, source "
+        "FROM research.kr_candles_1m WHERE time_utc=$1 AND symbol=$2 AND venue=$3"
     )
+
+    checks["first_insert_rows"] = await insert(*row)
+    stored = dict(await conn.fetchrow(read_sql, ts, row[0], VENUE))
 
     # Same key, deliberately different payload and a different provider.
     checks["conflict_insert_rows"] = await insert("005930", 1, 2, 3, 4, 5, 6)
+    after = dict(await conn.fetchrow(read_sql, ts, row[0], VENUE))
 
-    after = dict(
-        await conn.fetchrow(
-            "SELECT open, high, low, close, volume, value, source "
-            "FROM research.kr_candles_1m WHERE time_utc=$1 AND symbol=$2 AND venue=$3",
-            ts,
-            row[0],
-            VENUE,
-        )
-    )
     checks["existing_row_unchanged"] = stored == after
     checks["stored_close"] = float(stored["close"])
     checks["total_rows"] = await conn.fetchval(
         "SELECT count(*) FROM research.kr_candles_1m"
     )
-
     checks["verdict"] = (
         "PASS"
         if (
@@ -221,13 +238,9 @@ async def run_proof(conn: asyncpg.Connection) -> dict:
 
 async def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Upsert proof on a self-created throwaway database. "
-        "There is deliberately no option to choose the DML target database."
-    )
-    ap.add_argument(
-        "--admin-url",
-        default="postgresql://postgres:postgres@localhost:5432/postgres",
-        help=f"server to create the scratch DB on; forced onto the {ADMIN_DATABASE!r} database",
+        description="Upsert proof on a self-created throwaway database. The "
+        "server and the target database are fixed by this module; neither can "
+        "be selected by the caller."
     )
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument(
@@ -241,30 +254,41 @@ async def main() -> int:
         "ran_at_utc": datetime.now(UTC).isoformat(),
         "run_id": run_id,
         "scratch_database": database,
-        "targets_public_schema": False,
-        "operational_db_touched": False,
+        "server": f"{SCRATCH_HOST}:{SCRATCH_PORT}",
+        "statements_before_guard": 0,
     }
 
-    admin = await asyncpg.connect(_admin_dsn(args.admin_url))
-    admin_db = await admin.fetchval("SELECT current_database()")
-    if admin_db != ADMIN_DATABASE:
-        await admin.close()
-        raise ScratchGuardViolation(f"admin connection landed on {admin_db!r}")
-    result["admin_database"] = admin_db
-
+    # --- admin connection: read-only checks, then create the database ---
+    admin = await asyncpg.connect(_dsn(ADMIN_DATABASE))
     conn = None
     try:
-        await admin.execute(f'CREATE DATABASE "{database}"')
-        target_dsn = _target_dsn(args.admin_url, database)
+        admin_db = await admin.fetchval(GUARD_FIRST_SQL)
+        if admin_db != ADMIN_DATABASE:
+            raise ScratchGuardViolation(f"admin connection landed on {admin_db!r}")
+        _assert_loopback(await admin.fetchval(GUARD_SERVER_ADDR_SQL), "admin")
 
-        conn = await asyncpg.connect(target_dsn)
-        await conn.execute(
-            f"CREATE TABLE {MARKER_TABLE} (run_id TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT now())"
+        already = await admin.fetchval(
+            "SELECT count(*) FROM pg_database WHERE datname = $1", database
         )
-        await conn.execute(f"INSERT INTO {MARKER_TABLE} (run_id) VALUES ($1)", run_id)
+        if already:
+            raise ScratchGuardViolation(
+                f"{database!r} already exists; refusing to reuse"
+            )
+        result["admin_database"] = admin_db
+
+        # Succeeds only if the name was unused -> proof the database is new.
+        await admin.execute(f'CREATE DATABASE "{database}"')
+
+        conn = await asyncpg.connect(_dsn(database))
+
+        # --- FIRST statement on the target connection. Reads only. -----
+        result["guard"] = await assert_scratch_target(conn, database)
+
+        # --- everything below runs only after the guard passed ---------
         await conn.execute("CREATE SCHEMA IF NOT EXISTS research")
         await conn.execute("CREATE SCHEMA IF NOT EXISTS review")
 
+        target_dsn = _dsn(database)
         stamped = _alembic(target_dsn, "stamp", MIGRATION_DOWN_REVISION)
         if stamped.returncode != 0:
             raise RuntimeError(f"alembic stamp failed: {stamped.stderr[-800:]}")
@@ -272,9 +296,6 @@ async def main() -> int:
         if upgraded.returncode != 0:
             raise RuntimeError(f"alembic upgrade failed: {upgraded.stderr[-800:]}")
         result["migration_applied"] = MIGRATION_REVISION
-
-        # --- the guard, immediately before any DML --------------------
-        result["guard"] = await assert_scratch_target(conn, database, run_id)
 
         result["checks"] = await run_proof(conn)
     finally:
@@ -286,10 +307,12 @@ async def main() -> int:
                 database,
             )
             await admin.execute(f'DROP DATABASE IF EXISTS "{database}"')
-            remaining = await admin.fetchval(
-                "SELECT count(*) FROM pg_database WHERE datname = $1", database
+            result["scratch_dropped"] = (
+                await admin.fetchval(
+                    "SELECT count(*) FROM pg_database WHERE datname = $1", database
+                )
+                == 0
             )
-            result["scratch_dropped"] = remaining == 0
         await admin.close()
 
     payload = json.dumps(result, indent=2, default=str, ensure_ascii=False) + "\n"
