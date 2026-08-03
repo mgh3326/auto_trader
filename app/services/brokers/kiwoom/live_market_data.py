@@ -340,6 +340,10 @@ class KiwoomLiveReadOnlyAuthClient:
             base_url=LIVE_BASE_URL,
             transport=self._transport,
             timeout=self._timeout,
+            # SHOULD-1: pinned explicitly, not inherited from the httpx default.
+            # A redirect is the one way a validated request can still land on
+            # another host/path after our checks have already passed.
+            follow_redirects=False,
         ) as client:
             request = client.build_request(
                 "POST",
@@ -352,6 +356,13 @@ class KiwoomLiveReadOnlyAuthClient:
                 raise KiwoomLiveReadOnlyEndpointError(
                     "Kiwoom live OAuth resolved to non-live host "
                     f"{request.url.host!r}; refusing to send."
+                )
+            # SHOULD-2: re-validate the resolved path too, so host and path are
+            # checked symmetrically at the last moment before dispatch.
+            if request.url.path != OAUTH_PATH:
+                raise KiwoomLiveReadOnlyPathError(
+                    "Kiwoom live OAuth resolved to unexpected path "
+                    f"{request.url.path!r}; refusing to send."
                 )
             response = await client.send(request)
         response.raise_for_status()
@@ -490,6 +501,11 @@ class KiwoomLiveReadOnlyClient:
             base_url=self._base_url,
             transport=self._transport,
             timeout=self._timeout,
+            # SHOULD-1: pinned explicitly rather than inherited from the httpx
+            # default. A 3xx is the one way an already-validated request can
+            # still reach another host or path — and this host serves the order
+            # API, so the redirect must die here, not be followed.
+            follow_redirects=False,
         ) as client:
             request = client.build_request("POST", path, headers=headers, json=body)
             # Item 6 — re-validate the *resolved* host immediately before
@@ -498,6 +514,14 @@ class KiwoomLiveReadOnlyClient:
                 raise KiwoomLiveReadOnlyEndpointError(
                     "Kiwoom live request resolved to non-live host "
                     f"{request.url.host!r}; refusing to send."
+                )
+            # SHOULD-2: the path was allowlisted pre-build, but only the host
+            # was re-checked post-build. Remove that asymmetry — verify the
+            # *resolved* path is still the chart path right before dispatch.
+            if request.url.path != CHART_PATH:
+                raise KiwoomLiveReadOnlyPathError(
+                    "Kiwoom live request resolved to non-chart path "
+                    f"{request.url.path!r}; refusing to send."
                 )
             response = await client.send(request)
 

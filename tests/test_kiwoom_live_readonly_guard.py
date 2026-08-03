@@ -188,6 +188,214 @@ async def test_post_chart_revalidates_resolved_host_before_dispatch(armed):
 
 
 # ---------------------------------------------------------------------------
+# SHOULD-1 — redirects are never followed (pinned, not inherited)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+async def test_redirects_are_never_followed(armed, status):
+    """A 3xx must be surfaced as-is, never re-dispatched to the Location host.
+
+    This is the one way an already-validated request could still land on
+    another host — and this host serves the order API.
+    """
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            status, headers={"Location": "https://evil.example.com/api/dostk/ordr"}
+        )
+
+    client = _client(httpx.MockTransport(handler))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.fetch_daily_chart(symbol="005930", base_dt="20260731")
+
+    # Exactly one dispatch: the redirect was not followed.
+    assert len(seen) == 1
+    assert seen[0].url.host == "api.kiwoom.com"
+    assert not any(r.url.host == "evil.example.com" for r in seen)
+
+
+@pytest.mark.asyncio
+async def test_oauth_does_not_follow_redirects(monkeypatch):
+    """Token issuance is pinned the same way — it runs before any guard."""
+
+    from app.core import config as cfg
+
+    monkeypatch.setattr(cfg.settings, "kiwoom_live_marketdata_enabled", True)
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            302, headers={"Location": "https://evil.example.com/oauth2/token"}
+        )
+
+    auth = live_mod.KiwoomLiveReadOnlyAuthClient(
+        app_key="ak", app_secret="sk", transport=httpx.MockTransport(handler)
+    )
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await auth._issue_token()
+
+    assert len(seen) == 1
+    assert seen[0].url.host == "api.kiwoom.com"
+
+
+def test_both_dispatch_sites_pin_follow_redirects_false():
+    """Static proof: no AsyncClient here silently inherits the httpx default."""
+
+    source = Path(live_mod.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    sites = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "AsyncClient"
+    ]
+    assert len(sites) == 2, "expected exactly two dispatch sites (OAuth + chart)"
+
+    for site in sites:
+        pinned = [
+            kw
+            for kw in site.keywords
+            if kw.arg == "follow_redirects"
+            and isinstance(kw.value, ast.Constant)
+            and kw.value.value is False
+        ]
+        assert pinned, (
+            f"AsyncClient at line {site.lineno} does not pin follow_redirects=False"
+        )
+
+
+# ---------------------------------------------------------------------------
+# SHOULD-2 — resolved path re-validated at send, symmetric with the host check
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_chart_revalidates_resolved_path_before_dispatch(armed):
+    """A path that passes the pre-build allowlist but resolves elsewhere dies.
+
+    Simulated by tampering with the allowlist after construction — the point is
+    that the last word belongs to the *resolved* request, not the input string.
+    """
+
+    transport, calls = _counting_transport()
+    client = _client(transport)
+
+    monkey_path = "/api/dostk/ordr"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(live_mod, "ALLOWED_PATHS", frozenset({monkey_path}))
+        with pytest.raises(KiwoomLiveReadOnlyPathError):
+            await client.post_chart(
+                api_id=constants.CHART_DAILY_API_ID,
+                body={"stk_cd": "005930"},
+                path=monkey_path,
+            )
+
+    assert calls["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_oauth_revalidates_resolved_path_before_dispatch(monkeypatch):
+    """A tampered build step that retargets the path must not reach the wire.
+
+    ``build_request`` is patched to emit an order path on the correct host —
+    the shape a wrapper or middleware regression would produce.
+    """
+
+    from app.core import config as cfg
+
+    monkeypatch.setattr(cfg.settings, "kiwoom_live_marketdata_enabled", True)
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        return httpx.Response(200, json={"token": "x", "expires_dt": "20991231235959"})
+
+    original_build = httpx.AsyncClient.build_request
+
+    def tampered_build(self, method, url, **kwargs):
+        return original_build(self, method, "/api/dostk/ordr", **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "build_request", tampered_build)
+
+    auth = live_mod.KiwoomLiveReadOnlyAuthClient(
+        app_key="ak", app_secret="sk", transport=httpx.MockTransport(handler)
+    )
+
+    with pytest.raises(KiwoomLiveReadOnlyPathError):
+        await auth._issue_token()
+
+    assert calls["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_chart_revalidates_resolved_path_when_build_is_tampered(armed):
+    """Same tamper against the chart path — allowlist passed, resolution didn't."""
+
+    transport, calls = _counting_transport()
+    client = _client(transport)
+
+    original_build = httpx.AsyncClient.build_request
+
+    def tampered_build(self, method, url, **kwargs):
+        return original_build(self, method, "/api/dostk/ordr", **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(httpx.AsyncClient, "build_request", tampered_build)
+        with pytest.raises(KiwoomLiveReadOnlyPathError):
+            await client.fetch_daily_chart(symbol="005930", base_dt="20260731")
+
+    assert calls["count"] == 0
+
+
+def _resolved_url_guard_count(tree: ast.AST, attribute: str) -> int:
+    """Count ``request.url.<attribute> != ...`` comparisons in the module."""
+
+    found = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        left = node.left
+        if (
+            isinstance(left, ast.Attribute)
+            and left.attr == attribute
+            and isinstance(left.value, ast.Attribute)
+            and left.value.attr == "url"
+            and isinstance(left.value.value, ast.Name)
+            and left.value.value.id == "request"
+        ):
+            found += 1
+    return found
+
+
+def test_both_dispatch_sites_revalidate_the_resolved_host_and_path():
+    """Static proof: each send site guards the resolved host AND path."""
+
+    tree = ast.parse(Path(live_mod.__file__).read_text(encoding="utf-8"))
+
+    send_sites = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "send"
+    ]
+    assert len(send_sites) == 2, "expected exactly two send sites (OAuth + chart)"
+
+    assert _resolved_url_guard_count(tree, "host") == 2
+    assert _resolved_url_guard_count(tree, "path") == 2
+
+
+# ---------------------------------------------------------------------------
 # Item 2 — no account surface (regression test ④)
 # ---------------------------------------------------------------------------
 
