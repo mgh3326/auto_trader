@@ -815,7 +815,9 @@ async def _execute_and_record(
                 list(attribution_exc.missing),
             )
             err = order_error_fn(str(attribution_exc))
-            err["error_code"] = "attribution_required"
+            err["error_code"] = getattr(
+                attribution_exc, "error_code", "attribution_required"
+            )
             err["missing_attribution"] = list(attribution_exc.missing)
             return err
 

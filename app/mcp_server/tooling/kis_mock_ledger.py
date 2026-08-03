@@ -26,12 +26,12 @@ from app.services.brokers.kis.mock_scalping_exec.tracking_state import (
     LedgerWriteError,
 )
 from app.services.brokers.kis.order_id import normalize_broker_order_id
+from app.services.kis_mock_attribution import validate_strategy
 from app.services.kis_mock_lifecycle_service import KISMockLifecycleService
 from app.services.kis_mock_reconcile_scope import (
     normalize_kis_mock_reconcile_market,  # noqa: F401 - re-exported for back-compat
     resolve_kis_mock_reconcile_scope,
 )
-from app.services.live_correlation import live_correlation_id
 from app.services.live_place_provenance import publish_place_time_forecast
 
 # ROB-843: sensitive-key fragments to redact from raw broker evidence before it
@@ -481,7 +481,7 @@ async def _record_kis_mock_order(
     execution_result: dict[str, Any],
     reason: str | None,
     thesis: str | None,
-    strategy: str | None,
+    strategy: str,
     notes: str | None,
     holdings_baseline_qty: Decimal | None = None,
     correlation_id: str | None = None,
@@ -492,6 +492,16 @@ async def _record_kis_mock_order(
     mirror_source_bucket: str | None = None,
 ) -> dict[str, Any]:
     """Build ledger row from execution result and return the mock-order response dict."""
+    # This helper is intentionally fail-closed for direct callers too.  The
+    # authoritative attribution is resolved before POST by order_execution;
+    # this post-send writer must only consume that result, never mint a new
+    # identity after the fact.
+    strategy = validate_strategy(strategy)
+    if not isinstance(correlation_id, str) or not correlation_id.strip():
+        raise ValueError(
+            "kis_mock ledger recording requires a pre-submit correlation_id"
+        )
+
     price_val = _to_float(dry_run_result.get("price"), default=0.0)
     qty_val = _to_float(dry_run_result.get("quantity"), default=0.0)
     amt_val = _to_float(dry_run_result.get("estimated_value"), default=0.0)
@@ -547,24 +557,6 @@ async def _record_kis_mock_order(
     else:
         failure_reason = "unknown_response"
         failure_detail = msg or f"rt_cd={rt_cd} order_no={order_no}"
-
-    # ROB-730 provenance spine: the correlation_id joins forecast → fill →
-    # journal → retrospective, mirroring the kis_live path verbatim.
-    #
-    # The authoritative mint now happens PRE-submit in the attribution gate
-    # (app/services/kis_mock_attribution.py), which passes the id in. This
-    # branch is only a fallback for direct callers of this helper; it uses the
-    # identical inputs and helper, so it yields the identical id.
-    if correlation_id is None:
-        correlation_id = live_correlation_id(
-            account_scope="kis_mock",
-            symbol=normalized_symbol,
-            side=side,
-            price=Decimal(str(price_val)),
-            quantity=Decimal(str(qty_val)),
-            kst_trade_day=now_kst().strftime("%Y-%m-%d"),
-            rung=0,
-        )
 
     # ROB-843: redact sensitive keys from the raw broker evidence before it is
     # persisted or returned. Recursive, non-mutating; non-sensitive diagnostics

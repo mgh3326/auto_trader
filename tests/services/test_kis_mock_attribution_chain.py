@@ -27,6 +27,7 @@ from app.jobs.kis_mock_reconciliation_job import run_kis_mock_reconciliation
 from app.mcp_server.tooling import kis_mock_ledger, order_execution
 from app.models.review import KISMockOrderLedger
 from app.services.kis_mock_attribution import (
+    InvalidStrategy,
     MissingAttribution,
     record_signal,
     resolve_attribution,
@@ -63,6 +64,84 @@ async def test_resolver_rejects_blank_and_whitespace_strategy():
                 quantity=1,
                 strategy=blank,
             )
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        "null",
+        "None",
+        "undefined",
+        "",
+        "   ",
+        "NULL",
+        " null ",
+        "nil",
+        "n/a",
+        "tbd",
+        "todo",
+        "test",
+        "unknown",
+        "-",
+        "?",
+        "\u3000NULL\u3000",
+        "ＮＵＬＬ",
+        "ΝULL",  # Greek capital nu
+    ],
+)
+async def test_placeholder_strategy_is_rejected_before_broker_post(
+    placeholder, monkeypatch
+):
+    """The one attribution gate blocks every placeholder without a POST."""
+    calls: list[str] = []
+
+    async def broker_post(**kwargs):
+        calls.append("POST")
+        raise AssertionError("placeholder strategy reached the broker")
+
+    monkeypatch.setattr(order_execution, "_execute_order", broker_post)
+    result = await order_execution._execute_and_record(
+        **_execute_and_record_kwargs(strategy=placeholder)
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "placeholder_strategy"
+    assert calls == []
+
+
+async def test_valid_strategy_reaches_broker_positive_control(monkeypatch, db_session):
+    calls: list[str] = []
+
+    async def broker_post(**kwargs):
+        calls.append("POST")
+        return {"rt_cd": "0", "odno": "MOCK-POSITIVE"}
+
+    monkeypatch.setattr(order_execution, "_execute_order", broker_post)
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_fetch_kis_mock_baseline_qty",
+        AsyncMock(return_value=Decimal("0")),
+    )
+    monkeypatch.setattr(order_execution, "_record_order_history", AsyncMock())
+
+    result = await order_execution._execute_and_record(
+        **_execute_and_record_kwargs(strategy="posture-v1")
+    )
+
+    assert result["success"] is True
+    assert calls == ["POST"]
+
+
+async def test_placeholder_cannot_be_rescued_by_mirror_lane():
+    with pytest.raises(InvalidStrategy):
+        resolve_attribution(
+            symbol="005930",
+            side="buy",
+            price=70000,
+            quantity=1,
+            strategy=" null ",
+            mirror_cohort="mock_counterfactual",
+        )
 
 
 async def test_resolver_derives_the_mirror_lane_without_an_explicit_strategy():

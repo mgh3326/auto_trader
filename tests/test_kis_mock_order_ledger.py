@@ -1175,49 +1175,37 @@ def _mock_preview() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_record_mints_correlation_id_and_publishes_forecast(monkeypatch):
-    """ROB-730: the tool path passes no correlation_id, so the mock record path
-    mints a deterministic namespaced id, stores it on the ledger row, and emits a
-    place-time forecast for an accepted buy with a target — mirroring kis_live."""
+async def test_record_rejects_missing_strategy_without_writing(monkeypatch):
+    """The post-send writer cannot manufacture attribution for direct callers."""
     from app.mcp_server.tooling import kis_mock_ledger
+    from app.services.kis_mock_attribution import InvalidStrategy
 
     save = AsyncMock(return_value=5)
     monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save)
     pub = AsyncMock(return_value="fc-1")
     monkeypatch.setattr(kis_mock_ledger, "publish_place_time_forecast", pub)
 
-    result = await kis_mock_ledger._record_kis_mock_order(
-        normalized_symbol="005930",
-        market_type="equity_kr",
-        side="buy",
-        order_type="limit",
-        dry_run_result=_mock_preview(),
-        execution_result=_mock_exec_result(),
-        reason="t",
-        thesis=None,
-        strategy=None,
-        notes=None,
-        target_price=80000.0,
-        min_hold_days=5,
-    )
-
-    cid = result["correlation_id"]
-    assert cid is not None
-    assert cid.startswith("live:kis_mock:")
-    # stored on the ledger row
-    assert save.await_args.kwargs["correlation_id"] == cid
-    # forecast published for the accepted buy, tagged for mock provenance
-    pub.assert_awaited_once()
-    assert pub.await_args.kwargs["correlation_id"] == cid
-    assert pub.await_args.kwargs["session_label"] == "kis_mock_place"
-    assert pub.await_args.kwargs["created_by"] == "auto_place_mock"
-    assert pub.await_args.kwargs["target_price"] == 80000.0
+    with pytest.raises(InvalidStrategy):
+        await kis_mock_ledger._record_kis_mock_order(
+            normalized_symbol="005930",
+            market_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            dry_run_result=_mock_preview(),
+            execution_result=_mock_exec_result(),
+            reason="t",
+            thesis=None,
+            strategy=None,
+            notes=None,
+            correlation_id="pre-submit-cid",
+        )
+    save.assert_not_awaited()
+    pub.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_record_preserves_explicit_correlation_id(monkeypatch):
-    """ROB-730: an explicit correlation_id (ROB-402 scalping entry/exit pairing)
-    must be preserved, never overwritten by a freshly minted one."""
+    """A direct helper call must provide the pre-submit correlation id."""
     from app.mcp_server.tooling import kis_mock_ledger
 
     save = AsyncMock(return_value=5)
@@ -1225,23 +1213,21 @@ async def test_record_preserves_explicit_correlation_id(monkeypatch):
     pub = AsyncMock(return_value="fc-1")
     monkeypatch.setattr(kis_mock_ledger, "publish_place_time_forecast", pub)
 
-    result = await kis_mock_ledger._record_kis_mock_order(
-        normalized_symbol="005930",
-        market_type="equity_kr",
-        side="buy",
-        order_type="limit",
-        dry_run_result=_mock_preview(),
-        execution_result=_mock_exec_result(),
-        reason="t",
-        thesis=None,
-        strategy=None,
-        notes=None,
-        correlation_id="scalp-pair-1",
-    )
-
-    assert result["correlation_id"] == "scalp-pair-1"
-    assert save.await_args.kwargs["correlation_id"] == "scalp-pair-1"
-    assert pub.await_args.kwargs["correlation_id"] == "scalp-pair-1"
+    with pytest.raises(ValueError, match="pre-submit correlation_id"):
+        await kis_mock_ledger._record_kis_mock_order(
+            normalized_symbol="005930",
+            market_type="equity_kr",
+            side="buy",
+            order_type="limit",
+            dry_run_result=_mock_preview(),
+            execution_result=_mock_exec_result(),
+            reason="t",
+            thesis=None,
+            strategy="posture-v1",
+            notes=None,
+        )
+    save.assert_not_awaited()
+    pub.assert_not_awaited()
 
 
 def _make_domestic_orders():
@@ -1309,8 +1295,9 @@ async def test_record_accepts_real_domestic_order_shape(monkeypatch):
         execution_result=exec_result,
         reason="t",
         thesis=None,
-        strategy=None,
+        strategy="posture-v1",
         notes=None,
+        correlation_id="direct-record-accepted-1",
     )
     assert result["success"] is True
     assert result["status"] == "accepted"
@@ -1337,8 +1324,9 @@ async def test_record_accepted_returns_success_true(monkeypatch):
         execution_result=_mock_exec_result(rt_cd="0", odno="0001234567"),
         reason="t",
         thesis=None,
-        strategy=None,
+        strategy="posture-v1",
         notes=None,
+        correlation_id="direct-record-accepted-2",
     )
     assert result["success"] is True
     assert result["status"] == "accepted"
@@ -1365,8 +1353,9 @@ async def test_record_rejected_returns_success_false(monkeypatch):
         execution_result=exec_result,
         reason="t",
         thesis=None,
-        strategy=None,
+        strategy="posture-v1",
         notes=None,
+        correlation_id="direct-record-rejected-1",
     )
     assert result["success"] is False
     assert result["status"] == "rejected"
@@ -1395,8 +1384,9 @@ async def test_record_idless_success_code_returns_unknown_false(monkeypatch):
         execution_result={"rt_cd": "0", "odno": ""},
         reason="t",
         thesis=None,
-        strategy=None,
+        strategy="posture-v1",
         notes=None,
+        correlation_id="direct-record-unknown-1",
         target_price=80000.0,
     )
     assert result["success"] is False
@@ -1425,8 +1415,9 @@ async def test_record_malformed_payload_returns_false(monkeypatch):
         execution_result="totally not a dict",  # type: ignore[arg-type]
         reason="t",
         thesis=None,
-        strategy=None,
+        strategy="posture-v1",
         notes=None,
+        correlation_id="direct-record-malformed-1",
     )
     assert result["success"] is False
     assert result["status"] == "unknown"
@@ -1454,8 +1445,9 @@ async def test_record_whitespace_order_id_is_not_accepted(monkeypatch):
         execution_result={"rt_cd": "0", "odno": "   "},
         reason="t",
         thesis=None,
-        strategy=None,
+        strategy="posture-v1",
         notes=None,
+        correlation_id="direct-record-unknown-2",
     )
     assert result["success"] is False
     assert result["status"] == "unknown"
@@ -1483,8 +1475,9 @@ async def test_record_strips_valid_order_id(monkeypatch):
         execution_result={"rt_cd": "0", "odno": "  0001234567  "},
         reason="t",
         thesis=None,
-        strategy=None,
+        strategy="posture-v1",
         notes=None,
+        correlation_id="direct-record-accepted-5",
     )
     assert result["success"] is True
     assert result["order_no"] == "0001234567"
@@ -1512,8 +1505,9 @@ async def test_record_provider_failure_with_order_id_still_rejected(monkeypatch)
         execution_result={"rt_cd": "40", "odno": "0001234567", "msg": "거부"},
         reason="t",
         thesis=None,
-        strategy=None,
+        strategy="posture-v1",
         notes=None,
+        correlation_id="direct-record-rejected-4",
     )
     assert result["success"] is False
     assert result["status"] == "rejected"
@@ -1553,8 +1547,9 @@ async def test_record_redacts_sensitive_evidence(monkeypatch):
         execution_result=exec_result,
         reason="t",
         thesis=None,
-        strategy=None,
+        strategy="posture-v1",
         notes=None,
+        correlation_id="direct-record-accepted-6",
     )
     saved = save.await_args.kwargs["raw_response"]
     assert saved["AppKey"] == "[REDACTED]"
@@ -1595,7 +1590,7 @@ async def _record_accepted(monkeypatch, **over):
         "execution_result": {"rt_cd": "0", "odno": "0001234567"},
         "reason": "t",
         "thesis": None,
-        "strategy": None,
+        "strategy": "posture-v1",
         "notes": None,
         "correlation_id": "cid-x",
     }
@@ -1663,8 +1658,9 @@ async def test_record_rejected_order_mints_but_does_not_publish(monkeypatch):
         execution_result=_mock_exec_result(rt_cd="40", odno=""),
         reason="t",
         thesis=None,
-        strategy=None,
+        strategy="posture-v1",
         notes=None,
+        correlation_id="direct-record-rejected-5",
         target_price=80000.0,
     )
 
