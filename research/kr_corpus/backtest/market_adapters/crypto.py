@@ -10,11 +10,14 @@ This adapter is a **daily (1d)** harness binding:
 * every row's ``frequency`` value must equal ``CRYPTO_ADAPTER_FREQUENCY``
   (``"1d"``); hourly (or other) input raises ``CryptoFrequencyMismatchError``
 * ``frequency`` is carried on every ``CryptoBar``
-* label + frequency gates are attached to the **crypto contract** via
-  ``datasets.ohlcv.table_load_policy`` and run inside
-  ``schema_contract.validate_table_schema`` — any load using this contract
-  (``loader.load_shard``, ``ContractBackedCorpusAdapter``, adapter wrappers)
-  is gated without relying on wrapper enumeration
+* label + frequency gates are attached to **corpus_id identity**
+  (``crypto-corpus-v1``) via the code registry
+  ``CORPUS_TABLE_LOAD_POLICY_BY_ID`` and run inside
+  ``schema_contract.validate_table_schema``. A contract JSON that omits
+  ``table_load_policy`` cannot disable them.
+* Caveat: arbitrary ``contract_path`` is a residual (raw-PyArrow class). Known
+  ``corpus_id`` still gets registry policy; unknown identity fails closed;
+  raw parquet outside the loader is not blocked by this package.
 
 Bar time is ``open_time_utc`` (inclusive). ``close_time_utc`` is the exclusive
 end from the sealed builder. Session date is the UTC calendar day of the open.

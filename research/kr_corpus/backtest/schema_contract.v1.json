@@ -1,8 +1,10 @@
 {
   "contract_id": "kr-corpus-v1.harness-schema.v1",
+  "corpus_id": "kr-corpus-v1",
   "schema_origin": "SEALED_CORPUS_V1",
   "schema_origin_note": "Contrasted against sealed kr-corpus-v1 run kr-corpus-v1-20260803-1001 dataset parquet (ticker=000020 original + clamp-admit-v1). Column names/types match the sealed corpus. Explicit harness mapping: ticker→symbol, session→session_date, value→trading_value (nullable exchange-reported 거래대금; nulls preserved, never imputed). OHLCV stay int64 (KRW integer ticks).",
   "corpus_schema_source": "sealed kr-corpus-v1 parquet schema",
+  "table_load_policy_authority": "code registry CORPUS_TABLE_LOAD_POLICY_BY_ID[corpus_id]; file cannot opt out",
   "frequency": "1d",
   "price_mode": "adjusted",
   "timezone": "Asia/Seoul",

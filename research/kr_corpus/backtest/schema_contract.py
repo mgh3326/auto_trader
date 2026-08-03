@@ -6,6 +6,12 @@ Contracts declare the **sealed corpus** column names and types after contrast
 against real parquet. Adapters own an explicit mapping layer from those
 columns onto harness bar objects. Silent rename/coercion outside the declared
 ``harness_column_map`` is forbidden.
+
+**Table-load policy is NOT file self-declaration.** For a recognized corpus
+identity (``corpus_id``), the required policy is looked up from the code
+registry ``CORPUS_TABLE_LOAD_POLICY_BY_ID``. A contract JSON that omits or
+empties ``table_load_policy`` cannot weaken those gates. Policy absence for a
+known corpus/dataset is a hard error — never ``or {}`` success.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ import pyarrow as pa
 
 __all__ = [
     "CONTRACT_PATH",
+    "CORPUS_TABLE_LOAD_POLICY_BY_ID",
     "SCHEMA_ORIGIN",
     "SchemaContractError",
     "SchemaMismatchError",
@@ -26,12 +33,42 @@ __all__ = [
     "date_column_for",
     "enforce_table_load_policy",
     "load_contract",
+    "required_table_load_policy",
     "types_compatible",
     "validate_table_schema",
 ]
 
 SCHEMA_ORIGIN = "SEALED_CORPUS_V1"
 CONTRACT_PATH = Path(__file__).resolve().parent / "schema_contract.v1.json"
+
+# Authoritative post-schema gates keyed by corpus_id (not by whatever the
+# JSON file chooses to declare). Removing policy keys from a contract copy
+# must not admit unlabeled or wrong-frequency data.
+#
+# Each dataset entry is a non-empty mapping. Use
+# ``{"schema_column_gates_only": True}`` when the corpus needs column/dtype
+# refusal only (no parquet-metadata labels).
+CORPUS_TABLE_LOAD_POLICY_BY_ID: dict[str, dict[str, dict[str, Any]]] = {
+    "kr-corpus-v1": {
+        "ohlcv": {"schema_column_gates_only": True},
+        "membership": {"schema_column_gates_only": True},
+    },
+    "crypto-corpus-v1": {
+        "ohlcv": {
+            "require_crypto_parquet_labels": True,
+            "required_column_values": {"frequency": "1d"},
+        },
+        # Harness membership for crypto adapters is fixture-only if present;
+        # still refuse silent empty policy.
+        "membership": {"schema_column_gates_only": True},
+    },
+    "us-corpus-v1": {
+        "ohlcv": {
+            "require_schema_metadata_equals": {"SURVIVORSHIP_BIASED": "TRUE"},
+        },
+        "membership": {"schema_column_gates_only": True},
+    },
+}
 
 _ARROW_DTYPE_MAP: dict[str, pa.DataType] = {
     "string": pa.string(),
@@ -53,21 +90,27 @@ class SchemaMismatchError(SchemaContractError):
 
 
 class ContractTablePolicyError(SchemaContractError):
-    """Contract-declared post-schema table policy refused the load.
+    """Corpus-identity table policy refused the load.
 
-    Raised for required column *values* (e.g. frequency must be ``1d``) and
-    other structural table policies that are not column-dtype mismatches.
-    Label/metadata refusals from venue-specific policy modules propagate as
-    their own exception types (e.g. ``UnlabeledParquetError``).
+    Raised for required column *values* (e.g. frequency must be ``1d``),
+    missing/invalid policy identity, and metadata label refusals that are
+    expressed as contract policy errors. Venue-specific unlabeled errors
+    (e.g. ``UnlabeledParquetError``) may also propagate from nested checks.
     """
 
 
 def load_contract(contract_path: Path | str | None = None) -> dict[str, Any]:
-    """Load a declared local JSON contract (source of truth for schema).
+    """Load a declared local JSON contract (schema columns + corpus identity).
 
-    ``CONTRACT_PATH`` remains the KR default. Market adapters pass a committed
-    sealed-corpus contract explicitly; this loader never discovers a schema
-    from a live corpus artifact at import time.
+    Requires ``schema_origin == SEALED_CORPUS_V1`` and a known ``corpus_id``.
+    Table-load policy is **not** taken from this file as authority; see
+    ``required_table_load_policy``.
+
+    Caveat (operator-confirmed residual): callers may pass an arbitrary
+    ``contract_path`` (same class as raw-PyArrow residual). Supported-path
+    fail-closed means: if the file claims a known sealed corpus identity,
+    the code registry policy applies and cannot be stripped away. Completely
+    custom identities outside the registry fail closed at load.
     """
     path = Path(contract_path) if contract_path is not None else CONTRACT_PATH
     raw = path.read_text(encoding="utf-8")
@@ -77,7 +120,45 @@ def load_contract(contract_path: Path | str | None = None) -> dict[str, Any]:
             f"schema_origin must be {SCHEMA_ORIGIN!r}, "
             f"got {contract.get('schema_origin')!r}"
         )
+    corpus_id = contract.get("corpus_id")
+    if not isinstance(corpus_id, str) or not corpus_id:
+        raise SchemaContractError(
+            "corpus_id must be a non-empty string identifying the sealed corpus"
+        )
+    if corpus_id not in CORPUS_TABLE_LOAD_POLICY_BY_ID:
+        raise SchemaContractError(
+            f"unknown corpus_id {corpus_id!r}; not in "
+            f"{sorted(CORPUS_TABLE_LOAD_POLICY_BY_ID)!r}"
+        )
     return contract
+
+
+def required_table_load_policy(
+    corpus_id: str,
+    dataset: str,
+) -> dict[str, Any]:
+    """Return the code-registry policy for ``corpus_id`` × ``dataset``.
+
+    Fail-closed: missing corpus, missing dataset, or empty policy mapping
+    all raise. Never synthesizes ``{}``.
+    """
+    if corpus_id not in CORPUS_TABLE_LOAD_POLICY_BY_ID:
+        raise ContractTablePolicyError(
+            f"no table_load_policy registry entry for corpus_id={corpus_id!r}"
+        )
+    by_dataset = CORPUS_TABLE_LOAD_POLICY_BY_ID[corpus_id]
+    if dataset not in by_dataset:
+        raise ContractTablePolicyError(
+            f"corpus_id={corpus_id!r} has no table_load_policy for "
+            f"dataset={dataset!r}; refusing load"
+        )
+    policy = by_dataset[dataset]
+    if not isinstance(policy, dict) or not policy:
+        raise ContractTablePolicyError(
+            f"corpus_id={corpus_id!r} dataset={dataset!r} registry policy "
+            f"must be a non-empty dict; got {policy!r}"
+        )
+    return policy
 
 
 def _dataset_spec(
@@ -147,28 +228,51 @@ def enforce_table_load_policy(
     *,
     contract_path: Path | str | None = None,
 ) -> None:
-    """Apply contract-declared post-schema gates to a loaded table.
+    """Apply corpus-identity post-schema gates (registry, not file self-declare).
 
-    This is the **structural** attachment point for label/value policy: any
-    caller that validates a table against a contract (including
-    ``loader.load_shard`` and ``ContractBackedCorpusAdapter.load_shard``)
-    must pass through ``validate_table_schema``, which invokes this function.
-    Wrapper-only gates are insufficient and incomplete by construction.
+    Identity path: load contract → ``corpus_id`` →
+    ``CORPUS_TABLE_LOAD_POLICY_BY_ID[corpus_id][dataset]``. A stripped
+    ``table_load_policy`` key in a JSON copy cannot disable gates.
     """
-    ds = _dataset_spec(dataset, contract_path=contract_path)
-    policy = ds.get("table_load_policy") or {}
-    if not policy:
+    contract = load_contract(contract_path)
+    corpus_id = str(contract["corpus_id"])
+    policy = required_table_load_policy(corpus_id, dataset)
+
+    # Optional: if the file also declares a policy block, it must not *weaken*
+    # the registry (presence of empty/null file policy is ignored; only
+    # registry is authoritative). Wrong-type file policy is refused so a
+    # caller cannot claim "I declared policy=null means no check".
+    file_ds = contract.get("datasets", {}).get(dataset) or {}
+    if "table_load_policy" in file_ds:
+        file_policy = file_ds["table_load_policy"]
+        if file_policy is None or not isinstance(file_policy, dict):
+            raise ContractTablePolicyError(
+                f"corpus_id={corpus_id!r} dataset={dataset!r} file "
+                f"table_load_policy must be a dict when present; "
+                f"got {type(file_policy).__name__}"
+            )
+        if not file_policy:
+            raise ContractTablePolicyError(
+                f"corpus_id={corpus_id!r} dataset={dataset!r} file "
+                f"table_load_policy is empty; refusing fail-open self-declaration"
+            )
+
+    if policy.get("schema_column_gates_only"):
+        # Column/dtype already checked by validate_table_schema.
         return
 
     if policy.get("require_crypto_parquet_labels"):
-        # Import locally to keep schema_contract usable without crypto package
-        # for KR-only paths; only contracts that opt in pay this cost.
         from research.crypto_corpus.policy import policy_from_parquet_metadata
 
         policy_from_parquet_metadata(table.schema.metadata)
 
-    meta_eq = policy.get("require_schema_metadata_equals") or {}
-    if meta_eq:
+    meta_eq = policy.get("require_schema_metadata_equals")
+    if meta_eq is not None:
+        if not isinstance(meta_eq, dict) or not meta_eq:
+            raise ContractTablePolicyError(
+                f"require_schema_metadata_equals must be a non-empty dict "
+                f"for corpus_id={corpus_id!r}"
+            )
         metadata = table.schema.metadata or {}
         for key, expected in meta_eq.items():
             key_b = key.encode("utf-8") if isinstance(key, str) else key
@@ -181,19 +285,25 @@ def enforce_table_load_policy(
                     f"(actual={actual!r}); refusing load"
                 )
 
-    required_values = policy.get("required_column_values") or {}
-    for column, expected in required_values.items():
-        if column not in table.column_names:
+    required_values = policy.get("required_column_values")
+    if required_values is not None:
+        if not isinstance(required_values, dict) or not required_values:
             raise ContractTablePolicyError(
-                f"dataset={dataset!r} missing policy column {column!r}"
+                f"required_column_values must be a non-empty dict "
+                f"for corpus_id={corpus_id!r}"
             )
-        for i, raw in enumerate(table.column(column).to_pylist()):
-            if raw is None or str(raw) != str(expected):
+        for column, expected in required_values.items():
+            if column not in table.column_names:
                 raise ContractTablePolicyError(
-                    f"dataset={dataset!r} row {i} column {column!r}="
-                    f"{raw!r} is not required value {expected!r}; "
-                    f"refusing load (no silent filter)"
+                    f"dataset={dataset!r} missing policy column {column!r}"
                 )
+            for i, raw in enumerate(table.column(column).to_pylist()):
+                if raw is None or str(raw) != str(expected):
+                    raise ContractTablePolicyError(
+                        f"dataset={dataset!r} row {i} column {column!r}="
+                        f"{raw!r} is not required value {expected!r}; "
+                        f"refusing load (no silent filter)"
+                    )
 
 
 def validate_table_schema(
@@ -209,9 +319,10 @@ def validate_table_schema(
     Columns listed under ``forbidden_columns`` always fail (used to keep US
     ``trading_value`` absent).
 
-    After column/dtype checks, enforces any ``table_load_policy`` declared on
-    the dataset (labels, required column values). That policy is structural:
-    every load path that calls this function inherits it.
+    After column/dtype checks, enforces corpus-identity ``table_load_policy``
+    from the code registry (labels, required column values). That policy is
+    structural: every load path that calls this function inherits it, and a
+    contract file cannot opt out by omitting the policy key.
     """
     ds = _dataset_spec(dataset, contract_path=contract_path)
     required: list[str] = list(ds["required_columns"])

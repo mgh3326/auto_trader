@@ -16,6 +16,7 @@ from schema_contract import (
 def test_contract_declares_sealed_origin():
     contract = load_contract()
     assert contract["schema_origin"] == "SEALED_CORPUS_V1"
+    assert contract["corpus_id"] == "kr-corpus-v1"
     assert SCHEMA_ORIGIN == "SEALED_CORPUS_V1"
     assert "sealed" in contract["schema_origin_note"].lower()
 

@@ -1,10 +1,19 @@
-"""Shared adapter binding for inferred local corpus contracts.
+"""Shared adapter binding for sealed-corpus contracts.
 
 Adapters use this thin object instead of reimplementing the KR harness guards:
 ``loader`` performs SHA-before-parse and row-date refusal, ``holdout_guard``
 performs case-fold/symlink/path traversal refusal, and ``schema_contract``
-performs exact-schema refusal. Contract files are committed declarations, not
-real corpus artifacts.
+performs schema + **corpus-identity table_load_policy** refusal.
+
+Caveat (operator-confirmed residual — same class as raw PyArrow): a caller may
+pass an arbitrary ``contract_path``. Supported-path fail-closed guarantees:
+
+* If the file claims a known ``corpus_id`` under ``SEALED_CORPUS_V1``, the
+  code registry policy for that corpus applies and cannot be stripped from the
+  JSON copy.
+* Completely custom/unknown identities fail at ``load_contract``.
+* Completely bypassing this module (raw ``pyarrow.parquet.read_table``) is out
+  of band and is not claimed to be blocked here.
 """
 
 from __future__ import annotations

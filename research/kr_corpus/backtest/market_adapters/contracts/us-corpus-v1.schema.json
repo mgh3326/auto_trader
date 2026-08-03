@@ -1,8 +1,10 @@
 {
   "contract_id": "us-corpus-v1.harness-schema.v1",
+  "corpus_id": "us-corpus-v1",
   "schema_origin": "SEALED_CORPUS_V1",
   "schema_origin_note": "Contrasted against sealed us-corpus-v1 dataset/market=us/year=2024/part-00000.parquet. Real columns only. trading_value is ABSENT — the sealed corpus has no exchange-reported dollar turnover; adapters must not synthesize close×volume into trading_value (price_mode=adjusted would distort).",
   "corpus_schema_source": "sealed us-corpus-v1 parquet schema",
+  "table_load_policy_authority": "code registry CORPUS_TABLE_LOAD_POLICY_BY_ID['us-corpus-v1']; file cannot opt out of SURVIVORSHIP_BIASED label gate",
   "frequency": "1d",
   "price_mode": "adjusted",
   "timestamp_storage": "session_date is timestamp[ms] naive midnight representing the XNYS session calendar date; no separate raw UTC timestamp column exists in the sealed corpus",
