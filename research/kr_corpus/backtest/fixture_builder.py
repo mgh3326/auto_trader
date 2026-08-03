@@ -1,0 +1,164 @@
+"""Build synthetic KR corpus fixtures for Stage A harness wiring.
+
+Fixture data lives under ``research/kr_corpus/backtest/fixtures/synthetic_v1/``
+(or a caller-provided root). Dates are confined to the exploration window
+(2023-01-01..2023-02-15 subset for compact smoke). **No holdout dates.**
+
+Partition layout matches the declared contract: ``dataset/market/year``.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import date, timedelta
+from pathlib import Path
+from typing import Any
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+from loader import sha256_bytes
+from schema_contract import arrow_schema_for
+
+__all__ = [
+    "FIXTURE_REL_ROOT",
+    "build_synthetic_fixture",
+]
+
+FIXTURE_REL_ROOT = Path(__file__).resolve().parent / "fixtures" / "synthetic_v1"
+
+# Compact exploration-only calendar (weekdays). No 2025+ dates.
+_FIXTURE_START = date(2023, 1, 2)
+_FIXTURE_END = date(2023, 2, 15)
+_SYMBOLS = (
+    # (symbol, market, base_price, value_scale)
+    ("005930", "KOSPI", 70000.0, 1_000_000_000.0),
+    ("000660", "KOSPI", 120000.0, 800_000_000.0),
+    ("035420", "KOSPI", 200000.0, 500_000_000.0),
+    ("247540", "KOSDAQ", 80000.0, 300_000_000.0),
+    ("086520", "KOSDAQ", 50000.0, 200_000_000.0),
+)
+
+
+def _weekdays(start: date, end: date) -> list[date]:
+    out: list[date] = []
+    d = start
+    while d <= end:
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def build_synthetic_fixture(root: Path | None = None) -> Path:
+    """Write synthetic parquet shards + manifest under ``root``.
+
+    Returns the fixture root path.
+    """
+    fixture_root = Path(root) if root is not None else FIXTURE_REL_ROOT
+    fixture_root.mkdir(parents=True, exist_ok=True)
+
+    sessions = _weekdays(_FIXTURE_START, _FIXTURE_END)
+    ohlcv_rows: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    memb_rows: dict[tuple[str, int], list[dict[str, Any]]] = {}
+
+    for i, session in enumerate(sessions):
+        year = session.year
+        for j, (symbol, market, base_px, value_scale) in enumerate(_SYMBOLS):
+            # Simple deterministic walk; day index moves price.
+            px = round(base_px * (1.0 + 0.001 * i + 0.01 * j), 2)
+            trading_value = value_scale * (1.0 + 0.05 * ((i + j) % 7))
+            # Delist 086520 after mid window to exercise terminal path.
+            delisted = symbol == "086520" and session >= date(2023, 2, 1)
+            status = "delisted" if delisted else "listed"
+            member = not delisted
+
+            ohlcv_key = (market, year)
+            ohlcv_rows.setdefault(ohlcv_key, []).append(
+                {
+                    "symbol": symbol,
+                    "session_date": session.isoformat(),
+                    "open": px,
+                    "high": px * 1.01,
+                    "low": px * 0.99,
+                    "close": px,
+                    "volume": 1_000_000.0 + 1000 * i,
+                    "trading_value": float(trading_value),
+                    "market": market,
+                }
+            )
+            memb_rows.setdefault(ohlcv_key, []).append(
+                {
+                    "symbol": symbol,
+                    "session_date": session.isoformat(),
+                    "market": market,
+                    "member": member,
+                    "status": status,
+                }
+            )
+
+    manifest: list[dict[str, Any]] = []
+    ohlcv_schema = arrow_schema_for("ohlcv")
+    memb_schema = arrow_schema_for("membership")
+
+    for (market, year), rows in sorted(ohlcv_rows.items()):
+        rel = f"ohlcv/{market}/{year}/bars.parquet"
+        path = fixture_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        table = pa.Table.from_pylist(rows, schema=ohlcv_schema)
+        pq.write_table(table, path)
+        data = path.read_bytes()
+        manifest.append(
+            {
+                "relative_path": rel,
+                "file_sha256": sha256_bytes(data),
+                "row_count": len(rows),
+                "dataset": "ohlcv",
+                "market": market,
+                "year": year,
+            }
+        )
+
+    for (market, year), rows in sorted(memb_rows.items()):
+        rel = f"membership/{market}/{year}/members.parquet"
+        path = fixture_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        table = pa.Table.from_pylist(rows, schema=memb_schema)
+        pq.write_table(table, path)
+        data = path.read_bytes()
+        manifest.append(
+            {
+                "relative_path": rel,
+                "file_sha256": sha256_bytes(data),
+                "row_count": len(rows),
+                "dataset": "membership",
+                "market": market,
+                "year": year,
+            }
+        )
+
+    manifest_path = fixture_root / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    meta = {
+        "fixture_id": "kr-backtest-harness-synthetic-v1",
+        "JOB_PURPOSE": "BACKTEST_HARNESS_WIRING_ONLY",
+        "label": "PIPELINE_SMOKE_NOT_A_STRATEGY",
+        "schema_origin": "INFERRED_FROM_LITERALS",
+        "window": {
+            "start": _FIXTURE_START.isoformat(),
+            "end": _FIXTURE_END.isoformat(),
+        },
+        "notes": [
+            "Synthetic only — not real KR market data.",
+            "Exploration window subset; no holdout dates.",
+            "Schema is inferred from brief §3 literals.",
+        ],
+    }
+    (fixture_root / "fixture_meta.json").write_text(
+        json.dumps(meta, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return fixture_root
