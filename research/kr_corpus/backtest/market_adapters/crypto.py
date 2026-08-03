@@ -217,7 +217,11 @@ class CryptoVenueView:
                 f"venue view={self.venue!r} cannot expose mixed rows {mixed!r}"
             )
         bad_freq = sorted(
-            {bar.frequency for bar in self.bars if bar.frequency != CRYPTO_ADAPTER_FREQUENCY}
+            {
+                bar.frequency
+                for bar in self.bars
+                if bar.frequency != CRYPTO_ADAPTER_FREQUENCY
+            }
         )
         if bad_freq:
             raise CryptoFrequencyMismatchError(
@@ -437,8 +441,7 @@ class CryptoVenueAdapter:
             if freq != CRYPTO_ADAPTER_FREQUENCY:
                 # Defense in depth after table-level assert.
                 raise CryptoFrequencyMismatchError(
-                    f"row {i} frequency={freq!r} is not "
-                    f"{CRYPTO_ADAPTER_FREQUENCY!r}"
+                    f"row {i} frequency={freq!r} is not {CRYPTO_ADAPTER_FREQUENCY!r}"
                 )
             open_utc = _as_utc_datetime(data["open_time_utc"][i])
             close_utc = _as_utc_datetime(data["close_time_utc"][i])
@@ -477,5 +480,3 @@ class CryptoVenueAdapter:
                 f"manifest entry market={entry.market!r} cannot enter "
                 f"{self.venue!r} adapter"
             )
-
-
