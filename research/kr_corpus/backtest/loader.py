@@ -38,13 +38,15 @@ from typing import Any, Literal
 import pyarrow as pa
 import pyarrow.parquet as pq
 from holdout_guard import (
+    DEFAULT_HOLDOUT_POLICY,
     HoldoutAccessError,
+    HoldoutPolicy,
     assert_date_not_holdout,
     assert_partition_year_not_holdout,
     assert_path_not_holdout,
     assert_range_not_holdout,
 )
-from schema_contract import SchemaMismatchError, validate_table_schema
+from schema_contract import CONTRACT_PATH, SchemaMismatchError, validate_table_schema
 from windows import EXPLORATION_WINDOW, parse_iso_date
 
 __all__ = [
@@ -126,18 +128,23 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _resolve_within_root(artifact_root: Path, relative_path: str) -> Path:
+def _resolve_within_root(
+    artifact_root: Path,
+    relative_path: str,
+    *,
+    holdout_policy: HoldoutPolicy,
+) -> Path:
     # Holdout path gate first — even before root-escape logic — so a request
     # that points at HOLDOUT_DIR is refused as HoldoutPathBlocked specifically.
     if Path(relative_path).is_absolute():
-        assert_path_not_holdout(relative_path)
+        assert_path_not_holdout(relative_path, policy=holdout_policy)
 
     root = artifact_root.expanduser().resolve()
     # Refuse if the artifact_root itself is under holdout.
-    assert_path_not_holdout(root)
+    assert_path_not_holdout(root, policy=holdout_policy)
 
     candidate = (root / relative_path).resolve()
-    assert_path_not_holdout(candidate)
+    assert_path_not_holdout(candidate, policy=holdout_policy)
 
     if candidate != root and root not in candidate.parents:
         # Case-fold escape check already done via assert_path_not_holdout on
@@ -148,26 +155,35 @@ def _resolve_within_root(artifact_root: Path, relative_path: str) -> Path:
     return candidate
 
 
-def _gate_manifest_entry(entry: ManifestEntry, *, manifest_parent: Path) -> None:
+def _gate_manifest_entry(
+    entry: ManifestEntry,
+    *,
+    manifest_parent: Path,
+    holdout_policy: HoldoutPolicy,
+) -> None:
     """Dual path+date gate for one manifest row (before any shard open)."""
     # Date / partition-year gate (NICE-1: refuse before parquet open).
-    assert_partition_year_not_holdout(entry.year)
+    assert_partition_year_not_holdout(entry.year, policy=holdout_policy)
 
     rel = entry.relative_path
     if Path(rel).is_absolute():
-        assert_path_not_holdout(rel)
+        assert_path_not_holdout(rel, policy=holdout_policy)
     else:
-        assert_path_not_holdout(manifest_parent / rel)
+        assert_path_not_holdout(manifest_parent / rel, policy=holdout_policy)
 
 
-def load_manifest(manifest_path: Path | str) -> list[ManifestEntry]:
+def load_manifest(
+    manifest_path: Path | str,
+    *,
+    holdout_policy: HoldoutPolicy = DEFAULT_HOLDOUT_POLICY,
+) -> list[ManifestEntry]:
     """Load a manifest JSON list under dual holdout gates.
 
     Gates (both required — brief §4-3):
     * **path**: manifest path itself + each entry's relative_path
     * **date**: each entry's partition ``year`` must not intersect HOLDOUT_WINDOW
     """
-    path = assert_path_not_holdout(manifest_path)
+    path = assert_path_not_holdout(manifest_path, policy=holdout_policy)
     if not path.is_file():
         raise ShardFileMissingError(f"manifest missing at {path}")
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -177,7 +193,11 @@ def load_manifest(manifest_path: Path | str) -> list[ManifestEntry]:
     entries: list[ManifestEntry] = []
     for item in raw:
         entry = ManifestEntry.from_dict(item)
-        _gate_manifest_entry(entry, manifest_parent=parent)
+        _gate_manifest_entry(
+            entry,
+            manifest_parent=parent,
+            holdout_policy=holdout_policy,
+        )
         entries.append(entry)
     return entries
 
@@ -188,6 +208,8 @@ def load_shard(
     *,
     allowed_window_start: date | str | None = None,
     allowed_window_end: date | str | None = None,
+    contract_path: Path | str = CONTRACT_PATH,
+    holdout_policy: HoldoutPolicy = DEFAULT_HOLDOUT_POLICY,
 ) -> pa.Table:
     """Load one parquet shard under manifest SHA-256 gate + holdout dual gate.
 
@@ -203,10 +225,14 @@ def load_shard(
     6. caller / default exploration window date gate
     """
     # Date gate first — refuse holdout partition years without opening files.
-    assert_partition_year_not_holdout(entry.year)
+    assert_partition_year_not_holdout(entry.year, policy=holdout_policy)
 
     root = Path(artifact_root)
-    path = _resolve_within_root(root, entry.relative_path)
+    path = _resolve_within_root(
+        root,
+        entry.relative_path,
+        holdout_policy=holdout_policy,
+    )
     if not path.is_file():
         raise ShardFileMissingError(f"shard file missing at {path}")
 
@@ -221,7 +247,7 @@ def load_shard(
 
     table = pq.read_table(pa.BufferReader(data))
     try:
-        validate_table_schema(table, entry.dataset)
+        validate_table_schema(table, entry.dataset, contract_path=contract_path)
     except SchemaMismatchError as exc:
         raise LoaderError(str(exc)) from exc
 
@@ -231,19 +257,31 @@ def load_shard(
             f"manifest={entry.row_count} actual={table.num_rows}"
         )
 
-    _assert_no_holdout_rows(table)
+    _assert_no_holdout_rows(table, holdout_policy=holdout_policy)
 
     # Optional caller window: still dual-gated against holdout.
     if allowed_window_start is not None and allowed_window_end is not None:
-        assert_range_not_holdout(allowed_window_start, allowed_window_end)
+        assert_range_not_holdout(
+            allowed_window_start,
+            allowed_window_end,
+            policy=holdout_policy,
+        )
     else:
         # Default exploration window — never opens holdout by accident.
-        assert_range_not_holdout(EXPLORATION_WINDOW.start, EXPLORATION_WINDOW.end)
+        assert_range_not_holdout(
+            EXPLORATION_WINDOW.start,
+            EXPLORATION_WINDOW.end,
+            policy=holdout_policy,
+        )
 
     return table
 
 
-def _assert_no_holdout_rows(table: pa.Table) -> None:
+def _assert_no_holdout_rows(
+    table: pa.Table,
+    *,
+    holdout_policy: HoldoutPolicy,
+) -> None:
     """Date-level holdout gate over every session_date in the table."""
     if "session_date" not in table.column_names:
         raise LoaderError("table missing session_date column")
@@ -251,7 +289,7 @@ def _assert_no_holdout_rows(table: pa.Table) -> None:
     for i in range(len(col)):
         raw = col[i].as_py()
         try:
-            assert_date_not_holdout(raw)
+            assert_date_not_holdout(raw, policy=holdout_policy)
         except HoldoutAccessError:
             raise
         # Bound check also rejects non-ISO via parse_iso_date inside guard.
