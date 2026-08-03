@@ -1,0 +1,34 @@
+[
+  {
+    "dataset": "ohlcv",
+    "file_sha256": "939d46a6c5f301cf56c35f5971511167acdac9343012229c2a6a83d74da86e77",
+    "market": "KOSDAQ",
+    "relative_path": "ohlcv/KOSDAQ/2023/bars.parquet",
+    "row_count": 66,
+    "year": 2023
+  },
+  {
+    "dataset": "ohlcv",
+    "file_sha256": "c2f7156a050e0475240e39e09cc15588c854cadd71e1c3b33e537b16c8666396",
+    "market": "KOSPI",
+    "relative_path": "ohlcv/KOSPI/2023/bars.parquet",
+    "row_count": 99,
+    "year": 2023
+  },
+  {
+    "dataset": "membership",
+    "file_sha256": "72e9c399cbd52a6bf7729f3396a4f595d0dc61f176ce1a5227c1a9da5a89b55d",
+    "market": "KOSDAQ",
+    "relative_path": "membership/KOSDAQ/2023/members.parquet",
+    "row_count": 66,
+    "year": 2023
+  },
+  {
+    "dataset": "membership",
+    "file_sha256": "dfc6126f093e13c4cabd6541345fa3691a1a62f48159702af1cc21f7fb65d592",
+    "market": "KOSPI",
+    "relative_path": "membership/KOSPI/2023/members.parquet",
+    "row_count": 99,
+    "year": 2023
+  }
+]

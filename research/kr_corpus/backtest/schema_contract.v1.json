@@ -1,0 +1,88 @@
+{
+  "contract_id": "kr-corpus-v1.harness-schema.v1",
+  "schema_origin": "INFERRED_FROM_LITERALS",
+  "schema_origin_note": "INFERRED from kr-corpus-v1 brief §3 literals + harness Stage A needs (trading_value for value_rank baseline). NOT yet contrasted against a real terminal corpus manifest. Stage B must loud-fail on any mismatch; silent coercion is forbidden.",
+  "corpus_schema_source": "kr-corpus-v1 brief §3 literals",
+  "frequency": "1d",
+  "price_mode": "adjusted",
+  "timezone": "Asia/Seoul",
+  "session_calendar": "XKRX",
+  "markets_allowed": ["KOSPI", "KOSDAQ"],
+  "markets_excluded": ["KONEX"],
+  "partition_keys": ["dataset", "market", "year"],
+  "partition_layout": "dataset/market/year",
+  "membership_storage": "separate_from_ohlcv",
+  "windows": {
+    "start_date": "2015-01-01",
+    "cutoff_session": "2026-07-31",
+    "exploration": {"start": "2015-01-01", "end": "2024-12-31"},
+    "train": {"start": "2015-01-01", "end": "2022-12-31"},
+    "validation": {"start": "2023-01-01", "end": "2024-12-31"},
+    "historical_oos_holdout": {"start": "2025-01-01", "end": "2026-07-31"}
+  },
+  "datasets": {
+    "ohlcv": {
+      "required_columns": [
+        "symbol",
+        "session_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "trading_value",
+        "market"
+      ],
+      "column_dtypes": {
+        "symbol": "string",
+        "session_date": "string",
+        "open": "float64",
+        "high": "float64",
+        "low": "float64",
+        "close": "float64",
+        "volume": "float64",
+        "trading_value": "float64",
+        "market": "string"
+      },
+      "notes": {
+        "session_date": "ISO date YYYY-MM-DD, Asia/Seoul session date",
+        "trading_value": "inferred field required by BASELINE_SMOKE=value_rank_topN_D5 (거래대금); may need remap if real corpus uses a different column name — that remap must be an explicit contract revision, not silent coercion",
+        "price_mode": "adjusted"
+      }
+    },
+    "membership": {
+      "required_columns": [
+        "symbol",
+        "session_date",
+        "market",
+        "member",
+        "status"
+      ],
+      "column_dtypes": {
+        "symbol": "string",
+        "session_date": "string",
+        "market": "string",
+        "member": "bool",
+        "status": "string"
+      },
+      "status_enum": ["listed", "delisted", "suspended"],
+      "notes": {
+        "member": "true iff symbol is in the investable universe for that session_date",
+        "status": "listed|delisted|suspended — delisted requires explicit terminal handling (silent drop forbidden)",
+        "pit": "universe at session t is built only from membership rows with session_date <= t; live DB universe flags are forbidden"
+      }
+    }
+  },
+  "manifest": {
+    "required_fields": [
+      "relative_path",
+      "file_sha256",
+      "row_count",
+      "dataset",
+      "market",
+      "year"
+    ],
+    "file_sha256": "hex lowercase SHA-256 of full file bytes; verified BEFORE parquet parse",
+    "gate_policy": "mismatch => hard refusal (exception), never warning-and-continue"
+  }
+}
