@@ -370,6 +370,47 @@ def test_unfinished_bar_is_not_storable():
     assert bars.is_finished_bar(closed_bar, 60, now) is True
 
 
+def test_chain_snapshot_taken_inside_the_loop_is_premature():
+    """Regression: the `complete` flag was always False in the first 1Min run.
+
+    `termination` is only set after the final yield resumes, so a snapshot taken
+    inside the consuming loop reads "unstarted" and marks every chain
+    incomplete. The fix is to snapshot after the loop is exhausted. This test
+    pins both halves of that behaviour so the metric cannot silently go blind
+    again -- a page-chain check that always says "incomplete" gives no more
+    assurance than one that always says "complete".
+    """
+
+    class _FakeClient:
+        counter = alpaca_data.RequestCounter()
+
+        def iter_bars(self, symbols, timeframe, start, end):
+            chain = alpaca_data.PageChain(symbol=symbols[0], timeframe=timeframe)
+            for page in range(2):
+                chain.pages += 1
+                token = "tok" if page == 0 else None
+                chain.last_token = token
+                yield {"bars": {}, "next_page_token": token}, chain
+                if not token:
+                    chain.termination = "null_next_token"
+                    return
+
+    client = _FakeClient()
+
+    inside = None
+    for _payload, chain in client.iter_bars(["AAPL"], "1Min", "s", "e"):
+        inside = chain.as_dict()  # the old, premature snapshot
+    assert inside["complete"] is False, "premature snapshot cannot see termination"
+
+    live = None
+    for _payload, chain in client.iter_bars(["AAPL"], "1Min", "s", "e"):
+        live = chain
+    after = live.as_dict()  # the fixed, post-exhaustion snapshot
+    assert after["complete"] is True
+    assert after["termination"] == "null_next_token"
+    assert after["pages"] == 2
+
+
 def test_page_chain_marks_incomplete_when_not_exhausted():
     chain = alpaca_data.PageChain(symbol="AAPL", timeframe="1Min")
     chain.pages, chain.termination = 3, "budget"

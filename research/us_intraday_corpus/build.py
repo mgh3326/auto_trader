@@ -257,6 +257,7 @@ def run_phase(
 
             collected: list[dict[str, Any]] = []
             chain_dict: dict[str, Any] | None = None
+            live_chain: alpaca_data.PageChain | None = None
             try:
                 for payload, chain in client.iter_bars(batch, timeframe, start, end):
                     for sym, raw in (payload.get("bars") or {}).items():
@@ -278,7 +279,15 @@ def run_phase(
                         collected.extend(normalized)
                         if normalized:
                             seen_with_data.add(sym)
-                    chain_dict = chain.as_dict()
+                    # Keep a reference, do NOT snapshot here: `termination` is
+                    # only set after the final yield resumes, so a snapshot
+                    # taken inside the loop always reads "unstarted" and marks
+                    # every chain incomplete. Snapshot after the loop instead.
+                    live_chain = chain
+                # Loop exhausted: the generator has set `termination`, so this
+                # snapshot reflects how the chain actually ended (§3.9).
+                if live_chain is not None:
+                    chain_dict = live_chain.as_dict()
             except Exception as exc:  # explicit gap, never a silent drop (§3.5)
                 stats.gaps.append(
                     {
@@ -289,8 +298,8 @@ def run_phase(
                         "reason": f"{year}: {type(exc).__name__}: {exc}",
                     }
                 )
-                if chain_dict:
-                    stats.page_chains.append(chain_dict)
+                if live_chain is not None:
+                    stats.page_chains.append(live_chain.as_dict())
                 if isinstance(exc, RuntimeError) and "budget exhausted" in str(exc):
                     raise
                 continue
