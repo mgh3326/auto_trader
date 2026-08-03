@@ -156,11 +156,18 @@ def _normalize_strategy_for_comparison(value: str) -> str:
     """Canonicalize strategy text only for placeholder comparison.
 
     NFKC folds fullwidth letters/spaces, ``casefold`` handles case variants,
-    and removing format/control characters prevents zero-width bypasses.
+    and removing format/control/mark/symbol decorations prevents Unicode
+    placeholder bypasses.  Unicode has no ``Mo`` category; all existing
+    ``M*`` mark categories and ``S*`` symbol categories are handled here.
     """
     normalized = unicodedata.normalize("NFKC", value).translate(_COMMON_CONFUSABLES)
     normalized = "".join(
-        char for char in normalized if unicodedata.category(char) not in {"Cc", "Cf"}
+        char
+        for char in normalized
+        if not (
+            unicodedata.category(char).startswith(("M", "S"))
+            or unicodedata.category(char) in {"Cc", "Cf"}
+        )
     )
     return normalized.strip().casefold()
 
