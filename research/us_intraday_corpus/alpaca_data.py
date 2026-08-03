@@ -53,26 +53,84 @@ def assert_data_host(url: str) -> str:
     return host
 
 
-def load_credentials() -> tuple[str, str]:
-    """Resolve read-only market-data credentials from the environment.
+# Credential files this builder must never read. `.env.prod` carries the full
+# production surface (DB URLs, trading base URLs, other brokers) and the dev
+# `.env` is likewise off-limits, so both are denied by name rather than merely
+# not consulted.
+FORBIDDEN_ENV_FILES = ("/.env.prod", "/.env.dev", "/.env")
 
-    Deliberately does NOT read `.env.prod` -- §4 forbids it. Creating a new
-    secret is likewise forbidden. If nothing is present we raise, and the
-    caller reports BLOCKED_PRECONDITION rather than inventing a fallback.
+SANCTIONED_ENV_FILE = (
+    "/Users/mgh3326/services/auto_trader/shared/.env.alpaca-data-readonly.native"
+)
+
+
+class ForbiddenEnvFileError(RuntimeError):
+    """Raised when credentials are sourced from a denied env file."""
+
+
+def assert_env_file_allowed(path: str) -> str:
+    """Reject any credential file outside the sanctioned read-only one."""
+    resolved = os.path.abspath(path)
+    for denied in FORBIDDEN_ENV_FILES:
+        if resolved.endswith(denied):
+            raise ForbiddenEnvFileError(
+                f"refusing to read credentials from {resolved}: this builder is "
+                "restricted to the dedicated read-only market-data env file."
+            )
+    return resolved
+
+
+def load_env_file(path: str) -> dict[str, str]:
+    """Parse a KEY=VALUE env file. Values are never logged or echoed."""
+    assert_env_file_allowed(path)
+    values: dict[str, str] = {}
+    with open(path, encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
+def load_credentials() -> tuple[str, str]:
+    """Resolve read-only market-data credentials.
+
+    Source order, narrowest first:
+      1. `ENV_FILE` -- must point at the sanctioned read-only file; `.env.prod`,
+         `.env.dev` and `.env` are refused by `assert_env_file_allowed`.
+      2. the sanctioned file at its default path.
+      3. the process environment.
+
+    Creating a new secret is forbidden, so absence raises and the caller reports
+    BLOCKED_PRECONDITION rather than inventing a fallback.
     """
-    key = os.environ.get("ALPACA_DATA_API_KEY") or os.environ.get(
-        "ALPACA_PAPER_API_KEY"
-    )
-    secret = os.environ.get("ALPACA_DATA_API_SECRET") or os.environ.get(
-        "ALPACA_PAPER_API_SECRET"
-    )
+    sources: list[dict[str, str]] = []
+
+    env_file = os.environ.get("ENV_FILE")
+    if env_file:
+        sources.append(load_env_file(env_file))
+    elif os.path.exists(SANCTIONED_ENV_FILE):
+        sources.append(load_env_file(SANCTIONED_ENV_FILE))
+    sources.append(dict(os.environ))
+
+    def pick(*names: str) -> str | None:
+        for source in sources:
+            for name in names:
+                if source.get(name):
+                    return source[name]
+        return None
+
+    key = pick("ALPACA_DATA_API_KEY", "ALPACA_PAPER_API_KEY")
+    secret = pick("ALPACA_DATA_API_SECRET", "ALPACA_PAPER_API_SECRET")
     if not key or not secret:
         raise AlpacaCredentialsMissing(
-            "no Alpaca market-data credentials in the environment "
-            "(looked for ALPACA_DATA_API_KEY/_SECRET and "
-            "ALPACA_PAPER_API_KEY/_SECRET). Brief §1 requires reusing existing "
-            "credentials and §4 forbids .env.prod and new secrets, so this is a "
-            "precondition to escalate, not to work around."
+            "no Alpaca market-data credentials available (looked for "
+            "ALPACA_DATA_API_KEY/_SECRET and ALPACA_PAPER_API_KEY/_SECRET in "
+            f"ENV_FILE, {SANCTIONED_ENV_FILE}, and the process environment). "
+            "Creating a new secret is forbidden, so this is a precondition to "
+            "escalate, not to work around."
         )
     return key, secret
 

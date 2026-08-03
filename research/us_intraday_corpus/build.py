@@ -10,8 +10,21 @@ Order of operations is fixed by the brief:
          BUILT_WITH_GAPS at a clean boundary.
 3. §3.11 build 1Min for the pre-selected top 500.
 
-Rows are routed to `dataset/` or `holdout/` purely by session_date, and the
-holdout side is written and never read back.
+Work is decomposed into **units** of (timeframe, fetch_year, batch) and each
+completed unit drops a marker in `_staging/`. A 7-hour run that dies at hour 5
+resumes from the last finished unit instead of starting over.
+
+Measured page geometry (see the job's progress log) drives two design choices:
+
+* the 10,000-row page cap is shared across *all* symbols in a request, so
+  batching symbols does not multiply throughput. Request count tracks total
+  rows. 1Hour batches 100 symbols/request purely to amortise the per-symbol
+  minimum; 1Min fetches per symbol because a year of one symbol already fills
+  ~11 pages, and per-symbol units keep memory bounded and resume granular.
+* rows are routed to `dataset/` vs `holdout/` by **session_date**, not by the
+  UTC year they were fetched under. A bar at 2024-12-31 19:00 ET arrives as
+  2025-01-01 UTC but belongs to the 2024 exploration session -- routing on the
+  fetch year would silently leak it into the seal.
 """
 
 from __future__ import annotations
@@ -21,10 +34,16 @@ import csv
 import datetime as _dt
 import json
 import time
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from . import alpaca_data, bars, config, finalize, labels, writer
+
+# Symbols per request. See module docstring: this amortises the per-symbol
+# minimum, it does not raise throughput.
+BATCH_1H = 100
+BATCH_1M = 1
 
 
 @dataclass
@@ -38,6 +57,8 @@ class PhaseStats:
     gaps: list[dict[str, Any]] = field(default_factory=list)
     page_chains: list[dict[str, Any]] = field(default_factory=list)
     ohlc_violations: int = 0
+    units_done: int = 0
+    units_resumed: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -53,6 +74,8 @@ class PhaseStats:
             "page_chains_incomplete": sum(
                 1 for c in self.page_chains if not c["complete"]
             ),
+            "units_done": self.units_done,
+            "units_resumed_from_marker": self.units_resumed,
         }
 
 
@@ -88,80 +111,112 @@ def load_top500() -> list[str]:
 def project_budget(measurement: dict[str, Any]) -> dict[str, Any]:
     """Project total requests from MEASURED page geometry (§3.1).
 
-    Nothing here is assumed: `symbols_per_request` and `bars_per_page` both come
-    from `probe_multi_symbol_form`, because guessing them moves the projection
-    by an order of magnitude.
+    Nothing here is assumed. `bars_per_page`, the per-session bar densities and
+    the fraction of the universe carrying data all come from live measurement,
+    because guessing them moves the projection by an order of magnitude.
     """
-    syms_per_req = max(1, int(measurement["symbols_per_request_measured"]))
-    bars_per_page = max(1, int(measurement.get("bars_per_page_measured") or 10_000))
+    page = max(1, int(measurement["bars_per_page_measured"]))
+    h_density = float(measurement["h1_bars_per_session_measured"])
+    m_density = float(measurement["m1_bars_per_session_measured"])
+    coverage = float(measurement["universe_with_data_fraction_measured"])
 
     years = (config.CUTOFF_DATE - config.START_DATE).days / 365.25
-    sessions = years * 252
+    sessions_per_year = 252
+    n_years = config.CUTOFF_DATE.year - config.START_DATE.year + 1
+    n_1h = config.UNIVERSE_COUNT * coverage
 
-    # ~16 hourly bars/session (04:00-20:00 ET incl. extended hours)
-    rows_1h_per_symbol = sessions * 16
-    rows_1m_per_symbol = sessions * 960  # ~16h * 60
-
-    def reqs(n_symbols: int, rows_per_symbol: float) -> int:
-        total_rows = n_symbols * rows_per_symbol
-        pages = total_rows / bars_per_page
-        # multi-symbol batching only helps while a batch fits in one page
-        return int(pages / max(1, syms_per_req) + n_symbols)
-
-    r1h = reqs(config.UNIVERSE_COUNT, rows_1h_per_symbol)
-    r1m = reqs(config.TOP500_COUNT, rows_1m_per_symbol)
-    total = r1h + r1m
+    r1h = sum(
+        (n_1h * sessions_per_year * h_density) / page + (n_1h / BATCH_1H)
+        for _ in range(n_years)
+    )
+    r1m = sum(
+        (config.TOP500_COUNT * sessions_per_year * m_density) / page
+        + config.TOP500_COUNT
+        for _ in range(n_years)
+    )
+    total = int(r1h + r1m)
+    rows_total = (
+        n_1h * years * sessions_per_year * h_density
+        + config.TOP500_COUNT * years * sessions_per_year * m_density
+    )
 
     return {
-        "symbols_per_request_measured": syms_per_req,
-        "bars_per_page_measured": bars_per_page,
-        "requests_1h_projected": r1h,
-        "requests_1m_projected": r1m,
+        "bars_per_page_measured": page,
+        "h1_bars_per_session_measured": h_density,
+        "m1_bars_per_session_measured": m_density,
+        "universe_with_data_fraction_measured": coverage,
+        "requests_1h_projected": int(r1h),
+        "requests_1m_projected": int(r1m),
         "requests_total_projected": total,
         "max_requests": config.MAX_REQUESTS,
         "within_budget": total <= config.MAX_REQUESTS,
-        "projected_wall_clock_hours": round(
-            total * config.MIN_REQUEST_INTERVAL_SEC / 3600, 3
+        "budget_margin_pct": round(
+            (config.MAX_REQUESTS - total) / config.MAX_REQUESTS * 100, 1
         ),
+        "projected_wall_clock_hours": round(
+            total * config.MIN_REQUEST_INTERVAL_SEC / 3600, 2
+        ),
+        "max_wall_clock_hours": config.MAX_WALL_CLOCK_HOURS,
+        "rows_total_projected": int(rows_total),
     }
 
 
+def year_windows() -> Iterator[tuple[int, str, str]]:
+    """UTC fetch windows, one per calendar year, clipped to START..CUTOFF."""
+    for year in range(config.START_DATE.year, config.CUTOFF_DATE.year + 1):
+        start = max(_dt.date(year, 1, 1), config.START_DATE)
+        end = min(_dt.date(year, 12, 31), config.CUTOFF_DATE)
+        if start > end:
+            continue
+        yield year, f"{start}T00:00:00Z", f"{end}T23:59:59Z"
+
+
+def _chunks(items: Sequence[str], size: int) -> Iterator[list[str]]:
+    for i in range(0, len(items), size):
+        yield list(items[i : i + size])
+
+
+def _marker(label: str, year: int, batch_id: int):
+    return config.STAGING_DIR / "units" / f"{label}_{year}_{batch_id}.done"
+
+
 def _route_and_write(
-    rows: list[dict[str, Any]], timeframe: str, stats: PhaseStats
+    rows: list[dict[str, Any]], label: str, year: int, batch_id: int, stats: PhaseStats
 ) -> None:
-    """Split rows by session_date and write exploration/holdout partitions."""
+    """Split rows by session_date and write exploration/holdout partitions.
+
+    Routing is on `session_date`, never on the fetch year -- see module docstring.
+    """
     import pyarrow as pa
 
     if not rows:
         return
 
-    exploration = [r for r in rows if not config.is_holdout_date(r["session_date"])]
-    holdout = [r for r in rows if config.is_holdout_date(r["session_date"])]
+    by_target: dict[tuple[Any, int], list[dict[str, Any]]] = {}
+    for row in rows:
+        day = row["session_date"]
+        root = config.HOLDOUT_DIR if config.is_holdout_date(day) else config.DATASET_DIR
+        by_target.setdefault((root, day.year), []).append(row)
 
-    for bucket, root in (
-        (exploration, config.DATASET_DIR),
-        (holdout, config.HOLDOUT_DIR),
+    for (root, session_year), bucket in sorted(
+        by_target.items(), key=lambda kv: (str(kv[0][0]), kv[0][1])
     ):
-        if not bucket:
-            continue
-        by_year: dict[int, list[dict[str, Any]]] = {}
         for row in bucket:
-            by_year.setdefault(row["session_date"].year, []).append(row)
-        for year, year_rows in sorted(by_year.items()):
-            table = pa.Table.from_pylist(year_rows)
-            symbol = year_rows[0]["symbol"]
-            path = (
-                root
-                / f"freq={timeframe}"
-                / "market=us"
-                / f"year={year}"
-                / f"{symbol}.parquet"
-            )
-            result = writer.write_parquet_atomic(table, path)
-            finalize.register_digest(path, result.sha256)
-
-    stats.rows_exploration += len(exploration)
-    stats.rows_holdout += len(holdout)
+            row["session_date"] = str(row["session_date"])
+        table = pa.Table.from_pylist(bucket)
+        path = (
+            root
+            / f"freq={label}"
+            / "market=us"
+            / f"year={session_year}"
+            / f"part-{year}-{batch_id:05d}.parquet"
+        )
+        result = writer.write_parquet_atomic(table, path)
+        finalize.register_digest(path, result.sha256)
+        if root == config.HOLDOUT_DIR:
+            stats.rows_holdout += len(bucket)
+        else:
+            stats.rows_exploration += len(bucket)
 
 
 def run_phase(
@@ -169,56 +224,112 @@ def run_phase(
     symbols: list[str],
     timeframe: str,
     label: str,
+    batch_size: int,
+    stats: PhaseStats | None = None,
 ) -> PhaseStats:
-    """Fetch one timeframe for `symbols`, writing partitions as we go."""
-    stats = PhaseStats(timeframe=label)
-    start = f"{config.START_DATE}T00:00:00Z"
-    end = f"{config.CUTOFF_DATE}T23:59:59Z"
+    """Fetch one timeframe across all years, unit by unit, with resume."""
+    stats = stats or PhaseStats(timeframe=label)
+    stats.symbols_attempted = len(symbols)
     now_utc = _dt.datetime.now(_dt.UTC)
     tf_minutes = 60 if timeframe == "1Hour" else 1
+    seen_with_data: set[str] = set()
 
-    for symbol in symbols:
-        stats.symbols_attempted += 1
-        collected: list[dict[str, Any]] = []
-        chain_dict: dict[str, Any] | None = None
-        try:
-            for payload, chain in client.iter_bars([symbol], timeframe, start, end):
-                raw = (payload.get("bars") or {}).get(symbol) or []
-                normalized = bars.normalize_bars(symbol, raw)
-                # §3.8 -- never store an unfinished bar
-                normalized = [
-                    r
-                    for r in normalized
-                    if bars.is_finished_bar(r["ts_utc"], tf_minutes, now_utc)
-                ]
-                collected.extend(normalized)
-                chain_dict = chain.as_dict()
-        except Exception as exc:  # explicit gap, never a silent drop (§3.5)
-            stats.gaps.append(
-                {
-                    "symbol": symbol,
-                    "timeframe": label,
-                    "reason": f"{type(exc).__name__}: {exc}",
-                }
-            )
+    for year, start, end in year_windows():
+        for batch_id, batch in enumerate(_chunks(symbols, batch_size)):
+            marker = _marker(label, year, batch_id)
+            if marker.exists():
+                # Replay which symbols this unit found data for. Without this a
+                # resumed run would see an empty set and fabricate a
+                # "no_bars_in_any_year" gap for every symbol it skipped.
+                try:
+                    seen_with_data.update(
+                        json.loads(marker.read_text(encoding="utf-8")).get(
+                            "symbols", []
+                        )
+                    )
+                except (json.JSONDecodeError, OSError):
+                    stats.gaps.append(
+                        {
+                            "symbol": f"batch{batch_id}",
+                            "timeframe": label,
+                            "reason": f"{year}: unreadable resume marker {marker.name}",
+                        }
+                    )
+                stats.units_resumed += 1
+                continue
+
+            collected: list[dict[str, Any]] = []
+            chain_dict: dict[str, Any] | None = None
+            try:
+                for payload, chain in client.iter_bars(batch, timeframe, start, end):
+                    for sym, raw in (payload.get("bars") or {}).items():
+                        normalized = bars.normalize_bars(sym, raw)
+                        # §3.8 -- never store an unfinished bar
+                        # §3.8 never store an unfinished bar; and keep the
+                        # corpus inside its declared session window. A bar at
+                        # 2016-01-01T00:00Z is session 2015-12-31 in New York,
+                        # which is outside START..CUTOFF -- excluded here rather
+                        # than silently creating an out-of-window partition.
+                        normalized = [
+                            r
+                            for r in normalized
+                            if bars.is_finished_bar(r["ts_utc"], tf_minutes, now_utc)
+                            and config.START_DATE
+                            <= r["session_date"]
+                            <= config.CUTOFF_DATE
+                        ]
+                        collected.extend(normalized)
+                        if normalized:
+                            seen_with_data.add(sym)
+                    chain_dict = chain.as_dict()
+            except Exception as exc:  # explicit gap, never a silent drop (§3.5)
+                stats.gaps.append(
+                    {
+                        "symbol": ",".join(batch)
+                        if len(batch) <= 3
+                        else f"batch{batch_id}",
+                        "timeframe": label,
+                        "reason": f"{year}: {type(exc).__name__}: {exc}",
+                    }
+                )
+                if chain_dict:
+                    stats.page_chains.append(chain_dict)
+                if isinstance(exc, RuntimeError) and "budget exhausted" in str(exc):
+                    raise
+                continue
+
             if chain_dict:
                 stats.page_chains.append(chain_dict)
-            continue
 
-        if chain_dict:
-            stats.page_chains.append(chain_dict)
+            stats.ohlc_violations += len(bars.ohlc_violations(collected))
+            unit_symbols = sorted({r["symbol"] for r in collected})
+            _route_and_write(collected, label, year, batch_id, stats)
 
-        if not collected:
-            stats.symbols_empty += 1
-            stats.gaps.append(
-                {"symbol": symbol, "timeframe": label, "reason": "no_bars_returned"}
+            # Marker is written only after the parquet lands, so a crash between
+            # the two re-does the unit rather than skipping it.
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(
+                json.dumps({"rows": len(collected), "symbols": unit_symbols}),
+                encoding="utf-8",
             )
-            continue
+            stats.units_done += 1
 
-        stats.symbols_with_data += 1
-        stats.ohlc_violations += len(bars.ohlc_violations(collected))
-        _route_and_write(collected, label, stats)
+            if stats.units_done % 25 == 0:
+                finalize.save_registry()
+                print(
+                    f"[{label}] {year} batch {batch_id} | units={stats.units_done} "
+                    f"rows_expl={stats.rows_exploration} rows_hold={stats.rows_holdout} "
+                    f"req={client.counter.count}",
+                    flush=True,
+                )
 
+    stats.symbols_with_data = len(seen_with_data)
+    stats.symbols_empty = len(symbols) - len(seen_with_data)
+    for sym in symbols:
+        if sym not in seen_with_data:
+            stats.gaps.append(
+                {"symbol": sym, "timeframe": label, "reason": "no_bars_in_any_year"}
+            )
     return stats
 
 
@@ -232,21 +343,54 @@ def write_checkpoint(name: str, payload: dict[str, Any]) -> None:
     labels.write_labelled_json(config.REPORTS_DIR / f"checkpoint_{name}.json", payload)
 
 
+def measure(client: alpaca_data.AlpacaDataClient) -> dict[str, Any]:
+    """Measure everything the budget projection depends on (§3.1). No guessing."""
+    import statistics
+    from collections import defaultdict
+
+    m = alpaca_data.probe_multi_symbol_form(client, ["AAPL", "MSFT", "NVDA"])
+
+    page = client.fetch_bars_page(
+        ["AAPL"], "1Min", "2024-01-02T00:00:00Z", "2024-03-01T00:00:00Z", limit=10_000
+    )
+    m["bars_per_page_measured"] = len((page.get("bars") or {}).get("AAPL") or [])
+
+    def density(symbols: list[str], timeframe: str) -> tuple[float, float]:
+        totals: dict[str, int] = defaultdict(int)
+        for payload, _chain in client.iter_bars(
+            symbols, timeframe, "2024-03-04T00:00:00Z", "2024-03-09T00:00:00Z"
+        ):
+            for sym, rows in (payload.get("bars") or {}).items():
+                totals[sym] += len(rows)
+        per_session = [v / 5 for v in totals.values()]
+        return (
+            statistics.mean(per_session) if per_session else 0.0,
+            len(totals) / len(symbols),
+        )
+
+    universe = load_universe()
+    h_sample = universe[:: len(universe) // 50][:50]
+    h_density, coverage = density(h_sample, "1Hour")
+    m["h1_bars_per_session_measured"] = round(h_density, 2)
+    m["universe_with_data_fraction_measured"] = round(coverage, 3)
+    m["h1_sample_size"] = len(h_sample)
+
+    m_sample = load_top500()[::25][:20]
+    m_density, _ = density(m_sample, "1Min")
+    m["m1_bars_per_session_measured"] = round(m_density, 1)
+    m["m1_sample_size"] = len(m_sample)
+    return m
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="build us-intraday-corpus-v1")
-    parser.add_argument(
-        "--probe-only",
-        action="store_true",
-        help="measure the multi-symbol form and project budget, then stop",
-    )
-    parser.add_argument(
-        "--skip-1m",
-        action="store_true",
-        help="build 1Hour only and seal at the midpoint",
-    )
+    parser.add_argument("--probe-only", action="store_true")
+    parser.add_argument("--skip-1m", action="store_true")
+    parser.add_argument("--phase", choices=["1h", "1m", "both"], default="both")
     args = parser.parse_args(argv)
 
     started = time.monotonic()
+    finalize.load_registry()
 
     try:
         client = alpaca_data.AlpacaDataClient()
@@ -255,17 +399,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"BLOCKED_PRECONDITION: {exc}")
         return 2
 
-    # --- §3.1 measure, then gate -------------------------------------------
-    measurement = alpaca_data.probe_multi_symbol_form(client, ["AAPL", "MSFT", "NVDA"])
-    page = client.fetch_bars_page(
-        ["AAPL"], "1Min", "2024-01-02T14:30:00Z", "2024-01-03T21:00:00Z"
-    )
-    measurement["bars_per_page_measured"] = len(
-        (page.get("bars") or {}).get("AAPL") or []
-    )
-
+    measurement = measure(client)
     projection = project_budget(measurement)
     write_checkpoint("budget", {"measurement": measurement, "projection": projection})
+    print(json.dumps(projection, indent=2), flush=True)
 
     if not projection["within_budget"]:
         print(
@@ -274,41 +411,45 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     if args.probe_only:
-        print(json.dumps(projection, indent=2))
         return 0
 
-    # --- 1Hour --------------------------------------------------------------
-    stats_1h = run_phase(client, load_universe(), "1Hour", "1h")
-    finalize.save_registry()
-    write_checkpoint(
-        "midpoint_1h_complete_before_1m",
-        {
-            "phase": stats_1h.as_dict(),
-            "requests_actual": client.counter.count,
-            "rate_429_count": client.counter.rate_429,
-            "wall_clock_hours": round((time.monotonic() - started) / 3600, 3),
-            "note": "1Hour complete. 1Min has NOT started; safe to seal BUILT_WITH_GAPS here.",
-        },
-    )
+    phases: list[dict[str, Any]] = []
+    all_gaps: list[dict[str, Any]] = []
+    all_chains: list[dict[str, Any]] = []
 
-    phases = [stats_1h.as_dict()]
+    if args.phase in ("1h", "both"):
+        stats_1h = run_phase(client, load_universe(), "1Hour", "1h", BATCH_1H)
+        finalize.save_registry()
+        phases.append(stats_1h.as_dict())
+        all_gaps += stats_1h.gaps
+        all_chains += stats_1h.page_chains
+        write_checkpoint(
+            "midpoint_1h_complete_before_1m",
+            {
+                "phase": stats_1h.as_dict(),
+                "requests_actual": client.counter.count,
+                "rate_429_count": client.counter.rate_429,
+                "wall_clock_hours": round((time.monotonic() - started) / 3600, 3),
+                "note": (
+                    "1Hour complete. 1Min has NOT started; this is a clean "
+                    "boundary at which the corpus can be sealed BUILT_WITH_GAPS."
+                ),
+            },
+        )
 
-    # --- 1Min ---------------------------------------------------------------
-    if not args.skip_1m:
-        stats_1m = run_phase(client, load_top500(), "1Min", "1m")
+    if args.phase in ("1m", "both") and not args.skip_1m:
+        stats_1m = run_phase(client, load_top500(), "1Min", "1m", BATCH_1M)
         finalize.save_registry()
         phases.append(stats_1m.as_dict())
-        all_chains = stats_1h.page_chains + stats_1m.page_chains
-        all_gaps = stats_1h.gaps + stats_1m.gaps
-    else:
-        all_chains = stats_1h.page_chains
-        all_gaps = stats_1h.gaps
+        all_gaps += stats_1m.gaps
+        all_chains += stats_1m.page_chains
 
     labels.write_labelled_json(
         config.REPORTS_DIR / "page_chain_integrity.json",
         {
-            "chains": all_chains,
+            "chains_total": len(all_chains),
             "incomplete": [c for c in all_chains if not c["complete"]],
+            "chains": all_chains[:2000],
         },
     )
     labels.write_labelled_csv(
@@ -331,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:
             "unfinished_bar_stored": False,
         },
     )
-    print(verdict)
+    print(verdict, flush=True)
     return 0
 
 

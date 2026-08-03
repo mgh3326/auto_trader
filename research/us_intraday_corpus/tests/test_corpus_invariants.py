@@ -255,16 +255,52 @@ def test_data_host_is_allowed():
     )
 
 
-def test_missing_credentials_raise_rather_than_falling_back(monkeypatch):
+def test_missing_credentials_raise_rather_than_falling_back(monkeypatch, tmp_path):
     for key in (
         "ALPACA_DATA_API_KEY",
         "ALPACA_DATA_API_SECRET",
         "ALPACA_PAPER_API_KEY",
         "ALPACA_PAPER_API_SECRET",
+        "ENV_FILE",
     ):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        alpaca_data, "SANCTIONED_ENV_FILE", str(tmp_path / "absent.native")
+    )
     with pytest.raises(alpaca_data.AlpacaCredentialsMissing):
         alpaca_data.load_credentials()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/Users/mgh3326/work/auto_trader/.env.prod",
+        "/Users/mgh3326/work/auto_trader/.env.dev",
+        "/Users/mgh3326/work/auto_trader/.env",
+    ],
+)
+def test_forbidden_env_files_are_denied(path):
+    """orch-mock restricted credentials to one dedicated read-only file."""
+    with pytest.raises(alpaca_data.ForbiddenEnvFileError):
+        alpaca_data.assert_env_file_allowed(path)
+
+
+def test_sanctioned_env_file_is_allowed():
+    assert alpaca_data.assert_env_file_allowed(alpaca_data.SANCTIONED_ENV_FILE)
+
+
+def test_credentials_are_read_from_env_file_without_leaking(tmp_path, monkeypatch):
+    env = tmp_path / "creds.native"
+    env.write_text(
+        "ALPACA_PAPER_API_KEY=abc123\nALPACA_PAPER_API_SECRET='sek\"ret'\n# comment\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ENV_FILE", str(env))
+    for key in ("ALPACA_DATA_API_KEY", "ALPACA_PAPER_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    key, secret = alpaca_data.load_credentials()
+    assert key == "abc123"
+    assert secret == 'sek"ret'  # quotes stripped, value preserved verbatim
 
 
 def test_request_counter_enforces_hard_cap():
