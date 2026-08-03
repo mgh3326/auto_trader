@@ -388,6 +388,7 @@ class CorpusBuilder:
         self._completed = 0
         self._total_tasks = 0
         self._last_checkpoint = "none"
+        self.store.ensure_append_only_log("errors.jsonl")
 
     def _append_progress(self, stage: str, *, force: bool = False) -> None:
         current = self.monotonic()
@@ -1255,6 +1256,10 @@ class CorpusBuilder:
                     file_records[record.relative_path] = record
         file_records[coverage_record.relative_path] = coverage_record
         file_records[gaps_record.relative_path] = gaps_record
+        error_log_record = self.store.hash_nonholdout_file(
+            "errors.jsonl", kind="error_log"
+        )
+        file_records[error_log_record.relative_path] = error_log_record
         ordered_records = [file_records[key] for key in sorted(file_records)]
         hashes_text = "".join(
             f"{record.sha256}  {record.relative_path}\n" for record in ordered_records
@@ -1337,6 +1342,7 @@ class CorpusBuilder:
             "coverage_file": coverage_record.as_dict(),
             "explicit_gaps_file": gaps_record.as_dict(),
             "explicit_gap_count": len(all_gaps),
+            "error_log": error_log_record.as_dict(),
             "validation": {
                 "duplicate_rows_stored": 0,
                 "ohlc_invariant_violations_stored": 0,

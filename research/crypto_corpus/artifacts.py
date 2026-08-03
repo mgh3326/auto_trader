@@ -261,6 +261,32 @@ class ArtifactStore:
             handle.flush()
             os.fsync(handle.fileno())
 
+    def ensure_append_only_log(self, relative_path: str) -> None:
+        """Create an empty normal-control log once, without rewriting it."""
+        normalized = Path(relative_path)
+        if normalized.parts and normalized.parts[0] == "holdout":
+            raise PermissionError("holdout files are write-only for crypto-corpus-v1")
+        path = self.root / normalized
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            with path.open("x", encoding="utf-8"):
+                pass
+
+    def hash_nonholdout_file(self, relative_path: str, *, kind: str) -> FileRecord:
+        """Record a final SHA for an append-only control file outside holdout."""
+        normalized = Path(relative_path)
+        if normalized.parts and normalized.parts[0] == "holdout":
+            raise PermissionError("holdout files are write-only for crypto-corpus-v1")
+        payload = (self.root / normalized).read_bytes()
+        return FileRecord(
+            relative_path=normalized.as_posix(),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            byte_size=len(payload),
+            row_count=None,
+            kind=kind,
+            is_holdout=False,
+        )
+
     def load_json_records(self, directory: Path) -> list[dict[str, Any]]:
         """Read non-holdout control records in deterministic order."""
         records: list[dict[str, Any]] = []

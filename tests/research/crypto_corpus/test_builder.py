@@ -169,6 +169,20 @@ def test_holdout_receipt_is_write_only_after_atomic_publication(tmp_path, monkey
         store.read_file_bytes(record["relative_path"])
 
 
+def test_empty_error_log_is_an_artifact_with_a_terminal_hash(tmp_path):
+    store = ArtifactStore(tmp_path / "artifacts")
+    store.ensure_append_only_log("errors.jsonl")
+
+    record = store.hash_nonholdout_file("errors.jsonl", kind="error_log")
+
+    assert record.relative_path == "errors.jsonl"
+    assert record.byte_size == 0
+    assert (
+        record.sha256
+        == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+
+
 def test_binance_unfinished_bar_is_rejected_before_storage():
     malformed = [
         1_735_689_600_000,
