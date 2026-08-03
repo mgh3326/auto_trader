@@ -115,38 +115,35 @@ def project_budget(measurement: dict[str, Any]) -> dict[str, Any]:
     the fraction of the universe carrying data all come from live measurement,
     because guessing them moves the projection by an order of magnitude.
     """
-    page = max(1, int(measurement["bars_per_page_measured"]))
-    h_density = float(measurement["h1_bars_per_session_measured"])
-    m_density = float(measurement["m1_bars_per_session_measured"])
-    coverage = float(measurement["universe_with_data_fraction_measured"])
+    rows_per_request = float(measurement["m1_rows_per_request_measured"])
+    rows_2016 = float(measurement["m1_rows_per_symbol_year_2016"])
+    rows_2024 = float(measurement["m1_rows_per_symbol_year_2024"])
+    already_spent = int(measurement.get("requests_already_spent", 0))
 
-    years = (config.CUTOFF_DATE - config.START_DATE).days / 365.25
-    sessions_per_year = 252
-    n_years = config.CUTOFF_DATE.year - config.START_DATE.year + 1
-    n_1h = config.UNIVERSE_COUNT * coverage
+    # Rows per symbol-year, interpolated between the two measured years and
+    # held flat after 2024. Scope C collects 1Min only, so there is no 1Hour
+    # term: see config.HOUR_DATA_GAP.
+    first, last = config.START_DATE.year, config.CUTOFF_DATE.year
+    rows_total = 0.0
+    for year in range(first, last + 1):
+        frac = min(1.0, (year - 2016) / 8) if year >= 2016 else 0.0
+        rows_total += config.TOP500_COUNT * (rows_2016 + (rows_2024 - rows_2016) * frac)
 
-    r1h = sum(
-        (n_1h * sessions_per_year * h_density) / page + (n_1h / BATCH_1H)
-        for _ in range(n_years)
-    )
-    r1m = sum(
-        (config.TOP500_COUNT * sessions_per_year * m_density) / page
-        + config.TOP500_COUNT
-        for _ in range(n_years)
-    )
-    total = int(r1h + r1m)
-    rows_total = (
-        n_1h * years * sessions_per_year * h_density
-        + config.TOP500_COUNT * years * sessions_per_year * m_density
-    )
+    r1m = rows_total / rows_per_request
+    total = int(r1m) + already_spent
 
     return {
-        "bars_per_page_measured": page,
-        "h1_bars_per_session_measured": h_density,
-        "m1_bars_per_session_measured": m_density,
-        "universe_with_data_fraction_measured": coverage,
-        "requests_1h_projected": int(r1h),
+        "scope": config.SCOPE_DECISION,
+        "m1_rows_per_request_measured": rows_per_request,
+        "m1_rows_per_symbol_year_2016": rows_2016,
+        "m1_rows_per_symbol_year_2024": rows_2024,
+        "requests_1h_projected": 0,
+        "requests_1h_note": (
+            "1Hour collection dropped under scope C -- it needs 130k-246k "
+            "requests at the measured <=416 rows/request. See data_gaps."
+        ),
         "requests_1m_projected": int(r1m),
+        "requests_already_spent": already_spent,
         "requests_total_projected": total,
         "max_requests": config.MAX_REQUESTS,
         "within_budget": total <= config.MAX_REQUESTS,
@@ -154,7 +151,7 @@ def project_budget(measurement: dict[str, Any]) -> dict[str, Any]:
             (config.MAX_REQUESTS - total) / config.MAX_REQUESTS * 100, 1
         ),
         "projected_wall_clock_hours": round(
-            total * config.MIN_REQUEST_INTERVAL_SEC / 3600, 2
+            int(r1m) * config.MIN_REQUEST_INTERVAL_SEC / 3600, 2
         ),
         "max_wall_clock_hours": config.MAX_WALL_CLOCK_HOURS,
         "rows_total_projected": int(rows_total),
@@ -343,42 +340,67 @@ def write_checkpoint(name: str, payload: dict[str, Any]) -> None:
     labels.write_labelled_json(config.REPORTS_DIR / f"checkpoint_{name}.json", payload)
 
 
+MEASUREMENT_CACHE = "measurement_1m.json"
+
+
 def measure(client: alpaca_data.AlpacaDataClient) -> dict[str, Any]:
-    """Measure everything the budget projection depends on (§3.1). No guessing."""
-    import statistics
-    from collections import defaultdict
+    """Measure what the scope-C budget depends on (§3.1). Nothing is assumed.
 
-    m = alpaca_data.probe_multi_symbol_form(client, ["AAPL", "MSFT", "NVDA"])
+    Cached to `_staging/` because each measurement costs real requests against
+    the same 80,000 budget it is protecting -- re-running it on every relaunch
+    would spend the budget on measuring instead of collecting.
 
-    page = client.fetch_bars_page(
-        ["AAPL"], "1Min", "2024-01-02T00:00:00Z", "2024-03-01T00:00:00Z", limit=10_000
+    Two lessons from the 1Hour block are baked in here:
+      * page geometry is measured PER TIMEFRAME. A bars-per-page figure taken
+        from 1Min does not transfer to 1Hour, and assuming it did is what made
+        the first projection wrong by ~29x.
+      * density is sampled across ranks AND years. A 2-symbol probe projected
+        90,750 requests (would have blocked) because NVDA is an outlier at
+        229k rows/year against a 12-symbol mean of 111k.
+    """
+    cache = config.STAGING_DIR / MEASUREMENT_CACHE
+    if cache.exists():
+        cached = json.loads(cache.read_text(encoding="utf-8"))
+        print(f"reusing cached measurement from {cache}", flush=True)
+        return cached
+
+    m: dict[str, Any] = alpaca_data.probe_multi_symbol_form(
+        client, ["AAPL", "MSFT", "NVDA"]
     )
-    m["bars_per_page_measured"] = len((page.get("bars") or {}).get("AAPL") or [])
 
-    def density(symbols: list[str], timeframe: str) -> tuple[float, float]:
-        totals: dict[str, int] = defaultdict(int)
-        for payload, _chain in client.iter_bars(
-            symbols, timeframe, "2024-03-04T00:00:00Z", "2024-03-09T00:00:00Z"
-        ):
-            for sym, rows in (payload.get("bars") or {}).items():
-                totals[sym] += len(rows)
-        per_session = [v / 5 for v in totals.values()]
-        return (
-            statistics.mean(per_session) if per_session else 0.0,
-            len(totals) / len(symbols),
-        )
+    sample = load_top500()[::42][:12]
+    m["m1_sample"] = sample
+    m["m1_sample_size"] = len(sample)
 
-    universe = load_universe()
-    h_sample = universe[:: len(universe) // 50][:50]
-    h_density, coverage = density(h_sample, "1Hour")
-    m["h1_bars_per_session_measured"] = round(h_density, 2)
-    m["universe_with_data_fraction_measured"] = round(coverage, 3)
-    m["h1_sample_size"] = len(h_sample)
+    per_year: dict[str, float] = {}
+    rows_per_request: list[float] = []
+    for year in (2016, 2024):
+        total_rows = 0
+        before = client.counter.count
+        for symbol in sample:
+            for payload, _chain in client.iter_bars(
+                [symbol], "1Min", f"{year}-01-01T00:00:00Z", f"{year}-12-31T23:59:59Z"
+            ):
+                total_rows += len((payload.get("bars") or {}).get(symbol) or [])
+        used = max(1, client.counter.count - before)
+        per_year[str(year)] = total_rows / len(sample)
+        rows_per_request.append(total_rows / used)
 
-    m_sample = load_top500()[::25][:20]
-    m_density, _ = density(m_sample, "1Min")
-    m["m1_bars_per_session_measured"] = round(m_density, 1)
-    m["m1_sample_size"] = len(m_sample)
+    m["m1_rows_per_symbol_year_2016"] = round(per_year["2016"], 1)
+    m["m1_rows_per_symbol_year_2024"] = round(per_year["2024"], 1)
+    m["m1_rows_per_request_measured"] = round(
+        sum(rows_per_request) / len(rows_per_request), 1
+    )
+    m["m1_year_ratio_2016_over_2024"] = round(per_year["2016"] / per_year["2024"], 3)
+    m["requests_spent_measuring"] = client.counter.count
+    m["pagination_model"] = (
+        "1Min is ROW-capped (~9,800 rows/request). 1Hour is TIME-chunk limited "
+        "(<=416 rows/request) and never reaches the row cap -- which is why the "
+        "full-universe hourly corpus did not fit the budget."
+    )
+
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(m, indent=2), encoding="utf-8")
     return m
 
 
