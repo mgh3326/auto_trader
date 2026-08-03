@@ -24,7 +24,7 @@ import pytest_asyncio
 from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.review import TradeForecast
+from app.models.review import AlpacaPaperOrderLedger, TradeForecast
 from app.services.invalid_sample_eligibility.contract import (
     CalibrationEligibility,
     EligibilitySubject,
@@ -41,13 +41,19 @@ pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.integration,
     pytest.mark.usefixtures("investment_reports_cleanup_lock"),
+    pytest.mark.usefixtures("_serialize_alpaca_paper_db_suites"),
 ]
+
+_WIRING_ALPACA_CLIENT_ORDER_PREFIX = "rob1036-wiring-"
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def _cleanup(
-    db_session: AsyncSession, investment_reports_cleanup_lock: AsyncSession
+    db_session: AsyncSession,
+    investment_reports_cleanup_lock: AsyncSession,
+    _serialize_alpaca_paper_db_suites,
 ):
+    del investment_reports_cleanup_lock, _serialize_alpaca_paper_db_suites
     for table in (
         "invalid_sample_cleanup_lifecycle_events",
         "invalid_sample_cleanup_bindings",
@@ -61,8 +67,23 @@ async def _cleanup(
             text(f"ALTER TABLE review.{table} ENABLE TRIGGER USER")
         )
     await db_session.execute(delete(TradeForecast))
+    await db_session.execute(
+        delete(AlpacaPaperOrderLedger).where(
+            AlpacaPaperOrderLedger.client_order_id.like(
+                f"{_WIRING_ALPACA_CLIENT_ORDER_PREFIX}%"
+            )
+        )
+    )
     await db_session.commit()
     yield
+    await db_session.execute(
+        delete(AlpacaPaperOrderLedger).where(
+            AlpacaPaperOrderLedger.client_order_id.like(
+                f"{_WIRING_ALPACA_CLIENT_ORDER_PREFIX}%"
+            )
+        )
+    )
+    await db_session.commit()
 
 
 async def _exclude_lifecycle(db_session: AsyncSession, correlation_id: str) -> None:
@@ -319,11 +340,10 @@ async def test_evidence_loader_filters_the_excluded_alpaca_row(
 ) -> None:
     """The live loader skips a ledger row bound to an excluded lifecycle."""
 
-    from app.models.review import AlpacaPaperOrderLedger
     from app.services.paper_evaluation.evidence import AuthoritativeEvidenceReader
 
     correlation_id = f"corr-{uuid.uuid4().hex[:12]}"
-    client_order_id = f"cleanup-{uuid.uuid4().hex[:12]}"
+    client_order_id = f"{_WIRING_ALPACA_CLIENT_ORDER_PREFIX}{uuid.uuid4().hex[:12]}"
     row = AlpacaPaperOrderLedger(
         client_order_id=client_order_id,
         lifecycle_correlation_id=correlation_id,

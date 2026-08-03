@@ -1,0 +1,15 @@
+{
+  "JOB_PURPOSE": "BACKTEST_HARNESS_WIRING_ONLY",
+  "fixture_id": "kr-backtest-harness-synthetic-v1",
+  "label": "PIPELINE_SMOKE_NOT_A_STRATEGY",
+  "notes": [
+    "Synthetic only \u2014 not real KR market data.",
+    "Exploration window subset; no holdout dates.",
+    "Schema is inferred from brief \u00a73 literals."
+  ],
+  "schema_origin": "INFERRED_FROM_LITERALS",
+  "window": {
+    "end": "2023-02-15",
+    "start": "2023-01-02"
+  }
+}
