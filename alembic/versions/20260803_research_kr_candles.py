@@ -98,9 +98,34 @@ def upgrade() -> None:
         """
     )
 
+    # Hypertable conversion is conditional on the timescaledb extension.
+    #
+    # Production has it (2.26.3). CI does not: the test image is
+    # postgres:15-alpine, and tests/services/paper_cohort/test_migration.py
+    # stamps at 20260714_rob849_paper_cohort and runs `upgrade head`, so this is
+    # the first timescale-dependent migration CI actually executes — the older
+    # kr_candles timescale migration sits before that stamp and never runs.
+    #
+    # The plain table above is always created, so the schema is usable either
+    # way. Where the extension is missing we skip the hypertable and the caggs
+    # and raise a WARNING rather than failing the chain or pretending success.
     op.execute(
-        "SELECT create_hypertable('research.kr_candles_1m', 'time_utc', "
-        "chunk_time_interval => INTERVAL '7 days')"
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+                PERFORM create_hypertable('research.kr_candles_1m', 'time_utc');
+                PERFORM set_chunk_time_interval(
+                    'research.kr_candles_1m', INTERVAL '7 days'
+                );
+            ELSE
+                RAISE WARNING
+                    'timescaledb absent: research.kr_candles_1m created as a plain '
+                    'table; hypertable and continuous aggregates skipped';
+            END IF;
+        END
+        $$
+        """
     )
     op.execute(
         "CREATE INDEX ix_research_kr_candles_1m_symbol_time_desc "
@@ -119,29 +144,41 @@ def upgrade() -> None:
     # Newly defined, NOT copied from public: the public caggs merge KRX and NTX
     # into a single bucket, which destroys the distinction research needs.
     for view_name, interval in CAGG_SPECS:
+        # Continuous aggregates need timescaledb; same conditional as above.
+        # $sql$ quoting keeps the inner statement readable inside the DO block.
         op.execute(
             f"""
-            CREATE MATERIALIZED VIEW research.{view_name}
-            WITH (
-                timescaledb.continuous,
-                timescaledb.materialized_only = false
-            )
-            AS
-            SELECT
-                time_bucket(INTERVAL '{interval}', time_utc, 'Asia/Seoul') AS bucket,
-                symbol,
-                venue,
-                session_segment,
-                FIRST(open, time_utc) AS open,
-                MAX(high) AS high,
-                MIN(low) AS low,
-                LAST(close, time_utc) AS close,
-                SUM(volume) AS volume,
-                SUM(value) AS value,
-                COUNT(*) AS bar_count
-            FROM research.kr_candles_1m
-            GROUP BY bucket, symbol, venue, session_segment
-            WITH NO DATA
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+                    EXECUTE $sql$
+                        CREATE MATERIALIZED VIEW research.{view_name}
+                        WITH (
+                            timescaledb.continuous,
+                            timescaledb.materialized_only = false
+                        )
+                        AS
+                        SELECT
+                            time_bucket(
+                                INTERVAL '{interval}', time_utc, 'Asia/Seoul'
+                            ) AS bucket,
+                            symbol,
+                            venue,
+                            session_segment,
+                            FIRST(open, time_utc) AS open,
+                            MAX(high) AS high,
+                            MIN(low) AS low,
+                            LAST(close, time_utc) AS close,
+                            SUM(volume) AS volume,
+                            SUM(value) AS value,
+                            COUNT(*) AS bar_count
+                        FROM research.kr_candles_1m
+                        GROUP BY bucket, symbol, venue, session_segment
+                        WITH NO DATA
+                    $sql$;
+                END IF;
+            END
+            $$
             """
         )
 
