@@ -89,7 +89,16 @@ chain.strategy
 
 - 주문으로 이어지지 **않은** 신호(`decision="no_order"`)는 gap 이 아니다 —
   분모를 유지하기 위한 증거다.
-- `previewed/failed/anomaly` 상태 행은 reconcile 을 기대하지 않는다.
+- `_PRE_RECONCILE_STATES` = `planned` · `previewed` · `failed` · `anomaly`.
+  이 4개 상태의 행은 reconcile 을 기대하지 않으므로 부재가 gap 이 아니다.
+  (이 목록은 코드와 **정확히** 일치해야 한다 — 어긋나면 그 자체가 버그다.)
+- ⚠️ `cancelled` 는 위 목록에 **없다.** 일부러다: `cancelled` 는
+  `TERMINAL_LIFECYCLE_STATES` 이고 `apply_lifecycle_transition` 이 모든 전이에
+  `last_reconcile_detail` 을, terminal 전이에 `reconciled_at` 을 기록하므로
+  **정상 취소 경로는 이미 증거를 남긴다** → 오탐 없음. 목록에 넣어버리면 증거 없는
+  `cancelled` 행까지 조용히 통과하게 된다. 고정 테스트:
+  `test_cancelled_order_does_not_report_a_false_reconcile_gap`
+  (손으로 만든 행이 아니라 실제 `mark_kis_mock_order_cancelled` 경로를 태운다).
 
 ## 6. 남은 한계
 

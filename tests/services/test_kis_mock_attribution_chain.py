@@ -24,7 +24,7 @@ from uuid import uuid4
 import pytest
 
 from app.jobs.kis_mock_reconciliation_job import run_kis_mock_reconciliation
-from app.mcp_server.tooling import order_execution
+from app.mcp_server.tooling import kis_mock_ledger, order_execution
 from app.models.review import KISMockOrderLedger
 from app.services.kis_mock_attribution import (
     MissingAttribution,
@@ -268,6 +268,47 @@ async def test_missing_reconcile_stage_is_detected(db_session):
     assert GAP_RECONCILE_MISSING in chain.gaps
 
 
+async def test_cancelled_order_does_not_report_a_false_reconcile_gap(db_session):
+    """A cancelled order is terminal, and terminal transitions leave evidence.
+
+    Raised in review: ``cancelled`` is absent from ``_PRE_RECONCILE_STATES``, so
+    would a cancelled chain be reported broken? No — and the reason is worth
+    pinning down rather than asserting. ``cancelled`` is in
+    ``TERMINAL_LIFECYCLE_STATES``, and ``apply_lifecycle_transition`` writes
+    ``last_reconcile_detail`` for every transition plus ``reconciled_at`` for
+    terminal ones. So the cancel path leaves exactly the evidence the chain
+    looks for. This drives the real cancel entrypoint, not a hand-built row, so
+    the test fails if that ever stops being true.
+    """
+    from app.mcp_server.tooling.kis_mock_ledger import mark_kis_mock_order_cancelled
+
+    symbol = f"GC-{uuid4().hex[:8]}"
+    attribution = resolve_attribution(
+        symbol=symbol, side="buy", price=1000, quantity=1, strategy="posture-v1"
+    )
+    await record_signal(
+        db_session, attribution=attribution, symbol=symbol, decision="order"
+    )
+    row = _order_row(symbol=symbol, correlation_id=attribution.correlation_id)
+    db_session.add(row)
+    await db_session.commit()
+
+    await mark_kis_mock_order_cancelled(
+        ledger_id=row.id,
+        broker_confirmed=True,
+        detail={"source": "test"},
+    )
+
+    db_session.expire_all()
+    chain = await load_attribution_chain(
+        db_session, correlation_id=attribution.correlation_id
+    )
+    assert GAP_RECONCILE_MISSING not in chain.gaps
+    assert chain.gaps == ()
+    assert chain.stage("order").detail["lifecycle_states"] == ["cancelled"]
+    assert chain.stage("reconcile").present is True
+
+
 async def test_unattributed_order_row_is_detected(db_session):
     """The exact ROB-1093 shape: the row exists but names no owner."""
     symbol = f"GU-{uuid4().hex[:8]}"
@@ -394,12 +435,13 @@ async def test_positive_control_attributed_order_does_reach_the_broker(
     monkeypatch.setattr(
         order_execution, "_record_order_history", AsyncMock(return_value=None)
     )
-    monkeypatch.setattr(
-        order_execution,
-        "_fetch_kis_mock_baseline_qty",
-        AsyncMock(return_value=Decimal("0")),
-        raising=False,
-    )
+    # Patch where it is DEFINED, not where it is used: _execute_and_record
+    # imports this inside the function body from kis_mock_ledger, so patching
+    # the order_execution namespace binds nothing. No raising=False either —
+    # a silently-absent attribute is how the wrong target went unnoticed, and
+    # the real function then reached for a broker token.
+    baseline = AsyncMock(return_value=Decimal("0"))
+    monkeypatch.setattr(kis_mock_ledger, "_fetch_kis_mock_baseline_qty", baseline)
 
     symbol = f"PC-{uuid4().hex[:8]}"
     result = await order_execution._execute_and_record(
@@ -407,6 +449,9 @@ async def test_positive_control_attributed_order_does_reach_the_broker(
     )
 
     assert len(sent) == 1, "attributed order should have been sent"
+    # Proves the patch above actually bound; a no-op patch would leave this 0
+    # and let the real broker-touching baseline fetch run instead.
+    assert baseline.await_count == 1
     correlation_id = result["correlation_id"]
     assert correlation_id
 
