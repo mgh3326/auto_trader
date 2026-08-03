@@ -9,6 +9,11 @@ This is a **pipeline integrity** probe, not a strategy:
 * exit at session ``t + holding_days`` (default 5)
 * delisted holdings force-exit with explicit terminal events
 
+**Fill / pricing assumption (same-bar, documented — not a strategy claim):**
+entry and exit lots are marked at session ``t`` **close** on the decision
+session itself (same-bar close fill). This is **not** a next-open (t+1 open)
+model. Changing that assumption is a contract change, not a silent tweak.
+
 Do **not** interpret returns, Sharpe, or rank quality. Numbers exist only to
 prove the wiring moves data end-to-end without holdout / lookahead / silent
 delist drops.

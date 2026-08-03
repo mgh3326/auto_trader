@@ -17,14 +17,23 @@ Research-only surface under `research/kr_corpus/backtest/`. Wires:
 * Holdout reads: **0**
 * Real-data smoke: **Stage B only** (separate instruction)
 
+## Fill assumption (same-bar close)
+
+Baseline smoke marks entries and exits at session **t close on the decision
+session** (same-bar close fill). It is **not** a t+1 open model. Documented
+here and in `baseline_smoke.py` so the assumption is not silent.
+
 ## Commands
 
 ```bash
 # unit tests
 uv run pytest research/kr_corpus/backtest/tests/ -v
 
-# fixture smoke (rebuilds synthetic parquet under fixtures/synthetic_v1)
+# fixture smoke — uses committed fixtures/synthetic_v1 (SHA gate real)
 cd research/kr_corpus/backtest && uv run python smoke_cli.py
+
+# optional: regenerate fixture then smoke (authoring only; not default)
+cd research/kr_corpus/backtest && uv run python smoke_cli.py --rebuild-fixture
 ```
 
 ## Reuse

@@ -3,12 +3,27 @@
 Pattern reused from ``research/alpaca_track/persistence.py::load_symbol_shard``:
 
 * resolve path within artifact root (path-escape refuse)
+* holdout **dual** gate (path case-fold + date/partition year) on every entrypoint
 * read file bytes **once**
 * SHA-256 vs manifest **before** parquet parse
 * exact schema vs declared contract
-* holdout path + date dual refusal
+* row-level session_date holdout refusal
 
 Mismatch is always an exception (hard refusal), never a warning.
+
+Loader public entrypoints (complete enumeration — keep this list honest):
+
+1. ``load_manifest`` — path gate on manifest path + each entry relative_path;
+   date/partition-year gate on every entry ``year`` before return.
+2. ``load_shard`` — path gate (root + relative + resolved); partition-year
+   gate **before** byte read; window date gate; row session_date gate after parse.
+
+Internal helpers (not public, but always dual-gated when used):
+
+* ``_resolve_within_root`` — path only (called only after year gate in load_shard,
+  or for absolute relative_path path checks).
+* ``_assert_no_holdout_rows`` — date only (post-parse row scan).
+* ``_gate_manifest_entry`` — path + year for one manifest row.
 """
 
 from __future__ import annotations
@@ -25,6 +40,7 @@ import pyarrow.parquet as pq
 from holdout_guard import (
     HoldoutAccessError,
     assert_date_not_holdout,
+    assert_partition_year_not_holdout,
     assert_path_not_holdout,
     assert_range_not_holdout,
 )
@@ -32,6 +48,7 @@ from schema_contract import SchemaMismatchError, validate_table_schema
 from windows import EXPLORATION_WINDOW, parse_iso_date
 
 __all__ = [
+    "LOADER_ENTRYPOINTS",
     "LoaderError",
     "ManifestEntry",
     "ManifestShaMismatchError",
@@ -42,6 +59,13 @@ __all__ = [
     "load_shard",
     "sha256_bytes",
 ]
+
+# Complete public loader surface for dual holdout gating. Update this list
+# in the same PR if a new public load function is added.
+LOADER_ENTRYPOINTS: tuple[str, ...] = (
+    "load_manifest",
+    "load_shard",
+)
 
 DatasetName = Literal["ohlcv", "membership"]
 
@@ -116,21 +140,46 @@ def _resolve_within_root(artifact_root: Path, relative_path: str) -> Path:
     assert_path_not_holdout(candidate)
 
     if candidate != root and root not in candidate.parents:
+        # Case-fold escape check already done via assert_path_not_holdout on
+        # candidate; this is pure artifact-root containment.
         raise PathEscapesArtifactRootError(
             f"path {relative_path!r} escapes artifact root {root}"
         )
     return candidate
 
 
+def _gate_manifest_entry(entry: ManifestEntry, *, manifest_parent: Path) -> None:
+    """Dual path+date gate for one manifest row (before any shard open)."""
+    # Date / partition-year gate (NICE-1: refuse before parquet open).
+    assert_partition_year_not_holdout(entry.year)
+
+    rel = entry.relative_path
+    if Path(rel).is_absolute():
+        assert_path_not_holdout(rel)
+    else:
+        assert_path_not_holdout(manifest_parent / rel)
+
+
 def load_manifest(manifest_path: Path | str) -> list[ManifestEntry]:
-    """Load a manifest JSON list; refuse if the manifest path is holdout."""
+    """Load a manifest JSON list under dual holdout gates.
+
+    Gates (both required — brief §4-3):
+    * **path**: manifest path itself + each entry's relative_path
+    * **date**: each entry's partition ``year`` must not intersect HOLDOUT_WINDOW
+    """
     path = assert_path_not_holdout(manifest_path)
     if not path.is_file():
         raise ShardFileMissingError(f"manifest missing at {path}")
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, list):
         raise LoaderError("manifest root must be a JSON list of entries")
-    return [ManifestEntry.from_dict(item) for item in raw]
+    parent = path.parent
+    entries: list[ManifestEntry] = []
+    for item in raw:
+        entry = ManifestEntry.from_dict(item)
+        _gate_manifest_entry(entry, manifest_parent=parent)
+        entries.append(entry)
+    return entries
 
 
 def load_shard(
@@ -144,7 +193,18 @@ def load_shard(
 
     Reuses the single-buffer hash-then-parse discipline from
     ``research/alpaca_track/persistence.py`` lines 87–100.
+
+    Order:
+    1. partition year date-gate (before any byte read — NICE-1)
+    2. path resolve + holdout path gate
+    3. SHA-256 vs manifest (refusal on mismatch)
+    4. parquet parse + schema + row-count
+    5. row session_date holdout gate
+    6. caller / default exploration window date gate
     """
+    # Date gate first — refuse holdout partition years without opening files.
+    assert_partition_year_not_holdout(entry.year)
+
     root = Path(artifact_root)
     path = _resolve_within_root(root, entry.relative_path)
     if not path.is_file():

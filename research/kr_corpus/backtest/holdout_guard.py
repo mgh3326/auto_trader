@@ -4,6 +4,8 @@ Failure of this guard is irreversible: once holdout is observed, OOS value
 of the corpus is permanently burned. Therefore:
 
 1. **Path block**: any resolved path under ``HOLDOUT_DIR`` is refused.
+   Comparison is **case-fold** + ``resolve()`` so macOS case-insensitive FS
+   variants (``HOLDOUT`` / ``Holdout`` / ``HoLdOuT``) cannot slip through.
 2. **Date block**: any session date inside ``HOLDOUT_WINDOW`` is refused.
 3. Refusal is an **exception**, never a silent filter (filtered-to-zero
    looks like a successful empty result).
@@ -11,11 +13,15 @@ of the corpus is permanently burned. Therefore:
 
 ``HOLDOUT_ACCESS_LOG`` is **not** read by this module. Presence of access
 there is an external operator failure signal, not an input we consume.
+
+Bypass categories this module must refuse (regression suite pins all):
+root · child · abs · rel · ``..`` · ``.`` segment · symlink-to-dir ·
+symlink-to-file · CASE(UPPER/Title/Mixed).
 """
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from windows import HOLDOUT_WINDOW, parse_iso_date
@@ -28,9 +34,11 @@ __all__ = [
     "HoldoutDateBlocked",
     "HoldoutPathBlocked",
     "assert_date_not_holdout",
+    "assert_partition_year_not_holdout",
     "assert_path_not_holdout",
     "assert_range_not_holdout",
     "holdout_root_resolved",
+    "path_is_under_holdout",
 ]
 
 # §1 literal — absolute path only; cwd-relative interpretation forbidden.
@@ -57,11 +65,64 @@ def holdout_root_resolved() -> Path:
     return HOLDOUT_DIR.expanduser().resolve()
 
 
+def _casefold_key(path: Path | str) -> str:
+    """Stable case-insensitive path key (POSIX separators, no trailing slash)."""
+    text = str(path)
+    # Normalize separators; casefold for macOS case-insensitive FS.
+    text = text.replace("\\", "/")
+    while "//" in text:
+        text = text.replace("//", "/")
+    if len(text) > 1 and text.endswith("/"):
+        text = text.rstrip("/")
+    return text.casefold()
+
+
+def path_is_under_holdout(path: Path | str) -> bool:
+    """True if ``path`` is HOLDOUT_DIR or a descendant (case-fold + resolve).
+
+    Does **not** open or read any file under holdout — pure path algebra.
+    """
+    if isinstance(path, str):
+        candidate = Path(path)
+    elif isinstance(path, Path):
+        candidate = path
+    else:
+        raise TypeError(f"path must be Path|str, got {type(path)!r}")
+
+    root = holdout_root_resolved()
+    resolved = candidate.expanduser().resolve()
+
+    # 1) Structural (case-sensitive) — catches symlink / .. after resolve.
+    if resolved == root or root in resolved.parents:
+        return True
+
+    # 2) Case-fold compare of resolved paths (macOS case-insensitive FS).
+    root_cf = _casefold_key(root)
+    resolved_cf = _casefold_key(resolved)
+    if resolved_cf == root_cf or resolved_cf.startswith(root_cf + "/"):
+        return True
+
+    # 3) Case-fold the *input* absolute form before/without relying on on-disk
+    #    case canonicalization (non-existent path components keep typed case).
+    input_abs = candidate.expanduser()
+    if not input_abs.is_absolute():
+        input_abs = (Path.cwd() / input_abs).resolve()
+    else:
+        # resolve for .. and . even when the leaf does not exist
+        input_abs = input_abs.resolve()
+    input_cf = _casefold_key(input_abs)
+    if input_cf == root_cf or input_cf.startswith(root_cf + "/"):
+        return True
+
+    return False
+
+
 def assert_path_not_holdout(path: Path | str) -> Path:
     """Resolve ``path`` and refuse if it is under HOLDOUT_DIR.
 
-    Symlinks, relative segments (``..``), and absolute paths are all
-    normalized before the check. This is an **exception**, not a filter.
+    Symlinks, relative segments (``..``, ``.``), absolute paths, and
+    **case variants** are all normalized before the check. This is an
+    **exception**, not a filter.
     """
     if isinstance(path, str):
         candidate = Path(path)
@@ -71,22 +132,23 @@ def assert_path_not_holdout(path: Path | str) -> Path:
         raise TypeError(f"path must be Path|str, got {type(path)!r}")
 
     resolved = candidate.expanduser().resolve()
-    root = holdout_root_resolved()
-    if resolved == root or root in resolved.parents:
+    if path_is_under_holdout(candidate):
+        root = holdout_root_resolved()
         raise HoldoutPathBlocked(
-            f"holdout path blocked: {resolved} is under HOLDOUT_DIR={root}"
+            f"holdout path blocked: {resolved} is under HOLDOUT_DIR={root} "
+            f"(case-fold path gate)"
         )
     return resolved
 
 
-def assert_date_not_holdout(d: date | str) -> date:
-    """Refuse if ``d`` falls inside HOLDOUT_WINDOW (inclusive)."""
-    if isinstance(d, str):
-        session = parse_iso_date(d)
-    elif isinstance(d, date):
-        session = d
-    else:
-        raise TypeError(f"date must be date|str, got {type(d)!r}")
+def assert_date_not_holdout(d: date | datetime | str) -> date:
+    """Refuse if ``d`` falls inside HOLDOUT_WINDOW (inclusive).
+
+    ``datetime`` is accepted and converted via ``.date()``; a holdout calendar
+    day still raises ``HoldoutDateBlocked`` (never a bare ``TypeError`` that
+    an outer handler could swallow as non-holdout noise).
+    """
+    session = _as_date(d)
 
     if HOLDOUT_START <= session <= HOLDOUT_END:
         raise HoldoutDateBlocked(
@@ -96,7 +158,29 @@ def assert_date_not_holdout(d: date | str) -> date:
     return session
 
 
-def assert_range_not_holdout(start: date | str, end: date | str) -> tuple[date, date]:
+def assert_partition_year_not_holdout(year: int) -> int:
+    """Refuse a partition ``year`` whose calendar year intersects HOLDOUT_WINDOW.
+
+    Pre-parse / pre-open gate for ``dataset/market/year`` partitions so holdout
+    years are refused before parquet bytes are decoded.
+    """
+    if type(year) is not int:
+        raise HoldoutDateBlocked(
+            f"holdout date blocked: partition year has unsupported type {type(year)!r}"
+        )
+    year_start = date(year, 1, 1)
+    year_end = date(year, 12, 31)
+    if year_start <= HOLDOUT_END and year_end >= HOLDOUT_START:
+        raise HoldoutDateBlocked(
+            f"holdout date blocked: partition year={year} intersects "
+            f"HOLDOUT_WINDOW={HOLDOUT_WINDOW.start}..{HOLDOUT_WINDOW.end}"
+        )
+    return year
+
+
+def assert_range_not_holdout(
+    start: date | datetime | str, end: date | datetime | str
+) -> tuple[date, date]:
     """Refuse if the closed range ``[start, end]`` intersects HOLDOUT_WINDOW."""
     s = _as_date(start)
     e = _as_date(end)
@@ -111,9 +195,25 @@ def assert_range_not_holdout(start: date | str, end: date | str) -> tuple[date, 
     return s, e
 
 
-def _as_date(value: date | str) -> date:
-    if isinstance(value, str):
+def _as_date(value: date | datetime | str) -> date:
+    """Normalize to ``date``; unknown types → HoldoutDateBlocked (not TypeError).
+
+    Using ``type is`` checks so ``datetime`` (a ``date`` subclass) is handled
+    explicitly via ``.date()`` rather than compared raw against ``date`` bounds
+    (which raises TypeError in Python 3).
+    """
+    if type(value) is str:
         return parse_iso_date(value)
+    if type(value) is datetime:
+        return value.date()
+    if type(value) is date:
+        return value
+    # datetime subclasses of date other than datetime itself — convert.
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
-    raise TypeError(f"date must be date|str, got {type(value)!r}")
+    raise HoldoutDateBlocked(
+        f"holdout date blocked: unsupported type {type(value)!r} "
+        f"(expected date|datetime|str YYYY-MM-DD)"
+    )
