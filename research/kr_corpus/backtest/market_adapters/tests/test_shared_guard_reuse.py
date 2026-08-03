@@ -20,6 +20,8 @@ from market_adapters.crypto import CryptoVenueAdapter
 from market_adapters.us import USMarketAdapter
 from schema_contract import SchemaMismatchError
 
+from research.crypto_corpus.policy import label_table_for_venue
+
 
 def _adapter(market: str, policy: HoldoutPolicy):
     if market == "us":
@@ -131,6 +133,8 @@ def test_shared_schema_and_sha_gates(market: str, tmp_path: Path):
         [_row(market)],
         schema=adapter.corpus.arrow_schema_for("ohlcv"),
     )
+    if market == "crypto":
+        table = label_table_for_venue(table, "upbit_krw")
     pq.write_table(table, path)
     entry = ManifestEntry(
         relative_path=rel,

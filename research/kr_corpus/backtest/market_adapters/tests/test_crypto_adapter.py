@@ -10,14 +10,19 @@ import pytest
 from loader import ManifestEntry, sha256_bytes
 from market_adapters.crypto import (
     BINANCE_USDT_COST,
+    CRYPTO_ADAPTER_FREQUENCY,
+    CRYPTO_ADAPTER_PUBLIC_LOAD_ENTRYPOINTS,
     QUOTE_CURRENCY_BY_VENUE,
     UPBIT_KRW_COST,
     CryptoBar,
+    CryptoFrequencyMismatchError,
     CryptoPrelistingBarsUnavailable,
     CryptoVenueAdapter,
     CryptoVenueMixError,
 )
 from pit import LookaheadViolation, assert_no_lookahead
+
+from research.crypto_corpus.policy import UnlabeledParquetError, label_table_for_venue
 
 
 def _row(
@@ -28,15 +33,18 @@ def _row(
     close: float = 100.0,
     base_volume: float = 1000.0,
     quote_volume: float | None = None,
+    frequency: str = "1d",
 ) -> dict:
     from datetime import timedelta
 
     open_t = open_time_utc or datetime(2024, 6, 1, 0, 0, tzinfo=UTC)
-    close_t = open_t + timedelta(days=1)  # exclusive end
+    # exclusive end: 1d → +1 day; 1h → +1 hour (for adversarial rows)
+    delta = timedelta(days=1) if frequency == "1d" else timedelta(hours=1)
+    close_t = open_t + delta
     return {
         "venue": venue,
         "symbol": symbol,
-        "frequency": "1d",
+        "frequency": frequency,
         "bucket_timezone": "UTC",
         "open_time_utc": open_t,
         "close_time_utc": close_t,
@@ -56,10 +64,12 @@ def _row(
 
 
 def _table(adapter: CryptoVenueAdapter, rows: list[dict]) -> pa.Table:
-    return pa.Table.from_pylist(
+    """Build a labeled sealed-style table (metadata required by label gate)."""
+    table = pa.Table.from_pylist(
         rows,
         schema=adapter.corpus.arrow_schema_for("ohlcv"),
     )
+    return label_table_for_venue(table, adapter.venue)
 
 
 def test_crypto_uses_24_7_utc_calendar_including_weekend():
@@ -161,11 +171,113 @@ def test_crypto_units_and_volume_mapping():
     assert bar.volume == 10.0 == bar.base_volume
     assert bar.quote_volume == 6500.0
     assert bar.quote_currency == "KRW"
+    assert bar.frequency == CRYPTO_ADAPTER_FREQUENCY == "1d"
     assert (
         not hasattr(bar, "trading_value")
         or "trading_value" not in CryptoBar.__dataclass_fields__
     )
     assert QUOTE_CURRENCY_BY_VENUE["binance_usdt_spot"] == "USDT"
+
+
+def test_crypto_hourly_frequency_is_exception_not_silent_accept():
+    """BLOCKER-1: 1h rows must not enter the daily adapter as same-session bars."""
+    adapter = CryptoVenueAdapter("upbit_krw")
+    table = _table(
+        adapter,
+        [
+            _row(
+                frequency="1h",
+                open_time_utc=datetime(2024, 1, 1, 0, 0, tzinfo=UTC),
+            ),
+            _row(
+                frequency="1h",
+                open_time_utc=datetime(2024, 1, 1, 1, 0, tzinfo=UTC),
+            ),
+        ],
+    )
+    with pytest.raises(CryptoFrequencyMismatchError) as exc_info:
+        adapter.view_from_table(table)
+    assert "1h" in str(exc_info.value)
+    # No empty success: exception is mandatory.
+    assert "refusing" in str(exc_info.value).lower() or "not adapter" in str(
+        exc_info.value
+    )
+
+
+def test_crypto_unlabeled_table_is_exception_on_view_from_table():
+    """BLOCKER-2 (view path): stripped metadata cannot produce bars."""
+    adapter = CryptoVenueAdapter("upbit_krw")
+    labeled = _table(adapter, [_row()])
+    stripped = labeled.replace_schema_metadata(None)
+    with pytest.raises(UnlabeledParquetError):
+        adapter.view_from_table(stripped)
+
+
+def test_crypto_unlabeled_load_shard_is_exception(tmp_path):
+    """BLOCKER-2 (load_shard path): unlabeled temp copy fails closed."""
+    adapter = CryptoVenueAdapter("upbit_krw")
+    rel = "ohlcv/upbit_krw/2024/bars.parquet"
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    labeled = _table(adapter, [_row()])
+    stripped = labeled.replace_schema_metadata(None)
+    pq.write_table(stripped, path)
+    data = path.read_bytes()
+    entry = ManifestEntry(
+        relative_path=rel,
+        file_sha256=sha256_bytes(data),
+        row_count=1,
+        dataset="ohlcv",
+        market="upbit_krw",
+        year=2024,
+    )
+    with pytest.raises(UnlabeledParquetError):
+        adapter.load_shard(tmp_path, entry)
+
+
+def test_crypto_corpus_load_shard_also_enforces_label_and_frequency(tmp_path):
+    """Public residual corpus.load_shard cannot bypass gates either."""
+    adapter = CryptoVenueAdapter("upbit_krw")
+    rel = "ohlcv/upbit_krw/2024/bars.parquet"
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+
+    # unlabeled
+    stripped = _table(adapter, [_row()]).replace_schema_metadata(None)
+    pq.write_table(stripped, path)
+    entry = ManifestEntry(
+        relative_path=rel,
+        file_sha256=sha256_bytes(path.read_bytes()),
+        row_count=1,
+        dataset="ohlcv",
+        market="upbit_krw",
+        year=2024,
+    )
+    with pytest.raises(UnlabeledParquetError):
+        adapter.corpus.load_shard(tmp_path, entry)
+
+    # labeled but hourly
+    hourly = _table(adapter, [_row(frequency="1h")])
+    pq.write_table(hourly, path)
+    entry = ManifestEntry(
+        relative_path=rel,
+        file_sha256=sha256_bytes(path.read_bytes()),
+        row_count=1,
+        dataset="ohlcv",
+        market="upbit_krw",
+        year=2024,
+    )
+    with pytest.raises(CryptoFrequencyMismatchError):
+        adapter.corpus.load_shard(tmp_path, entry)
+
+
+def test_crypto_public_load_entrypoints_enumerated():
+    """Keep the public load surface list honest for gate coverage audits."""
+    assert CRYPTO_ADAPTER_PUBLIC_LOAD_ENTRYPOINTS == (
+        "CryptoVenueAdapter.load_shard",
+        "CryptoVenueAdapter.view_from_table",
+        "CryptoVenueAdapter.corpus.load_shard",
+    )
 
 
 def test_crypto_costs_are_venue_specific_and_bidirectional():
