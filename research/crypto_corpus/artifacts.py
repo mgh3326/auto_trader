@@ -25,6 +25,8 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from .policy import label_table_for_venue, policy_from_parquet_metadata
+
 
 @dataclass(frozen=True)
 class FileRecord:
@@ -155,27 +157,36 @@ class ArtifactStore:
         final_relative_path: str,
         *,
         is_holdout: bool,
+        venue: str,
     ) -> StagedFile:
         """Validate a Parquet payload before publishing it from staging.
 
         The serialized buffer keeps validation and SHA calculation independent
         of the final destination.  That is essential for the holdout tree's
-        write-only contract.
+        write-only contract. The venue policy label is embedded before
+        serialization, so both exploration and future holdout files are
+        fail-closed at the file boundary.
         """
+        labeled_table = label_table_for_venue(table, venue)
         sink = pa.BufferOutputStream()
         pq.write_table(
-            table,
+            labeled_table,
             sink,
             compression="zstd",
             use_dictionary=True,
             write_statistics=True,
         )
         payload = sink.getvalue().to_pybytes()
-        metadata = pq.ParquetFile(pa.BufferReader(payload)).metadata
+        parquet_file = pq.ParquetFile(pa.BufferReader(payload))
+        metadata = parquet_file.metadata
         if metadata is None or metadata.num_rows != table.num_rows:
             raise ValueError("staged Parquet metadata row-count mismatch")
         if len(metadata.schema.names) != len(table.schema.names):
             raise ValueError("staged Parquet schema-column mismatch")
+        policy_from_parquet_metadata(
+            parquet_file.schema_arrow.metadata,
+            expected_venue=venue,
+        )
         return self.stage_bytes(
             payload,
             final_relative_path,

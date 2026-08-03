@@ -867,7 +867,12 @@ class CorpusBuilder:
                 [_bar_to_row(row) for row in group], schema=BAR_SCHEMA
             )
             staged.append(
-                self.store.stage_parquet(table, relative, is_holdout=is_holdout)
+                self.store.stage_parquet(
+                    table,
+                    relative,
+                    is_holdout=is_holdout,
+                    venue=venue,
+                )
             )
         return staged
 
