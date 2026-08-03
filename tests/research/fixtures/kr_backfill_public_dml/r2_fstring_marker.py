@@ -1,0 +1,4 @@
+SCHEMA = "public"
+MARKER_TABLE = "_kr_dryrun_scratch_marker"
+CREATE_MARKER = f"CREATE TABLE {SCHEMA}.{MARKER_TABLE} (id integer)"
+INSERT_MARKER = f"INSERT INTO {SCHEMA}.{MARKER_TABLE} (id) VALUES (1)"
