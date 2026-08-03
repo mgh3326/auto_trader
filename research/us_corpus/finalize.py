@@ -472,9 +472,7 @@ def main() -> int:
                 "# Banner prepended by finalize; all lines below are the "
                 "unmodified fetch stdout capture.\n"
             ) + original
-        report_receipts.append(
-            write_labeled_bytes(fetch_log, original.encode("utf-8"))
-        )
+        report_receipts.append(write_labeled_bytes(fetch_log, original.encode("utf-8")))
 
     # Sizes come from the write receipts, not a filesystem sweep — the sweep is
     # what walked into the holdout in R1.
@@ -613,9 +611,16 @@ def main() -> int:
             "covers": [
                 "dataset/ parquet partitions",
                 "reports/ (all)",
-                "probe/ (if present)",
                 "manifest.json",
             ],
+            "probe_integrity": (
+                "probe/alpaca_lookback.sha256 — write-time digest published by "
+                "the probe process itself; finalize does not reopen it"
+            ),
+            "input_integrity": (
+                "pinned in config and echoed in manifest.inputs; the files are "
+                "operator-supplied and are never rewritten here"
+            ),
             "excludes": [
                 "holdout/ (separate write registry)",
                 "_staging/ (intermediate)",

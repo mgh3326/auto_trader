@@ -247,9 +247,20 @@ def main() -> int:
         "urls": probe.urls,
         "results": results,
     }
-    write_labeled_bytes(
+    receipt = write_labeled_bytes(
         cfg.PROBE_DIR / "alpaca_lookback.json",
         json.dumps(report, indent=2).encode(),
+    )
+    # Integrity sidecar. The probe runs as its own process, so finalize cannot
+    # capture its write-time digest — and having finalize reopen the JSON to
+    # hash it would reintroduce the "hash by reading" habit that walked into the
+    # sealed holdout in R1. The digest is published here instead, at write time.
+    write_labeled_bytes(
+        cfg.PROBE_DIR / "alpaca_lookback.sha256",
+        (
+            "# SURVIVORSHIP_BIASED=TRUE — write-time digest for the probe report.\n"
+            f"{receipt.sha256}  {receipt.relative_path}\n"
+        ).encode(),
     )
     print(json.dumps(report, indent=2))
     return 0
