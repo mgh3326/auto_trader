@@ -62,6 +62,13 @@ from app.services.brokers.kis.send_outcome import (
     OrderSendOutcomeTracker,
 )
 from app.services.crypto_trade_cooldown_service import CryptoTradeCooldownService
+from app.services.kis_mock_attribution import (
+    KisMockAttribution,
+    MissingAttribution,
+    mark_signal_outcome,
+    record_signal,
+    resolve_attribution,
+)
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
     OrderSendIntentService,
@@ -780,6 +787,80 @@ async def _execute_and_record(
     send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     """Execute a live order, record history, fills, and journals."""
+    # Pre-submit attribution gate (kis_mock). Deliberately the FIRST thing in
+    # this function: an unattributed mock order must not reach the broker at
+    # all, not even the baseline holdings read below. Resolution is pure, and
+    # the signal row is committed before the send — so an order that exists at
+    # the broker always has a durable owner, even if this process dies between
+    # the POST and the ledger write.
+    kis_mock_attribution: KisMockAttribution | None = None
+    if is_mock:
+        try:
+            kis_mock_attribution = resolve_attribution(
+                symbol=normalized_symbol,
+                side=side,
+                # Mint from the same normalized preview values the post-send
+                # path used, so the id is unchanged — only earlier.
+                price=_to_float(dry_run_result.get("price"), default=0.0),
+                quantity=_to_float(dry_run_result.get("quantity"), default=0.0),
+                strategy=strategy,
+                correlation_id=correlation_id,
+                mirror_cohort=mirror_cohort,
+            )
+        except MissingAttribution as attribution_exc:
+            logger.warning(
+                "kis_mock order blocked, unattributed: symbol=%s side=%s missing=%s",
+                normalized_symbol,
+                side,
+                list(attribution_exc.missing),
+            )
+            err = order_error_fn(str(attribution_exc))
+            err["error_code"] = "attribution_required"
+            err["missing_attribution"] = list(attribution_exc.missing)
+            return err
+
+        try:
+            async with _order_session_factory()() as signal_db:
+                await record_signal(
+                    signal_db,
+                    attribution=kis_mock_attribution,
+                    symbol=normalized_symbol,
+                    decision="order",
+                    instrument_type=market_type,
+                    side=side,
+                    intended_quantity=order_quantity,
+                    intended_price=price,
+                    report_item_uuid=report_item_uuid,
+                    detail={
+                        "reason": reason or None,
+                        "order_type": order_type,
+                        "mirror_cohort": mirror_cohort,
+                        "mirror_source_bucket": mirror_source_bucket,
+                    },
+                )
+        except Exception as signal_exc:  # noqa: BLE001 — no record, no send
+            # Fail closed. A send we cannot attribute durably is exactly the
+            # untraceable order this gate exists to prevent.
+            logger.error(
+                "kis_mock signal record failed, refusing to send: "
+                "symbol=%s side=%s correlation_id=%s error=%s",
+                normalized_symbol,
+                side,
+                kis_mock_attribution.correlation_id,
+                describe_exception(signal_exc),
+            )
+            err = order_error_fn(
+                "kis_mock signal ledger write failed; order not sent "
+                f"({describe_exception(signal_exc)})"
+            )
+            err["error_code"] = "signal_record_unavailable"
+            return err
+
+        # From here on the ledger row inherits the pre-submit attribution
+        # rather than re-deriving it after the fact.
+        correlation_id = kis_mock_attribution.correlation_id
+        strategy = kis_mock_attribution.strategy
+
     # ROB-102: capture pre-order KIS mock holdings as the reconciler baseline.
     # Best-effort — failure leaves the column NULL and the reconciler will
     # surface the row as `baseline_missing → anomaly` for operator review.
@@ -1040,6 +1121,33 @@ async def _execute_and_record(
                 send_outcome.mark_provider_rejected()
             else:
                 send_outcome.mark_unknown()
+        # Close the signal row out with what actually happened. Best-effort by
+        # design: the attribution itself is already durable, so a failure here
+        # degrades the outcome label, never the ownership of the order.
+        if kis_mock_attribution is not None:
+            try:
+                async with _order_session_factory()() as outcome_db:
+                    await mark_signal_outcome(
+                        outcome_db,
+                        correlation_id=kis_mock_attribution.correlation_id,
+                        outcome_state=(
+                            "submitted" if result.get("success") else "failed"
+                        ),
+                        suppressed_reason=(
+                            None if result.get("success") else result.get("reason")
+                        ),
+                        detail_patch={
+                            "order_no": result.get("order_no"),
+                            "status": result.get("status"),
+                            "ledger_id": result.get("ledger_id"),
+                        },
+                    )
+            except Exception as outcome_exc:  # noqa: BLE001
+                logger.warning(
+                    "kis_mock signal outcome update failed correlation_id=%s: %s",
+                    kis_mock_attribution.correlation_id,
+                    describe_exception(outcome_exc),
+                )
         return result
 
     # ROB-395: live KR orders record accepted-only to the live ledger; fills,

@@ -155,6 +155,9 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 "sample_eligibility_decisions",
             ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
+            # Same for the kis_mock pre-submit signal ledger, added after this
+            # boundary and already present in Base.metadata.
+            await connection.execute(text("DROP TABLE review.kis_mock_signal_ledger"))
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 

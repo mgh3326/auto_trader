@@ -548,10 +548,13 @@ async def _record_kis_mock_order(
         failure_reason = "unknown_response"
         failure_detail = msg or f"rt_cd={rt_cd} order_no={order_no}"
 
-    # ROB-730 provenance spine: mint a deterministic place-time correlation_id so
-    # this mock order joins forecast → fill → journal → retrospective, mirroring
-    # the kis_live path verbatim. Preserve an explicit id (ROB-402 scalping
-    # entry/exit pairing passes one) rather than overwriting it.
+    # ROB-730 provenance spine: the correlation_id joins forecast → fill →
+    # journal → retrospective, mirroring the kis_live path verbatim.
+    #
+    # The authoritative mint now happens PRE-submit in the attribution gate
+    # (app/services/kis_mock_attribution.py), which passes the id in. This
+    # branch is only a fallback for direct callers of this helper; it uses the
+    # identical inputs and helper, so it yields the identical id.
     if correlation_id is None:
         correlation_id = live_correlation_id(
             account_scope="kis_mock",

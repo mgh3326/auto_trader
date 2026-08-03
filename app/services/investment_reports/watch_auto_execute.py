@@ -26,6 +26,11 @@ from app.services.investment_reports.auto_execute_guard import (
 
 logger = logging.getLogger(__name__)
 
+# Strategy label carried into review.kis_mock_signal_ledger / kis_mock_order_ledger
+# so a watch-sourced order is attributable without joining back through the
+# watch intent row.
+WATCH_AUTO_EXECUTE_STRATEGY = "watch_auto_execute_mock"
+
 
 def _to_decimal(v: Any) -> Decimal | None:
     if v in (None, ""):
@@ -208,6 +213,10 @@ async def maybe_auto_execute(
             reason="watch auto_execute_mock",
             is_mock=True,
             correlation_id=correlation_id,
+            # Names the lane that owns the order. The kis_mock pre-submit
+            # attribution gate refuses to send without it; this path is still
+            # gated off by WATCH_AUTO_EXECUTE_MOCK_ENABLED either way.
+            strategy=WATCH_AUTO_EXECUTE_STRATEGY,
         )
     except Exception as exc:  # noqa: BLE001 — surface as a truthful failed outcome
         place_result = {

@@ -232,6 +232,7 @@ async def test_kis_mock_buy_writes_ledger_and_skips_live(monkeypatch):
         price=70000.0,
         dry_run=False,
         account_mode="kis_mock",
+        strategy="posture-v1",
     )
 
     assert result["success"] is True, result
@@ -335,6 +336,7 @@ async def test_kis_mock_sell_writes_ledger_and_does_not_close_journals(monkeypat
         price=70000.0,
         dry_run=False,
         account_mode="kis_mock",
+        strategy="posture-v1",
     )
 
     assert result["success"] is True, result
@@ -381,12 +383,17 @@ async def test_kis_mock_missing_config_fails_closed_before_broker(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Task 5: kis_mock buy does NOT require thesis/strategy
+# Task 5: kis_mock buy does NOT require a thesis, but DOES require a strategy.
+#
+# Contract change: thesis stays optional (mock orders never create a
+# TradeJournal, which is what thesis feeds). ``strategy`` is now mandatory —
+# the pre-submit attribution gate refuses to send an order nobody owns, since a
+# nullable strategy is what made mock fills unattributable after the fact.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_kis_mock_buy_does_not_require_thesis_strategy(monkeypatch):
+async def test_kis_mock_buy_does_not_require_thesis(monkeypatch):
     from app.mcp_server.tooling import kis_mock_ledger, order_execution, order_journal
     from tests._mcp_tooling_support import build_tools
 
@@ -444,7 +451,63 @@ async def test_kis_mock_buy_does_not_require_thesis_strategy(monkeypatch):
     monkeypatch.setattr(order_journal, "_save_order_fill", AsyncMock())
 
     tools = build_tools()
-    # No thesis, no strategy — should succeed for kis_mock
+    # No thesis — still fine for kis_mock (no TradeJournal is created).
+    result = await tools["place_order"](
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        quantity=3,
+        price=70000.0,
+        dry_run=False,
+        account_mode="kis_mock",
+        strategy="posture-v1",
+    )
+    assert result["success"] is True, result
+    assert result["ledger_id"] == 7
+    save_ledger.assert_awaited_once()
+    # The strategy reaches the ledger row rather than being dropped.
+    assert save_ledger.call_args.kwargs["strategy"] == "posture-v1"
+
+
+@pytest.mark.asyncio
+async def test_kis_mock_buy_without_strategy_is_refused_before_send(monkeypatch):
+    """The same order minus the strategy never reaches the broker."""
+    from app.mcp_server.tooling import kis_mock_ledger, order_execution
+    from tests._mcp_tooling_support import build_tools
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.orders_registration.validate_kis_mock_config",
+        lambda *_, **__: [],
+    )
+    monkeypatch.setattr(
+        order_execution, "_fetch_current_price", AsyncMock(return_value=70000.0)
+    )
+    monkeypatch.setattr(
+        order_execution,
+        "_build_preview",
+        AsyncMock(
+            return_value={
+                "symbol": "005930",
+                "side": "buy",
+                "order_type": "limit",
+                "price": 70000.0,
+                "quantity": 3,
+                "estimated_value": 210000.0,
+                "fee": 0,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        order_execution, "_check_balance_and_warn", AsyncMock(return_value=(None, None))
+    )
+    monkeypatch.setattr(order_execution, "_record_order_history", AsyncMock())
+
+    executed = AsyncMock()
+    monkeypatch.setattr(order_execution, "_execute_order", executed)
+    save_ledger = AsyncMock(return_value=7)
+    monkeypatch.setattr(kis_mock_ledger, "_save_kis_mock_order_ledger", save_ledger)
+
+    tools = build_tools()
     result = await tools["place_order"](
         symbol="005930",
         side="buy",
@@ -454,9 +517,11 @@ async def test_kis_mock_buy_does_not_require_thesis_strategy(monkeypatch):
         dry_run=False,
         account_mode="kis_mock",
     )
-    assert result["success"] is True, result
-    assert result["ledger_id"] == 7
-    save_ledger.assert_awaited_once()
+
+    assert result["success"] is False
+    assert result["error_code"] == "attribution_required"
+    executed.assert_not_awaited()
+    save_ledger.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1675,6 +1740,7 @@ async def test_place_order_impl_threads_correlation_id(db_session, monkeypatch):
         reason="rob402-test",
         is_mock=True,
         correlation_id="corr-rob402",
+        strategy="posture-v1",
     )
     assert result["success"] is True, result
     row = (

@@ -27,11 +27,17 @@
    fill 기록은 evidence-first — 브로커 증거 없이 `filled` 마킹 금지.
 6. **스케줄러 등록 금지**: 신규 TaskIQ/cron/Prefect 스케줄 연결은 명시 승인 없이 금지.
    기본은 scheduleless 출고(CLI/수동 lever만).
-7. **심볼 형식**: DB 기준은 `.` 구분(`BRK.B`). 변환은 `app/core/symbol.py`
+7. **kis_mock 주문은 귀속 없이 나가지 않는다**: `place_order(is_mock=True)` /
+   `account_mode="kis_mock"` 는 **`strategy` 필수**. 브로커 전송 **이전에**
+   `review.kis_mock_signal_ledger` 에 신호 행이 커밋돼야 하고, 실패하면 주문을 보내지 않는다
+   (`error_code`: `attribution_required` / `signal_record_unavailable`).
+   **이 게이트를 우회·완화하거나 placeholder strategy 를 만들어 넣지 마라** — 귀속 불가는
+   값이 아니라 에러다. 귀속을 못 정하겠으면 멈추고 운영자에게 보고하라.
+8. **심볼 형식**: DB 기준은 `.` 구분(`BRK.B`). 변환은 `app/core/symbol.py`
    (`to_kis_symbol`/`to_yahoo_symbol`/`to_db_symbol`)만 사용하고 직접 문자열 치환 금지.
-8. **검증·보고 규율**: 완료 주장 전 관련 테스트를 실제 실행하고 결과 원문을 보고하라.
+9. **검증·보고 규율**: 완료 주장 전 관련 테스트를 실제 실행하고 결과 원문을 보고하라.
    실패·스킵을 성공으로 보고 금지. push 완료 주장은 `git ls-remote`로 대조 가능해야 한다.
-9. **Secrets**: API 키·토큰 repo 커밋 금지. 로그·보고에 secret 값 출력 금지
+10. **Secrets**: API 키·토큰 repo 커밋 금지. 로그·보고에 secret 값 출력 금지
    (missing env는 key 이름만 보고).
 
 ## 최소 명령어

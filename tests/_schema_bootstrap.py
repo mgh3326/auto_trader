@@ -67,7 +67,10 @@ from sqlalchemy import text
 # v34 (ROB-1036): review.sample_eligibility_decisions /
 # invalid_sample_cleanup_bindings / invalid_sample_cleanup_lifecycle_events ORM
 # tables (create_all) + their append-only triggers mirrored below.
-SCHEMA_BOOTSTRAP_VERSION = 34
+# v35: review.kis_mock_signal_ledger (new ORM table via create_all). No
+# mirrored ALTER — the table is created wholesale; the bump only forces a
+# persistent local test DB to re-bootstrap once.
+SCHEMA_BOOTSTRAP_VERSION = 35
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"

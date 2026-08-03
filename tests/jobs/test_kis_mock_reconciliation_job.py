@@ -25,9 +25,15 @@ def _ledger_row(
     accepted_age_sec: int = 5,
     instrument_type: str = "equity_kr",
     price: Decimal = Decimal("0"),
+    correlation_id: str | None = None,
 ):
     row = MagicMock(spec=KISMockOrderLedger)
     row.id = ledger_id
+    row.correlation_id = (
+        correlation_id
+        if correlation_id is not None
+        else f"live:kis_mock:test{ledger_id}"
+    )
     row.symbol = symbol
     row.side = side
     row.quantity = qty
