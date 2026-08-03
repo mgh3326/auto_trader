@@ -49,9 +49,15 @@ class SchemaMismatchError(SchemaContractError):
     """Parquet/table schema does not exactly match the declared contract."""
 
 
-def load_contract() -> dict[str, Any]:
-    """Load the declared JSON contract (source of truth for column/dtype)."""
-    raw = CONTRACT_PATH.read_text(encoding="utf-8")
+def load_contract(contract_path: Path | str | None = None) -> dict[str, Any]:
+    """Load a declared local JSON contract (source of truth for schema).
+
+    ``CONTRACT_PATH`` remains the KR default. Market adapters pass a committed
+    inferred contract explicitly; this loader never discovers a schema from a
+    live corpus artifact.
+    """
+    path = Path(contract_path) if contract_path is not None else CONTRACT_PATH
+    raw = path.read_text(encoding="utf-8")
     contract = json.loads(raw)
     if contract.get("schema_origin") != SCHEMA_ORIGIN:
         raise SchemaContractError(
@@ -61,9 +67,13 @@ def load_contract() -> dict[str, Any]:
     return contract
 
 
-def arrow_schema_for(dataset: str) -> pa.Schema:
+def arrow_schema_for(
+    dataset: str,
+    *,
+    contract_path: Path | str | None = None,
+) -> pa.Schema:
     """Exact Arrow schema pinned by the declared contract for ``dataset``."""
-    contract = load_contract()
+    contract = load_contract(contract_path)
     try:
         ds = contract["datasets"][dataset]
     except KeyError as exc:
@@ -82,12 +92,17 @@ def arrow_schema_for(dataset: str) -> pa.Schema:
     return pa.schema(fields)
 
 
-def validate_table_schema(table: pa.Table, dataset: str) -> None:
+def validate_table_schema(
+    table: pa.Table,
+    dataset: str,
+    *,
+    contract_path: Path | str | None = None,
+) -> None:
     """Refuse unless ``table.schema`` exactly matches the contract schema.
 
     No silent column drop, rename, or dtype coercion.
     """
-    expected = arrow_schema_for(dataset)
+    expected = arrow_schema_for(dataset, contract_path=contract_path)
     actual = table.schema
     # Exact name+type match; ignore metadata only.
     if not actual.equals(expected, check_metadata=False):

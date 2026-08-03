@@ -1,0 +1,61 @@
+{
+  "contract_id": "us-corpus-v1.harness-schema.v1",
+  "schema_origin": "INFERRED_FROM_LITERALS",
+  "schema_origin_note": "INFERRED_FROM_LITERALS: declared from the harness adapter brief, not a real us-corpus-v1 manifest. The raw timestamp_utc field is required to preserve UTC source time and derive session_date in America/New_York. Stage B must contrast a terminal manifest and loud-fail on any mismatch; silent coercion is forbidden.",
+  "corpus_schema_source": "US adapter brief literals",
+  "frequency": "1d",
+  "price_mode": "adjusted",
+  "timestamp_storage": "timestamp_utc is ISO-8601 aware UTC and is retained without local re-anchoring",
+  "session_date_derivation": "America/New_York from timestamp_utc",
+  "session_calendar": "XNYS",
+  "markets_allowed": ["US"],
+  "partition_keys": ["dataset", "market", "year"],
+  "partition_layout": "dataset/market/year",
+  "membership_storage": "separate_from_ohlcv",
+  "windows": {
+    "exploration": {"start": "2015-01-01", "end": "2024-12-31"},
+    "historical_oos_holdout": {"start": "2025-01-01", "end": "2026-07-31"}
+  },
+  "datasets": {
+    "ohlcv": {
+      "required_columns": ["symbol", "timestamp_utc", "session_date", "open", "high", "low", "close", "volume", "trading_value", "market"],
+      "column_dtypes": {
+        "symbol": "string",
+        "timestamp_utc": "string",
+        "session_date": "string",
+        "open": "float64",
+        "high": "float64",
+        "low": "float64",
+        "close": "float64",
+        "volume": "float64",
+        "trading_value": "float64",
+        "market": "string"
+      },
+      "notes": {
+        "session_date": "must equal date(timestamp_utc at America/New_York)",
+        "calendar": "must be an XNYS session; holiday/non-session rows fail loudly",
+        "schema_inference": "The common OHLCV / manifest envelope is inferred. timestamp_utc is explicitly required by the UTC-preservation rule."
+      }
+    },
+    "membership": {
+      "required_columns": ["symbol", "session_date", "market", "member", "status"],
+      "column_dtypes": {
+        "symbol": "string",
+        "session_date": "string",
+        "market": "string",
+        "member": "bool",
+        "status": "string"
+      },
+      "status_enum": ["listed", "delisted", "suspended"],
+      "notes": {
+        "pit": "universe at session t uses membership rows <= t only",
+        "terminal": "delisted holdings require an explicit terminal event"
+      }
+    }
+  },
+  "manifest": {
+    "required_fields": ["relative_path", "file_sha256", "row_count", "dataset", "market", "year"],
+    "file_sha256": "hex lowercase SHA-256 of full file bytes; verified BEFORE parquet parse",
+    "gate_policy": "mismatch => hard refusal (exception), never warning-and-continue"
+  }
+}
