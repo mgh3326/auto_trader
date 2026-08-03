@@ -32,7 +32,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260803_research_kr_candles"
-down_revision: str | Sequence[str] | None = "20260802_rob1036_sample_elig"
+down_revision: str | Sequence[str] | None = "20260803_kis_mock_signal"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
