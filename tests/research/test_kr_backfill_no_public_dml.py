@@ -1,7 +1,19 @@
 """Static guard for accidental operational-table writes in KR backfill research.
 
-The guard deliberately evaluates only statically knowable Python expressions.  It
-does not connect to a database or import database drivers.
+Coverage boundary: this AST guard folds the explicitly implemented static Python
+string forms below, then recognizes public or search_path-dependent INSERT,
+UPDATE, DELETE, MERGE, and table DDL. It permits only an *unqualified* CREATE
+TEMP[ORARY] TABLE, because PostgreSQL creates that relation in a per-session
+temporary schema rather than ``public``. A qualified ``public`` temporary table
+is still rejected.
+
+It intentionally is not a SQL parser or an evaluator: runtime values (arguments,
+environment, imports, files, ORM metadata), unsupported expression operations
+(for example ``AugAssign``, ``replace``, slices, ``format_map``, conversions),
+and static SQL grammar gaps (comments between verb and target, COPY, SELECT INTO,
+bytes SQL, and DDL outside the listed grammar) can evade it. This is a targeted
+regression guard, not a claim that all possible database writes are prevented.
+It does not connect to a database or import database drivers.
 """
 
 from __future__ import annotations
@@ -29,7 +41,7 @@ REGRESSION_FIXTURES = (
 _DML_OR_DDL = re.compile(
     r"""\b(?:
         INSERT\s+INTO|UPDATE|DELETE\s+FROM|MERGE\s+INTO|
-        CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE|ALTER\s+TABLE|
+        CREATE\s+(?P<temporary>TEMP(?:ORARY)?\s+)?TABLE|ALTER\s+TABLE|
         DROP\s+TABLE|TRUNCATE(?:\s+TABLE)?
     )\s+(?P<table>(?:\"[^\"]+\"|[A-Za-z_][\w$]*)(?:\s*\.\s*(?:\"[^\"]+\"|[A-Za-z_][\w$]*))?)""",
     re.IGNORECASE | re.VERBOSE,
@@ -184,14 +196,19 @@ def _bind_static_target(
             _bind_static_target(child, child_value, names)
 
 
-def _is_docstring(node: ast.Constant, parent: ast.AST | None) -> bool:
+def _is_docstring(
+    node: ast.Constant, parent: ast.AST | None, grandparent: ast.AST | None
+) -> bool:
     return (
         isinstance(node.value, str)
+        and isinstance(parent, ast.Expr)
         and isinstance(
-            parent, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+            grandparent,
+            (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
         )
-        and parent.body
-        and parent.body[0].value is node
+        and grandparent.body
+        and grandparent.body[0] is parent
+        and parent.value is node
     )
 
 
@@ -209,8 +226,9 @@ def find_public_dml(paths: Iterable[Path]) -> list[str]:
         for node in ast.walk(tree):
             if not isinstance(node, ast.expr):
                 continue
+            parent = parents.get(id(node))
             if isinstance(node, ast.Constant) and _is_docstring(
-                node, parents.get(id(node))
+                node, parent, parents.get(id(parent)) if parent else None
             ):
                 continue
             value = _static_value(node, names)
@@ -219,6 +237,8 @@ def find_public_dml(paths: Iterable[Path]) -> list[str]:
             for match in _DML_OR_DDL.finditer(value):
                 table = re.sub(r"\s+", "", match.group("table")).replace('"', "")
                 schema, separator, _ = table.partition(".")
+                if not separator and match.group("temporary"):
+                    continue
                 if not separator or schema.lower() == "public":
                     violations.append(f"{path}:{node.lineno}: {match.group(0)!r}")
     return violations
@@ -260,3 +280,34 @@ def test_self_regression_summary() -> None:
 
 def test_research_schema_and_prose_positive_controls_are_allowed() -> None:
     assert_no_public_dml([FIXTURE_ROOT / "positive_control.py"])
+
+
+def test_only_unqualified_temporary_table_ddl_is_relaxed(tmp_path: Path) -> None:
+    temporary = tmp_path / "temporary.py"
+    temporary.write_text('SQL = "CREATE TEMP TABLE scratch (id integer)"\n')
+    temporary_alias = tmp_path / "temporary_alias.py"
+    temporary_alias.write_text('SQL = "CREATE TEMPORARY TABLE scratch (id integer)"\n')
+    assert_no_public_dml([temporary, temporary_alias])
+
+    public_temporary = tmp_path / "public_temporary.py"
+    public_temporary.write_text(
+        'SQL = "CREATE TEMP TABLE public.scratch (id integer)"\n'
+    )
+    regular_unqualified = tmp_path / "regular_unqualified.py"
+    regular_unqualified.write_text('SQL = "CREATE TABLE scratch (id integer)"\n')
+    for unsafe_path in (public_temporary, regular_unqualified):
+        with pytest.raises(
+            AssertionError, match="public or search_path-dependent DML/DDL"
+        ):
+            assert_no_public_dml([unsafe_path])
+
+
+def test_only_real_docstrings_are_exempt(tmp_path: Path) -> None:
+    non_docstring = tmp_path / "non_docstring.py"
+    non_docstring.write_text(
+        "def query() -> None:\n"
+        "    marker = 1\n"
+        "    \"INSERT INTO public.kr_candles_1m (symbol) VALUES ('005930')\"\n"
+    )
+    with pytest.raises(AssertionError, match="public or search_path-dependent DML/DDL"):
+        assert_no_public_dml([non_docstring])
