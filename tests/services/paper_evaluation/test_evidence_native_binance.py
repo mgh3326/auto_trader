@@ -22,7 +22,8 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+import pytest_asyncio
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.binance_demo_order_ledger import BinanceDemoOrderLedger
@@ -78,6 +79,9 @@ pytestmark = [
     # this file writes review.alpaca_paper_order_ledger rows through the global
     # ``db_session``, so it must hold the ROB-968 cleanup advisory lock.
     pytest.mark.usefixtures("investment_reports_cleanup_lock"),
+    # This module writes committed Alpaca-paper rows, and the retrospective
+    # pending suite scans that shared ledger with exact-count assertions.
+    pytest.mark.usefixtures("_serialize_alpaca_paper_db_suites"),
 ]
 
 SHADOW_START = CAPTURED_AT - timedelta(hours=2)
@@ -90,6 +94,10 @@ COHORT_SYMBOLS = ("BTCUSDT", "ETHUSDT")
 # Demo hosts are product-disjoint (see CLAUDE.md ROB-298); keep the ledger row's
 # host consistent with its own discriminator.
 DEMO_HOST = {"spot": "demo-api.binance.com", "usdm_futures": "demo-fapi.binance.com"}
+# This test module owns every native ledger row with this prefix.  It must not
+# use the generic ``client-`` prefix: another suite cannot safely distinguish
+# those rows when it cleans its own committed test data.
+_NATIVE_EVIDENCE_CLIENT_ORDER_PREFIX = "rob1205-native-evidence-"
 
 
 def _evaluated_at() -> datetime:
@@ -112,10 +120,11 @@ class _RecordingAdapter:
 
     broker: Broker
     symbol_by_client: dict[str, str]
+    client_order_id_prefix: str = _NATIVE_EVIDENCE_CLIENT_ORDER_PREFIX
 
     async def submit(self, intent):
         suffix = stable_hash(f"{self.broker.value}:{intent.idempotency_key}")[:16]
-        client_order_id = f"client-{suffix}"
+        client_order_id = f"{self.client_order_id_prefix}{suffix}"
         self.symbol_by_client[client_order_id] = intent.symbol
         return PaperOperationResult(
             operation=PaperOperation.SUBMIT,
@@ -317,6 +326,33 @@ async def _authoritative_history(session: AsyncSession, activation) -> None:
     await session.flush()
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _cleanup_owned_alpaca_rows(
+    db_session: AsyncSession,
+    investment_reports_cleanup_lock: AsyncSession,
+    _serialize_alpaca_paper_db_suites,
+):
+    """Remove only this module's committed Alpaca rows before and after a test.
+
+    ``_build_lineage`` deliberately commits production-shaped native ledger
+    evidence.  The shared test DB therefore needs an explicit ownership-scoped
+    teardown; otherwise a later retrospective-pending test sees these filled
+    Alpaca rows as unrelated work.  Both the test and its cleanup are held
+    under the existing cross-suite lock.
+    """
+    del investment_reports_cleanup_lock, _serialize_alpaca_paper_db_suites
+    statement = delete(AlpacaPaperOrderLedger).where(
+        AlpacaPaperOrderLedger.client_order_id.like(
+            f"{_NATIVE_EVIDENCE_CLIENT_ORDER_PREFIX}%"
+        )
+    )
+    await db_session.execute(statement)
+    await db_session.commit()
+    yield
+    await db_session.execute(statement)
+    await db_session.commit()
+
+
 @dataclass(frozen=True)
 class _Lineage:
     cohort_id: str
@@ -332,6 +368,7 @@ async def _build_lineage(
     instrument_product: str = "spot",
     ledger_product: str = "spot",
     filled_at: datetime = FILLED_AT,
+    client_order_id_prefix: str = _NATIVE_EVIDENCE_CLIENT_ORDER_PREFIX,
 ) -> _Lineage:
     """Run the production paper-active pipeline and seed the evaluation epoch.
 
@@ -435,8 +472,12 @@ async def _build_lineage(
         application_factory=lambda verifier: PaperExecutionApplication(
             registry=_Registry(
                 {
-                    Broker.BINANCE: _RecordingAdapter(Broker.BINANCE, symbol_by_client),
-                    Broker.ALPACA: _RecordingAdapter(Broker.ALPACA, symbol_by_client),
+                    Broker.BINANCE: _RecordingAdapter(
+                        Broker.BINANCE, symbol_by_client, client_order_id_prefix
+                    ),
+                    Broker.ALPACA: _RecordingAdapter(
+                        Broker.ALPACA, symbol_by_client, client_order_id_prefix
+                    ),
                 }
             ),
             verifier=verifier,
