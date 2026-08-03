@@ -35,6 +35,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from research.us_corpus import config as cfg  # noqa: E402
+from research.us_corpus.labeling import label_fields, write_labeled_bytes  # noqa: E402
 
 DATA_HOST = "data.alpaca.markets"
 FORBIDDEN_HOSTS = frozenset(
@@ -135,13 +136,15 @@ class Probe:
                 self.rate_limit_headers[name] = value
         return response
 
-    def oldest_bar(self, symbol: str, timeframe: str, feed: str) -> dict[str, object]:
+    def oldest_bar(
+        self, symbol: str, timeframe: str, feed: str, start: str | None = None
+    ) -> dict[str, object]:
         """Ask for the single earliest bar. sort=asc + limit=1 makes the first
         row the lookback floor, so one call answers the question per pair."""
         url = f"https://{DATA_HOST}/v2/stocks/{symbol}/bars"
         params = {
             "timeframe": timeframe,
-            "start": PROBE_START,
+            "start": start or PROBE_START,
             "limit": "1",
             "sort": "asc",
             "adjustment": "raw",
@@ -171,10 +174,31 @@ class Probe:
             result["oldest"] = "UNKNOWN"
             result["reason"] = "200 OK but zero bars returned for the probe window"
             return result
-        # 🔴 Only the timestamp is retained. The bar payload is discarded —
-        # collecting intraday data is out of scope (v2, separate approval).
-        result["oldest"] = bars[0].get("t")
+        # 🔴 Only the timestamp plus a minimal liveness fingerprint is retained.
+        # The bar series is discarded — collecting intraday data is out of scope
+        # (v2, separate approval).
+        #
+        # The fingerprint exists because R1 asserted "these are real bars, not a
+        # clamp artifact" while persisting nothing that could support it, and the
+        # verifier correctly marked the claim UNVERIFIABLE_OFFLINE. A boundary
+        # bar carrying a real price, a nonzero size and a nonzero trade count
+        # cannot be a clamped placeholder. Three scalars is evidence; a series
+        # would be collection.
+        first = bars[0]
+        result["oldest"] = first.get("t")
         result["reason"] = "measured"
+        result["liveness_fingerprint"] = {
+            "open": first.get("o"),
+            "volume": first.get("v"),
+            "trade_count": first.get("n"),
+            "is_real_bar": bool(
+                isinstance(first.get("o"), (int, float))
+                and first.get("o", 0) > 0
+                and (first.get("v") or 0) > 0
+                and (first.get("n") or 0) > 0
+            ),
+        }
+        result["bars_retained"] = 0
         return result
 
 
@@ -193,9 +217,27 @@ def main() -> int:
     for timeframe in TIMEFRAMES:
         results.append(probe.oldest_bar("AAPL", timeframe, "sip"))
 
+    # Floor-confirmation probes, now part of the single recorded run. In R1
+    # these were run ad hoc from a shell, so the artifact showed 8 calls while
+    # the report said 11 — the discrepancy was real and the verifier was right
+    # to flag it. Everything that hits the network now goes through one counter
+    # and one artifact.
+    confirmations: list[dict[str, object]] = []
+    for label, symbol, timeframe, feed, start in (
+        ("sip floor: ask older than the floor", "AAPL", "1Min", "sip", "2015-01-01"),
+        ("sip mid-window sanity", "AAPL", "1Min", "sip", "2016-06-01"),
+        ("iex floor: ask older than the floor", "AAPL", "1Min", "iex", "2019-01-01"),
+    ):
+        entry = probe.oldest_bar(symbol, timeframe, feed, start=f"{start}T00:00:00Z")
+        entry["confirmation"] = label
+        entry["requested_start"] = start
+        confirmations.append(entry)
+
     report = {
+        **label_fields(),
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "probe_calls": probe.calls,
+        "confirmations": confirmations,
         "max_calls": MAX_CALLS,
         "hosts_contacted": sorted(h for h in probe.hosts if h),
         "trading_host_contacted": False,
@@ -205,8 +247,10 @@ def main() -> int:
         "urls": probe.urls,
         "results": results,
     }
-    out = cfg.PROBE_DIR / "alpaca_lookback.json"
-    out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    write_labeled_bytes(
+        cfg.PROBE_DIR / "alpaca_lookback.json",
+        json.dumps(report, indent=2).encode(),
+    )
     print(json.dumps(report, indent=2))
     return 0
 

@@ -30,20 +30,24 @@ frozen US universe, split into an exploration set and a sealed holdout.
 | Calendar | XNYS (`exchange_calendars`), America/New_York |
 | Train | 2016-01-01 → 2022-12-31 |
 | Validation | 2023-01-01 → 2024-12-31 |
-| Holdout | 2025-01-01 → 2026-07-31 — **written, never read** |
+| Holdout | 2025-01-01 → 2026-07-31 — **write-only; sealed artifact never reopened** |
 | Forward OOS | starts 2026-08-03 |
 
 ## Layout
 
 ```
 /Users/mgh3326/work/herdr-artifacts/us-corpus-v1/
-  inputs/common_stock_universe.csv      # pinned input, read-only
-  crosscheck/kis_db_frozen_sample.csv   # pinned input, read-only
-  dataset/market=us/year=YYYY/          # exploration 2016–2024
-  holdout/market=us/year=YYYY/          # 🔴 holdout 2025–2026, do not read
-  reports/                              # coverage, gaps, empties, crosscheck
-  probe/alpaca_lookback.json            # intraday feasibility measurement
-  manifest.json · checksums.sha256 · holdout-access.log
+  inputs/common_stock_universe.csv         # pinned input, read-only
+  crosscheck/kis_db_frozen_sample_v2.csv   # pinned input (active)
+  crosscheck/kis_db_frozen_sample.csv      # v1, superseded — provenance only
+  dataset/market=us/year=YYYY/             # exploration 2016–2024, labelled
+  holdout/market=us/year=YYYY/             # 🔴 sealed 2025–2026, write-only
+  reports/                                 # coverage, gaps, empties, crosscheck
+  probe/alpaca_lookback.json               # intraday feasibility measurement
+  manifest.json                            # records the generating commit SHA
+  checksums.sha256                         # dataset + reports + manifest
+  holdout-write-registry.sha256            # sealed digests, NOT in checksums
+  holdout-access.log                       # WRITE and READ-refusal ledger
 ```
 
 ## Running
@@ -52,7 +56,12 @@ frozen US universe, split into an exploration set and a sealed holdout.
 uv run python -m research.us_corpus.build       # fetch (resumable, ~1h)
 uv run python -m research.us_corpus.finalize    # partition + validate + manifest
 uv run python -m research.us_corpus.alpaca_probe  # bounded intraday probe
+uv run python -m research.us_corpus.verify_gates  # offline boundary proofs
 ```
+
+🔴 `finalize` stamps the generating commit SHA into the manifest, so run it
+**after** committing the code. If the tree is dirty the SHA is suffixed
+`-dirty`, which makes non-reproducible artifacts visible rather than silent.
 
 `build` is checkpointed per symbol (`_staging/checkpoint.jsonl`) and heartbeats
 to the job's `events/progress.md`, so a killed session resumes rather than
@@ -83,25 +92,62 @@ make a number look better.
   silently drop. The count check is the backstop.
 - **Atomic writes.** `.partial` → fsync → rename. Finished files are never
   overwritten in place.
-- **Holdout is write-only.** Every read in `finalize` targets `_staging/`;
-  `HOLDOUT_DIR` is opened for write only, and `holdout-access.log` records the
-  writes.
+- **Holdout is write-only, structurally.** No digest in this package is computed
+  by reopening a file — every hash comes from the write buffer. There is
+  therefore no artifact-root sweep to exclude the holdout from, which is how R1
+  read both sealed partitions while reporting `written_not_read: true`. Sealed
+  writes go through `holdout_gate`, which offers no read function; `guard_read`
+  logs a `READ` line and raises. An AST check refuses any reintroduced
+  `ARTIFACT_ROOT.rglob(...)` and any read call taking a holdout path.
+- **Survivorship label is enforced, not just documented.** Every Parquet
+  partition carries `SURVIVORSHIP_BIASED=TRUE` in its schema metadata, every
+  numeric artifact carries a label field or column, and `read_labeled_parquet`
+  raises `UnlabeledCorpusError` on an unlabelled file rather than filtering or
+  returning an empty frame.
+
+## What the label does and does not stop
+
+The label is stamped **in place**, into the same tree consumers read. That was
+chosen over publishing a separate labelled tree because BLOCKER-3 required
+regenerating every artifact at the final commit anyway — the integrity seal is
+created *after* labelling, in the same operation, so nothing pre-existing is
+broken. A separate tree would have left an unlabelled original in place forever.
+
+🔴 It is still not a complete block, and should not be described as one:
+
+- `pd.read_parquet(path)` and `pq.read_table(path)` return rows without
+  surfacing schema metadata, so a consumer who ignores the supported loader
+  never sees the label,
+- converting to CSV/JSON, or copying the file elsewhere, drops the metadata,
+- `duckdb`/`polars` scanning `dataset/` ignore it as well.
+
+So: `CONSUMER_CAN_READ_UNAWARE = NO` through the supported loader, `YES` in
+absolute terms. The label is present in every file; nothing forces a reader to
+look at it.
 
 ## Crosscheck — and a boundary note
 
 `CROSSCHECK_MODE=FROZEN_DB_SAMPLE` is **diagnostic only**. The frozen KIS sample
 never overwrites a Yahoo value; disagreements are reported and nothing else.
 
-⚠️ **All 1,414 rows of the frozen sample fall inside the holdout window**
-(2025-05-20 → 2026-07-30). The crosscheck therefore runs against `_staging/`
-rather than the sealed `HOLDOUT_DIR`, restricted to exactly the
-`(symbol, session_date)` pairs already present in the authorised, digest-pinned
-input file, and emits only aggregate agreement statistics. See the job report —
-this collision is flagged for the brief author's decision.
+The pinned sample is **v2** (`kis_db_frozen_sample_v2.csv`). v1 was superseded:
+its export was timezone-shifted, labelling every row one calendar day early. The
+five value columns are identical across v1 and v2 for all 1,414 rows — only the
+dates moved. Against v2 at lag 0 there are **zero** price mismatches over 1%.
+🔴 v1 is retained unmodified as correction provenance and is never read by the
+build; the manifest records both digests and why v1 was replaced.
 
-The crosscheck includes a **date-alignment probe** because a naive same-date
-comparison is misleading here: the sources agree on prices and disagree on the
-date label. See `reports/crosscheck_report.json`.
+⚠️ **All 1,414 rows fall inside the holdout window** (v2: 2025-05-21 →
+2026-07-31). The crosscheck therefore runs against `_staging/` before the split,
+restricted to exactly the `(symbol, session_date)` pairs already present in the
+authorised digest-pinned input, and emits only aggregate statistics. The sealed
+`HOLDOUT_DIR` is never opened. See the job report for the precise wording — the
+claim is "the sealed artifact was not opened", not "the holdout was never seen".
+
+The crosscheck keeps the **date-alignment probe** that originally exposed the v1
+shift. It reports match rates at two tolerances because the residual after
+alignment is a piecewise-constant dividend factor (adjusted vs raw), which makes
+a single exact-match rate look like a partial effect.
 
 ## Alpaca probe scope
 

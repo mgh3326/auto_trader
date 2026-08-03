@@ -28,10 +28,23 @@ UNIVERSE_FILE_SHA256 = (
 UNIVERSE_COUNT = 5355
 
 CROSSCHECK_MODE = "FROZEN_DB_SAMPLE"
-CROSSCHECK_FILE = ARTIFACT_ROOT / "crosscheck" / "kis_db_frozen_sample.csv"
+
+# v2 supersedes v1. The v1 export carried a timezone shift: every row's date was
+# one calendar day early, which R1 correctly measured and reported as a lag+1
+# alignment (634 same-date mismatches). v2 fixes the export; the five value
+# columns are byte-identical across the two files for all 1,414 rows, only the
+# date labels moved. 🔴 v1 is retained unmodified as correction provenance — it
+# is never read by the build, and it is never deleted.
+CROSSCHECK_FILE = ARTIFACT_ROOT / "crosscheck" / "kis_db_frozen_sample_v2.csv"
 CROSSCHECK_FILE_SHA256 = (
+    "a360e988b619029a0641b9a0a596e534a09e734497c92617de79f56c0fae2018"
+)
+CROSSCHECK_VERSION = "v2"
+CROSSCHECK_SUPERSEDED_FILE = ARTIFACT_ROOT / "crosscheck" / "kis_db_frozen_sample.csv"
+CROSSCHECK_SUPERSEDED_SHA256 = (
     "bc0f8ca0276f0ad9b570d920312dea44cce3ad2dbb988e0f6bcc352313638d57"
 )
+CROSSCHECK_SUPERSEDED_MISMATCHES = 634
 
 START_DATE = "2016-01-01"
 CUTOFF_SESSION = "2026-07-31"
@@ -78,6 +91,35 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def code_commit_sha() -> str:
+    """The exact commit the running code came from, stamped into the manifest.
+
+    R1 shipped artifacts generated hours before the final commit, so the
+    reported per-symbol breakdown did not reproduce from the shipped HEAD. The
+    manifest now records which commit produced it and whether the tree was
+    dirty, making that drift visible instead of silent.
+    """
+    import subprocess
+
+    root = Path(__file__).resolve().parents[2]
+    try:
+        sha = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, OSError) as exc:  # pragma: no cover
+        return f"UNKNOWN ({type(exc).__name__})"
+    return f"{sha}{'-dirty' if dirty else ''}"
 
 
 class PreconditionFailed(RuntimeError):

@@ -8,9 +8,20 @@ and every report carries it in the header.
 Split: exploration = 2016-01-01..2024-12-31 (TRAIN + VALIDATION) under
 `dataset/`, holdout = 2025-01-01..2026-07-31 under `holdout/`.
 
-🔴 The holdout is written and never read back. `HOLDOUT_DIR` is opened for
-write only; every read in this module targets `_staging/`. The access log
-records the writes so the claim is evidenced rather than asserted.
+🔴 Holdout handling. R1 wrote `written_not_read: true` while a post-hoc `rglob`
+checksum sweep had in fact opened both sealed partitions to hash them. This
+module no longer hashes by reading anything: every digest comes from the write
+buffer (`labeling.write_labeled_parquet`), so there is no sweep to exclude the
+holdout from. Sealed writes go through `holdout_gate`, which is the only module
+permitted to name `HOLDOUT_DIR` and which offers no read function.
+
+Consequences stated plainly rather than as a boolean flag:
+* sealed digests live in `holdout-write-registry.sha256`, not in the public
+  `checksums.sha256`,
+* those digests cannot be re-verified without opening sealed files, so they are
+  not re-verified,
+* the survivorship label on sealed partitions is guaranteed by using the same
+  writer as exploration — it is not confirmed by reading them back.
 
 🔴 Gaps are reported, never filled. No forward-fill, no interpolation, no
 second source.
@@ -19,7 +30,6 @@ second source.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,26 +40,14 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from research.us_corpus import config as cfg  # noqa: E402
-
-
-def log_holdout_write(message: str) -> None:
-    """🔴 Append-only ledger of holdout *writes*. A READ line must never appear."""
-    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    with cfg.HOLDOUT_ACCESS_LOG.open("a", encoding="utf-8") as handle:
-        handle.write(f"{stamp}\tWRITE\t{message}\n")
-
-
-def atomic_parquet(frame: pd.DataFrame, target: Path) -> None:
-    """`.partial` -> fsync -> atomic rename. Never overwrite in place."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    partial = target.with_suffix(".parquet.partial")
-    frame.to_parquet(partial, index=False, compression="zstd")
-    fd = os.open(partial, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(partial, target)
+from research.us_corpus import holdout_gate  # noqa: E402
+from research.us_corpus.labeling import (  # noqa: E402
+    WriteReceipt,
+    label_fields,
+    write_labeled_bytes,
+    write_labeled_csv,
+    write_labeled_parquet,
+)
 
 
 def load_staging() -> pd.DataFrame:
@@ -101,10 +99,22 @@ def validate(frame: pd.DataFrame) -> tuple[dict[str, object], pd.DataFrame]:
     violations = int(bad.sum())
     negative_volume = int((frame["volume"] < 0).sum())
 
+    # R1 reported a type breakdown that did not reproduce, because the column
+    # names implied one definition while the code computed another: `high_ok`
+    # compares `high` against the max of ALL FOUR fields (so a row with
+    # high < low is counted), whereas a reader of "high_below_max" reasonably
+    # expects max(open, close). The two disagree on rows where high >= both
+    # open and close but still sits below low. The breakdown is now emitted as
+    # four independently named, individually checkable predicates so no reader
+    # has to guess which comparison set was used.
+    oc_max = frame[["open", "close"]].max(axis=1)
+    oc_min = frame[["open", "close"]].min(axis=1)
     offenders = frame.loc[bad].copy()
-    offenders["nonpositive_price"] = ~positive.loc[bad]
-    offenders["high_below_max"] = ~high_ok.loc[bad]
-    offenders["low_above_min"] = ~low_ok.loc[bad]
+    offenders["nonpositive_price"] = (~positive).loc[bad]
+    offenders["high_lt_max_open_close"] = (frame["high"] < oc_max - 1e-6).loc[bad]
+    offenders["low_gt_min_open_close"] = (frame["low"] > oc_min + 1e-6).loc[bad]
+    offenders["high_lt_low"] = (frame["high"] < frame["low"] - 1e-6).loc[bad]
+
     summary = (
         offenders.groupby("symbol")
         .agg(
@@ -112,13 +122,16 @@ def validate(frame: pd.DataFrame) -> tuple[dict[str, object], pd.DataFrame]:
             first_session=("session_date", "min"),
             last_session=("session_date", "max"),
             nonpositive_price_rows=("nonpositive_price", "sum"),
-            high_below_max_rows=("high_below_max", "sum"),
-            low_above_min_rows=("low_above_min", "sum"),
+            high_lt_max_open_close_rows=("high_lt_max_open_close", "sum"),
+            low_gt_min_open_close_rows=("low_gt_min_open_close", "sum"),
+            high_lt_low_rows=("high_lt_low", "sum"),
         )
         .reset_index()
         .sort_values("violation_rows", ascending=False)
     )
 
+    total = max(violations, 1)
+    top3 = summary.head(3)
     return (
         {
             "duplicate_rows": duplicates,
@@ -126,6 +139,30 @@ def validate(frame: pd.DataFrame) -> tuple[dict[str, object], pd.DataFrame]:
             "negative_volume": negative_volume,
             "ohlc_violation_symbols": int(summary["symbol"].nunique()),
             "ohlc_nonpositive_price_rows": int(offenders["nonpositive_price"].sum()),
+            "ohlc_high_lt_max_open_close_rows": int(
+                offenders["high_lt_max_open_close"].sum()
+            ),
+            "ohlc_low_gt_min_open_close_rows": int(
+                offenders["low_gt_min_open_close"].sum()
+            ),
+            "ohlc_high_lt_low_rows": int(offenders["high_lt_low"].sum()),
+            "ohlc_top3_symbols": list(top3["symbol"]),
+            "ohlc_top3_share": round(float(top3["violation_rows"].sum()) / total, 10),
+            "ohlc_breakdown_definitions": {
+                "violation_rows": (
+                    "full invariant: high >= max(open, close, low) AND "
+                    "low <= min(open, close, high) AND all four prices > 0"
+                ),
+                "nonpositive_price_rows": "any of open/high/low/close <= 0",
+                "high_lt_max_open_close_rows": "high < max(open, close)",
+                "low_gt_min_open_close_rows": "low > min(open, close)",
+                "high_lt_low_rows": "high < low",
+                "tolerance": 1e-6,
+                "note": (
+                    "The last three overlap and are NOT a partition; a single "
+                    "corrupted row commonly trips several at once."
+                ),
+            },
         },
         summary,
     )
@@ -338,17 +375,24 @@ def date_alignment_probe(
     }
 
 
-def write_partitions(frame: pd.DataFrame, root: Path, label: str) -> list[Path]:
-    written: list[Path] = []
+def write_partitions(
+    frame: pd.DataFrame, root: Path, sealed: bool
+) -> list[WriteReceipt]:
+    """Write year partitions, returning write-time digests.
+
+    🔴 Sealed partitions go through `holdout_gate.write_partition`, which is the
+    only sanctioned holdout path and records the digest in the access log. No
+    caller ever needs to reopen a sealed file to learn its hash.
+    """
+    receipts: list[WriteReceipt] = []
     for year, group in frame.groupby(frame["session_date"].dt.year):
         target = root / "market=us" / f"year={year}" / "part-00000.parquet"
-        atomic_parquet(group.sort_values(["symbol", "session_date"]), target)
-        written.append(target)
-        if label == "holdout":
-            log_holdout_write(
-                f"{target.relative_to(cfg.ARTIFACT_ROOT)} rows={len(group)}"
-            )
-    return written
+        ordered = group.sort_values(["symbol", "session_date"]).reset_index(drop=True)
+        if sealed:
+            receipts.append(holdout_gate.write_partition(ordered, target))
+        else:
+            receipts.append(write_labeled_parquet(ordered, target))
+    return receipts
 
 
 def main() -> int:
@@ -376,31 +420,67 @@ def main() -> int:
         & (frame["session_date"] <= pd.Timestamp(cfg.HOLDOUT_WINDOW[1]))
     ]
 
-    write_partitions(exploration, cfg.DATASET_DIR, "dataset")
-    write_partitions(holdout, cfg.HOLDOUT_DIR, "holdout")
+    # 🔴 exploration_receipts feed checksums.sha256; holdout receipts are kept
+    # in a SEPARATE write registry so no holdout entry appears in the public
+    # integrity list, matching the kr-corpus-v1 resolution of this same trap.
+    exploration_receipts = write_partitions(exploration, cfg.DATASET_DIR, sealed=False)
+    holdout_receipts = write_partitions(holdout, cfg.HOLDOUT_DIR, sealed=True)
 
     empty_symbols = outcomes[outcomes["status"] == "empty"][["symbol", "yahoo_symbol"]]
     error_symbols = outcomes[outcomes["status"] == "error"][
         ["symbol", "yahoo_symbol", "error", "attempts"]
     ]
 
-    coverage.to_csv(cfg.REPORTS_DIR / "coverage_by_year.csv", index=False)
-    gaps.to_csv(cfg.REPORTS_DIR / "explicit_gaps.csv", index=False)
-    empty_symbols.to_csv(cfg.REPORTS_DIR / "empty_symbols.csv", index=False)
-    error_symbols.to_csv(cfg.REPORTS_DIR / "error_symbols.csv", index=False)
-    truncated.to_csv(cfg.REPORTS_DIR / "truncated_symbols.csv", index=False)
-    ohlc_offenders.to_csv(cfg.REPORTS_DIR / "ohlc_violation_symbols.csv", index=False)
-    off_calendar.to_csv(cfg.REPORTS_DIR / "off_calendar_rows.csv", index=False)
-    (cfg.REPORTS_DIR / "crosscheck_report.json").write_text(
-        json.dumps(cross, indent=2, default=str), encoding="utf-8"
-    )
+    # Every artifact carrying numbers gets the label and a write-time digest.
+    report_receipts = [
+        write_labeled_csv(coverage, cfg.REPORTS_DIR / "coverage_by_year.csv"),
+        write_labeled_csv(gaps, cfg.REPORTS_DIR / "explicit_gaps.csv"),
+        write_labeled_csv(empty_symbols, cfg.REPORTS_DIR / "empty_symbols.csv"),
+        write_labeled_csv(error_symbols, cfg.REPORTS_DIR / "error_symbols.csv"),
+        write_labeled_csv(truncated, cfg.REPORTS_DIR / "truncated_symbols.csv"),
+        write_labeled_csv(
+            ohlc_offenders, cfg.REPORTS_DIR / "ohlc_violation_symbols.csv"
+        ),
+        write_labeled_csv(off_calendar, cfg.REPORTS_DIR / "off_calendar_rows.csv"),
+        write_labeled_bytes(
+            cfg.REPORTS_DIR / "crosscheck_report.json",
+            json.dumps({**label_fields(), **cross}, indent=2, default=str).encode(
+                "utf-8"
+            ),
+        ),
+    ]
 
     fetch_summary = json.loads((cfg.STAGING_DIR / "fetch_summary.json").read_text())
+    report_receipts.append(
+        write_labeled_bytes(
+            cfg.REPORTS_DIR / "fetch_summary.json",
+            json.dumps({**label_fields(), **fetch_summary}, indent=2).encode("utf-8"),
+        )
+    )
 
+    # fetch.log is the raw stdout capture from the fetch process. It carries
+    # counts, so it needs the label too. The original text is preserved verbatim
+    # beneath a banner that says when and why the banner was added — silently
+    # rewriting a process log would be worse than leaving it unlabelled.
+    fetch_log = cfg.REPORTS_DIR / "fetch.log"
+    if fetch_log.exists():
+        original = fetch_log.read_text(encoding="utf-8", errors="replace")
+        marker = "# SURVIVORSHIP_BIASED=TRUE"
+        if not original.startswith(marker):
+            original = (
+                f"{marker} corpus={cfg.CORPUS_ID} purpose={cfg.PURPOSE}\n"
+                "# Banner prepended by finalize; all lines below are the "
+                "unmodified fetch stdout capture.\n"
+            ) + original
+        report_receipts.append(
+            write_labeled_bytes(fetch_log, original.encode("utf-8"))
+        )
+
+    # Sizes come from the write receipts, not a filesystem sweep — the sweep is
+    # what walked into the holdout in R1.
     artifact_bytes = sum(
-        p.stat().st_size
-        for p in cfg.ARTIFACT_ROOT.rglob("*")
-        if p.is_file() and "_staging" not in p.parts
+        r.bytes_written
+        for r in [*exploration_receipts, *holdout_receipts, *report_receipts]
     )
 
     symbols_with_data = int(frame["symbol"].nunique())
@@ -432,6 +512,7 @@ def main() -> int:
         "corpus_id": cfg.CORPUS_ID,
         "purpose": cfg.PURPOSE,
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_by_commit": cfg.code_commit_sha(),
         "terminal_verdict": verdict,
         "source_product": cfg.SOURCE_PRODUCT,
         "source_fallback_used": False,
@@ -477,9 +558,26 @@ def main() -> int:
         },
         "crosscheck": {
             "mode": cfg.CROSSCHECK_MODE,
+            "version": cfg.CROSSCHECK_VERSION,
+            "file": str(cfg.CROSSCHECK_FILE),
+            "file_sha256": cfg.CROSSCHECK_FILE_SHA256,
             "mismatches_over_tolerance": cross["mismatches_over_tolerance"],
             "rows_absent_from_yahoo": cross["rows_absent_from_yahoo"],
             "yahoo_values_overwritten": 0,
+            "superseded": {
+                "version": "v1",
+                "file": str(cfg.CROSSCHECK_SUPERSEDED_FILE),
+                "file_sha256": cfg.CROSSCHECK_SUPERSEDED_SHA256,
+                "mismatches_over_tolerance": cfg.CROSSCHECK_SUPERSEDED_MISMATCHES,
+                "why_superseded": (
+                    "The v1 export was timezone-shifted: every row's date was "
+                    "one calendar day early. The five value columns are "
+                    "identical to v2 for all 1,414 rows — only the labels "
+                    "moved. v1's 634 same-date mismatches were a real signal "
+                    "about the export, not a KIS DB price defect, and not a "
+                    "corpus defect. v1 is retained unmodified as provenance."
+                ),
+            },
         },
         "budget": {
             "requests_projected": fetch_summary["requests_projected"],
@@ -489,29 +587,69 @@ def main() -> int:
             "artifact_gib": round(artifact_bytes / 1024**3, 4),
             "max_artifact_gib": cfg.MAX_ARTIFACT_GIB,
         },
+        # 🔴 No `written_not_read` field. R1 asserted it while a checksum sweep
+        # had in fact read both sealed files, and the flag could not have been
+        # falsified because nothing incremented a counter. Rather than restate
+        # it more carefully, the claim is replaced by facts that are checkable:
+        # where the digests came from, and what the guard actually refuses.
         "holdout": {
             "dir": str(cfg.HOLDOUT_DIR),
-            "written_not_read": True,
             "access_log": str(cfg.HOLDOUT_ACCESS_LOG),
+            "write_registry": "holdout-write-registry.sha256",
+            "digest_provenance": "write-time buffer hash; sealed files never reopened",
+            "present_in_public_checksums": False,
+            "read_guard": (
+                "research.us_corpus.holdout_gate.guard_read — logs a READ line "
+                "and raises HoldoutReadRefused; no read function exists"
+            ),
+            "labels_verified_by_read": False,
+            "labels_guaranteed_by": (
+                "same write_labeled_parquet path as exploration; re-reading to "
+                "confirm would itself be a holdout read"
+            ),
+        },
+        "integrity": {
+            "public_list": "checksums.sha256",
+            "covers": [
+                "dataset/ parquet partitions",
+                "reports/ (all)",
+                "probe/ (if present)",
+                "manifest.json",
+            ],
+            "excludes": [
+                "holdout/ (separate write registry)",
+                "_staging/ (intermediate)",
+                "pinned inputs (digests pinned in config)",
+            ],
+            "digest_method": "write-time buffer hash; no artifact is reopened",
         },
     }
 
-    (cfg.ARTIFACT_ROOT / "manifest.json").write_text(
-        json.dumps(manifest, indent=2), encoding="utf-8"
+    manifest_receipt = write_labeled_bytes(
+        cfg.ARTIFACT_ROOT / "manifest.json",
+        json.dumps(manifest, indent=2).encode("utf-8"),
     )
 
-    checksums = []
-    for path in sorted(cfg.ARTIFACT_ROOT.rglob("*.parquet")):
-        if "_staging" in path.parts:
-            continue
-        checksums.append(
-            f"{cfg.sha256_file(path)}  {path.relative_to(cfg.ARTIFACT_ROOT)}"
-        )
-    for name in ("manifest.json",):
-        p = cfg.ARTIFACT_ROOT / name
-        checksums.append(f"{cfg.sha256_file(p)}  {name}")
-    (cfg.ARTIFACT_ROOT / "checksums.sha256").write_text(
-        "\n".join(checksums) + "\n", encoding="utf-8"
+    # Sealed digests live here, deliberately outside the public list.
+    registry = "\n".join(
+        f"{r.sha256}  {r.relative_path}  rows={r.row_count}" for r in holdout_receipts
+    )
+    write_labeled_bytes(
+        cfg.ARTIFACT_ROOT / "holdout-write-registry.sha256",
+        (
+            "# write-time digests for the sealed holdout.\n"
+            "# 🔴 Deliberately NOT in checksums.sha256 and NOT verifiable by\n"
+            "# reading: confirming these would require opening sealed files.\n"
+            f"{registry}\n"
+        ).encode(),
+    )
+
+    public = [*exploration_receipts, *report_receipts, manifest_receipt]
+    write_labeled_bytes(
+        cfg.ARTIFACT_ROOT / "checksums.sha256",
+        ("\n".join(f"{r.sha256}  {r.relative_path}" for r in public) + "\n").encode(
+            "utf-8"
+        ),
     )
 
     print(json.dumps(manifest, indent=2))
