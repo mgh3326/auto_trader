@@ -72,6 +72,39 @@ MAX_REQUESTS: Final = 80_000
 MAX_WALL_CLOCK_HOURS: Final = 12
 MAX_ARTIFACT_GIB: Final = 25
 
+# --- scope decision (operator, 2026-08-03) ---------------------------------
+# Option C: collect 1Min for the top 500 only. 1Hour collection is dropped.
+#
+# This is a DEFERRAL, not a permanent abandonment, and the distinction is
+# recorded in the manifest so a future reader does not mistake one for the
+# other:
+#   * the top-500's hourly bars are DERIVABLE LOCALLY by resampling their 1Min
+#     data, so collecting them over the wire would be redundant;
+#   * the remaining ~4,855 symbols' hourly bars are simply not fetched yet.
+#     They are recorded as a DATA_GAP to be filled if and when an hourly
+#     hypothesis actually needs them.
+# The blocker was arithmetic, not preference: measured 1Hour throughput tops
+# out at ~416 rows/request, so the full-universe hourly corpus needs
+# 130k-246k requests against MAX_REQUESTS=80000.
+SCOPE_DECISION: Final = "C_1M_TOP500_ONLY"
+HOUR_COLLECTION_ABANDONED: Final = True
+HOUR_DERIVABLE_FROM_1M: Final = True
+HOUR_DATA_GAP: Final = {
+    "scope": "1Hour bars for universe symbols outside the 1Min top-500",
+    "symbols_not_collected": UNIVERSE_COUNT - TOP500_COUNT,
+    "status": "DEFERRED_NOT_ABANDONED",
+    "reason": (
+        "measured 1Hour throughput is <=416 rows/request, so the full "
+        "5,355-symbol hourly corpus needs 130k-246k requests against "
+        "MAX_REQUESTS=80000 (1.6x-3.1x over) before 1Min is added"
+    ),
+    "resume_condition": "an hourly-timeframe hypothesis actually requires them",
+    "top500_hourly_note": (
+        "the top-500's hourly bars are not a gap: they are derivable locally "
+        "by resampling this corpus's 1Min data"
+    ),
+}
+
 SOURCE_FALLBACK: Final = "NONE"
 OPERATING_DB_WRITES: Final = 0
 BROKER_OR_ACCOUNT_CALLS: Final = 0

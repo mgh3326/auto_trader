@@ -158,6 +158,29 @@ def seal(
                 "would shift every row by one day."
             ),
         },
+        "scope": {
+            "decision": config.SCOPE_DECISION,
+            "hour_collection_abandoned": config.HOUR_COLLECTION_ABANDONED,
+            "hour_derivable_from_1m": config.HOUR_DERIVABLE_FROM_1M,
+        },
+        "data_gaps": [config.HOUR_DATA_GAP],
+        "partial_not_shipped": {
+            "what": "1Hour partial collection, stopped when the budget projection proved wrong",
+            "rows": 2_384_816,
+            "symbols": 2_500,
+            "of_universe": config.UNIVERSE_COUNT,
+            "session_years": [2016],
+            "approx_coverage_pct_of_intended_1h": 2,
+            "location": str(config.STAGING_DIR / "aborted_1h_partial_20260803"),
+            "status": "PARTIAL_NOT_SHIPPED",
+            "promoted_to_dataset": False,
+            "deleted": False,
+            "note": (
+                "Preserved deliberately, outside dataset/, so a future 1Hour "
+                "resume can judge whether to reuse it. It is NOT part of this "
+                "corpus and no statistic may be computed from it."
+            ),
+        },
         "window": {
             "start_date": str(config.START_DATE),
             "cutoff_session": str(config.CUTOFF_DATE),
