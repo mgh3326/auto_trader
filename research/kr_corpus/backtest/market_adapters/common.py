@@ -78,6 +78,7 @@ class ContractBackedCorpusAdapter:
         return arrow_schema_for(dataset, contract_path=self.contract_path)
 
     def validate_table_schema(self, table: pa.Table, dataset: str) -> None:
+        """Schema + any contract ``table_load_policy`` (labels, required values)."""
         validate_table_schema(table, dataset, contract_path=self.contract_path)
 
     def assert_path_allowed(self, path: Path | str) -> Path:
@@ -105,7 +106,11 @@ class ContractBackedCorpusAdapter:
         allowed_window_start: date | str | None = None,
         allowed_window_end: date | str | None = None,
     ) -> pa.Table:
-        """Load only through the shared SHA-before-parse loader."""
+        """Load via shared SHA-before-parse loader (inherits contract policy).
+
+        Contract ``table_load_policy`` is enforced inside
+        ``validate_table_schema`` for this adapter's ``contract_path``.
+        """
         return load_shard(
             artifact_root,
             entry,

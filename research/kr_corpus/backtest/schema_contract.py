@@ -21,8 +21,10 @@ __all__ = [
     "SCHEMA_ORIGIN",
     "SchemaContractError",
     "SchemaMismatchError",
+    "ContractTablePolicyError",
     "arrow_schema_for",
     "date_column_for",
+    "enforce_table_load_policy",
     "load_contract",
     "types_compatible",
     "validate_table_schema",
@@ -48,6 +50,16 @@ class SchemaContractError(RuntimeError):
 
 class SchemaMismatchError(SchemaContractError):
     """Parquet/table schema does not match the declared contract."""
+
+
+class ContractTablePolicyError(SchemaContractError):
+    """Contract-declared post-schema table policy refused the load.
+
+    Raised for required column *values* (e.g. frequency must be ``1d``) and
+    other structural table policies that are not column-dtype mismatches.
+    Label/metadata refusals from venue-specific policy modules propagate as
+    their own exception types (e.g. ``UnlabeledParquetError``).
+    """
 
 
 def load_contract(contract_path: Path | str | None = None) -> dict[str, Any]:
@@ -129,6 +141,61 @@ def types_compatible(expected: pa.DataType, actual: pa.DataType) -> bool:
     return False
 
 
+def enforce_table_load_policy(
+    table: pa.Table,
+    dataset: str,
+    *,
+    contract_path: Path | str | None = None,
+) -> None:
+    """Apply contract-declared post-schema gates to a loaded table.
+
+    This is the **structural** attachment point for label/value policy: any
+    caller that validates a table against a contract (including
+    ``loader.load_shard`` and ``ContractBackedCorpusAdapter.load_shard``)
+    must pass through ``validate_table_schema``, which invokes this function.
+    Wrapper-only gates are insufficient and incomplete by construction.
+    """
+    ds = _dataset_spec(dataset, contract_path=contract_path)
+    policy = ds.get("table_load_policy") or {}
+    if not policy:
+        return
+
+    if policy.get("require_crypto_parquet_labels"):
+        # Import locally to keep schema_contract usable without crypto package
+        # for KR-only paths; only contracts that opt in pay this cost.
+        from research.crypto_corpus.policy import policy_from_parquet_metadata
+
+        policy_from_parquet_metadata(table.schema.metadata)
+
+    meta_eq = policy.get("require_schema_metadata_equals") or {}
+    if meta_eq:
+        metadata = table.schema.metadata or {}
+        for key, expected in meta_eq.items():
+            key_b = key.encode("utf-8") if isinstance(key, str) else key
+            exp_b = expected.encode("utf-8") if isinstance(expected, str) else expected
+            actual = metadata.get(key_b)
+            if actual != exp_b:
+                raise ContractTablePolicyError(
+                    f"dataset={dataset!r} required schema metadata "
+                    f"{key!r}={expected!r} missing or mismatched "
+                    f"(actual={actual!r}); refusing load"
+                )
+
+    required_values = policy.get("required_column_values") or {}
+    for column, expected in required_values.items():
+        if column not in table.column_names:
+            raise ContractTablePolicyError(
+                f"dataset={dataset!r} missing policy column {column!r}"
+            )
+        for i, raw in enumerate(table.column(column).to_pylist()):
+            if raw is None or str(raw) != str(expected):
+                raise ContractTablePolicyError(
+                    f"dataset={dataset!r} row {i} column {column!r}="
+                    f"{raw!r} is not required value {expected!r}; "
+                    f"refusing load (no silent filter)"
+                )
+
+
 def validate_table_schema(
     table: pa.Table,
     dataset: str,
@@ -141,6 +208,10 @@ def validate_table_schema(
     allowed only when the contract sets ``allow_extra_columns: true``.
     Columns listed under ``forbidden_columns`` always fail (used to keep US
     ``trading_value`` absent).
+
+    After column/dtype checks, enforces any ``table_load_policy`` declared on
+    the dataset (labels, required column values). That policy is structural:
+    every load path that calls this function inherits it.
     """
     ds = _dataset_spec(dataset, contract_path=contract_path)
     required: list[str] = list(ds["required_columns"])
@@ -181,3 +252,5 @@ def validate_table_schema(
 
     if diffs:
         raise SchemaMismatchError(f"schema mismatch for dataset={dataset!r}: {diffs}")
+
+    enforce_table_load_policy(table, dataset, contract_path=contract_path)

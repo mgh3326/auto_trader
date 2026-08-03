@@ -10,8 +10,11 @@ This adapter is a **daily (1d)** harness binding:
 * every row's ``frequency`` value must equal ``CRYPTO_ADAPTER_FREQUENCY``
   (``"1d"``); hourly (or other) input raises ``CryptoFrequencyMismatchError``
 * ``frequency`` is carried on every ``CryptoBar``
-* every public path that returns OHLCV data enforces the sealed **label**
-  gate (``policy_from_parquet_metadata``) — unlabeled tables fail closed
+* label + frequency gates are attached to the **crypto contract** via
+  ``datasets.ohlcv.table_load_policy`` and run inside
+  ``schema_contract.validate_table_schema`` — any load using this contract
+  (``loader.load_shard``, ``ContractBackedCorpusAdapter``, adapter wrappers)
+  is gated without relying on wrapper enumeration
 
 Bar time is ``open_time_utc`` (inclusive). ``close_time_utc`` is the exclusive
 end from the sealed builder. Session date is the UTC calendar day of the open.
@@ -36,6 +39,7 @@ from holdout_guard import (
 from loader import ManifestEntry
 from market_adapters.common import ContractBackedCorpusAdapter, parse_utc_timestamp
 from market_adapters.costs import CostModel
+from schema_contract import ContractTablePolicyError, enforce_table_load_policy
 from terminal_events import TerminalEvent, force_exit_delisted_holdings
 
 from research.crypto_corpus.policy import (
@@ -46,7 +50,7 @@ from research.crypto_corpus.policy import (
 __all__ = [
     "BINANCE_USDT_COST",
     "CRYPTO_ADAPTER_FREQUENCY",
-    "CRYPTO_ADAPTER_PUBLIC_LOAD_ENTRYPOINTS",
+    "CRYPTO_STRUCTURAL_GATE_ATTACHMENT",
     "CRYPTO_CALENDAR",
     "CRYPTO_HOLDOUT_POLICY",
     "CRYPTO_SCHEMA_CONTRACT_PATH",
@@ -88,12 +92,14 @@ CRYPTO_HOLDOUT_POLICY = HoldoutPolicy(
 UPBIT_KRW_COST = CostModel(fee_bp=5, slippage_bp_per_side=10)
 BINANCE_USDT_COST = CostModel(fee_bp=10, slippage_bp_per_side=10)
 
-# Complete public surface that can return OHLCV table/bars. Keep this list
-# honest: every entry must enforce the label gate (and frequency for bar paths).
-CRYPTO_ADAPTER_PUBLIC_LOAD_ENTRYPOINTS: tuple[str, ...] = (
-    "CryptoVenueAdapter.load_shard",
-    "CryptoVenueAdapter.view_from_table",
-    "CryptoVenueAdapter.corpus.load_shard",
+# Structural attachment (not an exhaustive wrapper list — enumeration is the
+# failure mode). Any path that validates/loads via CRYPTO_SCHEMA_CONTRACT_PATH
+# inherits label+frequency gates from validate_table_schema.
+CRYPTO_STRUCTURAL_GATE_ATTACHMENT: tuple[str, ...] = (
+    "schema_contract.validate_table_schema->enforce_table_load_policy",
+    "loader.load_shard->validate_table_schema",
+    "ContractBackedCorpusAdapter.load_shard->loader.load_shard",
+    "CryptoVenueAdapter.load_shard|view_from_table|corpus.*->contract path",
 )
 
 
@@ -141,9 +147,13 @@ def _as_utc_datetime(value: datetime | str) -> datetime:
 def assert_crypto_table_labeled(
     table: pa.Table,
     *,
-    expected_venue: str,
+    expected_venue: str | None = None,
 ) -> VenuePolicy:
-    """Refuse unlabeled or mislabeled tables (fail-closed; never empty-filter)."""
+    """Refuse unlabeled or mislabeled tables (fail-closed; never empty-filter).
+
+    Prefer contract ``table_load_policy`` via ``validate_table_schema``; this
+    helper remains for direct/adapter-level defense in depth.
+    """
     return policy_from_parquet_metadata(
         table.schema.metadata,
         expected_venue=expected_venue,
@@ -157,14 +167,28 @@ def assert_crypto_table_frequency(
 ) -> None:
     """Refuse any row whose frequency value is not the adapter binding.
 
-    Silent filtering of non-matching rows is forbidden — one bad value raises.
+    Structural enforcement is ``contract table_load_policy.required_column_values``
+    inside ``validate_table_schema``. This helper maps the same failure to
+    ``CryptoFrequencyMismatchError`` for adapter-facing call sites.
     """
+    try:
+        enforce_table_load_policy(
+            table,
+            "ohlcv",
+            contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
+        )
+    except ContractTablePolicyError as exc:
+        msg = str(exc)
+        if "frequency" in msg or expected in msg:
+            raise CryptoFrequencyMismatchError(msg) from exc
+        raise
+    # If policy only has labels and values already match, still hard-check
+    # frequency for callers that pass partially-gated tables.
     if "frequency" not in table.column_names:
         raise CryptoFrequencyMismatchError(
             "crypto OHLCV table missing frequency column"
         )
-    values = table.column("frequency").to_pylist()
-    for i, raw in enumerate(values):
+    for i, raw in enumerate(table.column("frequency").to_pylist()):
         if raw is None or str(raw) != expected:
             raise CryptoFrequencyMismatchError(
                 f"row {i} frequency={raw!r} is not adapter frequency "
@@ -285,81 +309,6 @@ class CryptoVenueView:
         )
 
 
-class _LabeledCryptoCorpusFacade:
-    """Public corpus surface: shared guards + label + frequency on load_shard.
-
-    Callers must not use the unwrapped ``ContractBackedCorpusAdapter`` for
-    crypto OHLCV: this facade is the only ``.corpus`` object the adapter
-    exposes, so residual ``corpus.load_shard`` cannot skip the label gate.
-    """
-
-    def __init__(
-        self,
-        *,
-        venue: CryptoVenue,
-        holdout_policy: HoldoutPolicy,
-    ) -> None:
-        self._venue = venue
-        self._inner = ContractBackedCorpusAdapter(
-            contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
-            holdout_policy=holdout_policy,
-        )
-
-    @property
-    def holdout_policy(self) -> HoldoutPolicy:
-        return self._inner.holdout_policy
-
-    @property
-    def contract_path(self) -> Path:
-        return self._inner.contract_path
-
-    def contract(self) -> dict:
-        return self._inner.contract()
-
-    def arrow_schema_for(self, dataset: str) -> pa.Schema:
-        return self._inner.arrow_schema_for(dataset)
-
-    def validate_table_schema(self, table: pa.Table, dataset: str) -> None:
-        self._inner.validate_table_schema(table, dataset)
-
-    def assert_path_allowed(self, path: Path | str) -> Path:
-        return self._inner.assert_path_allowed(path)
-
-    def assert_date_allowed(self, value: date | datetime | str) -> date:
-        return self._inner.assert_date_allowed(value)
-
-    def assert_range_allowed(
-        self,
-        start: date | datetime | str,
-        end: date | datetime | str,
-    ) -> tuple[date, date]:
-        return self._inner.assert_range_allowed(start, end)
-
-    def load_manifest(self, manifest_path: Path | str) -> list[ManifestEntry]:
-        return self._inner.load_manifest(manifest_path)
-
-    def load_shard(
-        self,
-        artifact_root: Path | str,
-        entry: ManifestEntry,
-        *,
-        allowed_window_start: date | str | None = None,
-        allowed_window_end: date | str | None = None,
-    ) -> pa.Table:
-        table = self._inner.load_shard(
-            artifact_root,
-            entry,
-            allowed_window_start=allowed_window_start,
-            allowed_window_end=allowed_window_end,
-        )
-        # Label gate BEFORE returning any rows (BLOCKER-2).
-        assert_crypto_table_labeled(table, expected_venue=self._venue)
-        # Frequency value gate on the raw table path too (BLOCKER-1 residual).
-        if entry.dataset == "ohlcv":
-            assert_crypto_table_frequency(table)
-        return table
-
-
 @dataclass(frozen=True)
 class CryptoVenueAdapter:
     """Adapter whose manifest, table, and resulting view are one venue only."""
@@ -371,9 +320,10 @@ class CryptoVenueAdapter:
         _assert_supported_venue(self.venue)
 
     @property
-    def corpus(self) -> _LabeledCryptoCorpusFacade:
-        return _LabeledCryptoCorpusFacade(
-            venue=self.venue,
+    def corpus(self) -> ContractBackedCorpusAdapter:
+        """Shared contract-backed loader; crypto gates ride on the contract."""
+        return ContractBackedCorpusAdapter(
+            contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
             holdout_policy=self.holdout_policy,
         )
 
@@ -418,16 +368,22 @@ class CryptoVenueAdapter:
         return self.view_from_table(table)
 
     def view_from_table(self, table: pa.Table) -> CryptoVenueView:
-        """Validate one table: schema + label + frequency + venue isolation.
+        """Validate one table: contract schema+policy + venue isolation.
 
-        Public bar-construction path. Unlabeled metadata or any non-``1d``
-        frequency value raises — never a silent filter or empty success.
+        Label and frequency are enforced by the crypto contract's
+        ``table_load_policy`` inside ``validate_table_schema`` (structural).
+        Unlabeled metadata or any non-``1d`` frequency raises — never a silent
+        filter or empty success.
         """
-        self.corpus.validate_table_schema(table, "ohlcv")
-        # Label gate (BLOCKER-2): stripped metadata must not produce bars.
+        try:
+            self.corpus.validate_table_schema(table, "ohlcv")
+        except ContractTablePolicyError as exc:
+            # Map contract frequency refusals to the adapter-facing type.
+            if "frequency" in str(exc):
+                raise CryptoFrequencyMismatchError(str(exc)) from exc
+            raise
+        # Venue-bound label check (metadata venue must match adapter venue).
         assert_crypto_table_labeled(table, expected_venue=self.venue)
-        # Frequency value gate (BLOCKER-1): 1h must not enter daily adapter.
-        assert_crypto_table_frequency(table)
 
         data = table.to_pydict()
         bars: list[CryptoBar] = []
@@ -439,7 +395,6 @@ class CryptoVenueAdapter:
                 )
             freq = str(data["frequency"][i])
             if freq != CRYPTO_ADAPTER_FREQUENCY:
-                # Defense in depth after table-level assert.
                 raise CryptoFrequencyMismatchError(
                     f"row {i} frequency={freq!r} is not {CRYPTO_ADAPTER_FREQUENCY!r}"
                 )

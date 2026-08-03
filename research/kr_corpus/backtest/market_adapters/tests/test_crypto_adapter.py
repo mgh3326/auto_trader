@@ -8,10 +8,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from loader import ManifestEntry, sha256_bytes
+from loader import load_shard as bare_load_shard
+from market_adapters.common import ContractBackedCorpusAdapter
 from market_adapters.crypto import (
     BINANCE_USDT_COST,
     CRYPTO_ADAPTER_FREQUENCY,
-    CRYPTO_ADAPTER_PUBLIC_LOAD_ENTRYPOINTS,
+    CRYPTO_HOLDOUT_POLICY,
+    CRYPTO_SCHEMA_CONTRACT_PATH,
+    CRYPTO_STRUCTURAL_GATE_ATTACHMENT,
     QUOTE_CURRENCY_BY_VENUE,
     UPBIT_KRW_COST,
     CryptoBar,
@@ -21,6 +25,7 @@ from market_adapters.crypto import (
     CryptoVenueMixError,
 )
 from pit import LookaheadViolation, assert_no_lookahead
+from schema_contract import ContractTablePolicyError
 
 from research.crypto_corpus.policy import UnlabeledParquetError, label_table_for_venue
 
@@ -267,17 +272,97 @@ def test_crypto_corpus_load_shard_also_enforces_label_and_frequency(tmp_path):
         market="upbit_krw",
         year=2024,
     )
-    with pytest.raises(CryptoFrequencyMismatchError):
+    with pytest.raises(ContractTablePolicyError):
         adapter.corpus.load_shard(tmp_path, entry)
 
 
-def test_crypto_public_load_entrypoints_enumerated():
-    """Keep the public load surface list honest for gate coverage audits."""
-    assert CRYPTO_ADAPTER_PUBLIC_LOAD_ENTRYPOINTS == (
-        "CryptoVenueAdapter.load_shard",
-        "CryptoVenueAdapter.view_from_table",
-        "CryptoVenueAdapter.corpus.load_shard",
+def test_crypto_structural_gate_attachment_documented():
+    """Gates attach to contract validation — not an exhaustive wrapper list."""
+    assert any("validate_table_schema" in s for s in CRYPTO_STRUCTURAL_GATE_ATTACHMENT)
+    assert any("loader.load_shard" in s for s in CRYPTO_STRUCTURAL_GATE_ATTACHMENT)
+    assert any(
+        "ContractBackedCorpusAdapter" in s for s in CRYPTO_STRUCTURAL_GATE_ATTACHMENT
     )
+
+
+def test_r3_unwrapped_contract_adapter_refuses_unlabeled_1h(tmp_path):
+    """BLOCKER-R3-1: bare ContractBackedCorpusAdapter + crypto contract must gate."""
+    adapter = CryptoVenueAdapter("upbit_krw")
+    rel = "ohlcv/upbit_krw/2024/attack.parquet"
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    # labeled then strip — unlabeled 1h
+    hourly = _table(adapter, [_row(frequency="1h")]).replace_schema_metadata(None)
+    pq.write_table(hourly, path)
+    entry = ManifestEntry(
+        relative_path=rel,
+        file_sha256=sha256_bytes(path.read_bytes()),
+        row_count=1,
+        dataset="ohlcv",
+        market="upbit_krw",
+        year=2024,
+    )
+    bare = ContractBackedCorpusAdapter(
+        contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
+        holdout_policy=CRYPTO_HOLDOUT_POLICY,
+    )
+    with pytest.raises(UnlabeledParquetError):
+        bare.load_shard(tmp_path, entry)
+
+
+def test_r3_bare_loader_load_shard_refuses_unlabeled_1h(tmp_path):
+    """BLOCKER-R3-1: loader.load_shard with crypto contract must also gate."""
+    adapter = CryptoVenueAdapter("upbit_krw")
+    rel = "ohlcv/upbit_krw/2024/attack.parquet"
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    hourly = _table(adapter, [_row(frequency="1h")]).replace_schema_metadata(None)
+    pq.write_table(hourly, path)
+    entry = ManifestEntry(
+        relative_path=rel,
+        file_sha256=sha256_bytes(path.read_bytes()),
+        row_count=1,
+        dataset="ohlcv",
+        market="upbit_krw",
+        year=2024,
+    )
+    with pytest.raises(UnlabeledParquetError):
+        bare_load_shard(
+            tmp_path,
+            entry,
+            contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
+            holdout_policy=CRYPTO_HOLDOUT_POLICY,
+        )
+
+
+def test_r3_bare_paths_refuse_labeled_hourly(tmp_path):
+    """Labeled 1h still fails frequency policy on unwrapped paths."""
+    adapter = CryptoVenueAdapter("upbit_krw")
+    rel = "ohlcv/upbit_krw/2024/h1.parquet"
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    pq.write_table(_table(adapter, [_row(frequency="1h")]), path)
+    entry = ManifestEntry(
+        relative_path=rel,
+        file_sha256=sha256_bytes(path.read_bytes()),
+        row_count=1,
+        dataset="ohlcv",
+        market="upbit_krw",
+        year=2024,
+    )
+    bare = ContractBackedCorpusAdapter(
+        contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
+        holdout_policy=CRYPTO_HOLDOUT_POLICY,
+    )
+    with pytest.raises(ContractTablePolicyError):
+        bare.load_shard(tmp_path, entry)
+    with pytest.raises(ContractTablePolicyError):
+        bare_load_shard(
+            tmp_path,
+            entry,
+            contract_path=CRYPTO_SCHEMA_CONTRACT_PATH,
+            holdout_policy=CRYPTO_HOLDOUT_POLICY,
+        )
 
 
 def test_crypto_costs_are_venue_specific_and_bidirectional():

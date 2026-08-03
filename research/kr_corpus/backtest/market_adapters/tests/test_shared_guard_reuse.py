@@ -135,6 +135,10 @@ def test_shared_schema_and_sha_gates(market: str, tmp_path: Path):
     )
     if market == "crypto":
         table = label_table_for_venue(table, "upbit_krw")
+    elif market == "us":
+        meta = dict(table.schema.metadata or {})
+        meta[b"SURVIVORSHIP_BIASED"] = b"TRUE"
+        table = table.replace_schema_metadata(meta)
     pq.write_table(table, path)
     entry = ManifestEntry(
         relative_path=rel,

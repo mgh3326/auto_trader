@@ -4,8 +4,8 @@
   "schema_origin_note": "Contrasted against sealed crypto-corpus-v1 labeled parquet (venue=upbit_krw KRW-1INCH 2024 + venue=binance_usdt_spot). Column names/types match research/crypto_corpus/builder.BAR_SCHEMA. Venues are the real strings upbit_krw and binance_usdt_spot (not a shortened binance_usdt).",
   "corpus_schema_source": "sealed crypto-corpus-v1 labeled parquet + builder.BAR_SCHEMA",
   "frequency": "1d",
-  "frequency_rule": "This harness adapter is daily-only. Every row frequency value must equal the literal '1d'; values such as '1h' raise CryptoFrequencyMismatchError (never silent filter). frequency is carried on CryptoBar.",
-  "label_gate": "Every public OHLCV load path (load_shard, view_from_table, corpus.load_shard) requires sealed policy_from_parquet_metadata labels; unlabeled tables raise UnlabeledParquetError.",
+  "frequency_rule": "Daily-only: datasets.ohlcv.table_load_policy.required_column_values.frequency='1d' is enforced by schema_contract.validate_table_schema for ANY load that uses this contract (loader.load_shard, ContractBackedCorpusAdapter, adapter wrappers). Non-1d raises; never silent filter. CryptoBar still carries frequency.",
+  "label_gate": "datasets.ohlcv.table_load_policy.require_crypto_parquet_labels is enforced inside validate_table_schema — structural, not wrapper enumeration.",
   "timestamp_storage": "open_time_utc and close_time_utc are timestamp[ms, tz=UTC]; close is exclusive end",
   "session_date_derivation": "UTC calendar date from open_time_utc (bar open / inclusive start)",
   "bar_time_column": "open_time_utc",
@@ -60,6 +60,12 @@
       ],
       "allow_extra_columns": false,
       "date_column": "open_time_utc",
+      "table_load_policy": {
+        "require_crypto_parquet_labels": true,
+        "required_column_values": {
+          "frequency": "1d"
+        }
+      },
       "column_dtypes": {
         "venue": "string",
         "symbol": "string",

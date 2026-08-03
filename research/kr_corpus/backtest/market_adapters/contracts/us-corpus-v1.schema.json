@@ -40,6 +40,11 @@
       ],
       "allow_extra_columns": false,
       "date_column": "session_date",
+      "table_load_policy": {
+        "require_schema_metadata_equals": {
+          "SURVIVORSHIP_BIASED": "TRUE"
+        }
+      },
       "column_dtypes": {
         "symbol": "large_string",
         "session_date": "timestamp_ms",

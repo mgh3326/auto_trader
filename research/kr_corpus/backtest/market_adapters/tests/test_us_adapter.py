@@ -43,10 +43,16 @@ def _row(
 
 
 def _table(rows: list[dict]) -> pa.Table:
-    return pa.Table.from_pylist(
+    table = pa.Table.from_pylist(
         rows,
         schema=US_ADAPTER.corpus.arrow_schema_for("ohlcv"),
     )
+    # US contract table_load_policy requires sealed survivorship label.
+    meta = dict(table.schema.metadata or {})
+    meta[b"SURVIVORSHIP_BIASED"] = b"TRUE"
+    meta[b"corpus_id"] = b"us-corpus-v1"
+    meta[b"price_mode"] = b"adjusted"
+    return table.replace_schema_metadata(meta)
 
 
 def test_us_trading_value_resolution_is_absent_declared():
@@ -90,8 +96,35 @@ def test_us_schema_rejects_trading_value_column():
     with pytest.raises(SchemaMismatchError) as exc_info:
         US_ADAPTER.corpus.validate_table_schema(bad, "ohlcv")
     assert "trading_value" in str(exc_info.value)
-    # bars_from_table also defense-in-depth refuses if schema check were bypassed
-    # via a table that somehow passed — covered by forbidden_columns.
+
+
+def test_us_contract_refuses_unlabeled_table_on_unwrapped_load(tmp_path):
+    """US structural label gate: bare ContractBackedCorpusAdapter refuses strip."""
+    from market_adapters.common import ContractBackedCorpusAdapter
+    from market_adapters.us import US_HOLDOUT_POLICY, US_SCHEMA_CONTRACT_PATH
+    from schema_contract import ContractTablePolicyError
+
+    from research.us_corpus.labeling import UnlabeledCorpusError  # noqa: F401
+
+    rel = "ohlcv/US/2024/u.parquet"
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True)
+    stripped = _table([_row()]).replace_schema_metadata(None)
+    pq.write_table(stripped, path)
+    entry = ManifestEntry(
+        relative_path=rel,
+        file_sha256=sha256_bytes(path.read_bytes()),
+        row_count=1,
+        dataset="ohlcv",
+        market="US",
+        year=2024,
+    )
+    bare = ContractBackedCorpusAdapter(
+        contract_path=US_SCHEMA_CONTRACT_PATH,
+        holdout_policy=US_HOLDOUT_POLICY,
+    )
+    with pytest.raises(ContractTablePolicyError):
+        bare.load_shard(tmp_path, entry)
 
 
 def test_us_xnys_holiday_and_half_day_are_calendar_backed():
