@@ -21,7 +21,9 @@ PROGRESS_LOG = (
     "events/progress.md"
 )
 
-MAX_REQUESTS = 60_000
+# Operator-approved continuation of crypto-corpus-v1 (2026-08-03): only this
+# request cap changed after the frozen-universe preflight proved 62,419 calls.
+MAX_REQUESTS = 70_000
 MAX_WALL_CLOCK_SECONDS = 12 * 60 * 60
 MAX_ARTIFACT_BYTES = 15 * 1024 * 1024 * 1024
 UPBIT_MIN_REQUEST_INTERVAL_SECONDS = 0.3

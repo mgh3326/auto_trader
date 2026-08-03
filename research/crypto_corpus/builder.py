@@ -438,6 +438,16 @@ class CorpusBuilder:
         """Freeze both venue universes, then enforce the request budget gate."""
         existing = self._load_latest_preflight()
         if existing is not None:
+            reopened = self._reopen_frozen_preflight_if_authorized(existing)
+            if reopened is not None:
+                self._preflight_payload = reopened
+                plan = reopened["request_budget"]["projected_total"]
+                self._append_progress(
+                    f"PREFLIGHT_REAUTHORIZED projected={plan}<=max={MAX_REQUESTS} "
+                    "frozen_inputs_reused universe_refetch=0",
+                    force=True,
+                )
+                return reopened
             self._preflight_payload = existing
             self._append_progress("PREFLIGHT_REUSED", force=True)
             return existing
@@ -534,6 +544,68 @@ class CorpusBuilder:
             "PREFLIGHT_READY" if status == "READY_FOR_COLLECTION" else "BLOCKED_BUDGET"
         )
         self._append_progress(stage, force=True)
+        return payload
+
+    def _reopen_frozen_preflight_if_authorized(
+        self, existing: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Re-evaluate a budget-blocked frozen universe without a new API call.
+
+        This path is deliberately narrow: only an otherwise complete frozen
+        universe whose *sole* old blocker was its request budget may be
+        reauthorized by a changed signed cap.  Snapshot bytes and the original
+        start time remain unchanged, and any previously consumed request is
+        included conservatively before collection resumes.
+        """
+        if existing.get("status") != "BLOCKED_PRECONDITION":
+            return None
+        if not str(existing.get("reason", "")).startswith("request_budget_projected="):
+            return None
+        universe = existing.get("universe")
+        inputs = existing.get("inputs")
+        started_at = existing.get("started_at")
+        if (
+            not isinstance(universe, dict)
+            or not isinstance(inputs, list)
+            or not isinstance(started_at, str)
+        ):
+            return None
+        upbit_symbols = universe.get("upbit_krw")
+        binance_symbols = universe.get("binance_usdt_spot")
+        if (
+            not isinstance(upbit_symbols, list)
+            or not isinstance(binance_symbols, list)
+            or not all(isinstance(symbol, str) for symbol in upbit_symbols)
+            or not all(isinstance(symbol, str) for symbol in binance_symbols)
+        ):
+            return None
+        plan = calculate_request_budget(len(upbit_symbols), len(binance_symbols))
+        prior_extra_requests = max(
+            0, self.client.requests_actual - plan.universe_snapshot_requests
+        )
+        conservative_total = plan.projected_total + prior_extra_requests
+        if conservative_total > MAX_REQUESTS:
+            return None
+        payload = {
+            "corpus_id": CORPUS_ID,
+            "created_at": utc_iso(self.now()),
+            "started_at": started_at,
+            "status": "READY_FOR_COLLECTION",
+            "reason": None,
+            "requests_actual_at_preflight": self.client.requests_actual,
+            "request_budget": plan.as_dict(),
+            "request_budget_with_prior_attempts": conservative_total,
+            "inputs": inputs,
+            "universe": universe,
+            "reauthorization": {
+                "frozen_universe_reused": True,
+                "universe_refetch_requests": 0,
+                "previous_preflight_created_at": existing.get("created_at"),
+                "previous_block_reason": existing.get("reason"),
+                "max_requests": MAX_REQUESTS,
+            },
+        }
+        self.store.write_preflight(payload)
         return payload
 
     def _check_wall_clock(self) -> bool:

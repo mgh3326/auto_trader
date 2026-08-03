@@ -125,6 +125,42 @@ def test_request_budget_is_conservative_and_includes_snapshots_and_probes():
     assert plan.projected_total < MAX_REQUESTS
 
 
+def test_authorized_budget_reopens_frozen_blocked_preflight_without_api_calls(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(builder_module, "PROGRESS_LOG", str(tmp_path / "progress.md"))
+    store = ArtifactStore(tmp_path / "artifacts")
+    frozen = {
+        "corpus_id": "crypto-corpus-v1",
+        "created_at": "2026-08-03T02:38:58Z",
+        "started_at": "2026-08-03T02:38:57Z",
+        "status": "BLOCKED_PRECONDITION",
+        "reason": "request_budget_projected=62419>max=60000",
+        "inputs": [{"relative_path": "inputs/frozen.json"}],
+        "universe": {
+            "upbit_krw": [f"KRW-{index}" for index in range(277)],
+            "binance_usdt_spot": [f"ASSET{index}USDT" for index in range(682)],
+            "binance_status_by_symbol": {},
+        },
+    }
+    store.write_preflight(frozen)
+    client = FakePublicClient({})
+    builder = CorpusBuilder(
+        store=store,
+        client=client,  # type: ignore[arg-type]
+        now=lambda: datetime(2026, 8, 3, 3, tzinfo=UTC),
+    )
+
+    preflight = builder.preflight()
+
+    assert preflight["status"] == "READY_FOR_COLLECTION"
+    assert preflight["request_budget"]["projected_total"] == 62_419
+    assert preflight["reauthorization"]["frozen_universe_reused"] is True
+    assert preflight["reauthorization"]["universe_refetch_requests"] == 0
+    assert client.requests_actual == 0
+    assert len(store.load_json_records(store.preflight)) == 2
+
+
 def test_holdout_receipt_is_write_only_after_atomic_publication(tmp_path, monkeypatch):
     monkeypatch.setattr(builder_module, "PROGRESS_LOG", str(tmp_path / "progress.md"))
     store = ArtifactStore(tmp_path / "artifacts")
