@@ -43,6 +43,10 @@ class LedgerOrderInput:
     holdings_baseline_qty: Decimal | None
     accepted_at: datetime
     price: Decimal = Decimal("0")
+    # Carried purely so downstream lifecycle events can name the order's owner.
+    # Optional because the classifier's decisions never depend on it — a row
+    # with no correlation id still reconciles, it just reports the gap.
+    correlation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +72,7 @@ class LifecycleTransitionProposal:
     observed_holdings_qty: Decimal | None
     observed_delta: Decimal | None
     attributed_fill_qty: Decimal | None = None
+    correlation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +121,7 @@ def _anomaly(
         observed_holdings_qty=None,
         observed_delta=None,
         attributed_fill_qty=None,
+        correlation_id=order.correlation_id,
     )
 
 
@@ -257,6 +263,7 @@ def _proposal_for(
         observed_holdings_qty=snapshot.quantity,
         observed_delta=per_order_delta,
         attributed_fill_qty=attributed,
+        correlation_id=order.correlation_id,
     )
 
 

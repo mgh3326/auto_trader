@@ -48,14 +48,21 @@ def _literal(tree: ast.AST, name: str):
     raise AssertionError(f"missing {name!r}")
 
 
-def test_migration_descends_from_the_current_head_and_is_the_single_head() -> None:
+def test_migration_descends_from_its_parent_on_the_single_head_chain() -> None:
     tree = ast.parse(MIGRATION.read_text(encoding="utf-8"))
     assert _literal(tree, "revision") == REVISION
     assert _literal(tree, "down_revision") == DOWN_REVISION
 
     config = Config(str(REPO / "alembic.ini"))
     config.set_main_option("script_location", str(REPO / "alembic"))
-    assert list(ScriptDirectory.from_config(config).get_heads()) == [REVISION]
+    script = ScriptDirectory.from_config(config)
+    # Exactly one head — the property that actually matters — rather than "this
+    # revision IS the head", which stops being true the moment any later
+    # migration lands and says nothing about this one.
+    heads = script.get_heads()
+    assert len(heads) == 1, heads
+    ancestry = {rev.revision for rev in script.walk_revisions("base", heads[0])}
+    assert REVISION in ancestry
 
 
 def test_migration_is_purely_additive() -> None:
@@ -143,7 +150,10 @@ async def test_isolated_upgrade_downgrade_upgrade() -> None:
         stamped = alembic("stamp", DOWN_REVISION)
         assert stamped.returncode == 0, stamped.stderr
 
-        upgraded = alembic("upgrade", "head")
+        # Upgrade to THIS revision, not head: later migrations are not under
+        # test here, and replaying them would collide with tables create_all
+        # already built. It also keeps "downgrade -1" pointed at this revision.
+        upgraded = alembic("upgrade", REVISION)
         assert upgraded.returncode == 0, upgraded.stderr
 
         async with engine.connect() as connection:
@@ -213,7 +223,7 @@ async def test_isolated_upgrade_downgrade_upgrade() -> None:
             )
             assert function_left == 0
 
-        re_upgraded = alembic("upgrade", "head")
+        re_upgraded = alembic("upgrade", REVISION)
         assert re_upgraded.returncode == 0, re_upgraded.stderr
 
         async with engine.connect() as connection:

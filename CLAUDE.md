@@ -193,6 +193,20 @@ scans `app/**/*.py` for forbidden provider imports and deleted provider files.
 - **런북**: `docs/runbooks/kis-websocket-mock-smoke.md`
 - **이벤트 태깅**: `app/services/kis_websocket_internal/events.py::build_lifecycle_event` (ROB-100 `OrderLifecycleEvent`)
 
+### kis_mock 귀속 사슬 — pre-submit 강제
+
+`kis_mock` 주문은 **브로커 전송 전에** 귀속이 확정돼야 한다. 확정 못 하면 주문이 나가지 않는다(fail-closed).
+
+- **모델**: `app/models/review.KISMockSignalLedger` (`review.kis_mock_signal_ledger`) — `correlation_id`/`strategy`/`signal_source` **NOT NULL + 공백거부 CHECK**
+- **서비스**: `app/services/kis_mock_attribution.py` — `resolve_attribution`(순수, 실패 시 `MissingAttribution`) / `record_signal` / `mark_signal_outcome`
+- **조회**: `app/services/kis_mock_attribution_chain.py::load_attribution_chain` — gap 코드 `signal_missing`/`order_missing`/`order_unattributed`/`reconcile_missing`
+- **게이트 위치**: `order_execution._execute_and_record` 최상단 (브로커 read 보다도 앞)
+- **런북**: `docs/runbooks/kis-mock-attribution-chain.md`
+
+**호출자 계약(파괴적)**: `place_order(is_mock=True)` 는 이제 `strategy` 필수 — 없으면 `error_code="attribution_required"`. `mirror_cohort="mock_counterfactual"` 은 레인 라벨 자동 판정. `thesis` 는 여전히 불필요.
+
+**주의**: `kis_mock_order_ledger.correlation_id`/`strategy` 는 과거 NULL 행 때문에 nullable 유지 — DB 제약은 pre-submit 신호 테이블에 걸려 있다. 원장 백필은 별건.
+
 ### KIS Live Order Fill-Evidence Gate (ROB-395)
 
 `kis_live_place_order(dry_run=False)` (KR domestic) records **accepted-only** to

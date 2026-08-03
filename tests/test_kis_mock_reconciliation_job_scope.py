@@ -58,6 +58,7 @@ async def test_job_layer_accepts_valid_market_unchanged(monkeypatch):
     mock_ledger_row.lifecycle_state = "accepted"
     mock_ledger_row.holdings_baseline_qty = Decimal("0")
     mock_ledger_row.trade_date = datetime.now(UTC) - timedelta(seconds=10)
+    mock_ledger_row.correlation_id = "live:kis_mock:scopetest"
 
     fake_lifecycle_svc = AsyncMock()
     fake_lifecycle_svc.list_open_orders.return_value = [mock_ledger_row]

@@ -12,8 +12,13 @@ from tests._mcp_tooling_support import build_tools
 
 
 @pytest.mark.asyncio
-async def test_full_reconciliation_cycle_acceptance(monkeypatch):
-    """place_order (kis_mock) captures baseline → reconciler detects fill via MCP tool."""
+async def test_full_reconciliation_cycle_acceptance(monkeypatch, db_session):
+    """place_order (kis_mock) captures baseline → reconciler detects fill via MCP tool.
+
+    ``db_session`` is required even though the ledger insert is mocked: the
+    pre-submit attribution gate writes a real signal row before the send and
+    fails closed if it cannot, so the test needs a reachable database.
+    """
     from app.mcp_server.tooling import kis_mock_ledger, order_execution
 
     monkeypatch.setattr(
@@ -59,6 +64,7 @@ async def test_full_reconciliation_cycle_acceptance(monkeypatch):
     mock_ledger_row.lifecycle_state = "accepted"
     mock_ledger_row.holdings_baseline_qty = Decimal("0")
     mock_ledger_row.trade_date = datetime.now(UTC) - timedelta(seconds=10)
+    mock_ledger_row.correlation_id = "live:kis_mock:acceptance"
 
     mock_lifecycle_svc = AsyncMock()
     mock_lifecycle_svc.list_open_orders.return_value = [mock_ledger_row]
@@ -104,6 +110,7 @@ async def test_full_reconciliation_cycle_acceptance(monkeypatch):
         price=100.0,
         account_mode="kis_mock",
         dry_run=False,
+        strategy="posture-v1",
     )
     assert place_res["success"] is True
     assert place_res["ledger_id"] == 555
@@ -128,3 +135,6 @@ async def test_full_reconciliation_cycle_acceptance(monkeypatch):
     assert args["next_state"] == "fill"
     assert args["reason_code"] == "fill_detected"
     assert args["dry_run"] is False
+    # The reconcile record names the decision it belongs to, not just the row.
+    assert args["detail"]["correlation_id"] == "live:kis_mock:acceptance"
+    assert recon_res["events"][0]["correlation_id"] == "live:kis_mock:acceptance"

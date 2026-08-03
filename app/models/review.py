@@ -292,6 +292,98 @@ class KISMockOrderLedger(Base):
     )
 
 
+class KISMockSignalLedger(Base):
+    """Durable pre-submit signal record for the kis_mock lane.
+
+    Written BEFORE the broker send, never after: the row is the proof that a
+    decision was made and *what strategy owns it*. ``correlation_id`` is the
+    single key that joins this row to ``review.kis_mock_order_ledger`` and to
+    every downstream lifecycle event.
+
+    Why this table exists at all: ``kis_mock_order_ledger.correlation_id`` and
+    ``.strategy`` are nullable (ROB-321/ROB-730 added them additively), and the
+    native place path minted the correlation id *after* the broker responded.
+    An order that was sent but whose ledger write was lost therefore carried no
+    attribution anywhere — the ROB-1093 failure mode, where a nullable column
+    meant "passes without being filled in" rather than "may be filled in".
+
+    Signals that never become orders are recorded too (``decision='no_order'``).
+    Counting only the signals that produced orders skews the denominator of any
+    hit-rate/attribution measurement, so suppression is first-class evidence.
+    """
+
+    __tablename__ = "kis_mock_signal_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "correlation_id", name="uq_kis_mock_signal_ledger_correlation_id"
+        ),
+        CheckConstraint(
+            "account_mode = 'kis_mock'", name="ck_kis_mock_signal_account_mode"
+        ),
+        CheckConstraint(
+            "decision IN ('order','no_order')", name="ck_kis_mock_signal_decision"
+        ),
+        CheckConstraint(
+            "outcome_state IN ('recorded','submitted','suppressed','failed')",
+            name="ck_kis_mock_signal_outcome_state",
+        ),
+        CheckConstraint(
+            "side IS NULL OR side IN ('buy','sell')", name="ck_kis_mock_signal_side"
+        ),
+        # The whole point of the table: attribution can never be blank. Unlike a
+        # nullable column, a blank-rejecting CHECK makes "unattributed" an
+        # insert-time error rather than a silent NULL discovered months later.
+        CheckConstraint(
+            "length(btrim(strategy)) > 0", name="ck_kis_mock_signal_strategy_nonblank"
+        ),
+        CheckConstraint(
+            "length(btrim(signal_source)) > 0",
+            name="ck_kis_mock_signal_source_nonblank",
+        ),
+        CheckConstraint(
+            "length(btrim(correlation_id)) > 0",
+            name="ck_kis_mock_signal_correlation_nonblank",
+        ),
+        Index("ix_kis_mock_signal_kst_date", "kst_date"),
+        Index("ix_kis_mock_signal_strategy", "strategy"),
+        Index("ix_kis_mock_signal_symbol", "symbol"),
+        Index("ix_kis_mock_signal_outcome_state", "outcome_state"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    correlation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    strategy: Mapped[str] = mapped_column(Text, nullable=False)
+    signal_source: Mapped[str] = mapped_column(Text, nullable=False)
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False, default="kis_mock")
+
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    instrument_type: Mapped[str | None] = mapped_column(Text)
+    side: Mapped[str | None] = mapped_column(Text)
+    intended_quantity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    intended_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome_state: Mapped[str] = mapped_column(Text, nullable=False, default="recorded")
+    suppressed_reason: Mapped[str | None] = mapped_column(Text)
+
+    report_item_uuid: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    detail: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    kst_date: Mapped[str] = mapped_column(Text, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class KISLiveOrderLedger(Base):
     """ROB-395 — KIS live (real-money) order lifecycle ledger.
 

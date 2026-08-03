@@ -249,6 +249,7 @@ async def run_kis_mock_reconciliation(
             ),
             accepted_at=row.trade_date,
             price=_to_decimal(row.price),
+            correlation_id=row.correlation_id,
         )
         for row in open_rows
     ]
@@ -270,6 +271,10 @@ async def run_kis_mock_reconciliation(
         # delta it did NOT receive). ``attributed_fill_qty`` is the authoritative
         # apportioned quantity that drives lifecycle and order-history status.
         detail = {
+            # The chain's last hop. Without this the reconciler recorded which
+            # ledger row moved but not which decision it belonged to, so
+            # signal -> submit -> fill could not be followed past the ledger id.
+            "correlation_id": proposal.correlation_id,
             "observed_holdings_qty": (
                 str(proposal.observed_holdings_qty)
                 if proposal.observed_holdings_qty is not None
@@ -302,6 +307,9 @@ async def run_kis_mock_reconciliation(
                 execution_source="reconciler",
                 state=proposal.next_state,
                 occurred_at=now,
+                # OrderLifecycleEvent has carried a first-class correlation_id
+                # field since ROB-100; the reconciler simply never set it.
+                correlation_id=proposal.correlation_id,
                 detail={
                     "ledger_id": proposal.ledger_id,
                     "symbol": proposal.symbol,
