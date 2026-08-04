@@ -21,8 +21,11 @@ class Side(StrEnum):
 class IncompleteReason(StrEnum):
     SIGNAL_BAR_MISSING = "SIGNAL_BAR_MISSING"
     SIGNAL_BAR_INCOMPLETE = "SIGNAL_BAR_INCOMPLETE"
+    SIGNAL_BAR_CLOSE_MISMATCH = "SIGNAL_BAR_CLOSE_MISMATCH"
     NEXT_BAR_MISSING = "NEXT_BAR_MISSING"
     NEXT_BAR_INCOMPLETE = "NEXT_BAR_INCOMPLETE"
+    NEXT_BAR_OVERLAPS_SIGNAL_BAR = "NEXT_BAR_OVERLAPS_SIGNAL_BAR"
+    NEXT_BAR_SESSION_GAP = "NEXT_BAR_SESSION_GAP"
 
 
 def _price(value: Decimal | int | str | float) -> Decimal:
@@ -111,7 +114,10 @@ class Fill:
 class ExecutionSummary:
     fills: tuple[Fill, ...]
     status: str
+    signal_count: int
     incomplete_count: int
+    filled_count: int
+    filled_notional: Decimal
     fee_total: Decimal
     slippage_total: Decimal
 
@@ -122,7 +128,7 @@ def _incomplete(signal: Signal, reason: IncompleteReason) -> Fill:
         signal.side,
         signal.bar_close_time,
         None,
-        signal.quantity,
+        Decimal(0),
         None,
         Decimal(0),
         Decimal(0),
@@ -157,9 +163,32 @@ def run(
         if not signal_bar.complete:
             fills.append(_incomplete(signal, IncompleteReason.SIGNAL_BAR_INCOMPLETE))
             continue
+        if signal_bar.close_time != signal.bar_close_time:
+            fills.append(
+                _incomplete(signal, IncompleteReason.SIGNAL_BAR_CLOSE_MISMATCH)
+            )
+            continue
         next_bar = bars.get(signal.symbol, signal.bar_close_time)
         if next_bar is None:
-            fills.append(_incomplete(signal, IncompleteReason.NEXT_BAR_MISSING))
+            later_bars = tuple(
+                bar
+                for bar in bars.bars
+                if bar.symbol == signal.symbol
+                and bar.open_time >= signal.bar_close_time
+            )
+            reason = (
+                IncompleteReason.NEXT_BAR_SESSION_GAP
+                if later_bars
+                and min(later_bars, key=lambda bar: bar.open_time).open_time.date()
+                != signal.bar_close_time.date()
+                else IncompleteReason.NEXT_BAR_MISSING
+            )
+            fills.append(_incomplete(signal, reason))
+            continue
+        if next_bar.open_time < signal_bar.close_time:
+            fills.append(
+                _incomplete(signal, IncompleteReason.NEXT_BAR_OVERLAPS_SIGNAL_BAR)
+            )
             continue
         if not next_bar.complete:
             fills.append(_incomplete(signal, IncompleteReason.NEXT_BAR_INCOMPLETE))
@@ -179,10 +208,23 @@ def run(
             )
         )
     result = tuple(fills)
+    filled = tuple(fill for fill in result if not fill.incomplete)
     return ExecutionSummary(
         fills=result,
-        status="INCOMPLETE" if any(fill.incomplete for fill in result) else "COMPLETE",
+        status=(
+            "NO_SIGNALS"
+            if not result
+            else "INCOMPLETE"
+            if any(fill.incomplete for fill in result)
+            else "COMPLETE"
+        ),
+        signal_count=len(result),
         incomplete_count=sum(fill.incomplete for fill in result),
+        filled_count=len(filled),
+        filled_notional=sum(
+            (fill.fill_price * fill.quantity for fill in filled if fill.fill_price),
+            Decimal(0),
+        ),
         fee_total=sum((fill.fee for fill in result), Decimal(0)),
         slippage_total=sum((fill.slippage for fill in result), Decimal(0)),
     )

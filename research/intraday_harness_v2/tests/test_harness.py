@@ -69,6 +69,78 @@ def test_fill_is_derived_from_strictly_next_bar_open_and_costs_are_separate():
     assert fill.slippage == Decimal("0.202")
     assert result.fee_total == Decimal("0.101")
     assert result.slippage_total == Decimal("0.202")
+    assert result.signal_count == 1
+    assert result.filled_count == 1
+    assert result.filled_notional == Decimal("202")
+
+
+def test_signal_bar_close_mismatch_blocks_heterogeneous_interval_lookahead():
+    signal_bar = Bar(
+        "ABC",
+        datetime(2026, 1, 2, 9, 0, tzinfo=UTC),
+        datetime(2026, 1, 2, 9, 30, tzinfo=UTC),
+        Decimal("100"),
+        Decimal("200"),
+        Decimal("99"),
+        Decimal("150"),
+    )
+    overlapping_fill_bar = Bar(
+        "ABC",
+        datetime(2026, 1, 2, 9, 5, tzinfo=UTC),
+        datetime(2026, 1, 2, 9, 10, tzinfo=UTC),
+        Decimal("101"),
+        Decimal("103"),
+        Decimal("99"),
+        Decimal("102"),
+    )
+    result = run(
+        [
+            Signal(
+                "ABC",
+                datetime(2026, 1, 2, 9, 5, tzinfo=UTC),
+                Side.BUY,
+                Decimal("1"),
+                timedelta(minutes=5),
+            )
+        ],
+        BarSeries.from_iterable([signal_bar, overlapping_fill_bar]),
+        fee_bps=0,
+        slippage_bps=0,
+    )
+    assert result.status == "INCOMPLETE"
+    assert result.fills[0].fill_price is None
+    assert result.fills[0].quantity == Decimal(0)
+    assert (
+        result.fills[0].incomplete_reason == IncompleteReason.SIGNAL_BAR_CLOSE_MISMATCH
+    )
+
+
+def test_session_gap_has_distinct_reason_and_empty_stream_is_not_complete():
+    overnight = bar(0)
+    next_session = Bar(
+        "ABC",
+        datetime(2026, 1, 3, 10, 0, tzinfo=UTC),
+        datetime(2026, 1, 3, 10, 5, tzinfo=UTC),
+        Decimal("101"),
+        Decimal("103"),
+        Decimal("99"),
+        Decimal("102"),
+    )
+    gap_result = run(
+        [signal()],
+        BarSeries.from_iterable([overnight, next_session]),
+        fee_bps=0,
+        slippage_bps=0,
+    )
+    assert (
+        gap_result.fills[0].incomplete_reason == IncompleteReason.NEXT_BAR_SESSION_GAP
+    )
+    assert gap_result.filled_count == 0
+    assert gap_result.filled_notional == Decimal(0)
+
+    empty_result = run(iter(()), BarSeries.from_iterable([]), fee_bps=0, slippage_bps=0)
+    assert empty_result.status == "NO_SIGNALS"
+    assert empty_result.signal_count == 0
 
 
 def test_same_bar_fill_cannot_be_requested_and_missing_next_bar_is_incomplete():
@@ -95,6 +167,8 @@ def test_forward_fill_is_not_an_available_path_and_incomplete_reaches_summary():
     )
     assert result.status == "INCOMPLETE"
     assert result.incomplete_count == 1
+    assert result.filled_count == 0
+    assert result.fills[0].quantity == Decimal(0)
     assert result.fee_total == Decimal(0)
     assert result.slippage_total == Decimal(0)
 
