@@ -13,10 +13,12 @@ Boundary (brief §4), enforced rather than promised:
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -32,6 +34,7 @@ from . import config
 CONTACTED_HOSTS: set[str] = set()
 
 HOST_EVIDENCE_FILENAME = "host_evidence.json"
+REQUEST_LEDGER_FILENAME = "request_attempts.jsonl"
 
 
 def host_evidence_path():
@@ -81,6 +84,74 @@ def record_host_evidence(host: str) -> None:
     if prior is not None:
         payload["prior_reconstructed_evidence"] = prior
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def request_ledger_path():
+    return config.STAGING_DIR / REQUEST_LEDGER_FILENAME
+
+
+def record_request_attempt(
+    *,
+    attempt: int,
+    request_number: int,
+    host: str,
+    url: str,
+    params: dict[str, Any],
+    outcome: str,
+    status_code: int | None = None,
+    error_type: str | None = None,
+) -> None:
+    """Persist one sanitized HTTP attempt, including retries.
+
+    This is deliberately JSONL rather than a counter: a 429 followed by a
+    successful retry must remain two independently auditable attempts. Request
+    parameters contain no credentials; the response body is never recorded.
+    """
+    safe_params = {
+        key: value
+        for key, value in params.items()
+        if key
+        in {
+            "symbols",
+            "timeframe",
+            "start",
+            "end",
+            "limit",
+            "adjustment",
+            "feed",
+            "sort",
+            "page_token",
+        }
+    }
+    entry = {
+        "recorded_at": datetime.now(UTC).isoformat(),
+        "attempt": attempt,
+        "request_number": request_number,
+        "host": host,
+        "path": urlparse(url).path,
+        "params": safe_params,
+        "outcome": outcome,
+        "status_code": status_code,
+        "error_type": error_type,
+    }
+    path = request_ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def load_request_attempts() -> list[dict[str, Any]]:
+    path = request_ledger_path()
+    if not path.exists():
+        return []
+    entries = []
+    with path.open(encoding="utf-8") as handle:
+        for raw in handle:
+            if raw.strip():
+                entries.append(json.loads(raw))
+    return entries
 
 
 def load_host_evidence() -> dict:
@@ -290,7 +361,7 @@ class AlpacaDataClient:
         CONTACTED_HOSTS.add(host)
 
         backoff = 1.0
-        for _attempt in range(8):
+        for _attempt in range(1, 9):
             self.limiter.wait()
             self.counter.spend()
             # Recorded INSIDE the retry loop, immediately before each HTTP
@@ -298,13 +369,56 @@ class AlpacaDataClient:
             # (two actual HTTP attempts) as a single request, so the sidecar was
             # not a record of all requests.
             record_host_evidence(host)
-            response = self._session.get(url, params=params, timeout=30)
+            try:
+                response = self._session.get(url, params=params, timeout=30)
+            except Exception as exc:
+                record_request_attempt(
+                    attempt=_attempt,
+                    request_number=self.counter.count,
+                    host=host,
+                    url=url,
+                    params=params,
+                    outcome="exception",
+                    error_type=type(exc).__name__,
+                )
+                raise
             if response.status_code == 429:
+                record_request_attempt(
+                    attempt=_attempt,
+                    request_number=self.counter.count,
+                    host=host,
+                    url=url,
+                    params=params,
+                    outcome="retryable_429",
+                    status_code=response.status_code,
+                )
                 self.counter.rate_429 += 1
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 60.0)  # back off only; never speed up
                 continue
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except Exception as exc:
+                record_request_attempt(
+                    attempt=_attempt,
+                    request_number=self.counter.count,
+                    host=host,
+                    url=url,
+                    params=params,
+                    outcome="http_error",
+                    status_code=response.status_code,
+                    error_type=type(exc).__name__,
+                )
+                raise
+            record_request_attempt(
+                attempt=_attempt,
+                request_number=self.counter.count,
+                host=host,
+                url=url,
+                params=params,
+                outcome="success",
+                status_code=response.status_code,
+            )
             return response.json()
         raise RuntimeError(f"giving up after repeated 429s: {url} {params}")
 

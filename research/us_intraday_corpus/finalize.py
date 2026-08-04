@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -100,17 +101,24 @@ def _shippable_files() -> list[Path]:
     included, which is exactly what let a stale CSV escape the sister corpus.
     """
     out: list[Path] = []
-    for path in sorted(config.ARTIFACT_ROOT.rglob("*")):
-        if not path.is_file():
-            continue
-        parts = path.parts
-        if "_staging" in parts:
-            continue
-        if access_log.is_holdout_path(path):
-            continue  # <-- pitfall 1: never re-read the seal
-        if path.name in {"checksums.sha256", "manifest.json"}:
-            continue
-        out.append(path)
+    # Prune sealed directories before walking them. The older rglob form did
+    # not open holdout files, but it still enumerated their directory entries;
+    # repair/reseal must make the exploration-only boundary explicit.
+    for root, dirs, files in os.walk(config.ARTIFACT_ROOT, followlinks=False):
+        root_path = Path(root)
+        dirs[:] = [
+            name
+            for name in dirs
+            if name != "_staging" and not access_log.is_holdout_path(root_path / name)
+        ]
+        for name in files:
+            path = root_path / name
+            if access_log.is_holdout_path(path):
+                continue  # <-- pitfall 1: never re-read the seal
+            if path.name in {"checksums.sha256", "manifest.json"}:
+                continue
+            out.append(path)
+    out.sort()
     return out
 
 
