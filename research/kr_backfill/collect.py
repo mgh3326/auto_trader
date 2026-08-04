@@ -145,6 +145,7 @@ class StreamStats:
     rows_filtered_cursor_overlap: int = 0
     rows_inserted: int = 0
     rows_skipped_conflict: int = 0
+    rows_skipped_conflict_preseed: int = 0
     empty_responses: int = 0
     empty_symbols: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -162,6 +163,7 @@ class SurfaceStats:
     rows_filtered_cursor_overlap: int = 0
     rows_inserted: int = 0
     rows_skipped_conflict: int = 0
+    rows_skipped_conflict_preseed: int = 0
     errors: list[str] = field(default_factory=list)
     stopped_reason: str | None = None
 
@@ -173,16 +175,22 @@ class AbortStream(RuntimeError):
 def enforce_hard_ratio_guards(stats: StreamStats | SurfaceStats) -> None:
     """Abort on contaminated inserts or a broken cursor within this collector batch."""
 
-    conflict_denominator = stats.rows_inserted + stats.rows_skipped_conflict
+    guarded_conflicts = (
+        stats.rows_skipped_conflict - stats.rows_skipped_conflict_preseed
+    )
+    if guarded_conflicts < 0:
+        raise AbortStream("preseed conflicts exceed total DB insert conflicts")
+    conflict_denominator = stats.rows_inserted + guarded_conflicts
     if conflict_denominator:
-        conflict_ratio = stats.rows_skipped_conflict / conflict_denominator
+        conflict_ratio = guarded_conflicts / conflict_denominator
         if conflict_ratio > DB_INSERT_CONFLICT_ABORT_RATIO:
             raise AbortStream(
                 "DB insert conflict ratio "
                 f"{conflict_ratio:.6f} > hard limit "
                 f"{DB_INSERT_CONFLICT_ABORT_RATIO:.6f} "
                 "(scope=collector_batch, "
-                f"skipped={stats.rows_skipped_conflict}, "
+                f"skipped_guarded={guarded_conflicts}, "
+                f"skipped_preseed={stats.rows_skipped_conflict_preseed}, "
                 f"inserted={stats.rows_inserted}, "
                 f"denominator={conflict_denominator})"
             )
@@ -199,6 +207,29 @@ def enforce_hard_ratio_guards(stats: StreamStats | SurfaceStats) -> None:
                 f"filtered={stats.rows_filtered_cursor_overlap}, "
                 f"kept={stats.rows_kept}, denominator={overlap_denominator})"
             )
+
+
+def classify_resume_preseed_conflicts(
+    *,
+    first_page: bool,
+    checkpoint_was_partial: bool,
+    rows_kept: int,
+    rows_inserted: int,
+    rows_skipped_conflict: int,
+    rows_verified_between_checkpoint_and_restart: int,
+) -> int:
+    """Identify only an atomic insert committed before its checkpoint on shutdown."""
+
+    if (
+        first_page
+        and checkpoint_was_partial
+        and rows_kept > 0
+        and rows_inserted == 0
+        and rows_skipped_conflict == rows_kept
+        and rows_verified_between_checkpoint_and_restart == rows_skipped_conflict
+    ):
+        return rows_skipped_conflict
+    return 0
 
 
 class ProgressLog:
@@ -320,6 +351,38 @@ async def count_existing_bars(
         )
 
 
+async def count_resume_preseed_bars(
+    pool: asyncpg.Pool,
+    symbol: str,
+    timestamps: list[datetime],
+    *,
+    checkpoint_saved_at: datetime,
+    collector_started_at: datetime,
+    current_batch_id: str,
+) -> int:
+    """Prove rows committed in the checkpoint-to-restart crash window."""
+
+    if not timestamps:
+        return 0
+    times = [timestamp.replace(tzinfo=KST) for timestamp in timestamps]
+    async with pool.acquire() as conn:
+        return int(
+            await conn.fetchval(
+                "SELECT count(*) FROM research.kr_candles_1m "
+                "WHERE symbol=$1 AND venue=$2 "
+                "AND time_utc = ANY($3::timestamptz[]) "
+                "AND retrieved_at > $4 AND retrieved_at <= $5 "
+                "AND batch_id <> $6",
+                symbol,
+                VENUE,
+                times,
+                checkpoint_saved_at,
+                collector_started_at,
+                current_batch_id,
+            )
+        )
+
+
 def filter_page_to_cursor(
     bars: dict[datetime, dict[str, float]], cursor_dt: datetime
 ) -> tuple[dict[datetime, dict[str, float]], int]:
@@ -403,6 +466,12 @@ async def run_stream(
     stats = StreamStats(source=pipe_id, symbols_total=len(symbols))
     pacer = Pacer(source)
     start_dt = datetime.combine(start_date, datetime.min.time())
+    collector_started_at = now_kst()
+    checkpoint_saved_at = (
+        datetime.fromtimestamp(ckpt.path.stat().st_mtime, tz=KST)
+        if ckpt.path.exists()
+        else None
+    )
 
     for symbol in symbols:
         st = ckpt.get(symbol)
@@ -541,6 +610,11 @@ async def run_stream(
                         f"filtered={cursor_overlap} "
                         f"existing={cursor_overlap_verified}"
                     )
+                first_page = stats.rows_fetched == 0
+                checkpoint_was_partial = (
+                    bool(st.get("oldest_reached"))
+                    and int(st.get("rows_inserted") or 0) > 0
+                )
                 stats.rows_fetched += len(bars)
                 stats.rows_kept += len(keep)
                 stats.rows_filtered_cursor_overlap += cursor_overlap
@@ -549,8 +623,37 @@ async def run_stream(
                 )
                 stats.rows_inserted += ins
                 stats.rows_skipped_conflict += skip
+                preseed_verified = 0
+                if (
+                    first_page
+                    and checkpoint_was_partial
+                    and checkpoint_saved_at is not None
+                    and len(keep) > 0
+                    and ins == 0
+                    and skip == len(keep)
+                ):
+                    preseed_verified = await count_resume_preseed_bars(
+                        pool,
+                        symbol,
+                        list(keep),
+                        checkpoint_saved_at=checkpoint_saved_at,
+                        collector_started_at=collector_started_at,
+                        current_batch_id=batch_id,
+                    )
+                preseed_conflicts = classify_resume_preseed_conflicts(
+                    first_page=first_page,
+                    checkpoint_was_partial=checkpoint_was_partial,
+                    rows_kept=len(keep),
+                    rows_inserted=ins,
+                    rows_skipped_conflict=skip,
+                    rows_verified_between_checkpoint_and_restart=preseed_verified,
+                )
+                stats.rows_skipped_conflict_preseed += preseed_conflicts
                 st["rows_inserted"] = st.get("rows_inserted", 0) + ins
                 st["rows_skipped"] = st.get("rows_skipped", 0) + skip
+                st["rows_skipped_preseed"] = (
+                    st.get("rows_skipped_preseed", 0) + preseed_conflicts
+                )
 
                 log.write(
                     {
@@ -567,6 +670,8 @@ async def run_stream(
                         ),
                         "rows_inserted": ins,
                         "rows_skipped_conflict": skip,
+                        "rows_skipped_conflict_preseed": preseed_conflicts,
+                        "rows_skipped_conflict_preseed_verified": preseed_verified,
                         "calls_cumulative": pacer.calls,
                     }
                 )
@@ -713,6 +818,12 @@ async def run_surface(
     surface_id = f"kiwoom_{surface}"
     stats = SurfaceStats(surface=surface, symbols_total=len(symbols))
     start_dt = datetime.combine(start_date, datetime.min.time())
+    collector_started_at = now_kst()
+    checkpoint_saved_at = (
+        datetime.fromtimestamp(ckpt.path.stat().st_mtime, tz=KST)
+        if ckpt.path.exists()
+        else None
+    )
 
     for symbol in symbols:
         if stop_event.is_set():
@@ -838,6 +949,11 @@ async def run_surface(
                         f"filtered={cursor_overlap} "
                         f"existing={cursor_overlap_verified}"
                     )
+                first_page = stats.rows_fetched == 0
+                checkpoint_was_partial = (
+                    bool(state.get("oldest_reached"))
+                    and int(state.get("rows_inserted") or 0) > 0
+                )
                 stats.rows_fetched += len(rows)
                 stats.rows_kept += len(keep)
                 stats.rows_filtered_cursor_overlap += cursor_overlap
@@ -850,8 +966,37 @@ async def run_surface(
                 )
                 stats.rows_inserted += inserted
                 stats.rows_skipped_conflict += skipped
+                preseed_verified = 0
+                if (
+                    first_page
+                    and checkpoint_was_partial
+                    and checkpoint_saved_at is not None
+                    and len(keep) > 0
+                    and inserted == 0
+                    and skipped == len(keep)
+                ):
+                    preseed_verified = await count_resume_preseed_bars(
+                        pool,
+                        symbol,
+                        list(keep),
+                        checkpoint_saved_at=checkpoint_saved_at,
+                        collector_started_at=collector_started_at,
+                        current_batch_id=batch_id,
+                    )
+                preseed_conflicts = classify_resume_preseed_conflicts(
+                    first_page=first_page,
+                    checkpoint_was_partial=checkpoint_was_partial,
+                    rows_kept=len(keep),
+                    rows_inserted=inserted,
+                    rows_skipped_conflict=skipped,
+                    rows_verified_between_checkpoint_and_restart=preseed_verified,
+                )
+                stats.rows_skipped_conflict_preseed += preseed_conflicts
                 state["rows_inserted"] = state.get("rows_inserted", 0) + inserted
                 state["rows_skipped"] = state.get("rows_skipped", 0) + skipped
+                state["rows_skipped_preseed"] = (
+                    state.get("rows_skipped_preseed", 0) + preseed_conflicts
+                )
                 log.write(
                     {
                         "event": "page",
@@ -866,6 +1011,8 @@ async def run_surface(
                         ),
                         "rows_inserted": inserted,
                         "rows_skipped_conflict": skipped,
+                        "rows_skipped_conflict_preseed": preseed_conflicts,
+                        "rows_skipped_conflict_preseed_verified": preseed_verified,
                         "calls_cumulative": pacer.calls,
                         "batch_id": batch_id,
                     }

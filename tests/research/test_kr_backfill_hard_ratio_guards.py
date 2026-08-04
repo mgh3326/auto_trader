@@ -62,6 +62,59 @@ def test_cursor_overlap_ratio_aborts_above_forty_percent(
         collect_module.enforce_hard_ratio_guards(above_limit)
 
 
+def test_only_proven_first_page_resume_preseed_is_excluded(
+    collect_module: ModuleType,
+) -> None:
+    preseed = collect_module.classify_resume_preseed_conflicts(
+        first_page=True,
+        checkpoint_was_partial=True,
+        rows_kept=702,
+        rows_inserted=0,
+        rows_skipped_conflict=702,
+        rows_verified_between_checkpoint_and_restart=702,
+    )
+    assert preseed == 702
+    collect_module.enforce_hard_ratio_guards(
+        collect_module.SurfaceStats(
+            surface="live",
+            rows_skipped_conflict=702,
+            rows_skipped_conflict_preseed=preseed,
+        )
+    )
+
+    assert (
+        collect_module.classify_resume_preseed_conflicts(
+            first_page=False,
+            checkpoint_was_partial=True,
+            rows_kept=702,
+            rows_inserted=0,
+            rows_skipped_conflict=702,
+            rows_verified_between_checkpoint_and_restart=702,
+        )
+        == 0
+    )
+    assert (
+        collect_module.classify_resume_preseed_conflicts(
+            first_page=True,
+            checkpoint_was_partial=True,
+            rows_kept=702,
+            rows_inserted=0,
+            rows_skipped_conflict=702,
+            rows_verified_between_checkpoint_and_restart=701,
+        )
+        == 0
+    )
+    with pytest.raises(collect_module.AbortStream, match="DB insert conflict ratio"):
+        collect_module.enforce_hard_ratio_guards(
+            collect_module.SurfaceStats(
+                surface="live",
+                rows_inserted=994,
+                rows_skipped_conflict=708,
+                rows_skipped_conflict_preseed=702,
+            )
+        )
+
+
 def test_both_collection_paths_enforce_non_configurable_hard_guards(
     collect_module: ModuleType,
 ) -> None:
