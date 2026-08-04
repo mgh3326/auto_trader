@@ -874,10 +874,24 @@ class Settings(BaseSettings):
     # Only paper credentials/endpoint — no live trading support.
     alpaca_paper_api_key: str | None = None
     alpaca_paper_api_secret: SecretStr | None = None
+    alpaca_paper_expected_account_id_suffix: str | None = None
+    alpaca_paper_expected_account_number_suffix: str | None = None
     # directional-lab uses a distinct Alpaca paper account. The endpoint is
     # intentionally shared; credentials are not allowed to fall back.
     alpaca_paper_lab_api_key: str | None = None
     alpaca_paper_lab_api_secret: SecretStr | None = None
+    alpaca_paper_lab_expected_account_id_suffix: str | None = None
+    alpaca_paper_lab_expected_account_number_suffix: str | None = None
+    # Clean-account onboarding. Credentials are intentionally a separate
+    # namespace; they must never fall back to default or lab credentials.
+    alpaca_paper_crypto_enabled: bool = False
+    alpaca_paper_crypto_api_key: str | None = None
+    alpaca_paper_crypto_api_secret: SecretStr | None = None
+    # Expected suffixes are deployment bindings, not account-purpose labels.
+    # They are required for the clean onboarding profile and are never inferred
+    # from the credential keyset or from an MCP/profile name.
+    alpaca_paper_crypto_expected_account_id_suffix: str | None = None
+    alpaca_paper_crypto_expected_account_number_suffix: str | None = None
     alpaca_paper_base_url: str = "https://paper-api.alpaca.markets"
     alpaca_paper_data_base_url: str = "https://data.alpaca.markets"
 

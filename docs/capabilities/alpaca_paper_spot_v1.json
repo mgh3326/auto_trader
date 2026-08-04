@@ -1,0 +1,12 @@
+{
+  "manifest": "alpaca-paper-spot-capability",
+  "version": "2026-08-04.v1",
+  "provider": "alpaca_paper",
+  "read_only_probe": true,
+  "authorization": {
+    "orders_allowed_by_manifest": false,
+    "exact_survivor_universe_approval_required": true
+  },
+  "symbols": ["BTC/USD", "ETH/USD", "SOL/USD"],
+  "notes": "Provider capability evidence is not an order allowlist. Extra pairs require exact survivor-universe approval."
+}

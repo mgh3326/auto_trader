@@ -59,6 +59,7 @@ def _validate_profile_auth_token(
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
         McpProfile.PAPER_EXECUTION,
+        McpProfile.ALPACA_PAPER_CLEAN,
     }
     if profile in token_required_profiles and not (token or "").strip():
         raise RuntimeError(
@@ -81,6 +82,27 @@ def _validate_profile_auth_token(
 
 
 def _validate_profile_runtime_settings(profile: McpProfile) -> None:
+    if profile is McpProfile.ALPACA_PAPER_CLEAN:
+        if not settings.alpaca_paper_crypto_enabled:
+            raise RuntimeError(
+                "MCP_PROFILE=alpaca-paper-clean requires "
+                "ALPACA_PAPER_CRYPTO_ENABLED=true"
+            )
+        # Validate only non-secret configuration here. The broker service
+        # performs the remote account read and fails closed on mismatch.
+        required = (
+            "alpaca_paper_crypto_api_key",
+            "alpaca_paper_crypto_api_secret",
+            "alpaca_paper_crypto_expected_account_id_suffix",
+            "alpaca_paper_crypto_expected_account_number_suffix",
+        )
+        missing = [name for name in required if not getattr(settings, name, None)]
+        if missing:
+            raise RuntimeError(
+                f"MCP_PROFILE={profile.value} has incomplete Alpaca clean config: "
+                + ", ".join(missing)
+            )
+        return
     if profile is McpProfile.PAPER_EXECUTION:
         if not settings.PAPER_EXECUTION_ENABLED:
             raise RuntimeError(

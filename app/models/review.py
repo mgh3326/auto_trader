@@ -798,7 +798,7 @@ class AlpacaPaperOrderLedger(Base):
         ),
         CheckConstraint("broker = 'alpaca'", name="alpaca_paper_ledger_broker"),
         CheckConstraint(
-            "account_mode IN ('alpaca_paper','alpaca_paper_lab')",
+            "account_mode IN ('alpaca_paper','alpaca_paper_lab','alpaca_paper_crypto')",
             name="alpaca_paper_ledger_account_mode",
         ),
         CheckConstraint(
@@ -895,6 +895,9 @@ class AlpacaPaperOrderLedger(Base):
     # Signal provenance (kept separate from execution)
     signal_symbol: Mapped[str | None] = mapped_column(Text)
     signal_venue: Mapped[str | None] = mapped_column(Text)
+    # Strategy ownership is optional for legacy rows, but available for new
+    # canonical routing so fills can be attributed without using account NAV.
+    strategy_key: Mapped[str | None] = mapped_column(Text)
 
     # Execution venue/symbol
     execution_symbol: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1142,7 +1145,7 @@ class TradeRetrospective(Base):
         ),
         CheckConstraint(
             "account_mode IN ('kis_mock','kiwoom_mock','kis_live','toss_live',"
-            "'alpaca_paper','alpaca_paper_lab','upbit_live','paper')",
+            "'alpaca_paper','alpaca_paper_lab','alpaca_paper_crypto','upbit_live','paper')",
             name="account_mode",
         ),
         CheckConstraint(

@@ -152,8 +152,14 @@ def test_existing_check_constraints_only_gain_lab_value():
         if hasattr(item, "sqltext")
     )
 
-    assert "account_mode IN ('alpaca_paper','alpaca_paper_lab')" in ledger_checks
-    assert "'alpaca_paper','alpaca_paper_lab','upbit_live'" in retrospective_checks
+    assert (
+        "account_mode IN ('alpaca_paper','alpaca_paper_lab','alpaca_paper_crypto')"
+        in ledger_checks
+    )
+    assert (
+        "'alpaca_paper','alpaca_paper_lab','alpaca_paper_crypto','upbit_live','paper'"
+        in retrospective_checks
+    )
 
 
 @pytest.mark.unit

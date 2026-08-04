@@ -272,6 +272,17 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
             register_paper_cohort_control_tools(mcp)
         return
 
+    if profile is McpProfile.ALPACA_PAPER_CLEAN:
+        # Default-disabled exact route. Even when enabled this preparation
+        # profile has no order mutation registrar; preview and reconciliation
+        # are separate operator approvals.
+        if settings.alpaca_paper_crypto_enabled:
+            register_alpaca_paper_tools(mcp)
+            register_alpaca_paper_preview_tools(mcp)
+            register_alpaca_paper_ledger_read_tools(mcp)
+        # Continue through the common read-only registration block. This route
+        # is not a crypto-purpose branch; it is a physical-account address.
+
     if profile is McpProfile.KIWOOM_KR:
         # ROB-1173: constrain the entire profile before any shared registrar
         # runs. This exact-set registration proxy is independent of central

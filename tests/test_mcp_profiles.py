@@ -419,6 +419,7 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     # Default-off profile: the direct registry exposes zero tools until the
     # dedicated feature flag is explicitly enabled.
     McpProfile.PAPER_EXECUTION: set(),
+    McpProfile.ALPACA_PAPER_CLEAN: set(),
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
