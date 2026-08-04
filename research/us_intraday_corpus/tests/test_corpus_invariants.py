@@ -456,6 +456,46 @@ def test_request_counter_enforces_hard_cap():
         counter.spend()
 
 
+def test_request_ledger_records_each_retry_attempt(artifact_root, monkeypatch):
+    """A retry is two request attempts, not one logical page fetch."""
+
+    class _Response:
+        def __init__(self, status_code, payload=None):
+            self.status_code = status_code
+            self._payload = payload or {"bars": {}, "next_page_token": None}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+        def json(self):
+            return self._payload
+
+    class _Session:
+        def __init__(self):
+            self.responses = [_Response(429), _Response(200)]
+            self.headers = {}
+
+        def get(self, *_args, **_kwargs):
+            return self.responses.pop(0)
+
+    monkeypatch.setattr(alpaca_data, "load_credentials", lambda: ("key", "secret"))
+    monkeypatch.setattr(alpaca_data.time, "sleep", lambda *_args: None)
+    client = alpaca_data.AlpacaDataClient(
+        limiter=alpaca_data.RateLimiter(min_interval_sec=0),
+        counter=alpaca_data.RequestCounter(max_requests=2),
+        session=_Session(),
+    )
+    client.fetch_bars_page(
+        ["AAPL"], "1Min", "2024-01-01T00:00:00Z", "2024-01-01T01:00:00Z"
+    )
+
+    entries = alpaca_data.load_request_attempts()
+    assert [entry["outcome"] for entry in entries] == ["retryable_429", "success"]
+    assert [entry["request_number"] for entry in entries] == [1, 2]
+    assert all("secret" not in json.dumps(entry) for entry in entries)
+
+
 # --------------------------------------------------------------------------
 # ROB-1206 -- UTC storage, America/New_York session_date, never KST
 # --------------------------------------------------------------------------
@@ -885,6 +925,46 @@ def test_old_snapshot_form_would_fail_the_regression_guard():
     for _payload, chain in _TwoPageClient().iter_bars(["AAPL"], "1Min", "s", "e"):
         live = chain
     assert live.as_dict()["complete"] is True  # post-exhaustion snapshot
+
+
+def test_fieldwise_null_report_is_exploration_only(artifact_root):
+    table = pa.Table.from_pylist(
+        [
+            {"symbol": "AAPL", "open": 1.0, "close": None, "volume": 10},
+            {"symbol": "AAPL", "open": None, "close": 1.5, "volume": 11},
+        ]
+    )
+    path = config.DATASET_DIR / "freq=1m" / "year=2024" / "part.parquet"
+    writer.write_parquet_atomic(table, path)
+
+    report = build.build_fieldwise_null_report()
+    by_field = {row["field"]: row for row in report["fields"]}
+    assert report["scope"] == "exploration_only"
+    assert report["row_count"] == 2
+    assert by_field["open"]["null_count"] == 1
+    assert by_field["open"]["null_rate"] == 0.5
+    assert by_field["close"]["null_count"] == 1
+    assert report["holdout_opened"] is False
+    assert report["holdout_read_count"] == 0
+
+
+def test_reseal_exploration_does_not_need_credentials_or_holdout(
+    artifact_root, monkeypatch
+):
+    path = config.DATASET_DIR / "freq=1m" / "year=2024" / "part.parquet"
+    writer.write_parquet_atomic(_table(), path)
+    monkeypatch.setattr(
+        alpaca_data,
+        "load_credentials",
+        lambda: (_ for _ in ()).throw(AssertionError("network path")),
+    )
+
+    assert build.main(["--reseal-exploration"]) == 0
+    manifest = json.loads(config.MANIFEST_PATH.read_text())
+    assert manifest["RESEAL_SCOPE"] == "exploration_only"
+    assert manifest["baseline_computed"] is False
+    assert manifest["strategy_admission"] is False
+    assert manifest["holdout"]["written_not_read"] is True
 
 
 def test_page_chain_marks_incomplete_when_not_exhausted():

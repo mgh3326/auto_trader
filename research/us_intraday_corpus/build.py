@@ -44,6 +44,7 @@ from . import alpaca_data, bars, config, finalize, labels, writer
 # minimum, it does not raise throughput.
 BATCH_1H = 100
 BATCH_1M = 1
+FIELDWISE_NULL_REPORT = "fieldwise_null_report.json"
 
 
 @dataclass
@@ -516,6 +517,95 @@ def write_checkpoint(name: str, payload: dict[str, Any]) -> None:
     labels.write_labelled_json(config.REPORTS_DIR / f"checkpoint_{name}.json", payload)
 
 
+def build_fieldwise_null_report() -> dict[str, Any]:
+    """Count nulls in readable exploration parquet, field by field.
+
+    The scan is deliberately rooted at ``dataset/`` and guards every path
+    before opening it. It never enumerates or inspects ``holdout/``.
+    """
+    import pyarrow.parquet as pq
+
+    files = sorted(config.DATASET_DIR.rglob("*.parquet"))
+    fields: dict[str, dict[str, int]] = {}
+    total_rows = 0
+    for path in files:
+        from . import loader
+
+        loader.assert_not_holdout_path(path)
+        parquet = pq.ParquetFile(str(path))
+        names = parquet.schema_arrow.names
+        for name in names:
+            fields.setdefault(name, {"null_count": 0, "row_count": 0})
+        for batch in parquet.iter_batches(batch_size=65_536):
+            total_rows += batch.num_rows
+            for index, name in enumerate(names):
+                column = batch.column(index)
+                fields[name]["row_count"] += batch.num_rows
+                fields[name]["null_count"] += column.null_count
+
+    field_rows = []
+    for name in sorted(fields):
+        row = fields[name]
+        count = row["row_count"]
+        nulls = row["null_count"]
+        field_rows.append(
+            {
+                "field": name,
+                "null_count": nulls,
+                "row_count": count,
+                "null_rate": (nulls / count if count else None),
+            }
+        )
+    report = {
+        "scope": "exploration_only",
+        "files_scanned": len(files),
+        "row_count": total_rows,
+        "fields": field_rows,
+        "holdout_opened": False,
+        "holdout_read_count": 0,
+    }
+    labels.write_labelled_json(config.REPORTS_DIR / FIELDWISE_NULL_REPORT, report)
+    return report
+
+
+def reseal_exploration_snapshot() -> int:
+    """Reseal existing readable exploration artifacts without collection.
+
+    This path has no credential/client construction and cannot promote or
+    inspect holdout data. It exists specifically for repair/reseal after the
+    collector contract has been corrected.
+    """
+    finalize.load_registry()
+    null_report = build_fieldwise_null_report()
+    request_attempts = alpaca_data.load_request_attempts()
+    manifest = finalize.seal(
+        terminal_verdict="BUILT_WITH_GAPS",
+        body={
+            "RESEAL_SCOPE": "exploration_only",
+            "repair": {
+                "marker_migration_or_failclose": "FAIL_CLOSED",
+                "empty_success_rejected": True,
+                "per_attempt_request_ledger": bool(request_attempts),
+                "request_attempt_count": len(request_attempts),
+                "fieldwise_null_report": f"reports/{FIELDWISE_NULL_REPORT}",
+            },
+            "fieldwise_null_report": null_report,
+            "baseline_computed": False,
+            "strategy_admission": False,
+        },
+    )
+    print(
+        json.dumps(
+            {
+                "RESEAL_SCOPE": manifest["RESEAL_SCOPE"],
+                "terminal_verdict": manifest["terminal_verdict"],
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 MEASUREMENT_CACHE = "measurement_1m.json"
 
 
@@ -584,6 +674,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="build us-intraday-corpus-v1")
     parser.add_argument("--probe-only", action="store_true")
     parser.add_argument(
+        "--reseal-exploration",
+        action="store_true",
+        help="reseal existing exploration artifacts only; never collect or open holdout",
+    )
+    parser.add_argument(
         "--skip-1m",
         action="store_true",
         help="legacy: only meaningful with --phase both; suppresses the 1Min phase",
@@ -603,6 +698,9 @@ def main(argv: list[str] | None = None) -> int:
         help="explicitly opt out of scope C to collect 1Hour (see config.HOUR_DATA_GAP)",
     )
     args = parser.parse_args(argv)
+
+    if args.reseal_exploration:
+        return reseal_exploration_snapshot()
 
     # Resolve which phases will actually run, then refuse an empty selection.
     # `--skip-1m` predates the scope-C default: with `--phase 1m` it suppresses
