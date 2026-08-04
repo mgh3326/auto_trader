@@ -38,6 +38,8 @@ def test_new_identity_and_v2_preservation_are_explicit() -> None:
     assert json.loads(json.dumps(payload, sort_keys=True)) == payload
     assert payload["predecessor_preservation"]["v2_row_mutation"] == "forbidden"
     assert payload["implementation"]["module_source_sha256"] == contract.MODULE_SOURCE_SHA256
+    from research_contracts import dfc_2c_4h_v21_harness as harness
+    assert payload["implementation"]["harness_source_sha256"] == harness.HARNESS_SOURCE_SHA256
 
 
 def test_import_time_source_freeze_is_present_and_runtime_hash_is_current() -> None:
@@ -85,6 +87,8 @@ def test_control_a_is_symmetric_and_adjudication_is_fully_numeric() -> None:
     payload = contract.contract_as_machine_data()
     assert payload["estimand"]["control_choice"] == "A"
     assert payload["estimand"]["selection_symmetric"] is True
+    assert payload["estimand"]["selection_implementation"] == "evaluate_basket argmax over all three scores"
+    assert payload["estimand"]["bootstrap_implementation"] == "stationary_block_bootstrap"
     rule = payload["adjudication"]
     assert rule["delta_threshold_bps"] == 5.0
     assert rule["bootstrap"] == "stationary_block_percentile"
@@ -114,7 +118,7 @@ def test_adopted_backtest_window_is_non_overlapping_and_warmup_is_recomputed() -
 
 
 def test_harness_hashes_validates_aligns_and_rejects_future_windows() -> None:
-    payload = ["x", 1]
+    payload = [0, 1, 2, 3, 4, 5, 14_399_999, 7, 8, 2, 1, 0]
     manifest = {
         "source_id": "binance_usdm.klines_4h", "endpoint_host": "fapi.binance.com",
         "endpoint_path": "/fapi/v1/klines", "endpoint_version": "v1", "symbol": "AAAUSDT",
@@ -123,31 +127,51 @@ def test_harness_hashes_validates_aligns_and_rejects_future_windows() -> None:
         "raw_payload_sha256": raw_payload_sha256(payload), "schema_version": "binance.v1",
     }
     left = EvidenceCandle("AAAUSDT", "kline", 0, 14_400_000, tuple(payload), manifest)
-    right = EvidenceCandle("AAAUSDT", "premium", 0, 14_400_000, tuple(payload), {**manifest, "endpoint_path": "/fapi/v1/premiumIndexKlines"})
+    right = EvidenceCandle("AAAUSDT", "premium", 0, 14_400_000, tuple(payload), {**manifest, "endpoint_path": "/fapi/v1/premiumIndexKlines", "source_id": "binance_usdm.premium_index_klines_4h"})
     assert inner_align_4h([left], [right]) == (("AAAUSDT", 0),)
     assert validate_and_sort_candles([left]) == (left,)
-    with pytest.raises(ValueError, match="future"):
-        assert_forward_only([100], {100: tuple(range(252)) + (100,) + tuple(range(252, 503))})
+    with pytest.raises(ValueError, match="prior"):
+        assert_forward_only([100], {100: tuple(range(504))}, prior_evidence={100: ()})
 
 
 def test_harness_blocks_signal_close_execution_overlap_from_raw_payload_times() -> None:
     signal = EvidenceCandle(
         "AAAUSDT", "kline", 0, 14_400_000,
-        (0, 0, 0, 0, 0, 0, 14_400_000), {},
+        (0, 0, 0, 0, 0, 0, 14_399_999, 0, 0, 0, 0, 0), {},
     )
     execution = EvidenceCandle(
         "AAAUSDT", "kline", 10_800_000, 25_200_000,
-        (10_800_000, 0, 0, 0, 0, 0, 25_200_000), {},
+        (10_800_000, 0, 0, 0, 0, 0, 25_199_999, 0, 0, 0, 0, 0), {},
     )
     with pytest.raises(ValueError, match="NEXT_BAR_OVERLAPS_SIGNAL_BAR"):
         assert_signal_execution_forward_only(
-            signal, execution, declared_signal_close_time_ms=14_400_000
+            signal, execution, declared_signal_close_time_ms=14_399_999
         )
 
     with pytest.raises(ValueError, match="SIGNAL_BAR_CLOSE_MISMATCH"):
         assert_signal_execution_forward_only(
-            signal, execution, declared_signal_close_time_ms=14_399_999
+            signal, execution, declared_signal_close_time_ms=14_400_000
         )
+
+
+def test_control_arm_executes_same_selection_and_adjudication() -> None:
+    basket = contract.evaluate_basket({symbol: _epoch(symbol, current=value) for symbol, value in (
+        ("AAAUSDT", 0.2), ("BBBUSDT", 0.1), ("CCCUSDT", 0.0)
+    )})
+    assert basket.winner == "AAAUSDT"
+    observations = tuple(contract.OutcomeObservation(index % 2 == 0, 10.0 if index % 2 == 0 else 1.0) for index in range(800))
+    result = contract.adjudicate_outcomes(observations)
+    assert result.status == "success"
+    assert result.delta_bps == pytest.approx(9.0)
+    assert contract.absolute_log_return_bps(100.0, 101.0) == pytest.approx(99.5033, rel=1e-4)
+    assert contract.make_outcome_observation(True, 100.0, 101.0).candidate is True
+
+
+def test_harness_rejects_short_raw_payload() -> None:
+    payload = (0, 1)
+    manifest = {"source_id": "binance_usdm.klines_4h", "endpoint_host": "fapi.binance.com", "endpoint_path": "/fapi/v1/klines", "endpoint_version": "v1", "symbol": "AAAUSDT", "interval": "4h", "epoch_start_utc": "1970-01-01T00:00:00Z", "epoch_end_utc": "1970-01-01T04:00:00Z", "complete": True, "gap_status": "none", "raw_payload_sha256": raw_payload_sha256(payload), "schema_version": "binance.v1"}
+    with pytest.raises((ValueError, IndexError)):
+        validate_and_sort_candles([EvidenceCandle("AAAUSDT", "kline", 0, 14_400_000, payload, manifest)])
 
 
 def test_contract_remains_offline_only() -> None:

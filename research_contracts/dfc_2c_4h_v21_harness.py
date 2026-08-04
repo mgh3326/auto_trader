@@ -16,13 +16,18 @@ from dataclasses import dataclass
 from typing import Any
 
 from research_contracts.dfc_2c_4h_v21 import (
+    EpochFeatures,
     IntegrityState,
+    evaluate_basket,
+    ofi_from_base_volumes,
+    premium_index_close_from_complete_4h,
+    select_universe,
     validate_evidence_manifest,
 )
 
 INTERVAL_MS = 4 * 60 * 60 * 1000
 REQUIRED_WARMUP_OBSERVATIONS = 504
-HARNESS_SOURCE_SHA256 = "89dc38effce02cff0b6f31f31f5de6aae7f60d972d6daeee034fc07dd3afdb7e"
+HARNESS_SOURCE_SHA256 = "979e6bc7ecbf9c06b27a70d7bde8c3b4b6695b996b5c0ca206fd78e0caecf785"
 _SOURCE_DECLARATION = re.compile(r'HARNESS_SOURCE_SHA256 = "([0-9a-f]{64})"')
 
 
@@ -61,19 +66,50 @@ class EvidenceCandle:
     manifest: Mapping[str, Any]
 
 
+KLINE_MIN_FIELDS = 12
+KLINE_OPEN_TIME_INDEX = 0
+KLINE_CLOSE_INDEX = 4
+KLINE_CLOSE_TIME_INDEX = 6
+KLINE_QUOTE_VOLUME_INDEX = 7
+KLINE_TAKER_BUY_BASE_INDEX = 9
+PREMIUM_CLOSE_INDEX = 4
+
+
 def raw_payload_sha256(payload: Sequence[Any]) -> str:
     encoded = json.dumps(list(payload), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _numeric_payload_value(value: Any, *, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"raw candle payload field {name} must be numeric")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"raw candle payload field {name} must be numeric") from exc
+    if not parsed == parsed or parsed in (float("inf"), float("-inf")):
+        raise ValueError(f"raw candle payload field {name} must be finite")
+    return parsed
 
 
 def validate_and_sort_candles(candles: Iterable[EvidenceCandle]) -> tuple[EvidenceCandle, ...]:
     materialized = tuple(candles)
     for candle in materialized:
         validate_evidence_manifest(candle.manifest)
+        if not isinstance(candle.payload, Mapping) and len(candle.payload) < KLINE_MIN_FIELDS:
+            raise ValueError("raw candle payload has fewer than the required 12 Binance fields")
+        if candle.symbol != candle.manifest["symbol"]:
+            raise ValueError("candle symbol does not match evidence manifest")
         if candle.epoch_end_ms - candle.epoch_start_ms != INTERVAL_MS:
             raise ValueError("candle interval must be exactly one UTC 4h epoch")
         if candle.manifest["raw_payload_sha256"] != raw_payload_sha256(candle.payload):
             raise ValueError("raw payload hash does not match evidence manifest")
+        open_time = _actual_candle_value(candle, mapping_key="open_time_ms", sequence_index=KLINE_OPEN_TIME_INDEX)
+        close_time = _actual_candle_value(candle, mapping_key="close_time_ms", sequence_index=KLINE_CLOSE_TIME_INDEX)
+        if open_time != candle.epoch_start_ms:
+            raise ValueError("raw candle open time does not match epoch start")
+        if close_time != open_time + INTERVAL_MS - 1:
+            raise ValueError("raw candle closeTime must equal openTime + interval - 1ms")
     ordered = tuple(sorted(materialized, key=lambda c: (c.symbol, c.endpoint, c.epoch_start_ms)))
     for earlier, later in zip(ordered, ordered[1:], strict=False):
         if (earlier.symbol, earlier.endpoint) == (later.symbol, later.endpoint) and earlier.epoch_start_ms == later.epoch_start_ms:
@@ -89,13 +125,22 @@ def inner_align_4h(
     return tuple(sorted(left & right))
 
 
-def assert_forward_only(epoch_starts_ms: Sequence[int], prior_windows: Mapping[int, Sequence[int]]) -> None:
+def assert_forward_only(
+    epoch_starts_ms: Sequence[int], prior_windows: Mapping[int, Sequence[int]], *,
+    prior_evidence: Mapping[int, Sequence[EvidenceCandle]],
+) -> None:
     for epoch in epoch_starts_ms:
         prior = tuple(prior_windows[epoch])
         if len(prior) != REQUIRED_WARMUP_OBSERVATIONS:
             raise ValueError("every epoch requires exactly 504 prior observations")
         if any(previous >= epoch for previous in prior):
             raise ValueError("prior window contains current or future epoch")
+        raw_prior = validate_and_sort_candles(prior_evidence[epoch])
+        starts = tuple(candle.epoch_start_ms for candle in raw_prior)
+        if starts != prior:
+            raise ValueError("prior window does not match raw evidence candle times")
+        if any(start >= epoch for start in starts):
+            raise ValueError("raw prior window contains current or future candle")
 
 
 def _actual_candle_value(candle: EvidenceCandle, *, mapping_key: str, sequence_index: int) -> int:
@@ -104,6 +149,8 @@ def _actual_candle_value(candle: EvidenceCandle, *, mapping_key: str, sequence_i
     if isinstance(payload, Mapping):
         value = payload.get(mapping_key)
     else:
+        if len(payload) < KLINE_MIN_FIELDS:
+            raise ValueError("raw candle payload has fewer than the required 12 Binance fields")
         value = payload[sequence_index]
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(f"raw candle payload lacks numeric {mapping_key}")
@@ -124,9 +171,7 @@ def assert_signal_execution_forward_only(
     actual_signal_close = _actual_candle_value(
         signal_bar, mapping_key="close_time_ms", sequence_index=6
     )
-    actual_signal_end = _actual_candle_value(
-        signal_bar, mapping_key="close_time_ms", sequence_index=6
-    )
+    actual_signal_end = actual_signal_close + 1
     if actual_signal_close != declared_signal_close_time_ms or actual_signal_end != signal_bar.epoch_end_ms:
         raise ForwardOnlyViolation(
             "SIGNAL_BAR_CLOSE_MISMATCH",
@@ -135,7 +180,7 @@ def assert_signal_execution_forward_only(
     actual_execution_start = _actual_candle_value(
         execution_bar, mapping_key="open_time_ms", sequence_index=0
     )
-    if actual_execution_start < actual_signal_close:
+    if actual_execution_start <= actual_signal_close:
         raise ForwardOnlyViolation(
             "NEXT_BAR_OVERLAPS_SIGNAL_BAR",
             "execution candle starts before the raw signal candle closes",
@@ -168,3 +213,53 @@ def classify_alignment(ok: bool, *, missing: bool = False) -> IntegrityState:
     if ok:
         return IntegrityState.COMPLETE
     return IntegrityState.MISSING if missing else IntegrityState.GAP
+
+
+def epoch_features_from_evidence(
+    *, symbol: str, current_kline: EvidenceCandle, current_premium: EvidenceCandle,
+    prior_klines: Sequence[EvidenceCandle], prior_premium: Sequence[EvidenceCandle],
+    prior_30d_quote_volume: float,
+) -> EpochFeatures:
+    """Build scoring features exclusively from validated raw endpoint evidence."""
+    klines = validate_and_sort_candles((*prior_klines, current_kline))
+    premiums = validate_and_sort_candles((*prior_premium, current_premium))
+    if len(klines) != 505 or len(premiums) != 505:
+        raise ValueError("feature construction requires exactly 504 prior candles and one current candle")
+    if any(c.symbol != symbol for c in (*klines, *premiums)):
+        raise ValueError("feature evidence symbol mismatch")
+    if current_kline.epoch_start_ms != current_premium.epoch_start_ms:
+        raise ValueError("current kline and premium candle are not aligned")
+    klines = tuple(sorted(klines, key=lambda candle: candle.epoch_start_ms))
+    premiums = tuple(sorted(premiums, key=lambda candle: candle.epoch_start_ms))
+    if tuple(c.epoch_start_ms for c in klines) != tuple(c.epoch_start_ms for c in premiums):
+        raise ValueError("kline and premium prior windows are not aligned")
+    ofi: list[float] = []
+    premium: list[float] = []
+    for candle in klines:
+        payload = candle.payload
+        if isinstance(payload, Mapping):
+            total = payload.get("volume")
+            buy = payload.get("taker_buy_base_volume")
+        else:
+            total = payload[5]
+            buy = payload[KLINE_TAKER_BUY_BASE_INDEX]
+        ofi.append(ofi_from_base_volumes(_numeric_payload_value(total, name="volume"), _numeric_payload_value(buy, name="taker_buy_base_volume")))
+    for candle in premiums:
+        value = candle.payload.get("close") if isinstance(candle.payload, Mapping) else candle.payload[PREMIUM_CLOSE_INDEX]
+        premium.append(premium_index_close_from_complete_4h(_numeric_payload_value(value, name="premium_close"), is_complete=True))
+    return EpochFeatures(
+        symbol=symbol, integrity=IntegrityState.COMPLETE,
+        current_ofi=ofi[-1], current_premium_close=premium[-1],
+        prior_ofi=tuple(ofi[:-1]), prior_premium_close=tuple(premium[:-1]),
+        prior_quote_volume_30d=prior_30d_quote_volume,
+    )
+
+
+def evaluate_epoch_basket(
+    prior_30d_quote_volume: Mapping[str, float], inputs: Mapping[str, EpochFeatures]
+):
+    """Wire the PIT universe selection into the basket scorer for every epoch."""
+    selected = select_universe(prior_30d_quote_volume)
+    if tuple(sorted(inputs)) != tuple(sorted(selected)):
+        raise ValueError("basket symbols do not equal the epoch PIT-selected universe")
+    return evaluate_basket(inputs)
