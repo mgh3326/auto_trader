@@ -32,7 +32,9 @@ Toss-first chart reader. The Phase-2 collector therefore does not treat a
 documented chart cap as a source constant:
 
 - The first chart response must expose `X-RateLimit-Limit`; that header is the
-  active cap. A missing cap fails closed before a second page request.
+  active cap. The single startup probe and all subsequent chart calls bypass
+  the runtime's static process-local chart limiter; a missing header cap fails
+  closed before a second page request.
 - During 09:00–20:00 KST, the collector targets at most
   `min(2 TPS, discovered-cap − 3 TPS)`, preserving three TPS for production
   chart readers. If the provider's cap cannot preserve that reservation, the

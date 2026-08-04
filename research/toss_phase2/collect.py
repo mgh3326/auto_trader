@@ -117,12 +117,14 @@ def _is_intraday(at: datetime) -> bool:
 class HeaderAdaptiveChartRateLimiter:
     """A chart-only pace controller whose cap comes from Toss response headers.
 
-    The process-local Toss limiter remains a backstop, but it is not the
-    authoritative chart cap for this bulk collector.  After the first chart
-    response exposes ``X-RateLimit-Limit``, intraday requests reserve three TPS
-    for the production Toss-first chart consumer.  If the provider lowers its
-    cap below that reservation, the collector fails closed before another page
-    request rather than consuming the production budget.
+    The process-local Toss limiter is retained only for non-chart groups.  The
+    chart path deliberately does not invoke its static local default: this
+    bulk collector's chart cap is determined solely from Toss response headers.
+    After the first chart response exposes ``X-RateLimit-Limit``, intraday
+    requests reserve three TPS for the production Toss-first chart consumer.
+    If the provider lowers its cap below that reservation, the collector fails
+    closed before another page request rather than consuming the production
+    budget.
     """
 
     def __init__(
@@ -296,7 +298,9 @@ class HeaderAdaptiveChartRateLimiter:
         wait_seconds = delay_until - self._monotonic()
         if wait_seconds > 0.0:
             await self._sleep(wait_seconds)
-        await self._base.acquire(group)
+        # Do not defer chart calls to TossRateLimiter here.  Its established
+        # per-process chart default is not shared across clients and would turn
+        # a documented value into a hidden fixed cap for this collector.
         self._last_chart_call = self._monotonic()
 
     async def backoff_after_429(self) -> tuple[int, float]:

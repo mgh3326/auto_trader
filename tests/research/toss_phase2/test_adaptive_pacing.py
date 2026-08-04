@@ -83,7 +83,7 @@ async def test_intraday_target_tracks_discovered_cap_and_preserves_headroom() ->
     assert pacer.target_tps() <= INTRADAY_TARGET_TPS_MAX
 
     await pacer.acquire("MARKET_DATA_CHART")
-    assert base.groups == ["MARKET_DATA_CHART"]
+    assert base.groups == []
 
 
 @pytest.mark.asyncio
@@ -110,7 +110,24 @@ async def test_low_remaining_uses_reset_window_before_after_close_request() -> N
     # 40% of ten tokens is four. Recovering from three to leave the bucket at
     # that floor after the next request requires two documented Reset windows.
     assert clock.sleeps == [1.0]
-    assert base.groups == ["MARKET_DATA_CHART"]
+    assert base.groups == []
+
+
+@pytest.mark.asyncio
+async def test_startup_probe_never_uses_the_static_chart_limiter() -> None:
+    clock = _Clock(datetime(2026, 8, 4, 10, 0, tzinfo=KST))
+    base = _BaseLimiter()
+    pacer = HeaderAdaptiveChartRateLimiter(
+        base,
+        "MARKET_DATA_CHART",
+        now_kst_fn=lambda: clock.now,
+        monotonic_fn=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    await pacer.acquire("MARKET_DATA_CHART")
+
+    assert base.groups == []
 
 
 @pytest.mark.asyncio
