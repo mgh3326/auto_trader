@@ -1,0 +1,83 @@
+{
+  "fixture_kind": "golden_alpaca_cancel_evidence",
+  "schema_version": "alpaca.order_activity_evidence.v1",
+  "format_only": true,
+  "account_record_id": "fixture-account-record",
+  "client_order_id": "paper-fixture-cid-001",
+  "broker_order_id": "fixture-broker-order-001",
+  "evidence": [
+    {
+      "evidence_id": "ev-001",
+      "event_kind": "order_submitted",
+      "clock_domain": "partner_dispatch",
+      "broker_timestamp": "2026-08-04T09:00:00.000Z",
+      "observed_at": "2026-08-04T09:00:01.000Z",
+      "source": "order_response",
+      "raw_payload_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "payload": {
+        "status": "accepted",
+        "submitted_at": "2026-08-04T09:00:00.000Z"
+      }
+    },
+    {
+      "evidence_id": "ev-002",
+      "event_kind": "order_observed",
+      "clock_domain": "partner_dispatch",
+      "broker_timestamp": "2026-08-04T09:00:02.000Z",
+      "observed_at": "2026-08-04T09:00:03.000Z",
+      "source": "order_activity",
+      "raw_payload_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "payload": {
+        "status": "accepted",
+        "submitted_at": "2026-08-04T09:00:02.000Z"
+      }
+    },
+    {
+      "evidence_id": "ev-003",
+      "event_kind": "cancel_requested",
+      "clock_domain": "operator_observed",
+      "broker_timestamp": null,
+      "observed_at": "2026-08-04T09:01:00.000Z",
+      "source": "cancel_response",
+      "raw_payload_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "payload": {
+        "http_status": 204,
+        "request_accepted": true,
+        "terminal_confirmed": false
+      }
+    },
+    {
+      "evidence_id": "ev-004",
+      "event_kind": "cancel_terminal_observed",
+      "clock_domain": "execution_partner",
+      "broker_timestamp": "2026-08-04T09:01:02.000Z",
+      "observed_at": "2026-08-04T09:01:03.000Z",
+      "source": "order_activity",
+      "raw_payload_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "payload": {
+        "status": "canceled",
+        "canceled_at": "2026-08-04T09:01:02.000Z"
+      }
+    },
+    {
+      "evidence_id": "ev-005",
+      "event_kind": "duplicate_client_order_id_rejected",
+      "clock_domain": "broker_observed",
+      "broker_timestamp": "2026-08-04T09:02:00.000Z",
+      "observed_at": "2026-08-04T09:02:01.000Z",
+      "source": "retry_response",
+      "raw_payload_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "payload": {
+        "duplicate": true,
+        "recovery_action": "query_existing_order_by_client_order_id",
+        "new_client_order_id_allowed": false
+      }
+    }
+  ],
+  "expected_projection": {
+    "after_ev_003": "cancel_pending_reconcile",
+    "after_ev_004": "terminal_confirmed:canceled",
+    "duplicate_recovery": "query_existing_order_by_client_order_id",
+    "paper_fidelity_terminal_source": "append_only_evidence_only"
+  }
+}

@@ -249,6 +249,81 @@ flatten 판단을 기다린다. 이 명령과 kill state/cancel/reconcile의 end
 
 현재 위 항목을 충족했다는 paper-run evidence는 **없음 — 필요**이다.
 
+## Wave 0 부속 계약: Alpaca broker-clock·비동기 cancel evidence
+
+이 절은 문서와 golden fixture만 추가한다. Alpaca service/ledger 구현과 겹치는
+코드화는 `#1782/alpacafix`가 고정된 exact head로 끝난 뒤에만 한다.
+
+### Evidence 원칙
+
+- order evidence와 activity evidence는 **append-only**다. 같은 order의 새 관측은
+  기존 행을 수정하지 않고 새 evidence event를 추가한다.
+- 각 event는 `evidence_id`, `client_order_id`, `broker_order_id`(있을 때),
+  `event_kind`, `clock_domain`, `broker_timestamp`(있을 때), `observed_at`,
+  `raw_payload_sha256`, `source`를 가진다. `observed_at`은 auto_trader가 관측한
+  UTC 시각이고, broker timestamp와 동일하다고 가정하지 않는다.
+- `submitted_at`은 mutable partner-dispatch 시각이므로 과거 값의 정정/변경을
+  append-only 새 관측으로 보존한다. `filled_at`과 `canceled_at`은 execution
+  partner clock이다. 모든 clock domain을 read model에서 구분한다.
+- raw payload 자체는 secret을 저장하지 않고 redacted canonical bytes의 SHA-256만
+  보존한다. hash가 없거나 clock domain/observed_at이 없으면 evidence로 인정하지
+  않는다.
+
+### Cancel projection
+
+`cancel_requested`는 operator/client가 취소를 요청했다는 projection event다.
+HTTP 204는 요청이 접수됐다는 evidence일 뿐 **종결이 아니다**. 이후 order/activity
+evidence에서 terminal status와 execution-partner `canceled_at`이 확인될 때만
+`terminal_confirmed(canceled)`로 projection한다. 확인 전에는
+`cancel_pending_reconcile`로 남기고 새 주문이나 대체 주문을 내지 않는다.
+
+### Same-client-order-id recovery
+
+모든 retry 가능한 submit은 명시적 `client_order_id`를 사용한다. Alpaca의 동일
+client order ID 중복거부는 “새 주문을 재전송하라”는 신호가 아니라 기존 주문을
+조회·복구하라는 신호다. duplicate rejection 후에는 client ID로 order/activity
+evidence를 query-first하고, 기존 order가 확인되면 그 lifecycle에 연결한다.
+기존 evidence가 없는데 duplicate rejection만 있으면 `uncertain_submit`/`ANOMALY`
+로 정지한다. 새 client ID로 우회 재제출하지 않는다.
+
+### Paper fidelity read model
+
+paper fidelity read model은 broker의 현재 mutable order row나 단일 응답의
+`submitted_at`을 직접 소비하지 않는다. 오직 append-only order/activity evidence와
+그 evidence에서 파생한 cancel projection만 소비한다. evidence가 불완전하면
+`PENDING_RECONCILE` 또는 `ANOMALY`이며 `filled`/`canceled` terminal state로
+승격하지 않는다.
+
+정형 예시는 [alpaca-cancel-evidence-golden.json](../fixtures/alpaca-cancel-evidence-golden.json)이다.
+
+## Wave 0 부속 계약: immutable account baseline attestation
+
+이것은 전략 결과와 무관한 read-only 계약이다. `BASELINE_SNAPSHOT_SUPPORTED =
+NO`가 clean Alpaca와 `kiwoom_mock_us` readiness 양쪽에서 확인된 공백을 메우기
+위한 **manifest 형식**만 정한다. 실제 capture는 해당 profile/credentials가
+안전하게 배선된 뒤 read-only 경로로 수행한다. 이 manifest는 조건부 acceptance
+예외의 조건 ③인 baseline 박제다.
+
+manifest는 생성 후 수정하지 않는 immutable artifact다. 다음 필드를 필수로 둔다:
+
+- `account_record_id`
+- `physical_fingerprint` — secret/account 전체 번호가 아닌 승인된 masked
+  fingerprint
+- `observed_at` — read-only capture의 UTC 시각
+- `cash`와 `cash_semantics` — cash가 deposit, broker-orderable cash,
+  buying power 중 무엇인지 명시; 의미를 모르면 `UNKNOWN`으로 fail-closed
+- 전체 `positions[]`와 전체 `open_orders[]` — 빈 배열도 실제 read evidence로
+  봉인하며 생략하지 않음
+- `ledger_watermark` — capture 시점에 대조한 ledger의 마지막 watermark/hash
+- `deployment_sha` — capture를 수행한 배포 commit SHA
+- `raw_response_hashes` — account/cash/positions/open-orders 각각의 redacted raw
+  response SHA-256
+
+`manifest_sha256`은 위 canonical manifest의 hash이며, 실제 capture 전에는
+`FORMAT_ONLY_NOT_CAPTURED`로 둔다. 실제 account 값·position·order를 fixture에
+넣지 않는다. 형식 예시는
+[account-baseline-manifest-format.json](../fixtures/account-baseline-manifest-format.json)이다.
+
 ## GAPS_CLOSED / GAPS_LEFT_OPEN
 
 아래에서 “닫음”은 이 문서가 계약 정의를 제공한다는 뜻이고, “운영 gap 닫힘”은

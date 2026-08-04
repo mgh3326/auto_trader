@@ -1,0 +1,35 @@
+{
+  "manifest_kind": "immutable_account_baseline_attestation",
+  "schema_version": "account.baseline_manifest.v1",
+  "format_only": true,
+  "capture_status": "FORMAT_ONLY_NOT_CAPTURED",
+  "account_record_id": "REQUIRED_ACCOUNT_RECORD_ID",
+  "physical_fingerprint": "REQUIRED_APPROVED_MASKED_FINGERPRINT",
+  "observed_at": "REQUIRED_UTC_CAPTURE_TIME",
+  "cash": {
+    "amount": "REQUIRED_DECIMAL_AS_STRING_OR_UNKNOWN",
+    "currency": "REQUIRED_CURRENCY",
+    "cash_semantics": "BROKER_ORDERABLE_CASH | BUYING_POWER | DEPOSIT | UNKNOWN"
+  },
+  "positions": [],
+  "open_orders": [],
+  "ledger_watermark": {
+    "kind": "REQUIRED_LEDGER_WATERMARK_KIND",
+    "value": "REQUIRED_WATERMARK_OR_UNKNOWN",
+    "source_hash": "REQUIRED_SHA256_OR_UNKNOWN"
+  },
+  "deployment_sha": "REQUIRED_DEPLOYMENT_COMMIT_SHA",
+  "raw_response_hashes": {
+    "account": "REQUIRED_REDACTED_RAW_RESPONSE_SHA256",
+    "cash": "REQUIRED_REDACTED_RAW_RESPONSE_SHA256",
+    "positions": "REQUIRED_REDACTED_RAW_RESPONSE_SHA256",
+    "open_orders": "REQUIRED_REDACTED_RAW_RESPONSE_SHA256"
+  },
+  "manifest_sha256": "DERIVED_AFTER_CANONICAL_CAPTURE",
+  "immutability": {
+    "append_only": true,
+    "post_capture_edits_allowed": false,
+    "capture_requires_read_only_profile": true,
+    "strategy_result_dependency": false
+  }
+}
