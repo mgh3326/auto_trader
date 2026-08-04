@@ -107,3 +107,24 @@ re-run with a wider window; re-collect the missing range from the providers
 against the production database by hand.
 
 Requires the `timescaledb` extension (>= 2.8.1; production is on 2.26.3).
+
+## 7. 1-minute strategy promotion gate
+
+`KR_1M_SOURCE_SENSITIVITY_V1` is required before promoting any strategy that
+consumes this corpus at 1-minute resolution. It is an operator evidence gate,
+not a scheduler and not an automatic strategy deployment path.
+
+For overlap symbols with both eligible sources, run the identical frozen
+strategy configuration once per source and retain the comparison artifact for:
+
+- signal timestamps and values;
+- resulting trade sequence; and
+- PnL.
+
+Any source-sensitive difference blocks promotion on the mixed corpus. Re-run
+that strategy against one declared canonical source, retain the reason and
+artifacts, and only then continue the normal promotion review. The review must
+also cite the raw 1-minute audit result and, when an adjacent-window exception
+is present, its predicate version/hash, independent-holdout evidence, and exact
+5m/15m/30m/1h bucket evidence. A documented exception never enables two-way
+operation by itself; the required operator approval remains separate.
