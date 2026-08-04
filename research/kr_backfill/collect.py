@@ -887,6 +887,28 @@ async def run_surface(
                     pacer.note_status(None)
                 except Exception as exc:  # noqa: BLE001
                     status = http_status_from_exception(exc)
+                    reason_code = getattr(exc, "reason_code", None)
+                    if reason_code == AUTH_STALE_TOKEN:
+                        stop_event.set()
+                        stats.stopped_reason = (
+                            "AUTH_STALE_TOKEN after one read-only retry"
+                        )
+                        log.write(
+                            {
+                                "event": "abort",
+                                "surface": surface_id,
+                                "symbol": symbol,
+                                "reason": stats.stopped_reason,
+                                "reason_code": reason_code,
+                                "retry_disposition": getattr(
+                                    exc, "retry_disposition", "NONE"
+                                ),
+                                "last_request": request_context,
+                                "pacer": pacer.snapshot(),
+                            }
+                        )
+                        ckpt.save()
+                        return stats
                     try:
                         pacer.note_exception(exc)
                     except (SurfaceAuthError, SurfaceBackoffExhausted) as fatal:

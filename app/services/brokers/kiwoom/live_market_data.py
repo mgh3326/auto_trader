@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 import uuid
 from typing import Any, Final
@@ -106,6 +107,9 @@ MONTHLY_LIST_KEY: Final[str] = "stk_mth_pole_chart_qry"
 _TOKEN_LOCK_TTL_SECONDS: Final[int] = 30
 _TOKEN_WAIT_TIMEOUT_SECONDS: Final[float] = 5.0
 _TOKEN_WAIT_POLL_SECONDS: Final[float] = 0.05
+_AUTH_REJECT_RETURN_CODE: Final[int] = 8005
+_MAX_TOKEN_REFRESH_RESUBMITS: Final[int] = 1
+AUTH_STALE_TOKEN: Final[str] = "AUTH_STALE_TOKEN"
 
 
 # --------------------------------------------------------------------------
@@ -139,6 +143,28 @@ class KiwoomLiveReadOnlyPathError(KiwoomLiveReadOnlyError):
 
 class KiwoomLiveTokenIssuanceUnavailable(KiwoomLiveReadOnlyError):
     """Raised when another issuer never publishes a usable token."""
+
+
+class KiwoomLiveReadResponseError(KiwoomLiveReadOnlyError):
+    """Typed, value-redacted failure after a read-only token retry."""
+
+    def __init__(
+        self,
+        *,
+        reason_code: str,
+        api_id: str,
+        return_code: int | None,
+        retry_disposition: str,
+    ) -> None:
+        self.reason_code = reason_code
+        self.api_id = api_id
+        self.return_code = return_code
+        self.retry_disposition = retry_disposition
+        super().__init__(
+            "Kiwoom live read response rejected "
+            f"reason_code={reason_code} api_id={api_id} "
+            f"return_code={return_code!r} retry={retry_disposition}"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -206,6 +232,25 @@ def _parse_expires_dt(value: str) -> float:
     return parsed.timestamp()
 
 
+def _is_auth_rejection(payload: dict[str, Any]) -> bool:
+    """Recognize documented 8005 and the observed return_code=3 envelope."""
+
+    if str(payload.get("return_code", "")).strip() == str(_AUTH_REJECT_RETURN_CODE):
+        return True
+    return_msg = str(payload.get("return_msg") or "")
+    return re.search(r"(?<!\d)8005(?!\d)", return_msg) is not None
+
+
+def _strict_return_code(payload: dict[str, Any]) -> int | None:
+    raw = payload.get("return_code")
+    if isinstance(raw, bool):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 # --------------------------------------------------------------------------
 # Live OAuth (separate from KiwoomAuthClient, which stays mock-only)
 # --------------------------------------------------------------------------
@@ -238,11 +283,21 @@ class KiwoomLiveReadOnlyAuthClient:
         self.token_key = f"{namespace}:access_token"
         self.lock_key = f"{namespace}:lock"
 
-    async def get_token(self) -> str:
-        cached = await self._get_cached_token()
-        if cached is not None:
-            return cached
-        return await self._issue_single_flight()
+    async def get_token(
+        self, *, force_reissue: bool = False, failed_token: str | None = None
+    ) -> str:
+        if not force_reissue:
+            cached = await self._get_cached_token()
+            if cached is not None:
+                return cached
+        elif failed_token is not None:
+            cached = await self._get_cached_token()
+            if cached is not None and cached != failed_token:
+                return cached
+        return await self._issue_single_flight(
+            force_reissue=force_reissue,
+            failed_token=failed_token,
+        )
 
     async def _get_redis(self) -> redis.Redis:
         if self._redis_client is not None:
@@ -281,7 +336,9 @@ class KiwoomLiveReadOnlyAuthClient:
         payload = {"access_token": access_token, "expires_at": expires_at}
         await redis_client.set(self.token_key, json.dumps(payload), ex=ttl)
 
-    async def _issue_single_flight(self) -> str:
+    async def _issue_single_flight(
+        self, *, force_reissue: bool = False, failed_token: str | None = None
+    ) -> str:
         redis_client = await self._get_redis()
         lock_token = str(uuid.uuid4())
         acquired = await redis_client.set(
@@ -291,7 +348,12 @@ class KiwoomLiveReadOnlyAuthClient:
             try:
                 cached = await self._get_cached_token()
                 if cached is not None:
-                    return cached
+                    if not force_reissue:
+                        return cached
+                    if failed_token is not None and cached != failed_token:
+                        return cached
+                if force_reissue:
+                    await redis_client.delete(self.token_key)
                 access_token, expires_at = await self._issue_token()
                 await self._cache_token(
                     access_token=access_token, expires_at=expires_at
@@ -301,7 +363,7 @@ class KiwoomLiveReadOnlyAuthClient:
             finally:
                 await self._release_lock(redis_client, lock_token)
 
-        waited = await self._wait_for_cached_token()
+        waited = await self._wait_for_cached_token(failed_token=failed_token)
         if waited is not None:
             return waited
         raise KiwoomLiveTokenIssuanceUnavailable(
@@ -309,11 +371,13 @@ class KiwoomLiveReadOnlyAuthClient:
             "no cached token after bounded wait"
         )
 
-    async def _wait_for_cached_token(self) -> str | None:
+    async def _wait_for_cached_token(
+        self, *, failed_token: str | None = None
+    ) -> str | None:
         deadline = time.monotonic() + _TOKEN_WAIT_TIMEOUT_SECONDS
         while True:
             cached = await self._get_cached_token()
-            if cached is not None:
+            if cached is not None and cached != failed_token:
                 return cached
             if time.monotonic() >= deadline:
                 return None
@@ -477,10 +541,15 @@ class KiwoomLiveReadOnlyClient:
 
     # -- request path ------------------------------------------------------
 
-    async def _resolve_token(self) -> str:
+    async def _resolve_token(
+        self, *, force_reissue: bool = False, failed_token: str | None = None
+    ) -> str:
         if self._token_override is not None:
             return self._token_override
-        return await self._auth.get_token()
+        return await self._auth.get_token(
+            force_reissue=force_reissue,
+            failed_token=failed_token,
+        )
 
     async def post_chart(
         self,
@@ -521,57 +590,73 @@ class KiwoomLiveReadOnlyClient:
 
         token = await self._resolve_token()
 
-        headers = {
-            HEADER_AUTHORIZATION: f"Bearer {token}",
-            HEADER_API_ID: api_id,
-            "Content-Type": OAUTH_CONTENT_TYPE,
-        }
-        if cont_yn is not None:
-            headers[HEADER_CONT_YN] = cont_yn
-        if next_key is not None:
-            headers[HEADER_NEXT_KEY] = next_key
+        token_refresh_resubmits = 0
+        while True:
+            headers = {
+                HEADER_AUTHORIZATION: f"Bearer {token}",
+                HEADER_API_ID: api_id,
+                "Content-Type": OAUTH_CONTENT_TYPE,
+            }
+            if cont_yn is not None:
+                headers[HEADER_CONT_YN] = cont_yn
+            if next_key is not None:
+                headers[HEADER_NEXT_KEY] = next_key
 
-        async with httpx.AsyncClient(
-            base_url=self._base_url,
-            transport=self._transport,
-            timeout=self._timeout,
-            # SHOULD-1: pinned explicitly rather than inherited from the httpx
-            # default. A 3xx is the one way an already-validated request can
-            # still reach another host or path — and this host serves the order
-            # API, so the redirect must die here, not be followed.
-            follow_redirects=False,
-        ) as client:
-            request = client.build_request("POST", path, headers=headers, json=body)
-            # Item 6 — re-validate the *resolved* host immediately before
-            # dispatch, mirroring the mock client's own last-line check.
-            if request.url.host != _live_host():
-                raise KiwoomLiveReadOnlyEndpointError(
-                    "Kiwoom live request resolved to non-live host "
-                    f"{request.url.host!r}; refusing to send."
-                )
-            # SHOULD-2: the path was allowlisted pre-build, but only the host
-            # was re-checked post-build. Remove that asymmetry — verify the
-            # *resolved* path is still the chart path right before dispatch.
-            if request.url.path != CHART_PATH:
-                raise KiwoomLiveReadOnlyPathError(
-                    "Kiwoom live request resolved to non-chart path "
-                    f"{request.url.path!r}; refusing to send."
-                )
-            response = await client.send(request)
+            async with httpx.AsyncClient(
+                base_url=self._base_url,
+                transport=self._transport,
+                timeout=self._timeout,
+                # SHOULD-1: pinned explicitly rather than inherited from the httpx
+                # default. A 3xx is the one way an already-validated request can
+                # still reach another host or path — and this host serves the order
+                # API, so the redirect must die here, not be followed.
+                follow_redirects=False,
+            ) as client:
+                request = client.build_request("POST", path, headers=headers, json=body)
+                # Item 6 — re-validate the *resolved* host immediately before
+                # dispatch, mirroring what the mock client does for its own host.
+                if request.url.host != _live_host():
+                    raise KiwoomLiveReadOnlyEndpointError(
+                        "Kiwoom live request resolved to non-live host "
+                        f"{request.url.host!r}; refusing to send."
+                    )
+                if request.url.path != CHART_PATH:
+                    raise KiwoomLiveReadOnlyPathError(
+                        "Kiwoom live request resolved to non-chart path "
+                        f"{request.url.path!r}; refusing to send."
+                    )
+                response = await client.send(request)
 
-        response.raise_for_status()
-        payload: dict[str, Any] = dict(response.json())
-        payload["continuation"] = {
-            "cont_yn": response.headers.get(HEADER_CONT_YN, ""),
-            "next_key": response.headers.get(HEADER_NEXT_KEY, ""),
-        }
-        if int(payload.get("return_code", 0)) != SUCCESS_RETURN_CODE:
-            _log.info(
-                "Kiwoom live chart api_id=%s returned non-zero return_code=%s",
-                api_id,
-                payload.get("return_code"),
-            )
-        return payload
+            response.raise_for_status()
+            payload: dict[str, Any] = dict(response.json())
+            payload["continuation"] = {
+                "cont_yn": response.headers.get(HEADER_CONT_YN, ""),
+                "next_key": response.headers.get(HEADER_NEXT_KEY, ""),
+            }
+            if (
+                _is_auth_rejection(payload)
+                and token_refresh_resubmits < _MAX_TOKEN_REFRESH_RESUBMITS
+            ):
+                token_refresh_resubmits += 1
+                token = await self._resolve_token(
+                    force_reissue=True,
+                    failed_token=token,
+                )
+                continue
+            if _is_auth_rejection(payload):
+                raise KiwoomLiveReadResponseError(
+                    reason_code=AUTH_STALE_TOKEN,
+                    api_id=api_id,
+                    return_code=_strict_return_code(payload),
+                    retry_disposition="RETRIED_ONCE_THEN_STOP",
+                )
+            if int(payload.get("return_code", 0)) != SUCCESS_RETURN_CODE:
+                _log.info(
+                    "Kiwoom live chart api_id=%s returned non-zero return_code=%s",
+                    api_id,
+                    payload.get("return_code"),
+                )
+            return payload
 
     # -- typed chart calls -------------------------------------------------
 

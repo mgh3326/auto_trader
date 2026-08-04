@@ -9,6 +9,8 @@ the transport is never reached at all.
 from __future__ import annotations
 
 import ast
+import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +65,44 @@ def _client(transport: httpx.MockTransport | None = None) -> KiwoomLiveReadOnlyC
     if transport is not None:
         client.set_transport_for_test(transport, token="TKN")
     return client
+
+
+class _RecordingAuth:
+    def __init__(self) -> None:
+        self.calls: list[tuple[bool, str | None]] = []
+
+    async def get_token(
+        self, *, force_reissue: bool = False, failed_token: str | None = None
+    ) -> str:
+        self.calls.append((force_reissue, failed_token))
+        return "fresh-token" if force_reissue else "stale-token"
+
+
+class _MemoryRedis:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    async def set(
+        self, key: str, value: str, *, nx: bool = False, ex: int | None = None
+    ) -> bool:
+        del ex
+        if nx and key in self.values:
+            return False
+        self.values[key] = value
+        return True
+
+    async def delete(self, key: str) -> int:
+        return int(self.values.pop(key, None) is not None)
+
+    async def eval(self, script: str, numkeys: int, key: str, token: str) -> int:
+        del script, numkeys
+        if self.values.get(key) != token:
+            return 0
+        del self.values[key]
+        return 1
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +168,113 @@ async def test_chart_api_id_is_accepted_and_sent(armed):
     assert str(request.url) == "https://api.kiwoom.com/api/dostk/chart"
     assert payload["return_code"] == 0
     assert payload["continuation"] == {"cont_yn": "N", "next_key": ""}
+
+
+@pytest.mark.asyncio
+async def test_live_chart_observed_code3_with_8005_refreshes_once():
+    authorizations: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        authorization = request.headers[constants.HEADER_AUTHORIZATION]
+        authorizations.append(authorization)
+        if authorization == "Bearer stale-token":
+            return httpx.Response(
+                200,
+                json={
+                    "return_code": 3,
+                    "return_msg": "인증에 실패했습니다[8005:Token이 유효하지 않습니다]",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "return_code": 0,
+                "return_msg": "정상",
+                "stk_min_pole_chart_qry": [{"cntr_tm": "20260803153000"}],
+            },
+        )
+
+    auth = _RecordingAuth()
+    client = KiwoomLiveReadOnlyClient(
+        app_key="ak", app_secret="sk", marketdata_enabled=True
+    )
+    client._transport = httpx.MockTransport(handler)  # type: ignore[attr-defined]
+    client._auth = auth  # type: ignore[attr-defined]
+
+    payload = await client.fetch_minute_chart(
+        symbol="005930", tic_scope="1", base_dt="20260803"
+    )
+
+    assert payload["return_code"] == 0
+    assert authorizations == ["Bearer stale-token", "Bearer fresh-token"]
+    assert auth.calls == [(False, None), (True, "stale-token")]
+
+
+@pytest.mark.asyncio
+async def test_live_chart_repeated_8005_stops_after_one_retry():
+    dispatches = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal dispatches
+        dispatches += 1
+        return httpx.Response(
+            200,
+            json={
+                "return_code": 3,
+                "return_msg": "인증에 실패했습니다[8005:Token이 유효하지 않습니다]",
+            },
+        )
+
+    auth = _RecordingAuth()
+    client = KiwoomLiveReadOnlyClient(
+        app_key="ak", app_secret="sk", marketdata_enabled=True
+    )
+    client._transport = httpx.MockTransport(handler)  # type: ignore[attr-defined]
+    client._auth = auth  # type: ignore[attr-defined]
+
+    with pytest.raises(
+        live_mod.KiwoomLiveReadResponseError,
+        match="AUTH_STALE_TOKEN.*RETRIED_ONCE_THEN_STOP",
+    ):
+        await client.fetch_minute_chart(
+            symbol="005930", tic_scope="1", base_dt="20260803"
+        )
+
+    assert dispatches == 2
+    assert auth.calls == [(False, None), (True, "stale-token")]
+
+
+@pytest.mark.asyncio
+async def test_live_forced_refresh_preserves_shared_token_single_flight(monkeypatch):
+    redis_client = _MemoryRedis()
+    first = live_mod.KiwoomLiveReadOnlyAuthClient(
+        app_key="ak",
+        app_secret="sk",
+        redis_client=redis_client,  # type: ignore[arg-type]
+    )
+    second = live_mod.KiwoomLiveReadOnlyAuthClient(
+        app_key="ak",
+        app_secret="sk",
+        redis_client=redis_client,  # type: ignore[arg-type]
+    )
+    redis_client.values[first.token_key] = json.dumps(
+        {"access_token": "stale-token", "expires_at": time.time() + 3600}
+    )
+    issues = 0
+
+    async def issue_token() -> tuple[str, float]:
+        nonlocal issues
+        issues += 1
+        return "fresh-token", time.time() + 3600
+
+    monkeypatch.setattr(first, "_issue_token", issue_token)
+    monkeypatch.setattr(second, "_issue_token", issue_token)
+
+    refreshed = await first.get_token(force_reissue=True, failed_token="stale-token")
+    shared = await second.get_token(force_reissue=True, failed_token="stale-token")
+
+    assert refreshed == shared == "fresh-token"
+    assert issues == 1
 
 
 # ---------------------------------------------------------------------------
