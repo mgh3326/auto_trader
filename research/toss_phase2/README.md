@@ -25,6 +25,10 @@ Consumer rules:
 The collector uses a shared cached Toss token only. It cannot issue or force
 reissue OAuth.
 
+The declared call budget is staging-wide rather than process-local: a resumed
+collector recovers prior chart attempts from the append-only progress log and
+will not reset that budget by restarting.
+
 ## Shared chart-budget control
 
 `MARKET_DATA_CHART` is a client × API-group budget shared with the production

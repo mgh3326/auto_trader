@@ -9,6 +9,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from research.toss_phase2.collect import (
+    CALL_BUDGET_ACCOUNTING,
     KST,
     STAGING_CONTRACT,
     VALUE_SEMANTICS,
@@ -17,6 +18,8 @@ from research.toss_phase2.collect import (
     ProductionTossLogMonitor,
     SharedTossHealthMonitor,
     classify_session_segment,
+    collection_stats_from_checkpoint,
+    cumulative_calls_from_progress,
     initialize_staging,
     load_readonly_toss_environment,
     make_rows,
@@ -166,6 +169,66 @@ def test_existing_staging_manifest_replaces_only_withdrawn_pacing_metadata(
     assert updated["rate_limit_control"] == {"mode": "response_header_adaptive"}
     assert updated["preserve"] == "staging-data-contract"
     assert page.read_bytes() == b"existing-page-must-not-change"
+
+
+def test_resumed_summary_is_seeded_from_checkpoint_without_rewriting_pages(
+    tmp_path,
+) -> None:
+    checkpoint_path = tmp_path / "state" / "checkpoint.json"
+    checkpoint_path.parent.mkdir()
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "symbols": {
+                    "005930": {
+                        "before": None,
+                        "done": True,
+                        "pages": 12,
+                        "rows_staged": 2398,
+                    },
+                    "000660": {
+                        "before": "cursor",
+                        "done": False,
+                        "pages": 3,
+                        "rows_staged": 600,
+                    },
+                },
+            }
+        )
+    )
+
+    stats = collection_stats_from_checkpoint(
+        staging_dir=tmp_path,
+        symbols=["005930", "000660"],
+    )
+
+    assert stats.symbols_total == 2
+    assert stats.symbols_done == 1
+    assert stats.pages_staged == 15
+    assert stats.rows_staged == 2998
+
+
+def test_call_budget_is_cumulative_across_legacy_and_resumed_processes(
+    tmp_path,
+) -> None:
+    progress = tmp_path / "events" / "progress.jsonl"
+    progress.parent.mkdir()
+    events = [
+        {"event": "collection_started"},
+        {"event": "page", "calls_actual": 125},
+        {"event": "collection_started"},
+        {"event": "page", "calls_actual": 201},
+        {
+            "event": "collection_started",
+            "call_accounting": CALL_BUDGET_ACCOUNTING,
+            "prior_calls_actual": 326,
+        },
+        {"event": "page", "calls_actual": 330},
+    ]
+    progress.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+
+    assert cumulative_calls_from_progress(progress) == 330
 
 
 @pytest.mark.asyncio

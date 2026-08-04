@@ -51,6 +51,7 @@ LOW_REMAINING_FRACTION = 0.4
 CONSECUTIVE_429_STOP_AT = 5
 CONSECUTIVE_TRANSIENT_RESUME_STOP_AT = 5
 SUMMARY_UPDATE_INTERVAL_SECONDS = 60.0
+CALL_BUDGET_ACCOUNTING = "cumulative_staging_scope"
 DEFAULT_SHARED_REDIS_URL = "redis://127.0.0.1:6379/0"
 _SETTINGS_PLACEHOLDERS = {
     "KIS_APP_KEY": "toss-phase2-unused",
@@ -145,8 +146,10 @@ class CachedTokenOnlyProvider:
 class CountingTransport(httpx.AsyncBaseTransport):
     """Count actual Toss HTTP attempts, rather than successful parsed pages."""
 
-    def __init__(self) -> None:
-        self.calls = 0
+    def __init__(self, *, initial_calls: int = 0) -> None:
+        if initial_calls < 0:
+            raise ValueError("initial_calls must be non-negative")
+        self.calls = initial_calls
         self._inner = httpx.AsyncHTTPTransport()
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -511,6 +514,73 @@ class ProgressLog:
         self._fh.close()
 
 
+def cumulative_calls_from_progress(path: Path) -> int:
+    """Return the staging-wide chart-call total across collector restarts.
+
+    Older runs recorded a per-process counter.  Once a run declares the
+    cumulative accounting marker, its counter already includes all preceding
+    calls and must replace—not be added to—the legacy total.
+    """
+
+    if not path.exists():
+        return 0
+
+    legacy_total = 0
+    cumulative_max = 0
+    run_seen = False
+    run_is_cumulative = False
+    run_max = 0
+
+    def finish_run() -> None:
+        nonlocal legacy_total, cumulative_max
+        if not run_seen:
+            return
+        if run_is_cumulative:
+            cumulative_max = max(cumulative_max, run_max)
+        else:
+            legacy_total += run_max
+
+    for line_number, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), 1
+    ):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"malformed progress log at line {line_number}; refusing to reset call budget"
+            ) from exc
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"malformed progress log at line {line_number}; expected object"
+            )
+        if record.get("event") == "collection_started":
+            finish_run()
+            run_seen = True
+            run_is_cumulative = record.get("call_accounting") == CALL_BUDGET_ACCOUNTING
+            prior_calls = record.get("prior_calls_actual", 0)
+            if not isinstance(prior_calls, int) or isinstance(prior_calls, bool):
+                raise ValueError(
+                    f"malformed prior_calls_actual at progress line {line_number}"
+                )
+            if prior_calls < 0:
+                raise ValueError(
+                    f"negative prior_calls_actual at progress line {line_number}"
+                )
+            run_max = prior_calls if run_is_cumulative else 0
+
+        if not run_seen or "calls_actual" not in record:
+            continue
+        calls = record["calls_actual"]
+        if not isinstance(calls, int) or isinstance(calls, bool) or calls < 0:
+            raise ValueError(f"malformed calls_actual at progress line {line_number}")
+        run_max = max(run_max, calls)
+
+    finish_run()
+    return max(legacy_total, cumulative_max)
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -746,6 +816,7 @@ def build_manifest(
             "definition": "all rows with session_date_kst >= collection_start_kst_date are excluded",
         },
         "call_budget_declared": call_budget,
+        "call_budget_accounting": CALL_BUDGET_ACCOUNTING,
         "page_size": PAGE_SIZE,
         "rate_limit_control": {
             "mode": "response_header_adaptive",
@@ -851,6 +922,54 @@ class CollectionStats:
     stopped_reason: str | None = None
 
 
+def collection_stats_from_checkpoint(
+    *,
+    staging_dir: Path,
+    symbols: list[str],
+) -> CollectionStats:
+    """Seed a resumed summary from durable staging state, not process memory."""
+
+    checkpoint = Checkpoint(staging_dir / "state" / "checkpoint.json")
+    states = checkpoint.data.get("symbols", {})
+    if not isinstance(states, dict):
+        raise ValueError("checkpoint symbols must be an object")
+    unexpected_symbols = set(states) - set(symbols)
+    if unexpected_symbols:
+        raise ValueError(
+            "checkpoint contains symbols outside sealed universe: "
+            + ", ".join(sorted(unexpected_symbols))
+        )
+
+    symbols_done = 0
+    pages_staged = 0
+    rows_staged = 0
+    for symbol, state in states.items():
+        if not isinstance(state, dict):
+            raise ValueError(f"checkpoint state for {symbol} must be an object")
+        pages = state.get("pages", 0)
+        rows = state.get("rows_staged", 0)
+        if (
+            not isinstance(pages, int)
+            or isinstance(pages, bool)
+            or pages < 0
+            or not isinstance(rows, int)
+            or isinstance(rows, bool)
+            or rows < 0
+        ):
+            raise ValueError(f"checkpoint counters for {symbol} must be non-negative")
+        pages_staged += pages
+        rows_staged += rows
+        if state.get("done") is True:
+            symbols_done += 1
+
+    return CollectionStats(
+        symbols_total=len(symbols),
+        symbols_done=symbols_done,
+        pages_staged=pages_staged,
+        rows_staged=rows_staged,
+    )
+
+
 class LatestSummaryWriter:
     """Atomically expose a fresh, redacted staging-only progress snapshot."""
 
@@ -877,6 +996,8 @@ class LatestSummaryWriter:
             **asdict(self._stats),
             "calls_actual": self._transport.calls,
             "call_budget_declared": self._call_budget,
+            "call_budget_accounting": CALL_BUDGET_ACCOUNTING,
+            "call_budget_remaining": max(self._call_budget - self._transport.calls, 0),
             "token_issued_by_collector": False,
             "database_load_performed": False,
             "artifact_state": STAGING_CONTRACT,
@@ -985,7 +1106,6 @@ async def collect(
     for symbol in symbols:
         state = checkpoint.state_for(symbol)
         if state["done"]:
-            stats.symbols_done += 1
             continue
         while not state["done"]:
             await monitor.assert_healthy()
@@ -1175,8 +1295,10 @@ async def async_main(args: argparse.Namespace) -> int:
     initialize_staging(staging_dir=args.staging_dir, manifest=manifest)
     existing_manifest = json.loads((args.staging_dir / "manifest.json").read_text())
     batch_id = str(existing_manifest["batch_id"])
-    progress = ProgressLog(args.staging_dir / "events" / "progress.jsonl")
-    transport = CountingTransport()
+    progress_path = args.staging_dir / "events" / "progress.jsonl"
+    prior_calls_actual = cumulative_calls_from_progress(progress_path)
+    progress = ProgressLog(progress_path)
+    transport = CountingTransport(initial_calls=prior_calls_actual)
     shared_limiter = get_shared_rate_limiter()
     manager = TossOAuthTokenManager.from_settings(settings, rate_limiter=shared_limiter)
     token_provider = CachedTokenOnlyProvider(manager)
@@ -1201,7 +1323,10 @@ async def async_main(args: argparse.Namespace) -> int:
         SharedTossHealthMonitor(read_toss_api_error_signal),
         ProductionTossLogMonitor(args.production_log),
     )
-    stats = CollectionStats(symbols_total=len(symbols))
+    stats = collection_stats_from_checkpoint(
+        staging_dir=args.staging_dir,
+        symbols=symbols,
+    )
     transient_resumer = TransientResumeBackoff()
     summary_writer = LatestSummaryWriter(
         path=args.staging_dir / "events" / "latest_summary.json",
@@ -1215,6 +1340,9 @@ async def async_main(args: argparse.Namespace) -> int:
             "collection_started",
             scope="top-200 x 4.6y",
             call_budget_declared=args.call_budget,
+            call_accounting=CALL_BUDGET_ACCOUNTING,
+            prior_calls_actual=prior_calls_actual,
+            call_budget_remaining=max(args.call_budget - prior_calls_actual, 0),
             cap_auto_discovery="X-RateLimit-Limit response header",
             intraday_target_tps_max=INTRADAY_TARGET_TPS_MAX,
             intraday_production_chart_headroom_tps=INTRADAY_CHART_HEADROOM_TPS,
