@@ -8,7 +8,9 @@ aligns them.  It has no database, broker, scheduler, or order path.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -20,6 +22,33 @@ from research_contracts.dfc_2c_4h_v21 import (
 
 INTERVAL_MS = 4 * 60 * 60 * 1000
 REQUIRED_WARMUP_OBSERVATIONS = 504
+HARNESS_SOURCE_SHA256 = "89dc38effce02cff0b6f31f31f5de6aae7f60d972d6daeee034fc07dd3afdb7e"
+_SOURCE_DECLARATION = re.compile(r'HARNESS_SOURCE_SHA256 = "([0-9a-f]{64})"')
+
+
+class ForwardOnlyViolation(ValueError):
+    """Fail-closed timestamp violation with the shared #1774 reason code."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(f"{code}: {message}")
+
+
+def _assert_harness_source_frozen() -> None:
+    source = inspect.getsource(inspect.getmodule(_assert_harness_source_frozen))
+    matches = list(_SOURCE_DECLARATION.finditer(source))
+    if len(matches) != 1:
+        raise RuntimeError("harness source digest declaration count must equal one")
+    declared = matches[0].group(1)
+    normalized = source[: matches[0].start(1)] + "0" * 64 + source[matches[0].end(1) :]
+    actual = hashlib.sha256(normalized.encode()).hexdigest()
+    if declared != actual:
+        raise RuntimeError(
+            f"DFC v2.1 harness source hash mismatch: declared={declared}, actual={actual}"
+        )
+
+
+_assert_harness_source_frozen()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +96,50 @@ def assert_forward_only(epoch_starts_ms: Sequence[int], prior_windows: Mapping[i
             raise ValueError("every epoch requires exactly 504 prior observations")
         if any(previous >= epoch for previous in prior):
             raise ValueError("prior window contains current or future epoch")
+
+
+def _actual_candle_value(candle: EvidenceCandle, *, mapping_key: str, sequence_index: int) -> int:
+    """Read timestamps from the raw Binance candle payload, never the manifest."""
+    payload = candle.payload
+    if isinstance(payload, Mapping):
+        value = payload.get(mapping_key)
+    else:
+        value = payload[sequence_index]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"raw candle payload lacks numeric {mapping_key}")
+    return int(value)
+
+
+def assert_signal_execution_forward_only(
+    signal_bar: EvidenceCandle,
+    execution_bar: EvidenceCandle,
+    *,
+    declared_signal_close_time_ms: int,
+) -> None:
+    """Compare actual raw candle timestamps and fail closed on overlap.
+
+    Binance kline arrays use index 0 for open time and index 6 for close time.
+    Mapping payloads may use the corresponding explicit ``*_time_ms`` keys.
+    """
+    actual_signal_close = _actual_candle_value(
+        signal_bar, mapping_key="close_time_ms", sequence_index=6
+    )
+    actual_signal_end = _actual_candle_value(
+        signal_bar, mapping_key="close_time_ms", sequence_index=6
+    )
+    if actual_signal_close != declared_signal_close_time_ms or actual_signal_end != signal_bar.epoch_end_ms:
+        raise ForwardOnlyViolation(
+            "SIGNAL_BAR_CLOSE_MISMATCH",
+            "declared/manifest signal close does not match the raw signal candle close_time",
+        )
+    actual_execution_start = _actual_candle_value(
+        execution_bar, mapping_key="open_time_ms", sequence_index=0
+    )
+    if actual_execution_start < actual_signal_close:
+        raise ForwardOnlyViolation(
+            "NEXT_BAR_OVERLAPS_SIGNAL_BAR",
+            "execution candle starts before the raw signal candle closes",
+        )
 
 
 def build_epoch_manifest(

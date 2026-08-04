@@ -30,7 +30,8 @@ __all__ = [
 # The literal is replaced by the source digest itself.  The verifier below
 # hashes the source with this one literal normalized, so the digest is not a
 # circular input.  Exactly one declaration is required.
-MODULE_SOURCE_SHA256: Final = "1c138bb4e4898c246731cf2e3e1b35035a638b87c8f12361e7dff9000200795b"
+MODULE_SOURCE_SHA256: Final = "003b1fb73aa0b8b236714f5bc6ef02e8075558dfad54cfd496c35986121c2d08"
+HARNESS_SOURCE_SHA256: Final = "0000000000000000000000000000000000000000000000000000000000000000"
 _SOURCE_DECLARATION = re.compile(
     r'MODULE_SOURCE_SHA256: Final = "([0-9a-f]{64})"'
 )
@@ -253,7 +254,7 @@ def contract_as_machine_data() -> dict[str, Any]:
         "basket": {"candidate": "any", "winner": "largest abs(C), ties by canonical symbol", "maximum_events_per_epoch": 1},
         "estimand": {"name": "matched_selection_absolute_log_return_delta", "outcome": "abs(log(close[e+4h]/close[e])) * 10000", "candidate_term": "mean outcome of largest-abs(C) winner on candidate epochs", "control_term": "mean outcome of largest-abs(C) winner on non-candidate epochs", "control_choice": "A", "selection_symmetric": True, "pnl_claim": False},
         "adjudication": B7_RULE,
-        "implementation": {"module": "research_contracts.dfc_2c_4h_v21", "algorithm_version": "dfc-2c-4h-v2.1-algorithm.v1", "module_source_sha256": MODULE_SOURCE_SHA256, "io": "none", "enforcement": "import-time source digest; edit causes RuntimeError"},
+        "implementation": {"module": "research_contracts.dfc_2c_4h_v21", "algorithm_version": "dfc-2c-4h-v2.1-algorithm.v1", "module_source_sha256": MODULE_SOURCE_SHA256, "harness_source_sha256": HARNESS_SOURCE_SHA256, "io": "none", "enforcement": "import-time source digest for contract and harness; edit causes RuntimeError"},
         "harness": {"module": "research_contracts.dfc_2c_4h_v21_harness", "read_only": True, "alignment": "UTC 4h inner join", "warmup": "504 prior observations plus current epoch", "manifest_validation": "every epoch, fail-closed", "forward_only": True, "raw_payload_sha256": True},
         "promotion_budget": {"backtest_runs": 1, "orders": 0, "demo": 0, "account": 0, "automatic_promotion": False},
     }

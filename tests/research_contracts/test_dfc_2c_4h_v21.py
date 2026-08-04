@@ -12,6 +12,7 @@ from research_contracts import dfc_2c_4h_v21 as contract
 from research_contracts.dfc_2c_4h_v21_harness import (
     EvidenceCandle,
     assert_forward_only,
+    assert_signal_execution_forward_only,
     inner_align_4h,
     raw_payload_sha256,
     validate_and_sort_candles,
@@ -111,6 +112,26 @@ def test_harness_hashes_validates_aligns_and_rejects_future_windows() -> None:
     assert validate_and_sort_candles([left]) == (left,)
     with pytest.raises(ValueError, match="future"):
         assert_forward_only([100], {100: tuple(range(252)) + (100,) + tuple(range(252, 503))})
+
+
+def test_harness_blocks_signal_close_execution_overlap_from_raw_payload_times() -> None:
+    signal = EvidenceCandle(
+        "AAAUSDT", "kline", 0, 14_400_000,
+        (0, 0, 0, 0, 0, 0, 14_400_000), {},
+    )
+    execution = EvidenceCandle(
+        "AAAUSDT", "kline", 10_800_000, 25_200_000,
+        (10_800_000, 0, 0, 0, 0, 0, 25_200_000), {},
+    )
+    with pytest.raises(ValueError, match="NEXT_BAR_OVERLAPS_SIGNAL_BAR"):
+        assert_signal_execution_forward_only(
+            signal, execution, declared_signal_close_time_ms=14_400_000
+        )
+
+    with pytest.raises(ValueError, match="SIGNAL_BAR_CLOSE_MISMATCH"):
+        assert_signal_execution_forward_only(
+            signal, execution, declared_signal_close_time_ms=14_399_999
+        )
 
 
 def test_contract_remains_offline_only() -> None:
