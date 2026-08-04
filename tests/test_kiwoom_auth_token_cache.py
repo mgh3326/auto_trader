@@ -83,7 +83,7 @@ async def test_scoped_redis_env_does_not_import_global_settings(
     monkeypatch.delenv("REDIS_SOCKET_CONNECT_TIMEOUT", raising=False)
     monkeypatch.setattr(auth_module.redis, "from_url", from_url)
     monkeypatch.setattr(auth_module, "_redis_client", None)
-    sys.modules.pop("app.core.config", None)
+    monkeypatch.delitem(sys.modules, "app.core.config", raising=False)
 
     client = await auth_module._get_redis_client()
 

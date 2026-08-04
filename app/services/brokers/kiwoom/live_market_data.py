@@ -461,9 +461,7 @@ class KiwoomLiveReadOnlyClient:
                 "Kiwoom live read-only scoped config missing: " + ", ".join(missing)
             )
         return cls(
-            base_url=str(os.getenv("KIWOOM_LIVE_BASE_URL", LIVE_BASE_URL)).rstrip(
-                "/"
-            ),
+            base_url=str(os.getenv("KIWOOM_LIVE_BASE_URL", LIVE_BASE_URL)).rstrip("/"),
             app_key=app_key,
             app_secret=app_secret,
             marketdata_enabled=True,

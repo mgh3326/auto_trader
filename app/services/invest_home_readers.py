@@ -28,6 +28,7 @@ from app.services.brokers.kis.account import (
     extract_domestic_cash_summary_from_integrated_margin,
 )
 from app.services.brokers.kis.base import BaseKISClient
+from app.services.brokers.kis.base import settings as kis_base_settings
 from app.services.brokers.upbit.client import (
     fetch_multiple_current_prices,
     fetch_my_coins,
@@ -965,10 +966,12 @@ class SafeKISMockClient(BaseKISClient):
     """
 
     def __init__(self) -> None:
-        from app.core.config import settings as _settings
         from app.services.redis_token_manager import get_kis_mock_token_manager
 
-        self._mock_settings = _KISMockSettingsProxy(_settings)
+        # Use the same canonical Settings instance captured by BaseKISClient.
+        # A late app.core.config re-import can otherwise split equal VTS
+        # credential scopes across separate process-local token managers.
+        self._mock_settings = _KISMockSettingsProxy(kis_base_settings)
         # Call super().__init__() — since _settings property is overridden,
         # _hdr_base will use mock app key/secret automatically.
         super().__init__()
