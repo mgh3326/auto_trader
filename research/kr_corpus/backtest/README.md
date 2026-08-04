@@ -23,13 +23,21 @@ injection. The approved literals are:
 * `43bp`: fee 3bp + transaction tax 20bp + slippage 10bp per side.
 * `83bp`: fee 3bp + transaction tax 20bp + slippage 30bp per side.
 
-The real-data runner verifies selected main-snapshot parquet bytes against
-`checksums.sha256`, verifies the signed XKRX session reference in
-`preflight.json`, refuses holdout paths/dates, and writes canonical
-`honest_trial.v3` evidence only after closed-trade statistics exist. D+5 is
-accepted only when each symbol's t+1…t+5 bars exactly match that market-session
-sequence; calendar-day gap thresholds are not used. Evidence records selected
-symbol, bar, and year coverage so partition loss is reviewable:
+The real-data runner accepts only the reviewed frozen main snapshot: source code
+pins both its `checksums.sha256` and `manifest.json` SHA-256 digests. It rejects
+duplicate or path-ambiguous checksum rows, verifies
+`manifest.checksums_sha256`, cross-checks the XKRX session reference in
+`preflight.json` against the pinned `exchange_calendars` XKRX calendar, verifies
+selected main-snapshot parquet bytes, refuses holdout paths/dates, and writes
+canonical `honest_trial.v3` evidence only after closed-trade statistics exist.
+D+5 is accepted only when each symbol's t+1…t+5 bars exactly match that
+market-session sequence; calendar-day gap thresholds are not used. Evidence
+records selected symbol, bar, and year coverage so partition loss is reviewable.
+
+The code-pinned digest is the trust root, not a detached artifact signature. A
+future snapshot therefore requires a reviewed source update with its run ID and
+both digest literals. A party able to replace the executable source/build can
+also replace that root; this loader does not claim to defend that boundary.
 
 ```bash
 uv run python scripts/run_kr_stageb.py \
