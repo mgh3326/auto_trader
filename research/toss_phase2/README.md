@@ -47,3 +47,8 @@ documented chart cap as a source constant:
   only five consecutive chart 429s stop the collector. New shared 429 markers
   are likewise non-fatal, while 401 and other upstream errors remain
   fail-closed.
+- A missing shared cached token or a one-off HTTP transport/timeout failure
+  retries the same checkpoint cursor with jittered 1 → 2 → 4 → 8 second
+  waits. This retry path still only reads the shared token cache, never issues
+  OAuth, and stops fail-closed on five consecutive failures. The staging
+  `latest_summary.json` is atomically refreshed while the collector runs.

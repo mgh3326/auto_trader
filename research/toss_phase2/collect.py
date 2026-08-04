@@ -23,6 +23,7 @@ import os
 import random
 import re
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
 from datetime import time as local_time
@@ -48,6 +49,8 @@ AFTER_CLOSE_TARGET_TPS_MIN = 3.0
 AFTER_CLOSE_TARGET_TPS_MAX = 4.0
 LOW_REMAINING_FRACTION = 0.4
 CONSECUTIVE_429_STOP_AT = 5
+CONSECUTIVE_TRANSIENT_RESUME_STOP_AT = 5
+SUMMARY_UPDATE_INTERVAL_SECONDS = 60.0
 DEFAULT_SHARED_REDIS_URL = "redis://127.0.0.1:6379/0"
 _SETTINGS_PLACEHOLDERS = {
     "KIS_APP_KEY": "toss-phase2-unused",
@@ -63,6 +66,55 @@ _SETTINGS_PLACEHOLDERS = {
 
 class CollectionStopped(RuntimeError):
     """A deliberate, fail-closed stop that leaves staging resumable."""
+
+
+def _transient_resume_reason(exc: Exception) -> str | None:
+    """Classify only failures safe to retry without issuing an OAuth token."""
+
+    if isinstance(exc, httpx.TransportError):
+        return "httpx_transport_error"
+    if isinstance(exc, CollectionStopped) and str(exc).startswith(
+        "shared_toss_token_cache_miss"
+    ):
+        return "shared_toss_token_cache_miss"
+    return None
+
+
+class TransientResumeBackoff:
+    """Bounded retry path for a cache gap or a one-off transport failure.
+
+    It deliberately excludes every other ``CollectionStopped`` reason, 401,
+    and 429.  Those retain their specific fail-closed or header-driven paths.
+    """
+
+    def __init__(
+        self,
+        *,
+        sleep: Any = asyncio.sleep,
+        jitter_fn: Any = random.uniform,
+    ) -> None:
+        self._sleep = sleep
+        self._jitter = jitter_fn
+        self._consecutive = 0
+
+    @property
+    def consecutive(self) -> int:
+        return self._consecutive
+
+    def reset(self) -> None:
+        self._consecutive = 0
+
+    async def backoff(self, *, reason: str) -> tuple[int, float]:
+        self._consecutive += 1
+        if self._consecutive >= CONSECUTIVE_TRANSIENT_RESUME_STOP_AT:
+            raise CollectionStopped(
+                "transient_resume_exhausted:"
+                f"reason={reason}:stop_at={CONSECUTIVE_TRANSIENT_RESUME_STOP_AT}"
+            )
+        exponential = min(2.0 ** (self._consecutive - 1), 16.0)
+        delay_seconds = exponential + self._jitter(0.0, exponential)
+        await self._sleep(delay_seconds)
+        return self._consecutive, delay_seconds
 
 
 class CachedTokenProvider(Protocol):
@@ -713,6 +765,13 @@ def build_manifest(
                 "exponential_backoff_with_jitter": True,
                 "consecutive_stop_at": CONSECUTIVE_429_STOP_AT,
             },
+            "on_isolated_cache_or_transport_failure": {
+                "same_checkpoint_cursor_retry": True,
+                "shared_cache_only_no_token_issue": True,
+                "exponential_backoff_seconds": [1, 2, 4, 8],
+                "jitter": True,
+                "consecutive_stop_at": CONSECUTIVE_TRANSIENT_RESUME_STOP_AT,
+            },
         },
         "value_semantics": VALUE_SEMANTICS,
         "padding_contract": "is_padding=true iff provider volume is zero; not coverage missing",
@@ -787,7 +846,119 @@ class CollectionStats:
     http_429: int = 0
     chart_rate_limit_cap: int | None = None
     rate_limit_backoffs: int = 0
+    transient_resume_failures: int = 0
+    transient_resume_backoffs: int = 0
     stopped_reason: str | None = None
+
+
+class LatestSummaryWriter:
+    """Atomically expose a fresh, redacted staging-only progress snapshot."""
+
+    def __init__(
+        self,
+        *,
+        path: Path,
+        stats: CollectionStats,
+        transport: CountingTransport,
+        call_budget: int,
+        monotonic_fn: Any = time.monotonic,
+        now_kst_fn: Any = now_kst,
+    ) -> None:
+        self._path = path
+        self._stats = stats
+        self._transport = transport
+        self._call_budget = call_budget
+        self._monotonic = monotonic_fn
+        self._now_kst = now_kst_fn
+        self._last_write_at: float | None = None
+
+    def _payload(self, *, collector_state: str) -> dict[str, Any]:
+        return {
+            **asdict(self._stats),
+            "calls_actual": self._transport.calls,
+            "call_budget_declared": self._call_budget,
+            "token_issued_by_collector": False,
+            "database_load_performed": False,
+            "artifact_state": STAGING_CONTRACT,
+            "collector_state": collector_state,
+            "updated_at_kst": self._now_kst().isoformat(),
+        }
+
+    def write(self, *, collector_state: str) -> dict[str, Any]:
+        payload = self._payload(collector_state=collector_state)
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, self._path)
+        self._last_write_at = self._monotonic()
+        return payload
+
+    def maybe_write(self) -> None:
+        if (
+            self._last_write_at is None
+            or self._monotonic() - self._last_write_at
+            >= SUMMARY_UPDATE_INTERVAL_SECONDS
+        ):
+            self.write(collector_state="RUNNING")
+
+
+async def _backoff_transient_failure(
+    *,
+    exc: Exception,
+    transient_resumer: TransientResumeBackoff,
+    progress: ProgressLog,
+    stats: CollectionStats,
+    calls_actual: int,
+    on_progress: Callable[[], None] | None,
+) -> bool:
+    reason = _transient_resume_reason(exc)
+    if reason is None:
+        return False
+    stats.transient_resume_failures += 1
+    consecutive, delay_seconds = await transient_resumer.backoff(reason=reason)
+    stats.transient_resume_backoffs += 1
+    progress.write(
+        "transient_resume_backoff",
+        reason=reason,
+        consecutive_transient_failures=consecutive,
+        delay_seconds=delay_seconds,
+        calls_actual=calls_actual,
+    )
+    if on_progress is not None:
+        on_progress()
+    return True
+
+
+async def _preflight_cached_token(
+    *,
+    token_provider: CachedTokenProvider,
+    transient_resumer: TransientResumeBackoff,
+    progress: ProgressLog,
+    stats: CollectionStats,
+    transport: CountingTransport,
+    on_progress: Callable[[], None] | None,
+) -> None:
+    """Wait through a short shared-cache gap without ever issuing OAuth."""
+
+    while True:
+        try:
+            await token_provider.get_access_token()
+        except Exception as exc:  # noqa: BLE001
+            if await _backoff_transient_failure(
+                exc=exc,
+                transient_resumer=transient_resumer,
+                progress=progress,
+                stats=stats,
+                calls_actual=transport.calls,
+                on_progress=on_progress,
+            ):
+                continue
+            raise
+        transient_resumer.reset()
+        return
 
 
 async def collect(
@@ -805,8 +976,11 @@ async def collect(
     official_nxt_launch_date: date | None,
     progress: ProgressLog,
     stats: CollectionStats,
+    transient_resumer: TransientResumeBackoff | None = None,
+    on_progress: Callable[[], None] | None = None,
 ) -> CollectionStats:
     checkpoint = Checkpoint(staging_dir / "state" / "checkpoint.json")
+    transient_resumer = transient_resumer or TransientResumeBackoff()
 
     for symbol in symbols:
         state = checkpoint.state_for(symbol)
@@ -850,11 +1024,22 @@ async def collect(
                     # Do not advance the checkpoint.  Retrying the same cursor
                     # is safe because no Parquet page has been written for it.
                     continue
+                if await _backoff_transient_failure(
+                    exc=exc,
+                    transient_resumer=transient_resumer,
+                    progress=progress,
+                    stats=stats,
+                    calls_actual=transport.calls,
+                    on_progress=on_progress,
+                ):
+                    # The checkpoint deliberately remains on the same cursor.
+                    continue
                 raise CollectionStopped(
                     f"toss_request_failed:{type(exc).__name__}:status={status}"
                 ) from exc
 
             chart_pacer.ensure_cap_discovered()
+            transient_resumer.reset()
             if stats.chart_rate_limit_cap != chart_pacer.cap:
                 stats.chart_rate_limit_cap = chart_pacer.cap
                 progress.write(
@@ -912,6 +1097,8 @@ async def collect(
                 rate_limit_reset_seconds=chart_pacer.reset_seconds,
                 target_tps=chart_pacer.target_tps(),
             )
+            if on_progress is not None:
+                on_progress()
             await monitor.assert_healthy()
     return stats
 
@@ -992,11 +1179,12 @@ async def async_main(args: argparse.Namespace) -> int:
     transport = CountingTransport()
     shared_limiter = get_shared_rate_limiter()
     manager = TossOAuthTokenManager.from_settings(settings, rate_limiter=shared_limiter)
+    token_provider = CachedTokenOnlyProvider(manager)
     chart_pacer = HeaderAdaptiveChartRateLimiter(
         shared_limiter, TossApiGroup.MARKET_DATA_CHART
     )
     client = TossReadClient(
-        token_manager=CachedTokenOnlyProvider(manager),
+        token_manager=token_provider,
         base_url=resolve_toss_base_url(
             getattr(settings, "toss_api_base_url", None), DEFAULT_TOSS_BASE_URL
         ),
@@ -1014,11 +1202,15 @@ async def async_main(args: argparse.Namespace) -> int:
         ProductionTossLogMonitor(args.production_log),
     )
     stats = CollectionStats(symbols_total=len(symbols))
+    transient_resumer = TransientResumeBackoff()
+    summary_writer = LatestSummaryWriter(
+        path=args.staging_dir / "events" / "latest_summary.json",
+        stats=stats,
+        transport=transport,
+        call_budget=args.call_budget,
+    )
     try:
         await monitor.start()
-        # This preflight can only hit shared Redis.  It proves the first request
-        # cannot start an OAuth issuance; no Toss HTTP is sent here.
-        await CachedTokenOnlyProvider(manager).get_access_token()
         progress.write(
             "collection_started",
             scope="top-200 x 4.6y",
@@ -1041,6 +1233,17 @@ async def async_main(args: argparse.Namespace) -> int:
             settings_placeholders=sorted(_SETTINGS_PLACEHOLDERS),
             production_logs=[str(path) for path in args.production_log],
         )
+        summary_writer.write(collector_state="RUNNING")
+        # This preflight can only hit shared Redis.  A short cache gap retries
+        # the exact same cache lookup and never starts an OAuth issuance.
+        await _preflight_cached_token(
+            token_provider=token_provider,
+            transient_resumer=transient_resumer,
+            progress=progress,
+            stats=stats,
+            transport=transport,
+            on_progress=summary_writer.maybe_write,
+        )
         stats = await collect(
             client=client,
             transport=transport,
@@ -1055,25 +1258,26 @@ async def async_main(args: argparse.Namespace) -> int:
             official_nxt_launch_date=args.official_nxt_launch_date,
             progress=progress,
             stats=stats,
+            transient_resumer=transient_resumer,
+            on_progress=summary_writer.maybe_write,
         )
     except CollectionStopped as exc:
         stats.stopped_reason = str(exc)
         progress.write(
             "collection_stopped", reason=str(exc), calls_actual=transport.calls
         )
+    except Exception as exc:  # noqa: BLE001
+        stats.stopped_reason = f"unexpected:{type(exc).__name__}:{exc}"
+        progress.write(
+            "collection_stopped",
+            reason=stats.stopped_reason,
+            calls_actual=transport.calls,
+        )
+        raise
     finally:
         await client.aclose()
-        summary = {
-            **asdict(stats),
-            "calls_actual": transport.calls,
-            "call_budget_declared": args.call_budget,
-            "token_issued_by_collector": False,
-            "database_load_performed": False,
-            "artifact_state": STAGING_CONTRACT,
-        }
-        (args.staging_dir / "events" / "latest_summary.json").write_text(
-            json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
+        summary = summary_writer.write(
+            collector_state=("STOPPED" if stats.stopped_reason else "COMPLETED")
         )
         progress.close()
     print(json.dumps(summary, ensure_ascii=False))
