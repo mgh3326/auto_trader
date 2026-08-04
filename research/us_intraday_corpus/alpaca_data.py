@@ -288,15 +288,16 @@ class AlpacaDataClient:
     def _get(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
         host = assert_data_host(url)
         CONTACTED_HOSTS.add(host)
-        # Record EVERY request, not just the first. Recording only on first
-        # sight preserved the host set but froze `requests_observed` at 1,
-        # which made "host and request evidence preserved" an overstatement.
-        record_host_evidence(host)
 
         backoff = 1.0
         for _attempt in range(8):
             self.limiter.wait()
             self.counter.spend()
+            # Recorded INSIDE the retry loop, immediately before each HTTP
+            # attempt. Recording once per _get() call counted a 429-then-success
+            # (two actual HTTP attempts) as a single request, so the sidecar was
+            # not a record of all requests.
+            record_host_evidence(host)
             response = self._session.get(url, params=params, timeout=30)
             if response.status_code == 429:
                 self.counter.rate_429 += 1

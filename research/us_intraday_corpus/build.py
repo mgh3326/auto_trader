@@ -88,6 +88,35 @@ class PhaseStats:
         }
 
 
+class LegacyResumeStateError(RuntimeError):
+    """Raised when resume markers predate the current schema.
+
+    Markers written before `exploration_symbols` existed record only the
+    any-window symbol list. Treating that as the exploration list -- which the
+    previous fallback did -- makes a resumed run publish 500 exploration
+    symbols / 0 empty, contradicting the sealed manifest's 499 / PSKY=1.
+
+    Failing closed is the honest option: silently reproducing the *wrong*
+    contract is worse than refusing to reproduce it. The operator can migrate
+    or clear the markers deliberately.
+    """
+
+
+def _require_current_marker_schema(marker_data: dict[str, Any], path) -> None:
+    """Reject legacy resume markers instead of guessing their exploration set."""
+    if "exploration_symbols" not in marker_data:
+        raise LegacyResumeStateError(
+            f"resume marker {path} predates the exploration_symbols schema. "
+            "Its 'symbols' field is ANY-WINDOW data and must not be replayed as "
+            "exploration coverage -- doing so reports holdout-only symbols "
+            "(e.g. PSKY) as exploration symbols and contradicts the sealed "
+            f"manifest. Remove {path.parent} to re-collect from scratch. "
+            "No automatic migration is offered: deriving the exploration set "
+            "for a holdout-bearing unit would require reading sealed holdout "
+            "parquet, which is forbidden."
+        )
+
+
 def load_universe() -> list[str]:
     """Universe symbols, with the §1 sha pinned."""
     from . import hashing
@@ -250,21 +279,14 @@ def run_phase(
                 # "no_bars_in_any_year" gap for every symbol it skipped.
                 try:
                     _m = json.loads(marker.read_text(encoding="utf-8"))
-                    seen_any_window.update(_m.get("symbols", []))
-                    # Markers written before this field existed carry no
-                    # exploration list; fall back to the any-window set rather
-                    # than silently reporting zero exploration coverage.
-                    seen_exploration.update(
-                        _m.get("exploration_symbols", _m.get("symbols", []))
-                    )
-                except (json.JSONDecodeError, OSError):
-                    stats.gaps.append(
-                        {
-                            "symbol": f"batch{batch_id}",
-                            "timeframe": label,
-                            "reason": f"{year}: unreadable resume marker {marker.name}",
-                        }
-                    )
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise LegacyResumeStateError(
+                        f"resume marker {marker} is unreadable ({exc}). "
+                        "Refusing to resume from a state that cannot be replayed."
+                    ) from exc
+                _require_current_marker_schema(_m, marker)
+                seen_any_window.update(_m.get("symbols", []))
+                seen_exploration.update(_m.get("exploration_symbols", []))
                 stats.units_resumed += 1
                 continue
 
@@ -376,7 +398,11 @@ def run_phase(
     return stats
 
 
-def completeness_assessment(chains: list[dict[str, Any]]) -> dict[str, Any]:
+def completeness_assessment(
+    chains: list[dict[str, Any]],
+    units_attempted: int | None = None,
+    units_resumed: int = 0,
+) -> dict[str, Any]:
     """Derive the page-completeness claim from the chains themselves.
 
     Emitted by every run so the shipped artifact contract is reproducible from
@@ -385,20 +411,66 @@ def completeness_assessment(chains: list[dict[str, Any]]) -> dict[str, Any]:
     arguments are recorded WITH their limitations -- argument B in particular
     is unsound because annual chains are independent, so a chain truncated in
     one year says nothing about another year completing normally.
+
+    "Every RECORDED chain terminated" is not sufficient, and reading only the
+    recorded chains was a real defect: a request that raises before its first
+    yield produces a gap but NO chain record, so the evidence set silently
+    shrinks to the successes and the claim reads VERIFIED. Absent evidence is
+    not evidence of completeness. VERIFIED therefore additionally requires that
+    the number of recorded chains match the number of units attempted, and that
+    no unit was resumed from a marker (a skipped unit carries no chain evidence
+    at all).
     """
     incomplete = [c for c in chains if not c.get("complete")]
-    if chains and not incomplete:
+    missing = (
+        max(0, units_attempted - len(chains)) if units_attempted is not None else None
+    )
+    unaccounted = bool(missing) or units_resumed > 0
+
+    if chains and not incomplete and not unaccounted and units_attempted is not None:
         return {
             "PAGE_COMPLETENESS": "VERIFIED",
-            "basis": "every recorded chain terminated on a null next_page_token",
+            "basis": (
+                "every attempted unit recorded a chain and every chain "
+                "terminated on a null next_page_token"
+            ),
             "chains_recorded": len(chains),
             "chains_incomplete": 0,
+            "units_attempted": units_attempted,
+            "chains_missing": 0,
+            "units_resumed": units_resumed,
         }
+    reasons = []
+    if not chains:
+        reasons.append("no chain was recorded at all")
+    if incomplete:
+        reasons.append(f"{len(incomplete)} chain(s) did not terminate on a null token")
+    if missing:
+        reasons.append(
+            f"{missing} attempted unit(s) recorded NO chain -- typically a request "
+            "that raised before its first yield, which leaves a gap but no "
+            "terminal-token evidence"
+        )
+    if units_resumed:
+        reasons.append(
+            f"{units_resumed} unit(s) were resumed from markers and carry no chain "
+            "evidence for this run"
+        )
+    if units_attempted is None:
+        reasons.append(
+            "units_attempted was not supplied, so recorded chains cannot be "
+            "reconciled against attempted units"
+        )
+
     return {
         "PAGE_COMPLETENESS": "UNVERIFIED",
         "completeness_resolution": "WEAKENED_CLAIM",
+        "unverified_because": reasons,
         "chains_recorded": len(chains),
         "chains_incomplete": len(incomplete),
+        "units_attempted": units_attempted,
+        "chains_missing": missing,
+        "units_resumed": units_resumed,
         "metric_status": (
             "MIS_INSTRUMENTED_IN_THIS_RUN"
             if chains and len(incomplete) == len(chains)
@@ -497,7 +569,11 @@ def measure(client: alpaca_data.AlpacaDataClient) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="build us-intraday-corpus-v1")
     parser.add_argument("--probe-only", action="store_true")
-    parser.add_argument("--skip-1m", action="store_true")
+    parser.add_argument(
+        "--skip-1m",
+        action="store_true",
+        help="legacy: only meaningful with --phase both; suppresses the 1Min phase",
+    )
     # Scope C (operator decision, 2026-08-03): 1Min top-500 only. 1Hour is a
     # recorded data gap, so the DEFAULT run must not silently collect it --
     # the declared scope and the default code path have to agree.
@@ -513,6 +589,28 @@ def main(argv: list[str] | None = None) -> int:
         help="explicitly opt out of scope C to collect 1Hour (see config.HOUR_DATA_GAP)",
     )
     args = parser.parse_args(argv)
+
+    # Resolve which phases will actually run, then refuse an empty selection.
+    # `--skip-1m` predates the scope-C default: with `--phase 1m` it suppresses
+    # the ONLY selected phase, and the run previously reached finalization with
+    # exit 0 and an empty phase list -- i.e. it could seal an empty corpus while
+    # looking successful. A false-green is the worst failure mode here, so the
+    # combination is rejected rather than silently reinterpreted.
+    selected = []
+    if args.phase in ("1h", "both"):
+        selected.append("1h")
+    if args.phase in ("1m", "both") and not args.skip_1m:
+        selected.append("1m")
+    if not selected:
+        print(
+            f"BLOCKED: --phase {args.phase} with --skip-1m selects no phase at all. "
+            "Refusing to run: this combination would reach finalization with an "
+            "empty phase list and could seal an empty corpus as a success. "
+            "Use --phase 1m (default) to collect 1Min, or "
+            "--phase 1h --override-scope-c to collect 1Hour deliberately.",
+            flush=True,
+        )
+        return 2
 
     if args.phase in ("1h", "both") and not args.override_scope_c:
         print(
@@ -551,6 +649,27 @@ def main(argv: list[str] | None = None) -> int:
     all_gaps: list[dict[str, Any]] = []
     all_chains: list[dict[str, Any]] = []
 
+    try:
+        return _collect_and_seal(
+            args, client, started, measurement, projection, phases, all_gaps, all_chains
+        )
+    except LegacyResumeStateError as exc:
+        # Surface the guard as a clean refusal rather than a traceback, so it is
+        # not mistaken for a crash that left partial state behind.
+        print(f"BLOCKED: {exc}", flush=True)
+        return 2
+
+
+def _collect_and_seal(
+    args,
+    client,
+    started: float,
+    measurement: dict[str, Any],
+    projection: dict[str, Any],
+    phases: list[dict[str, Any]],
+    all_gaps: list[dict[str, Any]],
+    all_chains: list[dict[str, Any]],
+) -> int:
     if args.phase in ("1h", "both"):
         stats_1h = run_phase(client, load_universe(), "1Hour", "1h", BATCH_1H)
         finalize.save_registry()
@@ -578,7 +697,30 @@ def main(argv: list[str] | None = None) -> int:
         all_gaps += stats_1m.gaps
         all_chains += stats_1m.page_chains
 
-    assessment = completeness_assessment(all_chains)
+    # Defence in depth against false-green. The CLI already rejects the empty
+    # flag combination; this catches any OTHER route to "sealed nothing"
+    # (a future flag, an early return, a phase that collected zero units).
+    if not phases:
+        print(
+            "BLOCKED: no phase produced results; refusing to finalize. "
+            "Sealing an empty corpus as a success is the failure mode this "
+            "guard exists to prevent.",
+            flush=True,
+        )
+        return 2
+    units = sum(p["units_done"] + p["units_resumed_from_marker"] for p in phases)
+    if units == 0:
+        print(
+            "BLOCKED: phases ran but completed zero units; refusing to finalize.",
+            flush=True,
+        )
+        return 2
+
+    attempted = sum(p["units_done"] for p in phases)
+    resumed = sum(p["units_resumed_from_marker"] for p in phases)
+    assessment = completeness_assessment(
+        all_chains, units_attempted=attempted, units_resumed=resumed
+    )
     labels.write_labelled_json(
         config.REPORTS_DIR / "page_chain_integrity.json",
         {

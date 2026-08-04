@@ -649,6 +649,54 @@ def test_holdout_only_symbol_is_not_counted_as_exploration_coverage(
     assert stats["zero_exploration_symbols"] == ["PSKY"]
 
 
+def test_legacy_resume_marker_is_refused_not_silently_reinterpreted(
+    artifact_root, monkeypatch
+):
+    """Legacy markers must fail closed rather than fake a reproduction.
+
+    Markers written before `exploration_symbols` existed hold only the
+    any-window list. The previous fallback replayed that as the exploration
+    set, so a resumed run reported 500 exploration / 0 empty against a sealed
+    manifest saying 499 / PSKY=1. Reproducing the WRONG contract silently is
+    worse than refusing to reproduce it.
+    """
+    monkeypatch.setattr(config, "START_DATE", _dt.date(2024, 1, 1))
+    monkeypatch.setattr(config, "CUTOFF_DATE", _dt.date(2024, 12, 31))
+
+    marker = build._marker("1m", 2024, 0)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"rows": 5, "symbols": ["PSKY"]}), encoding="utf-8")
+
+    with pytest.raises(build.LegacyResumeStateError, match="exploration_symbols"):
+        build.run_phase(_TwoPageClient(), ["PSKY"], "1Min", "1m", 1)
+
+    # A current-schema marker resumes normally.
+    marker.write_text(
+        json.dumps({"rows": 5, "symbols": ["PSKY"], "exploration_symbols": []}),
+        encoding="utf-8",
+    )
+    stats = build.run_phase(_TwoPageClient(), ["PSKY"], "1Min", "1m", 1)
+    assert stats.units_resumed == 1
+    assert stats.symbols_with_data == 0  # exploration set replayed as empty
+
+
+def test_skip_1m_with_default_phase_is_rejected_not_silently_empty(capsys):
+    """Regression: this combination could seal an empty corpus as a success.
+
+    Changing the default phase to 1m left the legacy `--skip-1m` flag
+    suppressing the ONLY selected phase, so the run reached finalization with
+    exit 0 and an empty phase list. A false-green is the worst failure mode in
+    this project, so the combination is refused outright.
+    """
+    assert build.main(["--skip-1m"]) == 2
+    out = capsys.readouterr().out
+    assert "selects no phase at all" in out
+    assert "empty corpus" in out
+
+    # Explicit 1m with skip is equally empty and equally refused.
+    assert build.main(["--phase", "1m", "--skip-1m"]) == 2
+
+
 def test_scope_c_is_the_default_and_1hour_needs_an_explicit_override(capsys):
     """The declared scope and the default code path must agree.
 
@@ -670,7 +718,60 @@ def test_completeness_assessment_is_emitted_from_code(artifact_root):
     assert "WITHDRAWN" in out["substitute_arguments_assessed"]["B_stop_then_resume"]
 
     good = [{"complete": True, "termination": "null_next_token"}] * 3
-    assert build.completeness_assessment(good)["PAGE_COMPLETENESS"] == "VERIFIED"
+    assert (
+        build.completeness_assessment(good, units_attempted=3)["PAGE_COMPLETENESS"]
+        == "VERIFIED"
+    )
+    # Without a unit count the recorded chains cannot be reconciled against
+    # what was attempted, so the claim must not be VERIFIED.
+    assert build.completeness_assessment(good)["PAGE_COMPLETENESS"] == "UNVERIFIED"
+
+
+def test_attempted_unit_with_no_chain_record_forces_unverified():
+    """Regression: absent evidence was being read as evidence of completeness.
+
+    A request that raises before its first yield produces a gap but NO chain
+    record. Judging only the recorded chains meant the evidence set silently
+    shrank to the successes, and `completeness_assessment` returned VERIFIED
+    while an attempted chain had no terminal-token evidence at all.
+    """
+    one_good = [{"complete": True, "termination": "null_next_token"}]
+
+    out = build.completeness_assessment(one_good, units_attempted=2)
+    assert out["PAGE_COMPLETENESS"] == "UNVERIFIED"
+    assert out["chains_missing"] == 1
+    assert any("recorded NO chain" in r for r in out["unverified_because"])
+
+    # Resumed units carry no chain evidence for this run either.
+    resumed = build.completeness_assessment(
+        one_good, units_attempted=1, units_resumed=4
+    )
+    assert resumed["PAGE_COMPLETENESS"] == "UNVERIFIED"
+    assert any("resumed from markers" in r for r in resumed["unverified_because"])
+
+
+def test_run_phase_that_raises_before_first_yield_leaves_no_chain(artifact_root):
+    """Pins the shape of the defect end-to-end, not just the pure function."""
+
+    class _RaisesImmediately:
+        def __init__(self):
+            self.counter = alpaca_data.RequestCounter()
+
+        def iter_bars(self, symbols, timeframe, start, end):
+            raise RuntimeError("connection reset")
+            yield  # pragma: no cover
+
+    monkey = build.run_phase(_RaisesImmediately(), ["AAPL"], "1Min", "1m", 1)
+    assert monkey.gaps, "a failed unit must be recorded as an explicit gap"
+    assert monkey.page_chains == [], "no chain evidence exists for that unit"
+    # units_done stays 0 because the unit never completed; the assessment must
+    # not read the empty chain list as success.
+    assert (
+        build.completeness_assessment(monkey.page_chains, units_attempted=1)[
+            "PAGE_COMPLETENESS"
+        ]
+        == "UNVERIFIED"
+    )
 
 
 def test_old_snapshot_form_would_fail_the_regression_guard():
