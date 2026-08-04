@@ -19,6 +19,7 @@ from app.services.alpaca_paper_account_modes import (
     ALPACA_PAPER_LAB_ACCOUNT_MODE,
     normalize_alpaca_paper_account_mode,
     profile_for_account_mode,
+    validate_alpaca_paper_asset_class,
 )
 from app.services.brokers.alpaca.exceptions import (
     AlpacaPaperConfigurationError,
@@ -289,6 +290,7 @@ async def alpaca_paper_preview_order(
     tools.
     """
     selected = normalize_alpaca_paper_account_mode(account_mode)
+    validate_alpaca_paper_asset_class(selected, asset_class)
     validated = PreviewOrderInput(
         symbol=symbol,
         side=side,

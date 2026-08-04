@@ -8,6 +8,7 @@ Verifies that:
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, cast
 
 import pytest
@@ -203,6 +204,68 @@ class TestUsPaperProfile:
     def test_registers_us_paper_tools(self) -> None:
         mcp = _build_mcp(McpProfile.US_PAPER)
         assert _US_PAPER_TOOL_NAMES <= mcp.tools.keys()
+
+
+class TestAlpacaCleanProfile:
+    def test_is_closed_world_and_contains_only_clean_alpaca_tools(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "alpaca_paper_crypto_enabled", True)
+        mcp = _build_mcp(McpProfile.ALPACA_PAPER_CLEAN)
+
+        assert len(mcp.tools) == 13
+        assert set(mcp.tools) == (
+            ALPACA_PAPER_READONLY_TOOL_NAMES
+            | ALPACA_PAPER_PREVIEW_TOOL_NAMES
+            | {
+                "alpaca_paper_ledger_list_recent",
+                "alpaca_paper_ledger_get",
+                "alpaca_paper_ledger_get_by_correlation",
+                "alpaca_paper_roundtrip_report",
+                "alpaca_paper_execution_preflight_check",
+            }
+        )
+        assert "kis_mock_mirror_execute_report" not in mcp.tools
+        assert _ALL_ORDER_TOOL_NAMES.isdisjoint(mcp.tools)
+
+    def test_pins_account_mode_and_rejects_other_account(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "alpaca_paper_crypto_enabled", True)
+        mcp = _build_mcp(McpProfile.ALPACA_PAPER_CLEAN)
+        get_account = mcp.tools["alpaca_paper_get_account"]
+
+        assert (
+            inspect.signature(get_account).parameters["account_mode"].default
+            == "alpaca_paper_crypto"
+        )
+        with pytest.raises(ValueError, match="pinned to account_mode"):
+            import asyncio
+
+            asyncio.run(get_account(account_mode="alpaca_paper"))
+
+        preview = mcp.tools["alpaca_paper_preview_order"]
+        with pytest.raises(ValueError, match="supports crypto orders only"):
+            asyncio.run(
+                preview(
+                    symbol="AAPL",
+                    side="buy",
+                    type="limit",
+                    qty=1,
+                    limit_price=100,
+                )
+            )
+        with pytest.raises(ValueError, match="crypto symbol must be one of"):
+            asyncio.run(
+                preview(
+                    symbol="XRP/USD",
+                    side="buy",
+                    type="limit",
+                    qty=1,
+                    limit_price=1,
+                    asset_class="crypto",
+                )
+            )
 
 
 class TestDbPaperProfile:
@@ -419,6 +482,7 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     # Default-off profile: the direct registry exposes zero tools until the
     # dedicated feature flag is explicitly enabled.
     McpProfile.PAPER_EXECUTION: set(),
+    McpProfile.ALPACA_PAPER_CLEAN: set(),
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -469,6 +533,7 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.ACCOUNT_READ,
         McpProfile.TRADINGCODEX_EXECUTION,
         McpProfile.PAPER_EXECUTION,
+        McpProfile.ALPACA_PAPER_CLEAN,
     )
 ]
 

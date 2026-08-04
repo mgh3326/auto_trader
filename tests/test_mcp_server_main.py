@@ -147,6 +147,7 @@ def _load_main_module(
     account_read_profile = _FakeProfileMember("account_read")
     tradingcodex_execution_profile = _FakeProfileMember("tradingcodex_execution")
     paper_execution_profile = _FakeProfileMember("paper_execution")
+    alpaca_paper_clean_profile = _FakeProfileMember("alpaca-paper-clean")
     default_profile = _FakeProfileMember("default")
     kiwoom_profile = _FakeProfileMember("kiwoom")
     kiwoom_kr_profile = _FakeProfileMember("kiwoom_kr")
@@ -170,6 +171,7 @@ def _load_main_module(
         ACCOUNT_READ=account_read_profile,
         TRADINGCODEX_EXECUTION=tradingcodex_execution_profile,
         PAPER_EXECUTION=paper_execution_profile,
+        ALPACA_PAPER_CLEAN=alpaca_paper_clean_profile,
         DEFAULT=default_profile,
         KIWOOM=kiwoom_profile,
         KIWOOM_KR=kiwoom_kr_profile,

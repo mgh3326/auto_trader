@@ -11,6 +11,7 @@ from app.services.brokers.alpaca.endpoints import (
 from app.services.brokers.alpaca.exceptions import (
     AlpacaPaperConfigurationError,
     AlpacaPaperEndpointError,
+    AlpacaPaperIdentityMismatch,
     AlpacaPaperRequestError,
 )
 from app.services.brokers.alpaca.schemas import (
@@ -40,6 +41,18 @@ class AlpacaPaperBrokerService:
                 else AlpacaPaperSettings.from_app_settings(profile=profile)
             )
 
+        if (
+            profile == "clean"
+            or settings.expected_account_id_suffix is not None
+            or settings.expected_account_number_suffix is not None
+        ) and (
+            not settings.expected_account_id_suffix
+            or not settings.expected_account_number_suffix
+        ):
+            raise AlpacaPaperConfigurationError(
+                "clean Alpaca route requires expected account identity suffixes"
+            )
+
         if not settings.api_key or not settings.api_secret:
             raise AlpacaPaperConfigurationError(
                 "alpaca_paper_api_key and alpaca_paper_api_secret must both be set"
@@ -60,6 +73,8 @@ class AlpacaPaperBrokerService:
             )
 
         self._settings = settings
+        self._identity_verified = False
+        self._identity_check_in_progress = False
         self._transport: HTTPTransport = transport or HttpxTransport(
             base_url=base_url,
             api_key=settings.api_key,
@@ -72,6 +87,16 @@ class AlpacaPaperBrokerService:
         path: str,
         **kwargs: Any,
     ) -> Any:
+        skip_identity = bool(kwargs.pop("_skip_identity", False))
+        if (
+            not skip_identity
+            and not self._identity_verified
+            and (
+                self._settings.expected_account_id_suffix is not None
+                or self._settings.expected_account_number_suffix is not None
+            )
+        ):
+            await self._verify_physical_identity()
         try:
             response = await self._transport.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
@@ -87,6 +112,39 @@ class AlpacaPaperBrokerService:
             return None
 
         return response.json()
+
+    async def _verify_physical_identity(self) -> None:
+        """Bind configured credentials to the configured physical account.
+
+        The expected values are deployment configuration. They are deliberately
+        not derived from ``profile`` or from a crypto/equity label.
+        """
+        if self._identity_verified:
+            return
+        if self._identity_check_in_progress:
+            raise AlpacaPaperConfigurationError(
+                "Alpaca account identity check re-entered"
+            )
+        self._identity_check_in_progress = True
+        try:
+            data = await self._request("GET", "/v2/account", _skip_identity=True)
+            actual_id = str(data.get("id") or "").strip().lower()
+            actual_number = str(data.get("account_number") or "").strip().lower()
+            expected_id = (
+                str(self._settings.expected_account_id_suffix or "").strip().lower()
+            )
+            expected_number = (
+                str(self._settings.expected_account_number_suffix or "").strip().lower()
+            )
+            if not actual_id.endswith(expected_id) or not actual_number.endswith(
+                expected_number
+            ):
+                raise AlpacaPaperIdentityMismatch(
+                    "Alpaca account physical identity mismatch; refusing broker access"
+                )
+            self._identity_verified = True
+        finally:
+            self._identity_check_in_progress = False
 
     async def get_account(self) -> AccountSnapshot:
         data = await self._request("GET", "/v2/account")

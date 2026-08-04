@@ -310,6 +310,7 @@ def _make_row(**kwargs) -> Any:
         "record_kind": "execution",
         "broker": "alpaca",
         "account_mode": "alpaca_paper",
+        "strategy_key": None,
         "lifecycle_state": "previewed",
         "execution_symbol": "BTCUSD",
         "execution_venue": "alpaca_paper",

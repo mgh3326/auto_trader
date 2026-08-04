@@ -283,6 +283,7 @@ class ApprovalProvenance:
     candidate_uuid: uuid.UUID | None = None
     signal_symbol: str | None = None
     signal_venue: str | None = None
+    strategy_key: str | None = None
     workflow_stage: str | None = None
     purpose: str | None = None
     briefing_artifact_run_uuid: uuid.UUID | None = None
@@ -1173,6 +1174,7 @@ class AlpacaPaperLedgerService:
         return {
             "signal_symbol": prov.signal_symbol,
             "signal_venue": prov.signal_venue,
+            "strategy_key": prov.strategy_key,
             "workflow_stage": prov.workflow_stage,
             "purpose": prov.purpose,
             "briefing_artifact_run_uuid": prov.briefing_artifact_run_uuid,
@@ -1504,6 +1506,7 @@ class AlpacaPaperLedgerService:
             "validation_summary": source_row.validation_summary,
             "signal_symbol": source_row.signal_symbol,
             "signal_venue": source_row.signal_venue,
+            "strategy_key": source_row.strategy_key,
             "execution_asset_class": source_row.execution_asset_class,
             "workflow_stage": source_row.workflow_stage,
             "purpose": source_row.purpose,

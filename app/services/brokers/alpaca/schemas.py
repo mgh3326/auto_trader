@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 class AccountSnapshot(BaseModel):
     id: str
+    account_number: str | None = None
     buying_power: Decimal
     cash: Decimal
     portfolio_value: Decimal

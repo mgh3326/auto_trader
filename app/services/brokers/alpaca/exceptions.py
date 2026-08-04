@@ -6,6 +6,10 @@ class AlpacaPaperEndpointError(Exception):
     """Raised when a forbidden or non-paper endpoint is used as the trading base URL."""
 
 
+class AlpacaPaperIdentityMismatch(AlpacaPaperConfigurationError):
+    """Raised when clean-account credentials resolve to another Alpaca account."""
+
+
 class AlpacaPaperRequestError(Exception):
     """Raised when an HTTP request to the Alpaca paper API fails."""
 
