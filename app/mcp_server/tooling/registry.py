@@ -90,6 +90,8 @@ See app/mcp_server/profiles.py and docs in app/mcp_server/README.md.
 
 from __future__ import annotations
 
+import inspect
+from functools import wraps
 from typing import TYPE_CHECKING
 
 from app.core.config import settings
@@ -221,6 +223,55 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
 
 
+class _AccountPinnedMCP:
+    """Registration proxy that binds every registered tool to one account.
+
+    The clean Alpaca profile is a physical-account surface, so its tools must
+    not inherit the legacy ``account_mode='alpaca_paper'`` defaults.  Keeping
+    this at registration time also makes the binding apply uniformly to read,
+    preview, and ledger tools without changing their public direct-call APIs.
+    """
+
+    def __init__(self, mcp: FastMCP, account_mode: str) -> None:
+        self._mcp = mcp
+        self._account_mode = account_mode
+
+    def tool(self, *args, **kwargs):
+        register = self._mcp.tool(*args, **kwargs)
+
+        def decorate(function):
+            signature = inspect.signature(function)
+            account_parameter = signature.parameters.get("account_mode")
+            if account_parameter is None:
+                return register(function)
+
+            @wraps(function)
+            async def pinned(*call_args, **call_kwargs):
+                bound = signature.bind_partial(*call_args, **call_kwargs)
+                supplied = bound.arguments.get("account_mode")
+                if supplied is not None and supplied != self._account_mode:
+                    raise ValueError(
+                        "alpaca-paper-clean tools are pinned to "
+                        f"account_mode='{self._account_mode}'"
+                    )
+                bound.arguments["account_mode"] = self._account_mode
+                return await function(*bound.args, **bound.kwargs)
+
+            pinned.__signature__ = signature.replace(
+                parameters=[
+                    (
+                        parameter.replace(default=self._account_mode)
+                        if name == "account_mode"
+                        else parameter
+                    )
+                    for name, parameter in signature.parameters.items()
+                ]
+            )
+            return register(pinned)
+
+        return decorate
+
+
 def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -> None:
     """Register MCP tools according to the given profile.
 
@@ -273,15 +324,15 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         return
 
     if profile is McpProfile.ALPACA_PAPER_CLEAN:
-        # Default-disabled exact route. Even when enabled this preparation
-        # profile has no order mutation registrar; preview and reconciliation
-        # are separate operator approvals.
+        # Default-disabled exact route. This is a closed-world physical-account
+        # surface: only the clean account's read/preview/ledger tools are
+        # registered, and every one is pinned to its account mode.
         if settings.alpaca_paper_crypto_enabled:
-            register_alpaca_paper_tools(mcp)
-            register_alpaca_paper_preview_tools(mcp)
-            register_alpaca_paper_ledger_read_tools(mcp)
-        # Continue through the common read-only registration block. This route
-        # is not a crypto-purpose branch; it is a physical-account address.
+            clean_mcp = _AccountPinnedMCP(mcp, account_mode="alpaca_paper_crypto")
+            register_alpaca_paper_tools(clean_mcp)
+            register_alpaca_paper_preview_tools(clean_mcp)
+            register_alpaca_paper_ledger_read_tools(clean_mcp)
+        return
 
     if profile is McpProfile.KIWOOM_KR:
         # ROB-1173: constrain the entire profile before any shared registrar

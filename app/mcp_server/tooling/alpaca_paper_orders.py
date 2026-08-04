@@ -31,6 +31,7 @@ from app.services.alpaca_paper_account_modes import (
     ALPACA_PAPER_LAB_ACCOUNT_MODE,
     normalize_alpaca_paper_account_mode,
     profile_for_account_mode,
+    validate_alpaca_paper_asset_class,
 )
 from app.services.alpaca_paper_ledger_service import (
     KNOWN_OPEN_BROKER_STATUSES,
@@ -257,6 +258,7 @@ async def alpaca_paper_submit_order(
     fallback and this behaviour does not depend on the automated feature flag.
     """
     selected_account_mode = normalize_alpaca_paper_account_mode(account_mode)
+    validate_alpaca_paper_asset_class(selected_account_mode, asset_class)
     validated = PreviewOrderInput(
         symbol=symbol,
         side=side,

@@ -296,7 +296,12 @@ class TestRouteRequestRegisteredEveryProfile:
         [
             profile
             for profile in McpProfile
-            if profile not in (McpProfile.ACCOUNT_READ, McpProfile.PAPER_EXECUTION)
+            if profile
+            not in (
+                McpProfile.ACCOUNT_READ,
+                McpProfile.PAPER_EXECUTION,
+                McpProfile.ALPACA_PAPER_CLEAN,
+            )
         ],
     )
     def test_route_request_present(self, profile: McpProfile) -> None:

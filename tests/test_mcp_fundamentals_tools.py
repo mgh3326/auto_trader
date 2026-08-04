@@ -2128,6 +2128,8 @@ class TestGetFxRateToolRegistration:
     #
     # ROB-760 — account_read is a physical account-sync allowlist and must not
     # inherit fundamentals tools.
+    # ROB-1782 R2 — alpaca-paper-clean is a closed-world physical-account
+    # surface and must not inherit the common fundamentals block.
     @pytest.mark.parametrize(
         "profile",
         [
@@ -2138,6 +2140,7 @@ class TestGetFxRateToolRegistration:
                 McpProfile.SHADOW_REPLAY,
                 McpProfile.ACCOUNT_READ,
                 McpProfile.PAPER_EXECUTION,
+                McpProfile.ALPACA_PAPER_CLEAN,
             )
         ],
     )

@@ -44,6 +44,9 @@ def test_account_routing_tool_names_register():
 # ROB-760 — account_read is also a physical allowlist profile: it must expose
 # exactly the account-sync read surface pinned in tests/test_mcp_profiles.py,
 # without route/advisory tools.
+#
+# ROB-1782 R2 — alpaca-paper-clean is also a closed-world physical-account
+# surface; it contains only its pinned Alpaca read/preview/ledger tools.
 _READ_PROFILES = [
     p
     for p in McpProfile
@@ -52,6 +55,7 @@ _READ_PROFILES = [
         McpProfile.SHADOW_REPLAY,
         McpProfile.ACCOUNT_READ,
         McpProfile.PAPER_EXECUTION,
+        McpProfile.ALPACA_PAPER_CLEAN,
     )
 ]
 
