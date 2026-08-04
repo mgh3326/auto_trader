@@ -53,8 +53,10 @@ def _series(snapshot: Mapping[str, Any]) -> tuple[list[float], list[float]]:
     volumes = [float(value) for value in snapshot.get("volume", ())]
     if len(closes) != len(volumes):
         raise ValueError("close and volume must have equal lengths")
-    if any(not math.isfinite(value) or value <= 0 for value in (*closes, *volumes)):
-        raise ValueError("close and volume values must be finite and positive")
+    if any(not math.isfinite(value) or value <= 0 for value in closes):
+        raise ValueError("close values must be finite and positive")
+    if any(not math.isfinite(value) or value < 0 for value in volumes):
+        raise ValueError("volume values must be finite and non-negative")
     return closes, volumes
 
 
@@ -79,7 +81,7 @@ def calculate_kr_rev3_reclaim(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     prior = closes[-lookback - 1 : -1]
     average_volume = sum(volumes[-lookback - 1 : -1]) / lookback
     reclaimed = closes[-2] <= min(prior) and closes[-1] > min(prior)
-    volume_ok = volumes[-1] >= average_volume * 1.2
+    volume_ok = average_volume > 0 and volumes[-1] >= average_volume * 1.2
     if not (reclaimed and volume_ok):
         return _no_signal("kr", "rev3_reclaim", "predicate_false")
     return {
@@ -105,7 +107,7 @@ def calculate_us_mom_cont_z126(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     average_volume = sum(volumes[-lookback - 1 : -1]) / lookback
     momentum = closes[-1] > closes[-1 - momentum_bars]
     continuation = closes[-1] > max(prior_window)
-    volume_ok = volumes[-1] >= average_volume * 1.1
+    volume_ok = average_volume > 0 and volumes[-1] >= average_volume * 1.1
     if not (momentum and continuation and volume_ok):
         return _no_signal("us", "MOM-CONT-Z126", "predicate_false")
     return {

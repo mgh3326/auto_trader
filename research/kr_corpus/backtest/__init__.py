@@ -1,9 +1,10 @@
-"""KR backtest harness — Stage A wiring (fixture only).
+"""KR backtest harness — Stage A wiring plus a bounded Stage-B bridge.
 
 JOB_PURPOSE=BACKTEST_HARNESS_WIRING_ONLY
 
-This package wires loaders, PIT membership, holdout refusal, and a
-pipeline-smoke baseline. It is **not** strategy research.
+This package wires loaders, PIT membership, holdout refusal, a pipeline-smoke
+baseline, and an explicit-contract Stage-B bridge. The Stage-B result remains
+unpromoted research evidence.
 
 Schema contracts are **inferred from kr-corpus-v1 brief §3 literals** and
 must be loud-failed against a real terminal manifest when Stage B opens.
