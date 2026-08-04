@@ -124,6 +124,8 @@ ON CONFLICT (time_utc, symbol, venue) DO NOTHING
 #: Latency regression threshold vs the Stage A baseline median (2.127 ms).
 LATENCY_ABORT_FACTOR = 5.0
 MAX_CONSECUTIVE_429 = 3
+DB_INSERT_CONFLICT_ABORT_RATIO = 0.005
+CURSOR_OVERLAP_ABORT_RATIO = 0.40
 EXIT_SUCCESS = 0
 EXIT_PARTIAL_FAILURE = 1
 EXIT_TOTAL_FAILURE = 2
@@ -139,6 +141,8 @@ class StreamStats:
     symbols_done: int = 0
     calls: int = 0
     rows_fetched: int = 0
+    rows_kept: int = 0
+    rows_filtered_cursor_overlap: int = 0
     rows_inserted: int = 0
     rows_skipped_conflict: int = 0
     empty_responses: int = 0
@@ -154,6 +158,8 @@ class SurfaceStats:
     symbols_done: int = 0
     calls: int = 0
     rows_fetched: int = 0
+    rows_kept: int = 0
+    rows_filtered_cursor_overlap: int = 0
     rows_inserted: int = 0
     rows_skipped_conflict: int = 0
     errors: list[str] = field(default_factory=list)
@@ -162,6 +168,37 @@ class SurfaceStats:
 
 class AbortStream(RuntimeError):
     pass
+
+
+def enforce_hard_ratio_guards(stats: StreamStats | SurfaceStats) -> None:
+    """Abort on contaminated inserts or a broken cursor within this collector batch."""
+
+    conflict_denominator = stats.rows_inserted + stats.rows_skipped_conflict
+    if conflict_denominator:
+        conflict_ratio = stats.rows_skipped_conflict / conflict_denominator
+        if conflict_ratio > DB_INSERT_CONFLICT_ABORT_RATIO:
+            raise AbortStream(
+                "DB insert conflict ratio "
+                f"{conflict_ratio:.6f} > hard limit "
+                f"{DB_INSERT_CONFLICT_ABORT_RATIO:.6f} "
+                "(scope=collector_batch, "
+                f"skipped={stats.rows_skipped_conflict}, "
+                f"inserted={stats.rows_inserted}, "
+                f"denominator={conflict_denominator})"
+            )
+
+    overlap_denominator = stats.rows_kept + stats.rows_filtered_cursor_overlap
+    if overlap_denominator:
+        overlap_ratio = stats.rows_filtered_cursor_overlap / overlap_denominator
+        if overlap_ratio > CURSOR_OVERLAP_ABORT_RATIO:
+            raise AbortStream(
+                "cursor overlap ratio "
+                f"{overlap_ratio:.6f} > hard limit "
+                f"{CURSOR_OVERLAP_ABORT_RATIO:.6f} "
+                "(scope=collector_batch, "
+                f"filtered={stats.rows_filtered_cursor_overlap}, "
+                f"kept={stats.rows_kept}, denominator={overlap_denominator})"
+            )
 
 
 class ProgressLog:
@@ -505,6 +542,8 @@ async def run_stream(
                         f"existing={cursor_overlap_verified}"
                     )
                 stats.rows_fetched += len(bars)
+                stats.rows_kept += len(keep)
+                stats.rows_filtered_cursor_overlap += cursor_overlap
                 ins, skip = await insert_bars(
                     pool, symbol, keep, source=source, batch_id=batch_id
                 )
@@ -534,11 +573,14 @@ async def run_stream(
 
                 if oldest >= cursor_dt:  # no backward progress; stop this symbol
                     st["done"] = True
+                    ckpt.save()
+                    enforce_hard_ratio_guards(stats)
                     break
                 cursor_dt = oldest - timedelta(minutes=1)
                 st["oldest_reached"] = cursor_dt.isoformat()
                 st["toss_cursor"] = toss_cursor
                 ckpt.save()
+                enforce_hard_ratio_guards(stats)
 
                 if source == "toss" and not toss_cursor:
                     st["done"] = True
@@ -797,6 +839,8 @@ async def run_surface(
                         f"existing={cursor_overlap_verified}"
                     )
                 stats.rows_fetched += len(rows)
+                stats.rows_kept += len(keep)
+                stats.rows_filtered_cursor_overlap += cursor_overlap
                 inserted, skipped = await insert_bars(
                     pool,
                     symbol,
@@ -828,10 +872,13 @@ async def run_surface(
                 )
                 if oldest >= cursor_dt:
                     state["done"] = True
+                    ckpt.save()
+                    enforce_hard_ratio_guards(stats)
                     break
                 cursor_dt = oldest - timedelta(minutes=1)
                 state["oldest_reached"] = cursor_dt.isoformat()
                 ckpt.save()
+                enforce_hard_ratio_guards(stats)
                 if overlap is not None:
                     await overlap.after_batch()
             else:
