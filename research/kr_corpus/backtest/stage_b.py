@@ -149,13 +149,14 @@ class StageBResult:
     skipped_signals: int
     lookahead_checks: int
     skipped_signal_reasons: tuple[str, ...] = ()
+    data_coverage: Mapping[str, Any] | None = None
 
     @property
     def net_returns(self) -> tuple[float, ...]:
         return tuple(trade.net_return for trade in self.trades)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "engine": "kr-stage-b-v1",
             "signal_contract_hash": self.contract.signal_contract_hash,
             "config_hash": self.contract.config_hash,
@@ -187,6 +188,9 @@ class StageBResult:
             "orders": 0,
             "account_mutations": 0,
         }
+        if self.data_coverage is not None:
+            payload["data_coverage"] = dict(self.data_coverage)
+        return payload
 
 
 def _group_bars(
@@ -204,21 +208,57 @@ def _group_bars(
     return grouped
 
 
+def _normalize_market_sessions(
+    market_sessions: Mapping[str, Iterable[date]],
+    contract: StageBRunContract,
+) -> dict[str, tuple[date, ...]]:
+    """Validate the explicit exchange-session reference used for D+5."""
+    normalized: dict[str, tuple[date, ...]] = {}
+    for market, sessions in market_sessions.items():
+        values = tuple(assert_date_not_holdout(session) for session in sessions)
+        if not values:
+            raise ValueError(f"empty market-session reference for {market}")
+        if tuple(sorted(values)) != values or len(set(values)) != len(values):
+            raise ValueError(
+                f"market-session reference for {market} must be strictly ascending "
+                "and unique"
+            )
+        if values[0] < contract.window_start or values[-1] > contract.window_end:
+            raise ValueError(
+                f"market-session reference for {market} falls outside run window"
+            )
+        normalized[market] = values
+    return normalized
+
+
 def run_stage_b(
     *,
     bars: Iterable[Bar],
     contract: StageBRunContract,
+    market_sessions: Mapping[str, Iterable[date]],
+    data_coverage: Mapping[str, Any] | None = None,
 ) -> StageBResult:
-    """Run t+1 open / D+5 close without using future bars for a signal."""
+    """Run t+1 open / D+5 close against an explicit exchange-session sequence."""
     if contract is None:  # type: ignore[comparison-overlap]
         raise ValueError("explicit Stage-B run contract is required")
     grouped = _group_bars(bars, contract)
+    sessions_by_market = _normalize_market_sessions(market_sessions, contract)
     trades: list[Trade] = []
     skipped_signals = 0
     lookahead_checks = 0
     skipped_reasons: list[str] = []
 
     for symbol, symbol_bars in sorted(grouped.items()):
+        markets = {bar.market for bar in symbol_bars}
+        if len(markets) != 1:
+            raise ValueError(f"symbol {symbol} appears in multiple market session sets")
+        market = next(iter(markets))
+        sessions = sessions_by_market.get(market)
+        if sessions is None:
+            raise ValueError(f"market-session reference missing for {market}")
+        session_positions = {
+            session: position for position, session in enumerate(sessions)
+        }
         active_until = -1
         for index, signal_bar in enumerate(symbol_bars):
             history = symbol_bars[: index + 1]
@@ -234,22 +274,30 @@ def run_stage_b(
             )
             if signal["signal_state"] != "SIGNAL":
                 continue
+            signal_position = session_positions.get(signal_bar.session_date)
+            if signal_position is None:
+                skipped_signals += 1
+                skipped_reasons.append("signal_session_absent_from_market_reference")
+                continue
             entry_index = index + 1
             exit_index = index + contract.holding_sessions
             if index <= active_until or exit_index >= len(symbol_bars):
                 skipped_signals += 1
                 skipped_reasons.append("overlap_or_insufficient_forward_bars")
                 continue
-            entry_bar = symbol_bars[entry_index]
-            exit_bar = symbol_bars[exit_index]
-            path = symbol_bars[entry_index : exit_index + 1]
-            if any(
-                (right.session_date - left.session_date).days > 10
-                for left, right in zip(path, path[1:], strict=False)
+            expected_path = sessions[
+                signal_position + 1 : signal_position + contract.holding_sessions + 1
+            ]
+            actual_path = symbol_bars[entry_index : exit_index + 1]
+            if (
+                len(expected_path) != contract.holding_sessions
+                or tuple(bar.session_date for bar in actual_path) != expected_path
             ):
                 skipped_signals += 1
                 skipped_reasons.append("session_gap_before_d5_exit")
                 continue
+            entry_bar = actual_path[0]
+            exit_bar = actual_path[-1]
             if entry_bar.open <= 0 or exit_bar.close <= 0:
                 skipped_signals += 1
                 skipped_reasons.append("non_positive_entry_or_exit_price")
@@ -277,6 +325,7 @@ def run_stage_b(
         skipped_signals=skipped_signals,
         lookahead_checks=lookahead_checks,
         skipped_signal_reasons=tuple(skipped_reasons),
+        data_coverage=data_coverage,
     )
 
 

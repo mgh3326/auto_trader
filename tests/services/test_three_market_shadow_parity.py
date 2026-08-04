@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
 from app.services.kis_lean_execution import SyntheticNoOpStrategy
 from app.services.three_market_shadow import shadow_decision
 from app.services.three_market_shadow_lifecycle import verify_crypto_acceptance_path
@@ -8,6 +14,9 @@ from research.three_market_shadow.calculations import (
     calculate_signal,
 )
 from research.three_market_shadow.harness import run_harness
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_CALCULATIONS_PATH = _REPO_ROOT / "research/three_market_shadow/calculations.py"
 
 
 def _snapshot() -> dict[str, object]:
@@ -69,3 +78,58 @@ def test_crypto_path_is_signal_intent_block_kill_restart() -> None:
     assert path[0]["signal_source"] == "SYNTHETIC_ACCEPTANCE"
     assert path[2]["accepted_for_submission"] is False
     assert path[-1]["orders"] == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "original", "replacement"),
+    (
+        ("contract", '"three-market-shadow-v1"', '"three-market-shadow-v2"'),
+        ("series_close_guard", "value <= 0", "value < 0"),
+        ("no_signal", '"reason": reason,', '"reason": f"changed:{reason}",'),
+        ("kr_predicate", "average_volume * 1.2", "average_volume * 1.0"),
+        ("us_predicate", "average_volume * 1.1", "average_volume * 1.0"),
+        (
+            "crypto_payload",
+            '"fixture_id": "crypto-shadow-fixed-signal-v1",',
+            '"fixture_id": "crypto-shadow-fixed-signal-v2",',
+        ),
+        ("dispatch", 'if market == "kr":', 'if market == "KR":'),
+        (
+            "digest_helper",
+            'normalized.encode("utf-8")',
+            'normalized.encode("ascii")',
+        ),
+    ),
+)
+def test_unpaired_full_module_enforcement_edit_fails_import(
+    tmp_path: Path,
+    name: str,
+    original: str,
+    replacement: str,
+) -> None:
+    """Every module-defined enforcement helper is inside the import-time digest."""
+    source = _CALCULATIONS_PATH.read_text(encoding="utf-8")
+    assert source.count(original) == 1, name
+    mutated = tmp_path / "calculations.py"
+    mutated.write_text(source.replace(original, replacement), encoding="utf-8")
+    command = "\n".join(
+        (
+            "import importlib.util",
+            "import sys",
+            f"path = {str(mutated)!r}",
+            "spec = importlib.util.spec_from_file_location('mutated_calculations', path)",
+            "module = importlib.util.module_from_spec(spec)",
+            "sys.modules[spec.name] = module",
+            "spec.loader.exec_module(module)",
+        )
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", command],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0, name
+    assert "signal enforcement source hash mismatch" in result.stderr

@@ -9,9 +9,9 @@ research result is evidence, never an order authorization.
 from __future__ import annotations
 
 import hashlib
-import inspect
 import math
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Literal
 
 from research_contracts.canonical_hash import canonical_sha256
@@ -39,12 +39,14 @@ _CONTRACT = {
     },
 }
 
-# This digest binds the executable predicates, not just the declarative
-# thresholds above.  Update it in the same change as an intentional predicate
-# edit; an unpaired edit fails at import time.
+# This digest binds the complete module-defined enforcement surface, not just
+# declarative thresholds or a hand-maintained function list.  The expected
+# literal is normalized solely to avoid a self-referential digest; changing it
+# alone still fails import unless it is paired with the measured module digest.
 _EXPECTED_ENFORCEMENT_SOURCE_SHA256 = (
-    "a7517ab80b7e83337625599a7995636a34eb7b41f6502727abb4e8d98915bb52"
+    "7c8be76fefbccb8aa6a39b9d1bd1a060a9f590ab126b4d8cc249cb845865e082"
 )
+_ENFORCEMENT_DIGEST_PLACEHOLDER = "<expected-enforcement-source-sha256>"
 CONTRACT_HASH: str
 CRYPTO_SYNTHETIC_SIGNAL: dict[str, Any] = {
     "market": "crypto",
@@ -149,13 +151,15 @@ def calculate_signal(market: str, snapshot: Mapping[str, Any]) -> dict[str, Any]
 
 
 def _enforcement_source_sha256() -> str:
-    source = "\n".join(
-        (
-            inspect.getsource(calculate_kr_rev3_reclaim),
-            inspect.getsource(calculate_signal),
-        )
-    ).encode("utf-8")
-    return hashlib.sha256(source).hexdigest()
+    """Hash normalized bytes of this complete enforcement module at import."""
+    source = Path(__file__).read_text(encoding="utf-8")
+    if source.count(_EXPECTED_ENFORCEMENT_SOURCE_SHA256) != 1:
+        raise RuntimeError("enforcement digest literal must occur exactly once")
+    normalized = source.replace(
+        _EXPECTED_ENFORCEMENT_SOURCE_SHA256,
+        _ENFORCEMENT_DIGEST_PLACEHOLDER,
+    )
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 _actual_enforcement_source_sha256 = _enforcement_source_sha256()

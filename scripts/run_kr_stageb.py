@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 
 from research.kr_corpus.backtest.evidence import write_stage_b_evidence
-from research.kr_corpus.backtest.real_data import load_real_main_bars
+from research.kr_corpus.backtest.real_data import load_real_main_stage_b_input
 from research.kr_corpus.backtest.stage_b import build_run_contract, run_stage_b
 
 
@@ -31,7 +31,7 @@ def main() -> int:
         window_start=args.start,
         window_end=args.end,
     )
-    bars = load_real_main_bars(
+    real_input = load_real_main_stage_b_input(
         artifact_root=args.artifact_root,
         run_id=args.run_id,
         window_start=args.start,
@@ -39,7 +39,12 @@ def main() -> int:
         markets=args.market,
         max_symbols=args.max_symbols,
     )
-    result = run_stage_b(bars=bars, contract=contract)
+    result = run_stage_b(
+        bars=real_input.bars,
+        contract=contract,
+        market_sessions=real_input.market_sessions,
+        data_coverage=real_input.coverage,
+    )
     payload = write_stage_b_evidence(args.evidence, result)
     print(
         json.dumps(

@@ -24,8 +24,12 @@ injection. The approved literals are:
 * `83bp`: fee 3bp + transaction tax 20bp + slippage 30bp per side.
 
 The real-data runner verifies selected main-snapshot parquet bytes against
-`checksums.sha256`, refuses holdout paths/dates, and writes canonical
-`honest_trial.v3` evidence only after closed-trade statistics exist:
+`checksums.sha256`, verifies the signed XKRX session reference in
+`preflight.json`, refuses holdout paths/dates, and writes canonical
+`honest_trial.v3` evidence only after closed-trade statistics exist. D+5 is
+accepted only when each symbol's t+1…t+5 bars exactly match that market-session
+sequence; calendar-day gap thresholds are not used. Evidence records selected
+symbol, bar, and year coverage so partition loss is reviewable:
 
 ```bash
 uv run python scripts/run_kr_stageb.py \

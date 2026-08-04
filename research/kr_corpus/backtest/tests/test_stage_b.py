@@ -32,13 +32,27 @@ def _bars() -> list[Bar]:
     ]
 
 
+def _market_sessions(bars: list[Bar]) -> dict[str, tuple[date, ...]]:
+    return {
+        market: tuple(
+            sorted({bar.session_date for bar in bars if bar.market == market})
+        )
+        for market in sorted({bar.market for bar in bars})
+    }
+
+
 def test_stage_b_uses_t_plus_one_open_and_d_plus_five_close() -> None:
     contract = build_run_contract(
         cost_profile="43bp",
         window_start=date(2024, 1, 2),
         window_end=date(2024, 1, 31),
     )
-    result = run_stage_b(bars=_bars(), contract=contract)
+    bars = _bars()
+    result = run_stage_b(
+        bars=bars,
+        contract=contract,
+        market_sessions=_market_sessions(bars),
+    )
 
     assert len(result.trades) == 1
     trade = result.trades[0]
@@ -69,28 +83,87 @@ def test_cost_contract_is_explicit_and_no_contract_fails() -> None:
         == 83
     )
     with pytest.raises(ValueError, match="explicit Stage-B run contract"):
-        run_stage_b(bars=_bars(), contract=None)  # type: ignore[arg-type]
+        bars = _bars()
+        run_stage_b(  # type: ignore[arg-type]
+            bars=bars,
+            contract=None,
+            market_sessions=_market_sessions(bars),
+        )
 
 
 def test_d5_session_gap_fails_closed_with_explicit_reason() -> None:
-    bars = _bars()
+    original_bars = _bars()
     # Synthetic 300-day suspension after entry; index+5 must not become D+5.
     bars = [
         replace(bar, session_date=bar.session_date + timedelta(days=300))
         if index >= 22
         else bar
-        for index, bar in enumerate(bars)
+        for index, bar in enumerate(original_bars)
     ]
     contract = build_run_contract(
         cost_profile="43bp",
         window_start=date(2024, 1, 2),
         window_end=date(2024, 12, 31),
     )
-    result = run_stage_b(bars=bars, contract=contract)
+    result = run_stage_b(
+        bars=bars,
+        contract=contract,
+        market_sessions=_market_sessions(original_bars),
+    )
     assert result.trades == ()
     assert "session_gap_before_d5_exit" in result.skipped_signal_reasons
     assert result.to_dict()["pit_boundary_checked"] is True
     assert "lookahead_checks" not in result.to_dict()
+
+
+def test_five_session_symbol_suspension_fails_closed() -> None:
+    original_bars = _bars()
+    bars = [
+        replace(bar, session_date=bar.session_date + timedelta(days=5))
+        if index >= 22
+        else bar
+        for index, bar in enumerate(original_bars)
+    ]
+    contract = build_run_contract(
+        cost_profile="43bp",
+        window_start=date(2024, 1, 2),
+        window_end=date(2024, 2, 29),
+    )
+
+    result = run_stage_b(
+        bars=bars,
+        contract=contract,
+        market_sessions=_market_sessions(original_bars),
+    )
+
+    assert result.trades == ()
+    assert result.skipped_signal_reasons == ("session_gap_before_d5_exit",)
+
+
+def test_market_wide_closure_is_not_rejected_by_calendar_span() -> None:
+    original_bars = _bars()
+    # The calendar itself has a five-day closure after the entry session.
+    bars = [
+        replace(bar, session_date=bar.session_date + timedelta(days=5))
+        if index >= 22
+        else bar
+        for index, bar in enumerate(original_bars)
+    ]
+    contract = build_run_contract(
+        cost_profile="43bp",
+        window_start=date(2024, 1, 2),
+        window_end=date(2024, 2, 29),
+    )
+
+    result = run_stage_b(
+        bars=bars,
+        contract=contract,
+        market_sessions=_market_sessions(bars),
+    )
+
+    assert len(result.trades) == 1
+    assert result.trades[0].entry_session == date(2024, 1, 23)
+    assert result.trades[0].exit_session == date(2024, 2, 1)
 
 
 def test_stage_b_contract_rejects_holdout_window() -> None:
@@ -112,7 +185,22 @@ def test_trial_evidence_writer_is_rejudgable(tmp_path) -> None:
     bars = _bars() + [
         bar.__class__(**{**bar.__dict__, "symbol": "000660"}) for bar in _bars()
     ]
-    result = run_stage_b(bars=bars, contract=contract)
+    coverage = {
+        "markets": {
+            "KOSPI": {
+                "symbol_count": 2,
+                "bar_count": len(bars),
+                "year_count": 1,
+                "years": [2024],
+            }
+        }
+    }
+    result = run_stage_b(
+        bars=bars,
+        contract=contract,
+        market_sessions=_market_sessions(bars),
+        data_coverage=coverage,
+    )
     payload = write_stage_b_evidence(tmp_path / "stageb.json", result)
     assert payload["track"] == "strategy_backtest"
     assert payload["acceptance_track_separate"] is True
@@ -130,6 +218,7 @@ def test_trial_evidence_writer_is_rejudgable(tmp_path) -> None:
         payload["trial_evidence"]["selection_score_method"]
         == "arithmetic_mean_net_return"
     )
+    assert payload["run_contract"]["data_coverage"] == coverage
 
 
 def test_lookahead_guard_remains_hard_error() -> None:
