@@ -14,7 +14,9 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "20260804_toss_phase2"
-down_revision: str | Sequence[str] | None = "20260803_research_kr_candles"
+# Rebased after #1782's merge revision advanced the sole Alembic head.  This
+# remains additive: the Toss research objects do not alter Alpaca's migration.
+down_revision: str | Sequence[str] | None = "20260804_alpaca_clean_account"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -15,7 +15,7 @@ spec.loader.exec_module(migration)
 def test_toss_corpus_is_separate_and_venue_free() -> None:
     source = MIGRATION_PATH.read_text()
 
-    assert migration.down_revision == "20260803_research_kr_candles"
+    assert migration.down_revision == "20260804_alpaca_clean_account"
     assert migration.TABLE_NAME == "kr_candles_1m_toss"
     assert len(migration.CAGG_SPECS) == 4
     assert "venue TEXT" not in source
