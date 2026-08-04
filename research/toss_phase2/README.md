@@ -23,4 +23,25 @@ Consumer rules:
   proposal, but this collector performs no promotion.
 
 The collector uses a shared cached Toss token only. It cannot issue or force
-reissue OAuth, and it stops itself on a new shared Toss 401/429/upstream error.
+reissue OAuth.
+
+## Shared chart-budget control
+
+`MARKET_DATA_CHART` is a client × API-group budget shared with the production
+Toss-first chart reader. The Phase-2 collector therefore does not treat a
+documented chart cap as a source constant:
+
+- The first chart response must expose `X-RateLimit-Limit`; that header is the
+  active cap. A missing cap fails closed before a second page request.
+- During 09:00–20:00 KST, the collector targets at most
+  `min(2 TPS, discovered-cap − 3 TPS)`, preserving three TPS for production
+  chart readers. If the provider's cap cannot preserve that reservation, the
+  collector stops before it consumes another page budget.
+- After 20:00 KST it may use 3–4 TPS only while headers remain healthy.
+  `X-RateLimit-Remaining` below 40% triggers a Reset-window recovery pause;
+  `X-RateLimit-Reset` is interpreted as seconds to one-token replenishment.
+- A collector 429 honors `Retry-After` and combines it with exponential
+  backoff plus jitter (1 → 2 → 4 seconds …). It does not immediately stop;
+  only five consecutive chart 429s stop the collector. New shared 429 markers
+  are likewise non-fatal, while 401 and other upstream errors remain
+  fail-closed.

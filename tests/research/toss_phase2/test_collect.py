@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -16,6 +17,7 @@ from research.toss_phase2.collect import (
     ProductionTossLogMonitor,
     SharedTossHealthMonitor,
     classify_session_segment,
+    initialize_staging,
     load_readonly_toss_environment,
     make_rows,
     resolve_toss_base_url,
@@ -128,6 +130,44 @@ def test_write_page_is_immutable_and_labels_parquet(tmp_path) -> None:
     assert pq.read_table(path).column("close")[0].as_py() == 1.0
 
 
+def test_existing_staging_manifest_replaces_only_withdrawn_pacing_metadata(
+    tmp_path,
+) -> None:
+    immutable = {
+        "artifact_state": STAGING_CONTRACT,
+        "scope": "top-200 x 4.6y",
+        "symbol_count": 200,
+        "universe_sha256": "sealed-universe",
+        "window": {"start_date": "2021-12-20", "end_date": "2026-08-03"},
+        "call_budget_declared": 820000,
+        "batch_id": "batch",
+    }
+    legacy_manifest = {
+        **immutable,
+        "pacing": {"during_09_00_to_20_00_kst_seconds": 0.5},
+        "preserve": "staging-data-contract",
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(legacy_manifest))
+    page = tmp_path / "data" / "symbol=005930" / "part-existing.parquet"
+    page.parent.mkdir(parents=True)
+    page.write_bytes(b"existing-page-must-not-change")
+
+    initialize_staging(
+        staging_dir=tmp_path,
+        manifest={
+            **immutable,
+            "rate_limit_control": {"mode": "response_header_adaptive"},
+        },
+    )
+
+    updated = json.loads(manifest_path.read_text())
+    assert "pacing" not in updated
+    assert updated["rate_limit_control"] == {"mode": "response_header_adaptive"}
+    assert updated["preserve"] == "staging-data-contract"
+    assert page.read_bytes() == b"existing-page-must-not-change"
+
+
 @pytest.mark.asyncio
 async def test_cached_token_provider_never_issues_or_forces() -> None:
     class Manager:
@@ -141,28 +181,32 @@ async def test_cached_token_provider_never_issues_or_forces() -> None:
 
 
 @pytest.mark.asyncio
-async def test_shared_monitor_stops_on_new_error() -> None:
+async def test_shared_monitor_treats_429_as_recoverable_but_stops_other_errors() -> (
+    None
+):
     class Signal:
-        def __init__(self, sequence: int) -> None:
+        def __init__(self, sequence: int, status_code: int) -> None:
             self.sequence = sequence
-            self.status_code = 429
+            self.status_code = status_code
             self.error_type = "http_response"
             self.error_code = "too-many-requests"
 
-    signal: Signal | None = Signal(3)
+    signal: Signal | None = Signal(3, 429)
 
     async def read() -> Signal | None:
         return signal
 
     monitor = SharedTossHealthMonitor(read)
     await monitor.start()
-    signal = Signal(4)
+    signal = Signal(4, 429)
+    await monitor.assert_healthy()
+    signal = Signal(5, 500)
     with pytest.raises(CollectionStopped, match="shared_toss_error_observed"):
         await monitor.assert_healthy()
 
 
 @pytest.mark.asyncio
-async def test_production_log_monitor_stops_only_for_new_toss_error(tmp_path) -> None:
+async def test_production_log_monitor_treats_new_429_as_recoverable(tmp_path) -> None:
     log = tmp_path / "production.log"
     log.write_text("old Toss API error status=429\n")
     monitor = ProductionTossLogMonitor([log])
@@ -170,6 +214,10 @@ async def test_production_log_monitor_stops_only_for_new_toss_error(tmp_path) ->
 
     with log.open("a") as fh:
         fh.write("ordinary startup message\n")
+    await monitor.assert_healthy()
+
+    with log.open("a") as fh:
+        fh.write("Toss API error status=429 code=rate-limit-exceeded\n")
     await monitor.assert_healthy()
 
     with log.open("a") as fh:

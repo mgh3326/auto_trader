@@ -14,6 +14,7 @@ from app.services.brokers.toss import rate_limiter as rate_limiter_module
 from app.services.brokers.toss.auth import TossOAuthTokenManager
 from app.services.brokers.toss.client import TossReadClient
 from app.services.brokers.toss.errors import TossApiResponseError
+from app.services.brokers.toss.rate_limiter import TossApiGroup
 
 
 @dataclass
@@ -343,9 +344,10 @@ async def test_strict_reader_does_not_reissue_after_401(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_strict_reader_does_not_retry_after_429(monkeypatch) -> None:
     calls = 0
+    health_writes = []
 
     async def no_health_write(**kwargs) -> None:
-        del kwargs
+        health_writes.append(kwargs)
 
     monkeypatch.setattr(toss_client_module, "publish_toss_api_error", no_health_write)
 
@@ -368,6 +370,7 @@ async def test_strict_reader_does_not_retry_after_429(monkeypatch) -> None:
         token_manager=_TokenManager(),
         transport=httpx.MockTransport(handler),
         retry_on_429=False,
+        publish_error_signals=False,
     )
     try:
         with pytest.raises(TossApiResponseError) as exc_info:
@@ -377,6 +380,7 @@ async def test_strict_reader_does_not_retry_after_429(monkeypatch) -> None:
 
     assert exc_info.value.status_code == 429
     assert calls == 1
+    assert health_writes == []
 
 
 @pytest.mark.asyncio
@@ -665,6 +669,42 @@ async def test_candles_returns_typed_page_and_sends_query_params() -> None:
     }
     assert page.next_before == "2026-06-11T00:00:00.000+09:00"
     assert page.candles[0].close_price == Decimal("326000")
+
+
+@pytest.mark.asyncio
+async def test_candles_response_observer_receives_documented_rate_headers() -> None:
+    observed = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_json({"candles": [], "nextBefore": None}),
+            headers={
+                "X-RateLimit-Limit": "7",
+                "X-RateLimit-Remaining": "6",
+                "X-RateLimit-Reset": "0.25",
+            },
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        transport=httpx.MockTransport(handler),
+        response_observer=lambda group, status, headers: observed.append(
+            (group, status, headers)
+        ),
+    )
+    try:
+        await client.candles("005930", interval="1m", count=1)
+    finally:
+        await client.aclose()
+
+    group, status, headers = observed[0]
+    assert group is TossApiGroup.MARKET_DATA_CHART
+    assert status == 200
+    assert headers.limit == 7
+    assert headers.remaining == 6
+    assert headers.reset_seconds == 0.25
 
 
 @pytest.mark.asyncio

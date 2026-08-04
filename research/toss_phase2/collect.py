@@ -18,7 +18,9 @@ import asyncio
 import csv
 import hashlib
 import json
+import math
 import os
+import random
 import re
 import time
 from dataclasses import asdict, dataclass
@@ -40,8 +42,12 @@ VALUE_SEMANTICS = "CLOSE_X_VOLUME_SYNTHETIC"
 DEFAULT_START_DATE = date(2021, 12, 20)
 EXPECTED_UNIVERSE_SIZE = 200
 PAGE_SIZE = 200
-PACING_SECONDS_DURING_MARKET = 0.5
-PACING_SECONDS_AFTER_CLOSE = 0.3
+INTRADAY_TARGET_TPS_MAX = 2.0
+INTRADAY_CHART_HEADROOM_TPS = 3.0
+AFTER_CLOSE_TARGET_TPS_MIN = 3.0
+AFTER_CLOSE_TARGET_TPS_MAX = 4.0
+LOW_REMAINING_FRACTION = 0.4
+CONSECUTIVE_429_STOP_AT = 5
 DEFAULT_SHARED_REDIS_URL = "redis://127.0.0.1:6379/0"
 _SETTINGS_PLACEHOLDERS = {
     "KIS_APP_KEY": "toss-phase2-unused",
@@ -103,31 +109,211 @@ def now_kst() -> datetime:
     return datetime.now(KST)
 
 
-def pacing_seconds(at: datetime | None = None) -> float:
-    """Use the operator-approved 0.5 s during KR/NXT hours, else 0.3 s."""
-    current = (at or now_kst()).astimezone(KST).time()
-    if local_time(9, 0) <= current < local_time(20, 0):
-        return PACING_SECONDS_DURING_MARKET
-    return PACING_SECONDS_AFTER_CLOSE
+def _is_intraday(at: datetime) -> bool:
+    current = at.astimezone(KST).time()
+    return local_time(9, 0) <= current < local_time(20, 0)
 
 
-class PacingRateLimiter:
-    """Keep the process-wide Toss limiter and add the Phase 2 serial pacing."""
+class HeaderAdaptiveChartRateLimiter:
+    """A chart-only pace controller whose cap comes from Toss response headers.
 
-    def __init__(self, base: Any, chart_group: Any) -> None:
+    The process-local Toss limiter remains a backstop, but it is not the
+    authoritative chart cap for this bulk collector.  After the first chart
+    response exposes ``X-RateLimit-Limit``, intraday requests reserve three TPS
+    for the production Toss-first chart consumer.  If the provider lowers its
+    cap below that reservation, the collector fails closed before another page
+    request rather than consuming the production budget.
+    """
+
+    def __init__(
+        self,
+        base: Any,
+        chart_group: Any,
+        *,
+        now_kst_fn: Any = now_kst,
+        monotonic_fn: Any = time.monotonic,
+        sleep: Any = asyncio.sleep,
+        jitter_fn: Any = random.uniform,
+    ) -> None:
         self._base = base
         self._chart_group = chart_group
-        self._last_chart_call = 0.0
+        self._now_kst = now_kst_fn
+        self._monotonic = monotonic_fn
+        self._sleep = sleep
+        self._jitter = jitter_fn
+        self._cap: int | None = None
+        self._remaining: int | None = None
+        self._reset_seconds: float | None = None
+        self._retry_after_seconds: float | None = None
+        self._last_chart_call: float | None = None
+        self._low_remaining_not_before = 0.0
+        self._retry_not_before = 0.0
+        self._consecutive_429 = 0
 
-    async def acquire(self, group: Any) -> None:
-        await self._base.acquire(group)
+    @property
+    def cap(self) -> int | None:
+        return self._cap
+
+    @property
+    def cap_auto_discovered(self) -> bool:
+        return self._cap is not None
+
+    @property
+    def consecutive_429(self) -> int:
+        return self._consecutive_429
+
+    @property
+    def remaining(self) -> int | None:
+        return self._remaining
+
+    @property
+    def reset_seconds(self) -> float | None:
+        return self._reset_seconds
+
+    @property
+    def retry_after_seconds(self) -> float | None:
+        return self._retry_after_seconds
+
+    def target_tps(self, at: datetime | None = None) -> float:
+        """Return a dynamic target, never treating a documented value as fixed."""
+
+        current = at or self._now_kst()
+        if _is_intraday(current):
+            if self._cap is None:
+                # At most one startup request can happen before the response
+                # header discovers the cap; no second request is admitted until
+                # ``ensure_cap_discovered`` has run.
+                return INTRADAY_TARGET_TPS_MAX
+            return max(
+                0.0,
+                min(
+                    INTRADAY_TARGET_TPS_MAX,
+                    float(self._cap) - INTRADAY_CHART_HEADROOM_TPS,
+                ),
+            )
+        if self._cap is None:
+            return AFTER_CLOSE_TARGET_TPS_MIN
+        if (
+            self._remaining is not None
+            and self._remaining / self._cap < LOW_REMAINING_FRACTION
+        ):
+            return min(AFTER_CLOSE_TARGET_TPS_MIN, float(self._cap))
+        return min(AFTER_CLOSE_TARGET_TPS_MAX, float(self._cap))
+
+    def intraday_headroom_preserved(self) -> bool | None:
+        if self._cap is None:
+            return None
+        target = max(
+            0.0,
+            min(
+                INTRADAY_TARGET_TPS_MAX,
+                float(self._cap) - INTRADAY_CHART_HEADROOM_TPS,
+            ),
+        )
+        return self._cap - target >= INTRADAY_CHART_HEADROOM_TPS
+
+    def observe_response(
+        self,
+        group: Any,
+        status_code: int,
+        rate_limit_headers: Any,
+    ) -> None:
+        """Consume one response's redacted rate-limit metadata.
+
+        ``TossReadClient`` calls this for successes and failures before it parses
+        the envelope, so a 429 still contributes its Retry-After and reset data.
+        """
+
         if group != self._chart_group:
             return
-        interval = pacing_seconds()
-        elapsed = time.monotonic() - self._last_chart_call
-        if elapsed < interval:
-            await asyncio.sleep(interval - elapsed)
-        self._last_chart_call = time.monotonic()
+        limit = getattr(rate_limit_headers, "limit", None)
+        remaining = getattr(rate_limit_headers, "remaining", None)
+        reset_seconds = getattr(rate_limit_headers, "reset_seconds", None)
+        retry_after_seconds = getattr(rate_limit_headers, "retry_after_seconds", None)
+        if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+            self._cap = limit
+        self._remaining = (
+            remaining
+            if isinstance(remaining, int)
+            and not isinstance(remaining, bool)
+            and remaining >= 0
+            else None
+        )
+        self._reset_seconds = (
+            float(reset_seconds)
+            if isinstance(reset_seconds, (float, int)) and reset_seconds >= 0.0
+            else None
+        )
+        self._retry_after_seconds = (
+            float(retry_after_seconds)
+            if isinstance(retry_after_seconds, (float, int))
+            and retry_after_seconds >= 0.0
+            else None
+        )
+        self._schedule_low_remaining_recovery()
+        if status_code < 400:
+            self._consecutive_429 = 0
+
+    def _schedule_low_remaining_recovery(self) -> None:
+        if (
+            self._cap is None
+            or self._remaining is None
+            or self._reset_seconds is None
+            or self._remaining / self._cap >= LOW_REMAINING_FRACTION
+        ):
+            self._low_remaining_not_before = 0.0
+            return
+        recovery_floor = math.ceil(self._cap * LOW_REMAINING_FRACTION)
+        tokens_to_rebuild = max(recovery_floor - self._remaining + 1, 1)
+        self._low_remaining_not_before = max(
+            self._low_remaining_not_before,
+            self._monotonic() + self._reset_seconds * tokens_to_rebuild,
+        )
+
+    def ensure_cap_discovered(self) -> None:
+        """Fail closed if the documented cap cannot protect shared chart traffic."""
+
+        if self._cap is None:
+            raise CollectionStopped(
+                "chart_rate_limit_cap_not_discovered:X-RateLimit-Limit missing"
+            )
+        if _is_intraday(self._now_kst()) and self.target_tps() <= 0.0:
+            raise CollectionStopped(
+                "chart_headroom_unavailable: "
+                f"cap={self._cap} reserve={INTRADAY_CHART_HEADROOM_TPS:g}"
+            )
+
+    async def acquire(self, group: Any) -> None:
+        if group != self._chart_group:
+            await self._base.acquire(group)
+            return
+        if self._cap is not None:
+            self.ensure_cap_discovered()
+        target_tps = self.target_tps()
+        delay_until = max(self._low_remaining_not_before, self._retry_not_before)
+        if self._last_chart_call is not None and target_tps > 0.0:
+            delay_until = max(delay_until, self._last_chart_call + 1.0 / target_tps)
+        wait_seconds = delay_until - self._monotonic()
+        if wait_seconds > 0.0:
+            await self._sleep(wait_seconds)
+        await self._base.acquire(group)
+        self._last_chart_call = self._monotonic()
+
+    async def backoff_after_429(self) -> tuple[int, float]:
+        """Honor Retry-After and add the documented exponential backoff+jitter."""
+
+        self._consecutive_429 += 1
+        if self._consecutive_429 >= CONSECUTIVE_429_STOP_AT:
+            raise CollectionStopped(f"consecutive_chart_429:{CONSECUTIVE_429_STOP_AT}")
+        exponential = min(2.0 ** (self._consecutive_429 - 1), 16.0)
+        backoff_seconds = exponential + self._jitter(0.0, exponential)
+        retry_after_seconds = self._retry_after_seconds or 0.0
+        delay_seconds = max(retry_after_seconds, backoff_seconds)
+        self._retry_not_before = max(
+            self._retry_not_before, self._monotonic() + delay_seconds
+        )
+        await self._sleep(delay_seconds)
+        return self._consecutive_429, delay_seconds
 
 
 @dataclass(frozen=True)
@@ -136,7 +322,13 @@ class SharedErrorBaseline:
 
 
 class SharedTossHealthMonitor:
-    """Stop this collector if a new shared Toss error is published."""
+    """Stop this collector for non-rate-limit shared Toss failures only.
+
+    A 429 is an overload signal with a documented recovery path, not an
+    immediate stop condition.  Advance the baseline so one external 429 cannot
+    repeatedly trip the collector; the collector's own header-aware retry path
+    controls subsequent chart requests.
+    """
 
     def __init__(self, read_signal: Any) -> None:
         self._read_signal = read_signal
@@ -151,6 +343,9 @@ class SharedTossHealthMonitor:
     async def assert_healthy(self) -> None:
         signal = await self._read_signal()
         if signal is not None and signal.sequence > self._baseline.sequence:
+            self._baseline = SharedErrorBaseline(sequence=signal.sequence)
+            if signal.status_code == 429:
+                return
             raise CollectionStopped(
                 "shared_toss_error_observed: "
                 f"status={signal.status_code} type={signal.error_type} "
@@ -163,6 +358,7 @@ _TOSS_ERROR_LINE = re.compile(
     r"|(?:\b401\b|\b429\b).{0,160}(?:toss|openapi\.tossinvest)",
     re.IGNORECASE,
 )
+_HTTP_429_LINE = re.compile(r"\b429\b")
 
 
 class ProductionTossLogMonitor:
@@ -191,7 +387,14 @@ class ProductionTossLogMonitor:
                 fh.seek(offset)
                 appended = fh.read()
             self._positions[path] = (stat.st_ino, stat.st_size)
-            if _TOSS_ERROR_LINE.search(appended):
+            for line in appended.splitlines():
+                if not _TOSS_ERROR_LINE.search(line):
+                    continue
+                if _HTTP_429_LINE.search(line):
+                    # Retry-After is not available in a redacted log line.  The
+                    # collector must not treat it as a fatal pipe error; its own
+                    # response headers govern retries and adaptive pacing.
+                    continue
                 # Do not copy log content: it can contain an upstream request id
                 # and is unnecessary for the collector's fail-closed decision.
                 raise CollectionStopped(f"production_toss_error_log_observed:{path}")
@@ -488,9 +691,24 @@ def build_manifest(
         },
         "call_budget_declared": call_budget,
         "page_size": PAGE_SIZE,
-        "pacing": {
-            "during_09_00_to_20_00_kst_seconds": PACING_SECONDS_DURING_MARKET,
-            "after_close_seconds": PACING_SECONDS_AFTER_CLOSE,
+        "rate_limit_control": {
+            "mode": "response_header_adaptive",
+            "cap_source": "X-RateLimit-Limit",
+            "hardcoded_chart_cap": False,
+            "remaining_low_fraction": LOW_REMAINING_FRACTION,
+            "intraday": {
+                "target_tps_max": INTRADAY_TARGET_TPS_MAX,
+                "reserved_production_chart_headroom_tps": INTRADAY_CHART_HEADROOM_TPS,
+            },
+            "after_close": {
+                "target_tps_min": AFTER_CLOSE_TARGET_TPS_MIN,
+                "target_tps_max": AFTER_CLOSE_TARGET_TPS_MAX,
+            },
+            "on_429": {
+                "retry_after_required": True,
+                "exponential_backoff_with_jitter": True,
+                "consecutive_stop_at": CONSECUTIVE_429_STOP_AT,
+            },
         },
         "value_semantics": VALUE_SEMANTICS,
         "padding_contract": "is_padding=true iff provider volume is zero; not coverage missing",
@@ -530,6 +748,16 @@ def initialize_staging(
         )
         if any(existing.get(key) != manifest.get(key) for key in immutable_keys):
             raise ValueError("existing staging manifest does not match this collection")
+        # Pages are write-once, but the control policy is operational metadata.
+        # Upgrade the previously staged corpus from the withdrawn fixed-interval
+        # policy before a later, separately authorized resume can append pages.
+        if existing.get("rate_limit_control") != manifest["rate_limit_control"]:
+            existing.pop("pacing", None)
+            existing["rate_limit_control"] = manifest["rate_limit_control"]
+            manifest_path.write_text(
+                json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
         return
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     (staging_dir / "STAGING_ONLY.md").write_text(
@@ -537,7 +765,9 @@ def initialize_staging(
         "This is an append-only Toss combined KRX/NXT collection. It must not be "
         "loaded into a database or used by a backtest until a separately approved "
         "review and load step. `is_padding=true` is a provider placeholder, and "
-        "`value` is synthetic `close * volume`.\n",
+        "`value` is synthetic `close * volume`. Chart rate control is derived from "
+        "the Toss response headers; the collector reserves intraday headroom for "
+        "production chart readers.\n",
         encoding="utf-8",
     )
 
@@ -551,6 +781,8 @@ class CollectionStats:
     pages_reused: int = 0
     http_401: int = 0
     http_429: int = 0
+    chart_rate_limit_cap: int | None = None
+    rate_limit_backoffs: int = 0
     stopped_reason: str | None = None
 
 
@@ -558,6 +790,7 @@ async def collect(
     *,
     client: Any,
     transport: CountingTransport,
+    chart_pacer: HeaderAdaptiveChartRateLimiter,
     monitor: CombinedTossHealthMonitor,
     staging_dir: Path,
     symbols: list[str],
@@ -594,10 +827,36 @@ async def collect(
                     stats.http_401 += 1
                 if status == 429:
                     stats.http_429 += 1
+                    consecutive, delay_seconds = await chart_pacer.backoff_after_429()
+                    stats.rate_limit_backoffs += 1
+                    progress.write(
+                        "chart_429_backoff",
+                        consecutive_429=consecutive,
+                        delay_seconds=delay_seconds,
+                        retry_after_seconds=chart_pacer.retry_after_seconds,
+                        rate_limit_cap=chart_pacer.cap,
+                        rate_limit_remaining=chart_pacer.remaining,
+                        rate_limit_reset_seconds=chart_pacer.reset_seconds,
+                        calls_actual=transport.calls,
+                    )
+                    # Do not advance the checkpoint.  Retrying the same cursor
+                    # is safe because no Parquet page has been written for it.
+                    continue
                 raise CollectionStopped(
                     f"toss_request_failed:{type(exc).__name__}:status={status}"
                 ) from exc
 
+            chart_pacer.ensure_cap_discovered()
+            if stats.chart_rate_limit_cap != chart_pacer.cap:
+                stats.chart_rate_limit_cap = chart_pacer.cap
+                progress.write(
+                    "chart_rate_limit_cap_discovered",
+                    cap=chart_pacer.cap,
+                    remaining=chart_pacer.remaining,
+                    reset_seconds=chart_pacer.reset_seconds,
+                    target_tps=chart_pacer.target_tps(),
+                    intraday_headroom_preserved=chart_pacer.intraday_headroom_preserved(),
+                )
             next_before = page.next_before
             rows = make_rows(
                 candles=list(page.candles),
@@ -640,7 +899,10 @@ async def collect(
                 output=str(destination) if destination is not None else None,
                 output_reused=reused,
                 calls_actual=transport.calls,
-                pacing_seconds=pacing_seconds(),
+                rate_limit_cap=chart_pacer.cap,
+                rate_limit_remaining=chart_pacer.remaining,
+                rate_limit_reset_seconds=chart_pacer.reset_seconds,
+                target_tps=chart_pacer.target_tps(),
             )
             await monitor.assert_healthy()
     return stats
@@ -722,15 +984,22 @@ async def async_main(args: argparse.Namespace) -> int:
     transport = CountingTransport()
     shared_limiter = get_shared_rate_limiter()
     manager = TossOAuthTokenManager.from_settings(settings, rate_limiter=shared_limiter)
+    chart_pacer = HeaderAdaptiveChartRateLimiter(
+        shared_limiter, TossApiGroup.MARKET_DATA_CHART
+    )
     client = TossReadClient(
         token_manager=CachedTokenOnlyProvider(manager),
         base_url=resolve_toss_base_url(
             getattr(settings, "toss_api_base_url", None), DEFAULT_TOSS_BASE_URL
         ),
         transport=transport,
-        rate_limiter=PacingRateLimiter(shared_limiter, TossApiGroup.MARKET_DATA_CHART),
+        rate_limiter=chart_pacer,
         retry_on_429=False,
         retry_auth_reissue=False,
+        response_observer=chart_pacer.observe_response,
+        # This optional reader must not emit its own errors as production health
+        # signals while it is applying its dedicated 429 recovery policy.
+        publish_error_signals=False,
     )
     monitor = CombinedTossHealthMonitor(
         SharedTossHealthMonitor(read_toss_api_error_signal),
@@ -746,7 +1015,15 @@ async def async_main(args: argparse.Namespace) -> int:
             "collection_started",
             scope="top-200 x 4.6y",
             call_budget_declared=args.call_budget,
-            pacing_seconds=pacing_seconds(),
+            cap_auto_discovery="X-RateLimit-Limit response header",
+            intraday_target_tps_max=INTRADAY_TARGET_TPS_MAX,
+            intraday_production_chart_headroom_tps=INTRADAY_CHART_HEADROOM_TPS,
+            low_remaining_fraction=LOW_REMAINING_FRACTION,
+            after_close_target_tps_range=[
+                AFTER_CLOSE_TARGET_TPS_MIN,
+                AFTER_CLOSE_TARGET_TPS_MAX,
+            ],
+            consecutive_429_stop_at=CONSECUTIVE_429_STOP_AT,
             latest_session_excluded=True,
             latest_session_definition=(
                 "session_date_kst >= collection_start_kst_date is excluded"
@@ -759,6 +1036,7 @@ async def async_main(args: argparse.Namespace) -> int:
         stats = await collect(
             client=client,
             transport=transport,
+            chart_pacer=chart_pacer,
             monitor=monitor,
             staging_dir=args.staging_dir,
             symbols=symbols,
