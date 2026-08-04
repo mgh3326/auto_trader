@@ -5,9 +5,10 @@
   "notes": [
     "Synthetic only \u2014 not real KR market data.",
     "Exploration window subset; no holdout dates.",
-    "Schema is inferred from brief \u00a73 literals."
+    "OHLCV columns match sealed kr-corpus-v1 (ticker/session/value int64).",
+    "value is non-null here so value_rank wiring can exercise; sealed corpus may carry null value cells which must not be imputed."
   ],
-  "schema_origin": "INFERRED_FROM_LITERALS",
+  "schema_origin": "SEALED_CORPUS_V1",
   "window": {
     "end": "2023-02-15",
     "start": "2023-01-02"

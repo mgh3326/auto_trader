@@ -1,10 +1,12 @@
-"""Build synthetic KR corpus fixtures for Stage A harness wiring.
+"""Build synthetic KR corpus fixtures for harness wiring.
 
 Fixture data lives under ``research/kr_corpus/backtest/fixtures/synthetic_v1/``
 (or a caller-provided root). Dates are confined to the exploration window
 (2023-01-01..2023-02-15 subset for compact smoke). **No holdout dates.**
 
-Partition layout matches the declared contract: ``dataset/market/year``.
+OHLCV column names/types match the sealed kr-corpus-v1 schema (ticker/session/
+value int64 + price_mode/source_product). Membership remains the harness
+fixture contract (symbol/session_date/member/status).
 """
 
 from __future__ import annotations
@@ -30,12 +32,12 @@ FIXTURE_REL_ROOT = Path(__file__).resolve().parent / "fixtures" / "synthetic_v1"
 _FIXTURE_START = date(2023, 1, 2)
 _FIXTURE_END = date(2023, 2, 15)
 _SYMBOLS = (
-    # (symbol, market, base_price, value_scale)
-    ("005930", "KOSPI", 70000.0, 1_000_000_000.0),
-    ("000660", "KOSPI", 120000.0, 800_000_000.0),
-    ("035420", "KOSPI", 200000.0, 500_000_000.0),
-    ("247540", "KOSDAQ", 80000.0, 300_000_000.0),
-    ("086520", "KOSDAQ", 50000.0, 200_000_000.0),
+    # (ticker, market, base_price_int, value_scale)
+    ("005930", "KOSPI", 70_000, 1_000_000_000),
+    ("000660", "KOSPI", 120_000, 800_000_000),
+    ("035420", "KOSPI", 200_000, 500_000_000),
+    ("247540", "KOSDAQ", 80_000, 300_000_000),
+    ("086520", "KOSDAQ", 50_000, 200_000_000),
 )
 
 
@@ -63,32 +65,34 @@ def build_synthetic_fixture(root: Path | None = None) -> Path:
 
     for i, session in enumerate(sessions):
         year = session.year
-        for j, (symbol, market, base_px, value_scale) in enumerate(_SYMBOLS):
-            # Simple deterministic walk; day index moves price.
-            px = round(base_px * (1.0 + 0.001 * i + 0.01 * j), 2)
-            trading_value = value_scale * (1.0 + 0.05 * ((i + j) % 7))
+        for j, (ticker, market, base_px, value_scale) in enumerate(_SYMBOLS):
+            # Simple deterministic walk; day index moves price (integer KRW).
+            px = int(base_px + i * 10 + j * 100)
+            trading_value = int(value_scale * (1 + ((i + j) % 7)) // 1)
             # Delist 086520 after mid window to exercise terminal path.
-            delisted = symbol == "086520" and session >= date(2023, 2, 1)
+            delisted = ticker == "086520" and session >= date(2023, 2, 1)
             status = "delisted" if delisted else "listed"
             member = not delisted
 
             ohlcv_key = (market, year)
             ohlcv_rows.setdefault(ohlcv_key, []).append(
                 {
-                    "symbol": symbol,
-                    "session_date": session.isoformat(),
-                    "open": px,
-                    "high": px * 1.01,
-                    "low": px * 0.99,
-                    "close": px,
-                    "volume": 1_000_000.0 + 1000 * i,
-                    "trading_value": float(trading_value),
+                    "session": session.isoformat(),
                     "market": market,
+                    "ticker": ticker,
+                    "open": px,
+                    "high": px + 100,
+                    "low": px - 100,
+                    "close": px,
+                    "volume": 1_000_000 + 1000 * i,
+                    "value": trading_value,
+                    "price_mode": "adjusted",
+                    "source_product": "synthetic_fixture",
                 }
             )
             memb_rows.setdefault(ohlcv_key, []).append(
                 {
-                    "symbol": symbol,
+                    "symbol": ticker,
                     "session_date": session.isoformat(),
                     "market": market,
                     "member": member,
@@ -146,7 +150,7 @@ def build_synthetic_fixture(root: Path | None = None) -> Path:
         "fixture_id": "kr-backtest-harness-synthetic-v1",
         "JOB_PURPOSE": "BACKTEST_HARNESS_WIRING_ONLY",
         "label": "PIPELINE_SMOKE_NOT_A_STRATEGY",
-        "schema_origin": "INFERRED_FROM_LITERALS",
+        "schema_origin": "SEALED_CORPUS_V1",
         "window": {
             "start": _FIXTURE_START.isoformat(),
             "end": _FIXTURE_END.isoformat(),
@@ -154,7 +158,9 @@ def build_synthetic_fixture(root: Path | None = None) -> Path:
         "notes": [
             "Synthetic only — not real KR market data.",
             "Exploration window subset; no holdout dates.",
-            "Schema is inferred from brief §3 literals.",
+            "OHLCV columns match sealed kr-corpus-v1 (ticker/session/value int64).",
+            "value is non-null here so value_rank wiring can exercise; sealed "
+            "corpus may carry null value cells which must not be imputed.",
         ],
     }
     (fixture_root / "fixture_meta.json").write_text(

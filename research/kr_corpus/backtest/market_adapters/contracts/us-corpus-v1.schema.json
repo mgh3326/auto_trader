@@ -1,14 +1,18 @@
 {
   "contract_id": "us-corpus-v1.harness-schema.v1",
-  "schema_origin": "INFERRED_FROM_LITERALS",
-  "schema_origin_note": "INFERRED_FROM_LITERALS: declared from the harness adapter brief, not a real us-corpus-v1 manifest. The raw timestamp_utc field is required to preserve UTC source time and derive session_date in America/New_York. Stage B must contrast a terminal manifest and loud-fail on any mismatch; silent coercion is forbidden.",
-  "corpus_schema_source": "US adapter brief literals",
+  "corpus_id": "us-corpus-v1",
+  "schema_origin": "SEALED_CORPUS_V1",
+  "schema_origin_note": "Contrasted against sealed us-corpus-v1 dataset/market=us/year=2024/part-00000.parquet. Real columns only. trading_value is ABSENT — the sealed corpus has no exchange-reported dollar turnover; adapters must not synthesize close×volume into trading_value (price_mode=adjusted would distort).",
+  "corpus_schema_source": "sealed us-corpus-v1 parquet schema",
+  "table_load_policy_authority": "code registry CORPUS_TABLE_LOAD_POLICY_BY_ID['us-corpus-v1']; file cannot opt out of SURVIVORSHIP_BIASED label gate",
   "frequency": "1d",
   "price_mode": "adjusted",
-  "timestamp_storage": "timestamp_utc is ISO-8601 aware UTC and is retained without local re-anchoring",
-  "session_date_derivation": "America/New_York from timestamp_utc",
+  "timestamp_storage": "session_date is timestamp[ms] naive midnight representing the XNYS session calendar date; no separate raw UTC timestamp column exists in the sealed corpus",
+  "session_date_derivation": "session_date column is authoritative (XNYS calendar day). No ET re-derivation from a raw UTC timestamp is possible without inventing that timestamp.",
   "session_calendar": "XNYS",
   "markets_allowed": ["US"],
+  "trading_value_resolution": "ABSENT_DECLARED",
+  "trading_value_policy": "Do not populate trading_value. Optional named proxy fields are out of this contract; inventing trading_value from adjusted close×volume is forbidden.",
   "partition_keys": ["dataset", "market", "year"],
   "partition_layout": "dataset/market/year",
   "membership_storage": "separate_from_ohlcv",
@@ -18,27 +22,55 @@
   },
   "datasets": {
     "ohlcv": {
-      "required_columns": ["symbol", "timestamp_utc", "session_date", "open", "high", "low", "close", "volume", "trading_value", "market"],
+      "required_columns": [
+        "symbol",
+        "session_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume"
+      ],
+      "nullable_columns": [
+        "symbol",
+        "session_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume"
+      ],
+      "allow_extra_columns": false,
+      "date_column": "session_date",
+      "table_load_policy": {
+        "require_schema_metadata_equals": {
+          "SURVIVORSHIP_BIASED": "TRUE"
+        }
+      },
       "column_dtypes": {
-        "symbol": "string",
-        "timestamp_utc": "string",
-        "session_date": "string",
+        "symbol": "large_string",
+        "session_date": "timestamp_ms",
         "open": "float64",
         "high": "float64",
         "low": "float64",
         "close": "float64",
-        "volume": "float64",
-        "trading_value": "float64",
-        "market": "string"
+        "volume": "int64"
       },
+      "forbidden_columns": ["trading_value"],
       "notes": {
-        "session_date": "must equal date(timestamp_utc at America/New_York)",
+        "session_date": "timestamp[ms] naive; .date() is the XNYS session calendar day",
+        "nullability": "Sealed US parquet is pandas-written with nullable=True on every field; adapter still refuses null cell values at bar construction",
+        "market": "not a parquet column; adapter injects constant market='US' on the bar object only",
+        "trading_value": "ABSENT — never synthesized",
         "calendar": "must be an XNYS session; holiday/non-session rows fail loudly",
-        "schema_inference": "The common OHLCV / manifest envelope is inferred. timestamp_utc is explicitly required by the UTC-preservation rule."
+        "price_mode": "adjusted (schema metadata); not a data column"
       }
     },
     "membership": {
       "required_columns": ["symbol", "session_date", "market", "member", "status"],
+      "nullable_columns": [],
+      "allow_extra_columns": false,
+      "date_column": "session_date",
       "column_dtypes": {
         "symbol": "string",
         "session_date": "string",
@@ -49,7 +81,8 @@
       "status_enum": ["listed", "delisted", "suspended"],
       "notes": {
         "pit": "universe at session t uses membership rows <= t only",
-        "terminal": "delisted holdings require an explicit terminal event"
+        "terminal": "delisted holdings require an explicit terminal event",
+        "scope": "Harness/fixture membership contract only; sealed US corpus is survivorship-biased and has no delist membership table in this job."
       }
     }
   },

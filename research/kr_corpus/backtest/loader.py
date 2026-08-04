@@ -46,7 +46,12 @@ from holdout_guard import (
     assert_path_not_holdout,
     assert_range_not_holdout,
 )
-from schema_contract import CONTRACT_PATH, SchemaMismatchError, validate_table_schema
+from schema_contract import (
+    CorpusKind,
+    SchemaMismatchError,
+    date_column_for,
+    validate_table_schema,
+)
 from windows import EXPLORATION_WINDOW, parse_iso_date
 
 __all__ = [
@@ -208,13 +213,13 @@ def load_shard(
     *,
     allowed_window_start: date | str | None = None,
     allowed_window_end: date | str | None = None,
-    contract_path: Path | str = CONTRACT_PATH,
+    corpus: CorpusKind = CorpusKind.KR_V1,
     holdout_policy: HoldoutPolicy = DEFAULT_HOLDOUT_POLICY,
 ) -> pa.Table:
     """Load one parquet shard under manifest SHA-256 gate + holdout dual gate.
 
-    Reuses the single-buffer hash-then-parse discipline from
-    ``research/alpaca_track/persistence.py`` lines 87–100.
+    Schema and load policy are selected only by ``corpus: CorpusKind``.
+    There is no ``contract_path`` argument.
 
     Order:
     1. partition year date-gate (before any byte read — NICE-1)
@@ -247,7 +252,7 @@ def load_shard(
 
     table = pq.read_table(pa.BufferReader(data))
     try:
-        validate_table_schema(table, entry.dataset, contract_path=contract_path)
+        validate_table_schema(table, entry.dataset, corpus=corpus)
     except SchemaMismatchError as exc:
         raise LoaderError(str(exc)) from exc
 
@@ -257,7 +262,12 @@ def load_shard(
             f"manifest={entry.row_count} actual={table.num_rows}"
         )
 
-    _assert_no_holdout_rows(table, holdout_policy=holdout_policy)
+    _assert_no_holdout_rows(
+        table,
+        holdout_policy=holdout_policy,
+        corpus=corpus,
+        dataset=entry.dataset,
+    )
 
     # Optional caller window: still dual-gated against holdout.
     if allowed_window_start is not None and allowed_window_end is not None:
@@ -281,11 +291,14 @@ def _assert_no_holdout_rows(
     table: pa.Table,
     *,
     holdout_policy: HoldoutPolicy,
+    corpus: CorpusKind = CorpusKind.KR_V1,
+    dataset: str = "ohlcv",
 ) -> None:
-    """Date-level holdout gate over every session_date in the table."""
-    if "session_date" not in table.column_names:
-        raise LoaderError("table missing session_date column")
-    col = table.column("session_date")
+    """Date-level holdout gate over every row date column from the contract."""
+    date_col = date_column_for(dataset, corpus=corpus)
+    if date_col not in table.column_names:
+        raise LoaderError(f"table missing date column {date_col!r}")
+    col = table.column(date_col)
     for i in range(len(col)):
         raw = col[i].as_py()
         try:

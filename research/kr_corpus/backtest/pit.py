@@ -2,13 +2,18 @@
 
 Lookahead is a hard error when a decision context is found to include a
 future row. Walk-forward boundary tests inject a future row and assert RED.
+
+KR sealed OHLCV columns are ``ticker`` / ``session`` / ``value`` (int64,
+value nullable). This module is the **explicit mapping layer** onto harness
+``Bar`` fields ``symbol`` / ``session_date`` / ``trading_value``. Null
+``value`` becomes ``trading_value=None`` — never imputed.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 import pyarrow as pa
 from holdout_guard import assert_date_not_holdout
@@ -20,6 +25,7 @@ __all__ = [
     "bars_from_table",
     "bars_available_at",
     "assert_no_lookahead",
+    "parse_session_date",
 ]
 
 
@@ -29,34 +35,82 @@ class LookaheadViolation(RuntimeError):
 
 @dataclass(frozen=True)
 class Bar:
+    """Harness bar after explicit KR sealed-corpus mapping.
+
+    OHLCV remain ``int`` (sealed int64 KRW ticks). ``trading_value`` is the
+    exchange-reported ``value`` column when present, else ``None``.
+    """
+
     symbol: str
     session_date: date
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-    trading_value: float
+    open: int
+    high: int
+    low: int
+    close: int
+    volume: int
+    trading_value: int | None
     market: str
+    price_mode: str
+    source_product: str
+
+
+def parse_session_date(value: date | datetime | str) -> date:
+    """Normalize sealed session labels without inventing a timezone shift."""
+    if type(value) is str:
+        return parse_iso_date(value)
+    if type(value) is date:
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    raise TypeError(f"session date must be date|datetime|str, got {type(value)!r}")
 
 
 def bars_from_table(table: pa.Table) -> list[Bar]:
+    """Map sealed KR OHLCV columns onto harness bars.
+
+    Required real columns: session, market, ticker, open/high/low/close/volume,
+    value, price_mode, source_product. Mapping is the only rename site.
+    """
+    required = (
+        "session",
+        "market",
+        "ticker",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "value",
+        "price_mode",
+        "source_product",
+    )
+    missing = [c for c in required if c not in table.column_names]
+    if missing:
+        raise ValueError(f"KR bars_from_table missing columns {missing}")
+
     data = table.to_pydict()
     out: list[Bar] = []
     for i in range(table.num_rows):
-        session = parse_iso_date(data["session_date"][i])
+        session = parse_session_date(data["session"][i])
         assert_date_not_holdout(session)
+        raw_value = data["value"][i]
+        if raw_value is None:
+            trading_value: int | None = None
+        else:
+            trading_value = int(raw_value)
         out.append(
             Bar(
-                symbol=str(data["symbol"][i]),
+                symbol=str(data["ticker"][i]),
                 session_date=session,
-                open=float(data["open"][i]),
-                high=float(data["high"][i]),
-                low=float(data["low"][i]),
-                close=float(data["close"][i]),
-                volume=float(data["volume"][i]),
-                trading_value=float(data["trading_value"][i]),
+                open=int(data["open"][i]),
+                high=int(data["high"][i]),
+                low=int(data["low"][i]),
+                close=int(data["close"][i]),
+                volume=int(data["volume"][i]),
+                trading_value=trading_value,
                 market=str(data["market"][i]),
+                price_mode=str(data["price_mode"][i]),
+                source_product=str(data["source_product"][i]),
             )
         )
     return out

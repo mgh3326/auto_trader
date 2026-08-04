@@ -51,7 +51,7 @@ def test_smoke_default_uses_committed_fixture_without_rebuild():
     assert report["CORPUS_ARTIFACT_ROOT_READS"] == 0
     assert report["HOLDOUT_READS"] == 0
     assert report["REAL_DATA_SMOKE_RAN"] is False
-    assert report["schema_origin"] == "INFERRED_FROM_LITERALS"
+    assert report["schema_origin"] == "SEALED_CORPUS_V1"
     assert report["fixture_rebuild_before_verify"] is False
     assert report["sha_gate_exercised_on_committed_bytes"] is True
     assert Path(report["fixture_root"]) == FIXTURE_REL_ROOT

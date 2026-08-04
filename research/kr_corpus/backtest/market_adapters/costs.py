@@ -5,9 +5,36 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-__all__ = ["CostModel", "OrderSide"]
+__all__ = [
+    "CostModel",
+    "OrderSide",
+    "KR_COST_WIRED",
+    "KR_COST_PARAMS_DECLARED",
+    "KRCostParamsUnsetError",
+    "require_kr_cost_model",
+]
 
 OrderSide = Literal["buy", "sell"]
+
+# KR harness imports CostModel through this module (same path crypto/US use).
+# Sealed kr-corpus-v1 does not declare fee/slippage parameters. Wiring is
+# present; parameters are explicitly unset so callers cannot silently invent
+# them via a default constant.
+KR_COST_WIRED = True
+KR_COST_PARAMS_DECLARED = False
+
+
+class KRCostParamsUnsetError(RuntimeError):
+    """KR cost parameters are not declared; inventing defaults is forbidden."""
+
+
+def require_kr_cost_model() -> CostModel:
+    """Refuse to invent KR fee/slippage; operator must supply CostModel explicitly."""
+    raise KRCostParamsUnsetError(
+        "KR cost parameters are not declared in the sealed corpus contract. "
+        "Construct CostModel(fee_bp=..., slippage_bp_per_side=...) with "
+        "operator-approved values. Inventing defaults is forbidden."
+    )
 
 
 @dataclass(frozen=True)

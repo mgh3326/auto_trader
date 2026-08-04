@@ -12,7 +12,7 @@ import pytest
 from pit import Bar, LookaheadViolation, assert_no_lookahead, bars_available_at
 
 
-def _bar(symbol: str, session: str, close: float = 100.0) -> Bar:
+def _bar(symbol: str, session: str, close: int = 100) -> Bar:
     d = date.fromisoformat(session)
     return Bar(
         symbol=symbol,
@@ -21,9 +21,11 @@ def _bar(symbol: str, session: str, close: float = 100.0) -> Bar:
         high=close,
         low=close,
         close=close,
-        volume=1_000.0,
-        trading_value=1_000_000.0,
+        volume=1_000,
+        trading_value=1_000_000,
         market="KOSPI",
+        price_mode="adjusted",
+        source_product="test",
     )
 
 
