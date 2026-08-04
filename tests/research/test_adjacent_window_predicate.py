@@ -582,6 +582,14 @@ def test_predicate_name_version_and_hash_are_frozen():
     ]
 
 
+def test_module_source_freeze_assertion_runs_before_predicate_body():
+    source = PREDICATE_SOURCE.read_text(encoding="utf-8")
+
+    assert source.index("\n_assert_module_source_is_frozen()\n") < source.index(
+        "\n@dataclass(frozen=True)\nclass ComparisonContext"
+    )
+
+
 def test_changing_the_canonical_spec_changes_its_hash():
     altered = copy.deepcopy(predicate.predicate_spec_payload())
     altered["invariants"][0]["rule"] += " changed"
@@ -671,3 +679,7 @@ def test_promotion_gate_is_registered_in_the_operator_runbook():
     assert "trade" in runbook
     assert "PnL" in runbook
     assert "canonical" in runbook
+    assert "holdout and design session declarations" in runbook
+    assert "raw comparison artifact and its SHA-256" in runbook
+    assert "bucket count, compared" in runbook
+    assert "검사 호출 제거" in runbook

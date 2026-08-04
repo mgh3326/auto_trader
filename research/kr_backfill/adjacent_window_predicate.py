@@ -11,9 +11,9 @@ reaggregation remain separate operator work.
 
 The frozen hashes detect accidental edits to the declared contract and this
 module's source at import time.  They do not make Python code unchangeable:
-an actor who changes a digest with the source, uses ``object.__setattr__``, or
-monkeypatches after import can still bypass them.  Review and controlled
-deployment remain required.
+an actor who changes a digest with the source, removes the source-freeze
+assertion call, uses ``object.__setattr__``, or monkeypatches after import can
+still bypass them.  Review and controlled deployment remain required.
 """
 
 from __future__ import annotations
@@ -177,7 +177,7 @@ if _spec_hash() != PREDICATE_SPEC_SHA256:
 # own literal with a stable marker.  It therefore covers implementation code
 # and operational constants as well as the declarative specification above.
 MODULE_SOURCE_SHA256 = (
-    "584f08d4025467ce5ae0f8fb6edc9800e0df5abaf74795dd8d3929612cc65ba5"
+    "3ebedb9e7e0bdc1cab18e95c8026cbd9440fe74ca3b941894d0e30131d3e54d0"
 )
 
 
@@ -192,6 +192,17 @@ def _module_source_hash() -> str:
     return hashlib.sha256(
         source.replace(literal, b"<MODULE_SOURCE_SHA256>", 1)
     ).hexdigest()
+
+
+def _assert_module_source_is_frozen() -> None:
+    if _module_source_hash() != MODULE_SOURCE_SHA256:
+        raise RuntimeError(
+            "ADJACENT_WINDOW_EQUIVALENT_V1 module source changed; issue a new "
+            "version and frozen SHA-256 before use"
+        )
+
+
+_assert_module_source_is_frozen()
 
 
 @dataclass(frozen=True)
@@ -934,14 +945,3 @@ def _isolation_failures(
 def _is_krx_regular_minute(timestamp: datetime) -> bool:
     minute = timestamp.timetz().replace(tzinfo=None)
     return REGULAR_SESSION_START <= minute <= REGULAR_SESSION_END
-
-
-def _assert_module_source_is_frozen() -> None:
-    if _module_source_hash() != MODULE_SOURCE_SHA256:
-        raise RuntimeError(
-            "ADJACENT_WINDOW_EQUIVALENT_V1 module source changed; issue a new "
-            "version and frozen SHA-256 before use"
-        )
-
-
-_assert_module_source_is_frozen()

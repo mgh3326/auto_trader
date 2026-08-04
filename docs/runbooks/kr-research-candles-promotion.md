@@ -133,6 +133,21 @@ operation by itself; the required operator approval remains separate.
 specification SHA-256 and module-source SHA-256. The import checks detect
 accidental edits to the declared contract, execution code, and frozen
 operational constants. This is not a claim that Python code cannot be changed:
-changing a digest alongside source, `object.__setattr__`, and post-import
-monkeypatching remain residual bypasses that controlled review and deployment
-must prevent.
+changing a digest alongside source, removing the
+`_assert_module_source_is_frozen()` check call (검사 호출 제거),
+`object.__setattr__`, and post-import monkeypatching remain residual bypasses
+that controlled review and deployment must prevent.
+
+## 8. Adjacent-window predicate evidence citation duties
+
+`ADJACENT_WINDOW_EQUIVALENT_V1` is a pure local classifier. The following
+facts are operational evidence duties, not guarantees that the module can
+establish by itself:
+
+- Record the holdout and design session declarations in the Phase B artifact;
+  the caller must directly compare those sets and report the result.
+- Cite `SHARD_GATE = PASS_WITH_DOCUMENTED_EXCEPTION` only together with the
+  raw comparison artifact and its SHA-256.
+- Attach an independently reaggregated higher-timeframe table for 5m, 15m,
+  30m, and 1h. For each timeframe, the table must show bucket count, compared
+  cell count, and mismatch count.
