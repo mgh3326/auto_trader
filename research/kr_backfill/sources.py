@@ -33,8 +33,8 @@ FREEZE_END = dtime(20, 0)
 
 #: What each source's `value` field actually is. Discovered during Stage A prep.
 VALUE_SEMANTICS: dict[str, str] = {
-    # broker-reported traded value (거래대금)
-    "kiwoom": "broker_reported_trde_prica",
+    # ka10080 minute rows omit traded value; derive the stable proxy explicitly.
+    "kiwoom": "synthesised_close_times_volume",
     "kis": "broker_reported_acml_tr_pbmn",
     # NOT broker-reported: app/services/brokers/toss/candles.py computes
     # value = close * volume. Comparing it against the others measures the
@@ -85,7 +85,12 @@ class Pacer:
 def _to_float(raw: Any) -> float:
     # Kiwoom prefixes price/volume with a direction sign ("-78800"); the
     # magnitude is the value, the sign is 전일대비 direction.
-    return abs(float(str(raw).strip().replace(",", "") or 0))
+    if raw is None:
+        return 0.0
+    normalized = str(raw).strip().replace(",", "")
+    if not normalized or normalized.lower() == "none":
+        return 0.0
+    return abs(float(normalized))
 
 
 def in_regular_session(ts: datetime) -> bool:
@@ -129,6 +134,11 @@ async def fetch_kiwoom_minutes(
             body=body,
             **({"cont_yn": cont_yn, "next_key": next_key} if cont_yn else {}),
         )
+        if int(payload.get("return_code", 0)) != 0:
+            raise RuntimeError(
+                "Kiwoom ka10080 rejected request "
+                f"return_code={payload.get('return_code')!r}"
+            )
         rows = payload.get("stk_min_pole_chart_qry") or []
         meta["pages"] += 1
         meta["rows_raw"] += len(rows)
@@ -139,13 +149,15 @@ async def fetch_kiwoom_minutes(
             if len(raw_ts) < 12:
                 continue
             ts = datetime.strptime(raw_ts[:12], "%Y%m%d%H%M")
+            close = _to_float(r.get("cur_prc"))
+            volume = _to_float(r.get("trde_qty"))
             out[ts] = {
                 "open": _to_float(r.get("open_pric")),
                 "high": _to_float(r.get("high_pric")),
                 "low": _to_float(r.get("low_pric")),
-                "close": _to_float(r.get("cur_prc")),
-                "volume": _to_float(r.get("trde_qty")),
-                "value": _to_float(r.get("trde_prica")),
+                "close": close,
+                "volume": volume,
+                "value": close * volume,
             }
         # post_api merges the cont-yn / next-key response headers into payload.
         more = str(payload.get("cont_yn", "")).strip().upper() == "Y"
