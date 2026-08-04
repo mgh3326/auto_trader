@@ -43,6 +43,7 @@ TRADE_TYPE_SELL = "1"  # 매도
 TRADE_TYPE_BUY = "2"  # 매수
 
 # Chart API IDs (scaffolded, deferred — NOT routed from get_ohlcv)
+CHART_PATH = "/api/dostk/chart"
 CHART_MINUTE_API_ID = "ka10080"
 CHART_DAILY_API_ID = "ka10081"
 CHART_WEEKLY_API_ID = "ka10082"

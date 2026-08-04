@@ -106,7 +106,7 @@ async def fetch_kiwoom_minutes(
     max_pages: int = 1,
     base_dt: str | None = None,
 ) -> tuple[dict[datetime, dict[str, float]], dict[str, Any]]:
-    from app.services.brokers.kiwoom.live_market_data import CHART_PATH
+    from app.services.brokers.kiwoom.constants import CHART_PATH
 
     assert_fetch_window_open()
     out: dict[datetime, dict[str, float]] = {}
