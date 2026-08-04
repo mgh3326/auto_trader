@@ -8,12 +8,12 @@ from datetime import UTC, datetime, timedelta
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import schema_contract as _schema_contract_mod
 from loader import ManifestEntry, load_shard, sha256_bytes
 from market_adapters.common import ContractBackedCorpusAdapter
 from market_adapters.crypto import CRYPTO_HOLDOUT_POLICY, CryptoVenueAdapter
 from market_adapters.us import USMarketAdapter
 from schema_contract import (
-    CORPUS_TABLE_LOAD_POLICY_BY_ID,
     ContractTablePolicyError,
     CorpusKind,
     load_contract,
@@ -63,14 +63,15 @@ def _crypto_table(*, frequency: str = "1d", labeled: bool = True) -> pa.Table:
 
 
 def test_registry_requires_crypto_and_us_and_kr():
-    assert set(CORPUS_TABLE_LOAD_POLICY_BY_ID) == {
-        "kr-corpus-v1",
-        "crypto-corpus-v1",
-        "us-corpus-v1",
-    }
+    for cid in ("kr-corpus-v1", "crypto-corpus-v1", "us-corpus-v1"):
+        assert required_table_load_policy(cid, "ohlcv")
     pol = required_table_load_policy("crypto-corpus-v1", "ohlcv")
     assert pol["require_crypto_parquet_labels"] is True
     assert pol["required_column_values"]["frequency"] == "1d"
+    # Not a public export; naive in-place mutation is rejected by MappingProxy.
+    assert "CORPUS_TABLE_LOAD_POLICY_BY_ID" not in _schema_contract_mod.__all__
+    with pytest.raises(TypeError):
+        _schema_contract_mod._CORPUS_TABLE_LOAD_POLICY_BY_ID["x"] = {}  # type: ignore[index]
 
 
 def test_no_contract_path_on_public_load_apis():

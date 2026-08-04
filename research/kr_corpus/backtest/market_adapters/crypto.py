@@ -12,8 +12,9 @@ This adapter is a **daily (1d)** harness binding:
 * ``frequency`` is carried on every ``CryptoBar``
 * label + frequency gates attach to ``CorpusKind.CRYPTO_V1`` (internal committed
   contract + registry). Callers cannot pass a contract file path.
-* Caveat: raw ``pyarrow`` outside this harness remains residual; supported
-  enum-selected loads always use the crypto committed contract.
+* Caveat: supported enum loads use the crypto committed contract. Residual
+  (not blocked here): raw ``pyarrow`` outside this harness, and Python
+  monkeypatch of internal module attributes (same class as raw-PyArrow).
 
 Bar time is ``open_time_utc`` (inclusive). ``close_time_utc`` is the exclusive
 end from the sealed builder. Session date is the UTC calendar day of the open.

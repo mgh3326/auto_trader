@@ -9,15 +9,17 @@ performs schema + corpus-kind table_load_policy refusal.
 contract path is resolved inside ``schema_contract.contract_path_for``. There is
 no public ``contract_path`` constructor argument or load keyword.
 
-Caveat (accurate residual boundary):
+Caveat (accurate residual boundary — what is gated vs what is not):
 
-* **Blocked on supported paths:** any load through this adapter / ``loader``
-  with a ``CorpusKind`` uses the internal committed contract + registry policy
-  for that kind. Caller-supplied JSON paths are not accepted, so R4/R5 style
-  "temp contract with stripped policy / swapped corpus_id" cannot be fed in.
-* **Not claimed blocked:** raw ``pyarrow.parquet.read_table`` (or any code that
-  never calls this harness). That residual is the same class as always: out-of-
-  process or out-of-API reads are outside the harness trust boundary.
+* **Gated on supported harness paths:** loads that take ``CorpusKind`` use the
+  internal committed contract for that kind. There is no caller ``contract_path``
+  input, so temp-JSON policy strip / corpus_id swap cannot be supplied as an
+  argument.
+* **Not gated (same class as raw PyArrow):** (1) reading parquet via raw
+  ``pyarrow`` without this harness; (2) Python module-attribute monkeypatch
+  (e.g. replacing ``schema_contract._CORPUS_TABLE_LOAD_POLICY_BY_ID``). MappingProxy
+  only stops *naive in-place* mutation of the registry object; it does **not**
+  stop ``module._NAME = evil``. We do not claim full process-wide sealing.
 """
 
 from __future__ import annotations

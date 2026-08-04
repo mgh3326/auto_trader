@@ -7,23 +7,30 @@ enum; the committed contract path and table-load policy are resolved
 internally. That removes the R5 class of attack (swap ``corpus_id`` in a
 caller-supplied JSON copy to pick a weaker registry policy).
 
-Table-load policy authority remains the code registry
-``CORPUS_TABLE_LOAD_POLICY_BY_ID``, keyed by the corpus identity of the
-selected kind — not by anything the file can omit or forge at call time.
+Table-load policy authority is the **internal** registry
+``_CORPUS_TABLE_LOAD_POLICY_BY_ID`` (not in ``__all__``), keyed by the corpus
+identity of the selected ``CorpusKind``.
+
+Caveat (honest residual): MappingProxyType blocks *naive in-place mutation*
+of the registry object. It does **not** stop Python module-attribute monkeypatch
+(``schema_contract._CORPUS_TABLE_LOAD_POLICY_BY_ID = evil`` or similar). That
+class of bypass is the same as raw-PyArrow: outside the supported fail-closed
+surface and not claimed blocked.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import pyarrow as pa
 
 __all__ = [
     "CONTRACT_PATH",
-    "CORPUS_TABLE_LOAD_POLICY_BY_ID",
     "CorpusKind",
     "SCHEMA_ORIGIN",
     "SchemaContractError",
@@ -65,26 +72,38 @@ _CORPUS_CONTRACT_PATHS: dict[CorpusKind, Path] = {
     CorpusKind.US_V1: _US_CONTRACT_PATH,
 }
 
-# Authoritative post-schema gates keyed by corpus_id.
-CORPUS_TABLE_LOAD_POLICY_BY_ID: dict[str, dict[str, dict[str, Any]]] = {
-    "kr-corpus-v1": {
-        "ohlcv": {"schema_column_gates_only": True},
-        "membership": {"schema_column_gates_only": True},
-    },
-    "crypto-corpus-v1": {
-        "ohlcv": {
-            "require_crypto_parquet_labels": True,
-            "required_column_values": {"frequency": "1d"},
+
+def _freeze_mapping(value: Any) -> Any:
+    """Recursively wrap dicts in MappingProxyType (naive mutation → TypeError)."""
+    if isinstance(value, dict):
+        return MappingProxyType({k: _freeze_mapping(v) for k, v in value.items()})
+    return value
+
+
+# Internal post-schema gates keyed by corpus_id. Not a public API export.
+# MappingProxyType stops naive ``registry[k] = …`` / nested item assignment;
+# it does not stop ``schema_contract._CORPUS_TABLE_LOAD_POLICY_BY_ID = evil``.
+_CORPUS_TABLE_LOAD_POLICY_BY_ID: Mapping[str, Any] = _freeze_mapping(
+    {
+        "kr-corpus-v1": {
+            "ohlcv": {"schema_column_gates_only": True},
+            "membership": {"schema_column_gates_only": True},
         },
-        "membership": {"schema_column_gates_only": True},
-    },
-    "us-corpus-v1": {
-        "ohlcv": {
-            "require_schema_metadata_equals": {"SURVIVORSHIP_BIASED": "TRUE"},
+        "crypto-corpus-v1": {
+            "ohlcv": {
+                "require_crypto_parquet_labels": True,
+                "required_column_values": {"frequency": "1d"},
+            },
+            "membership": {"schema_column_gates_only": True},
         },
-        "membership": {"schema_column_gates_only": True},
-    },
-}
+        "us-corpus-v1": {
+            "ohlcv": {
+                "require_schema_metadata_equals": {"SURVIVORSHIP_BIASED": "TRUE"},
+            },
+            "membership": {"schema_column_gates_only": True},
+        },
+    }
+)
 
 _ARROW_DTYPE_MAP: dict[str, pa.DataType] = {
     "string": pa.string(),
@@ -143,10 +162,10 @@ def load_contract(corpus: CorpusKind = CorpusKind.KR_V1) -> dict[str, Any]:
             f"committed contract at {path} has corpus_id={corpus_id!r} "
             f"but CorpusKind requires {corpus.value!r}"
         )
-    if corpus_id not in CORPUS_TABLE_LOAD_POLICY_BY_ID:
+    if corpus_id not in _CORPUS_TABLE_LOAD_POLICY_BY_ID:
         raise SchemaContractError(
             f"unknown corpus_id {corpus_id!r}; not in "
-            f"{sorted(CORPUS_TABLE_LOAD_POLICY_BY_ID)!r}"
+            f"{sorted(_CORPUS_TABLE_LOAD_POLICY_BY_ID)!r}"
         )
     return contract
 
@@ -154,23 +173,23 @@ def load_contract(corpus: CorpusKind = CorpusKind.KR_V1) -> dict[str, Any]:
 def required_table_load_policy(
     corpus_id: str,
     dataset: str,
-) -> dict[str, Any]:
+) -> Mapping[str, Any]:
     """Return the code-registry policy for ``corpus_id`` × ``dataset``."""
-    if corpus_id not in CORPUS_TABLE_LOAD_POLICY_BY_ID:
+    if corpus_id not in _CORPUS_TABLE_LOAD_POLICY_BY_ID:
         raise ContractTablePolicyError(
             f"no table_load_policy registry entry for corpus_id={corpus_id!r}"
         )
-    by_dataset = CORPUS_TABLE_LOAD_POLICY_BY_ID[corpus_id]
+    by_dataset = _CORPUS_TABLE_LOAD_POLICY_BY_ID[corpus_id]
     if dataset not in by_dataset:
         raise ContractTablePolicyError(
             f"corpus_id={corpus_id!r} has no table_load_policy for "
             f"dataset={dataset!r}; refusing load"
         )
     policy = by_dataset[dataset]
-    if not isinstance(policy, dict) or not policy:
+    if not isinstance(policy, Mapping) or not policy:
         raise ContractTablePolicyError(
             f"corpus_id={corpus_id!r} dataset={dataset!r} registry policy "
-            f"must be a non-empty dict; got {policy!r}"
+            f"must be a non-empty mapping; got {policy!r}"
         )
     return policy
 
@@ -256,9 +275,9 @@ def enforce_table_load_policy(
 
     meta_eq = policy.get("require_schema_metadata_equals")
     if meta_eq is not None:
-        if not isinstance(meta_eq, dict) or not meta_eq:
+        if not isinstance(meta_eq, Mapping) or not meta_eq:
             raise ContractTablePolicyError(
-                f"require_schema_metadata_equals must be a non-empty dict "
+                f"require_schema_metadata_equals must be a non-empty mapping "
                 f"for corpus_id={corpus_id!r}"
             )
         metadata = table.schema.metadata or {}
@@ -275,9 +294,9 @@ def enforce_table_load_policy(
 
     required_values = policy.get("required_column_values")
     if required_values is not None:
-        if not isinstance(required_values, dict) or not required_values:
+        if not isinstance(required_values, Mapping) or not required_values:
             raise ContractTablePolicyError(
-                f"required_column_values must be a non-empty dict "
+                f"required_column_values must be a non-empty mapping "
                 f"for corpus_id={corpus_id!r}"
             )
         for column, expected in required_values.items():
