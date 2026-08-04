@@ -18,6 +18,7 @@ import csv
 import json
 import os
 from collections import Counter
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from sources import (  # noqa: E402
 
 PRICE_FIELDS = ("open", "high", "low", "close")
 COMPARED_FIELDS = (*PRICE_FIELDS, "volume")
+CLIENT_SOURCES = ("toss", "kiwoom", "kis")
 
 CRITERION = {
     "unit": "(symbol, minute_ts) x field",
@@ -143,21 +145,38 @@ def compare_pair(
     }
 
 
-async def build_clients() -> dict[str, Any]:
-    from app.services.brokers.kis.client import KISClient
-    from app.services.brokers.kiwoom import constants as kw_constants
-    from app.services.brokers.kiwoom.client import KiwoomMockClient
-    from app.services.brokers.toss.client import TossReadClient
+async def build_clients(sources: Iterable[str] | None = None) -> dict[str, Any]:
+    """Build only requested sources, without importing unselected providers."""
+    requested = tuple(dict.fromkeys(CLIENT_SOURCES if sources is None else sources))
+    unknown = sorted(set(requested) - set(CLIENT_SOURCES))
+    if not requested:
+        raise ValueError("at least one backfill client source is required")
+    if unknown:
+        raise ValueError(f"unknown backfill client sources: {unknown}")
 
-    kiwoom = KiwoomMockClient(
-        base_url=kw_constants.MOCK_BASE_URL,
-        app_key=os.environ["KIWOOM_MOCK_APP_KEY"],
-        app_secret=os.environ["KIWOOM_MOCK_APP_SECRET"],
-        account_no="",  # chart TRs ignore it; the scoped env has none
-    )
-    kis = KISClient(is_mock=True)
-    toss = TossReadClient.from_settings()
-    return {"kiwoom": kiwoom, "kis": kis, "toss": toss}
+    clients: dict[str, Any] = {}
+    if "kiwoom" in requested:
+        from app.services.brokers.kiwoom import constants as kw_constants
+        from app.services.brokers.kiwoom.client import KiwoomMockClient
+
+        clients["kiwoom"] = KiwoomMockClient(
+            base_url=kw_constants.MOCK_BASE_URL,
+            app_key=os.environ["KIWOOM_MOCK_APP_KEY"],
+            app_secret=os.environ["KIWOOM_MOCK_APP_SECRET"],
+            account_no="",  # chart TRs ignore it; the scoped env has none
+        )
+
+    if "kis" in requested:
+        from app.services.brokers.kis.client import KISClient
+
+        clients["kis"] = KISClient(is_mock=True)
+
+    if "toss" in requested:
+        from app.services.brokers.toss.client import TossReadClient
+
+        clients["toss"] = TossReadClient.from_settings()
+
+    return clients
 
 
 async def probe_depth(clients: dict, pacers: dict, symbol: str) -> dict[str, Any]:
