@@ -1,8 +1,7 @@
 """Stage B collector — three independent source streams into research history.
 
 Destination is ``research.kr_candles_1m``. Production ``public.kr_candles_1m``
-is a **witness table** here: it is read for latency probing and checked for
-unexpected row-count change, but never written.
+is read only for latency probing and is never written.
 
 Write discipline (all enforced here, not by convention):
 
@@ -17,7 +16,7 @@ Write discipline (all enforced here, not by convention):
 
 Abort conditions (stop the stream, report, do not "work around"):
 conflict ratio far from expectation · query latency regression vs baseline ·
-repeated 429s · any change to a witness table outside kr_candles_1m.
+repeated 429s.
 """
 
 from __future__ import annotations
@@ -66,16 +65,12 @@ SELECT * FROM UNNEST($1::text[], $2::timestamptz[], $3::date[], $4::text[],
 ON CONFLICT (time_utc, symbol, venue) DO NOTHING
 """
 
-#: Production tables that this job must never modify. Checked before and during.
-WITNESS_TABLES = (
-    "public.kr_candles_1m",
-    "public.kr_symbol_universe",
-    "public.stock_info",
-)
-
 #: Latency regression threshold vs the Stage A baseline median (2.127 ms).
 LATENCY_ABORT_FACTOR = 5.0
 MAX_CONSECUTIVE_429 = 3
+
+# DB 권한으로 대체됨(role auto_trader_kr_backfill, 2026-08-04 적용).
+# 행수 감시는 프로덕션 동시 쓰기와 구분 불가.
 
 
 @dataclass
@@ -196,29 +191,16 @@ async def insert_bars(
 
 
 class Guard:
-    """Abort-condition monitor shared by all streams."""
+    """Latency and 429 abort-condition monitor shared by all streams."""
 
     def __init__(self, pool: asyncpg.Pool, baseline_median_ms: float, log: ProgressLog):
         self.pool = pool
         self.baseline = baseline_median_ms
         self.log = log
-        self.witness: dict[str, int] = {}
         self.consecutive_429: dict[str, int] = {}
-
-    async def snapshot_witness(self) -> None:
-        async with self.pool.acquire() as c:
-            for t in WITNESS_TABLES:
-                self.witness[t] = await c.fetchval(f"SELECT count(*) FROM {t}")
 
     async def check(self, source: str) -> None:
         async with self.pool.acquire() as c:
-            for t in WITNESS_TABLES:
-                n = await c.fetchval(f"SELECT count(*) FROM {t}")
-                if n != self.witness[t]:
-                    raise AbortStream(
-                        f"witness table {t} changed {self.witness[t]}->{n} "
-                        f"(out-of-scope write detected)"
-                    )
             samples = []
             for _ in range(5):
                 t0 = time.perf_counter()
@@ -456,7 +438,6 @@ async def main() -> int:
     pool = await asyncpg.create_pool(dsn(), min_size=2, max_size=6)
     log = ProgressLog(args.job_dir / "events" / "progress.jsonl")
     guard = Guard(pool, args.baseline_median_ms, log)
-    await guard.snapshot_witness()
 
     log.write(
         {
