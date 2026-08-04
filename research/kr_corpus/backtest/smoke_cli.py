@@ -30,7 +30,10 @@ if str(_HERE) not in sys.path:
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from baseline_smoke import PIPELINE_SMOKE_LABEL, run_value_rank_topn_d5  # noqa: E402
+from baseline_smoke import (  # noqa: E402
+    PIPELINE_SMOKE_LABEL,
+    run_liquidity_proxy_decile_topn_d5,
+)
 from fixture_builder import FIXTURE_REL_ROOT, build_synthetic_fixture  # noqa: E402
 from loader import load_manifest, load_shard  # noqa: E402
 from membership import membership_rows_from_table  # noqa: E402
@@ -73,7 +76,7 @@ def run_fixture_smoke(
             raise RuntimeError(f"unknown dataset {entry.dataset!r}")
 
     # Fixture window (exploration subset) — hard-coded in fixture_builder.
-    result = run_value_rank_topn_d5(
+    result = run_liquidity_proxy_decile_topn_d5(
         bars=bars,
         membership=membership,
         top_n=3,

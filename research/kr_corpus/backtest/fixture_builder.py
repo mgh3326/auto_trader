@@ -5,7 +5,7 @@ Fixture data lives under ``research/kr_corpus/backtest/fixtures/synthetic_v1/``
 (2023-01-01..2023-02-15 subset for compact smoke). **No holdout dates.**
 
 OHLCV column names/types match the sealed kr-corpus-v1 schema (ticker/session/
-value int64 + price_mode/source_product). Membership remains the harness
+nullable value + price_mode/source_product). Membership remains the harness
 fixture contract (symbol/session_date/member/status).
 """
 
@@ -32,12 +32,12 @@ FIXTURE_REL_ROOT = Path(__file__).resolve().parent / "fixtures" / "synthetic_v1"
 _FIXTURE_START = date(2023, 1, 2)
 _FIXTURE_END = date(2023, 2, 15)
 _SYMBOLS = (
-    # (ticker, market, base_price_int, value_scale)
-    ("005930", "KOSPI", 70_000, 1_000_000_000),
-    ("000660", "KOSPI", 120_000, 800_000_000),
-    ("035420", "KOSPI", 200_000, 500_000_000),
-    ("247540", "KOSDAQ", 80_000, 300_000_000),
-    ("086520", "KOSDAQ", 50_000, 200_000_000),
+    # (ticker, market, base_price_int)
+    ("005930", "KOSPI", 70_000),
+    ("000660", "KOSPI", 120_000),
+    ("035420", "KOSPI", 200_000),
+    ("247540", "KOSDAQ", 80_000),
+    ("086520", "KOSDAQ", 50_000),
 )
 
 
@@ -65,10 +65,9 @@ def build_synthetic_fixture(root: Path | None = None) -> Path:
 
     for i, session in enumerate(sessions):
         year = session.year
-        for j, (ticker, market, base_px, value_scale) in enumerate(_SYMBOLS):
+        for j, (ticker, market, base_px) in enumerate(_SYMBOLS):
             # Simple deterministic walk; day index moves price (integer KRW).
             px = int(base_px + i * 10 + j * 100)
-            trading_value = int(value_scale * (1 + ((i + j) % 7)) // 1)
             # Delist 086520 after mid window to exercise terminal path.
             delisted = ticker == "086520" and session >= date(2023, 2, 1)
             status = "delisted" if delisted else "listed"
@@ -85,7 +84,7 @@ def build_synthetic_fixture(root: Path | None = None) -> Path:
                     "low": px - 100,
                     "close": px,
                     "volume": 1_000_000 + 1000 * i,
-                    "value": trading_value,
+                    "value": None,
                     "price_mode": "adjusted",
                     "source_product": "synthetic_fixture",
                 }
@@ -158,9 +157,8 @@ def build_synthetic_fixture(root: Path | None = None) -> Path:
         "notes": [
             "Synthetic only — not real KR market data.",
             "Exploration window subset; no holdout dates.",
-            "OHLCV columns match sealed kr-corpus-v1 (ticker/session/value int64).",
-            "value is non-null here so value_rank wiring can exercise; sealed "
-            "corpus may carry null value cells which must not be imputed.",
+            "OHLCV columns match sealed kr-corpus-v1 (ticker/session/nullable value).",
+            "value is null here by design; D5 ranks only on the close×volume proxy.",
         ],
     }
     (fixture_root / "fixture_meta.json").write_text(

@@ -1,13 +1,27 @@
-"""Baseline pipeline smoke: value_rank_topN_D5.
+"""Baseline pipeline smoke: liquidity_proxy_decile_topN_D5.
 
 JOB_PURPOSE=BACKTEST_HARNESS_WIRING_ONLY
 LABEL=PIPELINE_SMOKE_NOT_A_STRATEGY
 
-This is a **pipeline integrity** probe, not a strategy:
-* each session ``t``: rank investable universe by that day's ``trading_value``
-* buy top-N equal-weight
+This is a **pipeline integrity** probe, not a strategy. ``trading_value`` is
+not usable here: the KR corpus has it null for 100% of the observed range and
+the US intraday schema does not contain that field. The shared liquidity cohort
+therefore uses the ``close × volume`` proxy, calculated from each session's
+close and volume and never named or treated as exchange-reported turnover.
+For each session, the top proxy decile (top 10%, with at least one symbol) is
+formed and the top-N symbols within that cohort are bought equal-weight.
 * exit at session ``t + holding_days`` (default 5)
 * delisted holdings force-exit with explicit terminal events
+
+The proxy can differ materially from actual turnover: it uses the closing
+price rather than a volume-weighted average price (VWAP), and it does not
+capture the intraday price path, trade-size distribution, or venue effects.
+The US universe is a frozen active-symbol snapshot and therefore has known
+survivorship bias; this baseline does not correct it.
+
+The ranking decision at session ``t`` consumes only that session's available
+bar. This is PIT-compliant with respect to the bar inputs, subject to the
+universe membership guard.
 
 **Fill / pricing assumption (same-bar, documented — not a strategy claim):**
 entry and exit lots are marked at session ``t`` **close** on the decision
@@ -42,7 +56,7 @@ __all__ = [
     "BASELINE_NAME",
     "OpenLot",
     "SmokeResult",
-    "run_value_rank_topn_d5",
+    "run_liquidity_proxy_decile_topn_d5",
     "KR_COST_WIRED",
     "KR_COST_PARAMS_DECLARED",
     "KRCostParamsUnsetError",
@@ -50,7 +64,7 @@ __all__ = [
 ]
 
 PIPELINE_SMOKE_LABEL = "PIPELINE_SMOKE_NOT_A_STRATEGY"
-BASELINE_NAME = "value_rank_topN_D5"
+BASELINE_NAME = "liquidity_proxy_decile_topN_D5"
 
 
 @dataclass
@@ -99,7 +113,7 @@ class SmokeResult:
         }
 
 
-def run_value_rank_topn_d5(
+def run_liquidity_proxy_decile_topn_d5(
     *,
     bars: list[Bar],
     membership: list[MembershipRow],
@@ -136,10 +150,15 @@ def run_value_rank_topn_d5(
         pit_bars = bars_available_at(bars, s)
         assert_no_lookahead(pit_bars, s)
 
-        # Day-s bars only for ranking (need trading_value at s).
+        # Day-s bars only for ranking. Both KR and US adapters expose these
+        # shared fields; neither adapter's trading_value is needed or used.
         day_bars = [b for b in pit_bars if b.session_date == s]
         close_by_symbol = {b.symbol: b.close for b in day_bars}
-        value_by_symbol = {b.symbol: b.trading_value for b in day_bars}
+        liquidity_proxy_by_symbol = {
+            b.symbol: b.close * b.volume
+            for b in day_bars
+            if b.close > 0 and b.volume > 0
+        }
 
         snap = universe_at(membership, s)
 
@@ -185,18 +204,18 @@ def run_value_rank_topn_d5(
                 still_open.append(lot)
         open_lots = still_open
 
-        # Entries: top-N by trading_value among investable with a bar today.
-        # Null trading_value is excluded (not imputed) — sealed KR value may be
-        # null; ranking requires a real exchange-reported figure.
+        # Entries: top proxy decile among investable symbols with a valid bar
+        # today, then top-N within that cohort. Sorting by symbol makes ties
+        # deterministic without using any future information.
         candidates = [
             sym
             for sym in snap.symbols
-            if sym in value_by_symbol
-            and sym not in held
-            and value_by_symbol[sym] is not None
+            if sym in liquidity_proxy_by_symbol and sym not in held
         ]
-        candidates.sort(key=lambda sym: value_by_symbol[sym], reverse=True)
-        picks = candidates[:top_n]
+        candidates.sort(key=lambda sym: (-liquidity_proxy_by_symbol[sym], sym))
+        top_decile_size = max(1, (len(candidates) + 9) // 10)
+        top_decile = candidates[:top_decile_size]
+        picks = top_decile[:top_n]
         if not picks:
             continue
         weight = 1.0 / len(picks)
@@ -224,7 +243,7 @@ def run_value_rank_topn_d5(
 
     result.notes.append(
         f"window={start.isoformat()}..{end.isoformat()} top_n={top_n} "
-        f"holding_days={holding_days}"
+        f"holding_days={holding_days} ranking=close_x_volume_top_decile"
     )
     return result
 

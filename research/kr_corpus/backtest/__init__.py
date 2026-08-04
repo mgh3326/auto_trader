@@ -13,4 +13,4 @@ from __future__ import annotations
 
 JOB_PURPOSE = "BACKTEST_HARNESS_WIRING_ONLY"
 PIPELINE_SMOKE_LABEL = "PIPELINE_SMOKE_NOT_A_STRATEGY"
-BASELINE_SMOKE_NAME = "value_rank_topN_D5"
+BASELINE_SMOKE_NAME = "liquidity_proxy_decile_topN_D5"

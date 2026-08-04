@@ -5,8 +5,8 @@
   "notes": [
     "Synthetic only \u2014 not real KR market data.",
     "Exploration window subset; no holdout dates.",
-    "OHLCV columns match sealed kr-corpus-v1 (ticker/session/value int64).",
-    "value is non-null here so value_rank wiring can exercise; sealed corpus may carry null value cells which must not be imputed."
+    "OHLCV columns match sealed kr-corpus-v1 (ticker/session/nullable value).",
+    "value is null here by design; D5 ranks only on the close\u00d7volume proxy."
   ],
   "schema_origin": "SEALED_CORPUS_V1",
   "window": {

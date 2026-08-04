@@ -1,11 +1,15 @@
-"""Fixture smoke for value_rank_topN_D5 — pipeline integrity only."""
+"""Fixture smoke for liquidity_proxy_decile_topN_D5 — pipeline integrity only."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
-from baseline_smoke import PIPELINE_SMOKE_LABEL, run_value_rank_topn_d5
+from baseline_smoke import (
+    BASELINE_NAME,
+    PIPELINE_SMOKE_LABEL,
+    run_liquidity_proxy_decile_topn_d5,
+)
 from fixture_builder import FIXTURE_REL_ROOT, build_synthetic_fixture
 from loader import ManifestShaMismatchError, load_manifest, load_shard
 from membership import membership_rows_from_table
@@ -25,7 +29,7 @@ def test_fixture_smoke_runs_and_is_labeled(tmp_path):
         else:
             membership.extend(membership_rows_from_table(table))
 
-    result = run_value_rank_topn_d5(
+    result = run_liquidity_proxy_decile_topn_d5(
         bars=bars,
         membership=membership,
         top_n=3,
@@ -34,7 +38,7 @@ def test_fixture_smoke_runs_and_is_labeled(tmp_path):
         window_end="2023-02-15",
     )
     assert result.label == PIPELINE_SMOKE_LABEL
-    assert result.baseline == "value_rank_topN_D5"
+    assert result.baseline == BASELINE_NAME
     assert result.sessions_processed > 0
     assert result.entries > 0
     report = result.to_report_dict()
@@ -80,6 +84,38 @@ def test_same_bar_close_fill_documented_in_module():
     assert doc is not None
     assert "same-bar" in doc.lower() or "same bar" in doc.lower()
     assert "close" in doc.lower()
+
+
+def test_proxy_ranking_accepts_us_shape_without_trading_value():
+    """The common baseline consumes only fields shared with USBar."""
+    from datetime import date
+
+    from market_adapters.us import USBar
+    from membership import MembershipRow
+
+    bars = [
+        USBar("LOW", date(2023, 1, 2), 10.0, 10.0, 10.0, 10.0, 100, "US", "adjusted"),
+        USBar("HIGH", date(2023, 1, 2), 20.0, 20.0, 20.0, 20.0, 100, "US", "adjusted"),
+    ]
+    membership = [
+        MembershipRow(
+            symbol=symbol,
+            session_date=date(2023, 1, 2),
+            market="US",
+            member=True,
+            status="listed",
+        )
+        for symbol in ("LOW", "HIGH")
+    ]
+    result = run_liquidity_proxy_decile_topn_d5(
+        bars=bars,
+        membership=membership,
+        top_n=1,
+        holding_days=1,
+        window_start="2023-01-02",
+        window_end="2023-01-02",
+    )
+    assert result.entries == 1
 
 
 def test_package_never_reads_corpus_artifact_root_constant_as_io():

@@ -9,7 +9,23 @@ Research-only surface under `research/kr_corpus/backtest/`. Wires:
 * dual holdout refusal (path `HOLDOUT_DIR` + date `HOLDOUT_WINDOW`) as **exceptions**
 * PIT universe from membership snapshots only
 * explicit delisted terminal events (no silent drop)
-* baseline pipeline smoke `value_rank_topN_D5` labeled **`PIPELINE_SMOKE_NOT_A_STRATEGY`**
+* common KR/US baseline pipeline smoke `liquidity_proxy_decile_topN_D5` labeled **`PIPELINE_SMOKE_NOT_A_STRATEGY`**
+
+## D5 baseline definition
+
+The baseline cannot rank by `trading_value`: the KR corpus `value` field is
+100% null over the observed range, while the US intraday schema has no such
+field. The common KR/US liquidity cohort is therefore the top decile of the
+`close × volume` proxy at each session (top 10%, minimum one symbol), with
+top-N equal-weight selection inside that cohort. This is a **proxy**, not
+exchange-reported turnover. It can differ from actual turnover because it uses
+the session close rather than VWAP and ignores the intraday price path,
+trade-size distribution, and venue effects.
+
+At session `t`, only bars with `session_date <= t` and membership rows with
+`session_date <= t` are admitted; the ranking uses the current session's bar
+only. This is the baseline's PIT rule. The US universe is a frozen active-symbol
+snapshot and carries survivorship bias; this baseline does not correct it.
 
 ## Stage A constraints
 
