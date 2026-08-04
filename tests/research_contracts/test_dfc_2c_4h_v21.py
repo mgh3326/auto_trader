@@ -97,6 +97,22 @@ def test_control_a_is_symmetric_and_adjudication_is_fully_numeric() -> None:
     assert rule["power"]["target"] == 0.80
 
 
+def test_adopted_backtest_window_is_non_overlapping_and_warmup_is_recomputed() -> None:
+    payload = contract.contract_as_machine_data()
+    window = payload["backtest_window"]
+    assert window["holdout_start_utc"] == "2021-05-02T00:00:00Z"
+    assert window["holdout_end_utc_exclusive"] == "2023-08-04T00:00:00Z"
+    assert window["calendar_days"] == 824
+    assert window["scheduled_epochs"] == 4_944
+    assert window["warmup_start_utc"] == "2021-02-02T00:00:00Z"
+    assert window["selection_basis"] == (
+        "exclude the 1,632-epoch exploration overlap to remove the design-validation feedback loop"
+    )
+    isolation = payload["exploration_isolation"]
+    assert isolation["relationship"] == "no overlap remains in the adopted backtest window"
+    assert isolation["excluded_overlap_epochs"] == 1_632
+
+
 def test_harness_hashes_validates_aligns_and_rejects_future_windows() -> None:
     payload = ["x", 1]
     manifest = {

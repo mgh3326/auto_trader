@@ -30,7 +30,7 @@ __all__ = [
 # The literal is replaced by the source digest itself.  The verifier below
 # hashes the source with this one literal normalized, so the digest is not a
 # circular input.  Exactly one declaration is required.
-MODULE_SOURCE_SHA256: Final = "003b1fb73aa0b8b236714f5bc6ef02e8075558dfad54cfd496c35986121c2d08"
+MODULE_SOURCE_SHA256: Final = "10c27c46d8f7f86fbae3a0992c38acc94778d95e4a773aac5c484f35cdc8412c"
 HARNESS_SOURCE_SHA256: Final = "0000000000000000000000000000000000000000000000000000000000000000"
 _SOURCE_DECLARATION = re.compile(
     r'MODULE_SOURCE_SHA256: Final = "([0-9a-f]{64})"'
@@ -45,8 +45,10 @@ TAIL_CONTEXT: Final = PIT_LOOKBACK + TAIL_LOOKBACK
 FIXED_QUANTILE_NUMERATOR: Final = 3
 FIXED_QUANTILE_DENOMINATOR: Final = 4
 EXPLORATION_WINDOW: Final = "2023-08-04T00:00:00Z/2026-08-03T00:00:00Z"
-THREE_YEAR_WINDOW: Final = "2021-05-02T00:00:00Z/2024-05-02T00:00:00Z"
-WARMUP_START: Final = "2019-09-08T00:00:00Z"
+BACKTEST_WINDOW: Final = "2021-05-02T00:00:00Z/2023-08-04T00:00:00Z"
+BACKTEST_CALENDAR_DAYS: Final = 824
+BACKTEST_SCHEDULED_EPOCHS: Final = 4_944
+WARMUP_START: Final = "2021-02-02T00:00:00Z"
 UNIVERSE_LOOKBACK_DAYS: Final = 30
 UNIVERSE_TOP_K: Final = 3
 SYMBOL_PRIORITY = MappingProxyType({})
@@ -246,8 +248,8 @@ def contract_as_machine_data() -> dict[str, Any]:
         "contract_id": CONTRACT_ID,
         "registration_mode": "independent_new_registration",
         "predecessor_preservation": {"v2_identity": "DFC-2C-4H-v2", "v2_row_mutation": "forbidden", "v2_seal_mutation": "forbidden", "v2_supersede_or_hide": "forbidden"},
-        "three_year_window": {"warmup_start_utc": WARMUP_START, "holdout_start_utc": THREE_YEAR_WINDOW.split("/")[0], "holdout_end_utc": THREE_YEAR_WINDOW.split("/")[1], "calendar_days": 1096, "scheduled_epochs": 6576},
-        "exploration_isolation": {"window": EXPLORATION_WINDOW, "relationship": "calendar overlap is 2023-08-04T00:00:00Z through 2024-05-02T00:00:00Z; no exploration artifact or result is admissible as holdout evidence, and the PIT universe rule is re-derived at every epoch", "artifact_use": "design_only_never_primary_or_promotion_evidence"},
+        "backtest_window": {"warmup_start_utc": WARMUP_START, "holdout_start_utc": BACKTEST_WINDOW.split("/")[0], "holdout_end_utc_exclusive": BACKTEST_WINDOW.split("/")[1], "calendar_days": BACKTEST_CALENDAR_DAYS, "scheduled_epochs": BACKTEST_SCHEDULED_EPOCHS, "selection_basis": "exclude the 1,632-epoch exploration overlap to remove the design-validation feedback loop"},
+        "exploration_isolation": {"window": EXPLORATION_WINDOW, "relationship": "no overlap remains in the adopted backtest window", "excluded_overlap": "2023-08-04T00:00:00Z/2024-05-02T00:00:00Z", "excluded_overlap_epochs": 1_632, "excluded_overlap_percent_of_original_three_year_window": 24.817518248175183, "exclusion_reason": "intentionally excluded to remove the design-validation feedback loop", "artifact_use": "design_only_never_primary_or_promotion_evidence"},
         "universe": {"rule": "At each UTC 4h epoch, rank all eligible USD-M perpetual symbols by quote volume summed over the immediately preceding 30 calendar days; select the top 3, ties by canonical uppercase symbol; use no future or exploration-selected symbol list", "lookback_days": 30, "top_k": 3, "hardcoded_symbols": False, "pit": True},
         "features": {"ofi": "log(taker_buy_base_volume / (total_base_volume - taker_buy_base_volume)) from complete Binance 4h Kline", "premium": "complete Binance 4h premium-index candle close", "deprecated": ["quote_volume_proxy_as_signal", "five_minute_premium_average"], "complete_only": True, "imputation": "forbidden"},
         "score": {"pit_rank": "current-excluded 252-observation inclusive <= empirical rank", "composite": "(ofi_rank + premium_rank) / 2", "tail": "linear Q0.75 of 252 derived prior |C| values", "tail_context_observations": 504, "comparator": "abs(C) >= threshold", "runtime_parameterization": "forbidden"},
