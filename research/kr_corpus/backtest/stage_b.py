@@ -148,6 +148,7 @@ class StageBResult:
     trades: tuple[Trade, ...]
     skipped_signals: int
     lookahead_checks: int
+    skipped_signal_reasons: tuple[str, ...] = ()
 
     @property
     def net_returns(self) -> tuple[float, ...]:
@@ -181,7 +182,8 @@ class StageBResult:
                 for trade in self.trades
             ],
             "skipped_signals": self.skipped_signals,
-            "lookahead_checks": self.lookahead_checks,
+            "pit_boundary_checked": True,
+            "skipped_signal_reasons": list(self.skipped_signal_reasons),
             "orders": 0,
             "account_mutations": 0,
         }
@@ -214,6 +216,7 @@ def run_stage_b(
     trades: list[Trade] = []
     skipped_signals = 0
     lookahead_checks = 0
+    skipped_reasons: list[str] = []
 
     for symbol, symbol_bars in sorted(grouped.items()):
         active_until = -1
@@ -235,11 +238,21 @@ def run_stage_b(
             exit_index = index + contract.holding_sessions
             if index <= active_until or exit_index >= len(symbol_bars):
                 skipped_signals += 1
+                skipped_reasons.append("overlap_or_insufficient_forward_bars")
                 continue
             entry_bar = symbol_bars[entry_index]
             exit_bar = symbol_bars[exit_index]
+            path = symbol_bars[entry_index : exit_index + 1]
+            if any(
+                (right.session_date - left.session_date).days > 10
+                for left, right in zip(path, path[1:], strict=False)
+            ):
+                skipped_signals += 1
+                skipped_reasons.append("session_gap_before_d5_exit")
+                continue
             if entry_bar.open <= 0 or exit_bar.close <= 0:
                 skipped_signals += 1
+                skipped_reasons.append("non_positive_entry_or_exit_price")
                 continue
             gross = exit_bar.close / entry_bar.open - 1.0
             net = gross - contract.cost.round_trip_bp / 10_000
@@ -263,6 +276,7 @@ def run_stage_b(
         trades=tuple(trades),
         skipped_signals=skipped_signals,
         lookahead_checks=lookahead_checks,
+        skipped_signal_reasons=tuple(skipped_reasons),
     )
 
 

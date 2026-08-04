@@ -8,6 +8,8 @@ research result is evidence, never an order authorization.
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 import math
 from collections.abc import Mapping
 from typing import Any, Literal
@@ -37,7 +39,13 @@ _CONTRACT = {
     },
 }
 
-CONTRACT_HASH = canonical_sha256(_CONTRACT)
+# This digest binds the executable predicates, not just the declarative
+# thresholds above.  Update it in the same change as an intentional predicate
+# edit; an unpaired edit fails at import time.
+_EXPECTED_ENFORCEMENT_SOURCE_SHA256 = (
+    "a7517ab80b7e83337625599a7995636a34eb7b41f6502727abb4e8d98915bb52"
+)
+CONTRACT_HASH: str
 CRYPTO_SYNTHETIC_SIGNAL: dict[str, Any] = {
     "market": "crypto",
     "strategy": "SYNTHETIC_ACCEPTANCE",
@@ -138,6 +146,27 @@ def calculate_signal(market: str, snapshot: Mapping[str, Any]) -> dict[str, Any]
     if market == "crypto":
         return calculate_crypto_synthetic(snapshot)
     raise ValueError(f"unsupported shadow market: {market}")
+
+
+def _enforcement_source_sha256() -> str:
+    source = "\n".join(
+        (
+            inspect.getsource(calculate_kr_rev3_reclaim),
+            inspect.getsource(calculate_signal),
+        )
+    ).encode("utf-8")
+    return hashlib.sha256(source).hexdigest()
+
+
+_actual_enforcement_source_sha256 = _enforcement_source_sha256()
+if _EXPECTED_ENFORCEMENT_SOURCE_SHA256 != _actual_enforcement_source_sha256:
+    raise RuntimeError(
+        "signal enforcement source hash mismatch; predicate edits require "
+        "an explicit contract update"
+    )
+CONTRACT_HASH = canonical_sha256(
+    {**_CONTRACT, "enforcement_source_sha256": _actual_enforcement_source_sha256}
+)
 
 
 __all__ = [

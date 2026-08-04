@@ -24,13 +24,17 @@ def write_stage_b_evidence(path: Path, result: StageBResult) -> dict[str, Any]:
         config_hash=result.contract.config_hash,
         execution_cost={
             "fee_bps": float(result.contract.cost.fee_bp),
+            "transaction_tax_bps": float(result.contract.cost.transaction_tax_bp),
             "half_spread_bps": 0.0,
-            "slippage_bps": float(result.contract.cost.slippage_bp_per_side),
+            "slippage_bps": float(2 * result.contract.cost.slippage_bp_per_side),
         },
         sharpe=float(stats["sharpe"]),
         p_value=float(stats["p_value"]),
         sample_size=int(stats["sample_size"]),
         validation_score=float(stats["validation_score"]),
+        sharpe_method="pooled_sample_sharpe",
+        p_value_method="not_computed",
+        selection_score_method="arithmetic_mean_net_return",
     )
     payload: dict[str, Any] = {
         "artifact_kind": "KR_STAGE_B_TRIAL_EVIDENCE",

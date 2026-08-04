@@ -15,7 +15,11 @@ PRODUCER_VERSION = "1"
 SHARPE_METHOD = "mean_cv_fold_sharpe"
 P_VALUE_METHOD = "one_sided_normal_cv_fold_sharpe"
 SELECTION_SCORE_METHOD = "canonical_cv_score"
-_EXECUTION_COST_KEYS = frozenset({"fee_bps", "half_spread_bps", "slippage_bps"})
+_LEGACY_EXECUTION_COST_KEYS = frozenset({"fee_bps", "half_spread_bps", "slippage_bps"})
+_EXECUTION_COST_KEYS = _LEGACY_EXECUTION_COST_KEYS | {"transaction_tax_bps"}
+_SHARPE_METHODS = frozenset({"mean_cv_fold_sharpe", "pooled_sample_sharpe"})
+_P_VALUE_METHODS = frozenset({"one_sided_normal_cv_fold_sharpe", "not_computed"})
+_SELECTION_METHODS = frozenset({"canonical_cv_score", "arithmetic_mean_net_return"})
 
 
 class TrialEvidenceError(ValueError):
@@ -61,6 +65,9 @@ def build_trial_evidence(
     p_value: float,
     sample_size: int,
     validation_score: float,
+    sharpe_method: str = SHARPE_METHOD,
+    p_value_method: str = P_VALUE_METHOD,
+    selection_score_method: str = SELECTION_SCORE_METHOD,
 ) -> dict[str, Any]:
     """Build the only accepted JSON payload for an evaluated trial."""
     payload: dict[str, Any] = {
@@ -71,12 +78,12 @@ def build_trial_evidence(
         "config_hash": config_hash,
         "execution_cost": dict(execution_cost),
         "sharpe": sharpe,
-        "sharpe_method": SHARPE_METHOD,
+        "sharpe_method": sharpe_method,
         "p_value": p_value,
-        "p_value_method": P_VALUE_METHOD,
+        "p_value_method": p_value_method,
         "sample_size": sample_size,
         "validation_score": validation_score,
-        "selection_score_method": SELECTION_SCORE_METHOD,
+        "selection_score_method": selection_score_method,
     }
     parse_trial_evidence(payload)
     return payload
@@ -123,9 +130,9 @@ def parse_trial_evidence(payload: Any) -> TrialEvidence:
         raise TrialEvidenceError("invalid_trial_evidence")
     if set(payload) != expected_keys:
         raise TrialEvidenceError("invalid_trial_evidence")
-    if payload.get("sharpe_method") != SHARPE_METHOD:
+    if payload.get("sharpe_method") not in _SHARPE_METHODS:
         raise TrialEvidenceError("invalid_trial_evidence")
-    if payload.get("p_value_method") != P_VALUE_METHOD:
+    if payload.get("p_value_method") not in _P_VALUE_METHODS:
         raise TrialEvidenceError("invalid_trial_evidence")
 
     parameter_key = payload.get("parameter_key")
@@ -136,7 +143,10 @@ def parse_trial_evidence(payload: Any) -> TrialEvidence:
         raise TrialEvidenceError("invalid_trial_evidence")
 
     raw_cost = payload.get("execution_cost")
-    if not isinstance(raw_cost, dict) or set(raw_cost) != _EXECUTION_COST_KEYS:
+    if not isinstance(raw_cost, dict) or set(raw_cost) not in {
+        _LEGACY_EXECUTION_COST_KEYS,
+        _EXECUTION_COST_KEYS,
+    }:
         raise TrialEvidenceError("invalid_trial_evidence")
     execution_cost = {key: _finite_number(raw_cost[key]) for key in raw_cost}
 
@@ -154,10 +164,10 @@ def parse_trial_evidence(payload: Any) -> TrialEvidence:
     validation_score: float | None = None
     selection_score_method: str | None = None
     if schema_version in {SCHEMA_VERSION, SELECTION_SCHEMA_VERSION}:
-        if payload.get("selection_score_method") != SELECTION_SCORE_METHOD:
+        if payload.get("selection_score_method") not in _SELECTION_METHODS:
             raise TrialEvidenceError("invalid_trial_evidence")
         validation_score = _finite_number(payload.get("validation_score"))
-        selection_score_method = SELECTION_SCORE_METHOD
+        selection_score_method = str(payload["selection_score_method"])
     return TrialEvidence(
         schema_version=schema_version,
         producer=producer,
@@ -166,9 +176,9 @@ def parse_trial_evidence(payload: Any) -> TrialEvidence:
         config_hash=config_hash,
         execution_cost=execution_cost,
         sharpe=sharpe,
-        sharpe_method=SHARPE_METHOD,
+        sharpe_method=str(payload["sharpe_method"]),
         p_value=p_value,
-        p_value_method=P_VALUE_METHOD,
+        p_value_method=str(payload["p_value_method"]),
         sample_size=sample_size,
         validation_score=validation_score,
         selection_score_method=selection_score_method,

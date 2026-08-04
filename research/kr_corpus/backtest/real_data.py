@@ -53,8 +53,9 @@ def load_real_main_bars(
     checksums = _checksum_index(checksum_path)
     selected_markets = frozenset(markets)
     files = sorted((root / "dataset").glob("market=*/year=*/ticker=*.parquet"))
-    selected: list[Path] = []
-    symbols: set[str] = set()
+    candidates_by_market: dict[str, list[Path]] = {
+        market: [] for market in selected_markets
+    }
     for path in files:
         relative = path.relative_to(root).as_posix()
         parts = path.parts
@@ -67,23 +68,56 @@ def load_real_main_bars(
         if year < window_start.year or year > window_end.year:
             continue
         symbol = path.stem.split("=", 1)[1]
-        if (
-            market not in selected_markets
-            or symbol not in symbols
-            and len(symbols) >= max_symbols
-        ):
+        if market not in selected_markets:
             continue
-        expected = checksums.get(relative)
-        if expected is None:
-            raise ValueError(
-                f"selected parquet missing checksum ledger row: {relative}"
-            )
-        data = path.read_bytes()
-        actual = hashlib.sha256(data).hexdigest()
-        if actual != expected:
-            raise ValueError(f"checksum mismatch: {relative}")
-        selected.append(path)
-        symbols.add(symbol)
+        candidates_by_market[market].append(path)
+
+    missing_markets = sorted(
+        market for market, paths in candidates_by_market.items() if not paths
+    )
+    if missing_markets:
+        raise ValueError(
+            f"requested market has no bounded corpus data: {missing_markets}"
+        )
+
+    # Deterministic round-robin selection prevents the first glob partition
+    # from exhausting the quota for one market and silently dropping another.
+    candidates_by_market = {
+        market: sorted(paths, key=lambda path: path.name)
+        for market, paths in candidates_by_market.items()
+    }
+    selected: list[Path] = []
+    selected_keys: set[tuple[str, str]] = set()
+    cursors = dict.fromkeys(sorted(selected_markets), 0)
+    while len(selected) < max_symbols:
+        progressed = False
+        for market in sorted(selected_markets):
+            candidates = candidates_by_market[market]
+            while cursors[market] < len(candidates):
+                path = candidates[cursors[market]]
+                cursors[market] += 1
+                symbol = path.stem.split("=", 1)[1]
+                key = (market, symbol)
+                if key in selected_keys:
+                    continue
+                relative = path.relative_to(root).as_posix()
+                expected = checksums.get(relative)
+                if expected is None:
+                    raise ValueError(
+                        f"selected parquet missing checksum ledger row: {relative}"
+                    )
+                data = path.read_bytes()
+                actual = hashlib.sha256(data).hexdigest()
+                if actual != expected:
+                    raise ValueError(f"checksum mismatch: {relative}")
+                selected.append(path)
+                selected_keys.add(key)
+                progressed = True
+                break
+            if len(selected) >= max_symbols:
+                break
+        if not progressed:
+            break
     bars: list[Bar] = []
     for path in selected:
         table = pq.read_table(path)
