@@ -750,6 +750,103 @@ def test_attempted_unit_with_no_chain_record_forces_unverified():
     assert any("resumed from markers" in r for r in resumed["unverified_because"])
 
 
+class _MixedClient:
+    """One symbol succeeds; the symbol named BAD raises before its first yield."""
+
+    def __init__(self) -> None:
+        self.counter = alpaca_data.RequestCounter()
+
+    def iter_bars(self, symbols, timeframe, start, end):
+        if symbols[0] == "BAD":
+            raise RuntimeError("connection reset before first page")
+        chain = alpaca_data.PageChain(symbol=symbols[0], timeframe=timeframe)
+        chain.pages, chain.last_token = 1, None
+        yield (
+            {
+                "bars": {
+                    symbols[0]: [
+                        {
+                            "t": "2024-03-04T15:00:00Z",
+                            "o": 1.0,
+                            "h": 2.0,
+                            "l": 0.5,
+                            "c": 1.5,
+                            "v": 7,
+                            "n": 1,
+                            "vw": 1.3,
+                        }
+                    ]
+                },
+                "next_page_token": None,
+            },
+            chain,
+        )
+        chain.termination = "null_next_token"
+
+
+def _run_main_e2e(monkeypatch, symbols):
+    """Drive build.main() end to end with a fake client and no network."""
+    monkeypatch.setattr(config, "START_DATE", _dt.date(2024, 1, 1))
+    monkeypatch.setattr(config, "CUTOFF_DATE", _dt.date(2024, 12, 31))
+    monkeypatch.setattr(
+        build.alpaca_data, "AlpacaDataClient", lambda *a, **k: _MixedClient()
+    )
+    monkeypatch.setattr(
+        build,
+        "measure",
+        lambda c: {
+            "m1_rows_per_request_measured": 9471.0,
+            "m1_rows_per_symbol_year_2016": 80000.0,
+            "m1_rows_per_symbol_year_2024": 100000.0,
+            "requests_already_spent": 0,
+        },
+    )
+    monkeypatch.setattr(build, "load_top500", lambda: symbols)
+    rc = build.main([])
+    manifest = json.loads(config.MANIFEST_PATH.read_text())
+    return rc, manifest
+
+
+def test_e2e_pre_yield_failure_forces_unverified_in_the_sealed_manifest(
+    artifact_root, monkeypatch
+):
+    """END-TO-END regression -- the unit-level fix alone did not hold.
+
+    R4 fixed `completeness_assessment` in isolation but wired it to
+    `units_done`, which only counts successes. A unit that raised before its
+    first yield was therefore absent from BOTH the chain list and the
+    denominator, so they reconciled and the sealed manifest still published
+    PAGE_COMPLETENESS=VERIFIED. The terminal verdict was correctly
+    BUILT_WITH_GAPS, but the consumer-facing field was false.
+
+    This drives the real `build.main()` path, because a passing unit test is
+    exactly what masked the defect last round.
+    """
+    _rc, manifest = _run_main_e2e(monkeypatch, ["GOOD", "BAD"])
+
+    phase = manifest["phases"][0]
+    assert phase["units_attempted"] == 2, "failures must count toward attempts"
+    assert phase["units_done"] == 1, "only the successful unit completed"
+    assert phase["page_chains_recorded"] == 1
+
+    assert manifest["page_chain_integrity"]["PAGE_COMPLETENESS"] == "UNVERIFIED"
+    assert manifest["terminal_verdict"] == "BUILT_WITH_GAPS"
+
+    report = json.loads((config.REPORTS_DIR / "page_chain_integrity.json").read_text())
+    assert report["PAGE_COMPLETENESS"] == "UNVERIFIED"
+    assert report["chains_missing"] == 1
+
+
+def test_e2e_clean_run_still_reaches_verified(artifact_root, monkeypatch):
+    """Guard against over-correcting: a fully clean run must stay VERIFIED."""
+    _rc, manifest = _run_main_e2e(monkeypatch, ["GOOD", "GOOD2"])
+
+    phase = manifest["phases"][0]
+    assert phase["units_attempted"] == phase["units_done"] == 2
+    assert manifest["page_chain_integrity"]["PAGE_COMPLETENESS"] == "VERIFIED"
+    assert manifest["terminal_verdict"] == "READY_FOR_RESEARCH"
+
+
 def test_run_phase_that_raises_before_first_yield_leaves_no_chain(artifact_root):
     """Pins the shape of the defect end-to-end, not just the pure function."""
 

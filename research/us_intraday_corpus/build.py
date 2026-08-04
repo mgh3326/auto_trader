@@ -59,6 +59,7 @@ class PhaseStats:
     ohlc_violations: int = 0
     units_done: int = 0
     units_resumed: int = 0
+    units_attempted: int = 0
     symbols_with_data_any_window: int = 0
     zero_exploration_symbols: list[str] = field(default_factory=list)
 
@@ -84,6 +85,11 @@ class PhaseStats:
                 1 for c in self.page_chains if not c["complete"]
             ),
             "units_done": self.units_done,
+            "units_attempted": self.units_attempted,
+            "units_attempted_definition": (
+                "units entered for collection, incremented BEFORE the attempt so "
+                "failures are included; units_done counts only successes"
+            ),
             "units_resumed_from_marker": self.units_resumed,
         }
 
@@ -289,6 +295,14 @@ def run_phase(
                 seen_exploration.update(_m.get("exploration_symbols", []))
                 stats.units_resumed += 1
                 continue
+
+            # Counted BEFORE the attempt, not after it succeeds. `units_done`
+            # only increments on success, so a unit that raises before its
+            # first yield left no chain record AND was never counted as
+            # attempted -- making recorded chains reconcile perfectly against a
+            # short count, and page completeness read VERIFIED. The evidence
+            # denominator has to include failures.
+            stats.units_attempted += 1
 
             collected: list[dict[str, Any]] = []
             chain_dict: dict[str, Any] | None = None
@@ -716,7 +730,10 @@ def _collect_and_seal(
         )
         return 2
 
-    attempted = sum(p["units_done"] for p in phases)
+    # Must be units_attempted, not units_done: a unit that failed before its
+    # first yield produced no chain, and counting only successes would let the
+    # recorded chains reconcile against a short denominator.
+    attempted = sum(p["units_attempted"] for p in phases)
     resumed = sum(p["units_resumed_from_marker"] for p in phases)
     assessment = completeness_assessment(
         all_chains, units_attempted=attempted, units_resumed=resumed
