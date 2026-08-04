@@ -10,6 +10,7 @@ so callers cannot smuggle in the live host. The token is fetched via
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Final
 
 import httpx
@@ -25,6 +26,10 @@ _MAX_TOKEN_REFRESH_RESUBMITS: Final[int] = 1
 # Explicit allowlist keeps every domestic/US order mutation out of token retry.
 _AUTH_RETRY_READ_API_IDS: Final[frozenset[str]] = frozenset(
     {
+        constants.CHART_MINUTE_API_ID,
+        constants.CHART_DAILY_API_ID,
+        constants.CHART_WEEKLY_API_ID,
+        constants.CHART_MONTHLY_API_ID,
         constants.ACCOUNT_ORDER_DETAIL_API_ID,
         constants.ACCOUNT_ORDER_STATUS_API_ID,
         constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID,
@@ -37,6 +42,14 @@ _AUTH_RETRY_READ_API_IDS: Final[frozenset[str]] = frozenset(
         constants.US_ACCOUNT_FOREIGN_DEPOSIT_API_ID,
     }
 )
+
+
+def _is_auth_rejection(payload: dict[str, Any]) -> bool:
+    """Recognize both documented and observed Kiwoom 8005 response shapes."""
+    if str(payload.get("return_code", "")).strip() == str(_AUTH_REJECT_RETURN_CODE):
+        return True
+    return_msg = str(payload.get("return_msg") or "")
+    return re.search(r"(?<!\d)8005(?!\d)", return_msg) is not None
 
 
 class KiwoomConfigurationError(RuntimeError):
@@ -207,8 +220,7 @@ class KiwoomMockClient:
             }
             if (
                 api_id in _AUTH_RETRY_READ_API_IDS
-                and payload.get("return_code")
-                in {_AUTH_REJECT_RETURN_CODE, str(_AUTH_REJECT_RETURN_CODE)}
+                and _is_auth_rejection(payload)
                 and token_refresh_resubmits < _MAX_TOKEN_REFRESH_RESUBMITS
             ):
                 token_refresh_resubmits += 1

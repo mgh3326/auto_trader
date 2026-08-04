@@ -110,7 +110,6 @@ async def _check_offline_fetch(report: PreflightReport, client: Any) -> None:
                         "low_pric": "99",
                         "cur_prc": "100",
                         "trde_qty": "10",
-                        "trde_prica": "1000",
                     }
                 ],
             },
@@ -130,7 +129,13 @@ async def _check_offline_fetch(report: PreflightReport, client: Any) -> None:
             max_pages=1,
             base_dt="20260801",
         )
-        if len(rows) != 1 or meta.get("pages") != 1 or seen_hosts != [ALLOWED_HOST]:
+        only_row = next(iter(rows.values()), {})
+        if (
+            len(rows) != 1
+            or only_row.get("value") != 1000.0
+            or meta.get("pages") != 1
+            or seen_hosts != [ALLOWED_HOST]
+        ):
             raise RuntimeError("offline fetch contract mismatch")
         report.passed("offline_first_fetch", resolved_hosts=seen_hosts)
     except Exception as exc:  # noqa: BLE001
