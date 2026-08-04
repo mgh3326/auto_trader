@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
+from research.three_market_shadow.calculations import calculate_signal
+
 Stage = Literal[
     "decision",
     "order_intent",
@@ -19,6 +21,20 @@ Stage = Literal[
     "discord",
 ]
 EventSink = Callable[[dict[str, object]], None]
+
+ACCEPTANCE_LABELS: dict[str, str] = {
+    "purpose": "execution_acceptance",
+    "sample_class": "ACCEPTANCE_ONLY",
+    "signal_source": "UNTESTED_RESEARCH_SHADOW",
+    "evidence_preserved": "YES",
+    "scoring_eligible": "EXCLUDE",
+    "forecast_calibration_eligible": "EXCLUDE",
+    "trade_performance_eligible": "EXCLUDE",
+    "strategy_promotion_credit": "NONE",
+    "paper_go_live_credit": "NONE",
+    "operational_reliability_eligible": "UNIDENTIFIABLE",
+    "completion_name": "BROKER_ACCEPTANCE_PASSED",
+}
 
 
 @dataclass(frozen=True)
@@ -30,14 +46,14 @@ class LeanRunResult:
 
 
 class SyntheticNoOpStrategy:
-    """Replaceable calculation seam; it can never emit an order signal."""
+    """KR research shadow adapter; it can never authorize an order."""
 
     def evaluate(self, snapshot: Mapping[str, object]) -> dict[str, object]:
+        signal = calculate_signal("kr", snapshot)
         return {
             "decision": "NO_ORDER",
             "symbol": snapshot.get("symbol", "005930"),
-            "reason": "synthetic_no_op",
-            "signal_emitted": False,
+            **signal,
         }
 
 
@@ -88,6 +104,7 @@ def run_once(
     try:
         decision_input = {"symbol": snapshot.get("symbol", "005930")}
         decision = strategy.evaluate(snapshot)
+        decision["labels"] = dict(ACCEPTANCE_LABELS)
         emit(_event(correlation_id, "decision", "completed", decision_input, decision))
         stages.append("decision")
 
