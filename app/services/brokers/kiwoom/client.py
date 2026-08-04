@@ -23,13 +23,21 @@ _log = logging.getLogger(__name__)
 _AUTH_REJECT_RETURN_CODE: Final[int] = 8005
 # ROB-733-style fail-closed bound: a loop counter, never recursive resubmission.
 _MAX_TOKEN_REFRESH_RESUBMITS: Final[int] = 1
-# Explicit allowlist keeps every domestic/US order mutation out of token retry.
-_AUTH_RETRY_READ_API_IDS: Final[frozenset[str]] = frozenset(
+AUTH_STALE_TOKEN: Final[str] = "AUTH_STALE_TOKEN"
+PROVIDER_REJECTED: Final[str] = "PROVIDER_REJECTED"
+MALFORMED_RESPONSE: Final[str] = "MALFORMED_RESPONSE"
+_CHART_READ_API_IDS: Final[frozenset[str]] = frozenset(
     {
         constants.CHART_MINUTE_API_ID,
         constants.CHART_DAILY_API_ID,
         constants.CHART_WEEKLY_API_ID,
         constants.CHART_MONTHLY_API_ID,
+    }
+)
+# Explicit allowlist keeps every domestic/US order mutation out of token retry.
+_AUTH_RETRY_READ_API_IDS: Final[frozenset[str]] = frozenset(
+    _CHART_READ_API_IDS
+    | {
         constants.ACCOUNT_ORDER_DETAIL_API_ID,
         constants.ACCOUNT_ORDER_STATUS_API_ID,
         constants.ACCOUNT_ORDERABLE_AMOUNT_API_ID,
@@ -50,6 +58,16 @@ def _is_auth_rejection(payload: dict[str, Any]) -> bool:
         return True
     return_msg = str(payload.get("return_msg") or "")
     return re.search(r"(?<!\d)8005(?!\d)", return_msg) is not None
+
+
+def _strict_return_code(payload: dict[str, Any]) -> int | None:
+    raw = payload.get("return_code")
+    if isinstance(raw, bool):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 class KiwoomConfigurationError(RuntimeError):
@@ -78,6 +96,28 @@ class KiwoomPreDispatchError(RuntimeError):
         super().__init__(
             f"Kiwoom request failed before dispatch "
             f"(stage={stage}, api_id={api_id}, cause_type={cause_type})"
+        )
+
+
+class KiwoomReadResponseError(RuntimeError):
+    """Typed, value-redacted failure for a read-only provider response."""
+
+    def __init__(
+        self,
+        *,
+        reason_code: str,
+        api_id: str,
+        return_code: int | None,
+        retry_disposition: str,
+    ) -> None:
+        self.reason_code = reason_code
+        self.api_id = api_id
+        self.return_code = return_code
+        self.retry_disposition = retry_disposition
+        super().__init__(
+            "Kiwoom read response rejected "
+            f"reason_code={reason_code} api_id={api_id} "
+            f"return_code={return_code!r} retry={retry_disposition}"
         )
 
 
@@ -236,6 +276,31 @@ class KiwoomMockClient:
                         cause_type=type(exc).__name__,
                     ) from exc
                 continue
+
+            if api_id in _AUTH_RETRY_READ_API_IDS and _is_auth_rejection(payload):
+                raise KiwoomReadResponseError(
+                    reason_code=AUTH_STALE_TOKEN,
+                    api_id=api_id,
+                    return_code=_strict_return_code(payload),
+                    retry_disposition="RETRIED_ONCE_THEN_STOP",
+                )
+
+            if api_id in _CHART_READ_API_IDS:
+                return_code = _strict_return_code(payload)
+                if return_code is None:
+                    raise KiwoomReadResponseError(
+                        reason_code=MALFORMED_RESPONSE,
+                        api_id=api_id,
+                        return_code=None,
+                        retry_disposition="STOP_NO_RETRY",
+                    )
+                if return_code != constants.SUCCESS_RETURN_CODE:
+                    raise KiwoomReadResponseError(
+                        reason_code=PROVIDER_REJECTED,
+                        api_id=api_id,
+                        return_code=return_code,
+                        retry_disposition="STOP_NO_RETRY",
+                    )
 
             if int(payload.get("return_code", 0)) != constants.SUCCESS_RETURN_CODE:
                 _log.info(

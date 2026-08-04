@@ -314,6 +314,8 @@ class TossCandlesPage:
 
 
 def parse_candles(raw: dict[str, Any]) -> TossCandlesPage:
+    if "candles" not in raw or not isinstance(raw["candles"], list):
+        raise ValueError("Malformed Toss candles response: expected candles list")
     candles = [
         TossCandle(
             timestamp=str(row["timestamp"]),
@@ -324,7 +326,7 @@ def parse_candles(raw: dict[str, Any]) -> TossCandlesPage:
             volume=parse_decimal_string(row["volume"]),
             currency=str(row["currency"]),
         )
-        for row in raw.get("candles", [])
+        for row in raw["candles"]
     ]
     next_before = raw.get("nextBefore")
     return TossCandlesPage(

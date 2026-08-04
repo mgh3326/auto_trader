@@ -35,6 +35,8 @@ from typing import Any
 
 import asyncpg
 from sources import (  # noqa: E402
+    AUTH_STALE_TOKEN,
+    EMPTY_RESPONSE,
     KST,
     FetchWindowClosed,
     Pacer,
@@ -85,6 +87,8 @@ class StreamStats:
     rows_fetched: int = 0
     rows_inserted: int = 0
     rows_skipped_conflict: int = 0
+    empty_responses: int = 0
+    empty_symbols: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     stopped_reason: str | None = None
 
@@ -314,6 +318,7 @@ async def run_stream(
                     guard.note_429(source, False)
                 except Exception as exc:  # noqa: BLE001
                     msg = f"{type(exc).__name__}: {exc}"
+                    reason_code = str(getattr(exc, "reason_code", type(exc).__name__))
                     stats.calls = pacer.calls
                     guard.note_429(source, "429" in msg or "TooManyRequests" in msg)
                     stats.errors.append(f"{symbol}: {msg}")
@@ -323,12 +328,34 @@ async def run_stream(
                             "source": source,
                             "symbol": symbol,
                             "error": msg,
+                            "reason_code": reason_code,
+                            "retry_disposition": getattr(
+                                exc, "retry_disposition", "NONE"
+                            ),
                         }
                     )
+                    if reason_code == AUTH_STALE_TOKEN:
+                        stats.stopped_reason = (
+                            "AUTH_STALE_TOKEN after one read-only retry"
+                        )
+                        ckpt.save()
+                        return stats
                     break
 
                 stats.calls = pacer.calls
                 if not bars:
+                    reason_code = str(meta.get("outcome_code") or EMPTY_RESPONSE)
+                    stats.empty_responses += 1
+                    stats.empty_symbols.append(symbol)
+                    log.write(
+                        {
+                            "event": "empty_response",
+                            "source": source,
+                            "symbol": symbol,
+                            "reason_code": reason_code,
+                            "calls_cumulative": pacer.calls,
+                        }
+                    )
                     st["done"] = True
                     break
 
@@ -400,7 +427,12 @@ def exit_code_for_results(results: list[StreamStats | BaseException]) -> int:
             continue
         useful = result.rows_fetched > 0
         any_useful_work = any_useful_work or useful
-        clean = useful and not result.errors and result.stopped_reason is None
+        clean = (
+            useful
+            and not result.errors
+            and result.stopped_reason is None
+            and result.empty_responses == 0
+        )
         if not clean:
             any_failure = True
 
