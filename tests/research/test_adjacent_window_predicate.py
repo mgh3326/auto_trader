@@ -9,9 +9,11 @@ from __future__ import annotations
 import ast
 import copy
 import hashlib
+import importlib.util
 import json
-from dataclasses import replace
-from datetime import date, datetime, timedelta, timezone
+import sys
+from dataclasses import FrozenInstanceError, replace
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,7 @@ from research.kr_backfill import adjacent_window_predicate as predicate
 pytestmark = pytest.mark.unit
 
 SESSION = date(2026, 7, 30)
+HOLDOUT_SESSIONS = (date(2026, 7, 28), date(2026, 7, 29))
 KST = timezone(timedelta(hours=9), name="KST")
 T = datetime(2026, 7, 30, 14, 55, tzinfo=KST)
 T_NEXT = T + timedelta(minutes=1)
@@ -102,6 +105,34 @@ def classify(source_a, source_b, **context_changes):
     )
 
 
+def holdout_result(symbol: str, session: date):
+    """Create a long completed-session fixture outside the design session."""
+
+    start = datetime.combine(session, time(14, 0), tzinfo=KST)
+    source_a = {}
+    source_b = {}
+    for offset in range(60):
+        timestamp = start + timedelta(minutes=offset)
+        source_a[timestamp] = bar(100, 105, 95, 100, 100)
+        source_b[timestamp] = bar(100, 105, 95, 100, 100)
+
+    pair_start = start + timedelta(minutes=20)
+    pair_next = pair_start + timedelta(minutes=1)
+    source_a[pair_start] = bar(100, 105, 95, 100, 100)
+    source_a[pair_next] = bar(100, 105, 95, 101, 100)
+    source_b[pair_start] = bar(100, 105, 95, 101, 90)
+    source_b[pair_next] = bar(100, 105, 95, 101, 110)
+    return predicate.classify(symbol, session, source_a, source_b, context=context())
+
+
+def completed_holdout_results():
+    return [
+        holdout_result(symbol, session)
+        for session in HOLDOUT_SESSIONS
+        for symbol in ("000270", "005930")
+    ]
+
+
 def invariant_ids(result):
     ids = {failure.invariant for failure in result.invariant_failures}
     for pair in result.rejected_pairs:
@@ -125,7 +156,7 @@ def full_window_with_two_pairs():
 def phase_b_evidence(**changes):
     base = predicate.PhaseBEvidence(
         design_sessions=(SESSION,),
-        holdout_sessions=(date(2026, 7, 29),),
+        holdout_sessions=HOLDOUT_SESSIONS,
         holdout_revalidation_completed=True,
         holdout_sessions_completed=True,
         higher_timeframe_bucket_exact={
@@ -136,6 +167,19 @@ def phase_b_evidence(**changes):
         },
     )
     return replace(base, **changes)
+
+
+def import_predicate_copy(path: Path) -> None:
+    module_name = f"_adjacent_window_predicate_copy_{path.stat().st_mtime_ns}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(module_name, None)
 
 
 def test_observed_shape_is_accepted_but_raw_exact_stays_failed():
@@ -159,6 +203,18 @@ def test_observed_shape_is_accepted_but_raw_exact_stays_failed():
     ]
 
 
+def test_classification_result_is_frozen_and_tuple_backed():
+    result = classify(*accepted_input())
+
+    assert isinstance(result.raw_mismatches, tuple)
+    assert isinstance(result.accepted_pairs, tuple)
+    assert isinstance(result.invariant_failures, tuple)
+    with pytest.raises(FrozenInstanceError):
+        result.noncompliant_mismatch_cells = 1
+    with pytest.raises(AttributeError):
+        result.accepted_pairs.clear()
+
+
 # I1: same semantic input and both candidate minutes must exist in both sources.
 
 
@@ -168,7 +224,7 @@ def test_I1_one_sided_only_input_fails_even_without_raw_cells():
     result = classify(source_a, source_b)
 
     assert result.raw_mismatch_cells == 0
-    assert result.one_sided_minutes == [T_NEXT]
+    assert result.one_sided_minutes == (T_NEXT,)
     assert result.adjacent_window_equivalent is False
     assert "I1" in invariant_ids(result)
 
@@ -435,31 +491,92 @@ def test_phase_a_evidence_cannot_issue_a_documented_exception_pass():
 
 
 def test_shard_pass_requires_distinct_completed_holdout_and_all_bucket_results():
-    result = classify(*accepted_input())
-    decision = predicate.evaluate_shard_gate([result], phase_b=phase_b_evidence())
+    results = completed_holdout_results()
+    decision = predicate.evaluate_shard_gate(results, phase_b=phase_b_evidence())
 
     assert decision.status == "PASS_WITH_DOCUMENTED_EXCEPTION"
+    assert decision.covered_symbols == predicate.MIN_HOLDOUT_SYMBOLS
+    assert decision.covered_sessions == predicate.MIN_HOLDOUT_SESSIONS
+    assert decision.compared_cells >= predicate.MIN_HOLDOUT_COMPARED_CELLS
     assert decision.two_way_enabled is False
 
 
-def test_shard_fails_when_holdout_overlaps_design_session():
-    result = classify(*accepted_input())
+def test_verifier_forged_evidence_now_fails_against_actual_result_session():
+    # Reproduce the verifier's exact B1 forgery: a design-cell result plus
+    # unrelated declared date tuples and PASS strings.
+    design_result = classify(*accepted_input())
+    forged = predicate.PhaseBEvidence(
+        design_sessions=(date(1999, 1, 1),),
+        holdout_sessions=(date(2000, 1, 1),),
+        holdout_revalidation_completed=True,
+        holdout_sessions_completed=True,
+        higher_timeframe_bucket_exact={
+            "5m": "PASS",
+            "15m": "PASS",
+            "30m": "PASS",
+            "1h": "PASS",
+        },
+    )
+
+    decision = predicate.evaluate_shard_gate([design_result], phase_b=forged)
+
+    assert decision.status == "FAIL"
+    assert (
+        "result_session_not_in_holdout_sessions:000270:2026-07-30" in decision.reasons
+    )
+    assert "holdout_symbol_coverage_below_minimum:1<2" in decision.reasons
+    assert "holdout_session_coverage_below_minimum:1<2" in decision.reasons
+    assert decision.two_way_enabled is False
+
+
+def test_design_session_result_cannot_be_retroactively_passed():
+    design_result = classify(*accepted_input())
     decision = predicate.evaluate_shard_gate(
-        [result],
+        [design_result],
         phase_b=phase_b_evidence(holdout_sessions=(SESSION,)),
     )
 
     assert decision.status == "FAIL"
     assert "holdout_overlaps_design_sessions" in decision.reasons
+    assert "result_session_is_design_session:000270:2026-07-30" in decision.reasons
+
+
+def test_shard_requires_minimum_actual_holdout_coverage():
+    result = holdout_result("000270", HOLDOUT_SESSIONS[0])
+    decision = predicate.evaluate_shard_gate(
+        [result],
+        phase_b=phase_b_evidence(holdout_sessions=(HOLDOUT_SESSIONS[0],)),
+    )
+
+    assert decision.status == "FAIL"
+    assert "holdout_symbol_coverage_below_minimum:1<2" in decision.reasons
+    assert "holdout_session_coverage_below_minimum:1<2" in decision.reasons
+    assert "holdout_compared_cell_coverage_below_minimum:300<1000" in decision.reasons
+
+
+def test_every_declared_holdout_session_must_have_an_actual_result():
+    result = holdout_result("000270", HOLDOUT_SESSIONS[0])
+    decision = predicate.evaluate_shard_gate([result], phase_b=phase_b_evidence())
+
+    assert decision.status == "FAIL"
+    assert "declared_holdout_session_has_no_result:2026-07-29" in decision.reasons
 
 
 def test_predicate_name_version_and_hash_are_frozen():
     assert predicate.PREDICATE_NAME == "ADJACENT_WINDOW_EQUIVALENT_V1"
-    assert predicate.PREDICATE_VERSION == "1.0.0"
+    assert predicate.PREDICATE_VERSION == "1.0.1"
     assert (
         predicate.PREDICATE_SPEC_SHA256
-        == "207d3f6f1a87413b8788446fde59e6fcad866478674fb99411c804df41de1e99"
+        == "abbd692cd91c0efc07ce21409ad043a199bad97d954d1a97f55852e29c929618"
     )
+    assert predicate._spec_hash() == predicate.PREDICATE_SPEC_SHA256
+    assert predicate._module_source_hash() == predicate.MODULE_SOURCE_SHA256
+    assert predicate.predicate_spec_payload()["required_higher_timeframes"] == [
+        "5m",
+        "15m",
+        "30m",
+        "1h",
+    ]
     assert [item.identifier for item in predicate.INVARIANT_SPEC] == [
         f"I{number}" for number in range(1, 10)
     ]
@@ -478,6 +595,55 @@ def test_changing_the_canonical_spec_changes_its_hash():
     ).hexdigest()
 
     assert altered_hash != predicate.PREDICATE_SPEC_SHA256
+
+
+def test_module_source_freeze_detects_removed_I7_implementation(tmp_path):
+    source = PREDICATE_SOURCE.read_text(encoding="utf-8")
+    i7_enforcement = """\
+    if delta_t == 0 or delta_next == 0:
+        failures.append(
+            InvariantFailure("I7", "volume movement must be non-zero in both minutes")
+        )
+    if delta_t != -delta_next:
+        failures.append(InvariantFailure("I7", "volume deltas do not cancel"))
+"""
+    assert i7_enforcement in source
+    edited_path = tmp_path / "adjacent_window_predicate_i7_deleted.py"
+    edited_path.write_text(source.replace(i7_enforcement, "", 1), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="module source changed"):
+        import_predicate_copy(edited_path)
+
+
+def test_verifier_two_source_edits_now_fail_at_import(tmp_path):
+    """Reproduce the verifier's B3 edits without monkeypatching the module."""
+
+    source = PREDICATE_SOURCE.read_text(encoding="utf-8")
+    i7_enforcement = """\
+    if delta_t == 0 or delta_next == 0:
+        failures.append(
+            InvariantFailure("I7", "volume movement must be non-zero in both minutes")
+        )
+    if delta_t != -delta_next:
+        failures.append(InvariantFailure("I7", "volume deltas do not cancel"))
+"""
+    assert i7_enforcement in source
+    assert (
+        'REQUIRED_HIGHER_TIMEFRAMES: tuple[str, ...] = ("5m", "15m", "30m", "1h")'
+        in source
+    )
+    edited = source.replace(i7_enforcement, "", 1).replace(
+        'REQUIRED_HIGHER_TIMEFRAMES: tuple[str, ...] = ("5m", "15m", "30m", "1h")',
+        "REQUIRED_HIGHER_TIMEFRAMES: tuple[str, ...] = ()",
+        1,
+    )
+    edited_path = tmp_path / "adjacent_window_predicate_verifier_edits.py"
+    edited_path.write_text(edited, encoding="utf-8")
+
+    with pytest.raises(
+        RuntimeError, match="specification changed|module source changed"
+    ):
+        import_predicate_copy(edited_path)
 
 
 def test_predicate_is_pure_and_has_no_offset_search_or_match_rate_escape_hatch():

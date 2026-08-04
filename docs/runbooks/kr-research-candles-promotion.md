@@ -128,3 +128,11 @@ also cite the raw 1-minute audit result and, when an adjacent-window exception
 is present, its predicate version/hash, independent-holdout evidence, and exact
 5m/15m/30m/1h bucket evidence. A documented exception never enables two-way
 operation by itself; the required operator approval remains separate.
+
+`ADJACENT_WINDOW_EQUIVALENT_V1` audit records must cite both its declarative
+specification SHA-256 and module-source SHA-256. The import checks detect
+accidental edits to the declared contract, execution code, and frozen
+operational constants. This is not a claim that Python code cannot be changed:
+changing a digest alongside source, `object.__setattr__`, and post-import
+monkeypatching remain residual bypasses that controlled review and deployment
+must prevent.

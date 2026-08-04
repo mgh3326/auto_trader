@@ -8,6 +8,12 @@ two-minute structural contract is satisfied.  It never changes the raw result:
 This is a pure, local module.  It performs no fetches, database writes, or
 broker/account operations.  Phase B collection and higher-timeframe
 reaggregation remain separate operator work.
+
+The frozen hashes detect accidental edits to the declared contract and this
+module's source at import time.  They do not make Python code unchangeable:
+an actor who changes a digest with the source, uses ``object.__setattr__``, or
+monkeypatches after import can still bypass them.  Review and controlled
+deployment remain required.
 """
 
 from __future__ import annotations
@@ -16,12 +22,13 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 PREDICATE_NAME = "ADJACENT_WINDOW_EQUIVALENT_V1"
-PREDICATE_VERSION = "1.0.0"
+PREDICATE_VERSION = "1.0.1"
 
 COMPARED_FIELDS: tuple[str, ...] = ("open", "high", "low", "close", "volume")
 NORMALISATION_RULE = "int(round(x)) for finite numeric OHLCV inputs"
@@ -39,6 +46,12 @@ FROZEN_BAR_LABEL_CONVENTION = "KRX_1M_BAR_START_KST_V1"
 FROZEN_OFFSET_MINUTES = 0
 
 REQUIRED_HIGHER_TIMEFRAMES: tuple[str, ...] = ("5m", "15m", "30m", "1h")
+
+# A Phase-B gate must cover more than one hand-picked result.  Coverage is
+# calculated from the immutable classification results, never self-attested.
+MIN_HOLDOUT_SYMBOLS = 2
+MIN_HOLDOUT_SESSIONS = 2
+MIN_HOLDOUT_COMPARED_CELLS = 1_000
 
 
 @dataclass(frozen=True)
@@ -122,6 +135,18 @@ def predicate_spec_payload() -> dict[str, Any]:
             "offset_minutes": FROZEN_OFFSET_MINUTES,
             "timezone": KST_TIMEZONE_NAME,
         },
+        "regular_session": {
+            "market": "KRX",
+            "segment": KRX_REGULAR_SEGMENT,
+            "start": REGULAR_SESSION_START.isoformat(),
+            "end": REGULAR_SESSION_END.isoformat(),
+        },
+        "required_higher_timeframes": list(REQUIRED_HIGHER_TIMEFRAMES),
+        "holdout_coverage_minimums": {
+            "symbols": MIN_HOLDOUT_SYMBOLS,
+            "sessions": MIN_HOLDOUT_SESSIONS,
+            "compared_cells": MIN_HOLDOUT_COMPARED_CELLS,
+        },
         "invariants": [invariant.as_record() for invariant in INVARIANT_SPEC],
     }
 
@@ -136,17 +161,37 @@ def _spec_hash() -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-# The literal is intentionally checked at import time. Changing even one byte of
-# the canonical contract without an explicit new version/hash makes the gate
-# unavailable instead of silently reinterpreting prior audit records.
+# The literals are intentionally checked at import time. Changing either the
+# canonical contract or module source without an explicit new version/hash
+# makes the gate unavailable instead of silently reinterpreting prior records.
 PREDICATE_SPEC_SHA256 = (
-    "207d3f6f1a87413b8788446fde59e6fcad866478674fb99411c804df41de1e99"
+    "abbd692cd91c0efc07ce21409ad043a199bad97d954d1a97f55852e29c929618"
 )
 if _spec_hash() != PREDICATE_SPEC_SHA256:
     raise RuntimeError(
         "ADJACENT_WINDOW_EQUIVALENT_V1 specification changed; issue a new "
         "version and frozen SHA-256 before use"
     )
+
+# This digest is calculated over the complete module source after replacing its
+# own literal with a stable marker.  It therefore covers implementation code
+# and operational constants as well as the declarative specification above.
+MODULE_SOURCE_SHA256 = (
+    "584f08d4025467ce5ae0f8fb6edc9800e0df5abaf74795dd8d3929612cc65ba5"
+)
+
+
+def _module_source_hash() -> str:
+    source = Path(__file__).read_bytes()
+    literal = MODULE_SOURCE_SHA256.encode("ascii")
+    if source.count(literal) != 1:
+        raise RuntimeError(
+            "ADJACENT_WINDOW_EQUIVALENT_V1 module-source digest literal is "
+            "missing or duplicated"
+        )
+    return hashlib.sha256(
+        source.replace(literal, b"<MODULE_SOURCE_SHA256>", 1)
+    ).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -212,18 +257,18 @@ class PairVerdict:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class ClassificationResult:
-    """Raw and structural verdicts kept separate for auditability."""
+    """Raw and structural verdicts kept separate and immutable for auditability."""
 
     symbol: str
     session: date
     common_minutes: int = 0
-    raw_mismatches: list[MinuteMismatch] = field(default_factory=list)
-    one_sided_minutes: list[datetime] = field(default_factory=list)
-    accepted_pairs: list[PairVerdict] = field(default_factory=list)
-    rejected_pairs: list[PairVerdict] = field(default_factory=list)
-    invariant_failures: list[InvariantFailure] = field(default_factory=list)
+    raw_mismatches: tuple[MinuteMismatch, ...] = ()
+    one_sided_minutes: tuple[datetime, ...] = ()
+    accepted_pairs: tuple[PairVerdict, ...] = ()
+    rejected_pairs: tuple[PairVerdict, ...] = ()
+    invariant_failures: tuple[InvariantFailure, ...] = ()
     noncompliant_mismatch_cells: int = 0
 
     @property
@@ -260,6 +305,7 @@ class ClassificationResult:
             "predicate": PREDICATE_NAME,
             "predicate_version": PREDICATE_VERSION,
             "predicate_spec_sha256": PREDICATE_SPEC_SHA256,
+            "module_source_sha256": MODULE_SOURCE_SHA256,
             "cause_name": PREDICATE_NAME,
             "symbol": self.symbol,
             "session": self.session.isoformat(),
@@ -309,6 +355,9 @@ class ShardGateDecision:
     status: str
     reasons: tuple[str, ...]
     noncompliant_mismatch_cells: int
+    covered_symbols: int
+    covered_sessions: int
+    compared_cells: int
 
     @property
     def two_way_enabled(self) -> bool:
@@ -319,14 +368,50 @@ class ShardGateDecision:
             "predicate": PREDICATE_NAME,
             "predicate_version": PREDICATE_VERSION,
             "predicate_spec_sha256": PREDICATE_SPEC_SHA256,
+            "module_source_sha256": MODULE_SOURCE_SHA256,
             "SHARD_GATE": self.status,
             "reasons": list(self.reasons),
             "noncompliant_mismatch_cells": self.noncompliant_mismatch_cells,
+            "holdout_coverage": {
+                "symbols": self.covered_symbols,
+                "sessions": self.covered_sessions,
+                "compared_cells": self.compared_cells,
+                "minimum_symbols": MIN_HOLDOUT_SYMBOLS,
+                "minimum_sessions": MIN_HOLDOUT_SESSIONS,
+                "minimum_compared_cells": MIN_HOLDOUT_COMPARED_CELLS,
+            },
             "TWO_WAY_ENABLED": "NO",
         }
 
 
 NormalisedBars = dict[datetime, dict[str, int]]
+
+
+def _classification_result(
+    *,
+    symbol: str,
+    session: date,
+    common_minutes: int,
+    raw_mismatches: Sequence[MinuteMismatch],
+    one_sided_minutes: Sequence[datetime],
+    accepted_pairs: Sequence[PairVerdict],
+    rejected_pairs: Sequence[PairVerdict],
+    invariant_failures: Sequence[InvariantFailure],
+    noncompliant_mismatch_cells: int,
+) -> ClassificationResult:
+    """Freeze local classification state before handing it to the gate."""
+
+    return ClassificationResult(
+        symbol=symbol,
+        session=session,
+        common_minutes=common_minutes,
+        raw_mismatches=tuple(raw_mismatches),
+        one_sided_minutes=tuple(one_sided_minutes),
+        accepted_pairs=tuple(accepted_pairs),
+        rejected_pairs=tuple(rejected_pairs),
+        invariant_failures=tuple(invariant_failures),
+        noncompliant_mismatch_cells=noncompliant_mismatch_cells,
+    )
 
 
 def classify(
@@ -339,30 +424,31 @@ def classify(
 ) -> ClassificationResult:
     """Classify one symbol and completed KRX session without changing raw facts."""
 
-    result = ClassificationResult(symbol=symbol, session=session)
-    result.invariant_failures.extend(_validate_context(context))
+    invariant_failures = _validate_context(context)
+    raw_mismatches: list[MinuteMismatch] = []
+    accepted_pairs: list[PairVerdict] = []
+    rejected_pairs: list[PairVerdict] = []
 
     normalised_a, failures_a = _normalise_source_bars(bars_a, session, "A")
     normalised_b, failures_b = _normalise_source_bars(bars_b, session, "B")
-    result.invariant_failures.extend(failures_a)
-    result.invariant_failures.extend(failures_b)
+    invariant_failures.extend(failures_a)
+    invariant_failures.extend(failures_b)
 
     only_a = sorted(set(normalised_a) - set(normalised_b))
     only_b = sorted(set(normalised_b) - set(normalised_a))
-    result.one_sided_minutes.extend((*only_a, *only_b))
-    if result.one_sided_minutes:
-        result.invariant_failures.append(
+    one_sided_minutes = [*only_a, *only_b]
+    if one_sided_minutes:
+        invariant_failures.append(
             InvariantFailure(
                 "I1",
                 "one-sided minute(s) cannot be structurally classified: "
-                + ", ".join(minute.isoformat() for minute in result.one_sided_minutes),
+                + ", ".join(minute.isoformat() for minute in one_sided_minutes),
             )
         )
 
     common_minutes = sorted(set(normalised_a) & set(normalised_b))
-    result.common_minutes = len(common_minutes)
     if not common_minutes:
-        result.invariant_failures.append(
+        invariant_failures.append(
             InvariantFailure("I1", "no comparable minute exists in both sources")
         )
 
@@ -371,30 +457,62 @@ def classify(
         fields = _mismatching_fields(normalised_a[minute], normalised_b[minute])
         if fields:
             mismatch_fields_by_minute[minute] = fields
-            result.raw_mismatches.append(MinuteMismatch(minute, fields))
+            raw_mismatches.append(MinuteMismatch(minute, fields))
 
     # A bad semantic/input contract invalidates every raw mismatch; accepting a
     # pair after any such failure would make an unavailable fact look verified.
-    if result.invariant_failures:
-        result.noncompliant_mismatch_cells = result.raw_mismatch_cells
-        return result
+    if invariant_failures:
+        return _classification_result(
+            symbol=symbol,
+            session=session,
+            common_minutes=len(common_minutes),
+            raw_mismatches=raw_mismatches,
+            one_sided_minutes=one_sided_minutes,
+            accepted_pairs=accepted_pairs,
+            rejected_pairs=rejected_pairs,
+            invariant_failures=invariant_failures,
+            noncompliant_mismatch_cells=sum(
+                len(mismatch.fields) for mismatch in raw_mismatches
+            ),
+        )
 
     mismatch_minutes = tuple(sorted(mismatch_fields_by_minute))
     if not mismatch_minutes:
-        return result
+        return _classification_result(
+            symbol=symbol,
+            session=session,
+            common_minutes=len(common_minutes),
+            raw_mismatches=raw_mismatches,
+            one_sided_minutes=one_sided_minutes,
+            accepted_pairs=accepted_pairs,
+            rejected_pairs=rejected_pairs,
+            invariant_failures=invariant_failures,
+            noncompliant_mismatch_cells=0,
+        )
 
     pairs, partition_failure = _partition_mismatch_minutes(mismatch_minutes)
     if partition_failure is not None:
-        result.invariant_failures.append(partition_failure)
-        result.invariant_failures.append(
+        invariant_failures.append(partition_failure)
+        invariant_failures.append(
             InvariantFailure(
                 "I8",
                 "because no complete accepted-pair partition exists, every raw "
                 "OHLCV mismatch remains outside the accepted exception set",
             )
         )
-        result.noncompliant_mismatch_cells = result.raw_mismatch_cells
-        return result
+        return _classification_result(
+            symbol=symbol,
+            session=session,
+            common_minutes=len(common_minutes),
+            raw_mismatches=raw_mismatches,
+            one_sided_minutes=one_sided_minutes,
+            accepted_pairs=accepted_pairs,
+            rejected_pairs=rejected_pairs,
+            invariant_failures=invariant_failures,
+            noncompliant_mismatch_cells=sum(
+                len(mismatch.fields) for mismatch in raw_mismatches
+            ),
+        )
 
     accepted_minutes: set[datetime] = set()
     for t, t_next in pairs:
@@ -406,30 +524,40 @@ def classify(
             t_next,
         )
         if pair.equivalent:
-            result.accepted_pairs.append(pair)
+            accepted_pairs.append(pair)
             accepted_minutes.update((t, t_next))
         else:
-            result.rejected_pairs.append(pair)
+            rejected_pairs.append(pair)
 
     noncompliant_minutes = set(mismatch_fields_by_minute) - accepted_minutes
-    result.noncompliant_mismatch_cells = sum(
+    noncompliant_mismatch_cells = sum(
         len(mismatch_fields_by_minute[minute]) for minute in noncompliant_minutes
     )
     if noncompliant_minutes:
-        result.invariant_failures.append(
+        invariant_failures.append(
             InvariantFailure(
                 "I8",
                 "OHLCV mismatch remains outside the accepted exception pair set",
             )
         )
-        result.invariant_failures.append(
+        invariant_failures.append(
             InvariantFailure(
                 "I9",
                 "rejected or unpaired raw mismatch minute(s) remain ordinary "
                 "mismatches",
             )
         )
-    return result
+    return _classification_result(
+        symbol=symbol,
+        session=session,
+        common_minutes=len(common_minutes),
+        raw_mismatches=raw_mismatches,
+        one_sided_minutes=one_sided_minutes,
+        accepted_pairs=accepted_pairs,
+        rejected_pairs=rejected_pairs,
+        invariant_failures=invariant_failures,
+        noncompliant_mismatch_cells=noncompliant_mismatch_cells,
+    )
 
 
 def evaluate_shard_gate(
@@ -441,7 +569,8 @@ def evaluate_shard_gate(
 
     Phase A callers should pass their pending evidence.  The result is then
     necessarily ``FAIL``.  A future Phase B caller must supply independent,
-    completed holdout sessions and all actual higher-timeframe bucket results.
+    completed holdout results, enough actual result coverage, and all actual
+    higher-timeframe bucket results.
     """
 
     reasons: list[str] = []
@@ -449,6 +578,17 @@ def evaluate_shard_gate(
         reasons.append("no_classification_results")
 
     noncompliant = sum(result.noncompliant_mismatch_cells for result in results)
+    result_sessions = {result.session for result in results}
+    result_symbols = {result.symbol for result in results}
+    result_keys = [(result.symbol, result.session) for result in results]
+    unique_results: dict[tuple[str, date], ClassificationResult] = {}
+    for result in results:
+        unique_results.setdefault((result.symbol, result.session), result)
+    compared_cells = sum(
+        result.common_minutes * len(COMPARED_FIELDS)
+        for result in unique_results.values()
+    )
+
     for result in results:
         if not result.adjacent_window_equivalent:
             reasons.append(
@@ -463,9 +603,41 @@ def evaluate_shard_gate(
         reasons.append("holdout_sessions_not_declared")
     if design_sessions & holdout_sessions:
         reasons.append("holdout_overlaps_design_sessions")
-    if not phase_b.holdout_revalidation_completed:
+    for result in results:
+        if result.session not in holdout_sessions:
+            reasons.append(
+                "result_session_not_in_holdout_sessions:"
+                f"{result.symbol}:{result.session.isoformat()}"
+            )
+        if result.session in design_sessions:
+            reasons.append(
+                "result_session_is_design_session:"
+                f"{result.symbol}:{result.session.isoformat()}"
+            )
+    for missing_session in sorted(holdout_sessions - result_sessions):
+        reasons.append(
+            "declared_holdout_session_has_no_result:" + missing_session.isoformat()
+        )
+    if len(set(result_keys)) != len(result_keys):
+        reasons.append("duplicate_symbol_session_classification_result")
+    if len(result_symbols) < MIN_HOLDOUT_SYMBOLS:
+        reasons.append(
+            "holdout_symbol_coverage_below_minimum:"
+            f"{len(result_symbols)}<{MIN_HOLDOUT_SYMBOLS}"
+        )
+    if len(result_sessions) < MIN_HOLDOUT_SESSIONS:
+        reasons.append(
+            "holdout_session_coverage_below_minimum:"
+            f"{len(result_sessions)}<{MIN_HOLDOUT_SESSIONS}"
+        )
+    if compared_cells < MIN_HOLDOUT_COMPARED_CELLS:
+        reasons.append(
+            "holdout_compared_cell_coverage_below_minimum:"
+            f"{compared_cells}<{MIN_HOLDOUT_COMPARED_CELLS}"
+        )
+    if phase_b.holdout_revalidation_completed is not True:
         reasons.append("holdout_revalidation_not_completed")
-    if not phase_b.holdout_sessions_completed:
+    if phase_b.holdout_sessions_completed is not True:
         reasons.append("holdout_includes_uncompleted_session")
     if noncompliant:
         reasons.append("noncompliant_mismatch_cells_present")
@@ -479,6 +651,9 @@ def evaluate_shard_gate(
         status=status,
         reasons=tuple(reasons),
         noncompliant_mismatch_cells=noncompliant,
+        covered_symbols=len(result_symbols),
+        covered_sessions=len(result_sessions),
+        compared_cells=compared_cells,
     )
 
 
@@ -759,3 +934,14 @@ def _isolation_failures(
 def _is_krx_regular_minute(timestamp: datetime) -> bool:
     minute = timestamp.timetz().replace(tzinfo=None)
     return REGULAR_SESSION_START <= minute <= REGULAR_SESSION_END
+
+
+def _assert_module_source_is_frozen() -> None:
+    if _module_source_hash() != MODULE_SOURCE_SHA256:
+        raise RuntimeError(
+            "ADJACENT_WINDOW_EQUIVALENT_V1 module source changed; issue a new "
+            "version and frozen SHA-256 before use"
+        )
+
+
+_assert_module_source_is_frozen()
