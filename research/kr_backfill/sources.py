@@ -43,10 +43,37 @@ VALUE_SEMANTICS: dict[str, str] = {
 }
 
 PACE_SECONDS: dict[str, float] = {"toss": 0.3, "kiwoom": 2.0, "kis": 0.5}
+ROWS_RETURNED = "ROWS_RETURNED"
+EMPTY_RESPONSE = "EMPTY_RESPONSE"
+EMPTY_RESPONSE_PLACEHOLDER = "EMPTY_RESPONSE_PLACEHOLDER"
+AUTH_STALE_TOKEN = "AUTH_STALE_TOKEN"
+PROVIDER_REJECTED = "PROVIDER_REJECTED"
+MALFORMED_RESPONSE = "MALFORMED_RESPONSE"
 
 
 class FetchWindowClosed(RuntimeError):
     """Raised when a fetch is attempted inside the 09:00-20:00 KST freeze."""
+
+
+class BackfillSourceResponseError(RuntimeError):
+    """Value-redacted source failure with an operator-facing reason code."""
+
+    def __init__(
+        self,
+        *,
+        reason_code: str,
+        source: str,
+        retry_disposition: str,
+        provider_code: int | str | None = None,
+    ) -> None:
+        self.reason_code = reason_code
+        self.source = source
+        self.retry_disposition = retry_disposition
+        self.provider_code = provider_code
+        super().__init__(
+            f"{source} response failure reason_code={reason_code} "
+            f"provider_code={provider_code!r} retry={retry_disposition}"
+        )
 
 
 def now_kst() -> datetime:
@@ -115,7 +142,12 @@ async def fetch_kiwoom_minutes(
 
     assert_fetch_window_open()
     out: dict[datetime, dict[str, float]] = {}
-    meta: dict[str, Any] = {"pages": 0, "rows_raw": 0, "next_key_seen": False}
+    meta: dict[str, Any] = {
+        "pages": 0,
+        "rows_raw": 0,
+        "next_key_seen": False,
+        "outcome_code": None,
+    }
 
     cont_yn: str | None = None
     next_key: str | None = None
@@ -134,31 +166,84 @@ async def fetch_kiwoom_minutes(
             body=body,
             **({"cont_yn": cont_yn, "next_key": next_key} if cont_yn else {}),
         )
-        if int(payload.get("return_code", 0)) != 0:
-            raise RuntimeError(
-                "Kiwoom ka10080 rejected request "
-                f"return_code={payload.get('return_code')!r}"
+        raw_return_code = payload.get("return_code")
+        try:
+            return_code = int(raw_return_code)
+        except (TypeError, ValueError) as exc:
+            raise BackfillSourceResponseError(
+                reason_code=MALFORMED_RESPONSE,
+                source="kiwoom",
+                retry_disposition="STOP_NO_RETRY",
+            ) from exc
+        if return_code != 0:
+            raise BackfillSourceResponseError(
+                reason_code=PROVIDER_REJECTED,
+                source="kiwoom",
+                retry_disposition="STOP_NO_RETRY",
+                provider_code=return_code,
             )
-        rows = payload.get("stk_min_pole_chart_qry") or []
+        if "stk_min_pole_chart_qry" not in payload:
+            raise BackfillSourceResponseError(
+                reason_code=MALFORMED_RESPONSE,
+                source="kiwoom",
+                retry_disposition="STOP_NO_RETRY",
+            )
+        rows = payload["stk_min_pole_chart_qry"]
+        if not isinstance(rows, list):
+            raise BackfillSourceResponseError(
+                reason_code=MALFORMED_RESPONSE,
+                source="kiwoom",
+                retry_disposition="STOP_NO_RETRY",
+            )
         meta["pages"] += 1
         meta["rows_raw"] += len(rows)
         if not rows:
+            if meta["outcome_code"] is None:
+                meta["outcome_code"] = EMPTY_RESPONSE
             break
+        blank_placeholders = 0
         for r in rows:
             raw_ts = str(r.get("cntr_tm", "")).strip()
             if len(raw_ts) < 12:
-                continue
-            ts = datetime.strptime(raw_ts[:12], "%Y%m%d%H%M")
-            close = _to_float(r.get("cur_prc"))
-            volume = _to_float(r.get("trde_qty"))
+                if all(value is None or not str(value).strip() for value in r.values()):
+                    blank_placeholders += 1
+                    continue
+                raise BackfillSourceResponseError(
+                    reason_code=MALFORMED_RESPONSE,
+                    source="kiwoom",
+                    retry_disposition="STOP_NO_RETRY",
+                )
+            try:
+                ts = datetime.strptime(raw_ts[:12], "%Y%m%d%H%M")
+                close = _to_float(r.get("cur_prc"))
+                volume = _to_float(r.get("trde_qty"))
+                open_price = _to_float(r.get("open_pric"))
+                high_price = _to_float(r.get("high_pric"))
+                low_price = _to_float(r.get("low_pric"))
+            except (TypeError, ValueError) as exc:
+                raise BackfillSourceResponseError(
+                    reason_code=MALFORMED_RESPONSE,
+                    source="kiwoom",
+                    retry_disposition="STOP_NO_RETRY",
+                ) from exc
             out[ts] = {
-                "open": _to_float(r.get("open_pric")),
-                "high": _to_float(r.get("high_pric")),
-                "low": _to_float(r.get("low_pric")),
+                "open": open_price,
+                "high": high_price,
+                "low": low_price,
                 "close": close,
                 "volume": volume,
                 "value": close * volume,
             }
+        if blank_placeholders:
+            if blank_placeholders != len(rows) or out:
+                raise BackfillSourceResponseError(
+                    reason_code=MALFORMED_RESPONSE,
+                    source="kiwoom",
+                    retry_disposition="STOP_NO_RETRY",
+                )
+            meta["outcome_code"] = EMPTY_RESPONSE_PLACEHOLDER
+            break
+        meta["outcome_code"] = ROWS_RETURNED
         # post_api merges the cont-yn / next-key response headers into payload.
         more = str(payload.get("cont_yn", "")).strip().upper() == "Y"
         nk = str(payload.get("next_key", "")).strip() or None
@@ -186,7 +271,12 @@ async def fetch_toss_minutes(
 ) -> tuple[dict[datetime, dict[str, float]], dict[str, Any]]:
     assert_fetch_window_open()
     out: dict[datetime, dict[str, float]] = {}
-    meta: dict[str, Any] = {"pages": 0, "rows_raw": 0, "next_before": None}
+    meta: dict[str, Any] = {
+        "pages": 0,
+        "rows_raw": 0,
+        "next_before": None,
+        "outcome_code": None,
+    }
 
     cursor = before
     for _ in range(max_pages):
@@ -197,7 +287,9 @@ async def fetch_toss_minutes(
         meta["pages"] += 1
         meta["rows_raw"] += len(page.candles)
         if not page.candles:
+            meta["outcome_code"] = EMPTY_RESPONSE
             break
+        meta["outcome_code"] = ROWS_RETURNED
         for c in page.candles:
             ts = datetime.fromisoformat(str(c.timestamp).replace("Z", "+00:00"))
             ts = ts.astimezone(KST).replace(tzinfo=None) if ts.tzinfo else ts
@@ -236,7 +328,7 @@ async def fetch_kis_minutes(
 ) -> tuple[dict[datetime, dict[str, float]], dict[str, Any]]:
     assert_fetch_window_open()
     out: dict[datetime, dict[str, float]] = {}
-    meta: dict[str, Any] = {"pages": 0, "rows_raw": 0}
+    meta: dict[str, Any] = {"pages": 0, "rows_raw": 0, "outcome_code": None}
 
     cursor = end_time
     for _ in range(max_pages):
@@ -247,7 +339,9 @@ async def fetch_kis_minutes(
         meta["pages"] += 1
         meta["rows_raw"] += len(frame)
         if frame.empty:
+            meta["outcome_code"] = EMPTY_RESPONSE
             break
+        meta["outcome_code"] = ROWS_RETURNED
         for _idx, r in frame.iterrows():
             ts = r["datetime"]
             ts = ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts

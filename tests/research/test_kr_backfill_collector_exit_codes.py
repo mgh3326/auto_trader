@@ -92,3 +92,17 @@ def test_stopped_stream_after_rows_is_partial_failure(
     )
 
     assert collect_module.exit_code_for_results([result]) == 1
+
+
+def test_empty_symbol_among_useful_rows_is_partial_failure(
+    collect_module: ModuleType,
+) -> None:
+    result = _stats(
+        collect_module,
+        rows_fetched=900,
+        rows_inserted=700,
+        empty_responses=1,
+        empty_symbols=["001570"],
+    )
+
+    assert collect_module.exit_code_for_results([result]) == 1

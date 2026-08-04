@@ -88,7 +88,9 @@ async def test_kiwoom_provider_rejection_is_not_reported_as_empty_data(
     pacer = sources_module.Pacer("kiwoom")
     pacer.interval = 0.0
 
-    with pytest.raises(RuntimeError, match="return_code=3") as exc_info:
+    with pytest.raises(
+        sources_module.BackfillSourceResponseError, match="PROVIDER_REJECTED"
+    ) as exc_info:
         await sources_module.fetch_kiwoom_minutes(
             client=client,
             symbol="196170",
@@ -98,3 +100,111 @@ async def test_kiwoom_provider_rejection_is_not_reported_as_empty_data(
         )
 
     assert "sensitive provider text" not in str(exc_info.value)
+    assert exc_info.value.provider_code == 3
+
+
+@pytest.mark.asyncio
+async def test_kiwoom_successful_empty_has_distinct_outcome_code(
+    sources_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BACKFILL_DAYTIME_APPROVED", "true")
+    client = _Client({"return_code": 0, "stk_min_pole_chart_qry": []})
+    pacer = sources_module.Pacer("kiwoom")
+    pacer.interval = 0.0
+
+    rows, meta = await sources_module.fetch_kiwoom_minutes(
+        client=client,
+        symbol="001570",
+        pacer=pacer,
+        max_pages=1,
+        base_dt="20260724",
+    )
+
+    assert rows == {}
+    assert meta["outcome_code"] == sources_module.EMPTY_RESPONSE
+
+
+@pytest.mark.asyncio
+async def test_kiwoom_missing_row_key_is_malformed_not_empty(
+    sources_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BACKFILL_DAYTIME_APPROVED", "true")
+    client = _Client({"return_code": 0})
+    pacer = sources_module.Pacer("kiwoom")
+    pacer.interval = 0.0
+
+    with pytest.raises(
+        sources_module.BackfillSourceResponseError, match="MALFORMED_RESPONSE"
+    ):
+        await sources_module.fetch_kiwoom_minutes(
+            client=client,
+            symbol="001570",
+            pacer=pacer,
+            max_pages=1,
+            base_dt="20260724",
+        )
+
+
+@pytest.mark.asyncio
+async def test_kiwoom_all_blank_sentinel_is_distinct_empty_placeholder(
+    sources_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BACKFILL_DAYTIME_APPROVED", "true")
+    client = _Client(
+        {
+            "return_code": 0,
+            "stk_min_pole_chart_qry": [
+                {
+                    "cntr_tm": "",
+                    "open_pric": "",
+                    "high_pric": "",
+                    "low_pric": "",
+                    "cur_prc": "",
+                    "trde_qty": "",
+                }
+            ],
+        }
+    )
+    pacer = sources_module.Pacer("kiwoom")
+    pacer.interval = 0.0
+
+    rows, meta = await sources_module.fetch_kiwoom_minutes(
+        client=client,
+        symbol="001570",
+        pacer=pacer,
+        max_pages=1,
+        base_dt="20260724",
+    )
+
+    assert rows == {}
+    assert meta["outcome_code"] == sources_module.EMPTY_RESPONSE_PLACEHOLDER
+
+
+@pytest.mark.asyncio
+async def test_kiwoom_partially_blank_row_is_malformed(
+    sources_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BACKFILL_DAYTIME_APPROVED", "true")
+    client = _Client(
+        {
+            "return_code": 0,
+            "stk_min_pole_chart_qry": [{"cntr_tm": "", "cur_prc": "100"}],
+        }
+    )
+    pacer = sources_module.Pacer("kiwoom")
+    pacer.interval = 0.0
+
+    with pytest.raises(
+        sources_module.BackfillSourceResponseError, match="MALFORMED_RESPONSE"
+    ):
+        await sources_module.fetch_kiwoom_minutes(
+            client=client,
+            symbol="001570",
+            pacer=pacer,
+            max_pages=1,
+            base_dt="20260724",
+        )
