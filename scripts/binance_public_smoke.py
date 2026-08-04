@@ -7,10 +7,10 @@ end-to-end 가시화.
 
 Exit codes:
     0   - 모든 smoke 성공
-    1   - 예기치 못한 예외
+    1   - 잘못된 duration 또는 예기치 못한 예외
     2   - REST exchangeInfo 실패
     3   - REST klines backfill 실패
-    4   - WebSocket connect 실패
+    4   - WebSocket connect/receive 실패 또는 duration 내 이벤트 0건
     5   - 호스트 allowlist rejection 동작 실패 (defense-in-depth 검증)
     130 - SIGINT (Ctrl-C)
 
@@ -27,10 +27,14 @@ import asyncio
 import datetime as dt
 import logging
 import sys
+from contextlib import aclosing
+from typing import Final
 
 from app.services.brokers.binance.errors import BinanceLiveHostBlocked
 from app.services.brokers.binance.rest_client import BinancePublicRestClient
 from app.services.brokers.binance.ws_client import BinancePublicWSClient
+
+_WS_CLOSE_TIMEOUT_SECONDS: Final[float] = 1.0
 
 
 def _parse_args() -> argparse.Namespace:
@@ -45,7 +49,10 @@ def _parse_args() -> argparse.Namespace:
         "--duration",
         type=int,
         default=15,
-        help="WS subscribe duration in seconds",
+        help=(
+            "WS receive duration in seconds "
+            f"(plus at most {_WS_CLOSE_TIMEOUT_SECONDS:g}s shutdown cleanup)"
+        ),
     )
     p.add_argument("--dry-run", action="store_true", default=True)
     p.add_argument("--no-dry-run", dest="dry_run", action="store_false")
@@ -55,6 +62,10 @@ def _parse_args() -> argparse.Namespace:
 async def _run(args: argparse.Namespace) -> int:
     log = logging.getLogger("binance_public_smoke")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    if args.duration <= 0:
+        log.error("--duration must be greater than zero seconds")
+        return 1
 
     symbol = args.symbol or args.symbols.split(",")[0]
 
@@ -107,18 +118,33 @@ async def _run(args: argparse.Namespace) -> int:
     url = f"wss://stream.binance.com:9443/stream?streams={syms}"
     received = 0
     try:
-        async with BinancePublicWSClient(url=url) as ws:
-            loop = asyncio.get_event_loop()
-            stop_at = loop.time() + args.duration
-            async for event in ws.events():
-                log.info(f"ws event: {event}")
-                received += 1
-                if loop.time() >= stop_at:
-                    break
-                if received >= 3:
-                    break
+        async with asyncio.timeout(args.duration):
+            async with BinancePublicWSClient(
+                url=url,
+                close_timeout=_WS_CLOSE_TIMEOUT_SECONDS,
+            ) as ws:
+                async with aclosing(ws.events()) as events:
+                    async for event in events:
+                        log.info(f"ws event: {event}")
+                        received += 1
+                        if received >= 3:
+                            break
+    except TimeoutError:
+        if received == 0:
+            log.error(
+                "WS FAIL: no events received before "
+                f"--duration={args.duration} seconds elapsed"
+            )
+            return 4
+        log.info(
+            f"WS duration elapsed after receiving {received} event(s); closing cleanly"
+        )
     except Exception as exc:
         log.error(f"WS FAIL: {exc}")
+        return 4
+
+    if received == 0:
+        log.error("WS FAIL: stream ended before any event was received")
         return 4
 
     log.info(f"smoke OK (dry_run={args.dry_run}; received {received} WS events)")

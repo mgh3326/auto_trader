@@ -79,6 +79,11 @@ uv run python -m scripts.binance_public_smoke \
     --symbols BTCUSDT,ETHUSDT,SOLUSDT --duration 30
 ```
 
+`--duration` is the WebSocket receive budget. The smoke client adds an explicit
+1-second shutdown budget, so a silent peer cannot extend cleanup to the
+`websockets` library's default 10-second closing-handshake timeout. REST phases
+run before this WS budget and retain their own transport timeouts.
+
 Exit codes are documented in the script docstring. `0` is success; `5` is
 "allowlist defense-in-depth check failed" (i.e., `fapi.binance.com` was
 not rejected — investigate immediately).
