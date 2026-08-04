@@ -742,6 +742,9 @@ def _reject_production_env_file(path: Path) -> None:
 def _prepare_surface_env(
     selected: tuple[str, ...], mock_env_file: Path | None, live_env_file: Path
 ) -> None:
+    ambient_env_file = os.environ.get("ENV_FILE", "")
+    if ambient_env_file:
+        _reject_production_env_file(Path(ambient_env_file))
     if "mock" in selected and mock_env_file is not None:
         _reject_production_env_file(mock_env_file)
         _load_env_file(
@@ -851,31 +854,35 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
     # This is the only branch that creates clients.  No client is built by the
     # dry-run path, so a planning invocation cannot accidentally call a host.
     selected_tuple = tuple(selected)
-    _prepare_surface_env(selected_tuple, args.mock_env_file, args.live_env_file)
-    from app.services.brokers.kiwoom.client import KiwoomMockClient
-    from app.services.brokers.kiwoom.live_market_data import KiwoomLiveReadOnlyClient
-
-    raw_clients, clients, pacers = _build_surface_runtime(
-        selected_tuple,
-        mock_factory=KiwoomMockClient.from_app_settings,
-        live_factory=KiwoomLiveReadOnlyClient.from_app_settings,
-    )
-    stop_events = {surface: asyncio.Event() for surface in selected}
-    pool = await asyncpg.create_pool(dsn(), min_size=2, max_size=6)
-    log = ProgressLog(job_events / "progress.jsonl")
-    guard = Guard(pool, args.baseline_median_ms, log)
-    await guard.snapshot_witness()
-    overlap = None
-    if len(selected) == 2:
-        overlap = OverlapVerifier(
-            symbols=tuple(overlap_symbols[:2]),
-            session_date=date.fromisoformat(args.end_date),
-            clients=clients,
-            pacers=pacers,
-            log=log,
-            stop_events=stop_events,
-        )
+    raw_clients: dict[str, Any] = {}
+    pool: asyncpg.Pool | None = None
+    log: ProgressLog | None = None
     try:
+        _prepare_surface_env(selected_tuple, args.mock_env_file, args.live_env_file)
+        from app.services.brokers.kiwoom.client import KiwoomMockClient
+        from app.services.brokers.kiwoom.live_market_data import (
+            KiwoomLiveReadOnlyClient,
+        )
+
+        raw_clients, clients, pacers = _build_surface_runtime(
+            selected_tuple,
+            mock_factory=KiwoomMockClient.from_app_settings,
+            live_factory=KiwoomLiveReadOnlyClient.from_app_settings,
+        )
+        stop_events = {surface: asyncio.Event() for surface in selected}
+        pool = await asyncpg.create_pool(dsn(), min_size=2, max_size=6)
+        log = ProgressLog(job_events / "progress.jsonl")
+        guard = Guard(pool, args.baseline_median_ms, log)
+        overlap = None
+        if len(selected) == 2:
+            overlap = OverlapVerifier(
+                symbols=tuple(overlap_symbols[:2]),
+                session_date=date.fromisoformat(args.end_date),
+                clients=clients,
+                pacers=pacers,
+                log=log,
+                stop_events=stop_events,
+            )
         results = await asyncio.gather(
             *[
                 run_surface(
@@ -897,7 +904,8 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
             ]
         )
     finally:
-        await pool.close()
+        if pool is not None:
+            await pool.close()
         for raw_client in raw_clients.values():
             close = getattr(raw_client, "aclose", None) or getattr(
                 raw_client, "close", None
@@ -906,7 +914,8 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
                 result = close()
                 if asyncio.iscoroutine(result):
                     await result
-        log.close()
+        if log is not None:
+            log.close()
     summary["status"] = "COMPLETE"
     summary["results"] = [result.__dict__ for result in results]
     summary["calls_by_surface"] = {

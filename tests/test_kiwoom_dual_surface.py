@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import time
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 
+import research.kr_backfill.collect as collect
 from research.kr_backfill.collect import _build_surface_runtime, _prepare_surface_env
 from research.kr_backfill.dual_surface import (
     OverlapMismatch,
@@ -149,11 +154,206 @@ def test_dual_runtime_uses_one_accounted_pacer_per_surface():
     assert set(clients) == set(pacers) == {"mock", "live"}
 
 
-def test_mock_only_env_does_not_require_or_read_live_file(tmp_path):
+def test_mock_only_env_does_not_require_or_read_live_file(monkeypatch, tmp_path):
     mock_file = tmp_path / ".env.kiwoom-mock"
     mock_file.write_text("KIWOOM_MOCK_ENABLED=true\n", encoding="utf-8")
     missing_live_file = tmp_path / ".env.kiwoom-live"
 
-    _prepare_surface_env(("mock",), mock_file, missing_live_file)
+    previous = os.environ.get("ENV_FILE")
+    try:
+        _prepare_surface_env(("mock",), mock_file, missing_live_file)
+        assert os.environ["ENV_FILE"] == str(mock_file)
+    finally:
+        if previous is None:
+            monkeypatch.delenv("ENV_FILE", raising=False)
+        else:
+            monkeypatch.setenv("ENV_FILE", previous)
 
-    assert os.environ["ENV_FILE"] == str(mock_file)
+
+def test_ambient_production_env_file_is_rejected(monkeypatch, tmp_path):
+    monkeypatch.setenv("ENV_FILE", str(tmp_path / ".env.prod"))
+    with pytest.raises(SurfaceContractError, match="production env file"):
+        _prepare_surface_env(("mock",), None, tmp_path / ".env.live")
+
+
+def test_surface_pacer_serializes_concurrent_waits():
+    async def scenario():
+        pacer = SurfacePacer("live")
+        pacer.interval = 0.01
+        pacer._last = time.monotonic()
+        started = time.monotonic()
+        await asyncio.gather(pacer.wait(), pacer.wait())
+        return pacer.calls, time.monotonic() - started
+
+    calls, elapsed = asyncio.run(scenario())
+    assert calls == 2
+    assert elapsed >= 0.019
+
+
+@pytest.mark.asyncio
+async def test_dual_orchestrator_runs_both_surfaces_with_synthetic_fixture(
+    monkeypatch, tmp_path
+):
+    split = tmp_path / "split.csv"
+    split.write_text(
+        "ticker,surface,assignment_kind\n"
+        "000001,mock,bulk\n"
+        "000002,live,bulk\n"
+        "000003,mock,overlap\n"
+        "000003,live,overlap\n",
+        encoding="utf-8",
+    )
+    job_dir = tmp_path / "job"
+    dispatches: list[tuple[str, str]] = []
+
+    class FakeClient:
+        def __init__(self, surface):
+            self.surface = surface
+
+        async def aclose(self):
+            return None
+
+    class FakeConn:
+        async def fetch(self, *_args):
+            return []
+
+    class FakePool:
+        def __init__(self):
+            self.closed = False
+
+        @asynccontextmanager
+        async def acquire(self):
+            yield FakeConn()
+
+        async def close(self):
+            self.closed = True
+
+    pool = FakePool()
+
+    def mock_factory():
+        return FakeClient("mock")
+
+    def live_factory():
+        return FakeClient("live")
+
+    async def fake_fetch(*, client, symbol, **_kwargs):
+        dispatches.append((client.client.surface, symbol))
+        _kwargs["pacer"].calls += 1
+        return {}, {"pages": 1}
+
+    monkeypatch.setattr(collect, "_prepare_surface_env", lambda *args: None)
+
+    async def create_pool(*_args, **_kwargs):
+        return pool
+
+    monkeypatch.setattr(collect.asyncpg, "create_pool", create_pool)
+    monkeypatch.setattr(collect, "dsn", lambda: "postgresql://synthetic")
+    monkeypatch.setattr(collect, "fetch_kiwoom_minutes", fake_fetch)
+    monkeypatch.setattr(collect, "assert_fetch_window_open", lambda: None)
+    monkeypatch.setattr(collect, "now_kst", lambda: collect.datetime(2026, 1, 2))
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+    from app.services.brokers.kiwoom.live_market_data import KiwoomLiveReadOnlyClient
+
+    monkeypatch.setattr(
+        KiwoomMockClient,
+        "from_app_settings",
+        classmethod(lambda cls: mock_factory()),
+    )
+    monkeypatch.setattr(
+        KiwoomLiveReadOnlyClient,
+        "from_app_settings",
+        classmethod(lambda cls: live_factory()),
+    )
+
+    args = SimpleNamespace(
+        split_csv=split,
+        job_dir=job_dir,
+        start_date="2026-01-01",
+        end_date="2026-01-02",
+        surface=None,
+        limit_symbols=None,
+        confirm_write=True,
+        mock_env_file=None,
+        live_env_file=tmp_path / ".env.live",
+        baseline_median_ms=2.127,
+    )
+
+    result = await collect._run_dual_surface(args)
+
+    assert result == 0
+    print(
+        "SYNTHETIC_DUAL_DISPATCHES",
+        {
+            surface: sum(item[0] == surface for item in dispatches)
+            for surface in ("mock", "live")
+        },
+        "POOL_CLOSED",
+        pool.closed,
+    )
+    assert sorted(dispatches) == [("live", "000002"), ("mock", "000001")]
+    assert pool.closed is True
+    assert (job_dir / "events" / "stage_b_dual_surface_summary.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_dual_orchestrator_closes_pool_when_initialization_fails(
+    monkeypatch, tmp_path
+):
+    split = tmp_path / "split.csv"
+    split.write_text(
+        "ticker,surface,assignment_kind\n"
+        "000001,mock,bulk\n"
+        "000002,live,bulk\n"
+        "000003,mock,overlap\n"
+        "000003,live,overlap\n",
+        encoding="utf-8",
+    )
+
+    class FakePool:
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    pool = FakePool()
+    monkeypatch.setattr(collect, "_prepare_surface_env", lambda *args: None)
+
+    async def create_pool(*_args, **_kwargs):
+        return pool
+
+    monkeypatch.setattr(collect.asyncpg, "create_pool", create_pool)
+    monkeypatch.setattr(collect, "dsn", lambda: "postgresql://synthetic")
+
+    def fail_guard_init(self, *args):
+        raise RuntimeError("guard init")
+
+    monkeypatch.setattr(collect.Guard, "__init__", fail_guard_init)
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+    from app.services.brokers.kiwoom.live_market_data import KiwoomLiveReadOnlyClient
+
+    monkeypatch.setattr(
+        KiwoomMockClient,
+        "from_app_settings",
+        classmethod(lambda cls: object()),
+    )
+    monkeypatch.setattr(
+        KiwoomLiveReadOnlyClient,
+        "from_app_settings",
+        classmethod(lambda cls: object()),
+    )
+    args = SimpleNamespace(
+        split_csv=split,
+        job_dir=tmp_path / "job",
+        start_date="2026-01-01",
+        end_date="2026-01-02",
+        surface=None,
+        limit_symbols=None,
+        confirm_write=True,
+        mock_env_file=None,
+        live_env_file=tmp_path / ".env.live",
+        baseline_median_ms=2.127,
+    )
+
+    with pytest.raises(RuntimeError, match="guard init"):
+        await collect._run_dual_surface(args)
+    assert pool.closed is True

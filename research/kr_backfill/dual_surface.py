@@ -8,6 +8,7 @@ parts of the dual-pipe without touching either Kiwoom host.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
 import json
@@ -90,16 +91,15 @@ class SurfacePacer:
         self.backoff_level = 0
         self._last = 0.0
         self._clock = clock
+        self._wait_lock = asyncio.Lock()
 
     async def wait(self) -> None:
-        # Imported lazily so the offline split/pacing tests remain cheap.
-        import asyncio
-
-        delta = self._clock() - self._last
-        if delta < self.interval:
-            await asyncio.sleep(self.interval - delta)
-        self._last = self._clock()
-        self.calls += 1
+        async with self._wait_lock:
+            delta = self._clock() - self._last
+            if delta < self.interval:
+                await asyncio.sleep(self.interval - delta)
+            self._last = self._clock()
+            self.calls += 1
 
     def note_status(self, status_code: int | None) -> None:
         """Apply only fail-closed status handling and monotonic backoff."""
