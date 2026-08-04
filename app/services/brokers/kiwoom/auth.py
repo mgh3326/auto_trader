@@ -15,6 +15,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+import os
 import random
 import time
 import uuid
@@ -34,6 +35,10 @@ TOKEN_WAIT_POLL_SECONDS: float = 0.05
 
 _redis_client: redis.Redis | None = None
 
+_REDIS_MAX_CONNECTIONS_DEFAULT: Final[int] = 20
+_REDIS_SOCKET_TIMEOUT_DEFAULT: Final[float] = 5.0
+_REDIS_SOCKET_CONNECT_TIMEOUT_DEFAULT: Final[float] = 5.0
+
 
 @dataclass(frozen=True)
 class KiwoomToken:
@@ -45,18 +50,49 @@ class KiwoomTokenIssuanceUnavailable(RuntimeError):
     """Raised when another issuer never publishes a usable token."""
 
 
+class KiwoomRedisConfigurationError(RuntimeError):
+    """Raised with env names only when scoped Redis configuration is invalid."""
+
+
+def _positive_number_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise KiwoomRedisConfigurationError(f"invalid numeric env: {name}") from exc
+    if value <= 0:
+        raise KiwoomRedisConfigurationError(f"non-positive numeric env: {name}")
+    return value
+
+
+def _redis_client_from_env() -> redis.Redis:
+    redis_url = str(os.getenv("REDIS_URL", "")).strip()
+    if not redis_url:
+        raise KiwoomRedisConfigurationError("missing required env: REDIS_URL")
+    max_connections = _positive_number_env(
+        "REDIS_MAX_CONNECTIONS", float(_REDIS_MAX_CONNECTIONS_DEFAULT)
+    )
+    socket_timeout = _positive_number_env(
+        "REDIS_SOCKET_TIMEOUT", _REDIS_SOCKET_TIMEOUT_DEFAULT
+    )
+    socket_connect_timeout = _positive_number_env(
+        "REDIS_SOCKET_CONNECT_TIMEOUT", _REDIS_SOCKET_CONNECT_TIMEOUT_DEFAULT
+    )
+    return redis.from_url(
+        redis_url,
+        max_connections=int(max_connections),
+        socket_timeout=socket_timeout,
+        socket_connect_timeout=socket_connect_timeout,
+        decode_responses=True,
+    )
+
+
 async def _get_redis_client() -> redis.Redis:
     global _redis_client
     if _redis_client is None:
-        from app.core.config import settings
-
-        _redis_client = redis.from_url(
-            settings.get_redis_url(),
-            max_connections=settings.redis_max_connections,
-            socket_timeout=settings.redis_socket_timeout,
-            socket_connect_timeout=settings.redis_socket_connect_timeout,
-            decode_responses=True,
-        )
+        _redis_client = _redis_client_from_env()
     return _redis_client
 
 

@@ -723,7 +723,18 @@ class DomesticMarketDataMixin(MarketDataBase):
             api_name="inquire_time_dailychartprice",
         )
 
-        rows = js.get("output2") or js.get("output") or []
+        if "output2" in js:
+            rows = js["output2"]
+        elif "output" in js:
+            rows = js["output"]
+        else:
+            raise RuntimeError(
+                "Malformed KIS minute chart response: missing output2/output"
+            )
+        if not isinstance(rows, list):
+            raise RuntimeError(
+                "Malformed KIS minute chart response: expected output2/output list"
+            )
         if not rows:
             return pd.DataFrame(
                 columns=[

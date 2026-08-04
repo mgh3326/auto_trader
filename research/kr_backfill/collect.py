@@ -35,6 +35,8 @@ from typing import Any
 
 import asyncpg
 from sources import (  # noqa: E402
+    AUTH_STALE_TOKEN,
+    EMPTY_RESPONSE,
     KST,
     FetchWindowClosed,
     Pacer,
@@ -68,6 +70,9 @@ ON CONFLICT (time_utc, symbol, venue) DO NOTHING
 #: Latency regression threshold vs the Stage A baseline median (2.127 ms).
 LATENCY_ABORT_FACTOR = 5.0
 MAX_CONSECUTIVE_429 = 3
+EXIT_SUCCESS = 0
+EXIT_PARTIAL_FAILURE = 1
+EXIT_TOTAL_FAILURE = 2
 
 # DB 권한으로 대체됨(role auto_trader_kr_backfill, 2026-08-04 적용).
 # 행수 감시는 프로덕션 동시 쓰기와 구분 불가.
@@ -82,6 +87,8 @@ class StreamStats:
     rows_fetched: int = 0
     rows_inserted: int = 0
     rows_skipped_conflict: int = 0
+    empty_responses: int = 0
+    empty_symbols: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     stopped_reason: str | None = None
 
@@ -311,6 +318,8 @@ async def run_stream(
                     guard.note_429(source, False)
                 except Exception as exc:  # noqa: BLE001
                     msg = f"{type(exc).__name__}: {exc}"
+                    reason_code = str(getattr(exc, "reason_code", type(exc).__name__))
+                    stats.calls = pacer.calls
                     guard.note_429(source, "429" in msg or "TooManyRequests" in msg)
                     stats.errors.append(f"{symbol}: {msg}")
                     log.write(
@@ -319,12 +328,34 @@ async def run_stream(
                             "source": source,
                             "symbol": symbol,
                             "error": msg,
+                            "reason_code": reason_code,
+                            "retry_disposition": getattr(
+                                exc, "retry_disposition", "NONE"
+                            ),
                         }
                     )
+                    if reason_code == AUTH_STALE_TOKEN:
+                        stats.stopped_reason = (
+                            "AUTH_STALE_TOKEN after one read-only retry"
+                        )
+                        ckpt.save()
+                        return stats
                     break
 
                 stats.calls = pacer.calls
                 if not bars:
+                    reason_code = str(meta.get("outcome_code") or EMPTY_RESPONSE)
+                    stats.empty_responses += 1
+                    stats.empty_symbols.append(symbol)
+                    log.write(
+                        {
+                            "event": "empty_response",
+                            "source": source,
+                            "symbol": symbol,
+                            "reason_code": reason_code,
+                            "calls_cumulative": pacer.calls,
+                        }
+                    )
                     st["done"] = True
                     break
 
@@ -384,6 +415,32 @@ async def run_stream(
         await guard.check(source)
 
     return stats
+
+
+def exit_code_for_results(results: list[StreamStats | BaseException]) -> int:
+    """Return 0=all useful+clean, 1=partial, 2=no useful successful work."""
+    any_useful_work = False
+    any_failure = False
+    for result in results:
+        if isinstance(result, BaseException):
+            any_failure = True
+            continue
+        useful = result.rows_fetched > 0
+        any_useful_work = any_useful_work or useful
+        clean = (
+            useful
+            and not result.errors
+            and result.stopped_reason is None
+            and result.empty_responses == 0
+        )
+        if not clean:
+            any_failure = True
+
+    if not any_useful_work:
+        return EXIT_TOTAL_FAILURE
+    if any_failure:
+        return EXIT_PARTIAL_FAILURE
+    return EXIT_SUCCESS
 
 
 async def main() -> int:
@@ -492,7 +549,7 @@ async def main() -> int:
     )
     print(json.dumps(summary, indent=2, default=str, ensure_ascii=False))
     log.close()
-    return 0
+    return exit_code_for_results(results)
 
 
 if __name__ == "__main__":

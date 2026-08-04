@@ -53,6 +53,7 @@ from app.services.brokers.kiwoom.constants import (
     CHART_DAILY_API_ID,
     CHART_MINUTE_API_ID,
     CHART_MONTHLY_API_ID,
+    CHART_PATH,
     CHART_WEEKLY_API_ID,
     DEFAULT_TIMEOUT,
     HEADER_API_ID,
@@ -72,9 +73,6 @@ _log = logging.getLogger(__name__)
 # --------------------------------------------------------------------------
 # Allowlists (items 3 and 4)
 # --------------------------------------------------------------------------
-
-#: Official doc (ka10080-ka10083): URL is ``/api/dostk/chart`` for all four.
-CHART_PATH: Final[str] = "/api/dostk/chart"
 
 #: The only api-ids this client may ever send. Read-only chart TRs.
 ALLOWED_API_IDS: Final[frozenset[str]] = frozenset(

@@ -176,6 +176,14 @@ def test_parse_candles_rejects_float_prices() -> None:
         )
 
 
+@pytest.mark.parametrize("payload", [{}, {"candles": None}, {"candles": {}}])
+def test_parse_candles_rejects_missing_or_malformed_rows(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="expected candles list"):
+        parse_candles(payload)
+
+
 def test_parse_warnings_converts_fields() -> None:
     from app.services.brokers.toss.dto import parse_warnings
 
