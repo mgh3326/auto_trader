@@ -108,6 +108,15 @@ class Pacer:
         self._last = time.monotonic()
         self.calls += 1
 
+    def snapshot(self) -> dict[str, float | int | str]:
+        """Value-redacted state recorded when a pipe stops."""
+        return {
+            "source": self.source,
+            "calls": self.calls,
+            "interval_seconds": self.interval,
+            "seconds_since_last_request": max(0.0, time.monotonic() - self._last),
+        }
+
 
 def _to_float(raw: Any) -> float:
     # Kiwoom prefixes price/volume with a direction sign ("-78800"); the

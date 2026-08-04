@@ -154,6 +154,21 @@ def test_dual_runtime_uses_one_accounted_pacer_per_surface():
     assert set(clients) == set(pacers) == {"mock", "live"}
 
 
+def test_surface_pacer_snapshot_is_attributable_and_value_redacted():
+    pacer = SurfacePacer("live")
+    pacer.calls = 7
+    pacer.consecutive_429 = 1
+    pacer.backoff_level = 1
+
+    snapshot = pacer.snapshot()
+
+    assert snapshot["surface"] == "kiwoom_live"
+    assert snapshot["calls"] == 7
+    assert snapshot["consecutive_429"] == 1
+    assert snapshot["backoff_level"] == 1
+    assert "token" not in snapshot
+
+
 def test_mock_only_env_does_not_require_or_read_live_file(monkeypatch, tmp_path):
     mock_file = tmp_path / ".env.kiwoom-mock"
     mock_file.write_text("KIWOOM_MOCK_ENABLED=true\n", encoding="utf-8")

@@ -125,6 +125,17 @@ class SurfacePacer:
     def note_exception(self, exc: BaseException) -> None:
         self.note_status(http_status_from_exception(exc))
 
+    def snapshot(self) -> dict[str, float | int | str]:
+        """Value-redacted state recorded with a surface-local stop."""
+        return {
+            "surface": f"kiwoom_{self.surface}",
+            "calls": self.calls,
+            "interval_seconds": self.interval,
+            "consecutive_429": self.consecutive_429,
+            "backoff_level": self.backoff_level,
+            "seconds_since_last_request": max(0.0, self._clock() - self._last),
+        }
+
 
 def validate_surface_rows(rows: list[dict[str, str]]) -> dict[str, list[Surface]]:
     """Validate an immutable split CSV and return symbol → allowed surfaces.

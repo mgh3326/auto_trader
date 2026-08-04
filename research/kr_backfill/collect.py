@@ -74,6 +74,18 @@ except ImportError:  # pragma: no cover - direct CLI execution
         write_surface_manifest,
     )
 try:
+    from .surface_runtime import (
+        build_kis_surface_client,
+        is_kis_live_immediate_stop,
+        source_for_surface,
+    )
+except ImportError:  # pragma: no cover - direct CLI execution
+    from surface_runtime import (
+        build_kis_surface_client,
+        is_kis_live_immediate_stop,
+        source_for_surface,
+    )
+try:
     from .sources import (  # noqa: E402
         AUTH_STALE_TOKEN,
         EMPTY_RESPONSE,
@@ -264,6 +276,48 @@ async def insert_bars(
     return inserted, len(items) - inserted
 
 
+async def count_existing_bars(
+    pool: asyncpg.Pool, symbol: str, timestamps: list[datetime]
+) -> int:
+    """Read-only proof that cursor-overlap rows are already persisted."""
+    if not timestamps:
+        return 0
+    times = [timestamp.replace(tzinfo=KST) for timestamp in timestamps]
+    async with pool.acquire() as conn:
+        return int(
+            await conn.fetchval(
+                "SELECT count(*) FROM research.kr_candles_1m "
+                "WHERE symbol=$1 AND venue=$2 AND time_utc = ANY($3::timestamptz[])",
+                symbol,
+                VENUE,
+                times,
+            )
+        )
+
+
+def filter_page_to_cursor(
+    bars: dict[datetime, dict[str, float]], cursor_dt: datetime
+) -> tuple[dict[datetime, dict[str, float]], int]:
+    """Exclude a provider's repeated tail newer than the exact checkpoint."""
+    eligible = {
+        timestamp: values
+        for timestamp, values in bars.items()
+        if timestamp <= cursor_dt
+    }
+    return eligible, len(bars) - len(eligible)
+
+
+def filter_insert_domain(
+    bars: dict[datetime, dict[str, float]], start_dt: datetime, end_dt: datetime
+) -> dict[datetime, dict[str, float]]:
+    """Keep only regular-session rows inside the approved collection window."""
+    return {
+        timestamp: values
+        for timestamp, values in bars.items()
+        if in_regular_session(timestamp) and start_dt <= timestamp <= end_dt
+    }
+
+
 class Guard:
     """Latency and 429 abort-condition monitor shared by all streams."""
 
@@ -319,8 +373,11 @@ async def run_stream(
     start_date: date,
     end_date: date,
     batch_id: str,
+    *,
+    surface_id: str | None = None,
 ) -> StreamStats:
-    stats = StreamStats(source=source, symbols_total=len(symbols))
+    pipe_id = surface_id or source
+    stats = StreamStats(source=pipe_id, symbols_total=len(symbols))
     pacer = Pacer(source)
     start_dt = datetime.combine(start_date, datetime.min.time())
 
@@ -339,6 +396,11 @@ async def run_stream(
 
         try:
             while cursor_dt > start_dt:
+                request_context = {
+                    "symbol": symbol,
+                    "cursor": cursor_dt.isoformat(),
+                    "source": source,
+                }
                 try:
                     assert_fetch_window_open()
                 except FetchWindowClosed as exc:
@@ -347,8 +409,11 @@ async def run_stream(
                         {
                             "event": "paused_market_hours",
                             "source": source,
+                            "surface": pipe_id,
                             "symbol": symbol,
                             "cursor": cursor_dt,
+                            "last_request": request_context,
+                            "pacer": pacer.snapshot(),
                         }
                     )
                     ckpt.save()
@@ -382,25 +447,33 @@ async def run_stream(
                             end_time=cursor_dt.strftime("%H%M%S"),
                             max_pages=1,
                         )
-                    guard.note_429(source, False)
+                    guard.note_429(pipe_id, False)
                 except Exception as exc:  # noqa: BLE001
                     msg = f"{type(exc).__name__}: {exc}"
                     reason_code = str(getattr(exc, "reason_code", type(exc).__name__))
                     stats.calls = pacer.calls
-                    guard.note_429(source, "429" in msg or "TooManyRequests" in msg)
+                    is_429 = "429" in msg or "TooManyRequests" in msg
                     stats.errors.append(f"{symbol}: {msg}")
                     log.write(
                         {
                             "event": "fetch_error",
                             "source": source,
+                            "surface": pipe_id,
                             "symbol": symbol,
                             "error": msg,
                             "reason_code": reason_code,
                             "retry_disposition": getattr(
                                 exc, "retry_disposition", "NONE"
                             ),
+                            "last_request": request_context,
+                            "pacer": pacer.snapshot(),
                         }
                     )
+                    if pipe_id == "kis_live" and is_kis_live_immediate_stop(exc):
+                        stats.stopped_reason = f"kis_live immediate stop: {reason_code}"
+                        ckpt.save()
+                        return stats
+                    guard.note_429(pipe_id, is_429)
                     if reason_code == AUTH_STALE_TOKEN:
                         stats.stopped_reason = (
                             "AUTH_STALE_TOKEN after one read-only retry"
@@ -418,6 +491,7 @@ async def run_stream(
                         {
                             "event": "empty_response",
                             "source": source,
+                            "surface": pipe_id,
                             "symbol": symbol,
                             "reason_code": reason_code,
                             "calls_cumulative": pacer.calls,
@@ -427,13 +501,27 @@ async def run_stream(
                     break
 
                 oldest = min(bars)
-                # regular session only, inside the requested range
-                keep = {
-                    t: v
-                    for t, v in bars.items()
-                    if in_regular_session(t)
-                    and start_dt <= t <= datetime.combine(end_date, datetime.max.time())
-                }
+                range_candidates = filter_insert_domain(
+                    bars,
+                    start_dt,
+                    datetime.combine(end_date, datetime.max.time()),
+                )
+                keep, cursor_overlap = filter_page_to_cursor(
+                    range_candidates, cursor_dt
+                )
+                overlap_timestamps = [
+                    timestamp for timestamp in range_candidates if timestamp > cursor_dt
+                ]
+                cursor_overlap_verified = await count_existing_bars(
+                    pool, symbol, overlap_timestamps
+                )
+                if cursor_overlap_verified != cursor_overlap:
+                    raise AbortStream(
+                        "cursor overlap is not fully persisted: "
+                        f"source={source} symbol={symbol} "
+                        f"filtered={cursor_overlap} "
+                        f"existing={cursor_overlap_verified}"
+                    )
                 stats.rows_fetched += len(bars)
                 ins, skip = await insert_bars(
                     pool, symbol, keep, source=source, batch_id=batch_id
@@ -447,10 +535,15 @@ async def run_stream(
                     {
                         "event": "page",
                         "source": source,
+                        "surface": pipe_id,
                         "symbol": symbol,
                         "range": [oldest.isoformat(), max(bars).isoformat()],
                         "rows_fetched": len(bars),
                         "rows_kept": len(keep),
+                        "rows_filtered_cursor_overlap": cursor_overlap,
+                        "rows_filtered_cursor_overlap_verified": (
+                            cursor_overlap_verified
+                        ),
                         "rows_inserted": ins,
                         "rows_skipped_conflict": skip,
                         "calls_cumulative": pacer.calls,
@@ -472,14 +565,23 @@ async def run_stream(
                 st["done"] = True
         except AbortStream as exc:
             stats.stopped_reason = str(exc)
-            log.write({"event": "abort", "source": source, "reason": str(exc)})
+            log.write(
+                {
+                    "event": "abort",
+                    "source": source,
+                    "surface": pipe_id,
+                    "reason": str(exc),
+                    "last_request": request_context,
+                    "pacer": pacer.snapshot(),
+                }
+            )
             ckpt.save()
             return stats
 
         if st.get("done"):
             stats.symbols_done += 1
         ckpt.save()
-        await guard.check(source)
+        await guard.check(pipe_id)
 
     return stats
 
@@ -584,6 +686,7 @@ async def run_surface(
     """Collect one immutable symbol partition for one Kiwoom surface."""
 
     surface = validate_surface(surface)
+    surface_id = f"kiwoom_{surface}"
     stats = SurfaceStats(surface=surface, symbols_total=len(symbols))
     start_dt = datetime.combine(start_date, datetime.min.time())
 
@@ -621,6 +724,11 @@ async def run_surface(
                     return stats
 
                 try:
+                    request_context = {
+                        "symbol": symbol,
+                        "api_id": "ka10080",
+                        "base_dt": cursor_dt.strftime("%Y%m%d"),
+                    }
                     rows, meta = await fetch_kiwoom_minutes(
                         client=client,
                         symbol=symbol,
@@ -639,10 +747,12 @@ async def run_surface(
                         log.write(
                             {
                                 "event": "abort",
-                                "surface": surface,
+                                "surface": surface_id,
                                 "symbol": symbol,
                                 "reason": str(fatal),
                                 "http_status": status,
+                                "last_request": request_context,
+                                "pacer": pacer.snapshot(),
                             }
                         )
                         return stats
@@ -653,12 +763,14 @@ async def run_surface(
                         log.write(
                             {
                                 "event": "backoff",
-                                "surface": surface,
+                                "surface": surface_id,
                                 "symbol": symbol,
                                 "http_status": 429,
                                 "interval_seconds": pacer.interval,
                                 "backoff_level": pacer.backoff_level,
                                 "auto_recovery": False,
+                                "last_request": request_context,
+                                "pacer": pacer.snapshot(),
                             }
                         )
                         continue
@@ -666,9 +778,11 @@ async def run_surface(
                     log.write(
                         {
                             "event": "fetch_error",
-                            "surface": surface,
+                            "surface": surface_id,
                             "symbol": symbol,
                             "error": f"{type(exc).__name__}: {exc}",
+                            "last_request": request_context,
+                            "pacer": pacer.snapshot(),
                         }
                     )
                     break
@@ -679,14 +793,27 @@ async def run_surface(
                     break
 
                 oldest = min(rows)
-                keep = {
-                    timestamp: values
-                    for timestamp, values in rows.items()
-                    if in_regular_session(timestamp)
-                    and start_dt
-                    <= timestamp
-                    <= datetime.combine(end_date, datetime.max.time())
-                }
+                range_candidates = filter_insert_domain(
+                    rows,
+                    start_dt,
+                    datetime.combine(end_date, datetime.max.time()),
+                )
+                keep, cursor_overlap = filter_page_to_cursor(
+                    range_candidates, cursor_dt
+                )
+                overlap_timestamps = [
+                    timestamp for timestamp in range_candidates if timestamp > cursor_dt
+                ]
+                cursor_overlap_verified = await count_existing_bars(
+                    pool, symbol, overlap_timestamps
+                )
+                if cursor_overlap_verified != cursor_overlap:
+                    raise AbortStream(
+                        "cursor overlap is not fully persisted: "
+                        f"surface=kiwoom_{surface} symbol={symbol} "
+                        f"filtered={cursor_overlap} "
+                        f"existing={cursor_overlap_verified}"
+                    )
                 stats.rows_fetched += len(rows)
                 inserted, skipped = await insert_bars(
                     pool,
@@ -702,11 +829,15 @@ async def run_surface(
                 log.write(
                     {
                         "event": "page",
-                        "surface": surface,
+                        "surface": surface_id,
                         "symbol": symbol,
                         "range": [oldest.isoformat(), max(rows).isoformat()],
                         "rows_fetched": len(rows),
                         "rows_kept": len(keep),
+                        "rows_filtered_cursor_overlap": cursor_overlap,
+                        "rows_filtered_cursor_overlap_verified": (
+                            cursor_overlap_verified
+                        ),
                         "rows_inserted": inserted,
                         "rows_skipped_conflict": skipped,
                         "calls_cumulative": pacer.calls,
@@ -731,7 +862,19 @@ async def run_surface(
         ) as exc:
             stop_event.set()
             stats.stopped_reason = str(exc)
-            log.write({"event": "abort", "surface": surface, "reason": str(exc)})
+            log.write(
+                {
+                    "event": "abort",
+                    "surface": surface_id,
+                    "reason": str(exc),
+                    "last_request": {
+                        "symbol": symbol,
+                        "api_id": "ka10080",
+                        "base_dt": cursor_dt.strftime("%Y%m%d"),
+                    },
+                    "pacer": pacer.snapshot(),
+                }
+            )
             ckpt.save()
             return stats
 
@@ -740,11 +883,23 @@ async def run_surface(
         ckpt.save()
         if guard is not None:
             try:
-                await guard.check(surface)
+                await guard.check(surface_id)
             except AbortStream as exc:
                 stop_event.set()
                 stats.stopped_reason = str(exc)
-                log.write({"event": "abort", "surface": surface, "reason": str(exc)})
+                log.write(
+                    {
+                        "event": "abort",
+                        "surface": surface_id,
+                        "reason": str(exc),
+                        "last_request": {
+                            "symbol": symbol,
+                            "api_id": "ka10080",
+                            "base_dt": cursor_dt.strftime("%Y%m%d"),
+                        },
+                        "pacer": pacer.snapshot(),
+                    }
+                )
                 ckpt.save()
                 return stats
     return stats
@@ -996,6 +1151,17 @@ async def main() -> int:
     ap.add_argument("--end-date", required=True)
     ap.add_argument("--sources", default="toss,kiwoom,kis")
     ap.add_argument(
+        "--surface-id",
+        choices=("kis_mock", "kis_live"),
+        default=None,
+        help="bind a single generic source stream to one explicit KIS surface",
+    )
+    ap.add_argument(
+        "--kis-latest-eligible-date",
+        default=None,
+        help="required for KIS surfaces; newest date after latest-session exclusion",
+    )
+    ap.add_argument(
         "--surface",
         choices=("mock", "live"),
         default=None,
@@ -1033,12 +1199,34 @@ async def main() -> int:
     with args.split_csv.open(newline="", encoding="utf-8") as split_fh:
         split_fields = set(csv.DictReader(split_fh).fieldnames or ())
     if "surface" in split_fields:
+        if args.surface_id is not None:
+            raise SurfaceContractError(
+                "--surface-id cannot be combined with a Kiwoom surface CSV"
+            )
         return await _run_dual_surface(args)
     if args.surface is not None:
         raise SurfaceContractError(
             "--surface requires a dual Kiwoom split CSV with a surface column"
         )
     wanted = [s.strip() for s in args.sources.split(",") if s.strip()]
+    if args.surface_id is not None:
+        expected_source = source_for_surface(args.surface_id)
+        if wanted != [expected_source]:
+            raise SurfaceContractError(
+                f"--surface-id {args.surface_id} requires "
+                f"--sources {expected_source} only"
+            )
+        if expected_source == "kis":
+            if args.kis_latest_eligible_date is None:
+                raise SurfaceContractError(
+                    "KIS surfaces require --kis-latest-eligible-date"
+                )
+            latest_eligible = date.fromisoformat(args.kis_latest_eligible_date)
+            if end_date > latest_eligible:
+                raise SurfaceContractError(
+                    f"KIS end-date {end_date} exceeds latest eligible "
+                    f"session boundary {latest_eligible}"
+                )
 
     assignment: dict[str, list[str]] = {s: [] for s in wanted}
     with args.split_csv.open() as fh:
@@ -1064,11 +1252,15 @@ async def main() -> int:
 
     assert_fetch_window_open()
 
-    batch_id = f"kr-backfill-p1-{now_kst():%Y%m%dT%H%M%S}"
+    pipe_label = args.surface_id or "generic"
+    batch_id = f"kr-backfill-p1-{pipe_label}-{now_kst():%Y%m%dT%H%M%S}"
 
-    from equality_gate import build_clients
+    if args.surface_id in {"kis_mock", "kis_live"}:
+        clients = {"kis": await build_kis_surface_client(args.surface_id)}
+    else:
+        from equality_gate import build_clients
 
-    clients = await build_clients(wanted)
+        clients = await build_clients(wanted)
     pool = await asyncpg.create_pool(dsn(), min_size=2, max_size=6)
     log = ProgressLog(args.job_dir / "events" / "progress.jsonl")
     guard = Guard(pool, args.baseline_median_ms, log)
@@ -1078,6 +1270,8 @@ async def main() -> int:
             "event": "stage_b_start",
             "target_table": TARGET_TABLE,
             "batch_id": batch_id,
+            "surface": args.surface_id,
+            "kis_latest_eligible_date": args.kis_latest_eligible_date,
             "window": [args.start_date, args.end_date],
             "symbols_per_source": {k: len(v) for k, v in assignment.items()},
         }
@@ -1091,12 +1285,17 @@ async def main() -> int:
                     assignment[src],
                     clients[src],
                     pool,
-                    Checkpoint(args.job_dir / "events" / f"checkpoint_{src}.json"),
+                    Checkpoint(
+                        args.job_dir
+                        / "events"
+                        / f"checkpoint_{args.surface_id or src}.json"
+                    ),
                     log,
                     guard,
                     start_date,
                     end_date,
                     batch_id,
+                    surface_id=args.surface_id,
                 )
                 for src in wanted
             ],
