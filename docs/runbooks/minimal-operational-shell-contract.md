@@ -16,8 +16,10 @@
 
 ## 현재 상태와 적용 경계
 
-- 1계좌=1전략은 운영 규약이다. 현재 모든 실행 표면을 가로지르는 기술적
-  singleton/writer 강제는 **없음 — 필요**.
+- 현재 정책은 계좌별 **허용 전략 목록의 길이를 1**로 운용한다. 이는 정책값이며
+  자료구조·쿼리·제약조건이 계좌당 전략 1개만 표현하도록 하드코딩한다는 뜻이
+  아니다. 모든 실행 표면을 가로지르는 기술적 singleton/writer 강제는
+  **없음 — 필요**.
 - 오늘 실측한 기존 writer 후보가 있다. production의 `.env.prod.native:199`에
   `WATCH_AUTO_EXECUTE_MOCK_ENABLED=true`가 켜져 있고, watch 알림에 `max_action`이
   있으면 `kis_mock`에 자동 주문 intent를 쓴다. 따라서 이 watch 경로는 새 shell
@@ -59,7 +61,7 @@
 | 필드 | 계약 | 틀리면 무슨 일이 생기는가 |
 |---|---|---|
 | `account_record_id` | 주문 대상 물리 계좌의 정본 ID. 계좌 fingerprint와 함께 operator 승인 | 다른 계좌에 주문하거나 공유 계좌에 귀속을 잃는다 |
-| `strategy_id`, `strategy_version`, `strategy_hash` | 해당 계좌의 유일한 전략 identity와 실행 산출물 hash | 다른 전략의 신호가 주문으로 변환되거나 재현성이 사라진다 |
+| `strategy_id`, `strategy_version`, `strategy_hash` | 해당 계좌의 허용 전략 목록에 있는 전략 identity와 실행 산출물 hash | 허용되지 않은 전략의 신호가 주문으로 변환되거나 재현성이 사라진다 |
 | `symbol` | DB는 `.` 형식. 외부 형식 변환은 `app/core/symbol.py`만 사용 | 다른 종목으로 주문하거나 심볼 해석이 브로커마다 달라진다 |
 | `side` 및 `intent` | `buy/sell`와 `entry/exit/reduce/cancel` 의미를 분리 | 매수·매도 방향 또는 신규 진입·청산 의미가 뒤집힌다 |
 | `quantity` 또는 `notional` | 둘 중 정확히 하나만 사용. lot/step/minimum 적용 후 실현값도 재검증 | 의도보다 큰 수량, 최소주문 위반, cap 초과 주문이 된다 |
@@ -82,22 +84,37 @@
 ### 제안
 
 모든 mutation adapter가 `account_record_id`로 동일한 PostgreSQL advisory lock을
-획득한다. lock은 프로세스 수명 동안 유지하고, `pg_try_advisory_lock` 실패 시
-주문하지 않고 `SINGLETON_BLOCKED`를 기록한다. 보조적으로 owner, process start,
-heartbeat, lease expiry, strategy identity를 저장해 운영자가 누가 lock을 잡았는지
-확인한다. DB 연결이 끊기거나 프로세스가 죽으면 advisory lock이 풀린다.
+획득한다. lock scope는 **계좌**이며, `pg_try_advisory_lock` 실패 시 주문하지
+않고 `SINGLETON_BLOCKED`를 기록한다. 보조적으로 owner, process start, heartbeat,
+lease expiry, strategy identity를 저장해 운영자가 누가 lock을 잡았는지 확인한다.
+DB 연결이 끊기거나 프로세스가 죽으면 advisory lock이 풀린다.
 
-lock 획득 이후에만 broker preflight와 mutation을 수행하고, lock을 획득하지 않은
-경로는 broker client를 호출할 수 없다. lease/heartbeat가 stale이면 자동으로
-계속하지 않고 fail-closed한다. 모든 broker 표면이 같은 lock을 사용해야 하며,
-표면별 별도 lock은 singleton으로 인정하지 않는다.
+lock 획득만으로 소유권을 승인하지 않는다. server-owned
+`account_record_id → allowed_strategy[]` 정본을 조회하고, 요청의
+`strategy_id/version/hash`가 그 목록에 포함되는지 allow predicate로 판정한다.
+계좌의 enabled writer 집합은 `enabled_writer ⊆ allowed_strategy[]`여야 한다.
+목록 길이 1이나 enabled writer 수 1을 자료구조·쿼리·partial unique constraint에
+하드코딩하지 않는다. 현재 운영 정책에서만 `allowed_strategy[]` 길이를 1로
+봉인한다. 모든 broker 표면은 같은 계좌 lock과 allow predicate를 사용해야 하며,
+표면별 별도 lock이나 키셋 이름만의 승인은 인정하지 않는다.
+
+키셋 이름(`PAPER`, `LAB`, `CRYPTO`)은 라벨일 뿐 시장·용도·허용 전략을
+추론하는 입력이 아니다. allow predicate의 판정 축은 오직 계좌 identity와 해당
+계좌의 허용 전략 목록이다. 키셋은 credential selection과 physical-account
+mapping의 입력일 수 있지만 용도 authorization은 아니다.
+
+허용 전략 목록이 2개 이상이 되는 미래 정책에서는 계좌 lock만으로 충분하지
+않다. 주문마다 어느 전략의 주문인지 귀속하는 pre-submit ownership,
+strategy-scoped `correlation_id`, 전략별 손익을 분리하는 virtual ledger, 그리고
+계좌 자본 배분 규칙을 추가로 봉인·강제해야 한다. 이 기반 인프라는 현재
+**없음 — 필요**다.
 
 ### 현재 상태
 
-공통 `account_record_id` lock, fencing token, writer registry, 그리고 모든
-mutation entrypoint에 대한 강제는 **없음 — 필요**. 따라서 현재는
-`1계좌=1전략` 운영 규약만으로 writer cardinality를 보장한다. 이 문서만으로
-paper activation을 허용하지 않는다.
+공통 `account_record_id` lock, `allowed_strategy[]` registry, fencing token,
+writer registry, 그리고 모든 mutation entrypoint에 대한 강제는 **없음 — 필요**.
+따라서 현재는 계좌별 허용 전략 목록을 길이 1로 두는 운영 규약에 의존한다. 이
+문서만으로 paper activation을 허용하지 않는다.
 
 특히 `WATCH_AUTO_EXECUTE_MOCK_ENABLED=true`인 production watch 경로는
 `max_action`을 받아 `kis_mock` 주문 intent를 만들 수 있으므로 기존 writer 후보로
@@ -105,8 +122,10 @@ paper activation을 허용하지 않는다.
 운영 강제 증거가 없었다. `ALPACA_PAPER`의 BTC 혼입은 같은 physical account에
 두 asset-class writer가 붙으면 안 된다는 실증이며, 그 계좌에서는 US/crypto가
 하나의 scope lock을 공유해야 한다. 별도 `ALPACA_PAPER_CRYPTO`는 물리적으로
-분리됐지만, 현재 accepted main에 client/read tool과 authoritative mapping이
-없으므로 별도 writer로 사용할 수 없다.
+분리됐지만, 현재 accepted main에는 `ALPACA_PAPER_CRYPTO` 자격증명을 읽는
+client/read code가 0줄이고 authoritative mapping도 없으므로 별도 writer로
+사용할 수 없다. 코드의 `ALPACA_PAPER_CRYPTO_*` 이름은 default 키셋의 crypto
+한도 상수일 뿐, 이 자격증명을 읽는 키셋 경로가 아니다.
 
 ## RESTART_SEMANTICS
 
