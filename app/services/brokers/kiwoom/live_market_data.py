@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
 import time
 import uuid
@@ -174,12 +175,16 @@ def _validate_relative_path(path: str) -> None:
         )
 
 
-def _assert_live_marketdata_enabled() -> None:
+def _assert_live_marketdata_enabled(scoped_enabled: bool | None = None) -> None:
     """Item 7: fail closed unless the operator armed the gate."""
 
-    from app.core.config import settings
+    if scoped_enabled is None:
+        from app.core.config import settings
 
-    if not bool(getattr(settings, "kiwoom_live_marketdata_enabled", False)):
+        enabled = bool(getattr(settings, "kiwoom_live_marketdata_enabled", False))
+    else:
+        enabled = scoped_enabled
+    if not enabled:
         raise KiwoomLiveReadOnlyDisabled(
             "Kiwoom live market data is disabled; set "
             "KIWOOM_LIVE_MARKETDATA_ENABLED=true to arm read-only chart access."
@@ -242,13 +247,16 @@ class KiwoomLiveReadOnlyAuthClient:
     async def _get_redis(self) -> redis.Redis:
         if self._redis_client is not None:
             return self._redis_client
-        from app.core.config import settings
-
+        redis_url = str(os.getenv("REDIS_URL", "")).strip()
+        if not redis_url:
+            raise KiwoomLiveReadOnlyConfigurationError(
+                "Kiwoom live read-only Redis config missing: REDIS_URL"
+            )
         return redis.from_url(
-            settings.get_redis_url(),
-            max_connections=settings.redis_max_connections,
-            socket_timeout=settings.redis_socket_timeout,
-            socket_connect_timeout=settings.redis_socket_connect_timeout,
+            redis_url,
+            max_connections=20,
+            socket_timeout=5.0,
+            socket_connect_timeout=5.0,
             decode_responses=True,
         )
 
@@ -397,6 +405,7 @@ class KiwoomLiveReadOnlyClient:
         app_secret: str,
         base_url: str = LIVE_BASE_URL,
         timeout: float = DEFAULT_TIMEOUT,
+        marketdata_enabled: bool | None = None,
     ) -> None:
         if str(base_url).rstrip("/") != LIVE_BASE_URL:
             raise KiwoomLiveReadOnlyEndpointError(
@@ -407,6 +416,7 @@ class KiwoomLiveReadOnlyClient:
         self._app_key = app_key
         self._app_secret = app_secret
         self._timeout = timeout
+        self._marketdata_enabled = marketdata_enabled
         self._transport: httpx.BaseTransport | None = None
         self._token_override: str | None = None
         self._auth = KiwoomLiveReadOnlyAuthClient(
@@ -429,6 +439,34 @@ class KiwoomLiveReadOnlyClient:
             base_url=str(settings.kiwoom_live_base_url).rstrip("/"),
             app_key=str(settings.kiwoom_live_app_key),
             app_secret=str(settings.kiwoom_live_app_secret),
+            marketdata_enabled=bool(settings.kiwoom_live_marketdata_enabled),
+        )
+
+    @classmethod
+    def from_scoped_env(cls) -> KiwoomLiveReadOnlyClient:
+        """Build from only the live read-only keys loaded by the collector."""
+
+        enabled = os.getenv("KIWOOM_LIVE_MARKETDATA_ENABLED") == "true"
+        missing: list[str] = []
+        if not enabled:
+            missing.append("KIWOOM_LIVE_MARKETDATA_ENABLED=true")
+        app_key = str(os.getenv("KIWOOM_LIVE_APP_KEY", "")).strip()
+        app_secret = str(os.getenv("KIWOOM_LIVE_APP_SECRET", "")).strip()
+        if not app_key:
+            missing.append("KIWOOM_LIVE_APP_KEY")
+        if not app_secret:
+            missing.append("KIWOOM_LIVE_APP_SECRET")
+        if missing:
+            raise KiwoomLiveReadOnlyConfigurationError(
+                "Kiwoom live read-only scoped config missing: " + ", ".join(missing)
+            )
+        return cls(
+            base_url=str(os.getenv("KIWOOM_LIVE_BASE_URL", LIVE_BASE_URL)).rstrip(
+                "/"
+            ),
+            app_key=app_key,
+            app_secret=app_secret,
+            marketdata_enabled=True,
         )
 
     def set_transport_for_test(
@@ -459,7 +497,7 @@ class KiwoomLiveReadOnlyClient:
 
         # Item 7 — gate first, so a disabled deployment never even resolves a
         # token, let alone opens a socket.
-        _assert_live_marketdata_enabled()
+        _assert_live_marketdata_enabled(self._marketdata_enabled)
 
         # Item 3 — api-id allowlist.
         if api_id not in ALLOWED_API_IDS:

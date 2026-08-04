@@ -887,11 +887,17 @@ async def run_surface(
     return stats
 
 
-def _load_env_file(path: Path, allowed_keys: set[str]) -> None:
+def _load_env_file(
+    path: Path,
+    allowed_keys: set[str],
+    *,
+    aliases: dict[str, str] | None = None,
+) -> None:
     """Load only surface keys; never print values or import a full env file."""
 
     if not path.is_file():
         raise FileNotFoundError(f"surface env file not found: {path}")
+    loaded: dict[str, str] = {}
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -901,7 +907,15 @@ def _load_env_file(path: Path, allowed_keys: set[str]) -> None:
         if key not in allowed_keys:
             continue
         value = value.strip().strip('"').strip("'")
+        loaded[key] = value
+    for key, value in loaded.items():
         os.environ[key] = value
+    for source, target in (aliases or {}).items():
+        # A dedicated LIVE key wins when a future file provides both.  The
+        # legacy source name is accepted only from the operator-selected
+        # read-only env file; no ambient credential is copied.
+        if target not in loaded and source in loaded:
+            os.environ[target] = loaded[source]
 
 
 def _reject_production_env_file(path: Path) -> None:
@@ -932,10 +946,16 @@ def _prepare_surface_env(
         _load_env_file(
             live_env_file,
             {
+                "KIWOOM_APP_KEY",
+                "KIWOOM_APP_SECRET",
                 "KIWOOM_LIVE_MARKETDATA_ENABLED",
                 "KIWOOM_LIVE_APP_KEY",
                 "KIWOOM_LIVE_APP_SECRET",
                 "KIWOOM_LIVE_BASE_URL",
+            },
+            aliases={
+                "KIWOOM_APP_KEY": "KIWOOM_LIVE_APP_KEY",
+                "KIWOOM_APP_SECRET": "KIWOOM_LIVE_APP_SECRET",
             },
         )
     # pydantic-settings reads this file for non-secret defaults.  The explicit
@@ -963,6 +983,37 @@ def _build_surface_runtime(
     }
     pacers = {surface: SurfacePacer(surface) for surface in selected}
     return raw_clients, clients, pacers
+
+
+def _build_scoped_surface_runtime(
+    selected: tuple[str, ...],
+) -> tuple[dict[str, Any], dict[str, KiwoomSurfaceClient], dict[str, SurfacePacer]]:
+    """Build dual collectors without importing the application Settings singleton."""
+
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+    from app.services.brokers.kiwoom.constants import MOCK_BASE_URL
+    from app.services.brokers.kiwoom.live_market_data import (
+        KiwoomLiveReadOnlyClient,
+    )
+
+    def required_env(name: str) -> str:
+        value = str(os.getenv(name, "")).strip()
+        if not value:
+            raise SurfaceContractError(f"missing scoped env: {name}")
+        return value
+
+    return _build_surface_runtime(
+        selected,
+        mock_factory=lambda: KiwoomMockClient(
+            base_url=str(os.getenv("KIWOOM_MOCK_BASE_URL", MOCK_BASE_URL)),
+            app_key=required_env("KIWOOM_MOCK_APP_KEY"),
+            app_secret=required_env("KIWOOM_MOCK_APP_SECRET"),
+            # Chart TRs do not consume an account number.  Keeping it absent
+            # prevents the collector from gaining account reach.
+            account_no="",
+        ),
+        live_factory=KiwoomLiveReadOnlyClient.from_scoped_env,
+    )
 
 
 async def _run_dual_surface(args: argparse.Namespace) -> int:
@@ -1029,16 +1080,7 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
     log: ProgressLog | None = None
     try:
         _prepare_surface_env(selected_tuple, args.mock_env_file, args.live_env_file)
-        from app.services.brokers.kiwoom.client import KiwoomMockClient
-        from app.services.brokers.kiwoom.live_market_data import (
-            KiwoomLiveReadOnlyClient,
-        )
-
-        raw_clients, clients, pacers = _build_surface_runtime(
-            selected_tuple,
-            mock_factory=KiwoomMockClient.from_app_settings,
-            live_factory=KiwoomLiveReadOnlyClient.from_app_settings,
-        )
+        raw_clients, clients, pacers = _build_scoped_surface_runtime(selected_tuple)
         stop_events = {surface: asyncio.Event() for surface in selected}
         pool = await asyncpg.create_pool(dsn(), min_size=2, max_size=6)
         log = ProgressLog(job_events / "progress.jsonl")

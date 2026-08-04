@@ -101,6 +101,20 @@ def test_allowlist_is_exactly_the_four_chart_trs():
 
 
 @pytest.mark.asyncio
+async def test_scoped_client_dispatch_does_not_import_global_settings(monkeypatch):
+    monkeypatch.setenv("KIWOOM_LIVE_MARKETDATA_ENABLED", "true")
+    monkeypatch.setenv("KIWOOM_LIVE_APP_KEY", "ak")
+    monkeypatch.setenv("KIWOOM_LIVE_APP_SECRET", "sk")
+    transport, calls = _counting_transport()
+    client = KiwoomLiveReadOnlyClient.from_scoped_env()
+    client.set_transport_for_test(transport, token="TKN")
+
+    await client.fetch_daily_chart(symbol="005930", base_dt="20260731")
+
+    assert calls["count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_chart_api_id_is_accepted_and_sent(armed):
     transport, calls = _counting_transport()
     client = _client(transport)
