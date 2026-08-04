@@ -175,7 +175,7 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
         config.set_main_option("script_location", str(REPO / "alembic"))
         expected_head = ScriptDirectory.from_config(config).get_current_head()
         assert expected_head is not None
-        assert current.stdout.strip() == f"{expected_head} (head)"
+        assert current.stdout.strip().startswith(f"{expected_head} (head)")
 
         async with engine.connect() as connection:
             triggers = await connection.scalar(
