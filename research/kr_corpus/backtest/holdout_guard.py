@@ -25,7 +25,10 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
-from windows import HOLDOUT_WINDOW, parse_iso_date
+try:
+    from .windows import HOLDOUT_WINDOW, parse_iso_date
+except ImportError:  # pragma: no cover - legacy flat-module test entrypoint
+    from windows import HOLDOUT_WINDOW, parse_iso_date
 
 __all__ = [
     "DEFAULT_HOLDOUT_POLICY",

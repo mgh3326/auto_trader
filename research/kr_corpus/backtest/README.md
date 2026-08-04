@@ -1,4 +1,4 @@
-# KR backtest harness (Stage A — fixture wiring)
+# KR backtest harness (Stage A wiring + Stage-B execution bridge)
 
 `JOB_PURPOSE=BACKTEST_HARNESS_WIRING_ONLY`
 
@@ -10,6 +10,47 @@ Research-only surface under `research/kr_corpus/backtest/`. Wires:
 * PIT universe from membership snapshots only
 * explicit delisted terminal events (no silent drop)
 * common KR/US baseline pipeline smoke `liquidity_proxy_decile_topN_D5` labeled **`PIPELINE_SMOKE_NOT_A_STRATEGY`**
+* KR Stage-B `rev3_reclaim` bridge, using the shadow3 canonical signal owner
+  (`research.three_market_shadow.calculations.calculate_signal`)
+
+## Stage-B contract
+
+Stage-B is a research backtest track, separate from execution acceptance. It
+uses **t+1 open** for entry and **D+5 close** for exit. A run must explicitly
+name `--cost-profile 43bp` or `--cost-profile 83bp`; there is no default cost
+injection. The approved literals are:
+
+* `43bp`: fee 3bp + transaction tax 20bp + slippage 10bp per side.
+* `83bp`: fee 3bp + transaction tax 20bp + slippage 30bp per side.
+
+The real-data runner accepts only the reviewed frozen main snapshot: source code
+pins both its `checksums.sha256` and `manifest.json` SHA-256 digests. It rejects
+duplicate or path-ambiguous checksum rows, verifies
+`manifest.checksums_sha256`, cross-checks the XKRX session reference in
+`preflight.json` against the pinned `exchange_calendars` XKRX calendar, verifies
+selected main-snapshot parquet bytes, refuses holdout paths/dates, and writes
+canonical `honest_trial.v3` evidence only after closed-trade statistics exist.
+D+5 is accepted only when each symbol's t+1…t+5 bars exactly match that
+market-session sequence; calendar-day gap thresholds are not used. Evidence
+records selected symbol, bar, and year coverage so partition loss is reviewable.
+
+The code-pinned digest is the trust root, not a detached artifact signature. A
+future snapshot therefore requires a reviewed source update with its run ID and
+both digest literals. A party able to replace the executable source/build can
+also replace that root; this loader does not claim to defend that boundary.
+
+```bash
+uv run python scripts/run_kr_stageb.py \
+  --artifact-root /Users/mgh3326/work/herdr-artifacts/kr-corpus-v1 \
+  --run-id kr-corpus-v1-20260803-1001 \
+  --start 2015-01-01 --end 2024-12-31 \
+  --market KOSPI --market KOSDAQ --max-symbols 20 \
+  --cost-profile 43bp \
+  --evidence /path/to/stageb-evidence.json
+```
+
+The result is descriptive research evidence only. It does not authorize
+orders, account mutation, broker calls, holdout access, or promotion.
 
 ## D5 baseline definition
 

@@ -16,8 +16,13 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 import pyarrow as pa
-from holdout_guard import assert_date_not_holdout
-from windows import parse_iso_date
+
+try:
+    from .holdout_guard import assert_date_not_holdout
+    from .windows import parse_iso_date
+except ImportError:  # pragma: no cover - legacy flat-module test entrypoint
+    from holdout_guard import assert_date_not_holdout
+    from windows import parse_iso_date
 
 __all__ = [
     "Bar",
