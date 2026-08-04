@@ -16,7 +16,11 @@ Write discipline (all enforced here, not by convention):
 
 Abort conditions (stop the stream, report, do not "work around"):
 conflict ratio far from expectation · query latency regression vs baseline ·
-repeated 429s.
+repeated 429s · any change to a witness table outside kr_candles_1m.
+
+The dual Kiwoom surfaces use these same guards; an abort is isolated to the
+failing surface. An overlap mismatch stops both participating surfaces because
+it invalidates the comparison itself.
 """
 
 from __future__ import annotations
@@ -458,7 +462,7 @@ class OverlapVerifier:
         clients: dict[str, KiwoomSurfaceClient],
         pacers: dict[str, SurfacePacer],
         log: ProgressLog,
-        stop_event: asyncio.Event,
+        stop_events: dict[str, asyncio.Event],
         every_batches: int = 50,
     ) -> None:
         if not symbols:
@@ -472,7 +476,7 @@ class OverlapVerifier:
         self.clients = clients
         self.pacers = pacers
         self.log = log
-        self.stop_event = stop_event
+        self.stop_events = stop_events
         self.every_batches = every_batches
         self.completed_batches = 0
         self._last_verified_batch = 0
@@ -512,7 +516,8 @@ class OverlapVerifier:
                         compare_overlap_exact(symbol, data["mock"], data["live"])
                     )
             except Exception:
-                self.stop_event.set()
+                for event in self.stop_events.values():
+                    event.set()
                 raise
             self.log.write(
                 {
@@ -538,19 +543,20 @@ async def run_surface(
     end_date: date,
     batch_id: str,
     *,
-    overlap: OverlapVerifier,
+    pacer: SurfacePacer,
+    overlap: OverlapVerifier | None,
     stop_event: asyncio.Event,
+    guard: Guard | None = None,
 ) -> SurfaceStats:
     """Collect one immutable symbol partition for one Kiwoom surface."""
 
     surface = validate_surface(surface)
     stats = SurfaceStats(surface=surface, symbols_total=len(symbols))
-    pacer = overlap.pacers[surface]
     start_dt = datetime.combine(start_date, datetime.min.time())
 
     for symbol in symbols:
         if stop_event.is_set():
-            stats.stopped_reason = "peer_surface_stopped"
+            stats.stopped_reason = "surface_stopped"
             return stats
         state = ckpt.get(symbol)
         if state.get("done"):
@@ -564,7 +570,7 @@ async def run_surface(
         try:
             while cursor_dt > start_dt:
                 if stop_event.is_set():
-                    stats.stopped_reason = "peer_surface_stopped"
+                    stats.stopped_reason = "surface_stopped"
                     return stats
                 try:
                     assert_fetch_window_open()
@@ -680,10 +686,16 @@ async def run_surface(
                 cursor_dt = oldest - timedelta(minutes=1)
                 state["oldest_reached"] = cursor_dt.isoformat()
                 ckpt.save()
-                await overlap.after_batch()
+                if overlap is not None:
+                    await overlap.after_batch()
             else:
                 state["done"] = True
-        except (OverlapMismatch, SurfaceAuthError, SurfaceBackoffExhausted) as exc:
+        except (
+            AbortStream,
+            OverlapMismatch,
+            SurfaceAuthError,
+            SurfaceBackoffExhausted,
+        ) as exc:
             stop_event.set()
             stats.stopped_reason = str(exc)
             log.write({"event": "abort", "surface": surface, "reason": str(exc)})
@@ -693,6 +705,15 @@ async def run_surface(
         if state.get("done"):
             stats.symbols_done += 1
         ckpt.save()
+        if guard is not None:
+            try:
+                await guard.check(surface)
+            except AbortStream as exc:
+                stop_event.set()
+                stats.stopped_reason = str(exc)
+                log.write({"event": "abort", "surface": surface, "reason": str(exc)})
+                ckpt.save()
+                return stats
     return stats
 
 
@@ -713,8 +734,16 @@ def _load_env_file(path: Path, allowed_keys: set[str]) -> None:
         os.environ[key] = value
 
 
-def _prepare_surface_env(mock_env_file: Path | None, live_env_file: Path) -> None:
-    if mock_env_file is not None:
+def _reject_production_env_file(path: Path) -> None:
+    if "prod" in str(path).lower():
+        raise SurfaceContractError(f"refusing to read a production env file: {path}")
+
+
+def _prepare_surface_env(
+    selected: tuple[str, ...], mock_env_file: Path | None, live_env_file: Path
+) -> None:
+    if "mock" in selected and mock_env_file is not None:
+        _reject_production_env_file(mock_env_file)
         _load_env_file(
             mock_env_file,
             {
@@ -725,19 +754,42 @@ def _prepare_surface_env(mock_env_file: Path | None, live_env_file: Path) -> Non
                 "KIWOOM_MOCK_BASE_URL",
             },
         )
-    _load_env_file(
-        live_env_file,
-        {
-            "KIWOOM_LIVE_MARKETDATA_ENABLED",
-            "KIWOOM_LIVE_APP_KEY",
-            "KIWOOM_LIVE_APP_SECRET",
-            "KIWOOM_LIVE_BASE_URL",
-        },
-    )
+    if "live" in selected:
+        _reject_production_env_file(live_env_file)
+        _load_env_file(
+            live_env_file,
+            {
+                "KIWOOM_LIVE_MARKETDATA_ENABLED",
+                "KIWOOM_LIVE_APP_KEY",
+                "KIWOOM_LIVE_APP_SECRET",
+                "KIWOOM_LIVE_BASE_URL",
+            },
+        )
     # pydantic-settings reads this file for non-secret defaults.  The explicit
     # environment values above win over dotenv values, and the path itself is
     # recorded only as an operator input, never with credential contents.
-    os.environ["ENV_FILE"] = str(live_env_file)
+    if selected == ("mock",) and mock_env_file is not None:
+        os.environ["ENV_FILE"] = str(mock_env_file)
+    elif "live" in selected:
+        os.environ["ENV_FILE"] = str(live_env_file)
+
+
+def _build_surface_runtime(
+    selected: tuple[str, ...],
+    *,
+    mock_factory: Any,
+    live_factory: Any,
+) -> tuple[dict[str, Any], dict[str, KiwoomSurfaceClient], dict[str, SurfacePacer]]:
+    """Build only selected clients and the exact pacers used by the run."""
+
+    factories = {"mock": mock_factory, "live": live_factory}
+    raw_clients = {surface: factories[surface]() for surface in selected}
+    clients = {
+        surface: KiwoomSurfaceClient(surface, raw_clients[surface])
+        for surface in selected
+    }
+    pacers = {surface: SurfacePacer(surface) for surface in selected}
+    return raw_clients, clients, pacers
 
 
 async def _run_dual_surface(args: argparse.Namespace) -> int:
@@ -754,15 +806,13 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
             by_surface[surface].append(symbol)
         elif symbol not in overlap_symbols:
             overlap_symbols.append(symbol)
-    if not overlap_symbols:
-        raise SurfaceContractError(
-            "surface split has no explicit overlap sample; generate the artifact "
-            "with at least one assignment_kind=overlap symbol"
-        )
-
     selected = [args.surface] if args.surface else ["mock", "live"]
     for surface in selected:
         validate_surface(surface)
+    if len(selected) == 2 and not overlap_symbols:
+        raise SurfaceContractError(
+            "dual surface run requires an explicit overlap sample"
+        )
     if args.limit_symbols is not None:
         by_surface = {
             surface: values[: args.limit_symbols]
@@ -800,36 +850,31 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
 
     # This is the only branch that creates clients.  No client is built by the
     # dry-run path, so a planning invocation cannot accidentally call a host.
-    _prepare_surface_env(args.mock_env_file, args.live_env_file)
+    selected_tuple = tuple(selected)
+    _prepare_surface_env(selected_tuple, args.mock_env_file, args.live_env_file)
     from app.services.brokers.kiwoom.client import KiwoomMockClient
     from app.services.brokers.kiwoom.live_market_data import KiwoomLiveReadOnlyClient
 
-    raw_clients: dict[str, Any] = {
-        "mock": KiwoomMockClient.from_app_settings(),
-        "live": KiwoomLiveReadOnlyClient.from_app_settings(),
-    }
-    clients = {
-        surface: KiwoomSurfaceClient(surface, raw_clients[surface])
-        for surface in selected
-    }
-    pacers = {surface: SurfacePacer(surface) for surface in selected}
-    stop_event = asyncio.Event()
-    overlap = OverlapVerifier(
-        symbols=tuple(overlap_symbols[:2]),
-        session_date=date.fromisoformat(args.end_date),
-        clients={
-            surface: KiwoomSurfaceClient(surface, raw_clients[surface])
-            for surface in ("mock", "live")
-        },
-        pacers={surface: SurfacePacer(surface) for surface in ("mock", "live")},
-        log=ProgressLog(job_events / "progress.jsonl"),
-        stop_event=stop_event,
+    raw_clients, clients, pacers = _build_surface_runtime(
+        selected_tuple,
+        mock_factory=KiwoomMockClient.from_app_settings,
+        live_factory=KiwoomLiveReadOnlyClient.from_app_settings,
     )
-    # Use the same pacers for bulk and overlap calls; every call is accounted
-    # against that surface's budget.
-    overlap.pacers.update(pacers)
+    stop_events = {surface: asyncio.Event() for surface in selected}
     pool = await asyncpg.create_pool(dsn(), min_size=2, max_size=6)
-    log = overlap.log
+    log = ProgressLog(job_events / "progress.jsonl")
+    guard = Guard(pool, args.baseline_median_ms, log)
+    await guard.snapshot_witness()
+    overlap = None
+    if len(selected) == 2:
+        overlap = OverlapVerifier(
+            symbols=tuple(overlap_symbols[:2]),
+            session_date=date.fromisoformat(args.end_date),
+            clients=clients,
+            pacers=pacers,
+            log=log,
+            stop_events=stop_events,
+        )
     try:
         results = await asyncio.gather(
             *[
@@ -843,8 +888,10 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
                     date.fromisoformat(args.start_date),
                     date.fromisoformat(args.end_date),
                     batch_id,
+                    pacer=pacers[surface],
                     overlap=overlap,
-                    stop_event=stop_event,
+                    stop_event=stop_events[surface],
+                    guard=guard,
                 )
                 for surface in selected
             ]

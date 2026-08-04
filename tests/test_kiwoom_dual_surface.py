@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
+from research.kr_backfill.collect import _build_surface_runtime, _prepare_surface_env
 from research.kr_backfill.dual_surface import (
     OverlapMismatch,
     SurfaceAuthError,
@@ -112,3 +115,45 @@ def test_split_artifact_records_bulk_owner_and_explicit_overlap(tmp_path):
     assert rows[0] == "rank,ticker,market,assignment_kind,surface"
     assert sum("000002" in row for row in rows) == 2
     assert "cross_surface_split_prevented" in manifest_path.read_text(encoding="utf-8")
+
+
+def test_mock_only_runtime_never_constructs_live_client():
+    dispatched: list[tuple[str, str]] = []
+
+    def mock_factory():
+        dispatched.append(("mock", "constructed"))
+        return object()
+
+    def live_factory():
+        raise AssertionError("live factory must not run for --surface mock")
+
+    raw, clients, pacers = _build_surface_runtime(
+        ("mock",), mock_factory=mock_factory, live_factory=live_factory
+    )
+    assert list(raw) == ["mock"]
+    assert list(clients) == ["mock"]
+    assert list(pacers) == ["mock"]
+    assert dispatched == [("mock", "constructed")]
+
+
+def test_dual_runtime_uses_one_accounted_pacer_per_surface():
+    def factory(surface):
+        return lambda: object()
+
+    raw, clients, pacers = _build_surface_runtime(
+        ("mock", "live"),
+        mock_factory=factory("mock"),
+        live_factory=factory("live"),
+    )
+    assert set(raw) == {"mock", "live"}
+    assert set(clients) == set(pacers) == {"mock", "live"}
+
+
+def test_mock_only_env_does_not_require_or_read_live_file(tmp_path):
+    mock_file = tmp_path / ".env.kiwoom-mock"
+    mock_file.write_text("KIWOOM_MOCK_ENABLED=true\n", encoding="utf-8")
+    missing_live_file = tmp_path / ".env.kiwoom-live"
+
+    _prepare_surface_env(("mock",), mock_file, missing_live_file)
+
+    assert os.environ["ENV_FILE"] == str(mock_file)

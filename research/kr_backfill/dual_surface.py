@@ -20,11 +20,6 @@ from typing import Any, Literal
 Surface = Literal["mock", "live"]
 SURFACES: tuple[Surface, Surface] = ("mock", "live")
 
-SURFACE_HOSTS: dict[Surface, str] = {
-    "mock": "mockapi.kiwoom.com",
-    "live": "api.kiwoom.com",
-}
-
 # The live probe reached 0.5 s without a 429, but only had eight calls per
 # step.  That is not enough evidence to call 0.5 s a proven safe upper bound.
 # Therefore the live lane backs off monotonically to 1.0 s and then 2.0 s.
