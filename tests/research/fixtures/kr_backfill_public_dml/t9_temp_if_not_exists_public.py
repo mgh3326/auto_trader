@@ -1,0 +1,1 @@
+SQL = "CREATE TEMP TABLE IF NOT EXISTS public.scratch"
