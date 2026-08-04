@@ -7,13 +7,19 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import sys
 import time
 
 import httpx
 import pytest
 
+from app.services.brokers.kiwoom import auth as auth_module
 from app.services.brokers.kiwoom import constants
-from app.services.brokers.kiwoom.auth import KiwoomAuthClient, KiwoomToken
+from app.services.brokers.kiwoom.auth import (
+    KiwoomAuthClient,
+    KiwoomRedisConfigurationError,
+    KiwoomToken,
+)
 
 
 class _FakeRedis:
@@ -57,6 +63,46 @@ class _FakeRedis:
             self.strings.pop(key)
             return 1
         return 0
+
+
+@pytest.mark.asyncio
+async def test_scoped_redis_env_does_not_import_global_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeRedis()
+    captured: dict[str, object] = {}
+
+    def from_url(url: str, **kwargs: object) -> _FakeRedis:
+        captured["url_present"] = bool(url)
+        captured.update(kwargs)
+        return fake
+
+    monkeypatch.setenv("REDIS_URL", "redis://scoped.invalid:6379/0")
+    monkeypatch.delenv("REDIS_MAX_CONNECTIONS", raising=False)
+    monkeypatch.delenv("REDIS_SOCKET_TIMEOUT", raising=False)
+    monkeypatch.delenv("REDIS_SOCKET_CONNECT_TIMEOUT", raising=False)
+    monkeypatch.setattr(auth_module.redis, "from_url", from_url)
+    monkeypatch.setattr(auth_module, "_redis_client", None)
+    monkeypatch.delitem(sys.modules, "app.core.config", raising=False)
+
+    client = await auth_module._get_redis_client()
+
+    assert client is fake
+    assert captured == {
+        "url_present": True,
+        "max_connections": 20,
+        "socket_timeout": 5.0,
+        "socket_connect_timeout": 5.0,
+        "decode_responses": True,
+    }
+    assert "app.core.config" not in sys.modules
+
+
+def test_scoped_redis_env_requires_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("REDIS_URL", raising=False)
+
+    with pytest.raises(KiwoomRedisConfigurationError, match="REDIS_URL"):
+        auth_module._redis_client_from_env()
 
 
 @pytest.fixture

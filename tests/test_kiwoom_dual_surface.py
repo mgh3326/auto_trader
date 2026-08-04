@@ -154,6 +154,21 @@ def test_dual_runtime_uses_one_accounted_pacer_per_surface():
     assert set(clients) == set(pacers) == {"mock", "live"}
 
 
+def test_surface_pacer_snapshot_is_attributable_and_value_redacted():
+    pacer = SurfacePacer("live")
+    pacer.calls = 7
+    pacer.consecutive_429 = 1
+    pacer.backoff_level = 1
+
+    snapshot = pacer.snapshot()
+
+    assert snapshot["surface"] == "kiwoom_live"
+    assert snapshot["calls"] == 7
+    assert snapshot["consecutive_429"] == 1
+    assert snapshot["backoff_level"] == 1
+    assert "token" not in snapshot
+
+
 def test_mock_only_env_does_not_require_or_read_live_file(monkeypatch, tmp_path):
     mock_file = tmp_path / ".env.kiwoom-mock"
     mock_file.write_text("KIWOOM_MOCK_ENABLED=true\n", encoding="utf-8")
@@ -168,6 +183,67 @@ def test_mock_only_env_does_not_require_or_read_live_file(monkeypatch, tmp_path)
             monkeypatch.delenv("ENV_FILE", raising=False)
         else:
             monkeypatch.setenv("ENV_FILE", previous)
+
+
+def test_live_readonly_env_maps_legacy_credentials_without_account_data(
+    monkeypatch, tmp_path
+):
+    live_file = tmp_path / ".env.kiwoom-readonly"
+    live_file.write_text(
+        "KIWOOM_LIVE_MARKETDATA_ENABLED=true\n"
+        "KIWOOM_APP_KEY=legacy-app\n"
+        "KIWOOM_APP_SECRET=legacy-secret\n"
+        "KIWOOM_ACCOUNT_NO=must-not-load\n",
+        encoding="utf-8",
+    )
+    for key in (
+        "KIWOOM_LIVE_APP_KEY",
+        "KIWOOM_LIVE_APP_SECRET",
+        "KIWOOM_ACCOUNT_NO",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    _prepare_surface_env(("live",), None, live_file)
+
+    assert os.environ["KIWOOM_LIVE_APP_KEY"] == "legacy-app"
+    assert os.environ["KIWOOM_LIVE_APP_SECRET"] == "legacy-secret"
+    assert "KIWOOM_ACCOUNT_NO" not in os.environ
+
+
+def test_dedicated_live_credentials_win_over_legacy_names(monkeypatch, tmp_path):
+    live_file = tmp_path / ".env.kiwoom-readonly"
+    live_file.write_text(
+        "KIWOOM_LIVE_MARKETDATA_ENABLED=true\n"
+        "KIWOOM_APP_KEY=legacy-app\n"
+        "KIWOOM_APP_SECRET=legacy-secret\n"
+        "KIWOOM_LIVE_APP_KEY=dedicated-app\n"
+        "KIWOOM_LIVE_APP_SECRET=dedicated-secret\n",
+        encoding="utf-8",
+    )
+
+    _prepare_surface_env(("live",), None, live_file)
+
+    assert os.environ["KIWOOM_LIVE_APP_KEY"] == "dedicated-app"
+    assert os.environ["KIWOOM_LIVE_APP_SECRET"] == "dedicated-secret"
+
+
+def test_live_scoped_factory_is_exact_gate_and_has_no_account(monkeypatch):
+    from app.services.brokers.kiwoom.live_market_data import (
+        KiwoomLiveReadOnlyClient,
+        KiwoomLiveReadOnlyConfigurationError,
+    )
+
+    monkeypatch.setenv("KIWOOM_LIVE_APP_KEY", "app")
+    monkeypatch.setenv("KIWOOM_LIVE_APP_SECRET", "secret")
+    monkeypatch.setenv("KIWOOM_LIVE_MARKETDATA_ENABLED", "TRUE")
+    with pytest.raises(KiwoomLiveReadOnlyConfigurationError):
+        KiwoomLiveReadOnlyClient.from_scoped_env()
+
+    monkeypatch.setenv("KIWOOM_LIVE_MARKETDATA_ENABLED", "true")
+    client = KiwoomLiveReadOnlyClient.from_scoped_env()
+
+    assert not hasattr(client, "account_no")
+    assert client._marketdata_enabled is True
 
 
 def test_ambient_production_env_file_is_rejected(monkeypatch, tmp_path):
@@ -251,18 +327,14 @@ async def test_dual_orchestrator_runs_both_surfaces_with_synthetic_fixture(
     monkeypatch.setattr(collect, "fetch_kiwoom_minutes", fake_fetch)
     monkeypatch.setattr(collect, "assert_fetch_window_open", lambda: None)
     monkeypatch.setattr(collect, "now_kst", lambda: collect.datetime(2026, 1, 2))
-    from app.services.brokers.kiwoom.client import KiwoomMockClient
-    from app.services.brokers.kiwoom.live_market_data import KiwoomLiveReadOnlyClient
-
     monkeypatch.setattr(
-        KiwoomMockClient,
-        "from_app_settings",
-        classmethod(lambda cls: mock_factory()),
-    )
-    monkeypatch.setattr(
-        KiwoomLiveReadOnlyClient,
-        "from_app_settings",
-        classmethod(lambda cls: live_factory()),
+        collect,
+        "_build_scoped_surface_runtime",
+        lambda selected: _build_surface_runtime(
+            selected,
+            mock_factory=mock_factory,
+            live_factory=live_factory,
+        ),
     )
 
     args = SimpleNamespace(
@@ -328,18 +400,14 @@ async def test_dual_orchestrator_closes_pool_when_initialization_fails(
         raise RuntimeError("guard init")
 
     monkeypatch.setattr(collect.Guard, "__init__", fail_guard_init)
-    from app.services.brokers.kiwoom.client import KiwoomMockClient
-    from app.services.brokers.kiwoom.live_market_data import KiwoomLiveReadOnlyClient
-
     monkeypatch.setattr(
-        KiwoomMockClient,
-        "from_app_settings",
-        classmethod(lambda cls: object()),
-    )
-    monkeypatch.setattr(
-        KiwoomLiveReadOnlyClient,
-        "from_app_settings",
-        classmethod(lambda cls: object()),
+        collect,
+        "_build_scoped_surface_runtime",
+        lambda selected: _build_surface_runtime(
+            selected,
+            mock_factory=object,
+            live_factory=object,
+        ),
     )
     args = SimpleNamespace(
         split_csv=split,

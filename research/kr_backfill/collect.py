@@ -75,6 +75,8 @@ except ImportError:  # pragma: no cover - direct CLI execution
     )
 try:
     from .sources import (  # noqa: E402
+        AUTH_STALE_TOKEN,
+        EMPTY_RESPONSE,
         KST,
         FetchWindowClosed,
         Pacer,
@@ -87,6 +89,8 @@ try:
     )
 except ImportError:  # pragma: no cover - direct CLI execution
     from sources import (  # noqa: E402
+        AUTH_STALE_TOKEN,
+        EMPTY_RESPONSE,
         KST,
         FetchWindowClosed,
         Pacer,
@@ -120,6 +124,11 @@ ON CONFLICT (time_utc, symbol, venue) DO NOTHING
 #: Latency regression threshold vs the Stage A baseline median (2.127 ms).
 LATENCY_ABORT_FACTOR = 5.0
 MAX_CONSECUTIVE_429 = 3
+DB_INSERT_CONFLICT_ABORT_RATIO = 0.005
+CURSOR_OVERLAP_ABORT_RATIO = 0.40
+EXIT_SUCCESS = 0
+EXIT_PARTIAL_FAILURE = 1
+EXIT_TOTAL_FAILURE = 2
 
 # DB 권한으로 대체됨(role auto_trader_kr_backfill, 2026-08-04 적용).
 # 행수 감시는 프로덕션 동시 쓰기와 구분 불가.
@@ -132,8 +141,13 @@ class StreamStats:
     symbols_done: int = 0
     calls: int = 0
     rows_fetched: int = 0
+    rows_kept: int = 0
+    rows_filtered_cursor_overlap: int = 0
     rows_inserted: int = 0
     rows_skipped_conflict: int = 0
+    rows_skipped_conflict_preseed: int = 0
+    empty_responses: int = 0
+    empty_symbols: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     stopped_reason: str | None = None
 
@@ -145,14 +159,81 @@ class SurfaceStats:
     symbols_done: int = 0
     calls: int = 0
     rows_fetched: int = 0
+    rows_kept: int = 0
+    rows_filtered_cursor_overlap: int = 0
     rows_inserted: int = 0
     rows_skipped_conflict: int = 0
+    rows_skipped_conflict_preseed: int = 0
     errors: list[str] = field(default_factory=list)
     stopped_reason: str | None = None
 
 
 class AbortStream(RuntimeError):
     pass
+
+
+class HardRatioAbort(AbortStream):
+    pass
+
+
+def enforce_hard_ratio_guards(stats: StreamStats | SurfaceStats) -> None:
+    """Abort on contaminated inserts or a broken cursor within this collector batch."""
+
+    guarded_conflicts = (
+        stats.rows_skipped_conflict - stats.rows_skipped_conflict_preseed
+    )
+    if guarded_conflicts < 0:
+        raise HardRatioAbort("preseed conflicts exceed total DB insert conflicts")
+    conflict_denominator = stats.rows_inserted + guarded_conflicts
+    if conflict_denominator:
+        conflict_ratio = guarded_conflicts / conflict_denominator
+        if conflict_ratio > DB_INSERT_CONFLICT_ABORT_RATIO:
+            raise HardRatioAbort(
+                "DB insert conflict ratio "
+                f"{conflict_ratio:.6f} > hard limit "
+                f"{DB_INSERT_CONFLICT_ABORT_RATIO:.6f} "
+                "(scope=collector_batch, "
+                f"skipped_guarded={guarded_conflicts}, "
+                f"skipped_preseed={stats.rows_skipped_conflict_preseed}, "
+                f"inserted={stats.rows_inserted}, "
+                f"denominator={conflict_denominator})"
+            )
+
+    overlap_denominator = stats.rows_kept + stats.rows_filtered_cursor_overlap
+    if overlap_denominator:
+        overlap_ratio = stats.rows_filtered_cursor_overlap / overlap_denominator
+        if overlap_ratio > CURSOR_OVERLAP_ABORT_RATIO:
+            raise HardRatioAbort(
+                "cursor overlap ratio "
+                f"{overlap_ratio:.6f} > hard limit "
+                f"{CURSOR_OVERLAP_ABORT_RATIO:.6f} "
+                "(scope=collector_batch, "
+                f"filtered={stats.rows_filtered_cursor_overlap}, "
+                f"kept={stats.rows_kept}, denominator={overlap_denominator})"
+            )
+
+
+def classify_resume_preseed_conflicts(
+    *,
+    first_page: bool,
+    checkpoint_was_partial: bool,
+    rows_kept: int,
+    rows_inserted: int,
+    rows_skipped_conflict: int,
+    rows_verified_between_checkpoint_and_restart: int,
+) -> int:
+    """Identify only an atomic insert committed before its checkpoint on shutdown."""
+
+    if (
+        first_page
+        and checkpoint_was_partial
+        and rows_kept > 0
+        and rows_inserted == 0
+        and rows_skipped_conflict == rows_kept
+        and rows_verified_between_checkpoint_and_restart == rows_skipped_conflict
+    ):
+        return rows_skipped_conflict
+    return 0
 
 
 class ProgressLog:
@@ -255,6 +336,80 @@ async def insert_bars(
     return inserted, len(items) - inserted
 
 
+async def count_existing_bars(
+    pool: asyncpg.Pool, symbol: str, timestamps: list[datetime]
+) -> int:
+    """Read-only proof that cursor-overlap rows are already persisted."""
+    if not timestamps:
+        return 0
+    times = [timestamp.replace(tzinfo=KST) for timestamp in timestamps]
+    async with pool.acquire() as conn:
+        return int(
+            await conn.fetchval(
+                "SELECT count(*) FROM research.kr_candles_1m "
+                "WHERE symbol=$1 AND venue=$2 AND time_utc = ANY($3::timestamptz[])",
+                symbol,
+                VENUE,
+                times,
+            )
+        )
+
+
+async def count_resume_preseed_bars(
+    pool: asyncpg.Pool,
+    symbol: str,
+    timestamps: list[datetime],
+    *,
+    checkpoint_saved_at: datetime,
+    collector_started_at: datetime,
+    current_batch_id: str,
+) -> int:
+    """Prove rows committed in the checkpoint-to-restart crash window."""
+
+    if not timestamps:
+        return 0
+    times = [timestamp.replace(tzinfo=KST) for timestamp in timestamps]
+    async with pool.acquire() as conn:
+        return int(
+            await conn.fetchval(
+                "SELECT count(*) FROM research.kr_candles_1m "
+                "WHERE symbol=$1 AND venue=$2 "
+                "AND time_utc = ANY($3::timestamptz[]) "
+                "AND retrieved_at > $4 AND retrieved_at <= $5 "
+                "AND batch_id <> $6",
+                symbol,
+                VENUE,
+                times,
+                checkpoint_saved_at,
+                collector_started_at,
+                current_batch_id,
+            )
+        )
+
+
+def filter_page_to_cursor(
+    bars: dict[datetime, dict[str, float]], cursor_dt: datetime
+) -> tuple[dict[datetime, dict[str, float]], int]:
+    """Exclude a provider's repeated tail newer than the exact checkpoint."""
+    eligible = {
+        timestamp: values
+        for timestamp, values in bars.items()
+        if timestamp <= cursor_dt
+    }
+    return eligible, len(bars) - len(eligible)
+
+
+def filter_insert_domain(
+    bars: dict[datetime, dict[str, float]], start_dt: datetime, end_dt: datetime
+) -> dict[datetime, dict[str, float]]:
+    """Keep only regular-session rows inside the approved collection window."""
+    return {
+        timestamp: values
+        for timestamp, values in bars.items()
+        if in_regular_session(timestamp) and start_dt <= timestamp <= end_dt
+    }
+
+
 class Guard:
     """Latency and 429 abort-condition monitor shared by all streams."""
 
@@ -311,9 +466,16 @@ async def run_stream(
     end_date: date,
     batch_id: str,
 ) -> StreamStats:
-    stats = StreamStats(source=source, symbols_total=len(symbols))
+    pipe_id = source
+    stats = StreamStats(source=pipe_id, symbols_total=len(symbols))
     pacer = Pacer(source)
     start_dt = datetime.combine(start_date, datetime.min.time())
+    collector_started_at = now_kst()
+    checkpoint_saved_at = (
+        datetime.fromtimestamp(ckpt.path.stat().st_mtime, tz=KST)
+        if ckpt.path.exists()
+        else None
+    )
 
     for symbol in symbols:
         st = ckpt.get(symbol)
@@ -330,6 +492,11 @@ async def run_stream(
 
         try:
             while cursor_dt > start_dt:
+                request_context = {
+                    "symbol": symbol,
+                    "cursor": cursor_dt.isoformat(),
+                    "source": source,
+                }
                 try:
                     assert_fetch_window_open()
                 except FetchWindowClosed as exc:
@@ -338,8 +505,11 @@ async def run_stream(
                         {
                             "event": "paused_market_hours",
                             "source": source,
+                            "surface": pipe_id,
                             "symbol": symbol,
                             "cursor": cursor_dt,
+                            "last_request": request_context,
+                            "pacer": pacer.snapshot(),
                         }
                     )
                     ckpt.save()
@@ -373,64 +543,153 @@ async def run_stream(
                             end_time=cursor_dt.strftime("%H%M%S"),
                             max_pages=1,
                         )
-                    guard.note_429(source, False)
+                    guard.note_429(pipe_id, False)
                 except Exception as exc:  # noqa: BLE001
                     msg = f"{type(exc).__name__}: {exc}"
-                    guard.note_429(source, "429" in msg or "TooManyRequests" in msg)
+                    reason_code = str(getattr(exc, "reason_code", type(exc).__name__))
+                    stats.calls = pacer.calls
+                    is_429 = "429" in msg or "TooManyRequests" in msg
                     stats.errors.append(f"{symbol}: {msg}")
                     log.write(
                         {
                             "event": "fetch_error",
                             "source": source,
+                            "surface": pipe_id,
                             "symbol": symbol,
                             "error": msg,
+                            "reason_code": reason_code,
+                            "retry_disposition": getattr(
+                                exc, "retry_disposition", "NONE"
+                            ),
+                            "last_request": request_context,
+                            "pacer": pacer.snapshot(),
                         }
                     )
+                    guard.note_429(pipe_id, is_429)
+                    if reason_code == AUTH_STALE_TOKEN:
+                        stats.stopped_reason = (
+                            "AUTH_STALE_TOKEN after one read-only retry"
+                        )
+                        ckpt.save()
+                        return stats
                     break
 
                 stats.calls = pacer.calls
                 if not bars:
+                    reason_code = str(meta.get("outcome_code") or EMPTY_RESPONSE)
+                    stats.empty_responses += 1
+                    stats.empty_symbols.append(symbol)
+                    log.write(
+                        {
+                            "event": "empty_response",
+                            "source": source,
+                            "surface": pipe_id,
+                            "symbol": symbol,
+                            "reason_code": reason_code,
+                            "calls_cumulative": pacer.calls,
+                        }
+                    )
                     st["done"] = True
                     break
 
                 oldest = min(bars)
-                # regular session only, inside the requested range
-                keep = {
-                    t: v
-                    for t, v in bars.items()
-                    if in_regular_session(t)
-                    and start_dt <= t <= datetime.combine(end_date, datetime.max.time())
-                }
+                range_candidates = filter_insert_domain(
+                    bars,
+                    start_dt,
+                    datetime.combine(end_date, datetime.max.time()),
+                )
+                keep, cursor_overlap = filter_page_to_cursor(
+                    range_candidates, cursor_dt
+                )
+                overlap_timestamps = [
+                    timestamp for timestamp in range_candidates if timestamp > cursor_dt
+                ]
+                cursor_overlap_verified = await count_existing_bars(
+                    pool, symbol, overlap_timestamps
+                )
+                if cursor_overlap_verified != cursor_overlap:
+                    raise AbortStream(
+                        "cursor overlap is not fully persisted: "
+                        f"source={source} symbol={symbol} "
+                        f"filtered={cursor_overlap} "
+                        f"existing={cursor_overlap_verified}"
+                    )
+                first_page = stats.rows_fetched == 0
+                checkpoint_was_partial = (
+                    bool(st.get("oldest_reached"))
+                    and int(st.get("rows_inserted") or 0) > 0
+                )
                 stats.rows_fetched += len(bars)
+                stats.rows_kept += len(keep)
+                stats.rows_filtered_cursor_overlap += cursor_overlap
                 ins, skip = await insert_bars(
                     pool, symbol, keep, source=source, batch_id=batch_id
                 )
                 stats.rows_inserted += ins
                 stats.rows_skipped_conflict += skip
+                preseed_verified = 0
+                if (
+                    first_page
+                    and checkpoint_was_partial
+                    and checkpoint_saved_at is not None
+                    and len(keep) > 0
+                    and ins == 0
+                    and skip == len(keep)
+                ):
+                    preseed_verified = await count_resume_preseed_bars(
+                        pool,
+                        symbol,
+                        list(keep),
+                        checkpoint_saved_at=checkpoint_saved_at,
+                        collector_started_at=collector_started_at,
+                        current_batch_id=batch_id,
+                    )
+                preseed_conflicts = classify_resume_preseed_conflicts(
+                    first_page=first_page,
+                    checkpoint_was_partial=checkpoint_was_partial,
+                    rows_kept=len(keep),
+                    rows_inserted=ins,
+                    rows_skipped_conflict=skip,
+                    rows_verified_between_checkpoint_and_restart=preseed_verified,
+                )
+                stats.rows_skipped_conflict_preseed += preseed_conflicts
                 st["rows_inserted"] = st.get("rows_inserted", 0) + ins
                 st["rows_skipped"] = st.get("rows_skipped", 0) + skip
+                st["rows_skipped_preseed"] = (
+                    st.get("rows_skipped_preseed", 0) + preseed_conflicts
+                )
 
                 log.write(
                     {
                         "event": "page",
                         "source": source,
+                        "surface": pipe_id,
                         "symbol": symbol,
                         "range": [oldest.isoformat(), max(bars).isoformat()],
                         "rows_fetched": len(bars),
                         "rows_kept": len(keep),
+                        "rows_filtered_cursor_overlap": cursor_overlap,
+                        "rows_filtered_cursor_overlap_verified": (
+                            cursor_overlap_verified
+                        ),
                         "rows_inserted": ins,
                         "rows_skipped_conflict": skip,
+                        "rows_skipped_conflict_preseed": preseed_conflicts,
+                        "rows_skipped_conflict_preseed_verified": preseed_verified,
                         "calls_cumulative": pacer.calls,
                     }
                 )
 
                 if oldest >= cursor_dt:  # no backward progress; stop this symbol
                     st["done"] = True
+                    ckpt.save()
+                    enforce_hard_ratio_guards(stats)
                     break
                 cursor_dt = oldest - timedelta(minutes=1)
                 st["oldest_reached"] = cursor_dt.isoformat()
                 st["toss_cursor"] = toss_cursor
                 ckpt.save()
+                enforce_hard_ratio_guards(stats)
 
                 if source == "toss" and not toss_cursor:
                     st["done"] = True
@@ -439,14 +698,23 @@ async def run_stream(
                 st["done"] = True
         except AbortStream as exc:
             stats.stopped_reason = str(exc)
-            log.write({"event": "abort", "source": source, "reason": str(exc)})
+            log.write(
+                {
+                    "event": "abort",
+                    "source": source,
+                    "surface": pipe_id,
+                    "reason": str(exc),
+                    "last_request": request_context,
+                    "pacer": pacer.snapshot(),
+                }
+            )
             ckpt.save()
             return stats
 
         if st.get("done"):
             stats.symbols_done += 1
         ckpt.save()
-        await guard.check(source)
+        await guard.check(pipe_id)
 
     return stats
 
@@ -546,17 +814,29 @@ async def run_surface(
     pacer: SurfacePacer,
     overlap: OverlapVerifier | None,
     stop_event: asyncio.Event,
+    hard_stop_event: asyncio.Event,
     guard: Guard | None = None,
 ) -> SurfaceStats:
     """Collect one immutable symbol partition for one Kiwoom surface."""
 
     surface = validate_surface(surface)
+    surface_id = f"kiwoom_{surface}"
     stats = SurfaceStats(surface=surface, symbols_total=len(symbols))
     start_dt = datetime.combine(start_date, datetime.min.time())
+    collector_started_at = now_kst()
+    checkpoint_saved_at = (
+        datetime.fromtimestamp(ckpt.path.stat().st_mtime, tz=KST)
+        if ckpt.path.exists()
+        else None
+    )
 
     for symbol in symbols:
-        if stop_event.is_set():
-            stats.stopped_reason = "surface_stopped"
+        if stop_event.is_set() or hard_stop_event.is_set():
+            stats.stopped_reason = (
+                "hard_ratio_guard_peer_stopped"
+                if hard_stop_event.is_set()
+                else "surface_stopped"
+            )
             return stats
         state = ckpt.get(symbol)
         if state.get("done"):
@@ -569,8 +849,12 @@ async def run_surface(
         )
         try:
             while cursor_dt > start_dt:
-                if stop_event.is_set():
-                    stats.stopped_reason = "surface_stopped"
+                if stop_event.is_set() or hard_stop_event.is_set():
+                    stats.stopped_reason = (
+                        "hard_ratio_guard_peer_stopped"
+                        if hard_stop_event.is_set()
+                        else "surface_stopped"
+                    )
                     return stats
                 try:
                     assert_fetch_window_open()
@@ -588,6 +872,11 @@ async def run_surface(
                     return stats
 
                 try:
+                    request_context = {
+                        "symbol": symbol,
+                        "api_id": "ka10080",
+                        "base_dt": cursor_dt.strftime("%Y%m%d"),
+                    }
                     rows, meta = await fetch_kiwoom_minutes(
                         client=client,
                         symbol=symbol,
@@ -598,6 +887,28 @@ async def run_surface(
                     pacer.note_status(None)
                 except Exception as exc:  # noqa: BLE001
                     status = http_status_from_exception(exc)
+                    reason_code = getattr(exc, "reason_code", None)
+                    if reason_code == AUTH_STALE_TOKEN:
+                        stop_event.set()
+                        stats.stopped_reason = (
+                            "AUTH_STALE_TOKEN after one read-only retry"
+                        )
+                        log.write(
+                            {
+                                "event": "abort",
+                                "surface": surface_id,
+                                "symbol": symbol,
+                                "reason": stats.stopped_reason,
+                                "reason_code": reason_code,
+                                "retry_disposition": getattr(
+                                    exc, "retry_disposition", "NONE"
+                                ),
+                                "last_request": request_context,
+                                "pacer": pacer.snapshot(),
+                            }
+                        )
+                        ckpt.save()
+                        return stats
                     try:
                         pacer.note_exception(exc)
                     except (SurfaceAuthError, SurfaceBackoffExhausted) as fatal:
@@ -606,10 +917,12 @@ async def run_surface(
                         log.write(
                             {
                                 "event": "abort",
-                                "surface": surface,
+                                "surface": surface_id,
                                 "symbol": symbol,
                                 "reason": str(fatal),
                                 "http_status": status,
+                                "last_request": request_context,
+                                "pacer": pacer.snapshot(),
                             }
                         )
                         return stats
@@ -620,12 +933,14 @@ async def run_surface(
                         log.write(
                             {
                                 "event": "backoff",
-                                "surface": surface,
+                                "surface": surface_id,
                                 "symbol": symbol,
                                 "http_status": 429,
                                 "interval_seconds": pacer.interval,
                                 "backoff_level": pacer.backoff_level,
                                 "auto_recovery": False,
+                                "last_request": request_context,
+                                "pacer": pacer.snapshot(),
                             }
                         )
                         continue
@@ -633,9 +948,11 @@ async def run_surface(
                     log.write(
                         {
                             "event": "fetch_error",
-                            "surface": surface,
+                            "surface": surface_id,
                             "symbol": symbol,
                             "error": f"{type(exc).__name__}: {exc}",
+                            "last_request": request_context,
+                            "pacer": pacer.snapshot(),
                         }
                     )
                     break
@@ -646,15 +963,35 @@ async def run_surface(
                     break
 
                 oldest = min(rows)
-                keep = {
-                    timestamp: values
-                    for timestamp, values in rows.items()
-                    if in_regular_session(timestamp)
-                    and start_dt
-                    <= timestamp
-                    <= datetime.combine(end_date, datetime.max.time())
-                }
+                range_candidates = filter_insert_domain(
+                    rows,
+                    start_dt,
+                    datetime.combine(end_date, datetime.max.time()),
+                )
+                keep, cursor_overlap = filter_page_to_cursor(
+                    range_candidates, cursor_dt
+                )
+                overlap_timestamps = [
+                    timestamp for timestamp in range_candidates if timestamp > cursor_dt
+                ]
+                cursor_overlap_verified = await count_existing_bars(
+                    pool, symbol, overlap_timestamps
+                )
+                if cursor_overlap_verified != cursor_overlap:
+                    raise AbortStream(
+                        "cursor overlap is not fully persisted: "
+                        f"surface=kiwoom_{surface} symbol={symbol} "
+                        f"filtered={cursor_overlap} "
+                        f"existing={cursor_overlap_verified}"
+                    )
+                first_page = stats.rows_fetched == 0
+                checkpoint_was_partial = (
+                    bool(state.get("oldest_reached"))
+                    and int(state.get("rows_inserted") or 0) > 0
+                )
                 stats.rows_fetched += len(rows)
+                stats.rows_kept += len(keep)
+                stats.rows_filtered_cursor_overlap += cursor_overlap
                 inserted, skipped = await insert_bars(
                     pool,
                     symbol,
@@ -664,28 +1001,66 @@ async def run_surface(
                 )
                 stats.rows_inserted += inserted
                 stats.rows_skipped_conflict += skipped
+                preseed_verified = 0
+                if (
+                    first_page
+                    and checkpoint_was_partial
+                    and checkpoint_saved_at is not None
+                    and len(keep) > 0
+                    and inserted == 0
+                    and skipped == len(keep)
+                ):
+                    preseed_verified = await count_resume_preseed_bars(
+                        pool,
+                        symbol,
+                        list(keep),
+                        checkpoint_saved_at=checkpoint_saved_at,
+                        collector_started_at=collector_started_at,
+                        current_batch_id=batch_id,
+                    )
+                preseed_conflicts = classify_resume_preseed_conflicts(
+                    first_page=first_page,
+                    checkpoint_was_partial=checkpoint_was_partial,
+                    rows_kept=len(keep),
+                    rows_inserted=inserted,
+                    rows_skipped_conflict=skipped,
+                    rows_verified_between_checkpoint_and_restart=preseed_verified,
+                )
+                stats.rows_skipped_conflict_preseed += preseed_conflicts
                 state["rows_inserted"] = state.get("rows_inserted", 0) + inserted
                 state["rows_skipped"] = state.get("rows_skipped", 0) + skipped
+                state["rows_skipped_preseed"] = (
+                    state.get("rows_skipped_preseed", 0) + preseed_conflicts
+                )
                 log.write(
                     {
                         "event": "page",
-                        "surface": surface,
+                        "surface": surface_id,
                         "symbol": symbol,
                         "range": [oldest.isoformat(), max(rows).isoformat()],
                         "rows_fetched": len(rows),
                         "rows_kept": len(keep),
+                        "rows_filtered_cursor_overlap": cursor_overlap,
+                        "rows_filtered_cursor_overlap_verified": (
+                            cursor_overlap_verified
+                        ),
                         "rows_inserted": inserted,
                         "rows_skipped_conflict": skipped,
+                        "rows_skipped_conflict_preseed": preseed_conflicts,
+                        "rows_skipped_conflict_preseed_verified": preseed_verified,
                         "calls_cumulative": pacer.calls,
                         "batch_id": batch_id,
                     }
                 )
                 if oldest >= cursor_dt:
                     state["done"] = True
+                    ckpt.save()
+                    enforce_hard_ratio_guards(stats)
                     break
                 cursor_dt = oldest - timedelta(minutes=1)
                 state["oldest_reached"] = cursor_dt.isoformat()
                 ckpt.save()
+                enforce_hard_ratio_guards(stats)
                 if overlap is not None:
                     await overlap.after_batch()
             else:
@@ -697,8 +1072,22 @@ async def run_surface(
             SurfaceBackoffExhausted,
         ) as exc:
             stop_event.set()
+            if isinstance(exc, HardRatioAbort):
+                hard_stop_event.set()
             stats.stopped_reason = str(exc)
-            log.write({"event": "abort", "surface": surface, "reason": str(exc)})
+            log.write(
+                {
+                    "event": "abort",
+                    "surface": surface_id,
+                    "reason": str(exc),
+                    "last_request": {
+                        "symbol": symbol,
+                        "api_id": "ka10080",
+                        "base_dt": cursor_dt.strftime("%Y%m%d"),
+                    },
+                    "pacer": pacer.snapshot(),
+                }
+            )
             ckpt.save()
             return stats
 
@@ -707,21 +1096,39 @@ async def run_surface(
         ckpt.save()
         if guard is not None:
             try:
-                await guard.check(surface)
+                await guard.check(surface_id)
             except AbortStream as exc:
                 stop_event.set()
                 stats.stopped_reason = str(exc)
-                log.write({"event": "abort", "surface": surface, "reason": str(exc)})
+                log.write(
+                    {
+                        "event": "abort",
+                        "surface": surface_id,
+                        "reason": str(exc),
+                        "last_request": {
+                            "symbol": symbol,
+                            "api_id": "ka10080",
+                            "base_dt": cursor_dt.strftime("%Y%m%d"),
+                        },
+                        "pacer": pacer.snapshot(),
+                    }
+                )
                 ckpt.save()
                 return stats
     return stats
 
 
-def _load_env_file(path: Path, allowed_keys: set[str]) -> None:
+def _load_env_file(
+    path: Path,
+    allowed_keys: set[str],
+    *,
+    aliases: dict[str, str] | None = None,
+) -> None:
     """Load only surface keys; never print values or import a full env file."""
 
     if not path.is_file():
         raise FileNotFoundError(f"surface env file not found: {path}")
+    loaded: dict[str, str] = {}
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -731,7 +1138,15 @@ def _load_env_file(path: Path, allowed_keys: set[str]) -> None:
         if key not in allowed_keys:
             continue
         value = value.strip().strip('"').strip("'")
+        loaded[key] = value
+    for key, value in loaded.items():
         os.environ[key] = value
+    for source, target in (aliases or {}).items():
+        # A dedicated LIVE key wins when a future file provides both.  The
+        # legacy source name is accepted only from the operator-selected
+        # read-only env file; no ambient credential is copied.
+        if target not in loaded and source in loaded:
+            os.environ[target] = loaded[source]
 
 
 def _reject_production_env_file(path: Path) -> None:
@@ -762,10 +1177,16 @@ def _prepare_surface_env(
         _load_env_file(
             live_env_file,
             {
+                "KIWOOM_APP_KEY",
+                "KIWOOM_APP_SECRET",
                 "KIWOOM_LIVE_MARKETDATA_ENABLED",
                 "KIWOOM_LIVE_APP_KEY",
                 "KIWOOM_LIVE_APP_SECRET",
                 "KIWOOM_LIVE_BASE_URL",
+            },
+            aliases={
+                "KIWOOM_APP_KEY": "KIWOOM_LIVE_APP_KEY",
+                "KIWOOM_APP_SECRET": "KIWOOM_LIVE_APP_SECRET",
             },
         )
     # pydantic-settings reads this file for non-secret defaults.  The explicit
@@ -793,6 +1214,37 @@ def _build_surface_runtime(
     }
     pacers = {surface: SurfacePacer(surface) for surface in selected}
     return raw_clients, clients, pacers
+
+
+def _build_scoped_surface_runtime(
+    selected: tuple[str, ...],
+) -> tuple[dict[str, Any], dict[str, KiwoomSurfaceClient], dict[str, SurfacePacer]]:
+    """Build dual collectors without importing the application Settings singleton."""
+
+    from app.services.brokers.kiwoom.client import KiwoomMockClient
+    from app.services.brokers.kiwoom.constants import MOCK_BASE_URL
+    from app.services.brokers.kiwoom.live_market_data import (
+        KiwoomLiveReadOnlyClient,
+    )
+
+    def required_env(name: str) -> str:
+        value = str(os.getenv(name, "")).strip()
+        if not value:
+            raise SurfaceContractError(f"missing scoped env: {name}")
+        return value
+
+    return _build_surface_runtime(
+        selected,
+        mock_factory=lambda: KiwoomMockClient(
+            base_url=str(os.getenv("KIWOOM_MOCK_BASE_URL", MOCK_BASE_URL)),
+            app_key=required_env("KIWOOM_MOCK_APP_KEY"),
+            app_secret=required_env("KIWOOM_MOCK_APP_SECRET"),
+            # Chart TRs do not consume an account number.  Keeping it absent
+            # prevents the collector from gaining account reach.
+            account_no="",
+        ),
+        live_factory=KiwoomLiveReadOnlyClient.from_scoped_env,
+    )
 
 
 async def _run_dual_surface(args: argparse.Namespace) -> int:
@@ -859,17 +1311,9 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
     log: ProgressLog | None = None
     try:
         _prepare_surface_env(selected_tuple, args.mock_env_file, args.live_env_file)
-        from app.services.brokers.kiwoom.client import KiwoomMockClient
-        from app.services.brokers.kiwoom.live_market_data import (
-            KiwoomLiveReadOnlyClient,
-        )
-
-        raw_clients, clients, pacers = _build_surface_runtime(
-            selected_tuple,
-            mock_factory=KiwoomMockClient.from_app_settings,
-            live_factory=KiwoomLiveReadOnlyClient.from_app_settings,
-        )
+        raw_clients, clients, pacers = _build_scoped_surface_runtime(selected_tuple)
         stop_events = {surface: asyncio.Event() for surface in selected}
+        hard_stop_event = asyncio.Event()
         pool = await asyncpg.create_pool(dsn(), min_size=2, max_size=6)
         log = ProgressLog(job_events / "progress.jsonl")
         guard = Guard(pool, args.baseline_median_ms, log)
@@ -898,6 +1342,7 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
                     pacer=pacers[surface],
                     overlap=overlap,
                     stop_event=stop_events[surface],
+                    hard_stop_event=hard_stop_event,
                     guard=guard,
                 )
                 for surface in selected
@@ -916,7 +1361,8 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
                     await result
         if log is not None:
             log.close()
-    summary["status"] = "COMPLETE"
+    result_code = exit_code_for_surface_results(results)
+    summary["status"] = "COMPLETE" if result_code == EXIT_SUCCESS else "STOPPED"
     summary["results"] = [result.__dict__ for result in results]
     summary["calls_by_surface"] = {
         surface: pacers[surface].calls for surface in selected
@@ -926,7 +1372,41 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))
-    return 0
+    return result_code
+
+
+def exit_code_for_surface_results(results: list[SurfaceStats]) -> int:
+    """Prevent a stopped dual surface from being reported as clean success."""
+
+    if any(result.errors or result.stopped_reason is not None for result in results):
+        return EXIT_PARTIAL_FAILURE
+    return EXIT_SUCCESS
+
+
+def exit_code_for_results(results: list[StreamStats | BaseException]) -> int:
+    """Return 0=all useful+clean, 1=partial, 2=no useful successful work."""
+    any_useful_work = False
+    any_failure = False
+    for result in results:
+        if isinstance(result, BaseException):
+            any_failure = True
+            continue
+        useful = result.rows_fetched > 0
+        any_useful_work = any_useful_work or useful
+        clean = (
+            useful
+            and not result.errors
+            and result.stopped_reason is None
+            and result.empty_responses == 0
+        )
+        if not clean:
+            any_failure = True
+
+    if not any_useful_work:
+        return EXIT_TOTAL_FAILURE
+    if any_failure:
+        return EXIT_PARTIAL_FAILURE
+    return EXIT_SUCCESS
 
 
 async def main() -> int:
@@ -1067,7 +1547,7 @@ async def main() -> int:
     )
     print(json.dumps(summary, indent=2, default=str, ensure_ascii=False))
     log.close()
-    return 0
+    return exit_code_for_results(results)
 
 
 if __name__ == "__main__":

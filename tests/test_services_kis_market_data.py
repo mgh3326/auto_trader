@@ -536,6 +536,36 @@ async def test_kis_inquire_time_dailychartprice_uses_end_time_when_provided(
 
 
 @pytest.mark.asyncio
+async def test_kis_inquire_time_dailychartprice_missing_rows_key_is_not_empty(
+    monkeypatch,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(return_value={"rt_cd": "0"})
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    with pytest.raises(RuntimeError, match="missing output2/output"):
+        await client.inquire_time_dailychartprice("005930", market="J", n=1)
+
+
+@pytest.mark.asyncio
+async def test_kis_inquire_time_dailychartprice_malformed_rows_is_not_empty(
+    monkeypatch,
+):
+    from app.services.brokers.kis.client import KISClient
+
+    client = KISClient()
+    monkeypatch.setattr(client, "_ensure_token", AsyncMock())
+    request_mock = AsyncMock(return_value={"rt_cd": "0", "output2": {}})
+    monkeypatch.setattr(client, "_request_with_rate_limit", request_mock)
+
+    with pytest.raises(RuntimeError, match="expected output2/output list"):
+        await client.inquire_time_dailychartprice("005930", market="J", n=1)
+
+
+@pytest.mark.asyncio
 async def test_kis_inquire_daily_itemchartprice_returns_empty_dataframe_on_empty_payload(
     monkeypatch,
 ):

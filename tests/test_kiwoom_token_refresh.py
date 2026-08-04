@@ -11,7 +11,13 @@ import pytest
 
 from app.services.brokers.kiwoom import constants
 from app.services.brokers.kiwoom.auth import KiwoomAuthClient, KiwoomToken
-from app.services.brokers.kiwoom.client import KiwoomMockClient
+from app.services.brokers.kiwoom.client import (
+    AUTH_STALE_TOKEN,
+    MALFORMED_RESPONSE,
+    PROVIDER_REJECTED,
+    KiwoomMockClient,
+    KiwoomReadResponseError,
+)
 
 
 class _RecordingAuth:
@@ -113,18 +119,125 @@ async def test_repeated_read_8005_is_resubmitted_only_once():
     client = _client_with_transport(handler)
     client._auth = auth  # type: ignore[assignment]
 
-    result = await client.post_api(
-        api_id=constants.US_ACCOUNT_POSITIONS_API_ID,
-        path=constants.US_ACCOUNT_PATH,
-        body={},
-    )
+    with pytest.raises(KiwoomReadResponseError) as exc_info:
+        await client.post_api(
+            api_id=constants.US_ACCOUNT_POSITIONS_API_ID,
+            path=constants.US_ACCOUNT_PATH,
+            body={},
+        )
 
-    assert result["return_code"] == "8005"
+    assert exc_info.value.reason_code == AUTH_STALE_TOKEN
+    assert exc_info.value.retry_disposition == "RETRIED_ONCE_THEN_STOP"
     assert dispatch_count == 2
     assert auth.calls == [
         (False, None),
         (True, "stale-token"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_chart_observed_return_code_3_with_8005_message_refreshes_once():
+    dispatched_authorizations: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        authorization = request.headers[constants.HEADER_AUTHORIZATION]
+        dispatched_authorizations.append(authorization)
+        if authorization == "Bearer stale-token":
+            return httpx.Response(
+                200,
+                json={
+                    "return_code": 3,
+                    "return_msg": "인증에 실패했습니다[8005:Token이 유효하지 않습니다]",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "return_code": 0,
+                "return_msg": "정상",
+                "stk_min_pole_chart_qry": [{"cntr_tm": "20260724153000"}],
+            },
+        )
+
+    auth = _RecordingAuth()
+    client = _client_with_transport(handler)
+    client._auth = auth  # type: ignore[assignment]
+
+    result = await client.post_api(
+        api_id=constants.CHART_MINUTE_API_ID,
+        path=constants.CHART_PATH,
+        body={"stk_cd": "196170", "tic_scope": "1"},
+    )
+
+    assert result["return_code"] == 0
+    assert len(result["stk_min_pole_chart_qry"]) == 1
+    assert dispatched_authorizations == [
+        "Bearer stale-token",
+        "Bearer fresh-token",
+    ]
+    assert auth.calls == [
+        (False, None),
+        (True, "stale-token"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_order_mutation_observed_return_code_3_with_8005_is_not_resubmitted():
+    dispatch_count = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal dispatch_count
+        dispatch_count += 1
+        return httpx.Response(
+            200,
+            json={
+                "return_code": 3,
+                "return_msg": "인증에 실패했습니다[8005:Token이 유효하지 않습니다]",
+            },
+        )
+
+    auth = _RecordingAuth()
+    client = _client_with_transport(handler)
+    client._auth = auth  # type: ignore[assignment]
+
+    result = await client.post_api(
+        api_id=constants.ORDER_BUY_API_ID,
+        path=constants.ORDER_PATH,
+        body={},
+    )
+
+    assert result["return_code"] == 3
+    assert dispatch_count == 1
+    assert auth.calls == [(False, None)]
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason_code"),
+    [
+        ({"return_code": 20, "return_msg": "rejected"}, PROVIDER_REJECTED),
+        ({"return_msg": "missing code"}, MALFORMED_RESPONSE),
+        ({"return_code": "not-a-number"}, MALFORMED_RESPONSE),
+    ],
+)
+@pytest.mark.asyncio
+async def test_chart_provider_errors_are_typed_not_returned_as_empty(
+    payload: dict[str, object], reason_code: str
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    client = _client_with_transport(handler)
+    client._auth = _RecordingAuth()  # type: ignore[assignment]
+
+    with pytest.raises(KiwoomReadResponseError) as exc_info:
+        await client.post_api(
+            api_id=constants.CHART_MINUTE_API_ID,
+            path=constants.CHART_PATH,
+            body={"stk_cd": "001570", "tic_scope": "1"},
+        )
+
+    assert exc_info.value.reason_code == reason_code
+    assert exc_info.value.retry_disposition == "STOP_NO_RETRY"
 
 
 @pytest.mark.parametrize(
