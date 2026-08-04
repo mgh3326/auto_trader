@@ -23,11 +23,24 @@
   있으면 `kis_mock`에 자동 주문 intent를 쓴다. 따라서 이 watch 경로는 새 shell
   writer가 아니라도 **동일 계좌 scope에서 선점·등록해야 하는 기존 mutation writer
   후보**다. 현재 이 경로를 singleton lock에 편입했다는 증거는 **없음 — 필요**.
-- 오늘 account canonicalization packet의 fresh read 결론은 후보 어느 곳에서도
-  `writer=1`이 운영 강제된다는 증거가 없다는 것이다. 또한 Alpaca crypto paper는
-  US equity와 **같은 physical account**를 공유하므로 crypto writer를 US writer와
-  분리할 수 없다. 따라서 lock scope는 strategy나 asset class가 아니라
+- 오늘 account canonicalization의 추가 read-only `GET /v2/account` 실측은 후보
+  어느 곳에서도 `writer=1`이 운영 강제된다는 증거를 만들지 않았다. 동시에
+  `ALPACA_PAPER` default에는 US 7종과 BTC 1종이 함께 있어 US/crypto가 한
+  physical account에 공존하는 **오염 상태**임을 증명했다. 반면
+  `ALPACA_PAPER_CRYPTO`는 별도 physical account이며 초기잔고 그대로인 clean
+  계좌다. 따라서 “Alpaca crypto는 US와 같은 계좌”는 일반 명제가 아니며,
+  lock scope는 strategy/asset class가 아니라 확인된
   `physical-account fingerprint/account_record_id`여야 한다.
+- 새 지문 실측은 `ALPACA_PAPER`(account suffix `a6445d`),
+  `ALPACA_PAPER_LAB`(`a9e6cd`), `ALPACA_PAPER_CRYPTO`(`c60c74`)가 서로 다른
+  physical account임을 증명한다. 단, `ALPACA_PAPER_CRYPTO` 키셋의 client와
+  read tool은 accepted main에 **없음 — 필요**다. 계좌가 존재한다는 사실만으로
+  코드가 그 계좌에 안전하게 읽거나 쓸 수 있는 상태라고 보지 않는다.
+- 키셋 이름과 물리 계좌는 동일 개념이 아니다. authoritative
+  `keyset → physical-account fingerprint → account_record_id` mapping이 코드·운영
+  정본에 없으면 어느 계좌에 쓰는지 알 수 없으므로 writer를 만들거나 paper를
+  arm하지 않는다. 오늘 이전 워커가 제3 키셋을 조회하지 못한 이유도 이 mapping과
+  accepted-main read surface의 부재였다.
 - 현재 KIS reconcile은 구현이 있어도 `no schedule → paused`로 확인되었고,
   Binance loop는 foreground CLI이며 US runner는 확인되지 않았다. 아래 cadence는
   **계약**이지 현재 활성화된 scheduler가 아니다.
@@ -89,9 +102,11 @@ paper activation을 허용하지 않는다.
 특히 `WATCH_AUTO_EXECUTE_MOCK_ENABLED=true`인 production watch 경로는
 `max_action`을 받아 `kis_mock` 주문 intent를 만들 수 있으므로 기존 writer 후보로
 취급해야 한다. account-packet 실측상 이 후보를 포함해 어느 후보에서도 writer=1
-운영 강제 증거가 없었다. Alpaca crypto와 US equity가 같은 physical account를
-공유하는 사실 때문에 두 asset-class별 lock을 따로 두는 것은 singleton 증명이
-아니다.
+운영 강제 증거가 없었다. `ALPACA_PAPER`의 BTC 혼입은 같은 physical account에
+두 asset-class writer가 붙으면 안 된다는 실증이며, 그 계좌에서는 US/crypto가
+하나의 scope lock을 공유해야 한다. 별도 `ALPACA_PAPER_CRYPTO`는 물리적으로
+분리됐지만, 현재 accepted main에 client/read tool과 authoritative mapping이
+없으므로 별도 writer로 사용할 수 없다.
 
 ## RESTART_SEMANTICS
 
