@@ -365,6 +365,40 @@ jobs:
       run: |
         uv run pytest research/alpaca_track_signals/tests/ -q -ra --strict-markers
 
+  intraday-harness-v2-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PYTHON_VERSION: "3.13"
+
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        persist-credentials: false
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install UV
+      run: pip install uv
+
+    - name: Load cached venv
+      id: cached-uv-dependencies
+      uses: actions/cache@v5
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group test
+
+    - name: Run intraday harness v2 freeze and execution tests
+      run: uv run pytest research/intraday_harness_v2/tests/ -v -ra --strict-markers
+
   alpaca-track-walkforward-tests:
     # ROB-1062 H4 remains a separate gate from the consolidated H1/H2/H3 job:
     # it has its own conftest.py sys.path wiring onto its three
