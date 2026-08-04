@@ -127,3 +127,18 @@ def test_both_collection_paths_enforce_non_configurable_hard_guards(
     assert "enforce_hard_ratio_guards(stats)" in inspect.getsource(
         collect_module.run_surface
     )
+    assert "hard_stop_event.set()" in inspect.getsource(collect_module.run_surface)
+
+
+def test_stopped_dual_surface_cannot_return_clean_success(
+    collect_module: ModuleType,
+) -> None:
+    clean = collect_module.SurfaceStats(surface="mock", rows_fetched=900)
+    stopped = collect_module.SurfaceStats(
+        surface="live",
+        rows_fetched=900,
+        stopped_reason="DB insert conflict ratio exceeded",
+    )
+
+    assert collect_module.exit_code_for_surface_results([clean]) == 0
+    assert collect_module.exit_code_for_surface_results([clean, stopped]) == 1

@@ -172,6 +172,10 @@ class AbortStream(RuntimeError):
     pass
 
 
+class HardRatioAbort(AbortStream):
+    pass
+
+
 def enforce_hard_ratio_guards(stats: StreamStats | SurfaceStats) -> None:
     """Abort on contaminated inserts or a broken cursor within this collector batch."""
 
@@ -179,12 +183,12 @@ def enforce_hard_ratio_guards(stats: StreamStats | SurfaceStats) -> None:
         stats.rows_skipped_conflict - stats.rows_skipped_conflict_preseed
     )
     if guarded_conflicts < 0:
-        raise AbortStream("preseed conflicts exceed total DB insert conflicts")
+        raise HardRatioAbort("preseed conflicts exceed total DB insert conflicts")
     conflict_denominator = stats.rows_inserted + guarded_conflicts
     if conflict_denominator:
         conflict_ratio = guarded_conflicts / conflict_denominator
         if conflict_ratio > DB_INSERT_CONFLICT_ABORT_RATIO:
-            raise AbortStream(
+            raise HardRatioAbort(
                 "DB insert conflict ratio "
                 f"{conflict_ratio:.6f} > hard limit "
                 f"{DB_INSERT_CONFLICT_ABORT_RATIO:.6f} "
@@ -199,7 +203,7 @@ def enforce_hard_ratio_guards(stats: StreamStats | SurfaceStats) -> None:
     if overlap_denominator:
         overlap_ratio = stats.rows_filtered_cursor_overlap / overlap_denominator
         if overlap_ratio > CURSOR_OVERLAP_ABORT_RATIO:
-            raise AbortStream(
+            raise HardRatioAbort(
                 "cursor overlap ratio "
                 f"{overlap_ratio:.6f} > hard limit "
                 f"{CURSOR_OVERLAP_ABORT_RATIO:.6f} "
@@ -810,6 +814,7 @@ async def run_surface(
     pacer: SurfacePacer,
     overlap: OverlapVerifier | None,
     stop_event: asyncio.Event,
+    hard_stop_event: asyncio.Event,
     guard: Guard | None = None,
 ) -> SurfaceStats:
     """Collect one immutable symbol partition for one Kiwoom surface."""
@@ -826,8 +831,12 @@ async def run_surface(
     )
 
     for symbol in symbols:
-        if stop_event.is_set():
-            stats.stopped_reason = "surface_stopped"
+        if stop_event.is_set() or hard_stop_event.is_set():
+            stats.stopped_reason = (
+                "hard_ratio_guard_peer_stopped"
+                if hard_stop_event.is_set()
+                else "surface_stopped"
+            )
             return stats
         state = ckpt.get(symbol)
         if state.get("done"):
@@ -840,8 +849,12 @@ async def run_surface(
         )
         try:
             while cursor_dt > start_dt:
-                if stop_event.is_set():
-                    stats.stopped_reason = "surface_stopped"
+                if stop_event.is_set() or hard_stop_event.is_set():
+                    stats.stopped_reason = (
+                        "hard_ratio_guard_peer_stopped"
+                        if hard_stop_event.is_set()
+                        else "surface_stopped"
+                    )
                     return stats
                 try:
                     assert_fetch_window_open()
@@ -1037,6 +1050,8 @@ async def run_surface(
             SurfaceBackoffExhausted,
         ) as exc:
             stop_event.set()
+            if isinstance(exc, HardRatioAbort):
+                hard_stop_event.set()
             stats.stopped_reason = str(exc)
             log.write(
                 {
@@ -1276,6 +1291,7 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
         _prepare_surface_env(selected_tuple, args.mock_env_file, args.live_env_file)
         raw_clients, clients, pacers = _build_scoped_surface_runtime(selected_tuple)
         stop_events = {surface: asyncio.Event() for surface in selected}
+        hard_stop_event = asyncio.Event()
         pool = await asyncpg.create_pool(dsn(), min_size=2, max_size=6)
         log = ProgressLog(job_events / "progress.jsonl")
         guard = Guard(pool, args.baseline_median_ms, log)
@@ -1304,6 +1320,7 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
                     pacer=pacers[surface],
                     overlap=overlap,
                     stop_event=stop_events[surface],
+                    hard_stop_event=hard_stop_event,
                     guard=guard,
                 )
                 for surface in selected
@@ -1322,7 +1339,8 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
                     await result
         if log is not None:
             log.close()
-    summary["status"] = "COMPLETE"
+    result_code = exit_code_for_surface_results(results)
+    summary["status"] = "COMPLETE" if result_code == EXIT_SUCCESS else "STOPPED"
     summary["results"] = [result.__dict__ for result in results]
     summary["calls_by_surface"] = {
         surface: pacers[surface].calls for surface in selected
@@ -1332,7 +1350,15 @@ async def _run_dual_surface(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))
-    return 0
+    return result_code
+
+
+def exit_code_for_surface_results(results: list[SurfaceStats]) -> int:
+    """Prevent a stopped dual surface from being reported as clean success."""
+
+    if any(result.errors or result.stopped_reason is not None for result in results):
+        return EXIT_PARTIAL_FAILURE
+    return EXIT_SUCCESS
 
 
 def exit_code_for_results(results: list[StreamStats | BaseException]) -> int:
