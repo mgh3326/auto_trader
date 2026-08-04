@@ -434,7 +434,7 @@ async def main() -> int:
 
     from equality_gate import build_clients
 
-    clients = await build_clients()
+    clients = await build_clients(wanted)
     pool = await asyncpg.create_pool(dsn(), min_size=2, max_size=6)
     log = ProgressLog(args.job_dir / "events" / "progress.jsonl")
     guard = Guard(pool, args.baseline_median_ms, log)
