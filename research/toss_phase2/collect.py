@@ -831,6 +831,10 @@ async def collect(
                     stats.http_401 += 1
                 if status == 429:
                     stats.http_429 += 1
+                    # The startup 429 is still the first response from which
+                    # the provider must reveal the live cap.  Never send a
+                    # second chart request under an unknown cap.
+                    chart_pacer.ensure_cap_discovered()
                     consecutive, delay_seconds = await chart_pacer.backoff_after_429()
                     stats.rate_limit_backoffs += 1
                     progress.write(

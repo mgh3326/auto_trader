@@ -271,3 +271,59 @@ async def test_collect_retries_a_429_without_stopping_the_pipeline(tmp_path) -> 
     assert stats.symbols_done == 1
     assert stats.stopped_reason is None
     assert clock.sleeps == [2.0]
+
+
+@pytest.mark.asyncio
+async def test_startup_429_without_limit_header_stops_before_a_second_request(
+    tmp_path,
+) -> None:
+    clock = _Clock(datetime(2026, 8, 4, 10, 0, tzinfo=KST))
+    pacer = HeaderAdaptiveChartRateLimiter(
+        _BaseLimiter(),
+        "MARKET_DATA_CHART",
+        now_kst_fn=lambda: clock.now,
+        monotonic_fn=clock.monotonic,
+        sleep=clock.sleep,
+    )
+    transport = SimpleNamespace(calls=0)
+
+    class _RateLimitError(RuntimeError):
+        status_code = 429
+
+    class _Client:
+        async def candles(self, *args, **kwargs):
+            del args, kwargs
+            transport.calls += 1
+            pacer.observe_response(
+                "MARKET_DATA_CHART",
+                429,
+                _headers(limit=None, remaining=0, reset_seconds=0.25),
+            )
+            raise _RateLimitError()
+
+    class _Monitor:
+        async def assert_healthy(self) -> None:
+            return None
+
+    progress = ProgressLog(tmp_path / "events" / "progress.jsonl")
+    try:
+        with pytest.raises(CollectionStopped, match="cap_not_discovered"):
+            await collect(
+                client=_Client(),
+                transport=transport,
+                chart_pacer=pacer,
+                monitor=_Monitor(),
+                staging_dir=tmp_path,
+                symbols=["005930"],
+                start_date=date(2021, 12, 20),
+                last_eligible_date=date(2026, 8, 3),
+                call_budget=10,
+                batch_id="batch",
+                official_nxt_launch_date=None,
+                progress=progress,
+                stats=CollectionStats(symbols_total=1),
+            )
+    finally:
+        progress.close()
+
+    assert transport.calls == 1
