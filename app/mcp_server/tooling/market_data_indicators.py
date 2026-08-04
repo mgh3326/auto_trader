@@ -285,13 +285,12 @@ async def _cache_first_crypto(
     legacy one-SELECT-per-symbol path.
     """
     from app.core.db import AsyncSessionLocal
+    from app.services.daily_candles.crypto_identity import (
+        upbit_daily_candle_partition,
+    )
     from app.services.daily_candles.repository import DailyCandlesRepository, MarketKey
 
-    # Derive the market quote currency from the symbol (e.g. "KRW-BTC" → "KRW").
-    if "-" in symbol:
-        partition = symbol.split("-", 1)[0]
-    else:
-        partition = "KRW"
+    partition = upbit_daily_candle_partition(symbol)
 
     async with AsyncSessionLocal() as session:
         repo = DailyCandlesRepository(session=session)

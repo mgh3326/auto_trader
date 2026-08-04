@@ -21,6 +21,7 @@ from typing import Any
 import pandas as pd
 
 from app.services.daily_candles.converters import frame_to_rows
+from app.services.daily_candles.crypto_identity import upbit_daily_candle_partition
 from app.services.daily_candles.repository import (
     DailyCandleRow,
     DailyCandlesRepository,
@@ -206,6 +207,13 @@ class DailyCandleSyncService:
     async def _sync_crypto(
         self, target: SyncTarget, horizon_bars: int
     ) -> SyncOneResult:
+        canonical_partition = upbit_daily_candle_partition(target.symbol)
+        if target.partition != canonical_partition:
+            raise ValueError(
+                "Crypto daily-candle target partition must match its canonical "
+                f"Upbit symbol identity: symbol={target.symbol!r}, "
+                f"partition={target.partition!r}, expected={canonical_partition!r}"
+            )
         frame = await self._upbit(market=target.symbol, days=horizon_bars)
         rows = frame_to_rows(
             frame, symbol=target.symbol, partition=target.partition, source="upbit"
@@ -287,7 +295,11 @@ class DailyCandleSyncService:
             )
             result = await session.execute(sql)
             return [
-                SyncTarget(market=MarketKey.CRYPTO, symbol=row.market, partition="KRW")
+                SyncTarget(
+                    market=MarketKey.CRYPTO,
+                    symbol=row.market,
+                    partition=upbit_daily_candle_partition(row.market),
+                )
                 for row in result
             ]
         raise ValueError(f"Unknown market: {market}")

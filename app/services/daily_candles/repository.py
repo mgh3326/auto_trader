@@ -73,8 +73,8 @@ def _recent_time_floor(count: int, *, now: datetime) -> datetime:
 def _crypto_venue_for_partition(partition: str) -> str:
     """Map a legacy crypto ``partition`` label to its ``crypto_instruments.venue`` value.
 
-    Today only Upbit KRW is producing crypto rows; ``partition='upbit_krw'`` maps
-    to ``venue='upbit'``. Children B/C will add Binance/Alpaca mappings via
+    Upbit quote partitions such as ``upbit_krw`` and ``upbit_usdt`` map to
+    ``venue='upbit'``. Children B/C will add Binance/Alpaca mappings via
     additional rows in ``crypto_instruments``.
     """
     return "upbit" if partition == "upbit_krw" else partition.split("_")[0]
