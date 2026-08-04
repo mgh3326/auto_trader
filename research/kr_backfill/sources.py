@@ -15,6 +15,7 @@ to operator discipline: `assert_fetch_window_open()` is called by every fetcher.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime
@@ -55,6 +56,10 @@ def now_kst() -> datetime:
 def assert_fetch_window_open(*, override_now: datetime | None = None) -> None:
     n = override_now or now_kst()
     if FREEZE_START <= n.time() < FREEZE_END:
+        # 2026-08-04 운영자 승인: 주간 백필 가동. dbrole 적용으로
+        # public.* write가 차단된다는 전제에서 exact "true"만 허용한다.
+        if os.getenv("BACKFILL_DAYTIME_APPROVED") == "true":
+            return
         raise FetchWindowClosed(
             f"fetch frozen 09:00-20:00 KST (regular session + NXT); now {n:%H:%M:%S} KST"
         )
