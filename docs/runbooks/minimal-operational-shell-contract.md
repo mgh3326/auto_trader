@@ -18,6 +18,16 @@
 
 - 1계좌=1전략은 운영 규약이다. 현재 모든 실행 표면을 가로지르는 기술적
   singleton/writer 강제는 **없음 — 필요**.
+- 오늘 실측한 기존 writer 후보가 있다. production의 `.env.prod.native:199`에
+  `WATCH_AUTO_EXECUTE_MOCK_ENABLED=true`가 켜져 있고, watch 알림에 `max_action`이
+  있으면 `kis_mock`에 자동 주문 intent를 쓴다. 따라서 이 watch 경로는 새 shell
+  writer가 아니라도 **동일 계좌 scope에서 선점·등록해야 하는 기존 mutation writer
+  후보**다. 현재 이 경로를 singleton lock에 편입했다는 증거는 **없음 — 필요**.
+- 오늘 account canonicalization packet의 fresh read 결론은 후보 어느 곳에서도
+  `writer=1`이 운영 강제된다는 증거가 없다는 것이다. 또한 Alpaca crypto paper는
+  US equity와 **같은 physical account**를 공유하므로 crypto writer를 US writer와
+  분리할 수 없다. 따라서 lock scope는 strategy나 asset class가 아니라
+  `physical-account fingerprint/account_record_id`여야 한다.
 - 현재 KIS reconcile은 구현이 있어도 `no schedule → paused`로 확인되었고,
   Binance loop는 foreground CLI이며 US runner는 확인되지 않았다. 아래 cadence는
   **계약**이지 현재 활성화된 scheduler가 아니다.
@@ -75,6 +85,13 @@ lock 획득 이후에만 broker preflight와 mutation을 수행하고, lock을 �
 mutation entrypoint에 대한 강제는 **없음 — 필요**. 따라서 현재는
 `1계좌=1전략` 운영 규약만으로 writer cardinality를 보장한다. 이 문서만으로
 paper activation을 허용하지 않는다.
+
+특히 `WATCH_AUTO_EXECUTE_MOCK_ENABLED=true`인 production watch 경로는
+`max_action`을 받아 `kis_mock` 주문 intent를 만들 수 있으므로 기존 writer 후보로
+취급해야 한다. account-packet 실측상 이 후보를 포함해 어느 후보에서도 writer=1
+운영 강제 증거가 없었다. Alpaca crypto와 US equity가 같은 physical account를
+공유하는 사실 때문에 두 asset-class별 lock을 따로 두는 것은 singleton 증명이
+아니다.
 
 ## RESTART_SEMANTICS
 
@@ -240,5 +257,5 @@ CODE_CHANGED = NO
 BROKER_API_CALLED = NO
 ACCOUNT_QUERIED = NO
 PUBLIC_WRITE = NO
-PR = 미생성 (public write 0 제약; local branch only)
+PR = 생성 예정 (문서 PR; merge 금지)
 ```
