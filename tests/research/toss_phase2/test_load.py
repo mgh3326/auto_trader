@@ -20,6 +20,7 @@ from research.toss_phase2.load import (
     LoadStopped,
     StagingValidationError,
     _assert_database_ready,
+    _inserted_row_count,
     _prefer_target_key_lookups,
     freeze_completed_fragments,
     preflight_source,
@@ -305,6 +306,25 @@ async def test_batch_coverage_queries_prefer_transaction_local_target_key_lookup
         "SET LOCAL enable_hashjoin TO off",
         "SET LOCAL enable_mergejoin TO off",
     ]
+
+
+@pytest.mark.parametrize(
+    ("command_tag", "expected"),
+    [
+        ("INSERT 0 0", 0),
+        ("INSERT 0 20000", 20000),
+    ],
+)
+def test_insert_command_tag_is_an_explicit_coverage_proof(
+    command_tag: str,
+    expected: int,
+) -> None:
+    assert _inserted_row_count(command_tag) == expected
+
+
+def test_unknown_insert_command_tag_fails_closed() -> None:
+    with pytest.raises(DatabaseLoadError, match="unexpected_insert_command_tag"):
+        _inserted_row_count("UPDATE 20000")
 
 
 def test_invalid_minimum_fragment_age_stops_with_structured_reason(

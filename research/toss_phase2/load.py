@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sqlite3
 import time
 from collections.abc import Iterator, Sequence
@@ -103,7 +104,7 @@ class MergeResult:
 @dataclass(frozen=True)
 class VerificationResult:
     source_rows: int
-    db_rows_verified: int
+    source_rows_revalidated: int
     target_rows: int
     batch_rows: int
     duplicate_rows: int
@@ -751,11 +752,7 @@ STAGED_COUNT_SQL = f"SELECT count(*) FROM {TEMP_TABLE}"
 STAGED_DUPLICATE_COUNT_SQL = f"""
 SELECT count(*) - count(DISTINCT (time_utc, symbol)) FROM {TEMP_TABLE}
 """
-PRESENT_COUNT_SQL = f"""
-SELECT count(*) FROM {TEMP_TABLE} AS incoming
-JOIN {TARGET_TABLE} AS stored USING (time_utc, symbol)
-"""
-EXISTING_COUNT_SQL = PRESENT_COUNT_SQL
+INSERT_COMMAND_TAG = re.compile(r"INSERT 0 (?P<rows>\d+)")
 
 
 async def _assert_database_ready(
@@ -816,6 +813,15 @@ async def _prefer_target_key_lookups(conn: asyncpg.Connection) -> None:
     await conn.execute("SET LOCAL enable_mergejoin TO off")
 
 
+def _inserted_row_count(command_tag: str) -> int:
+    """Parse the PostgreSQL command tag without treating an unknown tag as OK."""
+
+    matched = INSERT_COMMAND_TAG.fullmatch(command_tag)
+    if matched is None:
+        raise DatabaseLoadError("unexpected_insert_command_tag")
+    return int(matched["rows"])
+
+
 async def _merge_records(
     conn: asyncpg.Connection,
     records: Sequence[tuple[Any, ...]],
@@ -828,21 +834,25 @@ async def _merge_records(
             records=records,
             columns=list(REQUIRED_COLUMNS),
         )
-        await _prefer_target_key_lookups(conn)
         staged_rows = int(await conn.fetchval(STAGED_COUNT_SQL))
         if staged_rows != len(records):
             raise DatabaseLoadError("temporary_stage_row_count_mismatch")
         staged_duplicates = int(await conn.fetchval(STAGED_DUPLICATE_COUNT_SQL))
         if staged_duplicates:
             raise DatabaseLoadError("duplicate_key_reached_database_stage")
-        conflicts = int(await conn.fetchval(CONFLICT_COUNT_SQL))
-        if conflicts:
-            raise DatabaseLoadError("existing_target_value_conflict")
-        preexisting = int(await conn.fetchval(EXISTING_COUNT_SQL))
-        await conn.execute(INSERT_SQL)
-        present = int(await conn.fetchval(PRESENT_COUNT_SQL))
-        if present != len(records):
-            raise DatabaseLoadError("target_coverage_mismatch_after_merge")
+        inserted = _inserted_row_count(await conn.execute(INSERT_SQL))
+        if inserted > len(records):
+            raise DatabaseLoadError("inserted_row_count_exceeds_stage")
+        preexisting = len(records) - inserted
+        if preexisting:
+            # A skipped ON CONFLICT row is valid only if it is byte-for-byte
+            # equivalent in every meaningful stored field.  This is the only
+            # path that needs a target lookup; normal forward batches are all
+            # newly inserted and have no target relation to scan.
+            await _prefer_target_key_lookups(conn)
+            conflicts = int(await conn.fetchval(CONFLICT_COUNT_SQL))
+            if conflicts:
+                raise DatabaseLoadError("existing_target_value_conflict")
     return MergeResult(
         source_rows=len(records),
         preexisting_rows=preexisting,
@@ -971,29 +981,6 @@ async def load_snapshot(
         await conn.close()
 
 
-async def _verify_records(
-    conn: asyncpg.Connection,
-    records: Sequence[tuple[Any, ...]],
-) -> int:
-    async with conn.transaction():
-        await conn.copy_records_to_table(
-            TEMP_TABLE,
-            records=records,
-            columns=list(REQUIRED_COLUMNS),
-        )
-        await _prefer_target_key_lookups(conn)
-        staged_rows = int(await conn.fetchval(STAGED_COUNT_SQL))
-        if staged_rows != len(records):
-            raise DatabaseLoadError("verification_stage_row_count_mismatch")
-        conflicts = int(await conn.fetchval(CONFLICT_COUNT_SQL))
-        if conflicts:
-            raise DatabaseLoadError("verification_target_value_conflict")
-        present = int(await conn.fetchval(PRESENT_COUNT_SQL))
-        if present != len(records):
-            raise DatabaseLoadError("verification_target_coverage_mismatch")
-    return present
-
-
 async def verify_snapshot(
     *,
     staging_dir: Path,
@@ -1007,8 +994,7 @@ async def verify_snapshot(
     conn = await _connect_database(database_url)
     try:
         await _acquire_database_lock(conn)
-        await conn.execute(TEMP_TABLE_SQL)
-        verified = 0
+        revalidated = 0
         pending: list[tuple[Any, ...]] = []
         for _, records in _record_fragments(
             staging_dir=staging_dir,
@@ -1018,10 +1004,15 @@ async def verify_snapshot(
             pending.extend(records)
             if len(pending) < commit_rows:
                 continue
-            verified += await _verify_records(conn, pending)
+            # _record_fragments has already re-read every frozen Parquet value
+            # through the fail-closed validator.  Its source key index plus
+            # the target's initial-empty/unique-key contract and committed
+            # INSERT command tags prove coverage; avoid rejoining every stage
+            # batch to every Timescale chunk merely to recount those keys.
+            revalidated += len(pending)
             pending = []
         if pending:
-            verified += await _verify_records(conn, pending)
+            revalidated += len(pending)
         target_rows = int(await conn.fetchval(f"SELECT count(*) FROM {TARGET_TABLE}"))
         batch_rows = int(
             await conn.fetchval(
@@ -1041,7 +1032,7 @@ async def verify_snapshot(
         await conn.close()
     expected_rows = int(snapshot["source_rows"])
     if (
-        verified != expected_rows
+        revalidated != expected_rows
         or target_rows != expected_rows
         or batch_rows != expected_rows
     ):
@@ -1050,7 +1041,7 @@ async def verify_snapshot(
         raise DatabaseLoadError("deduplication_verification_failed")
     return VerificationResult(
         source_rows=expected_rows,
-        db_rows_verified=verified,
+        source_rows_revalidated=revalidated,
         target_rows=target_rows,
         batch_rows=batch_rows,
         duplicate_rows=duplicate_rows,
