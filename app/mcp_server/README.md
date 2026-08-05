@@ -556,7 +556,8 @@ scope keep the broad recent-ledger safety behavior for global runners. Passing
 `legacy_cycle_blockers_as_warnings=True` is an explicit Alpaca Paper execution
 flow test-mode: residual positions and stale preview/approval packets are
 returned as warnings instead of blockers so operators can test buy/sell/order
-adjust/close flows on a used paper account. It does not weaken open-order
+adjust/close flows on a used paper account. That test-mode flag by itself does
+not weaken open-order
 conflicts, duplicate `client_order_id`, ledger/order/fill anomalies, missing
 linked sells, unclosed sell snapshots, unverified broker snapshots, or symbol
 mismatches; those remain
@@ -571,6 +572,23 @@ findings return the dry-run action hint
 surface an explicit cleanup-required state before any separately approved repair
 write. The preflight itself performs no broker mutation, no repair writes, and
 no direct DB backfill.
+
+ROB-1209 adds optional `candidate_order` context for an account-maintenance
+sell. It does **not** skip preflight or trust a `purpose`/`reduce_only` label.
+The report treats a candidate as reduce-only only when all of the following are
+true: `side="sell"`, an execution symbol is present, `qty` (or packet-style
+`max_qty`) is finite and positive, the positions snapshot is fresh/attested for
+the selected account, and the requested quantity is no greater than that exact
+live position. Notional-only, unknown-symbol, oversized, or buy candidates do
+not qualify. If an `approval_packet` supplies order fields, the candidate must
+also match its side, execution symbol, and any `max_qty`; a sell context cannot
+clear a buy packet. Under that narrow condition, `residual_position_exists`,
+`sell_source_evidence_invalid`, and `previous_buy_filled_sell_missing` remain
+visible as warnings rather than blocking the reducing sell. All other evidence
+gates remain unchanged: missing/stale snapshots, open orders, duplicate IDs,
+ledger/fill inconsistencies, unclosed prior sells, stale packets, and symbol
+mismatches still block. The submit boundary separately re-reads live available
+quantity before any broker POST.
 
 The broker snapshot is fail-closed (ROB-1130). `open_orders` and `positions` must
 both be supplied together with `broker_snapshot_fetched_at`, the time the
@@ -615,7 +633,9 @@ the verified position snapshot: still-held symbols produce the informational
 `open_position_without_sell_leg` finding, while symbols the broker no longer
 holds, buys already in `closed`/`final_reconciled`, and rows with no verified
 snapshot keep blocking under `previous_buy_filled_sell_missing` with a per-row
-`reason`.
+`reason`. The only exception is the ROB-1209 candidate context above: a verified,
+snapshot-bounded reducing sell may continue while retaining that historical
+lifecycle discrepancy as a warning; it never releases a buy or unbounded sell.
 
 The broker inspection tools instantiate `AlpacaPaperBrokerService`, so they
 inherit the
@@ -2049,7 +2069,7 @@ Response shape:
 
 ### route_request — advisory lane router (ROB-649)
 
-`route_request(intent, market)` maps a coarse intent
+`route_request(intent, market, purpose=None)` maps a coarse intent
 (`buy_analysis`/`profit_taking`/`discovery`/`market_brief`) to the standard tool
 sequence, advisory allowed/blocked tools, `get_trading_policy` thresholds +
 version stamp, and hard constraints for that lane. Deterministic; registered on
@@ -2097,6 +2117,20 @@ explicit mutation taxonomy or CI fails.
   empty sequence/allowed lists, and the static direct-mutation deny list with
   `blocked_actions_basis="static_fail_closed"`. It never substitutes
   `ALL_KNOWN_TOOLS`.
+
+**Account cleanup exception (ROB-1209):** only
+`route_request(intent="profit_taking", market="us"|"crypto",
+purpose="account_cleanup")` has a separate maintenance sequence:
+`alpaca_paper_list_positions` → `alpaca_paper_list_orders` →
+`alpaca_paper_execution_preflight_check` → `alpaca_paper_submit_order`. It
+allows exactly that Alpaca submit tool and keeps every other direct broker
+mutation in `blocked_actions`. If any required read/preflight/submit tool is
+absent, the route fails closed and does not expose submit as an allowed or
+sequenced shortcut. A buy intent with this purpose returns
+`purpose_not_supported_for_intent`. This remains advisory: the actual submit
+continues to require its trusted quote, live position/reservation checks, and
+`confirm=True`; the preflight itself must receive the exact bounded sell to
+recognize it as reduce-only.
 
 **Discovery non-regression:** discovery is outside ROB-1045 and retains its
 existing `toss_place_order` step and ROB-658 crypto/US generic `place_order`

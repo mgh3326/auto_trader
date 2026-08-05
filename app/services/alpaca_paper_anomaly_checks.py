@@ -63,6 +63,7 @@ class PaperExecutionPreflightReport:
     anomalies: tuple[PaperExecutionAnomaly, ...]
     counts: dict[str, int]
     broker_snapshot: dict[str, Any] = field(default_factory=dict)
+    candidate_reduction: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +73,7 @@ class PaperExecutionPreflightReport:
             "stale_after_minutes": self.stale_after_minutes,
             "counts": self.counts,
             "broker_snapshot": self.broker_snapshot,
+            "candidate_reduction": self.candidate_reduction,
             "anomalies": [a.to_dict() for a in self.anomalies],
         }
 
@@ -347,6 +349,109 @@ def _position_qty_by_symbol(
             continue
         quantities[symbol] = quantities.get(symbol, Decimal("0")) + qty
     return quantities, invalid_symbols
+
+
+def _assess_candidate_reduction(
+    *,
+    candidate_order: Mapping[str, Any] | None,
+    positions: Iterable[Any],
+    positions_are_evidence: bool,
+    approval_packet: Any = None,
+) -> dict[str, Any]:
+    """Determine whether a candidate is a *verified* reducing sell.
+
+    A purpose label is deliberately not an input to this decision.  The only
+    safe way to relax "account must already be flat" cycle checks is to prove
+    from the current, verified broker snapshot that the exact candidate is a
+    positive-quantity sell no larger than the position it names.  Notional-only
+    sells do not qualify because a price move could make their share quantity
+    exceed the position.
+
+    This is preflight context, not an order authorization.  The submit boundary
+    still obtains its own live position/availability evidence immediately before
+    any broker POST.
+    """
+    assessment: dict[str, Any] = {
+        "provided": candidate_order is not None,
+        "reduce_only": False,
+        "reason": None,
+        "side": None,
+        "execution_symbol": None,
+        "qty": None,
+        "position_qty": None,
+    }
+    if candidate_order is None:
+        assessment["reason"] = "candidate_order_missing"
+        return assessment
+
+    side = _clean_lower(candidate_order.get("side"))
+    symbol = _normalize_symbol(
+        candidate_order.get("execution_symbol") or candidate_order.get("symbol")
+    )
+    raw_qty = candidate_order.get("qty")
+    if raw_qty is None:
+        # PaperApprovalPacket calls this guard max_qty; accepting it keeps an
+        # already-frozen packet usable as preflight context without trusting a
+        # notional-only order as reduce-only.
+        raw_qty = candidate_order.get("max_qty")
+    qty = _strict_decimal(raw_qty)
+    assessment.update(
+        {
+            "side": side,
+            "execution_symbol": symbol or None,
+            "qty": str(qty) if qty is not None else None,
+        }
+    )
+
+    if side != "sell":
+        assessment["reason"] = "candidate_side_not_sell"
+        return assessment
+    if not symbol:
+        assessment["reason"] = "candidate_execution_symbol_missing"
+        return assessment
+    if qty is None or qty <= Decimal("0"):
+        assessment["reason"] = "candidate_qty_missing_or_invalid"
+        return assessment
+    # When the caller supplies an approval packet for the order under review,
+    # its direction and execution symbol must agree with the candidate context.
+    # Otherwise a caller could describe a reducing sell while asking preflight to
+    # assess a different (for example buy) packet. A packet without either
+    # order field remains a scope-only packet and is not treated as a mismatch.
+    packet_side = _clean_lower(_packet_value(approval_packet, "side"))
+    packet_symbol = _normalize_symbol(
+        _packet_value(approval_packet, "execution_symbol")
+        or _packet_value(approval_packet, "symbol")
+    )
+    if packet_side is not None and packet_side != side:
+        assessment["reason"] = "candidate_side_mismatch_approval_packet"
+        return assessment
+    if packet_symbol and packet_symbol != symbol:
+        assessment["reason"] = "candidate_symbol_mismatch_approval_packet"
+        return assessment
+    packet_max_qty = _strict_decimal(_packet_value(approval_packet, "max_qty"))
+    if packet_max_qty is not None and qty > packet_max_qty:
+        assessment["reason"] = "candidate_qty_exceeds_approval_packet"
+        return assessment
+    if not positions_are_evidence:
+        assessment["reason"] = "broker_positions_unverified"
+        return assessment
+
+    position_qty_by_symbol, invalid_symbols = _position_qty_by_symbol(positions)
+    if symbol in invalid_symbols:
+        assessment["reason"] = "candidate_position_qty_invalid"
+        return assessment
+    position_qty = position_qty_by_symbol.get(symbol, Decimal("0"))
+    assessment["position_qty"] = str(position_qty)
+    if position_qty <= Decimal("0"):
+        assessment["reason"] = "candidate_position_not_positive"
+        return assessment
+    if qty > position_qty:
+        assessment["reason"] = "candidate_qty_exceeds_position"
+        return assessment
+
+    assessment["reduce_only"] = True
+    assessment["reason"] = "verified_sell_qty_within_current_position"
+    return assessment
 
 
 def _ledger_row_broker_symbol(row: Any) -> str:
@@ -750,6 +855,7 @@ def build_paper_execution_preflight_report(
     expected_account_mode: str | None = None,
     snapshot_account_mode: str | None = None,
     approval_packet: dict[str, Any] | None = None,
+    candidate_order: Mapping[str, Any] | None = None,
     expected_signal_symbol: str | None = None,
     expected_execution_symbol: str | None = None,
     now: datetime | None = None,
@@ -791,6 +897,13 @@ def build_paper_execution_preflight_report(
             is not evidence about this account.
         approval_packet: Optional preview/approval packet being considered for
             execution. Used for duplicate, stale, and symbol checks.
+        candidate_order: Optional proposed order context. Only a ``side="sell"``
+            candidate with an execution symbol and a finite positive ``qty`` (or
+            packet-style ``max_qty``) no greater than that symbol's *verified*
+            current broker position is treated as reduce-only. A purpose label,
+            sell notional, or caller-supplied ``reduce_only`` boolean never
+            qualifies by itself. When an approval packet supplies side, symbol,
+            or ``max_qty``, the candidate must agree with those fields.
         expected_signal_symbol: Optional symbol from the signal artifact.
         expected_execution_symbol: Optional symbol expected at Alpaca Paper.
         now: Clock injection for deterministic tests.
@@ -911,7 +1024,23 @@ def build_paper_execution_preflight_report(
         if snapshot_evidence_required
         else bool(position_rows)
     ) and not malformed_positions
+    # A candidate can relax cycle-only findings only for the actual account
+    # whose position it reduces. Historical/audit callers may opt out of the
+    # general snapshot blocker, but that must never turn an unattested row list
+    # into reducing-order evidence.
+    positions_verified_for_reduction = (
+        bool(snapshot_state["positions"]["verified"])
+        and bool(account_state["verified"])
+        and not malformed_positions
+    )
     orders = orders if orders is not None else []
+    candidate_reduction = _assess_candidate_reduction(
+        candidate_order=candidate_order,
+        positions=position_rows,
+        positions_are_evidence=positions_verified_for_reduction,
+        approval_packet=approval_packet,
+    )
+    verified_reducing_sell = bool(candidate_reduction["reduce_only"])
 
     # 1. Unexpected open orders.
     open_snapshot = [o for o in orders if _is_open_order(o)]
@@ -944,23 +1073,29 @@ def build_paper_execution_preflight_report(
         if qty is not None and qty != Decimal("0"):
             residual_positions.append((position, qty))
     if residual_positions:
+        residual_details: dict[str, Any] = {
+            "count": len(residual_positions),
+            "positions": [
+                {
+                    "symbol": p.get("symbol"),
+                    "qty": str(qty),
+                    "asset_class": p.get("asset_class"),
+                }
+                for p, qty in residual_positions
+            ],
+        }
+        if verified_reducing_sell:
+            residual_details["directional_context"] = candidate_reduction
         add(
             "residual_position_exists",
             PaperExecutionAnomalySeverity.warning
-            if legacy_cycle_blockers_as_warnings
+            if verified_reducing_sell or legacy_cycle_blockers_as_warnings
             else PaperExecutionAnomalySeverity.block,
-            "Residual Alpaca Paper position exists before starting a new cycle",
-            {
-                "count": len(residual_positions),
-                "positions": [
-                    {
-                        "symbol": p.get("symbol"),
-                        "qty": str(qty),
-                        "asset_class": p.get("asset_class"),
-                    }
-                    for p, qty in residual_positions
-                ],
-            },
+            "Residual Alpaca Paper position exists before starting a new cycle"
+            if not verified_reducing_sell
+            else "Residual Alpaca Paper position is the verified target of a "
+            "reduce-only sell candidate",
+            residual_details,
         )
 
     # 3. Duplicate client_order_id, both within the ledger slice and against
@@ -1007,15 +1142,25 @@ def build_paper_execution_preflight_report(
         source_evidence_issues,
     ) = _match_filled_buys_to_sells(ledger)
     if source_evidence_issues:
+        source_evidence_details: dict[str, Any] = {
+            "count": len(source_evidence_issues),
+            "rows": source_evidence_issues[:10],
+        }
+        if verified_reducing_sell:
+            source_evidence_details["directional_context"] = candidate_reduction
         add(
             "sell_source_evidence_invalid",
-            PaperExecutionAnomalySeverity.block,
+            # Historical source-link corruption still needs repair and stays
+            # visible, but it cannot make a separately verified live-position
+            # sell increase exposure. The real submit path re-checks available
+            # quantity (and automated sells re-check their exact source) before
+            # sending anything to the broker.
+            PaperExecutionAnomalySeverity.warning
+            if verified_reducing_sell
+            else PaperExecutionAnomalySeverity.block,
             "Explicit sell source evidence is ambiguous, incomplete, or "
             "inconsistent with the source buy",
-            {
-                "count": len(source_evidence_issues),
-                "rows": source_evidence_issues[:10],
-            },
+            source_evidence_details,
         )
     if legacy_buy_sell_matches:
         add(
@@ -1105,14 +1250,23 @@ def build_paper_execution_preflight_report(
             },
         )
     if unresolved_buys:
+        unresolved_buy_details: dict[str, Any] = {
+            "count": len(unresolved_buys),
+            "rows": unresolved_buys[:10],
+        }
+        if verified_reducing_sell:
+            unresolved_buy_details["directional_context"] = candidate_reduction
         add(
             "previous_buy_filled_sell_missing",
-            PaperExecutionAnomalySeverity.block,
+            # "A previous buy has no sell" is an audit/lifecycle discrepancy,
+            # not evidence that a newly proposed, snapshot-bounded sell would
+            # add risk. Keep it as a warning only for the verified reducing
+            # direction; a buy or an unbounded sell remains blocked above.
+            PaperExecutionAnomalySeverity.warning
+            if verified_reducing_sell
+            else PaperExecutionAnomalySeverity.block,
             "A previous filled buy has no linked sell ledger row",
-            {
-                "count": len(unresolved_buys),
-                "rows": unresolved_buys[:10],
-            },
+            unresolved_buy_details,
         )
 
     # 5. Sell filled but final position not closed.
@@ -1421,6 +1575,7 @@ def build_paper_execution_preflight_report(
         anomalies=tuple(anomalies),
         counts=counts,
         broker_snapshot=snapshot_state,
+        candidate_reduction=candidate_reduction,
     )
 
 

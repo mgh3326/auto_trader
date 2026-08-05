@@ -128,6 +128,200 @@ def test_residual_position_can_warn_in_paper_execution_test_mode():
     assert report.counts["block"] == 0
 
 
+# ---------------------------------------------------------------------------
+# ROB-1209: a verified reducing sell must not be blocked by its own cleanup
+# ---------------------------------------------------------------------------
+
+
+def _rob1209_cleanup_fixture():
+    """Return the three historical cycle findings from the blocked cleanup run.
+
+    The fixture intentionally keeps the source-link and missing-leg defects in
+    the ledger.  The candidate is a different, current broker position so this
+    proves that the cleanup direction is assessed from live position evidence,
+    not by deleting or repairing historical ledger rows.
+    """
+    return {
+        "ledger_rows": [
+            _row(
+                client_order_id="rob1209-buy-missing",
+                execution_symbol="DPZ",
+                signal_symbol="DPZ",
+                filled_qty="1",
+            ),
+            _row(
+                client_order_id="rob1209-sell-invalid-source",
+                side="sell",
+                lifecycle_state="planned",
+                order_status="new",
+                execution_symbol="AAPL",
+                signal_symbol="AAPL",
+                raw_responses={
+                    "payload": {"source_client_order_id": "missing-buy-source"}
+                },
+            ),
+        ],
+        **_verified_snapshot(
+            positions=[{"symbol": "UBER", "qty": "5", "asset_class": "us_equity"}]
+        ),
+        # The reduction exception needs the identity of the selected account as
+        # well as fresh positions; a row list without an account claim cannot
+        # prove which Alpaca Paper account it reduces.
+        "expected_account_mode": "alpaca_paper",
+        "snapshot_account_mode": "alpaca_paper",
+    }
+
+
+@pytest.mark.unit
+def test_rob1209_verified_reduce_only_sell_passes_without_hiding_history():
+    report = build_paper_execution_preflight_report(
+        **_rob1209_cleanup_fixture(),
+        candidate_order={
+            "side": "sell",
+            "execution_symbol": "UBER",
+            "qty": "1",
+            "purpose": "account_cleanup",
+        },
+    )
+
+    assert report.status == "pass"
+    assert report.should_block is False
+    assert report.candidate_reduction == {
+        "provided": True,
+        "reduce_only": True,
+        "reason": "verified_sell_qty_within_current_position",
+        "side": "sell",
+        "execution_symbol": "UBER",
+        "qty": "1",
+        "position_qty": "5",
+    }
+    for check_id in (
+        "residual_position_exists",
+        "sell_source_evidence_invalid",
+        "previous_buy_filled_sell_missing",
+    ):
+        finding = _anomaly(report, check_id)
+        assert finding.severity == PaperExecutionAnomalySeverity.warning
+        assert finding.details["directional_context"]["reduce_only"] is True
+
+
+@pytest.mark.unit
+def test_rob1209_cleanup_label_cannot_unblock_a_strategy_buy():
+    report = build_paper_execution_preflight_report(
+        **_rob1209_cleanup_fixture(),
+        candidate_order={
+            "side": "buy",
+            "execution_symbol": "UBER",
+            "qty": "1",
+            "purpose": "account_cleanup",
+        },
+    )
+
+    assert report.should_block is True
+    assert report.candidate_reduction["reduce_only"] is False
+    assert report.candidate_reduction["reason"] == "candidate_side_not_sell"
+    assert _blocking_check_ids(report) == {
+        "residual_position_exists",
+        "sell_source_evidence_invalid",
+        "previous_buy_filled_sell_missing",
+    }
+
+
+@pytest.mark.unit
+def test_rob1209_sell_context_cannot_unblock_a_buy_approval_packet():
+    """A reducing candidate must be the same order as a supplied packet."""
+    report = build_paper_execution_preflight_report(
+        **_verified_snapshot(
+            positions=[{"symbol": "UBER", "qty": "5", "asset_class": "us_equity"}]
+        ),
+        expected_account_mode="alpaca_paper",
+        snapshot_account_mode="alpaca_paper",
+        candidate_order={
+            "side": "sell",
+            "execution_symbol": "UBER",
+            "qty": "1",
+        },
+        approval_packet={
+            "side": "buy",
+            "signal_symbol": "UBER",
+            "execution_symbol": "UBER",
+        },
+    )
+
+    assert report.should_block is True
+    assert report.candidate_reduction["reduce_only"] is False
+    assert (
+        report.candidate_reduction["reason"]
+        == "candidate_side_mismatch_approval_packet"
+    )
+    assert _blocking_check_ids(report) == {"residual_position_exists"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("candidate_order", "reason"),
+    [
+        (
+            {"side": "sell", "execution_symbol": "UBER", "notional": "10"},
+            "candidate_qty_missing_or_invalid",
+        ),
+        (
+            {"side": "sell", "execution_symbol": "UBER", "qty": "6"},
+            "candidate_qty_exceeds_position",
+        ),
+    ],
+)
+def test_rob1209_unbounded_or_oversized_sell_stays_blocked(candidate_order, reason):
+    report = build_paper_execution_preflight_report(
+        **_rob1209_cleanup_fixture(),
+        candidate_order=candidate_order,
+    )
+
+    assert report.should_block is True
+    assert report.candidate_reduction["reduce_only"] is False
+    assert report.candidate_reduction["reason"] == reason
+    assert "residual_position_exists" in _blocking_check_ids(report)
+
+
+@pytest.mark.unit
+def test_rob1209_reduce_only_requires_an_attested_position_snapshot():
+    report = build_paper_execution_preflight_report(
+        positions=[{"symbol": "UBER", "qty": "5", "asset_class": "us_equity"}],
+        open_orders=[],
+        candidate_order={"side": "sell", "execution_symbol": "UBER", "qty": "1"},
+    )
+
+    assert report.should_block is True
+    assert report.candidate_reduction["reduce_only"] is False
+    assert report.candidate_reduction["reason"] == "broker_positions_unverified"
+    assert _blocking_check_ids(report) == {
+        "broker_snapshot_unverified",
+        "residual_position_exists",
+    }
+
+
+@pytest.mark.unit
+def test_rob1209_reduce_only_requires_selected_account_attestation():
+    """Fresh rows from an unspecified Alpaca account cannot relax a cycle gate."""
+    report = build_paper_execution_preflight_report(
+        **_verified_snapshot(
+            positions=[{"symbol": "UBER", "qty": "5", "asset_class": "us_equity"}]
+        ),
+        candidate_order={"side": "sell", "execution_symbol": "UBER", "qty": "1"},
+    )
+
+    assert report.should_block is True
+    assert report.candidate_reduction["reduce_only"] is False
+    assert report.candidate_reduction["reason"] == "broker_positions_unverified"
+    assert report.broker_snapshot["account"] == {
+        "expected": None,
+        "attested": None,
+        "verified": False,
+        "reason": "account_scope_not_declared",
+    }
+    assert _blocking_check_ids(report) == {"residual_position_exists"}
+
+
 @pytest.mark.unit
 def test_duplicate_client_order_id_blocks_against_packet_and_ledger():
     report = build_paper_execution_preflight_report(

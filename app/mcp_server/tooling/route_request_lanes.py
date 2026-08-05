@@ -182,6 +182,48 @@ ROUTE_CONTRACT_VERSION = "proposal-led-v1"
 PROPOSAL_TOOL = "order_proposal_create"
 PROPOSAL_LED_LANES: frozenset[str] = frozenset({"buy", "sell"})
 
+# ROB-1209: maintenance is not a strategic order.  This narrow route is still
+# advisory, but it expresses the only direct broker action an account-cleanup
+# caller may be shown: a preflighted, quantity-bounded Alpaca Paper sell.  The
+# route never grants generic place/cancel/modify access and purpose alone is not
+# enough to make preflight treat an order as reducing.
+ACCOUNT_CLEANUP_PURPOSE = "account_cleanup"
+ACCOUNT_CLEANUP_MARKETS: frozenset[str] = frozenset({"us", "crypto"})
+ACCOUNT_CLEANUP_DIRECT_TOOL = "alpaca_paper_submit_order"
+ACCOUNT_CLEANUP_REQUIRED_TOOLS: frozenset[str] = frozenset(
+    {
+        "alpaca_paper_list_positions",
+        "alpaca_paper_list_orders",
+        "alpaca_paper_execution_preflight_check",
+        ACCOUNT_CLEANUP_DIRECT_TOOL,
+    }
+)
+ACCOUNT_CLEANUP_SEQUENCE: tuple[dict[str, str], ...] = (
+    {
+        "tool": "alpaca_paper_list_positions",
+        "purpose": "fresh current position evidence for an exact reducing sell",
+    },
+    {
+        "tool": "alpaca_paper_list_orders",
+        "purpose": "fresh open-order evidence before maintenance execution",
+    },
+    {
+        "tool": "alpaca_paper_execution_preflight_check",
+        "purpose": "evaluate the exact sell as snapshot-verified reduce-only",
+    },
+    {
+        "tool": ACCOUNT_CLEANUP_DIRECT_TOOL,
+        "purpose": "submit only after passing preflight and per-call confirmation",
+    },
+)
+ACCOUNT_CLEANUP_HARD_CONSTRAINTS: tuple[str, ...] = (
+    "account_cleanup is sell-only: a finite positive qty must be no greater than the verified current position for the same execution symbol",
+    "purpose text alone never downgrades preflight; buy, notional-only, unknown-symbol, over-sized, stale, or unattested candidates stay blocked",
+    "preflight remains required: unverified snapshots, open orders, duplicate IDs, fill/ledger mismatches, and stale packets remain blockers",
+    "only alpaca_paper_submit_order is allowed directly; all other direct broker mutations remain blocked",
+    "alpaca_paper_submit_order keeps its existing trusted quote, current-position, reservation, and confirm=True gates",
+)
+
 # The legacy MUTATION_TOOLS bucket intentionally remains public and broad for
 # backwards compatibility. ROB-1045 overlays explicit, disjoint action classes
 # so proposal-led lanes can fail closed on direct broker mutations without also
@@ -527,7 +569,30 @@ def _route_contract(
     lane: str,
     *,
     registered_tools: set[str] | None,
+    purpose: str | None = None,
 ) -> dict[str, Any]:
+    if purpose == ACCOUNT_CLEANUP_PURPOSE:
+        required_tools = sorted(ACCOUNT_CLEANUP_REQUIRED_TOOLS)
+        missing_required_tools = (
+            required_tools
+            if registered_tools is None
+            else sorted(set(required_tools) - registered_tools)
+        )
+        execution_ready = registered_tools is not None and not missing_required_tools
+        return {
+            "version": "cleanup-reduce-only-v1",
+            "state": "ready" if execution_ready else "degraded",
+            "execution_mode": "cleanup_reduce_only",
+            "execution_ready": execution_ready,
+            "proposal_tool": None,
+            "approval_channel": "per_call_confirm",
+            "human_approval_required": True,
+            "preview_owner": "preflight_reduce_only",
+            "reconcile_requirement": "broker_evidence",
+            "required_tools": required_tools,
+            "missing_required_tools": missing_required_tools,
+        }
+
     proposal_led = lane in PROPOSAL_LED_LANES
     required_tools = sorted(PROPOSAL_LED_TOOLS) if proposal_led else []
     missing_required_tools = (
@@ -580,6 +645,7 @@ def build_registry_unavailable_plan(
     *,
     verdict_thresholds: dict[str, Any],
     policy_version: dict[str, str],
+    purpose: str | None = None,
 ) -> dict[str, Any]:
     """Return a stable fail-closed response when live registry state is unknown."""
     lane = INTENT_TO_LANE[intent]
@@ -590,14 +656,23 @@ def build_registry_unavailable_plan(
         "intent": intent,
         "lane": lane,
         "market": market,
+        "purpose": purpose,
         "standard_tool_sequence": [],
         "allowed_tools": [],
         "blocked_actions": sorted(DIRECT_BROKER_MUTATION_TOOLS),
         "blocked_actions_basis": "static_fail_closed",
-        "route_contract": _route_contract(lane, registered_tools=None),
+        "route_contract": _route_contract(
+            lane,
+            registered_tools=None,
+            purpose=purpose,
+        ),
         "verdict_thresholds": verdict_thresholds,
         "policy_version": policy_version,
-        "hard_constraints": list(HARD_CONSTRAINTS[lane]),
+        "hard_constraints": list(
+            ACCOUNT_CLEANUP_HARD_CONSTRAINTS
+            if purpose == ACCOUNT_CLEANUP_PURPOSE
+            else HARD_CONSTRAINTS[lane]
+        ),
     }
 
 
@@ -608,10 +683,68 @@ def build_route_plan(
     registered_tools: set[str],
     verdict_thresholds: dict[str, Any],
     policy_version: dict[str, str],
+    purpose: str | None = None,
 ) -> dict[str, Any]:
     """Assemble the deterministic route plan. Pure — no IO. Caller validates
     intent/market and resolves policy before calling."""
     lane = INTENT_TO_LANE[intent]
+    account_cleanup = purpose == ACCOUNT_CLEANUP_PURPOSE
+    if account_cleanup and (
+        intent != "profit_taking" or market not in ACCOUNT_CLEANUP_MARKETS
+    ):
+        raise ValueError(
+            "account_cleanup is only supported for US/crypto profit_taking"
+        )
+
+    if account_cleanup:
+        route_contract = _route_contract(
+            lane,
+            registered_tools=registered_tools,
+            purpose=purpose,
+        )
+        success = route_contract["execution_ready"]
+        sequence = [
+            step
+            for step in ACCOUNT_CLEANUP_SEQUENCE
+            if step["tool"] in registered_tools
+        ]
+        # A missing read/preflight tool must not leave a visible submit shortcut.
+        # The advisory router cannot enforce a tool call, so fail closed in its
+        # own output rather than relying on callers to notice success=false.
+        if not success:
+            sequence = [
+                step for step in sequence if step["tool"] != ACCOUNT_CLEANUP_DIRECT_TOOL
+            ]
+        standard_tool_sequence = [
+            {"step": i, "tool": step["tool"], "purpose": step["purpose"]}
+            for i, step in enumerate(sequence, start=1)
+        ]
+        allowed = (
+            set(READ_ONLY_ADVISORY_TOOLS) | set(ACCOUNT_CLEANUP_REQUIRED_TOOLS)
+        ) & registered_tools
+        if not success:
+            allowed.discard(ACCOUNT_CLEANUP_DIRECT_TOOL)
+        blocked = (MUTATION_TOOLS & registered_tools) - allowed
+        result: dict[str, Any] = {
+            "success": success,
+            "degraded": not success,
+            "intent": intent,
+            "lane": lane,
+            "market": market,
+            "purpose": purpose,
+            "standard_tool_sequence": standard_tool_sequence,
+            "allowed_tools": sorted(allowed),
+            "blocked_actions": sorted(blocked),
+            "blocked_actions_basis": "live_registered_surface",
+            "route_contract": route_contract,
+            "verdict_thresholds": verdict_thresholds,
+            "policy_version": policy_version,
+            "hard_constraints": list(ACCOUNT_CLEANUP_HARD_CONSTRAINTS),
+        }
+        if not success:
+            result["error"] = "required_route_tool_unavailable"
+        return result
+
     lane_tools = lane_tool_names(lane)
     proposal_led = lane in PROPOSAL_LED_LANES
     lane_place_tools = (
@@ -657,7 +790,11 @@ def build_route_plan(
     )
     allowed = allowed_candidates & registered_tools
     blocked = (MUTATION_TOOLS & registered_tools) - allowed
-    route_contract = _route_contract(lane, registered_tools=registered_tools)
+    route_contract = _route_contract(
+        lane,
+        registered_tools=registered_tools,
+        purpose=purpose,
+    )
     success = route_contract["execution_ready"]
 
     result: dict[str, Any] = {
@@ -666,6 +803,7 @@ def build_route_plan(
         "intent": intent,
         "lane": lane,
         "market": market,
+        "purpose": purpose,
         "standard_tool_sequence": standard_tool_sequence,
         "allowed_tools": sorted(allowed),
         "blocked_actions": sorted(blocked),
@@ -687,6 +825,12 @@ __all__ = [
     "LANE_SEQUENCES",
     "HARD_CONSTRAINTS",
     "ROUTE_CONTRACT_VERSION",
+    "ACCOUNT_CLEANUP_PURPOSE",
+    "ACCOUNT_CLEANUP_MARKETS",
+    "ACCOUNT_CLEANUP_DIRECT_TOOL",
+    "ACCOUNT_CLEANUP_REQUIRED_TOOLS",
+    "ACCOUNT_CLEANUP_SEQUENCE",
+    "ACCOUNT_CLEANUP_HARD_CONSTRAINTS",
     "PROPOSAL_TOOL",
     "PROPOSAL_LED_LANES",
     "DIRECT_BROKER_MUTATION_TOOLS",

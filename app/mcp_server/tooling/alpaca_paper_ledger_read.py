@@ -154,6 +154,7 @@ async def alpaca_paper_execution_preflight_check(
     broker_snapshot_account_mode: str | None = None,
     snapshot_max_age_minutes: int = DEFAULT_SNAPSHOT_MAX_AGE_MINUTES,
     approval_packet: dict[str, Any] | None = None,
+    candidate_order: dict[str, Any] | None = None,
     expected_signal_symbol: str | None = None,
     expected_execution_symbol: str | None = None,
     stale_after_minutes: int = 30,
@@ -182,6 +183,15 @@ async def alpaca_paper_execution_preflight_check(
     ``alpaca_paper_list_positions`` and
     ``alpaca_paper_list_orders(status="open")`` immediately before this call and
     pass the ``account_mode`` those reads echo back.
+
+    ``candidate_order`` is optional preflight context, never an execution
+    bypass.  A residual-position/lifecycle finding is downgraded only when it
+    describes a finite positive-quantity ``side="sell"`` whose execution symbol
+    is present in this verified broker snapshot and whose quantity is no greater
+    than that live position.  A cleanup/purpose label, a buy, a notional-only
+    sell, or an over-sized sell leaves the normal fail-closed blockers intact.
+    If ``approval_packet`` provides order fields, they must match this candidate;
+    a sell context cannot clear a buy packet.
 
     When a correlation/candidate/client/briefing scope is provided directly or
     via approval_packet, stale and symbol-context checks evaluate only rows in
@@ -256,6 +266,7 @@ async def alpaca_paper_execution_preflight_check(
         expected_account_mode=selected_account_mode,
         snapshot_account_mode=broker_snapshot_account_mode,
         approval_packet=approval_packet,
+        candidate_order=candidate_order,
         expected_signal_symbol=expected_signal_symbol,
         expected_execution_symbol=expected_execution_symbol,
         stale_after_minutes=stale_after_minutes,

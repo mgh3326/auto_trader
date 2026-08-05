@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.mcp_server.tooling.route_request_lanes import (
+    ACCOUNT_CLEANUP_MARKETS,
+    ACCOUNT_CLEANUP_PURPOSE,
     INTENT_TO_LANE,
     LANE_TO_POLICY_LANE,
     VALID_MARKETS,
@@ -62,7 +64,9 @@ async def _live_registered_names(mcp: Any) -> _RegistrySnapshot:
 
 def register_route_request_tools(mcp: FastMCP) -> None:
     async def route_request(
-        intent: str | None = None, market: str | None = None
+        intent: str | None = None,
+        market: str | None = None,
+        purpose: str | None = None,
     ) -> dict[str, Any]:
         # ROB-659: intent/market are optional in the schema so a MISSING arg
         # returns a deterministic success=false envelope instead of a FastMCP
@@ -92,6 +96,33 @@ def register_route_request_tools(mcp: FastMCP) -> None:
                 "error": "unknown_market",
                 "detail": f"unknown market {market!r}; valid: {sorted(VALID_MARKETS)}",
             }
+        normalized_purpose = (purpose or "").strip() or None
+        if normalized_purpose not in {None, ACCOUNT_CLEANUP_PURPOSE}:
+            return {
+                "success": False,
+                "error": "unknown_purpose",
+                "detail": (
+                    f"unknown purpose {purpose!r}; valid: {[ACCOUNT_CLEANUP_PURPOSE]}"
+                ),
+            }
+        if normalized_purpose == ACCOUNT_CLEANUP_PURPOSE:
+            if intent != "profit_taking":
+                return {
+                    "success": False,
+                    "error": "purpose_not_supported_for_intent",
+                    "detail": (
+                        "purpose='account_cleanup' requires intent='profit_taking'"
+                    ),
+                }
+            if market not in ACCOUNT_CLEANUP_MARKETS:
+                return {
+                    "success": False,
+                    "error": "purpose_not_supported_for_market",
+                    "detail": (
+                        "purpose='account_cleanup' supports markets "
+                        f"{sorted(ACCOUNT_CLEANUP_MARKETS)}"
+                    ),
+                }
         lane = INTENT_TO_LANE[intent]
         policy_lane = LANE_TO_POLICY_LANE[lane]
         version = policy_version_stamp()
@@ -118,6 +149,7 @@ def register_route_request_tools(mcp: FastMCP) -> None:
                 market,
                 verdict_thresholds=verdict_thresholds,
                 policy_version=version,
+                purpose=normalized_purpose,
             )
         return build_route_plan(
             intent,
@@ -125,6 +157,7 @@ def register_route_request_tools(mcp: FastMCP) -> None:
             registered_tools=set(registry_snapshot.names),
             verdict_thresholds=verdict_thresholds,
             policy_version=version,
+            purpose=normalized_purpose,
         )
 
     _ = mcp.tool(
@@ -134,7 +167,11 @@ def register_route_request_tools(mcp: FastMCP) -> None:
             "sequence, allowed/blocked tools, policy thresholds + version stamp, "
             "and hard constraints for that decision lane. Args: intent in "
             "{buy_analysis, profit_taking, discovery, market_brief}, market in "
-            "{kr, us, crypto} (required). Deterministic (same input -> same "
+            "{kr, us, crypto} (required), purpose optional. The only purpose "
+            "exception is purpose='account_cleanup' for US/crypto "
+            "profit_taking: it exposes a read -> preflight -> exact reducing "
+            "Alpaca Paper sell sequence, while keeping every other direct broker "
+            "mutation blocked. Deterministic (same input -> same "
             "output). ADVISORY ONLY — it does not block anything; it echoes "
             "get_trading_policy (ROB-646) with policy_version so a verdict can "
             "cite the criteria. Buy/sell use the proposal-led-v1 contract: "
