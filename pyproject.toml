@@ -130,6 +130,9 @@ exclude = [
     ".venv",
     "alembic/versions",
     "__pycache__",
+    # Immutable upstream provenance input; formatting it would break its
+    # registry-bound SHA-256 and static golden reproducibility.
+    "tests/fixtures/kr_a0_golden_v6/reference_generator_v4.py",
 ]
 
 [tool.ruff.lint]
