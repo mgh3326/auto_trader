@@ -202,6 +202,21 @@ def real_redis() -> Any:
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_real_redis_state(request: pytest.FixtureRequest):
+    """Keep module-scoped Redis state within each test that requests it."""
+    if "real_redis" not in request.fixturenames:
+        yield
+        return
+
+    rd = request.getfixturevalue("real_redis")
+    rd.flush()
+    try:
+        yield
+    finally:
+        rd.flush()
+
+
 def _make_gate(
     redis_url: str,
     *,
