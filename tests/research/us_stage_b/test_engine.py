@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
+from statistics import mean
 
-import research.us_stage_b.engine as engine_module
-from research.us_stage_b.engine import (
-    CohortComparison,
-    rank_signal_observations,
-    run_us_stage_b,
-)
+import pytest
+
+from research.us_stage_b.engine import rank_signal_observations, run_us_stage_b
 from research.us_stage_b.registry import US_CANDIDATE_ORDER
 from research.us_stage_b.signals import SignalObservation, tie_break_digest
 from research.us_stage_b.source import InMemoryUSBarSource, USStageBDailyBar
@@ -178,124 +176,155 @@ def test_terminal_signal_without_t_plus_1_open_is_no_fill_not_censoring(
     assert "censored" not in json.dumps(result.to_dict(), sort_keys=True)
 
 
-def test_rev_engine_emits_independent_cost_profile_verdicts(
-    monkeypatch, registry
-) -> None:
-    """Engine assembly preserves a 10bp/5bp pair that can genuinely diverge."""
+def _raw_rev_cost_discriminator_bars(
+    sessions: tuple[date, ...],
+) -> tuple[tuple[str, ...], tuple[USStageBDailyBar, ...]]:
+    """Build 29,240 deterministic raw bars that straddle the frozen REV costs."""
 
-    binding = candidate(registry, US_CANDIDATE_ORDER[1])
-    sessions = tuple(date(2023, 1, 1) + timedelta(days=index) for index in range(731))
-    symbols = tuple(f"R{index:02d}" for index in range(10))
-    session_index = {session: index for index, session in enumerate(sessions)}
-    source = InMemoryUSBarSource(
-        tuple(
-            USStageBDailyBar(
-                symbol=symbol,
-                session_date=session,
-                open=100.0,
-                adjusted_close=101.0,
-                volume=50_000.0,
-            )
-            for symbol in symbols
-            for session in sessions
-        )
+    phase_count = 20
+    symbols = tuple(
+        f"R{phase:02d}_{member}" for phase in range(phase_count) for member in range(2)
     )
+    first_signal_index = 126
+    last_viable_signal_index = len(sessions) - 5
+    initial_history_last_shock_index = first_signal_index - 4
+    closes: dict[str, list[float]] = {}
+    for phase in range(phase_count):
+        for member in range(2):
+            symbol = f"R{phase:02d}_{member}"
+            close = 100.0
+            values: list[float] = []
+            for index in range(len(sessions)):
+                if index:
+                    shock = index % phase_count == phase and (
+                        index <= initial_history_last_shock_index
+                        or first_signal_index <= index <= last_viable_signal_index
+                    )
+                    close *= 0.8 if shock else 1.014
+                values.append(close)
+            closes[symbol] = values
 
-    def staged_rev_signal(
-        candidate_binding,
-        *,
-        symbol,
-        session_date,
-        history,
-        no_active_position,
-    ) -> SignalObservation:
-        del history
-        index = session_index[session_date]
-        scheduled = index <= len(sessions) - 5 and index % 4 == int(symbol[1:]) % 4
-        signal = scheduled and no_active_position
-        return SignalObservation(
-            strategy_id=candidate_binding.strategy_id,
-            contract_hash=candidate_binding.contract_hash,
-            labels=candidate_binding.labels,
-            symbol=symbol,
-            session_date=session_date,
-            universe_eligible=True,
-            technical_signal=scheduled,
-            no_active_position=no_active_position,
-            signal=signal,
-            exclusion_reason=None if signal else "ENGINE_SEMANTIC_FIXTURE",
-            adv20_pre_proxy=5_000_001.0,
-            tie_break_sha256=tie_break_digest(
-                candidate_binding.strategy_id, session_date, symbol
-            ).hex(),
-            metrics={"z3": -2.0},
-            stages={"engine_semantic_fixture": True},
+    # Two same-phase candidates are the only signal symbols on a session.  Set
+    # their actual D+3 close so each raw cohort has +15bp gross excess.  Under
+    # §13's strategy-only costs that is -5bp at 10bp/side and +5bp at 5bp/side.
+    target_gross_excess = 0.0015
+    adjusted_close_overrides: dict[tuple[str, int], float] = {}
+    for signal_index in range(first_signal_index, last_viable_signal_index + 1):
+        phase = signal_index % phase_count
+        signal_symbols = (f"R{phase:02d}_0", f"R{phase:02d}_1")
+        entry_index = signal_index + 1
+        exit_index = signal_index + 4
+        non_signal_gross_sum = sum(
+            closes[symbol][exit_index] / closes[symbol][entry_index] - 1.0
+            for symbol in symbols
+            if symbol not in signal_symbols
         )
+        target_candidate_gross = (
+            non_signal_gross_sum + (len(symbols) - 1) * target_gross_excess
+        ) / (len(symbols) - 2)
+        for symbol in signal_symbols:
+            adjusted_close_overrides[(symbol, exit_index)] = closes[symbol][
+                entry_index
+            ] * (1.0 + target_candidate_gross)
 
-    def divergent_profile_cohorts(
-        *, contract, outcomes, observations, bars_by_symbol, sessions
-    ) -> tuple[CohortComparison, ...]:
-        del contract, observations, bars_by_symbol, sessions
-        comparisons: list[CohortComparison] = []
-        for outcome in outcomes:
-            if outcome.status != "completed":
-                continue
-            assert outcome.entry_session is not None
-            assert outcome.exit_session is not None
-            assert outcome.base_net_return is not None
-            assert outcome.sensitivity_net_return is not None
-            comparisons.append(
-                CohortComparison(
-                    strategy_id=outcome.strategy_id,
-                    contract_hash=outcome.contract_hash,
-                    labels=outcome.labels,
-                    symbol=outcome.symbol,
-                    signal_session=outcome.signal_session,
-                    entry_session=outcome.entry_session,
-                    exit_session=outcome.exit_session,
-                    liquidity_decile=9,
-                    eligible_universe_size=2,
-                    leave_one_out_member_count=1,
-                    excluded_entry_no_fill_count=0,
-                    excluded_maturity_close_count=0,
-                    status="completed",
-                    candidate_base_net_return=outcome.base_net_return,
-                    candidate_sensitivity_net_return=outcome.sensitivity_net_return,
-                    baseline_base_net_return=outcome.base_net_return + 0.001,
-                    baseline_sensitivity_net_return=(
-                        outcome.sensitivity_net_return - 0.001
-                    ),
-                    base_excess_return=-0.001,
-                    sensitivity_excess_return=0.001,
-                    volume_ratio20=None,
-                    tie_break_sha256=outcome.tie_break_sha256,
+    bars: list[USStageBDailyBar] = []
+    for symbol in symbols:
+        for index, session in enumerate(sessions):
+            adjusted_close = adjusted_close_overrides.get(
+                (symbol, index), closes[symbol][index]
+            )
+            bars.append(
+                USStageBDailyBar(
+                    symbol=symbol,
+                    session_date=session,
+                    open=closes[symbol][index],
+                    adjusted_close=adjusted_close,
+                    # Every same-session eligible member has the same ADV20-pre.
+                    volume=10_000_000.0 / adjusted_close,
                 )
             )
-        return tuple(comparisons)
+    return symbols, tuple(bars)
 
-    monkeypatch.setattr(engine_module, "evaluate_signal", staged_rev_signal)
-    monkeypatch.setattr(
-        engine_module, "_build_cohort_comparisons", divergent_profile_cohorts
-    )
+
+def test_rev_cost_profiles_diverge_from_unpatched_raw_ohlcv(registry) -> None:
+    """The actual 10bp/5bp verdict split must survive the untouched engine."""
+
+    sessions = tuple(date(2023, 1, 1) + timedelta(days=index) for index in range(731))
+    symbols, bars = _raw_rev_cost_discriminator_bars(sessions)
+    binding = candidate(registry, US_CANDIDATE_ORDER[1])
     result = run_us_stage_b(
-        source=source,
+        source=InMemoryUSBarSource(bars),
         contract=contract(binding, sessions),
         corpus_sessions=sessions,
     )
 
-    assert len(result.completed_outcomes) >= 1_000
+    assert len(bars) == 29_240
+    assert result.run_invalid is False
+    assert len(result.completed_outcomes) == 1_202
+    assert len(result.cohorts) == 1_202
+    assert all(cohort.status == "completed" for cohort in result.cohorts)
+    assert len({outcome.entry_session for outcome in result.completed_outcomes}) == 601
+    assert (
+        sum(
+            outcome.entry_session is not None and outcome.entry_session.year == 2023
+            for outcome in result.completed_outcomes
+        )
+        == 476
+    )
+    assert (
+        sum(
+            outcome.entry_session is not None and outcome.entry_session.year == 2024
+            for outcome in result.completed_outcomes
+        )
+        == 726
+    )
+
     profiles = result.cost_profile_verdicts
     assert profiles is not None
     assert profiles.base_10bp_per_side is not profiles.sensitivity_5bp_per_side
     assert profiles.base_10bp_per_side.state == "FALSIFIED_VALIDATION_COHORT_EXCESS"
     assert profiles.sensitivity_5bp_per_side.state == "NOT_FALSIFIED_EXPLORATORY_ONLY"
     assert result.verdict.state == "FALSIFIED_COST_SENSITIVE"
-    rendered = result.to_dict()["cost_profile_verdicts"]
-    assert rendered["base_10bp_per_side"]["cost_profile"] == "base_10bp_per_side"
-    assert (
-        rendered["sensitivity_5bp_per_side"]["cost_profile"]
-        == "sensitivity_5bp_per_side"
+    assert profiles.base_10bp_per_side.gate_results[
+        "profile_entry_session_equal_weighted_excess"
+    ] == pytest.approx(-0.0005)
+    assert profiles.sensitivity_5bp_per_side.gate_results[
+        "profile_entry_session_equal_weighted_excess"
+    ] == pytest.approx(0.0005)
+    rendered_profiles = result.to_dict()["cost_profile_verdicts"]
+    assert rendered_profiles is not None
+    assert rendered_profiles["base_10bp_per_side"]["cost_profile"] == (
+        "base_10bp_per_side"
     )
+    assert rendered_profiles["sensitivity_5bp_per_side"]["cost_profile"] == (
+        "sensitivity_5bp_per_side"
+    )
+
+    bars_by_identity = {(bar.symbol, bar.session_date): bar for bar in bars}
+    first_cohort = result.cohorts[0]
+    assert first_cohort.entry_session is not None
+    assert first_cohort.exit_session is not None
+    baseline_gross_returns: list[float] = []
+    for symbol in symbols:
+        if symbol == first_cohort.symbol:
+            continue
+        entry_bar = bars_by_identity[(symbol, first_cohort.entry_session)]
+        exit_bar = bars_by_identity[(symbol, first_cohort.exit_session)]
+        assert entry_bar.open is not None
+        assert exit_bar.adjusted_close is not None
+        baseline_gross_returns.append(exit_bar.adjusted_close / entry_bar.open - 1.0)
+    baseline_gross = mean(baseline_gross_returns)
+    assert first_cohort.leave_one_out_member_count == 39
+    assert first_cohort.baseline_base_net_return == pytest.approx(baseline_gross)
+    assert first_cohort.baseline_sensitivity_net_return == pytest.approx(baseline_gross)
+    assert first_cohort.base_excess_return == pytest.approx(-0.0005)
+    assert first_cohort.sensitivity_excess_return == pytest.approx(0.0005)
+    for cohort in result.cohorts:
+        assert cohort.base_excess_return is not None
+        assert cohort.sensitivity_excess_return is not None
+        assert cohort.sensitivity_excess_return == pytest.approx(
+            cohort.base_excess_return + 0.001
+        )
 
 
 def test_no_fill_does_not_promote_a_lower_ranked_same_session_signal(registry) -> None:

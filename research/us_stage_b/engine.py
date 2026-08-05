@@ -663,8 +663,7 @@ def _build_cohort_comparisons(
             )
         entry_index = session_index[outcome.entry_session]
         exit_index = session_index[outcome.exit_session]
-        baseline_base: list[float] = []
-        baseline_sensitivity: list[float] = []
+        baseline_gross: list[float] = []
         excluded_no_fill = 0
         excluded_maturity = 0
         for member in eligible:
@@ -682,19 +681,16 @@ def _build_cohort_comparisons(
                 excluded_maturity += 1
                 continue
             gross = float(exit_bar.adjusted_close) / float(entry_bar.open) - 1.0
-            baseline_base.append(gross - contract.cost.base_round_trip_bp / 10_000)
-            baseline_sensitivity.append(
-                gross - contract.cost.sensitivity_round_trip_bp / 10_000
-            )
-        if baseline_base:
-            base_mean = mean(baseline_base)
-            sensitivity_mean = mean(baseline_sensitivity)
+            # §13 US cost amendment: a counterfactual cohort is gross.  The
+            # frozen 10bp/5bp profiles apply only to selected strategy trades.
+            baseline_gross.append(gross)
+        if baseline_gross:
+            baseline_mean = mean(baseline_gross)
             status: Literal["completed", "cohort_unavailable"] = "completed"
-            base_excess = outcome.base_net_return - base_mean
-            sensitivity_excess = outcome.sensitivity_net_return - sensitivity_mean
+            base_excess = outcome.base_net_return - baseline_mean
+            sensitivity_excess = outcome.sensitivity_net_return - baseline_mean
         else:
-            base_mean = None
-            sensitivity_mean = None
+            baseline_mean = None
             status = "cohort_unavailable"
             base_excess = None
             sensitivity_excess = None
@@ -709,14 +705,14 @@ def _build_cohort_comparisons(
                 exit_session=outcome.exit_session,
                 liquidity_decile=own_decile,
                 eligible_universe_size=len(eligible),
-                leave_one_out_member_count=len(baseline_base),
+                leave_one_out_member_count=len(baseline_gross),
                 excluded_entry_no_fill_count=excluded_no_fill,
                 excluded_maturity_close_count=excluded_maturity,
                 status=status,
                 candidate_base_net_return=outcome.base_net_return,
                 candidate_sensitivity_net_return=outcome.sensitivity_net_return,
-                baseline_base_net_return=base_mean,
-                baseline_sensitivity_net_return=sensitivity_mean,
+                baseline_base_net_return=baseline_mean,
+                baseline_sensitivity_net_return=baseline_mean,
                 base_excess_return=base_excess,
                 sensitivity_excess_return=sensitivity_excess,
                 volume_ratio20=outcome.volume_ratio20,
