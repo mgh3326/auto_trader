@@ -384,6 +384,170 @@ async def test_repository_scores_momentum_candidates_with_cross_surface_rank_del
 
 
 @pytest.mark.asyncio
+async def test_repository_list_recent_trading_dates_returns_distinct_dates_desc(
+    db_session,
+):
+    """ROB-919: surge-ratio history lookup needs the N most recent trading
+    dates strictly before a given date, most-recent-first."""
+    symbol = "919001"
+    dates = [
+        dt.date(2026, 8, 3),
+        dt.date(2026, 8, 4),
+        dt.date(2026, 8, 5),
+        dt.date(2026, 8, 6),
+        dt.date(2026, 8, 7),
+        dt.date(2026, 8, 10),
+    ]
+    repo = InvestMomentumEventSnapshotsRepository(db_session)
+    for day in dates:
+        await repo.upsert_momentum(
+            MomentumEventUpsert(
+                snapshot_at=dt.datetime(
+                    day.year, day.month, day.day, 0, 40, tzinfo=dt.UTC
+                ),
+                trading_date=day,
+                surface="domestic_market_stock_default",
+                trade_type="KRX",
+                market_type="ALL",
+                order_type="up",
+                rank=1,
+                symbol=symbol,
+            )
+        )
+    await db_session.commit()
+
+    recent = await repo.list_recent_trading_dates(
+        before_date=dt.date(2026, 8, 10), limit=3
+    )
+    assert recent == [
+        dt.date(2026, 8, 7),
+        dt.date(2026, 8, 6),
+        dt.date(2026, 8, 5),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repository_get_symbol_trade_value_near_time(db_session):
+    """ROB-919: nearest-in-time trade_value within tolerance; max across
+    duplicate order_type rows at the chosen snapshot_at; None outside window
+    or when no rows exist for that symbol/day."""
+    symbol = "919002"
+    trading_date = dt.date(2026, 8, 11)
+    near_at = dt.datetime(2026, 8, 11, 0, 38, tzinfo=dt.UTC)
+    far_at = dt.datetime(2026, 8, 11, 2, 0, tzinfo=dt.UTC)
+
+    repo = InvestMomentumEventSnapshotsRepository(db_session)
+    await repo.upsert_momentum(
+        MomentumEventUpsert(
+            snapshot_at=near_at,
+            trading_date=trading_date,
+            surface="domestic_market_stock_default",
+            trade_type="KRX",
+            market_type="ALL",
+            order_type="up",
+            rank=1,
+            symbol=symbol,
+            trade_value=Decimal("1000000"),
+        )
+    )
+    await repo.upsert_momentum(
+        MomentumEventUpsert(
+            snapshot_at=near_at,
+            trading_date=trading_date,
+            surface="domestic_market_stock_default",
+            trade_type="KRX",
+            market_type="ALL",
+            order_type="quantTop",
+            rank=2,
+            symbol=symbol,
+            trade_value=Decimal("1200000"),
+        )
+    )
+    await repo.upsert_momentum(
+        MomentumEventUpsert(
+            snapshot_at=far_at,
+            trading_date=trading_date,
+            surface="domestic_market_stock_default",
+            trade_type="KRX",
+            market_type="ALL",
+            order_type="up",
+            rank=1,
+            symbol=symbol,
+            trade_value=Decimal("9999999"),
+        )
+    )
+    await db_session.commit()
+
+    target_at = dt.datetime(2026, 8, 11, 0, 40, tzinfo=dt.UTC)
+    value = await repo.get_symbol_trade_value_near_time(
+        symbol=symbol,
+        trading_date=trading_date,
+        target_at=target_at,
+        tolerance=dt.timedelta(minutes=10),
+    )
+    assert value == Decimal("1200000")
+
+    missing_symbol = await repo.get_symbol_trade_value_near_time(
+        symbol="919999",
+        trading_date=trading_date,
+        target_at=target_at,
+        tolerance=dt.timedelta(minutes=10),
+    )
+    assert missing_symbol is None
+
+
+@pytest.mark.asyncio
+async def test_repository_list_historical_trade_values_near_time_fills_gaps_with_none(
+    db_session,
+):
+    """ROB-919: a day the symbol has no near-time observation (e.g. it wasn't
+    ranked yet, or a listing/halt gap) must surface as None, not be skipped --
+    callers rely on positional alignment with the returned trading dates."""
+    symbol = "919003"
+    day_with_data = dt.date(2026, 8, 12)
+    day_without_data = dt.date(2026, 8, 13)
+    before_date = dt.date(2026, 8, 14)
+
+    repo = InvestMomentumEventSnapshotsRepository(db_session)
+    await repo.upsert_momentum(
+        MomentumEventUpsert(
+            snapshot_at=dt.datetime(2026, 8, 12, 0, 40, tzinfo=dt.UTC),
+            trading_date=day_with_data,
+            surface="domestic_market_stock_default",
+            trade_type="KRX",
+            market_type="ALL",
+            order_type="up",
+            rank=1,
+            symbol=symbol,
+            trade_value=Decimal("500000"),
+        )
+    )
+    # day_without_data: symbol never appears in any ranking that day.
+    await repo.upsert_momentum(
+        MomentumEventUpsert(
+            snapshot_at=dt.datetime(2026, 8, 13, 0, 40, tzinfo=dt.UTC),
+            trading_date=day_without_data,
+            surface="domestic_market_stock_default",
+            trade_type="KRX",
+            market_type="ALL",
+            order_type="up",
+            rank=1,
+            symbol="919004",
+        )
+    )
+    await db_session.commit()
+
+    values = await repo.list_historical_trade_values_near_time(
+        symbol=symbol,
+        before_date=before_date,
+        target_time_of_day=dt.time(0, 40),
+        lookback_days=2,
+        tolerance=dt.timedelta(minutes=10),
+    )
+    assert values == [None, Decimal("500000")]
+
+
+@pytest.mark.asyncio
 async def test_repository_list_theme_events_at_cutoff_picks_prior_snapshot(db_session):
     """ROB-917: an ``at`` cutoff must select the latest snapshot at-or-before it."""
     theme_date = dt.date(2026, 5, 19)
@@ -597,3 +761,204 @@ class TestMomentumDataStateHonesty:
 
         result = await mod.get_momentum_candidates_impl(market="kr", limit=20)
         assert result["data_state"] == "missing"
+
+
+class TestMomentumSurgeRatioWiring:
+    """ROB-919: get_momentum_candidates exposes trade_value_surge_ratio per item."""
+
+    @pytest.mark.asyncio
+    async def test_item_with_trade_value_gets_computed_surge_ratio(self, monkeypatch):
+        from app.mcp_server.tooling import momentum_candidates as mod
+        from app.services.invest_momentum_events.repository import (
+            MomentumCandidateSignal,
+        )
+
+        trading_date = dt.date(2026, 8, 20)
+        latest_at = dt.datetime(2026, 8, 20, 0, 40, tzinfo=dt.UTC)
+        row = MomentumCandidateSignal(
+            symbol="919101",
+            name="써지테스트",
+            score=50.0,
+            latest_snapshot_at=latest_at,
+            trading_date=trading_date,
+            price=Decimal("10000"),
+            change_rate=Decimal("3.5"),
+            surface_count=1,
+            venue_count=1,
+            rank_delta=None,
+            signals=[
+                {
+                    "orderType": "quantTop",
+                    "tradeType": "KRX",
+                    "rank": 3,
+                    "rankDelta": None,
+                    "changeRate": Decimal("3.5"),
+                    "volume": 1000,
+                    "tradeValue": Decimal("1000000"),
+                }
+            ],
+            theme_names=[],
+            reason_codes=[],
+        )
+
+        class _FakeRepo:
+            def __init__(self, session):
+                pass
+
+            async def list_candidate_signals(self, *, trading_date=None, limit=20):
+                return [row]
+
+            async def list_historical_trade_values_near_time(
+                self,
+                *,
+                symbol,
+                before_date,
+                target_time_of_day,
+                lookback_days,
+                tolerance,
+            ):
+                assert symbol == "919101"
+                assert before_date == trading_date
+                assert target_time_of_day == latest_at.time()
+                assert lookback_days == 5
+                return [Decimal("100000"), Decimal("100000"), Decimal("100000")]
+
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(mod, "InvestMomentumEventSnapshotsRepository", _FakeRepo)
+        monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: _FakeSession())
+
+        result = await mod.get_momentum_candidates_impl(market="kr", limit=20)
+
+        item = result["items"][0]
+        assert item["trade_value_surge_ratio"] == 10.0
+        assert item["trade_value_surge_reason"] is None
+        assert item["trade_value_surge_lookback_days"] == 3
+
+    @pytest.mark.asyncio
+    async def test_item_without_trade_value_skips_history_lookup_entirely(
+        self, monkeypatch
+    ):
+        """No tradeValue on any signal -> null ratio without ever calling the
+        historical-lookback method (proves the short-circuit; a fake without
+        that method would raise AttributeError if it were called)."""
+        from app.mcp_server.tooling import momentum_candidates as mod
+        from app.services.invest_momentum_events.repository import (
+            MomentumCandidateSignal,
+        )
+
+        row = MomentumCandidateSignal(
+            symbol="919102",
+            name="노시그널",
+            score=10.0,
+            latest_snapshot_at=dt.datetime(2026, 8, 20, 0, 40, tzinfo=dt.UTC),
+            trading_date=dt.date(2026, 8, 20),
+            price=Decimal("5000"),
+            change_rate=Decimal("2.0"),
+            surface_count=1,
+            venue_count=1,
+            rank_delta=None,
+            signals=[
+                {
+                    "orderType": "up",
+                    "tradeType": "KRX",
+                    "rank": 5,
+                    "rankDelta": None,
+                    "changeRate": Decimal("2.0"),
+                    "volume": 500,
+                    "tradeValue": None,
+                }
+            ],
+            theme_names=[],
+            reason_codes=[],
+        )
+
+        class _FakeRepoNoHistoryMethod:
+            def __init__(self, session):
+                pass
+
+            async def list_candidate_signals(self, *, trading_date=None, limit=20):
+                return [row]
+
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(
+            mod, "InvestMomentumEventSnapshotsRepository", _FakeRepoNoHistoryMethod
+        )
+        monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: _FakeSession())
+
+        result = await mod.get_momentum_candidates_impl(market="kr", limit=20)
+
+        item = result["items"][0]
+        assert item["trade_value_surge_ratio"] is None
+        assert item["trade_value_surge_reason"] == "missing_current_trade_value"
+
+    @pytest.mark.asyncio
+    async def test_insufficient_history_surfaces_reason_code(self, monkeypatch):
+        from app.mcp_server.tooling import momentum_candidates as mod
+        from app.services.invest_momentum_events.repository import (
+            MomentumCandidateSignal,
+        )
+
+        row = MomentumCandidateSignal(
+            symbol="919103",
+            name="신규상장",
+            score=20.0,
+            latest_snapshot_at=dt.datetime(2026, 8, 20, 0, 40, tzinfo=dt.UTC),
+            trading_date=dt.date(2026, 8, 20),
+            price=Decimal("3000"),
+            change_rate=Decimal("8.0"),
+            surface_count=1,
+            venue_count=1,
+            rank_delta=None,
+            signals=[
+                {
+                    "orderType": "searchTop",
+                    "tradeType": "KRX",
+                    "rank": 1,
+                    "rankDelta": None,
+                    "changeRate": Decimal("8.0"),
+                    "volume": 2000,
+                    "tradeValue": Decimal("2000000"),
+                }
+            ],
+            theme_names=[],
+            reason_codes=[],
+        )
+
+        class _FakeRepo:
+            def __init__(self, session):
+                pass
+
+            async def list_candidate_signals(self, *, trading_date=None, limit=20):
+                return [row]
+
+            async def list_historical_trade_values_near_time(self, **kwargs):
+                return [None, None, Decimal("100000")]
+
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(mod, "InvestMomentumEventSnapshotsRepository", _FakeRepo)
+        monkeypatch.setattr(mod, "AsyncSessionLocal", lambda: _FakeSession())
+
+        result = await mod.get_momentum_candidates_impl(market="kr", limit=20)
+
+        item = result["items"][0]
+        assert item["trade_value_surge_ratio"] is None
+        assert item["trade_value_surge_reason"] == "insufficient_history"
+        assert item["trade_value_surge_lookback_days"] == 1
