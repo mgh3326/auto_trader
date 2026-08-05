@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
@@ -65,6 +66,15 @@ class _Log:
         self.records.append(record)
 
 
+def _perf_counter_ticks(durations_ms: list[float]) -> Iterator[float]:
+    ticks: list[float] = []
+    cursor = 0.0
+    for duration_ms in durations_ms:
+        ticks.extend((cursor, cursor + duration_ms / 1_000))
+        cursor += duration_ms / 1_000 + 0.001
+    return iter(ticks)
+
+
 @pytest.mark.asyncio
 async def test_count_witness_is_removed_but_latency_probe_remains(
     collect_module: ModuleType,
@@ -77,7 +87,7 @@ async def test_count_witness_is_removed_but_latency_probe_remains(
 
     assert not hasattr(guard, "witness")
     assert not hasattr(guard, "snapshot_witness")
-    assert len(pool.connection.queries) == 5
+    assert len(pool.connection.queries) == 15
     assert all(
         "SELECT time, close FROM public.kr_candles_1m" in query
         for query in pool.connection.queries
@@ -87,20 +97,82 @@ async def test_count_witness_is_removed_but_latency_probe_remains(
 
 
 @pytest.mark.asyncio
-async def test_latency_abort_is_preserved(
+async def test_latency_p95_requires_two_consecutive_windows(
     collect_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ticks = iter([0.0, 0.006] * 5)
+    ticks = _perf_counter_ticks([6.0] * 30)
     monkeypatch.setattr(collect_module.time, "perf_counter", lambda: next(ticks))
     pool = _Pool()
     log = _Log()
     guard = collect_module.Guard(pool, baseline_median_ms=1.0, log=log)
 
-    with pytest.raises(collect_module.AbortStream, match="query latency"):
+    await guard.check("toss")
+    assert len(pool.connection.queries) == 15
+    assert log.records[-1]["p95_ms"] == 6.0
+    assert log.records[-1]["breach_streak"] == 1
+
+    with pytest.raises(collect_module.AbortStream, match="for 2 consecutive windows"):
         await guard.check("toss")
 
-    assert len(pool.connection.queries) == 5
-    assert [record["event"] for record in log.records] == ["latency_probe"]
+    assert len(pool.connection.queries) == 30
+    assert [record["event"] for record in log.records] == [
+        "latency_probe",
+        "latency_probe",
+    ]
+    assert log.records[-1]["breach_streak"] == 2
+
+
+@pytest.mark.asyncio
+async def test_latency_p95_streak_resets_after_normal_window(
+    collect_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticks = _perf_counter_ticks([6.0] * 15 + [1.0] * 15 + [6.0] * 15)
+    monkeypatch.setattr(collect_module.time, "perf_counter", lambda: next(ticks))
+    guard = collect_module.Guard(_Pool(), baseline_median_ms=1.0, log=_Log())
+
+    await guard.check("kiwoom_live")
+    await guard.check("kiwoom_live")
+    await guard.check("kiwoom_live")
+
+    assert guard.latency_p95_breach_streak["kiwoom_live"] == 1
+
+
+@pytest.mark.asyncio
+async def test_latency_raw_over_100ms_aborts_immediately(
+    collect_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ticks = _perf_counter_ticks([150.0])
+    monkeypatch.setattr(collect_module.time, "perf_counter", lambda: next(ticks))
+    pool = _Pool()
+    log = _Log()
+    guard = collect_module.Guard(pool, baseline_median_ms=1.0, log=log)
+
+    with pytest.raises(collect_module.AbortStream, match="raw 150.00ms"):
+        await guard.check("kiwoom_live")
+
+    assert len(pool.connection.queries) == 1
+    assert log.records == [
+        {
+            "event": "latency_probe",
+            "source": "kiwoom_live",
+            "window_complete": False,
+            "sample_count": 1,
+            "p95_ms": 150.0,
+            "raw_max_ms": 150.0,
+            "baseline_ms": 1.0,
+            "breach_streak": 0,
+            "hard_stop": "raw_gt_100ms",
+        }
+    ]
+
+
+def test_latency_statistic_constants_are_hard_coded(
+    collect_module: ModuleType,
+) -> None:
+    assert collect_module.LATENCY_ABORT_FACTOR == 5.0
+    assert collect_module.DB_LATENCY_SAMPLES_PER_WINDOW == 15
+    assert collect_module.DB_LATENCY_CONSECUTIVE_WINDOWS == 2
+    assert collect_module.DB_LATENCY_RAW_HARD_STOP_MS == 100.0
 
 
 def test_consecutive_429_abort_is_preserved(collect_module: ModuleType) -> None:
