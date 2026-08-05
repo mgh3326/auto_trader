@@ -32,6 +32,15 @@
 - market transfer 감지(A13-4)는 missing_exit 판정보다 **선행** — 기존 순서 유지.
 - crypto 반환 계약(`missing_exit=true 별도 집계`)과 동일 의미론 — 시장 간 정합.
 
+## A15-3 보정 (§12차 확정 — 2026-08-05 19:5x)
+- 확보된 사이드카의 `evidence_type = decision_disclosure` (결정공시일 ≠ 실상폐일 — 대사
+  불일치 42건 = 정리매매 구간 실증). 따라서 **증거는 만기 bar 부재/무효의 분류 전용**:
+  transfer 게이트 최우선(불변) → 만기 bar 유효 = 정상 청산(증거 무시 — 정리매매 거래 실재)
+  → bar 무효 + 증거(≤ 예정만기) = C8 (역탐색·exit_session 모두 예정 만기일 기준) → 증거 없음
+  = missing_exit. 슬롯 점유 = 예정 만기일까지.
+- KOSPI 이벤트 0건은 커버리지 공백으로 공개 수용 — 5% cap 이 자기교정 (초과 시 추가 소스
+  승인 상신 = 조건부 백로그).
+
 ## 적용 범위
 - KR 전용. **US 는 불변** — US 후보 동결 문안이 «만기 close 부재 = run-invalid» 를 명시
   (survivor universe). crypto 는 자체 계약이 이미 A15-3 과 동일.

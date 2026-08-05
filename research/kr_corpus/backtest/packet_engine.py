@@ -872,12 +872,9 @@ class PacketEngine:
     ) -> None:
         key = (str(signal["market"]), str(signal["symbol"]))
         exit_due = entry_session + binding.holding_sessions
-        event_session = world.delist_events.get(key)
-        occupy_until = (
-            min(exit_due, event_session)
-            if event_session is not None and event_session <= exit_due
-            else exit_due
-        )
+        # §12: decision-disclosure evidence classifies an invalid scheduled
+        # maturity bar; it is not a trading terminal or a capacity-release date.
+        occupy_until = exit_due
         positions.append(
             {
                 "key": key,
@@ -903,17 +900,9 @@ class PacketEngine:
         positions: Iterable[Mapping[str, Any]],
         log: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        terminal_trades: list[dict[str, Any]] = []
         regular_positions: list[Mapping[str, Any]] = []
         transfer_occurrences: list[dict[str, Any]] = []
         for position in positions:
-            key = position["key"]
-            event_session = world.delist_events.get(key)
-            if event_session is not None and event_session <= position["exit_due"]:
-                terminal_trades.append(
-                    self._terminal_trade(world, position, event_session)
-                )
-                continue
             if self._transfer_precedes_maturity() and self._transfer_gate(
                 world, position
             ):
@@ -930,16 +919,20 @@ class PacketEngine:
                 },
             )
 
-        trades = list(terminal_trades)
+        trades: list[dict[str, Any]] = []
         deferred_transfers: list[dict[str, Any]] = []
         for position in regular_positions:
             key = position["key"]
             exit_due = position["exit_due"]
             exit_bar = world.bar(key, exit_due)
             if not self._maturity_ok(exit_bar):
-                # A15-3 ordering is intentional: terminal evidence and the
-                # transfer gate above win before price interpretation.  With
-                # neither, exclude only this trade and disclose it.
+                # §12: after the transfer gate, decision-disclosure evidence
+                # classifies only a missing/invalid scheduled maturity bar.
+                # The C8 search and reported exit remain scheduled at exit_due.
+                event_session = world.delist_events.get(key)
+                if event_session is not None and event_session <= exit_due:
+                    trades.append(self._terminal_trade(world, position))
+                    continue
                 log["missing_exit"].append(
                     {
                         "market": key[0],
@@ -979,11 +972,11 @@ class PacketEngine:
         return trades
 
     def _terminal_trade(
-        self, world: PacketWorld, position: Mapping[str, Any], event_session: int
+        self, world: PacketWorld, position: Mapping[str, Any]
     ) -> dict[str, Any]:
         key = position["key"]
         last_close: float | None = None
-        for session_idx in range(event_session, position["entry_idx"] - 1, -1):
+        for session_idx in range(position["exit_due"], position["entry_idx"] - 1, -1):
             bar = world.bar(key, session_idx)
             if self._maturity_ok(bar):
                 last_close = bar.close
@@ -995,7 +988,7 @@ class PacketEngine:
             **_trade_position_fields(position),
             "market": key[0],
             "symbol": key[1],
-            "exit_session": event_session,
+            "exit_session": position["exit_due"],
             "exit_close": last_close,
             "gross": gross,
             "delisted_exit": True,
@@ -1088,10 +1081,14 @@ class PacketEngine:
             if not self._entry_ok(entry_bar):
                 excluded_entry += 1
                 continue
+            exit_bar = world.bar(key, exit_due)
+            if self._maturity_ok(exit_bar):
+                returns.append(exit_bar.close / entry_bar.open - 1)
+                continue
             event_session = world.delist_events.get(key)
             if event_session is not None and event_session <= exit_due:
                 last_close: float | None = None
-                for session_idx in range(event_session, signal_session, -1):
+                for session_idx in range(exit_due, signal_session, -1):
                     bar = world.bar(key, session_idx)
                     if self._maturity_ok(bar):
                         last_close = bar.close
@@ -1101,11 +1098,7 @@ class PacketEngine:
                 )
                 terminal_included += 1
                 continue
-            exit_bar = world.bar(key, exit_due)
-            if not self._maturity_ok(exit_bar):
-                excluded_maturity += 1
-                continue
-            returns.append(exit_bar.close / entry_bar.open - 1)
+            excluded_maturity += 1
         return {
             "decile": decile,
             "n": len(returns),

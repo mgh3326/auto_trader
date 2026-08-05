@@ -22,7 +22,7 @@ CANDIDATES_SHA256: Final = (
     "0f5e92bf7d10dd77588fa08ad949811a68004cf71dd7f2efd232306b22d82d85"
 )
 GOLDEN_V6_SHA256: Final = (
-    "77e293619a9d8370d0d0178d63b5ee4e04e222f5765cd3f4dfa6bbad79958d68"
+    "996a30b9c233320665aa17845991287fd7af71704af6f91a6956d12a91738d4f"
 )
 CONVENTION_SHA256: Final[dict[str, str]] = {
     "amendment_a1_a9": (
@@ -35,9 +35,9 @@ CONVENTION_SHA256: Final[dict[str, str]] = {
         "5bdb261504b7d3c298f3a85cc07cef72dc0528adad72c685dd322884b1bd6b59"
     ),
     "amendment_a15": (
-        "df4876861d6aee599c05bc5b2f29a3fbb37c1570483fcd15b0b2f963b28b1dae"
+        "4b421585db09829964dccc719130d07d7fa11f0b450e536cdd30f8e95f4d3b36"
     ),
-    "generator": ("490e23fb1c32f49b66a96a49b87f1628940cf0810c9484ecac2ddeb4493e19c3"),
+    "generator": ("32f15e948eee30d75215716688d4fc421415145618ff4f5637531cb4c3fc6b9f"),
 }
 BASE_FIXTURE_FILENAMES: Final[tuple[str, ...]] = (
     "fixture_bars.csv",

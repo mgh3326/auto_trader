@@ -623,9 +623,8 @@ def run_candidate(w, signal_fn, hold, schedule=None):
                                        "symbol": sig["symbol"], "entry_session": entry_t})
                 continue
             exit_due = entry_t + hold
-            d_evt = w.delist.get(key)
-            occupy_until = min(exit_due, d_evt) if d_evt is not None and d_evt <= exit_due \
-                else exit_due
+            # §12차: decision-disclosure date is not a trading terminal — slot to schedule
+            occupy_until = exit_due
             positions.append({"key": key, "entry_idx": entry_t, "exit_due": exit_due,
                               "occupy_until": occupy_until, "signal_session": t,
                               "entry_open": eb["open"]})
@@ -634,29 +633,31 @@ def run_candidate(w, signal_fn, hold, schedule=None):
     trades = []
     for p in positions:
         key = p["key"]
-        d_evt = w.delist.get(key)
-        if d_evt is not None and d_evt <= p["exit_due"]:
-            last = None
-            for k in range(d_evt, p["entry_idx"] - 1, -1):
-                b = w.bar(key, k)
-                if b is not None and maturity_ok(b):
-                    last = b["close"]
-                    break
-            gross = (last / p["entry_open"] - 1) if last is not None else -1.0
-            trades.append({**{x: p[x] for x in ("entry_idx", "exit_due", "signal_session",
-                                                "entry_open")},
-                           "market": key[0], "symbol": key[1], "exit_session": d_evt,
-                           "exit_close": last, "gross": gross, "delisted_exit": True,
-                           "net_43bp": gross - COST_BASE, "net_83bp": gross - COST_SENS})
-            continue
-        # A13-4: transfer gate BEFORE price resolution — membership ending mid-hold with
-        # a later other-market leg is fail-closed regardless of stale bars
+        # A13-4 transfer gate stays FIRST — fail-closed regardless of stale bars
         if w.membership[key][1] < p["exit_due"] and other_market_transfer(w, key):
             raise RunInvalid("RUN_INVALID_MARKET_TRANSFER", f"{key}")
         xb = w.bar(key, p["exit_due"])
         if not maturity_ok(xb):
-            # A15-3: evidence-less maturity gap -> TRADE-level exclusion, disclosed
-            # (transfer gate above stays FIRST; delist evidence handled earlier)
+            # A15-3 (§12차 보정): evidence_type=decision_disclosure — evidence classifies
+            # BAR ABSENCE only (a valid maturity bar always wins: liquidation trading is
+            # real). C8 search runs from the SCHEDULED exit backwards.
+            d_evt = w.delist.get(key)
+            if d_evt is not None and d_evt <= p["exit_due"]:
+                last = None
+                for k in range(p["exit_due"], p["entry_idx"] - 1, -1):
+                    b = w.bar(key, k)
+                    if b is not None and maturity_ok(b):
+                        last = b["close"]
+                        break
+                gross = (last / p["entry_open"] - 1) if last is not None else -1.0
+                trades.append({**{x: p[x] for x in ("entry_idx", "exit_due",
+                                                    "signal_session", "entry_open")},
+                               "market": key[0], "symbol": key[1],
+                               "exit_session": p["exit_due"], "exit_close": last,
+                               "gross": gross, "delisted_exit": True,
+                               "net_43bp": gross - COST_BASE,
+                               "net_83bp": gross - COST_SENS})
+                continue
             log["missing_exit"].append({"market": key[0], "symbol": key[1],
                                         "entry_session": p["entry_idx"],
                                         "exit_due": p["exit_due"]})
@@ -684,10 +685,14 @@ def baseline(w, t, hold, target_pct):
         if not entry_ok(eb):
             excl_e += 1
             continue
+        xb = w.bar(k, t + 1 + hold)
+        if maturity_ok(xb):
+            rets.append(xb["close"] / eb["open"] - 1)
+            continue
         d_evt = w.delist.get(k)
         if d_evt is not None and d_evt <= t + 1 + hold:
             last = None
-            for j in range(d_evt, t, -1):
+            for j in range(t + 1 + hold, t, -1):
                 b = w.bar(k, j)
                 if b is not None and maturity_ok(b):
                     last = b["close"]
@@ -695,11 +700,7 @@ def baseline(w, t, hold, target_pct):
             rets.append((last / eb["open"] - 1) if last is not None else -1.0)
             term_inc += 1
             continue
-        xb = w.bar(k, t + 1 + hold)
-        if not maturity_ok(xb):
-            excl_m += 1
-            continue
-        rets.append(xb["close"] / eb["open"] - 1)
+        excl_m += 1
     return {"decile": dec, "n": len(rets),
             "gross_mean": statistics.mean(rets) if rets else None,
             "cohort_excluded_entry": excl_e, "cohort_excluded_maturity": excl_m,
@@ -1036,7 +1037,7 @@ def main():
     assert len(tr3) == 17, len(tr3)
     tk = {(t["symbol"], t["entry_idx"]): t for t in tr3}
     ka4 = tk[(KA4, 29)]
-    assert ka4["delisted_exit"] and ka4["exit_session"] == 32
+    assert ka4["delisted_exit"] and ka4["exit_session"] == 34   # scheduled (§12차)
     assert ka4["exit_close"] == built_bars[(("KOSPI", KA4), 31)]["close"]
     assert built_bars[(("KOSPI", KA4), 31)]["open"] is None      # close-only search proven
     ka3 = tk[(KA3, 27)]
@@ -1044,11 +1045,12 @@ def main():
     assert ka3["exit_close"] == built_bars[(("KOSPI", KA3), 32)]["close"]
     assert built_bars[(("KOSPI", KA3), 32)]["open"] is None      # maturity close+volume-only
     qd1 = tk[(QD1, 42)]
-    assert qd1["delisted_exit"] and qd1["exit_session"] == 46
+    assert qd1["delisted_exit"] and qd1["exit_session"] == 47   # scheduled (§12차)
     assert qd1["exit_close"] == built_bars[(("KOSDAQ", QD1), 46)]["close"]
     assert built_bars[(("KOSDAQ", QD1), 46)]["open"] is None     # event-session-inclusive
     qd2 = tk[(QD2, 43)]
-    assert qd2["delisted_exit"] and qd2["gross"] == -1.0 and qd2["exit_close"] is None
+    assert qd2["delisted_exit"] and qd2["exit_session"] == 48
+    assert qd2["gross"] == -1.0 and qd2["exit_close"] is None
     kg1 = tk[(KG1, 42)]
     assert not kg1["delisted_exit"] and kg1["exit_session"] == 47
     assert (TWIN, 44) in tk and tk[(TWIN, 44)]["market"] == "KOSPI"
@@ -1392,18 +1394,20 @@ def main():
     wsd = read_world(vd)
     _, trs = run_candidate(wsd, sig_rev3, 5)
     ka4s = [t for t in trs if t["symbol"] == KA4][0]
-    assert ka4s["delisted_exit"] and ka4s["exit_session"] == 32
-    assert ka4s["exit_close"] == ka4["exit_close"]     # identical to base — evidence wins
-    # A4 exact oracle: QA5's cohort (contains KA4) must ALSO ignore the stale s34 bar —
-    # a maturity-first baseline mutant flips gross_mean sign and terminal count
+    # §12차: decision-disclosure evidence does NOT override a live maturity bar —
+    # the appended stale-valid s34 bar makes KA4 a NORMAL exit at that bar's close
+    assert not ka4s["delisted_exit"] and ka4s["exit_session"] == 34
+    assert ka4s["exit_close"] == 1000.0
     lp_sd = liq_pcts(wsd, 28, a8_base_set(wsd, 28))
     bl_sd = baseline(wsd, 28, 5, lp_sd[("KOSDAQ", QA5)])
-    assert bl_sd == bl3[("KOSDAQ", QA5, 29)], (bl_sd, bl3[("KOSDAQ", QA5, 29)])
+    assert bl_sd["cohort_terminal_included"] == 0        # KA4 normal in cohort too
     expect["stale_delist_bar"] = {
-        "result": "KA4_TRADE_IDENTICAL_TO_BASE",
+        "result": "VALID_MATURITY_BAR_WINS_OVER_DECISION_EVIDENCE",
+        "ka4_exit": {"session": 34, "close": 1000.0, "delisted_exit": False},
         "qa5_cohort_baseline_exact": bl_sd,
-        "note": "delist evidence precedes stale-valid scheduled maturity bar — for the "
-                "strategy trade AND the A4 cohort member"}
+        "note": "§12차 evidence_type=decision_disclosure — evidence classifies bar "
+                "ABSENCE only; an evidence-first mutant terminals KA4 early and flips "
+                "cohort_terminal_included/gross_mean"}
 
     # control: a holdout-only leg (membership s53+) must be invisible — base unchanged
     def holdout_leg(vd):

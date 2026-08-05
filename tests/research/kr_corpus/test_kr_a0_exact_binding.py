@@ -56,6 +56,7 @@ from research.kr_corpus.registry.exact_binding import (
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_BUNDLE = REPO_ROOT / "tests" / "fixtures" / "kr_a0_golden_v6"
+CONTRACT_MD_SHA256 = "debeccfd41564e24c2e99564cb55f5df08265cf87fa8199d19370f9a804b29d2"
 
 
 @pytest.fixture(scope="session")
@@ -159,7 +160,7 @@ def test_v6_inputs_are_recomputed_and_generator_is_byte_exact(
         sha256_file(generated_v6 / "reference_generator_v4.py")
         == CONVENTION_SHA256["generator"]
     )
-    assert "golden v6" in (FIXTURE_BUNDLE / "CONTRACT.md").read_text(encoding="utf-8")
+    assert sha256_file(FIXTURE_BUNDLE / "CONTRACT.md") == CONTRACT_MD_SHA256
     assert registry.inputs.candidates_sha256 == golden["candidates_yaml_sha256"]
     assert registry.inputs.golden_sha256 == GOLDEN_V6_SHA256
     assert dict(registry.inputs.convention_sha256) == golden["convention_sha256"]
@@ -502,18 +503,29 @@ def test_all_seventeen_variants_match_their_expected_outcome(
     } == expected["data_gap_control_all_invalid"]
 
     _, stale = _engine_run(registry, generated_v6 / "variants" / "stale_delist_bar")
+    base_ka4 = next(trade for trade in base.trades if trade["symbol"] == "000340")
+    assert base_ka4["delisted_exit"] is True
+    assert base_ka4["exit_session"] == base_ka4["exit_due"] == 34
     ka4 = next(trade for trade in stale.trades if trade["symbol"] == "000340")
     stale_actual = {
-        "result": "KA4_TRADE_IDENTICAL_TO_BASE",
+        "result": "VALID_MATURITY_BAR_WINS_OVER_DECISION_EVIDENCE",
+        "ka4_exit": {
+            "session": ka4["exit_session"],
+            "close": ka4["exit_close"],
+            "delisted_exit": ka4["delisted_exit"],
+        },
         "qa5_cohort_baseline_exact": stale.baselines[
             _baseline_key("KOSDAQ", "900350", 29)
         ],
         "note": (
-            "delist evidence precedes stale-valid scheduled maturity bar — for the "
-            "strategy trade AND the A4 cohort member"
+            "§12차 evidence_type=decision_disclosure — evidence classifies bar "
+            "ABSENCE only; an evidence-first mutant terminals KA4 early and flips "
+            "cohort_terminal_included/gross_mean"
         ),
     }
-    assert ka4 == next(trade for trade in base.trades if trade["symbol"] == "000340")
+    assert ka4["delisted_exit"] is False
+    assert ka4["exit_session"] == ka4["exit_due"] == 34
+    assert ka4["exit_close"] == 1000.0
     assert _normalized(stale_actual) == expected["stale_delist_bar"]
 
     holdout_world, holdout = _engine_run(

@@ -15,7 +15,7 @@ convention 정본: 운영자 확정 amendment A1~A9 + A10~A12 + A13~A14 + **A15*
 ## 파일
 
 ```
-77e293619a9d8370d0d0178d63b5ee4e04e222f5765cd3f4dfa6bbad79958d68  golden_v6.json
+996a30b9c233320665aa17845991287fd7af71704af6f91a6956d12a91738d4f  golden_v6.json
 e9e744932594da41…  fixture_bars.csv        9907044e1f54d0a1…  fixture_sessions.csv
 280f829080580d4c…  fixture_config.csv      88709819a088145e…  fixture_membership.csv
 588778f5e883b798…  fixture_delist_events.csv
@@ -32,9 +32,8 @@ variants/<name>/   자기완결 variant 디렉토리 17종 — RunInvalid 5종�
   market_transfer_missing_maturity → 같은 transfer 인데 만기 bar 결측 — 그래도
   RUN_INVALID_MARKET_TRANSFER (만기-먼저 mutant 는 MATURITY_PRICE 를 내어 격추 —
   두 variant 가 우선순위 양방향을 봉인) · data_gap_control_all_invalid →
-  전부-무효-but-존재 rows 는 gap 아님(완주) · stale_delist_bar → 상폐 증거가
-  stale-valid 만기 bar 에 우선(KA4 거래 base 와 동일 + QA5 cohort baseline exact 값 결속 —
-  maturity-first baseline mutant 는 gross_mean 부호가 뒤집혀 격추) · holdout_leg_control →
+  전부-무효-but-존재 rows 는 gap 아님(완주) · stale_delist_bar → **§12차 반전: 유효 만기 bar 가 결정공시 증거에 우선**(KA4 정상 청산
+  s34·close 1000.00 + QA5 cohort terminal_included=0 exact 결속 — evidence-first mutant 격추) · holdout_leg_control →
   s53+ 시작 membership leg 는 구조적으로 불가시(base 와 결과 동일·oob 0·clamped
   symbol/membership key set 부재가 golden 에 직렬화됨)
 ```
@@ -51,13 +50,14 @@ variants/<name>/   자기완결 variant 디렉토리 17종 — RunInvalid 5종�
   신규 leg 의 pre-membership bar 없음) — **적격성은 21세션 전 구간 membership** 이라
   KOSPI 쪽 최초 신호는 s43 (s42 에는 비적격 — pre-list history 사용 구현 격추). symbol-only 키는 붕괴. 동시 중복·보유 중 이동은 variant 로 격추.
 - **A12 field-level**: KG1 entry (high blank) 체결 · KA3 만기 (open/high/low blank) 정상 청산 ·
-  KA4/QD1 상폐 역탐색 close+volume-only (QD1 은 **event 세션 bar 를 사용** — d−1 구현 격추) ·
+  KA4/QD1 상폐 역탐색 close+volume-only·**예정 만기일부터 역방향**(QD1 은 event 세션 bar 사용 — d−1 구현 격추, exit_session=예정 만기일) ·
   QD2 = entry close blank 로 체결 후 유효 종가 없음 → **gross −100%** · KE5 blank volume 무효.
 - **exact 경계 (float 정확)**: KB1@45 `clv == 0.65 ∧ ratio == 1.5` (정수 프라이스 13/20) ·
   KB2@38 `clv == 0.75 ∧ ratio == 1.25` · KH1@49 `r3_pct == 0.05` (모집단 20) · s49 min
   `liq_pct == 0.5` · KD4@37 `margin == 0.0` · QH1@31 `r20 == 0.0` · LV5 900180@44
   `vol20_pct == 0.3` (모집단 20, rank 6).
-- **A4**: baseline 이 거래와 동일한 순서 (상폐 증거 → 만기 bar). `cohort_excluded_entry ≥ 1`
+- **A4**: baseline 이 거래와 동일한 순서 (**§12차: 유효 만기 bar → 결정공시 증거 → 제외** —
+  evidence_type=decision_disclosure 는 bar 부재의 분류 전용). `cohort_excluded_entry ≥ 1`
   (QA1) · `cohort_terminal_included ≥ 1` (QA5) 카운트 공개.
 - **A11+A14 합성**: 17거래 × 43/83bp 4게이트 실제 산출, 12 클러스터 → top-level
   `UNIDENTIFIABLE_CLUSTERS`(축약 금지) + `cost_sensitive` flag. **compose oracle**: 실제 compose 함수 통과 — PASS / FALSIFIED /
