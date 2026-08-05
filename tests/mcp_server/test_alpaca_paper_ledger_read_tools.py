@@ -312,6 +312,79 @@ async def test_execution_preflight_check_reflects_held_position(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_execution_preflight_check_passes_verified_reduce_only_candidate(
+    monkeypatch,
+):
+    """ROB-1209: public preflight keeps cleanup inside the gate, not around it."""
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    mock_svc = _mock_svc(rows=[])
+    _patch_ledger_service(monkeypatch, mod, mock_svc)
+
+    result = await mod.alpaca_paper_execution_preflight_check(
+        limit=20,
+        open_orders=[],
+        positions=[{"symbol": "UBER", "qty": "5", "asset_class": "us_equity"}],
+        broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+        broker_snapshot_account_mode="alpaca_paper",
+        candidate_order={
+            "side": "sell",
+            "execution_symbol": "UBER",
+            "qty": "1",
+        },
+    )
+
+    assert result["status"] == "pass"
+    assert result["should_block"] is False
+    assert result["candidate_reduction"]["reduce_only"] is True
+    residual = next(
+        item
+        for item in result["anomalies"]
+        if item["check_id"] == "residual_position_exists"
+    )
+    assert residual["severity"] == "warning"
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize("account_mode", ["alpaca_paper_lab", "alpaca_paper_crypto"])
+async def test_execution_preflight_keeps_nondefault_account_scope_unchanged(
+    monkeypatch,
+    account_mode,
+):
+    """Lab and c60c74 clean-account snapshots remain independently attested."""
+    import app.mcp_server.tooling.alpaca_paper_ledger_read as mod
+
+    mock_svc = _mock_svc(rows=[])
+    captured_account_modes: list[str | None] = []
+
+    def _service_factory(db, account_mode=None):  # noqa: ANN001
+        captured_account_modes.append(account_mode)
+        return mock_svc
+
+    monkeypatch.setattr(mod, "_session_factory", lambda: lambda: _FakeDB())
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.alpaca_paper_ledger_read.AlpacaPaperLedgerService",
+        _service_factory,
+    )
+
+    result = await mod.alpaca_paper_execution_preflight_check(
+        limit=20,
+        account_mode=account_mode,
+        open_orders=[],
+        positions=[],
+        broker_snapshot_fetched_at=datetime.now(UTC).isoformat(),
+        broker_snapshot_account_mode=account_mode,
+    )
+
+    assert result["status"] == "pass"
+    assert result["account_mode"] == account_mode
+    assert result["candidate_reduction"]["reason"] == "candidate_order_missing"
+    assert captured_account_modes == [account_mode]
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_execution_preflight_check_blocks_snapshot_from_other_account(
     monkeypatch,
 ):
