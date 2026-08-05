@@ -11,7 +11,7 @@ from .engine import (
 )
 from .registry import CandidateRegistry
 from .source import InMemoryUSBarSource, USStageBDailyBar
-from .verdict import FalsificationVerdict
+from .verdict import FalsificationVerdict, RevCostProfileVerdicts
 
 __all__ = [
     "CandidateRegistry",
@@ -19,6 +19,7 @@ __all__ = [
     "FalsificationVerdict",
     "InMemoryUSBarSource",
     "TradeOutcome",
+    "RevCostProfileVerdicts",
     "USCostLiteral",
     "USStageBDailyBar",
     "USStageBRunContract",

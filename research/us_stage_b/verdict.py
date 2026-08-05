@@ -20,7 +20,16 @@ from .registry import CandidateBinding
 if TYPE_CHECKING:
     from .engine import CohortComparison, TradeOutcome
 
-__all__ = ["FalsificationVerdict", "evaluate_falsification"]
+__all__ = [
+    "FalsificationEvaluation",
+    "FalsificationVerdict",
+    "RevCostProfileVerdicts",
+    "evaluate_falsification",
+    "evaluate_falsification_evidence",
+]
+
+
+CostProfile = Literal["base_10bp_per_side", "sensitivity_5bp_per_side"]
 
 
 VerdictState = Literal[
@@ -46,6 +55,7 @@ class FalsificationVerdict:
     falsification_literal: str
     gate_results: Mapping[str, Any]
     invalid_reasons: tuple[str, ...]
+    cost_profile: CostProfile | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -56,8 +66,59 @@ class FalsificationVerdict:
             "falsification_literal": self.falsification_literal,
             "gate_results": dict(self.gate_results),
             "invalid_reasons": list(self.invalid_reasons),
+            "cost_profile": self.cost_profile,
             "promotion": "FORBIDDEN",
         }
+
+
+@dataclass(frozen=True)
+class RevCostProfileVerdicts:
+    """Independent REV verdicts for the two frozen execution-cost profiles."""
+
+    base_10bp_per_side: FalsificationVerdict
+    sensitivity_5bp_per_side: FalsificationVerdict
+
+    def __post_init__(self) -> None:
+        base = self.base_10bp_per_side
+        sensitivity = self.sensitivity_5bp_per_side
+        if base is sensitivity:
+            raise ValueError("REV cost profiles must retain distinct verdict objects")
+        if base.cost_profile != "base_10bp_per_side":
+            raise ValueError("REV base verdict lost its 10bp/side identity")
+        if sensitivity.cost_profile != "sensitivity_5bp_per_side":
+            raise ValueError("REV sensitivity verdict lost its 5bp/side identity")
+        if (
+            base.strategy_id != sensitivity.strategy_id
+            or base.contract_hash != sensitivity.contract_hash
+            or base.labels != sensitivity.labels
+        ):
+            raise ValueError("REV cost-profile verdict provenance mismatch")
+
+    def to_dict(self) -> dict[str, dict[str, Any]]:
+        return {
+            "base_10bp_per_side": self.base_10bp_per_side.to_dict(),
+            "sensitivity_5bp_per_side": self.sensitivity_5bp_per_side.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class FalsificationEvaluation:
+    """Aggregate falsification result plus any required cost-profile evidence."""
+
+    verdict: FalsificationVerdict
+    cost_profile_verdicts: RevCostProfileVerdicts | None
+
+    def __post_init__(self) -> None:
+        is_rev = self.verdict.strategy_id == "US-TS-REV-SHORT-Z3-T126-H3-v1"
+        if is_rev != (self.cost_profile_verdicts is not None):
+            raise ValueError("REV alone requires the frozen dual cost-profile verdicts")
+        if self.cost_profile_verdicts is not None:
+            base = self.cost_profile_verdicts.base_10bp_per_side
+            if (
+                self.verdict.contract_hash != base.contract_hash
+                or self.verdict.labels != base.labels
+            ):
+                raise ValueError("aggregate REV verdict provenance mismatch")
 
 
 def evaluate_falsification(
@@ -68,7 +129,26 @@ def evaluate_falsification(
     run_invalid: bool,
     invalid_reasons: Sequence[str],
 ) -> FalsificationVerdict:
-    """Apply only the frozen candidate's own falsification literal and gates."""
+    """Return the aggregate frozen-candidate verdict for compatibility callers."""
+
+    return evaluate_falsification_evidence(
+        candidate=candidate,
+        outcomes=outcomes,
+        cohorts=cohorts,
+        run_invalid=run_invalid,
+        invalid_reasons=invalid_reasons,
+    ).verdict
+
+
+def evaluate_falsification_evidence(
+    *,
+    candidate: CandidateBinding,
+    outcomes: Sequence[TradeOutcome],
+    cohorts: Sequence[CohortComparison],
+    run_invalid: bool,
+    invalid_reasons: Sequence[str],
+) -> FalsificationEvaluation:
+    """Produce aggregate evidence and the mandatory independent REV pair."""
 
     completed = tuple(outcome for outcome in outcomes if outcome.status == "completed")
     validation_completed = tuple(
@@ -102,18 +182,6 @@ def evaluate_falsification(
             for year in (2023, 2024)
         },
     }
-    if run_invalid:
-        return _verdict(
-            candidate,
-            "RUN_INVALID",
-            {
-                **common,
-                "run_invalid": True,
-                "maturity_close_missing_policy": "RUN_INVALID",
-            },
-            invalid_reasons,
-        )
-
     resolved_validation = tuple(
         cohort
         for cohort in cohorts
@@ -134,12 +202,45 @@ def evaluate_falsification(
         ),
     }
 
-    if candidate.strategy_id == "US-TS-MOM-CONT-Z126-H20-v1":
-        return _evaluate_mom(candidate, common, coverage, resolved_validation)
     if candidate.strategy_id == "US-TS-REV-SHORT-Z3-T126-H3-v1":
-        return _evaluate_rev(candidate, common, coverage, resolved_validation)
+        profiles = _evaluate_rev_cost_profile_verdicts(
+            candidate=candidate,
+            common=common,
+            coverage=coverage,
+            validation=resolved_validation,
+            run_invalid=run_invalid,
+            invalid_reasons=invalid_reasons,
+        )
+        return FalsificationEvaluation(
+            verdict=_compose_rev_dual_falsification(candidate, profiles),
+            cost_profile_verdicts=profiles,
+        )
+    if run_invalid:
+        return FalsificationEvaluation(
+            verdict=_verdict(
+                candidate,
+                "RUN_INVALID",
+                {
+                    **common,
+                    "run_invalid": True,
+                    "maturity_close_missing_policy": "RUN_INVALID",
+                },
+                invalid_reasons,
+            ),
+            cost_profile_verdicts=None,
+        )
+    if candidate.strategy_id == "US-TS-MOM-CONT-Z126-H20-v1":
+        return FalsificationEvaluation(
+            verdict=_evaluate_mom(candidate, common, coverage, resolved_validation),
+            cost_profile_verdicts=None,
+        )
     if candidate.strategy_id == "US-TS-VOLBREAK-C55-V2-H10-v1":
-        return _evaluate_volbreak(candidate, common, coverage, resolved_validation)
+        return FalsificationEvaluation(
+            verdict=_evaluate_volbreak(
+                candidate, common, coverage, resolved_validation
+            ),
+            cost_profile_verdicts=None,
+        )
     raise ValueError(f"unsupported US candidate {candidate.strategy_id!r}")
 
 
@@ -183,11 +284,46 @@ def _evaluate_mom(
     return _verdict(candidate, "NOT_FALSIFIED_EXPLORATORY_ONLY", gates)
 
 
-def _evaluate_rev(
+def _evaluate_rev_cost_profile_verdicts(
+    *,
     candidate: CandidateBinding,
     common: Mapping[str, Any],
     coverage: Mapping[str, int],
     validation: Sequence[CohortComparison],
+    run_invalid: bool,
+    invalid_reasons: Sequence[str],
+) -> RevCostProfileVerdicts:
+    return RevCostProfileVerdicts(
+        base_10bp_per_side=_evaluate_rev_at_cost_profile(
+            candidate=candidate,
+            common=common,
+            coverage=coverage,
+            validation=validation,
+            cost_profile="base_10bp_per_side",
+            run_invalid=run_invalid,
+            invalid_reasons=invalid_reasons,
+        ),
+        sensitivity_5bp_per_side=_evaluate_rev_at_cost_profile(
+            candidate=candidate,
+            common=common,
+            coverage=coverage,
+            validation=validation,
+            cost_profile="sensitivity_5bp_per_side",
+            run_invalid=run_invalid,
+            invalid_reasons=invalid_reasons,
+        ),
+    )
+
+
+def _evaluate_rev_at_cost_profile(
+    *,
+    candidate: CandidateBinding,
+    common: Mapping[str, Any],
+    coverage: Mapping[str, int],
+    validation: Sequence[CohortComparison],
+    cost_profile: CostProfile,
+    run_invalid: bool,
+    invalid_reasons: Sequence[str],
 ) -> FalsificationVerdict:
     by_year = common["validation_completed_by_entry_year"]
     frequency_pass = (
@@ -199,18 +335,22 @@ def _evaluate_rev(
         and by_year["2024"] >= 80
     )
     metrics = _validation_metrics(validation)
-    base_excess = metrics["base_entry_session_equal_weighted_excess"]
-    sensitivity_excess = metrics["sensitivity_entry_session_equal_weighted_excess"]
-    cost_sensitive = (
-        base_excess is not None
-        and sensitivity_excess is not None
-        and base_excess <= 0.0
-        and sensitivity_excess > 0.0
-    )
+    metric_name = {
+        "base_10bp_per_side": "base_entry_session_equal_weighted_excess",
+        "sensitivity_5bp_per_side": "sensitivity_entry_session_equal_weighted_excess",
+    }[cost_profile]
+    excess = metrics[metric_name]
+    bp_per_side = 10 if cost_profile == "base_10bp_per_side" else 5
     gates = {
         **common,
         **coverage,
         **metrics,
+        "cost_profile": cost_profile,
+        "cost_bp_per_side": bp_per_side,
+        "profile_entry_session_equal_weighted_excess": excess,
+        "profile_entry_session_equal_weighted_excess_gt_zero": (
+            excess is not None and excess > 0.0
+        ),
         "frequency_gate": {
             "completed_trade_min": 1_000,
             "unique_entry_session_min": 200,
@@ -219,29 +359,79 @@ def _evaluate_rev(
             "validation_each_entry_year_min": 80,
             "passed": frequency_pass,
         },
-        "base_10bp_per_side_entry_session_equal_weighted_excess_gt_zero": (
-            base_excess is not None and base_excess > 0.0
-        ),
-        "sensitivity_5bp_per_side_entry_session_equal_weighted_excess_gt_zero": (
-            sensitivity_excess is not None and sensitivity_excess > 0.0
-        ),
-        "cost_sensitive_failure": cost_sensitive,
     }
-    if not frequency_pass:
-        return _verdict(candidate, "FALSIFIED_FREQUENCY", gates)
-    if coverage["validation_cohort_unavailable_count"]:
-        return _verdict(candidate, "UNIDENTIFIABLE_COHORT", gates)
-    if base_excess is None or sensitivity_excess is None:
-        return _verdict(candidate, "UNIDENTIFIABLE_COHORT", gates)
-    if base_excess <= 0.0:
+    if run_invalid:
         return _verdict(
             candidate,
-            "FALSIFIED_COST_SENSITIVE"
-            if cost_sensitive
-            else "FALSIFIED_VALIDATION_COHORT_EXCESS",
-            gates,
+            "RUN_INVALID",
+            {
+                **gates,
+                "run_invalid": True,
+                "maturity_close_missing_policy": "RUN_INVALID",
+            },
+            invalid_reasons,
+            cost_profile=cost_profile,
         )
-    return _verdict(candidate, "NOT_FALSIFIED_EXPLORATORY_ONLY", gates)
+    if not frequency_pass:
+        return _verdict(
+            candidate, "FALSIFIED_FREQUENCY", gates, cost_profile=cost_profile
+        )
+    if coverage["validation_cohort_unavailable_count"]:
+        return _verdict(
+            candidate, "UNIDENTIFIABLE_COHORT", gates, cost_profile=cost_profile
+        )
+    if excess is None:
+        return _verdict(
+            candidate, "UNIDENTIFIABLE_COHORT", gates, cost_profile=cost_profile
+        )
+    if excess <= 0.0:
+        return _verdict(
+            candidate,
+            "FALSIFIED_VALIDATION_COHORT_EXCESS",
+            gates,
+            cost_profile=cost_profile,
+        )
+    return _verdict(
+        candidate,
+        "NOT_FALSIFIED_EXPLORATORY_ONLY",
+        gates,
+        cost_profile=cost_profile,
+    )
+
+
+def _compose_rev_dual_falsification(
+    candidate: CandidateBinding,
+    profiles: RevCostProfileVerdicts,
+) -> FalsificationVerdict:
+    """Compose the frozen REV classification from independently evaluated costs."""
+
+    base = profiles.base_10bp_per_side
+    sensitivity = profiles.sensitivity_5bp_per_side
+    cost_sensitive = (
+        base.state == "FALSIFIED_VALIDATION_COHORT_EXCESS"
+        and sensitivity.state == "NOT_FALSIFIED_EXPLORATORY_ONLY"
+    )
+    gates = {
+        "dual_verdicts_are_distinct_objects": base is not sensitivity,
+        "base_10bp_per_side_verdict_state": base.state,
+        "sensitivity_5bp_per_side_verdict_state": sensitivity.state,
+        "base_10bp_per_side_verdict": base.to_dict(),
+        "sensitivity_5bp_per_side_verdict": sensitivity.to_dict(),
+        "cost_sensitive_failure": cost_sensitive,
+    }
+    if base.state == sensitivity.state:
+        state = base.state
+    elif cost_sensitive:
+        state = "FALSIFIED_COST_SENSITIVE"
+    else:
+        # The 10bp/side gate is the frozen decisive gate.  The independent
+        # 5bp/side result remains serialized above rather than being folded
+        # into a single predicate.
+        state = base.state
+    invalid_reasons = tuple(
+        dict.fromkeys((*base.invalid_reasons, *sensitivity.invalid_reasons))
+    )
+    return _verdict(candidate, state, gates, invalid_reasons)
 
 
 def _evaluate_volbreak(
@@ -404,6 +594,8 @@ def _verdict(
     state: VerdictState,
     gates: Mapping[str, Any],
     invalid_reasons: Sequence[str] = (),
+    *,
+    cost_profile: CostProfile | None = None,
 ) -> FalsificationVerdict:
     return FalsificationVerdict(
         strategy_id=candidate.strategy_id,
@@ -413,4 +605,5 @@ def _verdict(
         falsification_literal=candidate.falsification,
         gate_results=dict(gates),
         invalid_reasons=tuple(invalid_reasons),
+        cost_profile=cost_profile,
     )

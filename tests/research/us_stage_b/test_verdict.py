@@ -4,7 +4,10 @@ from datetime import date, timedelta
 
 from research.us_stage_b.engine import CohortComparison, TradeOutcome
 from research.us_stage_b.registry import US_CANDIDATE_ORDER
-from research.us_stage_b.verdict import evaluate_falsification
+from research.us_stage_b.verdict import (
+    evaluate_falsification,
+    evaluate_falsification_evidence,
+)
 
 from .conftest import candidate
 
@@ -156,16 +159,44 @@ def test_rev_identifies_the_frozen_10bp_fail_5bp_positive_cost_sensitive_case(
         base_excess=-0.001,
         sensitivity_excess=0.001,
     )
-    verdict = evaluate_falsification(
+    evaluation = evaluate_falsification_evidence(
         candidate=binding,
         outcomes=outcomes,
         cohorts=cohorts,
         run_invalid=False,
         invalid_reasons=(),
     )
+    verdict = evaluation.verdict
 
     assert verdict.state == "FALSIFIED_COST_SENSITIVE"
     assert verdict.gate_results["cost_sensitive_failure"] is True
+    assert evaluation.cost_profile_verdicts is not None
+    assert (
+        evaluation.cost_profile_verdicts.base_10bp_per_side.state
+        == "FALSIFIED_VALIDATION_COHORT_EXCESS"
+    )
+    assert (
+        evaluation.cost_profile_verdicts.sensitivity_5bp_per_side.state
+        == "NOT_FALSIFIED_EXPLORATORY_ONLY"
+    )
+
+
+def test_rev_run_invalid_is_emitted_for_both_cost_profiles(registry) -> None:
+    binding = candidate(registry, US_CANDIDATE_ORDER[1])
+    evaluation = evaluate_falsification_evidence(
+        candidate=binding,
+        outcomes=(),
+        cohorts=(),
+        run_invalid=True,
+        invalid_reasons=("RUN_INVALID_MISSING_EXIT_TERMINAL:REV",),
+    )
+
+    assert evaluation.verdict.state == "RUN_INVALID"
+    assert evaluation.cost_profile_verdicts is not None
+    assert evaluation.cost_profile_verdicts.base_10bp_per_side.state == "RUN_INVALID"
+    assert (
+        evaluation.cost_profile_verdicts.sensitivity_5bp_per_side.state == "RUN_INVALID"
+    )
 
 
 def test_volbreak_rejects_top_one_percent_extreme_dependence(registry) -> None:

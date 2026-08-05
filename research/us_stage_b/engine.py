@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from statistics import mean
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from .contracts import USStageBRunContract
 from .signals import SignalObservation, evaluate_signal
@@ -24,6 +24,9 @@ from .source import (
     USStageBDailyBar,
     USStageBInputError,
 )
+
+if TYPE_CHECKING:
+    from .verdict import FalsificationVerdict, RevCostProfileVerdicts
 
 __all__ = [
     "CohortComparison",
@@ -44,7 +47,6 @@ OutcomeStatus = Literal[
     "completed",
     "entry_no_fill",
     "capacity_rejected",
-    "censored_at_exploration_boundary",
     "run_invalid_missing_exit",
 ]
 
@@ -160,7 +162,23 @@ class USStageBRunResult:
     run_invalid: bool
     invalid_reasons: tuple[str, ...]
     access_summary: Mapping[str, int]
-    verdict: Any
+    verdict: FalsificationVerdict
+    cost_profile_verdicts: RevCostProfileVerdicts | None
+
+    def __post_init__(self) -> None:
+        is_rev = self.strategy_id == "US-TS-REV-SHORT-Z3-T126-H3-v1"
+        if is_rev != (self.cost_profile_verdicts is not None):
+            raise USStageBRunError(
+                "REV runs must retain both frozen cost-profile verdicts"
+            )
+        if self.cost_profile_verdicts is not None:
+            base = self.cost_profile_verdicts.base_10bp_per_side
+            if (
+                base.strategy_id != self.strategy_id
+                or base.contract_hash != self.contract_hash
+                or base.labels != self.labels
+            ):
+                raise USStageBRunError("cost-profile verdict provenance mismatch")
 
     @property
     def strategy_id(self) -> str:
@@ -206,6 +224,11 @@ class USStageBRunResult:
             "maturity_close_missing_policy": "RUN_INVALID",
             "access_summary": dict(self.access_summary),
             "verdict": self.verdict.to_dict(),
+            "cost_profile_verdicts": (
+                self.cost_profile_verdicts.to_dict()
+                if self.cost_profile_verdicts is not None
+                else None
+            ),
         }
 
 
@@ -287,7 +310,7 @@ def run_us_stage_b(
                 _outcome(
                     contract,
                     observation,
-                    status="censored_at_exploration_boundary",
+                    status="entry_no_fill",
                     selection_rank=None,
                     entry_session=None,
                 )
@@ -342,9 +365,9 @@ def run_us_stage_b(
         bars_by_symbol=bars_by_symbol,
         sessions=sessions,
     )
-    from .verdict import evaluate_falsification
+    from .verdict import evaluate_falsification_evidence
 
-    verdict = evaluate_falsification(
+    evaluation = evaluate_falsification_evidence(
         candidate=contract.candidate,
         outcomes=tuple(outcomes),
         cohorts=cohorts,
@@ -360,7 +383,8 @@ def run_us_stage_b(
         run_invalid=bool(invalid_reasons),
         invalid_reasons=tuple(invalid_reasons),
         access_summary=boundary_source.summary(),
-        verdict=verdict,
+        verdict=evaluation.verdict,
+        cost_profile_verdicts=evaluation.cost_profile_verdicts,
     )
 
 
@@ -488,11 +512,16 @@ def _execute_selected_signal(
         )
     entry_open = float(entry_bar.open)
     if exit_index >= len(sessions):
+        reason = (
+            "RUN_INVALID_MISSING_EXIT_TERMINAL:"
+            f"{observation.symbol}:entry={entry_session.isoformat()}:"
+            f"required_exit_session_index={exit_index}"
+        )
         return (
             _outcome(
                 contract,
                 observation,
-                status="censored_at_exploration_boundary",
+                status="run_invalid_missing_exit",
                 selection_rank=selection_rank,
                 entry_session=entry_session,
                 entry_open=entry_open,
@@ -502,7 +531,7 @@ def _execute_selected_signal(
                 entry_session=entry_session,
                 exit_session=None,
             ),
-            None,
+            reason,
         )
     exit_session = sessions[exit_index]
     exit_bar = bars[exit_index]
