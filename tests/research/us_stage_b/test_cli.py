@@ -263,3 +263,51 @@ def test_cli_two_runs_are_byte_identical(tmp_path: Path) -> None:
     assert json.dumps(payload_a, sort_keys=True) == json.dumps(
         payload_b, sort_keys=True
     )
+
+
+def _multi_signal_volbreak_year(tmp_path: Path) -> Path:
+    """Two symbols with true VOLBREAK signals so observation list order is tested."""
+
+    year_root = tmp_path / "corpus" / "year=2023"
+    rows: list[dict] = []
+    base = date(2023, 1, 3)
+    for symbol, adv_mult in (("AAA", 2.0), ("BBB", 1.0)):
+        for index in range(80):
+            session = date.fromordinal(base.toordinal() + index)
+            close = 100.0 + index * 0.1
+            volume = 50_000.0 * adv_mult
+            if index == 55:
+                close = 107.0
+                volume = 100_000.0 * adv_mult
+            elif index > 55:
+                close = 106.0
+            rows.append(_row(symbol, session, close=close, volume=volume))
+    return _write_year(year_root, rows)
+
+
+def test_cli_two_runs_byte_identical_with_multi_signal_order(tmp_path: Path) -> None:
+    """Determinism must cover list order when ≥2 signals are present (SHOULD-1)."""
+
+    year_root = _multi_signal_volbreak_year(tmp_path)
+    out_a = tmp_path / "multi-a.json"
+    out_b = tmp_path / "multi-b.json"
+    run_from_args(_base_args(tmp_path, year_root=year_root, output=out_a))
+    run_from_args(_base_args(tmp_path, year_root=year_root, output=out_b))
+    payload_a = json.loads(out_a.read_text(encoding="utf-8"))
+    payload_b = json.loads(out_b.read_text(encoding="utf-8"))
+    payload_a["adapter"].pop("engine_wall_seconds", None)
+    payload_b["adapter"].pop("engine_wall_seconds", None)
+    assert len(payload_a["observations"]) >= 2
+    assert [item["symbol"] for item in payload_a["observations"]] == [
+        item["symbol"] for item in payload_b["observations"]
+    ]
+    assert json.dumps(payload_a, sort_keys=True, separators=(",", ":")) == json.dumps(
+        payload_b, sort_keys=True, separators=(",", ":")
+    )
+    # Order-sensitive mutant: reverse observations must not match original bytes.
+    mutant = json.loads(json.dumps(payload_a))
+    mutant["observations"] = list(reversed(mutant["observations"]))
+    if len(mutant["observations"]) >= 2:
+        assert json.dumps(mutant, sort_keys=True, separators=(",", ":")) != json.dumps(
+            payload_a, sort_keys=True, separators=(",", ":")
+        )
