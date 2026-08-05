@@ -188,6 +188,7 @@ def test_preflight_rejects_duplicate_source_key(
     ("row_overrides", "reason"),
     [
         ({"volume": -1.0, "value": -11.0}, "negative_volume"),
+        ({"volume": "not-a-number"}, "non_numeric_candle_value"),
         ({"high": 10.0}, "incoherent_ohlc_values"),
         ({"value": 54.0}, "synthetic_value_mismatch"),
     ],

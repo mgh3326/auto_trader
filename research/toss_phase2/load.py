@@ -387,18 +387,11 @@ def _validate_batch(
         if timestamp.second or timestamp.microsecond:
             raise StagingValidationError(f"non_minute_timestamp:{path.name}")
 
-    volumes = _column(batch, "volume").to_pylist()
-    paddings = _column(batch, "is_padding").to_pylist()
-    if any(
-        bool(padding) is not (float(volume) == 0.0)
-        for volume, padding in zip(volumes, paddings, strict=True)
-    ):
-        raise StagingValidationError(f"invalid_padding_semantics:{path.name}")
-
     opens = _column(batch, "open").to_pylist()
     highs = _column(batch, "high").to_pylist()
     lows = _column(batch, "low").to_pylist()
     closes = _column(batch, "close").to_pylist()
+    volumes = _column(batch, "volume").to_pylist()
     values = _column(batch, "value").to_pylist()
     for open_, high, low, close, volume, value in zip(
         opens,
@@ -446,6 +439,15 @@ def _validate_batch(
             abs_tol=VALUE_ABSOLUTE_TOLERANCE,
         ):
             raise StagingValidationError(f"synthetic_value_mismatch:{path.name}")
+
+    paddings = _column(batch, "is_padding").to_pylist()
+    if any(not isinstance(padding, bool) for padding in paddings):
+        raise StagingValidationError(f"invalid_padding_type:{path.name}")
+    if any(
+        padding is not (float(volume) == 0.0)
+        for volume, padding in zip(volumes, paddings, strict=True)
+    ):
+        raise StagingValidationError(f"invalid_padding_semantics:{path.name}")
 
 
 def iter_validated_batches(
