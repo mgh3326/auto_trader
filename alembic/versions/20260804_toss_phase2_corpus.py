@@ -21,7 +21,10 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 TABLE_NAME = "kr_candles_1m_toss"
-SESSION_SEGMENTS = ("NXT_PRE", "KRX_REGULAR", "NXT_POST", "UNKNOWN")
+# A Toss row whose clock-time segment cannot be proven is rejected by the
+# collector/loader before it reaches this table.  ``UNKNOWN`` is deliberately
+# absent: storing it would turn a fail-closed classification error into data.
+SESSION_SEGMENTS = ("NXT_PRE", "KRX_REGULAR", "NXT_POST")
 VALUE_SEMANTICS = "CLOSE_X_VOLUME_SYNTHETIC"
 CAGG_SPECS = (
     ("kr_candles_5m_toss", "5 minutes"),

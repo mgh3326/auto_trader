@@ -1,5 +1,6 @@
 """Toss Phase 2 combined-KRX/NXT staging collector.
 
-This package deliberately writes Parquet staging only.  It has no database
-loader and is not a backtest input surface.
+The collector writes Parquet staging only.  The separately invoked loader
+snapshots completed fragments into the dedicated combined-KRX/NXT research
+table; neither surface is a backtest input.
 """

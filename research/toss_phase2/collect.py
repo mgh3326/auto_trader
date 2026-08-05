@@ -69,6 +69,10 @@ class CollectionStopped(RuntimeError):
     """A deliberate, fail-closed stop that leaves staging resumable."""
 
 
+class UnclassifiableSessionSegment(CollectionStopped):
+    """A candle outside the approved KST session labels must not be staged."""
+
+
 def _transient_resume_reason(exc: Exception) -> str | None:
     """Classify only failures safe to retry without issuing an OAuth token."""
 
@@ -647,7 +651,9 @@ def classify_session_segment(timestamp_kst: datetime) -> str:
         return "KRX_REGULAR"
     if local_time(15, 30) < clock <= local_time(20, 0):
         return "NXT_POST"
-    return "UNKNOWN"
+    raise UnclassifiableSessionSegment(
+        "session_segment_unclassifiable:" + timestamp_kst.astimezone(KST).isoformat()
+    )
 
 
 def normalize_timestamp(raw: Any) -> tuple[datetime, datetime]:

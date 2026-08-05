@@ -21,6 +21,7 @@ def test_toss_corpus_is_separate_and_venue_free() -> None:
     assert "venue TEXT" not in source
     assert "UNIQUE (time_utc, symbol)" in source
     assert "session_segment TEXT NOT NULL" in source
+    assert "UNKNOWN" not in migration.SESSION_SEGMENTS
     assert "CHECK (source = 'TOSS')" in source
 
 

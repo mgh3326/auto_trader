@@ -6,8 +6,9 @@ does not load data into any table.
 
 The product is physically separate because Toss may combine KRX and NXT bars
 for NXT-eligible symbols. `session_segment` is only a KST time-of-day label
-(`NXT_PRE`, `KRX_REGULAR`, `NXT_POST`, or `UNKNOWN`); it is never a trade-venue
-claim and no `venue` column is produced.
+(`NXT_PRE`, `KRX_REGULAR`, or `NXT_POST`); it is never a trade-venue claim and
+no `venue` column is produced. An unclassifiable timestamp is a fail-closed
+error: it is neither staged nor loaded as `UNKNOWN`.
 
 Consumer rules:
 

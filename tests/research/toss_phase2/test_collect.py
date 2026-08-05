@@ -17,6 +17,7 @@ from research.toss_phase2.collect import (
     CollectionStopped,
     ProductionTossLogMonitor,
     SharedTossHealthMonitor,
+    UnclassifiableSessionSegment,
     classify_session_segment,
     collection_stats_from_checkpoint,
     cumulative_calls_from_progress,
@@ -44,12 +45,16 @@ def test_empty_configured_base_url_uses_toss_transport_default() -> None:
         ((15, 30), "KRX_REGULAR"),
         ((15, 31), "NXT_POST"),
         ((20, 0), "NXT_POST"),
-        ((20, 1), "UNKNOWN"),
+        ((20, 1), None),
     ],
 )
 def test_session_segment_is_clock_time_only(clock, expected) -> None:
     timestamp = datetime(2026, 8, 3, *clock, tzinfo=KST)
-    assert classify_session_segment(timestamp) == expected
+    if expected is None:
+        with pytest.raises(UnclassifiableSessionSegment):
+            classify_session_segment(timestamp)
+    else:
+        assert classify_session_segment(timestamp) == expected
 
 
 @dataclass
