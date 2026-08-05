@@ -8,7 +8,6 @@ there are no heuristic aliases.
 
 from __future__ import annotations
 
-import math
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -394,13 +393,18 @@ def _coerce_session_date(value: Any, *, path: Path, row_index: int) -> date:
 
 
 def _coerce_optional_float(value: Any) -> float | None:
+    """Bind a numeric cell without cleaning.
+
+    Null stays None.  Finite and non-finite floats (NaN/±Inf) are preserved
+    exactly so the #1797 signal engine can exclude them via its own
+    ``_finite_positive`` checks — this adapter must not coerce them away.
+    """
+
     if value is None:
         return None
     if isinstance(value, bool):
         raise CorpusPathAccessError("boolean numeric cell is invalid for US bars")
     if isinstance(value, (int, float)):
-        number = float(value)
-        if math.isnan(number) or math.isinf(number):
-            return number
-        return number
+        # float() preserves math.nan / ±inf; do not special-case them here.
+        return float(value)
     raise CorpusPathAccessError(f"non-numeric OHLC/volume cell: {type(value).__name__}")

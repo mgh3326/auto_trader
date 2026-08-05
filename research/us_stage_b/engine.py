@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from statistics import mean
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from .contracts import USStageBRunContract
 from .signals import SignalObservation, evaluate_signal
@@ -37,6 +37,55 @@ __all__ = [
     "rank_signal_observations",
     "run_us_stage_b",
 ]
+
+
+class _HistoryPrefix(Sequence[USStageBDailyBar | None]):
+    """O(1) prefix view over an aligned bar series.
+
+    The engine evaluates every symbol on every session.  Copying
+    ``bars[:session_index + 1]`` would be O(sessions² × symbols) of tuple
+    allocation without changing any formula result.  This view preserves the
+    Sequence contract used by the signal engine while sharing the underlying
+    row storage.
+    """
+
+    __slots__ = ("_bars", "_end")
+
+    def __init__(
+        self,
+        bars: Sequence[USStageBDailyBar | None],
+        end_exclusive: int,
+    ) -> None:
+        if end_exclusive < 0 or end_exclusive > len(bars):
+            raise USStageBRunError("history prefix end is out of range")
+        self._bars = bars
+        self._end = end_exclusive
+
+    def __len__(self) -> int:
+        return self._end
+
+    @overload
+    def __getitem__(self, index: int) -> USStageBDailyBar | None: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[USStageBDailyBar | None]: ...
+
+    def __getitem__(
+        self, index: int | slice
+    ) -> USStageBDailyBar | None | list[USStageBDailyBar | None]:
+        if isinstance(index, slice):
+            start, stop, step = index.indices(self._end)
+            return [self._bars[position] for position in range(start, stop, step)]
+        if not isinstance(index, int):
+            raise TypeError("history index must be int or slice")
+        position = index if index >= 0 else index + self._end
+        if position < 0 or position >= self._end:
+            raise IndexError("history index out of range")
+        return self._bars[position]
+
+    def __iter__(self) -> Iterator[USStageBDailyBar | None]:
+        for position in range(self._end):
+            yield self._bars[position]
 
 
 class USStageBRunError(RuntimeError):
@@ -152,7 +201,13 @@ class CohortComparison:
 
 @dataclass(frozen=True)
 class USStageBRunResult:
-    """Serializable full run state; an empty result remains explicitly labeled."""
+    """Serializable run state with compact observation persistence.
+
+    Every symbol×session cell is still evaluated for ranking/cohorts.  The
+    retained ``observations`` tuple and artifact JSON keep only true-signal
+    rows; aggregate counts cover the non-signal mass.  Outcomes, cohorts,
+    verdicts, and costs are unchanged.
+    """
 
     contract: USStageBRunContract
     corpus_sessions: tuple[date, ...]
@@ -164,6 +219,7 @@ class USStageBRunResult:
     access_summary: Mapping[str, int]
     verdict: FalsificationVerdict
     cost_profile_verdicts: RevCostProfileVerdicts | None
+    observation_summary: Mapping[str, Any]
 
     def __post_init__(self) -> None:
         is_rev = self.strategy_id == "US-TS-REV-SHORT-Z3-T126-H3-v1"
@@ -179,6 +235,11 @@ class USStageBRunResult:
                 or base.labels != self.labels
             ):
                 raise USStageBRunError("cost-profile verdict provenance mismatch")
+        if any(not observation.signal for observation in self.observations):
+            raise USStageBRunError(
+                "persisted observations must be signal=true only; "
+                "non-signal mass belongs in observation_summary"
+            )
 
     @property
     def strategy_id(self) -> str:
@@ -216,6 +277,7 @@ class USStageBRunResult:
             ],
             "contract": self.contract.to_dict(),
             "observations": [item.to_dict() for item in self.observations],
+            "observation_summary": dict(self.observation_summary),
             "outcomes": [item.to_dict() for item in self.outcomes],
             "cohort_comparisons": [item.to_dict() for item in self.cohorts],
             "outcome_status_counts": dict(sorted(status_counts.items())),
@@ -277,10 +339,17 @@ def run_us_stage_b(
     )
     bars_by_symbol = _load_aligned_bars(boundary_source, symbols, sessions)
 
-    observations: list[SignalObservation] = []
+    # Cohort leave-one-out needs same-session universe_eligible members.  True
+    # signals are a subset.  Non-eligible non-signal cells are counted only.
+    cohort_observations: list[SignalObservation] = []
+    signal_observations: list[SignalObservation] = []
     outcomes: list[TradeOutcome] = []
     reservations: list[_Reservation] = []
     invalid_reasons: list[str] = []
+    observation_total = 0
+    signal_true_count = 0
+    universe_eligible_count = 0
+    exclusion_reason_counts: Counter[str] = Counter()
     hold_sessions = _required_positive_int(contract, "hold_sessions")
     max_positions = _required_positive_int(contract, "max_positions")
 
@@ -296,12 +365,20 @@ def run_us_stage_b(
                 contract.candidate,
                 symbol=symbol,
                 session_date=session,
-                history=bars_by_symbol[symbol][: session_index + 1],
+                history=_HistoryPrefix(bars_by_symbol[symbol], session_index + 1),
                 no_active_position=symbol not in active_symbols,
             )
-            observations.append(observation)
+            observation_total += 1
+            if observation.universe_eligible:
+                universe_eligible_count += 1
+            if observation.exclusion_reason is not None:
+                exclusion_reason_counts[observation.exclusion_reason] += 1
             if observation.signal:
+                signal_true_count += 1
                 daily_signals.append(observation)
+                signal_observations.append(observation)
+            if observation.signal or observation.universe_eligible:
+                cohort_observations.append(observation)
 
         if not daily_signals:
             continue
@@ -361,7 +438,7 @@ def run_us_stage_b(
     cohorts = _build_cohort_comparisons(
         contract=contract,
         outcomes=tuple(outcomes),
-        observations=tuple(observations),
+        observations=tuple(cohort_observations),
         bars_by_symbol=bars_by_symbol,
         sessions=sessions,
     )
@@ -374,10 +451,18 @@ def run_us_stage_b(
         run_invalid=bool(invalid_reasons),
         invalid_reasons=tuple(invalid_reasons),
     )
+    observation_summary: dict[str, Any] = {
+        "total_evaluated": observation_total,
+        "signal_true": signal_true_count,
+        "universe_eligible": universe_eligible_count,
+        "persisted": "signal_true_only",
+        "persisted_count": len(signal_observations),
+        "exclusion_reason_counts": dict(sorted(exclusion_reason_counts.items())),
+    }
     return USStageBRunResult(
         contract=contract,
         corpus_sessions=sessions,
-        observations=tuple(observations),
+        observations=tuple(signal_observations),
         outcomes=tuple(outcomes),
         cohorts=cohorts,
         run_invalid=bool(invalid_reasons),
@@ -385,6 +470,7 @@ def run_us_stage_b(
         access_summary=boundary_source.summary(),
         verdict=evaluation.verdict,
         cost_profile_verdicts=evaluation.cost_profile_verdicts,
+        observation_summary=observation_summary,
     )
 
 

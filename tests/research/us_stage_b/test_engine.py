@@ -114,6 +114,13 @@ def test_entry_and_maturity_follow_corpus_session_index_not_calendar_days(
     assert outcome.entry_session != outcome.signal_session + timedelta(days=1)
     assert outcome.exit_session != outcome.entry_session + timedelta(days=10)
     assert result.access_summary["outside_boundary_reads"] == 0
+    assert result.observation_summary["total_evaluated"] == len(sessions)
+    assert result.observation_summary["persisted"] == "signal_true_only"
+    assert result.observation_summary["signal_true"] == len(result.observations)
+    assert all(item.signal for item in result.observations)
+    rendered = result.to_dict()
+    assert rendered["observation_summary"]["total_evaluated"] == len(sessions)
+    assert all(item["signal"] is True for item in rendered["observations"])
 
 
 def test_missing_selected_maturity_close_invalidates_the_whole_run(registry) -> None:

@@ -192,13 +192,27 @@ def test_atomic_write_refuses_overwrite_and_is_durable(tmp_path: Path) -> None:
     path = tmp_path / "artifact.json"
     atomic_write_json(path, {"a": 1})
     assert json.loads(path.read_text(encoding="utf-8")) == {"a": 1}
-    assert not path.with_name(path.name + ".partial").exists()
+    assert list(tmp_path.glob("*.partial")) == []
     with pytest.raises(CliRejection, match="overwrite"):
         atomic_write_json(path, {"a": 2})
 
 
+def test_atomic_write_cleans_stranded_partial_before_write(tmp_path: Path) -> None:
+    path = tmp_path / "artifact.json"
+    legacy = path.with_name(path.name + ".partial")
+    legacy.write_text("stranded", encoding="utf-8")
+    unique = path.with_name(f"{path.name}.99999.1.partial")
+    unique.write_text("also-stranded", encoding="utf-8")
+    atomic_write_json(path, {"ok": True})
+    assert json.loads(path.read_text(encoding="utf-8")) == {"ok": True}
+    assert not legacy.exists()
+    assert not unique.exists()
+    assert list(tmp_path.glob("*.partial")) == []
+
+
 def test_cli_happy_path_writes_labeled_result_without_forbidden_enumeration(
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     year_root = _minimal_volbreak_year(tmp_path)
     # Plant forbidden siblings that must never appear in access records.
@@ -220,7 +234,32 @@ def test_cli_happy_path_writes_labeled_result_without_forbidden_enumeration(
     assert payload["adapter"]["ORDERS"] == 0
     assert payload["adapter"]["ACCOUNT_CONTACT"] == 0
     assert payload["adapter"]["DB_WRITES"] == 0
+    assert payload["observation_summary"]["persisted"] == "signal_true_only"
+    assert payload["observation_summary"]["total_evaluated"] == 80
+    assert all(item["signal"] is True for item in payload["observations"])
+    assert payload["adapter"]["scale_estimate"]["sessions"] == 80
+    assert payload["adapter"]["scale_estimate"]["symbols"] == 1
     access_paths = payload["adapter"]["path_access_summary"]["year_roots"]
     assert str(year_root) in access_paths
     # No leftover partial after success.
-    assert not output.with_name(output.name + ".partial").exists()
+    assert list(tmp_path.glob("*.partial")) == []
+    err = capsys.readouterr().err
+    assert "SCALE_ESTIMATE" in err
+    assert "sessions=80" in err
+    assert "symbols=1" in err
+
+
+def test_cli_two_runs_are_byte_identical(tmp_path: Path) -> None:
+    year_root = _minimal_volbreak_year(tmp_path)
+    out_a = tmp_path / "a.json"
+    out_b = tmp_path / "b.json"
+    run_from_args(_base_args(tmp_path, year_root=year_root, output=out_a))
+    run_from_args(_base_args(tmp_path, year_root=year_root, output=out_b))
+    # Wall-clock fields differ; strip non-deterministic adapter timing only.
+    payload_a = json.loads(out_a.read_text(encoding="utf-8"))
+    payload_b = json.loads(out_b.read_text(encoding="utf-8"))
+    payload_a["adapter"].pop("engine_wall_seconds", None)
+    payload_b["adapter"].pop("engine_wall_seconds", None)
+    assert json.dumps(payload_a, sort_keys=True) == json.dumps(
+        payload_b, sort_keys=True
+    )

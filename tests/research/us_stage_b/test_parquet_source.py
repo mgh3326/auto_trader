@@ -92,7 +92,7 @@ def test_parquet_source_loads_literal_columns_deterministically(tmp_path: Path) 
     assert summary["rows_loaded"] == 3
     assert spy.forbidden_root_enumerations() == ()
     assert not any(
-        "holdout" in record.path.lower() or "_staging" in record.path
+        "holdout" in record.path.lower() or "_staging" in record.path.lower()
         for record in spy.records
     )
 
