@@ -74,6 +74,18 @@ except ImportError:  # pragma: no cover - direct CLI execution
         write_surface_manifest,
     )
 try:
+    from .surface_runtime import (
+        build_kis_surface_client,
+        is_kis_live_immediate_stop,
+        source_for_surface,
+    )
+except ImportError:  # pragma: no cover - direct CLI execution
+    from surface_runtime import (
+        build_kis_surface_client,
+        is_kis_live_immediate_stop,
+        source_for_surface,
+    )
+try:
     from .sources import (  # noqa: E402
         AUTH_STALE_TOKEN,
         EMPTY_RESPONSE,
@@ -465,8 +477,10 @@ async def run_stream(
     start_date: date,
     end_date: date,
     batch_id: str,
+    *,
+    surface_id: str | None = None,
 ) -> StreamStats:
-    pipe_id = source
+    pipe_id = surface_id or source
     stats = StreamStats(source=pipe_id, symbols_total=len(symbols))
     pacer = Pacer(source)
     start_dt = datetime.combine(start_date, datetime.min.time())
@@ -565,6 +579,10 @@ async def run_stream(
                             "pacer": pacer.snapshot(),
                         }
                     )
+                    if pipe_id == "kis_live" and is_kis_live_immediate_stop(exc):
+                        stats.stopped_reason = f"kis_live immediate stop: {reason_code}"
+                        ckpt.save()
+                        return stats
                     guard.note_429(pipe_id, is_429)
                     if reason_code == AUTH_STALE_TOKEN:
                         stats.stopped_reason = (
@@ -1417,6 +1435,17 @@ async def main() -> int:
     ap.add_argument("--end-date", required=True)
     ap.add_argument("--sources", default="toss,kiwoom,kis")
     ap.add_argument(
+        "--surface-id",
+        choices=("kis_mock", "kis_live"),
+        default=None,
+        help="bind a single generic source stream to one explicit KIS surface",
+    )
+    ap.add_argument(
+        "--kis-latest-eligible-date",
+        default=None,
+        help="required for KIS surfaces; newest date after latest-session exclusion",
+    )
+    ap.add_argument(
         "--surface",
         choices=("mock", "live"),
         default=None,
@@ -1454,12 +1483,34 @@ async def main() -> int:
     with args.split_csv.open(newline="", encoding="utf-8") as split_fh:
         split_fields = set(csv.DictReader(split_fh).fieldnames or ())
     if "surface" in split_fields:
+        if args.surface_id is not None:
+            raise SurfaceContractError(
+                "--surface-id cannot be combined with a Kiwoom surface CSV"
+            )
         return await _run_dual_surface(args)
     if args.surface is not None:
         raise SurfaceContractError(
             "--surface requires a dual Kiwoom split CSV with a surface column"
         )
     wanted = [s.strip() for s in args.sources.split(",") if s.strip()]
+    if args.surface_id is not None:
+        expected_source = source_for_surface(args.surface_id)
+        if wanted != [expected_source]:
+            raise SurfaceContractError(
+                f"--surface-id {args.surface_id} requires "
+                f"--sources {expected_source} only"
+            )
+        if expected_source == "kis":
+            if args.kis_latest_eligible_date is None:
+                raise SurfaceContractError(
+                    "KIS surfaces require --kis-latest-eligible-date"
+                )
+            latest_eligible = date.fromisoformat(args.kis_latest_eligible_date)
+            if end_date > latest_eligible:
+                raise SurfaceContractError(
+                    f"KIS end-date {end_date} exceeds latest eligible "
+                    f"session boundary {latest_eligible}"
+                )
 
     assignment: dict[str, list[str]] = {s: [] for s in wanted}
     with args.split_csv.open() as fh:
@@ -1485,11 +1536,15 @@ async def main() -> int:
 
     assert_fetch_window_open()
 
-    batch_id = f"kr-backfill-p1-{now_kst():%Y%m%dT%H%M%S}"
+    pipe_label = args.surface_id or "generic"
+    batch_id = f"kr-backfill-p1-{pipe_label}-{now_kst():%Y%m%dT%H%M%S}"
 
-    from equality_gate import build_clients
+    if args.surface_id in {"kis_mock", "kis_live"}:
+        clients = {"kis": await build_kis_surface_client(args.surface_id)}
+    else:
+        from equality_gate import build_clients
 
-    clients = await build_clients(wanted)
+        clients = await build_clients(wanted)
     pool = await asyncpg.create_pool(dsn(), min_size=2, max_size=6)
     log = ProgressLog(args.job_dir / "events" / "progress.jsonl")
     guard = Guard(pool, args.baseline_median_ms, log)
@@ -1499,6 +1554,8 @@ async def main() -> int:
             "event": "stage_b_start",
             "target_table": TARGET_TABLE,
             "batch_id": batch_id,
+            "surface": args.surface_id,
+            "kis_latest_eligible_date": args.kis_latest_eligible_date,
             "window": [args.start_date, args.end_date],
             "symbols_per_source": {k: len(v) for k, v in assignment.items()},
         }
@@ -1512,12 +1569,17 @@ async def main() -> int:
                     assignment[src],
                     clients[src],
                     pool,
-                    Checkpoint(args.job_dir / "events" / f"checkpoint_{src}.json"),
+                    Checkpoint(
+                        args.job_dir
+                        / "events"
+                        / f"checkpoint_{args.surface_id or src}.json"
+                    ),
                     log,
                     guard,
                     start_date,
                     end_date,
                     batch_id,
+                    surface_id=args.surface_id,
                 )
                 for src in wanted
             ],
