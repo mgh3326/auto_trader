@@ -28,10 +28,13 @@ from app.services.brokers.toss.dto import (
     parse_warnings,
 )
 from app.services.brokers.toss.errors import TossApiResponseError, parse_toss_response
+from app.services.brokers.toss.health import publish_toss_api_error
 from app.services.brokers.toss.rate_limiter import (
     TossApiGroup,
     TossRateLimiter,
+    TossRateLimitHeaders,
     get_shared_rate_limiter,
+    parse_rate_limit_headers,
     retry_delay_seconds,
 )
 from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL, build_toss_client
@@ -39,6 +42,7 @@ from app.services.brokers.toss.transport import DEFAULT_TOSS_BASE_URL, build_tos
 _TOKEN_CODES = {"invalid-token", "expired-token"}
 _GET_REISSUABLE_NON_JSON_STATUSES = {403}
 PreSendHook = Callable[[], Awaitable[None]]
+ResponseObserver = Callable[[TossApiGroup, int, TossRateLimitHeaders], None]
 
 
 def _should_retry_get_non_json_auth_error(
@@ -60,11 +64,23 @@ class TossReadClient:
         base_url: str = DEFAULT_TOSS_BASE_URL,
         transport: httpx.AsyncBaseTransport | None = None,
         rate_limiter: TossRateLimiter | None = None,
+        retry_on_429: bool = True,
+        retry_auth_reissue: bool = True,
+        response_observer: ResponseObserver | None = None,
+        publish_error_signals: bool = True,
     ) -> None:
         self._token_manager = token_manager
         self._account_seq = account_seq
         self._client = build_toss_client(base_url=base_url, transport=transport)
         self._rate_limiter = rate_limiter or TossRateLimiter()
+        # The default preserves the established live-client behaviour.  A
+        # separately approved bulk reader can disable both retries so one
+        # upstream failure stops only that reader and never churns the shared
+        # OAuth token.
+        self._retry_on_429 = retry_on_429
+        self._retry_auth_reissue = retry_auth_reissue
+        self._response_observer = response_observer
+        self._publish_error_signals = publish_error_signals
 
     @classmethod
     def from_settings(cls, settings_obj: Any = settings) -> TossReadClient:
@@ -84,6 +100,18 @@ class TossReadClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def _publish_error(
+        self,
+        *,
+        status_code: int | None,
+        error_type: str,
+    ) -> None:
+        if self._publish_error_signals:
+            await publish_toss_api_error(
+                status_code=status_code,
+                error_type=error_type,
+            )
+
     async def _request(
         self,
         method: str,
@@ -101,23 +129,51 @@ class TossReadClient:
         if account_required:
             headers["X-Tossinvest-Account"] = str(await self._resolve_account_seq())
 
-        async def send() -> httpx.Response:
+        async def send() -> tuple[httpx.Response, TossRateLimitHeaders]:
             if pre_send_hook is not None:
                 await pre_send_hook()
-            return await self._client.request(
+            response = await self._client.request(
                 method, path, params=params, json=json, headers=headers
             )
+            rate_limit_headers = parse_rate_limit_headers(response.headers)
+            if self._response_observer is not None:
+                self._response_observer(group, response.status_code, rate_limit_headers)
+            return response, rate_limit_headers
 
-        response = await send()
-        if response.status_code == 429:
+        try:
+            response, _rate_limit_headers = await send()
+        except httpx.HTTPError as exc:
+            await self._publish_error(
+                status_code=None,
+                error_type=type(exc).__name__,
+            )
+            raise
+        if response.status_code >= 400:
+            await self._publish_error(
+                status_code=response.status_code,
+                error_type="http_response",
+            )
+        if response.status_code == 429 and self._retry_on_429:
             await asyncio.sleep(
                 retry_delay_seconds(response.headers.get("Retry-After"), attempt=0)
             )
-            response = await send()
+            try:
+                response, _rate_limit_headers = await send()
+            except httpx.HTTPError as exc:
+                await self._publish_error(
+                    status_code=None,
+                    error_type=type(exc).__name__,
+                )
+                raise
+            if response.status_code >= 400:
+                await self._publish_error(
+                    status_code=response.status_code,
+                    error_type="http_response",
+                )
         try:
             return parse_toss_response(response)
         except TossApiResponseError as exc:
-            if (
+            if self._retry_auth_reissue and (
                 exc.envelope.code in _TOKEN_CODES
                 or _should_retry_get_non_json_auth_error(method, exc)
             ):
@@ -125,7 +181,19 @@ class TossReadClient:
                     force_reissue=True, failed_token=token
                 )
                 headers["Authorization"] = f"Bearer {token}"
-                retry = await send()
+                try:
+                    retry, _rate_limit_headers = await send()
+                except httpx.HTTPError as retry_exc:
+                    await self._publish_error(
+                        status_code=None,
+                        error_type=type(retry_exc).__name__,
+                    )
+                    raise
+                if retry.status_code >= 400:
+                    await self._publish_error(
+                        status_code=retry.status_code,
+                        error_type="http_response",
+                    )
                 return parse_toss_response(retry)
             raise
 

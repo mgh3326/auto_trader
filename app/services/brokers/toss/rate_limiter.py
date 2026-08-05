@@ -4,6 +4,8 @@ import asyncio
 import random
 import time
 from collections import deque
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from zoneinfo import ZoneInfo
@@ -34,6 +36,67 @@ _BASE_LIMITS: dict[TossApiGroup, int] = {
     TossApiGroup.ORDER_HISTORY: 5,
     TossApiGroup.ORDER_INFO: 6,
 }
+
+
+@dataclass(frozen=True)
+class TossRateLimitHeaders:
+    """Rate-limit metadata supplied by the Toss Open API response.
+
+    The provider may change limits without notice.  Consumers that need a
+    current cap must use ``limit`` from this response snapshot, not
+    ``_BASE_LIMITS`` (which remains only a local, process-level guard for the
+    established runtime clients).
+    """
+
+    limit: int | None
+    remaining: int | None
+    reset_seconds: float | None
+    retry_after_seconds: float | None
+
+
+def _header_value(headers: Mapping[str, str], name: str) -> str | None:
+    """Read a header case-insensitively for both httpx and plain test mappings."""
+
+    expected = name.casefold()
+    for key, value in headers.items():
+        if key.casefold() == expected:
+            return value
+    return None
+
+
+def _positive_int(value: str | None) -> int | None:
+    try:
+        parsed = int(value) if value is not None else None
+    except ValueError:
+        return None
+    return parsed if parsed is not None and parsed > 0 else None
+
+
+def _nonnegative_int(value: str | None) -> int | None:
+    try:
+        parsed = int(value) if value is not None else None
+    except ValueError:
+        return None
+    return parsed if parsed is not None and parsed >= 0 else None
+
+
+def _nonnegative_float(value: str | None) -> float | None:
+    try:
+        parsed = float(value) if value is not None else None
+    except ValueError:
+        return None
+    return parsed if parsed is not None and parsed >= 0.0 else None
+
+
+def parse_rate_limit_headers(headers: Mapping[str, str]) -> TossRateLimitHeaders:
+    """Parse the documented Toss rate headers without inventing a fallback cap."""
+
+    return TossRateLimitHeaders(
+        limit=_positive_int(_header_value(headers, "X-RateLimit-Limit")),
+        remaining=_nonnegative_int(_header_value(headers, "X-RateLimit-Remaining")),
+        reset_seconds=_nonnegative_float(_header_value(headers, "X-RateLimit-Reset")),
+        retry_after_seconds=_nonnegative_float(_header_value(headers, "Retry-After")),
+    )
 
 
 class TossRateLimiter:

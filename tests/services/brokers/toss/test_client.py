@@ -9,10 +9,12 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
+from app.services.brokers.toss import client as toss_client_module
 from app.services.brokers.toss import rate_limiter as rate_limiter_module
 from app.services.brokers.toss.auth import TossOAuthTokenManager
 from app.services.brokers.toss.client import TossReadClient
 from app.services.brokers.toss.errors import TossApiResponseError
+from app.services.brokers.toss.rate_limiter import TossApiGroup
 
 
 @dataclass
@@ -287,6 +289,201 @@ async def test_get_order_retries_once_after_invalid_token() -> None:
     # ROB-547: the reissue must carry the failed token so a peer's fresher
     # token can be reused instead of force-churning a new one.
     assert failed_tokens == [None, "token-1"]
+
+
+@pytest.mark.asyncio
+async def test_reissued_token_retry_publishes_its_http_failure(monkeypatch) -> None:
+    calls = 0
+    health_writes: list[dict[str, object]] = []
+
+    async def capture_health_write(**kwargs: object) -> None:
+        health_writes.append(kwargs)
+
+    monkeypatch.setattr(
+        toss_client_module, "publish_toss_api_error", capture_health_write
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                401,
+                json={
+                    "error": {
+                        "requestId": "invalid-token",
+                        "code": "invalid-token",
+                        "message": "expired",
+                    }
+                },
+                request=request,
+            )
+        return httpx.Response(
+            500,
+            json={
+                "error": {
+                    "requestId": "retry-500",
+                    "code": "upstream-failure",
+                    "message": "retry failed",
+                }
+            },
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(TossApiResponseError) as exc_info:
+            await client.candles("005930", interval="1m", count=1)
+    finally:
+        await client.aclose()
+
+    assert exc_info.value.status_code == 500
+    assert health_writes == [
+        {"status_code": 401, "error_type": "http_response"},
+        {"status_code": 500, "error_type": "http_response"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reissued_token_retry_publishes_its_transport_failure(
+    monkeypatch,
+) -> None:
+    calls = 0
+    health_writes: list[dict[str, object]] = []
+
+    async def capture_health_write(**kwargs: object) -> None:
+        health_writes.append(kwargs)
+
+    monkeypatch.setattr(
+        toss_client_module, "publish_toss_api_error", capture_health_write
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                401,
+                json={
+                    "error": {
+                        "requestId": "invalid-token",
+                        "code": "invalid-token",
+                        "message": "expired",
+                    }
+                },
+                request=request,
+            )
+        raise httpx.ConnectError("reissue retry failed", request=request)
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(httpx.ConnectError):
+            await client.candles("005930", interval="1m", count=1)
+    finally:
+        await client.aclose()
+
+    assert health_writes == [
+        {"status_code": 401, "error_type": "http_response"},
+        {"status_code": None, "error_type": "ConnectError"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_strict_reader_does_not_reissue_after_401(monkeypatch) -> None:
+    """A bulk reader can fail closed without churning the shared OAuth token."""
+    calls = 0
+    token_calls: list[bool] = []
+
+    async def no_health_write(**kwargs) -> None:
+        del kwargs
+
+    monkeypatch.setattr(toss_client_module, "publish_toss_api_error", no_health_write)
+
+    class TokenManager(_TokenManager):
+        async def get_access_token(
+            self, *, force_reissue: bool = False, failed_token: str | None = None
+        ) -> str:
+            del failed_token
+            token_calls.append(force_reissue)
+            return "token-1"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            401,
+            json={
+                "error": {
+                    "requestId": "req-401",
+                    "code": "invalid-token",
+                    "message": "expired",
+                }
+            },
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=TokenManager(),
+        transport=httpx.MockTransport(handler),
+        retry_auth_reissue=False,
+    )
+    try:
+        with pytest.raises(TossApiResponseError) as exc_info:
+            await client.candles("005930", interval="1m", count=1)
+    finally:
+        await client.aclose()
+
+    assert exc_info.value.status_code == 401
+    assert calls == 1
+    assert token_calls == [False]
+
+
+@pytest.mark.asyncio
+async def test_strict_reader_does_not_retry_after_429(monkeypatch) -> None:
+    calls = 0
+    health_writes = []
+
+    async def no_health_write(**kwargs) -> None:
+        health_writes.append(kwargs)
+
+    monkeypatch.setattr(toss_client_module, "publish_toss_api_error", no_health_write)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            429,
+            json={
+                "error": {
+                    "requestId": "req-429",
+                    "code": "too-many-requests",
+                    "message": "slow down",
+                }
+            },
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        transport=httpx.MockTransport(handler),
+        retry_on_429=False,
+        publish_error_signals=False,
+    )
+    try:
+        with pytest.raises(TossApiResponseError) as exc_info:
+            await client.candles("005930", interval="1m", count=1)
+    finally:
+        await client.aclose()
+
+    assert exc_info.value.status_code == 429
+    assert calls == 1
+    assert health_writes == []
 
 
 @pytest.mark.asyncio
@@ -575,6 +772,42 @@ async def test_candles_returns_typed_page_and_sends_query_params() -> None:
     }
     assert page.next_before == "2026-06-11T00:00:00.000+09:00"
     assert page.candles[0].close_price == Decimal("326000")
+
+
+@pytest.mark.asyncio
+async def test_candles_response_observer_receives_documented_rate_headers() -> None:
+    observed = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_json({"candles": [], "nextBefore": None}),
+            headers={
+                "X-RateLimit-Limit": "7",
+                "X-RateLimit-Remaining": "6",
+                "X-RateLimit-Reset": "0.25",
+            },
+            request=request,
+        )
+
+    client = TossReadClient(
+        token_manager=_TokenManager(),
+        transport=httpx.MockTransport(handler),
+        response_observer=lambda group, status, headers: observed.append(
+            (group, status, headers)
+        ),
+    )
+    try:
+        await client.candles("005930", interval="1m", count=1)
+    finally:
+        await client.aclose()
+
+    group, status, headers = observed[0]
+    assert group is TossApiGroup.MARKET_DATA_CHART
+    assert status == 200
+    assert headers.limit == 7
+    assert headers.remaining == 6
+    assert headers.reset_seconds == 0.25
 
 
 @pytest.mark.asyncio

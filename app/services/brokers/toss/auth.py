@@ -143,6 +143,17 @@ class TossOAuthTokenManager:
             force_reissue=force_reissue, failed_token=failed_token
         )
 
+    async def get_cached_access_token(self) -> str | None:
+        """Return a currently valid shared token without issuing a new one.
+
+        Read-only bulk consumers that share the live OAuth client can use this
+        narrow path when their operating contract prohibits them from changing
+        the active token.  A cache miss is deliberately surfaced as ``None``;
+        the caller, rather than this manager, decides whether it may wait for a
+        production peer to refresh the token or must stop.
+        """
+        return await self._get_cached_token()
+
     async def _get_cached_token(self) -> str | None:
         redis_client = await _get_redis_client()
         raw = await redis_client.get(self.token_key)

@@ -11,7 +11,9 @@ from app.services.brokers.toss import rate_limiter as rate_limiter_module
 from app.services.brokers.toss.rate_limiter import (
     TossApiGroup,
     TossRateLimiter,
+    TossRateLimitHeaders,
     get_shared_rate_limiter,
+    parse_rate_limit_headers,
     retry_delay_seconds,
 )
 
@@ -32,6 +34,39 @@ def test_market_data_limit_is_ten_tps() -> None:
     limiter = TossRateLimiter()
 
     assert limiter.limit_for(TossApiGroup.MARKET_DATA) == 10
+
+
+def test_rate_limit_headers_are_parsed_case_insensitively_without_fallback_cap() -> (
+    None
+):
+    headers = parse_rate_limit_headers(
+        {
+            "x-ratelimit-limit": "7",
+            "X-RateLimit-Remaining": "2",
+            "X-RATELIMIT-RESET": "0.25",
+            "retry-after": "3",
+        }
+    )
+
+    assert headers == TossRateLimitHeaders(
+        limit=7,
+        remaining=2,
+        reset_seconds=0.25,
+        retry_after_seconds=3.0,
+    )
+
+
+def test_rate_limit_headers_leave_malformed_or_missing_cap_unknown() -> None:
+    headers = parse_rate_limit_headers(
+        {
+            "X-RateLimit-Limit": "not-a-number",
+            "X-RateLimit-Remaining": "-1",
+            "X-RateLimit-Reset": "bad",
+            "Retry-After": "-2",
+        }
+    )
+
+    assert headers == TossRateLimitHeaders(None, None, None, None)
 
 
 @pytest.mark.parametrize(
