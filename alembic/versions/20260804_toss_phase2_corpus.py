@@ -38,6 +38,85 @@ def _quoted(values: Sequence[str]) -> str:
     return ", ".join(f"'{value}'" for value in values)
 
 
+def _comment_cagg(view_name: str) -> None:
+    """Comment a Timescale cagg without assuming its PostgreSQL relkind.
+
+    Timescale exposes continuous aggregates as ``relkind='v'`` on the target
+    production version, while a plain PostgreSQL materialized view is ``'m'``.
+    The migration must remain additive under either representation.
+    """
+
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM pg_class AS c
+                JOIN pg_namespace AS n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'research'
+                  AND c.relname = '{view_name}'
+                  AND c.relkind = 'm'
+            ) THEN
+                EXECUTE $sql$
+                    COMMENT ON MATERIALIZED VIEW research.{view_name} IS
+                    'Derived from research.{TABLE_NAME}; preserves time-based session '
+                    'labels and padding visibility. value remains synthetic close*volume; '
+                    'no cagg refresh policy is installed.'
+                $sql$;
+            ELSIF EXISTS (
+                SELECT 1
+                FROM pg_class AS c
+                JOIN pg_namespace AS n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'research'
+                  AND c.relname = '{view_name}'
+                  AND c.relkind = 'v'
+            ) THEN
+                EXECUTE $sql$
+                    COMMENT ON VIEW research.{view_name} IS
+                    'Derived from research.{TABLE_NAME}; preserves time-based session '
+                    'labels and padding visibility. value remains synthetic close*volume; '
+                    'no cagg refresh policy is installed.'
+                $sql$;
+            END IF;
+        END
+        $$
+        """
+    )
+
+
+def _drop_cagg(view_name: str) -> None:
+    """Drop only the view representation actually created by this migration."""
+
+    op.execute(
+        f"""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM pg_class AS c
+                JOIN pg_namespace AS n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'research'
+                  AND c.relname = '{view_name}'
+                  AND c.relkind = 'm'
+            ) THEN
+                EXECUTE 'DROP MATERIALIZED VIEW research.{view_name}';
+            ELSIF EXISTS (
+                SELECT 1
+                FROM pg_class AS c
+                JOIN pg_namespace AS n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'research'
+                  AND c.relname = '{view_name}'
+                  AND c.relkind = 'v'
+            ) THEN
+                EXECUTE 'DROP VIEW research.{view_name}';
+            END IF;
+        END
+        $$
+        """
+    )
+
+
 def upgrade() -> None:
     # The research schema already exists.  Do not alter the earlier KRX-only
     # table or any public relation; this table is the physical separation.
@@ -169,22 +248,7 @@ def upgrade() -> None:
             $$
             """
         )
-        op.execute(
-            f"""
-            DO $$
-            BEGIN
-                IF to_regclass('research.{view_name}') IS NOT NULL THEN
-                    EXECUTE $sql$
-                        COMMENT ON MATERIALIZED VIEW research.{view_name} IS
-                        'Derived from research.{TABLE_NAME}; preserves time-based session '
-                        'labels and padding visibility. value remains synthetic close*volume; '
-                        'no cagg refresh policy is installed.'
-                    $sql$;
-                END IF;
-            END
-            $$
-            """
-        )
+        _comment_cagg(view_name)
 
     # The approved backfill role is explicitly allowlisted for only the new raw
     # table.  This fresh table has no serial/identity column, hence no sequence
@@ -215,5 +279,5 @@ def downgrade() -> None:
     # Only objects created above are removed.  No existing table, cagg, role,
     # or default privilege is altered by either direction of this migration.
     for view_name, _ in CAGG_SPECS:
-        op.execute(f"DROP MATERIALIZED VIEW IF EXISTS research.{view_name}")
+        _drop_cagg(view_name)
     op.execute(f"DROP TABLE IF EXISTS research.{TABLE_NAME}")

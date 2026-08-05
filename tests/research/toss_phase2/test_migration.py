@@ -35,3 +35,7 @@ def test_toss_migration_is_additive_and_least_privilege() -> None:
     assert "pre_nxt BOOLEAN" in source
     assert "BOOL_AND(is_padding) AS is_padding" in source
     assert "no cagg refresh policy is installed" in source
+    assert "COMMENT ON VIEW research.{view_name}" in source
+    assert "COMMENT ON MATERIALIZED VIEW research.{view_name}" in source
+    assert "DROP VIEW research.{view_name}" in source
+    assert "DROP MATERIALIZED VIEW research.{view_name}" in source
