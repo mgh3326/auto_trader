@@ -9,11 +9,13 @@ import pyarrow.parquet as pq
 import pytest
 
 from research.toss_phase2.collect import (
+    _SETTINGS_PLACEHOLDERS,
     CALL_BUDGET_ACCOUNTING,
     KST,
     STAGING_CONTRACT,
     VALUE_SEMANTICS,
     CachedTokenOnlyProvider,
+    Checkpoint,
     CollectionStopped,
     ProductionTossLogMonitor,
     SharedTossHealthMonitor,
@@ -236,6 +238,43 @@ def test_call_budget_is_cumulative_across_legacy_and_resumed_processes(
     assert cumulative_calls_from_progress(progress) == 330
 
 
+def test_call_budget_progress_is_streamed_not_read_as_one_large_string(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    progress = tmp_path / "events" / "progress.jsonl"
+    progress.parent.mkdir()
+    progress.write_text(
+        "\n".join(
+            [
+                json.dumps({"event": "collection_started"}),
+                json.dumps({"event": "page", "calls_actual": 7}),
+            ]
+        )
+        + "\n"
+    )
+
+    def fail_read_text(*_args, **_kwargs) -> str:
+        raise AssertionError("progress accounting must stream the log")
+
+    monkeypatch.setattr(type(progress), "read_text", fail_read_text)
+
+    assert cumulative_calls_from_progress(progress) == 7
+
+
+def test_checkpoint_save_syncs_json_before_replacing_it(tmp_path, monkeypatch) -> None:
+    checkpoint_path = tmp_path / "state" / "checkpoint.json"
+    checkpoint = Checkpoint(checkpoint_path)
+    checkpoint.state_for("005930")["pages"] = 1
+    synced_fds: list[int] = []
+
+    monkeypatch.setattr(os, "fsync", lambda fd: synced_fds.append(fd))
+    checkpoint.save()
+
+    assert json.loads(checkpoint_path.read_text())["symbols"]["005930"]["pages"] == 1
+    assert synced_fds
+
+
 @pytest.mark.asyncio
 async def test_cached_token_provider_never_issues_or_forces() -> None:
     class Manager:
@@ -308,6 +347,7 @@ def test_readonly_env_loads_only_toss_and_inert_settings(tmp_path, monkeypatch) 
         "TOSS_API_ENABLED",
         "TOSS_API_CLIENT_ID",
         "TOSS_API_CLIENT_SECRET",
+        *_SETTINGS_PLACEHOLDERS,
     ):
         monkeypatch.delenv(name, raising=False)
 

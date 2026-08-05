@@ -73,6 +73,35 @@ class UnclassifiableSessionSegment(CollectionStopped):
     """A candle outside the approved KST session labels must not be staged."""
 
 
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Durably replace a resume-critical JSON document.
+
+    The temporary file is synced before it becomes visible.  A directory sync
+    is attempted after the rename as well; a few local development filesystems
+    do not support syncing directory descriptors, where atomic replacement
+    still prevents a torn JSON file.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(temporary, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        try:
+            os.fsync(directory_fd)
+        except OSError:
+            # macOS and a few network filesystems do not permit directory
+            # fsync.  The file itself was already synced before the rename.
+            pass
+    finally:
+        os.close(directory_fd)
+
+
 def _transient_resume_reason(exc: Exception) -> str | None:
     """Classify only failures safe to retry without issuing an OAuth token."""
 
@@ -497,10 +526,7 @@ class Checkpoint:
         )
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(self.data, indent=2, ensure_ascii=False) + "\n")
-        os.replace(temporary, self.path)
+        _atomic_write_json(self.path, self.data)
 
 
 class ProgressLog:
@@ -544,42 +570,45 @@ def cumulative_calls_from_progress(path: Path) -> int:
         else:
             legacy_total += run_max
 
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), 1
-    ):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"malformed progress log at line {line_number}; refusing to reset call budget"
-            ) from exc
-        if not isinstance(record, dict):
-            raise ValueError(
-                f"malformed progress log at line {line_number}; expected object"
-            )
-        if record.get("event") == "collection_started":
-            finish_run()
-            run_seen = True
-            run_is_cumulative = record.get("call_accounting") == CALL_BUDGET_ACCOUNTING
-            prior_calls = record.get("prior_calls_actual", 0)
-            if not isinstance(prior_calls, int) or isinstance(prior_calls, bool):
+    with path.open(encoding="utf-8") as progress:
+        for line_number, line in enumerate(progress, 1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
                 raise ValueError(
-                    f"malformed prior_calls_actual at progress line {line_number}"
-                )
-            if prior_calls < 0:
+                    f"malformed progress log at line {line_number}; refusing to reset call budget"
+                ) from exc
+            if not isinstance(record, dict):
                 raise ValueError(
-                    f"negative prior_calls_actual at progress line {line_number}"
+                    f"malformed progress log at line {line_number}; expected object"
                 )
-            run_max = prior_calls if run_is_cumulative else 0
+            if record.get("event") == "collection_started":
+                finish_run()
+                run_seen = True
+                run_is_cumulative = (
+                    record.get("call_accounting") == CALL_BUDGET_ACCOUNTING
+                )
+                prior_calls = record.get("prior_calls_actual", 0)
+                if not isinstance(prior_calls, int) or isinstance(prior_calls, bool):
+                    raise ValueError(
+                        f"malformed prior_calls_actual at progress line {line_number}"
+                    )
+                if prior_calls < 0:
+                    raise ValueError(
+                        f"negative prior_calls_actual at progress line {line_number}"
+                    )
+                run_max = prior_calls if run_is_cumulative else 0
 
-        if not run_seen or "calls_actual" not in record:
-            continue
-        calls = record["calls_actual"]
-        if not isinstance(calls, int) or isinstance(calls, bool) or calls < 0:
-            raise ValueError(f"malformed calls_actual at progress line {line_number}")
-        run_max = max(run_max, calls)
+            if not run_seen or "calls_actual" not in record:
+                continue
+            calls = record["calls_actual"]
+            if not isinstance(calls, int) or isinstance(calls, bool) or calls < 0:
+                raise ValueError(
+                    f"malformed calls_actual at progress line {line_number}"
+                )
+            run_max = max(run_max, calls)
 
     finish_run()
     return max(legacy_total, cumulative_max)
@@ -894,12 +923,9 @@ def initialize_staging(
         if existing.get("rate_limit_control") != manifest["rate_limit_control"]:
             existing.pop("pacing", None)
             existing["rate_limit_control"] = manifest["rate_limit_control"]
-            manifest_path.write_text(
-                json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
+            _atomic_write_json(manifest_path, existing)
         return
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    _atomic_write_json(manifest_path, manifest)
     (staging_dir / "STAGING_ONLY.md").write_text(
         "# STAGING ONLY — NOT A BACKTEST INPUT\n\n"
         "This is an append-only Toss combined KRX/NXT collection. It must not be "
@@ -1013,13 +1039,7 @@ class LatestSummaryWriter:
 
     def write(self, *, collector_state: str) -> dict[str, Any]:
         payload = self._payload(collector_state=collector_state)
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, self._path)
+        _atomic_write_json(self._path, payload)
         self._last_write_at = self._monotonic()
         return payload
 

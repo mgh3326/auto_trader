@@ -13,6 +13,7 @@ import asyncio
 import fcntl
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import time
@@ -62,6 +63,11 @@ DEFAULT_COMMIT_ROWS = 20_000
 PREFLIGHT_FRAGMENT_CHUNK = 500
 STATE_VERSION = 1
 KST = timezone(timedelta(hours=9))
+# Staging values are emitted as IEEE-754 doubles.  This admits only the
+# round-off expected from serialising ``close * volume``, not a materially
+# different synthetic value.
+VALUE_RELATIVE_TOLERANCE = 1e-12
+VALUE_ABSOLUTE_TOLERANCE = 1e-6
 
 
 class LoadStopped(RuntimeError):
@@ -245,7 +251,7 @@ def freeze_completed_fragments(
         return existing
 
     if min_fragment_age_seconds <= 0:
-        raise ValueError("min_fragment_age_seconds must be positive")
+        raise LoadStopped("min_fragment_age_seconds_must_be_positive")
     manifest = _manifest(staging_dir)
     batch_id = str(manifest["batch_id"])
     cutoff_ns = (now_ns if now_ns is not None else time.time_ns()) - (
@@ -388,6 +394,58 @@ def _validate_batch(
         for volume, padding in zip(volumes, paddings, strict=True)
     ):
         raise StagingValidationError(f"invalid_padding_semantics:{path.name}")
+
+    opens = _column(batch, "open").to_pylist()
+    highs = _column(batch, "high").to_pylist()
+    lows = _column(batch, "low").to_pylist()
+    closes = _column(batch, "close").to_pylist()
+    values = _column(batch, "value").to_pylist()
+    for open_, high, low, close, volume, value in zip(
+        opens,
+        highs,
+        lows,
+        closes,
+        volumes,
+        values,
+        strict=True,
+    ):
+        try:
+            open_float = float(open_)
+            high_float = float(high)
+            low_float = float(low)
+            close_float = float(close)
+            volume_float = float(volume)
+            value_float = float(value)
+        except (TypeError, ValueError) as exc:
+            raise StagingValidationError(
+                f"non_numeric_candle_value:{path.name}"
+            ) from exc
+        numeric_values = (
+            open_float,
+            high_float,
+            low_float,
+            close_float,
+            volume_float,
+            value_float,
+        )
+        if not all(math.isfinite(number) for number in numeric_values):
+            raise StagingValidationError(f"non_finite_candle_value:{path.name}")
+        if volume_float < 0:
+            raise StagingValidationError(f"negative_volume:{path.name}")
+        if min(open_float, high_float, low_float, close_float) < 0:
+            raise StagingValidationError(f"negative_ohlc_value:{path.name}")
+        if high_float < max(open_float, close_float) or low_float > min(
+            open_float, close_float
+        ):
+            raise StagingValidationError(f"incoherent_ohlc_values:{path.name}")
+        expected_value = close_float * volume_float
+        if not math.isclose(
+            value_float,
+            expected_value,
+            rel_tol=VALUE_RELATIVE_TOLERANCE,
+            abs_tol=VALUE_ABSOLUTE_TOLERANCE,
+        ):
+            raise StagingValidationError(f"synthetic_value_mismatch:{path.name}")
 
 
 def iter_validated_batches(
@@ -718,6 +776,8 @@ async def _assert_database_ready(
     target_rows = int(await conn.fetchval(f"SELECT count(*) FROM {TARGET_TABLE}"))
     initial_rows = checkpoint.get("initial_target_rows")
     if initial_rows is None:
+        if target_rows != 0:
+            raise DatabaseLoadError("nonempty_target_at_initial_load")
         checkpoint["initial_target_rows"] = target_rows
     elif initial_rows != 0:
         raise DatabaseLoadError("nonempty_target_at_initial_load")
@@ -807,7 +867,7 @@ async def load_snapshot(
     """Load the frozen snapshot with DB transactions before checkpoint writes."""
 
     if commit_rows <= 0:
-        raise ValueError("commit_rows must be positive")
+        raise LoadStopped("commit_rows_must_be_positive")
     fragments = _frozen_fragments(snapshot)
     checkpoint = _load_checkpoint(state_dir, str(snapshot["digest"]))
     start_index = checkpoint.get("next_fragment_index")
@@ -953,7 +1013,7 @@ async def verify_snapshot(
         )
         duplicate_rows = int(
             await conn.fetchval(
-                f"SELECT count(*) - count(DISTINCT (session_date_kst, symbol, time_utc)) "
+                f"SELECT count(*) - count(DISTINCT (time_utc, symbol)) "
                 f"FROM {TARGET_TABLE}"
             )
         )
@@ -997,6 +1057,10 @@ def parse_args() -> argparse.Namespace:
 async def async_main(args: argparse.Namespace) -> int:
     staging_dir = args.staging_dir.resolve()
     state_dir = args.state_dir.resolve()
+    if args.min_fragment_age_seconds <= 0:
+        raise LoadStopped("min_fragment_age_seconds_must_be_positive")
+    if args.commit_rows <= 0:
+        raise LoadStopped("commit_rows_must_be_positive")
     _assert_state_dir_is_separate(staging_dir, state_dir)
     with StateDirectoryLock(state_dir):
         snapshot = freeze_completed_fragments(

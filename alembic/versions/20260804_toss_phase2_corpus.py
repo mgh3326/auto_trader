@@ -86,35 +86,12 @@ def _comment_cagg(view_name: str) -> None:
 
 
 def _drop_cagg(view_name: str) -> None:
-    """Drop only the view representation actually created by this migration."""
+    """Drop a Timescale continuous aggregate through its required API."""
 
-    op.execute(
-        f"""
-        DO $$
-        BEGIN
-            IF EXISTS (
-                SELECT 1
-                FROM pg_class AS c
-                JOIN pg_namespace AS n ON n.oid = c.relnamespace
-                WHERE n.nspname = 'research'
-                  AND c.relname = '{view_name}'
-                  AND c.relkind = 'm'
-            ) THEN
-                EXECUTE 'DROP MATERIALIZED VIEW research.{view_name}';
-            ELSIF EXISTS (
-                SELECT 1
-                FROM pg_class AS c
-                JOIN pg_namespace AS n ON n.oid = c.relnamespace
-                WHERE n.nspname = 'research'
-                  AND c.relname = '{view_name}'
-                  AND c.relkind = 'v'
-            ) THEN
-                EXECUTE 'DROP VIEW research.{view_name}';
-            END IF;
-        END
-        $$
-        """
-    )
+    # Continuous aggregates can appear as ``relkind='v'`` in the PostgreSQL
+    # catalog, but Timescale still requires the MATERIALIZED VIEW drop command.
+    # The migration creates no ordinary view with these names.
+    op.execute(f"DROP MATERIALIZED VIEW IF EXISTS research.{view_name}")
 
 
 def upgrade() -> None:
@@ -185,6 +162,18 @@ def upgrade() -> None:
         DO $$
         BEGIN
             IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_extension
+                    WHERE extname = 'timescaledb'
+                      AND string_to_array(
+                          regexp_replace(extversion, '[^0-9.]', '', 'g'), '.'
+                      )::INTEGER[] >= ARRAY[2, 8, 0]
+                ) THEN
+                    RAISE EXCEPTION
+                        'TimescaleDB 2.8.0 or newer is required for timezone-aware '
+                        'time_bucket continuous aggregates';
+                END IF;
                 PERFORM create_hypertable('research.{TABLE_NAME}', 'time_utc');
                 PERFORM set_chunk_time_interval(
                     'research.{TABLE_NAME}', INTERVAL '7 days'

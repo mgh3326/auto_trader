@@ -37,8 +37,9 @@ def test_toss_migration_is_additive_and_least_privilege() -> None:
     assert "no cagg refresh policy is installed" in source
     assert "COMMENT ON VIEW research.{view_name}" in source
     assert "COMMENT ON MATERIALIZED VIEW research.{view_name}" in source
-    assert "DROP VIEW research.{view_name}" in source
-    assert "DROP MATERIALIZED VIEW research.{view_name}" in source
+    assert "DROP MATERIALIZED VIEW IF EXISTS research.{view_name}" in source
+    assert "TimescaleDB 2.8.0 or newer is required" in source
+    assert ")::INTEGER[] >= ARRAY[2, 8, 0]" in source
 
 
 def test_toss_migration_history_merges_the_newer_main_head() -> None:

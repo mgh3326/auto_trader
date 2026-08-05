@@ -15,7 +15,11 @@ from research.toss_phase2.collect import (
 )
 from research.toss_phase2.load import (
     SOURCE,
+    TARGET_TABLE,
+    DatabaseLoadError,
+    LoadStopped,
     StagingValidationError,
+    _assert_database_ready,
     freeze_completed_fragments,
     preflight_source,
 )
@@ -63,13 +67,16 @@ def _write_page(
     request_before: str,
     timestamp: datetime,
     segment: str = "KRX_REGULAR",
+    row_overrides: dict[str, object] | None = None,
 ) -> Path:
+    row = _row(timestamp=timestamp, segment=segment)
+    row.update(row_overrides or {})
     path, reused = write_page(
         staging_dir=staging_dir,
         symbol="005930",
         request_before=request_before,
         next_before="next",
-        rows=[_row(timestamp=timestamp, segment=segment)],
+        rows=[row],
         batch_id="toss-staging-batch",
     )
     assert path is not None
@@ -109,15 +116,24 @@ def test_freeze_selects_only_completed_old_enough_pages_without_staging_writes(
     )
     old_stat = old.stat()
     os.utime(old, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns - 5_000_000_000))
-    before = old.read_bytes()
+    before = {
+        path.relative_to(staging_dir): path.read_bytes()
+        for path in staging_dir.rglob("*")
+        if path.is_file()
+    }
 
     snapshot = _freeze(staging_dir, state_dir, recent, seconds_after=0)
 
     assert snapshot["completed_fragments_only"] is True
     assert snapshot["source_rows"] == 1
     assert snapshot["too_recent_files_excluded"] == 1
-    assert old.read_bytes() == before
-    assert not (staging_dir / "loader-state").exists()
+    after = {
+        path.relative_to(staging_dir): path.read_bytes()
+        for path in staging_dir.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+    assert (state_dir / "snapshot.json").is_file()
 
 
 def test_preflight_rejects_unclassifiable_session_segment_before_any_db_work(
@@ -168,6 +184,36 @@ def test_preflight_rejects_duplicate_source_key(
         )
 
 
+@pytest.mark.parametrize(
+    ("row_overrides", "reason"),
+    [
+        ({"volume": -1.0, "value": -11.0}, "negative_volume"),
+        ({"high": 10.0}, "incoherent_ohlc_values"),
+        ({"value": 54.0}, "synthetic_value_mismatch"),
+    ],
+)
+def test_preflight_rejects_invalid_numeric_candle_invariants(
+    tmp_path: Path,
+    row_overrides: dict[str, object],
+    reason: str,
+) -> None:
+    staging_dir, state_dir = _staging(tmp_path)
+    page = _write_page(
+        staging_dir,
+        request_before="invalid-numeric",
+        timestamp=datetime(2026, 8, 3, 6, 4, tzinfo=UTC),
+        row_overrides=row_overrides,
+    )
+    snapshot = _freeze(staging_dir, state_dir, page)
+
+    with pytest.raises(StagingValidationError, match=reason):
+        preflight_source(
+            staging_dir=staging_dir,
+            state_dir=state_dir,
+            snapshot=snapshot,
+        )
+
+
 def test_preflight_reuses_completed_checkpoint_without_reloading_source(
     tmp_path: Path,
 ) -> None:
@@ -197,9 +243,54 @@ def test_loader_has_no_main_or_public_write_surface() -> None:
     ).read_text()
 
     assert 'TARGET_TABLE = "research.kr_candles_1m_toss"' in source
-    assert not re.search(
-        r"(?:INSERT INTO|UPDATE|DELETE FROM)\\s+research\\.kr_candles_1m(?:\\s|$)",
-        source,
+    main_write = re.compile(
+        r"(?:INSERT INTO|UPDATE|DELETE FROM)\s+research\.kr_candles_1m(?=\s|$)",
+        re.IGNORECASE,
     )
-    assert not re.search(r"(?:INSERT INTO|UPDATE|DELETE FROM)\\s+public\\.", source)
+    public_write = re.compile(
+        r"(?:INSERT INTO|UPDATE|DELETE FROM)\s+public\.", re.IGNORECASE
+    )
+    # A mutation must match these guards; otherwise the source assertion below
+    # could pass due to an inert pattern rather than an absent write surface.
+    assert main_write.search("INSERT INTO research.kr_candles_1m (time_utc)")
+    assert public_write.search("DELETE FROM public.orders")
+    assert not main_write.search(source)
+    assert not public_write.search(source)
     assert "session_segment_unclassifiable" in source
+    assert "count(DISTINCT (time_utc, symbol))" in source
+
+
+@pytest.mark.asyncio
+async def test_loader_refuses_a_nonempty_target_before_initial_load() -> None:
+    class Connection:
+        async def fetchval(self, query: str, *args: object) -> object:
+            if query == "SELECT current_user":
+                return "auto_trader_kr_backfill"
+            if query == "SELECT to_regclass($1)":
+                assert args == (TARGET_TABLE,)
+                return TARGET_TABLE
+            if query.startswith("SELECT has_table_privilege"):
+                return True
+            if query == f"SELECT count(*) FROM {TARGET_TABLE}":
+                return 1
+            raise AssertionError(f"unexpected query: {query}")
+
+    checkpoint = {"initial_target_rows": None}
+    with pytest.raises(DatabaseLoadError, match="nonempty_target_at_initial_load"):
+        await _assert_database_ready(
+            Connection(),
+            expected_source_rows=1,
+            checkpoint=checkpoint,
+        )
+    assert checkpoint["initial_target_rows"] is None
+
+
+def test_invalid_minimum_fragment_age_stops_with_structured_reason(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(LoadStopped, match="min_fragment_age_seconds_must_be_positive"):
+        freeze_completed_fragments(
+            staging_dir=tmp_path / "staging",
+            state_dir=tmp_path / "state",
+            min_fragment_age_seconds=0,
+        )

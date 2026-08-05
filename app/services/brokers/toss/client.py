@@ -181,7 +181,19 @@ class TossReadClient:
                     force_reissue=True, failed_token=token
                 )
                 headers["Authorization"] = f"Bearer {token}"
-                retry, _rate_limit_headers = await send()
+                try:
+                    retry, _rate_limit_headers = await send()
+                except httpx.HTTPError as retry_exc:
+                    await self._publish_error(
+                        status_code=None,
+                        error_type=type(retry_exc).__name__,
+                    )
+                    raise
+                if retry.status_code >= 400:
+                    await self._publish_error(
+                        status_code=retry.status_code,
+                        error_type="http_response",
+                    )
                 return parse_toss_response(retry)
             raise
 
