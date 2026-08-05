@@ -39,3 +39,18 @@ def test_toss_migration_is_additive_and_least_privilege() -> None:
     assert "COMMENT ON MATERIALIZED VIEW research.{view_name}" in source
     assert "DROP VIEW research.{view_name}" in source
     assert "DROP MATERIALIZED VIEW research.{view_name}" in source
+
+
+def test_toss_migration_history_merges_the_newer_main_head() -> None:
+    merge_path = (
+        REPO
+        / "alembic"
+        / "versions"
+        / "20260805_merge_toss_phase2_and_kis_mock_runner_heads.py"
+    )
+    source = merge_path.read_text()
+
+    assert 'revision: str = "20260805_merge_toss_phase2_kis_mock_runner"' in source
+    assert '"20260804_toss_phase2"' in source
+    assert '"20260805_kis_mock_runner"' in source
+    assert "op." not in source
