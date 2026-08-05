@@ -251,6 +251,20 @@ class TossReadClient:
             )
         )
 
+    async def stocks_raw(self, symbols: list[str] | tuple[str, ...]) -> Any:
+        """GET the master payload without DTO parsing (ROB-1172 AC1).
+
+        The unparsed body is what an authoritative metadata snapshot hashes; a
+        parsed DTO has already dropped fields and cannot be re-hashed faithfully.
+        Read-only, same TOSS_API_ENABLED gate as every other Toss read.
+        """
+        return await self._request(
+            "GET",
+            "/api/v1/stocks",
+            group=TossApiGroup.STOCK,
+            params={"symbols": self._symbols_param(symbols)},
+        )
+
     async def warnings(self, symbol: str) -> list[TossWarningInfo]:
         return parse_warnings(
             await self._request(
