@@ -1,0 +1,187 @@
+packet_status: active_scope_only
+active_scope_meaning: "이번 prior-art 조사 범위. admission, 승인, 백테스트 통과, paper 승격 또는 주문 승인이 아님. 모든 후보는 UNTESTED."
+source_files:
+  kr:
+    path: gptpro-kr-candidates-v1.md
+    sha256: 0639592817f13db80f1d67b199ffe80898b23675475d1fbf1a611ea2b6b671dc
+  us:
+    path: gptpro-us-candidates-v1.md
+    sha256: 6ec8e31d8252b0f396da205ea37938d85ea4933345bd578573154aa4364a2ae7
+candidates:
+  - market: KR
+    strategy_id: rev3_reclaim
+    family_id:
+      status: NOT_AVAILABLE_IN_SOURCE
+      value: null
+      source_file: gptpro-kr-candidates-v1.md
+      source_location: "candidate block strategy_id=rev3_reclaim; family_id not present in source"
+    cost_assumption:
+      base: "approximately 43 bp round trip (fee 3 bp + sell tax 20 bp + slippage 10 bp/side)"
+      sensitivity: "approximately 83 bp round trip with slippage 30 bp/side"
+      source_file: 03-harness-corpus-constraints.md
+      source_sha256: cf03ce4b93e1b307fec0479563415cf40a5970a0db93904efc4400f694f911ad
+    hypothesis: "같은 시장의 유동성 적격 종목 중 3세션 수익률이 극단적으로 낮았지만 당일 종가가 일중 범위 상단으로 회복되고 거래량이 급증한 경우, 정보에 의한 영구 재평가보다 일시적 매도 압력이 포함되어 이후 5세션 동안 baseline 대비 반전 초과성과가 나타날 수 있다."
+    side: long
+    universe_filter: "PIT 상장목록 포함; 공통 적격성; liq_pct_t >= 0.50; close×volume은 실제 거래대금이 아닌 유동성 프록시."
+    signal: "r3_t = close_t / close_{t-3} - 1; r3_pct_t = 같은 시장 universe_filter 통과 종목 사이 pct_asc(r3_t); clv_t = (close_t - low_c_t)/(high_c_t - low_c_t); volume_ratio_t = volume_t / median(volume_{t-20}..volume_{t-1}); r3_pct_t <= 0.05 AND clv_t >= 0.65 AND volume_ratio_t >= 1.50 AND high_c_t > low_c_t. r3 percentile은 시장별 계산 후 KOSPI/KOSDAQ 신호를 합쳐 최종 순위."
+    required_history: "현재 세션 포함 연속 21개 XKRX 거래 세션 (close/volume t-20..t)"
+    missing_data_handling: "필요 21세션 중 OHLCV 결측·비양수면 신호 미계산; high_c_t=low_c_t면 clv 미정의로 신호 없음; 보간 금지; 선택 후 t+1 bar 없으면 no-fill, 대체 종목 없음; 보유 중 상폐는 하네스 터미널 규칙."
+    entry: t_plus_1_open
+    exit: "진입 체결일 D 기준 D+5 XKRX 세션 종가 매도"
+    ranking: "r3_pct_t 오름차순 → r3_t 오름차순 → clv_t 내림차순 → volume_ratio_t 내림차순 → liq_pct_t 내림차순"
+    tie_break: "market 순서 KOSPI, KOSDAQ → zero-padded symbol 오름차순"
+    sizing: "정규화 notional 1.0 동일 · 동시 보유 상한 10 · 중복 보유/추가매수 금지, 재신호 무시 후 차순위로 슬롯 충원"
+    parameter_values: {liquidity_percentile_min: 0.50, reversal_lookback_sessions: 3, loser_percentile_max: 0.05, close_location_min: 0.65, volume_ratio_min: 1.50, holding_sessions: 5, max_concurrent_positions: 10}
+    param_sensitivity: "liq↑=거래수↓ · lookback↑=반전 지연 · loser_pct↓=희소·강도↑ · clv↑=표본↓ · vol_ratio↑=빈도↓ · hold↑=회전율↓·노출↑"
+    expected_trade_frequency: "사전 추정 월 10~30건; capacity 상한 ≈ floor(월 세션수/5)×10; corpus 관측 아님."
+    falsification: "2015~2024 filled trade <300; 또는 43bp 비용 후 같은 세션·D+5·유사 유동성 baseline 대비 거래당 평균 초과수익 ≤0; 또는 진입 세션 군집 one-sided 90% CLB ≤0; 또는 10개 연도 중 양수 연도 <6."
+    empirical_status: UNTESTED
+  - market: KR
+    strategy_id: brk20_confirm
+    family_id:
+      status: NOT_AVAILABLE_IN_SOURCE
+      value: null
+      source_file: gptpro-kr-candidates-v1.md
+      source_location: "candidate block strategy_id=brk20_confirm; family_id not present in source"
+    cost_assumption:
+      base: "approximately 43 bp round trip (fee 3 bp + sell tax 20 bp + slippage 10 bp/side)"
+      sensitivity: "approximately 83 bp round trip with slippage 30 bp/side"
+      source_file: 03-harness-corpus-constraints.md
+      source_sha256: cf03ce4b93e1b307fec0479563415cf40a5970a0db93904efc4400f694f911ad
+    hypothesis: "직전 20세션 모든 고가를 종가로 돌파하고 종가 위치·거래량이 강하면 정보 반영이 여러 세션에 걸쳐 진행되어 이후 10세션 지속 초과성과가 가능하다."
+    side: long
+    universe_filter: "PIT 포함 · 공통 적격성 · liq_pct_t >= 0.50 (close×volume 프록시)"
+    signal: "prior_high20_t = max(high_c_{t-20..t-1}); breakout_margin_t = close_t/prior_high20_t - 1; clv_t = (close_t-low_c_t)/(high_c_t-low_c_t); volume_ratio_t = volume_t/median(volume_{t-20..t-1}); breakout_margin_t > 0 AND clv_t >= 0.75 AND volume_ratio_t >= 1.25 AND high_c_t > low_c_t. 종목 자체 20세션 time-series breakout."
+    required_history: "연속 21개 XKRX 세션 (clamp high·volume t-20..t-1 + 당일 OHLCV)"
+    missing_data_handling: "결측·비양수 시 신호 없음 · high_c=low_c 신호 없음 · 고가 결측 너머 연결 금지 · no-fill 대체 없음 · 상폐 터미널 규칙"
+    entry: t_plus_1_open
+    exit: "D+10 XKRX 세션 종가 매도"
+    ranking: "breakout_margin_t 내림차순 → volume_ratio_t 내림차순 → clv_t 내림차순 → liq_pct_t 내림차순"
+    tie_break: "KOSPI, KOSDAQ → zero-padded symbol 오름차순"
+    sizing: "notional 1.0 · 상한 10 · 중복/추가매수 금지"
+    parameter_values: {liquidity_percentile_min: 0.50, breakout_lookback_sessions: 20, close_location_min: 0.75, volume_ratio_min: 1.25, holding_sessions: 10, max_concurrent_positions: 10}
+    param_sensitivity: "liq↑=거래수↓ · lookback↑=희소·강도↑ · clv↑=표본↓ · vol_ratio↑=정상 돌파 누락 · hold↑=false breakout 노출↑"
+    expected_trade_frequency: "사전 추정 월 6~18건; capacity ≈ floor(월 세션수/10)×10; corpus 관측 아님."
+    falsification: "filled <300; 또는 43bp 후 baseline 초과 ≤0; 또는 진입 세션 군집 90% CLB ≤0; 또는 양수 연도 <6."
+    empirical_status: UNTESTED
+  - market: KR
+    strategy_id: lowvol_up_month
+    family_id:
+      status: NOT_AVAILABLE_IN_SOURCE
+      value: null
+      source_file: gptpro-kr-candidates-v1.md
+      source_location: "candidate block strategy_id=lowvol_up_month; family_id not present in source"
+    cost_assumption:
+      base: "approximately 43 bp round trip (fee 3 bp + sell tax 20 bp + slippage 10 bp/side)"
+      sensitivity: "approximately 83 bp round trip with slippage 30 bp/side"
+      source_file: 03-harness-corpus-constraints.md
+      source_sha256: cf03ce4b93e1b307fec0479563415cf40a5970a0db93904efc4400f694f911ad
+    hypothesis: "월말 기준 최근 변동성 시장 하위 30%이고 20세션 수익률이 양수인 종목은 하방 변동이 작게 유지되며 다음 20세션 초과성과가 양수일 수 있다."
+    side: long
+    universe_filter: "월 마지막 XKRX 세션 한정 · PIT 포함 · 공통 적격성 · liq_pct_t >= 0.50"
+    signal: "vol20_t = std(r1_{t-19..t}, ddof=1); vol20_pct_t = 같은 시장 내 pct_asc(vol20_t); r20_t = close_t/close_{t-20}-1; vol20_pct_t <= 0.30 AND r20_t > 0."
+    required_history: "월말 포함 연속 21개 XKRX 세션"
+    missing_data_handling: "결측·비양수 시 해당 월 제외 · 보간 금지 · no-fill 차순위 보충 없음 · 기보유 제외 후 차순위 충원 · 상폐 터미널 규칙"
+    entry: t_plus_1_open
+    exit: "D+20 XKRX 세션 종가 매도"
+    ranking: "vol20_pct_t 오름차순 → vol20_t 오름차순 → r20_t 내림차순 → liq_pct_t 내림차순"
+    tie_break: "KOSPI, KOSDAQ → zero-padded symbol 오름차순"
+    sizing: "notional 1.0 · 상한 10 · 월말 강제 청산/재조정 없음, D+20 만기 유지 · 잔여 슬롯만 신규"
+    parameter_values: {selection_schedule: calendar_month_last_xkrx_session, liquidity_percentile_min: 0.50, volatility_lookback_sessions: 20, low_volatility_percentile_max: 0.30, trend_lookback_sessions: 20, trend_return_floor: 0.0, holding_sessions: 20, max_concurrent_positions: 10}
+    param_sensitivity: "liq↑=선택폭↓ · vol lookback↑=반영 지연 · lowvol_pct↓=방어적·참여도↓ · trend_floor↑=momentum 성격화 · hold↑=정합성 약화 · schedule 변경=신규 등록 대상"
+    expected_trade_frequency: "사전 추정 월 5~10건; 월 1회 평가·슬롯 10, D+20 잔존 시 슬롯 감소; corpus 관측 아님."
+    falsification: "filled <300; 또는 43bp 후 baseline 초과 ≤0; 또는 90% CLB ≤0; 또는 양수 연도 <6."
+    empirical_status: UNTESTED
+  - market: US
+    strategy_id: US-TS-MOM-CONT-Z126-H20-v1
+    family_id:
+      status: SOURCE_PROVIDED
+      value: US-TS-MOM-CONT
+      source_file: gptpro-us-candidates-v1.md
+      source_location: "candidate block strategy_id=US-TS-MOM-CONT-Z126-H20-v1; family_id"
+    cost_assumption:
+      base: "10 bp/side (20 bp round trip)"
+      sensitivity: "5 bp/side (10 bp round trip)"
+      source_file: 03-harness-corpus-constraints.md
+      source_sha256: cf03ce4b93e1b307fec0479563415cf40a5970a0db93904efc4400f694f911ad
+    source_text: "CONDITIONAL_DRAFT; v1.1 survivor corpus 공통 사실 기준으로 설계됨. 역사적 missing_data 문구는 만기 close 부재=하네스 TBD-3 미해결로 run-invalid이라고 기록함."
+    current_constraint_resolution: "현재 US 하네스 v1.2에서 만기 close 부재는 run-invalid으로 해소됨. 후보 정의를 수정하지 않고 현재 실행 제약만 이 값으로 해석한다."
+    hypothesis: "126세션 상승률이 자기 변동성 대비 충분히 크고(z126≥1.0) 21세션 수익률·63세션 SMA가 방향 확인하면 다음 20세션 지속 가능성이 동일 유동성 baseline보다 높다."
+    side: long
+    universe_filter: "ADV20_pre_proxy >= USD 5,000,000 · 20개 volume 전부 양수·유한 · 필요 close 이력 존재 (프록시 명시)"
+    signal: "R126=C_t/C_(t-126)-1; z126=R126/(sigma63×sqrt(126)); signal=(z126>=1.0) AND (R21>0.0) AND (C_t>SMA63) AND no_active_position(symbol). 전 항 자기 이력만."
+    required_history: "127개 corpus session 유효 close · 최근 63개 수익률 · 이전 20개 유효 volume"
+    missing_data_handling: "필요 bar 결측·null·비유한·비양수 시 신호 미생성 · forward-fill/보간/winsorization 금지 · t+1 open 부재=no-fill · 만기 close 부재의 source_text는 역사적 TBD-3이며 현재 v1.2 resolution은 run-invalid (조용한 대체 금지)."
+    entry: t_plus_1_open
+    exit: "D+20 session close (corpus session index 기준, 조기 청산 없음)"
+    ranking: "슬롯 초과 시 ADV20_pre_proxy 내림차순만. 수익률·z126·신호강도 횡단면 순위 금지"
+    tie_break: "sha256(strategy_id || session_date || symbol) 바이트 오름차순"
+    sizing: "종목당 USD 500 고정 notional · 복리 없음 · 최대 10종목 · pyramiding 없음 · execution_envelope_compatible=CONDITIONAL"
+    parameter_values: {adv20_min_usd: 5000000, trend_lookback_sessions: 126, trend_vol_lookback_sessions: 63, trend_z_min: 1.0, confirmation_lookback_sessions: 21, confirmation_return_min: 0.0, sma_lookback_sessions: 63, hold_sessions: 20, fixed_notional_usd: 500, max_positions: 10}
+    param_sensitivity: NOT_AVAILABLE_IN_SOURCE
+    expected_trade_frequency: "DESIGN_PRIOR 월 4~10건; raw incidence 미지; FREQ_QUERY로 확인."
+    falsification: "2024년 말 완료 거래 <400 또는 고유 진입 세션 <120, 또는 validation 2023~2024 <60건·고유 세션 <24면 폐기; 충족해도 validation entry-session 동일가중 비용차감 cohort 초과 ≤0bp면 폐기."
+    execution_envelope: "CONDITIONAL; source envelope의 미확정 실행 세부사항은 UNKNOWN으로 보존."
+    empirical_status: UNTESTED
+  - market: US
+    strategy_id: US-TS-REV-SHORT-Z3-T126-H3-v1
+    family_id:
+      status: SOURCE_PROVIDED
+      value: US-TS-REV-SHORT
+      source_file: gptpro-us-candidates-v1.md
+      source_location: "candidate block strategy_id=US-TS-REV-SHORT-Z3-T126-H3-v1; family_id"
+    cost_assumption:
+      base: "10 bp/side (20 bp round trip)"
+      sensitivity: "5 bp/side (10 bp round trip)"
+      source_file: 03-harness-corpus-constraints.md
+      source_sha256: cf03ce4b93e1b307fec0479563415cf40a5970a0db93904efc4400f694f911ad
+    source_text: "CONDITIONAL_DRAFT; v1.1 survivor corpus 공통 사실 기준으로 설계됨. 역사적 TBD-3 미해결 문구를 포함함."
+    current_constraint_resolution: "현재 US 하네스 v1.2에서 만기 close 부재는 run-invalid으로 해소됨. 후보 정의를 수정하지 않고 현재 실행 제약만 이 값으로 해석한다."
+    hypothesis: "126세션 자기 추세 양수인 종목의 자기 변동성 대비 과도한 3세션 하락(z3<=-2.0)은 다음 3세션 부분 회귀 가능."
+    side: long
+    universe_filter: "ADV20_pre_proxy >= USD 5,000,000 · 절대 주가 미사용"
+    signal: "R3=C_t/C_(t-3)-1; z3=R3/(sigma60×sqrt(3)); signal=(z3<=-2.0) AND (R126>0.0) AND no_active_position"
+    required_history: "127개 session close · 최근 60개 수익률 · 이전 20개 volume"
+    missing_data_handling: "결측·비유한·비양수·sigma60=0 → 신호 미생성 · 보간 없음 · no-fill/run-invalid 규칙 동일; 역사적 TBD-3는 현재 v1.2에서 만기 close 부재=run-invalid으로 해소."
+    entry: t_plus_1_open
+    exit: "D+3 session close (stop·목표가·조기 청산 없음)"
+    ranking: "ADV20_pre_proxy 내림차순만 (하락폭·z3 우선 금지)"
+    tie_break: "sha256 바이트 오름차순"
+    sizing: "USD 500 · 최대 10 · execution_envelope_compatible=CONDITIONAL_COST_SENSITIVE"
+    parameter_values: {adv20_min_usd: 5000000, shock_lookback_sessions: 3, shock_vol_lookback_sessions: 60, shock_z_max: -2.0, trend_lookback_sessions: 126, trend_return_min: 0.0, hold_sessions: 3, fixed_notional_usd: 500, max_positions: 10}
+    param_sensitivity: NOT_AVAILABLE_IN_SOURCE
+    expected_trade_frequency: "DESIGN_PRIOR 월 15~50건; 실제 2σ 하락 발생률 미지; FREQ_QUERY."
+    falsification: "완료 거래 <1,000 또는 고유 진입 세션 <200, validation <200건·고유 <50·각 연도 <80이면 폐기; 10bp/side에서 2023~2024 초과 ≤0bp 폐기; 5bp/side 양수인데 10bp/side ≤0이면 비용 민감 실패."
+    execution_envelope: "CONDITIONAL_COST_SENSITIVE; source envelope의 장중 집행·프리/애프터·비용은 UNKNOWN."
+    empirical_status: UNTESTED
+  - market: US
+    strategy_id: US-TS-VOLBREAK-C55-V2-H10-v1
+    family_id:
+      status: SOURCE_PROVIDED
+      value: US-TS-VOLBREAK
+      source_file: gptpro-us-candidates-v1.md
+      source_location: "candidate block strategy_id=US-TS-VOLBREAK-C55-V2-H10-v1; family_id"
+    cost_assumption:
+      base: "10 bp/side (20 bp round trip)"
+      sensitivity: "5 bp/side (10 bp round trip)"
+      source_file: 03-harness-corpus-constraints.md
+      source_sha256: cf03ce4b93e1b307fec0479563415cf40a5970a0db93904efc4400f694f911ad
+    source_text: "CONDITIONAL_DRAFT; v1.1 survivor corpus 공통 사실 기준으로 설계됨. 역사적 TBD-3 미해결 문구를 포함함."
+    current_constraint_resolution: "현재 US 하네스 v1.2에서 만기 close 부재는 run-invalid으로 해소됨. 후보 정의를 수정하지 않고 현재 실행 제약만 이 값으로 해석한다."
+    hypothesis: "55세션 종가 고점 상향 돌파와 자기 거래량 중앙값 2배 이상 동반 시 다음 10세션 지속성 가능."
+    side: long
+    universe_filter: "ADV20_pre_proxy >= USD 5,000,000 · volume 분할조정 여부 UNKNOWN 명시"
+    signal: "prior_close_high55=max(C_(t-55)..C_(t-1)); volume_ratio20=V_t/median(V_(t-20)..V_(t-1)); signal=(C_t>prior_close_high55) AND (R1>0.0) AND (2.0<=volume_ratio20<=10.0) AND no_active_position. high/low 미사용"
+    required_history: "56개 session close · 이전 20개+당일 양수 volume"
+    missing_data_handling: "결측·비유한·비양수·중앙값 0 → 신호 없음 · ratio 상한 10은 극단치 완화 guard이나 분할 오염 완전 제거 아님 · no-fill/run-invalid 동일"
+    entry: t_plus_1_open
+    exit: "D+10 session close (재이탈 조기 청산 없음)"
+    ranking: "ADV20_pre_proxy 내림차순만"
+    tie_break: "sha256 바이트 오름차순"
+    sizing: "USD 500 · 최대 10 · execution_envelope_compatible=CONDITIONAL_DATA_AND_COST"
+    parameter_values: {adv20_min_usd: 5000000, breakout_lookback_sessions: 55, volume_lookback_sessions: 20, volume_ratio_min: 2.0, volume_ratio_max: 10.0, daily_return_min: 0.0, hold_sessions: 10, fixed_notional_usd: 500, max_positions: 10}
+    param_sensitivity: NOT_AVAILABLE_IN_SOURCE
+    expected_trade_frequency: "DESIGN_PRIOR 월 6~19건; FREQ_QUERY."
+    falsification: "완료 <500 또는 고유 세션 <150, validation <100·고유 <30·각 연도 <40이면 폐기; 10bp/side 초과 ≤0bp 폐기; validation volume_ratio 상위 1% 제외 시 초과 ≤0bp 또는 상위 1%가 validation 초과의 50% 초과면 극단치 의존 폐기."
+    execution_envelope: "CONDITIONAL_DATA_AND_COST; volume 조정 여부와 비용은 UNKNOWN."
+    empirical_status: UNTESTED

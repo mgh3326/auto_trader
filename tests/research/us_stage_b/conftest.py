@@ -9,8 +9,13 @@ from research.us_stage_b.contracts import USCostLiteral, USStageBRunContract
 from research.us_stage_b.registry import CandidateBinding, CandidateRegistry
 from research.us_stage_b.source import USStageBDailyBar
 
-FROZEN_YAML = Path(
-    "/Users/mgh3326/Documents/prior-art-map-v1/02-active-candidates.yaml"
+# Exact byte-for-byte frozen packet fixture.  Keeping it inside the test tree
+# makes the SHA-verified raw-parse contract portable to clean CI workers.
+FROZEN_YAML = (
+    Path(__file__).resolve().parents[2]
+    / "fixtures"
+    / "us_u0_frozen"
+    / "02-active-candidates.yaml"
 )
 
 
