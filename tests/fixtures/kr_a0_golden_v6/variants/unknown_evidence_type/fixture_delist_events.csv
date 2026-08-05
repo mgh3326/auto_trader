@@ -1,0 +1,4 @@
+market,symbol,delist_session_idx,evidence_type
+KOSPI,000340,32,actual_delisting
+KOSDAQ,900110,46,actual_delisting
+KOSDAQ,900120,44,actual_delisting

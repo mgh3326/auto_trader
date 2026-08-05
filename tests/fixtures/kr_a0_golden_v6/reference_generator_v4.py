@@ -1,0 +1,1624 @@
+#!/usr/bin/env python3
+"""KR golden vector reference generator — kr-golden-vectors-v1 (golden v6).
+
+Per operator-ratified A1~A15 and codex-mock reviews 1~16. Supersedes v1~v5 artifacts.
+Emits golden_v6.json + 21 self-contained variant directories (6 RunInvalid + 15 completing).
+Canonical runtime: auto_trader .venv Python 3.13.x, plain `python` (no -O).
+
+v4 deltas from v3:
+  - BOUNDARY SEALED: every iteration (gap check, signal loop) clamped to
+    t <= exploration_end; World counts out-of-boundary bar reads (access spy) and the
+    generator asserts the count is ZERO across all main-fixture runs (A14-5)
+  - A13 identity: cross-market simultaneous membership overlap -> RUN_INVALID_IDENTITY_CONFLICT;
+    market transfer = independent instances (no stitching); held-through-transfer ->
+    RUN_INVALID_MARKET_TRANSFER. Twin fixture reshaped to a TRANSFER ("000420" KOSDAQ 0..20,
+    KOSPI 23..55); simultaneous-overlap is now a failing variant
+  - A14: data gap = row ABSENCE only (all-invalid rows -> universe exclusion path);
+    full verdict labels; top-level verdict = 43bp with COST_SENSITIVE flag; year = entry
+    session calendar year, session-equal-weight
+  - A12 discriminators: maturity bar with blank open/high/low but valid close+volume
+    SUCCEEDS (KA3); delist last-valid search is close+volume-only and event-session-inclusive
+    (QD1: blank-open bar AT event session is used); entry close not required (QD2 fills with
+    blank close, later -100% no-valid-price terminal); blank-volume bar invalid (KE5)
+  - exact comparators wired to real signals: clv == 0.65 and volume_ratio == 1.5 (KB1),
+    brk clv == 0.75 and ratio == 1.25 (KB2), vol20_pct == 0.3 (LV5 rank ladder at ml44
+    pop 20), plus v3's r3_pct == 0.05 / liq_pct == 0.5 / margin == 0.0 / r20 == 0.0
+  - A4 baseline mirrors trade resolution order (§12차: transfer -> valid maturity -> evidence)
+  - compose oracle: n>=30 / filled>=300 synthetic worlds through the REAL compose function
+    (PASS, FALSIFIED, COST_SENSITIVE, RUN_INVALID_EMPTY_BASELINE)
+  - loader hardening: sessions keyed by session_idx, duplicate session/config/membership/
+    delist rows fail-closed; all inputs read from the fixture directory (packet root)
+  - variants as self-contained directories (21 = 6 RunInvalid + 15 completing):
+    invalid_maturity, data_gap, duplicate_row, nofill_no_substitution, identity_conflict,
+    market_transfer (stale-valid maturity bar preserved),
+    market_transfer_missing_maturity (complementary precedence case),
+    invalid_maturity close blank/zero/Inf + volume blank/zero/negative (A15
+    present-but-invalid siblings), entry_open_zero_no_fill (A12 entry predicate),
+    data_gap_control_all_invalid, stale_delist_bar (A4 exact oracle), holdout_leg_control
+"""
+import csv
+import hashlib
+import json
+import math
+import os
+import random
+import shutil
+import statistics
+from datetime import date, timedelta
+
+OUT = "/Users/mgh3326/work/herdr-artifacts/kr-golden-vectors-v1"
+INBOX = "/Users/mgh3326/work/herdr-inbox"
+Z90 = 1.2815515655446004
+COST_BASE = 0.0043
+COST_SENS = 0.0083
+N_KOSPI = 48
+N_KOSDAQ = 48
+N_SESS = 56
+FLOOR_N = 20
+MONTH_LAST = {9, 29, 31, 44}
+EXPLORATION_END = 52
+
+KA1, KA2, KA3, KA4, KA5 = "000310", "000320", "000330", "000340", "000350"
+KD1, KD2, KD3 = "000360", "000370", "000380"
+KC1, KE1, KF1, TWIN, KG1, KH1, KB1 = "000390", "000400", "000410", "000420", "000430", "000440", "000050"
+CARVED = ["000010", "000020", "000030", "000040", "000450"]
+Q01, QB1, KE2, KE3 = "900010", "900370", "900380", "900390"
+QA1, QA2, QA3, QA4, QA5, QA6 = "900310", "900320", "900330", "900340", "900350", "900360"
+MASS5 = ["900400", "900410", "900420", "900430", "900440"]
+KE4, QH1, QH2, KD4, ZC = "900450", "900460", "900470", "900480", "900160"
+QD1, QD2, KE5, KB2 = "900110", "900120", "900130", "900140"
+CARVED_Q = ["900020", "900030", "900040", "900050"]
+LV5 = [("900060", 0.0002), ("900070", 0.0003), ("900150", 0.0004),
+       ("900170", 0.0005), ("900180", 0.0006)]
+
+
+def pct_asc(values, x):
+    return sum(1 for v in values if v <= x) / len(values)
+
+
+class RunInvalid(Exception):
+    def __init__(self, label, detail=""):
+        super().__init__(label + (f" {detail}" if detail else ""))
+        self.label = label
+
+
+# ---------------------------------------------------------------- fixture build
+def build_world():
+    rng = random.Random(20260805)
+    dates, d = [], date(2022, 9, 19)
+    while len(dates) < N_SESS:
+        if d.weekday() < 5 and d != date(2022, 10, 3):
+            dates.append(d)
+        d += timedelta(days=1)
+    symbols = ([("KOSPI", "%06d" % (10 * (i + 1))) for i in range(N_KOSPI)] +
+               [("KOSDAQ", "%06d" % (900000 + 10 * (i + 1))) for i in range(N_KOSDAQ)] +
+               [("KOSDAQ", TWIN)])
+    membership = {k: (0, N_SESS - 1) for k in symbols}
+    membership[("KOSPI", KF1)] = (40, N_SESS - 1)
+    membership[("KOSPI", KA4)] = (0, 31)
+    for c in CARVED:
+        membership[("KOSPI", c)] = (0, 47)
+    for c in CARVED_Q:
+        membership[("KOSDAQ", c)] = (0, 43)
+    membership[("KOSDAQ", TWIN)] = (0, 20)          # A13 transfer: KOSDAQ leg ends
+    membership[("KOSPI", TWIN)] = (23, N_SESS - 1)  # KOSPI leg starts (disjoint)
+    membership[("KOSDAQ", QD1)] = (0, 46)
+    membership[("KOSDAQ", QD2)] = (0, 43)
+    delist = {("KOSPI", KA4): 32, ("KOSDAQ", QD1): 46, ("KOSDAQ", QD2): 44}
+
+    bars = {}
+    for key in symbols:
+        base = rng.uniform(5000, 50000)
+        vb = rng.randint(50_000, 500_000)
+        close = base
+        for i in range(N_SESS):
+            r = rng.gauss(0.0005, 0.012)
+            o = close * (1 + rng.gauss(0, 0.004))
+            c = close * (1 + r)
+            hi = max(o, c) * (1 + abs(rng.gauss(0, 0.004)))
+            lo = min(o, c) * (1 - abs(rng.gauss(0, 0.004)))
+            v = max(1000, int(vb * rng.uniform(0.8, 1.2)))
+            bars[(key, i)] = {"open": o, "high": hi, "low": lo, "close": c, "volume": v}
+            close = c
+
+    def med_pv(key, s):
+        return statistics.median(bars[(key, s - k)]["volume"] for k in range(1, 21))
+
+    def craft_rev3(key, s, factor):
+        tc = bars[(key, s - 3)]["close"] * factor
+        bars[(key, s)].update(close=tc, open=tc * 0.97, low=tc * 0.94, high=tc * 1.01,
+                              volume=int(med_pv(key, s) * 2.5))
+
+    def craft_drop_clvfail(key, s, factor):
+        tc = bars[(key, s - 3)]["close"] * factor
+        bars[(key, s)].update(close=tc, low=tc, open=tc * 1.03, high=tc * 1.05,
+                              volume=int(med_pv(key, s) * 1.0))
+
+    def hc(b):
+        return max(b["high"], b["open"], b["close"])
+
+    def craft_brk20(key, s):
+        ph = max(hc(bars[(key, s - k)]) for k in range(1, 21))
+        c = ph * 1.03
+        bars[(key, s)].update(close=c, open=ph * 0.995, low=ph * 0.99, high=ph * 1.032,
+                              volume=int(med_pv(key, s) * 1.8))
+
+    def craft_const(key, start, end, drift):
+        c = bars[(key, start)]["close"]
+        for i in range(start + 1, end + 1):
+            c = c * (1 + drift)
+            bars[(key, i)].update(close=c, open=c * 0.999, high=c * 1.001, low=c * 0.998)
+
+    r3crafts = [(("KOSPI", KA1), 24, .80), (("KOSDAQ", QA1), 24, .80),
+                (("KOSPI", KA2), 25, .80), (("KOSDAQ", QA2), 25, .80),
+                (("KOSPI", KA3), 26, .80), (("KOSDAQ", QA3), 26, .80),
+                (("KOSPI", KA1), 27, .80), (("KOSDAQ", QA4), 27, .80),
+                (("KOSPI", KA4), 28, .80), (("KOSDAQ", QA5), 28, .80),
+                (("KOSPI", KA5), 29, .80), (("KOSDAQ", QA6), 29, .79),
+                (("KOSPI", KA1), 30, .80), (("KOSDAQ", QB1), 32, .80),
+                (("KOSPI", KC1), 35, .88), (("KOSPI", KE1), 36, .80),
+                (("KOSPI", KF1), 38, .80), (("KOSPI", KG1), 41, .80),
+                (("KOSDAQ", QD1), 41, .80), (("KOSPI", TWIN), 43, .80),
+                (("KOSDAQ", QD2), 42, .80), (("KOSPI", KA2), 47, .80),
+                (("KOSPI", KH1), 49, .80)]
+    for key, s, f in r3crafts:
+        craft_rev3(key, s, f)
+    for m in MASS5:
+        craft_drop_clvfail(("KOSDAQ", m), 35, .85)
+
+    k1 = ("KOSPI", KD1)
+    raw_max = max(bars[(k1, j)]["high"] for j in range(13, 33))
+    b20 = bars[(k1, 20)]
+    b20["high"] = raw_max * 1.001
+    b20["open"] = b20["high"] * 1.06
+    c33 = b20["high"] * 1.03
+    bars[(k1, 33)].update(close=c33, open=c33 * 0.996, low=c33 * 0.995, high=c33 * 1.001,
+                          volume=int(med_pv(k1, 33) * 1.8))
+    craft_brk20(("KOSPI", KD2), 34)
+    craft_brk20(("KOSPI", KD3), 50)
+    craft_const(("KOSDAQ", Q01), 9, 44, 0.0015)
+    qh1c = bars[(("KOSDAQ", QH1), 10)]["close"]
+    bars[(("KOSDAQ", QH1), 9)]["close"] = qh1c * 1.02
+    for i in range(10, 32):
+        bars[(("KOSDAQ", QH1), i)].update(close=qh1c, open=qh1c * 0.999,
+                                          high=qh1c * 1.001, low=qh1c * 0.998)
+    q2 = ("KOSDAQ", QH2)
+    bars[(q2, 10)]["close"] = bars[(q2, 9)]["close"] * 0.999
+    craft_const(q2, 10, 29, -0.0005)
+    craft_const(q2, 29, 31, 0.012)
+    # LV5: alternating +/-d with +e drift, crafted closes 24..44 (rank ladder at ml44)
+    for (sym, dd) in LV5:
+        key = ("KOSDAQ", sym)
+        c = bars[(key, 23)]["close"]
+        s = 1
+        for i in range(24, 45):
+            c = c * (1 + 0.001 + s * dd)
+            s = -s
+            bars[(key, i)].update(close=c, open=c * 0.999, high=c * 1.001, low=c * 0.998)
+    # KB1: fully crafted calm path with integer-exact boundary bar at s45
+    kb = ("KOSPI", KB1)
+    for i in range(25, 53):
+        bars[(kb, i)].update(close=41000.0, open=40950.0, high=41200.0, low=40800.0,
+                             volume=200000)
+    bars[(kb, 42)]["close"] = 41250.0
+    bars[(kb, 43)]["close"] = 40000.0
+    bars[(kb, 44)]["close"] = 39000.0
+    bars[(kb, 45)].update(close=33000.0, open=38000.0, high=40000.0, low=20000.0,
+                          volume=300000)                     # clv 13/20, ratio 1.5 exact
+    for i in range(46, 53):
+        bars[(kb, i)].update(close=33000.0 - (i - 45) * 50.0, open=33000.0, high=33100.0,
+                             low=32700.0, volume=200000)
+    # KB2: brk exact boundary (clv 15/20, ratio 1.25) at s38
+    k2 = ("KOSDAQ", KB2)
+    for i in range(18, 50):
+        bars[(k2, i)].update(close=30000.0, open=29950.0, high=30300.0, low=29700.0,
+                             volume=200000)
+    bars[(k2, 38)].update(close=35000.0, open=34800.0, high=40000.0, low=20000.0,
+                          volume=250000)
+    for i in range(39, 50):
+        bars[(k2, i)].update(close=35000.0 - (i - 38) * 40.0, open=35000.0, high=35100.0,
+                             low=34700.0, volume=200000)
+
+    # quantize
+    for _, b in bars.items():
+        for f in ("open", "high", "low", "close"):
+            if b[f] is not None:
+                b[f] = round(b[f], 2)
+        b["volume"] = int(b["volume"])
+
+    # post-quantize exact crafts
+    qh1q = bars[(("KOSDAQ", QH1), 11)]["close"]
+    for i in range(11, 32):
+        bars[(("KOSDAQ", QH1), i)]["close"] = qh1q
+    k4 = ("KOSDAQ", KD4)
+    ph4 = max(max(bars[(k4, 37 - k)]["high"], bars[(k4, 37 - k)]["open"],
+                  bars[(k4, 37 - k)]["close"]) for k in range(1, 21))
+    bars[(k4, 37)].update(close=ph4, open=round(ph4 * 0.996, 2), low=round(ph4 * 0.995, 2),
+                          high=round(ph4 * 1.001, 2), volume=int(med_pv(k4, 37) * 1.8))
+
+    def force_liq(key, i):
+        mkt = key[0]
+        vals = sorted(bars[(k, i)]["close"] * bars[(k, i)]["volume"]
+                      for k in symbols if k[0] == mkt and (k, i) in bars and k != key)
+        target = vals[int(len(vals) * 0.75)] * 1.2
+        b = bars[(key, i)]
+        b["volume"] = max(b["volume"], int(target / b["close"]) + 1)
+
+    for key, s, _ in r3crafts:
+        if key == kb:
+            continue                                   # KB1 keeps exact-ratio volume
+        force_liq(key, s)
+    for key, s in ([(("KOSPI", KD1), 33), (("KOSPI", KD2), 34), (("KOSPI", KD3), 50),
+                    (("KOSDAQ", KD4), 37), (("KOSDAQ", Q01), 29), (("KOSDAQ", Q01), 31),
+                    (("KOSDAQ", Q01), 44), (("KOSDAQ", QH1), 31), (("KOSDAQ", QH2), 31)] +
+                   [(("KOSDAQ", m), 35) for m in MASS5] +
+                   [(("KOSDAQ", sym), 44) for sym, _ in LV5]):
+        force_liq(key, s)
+
+    def liq_pct_of(key, i):
+        mkt = key[0]
+        ks = [k for k in symbols if k[0] == mkt and (k, i) in bars]
+        vals = {k: bars[(k, i)]["close"] * bars[(k, i)]["volume"] for k in ks}
+        return pct_asc(list(vals.values()), vals[key])
+
+    def match_decile(tgt, src, i):
+        want = min(9, int(liq_pct_of(src, i) * 10))
+        b = bars[(tgt, i)]
+        for _ in range(400):
+            if min(9, int(liq_pct_of(tgt, i) * 10)) == want:
+                return
+            b["volume"] = int(b["volume"] * 1.05) + 1
+        raise AssertionError(f"decile match failed {tgt}@{i}")
+
+    match_decile(("KOSDAQ", ZC), ("KOSDAQ", QA1), 24)
+    match_decile(("KOSDAQ", QA5), ("KOSPI", KA4), 28)
+
+    # invalid injections + field-level discriminators (post-quantize)
+    bars[(("KOSPI", KE1), 34)]["volume"] = 0
+    bars[(("KOSDAQ", KE2), 40)]["high"] = None
+    bars[(("KOSDAQ", KE3), 42)]["close"] = 0.0
+    bars[(("KOSDAQ", KE4), 43)]["close"] = float("inf")
+    bars[(("KOSDAQ", KE5), 45)]["volume"] = None
+    bars[(("KOSPI", KG1), 42)]["high"] = None            # entry fills on open+volume
+    for f in ("open", "high", "low"):
+        bars[(("KOSPI", KA3), 32)][f] = None             # maturity close+volume-only
+    bars[(("KOSPI", KA4), 31)]["open"] = None            # terminal search close-only
+    bars[(("KOSDAQ", QD1), 46)]["open"] = None           # event-session-inclusive search
+    bars[(("KOSDAQ", QD2), 43)]["close"] = None          # entry fills; later no-valid-price
+
+    # structural deletions
+    del bars[(("KOSDAQ", QB1), 33)]
+    del bars[(("KOSDAQ", ZC), 25)]
+    for i in range(21, N_SESS):                          # transfer: KOSDAQ twin leg ends
+        bars.pop((("KOSDAQ", TWIN), i), None)
+    for i in range(0, 23):                               # new leg bars start at listing
+        bars.pop((("KOSPI", TWIN), i), None)
+    for i in range(32, N_SESS):
+        bars.pop((("KOSPI", KA4), i), None)
+    for i in range(47, N_SESS):
+        bars.pop((("KOSDAQ", QD1), i), None)
+    for i in range(44, N_SESS):
+        bars.pop((("KOSDAQ", QD2), i), None)
+    return bars, symbols, membership, delist, dates
+
+
+# ---------------------------------------------------------------- serialization
+def fmt(x):
+    return "" if x is None else ("%.2f" % x)
+
+
+def write_fixtures(dirpath, bars, symbols, membership, delist, dates):
+    os.makedirs(dirpath, exist_ok=True)
+    with open(f"{dirpath}/fixture_bars.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["market", "symbol", "session_idx", "open", "high", "low", "close",
+                    "volume"])
+        for key in symbols:
+            for i in range(N_SESS):
+                b = bars.get((key, i))
+                if b is None:
+                    continue
+                w.writerow([key[0], key[1], i, fmt(b["open"]), fmt(b["high"]), fmt(b["low"]),
+                            fmt(b["close"]), "" if b["volume"] is None else b["volume"]])
+    with open(f"{dirpath}/fixture_sessions.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["session_idx", "date_informational", "month_last"])
+        for i, d in enumerate(dates):
+            w.writerow([i, d.isoformat(), 1 if i in MONTH_LAST else 0])
+    with open(f"{dirpath}/fixture_config.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["key", "value"])
+        w.writerow(["exploration_end_session_idx", EXPLORATION_END])
+    with open(f"{dirpath}/fixture_membership.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["market", "symbol", "start_idx", "end_idx"])
+        for key in symbols:
+            s, e = membership[key]
+            w.writerow([key[0], key[1], s, e])
+    with open(f"{dirpath}/fixture_delist_events.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["market", "symbol", "delist_session_idx", "evidence_type"])
+        for key, dd in delist.items():
+            w.writerow([key[0], key[1], dd, "decision_disclosure"])
+
+
+class World:
+    def __init__(self, bars, symbols, membership, delist, dates, month_last, expl_end):
+        self.bars, self.symbols, self.membership = bars, symbols, membership
+        self.delist, self.dates = delist, dates
+        self.month_last, self.expl_end = month_last, expl_end
+        # A14-5 metadata boundary: membership clamped to the exploration window at
+        # construction — identity/transfer checks structurally cannot see holdout legs
+        self.membership = {k: (s, min(e, expl_end))
+                           for k, (s, e) in self.membership.items() if s <= expl_end}
+        self.symbols = [k for k in self.symbols if k in self.membership]
+        self.oob_reads = 0                     # access spy (A14-5)
+
+    def bar(self, key, i):
+        if i > self.expl_end:
+            self.oob_reads += 1
+        return self.bars.get((key, i))
+
+
+def read_world(dirpath):
+    bars = {}
+    with open(f"{dirpath}/fixture_bars.csv", newline="") as f:
+        for row in csv.DictReader(f):
+            key = ((row["market"], row["symbol"]), int(row["session_idx"]))
+            if key in bars:
+                raise RunInvalid("RUN_INVALID_DUPLICATE_ROW", str(key))
+            def pf(x):
+                return None if x == "" else float(x)
+            bars[key] = {"open": pf(row["open"]), "high": pf(row["high"]),
+                         "low": pf(row["low"]), "close": pf(row["close"]),
+                         "volume": None if row["volume"] == "" else int(row["volume"])}
+    dates_by_idx, ml = {}, set()
+    with open(f"{dirpath}/fixture_sessions.csv", newline="") as f:
+        for row in csv.DictReader(f):
+            i = int(row["session_idx"])
+            if i in dates_by_idx:
+                raise RunInvalid("RUN_INVALID_DUPLICATE_ROW", f"session {i}")
+            dates_by_idx[i] = date.fromisoformat(row["date_informational"])
+            if row["month_last"] == "1":
+                ml.add(i)
+    dates = [dates_by_idx[i] for i in sorted(dates_by_idx)]
+    cfg = {}
+    with open(f"{dirpath}/fixture_config.csv", newline="") as f:
+        for row in csv.DictReader(f):
+            if row["key"] in cfg:
+                raise RunInvalid("RUN_INVALID_DUPLICATE_ROW", f"config {row['key']}")
+            cfg[row["key"]] = int(row["value"])
+    membership, symbols = {}, []
+    with open(f"{dirpath}/fixture_membership.csv", newline="") as f:
+        for row in csv.DictReader(f):
+            k = (row["market"], row["symbol"])
+            if k in membership:
+                raise RunInvalid("RUN_INVALID_DUPLICATE_ROW", f"membership {k}")
+            membership[k] = (int(row["start_idx"]), int(row["end_idx"]))
+            symbols.append(k)
+    delist = {}
+    with open(f"{dirpath}/fixture_delist_events.csv", newline="") as f:
+        for row in csv.DictReader(f):
+            k = (row["market"], row["symbol"])
+            if k in delist:
+                raise RunInvalid("RUN_INVALID_DUPLICATE_ROW", f"delist {k}")
+            # §12차: evidence semantics must be declared by the input, not assumed
+            if row.get("evidence_type") != "decision_disclosure":
+                raise RunInvalid("RUN_INVALID_UNKNOWN_EVIDENCE_TYPE",
+                                 f"{k}:{row.get('evidence_type')}")
+            delist[k] = int(row["delist_session_idx"])
+    return World(bars, symbols, membership, delist, dates, ml,
+                 cfg["exploration_end_session_idx"])
+
+
+# ---------------------------------------------------------------- validity (A8/A12)
+def fin_pos(v):
+    return v is not None and math.isfinite(v) and v > 0
+
+
+def vol_ok(v):
+    return v is not None and math.isfinite(v) and v > 0
+
+
+def valid_bar(b):
+    return (b is not None and all(fin_pos(b[f]) for f in ("open", "high", "low", "close"))
+            and vol_ok(b["volume"]))
+
+
+def entry_ok(b):
+    return b is not None and fin_pos(b["open"]) and vol_ok(b["volume"])
+
+
+def maturity_ok(b):
+    return b is not None and fin_pos(b["close"]) and vol_ok(b["volume"])
+
+
+def high_c(b):
+    return max(b["high"], b["open"], b["close"])
+
+
+def low_c(b):
+    return min(b["low"], b["open"], b["close"])
+
+
+def member(w, key, i):
+    s, e = w.membership[key]
+    return s <= i <= e
+
+
+def check_identity(w):
+    """A13-2: simultaneous cross-market membership overlap fail-closed."""
+    by_sym = {}
+    for (mkt, sym), (s, e) in w.membership.items():
+        by_sym.setdefault(sym, []).append((mkt, s, e))
+    for sym, entries in by_sym.items():
+        for a in range(len(entries)):
+            for b in range(a + 1, len(entries)):
+                if entries[a][0] != entries[b][0]:
+                    if max(entries[a][1], entries[b][1]) <= min(entries[a][2],
+                                                                entries[b][2]):
+                        raise RunInvalid("RUN_INVALID_IDENTITY_CONFLICT", sym)
+
+
+def check_data_gaps(w):
+    """A14-4: row PRESENCE per market-session, boundary-clamped."""
+    for i in range(min(N_SESS, w.expl_end + 1)):
+        for mkt in ("KOSPI", "KOSDAQ"):
+            if not any(w.bar(k, i) is not None for k in w.symbols if k[0] == mkt):
+                raise RunInvalid("RUN_INVALID_DATA_GAP", f"{mkt}@s{i}")
+
+
+def a8_base_set(w, i):
+    """A8+A13: PIT membership AND valid bar over the ENTIRE 21-session window —
+    pre-listing history is never used (transfer new leg matures naturally)."""
+    return [k for k in w.symbols
+            if all(member(w, k, i - j) and valid_bar(w.bar(k, i - j))
+                   for j in range(0, 21))]
+
+
+def liq_pcts(w, i, base):
+    res = {}
+    for mkt in ("KOSPI", "KOSDAQ"):
+        ks = [k for k in base if k[0] == mkt]
+        vals = [w.bar(k, i)["close"] * w.bar(k, i)["volume"] for k in ks]
+        for k, v in zip(ks, vals):
+            res[k] = pct_asc(vals, v)
+    return res
+
+
+def populations(w, i):
+    if i < 20:
+        return {"KOSPI": [], "KOSDAQ": []}, {}, ["insufficient_history"]
+    base = a8_base_set(w, i)
+    lp = liq_pcts(w, i, base)
+    pops, notes = {}, []
+    for mkt in ("KOSPI", "KOSDAQ"):
+        pop = [k for k in base if k[0] == mkt and lp[k] >= 0.50]
+        if len(pop) < FLOOR_N:
+            notes.append(f"POPULATION_BELOW_FLOOR:{mkt}:{len(pop)}")
+            pop = []
+        pops[mkt] = pop
+    return pops, lp, notes
+
+
+def rev3_key(r):
+    return (r["r3_pct"], r["r3"], -r["clv"], -r["volume_ratio"], -r["liq_pct"],
+            0 if r["market"] == "KOSPI" else 1, r["symbol"])
+
+
+def sig_rev3(w, i):
+    pops, lp, notes = populations(w, i)
+    sigs = []
+    for mkt in ("KOSPI", "KOSDAQ"):
+        pop = pops[mkt]
+        r3 = {k: w.bar(k, i)["close"] / w.bar(k, i - 3)["close"] - 1 for k in pop}
+        vals = list(r3.values())
+        for k in pop:
+            b = w.bar(k, i)
+            hcv, lcv = high_c(b), low_c(b)
+            if hcv <= lcv:
+                continue
+            clv = (b["close"] - lcv) / (hcv - lcv)
+            vr = b["volume"] / statistics.median(w.bar(k, i - j)["volume"]
+                                                for j in range(1, 21))
+            rp = pct_asc(vals, r3[k])
+            if rp <= 0.05 and clv >= 0.65 and vr >= 1.50:
+                sigs.append({"market": k[0], "symbol": k[1], "r3": r3[k], "r3_pct": rp,
+                             "clv": clv, "volume_ratio": vr, "liq_pct": lp[k]})
+    sigs.sort(key=rev3_key)
+    return sigs, notes
+
+
+def sig_brk20(w, i):
+    pops, lp, notes = populations(w, i)
+    sigs = []
+    for mkt in ("KOSPI", "KOSDAQ"):
+        for k in pops[mkt]:
+            b = w.bar(k, i)
+            hcv, lcv = high_c(b), low_c(b)
+            if hcv <= lcv:
+                continue
+            ph = max(high_c(w.bar(k, i - j)) for j in range(1, 21))
+            margin = b["close"] / ph - 1
+            clv = (b["close"] - lcv) / (hcv - lcv)
+            vr = b["volume"] / statistics.median(w.bar(k, i - j)["volume"]
+                                                for j in range(1, 21))
+            if margin > 0 and clv >= 0.75 and vr >= 1.25:
+                sigs.append({"market": k[0], "symbol": k[1], "margin": margin, "clv": clv,
+                             "volume_ratio": vr, "liq_pct": lp[k]})
+    sigs.sort(key=lambda r: (-r["margin"], -r["volume_ratio"], -r["clv"], -r["liq_pct"],
+                             0 if r["market"] == "KOSPI" else 1, r["symbol"]))
+    return sigs, notes
+
+
+def sig_lowvol(w, i):
+    pops, lp, notes = populations(w, i)
+    sigs = []
+    for mkt in ("KOSPI", "KOSDAQ"):
+        pop = pops[mkt]
+        vol20, r20 = {}, {}
+        for k in pop:
+            closes = [w.bar(k, i - j)["close"] for j in range(20, -1, -1)]
+            r1s = [closes[j + 1] / closes[j] - 1 for j in range(20)]
+            vol20[k] = statistics.stdev(r1s)
+            r20[k] = closes[-1] / closes[0] - 1
+        vals = list(vol20.values())
+        for k in pop:
+            vp = pct_asc(vals, vol20[k])
+            if vp <= 0.30 and r20[k] > 0:
+                sigs.append({"market": k[0], "symbol": k[1], "vol20": vol20[k],
+                             "vol20_pct": vp, "r20": r20[k], "liq_pct": lp[k]})
+    sigs.sort(key=lambda r: (r["vol20_pct"], r["vol20"], -r["r20"], -r["liq_pct"],
+                             0 if r["market"] == "KOSPI" else 1, r["symbol"]))
+    return sigs, notes
+
+
+def other_market_transfer(w, key):
+    """A13-4: same symbol listed in the other market starting after this leg ends."""
+    mkt, sym = key
+    end = w.membership[key][1]
+    for (m2, s2), (st, _) in w.membership.items():
+        if s2 == sym and m2 != mkt and st > end:
+            return True
+    return False
+
+
+def run_candidate(w, signal_fn, hold, schedule=None):
+    check_identity(w)
+    check_data_gaps(w)
+    positions, log = [], {"entries": [], "ignored_held": [], "skipped_max10": [],
+                          "no_fill": [], "censored": [], "missing_exit": [], "notes": {}}
+    for t in range(min(N_SESS, w.expl_end + 1)):       # boundary-sealed iteration
+        if schedule is not None and t not in schedule:
+            continue
+        sigs, notes = signal_fn(w, t)
+        if notes:
+            log["notes"][t] = notes
+        entry_t = t + 1
+        live = []
+        for sig in sigs:
+            if entry_t > w.expl_end or entry_t + hold > w.expl_end:
+                log["censored"].append({"session": t, "symbol": sig["symbol"],
+                                        "market": sig["market"],
+                                        "status": "RIGHT_CENSORED_NOT_TRADEABLE"})
+            else:
+                live.append(sig)
+        occupied = sum(1 for p in positions
+                       if p["entry_idx"] <= entry_t <= p["occupy_until"])
+        slots = 10 - occupied
+        selected = []
+        for sig in live:
+            key = (sig["market"], sig["symbol"])
+            if any(p["key"] == key and p["entry_idx"] <= entry_t <= p["occupy_until"]
+                   for p in positions):
+                log["ignored_held"].append({"session": t, "market": sig["market"],
+                                            "symbol": sig["symbol"]})
+                continue
+            if len(selected) >= slots:
+                log["skipped_max10"].append({"session": t, "market": sig["market"],
+                                             "symbol": sig["symbol"]})
+                continue
+            selected.append(sig)
+        for sig in selected:
+            key = (sig["market"], sig["symbol"])
+            eb = w.bar(key, entry_t)
+            if not entry_ok(eb):
+                log["no_fill"].append({"session": t, "market": sig["market"],
+                                       "symbol": sig["symbol"], "entry_session": entry_t})
+                continue
+            exit_due = entry_t + hold
+            # §12차: decision-disclosure date is not a trading terminal — slot to schedule
+            occupy_until = exit_due
+            positions.append({"key": key, "entry_idx": entry_t, "exit_due": exit_due,
+                              "occupy_until": occupy_until, "signal_session": t,
+                              "entry_open": eb["open"]})
+            log["entries"].append({"session": t, "symbol": sig["symbol"],
+                                   "market": sig["market"], "entry_session": entry_t})
+    trades = []
+    for p in positions:
+        key = p["key"]
+        # A13-4 transfer gate stays FIRST — fail-closed regardless of stale bars
+        if w.membership[key][1] < p["exit_due"] and other_market_transfer(w, key):
+            raise RunInvalid("RUN_INVALID_MARKET_TRANSFER", f"{key}")
+        xb = w.bar(key, p["exit_due"])
+        if not maturity_ok(xb):
+            # A15-3 (§12차 보정): evidence_type=decision_disclosure — evidence classifies
+            # BAR ABSENCE OR INVALIDITY only (a valid maturity bar always wins: liquidation trading is
+            # real). C8 search runs from the SCHEDULED exit backwards.
+            d_evt = w.delist.get(key)
+            if d_evt is not None and d_evt <= p["exit_due"]:
+                last = None
+                for k in range(p["exit_due"], p["entry_idx"] - 1, -1):
+                    b = w.bar(key, k)
+                    if b is not None and maturity_ok(b):
+                        last = b["close"]
+                        break
+                gross = (last / p["entry_open"] - 1) if last is not None else -1.0
+                trades.append({**{x: p[x] for x in ("entry_idx", "exit_due",
+                                                    "signal_session", "entry_open")},
+                               "market": key[0], "symbol": key[1],
+                               "exit_session": p["exit_due"], "exit_close": last,
+                               "gross": gross, "delisted_exit": True,
+                               "net_43bp": gross - COST_BASE,
+                               "net_83bp": gross - COST_SENS})
+                continue
+            log["missing_exit"].append({"market": key[0], "symbol": key[1],
+                                        "entry_session": p["entry_idx"],
+                                        "exit_due": p["exit_due"]})
+            continue
+        gross = xb["close"] / p["entry_open"] - 1
+        trades.append({**{x: p[x] for x in ("entry_idx", "exit_due", "signal_session",
+                                            "entry_open")},
+                       "market": key[0], "symbol": key[1], "exit_session": p["exit_due"],
+                       "exit_close": xb["close"], "gross": gross, "delisted_exit": False,
+                       "net_43bp": gross - COST_BASE, "net_83bp": gross - COST_SENS})
+    trades.sort(key=lambda tr: (tr["entry_idx"], tr["market"], tr["symbol"]))
+    return log, trades
+
+
+def baseline(w, t, hold, target_pct):
+    """A4 — mirrors trade resolution order (§12차: transfer gate -> valid maturity bar
+    -> decision-disclosure evidence -> exclusion)."""
+    base = a8_base_set(w, t)
+    lp = liq_pcts(w, t, base)
+    dec = min(9, int(target_pct * 10))
+    rets, excl_e, excl_m, term_inc, excl_tr = [], 0, 0, 0, 0
+    for k in base:
+        if min(9, int(lp[k] * 10)) != dec:
+            continue
+        eb = w.bar(k, t + 1)
+        if not entry_ok(eb):
+            excl_e += 1
+            continue
+        # §12차 mirror: transfer gate BEFORE any maturity read. Cohort members are
+        # excluded+counted (A15: RUN_INVALID is strategy-trade-only).
+        if w.membership[k][1] < t + 1 + hold and other_market_transfer(w, k):
+            excl_tr += 1
+            continue
+        xb = w.bar(k, t + 1 + hold)
+        if maturity_ok(xb):
+            rets.append(xb["close"] / eb["open"] - 1)
+            continue
+        d_evt = w.delist.get(k)
+        if d_evt is not None and d_evt <= t + 1 + hold:
+            last = None
+            for j in range(t + 1 + hold, t, -1):
+                b = w.bar(k, j)
+                if b is not None and maturity_ok(b):
+                    last = b["close"]
+                    break
+            rets.append((last / eb["open"] - 1) if last is not None else -1.0)
+            term_inc += 1
+            continue
+        excl_m += 1
+    return {"decile": dec, "n": len(rets),
+            "gross_mean": statistics.mean(rets) if rets else None,
+            "cohort_excluded_entry": excl_e, "cohort_excluded_maturity": excl_m,
+            "cohort_terminal_included": term_inc, "cohort_excluded_transfer": excl_tr}
+
+
+def compose_verdict(dates, trades, baselines, missing_exit_count=0):
+    """A11 + A14 + A15: full labels, 43bp top-level, COST_SENSITIVE flag,
+    missing_exit ratio gate (> 5% -> INCONCLUSIVE_MISSING_EXITS).
+    Priority: RUN_INVALID > INCONCLUSIVE_MISSING_EXITS > UNIDENTIFIABLE_CLUSTERS
+    > FALSIFIED > PASS."""
+    profiles = {}
+    for tag, cost in (("43bp", COST_BASE), ("83bp", COST_SENS)):
+        ex, by_sess = [], {}
+        for tr in trades:
+            bl = baselines[(tr["market"], tr["symbol"], tr["entry_idx"])]
+            if bl["gross_mean"] is None:
+                raise RunInvalid("RUN_INVALID_EMPTY_BASELINE",
+                                 f"{tr['symbol']}@e{tr['entry_idx']}")
+            e = (tr["gross"] - cost) - bl["gross_mean"]
+            ex.append(e)
+            by_sess.setdefault(tr["entry_idx"], []).append(e)
+        smeans = {s: statistics.mean(v) for s, v in sorted(by_sess.items())}
+        ymeans = {}
+        for s, m in smeans.items():
+            ymeans.setdefault(dates[s].year, []).append(m)
+        pos_years = sum(1 for v in ymeans.values() if statistics.mean(v) > 0)
+        n = len(smeans)
+        comp = {"filled": len(trades), "gate_filled_ge_300": len(trades) >= 300,
+                "trade_mean_excess": statistics.mean(ex) if ex else None,
+                "gate_mean_excess_gt_0": bool(ex) and statistics.mean(ex) > 0,
+                "n_entry_sessions": n, "session_means": smeans,
+                "positive_years": pos_years, "n_years": len(ymeans),
+                "year_means": {str(y): statistics.mean(v) for y, v in sorted(ymeans.items())},
+                "gate_positive_years_ge_6": pos_years >= 6, "z": Z90}
+        if n < 30:
+            comp["verdict"] = "UNIDENTIFIABLE_CLUSTERS"
+            if n >= 2:
+                mv = list(smeans.values())
+                comp["lcb_info_only"] = (statistics.mean(mv) -
+                                         Z90 * statistics.stdev(mv) / math.sqrt(n))
+        else:
+            mv = list(smeans.values())
+            lcb = statistics.mean(mv) - Z90 * statistics.stdev(mv) / math.sqrt(n)
+            comp["lcb"] = lcb
+            comp["gate_clustered_lcb_gt_0"] = lcb > 0
+            fails = [g for g in ("gate_filled_ge_300", "gate_mean_excess_gt_0",
+                                 "gate_clustered_lcb_gt_0", "gate_positive_years_ge_6")
+                     if not comp[g]]
+            comp["verdict"] = "FALSIFIED" if fails else "PASS"
+            comp["failed_gates"] = fails
+        profiles[tag] = comp
+    cs = (profiles["43bp"]["trade_mean_excess"] is not None
+          and profiles["43bp"]["trade_mean_excess"] > 0
+          and (profiles["83bp"]["trade_mean_excess"] or 0) <= 0)
+    total = len(trades) + missing_exit_count
+    me_ratio = (missing_exit_count / total) if total else 0.0
+    top = profiles["43bp"]["verdict"]
+    if me_ratio > 0.05:                        # A15-3: strict > (ratio == 0.05 passes)
+        top = "INCONCLUSIVE_MISSING_EXITS"
+    return {"verdict": top, "cost_sensitive": cs,
+            "missing_exit_count": missing_exit_count, "missing_exit_ratio": me_ratio,
+            "profiles": profiles}
+
+
+def build_layers():
+    """V1~V5 unit oracles (restored per 4th review; v3 lineage, v4 labels)."""
+    vals = [5.0, 1.0, 3.0, 3.0, 2.0, 8.0, 7.0, 3.0, 9.0, 4.0,
+            6.0, 2.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0]
+    rows = [
+        {"symbol": "000100", "market": "KOSPI",  "r3_pct": 0.04, "r3": -0.20, "clv": 0.90, "volume_ratio": 3.0, "liq_pct": 0.90},
+        {"symbol": "000200", "market": "KOSPI",  "r3_pct": 0.04, "r3": -0.20, "clv": 0.90, "volume_ratio": 3.0, "liq_pct": 0.80},
+        {"symbol": "000300", "market": "KOSDAQ", "r3_pct": 0.04, "r3": -0.20, "clv": 0.90, "volume_ratio": 3.0, "liq_pct": 0.90},
+        {"symbol": "000055", "market": "KOSDAQ", "r3_pct": 0.04, "r3": -0.20, "clv": 0.90, "volume_ratio": 3.0, "liq_pct": 0.90},
+        {"symbol": "000410", "market": "KOSPI",  "r3_pct": 0.02, "r3": -0.30, "clv": 0.70, "volume_ratio": 1.6, "liq_pct": 0.55},
+        {"symbol": "000500", "market": "KOSPI",  "r3_pct": 0.04, "r3": -0.25, "clv": 0.90, "volume_ratio": 3.0, "liq_pct": 0.90},
+        {"symbol": "000600", "market": "KOSDAQ", "r3_pct": 0.04, "r3": -0.20, "clv": 0.95, "volume_ratio": 2.0, "liq_pct": 0.60},
+        {"symbol": "000700", "market": "KOSPI",  "r3_pct": 0.04, "r3": -0.20, "clv": 0.90, "volume_ratio": 4.0, "liq_pct": 0.50},
+        {"symbol": "000800", "market": "KOSPI",  "r3_pct": 0.05, "r3": -0.10, "clv": 0.80, "volume_ratio": 1.5, "liq_pct": 0.95},
+        {"symbol": "000900", "market": "KOSDAQ", "r3_pct": 0.03, "r3": -0.28, "clv": 0.66, "volume_ratio": 1.51, "liq_pct": 0.52},
+        {"symbol": "001000", "market": "KOSPI",  "r3_pct": 0.04, "r3": -0.20, "clv": 0.90, "volume_ratio": 3.0, "liq_pct": 0.90},
+        {"symbol": "001100", "market": "KOSDAQ", "r3_pct": 0.04, "r3": -0.20, "clv": 0.90, "volume_ratio": 3.0, "liq_pct": 0.90},
+    ]
+    literal = ["000410", "000900", "000500", "000600", "000700", "000100", "001000",
+               "000055", "000300", "001100", "000200", "000800"]
+    assert [r["symbol"] for r in sorted(rows, key=rev3_key)] == literal
+    sm = [0.004, -0.002, 0.006, 0.001, -0.003, 0.005, 0.002, -0.001, 0.003, 0.0,
+          0.004, -0.002]
+    m36 = statistics.mean(sm * 3)
+    sd36 = statistics.stdev(sm * 3)
+    lcb36 = m36 - Z90 * sd36 / math.sqrt(36)
+    return {
+        "V1_indicators": {
+            "r3": {"closes": [100.0, 98.0, 97.0, 94.0], "expected_r3": -0.06},
+            "clv_clamped": {"bar": {"open": 96.0, "high": 95.0, "low": 93.0, "close": 94.8},
+                            "expected_high_c": 96.0, "expected_low_c": 93.0,
+                            "expected_clv": (94.8 - 93.0) / 3.0},
+            "clv_undefined": {"bar": {"open": 50.0, "high": 50.0, "low": 50.0,
+                                      "close": 50.0}, "expected_signal": None},
+            "volume_ratio": {"prior20_volumes": [11, 14, 9, 20, 3, 17, 6, 12, 19, 8, 15,
+                                                 2, 13, 10, 18, 5, 16, 4, 7, 1],
+                             "volume_t": 21, "expected_median": 10.5,
+                             "expected_ratio": 2.0},
+            "brk20_margin": {"prior20_high_c": [100.0 + i * 0.5 for i in range(20)],
+                             "close_t": 110.0, "expected_prior_high20": 109.5,
+                             "expected_margin": 110.0 / 109.5 - 1.0},
+            "invalid_value_matrix": [{"volume": 0}, {"high": None}, {"close": 0.0},
+                                     {"low": -1.0},
+                                     {"volume": "non-finite -> invalid"},
+                                     {"note": "open>high invariant violation stays VALID (clamp-admit)"}]},
+        "V2_percentile": {"pct_asc_with_ties": {"values": vals,
+                                                "expected_pct": [pct_asc(vals, x)
+                                                                 for x in vals]},
+                          "exact_thresholds": {"1/20==0.05": 1 / 20 == 0.05,
+                                               "6/20==0.3": 6 / 20 == 0.3,
+                                               "19/38==0.5": 19 / 38 == 0.5,
+                                               "13/20==0.65": 13 / 20 == 0.65,
+                                               "15/20==0.75": 15 / 20 == 0.75},
+                          "population_floor": {"population_size": 19, "floor": FLOOR_N,
+                                               "expected": "POPULATION_BELOW_FLOOR"}},
+        "V3_ranking_selection": {"rev3_ranking": {"rows": rows,
+                                                  "expected_order_literal": literal},
+                                 "two_stage_note": "selection first (held skipped, "
+                                                   "slot-capped); NO_FILL consumes slot"},
+        "V4_execution": {"normal_fill": {"entry": 10000.0, "exit": 10500.0,
+                                         "net_43bp": 0.05 - COST_BASE,
+                                         "net_83bp": 0.05 - COST_SENS},
+                         "delisted_no_price": {"expected_gross": -1.0},
+                         "statuses": ["ENTERED", "IGNORED_HELD", "SKIPPED_MAX10",
+                                      "NO_FILL", "RIGHT_CENSORED_NOT_TRADEABLE",
+                                      "delisted_exit", "RUN_INVALID_DATA_GAP",
+                                      "RUN_INVALID_MATURITY_PRICE (A15 superseded — KR 발화 경로 없음)",
+                                      "RUN_INVALID_DUPLICATE_ROW",
+                                      "RUN_INVALID_EMPTY_BASELINE",
+                                      "RUN_INVALID_IDENTITY_CONFLICT",
+                                      "RUN_INVALID_MARKET_TRANSFER",
+                                      "missing_exit (A15-3)",
+                                      "INCONCLUSIVE_MISSING_EXITS"]},
+        "V5_gates": {"clustered_lcb_n36": {"session_means": sm * 3, "z": Z90,
+                                           "expected_mean": m36, "expected_sd": sd36,
+                                           "expected_lcb": lcb36,
+                                           "expected_gate_pass": lcb36 > 0},
+                     "verdict_priority": "RUN_INVALID > INCONCLUSIVE_MISSING_EXITS > UNIDENTIFIABLE_CLUSTERS > FALSIFIED > PASS"}}
+
+
+def compose_oracle():
+    """A11 synthetic oracles through the REAL compose function (n>=30, filled>=300)."""
+    dates40 = []
+    for y in range(2015, 2025):
+        for q in range(4):
+            dates40.append(date(y, 3 + q, 1))
+
+    def mk(excess):
+        trades, bls = [], {}
+        for s in range(40):
+            for i in range(8):
+                sym = "%06d" % (100 + i)
+                trades.append({"market": "KOSPI", "symbol": sym, "entry_idx": s,
+                               "gross": excess + COST_BASE})
+                bls[("KOSPI", sym, s)] = {"gross_mean": 0.0}
+        return trades, bls
+
+    t1, b1 = mk(0.01)
+    t2, b2 = mk(-0.01)
+    t3, b3 = mk(0.002)
+    pass_case = compose_verdict(dates40, t1, b1)
+    fail_case = compose_verdict(dates40, t2, b2)
+    cs_case = compose_verdict(dates40, t3, b3)
+    assert pass_case["verdict"] == "PASS" and not pass_case["cost_sensitive"]
+    assert fail_case["verdict"] == "FALSIFIED"
+    assert cs_case["verdict"] == "PASS" and cs_case["cost_sensitive"]
+    tE, bE = mk(0.01)
+    bE[("KOSPI", "000100", 0)] = {"gross_mean": None}
+    try:
+        compose_verdict(dates40, tE, bE)
+        raise AssertionError("empty baseline not caught")
+    except RunInvalid as e:
+        assert e.label == "RUN_INVALID_EMPTY_BASELINE"
+
+    # exact gate boundaries (4th-review P0): 300/299 filled, 30/29 clusters,
+    # mean excess exactly 0, 6/5 positive years, session-vs-trade year weighting
+    def mkc(n_sess, per_counts, excesses):
+        trades, bls = [], {}
+        for s in range(n_sess):
+            for i in range(per_counts[s]):
+                sym = "%06d" % (100 + i)
+                trades.append({"market": "KOSPI", "symbol": sym, "entry_idx": s,
+                               "gross": excesses[s] + COST_BASE})
+                bls[("KOSPI", sym, s)] = {"gross_mean": 0.0}
+        return trades, bls
+
+    t, b = mkc(30, [10] * 30, [0.01] * 30)
+    v300 = compose_verdict(dates40, t, b)
+    assert v300["profiles"]["43bp"]["filled"] == 300 and v300["verdict"] == "PASS"
+    t, b = mkc(30, [10] * 29 + [9], [0.01] * 30)
+    v299 = compose_verdict(dates40, t, b)
+    assert v299["profiles"]["43bp"]["filled"] == 299 and v299["verdict"] == "FALSIFIED"
+    assert v299["profiles"]["43bp"]["failed_gates"] == ["gate_filled_ge_300"]
+    t, b = mkc(29, [11] * 29, [0.01] * 29)
+    v29 = compose_verdict(dates40, t, b)
+    assert v29["verdict"] == "UNIDENTIFIABLE_CLUSTERS"
+    t, b = mkc(30, [10] * 30, [0.0] * 30)
+    v0 = compose_verdict(dates40, t, b)
+    assert v0["verdict"] == "FALSIFIED"          # mean 0 not > 0; LCB 0 not > 0
+    # positive years 6 vs 5 — the ONLY gate that differs (barely-negative years keep
+    # LCB/mean/filled PASS, isolating >=6 vs >6 mutants)
+    def year_excess(pos_years_count):
+        ex = []
+        for y in range(10):
+            ex.extend([0.01 if y < pos_years_count else -0.001] * 4)
+        return ex
+    t, b = mkc(40, [8] * 40, year_excess(6))
+    v6y = compose_verdict(dates40, t, b)
+    assert v6y["verdict"] == "PASS", v6y["profiles"]["43bp"]
+    assert v6y["profiles"]["43bp"]["positive_years"] == 6
+    assert v6y["profiles"]["43bp"]["gate_positive_years_ge_6"] is True
+    t, b = mkc(40, [8] * 40, year_excess(5))
+    v5y = compose_verdict(dates40, t, b)
+    assert v5y["verdict"] == "FALSIFIED"
+    assert v5y["profiles"]["43bp"]["positive_years"] == 5
+    assert v5y["profiles"]["43bp"]["failed_gates"] == ["gate_positive_years_ge_6"], \
+        v5y["profiles"]["43bp"]["failed_gates"]
+    # entry-year attribution (A14-3): Dec-2015 entry with Jan-2016 exit belongs to 2015 —
+    # an exit-year mutant collapses 2015 out of year_means entirely
+    datesX = [date(2015, 12, 30)]
+    dx = date(2016, 1, 4)
+    while len(datesX) < 31:
+        if dx.weekday() < 5:
+            datesX.append(dx)
+        dx += timedelta(days=7)
+    tX, bX = [], {}
+    for s in range(31):
+        for i in range(8):
+            sym = "%06d" % (100 + i)
+            tX.append({"market": "KOSPI", "symbol": sym, "entry_idx": s,
+                       "exit_idx": min(s + 1, 30),
+                       "gross": (0.05 if s == 0 else -0.001) + COST_BASE})
+            bX[("KOSPI", sym, s)] = {"gross_mean": 0.0}
+    vX = compose_verdict(datesX, tX, bX)
+    ymX = vX["profiles"]["43bp"]["year_means"]
+    assert set(ymX) == {"2015", "2016"} and ymX["2015"] > 0 > ymX["2016"], ymX
+    # year weighting: session-equal (A14-3) vs trade-weighted mutant discriminator —
+    # year 2015: +0.03 (1 trade), -0.01 (9 trades), -0.01 (9), -0.01 (9):
+    # session-equal year mean = 0.0; make it decisive with +0.04 -> +0.0025 positive,
+    # trade-weighted mean = (0.04 - 0.27)/28 < 0 negative
+    ex = [0.04, -0.01, -0.01, -0.01] + [0.01] * 36
+    pc = [1, 9, 9, 9] + [8] * 36
+    t, b = mkc(40, pc, ex)
+    vyw = compose_verdict(dates40, t, b)
+    assert vyw["profiles"]["43bp"]["positive_years"] == 10   # session-equal: 2015 positive
+    # A15-3 exact threshold oracle: 95 filled + 5 missing = 5.0% (strict > -> passes);
+    # 94 filled + 6 missing = 6.0% -> INCONCLUSIVE_MISSING_EXITS
+    tE, bE = mkc(19, [5] * 19, [0.01] * 19)                  # 95 filled, n=19 clusters
+    v5pct = compose_verdict(dates40, tE, bE, missing_exit_count=5)
+    assert v5pct["missing_exit_ratio"] == 0.05
+    assert v5pct["verdict"] != "INCONCLUSIVE_MISSING_EXITS"
+    tE2 = tE[:94]
+    v6pct = compose_verdict(dates40, tE2, bE, missing_exit_count=6)
+    assert v6pct["missing_exit_ratio"] == 0.06
+    assert v6pct["verdict"] == "INCONCLUSIVE_MISSING_EXITS"
+    # 9th-review priority combos: baseline check precedes ratio; >5% overrides PASS and
+    # FALSIFIED alike (underlying profile preserved for disclosure)
+    tP, bP = mkc(30, [10] * 30, [0.01] * 30)
+    vP = compose_verdict(dates40, tP, bP, missing_exit_count=20)      # 20/320 = 6.25%
+    assert vP["verdict"] == "INCONCLUSIVE_MISSING_EXITS"
+    assert vP["profiles"]["43bp"]["verdict"] == "PASS"
+    tF, bF = mkc(30, [10] * 30, [-0.01] * 30)
+    vF = compose_verdict(dates40, tF, bF, missing_exit_count=20)
+    assert vF["verdict"] == "INCONCLUSIVE_MISSING_EXITS"
+    assert vF["profiles"]["43bp"]["verdict"] == "FALSIFIED"
+    tX, bX = mkc(30, [10] * 30, [0.01] * 30)
+    bX[("KOSPI", "000100", 0)] = {"gross_mean": None}
+    try:
+        compose_verdict(dates40, tX, bX, missing_exit_count=20)
+        raise AssertionError("combo empty-baseline not caught")
+    except RunInvalid as e:
+        assert e.label == "RUN_INVALID_EMPTY_BASELINE"                # RUN_INVALID first
+    tC, bC = mk(0.002)                          # 43bp +, 83bp - : cost-sensitive profile
+    vC = compose_verdict(dates40, tC, bC, missing_exit_count=20)      # 20/340 = 5.88%
+    assert vC["verdict"] == "INCONCLUSIVE_MISSING_EXITS"
+    assert vC["cost_sensitive"] is True         # flag preserved under INCONCLUSIVE
+    return {"pass_case": pass_case, "falsified_case": fail_case,
+            "cost_sensitive_case": cs_case,
+            "empty_baseline": "RUN_INVALID_EMPTY_BASELINE",
+            "boundary_filled_300": v300, "boundary_filled_299": v299,
+            "boundary_clusters_29": v29, "boundary_zero_excess": v0,
+            "boundary_years_6_full": v6y, "boundary_years_5_full": v5y,
+            "entry_year_attribution": {"dates_head": "2015-12-30 entry, 2016 exits",
+                                       "verdict": vX,
+                                       "note": "exit-year mutant erases 2015 bucket"},
+            "missing_exit_threshold": {"ratio_5pct_exact": v5pct["verdict"],
+                                       "ratio_6pct": v6pct["verdict"],
+                                       "note": "A15-3 strict >0.05"},
+            "priority_combos": {"pass_overridden": vP, "falsified_overridden": vF,
+                                "empty_baseline_wins": "RUN_INVALID_EMPTY_BASELINE",
+                                "inconclusive_cost_sensitive": vC},
+            "year_weight_session_equal": {"positive_years": vyw["profiles"]["43bp"]
+                                          ["positive_years"],
+                                          "note": "trade-weighted mutant -> 9"}}
+
+
+def sha(path):
+    return hashlib.sha256(open(path, "rb").read()).hexdigest()
+
+
+def main():
+    if os.path.realpath(__file__) != os.path.realpath(
+            f"{OUT}/reference_generator_v4.py"):
+        raise RuntimeError("generator must run from the canonical path (provenance)")
+    built_bars, symbols, membership, delist, dates = build_world()
+    write_fixtures(OUT, built_bars, symbols, membership, delist, dates)
+    w = read_world(OUT)
+    assert w.bars == built_bars, "bars roundtrip"
+    assert w.month_last == MONTH_LAST and w.expl_end == EXPLORATION_END
+
+    # ---- rev3
+    log3, tr3 = run_candidate(w, sig_rev3, 5)
+    ent = {(e["session"], e["symbol"], e["market"]) for e in log3["entries"]}
+    for s, sym, m in [(24, KA1, "KOSPI"), (24, QA1, "KOSDAQ"), (25, KA2, "KOSPI"),
+                      (25, QA2, "KOSDAQ"), (26, KA3, "KOSPI"), (26, QA3, "KOSDAQ"),
+                      (27, QA4, "KOSDAQ"), (28, KA4, "KOSPI"), (28, QA5, "KOSDAQ"),
+                      (29, QA6, "KOSDAQ"), (30, KA1, "KOSPI"), (35, KC1, "KOSPI"),
+                      (41, KG1, "KOSPI"), (41, QD1, "KOSDAQ"), (43, TWIN, "KOSPI"),
+                      (42, QD2, "KOSDAQ"), (45, KB1, "KOSPI")]:
+        assert (s, sym, m) in ent, (s, sym, m)
+    # A13: transfer new leg matures only after 21 member sessions — never pre-membership
+    assert ("KOSPI", TWIN) not in a8_base_set(w, 42)
+    assert ("KOSPI", TWIN) in a8_base_set(w, 43)
+    assert {(e["session"], e["symbol"]) for e in log3["ignored_held"]} == {(27, KA1)}
+    assert [(e["session"], e["symbol"]) for e in log3["skipped_max10"]] == [(29, KA5)]
+    assert [(e["session"], e["symbol"]) for e in log3["no_fill"]] == [(32, QB1)]
+    cen3 = {(e["session"], e["symbol"]) for e in log3["censored"]}
+    assert (47, KA2) in cen3 and (49, KH1) in cen3, sorted(cen3)
+    assert len(tr3) == 17, len(tr3)
+    tk = {(t["symbol"], t["entry_idx"]): t for t in tr3}
+    ka4 = tk[(KA4, 29)]
+    assert ka4["delisted_exit"] and ka4["exit_session"] == 34   # scheduled (§12차)
+    assert ka4["exit_close"] == built_bars[(("KOSPI", KA4), 31)]["close"]
+    assert built_bars[(("KOSPI", KA4), 31)]["open"] is None      # close-only search proven
+    ka3 = tk[(KA3, 27)]
+    assert not ka3["delisted_exit"] and ka3["exit_session"] == 32
+    assert ka3["exit_close"] == built_bars[(("KOSPI", KA3), 32)]["close"]
+    assert built_bars[(("KOSPI", KA3), 32)]["open"] is None      # maturity close+volume-only
+    qd1 = tk[(QD1, 42)]
+    assert qd1["delisted_exit"] and qd1["exit_session"] == 47   # scheduled (§12차)
+    assert qd1["exit_close"] == built_bars[(("KOSDAQ", QD1), 46)]["close"]
+    assert built_bars[(("KOSDAQ", QD1), 46)]["open"] is None     # event-session-inclusive
+    qd2 = tk[(QD2, 43)]
+    assert qd2["delisted_exit"] and qd2["exit_session"] == 48
+    assert qd2["gross"] == -1.0 and qd2["exit_close"] is None
+    kg1 = tk[(KG1, 42)]
+    assert not kg1["delisted_exit"] and kg1["exit_session"] == 47
+    assert (TWIN, 44) in tk and tk[(TWIN, 44)]["market"] == "KOSPI"
+    kb1t = tk[(KB1, 46)]
+    assert kb1t["exit_session"] == 51
+    s45, _ = sig_rev3(w, 45)
+    kb1s = [x for x in s45 if x["symbol"] == KB1][0]
+    assert kb1s["clv"] == 0.65 and kb1s["volume_ratio"] == 1.5, kb1s
+    s49, _ = sig_rev3(w, 49)
+    kh1 = [x for x in s49 if x["symbol"] == KH1][0]
+    assert kh1["r3_pct"] == 0.05, kh1["r3_pct"]
+    pops49, lp49, _ = populations(w, 49)
+    assert len(pops49["KOSPI"]) == 20, len(pops49["KOSPI"])
+    assert min(lp49[k] for k in pops49["KOSPI"]) == 0.5
+    s35, _ = sig_rev3(w, 35)
+    assert [x["symbol"] for x in s35 if x["market"] == "KOSPI"] == [KC1]
+    s36, _ = sig_rev3(w, 36)
+    assert not [x for x in s36 if x["market"] == "KOSPI"]
+    s38r, _ = sig_rev3(w, 38)
+    assert not [x for x in s38r if x["market"] == "KOSPI"]
+    assert ("KOSDAQ", KE5) not in a8_base_set(w, 45)
+    bl3 = {}
+    for t in tr3:
+        lpx = liq_pcts(w, t["signal_session"], a8_base_set(w, t["signal_session"]))
+        bl3[(t["market"], t["symbol"], t["entry_idx"])] = baseline(
+            w, t["signal_session"], 5, lpx[(t["market"], t["symbol"])])
+    assert bl3[("KOSDAQ", QA1, 25)]["cohort_excluded_entry"] >= 1
+    assert bl3[("KOSDAQ", QA5, 29)]["cohort_terminal_included"] >= 1
+    assert log3["missing_exit"] == []                    # main fixture: no A15 exclusions
+    verdict3 = compose_verdict(w.dates, tr3, bl3, len(log3["missing_exit"]))
+    assert verdict3["verdict"] == "UNIDENTIFIABLE_CLUSTERS"
+    assert verdict3["missing_exit_ratio"] == 0.0
+    assert verdict3["profiles"]["43bp"]["n_entry_sessions"] == 12
+
+    # ---- brk20
+    s33, _ = sig_brk20(w, 33)
+    assert all(x["symbol"] != KD1 for x in s33)
+    b33 = w.bar(("KOSPI", KD1), 33)
+    raw_ph = max(w.bar(("KOSPI", KD1), 33 - j)["high"] for j in range(1, 21))
+    clamp_ph = max(high_c(w.bar(("KOSPI", KD1), 33 - j)) for j in range(1, 21))
+    assert b33["close"] / raw_ph - 1 > 0 > b33["close"] / clamp_ph - 1
+    s37b, _ = sig_brk20(w, 37)
+    assert all(x["symbol"] != KD4 for x in s37b)
+    kd4b = w.bar(("KOSDAQ", KD4), 37)
+    ph4 = max(high_c(w.bar(("KOSDAQ", KD4), 37 - j)) for j in range(1, 21))
+    assert kd4b["close"] / ph4 - 1 == 0.0
+    s38b, _ = sig_brk20(w, 38)
+    kb2s = [x for x in s38b if x["symbol"] == KB2][0]
+    assert kb2s["clv"] == 0.75 and kb2s["volume_ratio"] == 1.25, kb2s
+    log_b, tr_b = run_candidate(w, sig_brk20, 10)
+    assert (34, KD2) in {(e["session"], e["symbol"]) for e in log_b["entries"]}
+    assert (38, KB2) in {(e["session"], e["symbol"]) for e in log_b["entries"]}
+    assert (50, KD3) in {(e["session"], e["symbol"]) for e in log_b["censored"]}
+    kd2 = [t for t in tr_b if t["symbol"] == KD2][0]
+    assert kd2["exit_session"] == 45
+    kb2t = [t for t in tr_b if t["symbol"] == KB2][0]
+    assert kb2t["exit_session"] == 49
+
+    # ---- lowvol
+    log_l, tr_l = run_candidate(w, sig_lowvol, 20, schedule=w.month_last)
+    assert 9 in log_l["notes"]
+    le = [(e["session"], e["symbol"]) for e in log_l["entries"]]
+    assert (29, Q01) in le
+    lv44, _ = sig_lowvol(w, 44)
+    lv5_hit = [x for x in lv44 if x["symbol"] == "900180"][0]
+    assert lv5_hit["vol20_pct"] == 0.3, lv5_hit["vol20_pct"]     # exact inclusive boundary
+    pops44, _, _ = populations(w, 44)
+    assert len(pops44["KOSDAQ"]) == 20, len(pops44["KOSDAQ"])
+    lv31, _ = sig_lowvol(w, 31)
+    assert all(x["symbol"] != QH1 for x in lv31)
+    closes_qh1 = [w.bar(("KOSDAQ", QH1), 31 - j)["close"] for j in range(20, -1, -1)]
+    assert closes_qh1[-1] / closes_qh1[0] - 1 == 0.0
+    assert (44, Q01) in {(e["session"], e["symbol"]) for e in log_l["censored"]}
+    q01t = [t for t in tr_l if t["symbol"] == Q01][0]
+    assert q01t["exit_session"] == 50 and not q01t["delisted_exit"]
+    print("lowvol entries:", le)
+    print("lowvol ignored:", [(e["session"], e["symbol"]) for e in log_l["ignored_held"]])
+    print("lowvol skipped:", [(e["session"], e["symbol"]) for e in log_l["skipped_max10"]])
+
+    assert w.oob_reads == 0, w.oob_reads                          # ACCESS SPY (A14-5)
+
+    oracle = compose_oracle()
+
+    # ---- variants (self-contained directories)
+    vroot = f"{OUT}/variants"
+    shutil.rmtree(vroot, ignore_errors=True)
+
+    def make_variant(name, mutate):
+        vd = f"{vroot}/{name}"
+        os.makedirs(vd, exist_ok=True)
+        for fn in ("fixture_bars.csv", "fixture_sessions.csv", "fixture_config.csv",
+                   "fixture_membership.csv", "fixture_delist_events.csv"):
+            shutil.copy(f"{OUT}/{fn}", f"{vd}/{fn}")
+        mutate(vd)
+        return vd
+
+    def drop_bar_rows(vd, pred):
+        p = f"{vd}/fixture_bars.csv"
+        with open(p, newline="") as f:
+            rows = list(csv.reader(f))
+        with open(p, "w", newline="") as f:
+            wcsv = csv.writer(f)
+            wcsv.writerow(rows[0])
+            for r in rows[1:]:
+                if not pred(r):
+                    wcsv.writerow(r)
+
+    expect = {}
+
+    # A15-3: evidence-less maturity gap is now a TRADE-level exclusion (was RUN_INVALID)
+    vd = make_variant("invalid_maturity", lambda vd: drop_bar_rows(
+        vd, lambda r: r[0] == "KOSDAQ" and r[1] == QA1 and r[2] == "30"))
+    def im_check(vd, note):
+        wv2 = read_world(vd)
+        lg2, tr2 = run_candidate(wv2, sig_rev3, 5)
+        assert len(tr2) == len(tr3) - 1, len(tr2)
+        me2 = [(e["symbol"], e["exit_due"]) for e in lg2["missing_exit"]]
+        assert me2 == [(QA1, 30)], me2
+        bl2 = {}
+        for t in tr2:
+            lpx = liq_pcts(wv2, t["signal_session"], a8_base_set(wv2, t["signal_session"]))
+            bl2[(t["market"], t["symbol"], t["entry_idx"])] = baseline(
+                wv2, t["signal_session"], 5, lpx[(t["market"], t["symbol"])])
+        v2 = compose_verdict(wv2.dates, tr2, bl2, len(lg2["missing_exit"]))
+        assert v2["verdict"] == "INCONCLUSIVE_MISSING_EXITS", v2["verdict"]
+        assert abs(v2["missing_exit_ratio"] - 1 / 17) < 1e-12
+        return {"result": "COMPLETES_WITH_MISSING_EXIT", "missing_exit": me2,
+                "trades": len(tr2), "final_verdict": v2["verdict"],
+                "missing_exit_ratio": v2["missing_exit_ratio"], "note": note}
+    expect["invalid_maturity"] = im_check(
+        vd, "A15-3: maturity ROW DELETED; count WIRED to compose")
+
+    def set_field(col, val, sess="30"):
+        def mut(vd):
+            with open(f"{vd}/fixture_bars.csv", newline="") as f:
+                rows = list(csv.reader(f))
+            with open(f"{vd}/fixture_bars.csv", "w", newline="") as f:
+                wcsv = csv.writer(f)
+                for r in rows:
+                    if r and r[0] == "KOSDAQ" and r[1] == QA1 and r[2] == sess:
+                        r = r[:col] + [val] + r[col + 1:]
+                    wcsv.writerow(r)
+        return mut
+    for vname, col, val, note in [
+            ("invalid_maturity_close_blank", 6, "", "close blank"),
+            ("invalid_maturity_volume_blank", 7, "", "volume blank"),
+            ("invalid_maturity_close_zero", 6, "0.00", "close zero — fin_pos fails"),
+            ("invalid_maturity_close_inf", 6, "inf", "close Inf — finite fails"),
+            ("invalid_maturity_volume_zero", 7, "0", "volume zero — vol_ok fails"),
+            ("invalid_maturity_volume_negative", 7, "-5", "volume negative — vol_ok fails")]:
+        vd = make_variant(vname, set_field(col, val))
+        expect[vname] = im_check(
+            vd, f"A15-3: maturity row PRESENT but {note} -> not maturity_ok")
+    # entry-path finite-positive wiring: QA1's ENTRY bar (s25) open=0 -> NO_FILL
+    vd = make_variant("entry_open_zero_no_fill", set_field(3, "0.00", sess="25"))
+    weo = read_world(vd)
+    lgo, tro = run_candidate(weo, sig_rev3, 5)
+    # QA1 NO_FILL frees capacity at the s30 saturation point -> KA5 (skipped in base)
+    # now enters: total stays 17 and the skip disappears — capacity ripple included
+    assert len(tro) == len(tr3), len(tro)
+    nf = {(e["session"], e["symbol"]) for e in lgo["no_fill"]}
+    assert (24, QA1) in nf and (32, QB1) in nf, nf
+    assert (KA5, 30) in {(t["symbol"], t["entry_idx"]) for t in tro}
+    assert lgo["skipped_max10"] == []
+    assert lgo["missing_exit"] == []
+    blo = {}
+    for t in tro:
+        lpx = liq_pcts(weo, t["signal_session"], a8_base_set(weo, t["signal_session"]))
+        blo[(t["market"], t["symbol"], t["entry_idx"])] = baseline(
+            weo, t["signal_session"], 5, lpx[(t["market"], t["symbol"])])
+    vo = compose_verdict(weo.dates, tro, blo, 0)
+    assert vo["verdict"] == "UNIDENTIFIABLE_CLUSTERS"
+    expect["entry_open_zero_no_fill"] = {
+        "result": "ENTRY_NO_FILL_ON_ZERO_OPEN", "trades": len(tro),
+        "no_fill": sorted(nf), "final_verdict": vo["verdict"],
+        "note": "A12 entry predicate: open must be finite AND positive — zero open at the "
+                "entry bar is NO_FILL; freed capacity lets KA5 enter at s30 (base skip "
+                "disappears) — capacity ripple discriminator included"}
+    # volume=Inf cannot be encoded through the int CSV field (loader int() would crash
+    # fail-closed) — sealed instead by the predicate oracle below, wired to the REAL
+    # maturity_ok / entry_ok functions
+    pred_cases = []
+    for label, bar, e_mat, e_ent in [
+            ("valid", {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+                       "volume": 100}, True, True),
+            ("valid_small_positive", {"open": 0.01, "high": 0.02, "low": 0.01,
+                                      "close": 0.01, "volume": 1}, True, True),
+            ("close_none", {"open": 10.0, "high": 11.0, "low": 9.0, "close": None,
+                            "volume": 100}, False, True),
+            ("close_zero", {"open": 10.0, "high": 11.0, "low": 9.0, "close": 0.0,
+                            "volume": 100}, False, True),
+            ("close_negative", {"open": 10.0, "high": 11.0, "low": 9.0, "close": -1.0,
+                                "volume": 100}, False, True),
+            ("close_inf", {"open": 10.0, "high": 11.0, "low": 9.0,
+                           "close": float("inf"), "volume": 100}, False, True),
+            ("open_none", {"open": None, "high": 11.0, "low": 9.0, "close": 10.5,
+                           "volume": 100}, True, False),
+            ("open_zero", {"open": 0.0, "high": 11.0, "low": 9.0, "close": 10.5,
+                           "volume": 100}, True, False),
+            ("open_negative", {"open": -1.0, "high": 11.0, "low": 9.0, "close": 10.5,
+                               "volume": 100}, True, False),
+            ("open_inf", {"open": float("inf"), "high": 11.0, "low": 9.0, "close": 10.5,
+                          "volume": 100}, True, False),
+            ("volume_none", {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+                             "volume": None}, False, False),
+            ("volume_zero", {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+                             "volume": 0}, False, False),
+            ("volume_negative", {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+                                 "volume": -5}, False, False),
+            ("volume_inf", {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+                            "volume": float("inf")}, False, False)]:
+        m, en = maturity_ok(bar), entry_ok(bar)
+        assert m == e_mat and en == e_ent, (label, m, en)
+        ser_bar = {k: ({"special_float": "+inf"} if isinstance(v, float)
+                       and math.isinf(v) else v) for k, v in bar.items()}
+        pred_cases.append({"case": label, "input_bar": ser_bar,
+                           "maturity_ok": m, "entry_ok": en})
+    predicate_oracles = {
+        "cohort_transfer": None, "cohort_c8_due_anchor": None,
+        "cohort_evidence_cutoff": None,   # filled after variants are built
+        "maturity_entry": {"cases": pred_cases,
+                           "note": "wired to the REAL maturity_ok/entry_ok — non-finite inputs are "
+                                   "serialized as {'special_float': '+inf'} tags "
+                                   "(RFC JSON); finite AND "
+                                   "strictly positive (0.01 price / volume 1 are VALID: "
+                                   "exact >0 bound); volume=Inf sealed here (int CSV field "
+                                   "cannot encode Inf; loader fails closed on non-int)"}}
+
+    vd = make_variant("data_gap", lambda vd: drop_bar_rows(
+        vd, lambda r: r[0] == "KOSPI" and r[2] == "30"))
+    try:
+        run_candidate(read_world(vd), sig_rev3, 5)
+        raise AssertionError("data_gap passed")
+    except RunInvalid as e:
+        assert e.label == "RUN_INVALID_DATA_GAP", e.label
+        expect["data_gap"] = e.label
+
+    def dup_row(vd):
+        p = f"{vd}/fixture_bars.csv"
+        with open(p, newline="") as f:
+            rows = list(csv.reader(f))
+        with open(p, "a", newline="") as f:
+            csv.writer(f).writerow(rows[1])
+    vd = make_variant("duplicate_row", dup_row)
+    try:
+        read_world(vd)
+        raise AssertionError("duplicate_row passed")
+    except RunInvalid as e:
+        assert e.label == "RUN_INVALID_DUPLICATE_ROW", e.label
+        expect["duplicate_row"] = e.label
+
+    vd = make_variant("nofill_no_substitution", lambda vd: drop_bar_rows(
+        vd, lambda r: r[0] == "KOSDAQ" and r[1] == QA6 and r[2] == "30"))
+    wv = read_world(vd)
+    logv, trv = run_candidate(wv, sig_rev3, 5)
+    assert (29, QA6) in {(e["session"], e["symbol"]) for e in logv["no_fill"]}
+    assert (29, KA5) in {(e["session"], e["symbol"]) for e in logv["skipped_max10"]}
+    assert all(t["symbol"] not in (QA6, KA5) for t in trv)
+    assert len(trv) == len(tr3) - 1
+    expect["nofill_no_substitution"] = {"QA6": "NO_FILL",
+                                        "KA5": "SKIPPED_MAX10 (no substitution)",
+                                        "trades": len(trv)}
+
+    def identity_conflict(vd):
+        p = f"{vd}/fixture_membership.csv"
+        with open(p, newline="") as f:
+            rows = list(csv.reader(f))
+        with open(p, "w", newline="") as f:
+            wcsv = csv.writer(f)
+            for r in rows:
+                if r and r[0] == "KOSDAQ" and r[1] == TWIN:
+                    r = ["KOSDAQ", TWIN, "0", "55"]      # overlaps KOSPI 23..55
+                wcsv.writerow(r)
+    vd = make_variant("identity_conflict", identity_conflict)
+    try:
+        run_candidate(read_world(vd), sig_rev3, 5)
+        raise AssertionError("identity_conflict passed")
+    except RunInvalid as e:
+        assert e.label == "RUN_INVALID_IDENTITY_CONFLICT", e.label
+        expect["identity_conflict"] = e.label
+
+    def market_transfer(vd):
+        # bars stay INTACT (incl. a stale-valid s34 maturity bar): the transfer gate must
+        # fire on membership_end < exit_due BEFORE price resolution — a mutant that only
+        # checks transfer when maturity is invalid completes normally and mismatches
+        p = f"{vd}/fixture_membership.csv"
+        with open(p, newline="") as f:
+            rows = list(csv.reader(f))
+        with open(p, "w", newline="") as f:
+            wcsv = csv.writer(f)
+            for r in rows:
+                if r and r[0] == "KOSDAQ" and r[1] == QA5:
+                    r = ["KOSDAQ", QA5, "0", "33"]
+                wcsv.writerow(r)
+            wcsv.writerow(["KOSPI", QA5, "35", "55"])    # same symbol re-lists on KOSPI
+    vd = make_variant("market_transfer", market_transfer)
+    try:
+        run_candidate(read_world(vd), sig_rev3, 5)
+        raise AssertionError("market_transfer passed")
+    except RunInvalid as e:
+        assert e.label == "RUN_INVALID_MARKET_TRANSFER", e.label
+        expect["market_transfer"] = e.label
+
+    # complementary precedence case: transfer=true + maturity MISSING must still be
+    # MARKET_TRANSFER (a maturity-first mutant emits MATURITY_PRICE here and is killed;
+    # the valid-bar variant above kills the invalid-only-check mutant — both directions)
+    def market_transfer_missing_maturity(vd):
+        market_transfer(vd)
+        drop_bar_rows(vd, lambda r: r[0] == "KOSDAQ" and r[1] == QA5 and int(r[2]) >= 34)
+    vd = make_variant("market_transfer_missing_maturity", market_transfer_missing_maturity)
+    try:
+        run_candidate(read_world(vd), sig_rev3, 5)
+        raise AssertionError("market_transfer_missing_maturity passed")
+    except RunInvalid as e:
+        assert e.label == "RUN_INVALID_MARKET_TRANSFER", e.label
+        expect["market_transfer_missing_maturity"] = e.label
+
+    # control: all-invalid-but-PRESENT rows are NOT a data gap (A14-4) — run completes
+    def blank_volumes(vd):
+        p = f"{vd}/fixture_bars.csv"
+        with open(p, newline="") as f:
+            rows = list(csv.reader(f))
+        with open(p, "w", newline="") as f:
+            wcsv = csv.writer(f)
+            wcsv.writerow(rows[0])
+            for r in rows[1:]:
+                if r[0] == "KOSPI" and r[2] == "21":
+                    r = r[:7] + [""]
+                wcsv.writerow(r)
+    vd = make_variant("data_gap_control_all_invalid", blank_volumes)
+    logc, trc = run_candidate(read_world(vd), sig_rev3, 5)
+    expect["data_gap_control_all_invalid"] = {
+        "result": "COMPLETES_NOT_DATA_GAP", "trades": len(trc),
+        "note": "rows present but invalid -> universe exclusion, not RUN_INVALID_DATA_GAP"}
+
+    # §12차: a valid maturity bar WINS over decision-disclosure evidence (A4/A7)
+    def stale_delist_bar(vd):
+        p = f"{vd}/fixture_bars.csv"
+        with open(p, "a", newline="") as f:
+            csv.writer(f).writerow(["KOSPI", KA4, "34", "1000.00", "1010.00", "990.00",
+                                    "1000.00", "1000"])
+    vd = make_variant("stale_delist_bar", stale_delist_bar)
+    wsd = read_world(vd)
+    _, trs = run_candidate(wsd, sig_rev3, 5)
+    ka4s = [t for t in trs if t["symbol"] == KA4][0]
+    # §12차: decision-disclosure evidence does NOT override a live maturity bar —
+    # the appended stale-valid s34 bar makes KA4 a NORMAL exit at that bar's close
+    assert not ka4s["delisted_exit"] and ka4s["exit_session"] == 34
+    assert ka4s["exit_close"] == 1000.0
+    lp_sd = liq_pcts(wsd, 28, a8_base_set(wsd, 28))
+    bl_sd = baseline(wsd, 28, 5, lp_sd[("KOSDAQ", QA5)])
+    assert bl_sd["cohort_terminal_included"] == 0        # KA4 normal in cohort too
+    expect["stale_delist_bar"] = {
+        "result": "VALID_MATURITY_BAR_WINS_OVER_DECISION_EVIDENCE",
+        "ka4_exit": {"session": 34, "close": 1000.0, "delisted_exit": False},
+        "qa5_cohort_baseline_exact": bl_sd,
+        "note": "§12차 evidence_type=decision_disclosure — evidence classifies bar "
+                "absence OR invalidity only; an evidence-first mutant terminals KA4 early and flips "
+                "cohort_terminal_included/gross_mean"}
+
+    # §12차 discriminators -------------------------------------------------------
+    def edit_delist(mutate_rows):
+        def mut(vd):
+            pth = f"{vd}/fixture_delist_events.csv"
+            with open(pth, newline="") as f:
+                rows = list(csv.reader(f))
+            out = mutate_rows(rows)
+            with open(pth, "w", newline="") as f:
+                csv.writer(f).writerows(out)
+        return mut
+
+    def add_event(market, symbol, sess):
+        def m(rows):
+            return rows + [[market, symbol, str(sess), "decision_disclosure"]]
+        return m
+
+    # (a) C8 back-scan must start at the SCHEDULED exit, not the event date
+    def due_anchor(vd):
+        edit_delist(add_event("KOSDAQ", QA2, 28))(vd)
+        blank_field(6, sess="31") if False else None
+        with open(f"{vd}/fixture_bars.csv", newline="") as f:
+            rows = list(csv.reader(f))
+        with open(f"{vd}/fixture_bars.csv", "w", newline="") as f:
+            wcsv = csv.writer(f)
+            for r in rows:
+                if r and r[0] == "KOSDAQ" and r[1] == QA2 and r[2] == "31":
+                    r = r[:6] + [""] + r[7:]
+                wcsv.writerow(r)
+    vd = make_variant("c8_backscan_due_anchor", due_anchor)
+    wda = read_world(vd)
+    _, trda = run_candidate(wda, sig_rev3, 5)
+    q2 = [t for t in trda if t["symbol"] == QA2][0]
+    exp_close = built_bars[(("KOSDAQ", QA2), 30)]["close"]
+    assert q2["delisted_exit"] and q2["exit_session"] == 31
+    assert q2["exit_close"] == exp_close, (q2["exit_close"], exp_close)
+    expect["c8_backscan_due_anchor"] = {
+        "result": "C8_SCANS_BACK_FROM_SCHEDULED_EXIT", "qa2_exit_close": exp_close,
+        "qa2_exit_session": 31, "trades": len(trda),
+        "note": "event s28 < valid s30 < invalid due s31 — an event-anchored back-scan "
+                "returns the s28 close instead and mismatches"}
+
+    # (b) decision-disclosure date must NOT release the slot early (capacity ripple)
+    def early_event(vd):
+        def m(rows):
+            return [r if not (r and r[0] == "KOSPI" and r[1] == KA4)
+                    else ["KOSPI", KA4, "29", "decision_disclosure"] for r in rows]
+        edit_delist(m)(vd)
+    vd = make_variant("slot_release_capacity_ripple", early_event)
+    wcr = read_world(vd)
+    lgcr, trcr = run_candidate(wcr, sig_rev3, 5)
+    assert len(trcr) == len(tr3), len(trcr)
+    assert (29, KA5) in {(e["session"], e["symbol"]) for e in lgcr["skipped_max10"]}
+    ka4c = [t for t in trcr if t["symbol"] == KA4][0]
+    assert ka4c["exit_session"] == 34 and ka4c["exit_close"] == ka4["exit_close"]
+    expect["slot_release_capacity_ripple"] = {
+        "result": "SLOT_HELD_TO_SCHEDULED_EXIT", "trades": len(trcr),
+        "ka5_still_skipped": True, "ka4_exit_session": 34,
+        "note": "event s29 with capacity saturation at entry s30 — an occupy=min(due,event) "
+                "mutant frees a slot, KA5 enters and the count/skip mismatch"}
+
+    # (c) evidence AFTER the scheduled exit is not evidence (cutoff)
+    def evidence_after_due(vd):
+        drop_bar_rows(vd, lambda r: r[0] == "KOSDAQ" and r[1] == QA1 and r[2] == "30")
+        edit_delist(add_event("KOSDAQ", QA1, 40))(vd)
+    vd = make_variant("evidence_after_due", evidence_after_due)
+    expect["evidence_after_due"] = im_check(
+        vd, "§12차 cutoff: event s40 > scheduled exit s30 -> NOT evidence; a cutoff-free "
+            "mutant terminals it as C8 and yields 17 trades")
+
+    # (d) evidence_type must be declared and known
+    def bad_evidence_type(vd):
+        def m(rows):
+            return [r if i == 0 or not r else r[:3] + ["actual_delisting"]
+                    for i, r in enumerate(rows)]
+        edit_delist(m)(vd)
+    vd = make_variant("unknown_evidence_type", bad_evidence_type)
+    try:
+        read_world(vd)
+        raise AssertionError("unknown_evidence_type passed")
+    except RunInvalid as e:
+        assert e.label == "RUN_INVALID_UNKNOWN_EVIDENCE_TYPE", e.label
+        expect["unknown_evidence_type"] = e.label
+
+    # control: a holdout-only leg (membership s53+) must be invisible — base unchanged
+    def holdout_leg(vd):
+        with open(f"{vd}/fixture_membership.csv", "a", newline="") as f:
+            csv.writer(f).writerow(["KOSDAQ", "900490", "53", "55"])
+        with open(f"{vd}/fixture_bars.csv", "a", newline="") as f:
+            wcsv = csv.writer(f)
+            for i in (53, 54, 55):
+                wcsv.writerow(["KOSDAQ", "900490", i, "1000.00", "1010.00", "990.00",
+                               "1000.00", "1000"])
+    vd = make_variant("holdout_leg_control", holdout_leg)
+    wh = read_world(vd)
+    logh, trh = run_candidate(wh, sig_rev3, 5)
+    assert trh == tr3 and wh.oob_reads == 0            # invisible: identical results
+    hk = ("KOSDAQ", "900490")
+    assert hk not in wh.membership and hk not in wh.symbols   # structural clamp serialized
+    expect["holdout_leg_control"] = {
+        "result": "IDENTICAL_TO_BASE", "trades": len(trh), "oob_reads": wh.oob_reads,
+        "holdout_key_in_symbols": False, "holdout_key_in_membership": False,
+        "note": "membership leg starting beyond exploration_end is structurally invisible —"
+                " implementations must assert the clamped symbol/membership key sets"}
+
+    # ---- golden
+    # cohort-only transfer oracle: baseline() alone must apply the transfer gate —
+    # run_candidate raises first in the variant, so this path needs a direct call
+    wmt = read_world(f"{vroot}/market_transfer")
+    lp_mt = liq_pcts(wmt, 28, a8_base_set(wmt, 28))
+    bl_mt = baseline(wmt, 28, 5, lp_mt[("KOSDAQ", QA5)])
+    assert bl_mt["cohort_excluded_transfer"] >= 1, bl_mt   # QA5 transfer-excluded
+    assert bl_mt["cohort_terminal_included"] == 1, bl_mt   # KA4 C8 stays included
+    # baseline-only due-anchor oracle: cohort member QA2 has event s28, valid s30 and an
+    # invalid due s31 -> C8 close must come from the SCHEDULED exit back-scan
+    wda2 = read_world(f"{vroot}/c8_backscan_due_anchor")
+    lp_da = liq_pcts(wda2, 25, a8_base_set(wda2, 25))
+    bl_da = baseline(wda2, 25, 5, lp_da[("KOSDAQ", QA2)])
+    assert bl_da["cohort_terminal_included"] >= 1, bl_da
+    predicate_oracles["cohort_c8_due_anchor"] = {
+        "world": "variants/c8_backscan_due_anchor", "signal_session": 25, "hold": 5,
+        "baseline_exact": bl_da,
+        "note": "baseline-only mutant scanning back from the event date changes gross_mean"}
+    # baseline-only cutoff oracle: cohort member QA1 has a missing due bar and an event
+    # AFTER the scheduled exit -> not evidence -> excluded+counted, never C8
+    wea = read_world(f"{vroot}/evidence_after_due")
+    lp_ea = liq_pcts(wea, 24, a8_base_set(wea, 24))
+    bl_ea = baseline(wea, 24, 5, lp_ea[("KOSDAQ", QA1)])
+    assert bl_ea["cohort_excluded_maturity"] >= 1, bl_ea
+    predicate_oracles["cohort_evidence_cutoff"] = {
+        "world": "variants/evidence_after_due", "signal_session": 24, "hold": 5,
+        "baseline_exact": bl_ea,
+        "note": "baseline-only cutoff-free mutant includes the post-due event as C8 and "
+                "flips cohort_excluded_maturity/terminal_included/gross_mean"}
+    predicate_oracles["cohort_transfer"] = {
+        "world": "variants/market_transfer", "signal_session": 28, "hold": 5,
+        "baseline_exact": bl_mt,
+        "note": "§12차 mirror — a baseline without the transfer-first gate completes QA5 "
+                "and flips cohort_excluded_transfer/terminal_included/gross_mean"}
+
+    fixture_files = ["fixture_bars.csv", "fixture_sessions.csv", "fixture_config.csv",
+                     "fixture_membership.csv", "fixture_delist_events.csv"]
+    variant_shas = {n: {fn: sha(f"{vroot}/{n}/{fn}") for fn in fixture_files} for n in
+                    ("invalid_maturity", "data_gap", "duplicate_row",
+                     "nofill_no_substitution", "identity_conflict", "market_transfer",
+                     "market_transfer_missing_maturity",
+                     "invalid_maturity_close_blank", "invalid_maturity_volume_blank",
+                     "invalid_maturity_close_zero", "invalid_maturity_close_inf",
+                     "invalid_maturity_volume_zero", "invalid_maturity_volume_negative",
+                     "entry_open_zero_no_fill", "c8_backscan_due_anchor",
+                     "slot_release_capacity_ripple", "evidence_after_due",
+                     "unknown_evidence_type",
+                     "data_gap_control_all_invalid", "stale_delist_bar",
+                     "holdout_leg_control")}
+    golden = {
+        "contract": "kr-golden-vectors-v1 / golden v6",
+        "candidates_yaml_sha256": "0f5e92bf7d10dd77588fa08ad949811a68004cf71dd7f2efd232306b22d82d85",
+        "convention_sha256": {
+            "amendment_a1_a9": sha(f"{INBOX}/amendment-kr-engine-conventions-v2-draft-20260805.md"),
+            "amendment_a10_a12": sha(f"{INBOX}/amendment-kr-engine-a10-a12-draft-20260805.md"),
+            "amendment_a13_a14": sha(f"{INBOX}/amendment-kr-engine-a13-a14-draft-20260805.md"),
+            "amendment_a15": sha(f"{INBOX}/amendment-kr-engine-a15-20260805.md"),
+            "generator": sha(os.path.realpath(__file__))},
+        "fixture_sha256": {n: sha(f"{OUT}/{n}") for n in fixture_files},
+        "variant_fixture_sha256": variant_shas,
+        "exploration_end_session_idx": EXPLORATION_END,
+        "access_spy_oob_reads": w.oob_reads,
+        **build_layers(),
+        "E2E": {
+            "rev3": {"log": log3, "trades": tr3,
+                     "baselines": {f"{k[0]}:{k[1]}@e{k[2]}": v for k, v in bl3.items()},
+                     "verdict": verdict3,
+                     "signals_s35_per_market_proof": s35,
+                     "signals_s45_exact_clv_ratio": s45,
+                     "signals_s49_exact_boundary": s49},
+            "brk20": {"log": log_b, "trades": tr_b,
+                      "signals_s38_exact_clv_ratio": s38b},
+            "lowvol": {"log": log_l, "trades": tr_l,
+                       "signals_s44_exact_vol20_pct": lv44},
+            "compose_oracle": oracle,
+            "predicate_oracles": predicate_oracles,
+            "variants": expect},
+    }
+    with open(f"{OUT}/golden_v6.json", "w") as f:
+        json.dump(golden, f, indent=1, ensure_ascii=False, default=str,
+                  allow_nan=False)          # RFC JSON only — bare Infinity/NaN fail closed
+    def _reject(c):
+        raise ValueError(f"non-standard JSON constant {c}")
+    with open(f"{OUT}/golden_v6.json") as f:
+        json.load(f, parse_constant=_reject)  # strict-parser acceptance
+    print(sha(f"{OUT}/golden_v6.json"), " golden_v6.json")
+    for n in fixture_files:
+        print(golden["fixture_sha256"][n][:16], n)
+    print("rev3:", len(tr3), "| verdict:", verdict3["verdict"],
+          "| clusters:", verdict3["profiles"]["43bp"]["n_entry_sessions"],
+          "| oob_reads:", w.oob_reads)
+    print("brk20:", len(tr_b), "| lowvol:", len(tr_l))
+    print("ALL_V6_ASSERTIONS_PASSED")
+
+
+if __name__ == "__main__":
+    main()

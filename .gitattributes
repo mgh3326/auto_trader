@@ -1,0 +1,5 @@
+# The KR-A0 fixed golden fixture binds CSV bytes, including upstream CRLF.
+# Keep these fixtures binary-text-neutral across checkout and recognize CR as
+# an end-of-line marker in whitespace diagnostics; the registry verifies SHA-256.
+tests/fixtures/kr_a0_golden_v6/fixture_*.csv -text whitespace=cr-at-eol
+tests/fixtures/kr_a0_golden_v6/variants/**/fixture_*.csv -text whitespace=cr-at-eol
