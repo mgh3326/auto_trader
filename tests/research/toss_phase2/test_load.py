@@ -20,6 +20,7 @@ from research.toss_phase2.load import (
     LoadStopped,
     StagingValidationError,
     _assert_database_ready,
+    _prefer_target_key_lookups,
     freeze_completed_fragments,
     preflight_source,
 )
@@ -284,6 +285,26 @@ async def test_loader_refuses_a_nonempty_target_before_initial_load() -> None:
             checkpoint=checkpoint,
         )
     assert checkpoint["initial_target_rows"] is None
+
+
+@pytest.mark.asyncio
+async def test_batch_coverage_queries_prefer_transaction_local_target_key_lookups() -> (
+    None
+):
+    class Connection:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        async def execute(self, query: str) -> None:
+            self.statements.append(query)
+
+    conn = Connection()
+    await _prefer_target_key_lookups(conn)
+
+    assert conn.statements == [
+        "SET LOCAL enable_hashjoin TO off",
+        "SET LOCAL enable_mergejoin TO off",
+    ]
 
 
 def test_invalid_minimum_fragment_age_stops_with_structured_reason(

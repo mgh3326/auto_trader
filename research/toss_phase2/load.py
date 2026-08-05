@@ -802,6 +802,20 @@ async def _connect_database(database_url: str) -> asyncpg.Connection:
         raise DatabaseLoadError(f"database_error:{type(exc).__name__}") from exc
 
 
+async def _prefer_target_key_lookups(conn: asyncpg.Connection) -> None:
+    """Keep per-batch coverage checks on the Toss target's unique key.
+
+    A Timescale hypertable has many chunks.  A default merge/hash plan can
+    scan their complete index append for a 20k-row temporary stage, whereas a
+    nested loop parameterized by ``(time_utc, symbol)`` uses the target's
+    unique key per incoming row.  These settings are transaction-local, so
+    they cannot affect unrelated backfill or production sessions.
+    """
+
+    await conn.execute("SET LOCAL enable_hashjoin TO off")
+    await conn.execute("SET LOCAL enable_mergejoin TO off")
+
+
 async def _merge_records(
     conn: asyncpg.Connection,
     records: Sequence[tuple[Any, ...]],
@@ -814,6 +828,7 @@ async def _merge_records(
             records=records,
             columns=list(REQUIRED_COLUMNS),
         )
+        await _prefer_target_key_lookups(conn)
         staged_rows = int(await conn.fetchval(STAGED_COUNT_SQL))
         if staged_rows != len(records):
             raise DatabaseLoadError("temporary_stage_row_count_mismatch")
@@ -966,6 +981,7 @@ async def _verify_records(
             records=records,
             columns=list(REQUIRED_COLUMNS),
         )
+        await _prefer_target_key_lookups(conn)
         staged_rows = int(await conn.fetchval(STAGED_COUNT_SQL))
         if staged_rows != len(records):
             raise DatabaseLoadError("verification_stage_row_count_mismatch")
