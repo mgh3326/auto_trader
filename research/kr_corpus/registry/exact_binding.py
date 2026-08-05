@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,8 +21,8 @@ import yaml
 CANDIDATES_SHA256: Final = (
     "0f5e92bf7d10dd77588fa08ad949811a68004cf71dd7f2efd232306b22d82d85"
 )
-GOLDEN_V5_SHA256: Final = (
-    "fa9a3a1adbb47f80e0980e99e3f641ef0f331c21e4801bee296366f3735cb97b"
+GOLDEN_V6_SHA256: Final = (
+    "77e293619a9d8370d0d0178d63b5ee4e04e222f5765cd3f4dfa6bbad79958d68"
 )
 CONVENTION_SHA256: Final[dict[str, str]] = {
     "amendment_a1_a9": (
@@ -33,7 +34,10 @@ CONVENTION_SHA256: Final[dict[str, str]] = {
     "amendment_a13_a14": (
         "5bdb261504b7d3c298f3a85cc07cef72dc0528adad72c685dd322884b1bd6b59"
     ),
-    "generator": ("28866f8e02f2eddd8b990a17324e96b5cebaca8b10bb96065a3f84b68e733517"),
+    "amendment_a15": (
+        "df4876861d6aee599c05bc5b2f29a3fbb37c1570483fcd15b0b2f963b28b1dae"
+    ),
+    "generator": ("490e23fb1c32f49b66a96a49b87f1628940cf0810c9484ecac2ddeb4493e19c3"),
 }
 BASE_FIXTURE_FILENAMES: Final[tuple[str, ...]] = (
     "fixture_bars.csv",
@@ -67,10 +71,11 @@ class ArtifactPaths:
     """All serialized inputs required before registry startup is allowed."""
 
     candidates_yaml: Path
-    golden_v5: Path
+    golden_v6: Path
     amendment_a1_a9: Path
     amendment_a10_a12: Path
     amendment_a13_a14: Path
+    amendment_a15: Path
     generator: Path
     fixture_root: Path
 
@@ -87,11 +92,12 @@ class ArtifactPaths:
         inbox = bundle / "inbox"
         return cls(
             candidates_yaml=bundle / "02-active-candidates.yaml",
-            golden_v5=bundle / "golden_v5.json",
+            golden_v6=bundle / "golden_v6.json",
             amendment_a1_a9=inbox
             / "amendment-kr-engine-conventions-v2-draft-20260805.md",
             amendment_a10_a12=inbox / "amendment-kr-engine-a10-a12-draft-20260805.md",
             amendment_a13_a14=inbox / "amendment-kr-engine-a13-a14-draft-20260805.md",
+            amendment_a15=inbox / "amendment-kr-engine-a15-20260805.md",
             generator=bundle / "reference_generator_v4.py",
             fixture_root=bundle,
         )
@@ -110,7 +116,7 @@ class VerifiedInputs:
     def as_dict(self) -> dict[str, Any]:
         return {
             "candidates_yaml_sha256": self.candidates_sha256,
-            "golden_v5_sha256": self.golden_sha256,
+            "golden_v6_sha256": self.golden_sha256,
             "convention_sha256": dict(self.convention_sha256),
             "fixture_sha256": dict(self.fixture_sha256),
             "variant_fixture_sha256": {
@@ -172,6 +178,12 @@ class CandidateRegistry:
     ) -> CandidateRegistry:
         """Verify inputs, parse the source YAML, and reject all unsupported drift."""
 
+        if sys.flags.optimize != 0:
+            raise RegistryStartRejected(
+                "canonical runtime requires plain Python; -O is forbidden"
+            )
+        if sys.version_info[:2] != (3, 13):
+            raise RegistryStartRejected("canonical runtime requires Python 3.13.x")
         if (
             observed_percentile_convention is not None
             and observed_percentile_convention != PERCENTILE_CONVENTION
@@ -239,7 +251,7 @@ def sha256_file(path: Path | str) -> str:
 
 
 def verify_bound_inputs(paths: ArtifactPaths) -> VerifiedInputs:
-    """Recompute and cross-check every SHA named by golden v5.
+    """Recompute and cross-check every SHA named by golden v6.
 
     The artifact root is allowed to contain only the five named fixture files and
     explicitly named variant directories for this verification path.  No corpus
@@ -250,11 +262,12 @@ def verify_bound_inputs(paths: ArtifactPaths) -> VerifiedInputs:
     candidate_sha = _require_sha(
         paths.candidates_yaml, CANDIDATES_SHA256, label="candidate YAML"
     )
-    golden_sha = _require_sha(paths.golden_v5, GOLDEN_V5_SHA256, label="golden v5")
+    golden_sha = _require_sha(paths.golden_v6, GOLDEN_V6_SHA256, label="golden v6")
     convention_paths = {
         "amendment_a1_a9": paths.amendment_a1_a9,
         "amendment_a10_a12": paths.amendment_a10_a12,
         "amendment_a13_a14": paths.amendment_a13_a14,
+        "amendment_a15": paths.amendment_a15,
         "generator": paths.generator,
     }
     recomputed_conventions = {
@@ -262,13 +275,19 @@ def verify_bound_inputs(paths: ArtifactPaths) -> VerifiedInputs:
         for name, path in convention_paths.items()
     }
 
-    golden_raw = _read_regular_file(paths.golden_v5, label="golden v5")
+    golden_raw = _read_regular_file(paths.golden_v6, label="golden v6")
     try:
-        golden = json.loads(golden_raw)
+        golden = json.loads(
+            golden_raw, parse_constant=_reject_nonstandard_json_constant
+        )
     except json.JSONDecodeError as exc:
-        raise RegistryStartRejected("golden v5 is not valid JSON") from exc
+        raise RegistryStartRejected("golden v6 is not valid JSON") from exc
+    except ValueError as exc:
+        raise RegistryStartRejected(
+            "golden v6 has a non-standard JSON constant"
+        ) from exc
     if not isinstance(golden, Mapping):
-        raise RegistryStartRejected("golden v5 root is not an object")
+        raise RegistryStartRejected("golden v6 root is not an object")
     if golden.get("candidates_yaml_sha256") != candidate_sha:
         raise RegistryStartRejected("golden/candidate SHA binding mismatch")
     if golden.get("convention_sha256") != recomputed_conventions:
@@ -327,6 +346,12 @@ def _read_regular_file(path: Path | str, *, label: str) -> bytes:
     if not resolved.is_file():
         raise RegistryStartRejected(f"{label} missing or not a file: {resolved}")
     return resolved.read_bytes()
+
+
+def _reject_nonstandard_json_constant(constant: str) -> None:
+    """Keep RFC-strict JSON at the registry boundary (no bare Infinity/NaN)."""
+
+    raise ValueError(f"non-standard JSON constant {constant}")
 
 
 def _safe_fixture_root(path: Path | str) -> Path:

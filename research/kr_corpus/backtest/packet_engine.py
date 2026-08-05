@@ -13,7 +13,6 @@ import statistics
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
-from fractions import Fraction
 from pathlib import Path
 from typing import Any, Final, Protocol
 
@@ -29,6 +28,8 @@ POPULATION_FLOOR: Final = 20
 MARKETS: Final[tuple[str, str]] = ("KOSPI", "KOSDAQ")
 
 Identity = tuple[str, str]
+MembershipInterval = tuple[int, int]
+MembershipIntervals = tuple[MembershipInterval, ...]
 
 
 class RunInvalid(RuntimeError):
@@ -93,7 +94,9 @@ class PacketWorld:
 
     bars: Mapping[tuple[Identity, int], Bar]
     symbols: tuple[Identity, ...]
-    membership: Mapping[Identity, tuple[int, int]]
+    # A15-1: intervals are a mechanical projection of presence-only rows.  They
+    # are observation intervals, never an implicit listing-status assertion.
+    membership: Mapping[Identity, MembershipIntervals]
     delist_events: Mapping[Identity, int]
     dates: Mapping[int, date]
     month_last_sessions: frozenset[int]
@@ -112,8 +115,19 @@ class PacketWorld:
         if session_idx > self.exploration_end_session_idx:
             self.spy.membership_oob_reads += 1
             return False
-        interval = self.membership.get(key)
-        return interval is not None and interval[0] <= session_idx <= interval[1]
+        return any(
+            start <= session_idx <= end for start, end in self.membership.get(key, ())
+        )
+
+    def membership_interval_at(
+        self, key: Identity, session_idx: int
+    ) -> MembershipInterval | None:
+        """Return the observed presence interval containing ``session_idx``."""
+
+        for interval in self.membership.get(key, ()):
+            if interval[0] <= session_idx <= interval[1]:
+                return interval
+        return None
 
     def assert_boundary_clean(self) -> None:
         if self.spy.total_oob_reads != 0:
@@ -124,7 +138,11 @@ class PacketWorld:
 
 
 class BoundedPacketSource(Protocol):
-    """Explicit-query source contract used by the production materializer."""
+    """Explicit-query source contract used by the production materializer.
+
+    ``fetch_membership`` returns presence-only rows keyed by ``session_idx``;
+    it never supplies a listing status or precomputed interval.
+    """
 
     def fetch_sessions(
         self, *, max_session_idx: int
@@ -133,10 +151,6 @@ class BoundedPacketSource(Protocol):
     def fetch_bars(self, *, max_session_idx: int) -> Iterable[Mapping[str, Any]]: ...
 
     def fetch_membership(
-        self, *, max_session_idx: int
-    ) -> Iterable[Mapping[str, Any]]: ...
-
-    def fetch_delist_events(
         self, *, max_session_idx: int
     ) -> Iterable[Mapping[str, Any]]: ...
 
@@ -155,7 +169,11 @@ class PacketWorldAdapter:
         sessions = _read_csv_rows(root / "fixture_sessions.csv")
         bars = _read_csv_rows(root / "fixture_bars.csv")
         membership = _read_csv_rows(root / "fixture_membership.csv")
-        delist = _read_csv_rows(root / "fixture_delist_events.csv")
+        # A15-1/2: a DART sidecar is optional at startup.  Its absence means
+        # no C8 evidence exists; it must never be inferred from membership
+        # absence or an observation interval ending.
+        delist_path = root / "fixture_delist_events.csv"
+        delist = _read_csv_rows(delist_path) if delist_path.is_file() else []
         return cls._materialize(
             sessions=sessions,
             bars=bars,
@@ -163,6 +181,7 @@ class PacketWorldAdapter:
             delist_events=delist,
             exploration_end_session_idx=end,
             spy=spy,
+            require_presence_membership=False,
         )
 
     @classmethod
@@ -172,7 +191,7 @@ class PacketWorldAdapter:
         *,
         exploration_end_session_idx: int,
     ) -> PacketWorld:
-        """Materialize only rows that a source explicitly filtered to the boundary."""
+        """Materialize boundary-filtered bars and presence-only membership rows."""
 
         if exploration_end_session_idx < 0:
             raise RunInvalid("RUN_INVALID_CONFIG", "negative exploration end")
@@ -180,8 +199,7 @@ class PacketWorldAdapter:
         methods = (
             (source.fetch_sessions, _record_session_index),
             (source.fetch_bars, _record_session_index),
-            (source.fetch_membership, _membership_start_index),
-            (source.fetch_delist_events, _record_session_index),
+            (source.fetch_membership, _membership_record_index),
         )
         records: list[list[Mapping[str, Any]]] = []
         for method, indexer in methods:
@@ -197,6 +215,29 @@ class PacketWorldAdapter:
                         evidence=spy.as_dict(),
                     )
             records.append(fetched)
+        # The DART sidecar arrives independently.  A source without that
+        # capability is valid and produces an empty evidence map (no C8).
+        fetch_delist_events = getattr(source, "fetch_delist_events", None)
+        if callable(fetch_delist_events):
+            spy.source_query_maxima.append(exploration_end_session_idx)
+            fetched_delist = list(
+                fetch_delist_events(max_session_idx=exploration_end_session_idx)
+            )
+            for record in fetched_delist:
+                # A normalized fixture can carry a session index.  The live
+                # DART sidecar instead carries delist_date and is resolved
+                # against the materialized session map below.
+                idx = _delist_source_session_index(record)
+                if idx is not None and idx > exploration_end_session_idx:
+                    spy.source_oob_records += 1
+                    raise RunInvalid(
+                        "RUN_INVALID_SOURCE_BOUNDARY",
+                        f"source returned s{idx} above exploration end",
+                        evidence=spy.as_dict(),
+                    )
+            records.append(fetched_delist)
+        else:
+            records.append([])
         return cls._materialize(
             sessions=records[0],
             bars=records[1],
@@ -204,6 +245,7 @@ class PacketWorldAdapter:
             delist_events=records[3],
             exploration_end_session_idx=exploration_end_session_idx,
             spy=spy,
+            require_presence_membership=True,
         )
 
     @classmethod
@@ -216,6 +258,7 @@ class PacketWorldAdapter:
         delist_events: Iterable[Mapping[str, Any]],
         exploration_end_session_idx: int,
         spy: AccessSpy,
+        require_presence_membership: bool,
     ) -> PacketWorld:
         dates: dict[int, date] = {}
         month_last: set[int] = set()
@@ -255,28 +298,23 @@ class PacketWorldAdapter:
                 volume=_optional_int(row.get("volume")),
             )
 
-        parsed_membership: dict[Identity, tuple[int, int]] = {}
-        symbols: list[Identity] = []
-        for row in membership:
-            key = _identity_from_row(row)
-            if key in parsed_membership:
-                raise RunInvalid("RUN_INVALID_DUPLICATE_ROW", f"membership {key}")
-            start = _as_int(row.get("start_idx"), "membership start")
-            end = _as_int(row.get("end_idx"), "membership end")
-            if start > end:
-                raise RunInvalid("RUN_INVALID_MEMBERSHIP", str(key))
-            if start > exploration_end_session_idx:
-                continue
-            parsed_membership[key] = (start, min(end, exploration_end_session_idx))
-            symbols.append(key)
+        parsed_membership = _membership_intervals_from_rows(
+            membership,
+            exploration_end_session_idx=exploration_end_session_idx,
+            require_presence_rows=require_presence_membership,
+        )
+        symbols = list(parsed_membership)
 
         parsed_delist: dict[Identity, int] = {}
         for row in delist_events:
             key = _identity_from_row(row)
             if key in parsed_delist:
                 raise RunInvalid("RUN_INVALID_DUPLICATE_ROW", f"delist {key}")
-            event_session = _as_int(row.get("delist_session_idx"), "delist session")
-            if event_session <= exploration_end_session_idx:
+            event_session = _delist_event_session_index(row, dates)
+            if (
+                event_session is not None
+                and event_session <= exploration_end_session_idx
+            ):
                 parsed_delist[key] = event_session
 
         return PacketWorld(
@@ -341,7 +379,12 @@ class PacketEngine:
         self._check_data_gaps(world)
         log, trades = self._execute_candidate(world, binding)
         baselines = self._build_baselines(world, binding, trades)
-        verdict = compose_verdict(world.dates, trades, baselines)
+        verdict = self._compose_verdict(
+            world.dates,
+            trades,
+            baselines,
+            missing_exit_count=len(log["missing_exit"]),
+        )
         world.assert_boundary_clean()
         return CandidateRun(
             binding=binding,
@@ -376,8 +419,10 @@ class PacketEngine:
 
     def _check_identity(self, world: PacketWorld) -> None:
         by_symbol: dict[str, list[tuple[str, int, int]]] = {}
-        for (market, symbol), (start, end) in world.membership.items():
-            by_symbol.setdefault(symbol, []).append((market, start, end))
+        for (market, symbol), intervals in world.membership.items():
+            by_symbol.setdefault(symbol, []).extend(
+                (market, start, end) for start, end in intervals
+            )
         conflicts: list[str] = []
         for symbol, entries in by_symbol.items():
             for left_idx, left in enumerate(entries):
@@ -632,6 +677,9 @@ class PacketEngine:
             "skipped_max10": [],
             "no_fill": [],
             "censored": [],
+            # A15-3: evidence-less invalid/missing maturity exits are visible
+            # and excluded at trade granularity, rather than invalidating a run.
+            "missing_exit": [],
             "notes": {},
         }
         for signal_session in range(world.exploration_end_session_idx + 1):
@@ -687,7 +735,7 @@ class PacketEngine:
                 log=log,
             )
 
-        trades = self._resolve_positions(world, positions)
+        trades = self._resolve_positions(world, positions, log)
         trades.sort(
             key=lambda trade: (trade["entry_idx"], trade["market"], trade["symbol"])
         )
@@ -850,7 +898,10 @@ class PacketEngine:
         )
 
     def _resolve_positions(
-        self, world: PacketWorld, positions: Iterable[Mapping[str, Any]]
+        self,
+        world: PacketWorld,
+        positions: Iterable[Mapping[str, Any]],
+        log: dict[str, Any],
     ) -> list[dict[str, Any]]:
         terminal_trades: list[dict[str, Any]] = []
         regular_positions: list[Mapping[str, Any]] = []
@@ -886,7 +937,18 @@ class PacketEngine:
             exit_due = position["exit_due"]
             exit_bar = world.bar(key, exit_due)
             if not self._maturity_ok(exit_bar):
-                raise RunInvalid("RUN_INVALID_MATURITY_PRICE", f"{key}@s{exit_due}")
+                # A15-3 ordering is intentional: terminal evidence and the
+                # transfer gate above win before price interpretation.  With
+                # neither, exclude only this trade and disclose it.
+                log["missing_exit"].append(
+                    {
+                        "market": key[0],
+                        "symbol": key[1],
+                        "entry_session": position["entry_idx"],
+                        "exit_due": exit_due,
+                    }
+                )
+                continue
             if not self._transfer_precedes_maturity() and self._transfer_gate(
                 world, position
             ):
@@ -943,29 +1005,41 @@ class PacketEngine:
 
     def _transfer_gate(self, world: PacketWorld, position: Mapping[str, Any]) -> bool:
         key = position["key"]
-        membership_end = world.membership[key][1]
+        interval = world.membership_interval_at(key, int(position["signal_session"]))
+        if interval is None:
+            raise RunInvalid("RUN_INVALID_MEMBERSHIP", f"no observed leg for {key}")
+        membership_end = interval[1]
         return membership_end < position["exit_due"] and self._other_market_transfer(
-            world, key
+            world, key, membership_end=membership_end
         )
 
     def _transfer_evidence(
         self, world: PacketWorld, position: Mapping[str, Any]
     ) -> dict[str, Any]:
         market, symbol = position["key"]
+        interval = world.membership_interval_at(
+            (market, symbol), int(position["signal_session"])
+        )
+        if interval is None:
+            raise RunInvalid(
+                "RUN_INVALID_MEMBERSHIP", f"no observed leg for {(market, symbol)}"
+            )
         return {
             "market": market,
             "symbol": symbol,
             "identity": [market, symbol],
-            "membership_end": world.membership[(market, symbol)][1],
+            "membership_end": interval[1],
             "exit_due": position["exit_due"],
         }
 
-    def _other_market_transfer(self, world: PacketWorld, key: Identity) -> bool:
+    def _other_market_transfer(
+        self, world: PacketWorld, key: Identity, *, membership_end: int
+    ) -> bool:
         market, symbol = key
-        end = world.membership[key][1]
         return any(
-            other_symbol == symbol and other_market != market and start > end
-            for (other_market, other_symbol), (start, _) in world.membership.items()
+            other_symbol == symbol and other_market != market and start > membership_end
+            for (other_market, other_symbol), intervals in world.membership.items()
+            for start, _ in intervals
         )
 
     def _build_baselines(
@@ -1065,6 +1139,23 @@ class PacketEngine:
     def _transfer_precedes_maturity(self) -> bool:
         return True
 
+    def _compose_verdict(
+        self,
+        dates: Mapping[int, date],
+        trades: Iterable[Mapping[str, Any]],
+        baselines: Mapping[str, Mapping[str, Any]],
+        *,
+        missing_exit_count: int,
+    ) -> dict[str, Any]:
+        """Hook retained so CI can prove that dropping missing-exit counts fails."""
+
+        return compose_verdict(
+            dates,
+            trades,
+            baselines,
+            missing_exit_count=missing_exit_count,
+        )
+
 
 def pct_asc(values: Iterable[float], value: float) -> float:
     """A1: self-inclusive, tie-inclusive ascending percentile."""
@@ -1150,10 +1241,20 @@ def compose_verdict(
     dates: Mapping[int, date],
     trades: Iterable[Mapping[str, Any]],
     baselines: Mapping[str, Mapping[str, Any]],
+    *,
+    missing_exit_count: int = 0,
 ) -> dict[str, Any]:
-    """A11/A14 verdict composition using entry-session equal weighting."""
+    """A11/A14/A15 verdict composition using entry-session equal weighting.
+
+    Run-invalid conditions are raised by the caller before this point.  Of the
+    completed-run labels, A15's strictly-greater-than-five-percent
+    ``INCONCLUSIVE_MISSING_EXITS`` override takes precedence over cluster,
+    falsification, and pass labels.
+    """
 
     materialized = tuple(trades)
+    if not isinstance(missing_exit_count, int) or missing_exit_count < 0:
+        raise RunInvalid("RUN_INVALID_MISSING_EXIT_COUNT")
     profiles: dict[str, dict[str, Any]] = {}
     for tag, cost in (("43bp", COST_BASE), ("83bp", COST_SENSITIVITY)):
         excesses: list[float] = []
@@ -1229,11 +1330,20 @@ def compose_verdict(
         profiles[tag] = profile
     base_mean = profiles["43bp"]["trade_mean_excess"]
     sensitivity_mean = profiles["83bp"]["trade_mean_excess"]
+    total_attempted_exits = len(materialized) + missing_exit_count
+    missing_exit_ratio = (
+        missing_exit_count / total_attempted_exits if total_attempted_exits else 0.0
+    )
+    verdict = profiles["43bp"]["verdict"]
+    if missing_exit_ratio > 0.05:
+        verdict = "INCONCLUSIVE_MISSING_EXITS"
     return {
-        "verdict": profiles["43bp"]["verdict"],
+        "verdict": verdict,
         "cost_sensitive": base_mean is not None
         and base_mean > 0
         and (sensitivity_mean or 0) <= 0,
+        "missing_exit_count": missing_exit_count,
+        "missing_exit_ratio": missing_exit_ratio,
         "profiles": profiles,
     }
 
@@ -1248,30 +1358,70 @@ def clustered_lcb(session_means: Iterable[float]) -> float:
 
 
 def canonical_sample_stdev(values: Iterable[float]) -> float:
-    """Pinned v5 ddof=1 standard deviation across supported CPython versions.
+    """A15's canonical CPython 3.13 ``statistics.stdev`` calculation.
 
-    The original v5 generator was sealed with the exact-ratio implementation
-    used by CPython 3.9.  Later stdlib revisions changed the final rounding of
-    ``statistics.stdev`` for a few vectors.  This local, pure implementation
-    preserves the sealed numerical convention rather than allowing a runtime
-    upgrade to silently drift the packet contract.
+    Golden v6 deliberately binds byte identity to the repository's plain
+    Python 3.13 runtime.  The v5 compatibility kernel is therefore no longer
+    part of this engine.
     """
 
     materialized = tuple(values)
     if len(materialized) < 2:
         raise RunInvalid("UNIDENTIFIABLE_CLUSTERS")
-    total = sum((Fraction.from_float(value) for value in materialized), Fraction(0, 1))
-    center = float(total / len(materialized))
-    squared = sum(
-        (Fraction.from_float((value - center) ** 2) for value in materialized),
-        Fraction(0, 1),
+    return statistics.stdev(materialized)
+
+
+def membership_intervals_from_presence_table(
+    table: Any,
+    *,
+    exploration_end_session_idx: int,
+) -> dict[Identity, MembershipIntervals]:
+    """Mechanically derive continuous observed intervals from presence rows.
+
+    The caller may hand this function a PyArrow table read from the
+    presence-only membership parquet.  Only ``market``, ``symbol`` and
+    ``session_idx`` participate: a membership ``status`` field, if an
+    upstream table happens to carry one, is deliberately ignored.  Delisting
+    is represented solely by separately supplied DART evidence.
+    """
+
+    to_pylist = getattr(table, "to_pylist", None)
+    if not callable(to_pylist):
+        raise RunInvalid("RUN_INVALID_MEMBERSHIP", "presence table has no to_pylist")
+    rows = to_pylist()
+    if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
+        raise RunInvalid("RUN_INVALID_MEMBERSHIP", "presence table rows")
+    return _membership_intervals_from_rows(
+        rows,
+        exploration_end_session_idx=exploration_end_session_idx,
+        require_presence_rows=True,
     )
-    residual = sum(
-        (Fraction.from_float(value - center) for value in materialized),
-        Fraction(0, 1),
+
+
+def membership_intervals_from_presence_parquet(
+    path: Path | str,
+    *,
+    exploration_end_session_idx: int,
+) -> dict[Identity, MembershipIntervals]:
+    """Read the A15 presence-only parquet and derive observation intervals.
+
+    This adapter intentionally delegates delisting to a separate evidence
+    sidecar; there is no status-to-delisted conversion on this path.
+    """
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    try:
+        table = pq.read_table(Path(path))
+    except (OSError, ValueError, pa.ArrowException) as exc:
+        raise RunInvalid(
+            "RUN_INVALID_MEMBERSHIP", "presence parquet unreadable"
+        ) from exc
+    return membership_intervals_from_presence_table(
+        table,
+        exploration_end_session_idx=exploration_end_session_idx,
     )
-    squared -= residual**2 / len(materialized)
-    return math.sqrt(float(squared / (len(materialized) - 1)))
 
 
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -1298,8 +1448,158 @@ def _record_session_index(row: Mapping[str, Any]) -> int:
     return _as_int(raw, "session_idx")
 
 
-def _membership_start_index(row: Mapping[str, Any]) -> int:
+def _delist_source_session_index(row: Mapping[str, Any]) -> int | None:
+    raw = row.get("delist_session_idx")
+    if raw in (None, ""):
+        return None
+    return _as_int(raw, "delist session")
+
+
+def _delist_event_session_index(
+    row: Mapping[str, Any], dates: Mapping[int, date]
+) -> int | None:
+    """Resolve only explicit sidecar evidence to a known market session.
+
+    Golden fixtures use the already-normalized ``delist_session_idx``.  The
+    A15 sidecar contract supplies ``delist_date`` and ``reason``; an event date
+    must match a materialized XKRX session exactly.  If a future sidecar event
+    lies beyond this exploration window it is irrelevant and ignored.  Weekend
+    or otherwise ambiguous alignment is fail-closed rather than guessed.
+    """
+
+    raw_session = row.get("delist_session_idx")
+    raw_date = row.get("delist_date")
+    if raw_session not in (None, ""):
+        event_session = _as_int(raw_session, "delist session")
+        if raw_date in (None, ""):
+            return event_session
+        parsed_date = _parse_delist_date(raw_date)
+        if dates.get(event_session) != parsed_date:
+            raise RunInvalid("RUN_INVALID_DELIST_EVIDENCE", "session/date mismatch")
+        return event_session
+    if raw_date in (None, ""):
+        raise RunInvalid("RUN_INVALID_DELIST_EVIDENCE", "missing delist date")
+    reason = row.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise RunInvalid("RUN_INVALID_DELIST_EVIDENCE", "missing delist reason")
+    parsed_date = _parse_delist_date(raw_date)
+    if parsed_date > max(dates.values()):
+        return None
+    matches = [
+        session_idx
+        for session_idx, session_date in dates.items()
+        if session_date == parsed_date
+    ]
+    if len(matches) != 1:
+        raise RunInvalid("RUN_INVALID_DELIST_EVIDENCE", "delist date is not a session")
+    return matches[0]
+
+
+def _parse_delist_date(raw: object) -> date:
+    if not isinstance(raw, str):
+        raise RunInvalid("RUN_INVALID_DELIST_EVIDENCE", "invalid delist date")
+    try:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
+        raise RunInvalid("RUN_INVALID_DELIST_EVIDENCE", "invalid delist date") from exc
+
+
+def _membership_record_index(row: Mapping[str, Any]) -> int:
+    """Index a presence row, with interval rows retained for golden fixtures."""
+
+    raw_presence = row.get("session_idx")
+    if raw_presence not in (None, ""):
+        return _as_int(raw_presence, "membership session_idx")
     return _as_int(row.get("start_idx"), "membership start_idx")
+
+
+def _membership_intervals_from_rows(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    exploration_end_session_idx: int,
+    require_presence_rows: bool = False,
+) -> dict[Identity, MembershipIntervals]:
+    """Normalize either presence rows or fixture-only interval rows.
+
+    Real A15 inputs are presence rows.  The interval branch is kept only for
+    the hash-bound upstream golden CSV fixture, whose bytes predate the parquet
+    adapter.  Both paths end in the same plural interval representation.
+    """
+
+    materialized = list(rows)
+    if not materialized:
+        return {}
+    modes: set[str] = set()
+    for row in materialized:
+        has_presence = row.get("session_idx") not in (None, "")
+        has_start = row.get("start_idx") not in (None, "")
+        has_end = row.get("end_idx") not in (None, "")
+        if has_presence and not (has_start or has_end):
+            modes.add("presence")
+        elif not has_presence and has_start and has_end:
+            modes.add("interval")
+        else:
+            raise RunInvalid("RUN_INVALID_MEMBERSHIP", "ambiguous membership row")
+    if len(modes) != 1:
+        raise RunInvalid("RUN_INVALID_MEMBERSHIP", "mixed membership row formats")
+    mode = next(iter(modes))
+    if require_presence_rows and mode != "presence":
+        raise RunInvalid("RUN_INVALID_MEMBERSHIP", "presence-only rows required")
+
+    intervals_by_key: dict[Identity, list[MembershipInterval]] = {}
+    if mode == "presence":
+        seen_presence: set[tuple[Identity, int]] = set()
+        for row in materialized:
+            key = _identity_from_row(row)
+            session_idx = _as_int(row.get("session_idx"), "membership session_idx")
+            if session_idx < 0:
+                raise RunInvalid("RUN_INVALID_MEMBERSHIP", str(key))
+            compound = (key, session_idx)
+            if compound in seen_presence:
+                raise RunInvalid("RUN_INVALID_DUPLICATE_ROW", f"membership {compound}")
+            seen_presence.add(compound)
+            if session_idx <= exploration_end_session_idx:
+                intervals_by_key.setdefault(key, []).append((session_idx, session_idx))
+    else:
+        seen_intervals: set[tuple[Identity, int, int]] = set()
+        for row in materialized:
+            key = _identity_from_row(row)
+            start = _as_int(row.get("start_idx"), "membership start")
+            end = _as_int(row.get("end_idx"), "membership end")
+            if start < 0 or start > end:
+                raise RunInvalid("RUN_INVALID_MEMBERSHIP", str(key))
+            compound = (key, start, end)
+            if compound in seen_intervals:
+                raise RunInvalid("RUN_INVALID_DUPLICATE_ROW", f"membership {compound}")
+            seen_intervals.add(compound)
+            if start <= exploration_end_session_idx:
+                intervals_by_key.setdefault(key, []).append(
+                    (start, min(end, exploration_end_session_idx))
+                )
+
+    return {
+        key: _canonicalize_membership_intervals(key, intervals)
+        for key, intervals in intervals_by_key.items()
+    }
+
+
+def _canonicalize_membership_intervals(
+    key: Identity, intervals: Iterable[MembershipInterval]
+) -> MembershipIntervals:
+    ordered = sorted(intervals)
+    normalized: list[MembershipInterval] = []
+    for start, end in ordered:
+        if not normalized:
+            normalized.append((start, end))
+            continue
+        prior_start, prior_end = normalized[-1]
+        if start <= prior_end:
+            raise RunInvalid("RUN_INVALID_MEMBERSHIP", f"overlapping intervals {key}")
+        if start == prior_end + 1:
+            normalized[-1] = (prior_start, end)
+        else:
+            normalized.append((start, end))
+    return tuple(normalized)
 
 
 def _identity_from_row(row: Mapping[str, Any]) -> Identity:
