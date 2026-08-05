@@ -923,15 +923,23 @@ class AlpacaPaperOrderLedger(Base):
     preview_payload: Mapped[dict | None] = mapped_column(JSONB)
     validation_summary: Mapped[dict | None] = mapped_column(JSONB)
 
-    # Broker order fields
+    # Broker order fields. These two legacy columns are consumer-local write
+    # timestamps, not Alpaca/broker or execution-partner clock observations.
+    # Keep the names and historical values for compatibility; source-qualified
+    # broker evidence belongs in a future additive field, not in these columns.
     broker_order_id: Mapped[str | None] = mapped_column(Text)
+    # LEGACY: local record_submit()/record_submit_failure() time; never a
+    # broker receipt, partner-dispatch time, latency/SLA clock, or receipt t0.
     submitted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     order_status: Mapped[str | None] = mapped_column(Text)
     filled_qty: Mapped[float | None] = mapped_column(Numeric(20, 8))
     filled_avg_price: Mapped[float | None] = mapped_column(Numeric(20, 8))
 
-    # Cancel tracking
+    # Cancel tracking. The legacy value is local record_cancel() time, not
+    # Alpaca cancel_requested_at or execution-partner canceled_at.
     cancel_status: Mapped[str | None] = mapped_column(Text)
+    # LEGACY: local cancellation-record time; never terminal partner evidence
+    # and never a broker/execution clock for latency or SLA comparisons.
     canceled_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
 
     # Position snapshot — null=not checked; {qty,avg_entry_price,fetched_at}=checked
