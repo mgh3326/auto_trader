@@ -15,12 +15,12 @@ convention 정본: 운영자 확정 amendment A1~A9 + A10~A12 + A13~A14 + **A15*
 ## 파일
 
 ```
-996a30b9c233320665aa17845991287fd7af71704af6f91a6956d12a91738d4f  golden_v6.json
+5b5bde57f83ad39ddf3bd6a077ed7d22370d338f85c2765873c1e767354dd220  golden_v6.json
 e9e744932594da41…  fixture_bars.csv        9907044e1f54d0a1…  fixture_sessions.csv
 280f829080580d4c…  fixture_config.csv      88709819a088145e…  fixture_membership.csv
-588778f5e883b798…  fixture_delist_events.csv
-variants/<name>/   자기완결 variant 디렉토리 17종 — RunInvalid 5종은 지정 라벨로 **실패해야
-                   하고**, 완주 12종은 지정 결과로 **완주해야 한다** (A15 로 invalid_maturity 가
+586151af9101f47d…  fixture_delist_events.csv
+variants/<name>/   자기완결 variant 디렉토리 21종 — RunInvalid 6종은 지정 라벨로 **실패해야
+                   하고**, 완주 15종은 지정 결과로 **완주해야 한다** (A15 로 invalid_maturity 가
                    실패군 → 완주군 이동. 5파일 전체 SHA 가 golden 에 결속):
   invalid_maturity → **A15-3: 완주 + missing_exit 1건·16거래 + 최종 verdict = INCONCLUSIVE_MISSING_EXITS (1/17=5.88%) 결속 + 존재-but-무효 자매 6종(close blank/0/Inf·volume blank/0/음수) 동일 기대 + entry_open_zero(진입 open=0 → NO_FILL·capacity ripple) + E2E.predicate_oracles(입력 bar 자기완결 14케이스 — 비유한 값은 {"special_float": "+inf"} tag, golden 은 RFC strict JSON·allow_nan=False·strict 파서 검사 내장 — 소양수 0.01/1 유효로 exact >0 하한 고정, 실함수 배선)** (구 RUN_INVALID 기대 폐기 —
   증거 없는 만기 결측은 거래 단위 제외+공개, 5% 초과 시 INCONCLUSIVE_MISSING_EXITS) · data_gap → RUN_INVALID_DATA_GAP ·
@@ -67,13 +67,25 @@ variants/<name>/   자기완결 variant 디렉토리 17종 — RunInvalid 5종�
 - lowvol: ml {9(이력부족)·29(8진입)·31(held 5 무시 유지+2충원+2 SKIP)·44(전부 censored)} ·
   Q01 s50 만기까지 강제청산 없음.
 
+- **§12차 판별기 4종 + cohort oracle**: `c8_backscan_due_anchor`(event s28 < 유효 s30 <
+  무효 due s31 → C8 종가는 **예정 만기일부터 역탐색**한 s30 — event 기점 mutant 격추) ·
+  `slot_release_capacity_ripple`(event s29 + 정원 포화 → 슬롯은 예정 만기까지 유지, KA5 SKIP
+  보존 — occupy=min(due,event) mutant 격추) · `evidence_after_due`(event s40 > 예정 만기 s30
+  → 증거 아님·missing_exit — cutoff 제거 mutant 격추) · `unknown_evidence_type`(→
+  `RUN_INVALID_UNKNOWN_EVIDENCE_TYPE` — fixture 가 evidence_type 을 선언·검증) ·
+  **E2E.predicate_oracles (cohort 3종 + maturity_entry, 총 4종)**(baseline 단독 호출 — transfer-first 게이트·C8 due-anchor·
+  evidence cutoff 가 baseline 에도 있음을 각각 exact 결속. baseline-only mutant 격추)
+
+🔴 acceptance 원칙: «격추» 는 **불변 pinned golden_v6.json 과 구현 산출의 exact 비교**로만
+   성립한다 — generator 를 다시 돌려 동적 기대값을 재생성하는 것으로 대체 금지 (17차 지적).
+
 ## 검증 요구
 
 1. fixture 양자화 — 재계산 exact 일치. `==` 명시 항목은 float 정확 일치.
 2. **양방향 증명**: mutation test (strict `<`·raw high·global percentile·no-fill 대체·full-bar
    entry/maturity validity·symbol-only identity·경계 밖 read — 각각 검출) + tamper test.
    실제 CI 테스트로 제공. **access-spy 테스트 필수.**
-3. variant 17종은 지정 결과와 정확히 일치해야 한다 (RunInvalid 5종의 라벨·완주 12종의 결과 —
+3. variant 21종은 지정 결과와 정확히 일치해야 한다 (RunInvalid 6종의 라벨·완주 15종의 결과 —
    golden_v6.json `E2E.variants` 가 정본).
 4. 의도된 결측·오류는 시나리오 — "수리" 금지.
 5. golden 미통과 시 registry 기동 거부 경로 증명.

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """KR golden vector reference generator — kr-golden-vectors-v1 (golden v6).
 
-Per operator-ratified A1~A15 and codex-mock reviews 1~11. Supersedes v1~v5 artifacts.
-Emits golden_v6.json + 17 self-contained variant directories (5 RunInvalid + 12 completing).
+Per operator-ratified A1~A15 and codex-mock reviews 1~16. Supersedes v1~v5 artifacts.
+Emits golden_v6.json + 21 self-contained variant directories (6 RunInvalid + 15 completing).
 Canonical runtime: auto_trader .venv Python 3.13.x, plain `python` (no -O).
 
 v4 deltas from v3:
@@ -23,12 +23,12 @@ v4 deltas from v3:
   - exact comparators wired to real signals: clv == 0.65 and volume_ratio == 1.5 (KB1),
     brk clv == 0.75 and ratio == 1.25 (KB2), vol20_pct == 0.3 (LV5 rank ladder at ml44
     pop 20), plus v3's r3_pct == 0.05 / liq_pct == 0.5 / margin == 0.0 / r20 == 0.0
-  - A4 baseline mirrors trade resolution order (delist evidence BEFORE maturity bar)
+  - A4 baseline mirrors trade resolution order (§12차: transfer -> valid maturity -> evidence)
   - compose oracle: n>=30 / filled>=300 synthetic worlds through the REAL compose function
     (PASS, FALSIFIED, COST_SENSITIVE, RUN_INVALID_EMPTY_BASELINE)
   - loader hardening: sessions keyed by session_idx, duplicate session/config/membership/
     delist rows fail-closed; all inputs read from the fixture directory (packet root)
-  - variants as self-contained directories (17 = 5 RunInvalid + 12 completing):
+  - variants as self-contained directories (21 = 6 RunInvalid + 15 completing):
     invalid_maturity, data_gap, duplicate_row, nofill_no_substitution, identity_conflict,
     market_transfer (stale-valid maturity bar preserved),
     market_transfer_missing_maturity (complementary precedence case),
@@ -337,9 +337,9 @@ def write_fixtures(dirpath, bars, symbols, membership, delist, dates):
             w.writerow([key[0], key[1], s, e])
     with open(f"{dirpath}/fixture_delist_events.csv", "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["market", "symbol", "delist_session_idx"])
+        w.writerow(["market", "symbol", "delist_session_idx", "evidence_type"])
         for key, dd in delist.items():
-            w.writerow([key[0], key[1], dd])
+            w.writerow([key[0], key[1], dd, "decision_disclosure"])
 
 
 class World:
@@ -402,6 +402,10 @@ def read_world(dirpath):
             k = (row["market"], row["symbol"])
             if k in delist:
                 raise RunInvalid("RUN_INVALID_DUPLICATE_ROW", f"delist {k}")
+            # §12차: evidence semantics must be declared by the input, not assumed
+            if row.get("evidence_type") != "decision_disclosure":
+                raise RunInvalid("RUN_INVALID_UNKNOWN_EVIDENCE_TYPE",
+                                 f"{k}:{row.get('evidence_type')}")
             delist[k] = int(row["delist_session_idx"])
     return World(bars, symbols, membership, delist, dates, ml,
                  cfg["exploration_end_session_idx"])
@@ -639,7 +643,7 @@ def run_candidate(w, signal_fn, hold, schedule=None):
         xb = w.bar(key, p["exit_due"])
         if not maturity_ok(xb):
             # A15-3 (§12차 보정): evidence_type=decision_disclosure — evidence classifies
-            # BAR ABSENCE only (a valid maturity bar always wins: liquidation trading is
+            # BAR ABSENCE OR INVALIDITY only (a valid maturity bar always wins: liquidation trading is
             # real). C8 search runs from the SCHEDULED exit backwards.
             d_evt = w.delist.get(key)
             if d_evt is not None and d_evt <= p["exit_due"]:
@@ -673,17 +677,23 @@ def run_candidate(w, signal_fn, hold, schedule=None):
 
 
 def baseline(w, t, hold, target_pct):
-    """A4 — mirrors trade resolution order (delist evidence BEFORE maturity bar)."""
+    """A4 — mirrors trade resolution order (§12차: transfer gate -> valid maturity bar
+    -> decision-disclosure evidence -> exclusion)."""
     base = a8_base_set(w, t)
     lp = liq_pcts(w, t, base)
     dec = min(9, int(target_pct * 10))
-    rets, excl_e, excl_m, term_inc = [], 0, 0, 0
+    rets, excl_e, excl_m, term_inc, excl_tr = [], 0, 0, 0, 0
     for k in base:
         if min(9, int(lp[k] * 10)) != dec:
             continue
         eb = w.bar(k, t + 1)
         if not entry_ok(eb):
             excl_e += 1
+            continue
+        # §12차 mirror: transfer gate BEFORE any maturity read. Cohort members are
+        # excluded+counted (A15: RUN_INVALID is strategy-trade-only).
+        if w.membership[k][1] < t + 1 + hold and other_market_transfer(w, k):
+            excl_tr += 1
             continue
         xb = w.bar(k, t + 1 + hold)
         if maturity_ok(xb):
@@ -704,7 +714,7 @@ def baseline(w, t, hold, target_pct):
     return {"decile": dec, "n": len(rets),
             "gross_mean": statistics.mean(rets) if rets else None,
             "cohort_excluded_entry": excl_e, "cohort_excluded_maturity": excl_m,
-            "cohort_terminal_included": term_inc}
+            "cohort_terminal_included": term_inc, "cohort_excluded_transfer": excl_tr}
 
 
 def compose_verdict(dates, trades, baselines, missing_exit_count=0):
@@ -1269,6 +1279,8 @@ def main():
         pred_cases.append({"case": label, "input_bar": ser_bar,
                            "maturity_ok": m, "entry_ok": en})
     predicate_oracles = {
+        "cohort_transfer": None, "cohort_c8_due_anchor": None,
+        "cohort_evidence_cutoff": None,   # filled after variants are built
         "maturity_entry": {"cases": pred_cases,
                            "note": "wired to the REAL maturity_ok/entry_ok — non-finite inputs are "
                                    "serialized as {'special_float': '+inf'} tags "
@@ -1384,7 +1396,7 @@ def main():
         "result": "COMPLETES_NOT_DATA_GAP", "trades": len(trc),
         "note": "rows present but invalid -> universe exclusion, not RUN_INVALID_DATA_GAP"}
 
-    # control: stale-valid maturity bar must NOT override delist evidence (A4/A7)
+    # §12차: a valid maturity bar WINS over decision-disclosure evidence (A4/A7)
     def stale_delist_bar(vd):
         p = f"{vd}/fixture_bars.csv"
         with open(p, "a", newline="") as f:
@@ -1406,8 +1418,91 @@ def main():
         "ka4_exit": {"session": 34, "close": 1000.0, "delisted_exit": False},
         "qa5_cohort_baseline_exact": bl_sd,
         "note": "§12차 evidence_type=decision_disclosure — evidence classifies bar "
-                "ABSENCE only; an evidence-first mutant terminals KA4 early and flips "
+                "absence OR invalidity only; an evidence-first mutant terminals KA4 early and flips "
                 "cohort_terminal_included/gross_mean"}
+
+    # §12차 discriminators -------------------------------------------------------
+    def edit_delist(mutate_rows):
+        def mut(vd):
+            pth = f"{vd}/fixture_delist_events.csv"
+            with open(pth, newline="") as f:
+                rows = list(csv.reader(f))
+            out = mutate_rows(rows)
+            with open(pth, "w", newline="") as f:
+                csv.writer(f).writerows(out)
+        return mut
+
+    def add_event(market, symbol, sess):
+        def m(rows):
+            return rows + [[market, symbol, str(sess), "decision_disclosure"]]
+        return m
+
+    # (a) C8 back-scan must start at the SCHEDULED exit, not the event date
+    def due_anchor(vd):
+        edit_delist(add_event("KOSDAQ", QA2, 28))(vd)
+        blank_field(6, sess="31") if False else None
+        with open(f"{vd}/fixture_bars.csv", newline="") as f:
+            rows = list(csv.reader(f))
+        with open(f"{vd}/fixture_bars.csv", "w", newline="") as f:
+            wcsv = csv.writer(f)
+            for r in rows:
+                if r and r[0] == "KOSDAQ" and r[1] == QA2 and r[2] == "31":
+                    r = r[:6] + [""] + r[7:]
+                wcsv.writerow(r)
+    vd = make_variant("c8_backscan_due_anchor", due_anchor)
+    wda = read_world(vd)
+    _, trda = run_candidate(wda, sig_rev3, 5)
+    q2 = [t for t in trda if t["symbol"] == QA2][0]
+    exp_close = built_bars[(("KOSDAQ", QA2), 30)]["close"]
+    assert q2["delisted_exit"] and q2["exit_session"] == 31
+    assert q2["exit_close"] == exp_close, (q2["exit_close"], exp_close)
+    expect["c8_backscan_due_anchor"] = {
+        "result": "C8_SCANS_BACK_FROM_SCHEDULED_EXIT", "qa2_exit_close": exp_close,
+        "qa2_exit_session": 31, "trades": len(trda),
+        "note": "event s28 < valid s30 < invalid due s31 — an event-anchored back-scan "
+                "returns the s28 close instead and mismatches"}
+
+    # (b) decision-disclosure date must NOT release the slot early (capacity ripple)
+    def early_event(vd):
+        def m(rows):
+            return [r if not (r and r[0] == "KOSPI" and r[1] == KA4)
+                    else ["KOSPI", KA4, "29", "decision_disclosure"] for r in rows]
+        edit_delist(m)(vd)
+    vd = make_variant("slot_release_capacity_ripple", early_event)
+    wcr = read_world(vd)
+    lgcr, trcr = run_candidate(wcr, sig_rev3, 5)
+    assert len(trcr) == len(tr3), len(trcr)
+    assert (29, KA5) in {(e["session"], e["symbol"]) for e in lgcr["skipped_max10"]}
+    ka4c = [t for t in trcr if t["symbol"] == KA4][0]
+    assert ka4c["exit_session"] == 34 and ka4c["exit_close"] == ka4["exit_close"]
+    expect["slot_release_capacity_ripple"] = {
+        "result": "SLOT_HELD_TO_SCHEDULED_EXIT", "trades": len(trcr),
+        "ka5_still_skipped": True, "ka4_exit_session": 34,
+        "note": "event s29 with capacity saturation at entry s30 — an occupy=min(due,event) "
+                "mutant frees a slot, KA5 enters and the count/skip mismatch"}
+
+    # (c) evidence AFTER the scheduled exit is not evidence (cutoff)
+    def evidence_after_due(vd):
+        drop_bar_rows(vd, lambda r: r[0] == "KOSDAQ" and r[1] == QA1 and r[2] == "30")
+        edit_delist(add_event("KOSDAQ", QA1, 40))(vd)
+    vd = make_variant("evidence_after_due", evidence_after_due)
+    expect["evidence_after_due"] = im_check(
+        vd, "§12차 cutoff: event s40 > scheduled exit s30 -> NOT evidence; a cutoff-free "
+            "mutant terminals it as C8 and yields 17 trades")
+
+    # (d) evidence_type must be declared and known
+    def bad_evidence_type(vd):
+        def m(rows):
+            return [r if i == 0 or not r else r[:3] + ["actual_delisting"]
+                    for i, r in enumerate(rows)]
+        edit_delist(m)(vd)
+    vd = make_variant("unknown_evidence_type", bad_evidence_type)
+    try:
+        read_world(vd)
+        raise AssertionError("unknown_evidence_type passed")
+    except RunInvalid as e:
+        assert e.label == "RUN_INVALID_UNKNOWN_EVIDENCE_TYPE", e.label
+        expect["unknown_evidence_type"] = e.label
 
     # control: a holdout-only leg (membership s53+) must be invisible — base unchanged
     def holdout_leg(vd):
@@ -1431,6 +1526,40 @@ def main():
                 " implementations must assert the clamped symbol/membership key sets"}
 
     # ---- golden
+    # cohort-only transfer oracle: baseline() alone must apply the transfer gate —
+    # run_candidate raises first in the variant, so this path needs a direct call
+    wmt = read_world(f"{vroot}/market_transfer")
+    lp_mt = liq_pcts(wmt, 28, a8_base_set(wmt, 28))
+    bl_mt = baseline(wmt, 28, 5, lp_mt[("KOSDAQ", QA5)])
+    assert bl_mt["cohort_excluded_transfer"] >= 1, bl_mt   # QA5 transfer-excluded
+    assert bl_mt["cohort_terminal_included"] == 1, bl_mt   # KA4 C8 stays included
+    # baseline-only due-anchor oracle: cohort member QA2 has event s28, valid s30 and an
+    # invalid due s31 -> C8 close must come from the SCHEDULED exit back-scan
+    wda2 = read_world(f"{vroot}/c8_backscan_due_anchor")
+    lp_da = liq_pcts(wda2, 25, a8_base_set(wda2, 25))
+    bl_da = baseline(wda2, 25, 5, lp_da[("KOSDAQ", QA2)])
+    assert bl_da["cohort_terminal_included"] >= 1, bl_da
+    predicate_oracles["cohort_c8_due_anchor"] = {
+        "world": "variants/c8_backscan_due_anchor", "signal_session": 25, "hold": 5,
+        "baseline_exact": bl_da,
+        "note": "baseline-only mutant scanning back from the event date changes gross_mean"}
+    # baseline-only cutoff oracle: cohort member QA1 has a missing due bar and an event
+    # AFTER the scheduled exit -> not evidence -> excluded+counted, never C8
+    wea = read_world(f"{vroot}/evidence_after_due")
+    lp_ea = liq_pcts(wea, 24, a8_base_set(wea, 24))
+    bl_ea = baseline(wea, 24, 5, lp_ea[("KOSDAQ", QA1)])
+    assert bl_ea["cohort_excluded_maturity"] >= 1, bl_ea
+    predicate_oracles["cohort_evidence_cutoff"] = {
+        "world": "variants/evidence_after_due", "signal_session": 24, "hold": 5,
+        "baseline_exact": bl_ea,
+        "note": "baseline-only cutoff-free mutant includes the post-due event as C8 and "
+                "flips cohort_excluded_maturity/terminal_included/gross_mean"}
+    predicate_oracles["cohort_transfer"] = {
+        "world": "variants/market_transfer", "signal_session": 28, "hold": 5,
+        "baseline_exact": bl_mt,
+        "note": "§12차 mirror — a baseline without the transfer-first gate completes QA5 "
+                "and flips cohort_excluded_transfer/terminal_included/gross_mean"}
+
     fixture_files = ["fixture_bars.csv", "fixture_sessions.csv", "fixture_config.csv",
                      "fixture_membership.csv", "fixture_delist_events.csv"]
     variant_shas = {n: {fn: sha(f"{vroot}/{n}/{fn}") for fn in fixture_files} for n in
@@ -1440,7 +1569,9 @@ def main():
                      "invalid_maturity_close_blank", "invalid_maturity_volume_blank",
                      "invalid_maturity_close_zero", "invalid_maturity_close_inf",
                      "invalid_maturity_volume_zero", "invalid_maturity_volume_negative",
-                     "entry_open_zero_no_fill",
+                     "entry_open_zero_no_fill", "c8_backscan_due_anchor",
+                     "slot_release_capacity_ripple", "evidence_after_due",
+                     "unknown_evidence_type",
                      "data_gap_control_all_invalid", "stale_delist_bar",
                      "holdout_leg_control")}
     golden = {

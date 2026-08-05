@@ -1,20 +1,20 @@
 """Adversarial CI coverage for the KR-A0 exact packet binding.
 
-The fixture bundle is self-contained.  Its hash-pinned reference generator
-materializes the five base files and all seventeen variants into ``tmp_path``; no
-corpus or holdout path is included in this test's input list.
+The self-contained fixture bundle contains an immutable, byte-pinned golden
+file plus the five base files and all twenty-one variants.  Tests read that
+fixed file directly: the bundled reference generator is hash-bound provenance
+only and is never executed as an acceptance oracle.
 """
 
 from __future__ import annotations
 
+import ast
 import csv
-import importlib.util
 import json
 import shutil
 import sys
 from collections.abc import Iterable, Mapping
 from datetime import date, timedelta
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import Any
 
@@ -56,45 +56,19 @@ from research.kr_corpus.registry.exact_binding import (
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_BUNDLE = REPO_ROOT / "tests" / "fixtures" / "kr_a0_golden_v6"
-CONTRACT_MD_SHA256 = "debeccfd41564e24c2e99564cb55f5df08265cf87fa8199d19370f9a804b29d2"
+CONTRACT_MD_SHA256 = "c4d4fd8c28c9f10b26891672981d18d0792b6e87370e31087fb172cff0e82e65"
 
 
 @pytest.fixture(scope="session")
-def generated_v6(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Execute the v6 generator on canonical plain CPython 3.13."""
+def fixed_v6() -> Path:
+    """Return the committed static bundle; do not execute its generator."""
 
-    output = tmp_path_factory.mktemp("kr_a0_golden") / "vectors"
-    output.mkdir()
-    generator = output / "reference_generator_v4.py"
-    shutil.copy2(FIXTURE_BUNDLE / "reference_generator_v4.py.fixture", generator)
-
-    loader = SourceFileLoader("kr_a0_reference", str(generator))
-    spec = importlib.util.spec_from_loader("kr_a0_reference", loader)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    module.OUT = str(output)
-    module.INBOX = str(FIXTURE_BUNDLE / "inbox")
-    module.main()
-
-    assert sha256_file(output / "golden_v6.json") == GOLDEN_V6_SHA256
-    return output
+    return FIXTURE_BUNDLE
 
 
 @pytest.fixture
-def artifact_paths(generated_v6: Path) -> ArtifactPaths:
-    inbox = FIXTURE_BUNDLE / "inbox"
-    return ArtifactPaths(
-        candidates_yaml=FIXTURE_BUNDLE / "02-active-candidates.yaml",
-        golden_v6=generated_v6 / "golden_v6.json",
-        amendment_a1_a9=inbox / "amendment-kr-engine-conventions-v2-draft-20260805.md",
-        amendment_a10_a12=inbox / "amendment-kr-engine-a10-a12-draft-20260805.md",
-        amendment_a13_a14=inbox / "amendment-kr-engine-a13-a14-draft-20260805.md",
-        amendment_a15=inbox / "amendment-kr-engine-a15-20260805.md",
-        generator=generated_v6 / "reference_generator_v4.py",
-        fixture_root=generated_v6,
-    )
+def artifact_paths(fixed_v6: Path) -> ArtifactPaths:
+    return ArtifactPaths.from_fixture_bundle(fixed_v6)
 
 
 @pytest.fixture
@@ -103,9 +77,9 @@ def registry(artifact_paths: ArtifactPaths) -> CandidateRegistry:
 
 
 @pytest.fixture
-def golden(generated_v6: Path) -> dict[str, Any]:
+def golden(fixed_v6: Path) -> dict[str, Any]:
     return _strict_json_object(
-        (generated_v6 / "golden_v6.json").read_text(encoding="utf-8")
+        (fixed_v6 / "golden_v6.json").read_text(encoding="utf-8")
     )
 
 
@@ -144,20 +118,20 @@ def _baseline_key(market: str, symbol: str, entry_idx: int) -> str:
     return f"{market}:{symbol}@e{entry_idx}"
 
 
-def test_v6_inputs_are_recomputed_and_generator_is_byte_exact(
+def test_v6_static_inputs_are_recomputed_and_byte_exact(
     artifact_paths: ArtifactPaths,
-    generated_v6: Path,
+    fixed_v6: Path,
     registry: CandidateRegistry,
     golden: Mapping[str, Any],
 ) -> None:
-    """Acceptance 1/2: all base, variant, convention, and generator pins fire."""
+    """Acceptance 1/2: static golden, inputs, and provenance pins all fire."""
 
     assert (
         sha256_file(FIXTURE_BUNDLE / "02-active-candidates.yaml") == CANDIDATES_SHA256
     )
-    assert sha256_file(generated_v6 / "golden_v6.json") == GOLDEN_V6_SHA256
+    assert sha256_file(fixed_v6 / "golden_v6.json") == GOLDEN_V6_SHA256
     assert (
-        sha256_file(generated_v6 / "reference_generator_v4.py")
+        sha256_file(fixed_v6 / "reference_generator_v4.py")
         == CONVENTION_SHA256["generator"]
     )
     assert sha256_file(FIXTURE_BUNDLE / "CONTRACT.md") == CONTRACT_MD_SHA256
@@ -169,8 +143,37 @@ def test_v6_inputs_are_recomputed_and_generator_is_byte_exact(
         dict(registry.inputs.variant_fixture_sha256) == golden["variant_fixture_sha256"]
     )
     assert len(registry.inputs.fixture_sha256) == 5
-    assert len(registry.inputs.variant_fixture_sha256) == 17
-    assert artifact_paths.fixture_root == generated_v6
+    assert len(registry.inputs.variant_fixture_sha256) == 21
+    assert (
+        sum(len(files) for files in registry.inputs.variant_fixture_sha256.values())
+        == 105
+    )
+    assert (
+        len(registry.inputs.fixture_sha256)
+        + sum(len(files) for files in registry.inputs.variant_fixture_sha256.values())
+        == 110
+    )
+    assert artifact_paths.fixture_root == fixed_v6
+    # The generator is a byte-pinned provenance input, never a dynamic oracle.
+    # Keep this structural check adjacent to the direct static golden read above
+    # so a future due-anchor mutant cannot regenerate its own expected output.
+    test_source = Path(__file__).read_text(encoding="utf-8")
+    test_tree = ast.parse(test_source)
+    assert not any(
+        isinstance(node, (ast.Import, ast.ImportFrom))
+        and any(
+            alias.name == "importlib" or alias.name.startswith("importlib.")
+            for alias in node.names
+        )
+        for node in ast.walk(test_tree)
+    )
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"exec_module", "main"}
+        for node in ast.walk(test_tree)
+    )
+    assert not (fixed_v6 / "reference_generator_v4.py.fixture").exists()
     assert sys.version_info[:2] == (3, 13)
     assert sys.flags.optimize == 0
 
@@ -232,16 +235,24 @@ def test_v1_to_v5_primitives_match_exact_oracles(golden: Mapping[str, Any]) -> N
 
 
 def test_a15_predicate_oracles_decode_tagged_infinity_and_reject_bare_output(
-    generated_v6: Path, golden: Mapping[str, Any]
+    fixed_v6: Path, registry: CandidateRegistry, golden: Mapping[str, Any]
 ) -> None:
-    """All 14 real predicate calls include the tagged ``+inf`` wire form."""
+    """All four fixed predicate categories, including baseline mirrors, fire."""
 
-    raw = (generated_v6 / "golden_v6.json").read_text(encoding="utf-8")
+    raw = (fixed_v6 / "golden_v6.json").read_text(encoding="utf-8")
     assert "Infinity" not in raw
     assert "NaN" not in raw
     assert raw.count('"special_float": "+inf"') == 3
 
-    cases = golden["E2E"]["predicate_oracles"]["maturity_entry"]["cases"]
+    predicate_oracles = golden["E2E"]["predicate_oracles"]
+    assert set(predicate_oracles) == {
+        "maturity_entry",
+        "cohort_transfer",
+        "cohort_c8_due_anchor",
+        "cohort_evidence_cutoff",
+    }
+
+    cases = predicate_oracles["maturity_entry"]["cases"]
     assert len(cases) == 14
     for case in cases:
         decoded = _decode_special_floats(case["input_bar"])
@@ -255,9 +266,32 @@ def test_a15_predicate_oracles_decode_tagged_infinity_and_reject_bare_output(
     with pytest.raises(ValueError, match="non-standard JSON constant Infinity"):
         _strict_json_object(bare_infinity)
 
+    # A15 §12 applies the same transfer-first / due-anchor / evidence-cutoff
+    # resolution order to baselines.  These are direct calls because the
+    # strategy-level transfer variant intentionally raises before E2E finishes.
+    targets = {
+        "cohort_transfer": ("KOSDAQ", "900350"),
+        "cohort_c8_due_anchor": ("KOSDAQ", "900320"),
+        "cohort_evidence_cutoff": ("KOSDAQ", "900310"),
+    }
+    engine = PacketEngine(registry)
+    for oracle_name, target_key in targets.items():
+        oracle = predicate_oracles[oracle_name]
+        world = PacketWorldAdapter.from_fixture_directory(fixed_v6 / oracle["world"])
+        signal_session = oracle["signal_session"]
+        base = engine._a8_base_set(world, signal_session)
+        liquidity = engine._liquidity_percentiles(world, signal_session, base)
+        actual = engine._baseline(
+            world,
+            signal_session=signal_session,
+            holding_sessions=oracle["hold"],
+            target_pct=liquidity[target_key],
+        )
+        assert _normalized(actual) == oracle["baseline_exact"]
+
 
 def test_all_three_packet_e2es_are_json_normalized_exact(
-    generated_v6: Path,
+    fixed_v6: Path,
     registry: CandidateRegistry,
     golden: Mapping[str, Any],
 ) -> None:
@@ -268,7 +302,7 @@ def test_all_three_packet_e2es_are_json_normalized_exact(
         ("lowvol_up_month", "lowvol"),
     )
     for strategy_id, golden_key in candidates:
-        world = PacketWorldAdapter.from_fixture_directory(generated_v6)
+        world = PacketWorldAdapter.from_fixture_directory(fixed_v6)
         result = engine.run(world, strategy_id)
         expected = golden["E2E"][golden_key]
         actual = result.golden_payload()
@@ -290,7 +324,7 @@ def test_all_three_packet_e2es_are_json_normalized_exact(
         )
         assert world.spy.total_oob_reads == golden["access_spy_oob_reads"] == 0
 
-    rev_world = PacketWorldAdapter.from_fixture_directory(generated_v6)
+    rev_world = PacketWorldAdapter.from_fixture_directory(fixed_v6)
     assert (
         engine.signals(rev_world, "rev3_reclaim", 35)[0]
         == golden["E2E"]["rev3"]["signals_s35_per_market_proof"]
@@ -305,13 +339,13 @@ def test_all_three_packet_e2es_are_json_normalized_exact(
     )
     assert (
         engine.signals(
-            PacketWorldAdapter.from_fixture_directory(generated_v6), "brk20_confirm", 38
+            PacketWorldAdapter.from_fixture_directory(fixed_v6), "brk20_confirm", 38
         )[0]
         == golden["E2E"]["brk20"]["signals_s38_exact_clv_ratio"]
     )
     assert (
         engine.signals(
-            PacketWorldAdapter.from_fixture_directory(generated_v6),
+            PacketWorldAdapter.from_fixture_directory(fixed_v6),
             "lowvol_up_month",
             44,
         )[0]
@@ -397,21 +431,52 @@ def test_compose_oracle_and_entry_year_schema_are_exact(
         == oracle["year_weight_session_equal"]["positive_years"]
     )
 
+    # A15-3 has a strict boundary: exactly 5% remains subject to the normal
+    # profile verdict, whereas 6% overrides it as INCONCLUSIVE.
+    trades, baselines = _compose_case(19, [5] * 19, [0.01] * 19)
+    exact_five_pct = compose_verdict(dates40, trades, baselines, missing_exit_count=5)
+    assert exact_five_pct["missing_exit_ratio"] == 0.05
+    assert (
+        exact_five_pct["verdict"]
+        == oracle["missing_exit_threshold"]["ratio_5pct_exact"]
+    )
+    six_pct = compose_verdict(dates40, trades[:94], baselines, missing_exit_count=6)
+    assert six_pct["missing_exit_ratio"] == 0.06
+    assert six_pct["verdict"] == oracle["missing_exit_threshold"]["ratio_6pct"]
+
+    # Verdict priority is pinned as data, rather than inferred from a local
+    # guard: RUN_INVALID > INCONCLUSIVE > UNIDENTIFIABLE > FALSIFIED > PASS.
+    trades, baselines = _compose_case(30, [10] * 30, [0.01] * 30)
+    assert (
+        _normalized(compose_verdict(dates40, trades, baselines, missing_exit_count=20))
+        == oracle["priority_combos"]["pass_overridden"]
+    )
+    trades, baselines = _compose_case(30, [10] * 30, [-0.01] * 30)
+    assert (
+        _normalized(compose_verdict(dates40, trades, baselines, missing_exit_count=20))
+        == oracle["priority_combos"]["falsified_overridden"]
+    )
+    trades, baselines = _compose_case(40, [8] * 40, [0.002] * 40)
+    assert (
+        _normalized(compose_verdict(dates40, trades, baselines, missing_exit_count=20))
+        == oracle["priority_combos"]["inconclusive_cost_sensitive"]
+    )
+
     trades, baselines = _compose_case(40, [8] * 40, [0.01] * 40)
     baselines[_baseline_key("KOSPI", "000100", 0)] = {"gross_mean": None}
     with pytest.raises(RunInvalid, match="RUN_INVALID_EMPTY_BASELINE"):
-        compose_verdict(dates40, trades, baselines)
+        compose_verdict(dates40, trades, baselines, missing_exit_count=20)
 
 
-def test_all_seventeen_variants_match_their_expected_outcome(
-    generated_v6: Path,
+def test_all_twenty_one_variants_match_their_expected_outcome(
+    fixed_v6: Path,
     registry: CandidateRegistry,
     golden: Mapping[str, Any],
 ) -> None:
     expected = golden["E2E"]["variants"]
     assert set(expected) == set(registry.inputs.variant_fixture_sha256)
-    assert len(expected) == 17
-    _, base = _engine_run(registry, generated_v6)
+    assert len(expected) == 21
+    _, base = _engine_run(registry, fixed_v6)
 
     run_invalid = (
         "data_gap",
@@ -419,16 +484,17 @@ def test_all_seventeen_variants_match_their_expected_outcome(
         "identity_conflict",
         "market_transfer",
         "market_transfer_missing_maturity",
+        "unknown_evidence_type",
     )
-    assert len(run_invalid) == 5
+    assert len(run_invalid) == 6
     for name in run_invalid:
         with pytest.raises(RunInvalid) as caught:
-            _engine_run(registry, generated_v6 / "variants" / name)
+            _engine_run(registry, fixed_v6 / "variants" / name)
         assert caught.value.label == expected[name]
 
     for name in ("market_transfer", "market_transfer_missing_maturity"):
         with pytest.raises(RunInvalid) as caught:
-            _engine_run(registry, generated_v6 / "variants" / name)
+            _engine_run(registry, fixed_v6 / "variants" / name)
         assert caught.value.evidence["occurrence_count"] >= 1
         assert caught.value.evidence["affected_identities"][0]["market"] == "KOSDAQ"
         assert caught.value.evidence["affected_identities"][0]["symbol"] == "900350"
@@ -441,9 +507,10 @@ def test_all_seventeen_variants_match_their_expected_outcome(
         "invalid_maturity_close_inf",
         "invalid_maturity_volume_zero",
         "invalid_maturity_volume_negative",
+        "evidence_after_due",
     )
     for name in missing_exit_variants:
-        _, result = _engine_run(registry, generated_v6 / "variants" / name)
+        _, result = _engine_run(registry, fixed_v6 / "variants" / name)
         actual = {
             "result": "COMPLETES_WITH_MISSING_EXIT",
             "missing_exit": [
@@ -467,7 +534,7 @@ def test_all_seventeen_variants_match_their_expected_outcome(
         assert actual == expected_slice
 
     _, entry_zero = _engine_run(
-        registry, generated_v6 / "variants" / "entry_open_zero_no_fill"
+        registry, fixed_v6 / "variants" / "entry_open_zero_no_fill"
     )
     entry_zero_expected = expected["entry_open_zero_no_fill"]
     assert len(entry_zero.trades) == entry_zero_expected["trades"]
@@ -479,9 +546,7 @@ def test_all_seventeen_variants_match_their_expected_outcome(
     assert entry_zero.log["skipped_max10"] == []
     assert entry_zero.log["missing_exit"] == []
 
-    _, nofill = _engine_run(
-        registry, generated_v6 / "variants" / "nofill_no_substitution"
-    )
+    _, nofill = _engine_run(registry, fixed_v6 / "variants" / "nofill_no_substitution")
     nofill_actual = {
         "QA6": "NO_FILL"
         if any(entry["symbol"] == "900360" for entry in nofill.log["no_fill"])
@@ -494,7 +559,7 @@ def test_all_seventeen_variants_match_their_expected_outcome(
     assert nofill_actual == expected["nofill_no_substitution"]
 
     _, all_invalid = _engine_run(
-        registry, generated_v6 / "variants" / "data_gap_control_all_invalid"
+        registry, fixed_v6 / "variants" / "data_gap_control_all_invalid"
     )
     assert {
         "result": "COMPLETES_NOT_DATA_GAP",
@@ -502,7 +567,7 @@ def test_all_seventeen_variants_match_their_expected_outcome(
         "note": "rows present but invalid -> universe exclusion, not RUN_INVALID_DATA_GAP",
     } == expected["data_gap_control_all_invalid"]
 
-    _, stale = _engine_run(registry, generated_v6 / "variants" / "stale_delist_bar")
+    _, stale = _engine_run(registry, fixed_v6 / "variants" / "stale_delist_bar")
     base_ka4 = next(trade for trade in base.trades if trade["symbol"] == "000340")
     assert base_ka4["delisted_exit"] is True
     assert base_ka4["exit_session"] == base_ka4["exit_due"] == 34
@@ -519,7 +584,7 @@ def test_all_seventeen_variants_match_their_expected_outcome(
         ],
         "note": (
             "§12차 evidence_type=decision_disclosure — evidence classifies bar "
-            "ABSENCE only; an evidence-first mutant terminals KA4 early and flips "
+            "absence OR invalidity only; an evidence-first mutant terminals KA4 early and flips "
             "cohort_terminal_included/gross_mean"
         ),
     }
@@ -528,8 +593,38 @@ def test_all_seventeen_variants_match_their_expected_outcome(
     assert ka4["exit_close"] == 1000.0
     assert _normalized(stale_actual) == expected["stale_delist_bar"]
 
+    _, due_anchor = _engine_run(
+        registry, fixed_v6 / "variants" / "c8_backscan_due_anchor"
+    )
+    qa2 = next(trade for trade in due_anchor.trades if trade["symbol"] == "900320")
+    due_anchor_actual = {
+        "result": "C8_SCANS_BACK_FROM_SCHEDULED_EXIT",
+        "qa2_exit_close": qa2["exit_close"],
+        "qa2_exit_session": qa2["exit_session"],
+        "trades": len(due_anchor.trades),
+        "note": expected["c8_backscan_due_anchor"]["note"],
+    }
+    assert _normalized(due_anchor_actual) == expected["c8_backscan_due_anchor"]
+
+    _, slot_ripple = _engine_run(
+        registry, fixed_v6 / "variants" / "slot_release_capacity_ripple"
+    )
+    ka4_ripple = next(
+        trade for trade in slot_ripple.trades if trade["symbol"] == "000340"
+    )
+    slot_ripple_actual = {
+        "result": "SLOT_HELD_TO_SCHEDULED_EXIT",
+        "trades": len(slot_ripple.trades),
+        "ka5_still_skipped": any(
+            item["symbol"] == "000350" for item in slot_ripple.log["skipped_max10"]
+        ),
+        "ka4_exit_session": ka4_ripple["exit_session"],
+        "note": expected["slot_release_capacity_ripple"]["note"],
+    }
+    assert _normalized(slot_ripple_actual) == expected["slot_release_capacity_ripple"]
+
     holdout_world, holdout = _engine_run(
-        registry, generated_v6 / "variants" / "holdout_leg_control"
+        registry, fixed_v6 / "variants" / "holdout_leg_control"
     )
     holdout_key = ("KOSDAQ", "900490")
     holdout_actual = {
@@ -548,7 +643,7 @@ def test_all_seventeen_variants_match_their_expected_outcome(
 
 
 def test_mutations_are_each_killed_by_the_golden_vectors(
-    generated_v6: Path,
+    fixed_v6: Path,
     registry: CandidateRegistry,
     golden: Mapping[str, Any],
 ) -> None:
@@ -591,7 +686,7 @@ def test_mutations_are_each_killed_by_the_golden_vectors(
             return valid_bar(bar)
 
     for mutant in (StrictComparatorMutant, GlobalPercentileMutant):
-        world = PacketWorldAdapter.from_fixture_directory(generated_v6)
+        world = PacketWorldAdapter.from_fixture_directory(fixed_v6)
         result = mutant(registry).run(world, "rev3_reclaim")
         actual = result.golden_payload()
         assert any(
@@ -601,7 +696,7 @@ def test_mutations_are_each_killed_by_the_golden_vectors(
 
     raw_high = (
         RawHighMutant(registry)
-        .run(PacketWorldAdapter.from_fixture_directory(generated_v6), "brk20_confirm")
+        .run(PacketWorldAdapter.from_fixture_directory(fixed_v6), "brk20_confirm")
         .golden_payload()
     )
     raw_high_expected = golden["E2E"]["brk20"]
@@ -611,7 +706,7 @@ def test_mutations_are_each_killed_by_the_golden_vectors(
     )
 
     full_bar = FullBarExecutionMutant(registry).run(
-        PacketWorldAdapter.from_fixture_directory(generated_v6), "rev3_reclaim"
+        PacketWorldAdapter.from_fixture_directory(fixed_v6), "rev3_reclaim"
     )
     assert _normalized(full_bar.golden_payload()) != _normalized(expected)
     assert full_bar.log["missing_exit"]
@@ -622,7 +717,7 @@ def test_mutations_are_each_killed_by_the_golden_vectors(
 
     nofill = NoFillSubstitutionMutant(registry).run(
         PacketWorldAdapter.from_fixture_directory(
-            generated_v6 / "variants" / "nofill_no_substitution"
+            fixed_v6 / "variants" / "nofill_no_substitution"
         ),
         "rev3_reclaim",
     )
@@ -635,7 +730,7 @@ def test_mutations_are_each_killed_by_the_golden_vectors(
 
     result = SymbolOnlyIdentityMutant(registry).run(
         PacketWorldAdapter.from_fixture_directory(
-            generated_v6 / "variants" / "identity_conflict"
+            fixed_v6 / "variants" / "identity_conflict"
         ),
         "rev3_reclaim",
     )
@@ -643,7 +738,7 @@ def test_mutations_are_each_killed_by_the_golden_vectors(
 
 
 def test_transfer_precedence_mutants_are_killed_in_both_directions(
-    generated_v6: Path, registry: CandidateRegistry
+    fixed_v6: Path, registry: CandidateRegistry
 ) -> None:
     class InvalidOnlyTransferMutant(PacketEngine):
         def _transfer_gate(
@@ -658,8 +753,8 @@ def test_transfer_precedence_mutants_are_killed_in_both_directions(
         def _transfer_precedes_maturity(self) -> bool:
             return False
 
-    valid_transfer = generated_v6 / "variants" / "market_transfer"
-    missing_transfer = generated_v6 / "variants" / "market_transfer_missing_maturity"
+    valid_transfer = fixed_v6 / "variants" / "market_transfer"
+    missing_transfer = fixed_v6 / "variants" / "market_transfer_missing_maturity"
     completed = InvalidOnlyTransferMutant(registry).run(
         PacketWorldAdapter.from_fixture_directory(valid_transfer), "rev3_reclaim"
     )
@@ -671,8 +766,52 @@ def test_transfer_precedence_mutants_are_killed_in_both_directions(
     assert maturity_first.verdict["verdict"] == "INCONCLUSIVE_MISSING_EXITS"
 
 
+def test_due_anchor_mutant_is_killed_by_fixed_golden(
+    fixed_v6: Path, registry: CandidateRegistry, golden: Mapping[str, Any]
+) -> None:
+    """A C8 event-anchored backscan cannot alter its fixed expected result."""
+
+    class EventAnchoredC8Mutant(PacketEngine):
+        def _terminal_trade(
+            self, world: PacketWorld, position: Mapping[str, Any]
+        ) -> dict[str, Any]:
+            trade = super()._terminal_trade(world, position)
+            if position["key"] != ("KOSDAQ", "900320"):
+                return trade
+            event_session = world.delist_events[position["key"]]
+            event_bar = world.bar(position["key"], event_session)
+            assert self._maturity_ok(event_bar)
+            assert event_bar is not None and event_bar.close is not None
+            gross = event_bar.close / position["entry_open"] - 1
+            return {
+                **trade,
+                "exit_close": event_bar.close,
+                "gross": gross,
+                "net_43bp": gross - COST_BASE,
+                "net_83bp": gross - COST_SENSITIVITY,
+            }
+
+    result = EventAnchoredC8Mutant(registry).run(
+        PacketWorldAdapter.from_fixture_directory(
+            fixed_v6 / "variants" / "c8_backscan_due_anchor"
+        ),
+        "rev3_reclaim",
+    )
+    qa2 = next(trade for trade in result.trades if trade["symbol"] == "900320")
+    actual = {
+        "qa2_exit_close": qa2["exit_close"],
+        "qa2_exit_session": qa2["exit_session"],
+        "trades": len(result.trades),
+    }
+    expected = {
+        key: golden["E2E"]["variants"]["c8_backscan_due_anchor"][key] for key in actual
+    }
+    assert _normalized(actual) != expected
+    assert actual["qa2_exit_close"] != expected["qa2_exit_close"]
+
+
 def test_a15_mutations_are_each_killed_by_ci(
-    generated_v6: Path, registry: CandidateRegistry, golden: Mapping[str, Any]
+    fixed_v6: Path, registry: CandidateRegistry, golden: Mapping[str, Any]
 ) -> None:
     """A15's count, ordering, finite-positive, and JSON guards all fire."""
 
@@ -692,7 +831,7 @@ def test_a15_mutations_are_each_killed_by_ci(
                 missing_exit_count=0,
             )
 
-    missing_root = generated_v6 / "variants" / "invalid_maturity"
+    missing_root = fixed_v6 / "variants" / "invalid_maturity"
     dropped = CountDropMutant(registry).run(
         PacketWorldAdapter.from_fixture_directory(missing_root), "rev3_reclaim"
     )
@@ -712,7 +851,7 @@ def test_a15_mutations_are_each_killed_by_ci(
     with pytest.raises(ZeroDivisionError):
         NonNonePredicateMutant(registry).run(
             PacketWorldAdapter.from_fixture_directory(
-                generated_v6 / "variants" / "entry_open_zero_no_fill"
+                fixed_v6 / "variants" / "entry_open_zero_no_fill"
             ),
             "rev3_reclaim",
         )
@@ -771,7 +910,7 @@ def test_a15_mutations_are_each_killed_by_ci(
 
 
 def test_presence_native_membership_and_absent_sidecar_do_not_infer_delisting(
-    generated_v6: Path, registry: CandidateRegistry, tmp_path: Path
+    fixed_v6: Path, registry: CandidateRegistry, tmp_path: Path
 ) -> None:
     """A15-1/2: observation presence is not a hidden delist status channel."""
 
@@ -849,7 +988,7 @@ def test_presence_native_membership_and_absent_sidecar_do_not_infer_delisting(
 
     # No fetch_delist_events method: the DART sidecar is intentionally absent.
     world = PacketWorldAdapter.from_source(
-        PresenceOnlySource(generated_v6), exploration_end_session_idx=52
+        PresenceOnlySource(fixed_v6), exploration_end_session_idx=52
     )
     assert world.delist_events == {}
     result = PacketEngine(registry).run(world, "rev3_reclaim")
@@ -859,12 +998,12 @@ def test_presence_native_membership_and_absent_sidecar_do_not_infer_delisting(
 
 
 def test_dated_delist_sidecar_is_explicit_evidence(
-    generated_v6: Path, tmp_path: Path
+    fixed_v6: Path, tmp_path: Path
 ) -> None:
     """The production-shaped ``delist_date`` + reason sidecar maps explicitly."""
 
     dated = tmp_path / "dated-sidecar"
-    shutil.copytree(generated_v6, dated)
+    shutil.copytree(fixed_v6, dated)
     dates = {
         int(row["session_idx"]): row["date_informational"]
         for row in _csv_rows(dated / "fixture_sessions.csv")
@@ -886,12 +1025,12 @@ def test_dated_delist_sidecar_is_explicit_evidence(
                 }
             )
     assert PacketWorldAdapter.from_fixture_directory(dated).delist_events == (
-        PacketWorldAdapter.from_fixture_directory(generated_v6).delist_events
+        PacketWorldAdapter.from_fixture_directory(fixed_v6).delist_events
     )
 
 
 def test_access_spy_and_source_materialization_are_boundary_sealed(
-    generated_v6: Path, registry: CandidateRegistry
+    fixed_v6: Path, registry: CandidateRegistry
 ) -> None:
     """Acceptance 5/6: query and materialization both carry the <= end predicate."""
 
@@ -944,7 +1083,7 @@ def test_access_spy_and_source_materialization_are_boundary_sealed(
                 if int(row["delist_session_idx"]) <= max_session_idx
             ]
 
-    source = SourceSpy(generated_v6 / "variants" / "holdout_leg_control")
+    source = SourceSpy(fixed_v6 / "variants" / "holdout_leg_control")
     world = PacketWorldAdapter.from_source(source, exploration_end_session_idx=52)
     assert source.calls == [
         ("sessions", 52),
@@ -970,22 +1109,17 @@ def test_access_spy_and_source_materialization_are_boundary_sealed(
 
     with pytest.raises(RunInvalid, match="RUN_INVALID_BOUNDARY_ACCESS"):
         BoundaryReadMutant(registry).run(
-            PacketWorldAdapter.from_fixture_directory(generated_v6), "rev3_reclaim"
+            PacketWorldAdapter.from_fixture_directory(fixed_v6), "rev3_reclaim"
         )
 
 
 def test_tamper_and_fallback_paths_refuse_registry_startup(
-    generated_v6: Path, tmp_path: Path
+    fixed_v6: Path, tmp_path: Path
 ) -> None:
     """Acceptance 7: input tamper, golden mismatch, and fallback all fail closed."""
 
     mutable = tmp_path / "mutable_bundle"
-    shutil.copytree(generated_v6, mutable)
-    shutil.copy2(
-        FIXTURE_BUNDLE / "02-active-candidates.yaml",
-        mutable / "02-active-candidates.yaml",
-    )
-    shutil.copytree(FIXTURE_BUNDLE / "inbox", mutable / "inbox")
+    shutil.copytree(fixed_v6, mutable)
     paths = ArtifactPaths.from_fixture_bundle(mutable)
     registry = CandidateRegistry.start(paths)
     with pytest.raises(RegistryStartRejected, match="shared fallback is forbidden"):

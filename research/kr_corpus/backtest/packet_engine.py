@@ -1072,6 +1072,7 @@ class PacketEngine:
         excluded_entry = 0
         excluded_maturity = 0
         terminal_included = 0
+        excluded_transfer = 0
         entry_session = signal_session + 1
         exit_due = entry_session + holding_sessions
         for key in base:
@@ -1080,6 +1081,17 @@ class PacketEngine:
             entry_bar = world.bar(key, entry_session)
             if not self._entry_ok(entry_bar):
                 excluded_entry += 1
+                continue
+            # A15 §12 mirror: a held-through-market-transfer cohort member is
+            # excluded before interpreting its scheduled maturity price.  This
+            # is a cohort exclusion, not a strategy-level RunInvalid verdict.
+            position = {
+                "key": key,
+                "signal_session": signal_session,
+                "exit_due": exit_due,
+            }
+            if self._transfer_gate(world, position):
+                excluded_transfer += 1
                 continue
             exit_bar = world.bar(key, exit_due)
             if self._maturity_ok(exit_bar):
@@ -1106,6 +1118,7 @@ class PacketEngine:
             "cohort_excluded_entry": excluded_entry,
             "cohort_excluded_maturity": excluded_maturity,
             "cohort_terminal_included": terminal_included,
+            "cohort_excluded_transfer": excluded_transfer,
         }
 
     def _at_least(self, actual: float, threshold: float) -> bool:
@@ -1459,6 +1472,14 @@ def _delist_event_session_index(
     lies beyond this exploration window it is irrelevant and ignored.  Weekend
     or otherwise ambiguous alignment is fail-closed rather than guessed.
     """
+
+    # The normalized fixture records an evidence class explicitly.  Unknown
+    # classes are not interchangeable with a decision disclosure and must
+    # fail closed; an absent class remains valid for the dated live-sidecar
+    # shape (``delist_date`` + ``reason``) described by A15-1.
+    evidence_type = row.get("evidence_type")
+    if evidence_type not in (None, "") and evidence_type != "decision_disclosure":
+        raise RunInvalid("RUN_INVALID_UNKNOWN_EVIDENCE_TYPE", str(evidence_type))
 
     raw_session = row.get("delist_session_idx")
     raw_date = row.get("delist_date")

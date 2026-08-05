@@ -1,0 +1,4022 @@
+{
+ "contract": "kr-golden-vectors-v1 / golden v6",
+ "candidates_yaml_sha256": "0f5e92bf7d10dd77588fa08ad949811a68004cf71dd7f2efd232306b22d82d85",
+ "convention_sha256": {
+  "amendment_a1_a9": "5cbe56934b0e53eba8123c81aa8999e6bc5f862c9ee6e0f0d4664b3d2b098092",
+  "amendment_a10_a12": "79ec69c935af9f271e02cb8b01805d727fd4cf7b9ab342aaa0a49995166d30b9",
+  "amendment_a13_a14": "5bdb261504b7d3c298f3a85cc07cef72dc0528adad72c685dd322884b1bd6b59",
+  "amendment_a15": "4b421585db09829964dccc719130d07d7fa11f0b450e536cdd30f8e95f4d3b36",
+  "generator": "0c676873b74eb0e2d95df6c013be376a306b33e38ce3b2f6a81dc39db6e33f70"
+ },
+ "fixture_sha256": {
+  "fixture_bars.csv": "e9e744932594da41f2127c6ff44e84f334b40c13a3e883367692c349bb25896a",
+  "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+  "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+  "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+  "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+ },
+ "variant_fixture_sha256": {
+  "invalid_maturity": {
+   "fixture_bars.csv": "5911a0df45e89391e5142940bdb8119f9af4ed4b15fd0238c6c2ecf43261ffbf",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "data_gap": {
+   "fixture_bars.csv": "db475bbee64475172b5f226937af6cf18fe532f5c32815bd165771f2c648707b",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "duplicate_row": {
+   "fixture_bars.csv": "6112844a479a7088b528ec992609e8a6e8ed928fda183c1106c9919ca8857111",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "nofill_no_substitution": {
+   "fixture_bars.csv": "07e3f3d58610dfea85b089b67bbb13367c2bacec693e681a00ecb69c5b6e9418",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "identity_conflict": {
+   "fixture_bars.csv": "e9e744932594da41f2127c6ff44e84f334b40c13a3e883367692c349bb25896a",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "1873aa4f928505fe380f4d965a9ae6df683913f01dbaff6ec4cbe2f960f74ebe",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "market_transfer": {
+   "fixture_bars.csv": "e9e744932594da41f2127c6ff44e84f334b40c13a3e883367692c349bb25896a",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "7211e2a0c779371d8674ad903a36aeb9ea11987b6c0d4bac7e782d41ee5861ad",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "market_transfer_missing_maturity": {
+   "fixture_bars.csv": "b829dfe0a068189f9da1373b1b1e01045bd5a9452a26f56056159477f49579f6",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "7211e2a0c779371d8674ad903a36aeb9ea11987b6c0d4bac7e782d41ee5861ad",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "invalid_maturity_close_blank": {
+   "fixture_bars.csv": "2d510624daf131078fded9cb7b617e14b895b4906fc36f972835bf8805378a8c",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "invalid_maturity_volume_blank": {
+   "fixture_bars.csv": "bd1930eea97e0e08b50690d35df2a2d1bb8a89046a17426aaf250ba4542aedbc",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "invalid_maturity_close_zero": {
+   "fixture_bars.csv": "90aaa1d933948e5137a6645d20f8de31ab2e4e03ac402738e6fe61228f0c64b0",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "invalid_maturity_close_inf": {
+   "fixture_bars.csv": "c2c60162b36f4d85e18348275d7e1d0ddad79d56f1113f3e937f550b8ce94426",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "invalid_maturity_volume_zero": {
+   "fixture_bars.csv": "ce18f858483b6f987c2bc5157bb647b7cfa4a86c58da5edd50287bf05efdd3ab",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "invalid_maturity_volume_negative": {
+   "fixture_bars.csv": "b345f0ae44604b9047a8eae984e92e08953931f4cf2a9156de22e86332ab5da1",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "entry_open_zero_no_fill": {
+   "fixture_bars.csv": "ecb863939b60b17b8107332e09bea567253afd78752146963c0f2a0f383f5081",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "c8_backscan_due_anchor": {
+   "fixture_bars.csv": "4e2b39598729875f0913f94be945f69d048796a02314ab424342be8f854ac50b",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "756aca876be9e0ee739b78bfc4459618342c73ac1b6ceca75888beb41eeb5312"
+  },
+  "slot_release_capacity_ripple": {
+   "fixture_bars.csv": "e9e744932594da41f2127c6ff44e84f334b40c13a3e883367692c349bb25896a",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "595e57047f98c894ecfa6a70000a174231894835d041391794d550c69ae81733"
+  },
+  "evidence_after_due": {
+   "fixture_bars.csv": "5911a0df45e89391e5142940bdb8119f9af4ed4b15fd0238c6c2ecf43261ffbf",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "9d81fec0505b407bb148c3a3d6cee21278c4b8c1a14343028485562e8e937a87"
+  },
+  "unknown_evidence_type": {
+   "fixture_bars.csv": "e9e744932594da41f2127c6ff44e84f334b40c13a3e883367692c349bb25896a",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "2e716b8bcd3acee93ceb1eb3a80e36f788e175e3d2776972904238a4eb790e54"
+  },
+  "data_gap_control_all_invalid": {
+   "fixture_bars.csv": "32431e77d8fe89a8800547316719dc552e66065a5dcdb54bb20d76d8691b8cb6",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "stale_delist_bar": {
+   "fixture_bars.csv": "5f06a45c859634c0354e91e38a4269713bb8e6ae592799607ca4e712362e8c2e",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "88709819a088145ee79c97c02da82604b184e325a3d3ba508f172f3d31eb0a3c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  },
+  "holdout_leg_control": {
+   "fixture_bars.csv": "537d37f9e29cc97f6bb97100c2ca878d8863054cb71e1313dac89dfd1b75f720",
+   "fixture_sessions.csv": "9907044e1f54d0a1ee8dc1f6103cf2e010f60a5eaba91a57e13c576f5c1266fe",
+   "fixture_config.csv": "280f829080580d4cad258ca257a42636dad09309cf9bbe91a8913a4ab69f6618",
+   "fixture_membership.csv": "73894335645dd113f5270eb8cca10692c6cf1235772d4348a32e6d06f21da07c",
+   "fixture_delist_events.csv": "586151af9101f47d7e16d0f1db80745fb8f83e8f9da1d4e7bb3a39fb0a0bfe4a"
+  }
+ },
+ "exploration_end_session_idx": 52,
+ "access_spy_oob_reads": 0,
+ "V1_indicators": {
+  "r3": {
+   "closes": [
+    100.0,
+    98.0,
+    97.0,
+    94.0
+   ],
+   "expected_r3": -0.06
+  },
+  "clv_clamped": {
+   "bar": {
+    "open": 96.0,
+    "high": 95.0,
+    "low": 93.0,
+    "close": 94.8
+   },
+   "expected_high_c": 96.0,
+   "expected_low_c": 93.0,
+   "expected_clv": 0.5999999999999991
+  },
+  "clv_undefined": {
+   "bar": {
+    "open": 50.0,
+    "high": 50.0,
+    "low": 50.0,
+    "close": 50.0
+   },
+   "expected_signal": null
+  },
+  "volume_ratio": {
+   "prior20_volumes": [
+    11,
+    14,
+    9,
+    20,
+    3,
+    17,
+    6,
+    12,
+    19,
+    8,
+    15,
+    2,
+    13,
+    10,
+    18,
+    5,
+    16,
+    4,
+    7,
+    1
+   ],
+   "volume_t": 21,
+   "expected_median": 10.5,
+   "expected_ratio": 2.0
+  },
+  "brk20_margin": {
+   "prior20_high_c": [
+    100.0,
+    100.5,
+    101.0,
+    101.5,
+    102.0,
+    102.5,
+    103.0,
+    103.5,
+    104.0,
+    104.5,
+    105.0,
+    105.5,
+    106.0,
+    106.5,
+    107.0,
+    107.5,
+    108.0,
+    108.5,
+    109.0,
+    109.5
+   ],
+   "close_t": 110.0,
+   "expected_prior_high20": 109.5,
+   "expected_margin": 0.004566210045662045
+  },
+  "invalid_value_matrix": [
+   {
+    "volume": 0
+   },
+   {
+    "high": null
+   },
+   {
+    "close": 0.0
+   },
+   {
+    "low": -1.0
+   },
+   {
+    "volume": "non-finite -> invalid"
+   },
+   {
+    "note": "open>high invariant violation stays VALID (clamp-admit)"
+   }
+  ]
+ },
+ "V2_percentile": {
+  "pct_asc_with_ties": {
+   "values": [
+    5.0,
+    1.0,
+    3.0,
+    3.0,
+    2.0,
+    8.0,
+    7.0,
+    3.0,
+    9.0,
+    4.0,
+    6.0,
+    2.0,
+    10.0,
+    11.0,
+    12.0,
+    13.0,
+    14.0,
+    15.0,
+    16.0,
+    17.0
+   ],
+   "expected_pct": [
+    0.4,
+    0.05,
+    0.3,
+    0.3,
+    0.15,
+    0.55,
+    0.5,
+    0.3,
+    0.6,
+    0.35,
+    0.45,
+    0.15,
+    0.65,
+    0.7,
+    0.75,
+    0.8,
+    0.85,
+    0.9,
+    0.95,
+    1.0
+   ]
+  },
+  "exact_thresholds": {
+   "1/20==0.05": true,
+   "6/20==0.3": true,
+   "19/38==0.5": true,
+   "13/20==0.65": true,
+   "15/20==0.75": true
+  },
+  "population_floor": {
+   "population_size": 19,
+   "floor": 20,
+   "expected": "POPULATION_BELOW_FLOOR"
+  }
+ },
+ "V3_ranking_selection": {
+  "rev3_ranking": {
+   "rows": [
+    {
+     "symbol": "000100",
+     "market": "KOSPI",
+     "r3_pct": 0.04,
+     "r3": -0.2,
+     "clv": 0.9,
+     "volume_ratio": 3.0,
+     "liq_pct": 0.9
+    },
+    {
+     "symbol": "000200",
+     "market": "KOSPI",
+     "r3_pct": 0.04,
+     "r3": -0.2,
+     "clv": 0.9,
+     "volume_ratio": 3.0,
+     "liq_pct": 0.8
+    },
+    {
+     "symbol": "000300",
+     "market": "KOSDAQ",
+     "r3_pct": 0.04,
+     "r3": -0.2,
+     "clv": 0.9,
+     "volume_ratio": 3.0,
+     "liq_pct": 0.9
+    },
+    {
+     "symbol": "000055",
+     "market": "KOSDAQ",
+     "r3_pct": 0.04,
+     "r3": -0.2,
+     "clv": 0.9,
+     "volume_ratio": 3.0,
+     "liq_pct": 0.9
+    },
+    {
+     "symbol": "000410",
+     "market": "KOSPI",
+     "r3_pct": 0.02,
+     "r3": -0.3,
+     "clv": 0.7,
+     "volume_ratio": 1.6,
+     "liq_pct": 0.55
+    },
+    {
+     "symbol": "000500",
+     "market": "KOSPI",
+     "r3_pct": 0.04,
+     "r3": -0.25,
+     "clv": 0.9,
+     "volume_ratio": 3.0,
+     "liq_pct": 0.9
+    },
+    {
+     "symbol": "000600",
+     "market": "KOSDAQ",
+     "r3_pct": 0.04,
+     "r3": -0.2,
+     "clv": 0.95,
+     "volume_ratio": 2.0,
+     "liq_pct": 0.6
+    },
+    {
+     "symbol": "000700",
+     "market": "KOSPI",
+     "r3_pct": 0.04,
+     "r3": -0.2,
+     "clv": 0.9,
+     "volume_ratio": 4.0,
+     "liq_pct": 0.5
+    },
+    {
+     "symbol": "000800",
+     "market": "KOSPI",
+     "r3_pct": 0.05,
+     "r3": -0.1,
+     "clv": 0.8,
+     "volume_ratio": 1.5,
+     "liq_pct": 0.95
+    },
+    {
+     "symbol": "000900",
+     "market": "KOSDAQ",
+     "r3_pct": 0.03,
+     "r3": -0.28,
+     "clv": 0.66,
+     "volume_ratio": 1.51,
+     "liq_pct": 0.52
+    },
+    {
+     "symbol": "001000",
+     "market": "KOSPI",
+     "r3_pct": 0.04,
+     "r3": -0.2,
+     "clv": 0.9,
+     "volume_ratio": 3.0,
+     "liq_pct": 0.9
+    },
+    {
+     "symbol": "001100",
+     "market": "KOSDAQ",
+     "r3_pct": 0.04,
+     "r3": -0.2,
+     "clv": 0.9,
+     "volume_ratio": 3.0,
+     "liq_pct": 0.9
+    }
+   ],
+   "expected_order_literal": [
+    "000410",
+    "000900",
+    "000500",
+    "000600",
+    "000700",
+    "000100",
+    "001000",
+    "000055",
+    "000300",
+    "001100",
+    "000200",
+    "000800"
+   ]
+  },
+  "two_stage_note": "selection first (held skipped, slot-capped); NO_FILL consumes slot"
+ },
+ "V4_execution": {
+  "normal_fill": {
+   "entry": 10000.0,
+   "exit": 10500.0,
+   "net_43bp": 0.045700000000000005,
+   "net_83bp": 0.0417
+  },
+  "delisted_no_price": {
+   "expected_gross": -1.0
+  },
+  "statuses": [
+   "ENTERED",
+   "IGNORED_HELD",
+   "SKIPPED_MAX10",
+   "NO_FILL",
+   "RIGHT_CENSORED_NOT_TRADEABLE",
+   "delisted_exit",
+   "RUN_INVALID_DATA_GAP",
+   "RUN_INVALID_MATURITY_PRICE (A15 superseded — KR 발화 경로 없음)",
+   "RUN_INVALID_DUPLICATE_ROW",
+   "RUN_INVALID_EMPTY_BASELINE",
+   "RUN_INVALID_IDENTITY_CONFLICT",
+   "RUN_INVALID_MARKET_TRANSFER",
+   "missing_exit (A15-3)",
+   "INCONCLUSIVE_MISSING_EXITS"
+  ]
+ },
+ "V5_gates": {
+  "clustered_lcb_n36": {
+   "session_means": [
+    0.004,
+    -0.002,
+    0.006,
+    0.001,
+    -0.003,
+    0.005,
+    0.002,
+    -0.001,
+    0.003,
+    0.0,
+    0.004,
+    -0.002,
+    0.004,
+    -0.002,
+    0.006,
+    0.001,
+    -0.003,
+    0.005,
+    0.002,
+    -0.001,
+    0.003,
+    0.0,
+    0.004,
+    -0.002,
+    0.004,
+    -0.002,
+    0.006,
+    0.001,
+    -0.003,
+    0.005,
+    0.002,
+    -0.001,
+    0.003,
+    0.0,
+    0.004,
+    -0.002
+   ],
+   "z": 1.2815515655446004,
+   "expected_mean": 0.0014166666666666668,
+   "expected_sd": 0.002941088233970549,
+   "expected_lcb": 0.0007884739615583733,
+   "expected_gate_pass": true
+  },
+  "verdict_priority": "RUN_INVALID > INCONCLUSIVE_MISSING_EXITS > UNIDENTIFIABLE_CLUSTERS > FALSIFIED > PASS"
+ },
+ "E2E": {
+  "rev3": {
+   "log": {
+    "entries": [
+     {
+      "session": 24,
+      "symbol": "900310",
+      "market": "KOSDAQ",
+      "entry_session": 25
+     },
+     {
+      "session": 24,
+      "symbol": "000310",
+      "market": "KOSPI",
+      "entry_session": 25
+     },
+     {
+      "session": 25,
+      "symbol": "000320",
+      "market": "KOSPI",
+      "entry_session": 26
+     },
+     {
+      "session": 25,
+      "symbol": "900320",
+      "market": "KOSDAQ",
+      "entry_session": 26
+     },
+     {
+      "session": 26,
+      "symbol": "900330",
+      "market": "KOSDAQ",
+      "entry_session": 27
+     },
+     {
+      "session": 26,
+      "symbol": "000330",
+      "market": "KOSPI",
+      "entry_session": 27
+     },
+     {
+      "session": 27,
+      "symbol": "900340",
+      "market": "KOSDAQ",
+      "entry_session": 28
+     },
+     {
+      "session": 28,
+      "symbol": "900350",
+      "market": "KOSDAQ",
+      "entry_session": 29
+     },
+     {
+      "session": 28,
+      "symbol": "000340",
+      "market": "KOSPI",
+      "entry_session": 29
+     },
+     {
+      "session": 29,
+      "symbol": "900360",
+      "market": "KOSDAQ",
+      "entry_session": 30
+     },
+     {
+      "session": 30,
+      "symbol": "000310",
+      "market": "KOSPI",
+      "entry_session": 31
+     },
+     {
+      "session": 35,
+      "symbol": "000390",
+      "market": "KOSPI",
+      "entry_session": 36
+     },
+     {
+      "session": 41,
+      "symbol": "900110",
+      "market": "KOSDAQ",
+      "entry_session": 42
+     },
+     {
+      "session": 41,
+      "symbol": "000430",
+      "market": "KOSPI",
+      "entry_session": 42
+     },
+     {
+      "session": 42,
+      "symbol": "900120",
+      "market": "KOSDAQ",
+      "entry_session": 43
+     },
+     {
+      "session": 43,
+      "symbol": "000420",
+      "market": "KOSPI",
+      "entry_session": 44
+     },
+     {
+      "session": 45,
+      "symbol": "000050",
+      "market": "KOSPI",
+      "entry_session": 46
+     }
+    ],
+    "ignored_held": [
+     {
+      "session": 27,
+      "market": "KOSPI",
+      "symbol": "000310"
+     }
+    ],
+    "skipped_max10": [
+     {
+      "session": 29,
+      "market": "KOSPI",
+      "symbol": "000350"
+     }
+    ],
+    "no_fill": [
+     {
+      "session": 32,
+      "market": "KOSDAQ",
+      "symbol": "900370",
+      "entry_session": 33
+     }
+    ],
+    "censored": [
+     {
+      "session": 47,
+      "symbol": "000320",
+      "market": "KOSPI",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     },
+     {
+      "session": 49,
+      "symbol": "000440",
+      "market": "KOSPI",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     }
+    ],
+    "missing_exit": [],
+    "notes": {
+     "0": [
+      "insufficient_history"
+     ],
+     "1": [
+      "insufficient_history"
+     ],
+     "2": [
+      "insufficient_history"
+     ],
+     "3": [
+      "insufficient_history"
+     ],
+     "4": [
+      "insufficient_history"
+     ],
+     "5": [
+      "insufficient_history"
+     ],
+     "6": [
+      "insufficient_history"
+     ],
+     "7": [
+      "insufficient_history"
+     ],
+     "8": [
+      "insufficient_history"
+     ],
+     "9": [
+      "insufficient_history"
+     ],
+     "10": [
+      "insufficient_history"
+     ],
+     "11": [
+      "insufficient_history"
+     ],
+     "12": [
+      "insufficient_history"
+     ],
+     "13": [
+      "insufficient_history"
+     ],
+     "14": [
+      "insufficient_history"
+     ],
+     "15": [
+      "insufficient_history"
+     ],
+     "16": [
+      "insufficient_history"
+     ],
+     "17": [
+      "insufficient_history"
+     ],
+     "18": [
+      "insufficient_history"
+     ],
+     "19": [
+      "insufficient_history"
+     ],
+     "45": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "46": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "47": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "48": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "49": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "50": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "51": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "52": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ]
+    }
+   },
+   "trades": [
+    {
+     "entry_idx": 25,
+     "exit_due": 30,
+     "signal_session": 24,
+     "entry_open": 33386.94,
+     "market": "KOSDAQ",
+     "symbol": "900310",
+     "exit_session": 30,
+     "exit_close": 33486.16,
+     "gross": 0.0029718207179214584,
+     "delisted_exit": false,
+     "net_43bp": -0.0013281792820785416,
+     "net_83bp": -0.005328179282078542
+    },
+    {
+     "entry_idx": 25,
+     "exit_due": 30,
+     "signal_session": 24,
+     "entry_open": 7276.28,
+     "market": "KOSPI",
+     "symbol": "000310",
+     "exit_session": 30,
+     "exit_close": 3665.93,
+     "gross": -0.4961807407081641,
+     "delisted_exit": false,
+     "net_43bp": -0.5004807407081641,
+     "net_83bp": -0.5044807407081641
+    },
+    {
+     "entry_idx": 26,
+     "exit_due": 31,
+     "signal_session": 25,
+     "entry_open": 25503.54,
+     "market": "KOSDAQ",
+     "symbol": "900320",
+     "exit_session": 31,
+     "exit_close": 25480.6,
+     "gross": -0.0008994829737363208,
+     "delisted_exit": false,
+     "net_43bp": -0.005199482973736321,
+     "net_83bp": -0.009199482973736321
+    },
+    {
+     "entry_idx": 26,
+     "exit_due": 31,
+     "signal_session": 25,
+     "entry_open": 37301.67,
+     "market": "KOSPI",
+     "symbol": "000320",
+     "exit_session": 31,
+     "exit_close": 38584.12,
+     "gross": 0.03438049824578915,
+     "delisted_exit": false,
+     "net_43bp": 0.03008049824578915,
+     "net_83bp": 0.026080498245789147
+    },
+    {
+     "entry_idx": 27,
+     "exit_due": 32,
+     "signal_session": 26,
+     "entry_open": 6738.3,
+     "market": "KOSDAQ",
+     "symbol": "900330",
+     "exit_session": 32,
+     "exit_close": 6742.13,
+     "gross": 0.0005683926212842749,
+     "delisted_exit": false,
+     "net_43bp": -0.003731607378715725,
+     "net_83bp": -0.007731607378715725
+    },
+    {
+     "entry_idx": 27,
+     "exit_due": 32,
+     "signal_session": 26,
+     "entry_open": 9561.14,
+     "market": "KOSPI",
+     "symbol": "000330",
+     "exit_session": 32,
+     "exit_close": 9790.32,
+     "gross": 0.023969945006557802,
+     "delisted_exit": false,
+     "net_43bp": 0.019669945006557804,
+     "net_83bp": 0.0156699450065578
+    },
+    {
+     "entry_idx": 28,
+     "exit_due": 33,
+     "signal_session": 27,
+     "entry_open": 38334.36,
+     "market": "KOSDAQ",
+     "symbol": "900340",
+     "exit_session": 33,
+     "exit_close": 37099.36,
+     "gross": -0.032216528461672556,
+     "delisted_exit": false,
+     "net_43bp": -0.036516528461672554,
+     "net_83bp": -0.04051652846167256
+    },
+    {
+     "entry_idx": 29,
+     "exit_due": 34,
+     "signal_session": 28,
+     "entry_open": 42460.69,
+     "market": "KOSDAQ",
+     "symbol": "900350",
+     "exit_session": 34,
+     "exit_close": 43795.06,
+     "gross": 0.03142600838563836,
+     "delisted_exit": false,
+     "net_43bp": 0.02712600838563836,
+     "net_83bp": 0.023126008385638358
+    },
+    {
+     "entry_idx": 29,
+     "exit_due": 34,
+     "signal_session": 28,
+     "entry_open": 42137.05,
+     "market": "KOSPI",
+     "symbol": "000340",
+     "exit_session": 34,
+     "exit_close": 41243.07,
+     "gross": -0.021216008239779538,
+     "delisted_exit": true,
+     "net_43bp": -0.025516008239779536,
+     "net_83bp": -0.02951600823977954
+    },
+    {
+     "entry_idx": 30,
+     "exit_due": 35,
+     "signal_session": 29,
+     "entry_open": 43493.79,
+     "market": "KOSDAQ",
+     "symbol": "900360",
+     "exit_session": 35,
+     "exit_close": 44904.55,
+     "gross": 0.03243589487142873,
+     "delisted_exit": false,
+     "net_43bp": 0.02813589487142873,
+     "net_83bp": 0.024135894871428726
+    },
+    {
+     "entry_idx": 31,
+     "exit_due": 36,
+     "signal_session": 30,
+     "entry_open": 7136.23,
+     "market": "KOSPI",
+     "symbol": "000310",
+     "exit_session": 36,
+     "exit_close": 7245.33,
+     "gross": 0.015288184377465486,
+     "delisted_exit": false,
+     "net_43bp": 0.010988184377465486,
+     "net_83bp": 0.006988184377465486
+    },
+    {
+     "entry_idx": 36,
+     "exit_due": 41,
+     "signal_session": 35,
+     "entry_open": 24549.73,
+     "market": "KOSPI",
+     "symbol": "000390",
+     "exit_session": 41,
+     "exit_close": 24819.54,
+     "gross": 0.010990344903996974,
+     "delisted_exit": false,
+     "net_43bp": 0.006690344903996974,
+     "net_83bp": 0.0026903449039969735
+    },
+    {
+     "entry_idx": 42,
+     "exit_due": 47,
+     "signal_session": 41,
+     "entry_open": 46200.3,
+     "market": "KOSDAQ",
+     "symbol": "900110",
+     "exit_session": 47,
+     "exit_close": 44363.31,
+     "gross": -0.03976143012058375,
+     "delisted_exit": true,
+     "net_43bp": -0.04406143012058375,
+     "net_83bp": -0.048061430120583754
+    },
+    {
+     "entry_idx": 42,
+     "exit_due": 47,
+     "signal_session": 41,
+     "entry_open": 16331.69,
+     "market": "KOSPI",
+     "symbol": "000430",
+     "exit_session": 47,
+     "exit_close": 16650.46,
+     "gross": 0.019518494411784548,
+     "delisted_exit": false,
+     "net_43bp": 0.015218494411784548,
+     "net_83bp": 0.011218494411784548
+    },
+    {
+     "entry_idx": 43,
+     "exit_due": 48,
+     "signal_session": 42,
+     "entry_open": 10979.53,
+     "market": "KOSDAQ",
+     "symbol": "900120",
+     "exit_session": 48,
+     "exit_close": null,
+     "gross": -1.0,
+     "delisted_exit": true,
+     "net_43bp": -1.0043,
+     "net_83bp": -1.0083
+    },
+    {
+     "entry_idx": 44,
+     "exit_due": 49,
+     "signal_session": 43,
+     "entry_open": 31418.13,
+     "market": "KOSPI",
+     "symbol": "000420",
+     "exit_session": 49,
+     "exit_close": 31185.45,
+     "gross": -0.007405914992394513,
+     "delisted_exit": false,
+     "net_43bp": -0.011705914992394513,
+     "net_83bp": -0.015705914992394515
+    },
+    {
+     "entry_idx": 46,
+     "exit_due": 51,
+     "signal_session": 45,
+     "entry_open": 33000.0,
+     "market": "KOSPI",
+     "symbol": "000050",
+     "exit_session": 51,
+     "exit_close": 32700.0,
+     "gross": -0.009090909090909038,
+     "delisted_exit": false,
+     "net_43bp": -0.013390909090909038,
+     "net_83bp": -0.01739090909090904
+    }
+   ],
+   "baselines": {
+    "KOSDAQ:900310@e25": {
+     "decile": 9,
+     "n": 9,
+     "gross_mean": 0.014523171804955338,
+     "cohort_excluded_entry": 1,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSPI:000310@e25": {
+     "decile": 8,
+     "n": 10,
+     "gross_mean": -0.0021774552104503854,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSDAQ:900320@e26": {
+     "decile": 8,
+     "n": 10,
+     "gross_mean": 0.013816541992345444,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSPI:000320@e26": {
+     "decile": 9,
+     "n": 10,
+     "gross_mean": 0.017930796487835278,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSDAQ:900330@e27": {
+     "decile": 8,
+     "n": 10,
+     "gross_mean": -0.0035210803263255987,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSPI:000330@e27": {
+     "decile": 8,
+     "n": 10,
+     "gross_mean": -0.0035210803263255987,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSDAQ:900340@e28": {
+     "decile": 9,
+     "n": 10,
+     "gross_mean": 0.04236132432709068,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 1,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSDAQ:900350@e29": {
+     "decile": 9,
+     "n": 10,
+     "gross_mean": 0.038315350288276505,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 1,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSPI:000340@e29": {
+     "decile": 9,
+     "n": 10,
+     "gross_mean": 0.038315350288276505,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 1,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSDAQ:900360@e30": {
+     "decile": 9,
+     "n": 10,
+     "gross_mean": 0.00502704711845593,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 1,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSPI:000310@e31": {
+     "decile": 8,
+     "n": 10,
+     "gross_mean": 0.0062985594783667945,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSPI:000390@e36": {
+     "decile": 8,
+     "n": 9,
+     "gross_mean": 0.002059500133630062,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSDAQ:900110@e42": {
+     "decile": 9,
+     "n": 10,
+     "gross_mean": -0.01620446740948356,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 1,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSPI:000430@e42": {
+     "decile": 8,
+     "n": 9,
+     "gross_mean": 0.03247924660123353,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSDAQ:900120@e43": {
+     "decile": 8,
+     "n": 8,
+     "gross_mean": -0.11668136106835432,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 1,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSPI:000420@e44": {
+     "decile": 9,
+     "n": 10,
+     "gross_mean": 0.012734061676342733,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    },
+    "KOSPI:000050@e46": {
+     "decile": 7,
+     "n": 8,
+     "gross_mean": 0.009866251443142252,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    }
+   },
+   "verdict": {
+    "verdict": "UNIDENTIFIABLE_CLUSTERS",
+    "cost_sensitive": false,
+    "missing_exit_count": 0,
+    "missing_exit_ratio": 0.0,
+    "profiles": {
+     "43bp": {
+      "filled": 17,
+      "gate_filled_ge_300": false,
+      "trade_mean_excess": -0.0941143051967285,
+      "gate_mean_excess_gt_0": false,
+      "n_entry_sessions": 12,
+      "session_means": {
+       "25": -0.2570773182923738,
+       "26": -0.0034331616040639452,
+       "27": 0.011490249140246638,
+       "28": -0.07887785278876323,
+       "29": -0.0375103502153471,
+       "30": 0.0231088477529728,
+       "31": 0.004689624899098691,
+       "36": 0.004630844770366911,
+       "42": -0.022558857450274587,
+       "43": -0.8876186389316456,
+       "44": -0.02443997666873725,
+       "46": -0.023257160534051288
+      },
+      "positive_years": 0,
+      "n_years": 1,
+      "year_means": {
+       "2022": -0.10757114582688097
+      },
+      "gate_positive_years_ge_6": false,
+      "z": 1.2815515655446004,
+      "verdict": "UNIDENTIFIABLE_CLUSTERS",
+      "lcb_info_only": -0.20255423831991876
+     },
+     "83bp": {
+      "filled": 17,
+      "gate_filled_ge_300": false,
+      "trade_mean_excess": -0.09811430519672851,
+      "gate_mean_excess_gt_0": false,
+      "n_entry_sessions": 12,
+      "session_means": {
+       "25": -0.26107731829237374,
+       "26": -0.007433161604063949,
+       "27": 0.007490249140246636,
+       "28": -0.08287785278876324,
+       "29": -0.0415103502153471,
+       "30": 0.019108847752972797,
+       "31": 0.0006896248990986911,
+       "36": 0.0006308447703669115,
+       "42": -0.02655885745027459,
+       "43": -0.8916186389316456,
+       "44": -0.02843997666873725,
+       "46": -0.027257160534051292
+      },
+      "positive_years": 0,
+      "n_years": 1,
+      "year_means": {
+       "2022": -0.11157114582688098
+      },
+      "gate_positive_years_ge_6": false,
+      "z": 1.2815515655446004,
+      "verdict": "UNIDENTIFIABLE_CLUSTERS",
+      "lcb_info_only": -0.20655423831991876
+     }
+    }
+   },
+   "signals_s35_per_market_proof": [
+    {
+     "market": "KOSPI",
+     "symbol": "000390",
+     "r3": -0.1199999828709708,
+     "r3_pct": 0.045454545454545456,
+     "clv": 0.8571418640379844,
+     "volume_ratio": 11.338448333245747,
+     "liq_pct": 0.813953488372093
+    }
+   ],
+   "signals_s45_exact_clv_ratio": [
+    {
+     "market": "KOSPI",
+     "symbol": "000050",
+     "r3": -0.19999999999999996,
+     "r3_pct": 0.045454545454545456,
+     "clv": 0.65,
+     "volume_ratio": 1.5,
+     "liq_pct": 0.7209302325581395
+    }
+   ],
+   "signals_s49_exact_boundary": [
+    {
+     "market": "KOSPI",
+     "symbol": "000440",
+     "r3": -0.20000011115069305,
+     "r3_pct": 0.05,
+     "clv": 0.8571414394029624,
+     "volume_ratio": 3.3125976986953174,
+     "liq_pct": 0.868421052631579
+    }
+   ]
+  },
+  "brk20": {
+   "log": {
+    "entries": [
+     {
+      "session": 34,
+      "symbol": "000370",
+      "market": "KOSPI",
+      "entry_session": 35
+     },
+     {
+      "session": 38,
+      "symbol": "900140",
+      "market": "KOSDAQ",
+      "entry_session": 39
+     }
+    ],
+    "ignored_held": [],
+    "skipped_max10": [],
+    "no_fill": [],
+    "censored": [
+     {
+      "session": 50,
+      "symbol": "000380",
+      "market": "KOSPI",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     }
+    ],
+    "missing_exit": [],
+    "notes": {
+     "0": [
+      "insufficient_history"
+     ],
+     "1": [
+      "insufficient_history"
+     ],
+     "2": [
+      "insufficient_history"
+     ],
+     "3": [
+      "insufficient_history"
+     ],
+     "4": [
+      "insufficient_history"
+     ],
+     "5": [
+      "insufficient_history"
+     ],
+     "6": [
+      "insufficient_history"
+     ],
+     "7": [
+      "insufficient_history"
+     ],
+     "8": [
+      "insufficient_history"
+     ],
+     "9": [
+      "insufficient_history"
+     ],
+     "10": [
+      "insufficient_history"
+     ],
+     "11": [
+      "insufficient_history"
+     ],
+     "12": [
+      "insufficient_history"
+     ],
+     "13": [
+      "insufficient_history"
+     ],
+     "14": [
+      "insufficient_history"
+     ],
+     "15": [
+      "insufficient_history"
+     ],
+     "16": [
+      "insufficient_history"
+     ],
+     "17": [
+      "insufficient_history"
+     ],
+     "18": [
+      "insufficient_history"
+     ],
+     "19": [
+      "insufficient_history"
+     ],
+     "45": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "46": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "47": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "48": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "49": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "50": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "51": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ],
+     "52": [
+      "POPULATION_BELOW_FLOOR:KOSDAQ:19"
+     ]
+    }
+   },
+   "trades": [
+    {
+     "entry_idx": 35,
+     "exit_due": 45,
+     "signal_session": 34,
+     "entry_open": 16815.71,
+     "market": "KOSPI",
+     "symbol": "000370",
+     "exit_session": 45,
+     "exit_close": 16956.74,
+     "gross": 0.008386800200526956,
+     "delisted_exit": false,
+     "net_43bp": 0.004086800200526956,
+     "net_83bp": 8.680020052695588e-05
+    },
+    {
+     "entry_idx": 39,
+     "exit_due": 49,
+     "signal_session": 38,
+     "entry_open": 35000.0,
+     "market": "KOSDAQ",
+     "symbol": "900140",
+     "exit_session": 49,
+     "exit_close": 34560.0,
+     "gross": -0.012571428571428567,
+     "delisted_exit": false,
+     "net_43bp": -0.016871428571428565,
+     "net_83bp": -0.02087142857142857
+    }
+   ],
+   "signals_s38_exact_clv_ratio": [
+    {
+     "market": "KOSDAQ",
+     "symbol": "900140",
+     "margin": 0.1551155115511551,
+     "clv": 0.75,
+     "volume_ratio": 1.25,
+     "liq_pct": 0.6304347826086957
+    }
+   ]
+  },
+  "lowvol": {
+   "log": {
+    "entries": [
+     {
+      "session": 29,
+      "symbol": "900010",
+      "market": "KOSDAQ",
+      "entry_session": 30
+     },
+     {
+      "session": 29,
+      "symbol": "000440",
+      "market": "KOSPI",
+      "entry_session": 30
+     },
+     {
+      "session": 29,
+      "symbol": "000110",
+      "market": "KOSPI",
+      "entry_session": 30
+     },
+     {
+      "session": 29,
+      "symbol": "900150",
+      "market": "KOSDAQ",
+      "entry_session": 30
+     },
+     {
+      "session": 29,
+      "symbol": "000380",
+      "market": "KOSPI",
+      "entry_session": 30
+     },
+     {
+      "session": 29,
+      "symbol": "900070",
+      "market": "KOSDAQ",
+      "entry_session": 30
+     },
+     {
+      "session": 29,
+      "symbol": "000100",
+      "market": "KOSPI",
+      "entry_session": 30
+     },
+     {
+      "session": 29,
+      "symbol": "000240",
+      "market": "KOSPI",
+      "entry_session": 30
+     },
+     {
+      "session": 31,
+      "symbol": "900470",
+      "market": "KOSDAQ",
+      "entry_session": 32
+     },
+     {
+      "session": 31,
+      "symbol": "900180",
+      "market": "KOSDAQ",
+      "entry_session": 32
+     }
+    ],
+    "ignored_held": [
+     {
+      "session": 31,
+      "market": "KOSDAQ",
+      "symbol": "900010"
+     },
+     {
+      "session": 31,
+      "market": "KOSPI",
+      "symbol": "000440"
+     },
+     {
+      "session": 31,
+      "market": "KOSPI",
+      "symbol": "000110"
+     },
+     {
+      "session": 31,
+      "market": "KOSDAQ",
+      "symbol": "900070"
+     },
+     {
+      "session": 31,
+      "market": "KOSDAQ",
+      "symbol": "900150"
+     }
+    ],
+    "skipped_max10": [
+     {
+      "session": 31,
+      "market": "KOSPI",
+      "symbol": "000090"
+     },
+     {
+      "session": 31,
+      "market": "KOSPI",
+      "symbol": "000030"
+     }
+    ],
+    "no_fill": [],
+    "censored": [
+     {
+      "session": 44,
+      "symbol": "000030",
+      "market": "KOSPI",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     },
+     {
+      "session": 44,
+      "symbol": "900010",
+      "market": "KOSDAQ",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     },
+     {
+      "session": 44,
+      "symbol": "000090",
+      "market": "KOSPI",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     },
+     {
+      "session": 44,
+      "symbol": "900060",
+      "market": "KOSDAQ",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     },
+     {
+      "session": 44,
+      "symbol": "000440",
+      "market": "KOSPI",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     },
+     {
+      "session": 44,
+      "symbol": "900070",
+      "market": "KOSDAQ",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     },
+     {
+      "session": 44,
+      "symbol": "000100",
+      "market": "KOSPI",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     },
+     {
+      "session": 44,
+      "symbol": "900150",
+      "market": "KOSDAQ",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     },
+     {
+      "session": 44,
+      "symbol": "900170",
+      "market": "KOSDAQ",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     },
+     {
+      "session": 44,
+      "symbol": "000470",
+      "market": "KOSPI",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     },
+     {
+      "session": 44,
+      "symbol": "900180",
+      "market": "KOSDAQ",
+      "status": "RIGHT_CENSORED_NOT_TRADEABLE"
+     }
+    ],
+    "missing_exit": [],
+    "notes": {
+     "9": [
+      "insufficient_history"
+     ]
+    }
+   },
+   "trades": [
+    {
+     "entry_idx": 30,
+     "exit_due": 50,
+     "signal_session": 29,
+     "entry_open": 50745.1,
+     "market": "KOSDAQ",
+     "symbol": "900010",
+     "exit_session": 50,
+     "exit_close": 53297.05,
+     "gross": 0.05028958461013988,
+     "delisted_exit": false,
+     "net_43bp": 0.04598958461013988,
+     "net_83bp": 0.04198958461013988
+    },
+    {
+     "entry_idx": 30,
+     "exit_due": 50,
+     "signal_session": 29,
+     "entry_open": 36995.88,
+     "market": "KOSDAQ",
+     "symbol": "900070",
+     "exit_session": 50,
+     "exit_close": 40715.54,
+     "gross": 0.10054254689981712,
+     "delisted_exit": false,
+     "net_43bp": 0.09624254689981712,
+     "net_83bp": 0.09224254689981712
+    },
+    {
+     "entry_idx": 30,
+     "exit_due": 50,
+     "signal_session": 29,
+     "entry_open": 27672.11,
+     "market": "KOSDAQ",
+     "symbol": "900150",
+     "exit_session": 50,
+     "exit_close": 27690.35,
+     "gross": 0.0006591474231636418,
+     "delisted_exit": false,
+     "net_43bp": -0.003640852576836358,
+     "net_83bp": -0.007640852576836358
+    },
+    {
+     "entry_idx": 30,
+     "exit_due": 50,
+     "signal_session": 29,
+     "entry_open": 10695.28,
+     "market": "KOSPI",
+     "symbol": "000100",
+     "exit_session": 50,
+     "exit_close": 11687.04,
+     "gross": 0.09272875511440559,
+     "delisted_exit": false,
+     "net_43bp": 0.0884287551144056,
+     "net_83bp": 0.08442875511440559
+    },
+    {
+     "entry_idx": 30,
+     "exit_due": 50,
+     "signal_session": 29,
+     "entry_open": 29964.4,
+     "market": "KOSPI",
+     "symbol": "000110",
+     "exit_session": 50,
+     "exit_close": 30699.59,
+     "gross": 0.0245354487324958,
+     "delisted_exit": false,
+     "net_43bp": 0.020235448732495803,
+     "net_83bp": 0.0162354487324958
+    },
+    {
+     "entry_idx": 30,
+     "exit_due": 50,
+     "signal_session": 29,
+     "entry_open": 21259.72,
+     "market": "KOSPI",
+     "symbol": "000240",
+     "exit_session": 50,
+     "exit_close": 20692.13,
+     "gross": -0.0266979057108937,
+     "delisted_exit": false,
+     "net_43bp": -0.030997905710893697,
+     "net_83bp": -0.0349979057108937
+    },
+    {
+     "entry_idx": 30,
+     "exit_due": 50,
+     "signal_session": 29,
+     "entry_open": 45230.58,
+     "market": "KOSPI",
+     "symbol": "000380",
+     "exit_session": 50,
+     "exit_close": 46629.3,
+     "gross": 0.030924211009454305,
+     "delisted_exit": false,
+     "net_43bp": 0.026624211009454307,
+     "net_83bp": 0.022624211009454304
+    },
+    {
+     "entry_idx": 30,
+     "exit_due": 50,
+     "signal_session": 29,
+     "entry_open": 17685.99,
+     "market": "KOSPI",
+     "symbol": "000440",
+     "exit_session": 50,
+     "exit_close": 17817.47,
+     "gross": 0.007434132892758516,
+     "delisted_exit": false,
+     "net_43bp": 0.003134132892758516,
+     "net_83bp": -0.0008658671072414841
+    },
+    {
+     "entry_idx": 32,
+     "exit_due": 52,
+     "signal_session": 31,
+     "entry_open": 33575.51,
+     "market": "KOSDAQ",
+     "symbol": "900180",
+     "exit_session": 52,
+     "exit_close": 31698.82,
+     "gross": -0.0558946088979736,
+     "delisted_exit": false,
+     "net_43bp": -0.060194608897973595,
+     "net_83bp": -0.0641946088979736
+    },
+    {
+     "entry_idx": 32,
+     "exit_due": 52,
+     "signal_session": 31,
+     "entry_open": 31576.27,
+     "market": "KOSDAQ",
+     "symbol": "900470",
+     "exit_session": 52,
+     "exit_close": 31506.75,
+     "gross": -0.0022016533301748575,
+     "delisted_exit": false,
+     "net_43bp": -0.0065016533301748575,
+     "net_83bp": -0.010501653330174858
+    }
+   ],
+   "signals_s44_exact_vol20_pct": [
+    {
+     "market": "KOSPI",
+     "symbol": "000030",
+     "vol20": 0.008268116920598739,
+     "vol20_pct": 0.045454545454545456,
+     "r20": 0.027054169098797543,
+     "liq_pct": 0.9534883720930233
+    },
+    {
+     "market": "KOSDAQ",
+     "symbol": "900010",
+     "vol20": 7.479293477766731e-08,
+     "vol20_pct": 0.05,
+     "r20": 0.030431180229764543,
+     "liq_pct": 0.7105263157894737
+    },
+    {
+     "market": "KOSPI",
+     "symbol": "000090",
+     "vol20": 0.008571943071225515,
+     "vol20_pct": 0.09090909090909091,
+     "r20": 0.05385300504009338,
+     "liq_pct": 0.5348837209302325
+    },
+    {
+     "market": "KOSDAQ",
+     "symbol": "900060",
+     "vol20": 0.00020520649946420875,
+     "vol20_pct": 0.1,
+     "r20": 0.020190800827905697,
+     "liq_pct": 0.7631578947368421
+    },
+    {
+     "market": "KOSPI",
+     "symbol": "000440",
+     "vol20": 0.010216946886437874,
+     "vol20_pct": 0.13636363636363635,
+     "r20": 0.05104752779244559,
+     "liq_pct": 0.5813953488372093
+    },
+    {
+     "market": "KOSDAQ",
+     "symbol": "900070",
+     "vol20": 0.0003078539701943274,
+     "vol20_pct": 0.15,
+     "r20": 0.02019015796693968,
+     "liq_pct": 0.8947368421052632
+    },
+    {
+     "market": "KOSPI",
+     "symbol": "000100",
+     "vol20": 0.010921565568146158,
+     "vol20_pct": 0.18181818181818182,
+     "r20": 0.10723557802278227,
+     "liq_pct": 0.5581395348837209
+    },
+    {
+     "market": "KOSDAQ",
+     "symbol": "900150",
+     "vol20": 0.000410444718426724,
+     "vol20_pct": 0.2,
+     "r20": 0.020189800321055218,
+     "liq_pct": 0.7894736842105263
+    },
+    {
+     "market": "KOSDAQ",
+     "symbol": "900170",
+     "vol20": 0.0005129779669950328,
+     "vol20_pct": 0.25,
+     "r20": 0.020188175121904406,
+     "liq_pct": 0.8157894736842105
+    },
+    {
+     "market": "KOSPI",
+     "symbol": "000470",
+     "vol20": 0.011358528194338694,
+     "vol20_pct": 0.2727272727272727,
+     "r20": 0.05100489730237956,
+     "liq_pct": 0.7906976744186046
+    },
+    {
+     "market": "KOSDAQ",
+     "symbol": "900180",
+     "vol20": 0.0006155647732305436,
+     "vol20_pct": 0.3,
+     "r20": 0.020187454073751887,
+     "liq_pct": 0.8421052631578947
+    }
+   ]
+  },
+  "compose_oracle": {
+   "pass_case": {
+    "verdict": "PASS",
+    "cost_sensitive": false,
+    "missing_exit_count": 0,
+    "missing_exit_ratio": 0.0,
+    "profiles": {
+     "43bp": {
+      "filled": 320,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": 0.01,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 40,
+      "session_means": {
+       "0": 0.01,
+       "1": 0.01,
+       "2": 0.01,
+       "3": 0.01,
+       "4": 0.01,
+       "5": 0.01,
+       "6": 0.01,
+       "7": 0.01,
+       "8": 0.01,
+       "9": 0.01,
+       "10": 0.01,
+       "11": 0.01,
+       "12": 0.01,
+       "13": 0.01,
+       "14": 0.01,
+       "15": 0.01,
+       "16": 0.01,
+       "17": 0.01,
+       "18": 0.01,
+       "19": 0.01,
+       "20": 0.01,
+       "21": 0.01,
+       "22": 0.01,
+       "23": 0.01,
+       "24": 0.01,
+       "25": 0.01,
+       "26": 0.01,
+       "27": 0.01,
+       "28": 0.01,
+       "29": 0.01,
+       "30": 0.01,
+       "31": 0.01,
+       "32": 0.01,
+       "33": 0.01,
+       "34": 0.01,
+       "35": 0.01,
+       "36": 0.01,
+       "37": 0.01,
+       "38": 0.01,
+       "39": 0.01
+      },
+      "positive_years": 10,
+      "n_years": 10,
+      "year_means": {
+       "2015": 0.01,
+       "2016": 0.01,
+       "2017": 0.01,
+       "2018": 0.01,
+       "2019": 0.01,
+       "2020": 0.01,
+       "2021": 0.01,
+       "2022": 0.01,
+       "2023": 0.01,
+       "2024": 0.01
+      },
+      "gate_positive_years_ge_6": true,
+      "z": 1.2815515655446004,
+      "lcb": 0.01,
+      "gate_clustered_lcb_gt_0": true,
+      "verdict": "PASS",
+      "failed_gates": []
+     },
+     "83bp": {
+      "filled": 320,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": 0.006,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 40,
+      "session_means": {
+       "0": 0.006,
+       "1": 0.006,
+       "2": 0.006,
+       "3": 0.006,
+       "4": 0.006,
+       "5": 0.006,
+       "6": 0.006,
+       "7": 0.006,
+       "8": 0.006,
+       "9": 0.006,
+       "10": 0.006,
+       "11": 0.006,
+       "12": 0.006,
+       "13": 0.006,
+       "14": 0.006,
+       "15": 0.006,
+       "16": 0.006,
+       "17": 0.006,
+       "18": 0.006,
+       "19": 0.006,
+       "20": 0.006,
+       "21": 0.006,
+       "22": 0.006,
+       "23": 0.006,
+       "24": 0.006,
+       "25": 0.006,
+       "26": 0.006,
+       "27": 0.006,
+       "28": 0.006,
+       "29": 0.006,
+       "30": 0.006,
+       "31": 0.006,
+       "32": 0.006,
+       "33": 0.006,
+       "34": 0.006,
+       "35": 0.006,
+       "36": 0.006,
+       "37": 0.006,
+       "38": 0.006,
+       "39": 0.006
+      },
+      "positive_years": 10,
+      "n_years": 10,
+      "year_means": {
+       "2015": 0.006,
+       "2016": 0.006,
+       "2017": 0.006,
+       "2018": 0.006,
+       "2019": 0.006,
+       "2020": 0.006,
+       "2021": 0.006,
+       "2022": 0.006,
+       "2023": 0.006,
+       "2024": 0.006
+      },
+      "gate_positive_years_ge_6": true,
+      "z": 1.2815515655446004,
+      "lcb": 0.006,
+      "gate_clustered_lcb_gt_0": true,
+      "verdict": "PASS",
+      "failed_gates": []
+     }
+    }
+   },
+   "falsified_case": {
+    "verdict": "FALSIFIED",
+    "cost_sensitive": false,
+    "missing_exit_count": 0,
+    "missing_exit_ratio": 0.0,
+    "profiles": {
+     "43bp": {
+      "filled": 320,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": -0.01,
+      "gate_mean_excess_gt_0": false,
+      "n_entry_sessions": 40,
+      "session_means": {
+       "0": -0.01,
+       "1": -0.01,
+       "2": -0.01,
+       "3": -0.01,
+       "4": -0.01,
+       "5": -0.01,
+       "6": -0.01,
+       "7": -0.01,
+       "8": -0.01,
+       "9": -0.01,
+       "10": -0.01,
+       "11": -0.01,
+       "12": -0.01,
+       "13": -0.01,
+       "14": -0.01,
+       "15": -0.01,
+       "16": -0.01,
+       "17": -0.01,
+       "18": -0.01,
+       "19": -0.01,
+       "20": -0.01,
+       "21": -0.01,
+       "22": -0.01,
+       "23": -0.01,
+       "24": -0.01,
+       "25": -0.01,
+       "26": -0.01,
+       "27": -0.01,
+       "28": -0.01,
+       "29": -0.01,
+       "30": -0.01,
+       "31": -0.01,
+       "32": -0.01,
+       "33": -0.01,
+       "34": -0.01,
+       "35": -0.01,
+       "36": -0.01,
+       "37": -0.01,
+       "38": -0.01,
+       "39": -0.01
+      },
+      "positive_years": 0,
+      "n_years": 10,
+      "year_means": {
+       "2015": -0.01,
+       "2016": -0.01,
+       "2017": -0.01,
+       "2018": -0.01,
+       "2019": -0.01,
+       "2020": -0.01,
+       "2021": -0.01,
+       "2022": -0.01,
+       "2023": -0.01,
+       "2024": -0.01
+      },
+      "gate_positive_years_ge_6": false,
+      "z": 1.2815515655446004,
+      "lcb": -0.01,
+      "gate_clustered_lcb_gt_0": false,
+      "verdict": "FALSIFIED",
+      "failed_gates": [
+       "gate_mean_excess_gt_0",
+       "gate_clustered_lcb_gt_0",
+       "gate_positive_years_ge_6"
+      ]
+     },
+     "83bp": {
+      "filled": 320,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": -0.014,
+      "gate_mean_excess_gt_0": false,
+      "n_entry_sessions": 40,
+      "session_means": {
+       "0": -0.014,
+       "1": -0.014,
+       "2": -0.014,
+       "3": -0.014,
+       "4": -0.014,
+       "5": -0.014,
+       "6": -0.014,
+       "7": -0.014,
+       "8": -0.014,
+       "9": -0.014,
+       "10": -0.014,
+       "11": -0.014,
+       "12": -0.014,
+       "13": -0.014,
+       "14": -0.014,
+       "15": -0.014,
+       "16": -0.014,
+       "17": -0.014,
+       "18": -0.014,
+       "19": -0.014,
+       "20": -0.014,
+       "21": -0.014,
+       "22": -0.014,
+       "23": -0.014,
+       "24": -0.014,
+       "25": -0.014,
+       "26": -0.014,
+       "27": -0.014,
+       "28": -0.014,
+       "29": -0.014,
+       "30": -0.014,
+       "31": -0.014,
+       "32": -0.014,
+       "33": -0.014,
+       "34": -0.014,
+       "35": -0.014,
+       "36": -0.014,
+       "37": -0.014,
+       "38": -0.014,
+       "39": -0.014
+      },
+      "positive_years": 0,
+      "n_years": 10,
+      "year_means": {
+       "2015": -0.014,
+       "2016": -0.014,
+       "2017": -0.014,
+       "2018": -0.014,
+       "2019": -0.014,
+       "2020": -0.014,
+       "2021": -0.014,
+       "2022": -0.014,
+       "2023": -0.014,
+       "2024": -0.014
+      },
+      "gate_positive_years_ge_6": false,
+      "z": 1.2815515655446004,
+      "lcb": -0.014,
+      "gate_clustered_lcb_gt_0": false,
+      "verdict": "FALSIFIED",
+      "failed_gates": [
+       "gate_mean_excess_gt_0",
+       "gate_clustered_lcb_gt_0",
+       "gate_positive_years_ge_6"
+      ]
+     }
+    }
+   },
+   "cost_sensitive_case": {
+    "verdict": "PASS",
+    "cost_sensitive": true,
+    "missing_exit_count": 0,
+    "missing_exit_ratio": 0.0,
+    "profiles": {
+     "43bp": {
+      "filled": 320,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": 0.002,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 40,
+      "session_means": {
+       "0": 0.002,
+       "1": 0.002,
+       "2": 0.002,
+       "3": 0.002,
+       "4": 0.002,
+       "5": 0.002,
+       "6": 0.002,
+       "7": 0.002,
+       "8": 0.002,
+       "9": 0.002,
+       "10": 0.002,
+       "11": 0.002,
+       "12": 0.002,
+       "13": 0.002,
+       "14": 0.002,
+       "15": 0.002,
+       "16": 0.002,
+       "17": 0.002,
+       "18": 0.002,
+       "19": 0.002,
+       "20": 0.002,
+       "21": 0.002,
+       "22": 0.002,
+       "23": 0.002,
+       "24": 0.002,
+       "25": 0.002,
+       "26": 0.002,
+       "27": 0.002,
+       "28": 0.002,
+       "29": 0.002,
+       "30": 0.002,
+       "31": 0.002,
+       "32": 0.002,
+       "33": 0.002,
+       "34": 0.002,
+       "35": 0.002,
+       "36": 0.002,
+       "37": 0.002,
+       "38": 0.002,
+       "39": 0.002
+      },
+      "positive_years": 10,
+      "n_years": 10,
+      "year_means": {
+       "2015": 0.002,
+       "2016": 0.002,
+       "2017": 0.002,
+       "2018": 0.002,
+       "2019": 0.002,
+       "2020": 0.002,
+       "2021": 0.002,
+       "2022": 0.002,
+       "2023": 0.002,
+       "2024": 0.002
+      },
+      "gate_positive_years_ge_6": true,
+      "z": 1.2815515655446004,
+      "lcb": 0.002,
+      "gate_clustered_lcb_gt_0": true,
+      "verdict": "PASS",
+      "failed_gates": []
+     },
+     "83bp": {
+      "filled": 320,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": -0.002,
+      "gate_mean_excess_gt_0": false,
+      "n_entry_sessions": 40,
+      "session_means": {
+       "0": -0.002,
+       "1": -0.002,
+       "2": -0.002,
+       "3": -0.002,
+       "4": -0.002,
+       "5": -0.002,
+       "6": -0.002,
+       "7": -0.002,
+       "8": -0.002,
+       "9": -0.002,
+       "10": -0.002,
+       "11": -0.002,
+       "12": -0.002,
+       "13": -0.002,
+       "14": -0.002,
+       "15": -0.002,
+       "16": -0.002,
+       "17": -0.002,
+       "18": -0.002,
+       "19": -0.002,
+       "20": -0.002,
+       "21": -0.002,
+       "22": -0.002,
+       "23": -0.002,
+       "24": -0.002,
+       "25": -0.002,
+       "26": -0.002,
+       "27": -0.002,
+       "28": -0.002,
+       "29": -0.002,
+       "30": -0.002,
+       "31": -0.002,
+       "32": -0.002,
+       "33": -0.002,
+       "34": -0.002,
+       "35": -0.002,
+       "36": -0.002,
+       "37": -0.002,
+       "38": -0.002,
+       "39": -0.002
+      },
+      "positive_years": 0,
+      "n_years": 10,
+      "year_means": {
+       "2015": -0.002,
+       "2016": -0.002,
+       "2017": -0.002,
+       "2018": -0.002,
+       "2019": -0.002,
+       "2020": -0.002,
+       "2021": -0.002,
+       "2022": -0.002,
+       "2023": -0.002,
+       "2024": -0.002
+      },
+      "gate_positive_years_ge_6": false,
+      "z": 1.2815515655446004,
+      "lcb": -0.002,
+      "gate_clustered_lcb_gt_0": false,
+      "verdict": "FALSIFIED",
+      "failed_gates": [
+       "gate_mean_excess_gt_0",
+       "gate_clustered_lcb_gt_0",
+       "gate_positive_years_ge_6"
+      ]
+     }
+    }
+   },
+   "empty_baseline": "RUN_INVALID_EMPTY_BASELINE",
+   "boundary_filled_300": {
+    "verdict": "PASS",
+    "cost_sensitive": false,
+    "missing_exit_count": 0,
+    "missing_exit_ratio": 0.0,
+    "profiles": {
+     "43bp": {
+      "filled": 300,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": 0.01,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 30,
+      "session_means": {
+       "0": 0.01,
+       "1": 0.01,
+       "2": 0.01,
+       "3": 0.01,
+       "4": 0.01,
+       "5": 0.01,
+       "6": 0.01,
+       "7": 0.01,
+       "8": 0.01,
+       "9": 0.01,
+       "10": 0.01,
+       "11": 0.01,
+       "12": 0.01,
+       "13": 0.01,
+       "14": 0.01,
+       "15": 0.01,
+       "16": 0.01,
+       "17": 0.01,
+       "18": 0.01,
+       "19": 0.01,
+       "20": 0.01,
+       "21": 0.01,
+       "22": 0.01,
+       "23": 0.01,
+       "24": 0.01,
+       "25": 0.01,
+       "26": 0.01,
+       "27": 0.01,
+       "28": 0.01,
+       "29": 0.01
+      },
+      "positive_years": 8,
+      "n_years": 8,
+      "year_means": {
+       "2015": 0.01,
+       "2016": 0.01,
+       "2017": 0.01,
+       "2018": 0.01,
+       "2019": 0.01,
+       "2020": 0.01,
+       "2021": 0.01,
+       "2022": 0.01
+      },
+      "gate_positive_years_ge_6": true,
+      "z": 1.2815515655446004,
+      "lcb": 0.01,
+      "gate_clustered_lcb_gt_0": true,
+      "verdict": "PASS",
+      "failed_gates": []
+     },
+     "83bp": {
+      "filled": 300,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": 0.006,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 30,
+      "session_means": {
+       "0": 0.006,
+       "1": 0.006,
+       "2": 0.006,
+       "3": 0.006,
+       "4": 0.006,
+       "5": 0.006,
+       "6": 0.006,
+       "7": 0.006,
+       "8": 0.006,
+       "9": 0.006,
+       "10": 0.006,
+       "11": 0.006,
+       "12": 0.006,
+       "13": 0.006,
+       "14": 0.006,
+       "15": 0.006,
+       "16": 0.006,
+       "17": 0.006,
+       "18": 0.006,
+       "19": 0.006,
+       "20": 0.006,
+       "21": 0.006,
+       "22": 0.006,
+       "23": 0.006,
+       "24": 0.006,
+       "25": 0.006,
+       "26": 0.006,
+       "27": 0.006,
+       "28": 0.006,
+       "29": 0.006
+      },
+      "positive_years": 8,
+      "n_years": 8,
+      "year_means": {
+       "2015": 0.006,
+       "2016": 0.006,
+       "2017": 0.006,
+       "2018": 0.006,
+       "2019": 0.006,
+       "2020": 0.006,
+       "2021": 0.006,
+       "2022": 0.006
+      },
+      "gate_positive_years_ge_6": true,
+      "z": 1.2815515655446004,
+      "lcb": 0.006,
+      "gate_clustered_lcb_gt_0": true,
+      "verdict": "PASS",
+      "failed_gates": []
+     }
+    }
+   },
+   "boundary_filled_299": {
+    "verdict": "FALSIFIED",
+    "cost_sensitive": false,
+    "missing_exit_count": 0,
+    "missing_exit_ratio": 0.0,
+    "profiles": {
+     "43bp": {
+      "filled": 299,
+      "gate_filled_ge_300": false,
+      "trade_mean_excess": 0.01,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 30,
+      "session_means": {
+       "0": 0.01,
+       "1": 0.01,
+       "2": 0.01,
+       "3": 0.01,
+       "4": 0.01,
+       "5": 0.01,
+       "6": 0.01,
+       "7": 0.01,
+       "8": 0.01,
+       "9": 0.01,
+       "10": 0.01,
+       "11": 0.01,
+       "12": 0.01,
+       "13": 0.01,
+       "14": 0.01,
+       "15": 0.01,
+       "16": 0.01,
+       "17": 0.01,
+       "18": 0.01,
+       "19": 0.01,
+       "20": 0.01,
+       "21": 0.01,
+       "22": 0.01,
+       "23": 0.01,
+       "24": 0.01,
+       "25": 0.01,
+       "26": 0.01,
+       "27": 0.01,
+       "28": 0.01,
+       "29": 0.01
+      },
+      "positive_years": 8,
+      "n_years": 8,
+      "year_means": {
+       "2015": 0.01,
+       "2016": 0.01,
+       "2017": 0.01,
+       "2018": 0.01,
+       "2019": 0.01,
+       "2020": 0.01,
+       "2021": 0.01,
+       "2022": 0.01
+      },
+      "gate_positive_years_ge_6": true,
+      "z": 1.2815515655446004,
+      "lcb": 0.01,
+      "gate_clustered_lcb_gt_0": true,
+      "verdict": "FALSIFIED",
+      "failed_gates": [
+       "gate_filled_ge_300"
+      ]
+     },
+     "83bp": {
+      "filled": 299,
+      "gate_filled_ge_300": false,
+      "trade_mean_excess": 0.006,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 30,
+      "session_means": {
+       "0": 0.006,
+       "1": 0.006,
+       "2": 0.006,
+       "3": 0.006,
+       "4": 0.006,
+       "5": 0.006,
+       "6": 0.006,
+       "7": 0.006,
+       "8": 0.006,
+       "9": 0.006,
+       "10": 0.006,
+       "11": 0.006,
+       "12": 0.006,
+       "13": 0.006,
+       "14": 0.006,
+       "15": 0.006,
+       "16": 0.006,
+       "17": 0.006,
+       "18": 0.006,
+       "19": 0.006,
+       "20": 0.006,
+       "21": 0.006,
+       "22": 0.006,
+       "23": 0.006,
+       "24": 0.006,
+       "25": 0.006,
+       "26": 0.006,
+       "27": 0.006,
+       "28": 0.006,
+       "29": 0.006
+      },
+      "positive_years": 8,
+      "n_years": 8,
+      "year_means": {
+       "2015": 0.006,
+       "2016": 0.006,
+       "2017": 0.006,
+       "2018": 0.006,
+       "2019": 0.006,
+       "2020": 0.006,
+       "2021": 0.006,
+       "2022": 0.006
+      },
+      "gate_positive_years_ge_6": true,
+      "z": 1.2815515655446004,
+      "lcb": 0.006,
+      "gate_clustered_lcb_gt_0": true,
+      "verdict": "FALSIFIED",
+      "failed_gates": [
+       "gate_filled_ge_300"
+      ]
+     }
+    }
+   },
+   "boundary_clusters_29": {
+    "verdict": "UNIDENTIFIABLE_CLUSTERS",
+    "cost_sensitive": false,
+    "missing_exit_count": 0,
+    "missing_exit_ratio": 0.0,
+    "profiles": {
+     "43bp": {
+      "filled": 319,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": 0.01,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 29,
+      "session_means": {
+       "0": 0.01,
+       "1": 0.01,
+       "2": 0.01,
+       "3": 0.01,
+       "4": 0.01,
+       "5": 0.01,
+       "6": 0.01,
+       "7": 0.01,
+       "8": 0.01,
+       "9": 0.01,
+       "10": 0.01,
+       "11": 0.01,
+       "12": 0.01,
+       "13": 0.01,
+       "14": 0.01,
+       "15": 0.01,
+       "16": 0.01,
+       "17": 0.01,
+       "18": 0.01,
+       "19": 0.01,
+       "20": 0.01,
+       "21": 0.01,
+       "22": 0.01,
+       "23": 0.01,
+       "24": 0.01,
+       "25": 0.01,
+       "26": 0.01,
+       "27": 0.01,
+       "28": 0.01
+      },
+      "positive_years": 8,
+      "n_years": 8,
+      "year_means": {
+       "2015": 0.01,
+       "2016": 0.01,
+       "2017": 0.01,
+       "2018": 0.01,
+       "2019": 0.01,
+       "2020": 0.01,
+       "2021": 0.01,
+       "2022": 0.01
+      },
+      "gate_positive_years_ge_6": true,
+      "z": 1.2815515655446004,
+      "verdict": "UNIDENTIFIABLE_CLUSTERS",
+      "lcb_info_only": 0.01
+     },
+     "83bp": {
+      "filled": 319,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": 0.006,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 29,
+      "session_means": {
+       "0": 0.006,
+       "1": 0.006,
+       "2": 0.006,
+       "3": 0.006,
+       "4": 0.006,
+       "5": 0.006,
+       "6": 0.006,
+       "7": 0.006,
+       "8": 0.006,
+       "9": 0.006,
+       "10": 0.006,
+       "11": 0.006,
+       "12": 0.006,
+       "13": 0.006,
+       "14": 0.006,
+       "15": 0.006,
+       "16": 0.006,
+       "17": 0.006,
+       "18": 0.006,
+       "19": 0.006,
+       "20": 0.006,
+       "21": 0.006,
+       "22": 0.006,
+       "23": 0.006,
+       "24": 0.006,
+       "25": 0.006,
+       "26": 0.006,
+       "27": 0.006,
+       "28": 0.006
+      },
+      "positive_years": 8,
+      "n_years": 8,
+      "year_means": {
+       "2015": 0.006,
+       "2016": 0.006,
+       "2017": 0.006,
+       "2018": 0.006,
+       "2019": 0.006,
+       "2020": 0.006,
+       "2021": 0.006,
+       "2022": 0.006
+      },
+      "gate_positive_years_ge_6": true,
+      "z": 1.2815515655446004,
+      "verdict": "UNIDENTIFIABLE_CLUSTERS",
+      "lcb_info_only": 0.006
+     }
+    }
+   },
+   "boundary_zero_excess": {
+    "verdict": "FALSIFIED",
+    "cost_sensitive": false,
+    "missing_exit_count": 0,
+    "missing_exit_ratio": 0.0,
+    "profiles": {
+     "43bp": {
+      "filled": 300,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": 0.0,
+      "gate_mean_excess_gt_0": false,
+      "n_entry_sessions": 30,
+      "session_means": {
+       "0": 0.0,
+       "1": 0.0,
+       "2": 0.0,
+       "3": 0.0,
+       "4": 0.0,
+       "5": 0.0,
+       "6": 0.0,
+       "7": 0.0,
+       "8": 0.0,
+       "9": 0.0,
+       "10": 0.0,
+       "11": 0.0,
+       "12": 0.0,
+       "13": 0.0,
+       "14": 0.0,
+       "15": 0.0,
+       "16": 0.0,
+       "17": 0.0,
+       "18": 0.0,
+       "19": 0.0,
+       "20": 0.0,
+       "21": 0.0,
+       "22": 0.0,
+       "23": 0.0,
+       "24": 0.0,
+       "25": 0.0,
+       "26": 0.0,
+       "27": 0.0,
+       "28": 0.0,
+       "29": 0.0
+      },
+      "positive_years": 0,
+      "n_years": 8,
+      "year_means": {
+       "2015": 0.0,
+       "2016": 0.0,
+       "2017": 0.0,
+       "2018": 0.0,
+       "2019": 0.0,
+       "2020": 0.0,
+       "2021": 0.0,
+       "2022": 0.0
+      },
+      "gate_positive_years_ge_6": false,
+      "z": 1.2815515655446004,
+      "lcb": 0.0,
+      "gate_clustered_lcb_gt_0": false,
+      "verdict": "FALSIFIED",
+      "failed_gates": [
+       "gate_mean_excess_gt_0",
+       "gate_clustered_lcb_gt_0",
+       "gate_positive_years_ge_6"
+      ]
+     },
+     "83bp": {
+      "filled": 300,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": -0.004,
+      "gate_mean_excess_gt_0": false,
+      "n_entry_sessions": 30,
+      "session_means": {
+       "0": -0.004,
+       "1": -0.004,
+       "2": -0.004,
+       "3": -0.004,
+       "4": -0.004,
+       "5": -0.004,
+       "6": -0.004,
+       "7": -0.004,
+       "8": -0.004,
+       "9": -0.004,
+       "10": -0.004,
+       "11": -0.004,
+       "12": -0.004,
+       "13": -0.004,
+       "14": -0.004,
+       "15": -0.004,
+       "16": -0.004,
+       "17": -0.004,
+       "18": -0.004,
+       "19": -0.004,
+       "20": -0.004,
+       "21": -0.004,
+       "22": -0.004,
+       "23": -0.004,
+       "24": -0.004,
+       "25": -0.004,
+       "26": -0.004,
+       "27": -0.004,
+       "28": -0.004,
+       "29": -0.004
+      },
+      "positive_years": 0,
+      "n_years": 8,
+      "year_means": {
+       "2015": -0.004,
+       "2016": -0.004,
+       "2017": -0.004,
+       "2018": -0.004,
+       "2019": -0.004,
+       "2020": -0.004,
+       "2021": -0.004,
+       "2022": -0.004
+      },
+      "gate_positive_years_ge_6": false,
+      "z": 1.2815515655446004,
+      "lcb": -0.004,
+      "gate_clustered_lcb_gt_0": false,
+      "verdict": "FALSIFIED",
+      "failed_gates": [
+       "gate_mean_excess_gt_0",
+       "gate_clustered_lcb_gt_0",
+       "gate_positive_years_ge_6"
+      ]
+     }
+    }
+   },
+   "boundary_years_6_full": {
+    "verdict": "PASS",
+    "cost_sensitive": false,
+    "missing_exit_count": 0,
+    "missing_exit_ratio": 0.0,
+    "profiles": {
+     "43bp": {
+      "filled": 320,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": 0.0056,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 40,
+      "session_means": {
+       "0": 0.01,
+       "1": 0.01,
+       "2": 0.01,
+       "3": 0.01,
+       "4": 0.01,
+       "5": 0.01,
+       "6": 0.01,
+       "7": 0.01,
+       "8": 0.01,
+       "9": 0.01,
+       "10": 0.01,
+       "11": 0.01,
+       "12": 0.01,
+       "13": 0.01,
+       "14": 0.01,
+       "15": 0.01,
+       "16": 0.01,
+       "17": 0.01,
+       "18": 0.01,
+       "19": 0.01,
+       "20": 0.01,
+       "21": 0.01,
+       "22": 0.01,
+       "23": 0.01,
+       "24": -0.001,
+       "25": -0.001,
+       "26": -0.001,
+       "27": -0.001,
+       "28": -0.001,
+       "29": -0.001,
+       "30": -0.001,
+       "31": -0.001,
+       "32": -0.001,
+       "33": -0.001,
+       "34": -0.001,
+       "35": -0.001,
+       "36": -0.001,
+       "37": -0.001,
+       "38": -0.001,
+       "39": -0.001
+      },
+      "positive_years": 6,
+      "n_years": 10,
+      "year_means": {
+       "2015": 0.01,
+       "2016": 0.01,
+       "2017": 0.01,
+       "2018": 0.01,
+       "2019": 0.01,
+       "2020": 0.01,
+       "2021": -0.001,
+       "2022": -0.001,
+       "2023": -0.001,
+       "2024": -0.001
+      },
+      "gate_positive_years_ge_6": true,
+      "z": 1.2815515655446004,
+      "lcb": 0.0044941350639344565,
+      "gate_clustered_lcb_gt_0": true,
+      "verdict": "PASS",
+      "failed_gates": []
+     },
+     "83bp": {
+      "filled": 320,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": 0.0016,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 40,
+      "session_means": {
+       "0": 0.006,
+       "1": 0.006,
+       "2": 0.006,
+       "3": 0.006,
+       "4": 0.006,
+       "5": 0.006,
+       "6": 0.006,
+       "7": 0.006,
+       "8": 0.006,
+       "9": 0.006,
+       "10": 0.006,
+       "11": 0.006,
+       "12": 0.006,
+       "13": 0.006,
+       "14": 0.006,
+       "15": 0.006,
+       "16": 0.006,
+       "17": 0.006,
+       "18": 0.006,
+       "19": 0.006,
+       "20": 0.006,
+       "21": 0.006,
+       "22": 0.006,
+       "23": 0.006,
+       "24": -0.005,
+       "25": -0.005,
+       "26": -0.005,
+       "27": -0.005,
+       "28": -0.005,
+       "29": -0.005,
+       "30": -0.005,
+       "31": -0.005,
+       "32": -0.005,
+       "33": -0.005,
+       "34": -0.005,
+       "35": -0.005,
+       "36": -0.005,
+       "37": -0.005,
+       "38": -0.005,
+       "39": -0.005
+      },
+      "positive_years": 6,
+      "n_years": 10,
+      "year_means": {
+       "2015": 0.006,
+       "2016": 0.006,
+       "2017": 0.006,
+       "2018": 0.006,
+       "2019": 0.006,
+       "2020": 0.006,
+       "2021": -0.005,
+       "2022": -0.005,
+       "2023": -0.005,
+       "2024": -0.005
+      },
+      "gate_positive_years_ge_6": true,
+      "z": 1.2815515655446004,
+      "lcb": 0.000494135063934457,
+      "gate_clustered_lcb_gt_0": true,
+      "verdict": "PASS",
+      "failed_gates": []
+     }
+    }
+   },
+   "boundary_years_5_full": {
+    "verdict": "FALSIFIED",
+    "cost_sensitive": false,
+    "missing_exit_count": 0,
+    "missing_exit_ratio": 0.0,
+    "profiles": {
+     "43bp": {
+      "filled": 320,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": 0.0045000000000000005,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 40,
+      "session_means": {
+       "0": 0.01,
+       "1": 0.01,
+       "2": 0.01,
+       "3": 0.01,
+       "4": 0.01,
+       "5": 0.01,
+       "6": 0.01,
+       "7": 0.01,
+       "8": 0.01,
+       "9": 0.01,
+       "10": 0.01,
+       "11": 0.01,
+       "12": 0.01,
+       "13": 0.01,
+       "14": 0.01,
+       "15": 0.01,
+       "16": 0.01,
+       "17": 0.01,
+       "18": 0.01,
+       "19": 0.01,
+       "20": -0.001,
+       "21": -0.001,
+       "22": -0.001,
+       "23": -0.001,
+       "24": -0.001,
+       "25": -0.001,
+       "26": -0.001,
+       "27": -0.001,
+       "28": -0.001,
+       "29": -0.001,
+       "30": -0.001,
+       "31": -0.001,
+       "32": -0.001,
+       "33": -0.001,
+       "34": -0.001,
+       "35": -0.001,
+       "36": -0.001,
+       "37": -0.001,
+       "38": -0.001,
+       "39": -0.001
+      },
+      "positive_years": 5,
+      "n_years": 10,
+      "year_means": {
+       "2015": 0.01,
+       "2016": 0.01,
+       "2017": 0.01,
+       "2018": 0.01,
+       "2019": 0.01,
+       "2020": -0.001,
+       "2021": -0.001,
+       "2022": -0.001,
+       "2023": -0.001,
+       "2024": -0.001
+      },
+      "gate_positive_years_ge_6": false,
+      "z": 1.2815515655446004,
+      "lcb": 0.003371331325918283,
+      "gate_clustered_lcb_gt_0": true,
+      "verdict": "FALSIFIED",
+      "failed_gates": [
+       "gate_positive_years_ge_6"
+      ]
+     },
+     "83bp": {
+      "filled": 320,
+      "gate_filled_ge_300": true,
+      "trade_mean_excess": 0.0005,
+      "gate_mean_excess_gt_0": true,
+      "n_entry_sessions": 40,
+      "session_means": {
+       "0": 0.006,
+       "1": 0.006,
+       "2": 0.006,
+       "3": 0.006,
+       "4": 0.006,
+       "5": 0.006,
+       "6": 0.006,
+       "7": 0.006,
+       "8": 0.006,
+       "9": 0.006,
+       "10": 0.006,
+       "11": 0.006,
+       "12": 0.006,
+       "13": 0.006,
+       "14": 0.006,
+       "15": 0.006,
+       "16": 0.006,
+       "17": 0.006,
+       "18": 0.006,
+       "19": 0.006,
+       "20": -0.005,
+       "21": -0.005,
+       "22": -0.005,
+       "23": -0.005,
+       "24": -0.005,
+       "25": -0.005,
+       "26": -0.005,
+       "27": -0.005,
+       "28": -0.005,
+       "29": -0.005,
+       "30": -0.005,
+       "31": -0.005,
+       "32": -0.005,
+       "33": -0.005,
+       "34": -0.005,
+       "35": -0.005,
+       "36": -0.005,
+       "37": -0.005,
+       "38": -0.005,
+       "39": -0.005
+      },
+      "positive_years": 5,
+      "n_years": 10,
+      "year_means": {
+       "2015": 0.006,
+       "2016": 0.006,
+       "2017": 0.006,
+       "2018": 0.006,
+       "2019": 0.006,
+       "2020": -0.005,
+       "2021": -0.005,
+       "2022": -0.005,
+       "2023": -0.005,
+       "2024": -0.005
+      },
+      "gate_positive_years_ge_6": false,
+      "z": 1.2815515655446004,
+      "lcb": -0.0006286686740817177,
+      "gate_clustered_lcb_gt_0": false,
+      "verdict": "FALSIFIED",
+      "failed_gates": [
+       "gate_clustered_lcb_gt_0",
+       "gate_positive_years_ge_6"
+      ]
+     }
+    }
+   },
+   "entry_year_attribution": {
+    "dates_head": "2015-12-30 entry, 2016 exits",
+    "verdict": {
+     "verdict": "FALSIFIED",
+     "cost_sensitive": true,
+     "missing_exit_count": 0,
+     "missing_exit_ratio": 0.0,
+     "profiles": {
+      "43bp": {
+       "filled": 248,
+       "gate_filled_ge_300": false,
+       "trade_mean_excess": 0.0006451612903225808,
+       "gate_mean_excess_gt_0": true,
+       "n_entry_sessions": 31,
+       "session_means": {
+        "0": 0.05,
+        "1": -0.001,
+        "2": -0.001,
+        "3": -0.001,
+        "4": -0.001,
+        "5": -0.001,
+        "6": -0.001,
+        "7": -0.001,
+        "8": -0.001,
+        "9": -0.001,
+        "10": -0.001,
+        "11": -0.001,
+        "12": -0.001,
+        "13": -0.001,
+        "14": -0.001,
+        "15": -0.001,
+        "16": -0.001,
+        "17": -0.001,
+        "18": -0.001,
+        "19": -0.001,
+        "20": -0.001,
+        "21": -0.001,
+        "22": -0.001,
+        "23": -0.001,
+        "24": -0.001,
+        "25": -0.001,
+        "26": -0.001,
+        "27": -0.001,
+        "28": -0.001,
+        "29": -0.001,
+        "30": -0.001
+       },
+       "positive_years": 1,
+       "n_years": 2,
+       "year_means": {
+        "2015": 0.05,
+        "2016": -0.001
+       },
+       "gate_positive_years_ge_6": false,
+       "z": 1.2815515655446004,
+       "lcb": -0.001463197736863698,
+       "gate_clustered_lcb_gt_0": false,
+       "verdict": "FALSIFIED",
+       "failed_gates": [
+        "gate_filled_ge_300",
+        "gate_clustered_lcb_gt_0",
+        "gate_positive_years_ge_6"
+       ]
+      },
+      "83bp": {
+       "filled": 248,
+       "gate_filled_ge_300": false,
+       "trade_mean_excess": -0.0033548387096774194,
+       "gate_mean_excess_gt_0": false,
+       "n_entry_sessions": 31,
+       "session_means": {
+        "0": 0.046,
+        "1": -0.005,
+        "2": -0.005,
+        "3": -0.005,
+        "4": -0.005,
+        "5": -0.005,
+        "6": -0.005,
+        "7": -0.005,
+        "8": -0.005,
+        "9": -0.005,
+        "10": -0.005,
+        "11": -0.005,
+        "12": -0.005,
+        "13": -0.005,
+        "14": -0.005,
+        "15": -0.005,
+        "16": -0.005,
+        "17": -0.005,
+        "18": -0.005,
+        "19": -0.005,
+        "20": -0.005,
+        "21": -0.005,
+        "22": -0.005,
+        "23": -0.005,
+        "24": -0.005,
+        "25": -0.005,
+        "26": -0.005,
+        "27": -0.005,
+        "28": -0.005,
+        "29": -0.005,
+        "30": -0.005
+       },
+       "positive_years": 1,
+       "n_years": 2,
+       "year_means": {
+        "2015": 0.046,
+        "2016": -0.005
+       },
+       "gate_positive_years_ge_6": false,
+       "z": 1.2815515655446004,
+       "lcb": -0.005463197736863698,
+       "gate_clustered_lcb_gt_0": false,
+       "verdict": "FALSIFIED",
+       "failed_gates": [
+        "gate_filled_ge_300",
+        "gate_mean_excess_gt_0",
+        "gate_clustered_lcb_gt_0",
+        "gate_positive_years_ge_6"
+       ]
+      }
+     }
+    },
+    "note": "exit-year mutant erases 2015 bucket"
+   },
+   "missing_exit_threshold": {
+    "ratio_5pct_exact": "UNIDENTIFIABLE_CLUSTERS",
+    "ratio_6pct": "INCONCLUSIVE_MISSING_EXITS",
+    "note": "A15-3 strict >0.05"
+   },
+   "priority_combos": {
+    "pass_overridden": {
+     "verdict": "INCONCLUSIVE_MISSING_EXITS",
+     "cost_sensitive": false,
+     "missing_exit_count": 20,
+     "missing_exit_ratio": 0.0625,
+     "profiles": {
+      "43bp": {
+       "filled": 300,
+       "gate_filled_ge_300": true,
+       "trade_mean_excess": 0.01,
+       "gate_mean_excess_gt_0": true,
+       "n_entry_sessions": 30,
+       "session_means": {
+        "0": 0.01,
+        "1": 0.01,
+        "2": 0.01,
+        "3": 0.01,
+        "4": 0.01,
+        "5": 0.01,
+        "6": 0.01,
+        "7": 0.01,
+        "8": 0.01,
+        "9": 0.01,
+        "10": 0.01,
+        "11": 0.01,
+        "12": 0.01,
+        "13": 0.01,
+        "14": 0.01,
+        "15": 0.01,
+        "16": 0.01,
+        "17": 0.01,
+        "18": 0.01,
+        "19": 0.01,
+        "20": 0.01,
+        "21": 0.01,
+        "22": 0.01,
+        "23": 0.01,
+        "24": 0.01,
+        "25": 0.01,
+        "26": 0.01,
+        "27": 0.01,
+        "28": 0.01,
+        "29": 0.01
+       },
+       "positive_years": 8,
+       "n_years": 8,
+       "year_means": {
+        "2015": 0.01,
+        "2016": 0.01,
+        "2017": 0.01,
+        "2018": 0.01,
+        "2019": 0.01,
+        "2020": 0.01,
+        "2021": 0.01,
+        "2022": 0.01
+       },
+       "gate_positive_years_ge_6": true,
+       "z": 1.2815515655446004,
+       "lcb": 0.01,
+       "gate_clustered_lcb_gt_0": true,
+       "verdict": "PASS",
+       "failed_gates": []
+      },
+      "83bp": {
+       "filled": 300,
+       "gate_filled_ge_300": true,
+       "trade_mean_excess": 0.006,
+       "gate_mean_excess_gt_0": true,
+       "n_entry_sessions": 30,
+       "session_means": {
+        "0": 0.006,
+        "1": 0.006,
+        "2": 0.006,
+        "3": 0.006,
+        "4": 0.006,
+        "5": 0.006,
+        "6": 0.006,
+        "7": 0.006,
+        "8": 0.006,
+        "9": 0.006,
+        "10": 0.006,
+        "11": 0.006,
+        "12": 0.006,
+        "13": 0.006,
+        "14": 0.006,
+        "15": 0.006,
+        "16": 0.006,
+        "17": 0.006,
+        "18": 0.006,
+        "19": 0.006,
+        "20": 0.006,
+        "21": 0.006,
+        "22": 0.006,
+        "23": 0.006,
+        "24": 0.006,
+        "25": 0.006,
+        "26": 0.006,
+        "27": 0.006,
+        "28": 0.006,
+        "29": 0.006
+       },
+       "positive_years": 8,
+       "n_years": 8,
+       "year_means": {
+        "2015": 0.006,
+        "2016": 0.006,
+        "2017": 0.006,
+        "2018": 0.006,
+        "2019": 0.006,
+        "2020": 0.006,
+        "2021": 0.006,
+        "2022": 0.006
+       },
+       "gate_positive_years_ge_6": true,
+       "z": 1.2815515655446004,
+       "lcb": 0.006,
+       "gate_clustered_lcb_gt_0": true,
+       "verdict": "PASS",
+       "failed_gates": []
+      }
+     }
+    },
+    "falsified_overridden": {
+     "verdict": "INCONCLUSIVE_MISSING_EXITS",
+     "cost_sensitive": false,
+     "missing_exit_count": 20,
+     "missing_exit_ratio": 0.0625,
+     "profiles": {
+      "43bp": {
+       "filled": 300,
+       "gate_filled_ge_300": true,
+       "trade_mean_excess": -0.01,
+       "gate_mean_excess_gt_0": false,
+       "n_entry_sessions": 30,
+       "session_means": {
+        "0": -0.01,
+        "1": -0.01,
+        "2": -0.01,
+        "3": -0.01,
+        "4": -0.01,
+        "5": -0.01,
+        "6": -0.01,
+        "7": -0.01,
+        "8": -0.01,
+        "9": -0.01,
+        "10": -0.01,
+        "11": -0.01,
+        "12": -0.01,
+        "13": -0.01,
+        "14": -0.01,
+        "15": -0.01,
+        "16": -0.01,
+        "17": -0.01,
+        "18": -0.01,
+        "19": -0.01,
+        "20": -0.01,
+        "21": -0.01,
+        "22": -0.01,
+        "23": -0.01,
+        "24": -0.01,
+        "25": -0.01,
+        "26": -0.01,
+        "27": -0.01,
+        "28": -0.01,
+        "29": -0.01
+       },
+       "positive_years": 0,
+       "n_years": 8,
+       "year_means": {
+        "2015": -0.01,
+        "2016": -0.01,
+        "2017": -0.01,
+        "2018": -0.01,
+        "2019": -0.01,
+        "2020": -0.01,
+        "2021": -0.01,
+        "2022": -0.01
+       },
+       "gate_positive_years_ge_6": false,
+       "z": 1.2815515655446004,
+       "lcb": -0.01,
+       "gate_clustered_lcb_gt_0": false,
+       "verdict": "FALSIFIED",
+       "failed_gates": [
+        "gate_mean_excess_gt_0",
+        "gate_clustered_lcb_gt_0",
+        "gate_positive_years_ge_6"
+       ]
+      },
+      "83bp": {
+       "filled": 300,
+       "gate_filled_ge_300": true,
+       "trade_mean_excess": -0.014,
+       "gate_mean_excess_gt_0": false,
+       "n_entry_sessions": 30,
+       "session_means": {
+        "0": -0.014,
+        "1": -0.014,
+        "2": -0.014,
+        "3": -0.014,
+        "4": -0.014,
+        "5": -0.014,
+        "6": -0.014,
+        "7": -0.014,
+        "8": -0.014,
+        "9": -0.014,
+        "10": -0.014,
+        "11": -0.014,
+        "12": -0.014,
+        "13": -0.014,
+        "14": -0.014,
+        "15": -0.014,
+        "16": -0.014,
+        "17": -0.014,
+        "18": -0.014,
+        "19": -0.014,
+        "20": -0.014,
+        "21": -0.014,
+        "22": -0.014,
+        "23": -0.014,
+        "24": -0.014,
+        "25": -0.014,
+        "26": -0.014,
+        "27": -0.014,
+        "28": -0.014,
+        "29": -0.014
+       },
+       "positive_years": 0,
+       "n_years": 8,
+       "year_means": {
+        "2015": -0.014,
+        "2016": -0.014,
+        "2017": -0.014,
+        "2018": -0.014,
+        "2019": -0.014,
+        "2020": -0.014,
+        "2021": -0.014,
+        "2022": -0.014
+       },
+       "gate_positive_years_ge_6": false,
+       "z": 1.2815515655446004,
+       "lcb": -0.014,
+       "gate_clustered_lcb_gt_0": false,
+       "verdict": "FALSIFIED",
+       "failed_gates": [
+        "gate_mean_excess_gt_0",
+        "gate_clustered_lcb_gt_0",
+        "gate_positive_years_ge_6"
+       ]
+      }
+     }
+    },
+    "empty_baseline_wins": "RUN_INVALID_EMPTY_BASELINE",
+    "inconclusive_cost_sensitive": {
+     "verdict": "INCONCLUSIVE_MISSING_EXITS",
+     "cost_sensitive": true,
+     "missing_exit_count": 20,
+     "missing_exit_ratio": 0.058823529411764705,
+     "profiles": {
+      "43bp": {
+       "filled": 320,
+       "gate_filled_ge_300": true,
+       "trade_mean_excess": 0.002,
+       "gate_mean_excess_gt_0": true,
+       "n_entry_sessions": 40,
+       "session_means": {
+        "0": 0.002,
+        "1": 0.002,
+        "2": 0.002,
+        "3": 0.002,
+        "4": 0.002,
+        "5": 0.002,
+        "6": 0.002,
+        "7": 0.002,
+        "8": 0.002,
+        "9": 0.002,
+        "10": 0.002,
+        "11": 0.002,
+        "12": 0.002,
+        "13": 0.002,
+        "14": 0.002,
+        "15": 0.002,
+        "16": 0.002,
+        "17": 0.002,
+        "18": 0.002,
+        "19": 0.002,
+        "20": 0.002,
+        "21": 0.002,
+        "22": 0.002,
+        "23": 0.002,
+        "24": 0.002,
+        "25": 0.002,
+        "26": 0.002,
+        "27": 0.002,
+        "28": 0.002,
+        "29": 0.002,
+        "30": 0.002,
+        "31": 0.002,
+        "32": 0.002,
+        "33": 0.002,
+        "34": 0.002,
+        "35": 0.002,
+        "36": 0.002,
+        "37": 0.002,
+        "38": 0.002,
+        "39": 0.002
+       },
+       "positive_years": 10,
+       "n_years": 10,
+       "year_means": {
+        "2015": 0.002,
+        "2016": 0.002,
+        "2017": 0.002,
+        "2018": 0.002,
+        "2019": 0.002,
+        "2020": 0.002,
+        "2021": 0.002,
+        "2022": 0.002,
+        "2023": 0.002,
+        "2024": 0.002
+       },
+       "gate_positive_years_ge_6": true,
+       "z": 1.2815515655446004,
+       "lcb": 0.002,
+       "gate_clustered_lcb_gt_0": true,
+       "verdict": "PASS",
+       "failed_gates": []
+      },
+      "83bp": {
+       "filled": 320,
+       "gate_filled_ge_300": true,
+       "trade_mean_excess": -0.002,
+       "gate_mean_excess_gt_0": false,
+       "n_entry_sessions": 40,
+       "session_means": {
+        "0": -0.002,
+        "1": -0.002,
+        "2": -0.002,
+        "3": -0.002,
+        "4": -0.002,
+        "5": -0.002,
+        "6": -0.002,
+        "7": -0.002,
+        "8": -0.002,
+        "9": -0.002,
+        "10": -0.002,
+        "11": -0.002,
+        "12": -0.002,
+        "13": -0.002,
+        "14": -0.002,
+        "15": -0.002,
+        "16": -0.002,
+        "17": -0.002,
+        "18": -0.002,
+        "19": -0.002,
+        "20": -0.002,
+        "21": -0.002,
+        "22": -0.002,
+        "23": -0.002,
+        "24": -0.002,
+        "25": -0.002,
+        "26": -0.002,
+        "27": -0.002,
+        "28": -0.002,
+        "29": -0.002,
+        "30": -0.002,
+        "31": -0.002,
+        "32": -0.002,
+        "33": -0.002,
+        "34": -0.002,
+        "35": -0.002,
+        "36": -0.002,
+        "37": -0.002,
+        "38": -0.002,
+        "39": -0.002
+       },
+       "positive_years": 0,
+       "n_years": 10,
+       "year_means": {
+        "2015": -0.002,
+        "2016": -0.002,
+        "2017": -0.002,
+        "2018": -0.002,
+        "2019": -0.002,
+        "2020": -0.002,
+        "2021": -0.002,
+        "2022": -0.002,
+        "2023": -0.002,
+        "2024": -0.002
+       },
+       "gate_positive_years_ge_6": false,
+       "z": 1.2815515655446004,
+       "lcb": -0.002,
+       "gate_clustered_lcb_gt_0": false,
+       "verdict": "FALSIFIED",
+       "failed_gates": [
+        "gate_mean_excess_gt_0",
+        "gate_clustered_lcb_gt_0",
+        "gate_positive_years_ge_6"
+       ]
+      }
+     }
+    }
+   },
+   "year_weight_session_equal": {
+    "positive_years": 10,
+    "note": "trade-weighted mutant -> 9"
+   }
+  },
+  "predicate_oracles": {
+   "cohort_transfer": {
+    "world": "variants/market_transfer",
+    "signal_session": 28,
+    "hold": 5,
+    "baseline_exact": {
+     "decile": 9,
+     "n": 9,
+     "gross_mean": 0.039080832721902964,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 1,
+     "cohort_excluded_transfer": 1
+    },
+    "note": "§12차 mirror — a baseline without the transfer-first gate completes QA5 and flips cohort_excluded_transfer/terminal_included/gross_mean"
+   },
+   "cohort_c8_due_anchor": {
+    "world": "variants/c8_backscan_due_anchor",
+    "signal_session": 25,
+    "hold": 5,
+    "baseline_exact": {
+     "decile": 8,
+     "n": 10,
+     "gross_mean": 0.013898138507966418,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 1,
+     "cohort_excluded_transfer": 0
+    },
+    "note": "baseline-only mutant scanning back from the event date changes gross_mean"
+   },
+   "cohort_evidence_cutoff": {
+    "world": "variants/evidence_after_due",
+    "signal_session": 24,
+    "hold": 5,
+    "baseline_exact": {
+     "decile": 9,
+     "n": 8,
+     "gross_mean": 0.015967090690834573,
+     "cohort_excluded_entry": 1,
+     "cohort_excluded_maturity": 1,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    },
+    "note": "baseline-only cutoff-free mutant includes the post-due event as C8 and flips cohort_excluded_maturity/terminal_included/gross_mean"
+   },
+   "maturity_entry": {
+    "cases": [
+     {
+      "case": "valid",
+      "input_bar": {
+       "open": 10.0,
+       "high": 11.0,
+       "low": 9.0,
+       "close": 10.5,
+       "volume": 100
+      },
+      "maturity_ok": true,
+      "entry_ok": true
+     },
+     {
+      "case": "valid_small_positive",
+      "input_bar": {
+       "open": 0.01,
+       "high": 0.02,
+       "low": 0.01,
+       "close": 0.01,
+       "volume": 1
+      },
+      "maturity_ok": true,
+      "entry_ok": true
+     },
+     {
+      "case": "close_none",
+      "input_bar": {
+       "open": 10.0,
+       "high": 11.0,
+       "low": 9.0,
+       "close": null,
+       "volume": 100
+      },
+      "maturity_ok": false,
+      "entry_ok": true
+     },
+     {
+      "case": "close_zero",
+      "input_bar": {
+       "open": 10.0,
+       "high": 11.0,
+       "low": 9.0,
+       "close": 0.0,
+       "volume": 100
+      },
+      "maturity_ok": false,
+      "entry_ok": true
+     },
+     {
+      "case": "close_negative",
+      "input_bar": {
+       "open": 10.0,
+       "high": 11.0,
+       "low": 9.0,
+       "close": -1.0,
+       "volume": 100
+      },
+      "maturity_ok": false,
+      "entry_ok": true
+     },
+     {
+      "case": "close_inf",
+      "input_bar": {
+       "open": 10.0,
+       "high": 11.0,
+       "low": 9.0,
+       "close": {
+        "special_float": "+inf"
+       },
+       "volume": 100
+      },
+      "maturity_ok": false,
+      "entry_ok": true
+     },
+     {
+      "case": "open_none",
+      "input_bar": {
+       "open": null,
+       "high": 11.0,
+       "low": 9.0,
+       "close": 10.5,
+       "volume": 100
+      },
+      "maturity_ok": true,
+      "entry_ok": false
+     },
+     {
+      "case": "open_zero",
+      "input_bar": {
+       "open": 0.0,
+       "high": 11.0,
+       "low": 9.0,
+       "close": 10.5,
+       "volume": 100
+      },
+      "maturity_ok": true,
+      "entry_ok": false
+     },
+     {
+      "case": "open_negative",
+      "input_bar": {
+       "open": -1.0,
+       "high": 11.0,
+       "low": 9.0,
+       "close": 10.5,
+       "volume": 100
+      },
+      "maturity_ok": true,
+      "entry_ok": false
+     },
+     {
+      "case": "open_inf",
+      "input_bar": {
+       "open": {
+        "special_float": "+inf"
+       },
+       "high": 11.0,
+       "low": 9.0,
+       "close": 10.5,
+       "volume": 100
+      },
+      "maturity_ok": true,
+      "entry_ok": false
+     },
+     {
+      "case": "volume_none",
+      "input_bar": {
+       "open": 10.0,
+       "high": 11.0,
+       "low": 9.0,
+       "close": 10.5,
+       "volume": null
+      },
+      "maturity_ok": false,
+      "entry_ok": false
+     },
+     {
+      "case": "volume_zero",
+      "input_bar": {
+       "open": 10.0,
+       "high": 11.0,
+       "low": 9.0,
+       "close": 10.5,
+       "volume": 0
+      },
+      "maturity_ok": false,
+      "entry_ok": false
+     },
+     {
+      "case": "volume_negative",
+      "input_bar": {
+       "open": 10.0,
+       "high": 11.0,
+       "low": 9.0,
+       "close": 10.5,
+       "volume": -5
+      },
+      "maturity_ok": false,
+      "entry_ok": false
+     },
+     {
+      "case": "volume_inf",
+      "input_bar": {
+       "open": 10.0,
+       "high": 11.0,
+       "low": 9.0,
+       "close": 10.5,
+       "volume": {
+        "special_float": "+inf"
+       }
+      },
+      "maturity_ok": false,
+      "entry_ok": false
+     }
+    ],
+    "note": "wired to the REAL maturity_ok/entry_ok — non-finite inputs are serialized as {'special_float': '+inf'} tags (RFC JSON); finite AND strictly positive (0.01 price / volume 1 are VALID: exact >0 bound); volume=Inf sealed here (int CSV field cannot encode Inf; loader fails closed on non-int)"
+   }
+  },
+  "variants": {
+   "invalid_maturity": {
+    "result": "COMPLETES_WITH_MISSING_EXIT",
+    "missing_exit": [
+     [
+      "900310",
+      30
+     ]
+    ],
+    "trades": 16,
+    "final_verdict": "INCONCLUSIVE_MISSING_EXITS",
+    "missing_exit_ratio": 0.058823529411764705,
+    "note": "A15-3: maturity ROW DELETED; count WIRED to compose"
+   },
+   "invalid_maturity_close_blank": {
+    "result": "COMPLETES_WITH_MISSING_EXIT",
+    "missing_exit": [
+     [
+      "900310",
+      30
+     ]
+    ],
+    "trades": 16,
+    "final_verdict": "INCONCLUSIVE_MISSING_EXITS",
+    "missing_exit_ratio": 0.058823529411764705,
+    "note": "A15-3: maturity row PRESENT but close blank -> not maturity_ok"
+   },
+   "invalid_maturity_volume_blank": {
+    "result": "COMPLETES_WITH_MISSING_EXIT",
+    "missing_exit": [
+     [
+      "900310",
+      30
+     ]
+    ],
+    "trades": 16,
+    "final_verdict": "INCONCLUSIVE_MISSING_EXITS",
+    "missing_exit_ratio": 0.058823529411764705,
+    "note": "A15-3: maturity row PRESENT but volume blank -> not maturity_ok"
+   },
+   "invalid_maturity_close_zero": {
+    "result": "COMPLETES_WITH_MISSING_EXIT",
+    "missing_exit": [
+     [
+      "900310",
+      30
+     ]
+    ],
+    "trades": 16,
+    "final_verdict": "INCONCLUSIVE_MISSING_EXITS",
+    "missing_exit_ratio": 0.058823529411764705,
+    "note": "A15-3: maturity row PRESENT but close zero — fin_pos fails -> not maturity_ok"
+   },
+   "invalid_maturity_close_inf": {
+    "result": "COMPLETES_WITH_MISSING_EXIT",
+    "missing_exit": [
+     [
+      "900310",
+      30
+     ]
+    ],
+    "trades": 16,
+    "final_verdict": "INCONCLUSIVE_MISSING_EXITS",
+    "missing_exit_ratio": 0.058823529411764705,
+    "note": "A15-3: maturity row PRESENT but close Inf — finite fails -> not maturity_ok"
+   },
+   "invalid_maturity_volume_zero": {
+    "result": "COMPLETES_WITH_MISSING_EXIT",
+    "missing_exit": [
+     [
+      "900310",
+      30
+     ]
+    ],
+    "trades": 16,
+    "final_verdict": "INCONCLUSIVE_MISSING_EXITS",
+    "missing_exit_ratio": 0.058823529411764705,
+    "note": "A15-3: maturity row PRESENT but volume zero — vol_ok fails -> not maturity_ok"
+   },
+   "invalid_maturity_volume_negative": {
+    "result": "COMPLETES_WITH_MISSING_EXIT",
+    "missing_exit": [
+     [
+      "900310",
+      30
+     ]
+    ],
+    "trades": 16,
+    "final_verdict": "INCONCLUSIVE_MISSING_EXITS",
+    "missing_exit_ratio": 0.058823529411764705,
+    "note": "A15-3: maturity row PRESENT but volume negative — vol_ok fails -> not maturity_ok"
+   },
+   "entry_open_zero_no_fill": {
+    "result": "ENTRY_NO_FILL_ON_ZERO_OPEN",
+    "trades": 17,
+    "no_fill": [
+     [
+      24,
+      "900310"
+     ],
+     [
+      32,
+      "900370"
+     ]
+    ],
+    "final_verdict": "UNIDENTIFIABLE_CLUSTERS",
+    "note": "A12 entry predicate: open must be finite AND positive — zero open at the entry bar is NO_FILL; freed capacity lets KA5 enter at s30 (base skip disappears) — capacity ripple discriminator included"
+   },
+   "data_gap": "RUN_INVALID_DATA_GAP",
+   "duplicate_row": "RUN_INVALID_DUPLICATE_ROW",
+   "nofill_no_substitution": {
+    "QA6": "NO_FILL",
+    "KA5": "SKIPPED_MAX10 (no substitution)",
+    "trades": 16
+   },
+   "identity_conflict": "RUN_INVALID_IDENTITY_CONFLICT",
+   "market_transfer": "RUN_INVALID_MARKET_TRANSFER",
+   "market_transfer_missing_maturity": "RUN_INVALID_MARKET_TRANSFER",
+   "data_gap_control_all_invalid": {
+    "result": "COMPLETES_NOT_DATA_GAP",
+    "trades": 10,
+    "note": "rows present but invalid -> universe exclusion, not RUN_INVALID_DATA_GAP"
+   },
+   "stale_delist_bar": {
+    "result": "VALID_MATURITY_BAR_WINS_OVER_DECISION_EVIDENCE",
+    "ka4_exit": {
+     "session": 34,
+     "close": 1000.0,
+     "delisted_exit": false
+    },
+    "qa5_cohort_baseline_exact": {
+     "decile": 9,
+     "n": 10,
+     "gross_mean": -0.057189840511743896,
+     "cohort_excluded_entry": 0,
+     "cohort_excluded_maturity": 0,
+     "cohort_terminal_included": 0,
+     "cohort_excluded_transfer": 0
+    },
+    "note": "§12차 evidence_type=decision_disclosure — evidence classifies bar absence OR invalidity only; an evidence-first mutant terminals KA4 early and flips cohort_terminal_included/gross_mean"
+   },
+   "c8_backscan_due_anchor": {
+    "result": "C8_SCANS_BACK_FROM_SCHEDULED_EXIT",
+    "qa2_exit_close": 25501.41,
+    "qa2_exit_session": 31,
+    "trades": 17,
+    "note": "event s28 < valid s30 < invalid due s31 — an event-anchored back-scan returns the s28 close instead and mismatches"
+   },
+   "slot_release_capacity_ripple": {
+    "result": "SLOT_HELD_TO_SCHEDULED_EXIT",
+    "trades": 17,
+    "ka5_still_skipped": true,
+    "ka4_exit_session": 34,
+    "note": "event s29 with capacity saturation at entry s30 — an occupy=min(due,event) mutant frees a slot, KA5 enters and the count/skip mismatch"
+   },
+   "evidence_after_due": {
+    "result": "COMPLETES_WITH_MISSING_EXIT",
+    "missing_exit": [
+     [
+      "900310",
+      30
+     ]
+    ],
+    "trades": 16,
+    "final_verdict": "INCONCLUSIVE_MISSING_EXITS",
+    "missing_exit_ratio": 0.058823529411764705,
+    "note": "§12차 cutoff: event s40 > scheduled exit s30 -> NOT evidence; a cutoff-free mutant terminals it as C8 and yields 17 trades"
+   },
+   "unknown_evidence_type": "RUN_INVALID_UNKNOWN_EVIDENCE_TYPE",
+   "holdout_leg_control": {
+    "result": "IDENTICAL_TO_BASE",
+    "trades": 17,
+    "oob_reads": 0,
+    "holdout_key_in_symbols": false,
+    "holdout_key_in_membership": false,
+    "note": "membership leg starting beyond exploration_end is structurally invisible — implementations must assert the clamped symbol/membership key sets"
+   }
+  }
+ }
+}
