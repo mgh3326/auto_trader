@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-revision: str = "20260805_merge_toss_phase2_kis_mock_runner"
+revision: str = "20260805_toss_merge"
 down_revision: str | Sequence[str] | None = (
     "20260804_toss_phase2",
     "20260805_kis_mock_runner",

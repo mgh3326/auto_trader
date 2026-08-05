@@ -50,7 +50,7 @@ def test_toss_migration_history_merges_the_newer_main_head() -> None:
     )
     source = merge_path.read_text()
 
-    assert 'revision: str = "20260805_merge_toss_phase2_kis_mock_runner"' in source
+    assert 'revision: str = "20260805_toss_merge"' in source
     assert '"20260804_toss_phase2"' in source
     assert '"20260805_kis_mock_runner"' in source
     assert "op." not in source
