@@ -283,6 +283,13 @@ def _evaluate_etr(
     metrics: dict[str, float] = {"r1": r1, "q10_r1": q10}
 
     if arm == "ablation":
+        _populate_etr_ablation_ranking_metrics(
+            candidate,
+            bars,
+            q10=q10,
+            r1=r1,
+            metrics=metrics,
+        )
         return _result(
             candidate,
             bars,
@@ -375,6 +382,52 @@ def _evaluate_etr(
             "quote_volume": volume_ok,
         },
         metrics=metrics,
+    )
+
+
+def _populate_etr_ablation_ranking_metrics(
+    candidate: CandidateDefinition,
+    bars: Sequence[DailyBar],
+    *,
+    q10: float,
+    r1: float,
+    metrics: dict[str, float],
+) -> None:
+    """Populate only valid ETR ranking inputs without changing ablation admission.
+
+    The pre-registered ablation remains ``tail_day`` alone.  Ranking is a
+    separate execution concern, so the full-arm thresholds are intentionally
+    not consulted here.  Inputs that fail the full path's existing raw-data
+    validity checks remain absent and therefore retain the engine's established
+    last-place treatment for missing ranking values.
+    """
+    metrics["tail_severity"] = q10 - r1
+    current = bars[-1]
+    if not _valid_ohlc(current, require_nonflat=True):
+        return
+    if not (
+        _is_finite_positive(current.base_volume)
+        and _is_finite_positive(current.quote_volume)
+    ):
+        return
+
+    volume_days = _int_parameter(candidate, "quote_volume_median_days")
+    volume_sample = tuple(bar.quote_volume for bar in bars[-(volume_days + 1) : -1])
+    if len(volume_sample) != volume_days:
+        raise CandidateParseError("ETR quote-volume sample length drift")
+    try:
+        volume_median = _median(volume_sample)
+    except ValueError:
+        return
+    if not _is_finite_positive(volume_median):
+        return
+
+    price_range = current.high - current.low
+    metrics.update(
+        {
+            "clv": (current.close - current.low) / price_range,
+            "qv_ratio": current.quote_volume / volume_median,
+        }
     )
 
 
