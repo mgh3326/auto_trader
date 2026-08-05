@@ -4,8 +4,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
+from functools import wraps
 from typing import TYPE_CHECKING, Any, cast
 
+from app.services.kis_mock_runner.gates import is_truthy
+from app.services.kis_mock_runner.singleton import enforce_kis_mock_mutation_writer
 from app.services.kr_symbol_universe_service import is_nxt_eligible
 
 from . import constants
@@ -26,6 +30,42 @@ if TYPE_CHECKING:
 # fail-closed(RuntimeError). KR live mutation 경로(order/cancel/modify)의 무한 재-POST
 # 및 실 주문 다중 제출 리스크를 차단한다.
 _MAX_TOKEN_REFRESH_RESUBMITS = 1
+
+
+async def _domestic_exchange_route(stock_code: str, *, is_mock: bool) -> str:
+    """Resolve the venue at every domestic mutation boundary.
+
+    KR-B0's KIS mock runner is KRX regular-session only.  This is deliberately
+    a route decision inside the existing place/cancel/modify path rather than
+    an ``is_mock`` bypass around it: mock retries execute this helper again and
+    can never inherit SOR from an NXT-eligible symbol.
+    """
+    if is_mock:
+        return "KRX"
+    nxt = await is_nxt_eligible(stock_code)
+    return "SOR" if nxt else "KRX"
+
+
+def _guard_kis_mock_writer(method):
+    """Use the B0 account-mode singleton for every armed mock KRX mutation.
+
+    ``DomesticOrderClient`` is the common KRX wire boundary for runner, watch
+    auto-execute, smoke, and manual MCP place/cancel/modify.  The wrapper keeps
+    the original route/preflight method intact and is deliberately active only
+    once the default-disabled KIS mock runner master gate has been armed.
+    """
+    signature = inspect.signature(method)
+
+    @wraps(method)
+    async def guarded(self, *args, **kwargs):
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        is_mock = bool(bound.arguments.get("is_mock", False))
+        enabled = is_truthy(os.getenv("KIS_MOCK_RUNNER_ENABLED"))
+        async with enforce_kis_mock_mutation_writer(enabled=is_mock and enabled):
+            return await method(self, *args, **kwargs)
+
+    return guarded
 
 
 def _domestic_order_key(order: dict[str, Any]) -> str | None:
@@ -247,6 +287,7 @@ class DomesticOrderClient:
 
         return all_orders
 
+    @_guard_kis_mock_writer
     async def order_korea_stock(
         self,
         stock_code: str,
@@ -318,8 +359,7 @@ class DomesticOrderClient:
         # 주문 구분: 00(지정가), 01(시장가)
         ord_dvsn = "01" if price == 0 else "00"
 
-        nxt = await is_nxt_eligible(stock_code)
-        excg_id_dvsn_cd = "SOR" if nxt else "KRX"
+        excg_id_dvsn_cd = await _domestic_exchange_route(stock_code, is_mock=is_mock)
 
         body = {
             "CANO": cano,
@@ -507,6 +547,7 @@ class DomesticOrderClient:
             stock_code, "sell", quantity, price, is_mock
         )
 
+    @_guard_kis_mock_writer
     async def cancel_korea_order(
         self,
         order_number: str,
@@ -586,8 +627,7 @@ class DomesticOrderClient:
                 is_mock=is_mock,
             )
 
-        nxt = await is_nxt_eligible(stock_code)
-        excg_id_dvsn_cd = "SOR" if nxt else "KRX"
+        excg_id_dvsn_cd = await _domestic_exchange_route(stock_code, is_mock=is_mock)
 
         body = {
             "CANO": cano,
@@ -890,6 +930,7 @@ class DomesticOrderClient:
         logging.info(f"국내주식 체결조회 완료: 총 {len(all_orders)}건")
         return all_orders
 
+    @_guard_kis_mock_writer
     async def modify_korea_order(
         self,
         order_number: str,
@@ -956,8 +997,7 @@ class DomesticOrderClient:
                 is_mock=is_mock,
             )
 
-        nxt = await is_nxt_eligible(stock_code)
-        excg_id_dvsn_cd = "SOR" if nxt else "KRX"
+        excg_id_dvsn_cd = await _domestic_exchange_route(stock_code, is_mock=is_mock)
 
         body = {
             "CANO": cano,

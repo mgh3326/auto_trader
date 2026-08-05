@@ -238,23 +238,24 @@ class TestKISFailureLogging:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("order_type", "is_mock", "expected_tr_id"),
+        ("order_type", "is_mock", "expected_tr_id", "expected_exchange"),
         [
-            ("buy", False, "TTTC0012U"),
-            ("buy", True, "VTTC0012U"),
-            ("sell", False, "TTTC0011U"),
-            ("sell", True, "VTTC0011U"),
+            ("buy", False, "TTTC0012U", "SOR"),
+            ("buy", True, "VTTC0012U", "KRX"),
+            ("sell", False, "TTTC0011U", "SOR"),
+            ("sell", True, "VTTC0011U", "KRX"),
         ],
     )
     @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
-    async def test_order_korea_stock_uses_new_tr_and_sor(
+    async def test_order_korea_stock_uses_new_tr_and_mock_krx_route(
         self,
         mock_settings,
         mock_client_class,
         order_type,
         is_mock,
         expected_tr_id,
+        expected_exchange,
     ):
         from app.services.brokers.kis.client import KISClient
 
@@ -294,24 +295,25 @@ class TestKISFailureLogging:
         body = mock_client.post.call_args.kwargs["json"]
 
         assert headers["tr_id"] == expected_tr_id
-        assert body["EXCG_ID_DVSN_CD"] == "SOR"
+        assert body["EXCG_ID_DVSN_CD"] == expected_exchange
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("is_mock", "expected_tr_id"),
+        ("is_mock", "expected_tr_id", "expected_exchange"),
         [
-            (False, "TTTC0013U"),
-            (True, "VTTC0013U"),
+            (False, "TTTC0013U", "SOR"),
+            (True, "VTTC0013U", "KRX"),
         ],
     )
     @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
-    async def test_cancel_korea_order_uses_new_tr_sor_and_explicit_orgno(
+    async def test_cancel_korea_order_uses_new_tr_and_mock_krx_route(
         self,
         mock_settings,
         mock_client_class,
         is_mock,
         expected_tr_id,
+        expected_exchange,
     ):
         from app.services.brokers.kis.client import KISClient
 
@@ -353,26 +355,27 @@ class TestKISFailureLogging:
         body = mock_client.post.call_args.kwargs["json"]
 
         assert headers["tr_id"] == expected_tr_id
-        assert body["EXCG_ID_DVSN_CD"] == "SOR"
+        assert body["EXCG_ID_DVSN_CD"] == expected_exchange
         assert body["KRX_FWDG_ORD_ORGNO"] == "06010"
         assert body["RVSE_CNCL_DVSN_CD"] == "02"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("is_mock", "expected_tr_id"),
+        ("is_mock", "expected_tr_id", "expected_exchange"),
         [
-            (False, "TTTC0013U"),
-            (True, "VTTC0013U"),
+            (False, "TTTC0013U", "SOR"),
+            (True, "VTTC0013U", "KRX"),
         ],
     )
     @patch("app.services.brokers.kis.base.httpx.AsyncClient")
     @patch("app.services.brokers.kis.client.settings")
-    async def test_modify_korea_order_uses_new_tr_sor_and_resolved_orgno(
+    async def test_modify_korea_order_uses_new_tr_and_mock_krx_route(
         self,
         mock_settings,
         mock_client_class,
         is_mock,
         expected_tr_id,
+        expected_exchange,
     ):
         from app.services.brokers.kis.client import KISClient
 
@@ -421,7 +424,7 @@ class TestKISFailureLogging:
         body = mock_client.post.call_args.kwargs["json"]
 
         assert headers["tr_id"] == expected_tr_id
-        assert body["EXCG_ID_DVSN_CD"] == "SOR"
+        assert body["EXCG_ID_DVSN_CD"] == expected_exchange
         assert body["KRX_FWDG_ORD_ORGNO"] == "06010"
         assert body["RVSE_CNCL_DVSN_CD"] == "01"
 
