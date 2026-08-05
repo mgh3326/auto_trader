@@ -120,6 +120,27 @@ def test_envelope_rejects_hard_caps_and_daily_loss_halt() -> None:
     assert decision.requires_entry_halt is True
 
 
+def test_daily_loss_halt_blocks_entries_but_not_exits() -> None:
+    drawdown_snapshot = _snapshot(current_nlv_krw=Decimal("97500000"))
+    entry = evaluate_envelope(intent=_entry(), snapshot=drawdown_snapshot)
+    exit = evaluate_envelope(
+        intent=OrderIntent(
+            side="sell",
+            role="exit",
+            order_type="limit",
+            quantity=Decimal("1"),
+            limit_price_krw=Decimal("100000"),
+        ),
+        snapshot=drawdown_snapshot,
+    )
+
+    assert entry.allowed is False
+    assert entry.requires_entry_halt is True
+    assert EnvelopeReason.DAILY_LOSS_ENTRY_HALT in entry.reason_codes
+    assert exit.allowed is True
+    assert exit.reason_codes == ()
+
+
 def test_exit_cap_is_distinct_from_new_entry_cap() -> None:
     decision = evaluate_envelope(
         intent=OrderIntent(

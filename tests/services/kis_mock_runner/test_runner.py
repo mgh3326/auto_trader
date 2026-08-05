@@ -179,9 +179,7 @@ async def test_control_read_failure_blocks_all_automatic_work() -> None:
 
 
 @pytest.mark.asyncio
-async def test_entry_halt_cancels_only_attributed_pending_entries_and_allows_exits() -> (
-    None
-):
+async def test_entry_halt_cancels_only_attributed_pending_entries() -> None:
     pending = PendingEntryPort(
         (
             AttributedPendingEntry(
@@ -207,8 +205,49 @@ async def test_entry_halt_cancels_only_attributed_pending_entries_and_allows_exi
     assert result.status is RunnerStatus.ENTRY_HALT
     assert result.canceled_pending_entries == 1
     assert pending.cancelled == ["order-1"]
-    # Exit permission itself is asserted exhaustively in test_control; this run
-    # demonstrates that ENTRY_HALT's automatic mutation is only entry cancellation.
+    assert result.broker_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_entry_halt_allows_exit_through_terminal_envelope_path() -> None:
+    store = FakeStore(
+        KillSwitchState(
+            mode=KillMode.ENTRY_HALT,
+            reason="daily_loss_halt_threshold_reached",
+            updated_by="kis_mock_runner",
+        )
+    )
+    runner = KISMockRunner(
+        environment={"KIS_MOCK_RUNNER_ENABLED": "true"},
+        tag="test",
+        overlay=OverlayBinding(
+            candidate_id="candidate-v1",
+            contract_hash="hash-v1",
+            strategy_id="strategy-v1",
+        ),
+        kill_switch_store=store,
+        writer_lease=TrackingLease(),
+        notifier=RecordingNotifier(),
+    )
+
+    result = await runner.evaluate_overlay_intent(
+        intent=OrderIntent(
+            side="sell",
+            role="exit",
+            order_type="limit",
+            quantity=Decimal("1"),
+            limit_price_krw=Decimal("100000"),
+        ),
+        snapshot=_snapshot(current_nlv_krw=Decimal("97500000")),
+        decision_key="2026-08-05:exit-after-halt",
+    )
+
+    assert result.status is RunnerStatus.READY_NO_INTENT
+    assert result.kill_switch is not None
+    assert result.kill_switch.mode is KillMode.ENTRY_HALT
+    assert result.envelope is not None and result.envelope.allowed is True
+    assert result.correlation_id is not None
+    assert store.writes == []
     assert result.broker_calls == 0
 
 

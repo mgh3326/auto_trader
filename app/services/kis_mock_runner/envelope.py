@@ -205,8 +205,12 @@ def evaluate_envelope(
         >= envelope.max_planned_exits_per_xkrx_session
     ):
         reasons.append(EnvelopeReason.SESSION_PLANNED_EXIT_CAP)
-    if snapshot.current_nlv_krw <= snapshot.session_start_nlv_krw * (
-        Decimal("1") - envelope.daily_loss_halt_fraction
+    # A daily-loss breach transitions the durable control plane to ENTRY_HALT.
+    # It is deliberately an entry-only no-submit reason: B-03 requires the
+    # resulting halt to leave liquidation/exit mutations available.
+    if intent.role == "entry" and snapshot.current_nlv_krw <= (
+        snapshot.session_start_nlv_krw
+        * (Decimal("1") - envelope.daily_loss_halt_fraction)
     ):
         reasons.append(EnvelopeReason.DAILY_LOSS_ENTRY_HALT)
     return EnvelopeDecision(allowed=not reasons, reason_codes=tuple(reasons))
