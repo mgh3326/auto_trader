@@ -136,6 +136,9 @@ ON CONFLICT (time_utc, symbol, venue) DO NOTHING
 #: Latency regression threshold vs the Stage A baseline median (2.127 ms).
 LATENCY_ABORT_FACTOR = 5.0
 MAX_CONSECUTIVE_429 = 3
+DB_LATENCY_SAMPLES_PER_WINDOW = 15
+DB_LATENCY_CONSECUTIVE_WINDOWS = 2
+DB_LATENCY_RAW_HARD_STOP_MS = 100.0
 DB_INSERT_CONFLICT_ABORT_RATIO = 0.005
 CURSOR_OVERLAP_ABORT_RATIO = 0.40
 EXIT_SUCCESS = 0
@@ -430,11 +433,19 @@ class Guard:
         self.baseline = baseline_median_ms
         self.log = log
         self.consecutive_429: dict[str, int] = {}
+        self.latency_p95_breach_streak: dict[str, int] = {}
+
+    @staticmethod
+    def _nearest_rank_p95(samples: list[float]) -> float:
+        if not samples:
+            raise ValueError("latency samples must not be empty")
+        rank = max(1, (95 * len(samples) + 99) // 100)
+        return sorted(samples)[rank - 1]
 
     async def check(self, source: str) -> None:
         async with self.pool.acquire() as c:
-            samples = []
-            for _ in range(5):
+            samples: list[float] = []
+            for _ in range(DB_LATENCY_SAMPLES_PER_WINDOW):
                 t0 = time.perf_counter()
                 await c.fetch(
                     "SELECT time, close FROM public.kr_candles_1m "
@@ -442,19 +453,56 @@ class Guard:
                     "005930",
                     datetime.now(KST) - timedelta(days=1),
                 )
-                samples.append((time.perf_counter() - t0) * 1000)
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                samples.append(elapsed_ms)
+                if elapsed_ms > DB_LATENCY_RAW_HARD_STOP_MS:
+                    self.log.write(
+                        {
+                            "event": "latency_probe",
+                            "source": source,
+                            "window_complete": False,
+                            "sample_count": len(samples),
+                            "p95_ms": round(self._nearest_rank_p95(samples), 3),
+                            "raw_max_ms": round(max(samples), 3),
+                            "baseline_ms": self.baseline,
+                            "breach_streak": self.latency_p95_breach_streak.get(
+                                source, 0
+                            ),
+                            "hard_stop": "raw_gt_100ms",
+                        }
+                    )
+                    raise AbortStream(
+                        f"query latency raw {elapsed_ms:.2f}ms > "
+                        f"{DB_LATENCY_RAW_HARD_STOP_MS:.1f}ms"
+                    )
         med = statistics.median(samples)
+        p95 = self._nearest_rank_p95(samples)
+        threshold_ms = self.baseline * LATENCY_ABORT_FACTOR
+        streak = (
+            self.latency_p95_breach_streak.get(source, 0) + 1
+            if p95 > threshold_ms
+            else 0
+        )
+        self.latency_p95_breach_streak[source] = streak
         self.log.write(
             {
                 "event": "latency_probe",
                 "source": source,
+                "window_complete": True,
+                "sample_count": len(samples),
                 "median_ms": round(med, 3),
+                "p95_ms": round(p95, 3),
+                "raw_max_ms": round(max(samples), 3),
                 "baseline_ms": self.baseline,
+                "threshold_ms": round(threshold_ms, 3),
+                "breach_streak": streak,
             }
         )
-        if med > self.baseline * LATENCY_ABORT_FACTOR:
+        if streak >= DB_LATENCY_CONSECUTIVE_WINDOWS:
             raise AbortStream(
-                f"query latency {med:.2f}ms > {LATENCY_ABORT_FACTOR}x baseline {self.baseline}ms"
+                f"query latency p95 {p95:.2f}ms > {LATENCY_ABORT_FACTOR}x "
+                f"baseline {self.baseline}ms for "
+                f"{DB_LATENCY_CONSECUTIVE_WINDOWS} consecutive windows"
             )
 
     def note_429(self, source: str, is_429: bool) -> None:
