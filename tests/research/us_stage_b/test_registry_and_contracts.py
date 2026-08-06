@@ -32,12 +32,27 @@ def test_registry_parses_original_packet_bytes_and_stamps_raw_contract_hashes(
         "7052f69ae1ae20de53750276c006959694941a1b2a430c99c8dbbe616cba9836",
         "43ff9a4a99ba3717c2d5563aa58c8a482800082c4fa4c41330712c4460848b0f",
     ]
+    expected_hashes = {
+        "US-TS-MOM-CONT-Z126-H20-v1": (
+            "25d06a5e81c03a254948ee20b9180d466e5531a63715dd1ba53b7160ce032509"
+        ),
+        "US-TS-REV-SHORT-Z3-T126-H3-v1": (
+            "7052f69ae1ae20de53750276c006959694941a1b2a430c99c8dbbe616cba9836"
+        ),
+        "US-TS-VOLBREAK-C55-V2-H10-v1": (
+            "43ff9a4a99ba3717c2d5563aa58c8a482800082c4fa4c41330712c4460848b0f"
+        ),
+    }
+    disposal = "EXPLORATORY_FALSIFIED (2026-08-06) — 결과 폐기, 승격 불가"
     for item in registry.admitted:
         payload = item.to_dict()
         assert payload["strategy_id"] == item.strategy_id
         assert payload["contract_hash"] == item.contract_hash
+        assert item.contract_hash == expected_hashes[item.strategy_id]
         assert "EXPLORATORY_FALSIFICATION_ONLY" in payload["labels"]
         assert "SURVIVORSHIP_BIASED=TRUE" in payload["labels"]
+        assert disposal in payload["labels"]
+        assert disposal in item.labels
 
 
 def test_registry_refuses_any_packet_byte_drift_before_parsing() -> None:

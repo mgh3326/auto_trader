@@ -9,6 +9,7 @@ from .engine import (
     rank_signal_observations,
     run_us_stage_b,
 )
+from .parquet_source import ParquetUSBarSource, PathAccessSpy
 from .registry import CandidateRegistry
 from .source import InMemoryUSBarSource, USStageBDailyBar
 from .verdict import FalsificationVerdict, RevCostProfileVerdicts
@@ -18,6 +19,8 @@ __all__ = [
     "CohortComparison",
     "FalsificationVerdict",
     "InMemoryUSBarSource",
+    "ParquetUSBarSource",
+    "PathAccessSpy",
     "TradeOutcome",
     "RevCostProfileVerdicts",
     "USCostLiteral",
