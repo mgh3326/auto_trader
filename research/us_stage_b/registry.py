@@ -46,6 +46,12 @@ _COMMON_LABELS: Final[tuple[str, ...]] = (
     "EXECUTION_ENVELOPE_UNBOUND",
 )
 _VOLBREAK_LABEL: Final = "VOLUME_CA_UNRESOLVED"
+# Post U1-B (2026-08-06): all three frozen US candidates failed exploratory
+# gates.  This label is registry-side only — it does not alter YAML source
+# blocks, contract hashes, parameters, costs, or falsification gate text.
+_EXPLORATORY_DISPOSAL_LABEL: Final = (
+    "EXPLORATORY_FALSIFIED (2026-08-06) — 결과 폐기, 승격 불가"
+)
 
 # These checks bind the three explicit code paths to the packet's parsed values.
 # They are guards, not a second configuration source: signal evaluation fetches
@@ -132,8 +138,8 @@ def mandatory_labels(strategy_id: str) -> tuple[str, ...]:
             f"unsupported strategy_id {strategy_id!r}; shared fallback is forbidden"
         )
     if strategy_id == "US-TS-VOLBREAK-C55-V2-H10-v1":
-        return (*_COMMON_LABELS, _VOLBREAK_LABEL)
-    return _COMMON_LABELS
+        return (*_COMMON_LABELS, _VOLBREAK_LABEL, _EXPLORATORY_DISPOSAL_LABEL)
+    return (*_COMMON_LABELS, _EXPLORATORY_DISPOSAL_LABEL)
 
 
 @dataclass(frozen=True)
