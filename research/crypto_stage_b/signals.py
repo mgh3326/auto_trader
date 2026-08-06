@@ -509,6 +509,7 @@ def _evaluate_tpr(
     }
 
     if arm == "ablation":
+        _populate_tpr_ablation_ranking_metrics(candidate, bars, metrics=metrics)
         return _result(
             candidate,
             bars,
@@ -587,6 +588,40 @@ def _evaluate_tpr(
         },
         metrics=metrics,
     )
+
+
+def _populate_tpr_ablation_ranking_metrics(
+    candidate: CandidateDefinition,
+    bars: Sequence[DailyBar],
+    *,
+    metrics: dict[str, float],
+) -> None:
+    """Populate valid TPR rank inputs without applying full-arm thresholds.
+
+    TPR ablation remains a trend-state-only arm.  The execution ranking's third
+    key is nevertheless part of the frozen contract, so it is derived whenever
+    the existing full path's raw volume validity permits it.  Invalid inputs
+    remain absent so the engine retains its established last-place behavior.
+    """
+    current = bars[-1]
+    if not (
+        _is_finite_positive(current.base_volume)
+        and _is_finite_positive(current.quote_volume)
+    ):
+        return
+
+    volume_days = _int_parameter(candidate, "quote_volume_median_days")
+    volume_sample = tuple(bar.quote_volume for bar in bars[-(volume_days + 1) : -1])
+    if len(volume_sample) != volume_days:
+        raise CandidateParseError("TPR quote-volume sample length drift")
+    try:
+        volume_median = _median(volume_sample)
+    except ValueError:
+        return
+    if not _is_finite_positive(volume_median):
+        return
+
+    metrics["qv_ratio"] = current.quote_volume / volume_median
 
 
 def _normalized_true_range(current: DailyBar, previous_close: float) -> float:
@@ -684,6 +719,13 @@ def _evaluate_ceb(
         "clv": clv,
     }
     if arm == "ablation":
+        _populate_ceb_ablation_ranking_metrics(
+            candidate,
+            bars,
+            ntr_history=ntr_history,
+            current_ntr=current_ntr,
+            metrics=metrics,
+        )
         return _result(
             candidate,
             bars,
@@ -766,4 +808,40 @@ def _evaluate_ceb(
             "quote_volume": volume_ok,
         },
         metrics=metrics,
+    )
+
+
+def _populate_ceb_ablation_ranking_metrics(
+    candidate: CandidateDefinition,
+    bars: Sequence[DailyBar],
+    *,
+    ntr_history: Sequence[float],
+    current_ntr: float,
+    metrics: dict[str, float],
+) -> None:
+    """Populate valid CEB rank inputs without changing raw-breakout admission.
+
+    CEB ablation remains a raw-20d-breakout arm.  Its first and second frozen
+    rank keys are derived only when the existing full path accepts their raw
+    inputs; range/volume thresholds are intentionally not applied here.
+    """
+    current = bars[-1]
+    if not _is_finite_positive(current.quote_volume):
+        return
+    volume_days = _int_parameter(candidate, "quote_volume_median_days")
+    try:
+        ntr_median = _median(ntr_history)
+        volume_median = _median(
+            tuple(bar.quote_volume for bar in bars[-(volume_days + 1) : -1])
+        )
+    except ValueError:
+        return
+    if not (_is_finite_positive(ntr_median) and _is_finite_positive(volume_median)):
+        return
+
+    metrics.update(
+        {
+            "range_ratio": current_ntr / ntr_median,
+            "qv_ratio": current.quote_volume / volume_median,
+        }
     )
