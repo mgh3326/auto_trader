@@ -83,6 +83,87 @@ def test_etr_ablation_uses_frozen_ranking_not_alphabetical_selection() -> None:
     )
 
 
+def _simultaneous_ablation_outcomes(
+    bars_by_symbol: dict[str, tuple[DailyBar, ...]],
+) -> list:
+    result = run_execution_arm(
+        source=InMemoryDailyBarSource(
+            [bar for bars in bars_by_symbol.values() for bar in bars]
+        ),
+        contract=_contract("CR-SPOT-ETR-01", venue="upbit_krw", end_index=255),
+        arm="ablation",
+    )
+    signal_session = date(2024, 1, 1) + timedelta(days=251)
+    return [
+        item for item in result.outcomes if item.signal_session == signal_session
+    ]
+
+
+def test_etr_ablation_tied_qv_ratio_uses_clv_before_symbol() -> None:
+    """A later symbol wins a primary-key tie through the second frozen key."""
+    profiles = {
+        "A": (41.0, 51.0, 40.0, 45.0, 200.0),
+        "Z": (41.0, 51.0, 40.0, 50.0, 200.0),
+    }
+    signal_session = date(2024, 1, 1) + timedelta(days=251)
+    bars_by_symbol: dict[str, tuple[DailyBar, ...]] = {}
+    for symbol, (open_price, high, low, close, quote_volume) in profiles.items():
+        bars_by_symbol[symbol] = tuple(
+            replace(
+                bar,
+                open=open_price,
+                high=high,
+                low=low,
+                close=close,
+                quote_volume=quote_volume,
+            )
+            if bar.session == signal_session
+            else bar
+            for bar in etr_bars(symbol=symbol)
+        )
+
+    simultaneous = _simultaneous_ablation_outcomes(bars_by_symbol)
+
+    assert [item.symbol for item in simultaneous] == ["Z", "A"]
+    assert [item.rank for item in simultaneous] == [1, 2]
+    assert simultaneous[0].ranking_metrics["qv_ratio"] == pytest.approx(
+        simultaneous[1].ranking_metrics["qv_ratio"]
+    )
+    assert (
+        simultaneous[0].ranking_metrics["clv"]
+        > simultaneous[1].ranking_metrics["clv"]
+    )
+
+
+def test_etr_ablation_tied_qv_and_clv_uses_tail_severity_before_symbol() -> None:
+    """A later symbol wins ties on the first two frozen ranking keys."""
+    weaker_tail = list(etr_bars(symbol="A"))
+    for index in range(1, 50, 2):
+        weaker_tail[index] = replace(
+            weaker_tail[index], low=89.0, close=90.0
+        )
+
+    simultaneous = _simultaneous_ablation_outcomes(
+        {
+            "A": tuple(weaker_tail),
+            "Z": etr_bars(symbol="Z"),
+        }
+    )
+
+    assert [item.symbol for item in simultaneous] == ["Z", "A"]
+    assert [item.rank for item in simultaneous] == [1, 2]
+    assert simultaneous[0].ranking_metrics["qv_ratio"] == pytest.approx(
+        simultaneous[1].ranking_metrics["qv_ratio"]
+    )
+    assert simultaneous[0].ranking_metrics["clv"] == pytest.approx(
+        simultaneous[1].ranking_metrics["clv"]
+    )
+    assert (
+        simultaneous[0].ranking_metrics["tail_severity"]
+        > simultaneous[1].ranking_metrics["tail_severity"]
+    )
+
+
 def test_etr_ablation_populates_ranking_metrics_without_full_arm_admission() -> None:
     bars = etr_bars(quote_volume_on_signal=100.0)
 
