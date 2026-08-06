@@ -9,6 +9,7 @@ from research.crypto_stage_b.resynthesis import (
     apply_inconclusive_predicate,
     canonical_json_bytes,
     resynthesize_artifact_directory,
+    resynthesize_artifact_files,
     resynthesize_pair_artifact,
     write_json_once,
 )
@@ -52,6 +53,76 @@ def _resynthesize(records: list[dict[str, object]], **kwargs: object):
         source_artifact_filename="pair.json",
         source_artifact_sha256="a" * 64,
     ).to_dict()
+
+
+def _replay_year(
+    year: int,
+    *,
+    full: float | None,
+    ablation: float | None,
+    full_count: int = 1,
+    ablation_count: int = 1,
+) -> dict[str, object]:
+    return {
+        "full": {
+            "calendar_year": year,
+            "net_mean_return": full,
+            "resolved_exit_count": full_count if full is not None else 0,
+        },
+        "ablation": {
+            "calendar_year": year,
+            "net_mean_return": ablation,
+            "resolved_exit_count": ablation_count if ablation is not None else 0,
+        },
+        "incremental": {
+            "full_net_mean_return": full,
+            "ablation_net_mean_return": ablation,
+            "full_minus_ablation_net_mean_return": (
+                None if full is None or ablation is None else full - ablation
+            ),
+        },
+    }
+
+
+def _replay_artifact(
+    records: list[dict[str, object]],
+    *,
+    full_net_mean_return: float,
+    ablation_net_mean_return: float,
+    full_sensitivity_net_mean_return: float | None = None,
+    ablation_sensitivity_net_mean_return: float | None = None,
+) -> dict[str, object]:
+    return {
+        "strategy_id": "CR-SPOT-TEST-01",
+        "venue": "upbit_krw",
+        "pair": {
+            "strategy_id": "CR-SPOT-TEST-01",
+            "venue": "upbit_krw",
+            "contract_hash": "frozen-contract-hash",
+            "full": {
+                "net_mean_return": full_net_mean_return,
+                "sensitivity_net_mean_return": (
+                    full_net_mean_return
+                    if full_sensitivity_net_mean_return is None
+                    else full_sensitivity_net_mean_return
+                ),
+            },
+            "ablation": {
+                "net_mean_return": ablation_net_mean_return,
+                "sensitivity_net_mean_return": (
+                    ablation_net_mean_return
+                    if ablation_sensitivity_net_mean_return is None
+                    else ablation_sensitivity_net_mean_return
+                ),
+            },
+        },
+        "harness_query": {
+            "strategy_id": "CR-SPOT-TEST-01",
+            "venue": "upbit_krw",
+            "contract_hash": "frozen-contract-hash",
+            "records": records,
+        },
+    }
 
 
 def test_one_contributing_year_is_inconclusive_not_a_new_sample_gate() -> None:
@@ -160,3 +231,112 @@ def test_writer_is_atomic_and_refuses_overwrite(tmp_path) -> None:
     assert digest == hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
     with pytest.raises(FileExistsError, match="refusing to overwrite"):
         write_json_once(target, payload)
+
+
+def test_replay_record_reconstructs_existing_verdict_and_fragile_evidence() -> None:
+    artifact = _replay_artifact(
+        [
+            _replay_year(2020, full=0.10, ablation=0.02),
+            _replay_year(2021, full=-0.01, ablation=0.02),
+        ],
+        full_net_mean_return=0.045,
+        ablation_net_mean_return=0.02,
+    )
+
+    result = resynthesize_pair_artifact(
+        artifact,
+        source_artifact_filename="replay.json",
+        source_artifact_sha256="b" * 64,
+    ).to_dict()
+
+    assert result["source_verdict_base"] == "PASS"
+    assert result["headline"] == {
+        "verdict_base": "PASS",
+        "verdict_sensitivity": "PASS",
+        "judgeable_years": 2,
+        "fragile": True,
+    }
+    assert result["fragile_evidence"] == {
+        "state": "EVALUATED",
+        "fragile": True,
+        "highest_year_net_mean_return": 0.10,
+        "highest_years": [2020],
+        "remaining_net_mean_returns": {"2020": -0.01},
+    }
+
+
+@pytest.mark.parametrize(
+    ("full", "ablation", "expected_verdict"),
+    [
+        (-0.01, -0.02, "FALSIFIED_NONPOSITIVE_NET_RETURN"),
+        (0.01, 0.02, "FALSIFIED_NO_INCREMENT_OVER_ABLATION"),
+    ],
+)
+def test_replay_record_reconstructs_frozen_falsification_precedence(
+    full: float, ablation: float, expected_verdict: str
+) -> None:
+    artifact = _replay_artifact(
+        [
+            _replay_year(2020, full=full, ablation=ablation),
+            _replay_year(2021, full=full, ablation=ablation),
+        ],
+        full_net_mean_return=full,
+        ablation_net_mean_return=ablation,
+    )
+
+    result = resynthesize_pair_artifact(
+        artifact,
+        source_artifact_filename="replay.json",
+        source_artifact_sha256="b" * 64,
+    ).to_dict()
+
+    assert result["source_verdict_base"] == expected_verdict
+    assert result["headline"]["verdict_base"] == expected_verdict
+
+
+def test_file_resynthesis_hash_binds_separate_pair_and_manifest_sources(
+    tmp_path,
+) -> None:
+    pair = tmp_path / "pair.json"
+    correction_manifest = tmp_path / "correction-manifest.json"
+    etr_manifest = tmp_path / "etr-manifest.json"
+    pair.write_bytes(
+        canonical_json_bytes(
+            _replay_artifact(
+                [
+                    _replay_year(2020, full=0.02, ablation=0.01),
+                    _replay_year(2021, full=0.04, ablation=0.01),
+                ],
+                full_net_mean_return=0.03,
+                ablation_net_mean_return=0.01,
+            )
+        )
+    )
+    correction_manifest.write_bytes(canonical_json_bytes({"kind": "correction"}))
+    etr_manifest.write_bytes(canonical_json_bytes({"kind": "etr"}))
+
+    payload = resynthesize_artifact_files(
+        pair_sources={"pair.json": pair},
+        expected_pair_sha256={
+            "pair.json": hashlib.sha256(pair.read_bytes()).hexdigest()
+        },
+        manifest_sources={
+            "correction_manifest": correction_manifest,
+            "etr_manifest": etr_manifest,
+        },
+        expected_manifest_sha256={
+            "correction_manifest": hashlib.sha256(
+                correction_manifest.read_bytes()
+            ).hexdigest(),
+            "etr_manifest": hashlib.sha256(etr_manifest.read_bytes()).hexdigest(),
+        },
+    )
+
+    assert payload["resynthesis_only"] is True
+    assert payload["source_artifact_sha256"] == {
+        "pair.json": hashlib.sha256(pair.read_bytes()).hexdigest()
+    }
+    assert [item["label"] for item in payload["source_manifests"]] == [
+        "correction_manifest",
+        "etr_manifest",
+    ]
