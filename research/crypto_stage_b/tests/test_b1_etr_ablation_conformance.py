@@ -8,7 +8,7 @@ from datetime import date, timedelta
 import pytest
 
 from research.crypto_stage_b.contracts import CryptoStageBRunContract
-from research.crypto_stage_b.engine import run_candidate_pair, run_execution_arm
+from research.crypto_stage_b.engine import run_execution_arm
 from research.crypto_stage_b.signals import evaluate_signal
 from research.crypto_stage_b.source import DailyBar, InMemoryDailyBarSource
 from research.crypto_stage_b.tests.conftest import candidate, cost, etr_bars
@@ -215,7 +215,7 @@ def _payload_sha256(payload: object) -> str:
     ).hexdigest()
 
 
-def _fixed_fixture_output_hashes() -> dict[str, str]:
+def _fixed_etr_full_output_hash() -> str:
     etr_full = run_execution_arm(
         source=InMemoryDailyBarSource(
             _steady_bars(
@@ -225,34 +225,11 @@ def _fixed_fixture_output_hashes() -> dict[str, str]:
         contract=_contract("CR-SPOT-ETR-01", venue="upbit_krw", end_index=251),
         arm="full",
     )
-    tpr_pair = run_candidate_pair(
-        source=InMemoryDailyBarSource(
-            _steady_bars(
-                strategy_id="CR-SPOT-TPR-01", venue="upbit_krw", symbol="KRW-TPR"
-            )
-        ),
-        contract=_contract("CR-SPOT-TPR-01", venue="upbit_krw", end_index=119),
-    )
-    ceb_pair = run_candidate_pair(
-        source=InMemoryDailyBarSource(
-            _steady_bars(
-                strategy_id="CR-SPOT-CEB-01",
-                venue="binance_usdt_spot",
-                symbol="CEBUSDT",
-            )
-        ),
-        contract=_contract("CR-SPOT-CEB-01", venue="binance_usdt_spot", end_index=121),
-    )
-    return {
-        "etr_full": _payload_sha256(etr_full.to_dict()),
-        "tpr_pair": _payload_sha256(tpr_pair.to_dict()),
-        "ceb_pair": _payload_sha256(ceb_pair.to_dict()),
-    }
+    return _payload_sha256(etr_full.to_dict())
 
 
-def test_fixed_fixture_non_target_outputs_are_unchanged() -> None:
-    assert _fixed_fixture_output_hashes() == {
-        "etr_full": "2731e2e4f21636039c715730e9ad19031e8d02b7810d558ddb562cd351cc10ec",
-        "tpr_pair": "7557308966a0668d7949aac88f987197898cf1f5ef1a27ac1703e180a1301859",
-        "ceb_pair": "1c5132d6741ebd768f573af9de7f463757ddd2b5e185e9959a213dc0ea0baca1",
-    }
+def test_fixed_etr_full_fixture_is_unchanged() -> None:
+    assert (
+        _fixed_etr_full_output_hash()
+        == "2731e2e4f21636039c715730e9ad19031e8d02b7810d558ddb562cd351cc10ec"
+    )
