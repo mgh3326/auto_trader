@@ -30,6 +30,7 @@ __all__ = [
     "TopLevelResynthesis",
     "apply_inconclusive_predicate",
     "canonical_json_bytes",
+    "resynthesize_artifact_files",
     "resynthesize_artifact_directory",
     "resynthesize_pair_artifact",
     "sha256_file",
@@ -141,22 +142,21 @@ def resynthesize_pair_artifact(
     an empty arm cannot make an annual incremental comparison or contribute to
     the mandatory FRAGILE leave-one-best-year calculation.
     """
-    records = _required_sequence(
-        _required_mapping(artifact, "harness_query"), "records"
-    )
+    source = _normalize_source_artifact(artifact)
+    records = _required_sequence(_required_mapping(source, "harness_query"), "records")
     judgeable_years = sum(_is_judgeable_year(record) for record in records)
     all_arms_empty = _all_arms_empty(records)
-    fragile_evidence = _required_mapping(artifact, "fragile")
+    fragile_evidence = _required_mapping(source, "fragile")
     fragile = fragile_evidence.get("fragile")
     if not isinstance(fragile, bool):
         raise ArtifactSchemaError("fragile.fragile must be a bool")
 
-    source_verdict_base = _required_string(artifact, "verdict_base")
-    source_verdict_sensitivity = _required_string(artifact, "verdict_sensitivity")
+    source_verdict_base = _required_string(source, "verdict_base")
+    source_verdict_sensitivity = _required_string(source, "verdict_sensitivity")
     return TopLevelResynthesis(
-        strategy_id=_required_string(artifact, "strategy_id"),
-        venue=_required_string(artifact, "venue"),
-        contract_hash=_required_string(artifact, "contract_hash"),
+        strategy_id=_required_string(source, "strategy_id"),
+        venue=_required_string(source, "venue"),
+        contract_hash=_required_string(source, "contract_hash"),
         source_artifact_filename=source_artifact_filename,
         source_artifact_sha256=source_artifact_sha256,
         source_verdict_base=source_verdict_base,
@@ -175,6 +175,61 @@ def resynthesize_pair_artifact(
         fragile=fragile,
         fragile_evidence=fragile_evidence,
     )
+
+
+def resynthesize_artifact_files(
+    *,
+    pair_sources: Mapping[str, Path],
+    expected_pair_sha256: Mapping[str, str],
+    manifest_sources: Mapping[str, Path],
+    expected_manifest_sha256: Mapping[str, str],
+) -> dict[str, Any]:
+    """Resynthesize a SHA-bound set of pair records from separate directories.
+
+    A correction can supersede only some candidate × venue records while other
+    records remain in a separately sealed replay.  This helper binds each
+    exact source path before JSON parsing, so that composition never copies,
+    alters, or reruns any original arm artifact.
+    """
+    pair_hashes = _verify_source_files(pair_sources, expected_pair_sha256)
+    manifest_hashes = _verify_source_files(manifest_sources, expected_manifest_sha256)
+
+    pair_results = []
+    for label in sorted(pair_sources):
+        path = pair_sources[label]
+        try:
+            with path.open(encoding="utf-8") as handle:
+                artifact = json.load(handle)
+        except json.JSONDecodeError as exc:
+            raise ArtifactSchemaError(
+                f"source artifact is invalid JSON: {path}"
+            ) from exc
+        if not isinstance(artifact, Mapping):
+            raise ArtifactSchemaError(f"source artifact must be a JSON object: {path}")
+        pair_results.append(
+            resynthesize_pair_artifact(
+                artifact,
+                source_artifact_filename=path.name,
+                source_artifact_sha256=pair_hashes[label],
+            ).to_dict()
+        )
+
+    return {
+        "schema_version": _SCHEMA_VERSION,
+        "resynthesis_only": True,
+        "source_manifests": [
+            {
+                "label": label,
+                "filename": manifest_sources[label].name,
+                "sha256": manifest_hashes[label],
+            }
+            for label in sorted(manifest_sources)
+        ],
+        "source_artifact_sha256": {
+            label: pair_hashes[label] for label in sorted(pair_hashes)
+        },
+        "records": pair_results,
+    }
 
 
 def resynthesize_artifact_directory(
@@ -238,6 +293,212 @@ def resynthesize_artifact_directory(
         },
         "records": pair_results,
     }
+
+
+def _normalize_source_artifact(artifact: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the established B2 shape from a compact or replay record.
+
+    The original R2 artifacts already carry source verdict and FRAGILE fields
+    at top level.  The bounded B1/correction replay drivers deliberately
+    preserve only arm evidence, so their equivalent source label and FRAGILE
+    disclosure are mechanically reconstructed from the frozen pair summaries
+    and per-year harness records.  This does not call the engine or create a
+    new threshold.
+    """
+    if {
+        "verdict_base",
+        "verdict_sensitivity",
+        "fragile",
+        "harness_query",
+    }.issubset(artifact):
+        return artifact
+    if "pair" not in artifact:
+        raise ArtifactSchemaError(
+            "source artifact must be a compact B2 artifact or a bounded replay record"
+        )
+
+    pair = _required_mapping(artifact, "pair")
+    harness_query = _required_mapping(artifact, "harness_query")
+    strategy_id = _required_string(artifact, "strategy_id")
+    venue = _required_string(artifact, "venue")
+    contract_hash = _required_string(pair, "contract_hash")
+    _require_matching_pair_identity(
+        pair,
+        strategy_id=strategy_id,
+        venue=venue,
+        contract_hash=contract_hash,
+    )
+    _require_matching_harness_identity(
+        harness_query,
+        strategy_id=strategy_id,
+        venue=venue,
+        contract_hash=contract_hash,
+    )
+
+    full = _required_mapping(pair, "full")
+    ablation = _required_mapping(pair, "ablation")
+    return {
+        "strategy_id": strategy_id,
+        "venue": venue,
+        "contract_hash": contract_hash,
+        "verdict_base": _source_verdict(
+            _optional_finite_number(full, "net_mean_return"),
+            _optional_finite_number(ablation, "net_mean_return"),
+        ),
+        "verdict_sensitivity": _source_verdict(
+            _optional_finite_number(full, "sensitivity_net_mean_return"),
+            _optional_finite_number(ablation, "sensitivity_net_mean_return"),
+        ),
+        "fragile": _fragile_evidence_from_harness(
+            _required_sequence(harness_query, "records"),
+            full_net_mean_return=_optional_finite_number(full, "net_mean_return"),
+        ),
+        "harness_query": harness_query,
+    }
+
+
+def _require_matching_pair_identity(
+    pair: Mapping[str, Any],
+    *,
+    strategy_id: str,
+    venue: str,
+    contract_hash: str,
+) -> None:
+    if _required_string(pair, "strategy_id") != strategy_id:
+        raise ArtifactSchemaError("replay pair strategy_id does not match record")
+    if _required_string(pair, "venue") != venue:
+        raise ArtifactSchemaError("replay pair venue does not match record")
+    if _required_string(pair, "contract_hash") != contract_hash:
+        raise ArtifactSchemaError("replay pair contract_hash does not match record")
+
+
+def _require_matching_harness_identity(
+    harness_query: Mapping[str, Any],
+    *,
+    strategy_id: str,
+    venue: str,
+    contract_hash: str,
+) -> None:
+    if _required_string(harness_query, "strategy_id") != strategy_id:
+        raise ArtifactSchemaError("harness strategy_id does not match record")
+    if _required_string(harness_query, "venue") != venue:
+        raise ArtifactSchemaError("harness venue does not match record")
+    if _required_string(harness_query, "contract_hash") != contract_hash:
+        raise ArtifactSchemaError("harness contract_hash does not match record")
+
+
+def _source_verdict(
+    full_net_mean_return: float | None, ablation_net_mean_return: float | None
+) -> str:
+    """Reconstruct the frozen per-venue label from existing pair summaries."""
+    if full_net_mean_return is None or ablation_net_mean_return is None:
+        return "INCONCLUSIVE_EMPTY_ARM"
+    if full_net_mean_return <= 0.0:
+        return "FALSIFIED_NONPOSITIVE_NET_RETURN"
+    if full_net_mean_return - ablation_net_mean_return <= 0.0:
+        return "FALSIFIED_NO_INCREMENT_OVER_ABLATION"
+    return "PASS"
+
+
+def _fragile_evidence_from_harness(
+    records: Sequence[object], *, full_net_mean_return: float | None
+) -> dict[str, Any]:
+    """Reconstruct mandatory FRAGILE evidence from frozen annual full-arm rows."""
+    contributing_years: list[tuple[int, int, float]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise ArtifactSchemaError("harness record must be an object")
+        full = _required_mapping(record, "full")
+        net_mean_return = _optional_finite_number(full, "net_mean_return")
+        resolved_exit_count = full.get("resolved_exit_count")
+        if net_mean_return is None:
+            continue
+        if (
+            not isinstance(resolved_exit_count, int)
+            or isinstance(resolved_exit_count, bool)
+            or resolved_exit_count <= 0
+        ):
+            raise ArtifactSchemaError(
+                "finite annual full net_mean_return requires positive resolved_exit_count"
+            )
+        calendar_year = full.get("calendar_year")
+        if not isinstance(calendar_year, int) or isinstance(calendar_year, bool):
+            raise ArtifactSchemaError("annual full calendar_year must be an int")
+        contributing_years.append((calendar_year, resolved_exit_count, net_mean_return))
+
+    if len(contributing_years) < 2 or full_net_mean_return is None:
+        return {
+            "state": "NOT_EVALUABLE",
+            "fragile": False,
+            "reason": "fewer than two contributing full-arm years",
+        }
+
+    total_count = sum(count for _, count, _ in contributing_years)
+    weighted_full_mean = (
+        sum(count * net_mean for _, count, net_mean in contributing_years) / total_count
+    )
+    if not math.isclose(
+        weighted_full_mean, full_net_mean_return, rel_tol=0.0, abs_tol=1e-12
+    ):
+        raise ArtifactSchemaError(
+            "annual full-arm rows do not reproduce pair full net_mean_return"
+        )
+    highest_year_net_mean_return = max(
+        net_mean for _, _, net_mean in contributing_years
+    )
+    highest_years = tuple(
+        year
+        for year, _, net_mean in contributing_years
+        if net_mean == highest_year_net_mean_return
+    )
+    remaining_net_mean_returns: dict[str, float] = {}
+    for highest_year in highest_years:
+        remaining = [
+            (count, net_mean)
+            for year, count, net_mean in contributing_years
+            if year != highest_year
+        ]
+        remaining_count = sum(count for count, _ in remaining)
+        if remaining_count == 0:
+            return {
+                "state": "NOT_EVALUABLE",
+                "fragile": False,
+                "reason": "no full-arm observations remain after highest year removal",
+            }
+        remaining_net_mean_returns[str(highest_year)] = (
+            sum(count * net_mean for count, net_mean in remaining) / remaining_count
+        )
+
+    return {
+        "state": "EVALUATED",
+        "fragile": full_net_mean_return > 0.0
+        and any(value <= 0.0 for value in remaining_net_mean_returns.values()),
+        "highest_year_net_mean_return": highest_year_net_mean_return,
+        "highest_years": list(highest_years),
+        "remaining_net_mean_returns": remaining_net_mean_returns,
+    }
+
+
+def _verify_source_files(
+    sources: Mapping[str, Path], expected_sha256: Mapping[str, str]
+) -> dict[str, str]:
+    if set(sources) != set(expected_sha256):
+        raise ArtifactSchemaError(
+            "source paths and expected SHA-256 table must have exactly the same labels"
+        )
+    hashes: dict[str, str] = {}
+    for label in sorted(sources):
+        path = sources[label]
+        if not path.is_file():
+            raise ArtifactSchemaError(f"required source artifact is missing: {path}")
+        actual_digest = sha256_file(path)
+        if actual_digest != expected_sha256[label]:
+            raise ArtifactSchemaError(
+                f"source SHA-256 mismatch for {label}: expected "
+                f"{expected_sha256[label]}, got {actual_digest}"
+            )
+        hashes[label] = actual_digest
+    return hashes
 
 
 def canonical_json_bytes(payload: object) -> bytes:
@@ -333,6 +594,15 @@ def _required_string(container: Mapping[str, Any], field: str) -> str:
     if not isinstance(value, str) or not value:
         raise ArtifactSchemaError(f"{field} must be a non-empty string")
     return value
+
+
+def _optional_finite_number(container: Mapping[str, Any], field: str) -> float | None:
+    value = container.get(field)
+    if value is None:
+        return None
+    if not _is_finite_number(value):
+        raise ArtifactSchemaError(f"{field} must be a finite number or null")
+    return float(value)
 
 
 def _is_finite_number(value: object) -> bool:
