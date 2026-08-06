@@ -94,9 +94,7 @@ def _simultaneous_ablation_outcomes(
         arm="ablation",
     )
     signal_session = date(2024, 1, 1) + timedelta(days=251)
-    return [
-        item for item in result.outcomes if item.signal_session == signal_session
-    ]
+    return [item for item in result.outcomes if item.signal_session == signal_session]
 
 
 def test_etr_ablation_tied_qv_ratio_uses_clv_before_symbol() -> None:
@@ -130,8 +128,7 @@ def test_etr_ablation_tied_qv_ratio_uses_clv_before_symbol() -> None:
         simultaneous[1].ranking_metrics["qv_ratio"]
     )
     assert (
-        simultaneous[0].ranking_metrics["clv"]
-        > simultaneous[1].ranking_metrics["clv"]
+        simultaneous[0].ranking_metrics["clv"] > simultaneous[1].ranking_metrics["clv"]
     )
 
 
@@ -139,9 +136,7 @@ def test_etr_ablation_tied_qv_and_clv_uses_tail_severity_before_symbol() -> None
     """A later symbol wins ties on the first two frozen ranking keys."""
     weaker_tail = list(etr_bars(symbol="A"))
     for index in range(1, 50, 2):
-        weaker_tail[index] = replace(
-            weaker_tail[index], low=89.0, close=90.0
-        )
+        weaker_tail[index] = replace(weaker_tail[index], low=89.0, close=90.0)
 
     simultaneous = _simultaneous_ablation_outcomes(
         {
