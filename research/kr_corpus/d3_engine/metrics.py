@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 from decimal import ROUND_CEILING, Decimal, localcontext
 
 from research.kr_corpus.d3_engine.constants import DECIMAL_PRECISION
@@ -14,6 +14,14 @@ def locked_share_time_weighted_mean(daily_ratios: Sequence[Decimal]) -> Decimal:
     if any(value < 0 or value > 1 for value in daily_ratios):
         raise ValueError("locked ratios must be in [0,1]")
     return sum(daily_ratios, Decimal(0)) / Decimal(len(daily_ratios))
+
+
+def unserved_counterfactual_demand_sessions(
+    rejected_sessions: Iterable[Hashable],
+) -> int:
+    """Count unique B0-demand sessions; notional is deliberately not primary."""
+
+    return len(set(rejected_sessions))
 
 
 def deployment_mean(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from research.kr_corpus.d3_engine.acceptance import run_acceptance
@@ -39,6 +41,20 @@ def test_d3_e1_full_local_acceptance() -> None:
     assert result["golden_exact"]["passed"] == 33
     assert result["deterministic_2runs"] is True
     assert result["four_arms"] == {"B0": "OK", "C1": "OK", "C2": "OK", "C3": "OK"}
+    for payload in result["four_arm_contract"].values():
+        assert [fill["price"] for fill in payload["fills"]] == [9600, 9450]
+        assert payload["signals_submitted"] == 2
+        assert payload["terminal_nav"] == Decimal("13520402.57250")
+    assert result["engine_contract_probes"] == {
+        "sell_fill_prices": [105, 100, None],
+        "unitized_mdd": Decimal("-0.2"),
+        "resistance_orders": [{"rung": "R1", "limit": 10960, "quantity": 5}],
+        "day_expiry": True,
+        "receivable_single_credit": True,
+        "global_rank_cap": {"demand_pairs": 3, "fills": 6},
+        "c2_missing_index_fail_closed": True,
+        "c3_buy_suppression_bound": True,
+    }
     assert result["mutant_diffs"]["passed"] == 23
     assert all(row["status"] == "PASS" for row in result["negative_tests"].values())
     assert result["sealed_access_spy"] == 0

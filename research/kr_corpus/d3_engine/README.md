@@ -15,11 +15,21 @@ continuity and makes T+2 settlement session-based. Both `original_valid_bar` and
 counterfactual-demand accounting from a deterministic B0 shadow run on the same
 input, so policy rejections cannot disappear from the cash-exhaustion axis.
 
+Delisting/corporate-action ingestion must set
+`CorporateAction.data_ends_before_exploration_end=True` when the authoritative
+event ledger establishes that a nonzero position's last valid bar precedes the
+exploration end. A bare missing symbol bar is intentionally not treated as a
+delisting because it can also mean a trading halt; without that upstream event
+annotation the engine cannot distinguish an unresolved terminal exposure from a
+temporary omission. The engine then marks the run
+`INCONCLUSIVE_UNRESOLVED_TERMINAL` and prevents an ordinary OK result.
+
 ```bash
 uv run python -m research.kr_corpus.d3_engine.acceptance
 uv run pytest tests/research/kr_corpus/d3_engine -v
 ```
 
-The acceptance smoke runs only synthetic single-session checks for all four arms.
-It does not run the primary 16 physical exploration jobs and does not access any
-2025+ holdout or calibration input.
+The acceptance smoke runs a natural, non-vacuous indicator signal and exact L1/L2
+fills for all four arms, plus isolated engine contract probes. It does not run the
+primary 16 physical exploration jobs and does not access any 2025+ holdout or
+calibration input.

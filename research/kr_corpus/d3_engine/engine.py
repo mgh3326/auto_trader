@@ -30,6 +30,7 @@ from research.kr_corpus.d3_engine.metrics import (
     locked_share_time_weighted_mean,
     nearest_rank,
     twr_returns,
+    unserved_counterfactual_demand_sessions,
 )
 from research.kr_corpus.d3_engine.models import (
     Arm,
@@ -47,11 +48,13 @@ from research.kr_corpus.d3_engine.models import (
 )
 from research.kr_corpus.d3_engine.policies import (
     C1Cycle,
+    adjusted_simulation_quantity,
     c2_allows,
     c3_buy_suppressed,
     c3_trim_quantity,
     mark_c3_trim_filled,
     mark_c3_trim_skipped,
+    unresolved_terminal_status,
     update_c3_close,
 )
 from research.kr_corpus.d3_engine.signals import (
@@ -61,6 +64,7 @@ from research.kr_corpus.d3_engine.signals import (
     choose_l2,
     cluster_levels,
     rank_candidates,
+    signal_is_eligible,
     support_distance,
 )
 from research.kr_corpus.d3_engine.tick import TickTable
@@ -241,15 +245,19 @@ class PortfolioEngine:
                             "session": session,
                             "symbol": action.symbol,
                             "label": "ADJUSTED_PRICE_SIMULATION",
-                            "quantity_unchanged": position.quantity if position else 0,
+                            "quantity_unchanged": adjusted_simulation_quantity(
+                                position.quantity if position else 0
+                            ),
                         }
                     )
-                if (
-                    action.data_ends_before_exploration_end
-                    and position is not None
-                    and position.quantity > 0
-                ):
-                    status = "INCONCLUSIVE_UNRESOLVED_TERMINAL"
+                action_status = unresolved_terminal_status(
+                    data_ends_before_exploration_end=(
+                        action.data_ends_before_exploration_end
+                    ),
+                    position_quantity=position.quantity if position else 0,
+                )
+                if action_status != "OK":
+                    status = action_status
                     state.events.append(
                         {
                             "event": "unresolved_terminal",
@@ -456,8 +464,6 @@ class PortfolioEngine:
                 decision_index = len(history) - 1
                 if decision_index < 120:
                     continue
-                if run_input.arm is Arm.C3 and c3_buy_suppressed(position):
-                    continue
                 new_sell_orders = self._resistance_orders(
                     symbol=symbol,
                     session=session,
@@ -643,7 +649,9 @@ class PortfolioEngine:
             "locked_share_p95": locked_p95,
             "locked_share_max": max(daily_locked_ratios),
             "deployment_mean": deployment,
-            "unserved_counterfactual_demand_sessions": len(unserved_sessions),
+            "unserved_counterfactual_demand_sessions": (
+                unserved_counterfactual_demand_sessions(unserved_sessions)
+            ),
             "unserved_notional_diagnostic": unserved_notional,
             "policy_rejected": sum(
                 event["event"] == "policy_rejected" for event in state.events
@@ -716,10 +724,16 @@ class PortfolioEngine:
         ]
         levels.append(PriceLevel(bands.lower, "bb_lower", "bb_lower"))
         clusters = cluster_levels(levels, close=previous_close)
-        l2 = choose_l2(clusters, close=previous_close)
         rounded_rsi = rsi.quantize(Decimal("0.0001"), rounding=DECIMAL_ROUNDING)
-        if rounded_rsi >= Decimal("45") or l2 is None:
+        if not signal_is_eligible(
+            rsi=rounded_rsi,
+            clusters=clusters,
+            close=previous_close,
+        ):
             return None
+        l2 = choose_l2(clusters, close=previous_close)
+        if l2 is None:
+            raise AssertionError("eligible signal has no qualifying L2")
         return rounded_rsi, l2.representative, window.high, window.low
 
     @staticmethod

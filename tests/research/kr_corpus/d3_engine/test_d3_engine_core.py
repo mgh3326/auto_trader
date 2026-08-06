@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import ast
+from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from research.kr_corpus.d3_engine import engine as engine_module
+from research.kr_corpus.d3_engine.acceptance import (
+    _contract_signal_bars,
+    _resistance_probe_bars,
+)
 from research.kr_corpus.d3_engine.cash import CashLedger
 from research.kr_corpus.d3_engine.engine import PortfolioEngine
 from research.kr_corpus.d3_engine.guards import (
@@ -19,8 +25,13 @@ from research.kr_corpus.d3_engine.models import (
     Arm,
     Bar,
     CashflowView,
+    Order,
+    OrderClass,
+    OrderSide,
+    OrderStatus,
     PortfolioRunInput,
     Position,
+    RunState,
 )
 from research.kr_corpus.d3_engine.policies import (
     C1Cycle,
@@ -247,33 +258,11 @@ def test_indicator_state_resets_after_missing_market_session(
     assert decision_indexes == [60]
 
 
-def test_c2_fails_closed_when_prior_xkrx_index_row_is_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_c2_fails_closed_when_prior_xkrx_index_row_is_missing() -> None:
     ticks = _sealed_tick_shape()
     sessions = [date(2014, 1, 1) + timedelta(days=index) for index in range(201)]
-    bars = tuple(
-        Bar(
-            session=session,
-            symbol="005930",
-            open=Decimal("9600") if index == 120 else Decimal("10000"),
-            high=Decimal("10100"),
-            low=Decimal("9400") if index == 120 else Decimal("9900"),
-            close=Decimal("9900") if index == 120 else Decimal("10000"),
-        )
-        for index, session in enumerate(sessions[-121:])
-    )
+    bars = _contract_signal_bars(sessions[-121:], symbols=("005930",))
     engine = PortfolioEngine(ticks)
-    monkeypatch.setattr(
-        engine,
-        "_signal_for_session",
-        lambda _history, _index: (
-            Decimal("40"),
-            Decimal("9500"),
-            Decimal("12000"),
-            Decimal("8000"),
-        ),
-    )
     missing = sessions[50]
     result = engine.run(
         PortfolioRunInput(
@@ -345,34 +334,12 @@ def test_add_eligibility_uses_t_minus_1_close_not_current_bar_close(
 
 
 @pytest.mark.parametrize("arm", list(Arm))
-def test_all_four_arms_execute_contract_signal(
-    arm: Arm, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_all_four_arms_execute_natural_contract_signal(arm: Arm) -> None:
     ticks = _sealed_tick_shape()
     sessions = [date(2014, 1, 1) + timedelta(days=index) for index in range(201)]
     bar_sessions = sessions[-121:]
-    bars = tuple(
-        Bar(
-            session=session,
-            symbol="005930",
-            open=Decimal("9600") if index == 120 else Decimal("10000"),
-            high=Decimal("10100"),
-            low=Decimal("9400") if index == 120 else Decimal("9900"),
-            close=Decimal("9900") if index == 120 else Decimal("10000"),
-        )
-        for index, session in enumerate(bar_sessions)
-    )
+    bars = _contract_signal_bars(bar_sessions, symbols=("005930",))
     engine = PortfolioEngine(ticks)
-    monkeypatch.setattr(
-        engine,
-        "_signal_for_session",
-        lambda _history, _index: (
-            Decimal("40"),
-            Decimal("9500"),
-            Decimal("12000"),
-            Decimal("8000"),
-        ),
-    )
     result = engine.run(
         PortfolioRunInput(
             arm=arm,
@@ -397,7 +364,129 @@ def test_all_four_arms_execute_contract_signal(
     assert [fill.side.value for fill in result.fills] == ["buy", "buy"]
     assert [fill.price for fill in result.fills] == [
         Decimal("9600"),
-        Decimal("9500"),
+        Decimal("9450"),
     ]
+    assert result.metrics["signals_submitted"] == 2
+    assert result.metrics["terminal_nav"] == Decimal("10020402.57250")
     assert result.evidence["sealed_access_spy"] == 0
     assert result.evidence["primary_run_executed"] is False
+
+
+def test_sell_fill_and_unitized_mdd_contract_paths() -> None:
+    engine = PortfolioEngine(_sealed_tick_shape())
+    session = date(2014, 1, 2)
+
+    assert engine._sell_fill_price(
+        Decimal(100),
+        Bar(session, "SELL", Decimal(105), Decimal(110), Decimal(90), Decimal(100)),
+    ) == Decimal(105)
+    assert engine._sell_fill_price(
+        Decimal(100),
+        Bar(session, "SELL", Decimal(95), Decimal(105), Decimal(90), Decimal(100)),
+    ) == Decimal(100)
+    assert (
+        engine._sell_fill_price(
+            Decimal(100),
+            Bar(
+                session,
+                "SELL",
+                Decimal(95),
+                Decimal(99),
+                Decimal(90),
+                Decimal(98),
+            ),
+        )
+        is None
+    )
+    assert engine._max_drawdown((Decimal(100), Decimal(80), Decimal(90))) == Decimal(
+        "-0.2"
+    )
+
+
+def test_resistance_sell_orders_remain_available_for_c3_armed_position() -> None:
+    ticks = _sealed_tick_shape()
+    engine = PortfolioEngine(ticks)
+    sessions = [date(2014, 1, 1) + timedelta(days=index) for index in range(121)]
+    position = Position(
+        symbol="RESIST",
+        quantity=10,
+        average_price=Decimal(9000),
+        invested_cost_basis=Decimal(90000),
+        trim90_armed=True,
+    )
+
+    orders = engine._resistance_orders(
+        symbol="RESIST",
+        session=sessions[-1],
+        history=_resistance_probe_bars(sessions),
+        index=120,
+        position=position,
+        first_order_number=0,
+    )
+
+    assert [(order.rung, order.limit, order.quantity) for order in orders] == [
+        ("R1", Decimal(10960), 5)
+    ]
+
+
+def test_day_order_expiry_returns_cash_and_c1_reservation() -> None:
+    engine = PortfolioEngine(_sealed_tick_shape())
+    session = date(2014, 1, 2)
+    cash = CashLedger(Decimal(1000))
+    assert cash.reserve_order("EXPIRY", Decimal(200))
+    cycle = C1Cycle()
+    assert cycle.reserve(notional=Decimal(200), is_add=False)[0]
+    order = Order(
+        order_id="EXPIRY",
+        session=session,
+        symbol="EXPIRY",
+        side=OrderSide.BUY,
+        order_class=OrderClass.NEW,
+        limit=Decimal(200),
+        quantity=1,
+        rung="L1",
+        rank=1,
+    )
+    state = RunState(pending_orders=[order])
+
+    engine._expire_orders(
+        state=state,
+        cash=cash,
+        c1_cycles=defaultdict(C1Cycle, {"EXPIRY": cycle}),
+        arm=Arm.C1,
+        session=session + timedelta(days=1),
+    )
+
+    assert cash.orderable_cash == Decimal(1000)
+    assert cash.reserved_orders == {}
+    assert state.pending_orders == []
+    assert order.status is OrderStatus.EXPIRED
+    assert cycle.reserved_buy_gross == 0
+
+
+def test_global_rank_cap_is_enforced_by_engine_execution() -> None:
+    ticks = _sealed_tick_shape()
+    sessions = [date(2014, 1, 1) + timedelta(days=index) for index in range(201)]
+    decision_sessions = sessions[-121:]
+
+    result = PortfolioEngine(ticks).run(
+        PortfolioRunInput(
+            arm=Arm.B0,
+            cashflow_view=CashflowView.NO_CONTRIBUTION,
+            bars=_contract_signal_bars(
+                decision_sessions,
+                symbols=("000001", "000002", "000003", "000004"),
+            ),
+            market_sessions=tuple(sessions),
+            decision_start=decision_sessions[-1],
+        )
+    )
+
+    assert len(result.evidence["counterfactual_demand_pairs"]) == 3
+    assert len(result.fills) == 6
+
+
+def test_engine_binds_c3_armed_buy_suppression_policy() -> None:
+    position = Position(symbol="C3", quantity=3, trim90_armed=True)
+
+    assert engine_module.c3_buy_suppressed(position)

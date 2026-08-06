@@ -17,6 +17,7 @@ from typing import Any
 from research.kr_corpus.d3_engine.canonical import fixed, plain
 from research.kr_corpus.d3_engine.cash import CashLedger
 from research.kr_corpus.d3_engine.constants import EXPLANATION_KEYS
+from research.kr_corpus.d3_engine.engine import PortfolioEngine
 from research.kr_corpus.d3_engine.indicators import (
     OhlcPoint,
     bollinger_bands,
@@ -31,23 +32,30 @@ from research.kr_corpus.d3_engine.metrics import (
     locked_share_time_weighted_mean,
     nearest_rank,
     twr_returns,
+    unserved_counterfactual_demand_sessions,
     virtual_exit_value,
 )
-from research.kr_corpus.d3_engine.models import Position
+from research.kr_corpus.d3_engine.models import Bar, Position
 from research.kr_corpus.d3_engine.policies import (
     C1Cycle,
+    adjusted_simulation_quantity,
     c2_allows,
+    c3_180_should_arm,
     c3_buy_suppressed,
     c3_trim_quantity,
+    unresolved_terminal_status,
     update_c3_close,
 )
 from research.kr_corpus.d3_engine.signals import (
+    LevelCluster,
     PriceLevel,
     SignalCandidate,
     build_buy_rungs,
     cluster_levels,
+    order_class_sort_key,
     qualifying_supports,
     rank_candidates,
+    signal_is_eligible,
 )
 from research.kr_corpus.d3_engine.sources import FrozenKospiIndex
 from research.kr_corpus.d3_engine.tick import InvalidTickTable, TickTable
@@ -207,6 +215,24 @@ def _levels_payload(levels: Mapping[Decimal, Decimal]) -> dict[str, str]:
     return {_ratio_key(ratio): plain(price) for ratio, price in levels.items()}
 
 
+def _contract_clusters(raw_clusters: list[dict[str, Any]]) -> tuple[LevelCluster, ...]:
+    return tuple(
+        LevelCluster(
+            members=tuple(
+                PriceLevel(
+                    Decimal(raw["price"]),
+                    str(source),
+                    f"cluster-{cluster_index}-{source_index}",
+                )
+                for source_index, source in enumerate(raw["sources"])
+            ),
+            representative=Decimal(raw["price"]),
+            distinct_sources=tuple(sorted(set(raw["sources"]))),
+        )
+        for cluster_index, raw in enumerate(raw_clusters)
+    )
+
+
 def _v001(
     data: dict[str, Any], _: TickTable, __: FrozenKospiIndex
 ) -> list[dict[str, Any]]:
@@ -269,11 +295,11 @@ def _v003(
 def _v004(
     data: dict[str, Any], _: TickTable, __: FrozenKospiIndex
 ) -> list[dict[str, Any]]:
-    eligible = any(
-        Decimal("-0.08") <= Decimal(cluster["dist_pct"]) <= Decimal("-0.03")
-        and len(set(cluster["sources"])) >= 2
-        for cluster in data["support_clusters"]
-    ) and Decimal(data["rsi"]) < Decimal("45")
+    eligible = signal_is_eligible(
+        rsi=Decimal(data["rsi"]),
+        clusters=_contract_clusters(data["support_clusters"]),
+        close=Decimal(data["t_minus_1_close"]),
+    )
     return [
         {"name": "signal_emitted", "value": eligible},
         {"name": "orders", "value": [] if not eligible else ["L1", "L2"]},
@@ -540,10 +566,33 @@ def _v011(
     )
     outcome = update_c3_close(position, close=Decimal(d90["close"]))
     add_case = next(item for item in data["timeline"] if item["session"] == "D_add")
-    average = (
-        Decimal(add_case["pre_session_avg"]) * 9
-        + Decimal(add_case["add_fill"]["price"]) * int(add_case["add_fill"]["qty"])
-    ) / 18
+    add_position = Position(
+        symbol=data["symbol"],
+        quantity=9,
+        average_price=Decimal(add_case["pre_session_avg"]),
+        invested_cost_basis=Decimal(add_case["pre_session_avg"]) * 9,
+    )
+    add_position.apply_buy(
+        quantity=int(add_case["add_fill"]["qty"]),
+        price=Decimal(add_case["add_fill"]["price"]),
+        fee=Decimal(0),
+        session_index=1,
+    )
+    average = add_position.average_price
+    close_a_position = Position(
+        symbol=data["symbol"],
+        quantity=add_position.quantity,
+        average_price=average,
+        invested_cost_basis=add_position.invested_cost_basis,
+    )
+    close_b_position = Position(
+        symbol=data["symbol"],
+        quantity=add_position.quantity,
+        average_price=average,
+        invested_cost_basis=add_position.invested_cost_basis,
+    )
+    close_a = update_c3_close(close_a_position, close=Decimal(add_case["close_A"]))
+    close_b = update_c3_close(close_b_position, close=Decimal(add_case["close_B"]))
     equality = next(item for item in data["timeline"] if item["session"] == "D_eq")
     equality_position = Position(
         symbol=data["symbol"],
@@ -566,8 +615,8 @@ def _v011(
             "trim_qty": str(c3_trim_quantity(position)),
         },
         {
-            "close_8900_underwater": Decimal(add_case["close_A"]) < average,
-            "close_9500_underwater_correct": Decimal(add_case["close_B"]) < average,
+            "close_8900_underwater": close_a.underwater,
+            "close_9500_underwater_correct": close_b.underwater,
             "close_9500_underwater_prefill_mutant": Decimal(add_case["close_B"])
             < Decimal(add_case["pre_session_avg"]),
             "name": "post_fill_avg_underwater",
@@ -672,13 +721,19 @@ def _v013(
 def _v014(
     data: dict[str, Any], _: TickTable, __: FrozenKospiIndex
 ) -> list[dict[str, Any]]:
-    bar = data["bar"]
+    raw_bar = data["bar"]
+    bar = Bar(
+        session=date(2000, 1, 3),
+        symbol="GOLDEN",
+        open=Decimal(raw_bar["open"]),
+        high=Decimal(raw_bar["high"]),
+        low=Decimal(raw_bar["low"]),
+        close=Decimal(raw_bar["close"]),
+    )
     buy_limit = Decimal(data["buy_limit"])
     sell_limit = Decimal(data["sell_limit"])
-    buy_filled = Decimal(bar["open"]) <= buy_limit or Decimal(bar["low"]) <= buy_limit
-    sell_touched = (
-        Decimal(bar["open"]) >= sell_limit or Decimal(bar["high"]) >= sell_limit
-    )
+    buy_filled = PortfolioEngine._buy_fill_price(buy_limit, bar) is not None
+    sell_touched = PortfolioEngine._sell_fill_price(sell_limit, bar) is not None
     return [
         {
             "buy_filled_this_bar": buy_filled,
@@ -693,17 +748,19 @@ def _v014(
 def _v015(
     data: dict[str, Any], _: TickTable, __: FrozenKospiIndex
 ) -> list[dict[str, Any]]:
-    cash = Decimal(data["settled_cash"])
-    rejected = [
-        item
-        for item in data["b0_demand_orders_same_session"]
-        if Decimal(item["notional"]) * (Decimal(1) + Decimal(data["fee_rate"])) > cash
-    ]
+    ledger = CashLedger(Decimal(data["settled_cash"]))
+    rejected: list[dict[str, Any]] = []
+    for item in data["b0_demand_orders_same_session"]:
+        required = Decimal(item["notional"]) * (Decimal(1) + Decimal(data["fee_rate"]))
+        if not ledger.reserve_order(f"golden-{item['symbol']}", required):
+            rejected.append(item)
     return [
         {
             "cash_rejected_orders": [item["symbol"] for item in rejected],
             "name": "session_primary_not_notional",
-            "unserved_counterfactual_demand_sessions_delta": int(bool(rejected)),
+            "unserved_counterfactual_demand_sessions_delta": (
+                unserved_counterfactual_demand_sessions(["S1" for _item in rejected])
+            ),
             "unserved_notional_diagnostic": plain(
                 sum((Decimal(item["notional"]) for item in rejected), Decimal(0))
             ),
@@ -724,8 +781,8 @@ def _v016(
             "demand_basis": "B0_stream",
             "labels": labels,
             "name": "policy_rejected_not_invisible",
-            "unserved_sessions": int(
-                any(value != "filled" for value in labels.values())
+            "unserved_sessions": unserved_counterfactual_demand_sessions(
+                ["S1" for value in labels.values() if value != "filled"]
             ),
         }
     ]
@@ -734,15 +791,16 @@ def _v016(
 def _v017(
     data: dict[str, Any], _: TickTable, __: FrozenKospiIndex
 ) -> list[dict[str, Any]]:
-    unresolved = (
-        bool(data["data_ends_before_exploration_end"]) and int(data["position_qty"]) > 0
+    status = unresolved_terminal_status(
+        data_ends_before_exploration_end=bool(data["data_ends_before_exploration_end"]),
+        position_quantity=int(data["position_qty"]),
     )
     return [
         {
             "mtm": plain(Decimal(data["last_valid_close"]) * int(data["position_qty"])),
             "name": "status",
-            "top_level": ("INCONCLUSIVE_UNRESOLVED_TERMINAL" if unresolved else "OK"),
-            "winner_selection_allowed": not unresolved,
+            "top_level": status,
+            "winner_selection_allowed": status == "OK",
         },
         {
             "name": "normal_eod_open_lot_not_this_status",
@@ -828,7 +886,9 @@ def _v021(
             "label": "ADJUSTED_PRICE_SIMULATION",
             "name": "no_share_restatement",
             "paper_promotion_evidence": False,
-            "qty_after_corporate_action_without_ledger": quantity,
+            "qty_after_corporate_action_without_ledger": (
+                adjusted_simulation_quantity(quantity)
+            ),
         }
     ]
 
@@ -862,14 +922,21 @@ def _v023(
     bull_terminal = Decimal(data["bull_closes"][-1])
     fee_rate = Decimal("0.00215")
     bear_rows: list[dict[str, Any]] = []
-    streak = 0
+    position = Position(
+        symbol="GOLDEN",
+        quantity=1,
+        average_price=entry,
+        invested_cost_basis=entry,
+    )
     for raw_close in data["bear_closes"]:
         close = Decimal(raw_close)
-        underwater = close < entry
-        streak = streak + 1 if underwater else 0
-        row: dict[str, Any] = {"close": raw_close, "underwater": underwater}
-        if underwater:
-            row["streak"] = streak
+        outcome = update_c3_close(position, close=close)
+        row: dict[str, Any] = {
+            "close": raw_close,
+            "underwater": outcome.underwater,
+        }
+        if outcome.underwater:
+            row["streak"] = outcome.streak
         else:
             row["reason"] = "close == avg → equality 비충족 / reset"
         bear_rows.append(row)
@@ -888,7 +955,7 @@ def _v023(
             "entry_avg": plain(entry),
             "name": "bear_underwater_streak_if_held",
             "per_bar": bear_rows,
-            "streak_bars": streak,
+            "streak_bars": position.underwater_streak,
         },
         {"name": "sideways_scenario_present", "value": bool(data["sideways_closes"])},
     ]
@@ -898,16 +965,22 @@ def _v024(
     data: dict[str, Any], _: TickTable, __: FrozenKospiIndex
 ) -> list[dict[str, Any]]:
     quantity = int(data["qty_each"])
-    cash = Decimal(data["initial_cash"])
+    ledger = CashLedger(Decimal(data["initial_cash"]))
     open_price = Decimal(data["bar_open"])
     l2_limit = Decimal(data["L2_limit"])
     l1_gross = open_price * quantity
     l1_fee = l1_gross * Decimal("0.00215")
-    cash -= l1_gross + l1_fee
+    ledger.fill_buy_immediate(
+        amount=l1_gross + l1_fee,
+        trade_session_index=0,
+    )
     l2_gross = l2_limit * quantity
     l2_fee = l2_gross * Decimal("0.00215")
-    cash_after_l1 = cash
-    cash -= l2_gross + l2_fee
+    cash_after_l1 = ledger.orderable_cash
+    ledger.fill_buy_immediate(
+        amount=l2_gross + l2_fee,
+        trade_session_index=0,
+    )
     return [
         {
             "L1": {
@@ -917,7 +990,7 @@ def _v024(
                 "gross": plain(l1_gross),
             },
             "L2": {
-                "cash_after": fixed(cash, 2),
+                "cash_after": fixed(ledger.orderable_cash, 2),
                 "fee": fixed(l2_fee, 2),
                 "fill_price": plain(l2_limit),
                 "gross": plain(l2_gross),
@@ -960,10 +1033,11 @@ def _v026(
 ) -> list[dict[str, Any]]:
     orders = sorted(
         data["orders"],
-        key=lambda item: (
-            0 if item["class"] == "add" else 1,
-            int(item["rank"]),
-            item["symbol"],
+        key=lambda item: order_class_sort_key(
+            is_add=item["class"] == "add",
+            signal_rank=int(item["rank"]),
+            symbol=item["symbol"],
+            rung="L1",
         ),
     )
     return [
@@ -977,7 +1051,9 @@ def _v026(
 def _v027(
     data: dict[str, Any], _: TickTable, __: FrozenKospiIndex
 ) -> list[dict[str, Any]]:
-    arm = int(data["streak"]) >= 180 and bool(data["trim90_filled"])
+    arm = c3_180_should_arm(
+        streak=int(data["streak"]), trim90_filled=bool(data["trim90_filled"])
+    )
     return [{"name": "arm_180", "value": arm}]
 
 
@@ -1003,10 +1079,10 @@ def _v029(
     cluster = data["cluster"]
     distance = Decimal(cluster["dist_pct"])
     band_ok = Decimal("-0.08") <= distance <= Decimal("-0.03")
-    emitted = (
-        Decimal(data["rsi"]) < Decimal("45")
-        and band_ok
-        and len(set(cluster["sources"])) >= 2
+    emitted = signal_is_eligible(
+        rsi=Decimal(data["rsi"]),
+        clusters=_contract_clusters([cluster]),
+        close=close,
     )
     rungs = dict(
         build_buy_rungs(

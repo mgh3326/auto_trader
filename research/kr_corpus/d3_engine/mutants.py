@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from research.kr_corpus.d3_engine.canonical import fixed, plain
+from research.kr_corpus.d3_engine.cash import CashLedger
 from research.kr_corpus.d3_engine.constants import DECIMAL_PRECISION
 from research.kr_corpus.d3_engine.indicators import (
     OhlcPoint,
@@ -19,12 +20,25 @@ from research.kr_corpus.d3_engine.indicators import (
 )
 from research.kr_corpus.d3_engine.metrics import (
     deployment_mean,
+    dual_view_result,
     locked_share_time_weighted_mean,
     nearest_rank,
+    unserved_counterfactual_demand_sessions,
 )
 from research.kr_corpus.d3_engine.models import Position
-from research.kr_corpus.d3_engine.policies import C1Cycle, c2_allows, update_c3_close
-from research.kr_corpus.d3_engine.signals import PriceLevel, cluster_levels
+from research.kr_corpus.d3_engine.policies import (
+    C1Cycle,
+    adjusted_simulation_quantity,
+    c2_allows,
+    update_c3_close,
+)
+from research.kr_corpus.d3_engine.signals import (
+    LevelCluster,
+    PriceLevel,
+    build_buy_rungs,
+    cluster_levels,
+    signal_is_eligible,
+)
 from research.kr_corpus.d3_engine.tick import InvalidTickTable, TickTable
 
 
@@ -57,7 +71,7 @@ def run_mutant_probes(root: Path, ticks: TickTable) -> tuple[MutantProbeResult, 
         _fib_close(root),
         _l2_less_signal(root),
         _same_source_confluence(root),
-        _l1_l2_priority(root),
+        _l1_l2_priority(root, ticks),
         _tick_alignment(root, ticks),
         _c1_submitted_notional(root),
         _c3_prefill_average(root),
@@ -149,12 +163,25 @@ def _fib_close(root: Path) -> MutantProbeResult:
 
 def _l2_less_signal(root: Path) -> MutantProbeResult:
     data = _load_input(root, "V004_l2_less_no_signal")
-    rsi_ok = Decimal(data["rsi"]) < 45
-    correct = rsi_ok and any(
-        Decimal("-0.08") <= Decimal(item["dist_pct"]) <= Decimal("-0.03")
-        for item in data["support_clusters"]
+    close = Decimal(data["t_minus_1_close"])
+    clusters = tuple(
+        LevelCluster(
+            members=tuple(
+                PriceLevel(
+                    Decimal(item["price"]),
+                    str(source),
+                    f"cluster-{cluster_index}-{source_index}",
+                )
+                for source_index, source in enumerate(item["sources"])
+            ),
+            representative=Decimal(item["price"]),
+            distinct_sources=tuple(sorted(set(item["sources"]))),
+        )
+        for cluster_index, item in enumerate(data["support_clusters"])
     )
-    mutant = rsi_ok and bool(data["support_clusters"])
+    rsi = Decimal(data["rsi"])
+    correct = signal_is_eligible(rsi=rsi, clusters=clusters, close=close)
+    mutant = rsi < Decimal("45") and bool(clusters)
     return MutantProbeResult(
         "l2_less_signal", "V004_l2_less_no_signal", correct, mutant
     )
@@ -177,17 +204,21 @@ def _same_source_confluence(root: Path) -> MutantProbeResult:
     )
 
 
-def _l1_l2_priority(root: Path) -> MutantProbeResult:
+def _l1_l2_priority(root: Path, ticks: TickTable) -> MutantProbeResult:
     data = _load_input(root, "V006_l1_l2_priority")
-    correct = (
-        ["L1", "L2"]
-        if Decimal(data["t_minus_1_close"]) * Decimal("0.97")
-        >= Decimal(data["qualifying_cluster_price"])
-        else ["L2"]
-    )
-    mutant = list(reversed(correct))
+    correct = [
+        name
+        for name, _ in build_buy_rungs(
+            close=Decimal(data["t_minus_1_close"]),
+            l2_price=Decimal(data["qualifying_cluster_price"]),
+            tick_table=ticks,
+        )
+    ]
     return MutantProbeResult(
-        "l1_l2_priority_reversed", "V006_l1_l2_priority", correct, mutant
+        "l1_l2_priority_reversed",
+        "V006_l1_l2_priority",
+        correct,
+        list(reversed(correct)),
     )
 
 
@@ -241,12 +272,24 @@ def _c1_submitted_notional(root: Path) -> MutantProbeResult:
 def _c3_prefill_average(root: Path) -> MutantProbeResult:
     data = _load_input(root, "V011_c3_trim_streak")
     item = next(row for row in data["timeline"] if row["session"] == "D_add")
-    post = Decimal(item["post_fill_avg"])
+    position = Position(
+        symbol=data["symbol"],
+        quantity=9,
+        average_price=Decimal(item["pre_session_avg"]),
+        invested_cost_basis=Decimal(item["pre_session_avg"]) * 9,
+    )
+    position.apply_buy(
+        quantity=int(item["add_fill"]["qty"]),
+        price=Decimal(item["add_fill"]["price"]),
+        fee=Decimal(0),
+        session_index=1,
+    )
     close = Decimal(item["close_B"])
+    correct = update_c3_close(position, close=close).underwater
     return MutantProbeResult(
         "c3_prefill_average",
         "V011_c3_trim_streak",
-        close < post,
+        correct,
         close < Decimal(item["pre_session_avg"]),
     )
 
@@ -285,23 +328,28 @@ def _c2_t_instead_of_t_minus_1(root: Path) -> MutantProbeResult:
 
 def _t0_reuse(root: Path) -> MutantProbeResult:
     data = _load_input(root, "V012_t2_settle_payable")
-    initial = Decimal(data["initial_settled_cash"])
+    ledger = CashLedger(Decimal(data["initial_settled_cash"]))
     buy = Decimal(data["buy"]["gross"]) + Decimal(data["buy"]["fee"])
     sell = Decimal(data["sell"]["net"])
+    ledger.fill_buy_immediate(amount=buy, trade_session_index=0)
+    ledger.fill_sell(net_amount=sell, trade_session_index=1)
     return MutantProbeResult(
         "t0_sell_receivable_reuse",
         "V012_t2_settle_payable",
-        plain(initial - buy),
-        plain(initial - buy + sell),
+        plain(ledger.orderable_cash),
+        plain(ledger.orderable_cash + sell),
     )
 
 
 def _t2_off_by_one(root: Path) -> MutantProbeResult:
     data = _load_input(root, "V012_t2_settle_payable")
+    ledger = CashLedger(Decimal(data["initial_settled_cash"]))
+    amount = Decimal(data["buy"]["gross"]) + Decimal(data["buy"]["fee"])
+    payable = ledger.fill_buy_immediate(amount=amount, trade_session_index=0)
     return MutantProbeResult(
         "t2_settlement_off_by_one",
         "V012_t2_settle_payable",
-        data["sessions"][2],
+        data["sessions"][payable.settle_session_index],
         data["sessions"][1],
     )
 
@@ -309,10 +357,14 @@ def _t2_off_by_one(root: Path) -> MutantProbeResult:
 def _payable_double_debit(root: Path) -> MutantProbeResult:
     data = _load_input(root, "V012_t2_settle_payable")
     amount = Decimal(data["buy"]["gross"]) + Decimal(data["buy"]["fee"])
+    ledger = CashLedger(Decimal(data["initial_settled_cash"]))
+    payable = ledger.fill_buy_immediate(amount=amount, trade_session_index=0)
+    before = ledger.orderable_cash
+    ledger.settle_pre_open(payable.settle_session_index)
     return MutantProbeResult(
         "payable_double_debit",
         "V012_t2_settle_payable",
-        "0",
+        plain(ledger.orderable_cash - before),
         plain(-amount),
     )
 
@@ -323,7 +375,7 @@ def _split_quantity(root: Path) -> MutantProbeResult:
     return MutantProbeResult(
         "split_quantity_restatement_without_ledger",
         "V021_split_adjusted_price_sim",
-        quantity,
+        adjusted_simulation_quantity(quantity),
         quantity * 2,
     )
 
@@ -353,7 +405,12 @@ def _p05_right_censored(root: Path) -> MutantProbeResult:
 
 def _arm_local_eligibility(root: Path) -> MutantProbeResult:
     data = _load_input(root, "V016_counterfactual_demand_gaming")
-    correct = int(bool(data["b0_demand_signals"]) and data["c2_regime_block"])
+    labels = dict.fromkeys(
+        data["b0_demand_signals"],
+        "policy_rejected" if data["c2_regime_block"] else "filled",
+    )
+    rejected_sessions = ["S1" for label in labels.values() if label != "filled"]
+    correct = unserved_counterfactual_demand_sessions(rejected_sessions)
     mutant = 0 if data["c2_regime_block"] else correct
     return MutantProbeResult(
         "arm_local_eligibility_gaming",
@@ -365,7 +422,16 @@ def _arm_local_eligibility(root: Path) -> MutantProbeResult:
 
 def _clamp_only_winner(root: Path) -> MutantProbeResult:
     data = _load_input(root, "V022_dual_view_consistency")
-    correct = "INCONCLUSIVE_DATA_BIAS"
+    original = data["original_valid_bar"]
+    clamp = data["clamp_admit_v1"]
+    correct = dual_view_result(
+        original_verdicts=original["verdicts"],
+        original_hard_guards={},
+        original_winner=original["winner_id"],
+        clamp_verdicts=clamp["verdicts"],
+        clamp_hard_guards={},
+        clamp_winner=clamp["winner_id"],
+    )
     mutant = data["clamp_admit_v1"]["winner_id"]
     return MutantProbeResult(
         "clamp_only_winner", "V022_dual_view_consistency", correct, mutant
@@ -412,7 +478,9 @@ def _unserved_notional_primary(root: Path) -> MutantProbeResult:
     return MutantProbeResult(
         "unserved_notional_as_primary",
         "V015_cash_exhaustion",
-        1,
+        unserved_counterfactual_demand_sessions(
+            ["S1"] if data["b0_demand_orders_same_session"] else []
+        ),
         plain(notional),
     )
 

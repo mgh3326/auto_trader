@@ -90,8 +90,10 @@ def update_c3_close(position: Position, *, close: Decimal) -> C3CloseOutcome:
         position.trim90_armed = True
         armed_90 = True
     if (
-        position.underwater_streak >= 180
-        and position.trim90_filled
+        c3_180_should_arm(
+            streak=position.underwater_streak,
+            trim90_filled=position.trim90_filled,
+        )
         and not position.trim180_triggered
     ):
         position.trim180_triggered = True
@@ -109,8 +111,30 @@ def c3_buy_suppressed(position: Position) -> bool:
     return position.trim90_armed or position.trim180_armed
 
 
+def c3_180_should_arm(*, streak: int, trim90_filled: bool) -> bool:
+    return streak >= 180 and trim90_filled
+
+
 def c3_trim_quantity(position: Position) -> int:
     return position.quantity // 3
+
+
+def adjusted_simulation_quantity(quantity: int) -> int:
+    """Adjusted-price simulation never restates integer shares without a ledger."""
+
+    if quantity < 0:
+        raise ValueError("quantity cannot be negative")
+    return quantity
+
+
+def unresolved_terminal_status(
+    *, data_ends_before_exploration_end: bool, position_quantity: int
+) -> str:
+    return (
+        "INCONCLUSIVE_UNRESOLVED_TERMINAL"
+        if data_ends_before_exploration_end and position_quantity > 0
+        else "OK"
+    )
 
 
 def mark_c3_trim_filled(position: Position, *, stage: int) -> None:
