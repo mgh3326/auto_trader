@@ -62,6 +62,13 @@ def test_registry_parses_raw_blocks_and_binds_each_contract_hash() -> None:
         item.to_dict()["contract_hash"] == item.contract_hash
         for item in registry.definitions
     )
+    etr = registry.get("CR-SPOT-ETR-01")
+    assert etr.labels == (
+        "CR-S1 verdict = BLOCKED (B2 unresolved)",
+        "ETR-01×Upbit PASS = exploratory, not promotable",
+    )
+    assert etr.to_dict()["labels"] == etr.labels
+    assert registry.get("CR-SPOT-TPR-01").labels == ()
 
 
 def test_registry_refuses_one_byte_drift_before_parsing() -> None:

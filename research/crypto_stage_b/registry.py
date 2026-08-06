@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import Final
 
 __all__ = [
     "ADMITTED_STRATEGY_IDS",
@@ -22,6 +23,7 @@ __all__ = [
     "CandidateDefinition",
     "CandidateParseError",
     "CandidateRegistry",
+    "mandatory_labels",
 ]
 
 
@@ -38,6 +40,10 @@ ADMITTED_STRATEGY_IDS = (
 """The three operator-admitted candidates; HTA-01 remains preserved only."""
 
 _PRESERVED_NOT_IMPLEMENTED_ID = "CR-SPOT-HTA-01"
+_ETR_RESEARCH_LABELS: Final[tuple[str, ...]] = (
+    "CR-S1 verdict = BLOCKED (B2 unresolved)",
+    "ETR-01×Upbit PASS = exploratory, not promotable",
+)
 _CANDIDATE_START = re.compile(r"(?m)^- strategy_id: (?P<strategy_id>[^\r\n]+)$")
 _TOP_LEVEL_FIELD = re.compile(r"(?m)^  [A-Za-z_][A-Za-z0-9_]*:")
 _PARAMETER_LINE = re.compile(
@@ -50,6 +56,19 @@ _DECIMAL = re.compile(r"-?(?:0|[1-9]\d*)\.\d+\Z")
 
 class CandidateParseError(ValueError):
     """The sealed return cannot be used as an unambiguous strategy contract."""
+
+
+def mandatory_labels(strategy_id: str) -> tuple[str, ...]:
+    """Return additive registry labels that prevent research-status revival.
+
+    These labels are intentionally outside the verbatim candidate blocks: they
+    cannot alter the frozen contract hash, parameters, costs, or ablation
+    definition.  They are carried by every serialized registry definition so a
+    successful exploratory pair cannot be mistaken for a promotion decision.
+    """
+    if strategy_id == "CR-SPOT-ETR-01":
+        return _ETR_RESEARCH_LABELS
+    return ()
 
 
 @dataclass(frozen=True)
@@ -72,6 +91,11 @@ class CandidateDefinition:
     source_return_sha256: str
     contract_hash: str
 
+    @property
+    def labels(self) -> tuple[str, ...]:
+        """Return the mandatory non-promotional registry labels for this candidate."""
+        return mandatory_labels(self.strategy_id)
+
     def parameter(self, name: str) -> int | float:
         """Return one source-derived parameter or fail closed on contract drift."""
         try:
@@ -86,6 +110,7 @@ class CandidateDefinition:
         return {
             "strategy_id": self.strategy_id,
             "contract_hash": self.contract_hash,
+            "labels": self.labels,
             "source_return_sha256": self.source_return_sha256,
             "family_id": self.family_id,
             "venue_scope": self.venue_scope,
