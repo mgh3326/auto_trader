@@ -23,7 +23,7 @@ async def test_crypto_upsert_writes_via_instrument_id(
     inst = CryptoInstrument(
         venue="upbit",
         product="spot",
-        venue_symbol="KRW-SOL",
+        venue_symbol="KRW-ROB284SOL",
         base_asset="SOL",
         quote_asset="KRW",
         status="active",
@@ -34,7 +34,7 @@ async def test_crypto_upsert_writes_via_instrument_id(
     repo = DailyCandlesRepository(session=db_session)
     row = DailyCandleRow(
         time_utc=dt.datetime(2026, 5, 20, tzinfo=dt.UTC),
-        symbol="KRW-SOL",
+        symbol="KRW-ROB284SOL",
         partition="upbit_krw",
         open=100,
         high=110,
@@ -91,7 +91,7 @@ async def test_crypto_latest_time_utc_resolves_via_instrument(
     inst = CryptoInstrument(
         venue="upbit",
         product="spot",
-        venue_symbol="KRW-ETH",
+        venue_symbol="KRW-ROB284ETH",
         base_asset="ETH",
         quote_asset="KRW",
         status="active",
@@ -103,7 +103,7 @@ async def test_crypto_latest_time_utc_resolves_via_instrument(
     rows = [
         DailyCandleRow(
             time_utc=dt.datetime(2026, 5, 18, tzinfo=dt.UTC),
-            symbol="KRW-ETH",
+            symbol="KRW-ROB284ETH",
             partition="upbit_krw",
             open=100,
             high=101,
@@ -116,7 +116,7 @@ async def test_crypto_latest_time_utc_resolves_via_instrument(
         ),
         DailyCandleRow(
             time_utc=dt.datetime(2026, 5, 20, tzinfo=dt.UTC),
-            symbol="KRW-ETH",
+            symbol="KRW-ROB284ETH",
             partition="upbit_krw",
             open=100,
             high=101,
@@ -131,7 +131,9 @@ async def test_crypto_latest_time_utc_resolves_via_instrument(
     await repo.upsert_rows(market=MarketKey.CRYPTO, rows=rows)
 
     latest = await repo.latest_time_utc(
-        market=MarketKey.CRYPTO, symbol="KRW-ETH", partition="upbit_krw"
+        market=MarketKey.CRYPTO,
+        symbol="KRW-ROB284ETH",
+        partition="upbit_krw",
     )
     assert latest is not None
     assert latest.date() == dt.date(2026, 5, 20)
@@ -144,7 +146,7 @@ async def test_crypto_fetch_recent_returns_rows_in_ascending_order(
     inst = CryptoInstrument(
         venue="upbit",
         product="spot",
-        venue_symbol="KRW-XRP",
+        venue_symbol="KRW-ROB284XRP",
         base_asset="XRP",
         quote_asset="KRW",
         status="active",
@@ -156,7 +158,7 @@ async def test_crypto_fetch_recent_returns_rows_in_ascending_order(
     rows = [
         DailyCandleRow(
             time_utc=dt.datetime(2026, 5, d, tzinfo=dt.UTC),
-            symbol="KRW-XRP",
+            symbol="KRW-ROB284XRP",
             partition="upbit_krw",
             open=100,
             high=101,
@@ -172,12 +174,12 @@ async def test_crypto_fetch_recent_returns_rows_in_ascending_order(
     await repo.upsert_rows(market=MarketKey.CRYPTO, rows=rows)
     recent = await repo.fetch_recent(
         market=MarketKey.CRYPTO,
-        symbol="KRW-XRP",
+        symbol="KRW-ROB284XRP",
         partition="upbit_krw",
         count=10,
     )
     assert [r.time_utc.day for r in recent] == [18, 19, 20]
-    assert all(r.symbol == "KRW-XRP" for r in recent)
+    assert all(r.symbol == "KRW-ROB284XRP" for r in recent)
     assert all(r.partition == "upbit_krw" for r in recent)
 
 
@@ -236,7 +238,7 @@ async def test_resolve_crypto_instrument_ids_returns_only_known_symbols(
     known = CryptoInstrument(
         venue="upbit",
         product="spot",
-        venue_symbol="KRW-SOL",
+        venue_symbol="KRW-ROB284KNOWN-SOL",
         base_asset="SOL",
         quote_asset="KRW",
         status="active",
@@ -247,8 +249,8 @@ async def test_resolve_crypto_instrument_ids_returns_only_known_symbols(
     resolved = await DailyCandlesRepository(
         session=db_session
     ).resolve_crypto_instrument_ids(
-        symbols=["KRW-SOL", "KRW-NOT-SEEDED"],
+        symbols=["KRW-ROB284KNOWN-SOL", "KRW-NOT-SEEDED"],
         partition="upbit_krw",
     )
 
-    assert resolved == {"KRW-SOL": known.id}
+    assert resolved == {"KRW-ROB284KNOWN-SOL": known.id}
