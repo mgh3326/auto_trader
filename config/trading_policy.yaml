@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-07-28.1"
-captured_as_of: "2026-07-28"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28"
+version: "2026-08-08.1"
+captured_as_of: "2026-08-08"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner)"
 
 authority:
   scope: judgment_policy_only
@@ -209,8 +209,7 @@ decision_rules:
       ADVISORY ONLY. de_minimis_trim_watch prevents session-local benefit gates.
       A one-share equity position is assessed for a full exit, never a
       pseudo-partial trim. momentum_spike_profit_ladder exempts only its matched
-      spike candidate from the RSI gate and remains profit-zone-only.
-      profit_realization is resistance-distance-independent. When
+      spike candidate from the RSI gate and remains profit-zone-only. When
       resistance-near favors PLACE but upside-rich would otherwise allow WATCH,
       resistance proximity can pre-place only a small trim; upside richness
       limits size, not eligibility.
@@ -244,13 +243,6 @@ decision_rules:
           ladder_total_position_pct_max: 33.3333
         action: preplace_resistance_1_2_small_trim_ladder
         sizing: at_most_one_third_position
-      - id: profit_realization
-        conditions:
-          # Fable governance advisory Q3-#4 Phase 1 seed; follow-up sell-policy
-          # research must recalibrate this initial threshold.
-          profit_pct_min: 8
-        action: preplace_small_trim_ladder
-        sizing: small_trim_only
       - id: rsi_confirmed_resistance
         conditions:
           rsi_min_policy_key: sell.rsi_place_min
@@ -271,7 +263,7 @@ decision_rules:
         action: register_watch
         sizing: no_preplaced_trim
     tie_breaks:
-      tier_priority: "de_minimis_trim_watch > single_share_full_exit_review > momentum_spike_profit_ladder > profit_realization > rsi_confirmed_resistance > ultra_near_resistance > watch_zone"
+      tier_priority: "de_minimis_trim_watch > single_share_full_exit_review > momentum_spike_profit_ladder > rsi_confirmed_resistance > ultra_near_resistance > watch_zone"
       multiple_tiers_matched: first_matching_tier_wins
       sell.upside_place_max_pct: size_limit_only
       momentum_spike_rsi_exception: matched_tier_only
@@ -302,8 +294,8 @@ decision_rules:
       order_routable_required: true
     conditions:
       symbol_routable_sellable_quantity_eq: 1
-      # Provisional: aligned with profit_realization so this fallback closes
-      # only the single-share sizing gap instead of changing profit eligibility.
+      # Provisional: aligned with sell.single_share_profit_pct_min (D5) so this
+      # fallback closes only the single-share sizing gap.
       profit_pct_min: 8
       resistance_reference_required: true
       resistance_strength_min: strong
@@ -351,354 +343,10 @@ decision_rules:
       separately by the operator.
 
   # GPT Pro trading retrospective Phase 2.5 (received 2026-07-25).
-  # Rules 01-14 are advisory policy data only. They do not activate proposals,
-  # submit/cancel orders, mutate broker state, or widen code-enforced guards.
-  # `conditions.markets` is the applicability contract because the generic
-  # decision-rule schema has lane filtering but no market-filter field.
-  phase25.01_level_role_arm:
-    lanes: [sell]
-    semantics: >-
-      ADVISORY ONLY. Register each exit-related level by meaning rather than
-      price distance. Required registration fields are level_role, level_price,
-      reserved_quantity, and policy_version. The approval test is whether price
-      touching the level is sufficient by itself to approve the order.
-    tiers:
-      - id: hard_exit
-        conditions:
-          markets: [kr, us, crypto]
-          level_role: HARD_EXIT
-          required_fields: [level_role, level_price, reserved_quantity, policy_version]
-          price_touch_sufficient_for_approval: true
-        action: advise_resting_sell
-        sizing: reserved_quantity
-      - id: conditional_exit
-        conditions:
-          markets: [kr, us, crypto]
-          level_role: CONDITIONAL_EXIT
-          required_fields: [level_role, level_price, reserved_quantity, policy_version]
-          price_touch_sufficient_for_approval: false
-        action: advise_approach_watch_and_proposal_draft
-        sizing: reserved_quantity
-      - id: hard_invalidation
-        conditions:
-          markets: [kr, us, crypto]
-          level_role: HARD_INVALIDATION
-          required_fields: [level_role, level_price, reserved_quantity, policy_version]
-        action: advise_downside_watch_and_full_exit_draft
-        sizing: full_position
-      - id: reference_only
-        conditions:
-          markets: [kr, us, crypto]
-          level_role: REFERENCE_ONLY
-          required_fields: [level_role, level_price, reserved_quantity, policy_version]
-        action: advise_disarmed_with_reason_and_review_at
-        sizing: no_broker_action
-    tie_breaks:
-      classification_question: price_touch_alone_sufficient_for_order_approval
-      hard_commitment_cost: post_fill_upside_is_precommitment_cost_not_system_error
-    exclusions: [position_zero, expired_level_basis, invalid_level_data]
-
-  phase25.02_no_action_deprecation:
-    lanes: [sell]
-    semantics: >-
-      ADVISORY ONLY. The legacy distance-only ">6% NO ACTION" classification is
-      deprecated, not deleted or renamed. Distance never permits an untracked
-      hard exit or invalidation; use the role-based arm policy and the
-      FAR_DISTRIBUTION replacement. No action is represented as a durable
-      DISARMED state with reason and review_at.
-    tiers:
-      - id: legacy_gt_6_pct_no_action
-        conditions:
-          markets: [kr, us, crypto]
-          target_distance_pct_min_exclusive: 6
-          legacy_status: deprecated
-        action: replace_with_level_role_and_far_distribution
-        sizing: preserve_existing_keys
-      - id: allowed_disarmed_state
-        conditions:
-          markets: [kr, us, crypto]
-          allowed_reasons: [position_zero, expired_level_basis, invalid_level_data, reference_only, temporary_conflict]
-          durable_fields: [state, reason, review_at]
-        action: record_disarmed_with_reason_and_review_at
-        sizing: no_broker_action
-    tie_breaks:
-      hard_exit_or_invalidation: arm_state_required
-      temporary_conflict: review_at_required
-    exclusions: []
-
-  phase25.03_far_distribution:
-    lanes: [sell]
-    semantics: >-
-      ADVISORY ONLY. Add FAR_DISTRIBUTION for targets 6-15% above current price;
-      this is the explicit replacement for the deprecated ">6% NO ACTION".
-      HARD_EXIT remains a resting-sell recommendation at every covered distance.
-      CONDITIONAL_EXIT uses an approach watch and prebuilt proposal. The numeric
-      approach-buffer prior is specified only for KR and crypto and is frozen
-      for the next evaluation quarter.
-    tiers:
-      - id: near_0_to_2_pct
-        conditions:
-          markets: [kr, us, crypto]
-          target_distance_pct_range: [0, 2]
-        action: hard_exit_resting_or_conditional_immediate_draft
-        sizing: reserved_quantity
-      - id: approach_2_to_6_pct
-        conditions:
-          markets: [kr, us, crypto]
-          target_distance_pct_min_exclusive: 2
-          target_distance_pct_max: 6
-        action: hard_exit_resting_or_conditional_approach_watch
-        sizing: reserved_quantity
-      - id: far_distribution_6_to_15_pct
-        conditions:
-          markets: [kr, us, crypto]
-          target_distance_pct_min_exclusive: 6
-          target_distance_pct_max: 15
-        action: hard_exit_far_resting_or_conditional_leading_watch
-        sizing: reserved_quantity
-      - id: kr_conditional_approach_buffer
-        conditions:
-          markets: [kr]
-          buffer_formula: "max(2.0%, 0.75 * ATR14%)"
-          buffer_upper_cap_pct: 3.5
-          approach_level_formula: "target * (1 - buffer)"
-        action: register_leading_approach_watch
-        sizing: reserved_quantity
-      - id: crypto_conditional_approach_buffer
-        conditions:
-          markets: [crypto]
-          buffer_formula: "max(3.0%, 1.0 * ATR20_4h%)"
-          buffer_upper_cap_pct: 6
-          approach_level_formula: "target * (1 - buffer)"
-        action: register_leading_approach_watch
-        sizing: reserved_quantity
-      - id: beyond_15_pct
-        conditions:
-          markets: [kr]
-          target_distance_pct_min_exclusive: 15
-          kis_strong_hard_target_resting_allowed: true
-        action: kis_strong_hard_target_or_periodic_reevaluation_until_within_15_pct
-        sizing: reserved_quantity
-      - id: resting_limit_price
-        conditions:
-          markets: [kr, us, crypto]
-          default_formula: "target - 1 tick"
-          wide_tick_exception: "tick > 5bp of target uses target"
-        action: advise_resting_limit_price
-        sizing: reserved_quantity
-    tie_breaks:
-      role_before_distance: HARD_EXIT_or_CONDITIONAL_EXIT_first
-      parameter_freeze: next_evaluation_quarter
-    exclusions: [us_conditional_buffer_not_calibrated, us_or_crypto_beyond_15_pct_not_specified]
-
-  phase25.04_hard_exit_resting_sell:
-    lanes: [sell]
-    semantics: >-
-      ADVISORY ONLY. A HARD_EXIT is a precommitment: recommend a resting sell
-      because price touch completes the judgment. A later price rise is accepted
-      opportunity cost, not an execution defect. If further information is
-      required, classify the level as CONDITIONAL_EXIT instead. Existing manual
-      approval and auto-approve master gates remain unchanged.
-    tiers:
-      - id: hard_exit_resting
-        conditions:
-          markets: [kr, us, crypto]
-          level_role: HARD_EXIT
-          price_touch_sufficient_for_approval: true
-        action: advise_resting_sell
-        sizing: reserved_quantity
-      - id: hard_exit_reclassification
-        conditions:
-          markets: [kr, us, crypto]
-          further_information_required: true
-        action: reclassify_as_conditional_exit
-        sizing: reserved_quantity
-    tie_breaks:
-      adverse_or_favorable_information_cost: accepted_only_when_precommitted
-      execution_authority: existing_approval_and_broker_guards_unchanged
-    exclusions: [reference_only, conditional_exit, hard_invalidation]
-
-  phase25.05_conditional_exit_approach_watch:
-    lanes: [sell]
-    semantics: >-
-      ADVISORY ONLY. CONDITIONAL_EXIT never waits until target passage to begin
-      analysis. Register a leading approach watch and prepare an automatic
-      proposal draft for operator review. KR and crypto use the frozen approach
-      buffers in phase25.03; US has no numeric buffer recommendation and must not
-      infer one.
-    tiers:
-      - id: conditional_exit
-        conditions:
-          markets: [kr, us, crypto]
-          level_role: CONDITIONAL_EXIT
-          price_touch_sufficient_for_approval: false
-        action: register_approach_watch_and_prepare_proposal_draft
-        sizing: reserved_quantity
-      - id: conditional_review_choices
-        conditions:
-          markets: [kr, us, crypto]
-          review_choices: [convert_to_sell_proposal, hold_with_new_levels, dismiss_with_reason_and_expiry]
-          hold_required_fields: [new_invalidation_or_target_or_watch, valid_until]
-        action: require_explicit_disposition
-        sizing: reserved_quantity
-    tie_breaks:
-      kr_buffer: phase25.03_far_distribution.kr_conditional_approach_buffer
-      crypto_buffer: phase25.03_far_distribution.crypto_conditional_approach_buffer
-    exclusions: [us_numeric_buffer_not_specified]
-
-  phase25.06_toss_account_symbol_mode:
-    lanes: [buy, sell]
-    semantics: >-
-      ADVISORY ONLY. For the supported KR Toss account-symbol path, choose one
-      active mode: ACCUMULATION permits resting BUY while SELL remains
-      watch/draft; DISTRIBUTION permits resting SELL while BUY remains
-      watch/draft. Mode changes and cancel/sell submission remain
-      operator-approved proposals; this rule performs no mutation.
-    tiers:
-      - id: accumulation
-        conditions:
-          markets: [kr]
-          brokers: [toss]
-          mode: ACCUMULATION
-          resting_side_allowed: BUY
-        action: advise_sell_watch_or_draft_only
-        sizing: reserved_quantity
-      - id: distribution
-        conditions:
-          markets: [kr]
-          brokers: [toss]
-          mode: DISTRIBUTION
-          resting_side_allowed: SELL
-          priority_triggers: [hard_invalidation_or_trail_active, hard_exit_within_15_pct, planned_quantity_acquired, unresolved_sell_debt, risk_budget_or_holding_period_exceeded]
-        action: advise_buy_watch_or_draft_only
-        sizing: reserved_quantity
-      - id: approved_mode_transition
-        conditions:
-          markets: [kr]
-          brokers: [toss]
-          ordered_steps: [cancel_pending_buy, confirm_cancel_terminal, set_distribution_mode, submit_sell_proposal]
-          operator_approval_required: true
-        action: prepare_composite_transition_proposal
-        sizing: reserved_quantity
-      - id: kis_split_inventory_default
-        conditions:
-          markets: [kr]
-          brokers: [kis]
-          default_mode: same_single_mode
-          exception: separate_campaign_reserved_quantities
-        action: advise_account_level_mode
-        sizing: campaign_reserved_quantity
-    tie_breaks:
-      distribution_priority: any_priority_trigger_true
-      broker_sequence: cancel_terminal_before_sell_submission
-    exclusions: [us_toss_path_not_in_current_policy_contract, crypto_not_share_account_path]
-
-  phase25.07_risk_and_hard_exit_priority:
-    lanes: [buy, sell]
-    semantics: >-
-      ADVISORY ONLY. Risk debt and precommitted exits outrank optional
-      accumulation. Unresolved P0/P1 sell work, approved-but-not-submitted work,
-      expired HARD_EXIT re-arm, active HARD_INVALIDATION, or an active trailing
-      floor blocks a new BUY proposal for the same account-symbol until resolved.
-    tiers:
-      - id: distribution_priority
-        conditions:
-          markets: [kr, us, crypto]
-          higher_priority_states: [hard_invalidation_active, trail_floor_active, hard_exit_within_15_pct, planned_quantity_acquired, unresolved_sell_review, approved_not_submitted, expired_not_rearmed, risk_budget_exceeded, holding_period_exceeded]
-        action: advise_distribution_before_optional_buy
-        sizing: no_new_buy_proposal
-      - id: sell_debt_gate
-        conditions:
-          markets: [kr, us, crypto]
-          unresolved_priorities: [P0, P1]
-        action: surface_at_session_bootstrap_and_hold_same_symbol_buy
-        sizing: no_new_buy_proposal
-    tie_breaks:
-      priority_order: risk_then_hard_exit_then_optional_buy
-      resolution_required: terminal_or_explicit_disposition
-    exclusions: [position_zero, stale_or_duplicate_sell_item]
-
-  phase25.08_persistent_arm_intent:
-    lanes: [sell]
-    semantics: >-
-      ADVISORY ONLY. For KR DAY orders, separate persistent strategy arm_intent
-      from the one-trading-day broker_order. Expiration of the broker object does
-      not expire a valid level. Reconciliation creates a new proposal; it never
-      submits an order without operator approval.
-    tiers:
-      - id: kr_day_order_terminal_collection
-        conditions:
-          markets: [kr]
-          regular_session_terminal: immediately_after_regular_close
-          nxt_extended_terminal_kst: "20:05"
-          distinct_terminal_states: [EXPIRED_UNFILLED, BROKER_REJECTED]
-        action: collect_broker_day_terminal
-        sizing: reserved_quantity
-      - id: kr_next_day_reconciliation
-        conditions:
-          markets: [kr]
-          reconciliation_window_kst: "08:20-08:40"
-          checks: [holding_quantity, arm_intent, policy_version, opposite_pending, duplicate_reserved_quantity, prior_terminal, opening_gap]
-          idempotency_components: [account, symbol, side, level_version, trade_date, reserved_quantity]
-        action: prepare_new_operator_approved_proposal
-        sizing: reserved_quantity
-      - id: gap_above_prior_target
-        conditions:
-          markets: [kr]
-          opening_price_above_prior_target: true
-        action: draft_marketable_limit_with_target_passage_and_slippage
-        sizing: reserved_quantity
-    tie_breaks:
-      strategy_lifetime: arm_intent_validity
-      broker_lifetime: one_trading_day
-    exclusions: [us_day_rearm_schedule_not_specified, crypto_day_order_not_applicable]
-
-  phase25.09_mfe_session_ratcheted_trail:
-    lanes: [sell]
-    semantics: >-
-      ADVISORY ONLY. Use a session-ratcheted HWM floor, not a live automatic
-      trailing order. At session start update HWM, test activation, compute the
-      floor, and re-register a higher downside watch. A fired watch only drafts
-      a proposal. Freeze initial parameters for the next evaluation quarter.
-    tiers:
-      - id: kr_trail
-        conditions:
-          markets: [kr]
-          activation_formula: "max(6%, 2 * ATR14%)"
-          giveback_formula: "clip(1.5 * ATR14%, 4%, 7%)"
-          time_stop: "5 trading days without a new HWM"
-          hwm_source: "daily high when intraday coverage is incomplete"
-        action: session_update_hwm_and_raise_watch_floor
-        sizing: full_or_remaining_position
-      - id: crypto_trail
-        conditions:
-          markets: [crypto]
-          activation_formula: "max(8%, 2 * ATR20_4h%)"
-          giveback_formula: "clip(2 * ATR20_4h%, 6%, 12%)"
-          time_stop: "12 four-hour bars without a new HWM"
-          hwm_source: "4h high"
-        action: session_update_hwm_and_raise_watch_floor
-        sizing: full_or_remaining_position
-      - id: ratchet
-        conditions:
-          markets: [kr, crypto]
-          floor_formula: "max(previous_floor, HWM * (1 - G_current))"
-          giveback_width_must_not_exceed_activation_G0: true
-          time_stop_requires_half_allowed_giveback: true
-        action: never_lower_existing_floor
-        sizing: full_or_remaining_position
-      - id: static_vs_trail_role_split
-        conditions:
-          markets: [kr, crypto]
-          known_distant_resistance: resting_hard_exit
-          unknown_trend_peak: session_ratcheted_trail
-        action: preserve_separate_protection_roles
-        sizing: reserved_or_remaining_quantity
-    tie_breaks:
-      floor_direction: upward_only
-      automation_boundary: watch_and_draft_only
-    exclusions: [us_trail_parameters_not_recommended, intraday_spike_reversal_between_sessions_unprotected]
-
+  # Rules 01-09 and 11-14 were removed 2026-08-08 by operator decision:
+  # unvalidated advisory drift (hypotheses never confirmed by measurement).
+  # Rule 10 is retained because it owns the disposition verdict for the
+  # operator-confirmed D5 single-share tier (disposition_policy_key).
   phase25.10_single_share_exit_choice:
     lanes: [sell]
     semantics: >-
@@ -760,168 +408,6 @@ decision_rules:
       one_share_choice: hard_target_or_trail_not_both
       collision_sequence: cancel_terminal_before_replacement_submit
     exclusions: [crypto_fractional_quantity, loss_state_uses_existing_loss_cut_path]
-
-  phase25.11_durable_watch_work_item:
-    lanes: [sell]
-    semantics: >-
-      ADVISORY ONLY. Every actionable watch fire creates or updates a durable
-      work item linked to its proposal context; a notification alone is not
-      consumption. Deterministic exit events draft immediately, while
-      conditional events require an explicit review disposition.
-    tiers:
-      - id: work_item_contract
-        conditions:
-          markets: [kr, us, crypto]
-          required_fields: [event_id, account_mode, symbol, intent, policy_version, trigger_snapshot, position_snapshot, proposed_action, proposal_id, reserved_quantity, conflict_resolution_plan, priority_score, sla_at, state, disposition_reason]
-          lifecycle: [FIRED, DRAFTED, ACKNOWLEDGED, APPROVED, REJECTED_WITH_REASON, SNOOZED, SUBMITTED, FILLED, EXPIRED, BROKER_FAILED, REARMED, CLOSED]
-        action: create_or_update_durable_work_item
-        sizing: reserved_quantity
-      - id: deterministic_exit_event
-        conditions:
-          markets: [kr, us, crypto]
-          intents: [HARD_EXIT, HARD_INVALIDATION, trail_floor]
-          immediate_draft_fields: [quantity, order_price_or_marketable_limit, pending_cancel_plan, loss_guard_exception, order_expiry, rearm_at, policy_price_position_hash]
-        action: prepare_immediate_operator_review_draft
-        sizing: reserved_or_full_quantity
-      - id: conditional_review_event
-        conditions:
-          markets: [kr, us, crypto]
-          intent: CONDITIONAL_EXIT
-          valid_dispositions: [convert_to_sell_proposal, hold_with_new_level_and_expiry, dismiss_with_reason_and_expiry]
-        action: require_explicit_review_card_disposition
-        sizing: reserved_quantity
-      - id: priority_and_sla
-        conditions:
-          markets: [kr, us, crypto]
-          base_scores: [hard_invalidation_or_trail_70, hard_exit_or_sell_review_40, conditional_exit_20, buy_review_10]
-          p0_sla: "ACK 5m; disposition 10-15m"
-          p1_sla: "ACK 15m; disposition 30m"
-          p2_sla: "next session; max 4h"
-        action: rank_and_escalate_existing_card
-        sizing: reserved_quantity
-      - id: dedupe_and_snooze
-        conditions:
-          markets: [kr, us, crypto]
-          dedupe_components: [account, symbol, intent, level_version]
-          p0_snooze: "once for 10m"
-          p1_snooze: "once for 30m"
-          p2_snooze: "until next session"
-        action: update_existing_card_and_require_protection_during_snooze
-        sizing: reserved_quantity
-    tie_breaks:
-      repeated_fire: update_existing_card
-      hard_sell_at_close: carry_rearm_required_not_expire_work_item
-    exclusions: [stale, duplicate, position_zero, no_order_path, higher_priority_conflict]
-
-  phase25.12_approved_submission_outbox:
-    lanes: [sell]
-    semantics: >-
-      ADVISORY ONLY. Approval is not terminal. Persist APPROVED and a submission
-      outbox record atomically, then let a delivery consumer retry the already
-      approved command until terminal evidence or valid_until. This YAML records
-      the desired reliability contract but does not implement an outbox.
-    tiers:
-      - id: approval_transaction
-        conditions:
-          markets: [kr, us, crypto]
-          atomic_steps: [set_proposal_approved, insert_submission_outbox, commit]
-        action: guarantee_submission_delivery_after_approval
-        sizing: approved_reserved_quantity
-      - id: submission_slo
-        conditions:
-          markets: [kr, us, crypto]
-          approval_to_submit_p95_seconds_max: 60
-          approved_without_ledger_count_target: 0
-          retry_until: valid_until
-        action: idempotent_submit_and_record_terminal
-        sizing: approved_reserved_quantity
-    tie_breaks:
-      consumer_scope: delivery_only_no_new_investment_judgment
-      completion: submitted_failed_or_expired_terminal_required
-    exclusions: [outbox_implementation_requires_separate_code_change]
-
-  phase25.13_giveback_and_signal_metrics:
-    lanes: [sell]
-    semantics: >-
-      ADVISORY ONLY. Measure peak giveback as a campaign-level outcome and
-      signal_ignored as a process metric. The primary outcome judgment is policy
-      excess giveback, not raw capture ratio. Keep live/mock, market, account
-      mode, exit rule, position-size class, and currency cohorts separate.
-    tiers:
-      - id: campaign_outcome
-        conditions:
-          markets: [kr, us, crypto]
-          campaign_boundary: "inventory 0-to-positive through return to 0"
-          campaign_value_formula: "cumulative_cashflow + quantity * price"
-          mfe_dollar_formula: "max(campaign_value)"
-          peak_giveback_formula: "max(0, MFE_dollar - FinalPnL) / MFE_dollar"
-          exit_efficiency_formula: "FinalPnL / MFE_dollar"
-          policy_excess_formula: "max(0, ActualGiveback - PolicyAllowedGiveback(G))"
-        action: classify_outcome_against_policy_allowance
-        sizing: campaign
-      - id: actionable_signal_process
-        conditions:
-          markets: [kr, us, crypto]
-          actionable_requirements: [delivered, position_positive, policy_version_valid, not_stale_or_duplicate, order_path_exists, no_higher_priority_conflict]
-          consumed_evidence: [submitted_or_filled, explicit_hold_or_reject_with_new_level_and_expiry, broker_failure_with_retry_or_rearm, position_already_closed]
-          denominator_exclusion: actionability_unknown_when_required_intraday_data_missing
-        action: measure_actionable_sell_consumption
-        sizing: actionable_fire_cohort
-      - id: combined_classification
-        conditions:
-          markets: [kr, us, crypto]
-          outcomes: [POLICY_GAP, SIGNAL_IGNORED, RULE_TOO_WIDE, EXECUTION_SHORTFALL, POLICY_CONFORMANT, NO_TRIGGER, OUTCOME_OK]
-        action: combine_trigger_consumption_and_policy_excess
-        sizing: campaign
-      - id: implementation_shortfall
-        conditions:
-          markets: [kr, us, crypto]
-          shortfall_bp_formula: "(decision_price - execution_price) / decision_price * 10000"
-          latency_segments: [trigger_to_draft, draft_to_approval, approval_to_submit, submit_to_fill, unfilled_opportunity_cost]
-        action: measure_execution_delay_separately
-        sizing: submitted_or_unfilled_quantity
-    tie_breaks:
-      process_before_outcome: freeze_process_classification_before_future_price
-      partial_exit_accounting: preserve_cashflow_at_campaign_level
-    exclusions: [mfe_below_trail_activation_from_failure_judgment, analysis_document_only_is_not_consumed]
-
-  phase25.14_remove_hindsight_failure_tags:
-    lanes: [sell]
-    semantics: >-
-      ADVISORY ONLY. Remove capture ratio below 50% and post-exit 20-day return
-      at or above 5% from failure classification. Retain them only as descriptive
-      outcome variables, with post-exit results renamed
-      post_exit_opportunity and normalized by ATR or initial risk.
-    tiers:
-      - id: capture_ratio
-        conditions:
-          markets: [kr, us, crypto]
-          legacy_failure_threshold_pct: 50
-          legacy_failure_status: removed
-          retained_use: distribution_dashboard_only
-        action: report_by_market_and_exit_rule_quantiles
-        sizing: campaign
-      - id: post_exit_opportunity
-        conditions:
-          markets: [kr, us, crypto]
-          legacy_post_exit_20d_threshold_pct: 5
-          legacy_failure_status: removed
-          retained_windows: [5d, 20d]
-          normalized_metrics: [post_exit_opportunity_ATR, post_exit_opportunity_R, alpha_vs_market]
-        action: report_as_outcome_not_failure
-        sizing: campaign
-      - id: hindsight_safe_evaluation
-        conditions:
-          markets: [kr, us, crypto]
-          pass_a: [thesis_and_policy_version, registered_levels, watch_delivery, proposal_approval_submission, broker_response, contemporaneous_market_data]
-          pass_b_after_freeze: [campaign_mfe, peak_giveback, policy_excess, implementation_shortfall, post_exit_opportunity, realized_pnl]
-          missing_intraday_classification: attainability_unknown
-        action: freeze_process_verdict_before_outcome_calculation
-        sizing: campaign
-    tie_breaks:
-      rational_exit_then_later_rise: outcome_luck
-      unjustified_policy_violation: process_miss
-    exclusions: [future_price_in_pass_a, unknown_forced_to_missed_or_ignored, fifo_lot_late_or_early_tagging]
 
 market_rules:
   crypto:

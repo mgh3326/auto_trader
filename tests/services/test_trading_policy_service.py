@@ -22,10 +22,7 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
     assert view["thresholds"]["portfolio.max_symbols_per_theme"]["value"] == 2
     assert view["thresholds"]["sell.loss_guard_min_multiple"]["value"] == 1.01
     assert "sell.rsi_place_min" not in view["thresholds"]
-    assert set(view["decision_rules"]) == {
-        "phase25.06_toss_account_symbol_mode",
-        "phase25.07_risk_and_hard_exit_priority",
-    }
+    assert set(view["decision_rules"]) == set()
 
 
 def test_get_policy_for_sell_lane_filters_thresholds():
@@ -70,7 +67,6 @@ def test_trim_preplace_exposes_d2_d5_d7_advisory_contracts():
         "de_minimis_trim_watch",
         "single_share_full_exit_review",
         "momentum_spike_profit_ladder",
-        "profit_realization",
         "rsi_confirmed_resistance",
         "ultra_near_resistance",
         "watch_zone",
