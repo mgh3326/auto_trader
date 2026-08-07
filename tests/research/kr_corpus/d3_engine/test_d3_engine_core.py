@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 from collections import defaultdict
 from datetime import date, timedelta
 from decimal import Decimal
@@ -9,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from research.kr_corpus.d3_engine import engine as engine_module
+from research.kr_corpus.d3_engine import golden as golden_module
+from research.kr_corpus.d3_engine import signals as signals_module
 from research.kr_corpus.d3_engine.acceptance import (
     _contract_signal_bars,
     _resistance_probe_bars,
@@ -21,6 +24,7 @@ from research.kr_corpus.d3_engine.guards import (
     SealedAccessSpy,
 )
 from research.kr_corpus.d3_engine.indicators import OhlcPoint, scan_fib_window
+from research.kr_corpus.d3_engine.metrics import twr_returns
 from research.kr_corpus.d3_engine.models import (
     Arm,
     Bar,
@@ -38,6 +42,7 @@ from research.kr_corpus.d3_engine.policies import (
     c3_buy_suppressed,
     update_c3_close,
 )
+from research.kr_corpus.d3_engine.signals import SignalCandidate
 from research.kr_corpus.d3_engine.tick import (
     InvalidTickTable,
     TickTable,
@@ -76,6 +81,53 @@ def test_fib_window_is_prior_120_and_excludes_t() -> None:
     assert window.excluded_index == 120
     assert window.high == Decimal("120")
     assert window.low == Decimal("80")
+
+
+def test_v026_engine_candidate_publication_calls_frozen_order_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[bool, int, str, str]] = []
+    original = signals_module.order_class_sort_key
+
+    def recording_key(
+        *, is_add: bool, signal_rank: int, symbol: str, rung: str
+    ) -> tuple[int, int, str, int]:
+        calls.append((is_add, signal_rank, symbol, rung))
+        return original(
+            is_add=is_add,
+            signal_rank=signal_rank,
+            symbol=symbol,
+            rung=rung,
+        )
+
+    monkeypatch.setattr(signals_module, "order_class_sort_key", recording_key)
+    candidates = (
+        SignalCandidate("NEW", Decimal(10), Decimal("0.04"), Decimal(100), False),
+        SignalCandidate("ADD", Decimal(20), Decimal("0.05"), Decimal(90), True),
+    )
+
+    ranked = signals_module.rank_candidates(candidates)
+
+    assert [candidate.symbol for candidate in ranked] == ["ADD", "NEW"]
+    assert calls == [(True, 2, "ADD", "L1"), (False, 1, "NEW", "L1")]
+
+
+def test_v028_fee_golden_uses_the_single_engine_cost_path() -> None:
+    source = inspect.getsource(golden_module._v028)
+
+    assert "fee_amount(gross)" in source
+    assert "round_trip_basis_points()" in source
+    assert 'Decimal("0.00215")' not in source
+
+
+def test_twr_total_loss_is_represented_as_minus_one() -> None:
+    cumulative, annualized = twr_returns(
+        start_unit_price=Decimal(1),
+        end_unit_price=Decimal(0),
+        calendar_days=Decimal("365.2425"),
+    )
+
+    assert cumulative == annualized == Decimal(-1)
 
 
 def test_tick_table_rejects_gap_and_overlap() -> None:
@@ -369,7 +421,7 @@ def test_all_four_arms_execute_natural_contract_signal(arm: Arm) -> None:
     assert result.metrics["signals_submitted"] == 2
     assert result.metrics["terminal_nav"] == Decimal("10020402.57250")
     assert result.evidence["sealed_access_spy"] == 0
-    assert result.evidence["primary_run_executed"] is False
+    assert "primary_run_executed" not in result.evidence
 
 
 def test_sell_fill_and_unitized_mdd_contract_paths() -> None:

@@ -39,6 +39,10 @@ from research.kr_corpus.d3_engine.models import (
 )
 from research.kr_corpus.d3_engine.mutants import run_mutant_probes
 from research.kr_corpus.d3_engine.policies import C1Cycle
+from research.kr_corpus.d3_engine.primary import (
+    PrimaryHarnessPaths,
+    measure_primary_run_executed,
+)
 from research.kr_corpus.d3_engine.sources import (
     ContractDrift,
     FrozenKospiIndex,
@@ -519,7 +523,11 @@ def _prove_no_tick_python_import() -> dict[str, Any]:
     }
 
 
-def run_acceptance(paths: ArtifactPaths | None = None) -> dict[str, Any]:
+def run_acceptance(
+    paths: ArtifactPaths | None = None,
+    *,
+    primary_artifact_root: Path | None = None,
+) -> dict[str, Any]:
     paths = paths or ArtifactPaths.defaults()
     sha_gate = verify_start_gate(paths)
     golden_files = verify_golden_checksums(paths.golden_root)
@@ -597,8 +605,11 @@ def run_acceptance(paths: ArtifactPaths | None = None) -> dict[str, Any]:
     if not fib_window_excludes_t:
         raise AssertionError("Fibonacci window includes t or is not 120 sessions")
 
+    primary_measurement = measure_primary_run_executed(
+        primary_artifact_root or PrimaryHarnessPaths.defaults().output_root
+    )
     return {
-        "sha_gate": {"passed": len(sha_gate), "total": 9, "rows": sha_gate},
+        "sha_gate": {"passed": len(sha_gate), "total": 10, "rows": sha_gate},
         "golden_files": golden_files,
         "golden_exact": golden_first.as_dict(),
         "deterministic_2runs": deterministic,
@@ -635,7 +646,8 @@ def run_acceptance(paths: ArtifactPaths | None = None) -> dict[str, Any]:
         "fib_window_excludes_t": fib_window_excludes_t,
         "tick_source": tick_proof,
         "runtime_pins": pins,
-        "primary_run_executed": False,
+        "primary_run": primary_measurement,
+        "primary_run_executed": primary_measurement["primary_run_executed"],
     }
 
 
@@ -646,8 +658,13 @@ def main() -> int:
         action="store_true",
         help="emit complete canonical evidence instead of a compact summary",
     )
+    parser.add_argument(
+        "--primary-artifact-root",
+        type=Path,
+        help="completed D3 primary artifact root to measure (default: frozen job path)",
+    )
     args = parser.parse_args()
-    result = run_acceptance()
+    result = run_acceptance(primary_artifact_root=args.primary_artifact_root)
     if args.full_json:
         print(canonical_bytes(result).decode("utf-8"), end="")
     else:
@@ -658,7 +675,7 @@ def main() -> int:
         print(
             " ".join(
                 (
-                    f"SHA_GATE={result['sha_gate']['passed']}/9",
+                    f"SHA_GATE={result['sha_gate']['passed']}/10",
                     f"GOLDEN_EXACT={result['golden_exact']['passed']}/33",
                     f"DETERMINISTIC_2RUNS={result['deterministic_2runs']}",
                     f"MUTANT_DIFFS={result['mutant_diffs']['passed']}/23",

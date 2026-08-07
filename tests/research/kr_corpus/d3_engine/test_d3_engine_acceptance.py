@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +19,7 @@ _REQUIRED = (
     _PATHS.golden_root / "CONTRACT.md",
     _PATHS.golden_root / "provenance.json",
     _PATHS.golden_root / "checksums.sha256",
+    _PATHS.amendment_a1,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -26,10 +28,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_d3_e1_full_local_acceptance() -> None:
-    result = run_acceptance()
+def test_d3_e1_full_local_acceptance(tmp_path: Path) -> None:
+    result = run_acceptance(primary_artifact_root=tmp_path / "not-executed")
 
-    assert result["sha_gate"]["passed"] == 9
+    assert result["sha_gate"] == {
+        "passed": 10,
+        "total": 10,
+        "rows": result["sha_gate"]["rows"],
+    }
     assert result["golden_files"] == {
         "vectors": 33,
         "expected": 33,
@@ -62,4 +68,5 @@ def test_d3_e1_full_local_acceptance() -> None:
     assert result["fib_window_excludes_t"] is True
     assert result["tick_source"]["source"] == "krx_tick_table_frozen.yaml"
     assert result["tick_source"]["python_import_count"] == 0
+    assert result["primary_run"]["reason"] == "manifest_missing"
     assert result["primary_run_executed"] is False

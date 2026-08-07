@@ -16,7 +16,12 @@ from typing import Any
 
 from research.kr_corpus.d3_engine.canonical import fixed, plain
 from research.kr_corpus.d3_engine.cash import CashLedger
-from research.kr_corpus.d3_engine.constants import EXPLANATION_KEYS
+from research.kr_corpus.d3_engine.constants import EXPLANATION_KEYS, FEE_RATE
+from research.kr_corpus.d3_engine.costs import (
+    cash_required,
+    fee_amount,
+    round_trip_basis_points,
+)
 from research.kr_corpus.d3_engine.engine import PortfolioEngine
 from research.kr_corpus.d3_engine.indicators import (
     OhlcPoint,
@@ -751,7 +756,7 @@ def _v015(
     ledger = CashLedger(Decimal(data["settled_cash"]))
     rejected: list[dict[str, Any]] = []
     for item in data["b0_demand_orders_same_session"]:
-        required = Decimal(item["notional"]) * (Decimal(1) + Decimal(data["fee_rate"]))
+        required = cash_required(Decimal(item["notional"]), Decimal(data["fee_rate"]))
         if not ledger.reserve_order(f"golden-{item['symbol']}", required):
             rejected.append(item)
     return [
@@ -920,7 +925,7 @@ def _v023(
 ) -> list[dict[str, Any]]:
     entry = Decimal(data["long_1_share_entry"])
     bull_terminal = Decimal(data["bull_closes"][-1])
-    fee_rate = Decimal("0.00215")
+    fee_rate = FEE_RATE
     bear_rows: list[dict[str, Any]] = []
     position = Position(
         symbol="GOLDEN",
@@ -943,7 +948,7 @@ def _v023(
     return [
         {
             "name": "bull_virtual_exit",
-            "sell_fee_21_5bp": _normalized(bull_terminal * fee_rate),
+            "sell_fee_21_5bp": _normalized(fee_amount(bull_terminal, fee_rate)),
             "terminal_close": plain(bull_terminal),
             "virtual_exit_value": _normalized(
                 virtual_exit_value(
@@ -969,13 +974,13 @@ def _v024(
     open_price = Decimal(data["bar_open"])
     l2_limit = Decimal(data["L2_limit"])
     l1_gross = open_price * quantity
-    l1_fee = l1_gross * Decimal("0.00215")
+    l1_fee = fee_amount(l1_gross)
     ledger.fill_buy_immediate(
         amount=l1_gross + l1_fee,
         trade_session_index=0,
     )
     l2_gross = l2_limit * quantity
-    l2_fee = l2_gross * Decimal("0.00215")
+    l2_fee = fee_amount(l2_gross)
     cash_after_l1 = ledger.orderable_cash
     ledger.fill_buy_immediate(
         amount=l2_gross + l2_fee,
@@ -1061,12 +1066,12 @@ def _v028(
     data: dict[str, Any], _: TickTable, __: FrozenKospiIndex
 ) -> list[dict[str, Any]]:
     gross = Decimal(data["gross"])
-    fee = gross * Decimal("0.00215")
+    fee = fee_amount(gross)
     return [
         {
             "buy_fee": _normalized(fee),
             "name": "fees",
-            "round_trip_bp": "43",
+            "round_trip_bp": _normalized(round_trip_basis_points()),
             "sell_fee": _normalized(fee),
         }
     ]

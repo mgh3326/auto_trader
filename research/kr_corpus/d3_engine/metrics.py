@@ -6,6 +6,7 @@ from collections.abc import Hashable, Iterable, Mapping, Sequence
 from decimal import ROUND_CEILING, Decimal, localcontext
 
 from research.kr_corpus.d3_engine.constants import DECIMAL_PRECISION
+from research.kr_corpus.d3_engine.costs import proceeds_after_fee
 
 
 def locked_share_time_weighted_mean(daily_ratios: Sequence[Decimal]) -> Decimal:
@@ -58,9 +59,11 @@ def nearest_rank(values: Iterable[int], percentile: Decimal) -> int:
 def twr_returns(
     *, start_unit_price: Decimal, end_unit_price: Decimal, calendar_days: Decimal
 ) -> tuple[Decimal, Decimal]:
-    if min(start_unit_price, end_unit_price, calendar_days) <= 0:
-        raise ValueError("TWR arguments must be positive")
+    if start_unit_price <= 0 or end_unit_price < 0 or calendar_days <= 0:
+        raise ValueError("TWR start/days must be positive and end must be non-negative")
     cumulative = end_unit_price / start_unit_price - Decimal(1)
+    if end_unit_price == 0:
+        return cumulative, Decimal(-1)
     with localcontext() as context:
         context.prec = DECIMAL_PRECISION
         annualized = (end_unit_price / start_unit_price) ** (
@@ -92,4 +95,4 @@ def virtual_exit_value(
     *, quantity: int, close: Decimal, sell_fee_rate: Decimal
 ) -> Decimal:
     gross = close * quantity
-    return gross - gross * sell_fee_rate
+    return proceeds_after_fee(gross, sell_fee_rate)
