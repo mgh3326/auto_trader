@@ -13,6 +13,17 @@ last 20 closes and ``scan_fib_window`` only the prior 120, so a 120-bar history
 slice reproduces the base engine's fib/Bollinger inputs bit-for-bit, and the
 tape's running Wilder state reproduces its RSI over the full contiguous
 segment.
+
+Arithmetic context — measured, and a deliberate divergence from the primary
+harness. ``PortfolioEngine.run`` establishes the contract's pinned 50-digit
+``ROUND_HALF_UP`` context before delegating to ``_run``, but
+``PrimaryPortfolioEngine.execute`` calls ``_run`` directly, so the frozen
+primary artifacts' engine arithmetic ran at the interpreter default of 28
+digits. ``primary.py`` cannot be edited under A2, so that stays as it is; this
+runner instead follows the frozen contract literal (``DECIMAL_PRECISION = 50``)
+and wraps its own ``_run``. The divergence is published in the artifact
+stamps — a verifier should weigh whether the primary bypass needs an upstream
+ruling of its own.
 """
 
 from __future__ import annotations
@@ -23,6 +34,7 @@ from decimal import Decimal
 from typing import Any
 
 from research.kr_corpus.d3_engine.calibration_guard import CalibrationAccessGuard
+from research.kr_corpus.d3_engine.calibration_metrics import contract_context
 from research.kr_corpus.d3_engine.engine import PortfolioEngine
 from research.kr_corpus.d3_engine.models import (
     EngineResult,
@@ -63,7 +75,10 @@ class CalibrationPortfolioEngine(PortfolioEngine):
         self._capture = True
         try:
             self._trace.engine_invocations += 1
-            result = super()._run(run_input)
+            # The contract's fixed context, as PortfolioEngine.run establishes
+            # it — see the module docstring on the primary-harness divergence.
+            with contract_context():
+                result = super()._run(run_input)
         finally:
             self._capture = False
         return result, self._trace

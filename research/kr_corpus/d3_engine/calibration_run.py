@@ -490,6 +490,12 @@ class CalibrationRunHarness:
                 "an operator cycle whose first fill predates 2025 has no "
                 "session_seq on the sealed 2025 axis and is excluded from "
                 "open_lot_age_sessions rather than clipped",
+                "measured divergence: the frozen primary artifacts were "
+                "produced with the engine running at the interpreter default "
+                "prec=28 because PrimaryPortfolioEngine.execute bypasses "
+                "PortfolioEngine.run's localcontext; this calibration replay "
+                "uses the contract literal prec=50. primary.py is unedited "
+                "under A2, so the difference is disclosed, not fixed",
             ],
         }
         _write_bytes(
@@ -638,6 +644,18 @@ class CalibrationRunHarness:
                 "decision_start": DECISION_START.isoformat(),
                 "warmup": "2015-2024 exploration corpus, contiguous into 2025",
                 "sensitivity": False,
+                "decimal_context": (
+                    "contract literal: prec=50, ROUND_HALF_UP, established "
+                    "around _run as PortfolioEngine.run does"
+                ),
+                "decimal_context_divergence_from_primary": (
+                    "measured: PrimaryPortfolioEngine.execute calls _run "
+                    "directly instead of through PortfolioEngine.run, so the "
+                    "frozen primary artifacts' engine arithmetic ran at the "
+                    "interpreter default prec=28. primary.py is unedited under "
+                    "A2; this runner follows the frozen contract literal "
+                    "instead. Flagged for upstream — it is not resolved here."
+                ),
             },
         }
 
