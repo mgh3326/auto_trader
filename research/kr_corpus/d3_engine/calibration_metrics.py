@@ -17,14 +17,43 @@ Frozen literals this module implements (no invention):
 * GAP-06 — an empty sample stays ``NOT_COMPUTABLE``; it never becomes 0.
 * GAP-07 — a fill dated outside the sealed XKRX session list is
   ``session_unassignable`` and excluded with its count published.
+
+All arithmetic runs inside :func:`contract_context`, the contract's pinned
+50-digit ``ROUND_HALF_UP`` Decimal context — the same one the engine wraps its
+own run in. Python's 28-digit default would silently truncate the actual-side
+values that the D3-C2P fix-r1 job published and an independent verifier passed.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from typing import Any
+
+from research.kr_corpus.d3_engine.constants import (
+    DECIMAL_PRECISION,
+    DECIMAL_ROUNDING,
+)
+
+
+@contextmanager
+def contract_context() -> Iterator[None]:
+    """The contract's fixed Decimal arithmetic context (prec 50, HALF_UP)."""
+
+    with localcontext() as context:
+        context.prec = DECIMAL_PRECISION
+        context.rounding = DECIMAL_ROUNDING
+        yield
+
+
+def decimal_text(value: Decimal) -> str:
+    """Fixed-notation Decimal text; an exponent-only zero renders as ``0``."""
+
+    return format(value, "f")
+
 
 WINDOW_START = date(2025, 1, 1)
 WINDOW_END = date(2025, 12, 31)
@@ -127,6 +156,12 @@ def reconstruct_cycles(fills: list[CycleFill]) -> Reconstruction:
         by_symbol.setdefault(fill.symbol, []).append(fill)
 
     out = Reconstruction()
+    with contract_context():
+        _walk_symbols(by_symbol, out)
+    return out
+
+
+def _walk_symbols(by_symbol: dict[str, list[CycleFill]], out: Reconstruction) -> None:
     for symbol, symbol_fills in sorted(by_symbol.items()):
         position = Decimal(0)
         average = Decimal(0)
@@ -191,7 +226,6 @@ def reconstruct_cycles(fills: list[CycleFill]) -> Reconstruction:
                 cycle.closed = True
                 cycle.close_day = fill.day
                 previous_buy_day = None
-    return out
 
 
 @dataclass(slots=True)
@@ -257,7 +291,8 @@ def median(values: list[Decimal]) -> tuple[Decimal | None, int]:
         return None, 0
     if count % 2:
         return ordered[count // 2], count
-    return (ordered[count // 2 - 1] + ordered[count // 2]) / Decimal(2), count
+    with contract_context():
+        return (ordered[count // 2 - 1] + ordered[count // 2]) / Decimal(2), count
 
 
 class SessionAxis:
@@ -284,8 +319,8 @@ def _observation(
     value, count = median(values)
     payload: dict[str, Any] = {
         "aggregate_kind": "median",
-        "aggregate_decimal": str(value) if value is not None else None,
-        "median_decimal": str(value) if value is not None else None,
+        "aggregate_decimal": decimal_text(value) if value is not None else None,
+        "median_decimal": decimal_text(value) if value is not None else None,
         "n": count,
         "raw_observation_count": raw,
         "excluded_observation_count": excluded,
@@ -306,11 +341,12 @@ def compute_cycle_metrics(
     unassignable = 0
 
     # annualized_cycle_count — one window-level observation (GAP-01).
-    annualized = (
-        Decimal(len(gap03.eligible_closed))
-        * ANNUALIZATION_CALENDAR_DAYS
-        / Decimal(WINDOW_CALENDAR_DAYS)
-    )
+    with contract_context():
+        annualized = (
+            Decimal(len(gap03.eligible_closed))
+            * ANNUALIZATION_CALENDAR_DAYS
+            / Decimal(WINDOW_CALENDAR_DAYS)
+        )
 
     # holding_period_sessions — eligible closed cycles only (GAP-03).
     holding: list[Decimal] = []
@@ -359,8 +395,8 @@ def compute_cycle_metrics(
     return {
         "annualized_cycle_count": {
             "aggregate_kind": "window_level_rate",
-            "aggregate_decimal": str(annualized),
-            "median_decimal": str(annualized),
+            "aggregate_decimal": decimal_text(annualized),
+            "median_decimal": decimal_text(annualized),
             "n": 1,
             "raw_observation_count": 1,
             "excluded_observation_count": 0,
@@ -464,19 +500,22 @@ def capital_share_observation(
     if any(value < 0 or value > 1 for value in daily_ratios):
         raise ValueError("locked ratios must be in [0,1]")
     ordered = sorted(daily_ratios)
-    tw_mean = sum(daily_ratios, Decimal(0)) / Decimal(len(daily_ratios))
+    with contract_context():
+        tw_mean = sum(daily_ratios, Decimal(0)) / Decimal(len(daily_ratios))
     rank = -(-95 * len(ordered) // 100)
     p95 = ordered[rank - 1]
     median_value, _ = median(daily_ratios)
     return {
         "aggregate_kind": "time_weighted_mean",
-        "aggregate_decimal": str(tw_mean),
-        "median_decimal": str(median_value) if median_value is not None else None,
+        "aggregate_decimal": decimal_text(tw_mean),
+        "median_decimal": (
+            decimal_text(median_value) if median_value is not None else None
+        ),
         "n": len(daily_ratios),
         "raw_observation_count": len(daily_ratios),
         "excluded_observation_count": 0,
-        "p95_decimal": str(p95),
-        "max_decimal": str(max(daily_ratios)),
+        "p95_decimal": decimal_text(p95),
+        "max_decimal": decimal_text(max(daily_ratios)),
         "capital_share_definition_id": definition_id,
         "note": note,
     }

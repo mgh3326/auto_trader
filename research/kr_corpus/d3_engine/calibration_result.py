@@ -22,6 +22,8 @@ from typing import Any
 from research.kr_corpus.d3_engine.calibration_metrics import (
     COMPARISON_KIND,
     METRIC_IDS,
+    contract_context,
+    decimal_text,
 )
 
 STATE_PRIORITY_A1 = (
@@ -73,9 +75,11 @@ def compare_view(
     simulated_value = _aggregate(simulated)
     detail: dict[str, Any] = {
         "comparison_kind": kind,
-        "actual_aggregate": str(actual_value) if actual_value is not None else None,
+        "actual_aggregate": (
+            decimal_text(actual_value) if actual_value is not None else None
+        ),
         "simulated_aggregate": (
-            str(simulated_value) if simulated_value is not None else None
+            decimal_text(simulated_value) if simulated_value is not None else None
         ),
         "zero_rule_applied": False,
     }
@@ -89,18 +93,21 @@ def compare_view(
         return ("PASS" if simulated_value == 0 else "FAIL"), detail
 
     if kind == "positive_scale":
-        ratio = simulated_value / actual_value
-        detail["ratio"] = str(ratio)
+        with contract_context():
+            ratio = simulated_value / actual_value
+        detail["ratio"] = decimal_text(ratio)
         detail["predicate"] = "0.5 <= simulated/actual <= 2.0"
         passed = POSITIVE_SCALE_LOW <= ratio <= POSITIVE_SCALE_HIGH
     elif kind == "bounded_share":
-        difference = abs(simulated_value - actual_value)
-        detail["absolute_difference"] = str(difference)
+        with contract_context():
+            difference = abs(simulated_value - actual_value)
+        detail["absolute_difference"] = decimal_text(difference)
         detail["predicate"] = "abs(simulated - actual) <= 0.20"
         passed = difference <= BOUNDED_SHARE_TOLERANCE
     else:
-        difference = abs(simulated_value - actual_value)
-        detail["absolute_difference_points"] = str(difference)
+        with contract_context():
+            difference = abs(simulated_value - actual_value)
+        detail["absolute_difference_points"] = decimal_text(difference)
         detail["predicate"] = "abs(simulated - actual) <= 5.0 percentage points"
         passed = difference <= SIGNED_POINT_TOLERANCE
     return ("PASS" if passed else "FAIL"), detail
