@@ -23,6 +23,7 @@ from research.kr_corpus.d3_engine.indicators import rsi_wilder
 from research.kr_corpus.d3_engine.models import Arm, CashflowView, DataView
 from research.kr_corpus.d3_engine.primary import (
     PhysicalRun,
+    PrimaryPortfolioEngine,
     PrimaryRunInvalid,
     _funding_p05,
     _seal_determinism,
@@ -176,6 +177,19 @@ def test_precomputed_signal_tape_is_exact_engine_equivalent() -> None:
         )
         assert actual == expected
     assert len(tape) == 1
+
+
+def test_primary_signal_history_projection_keeps_exact_prior_120_and_t() -> None:
+    bars = list(range(300))
+
+    assert (
+        PrimaryPortfolioEngine._signal_history(bars, index=250, segment_start=17)
+        == bars[130:251]
+    )
+    assert (
+        PrimaryPortfolioEngine._signal_history(bars, index=40, segment_start=17)
+        == bars[17:41]
+    )
 
 
 def test_signal_tape_resets_at_missing_xkrx_session() -> None:

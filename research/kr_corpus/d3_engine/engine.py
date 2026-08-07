@@ -299,7 +299,11 @@ class PortfolioEngine:
                     continue
                 index = history_index[(session, symbol)]
                 segment_start = contiguous_start[(session, symbol)]
-                history = histories[symbol][segment_start : index + 1]
+                history = self._signal_history(
+                    histories[symbol],
+                    index=index,
+                    segment_start=segment_start,
+                )
                 decision_index = len(history) - 1
                 signal = self._signal_for_session(history, decision_index)
                 if signal is None:
@@ -508,10 +512,10 @@ class PortfolioEngine:
                     continue
                 index = history_index[(session, symbol)]
                 segment_start = contiguous_start[(session, symbol)]
-                history = histories[symbol][segment_start : index + 1]
-                decision_index = len(history) - 1
-                if decision_index < 120:
+                if index - segment_start < 120:
                     continue
+                history = histories[symbol][index - 120 : index + 1]
+                decision_index = 120
                 new_sell_orders = self._resistance_orders(
                     symbol=symbol,
                     session=session,
@@ -782,6 +786,14 @@ class PortfolioEngine:
         if l2 is None:
             raise AssertionError("eligible signal has no qualifying L2")
         return rounded_rsi, l2.representative, window.high, window.low
+
+    @staticmethod
+    def _signal_history(
+        symbol_bars: list[Bar], *, index: int, segment_start: int
+    ) -> list[Bar]:
+        """Preserve the full contiguous Wilder history for the base engine."""
+
+        return symbol_bars[segment_start : index + 1]
 
     @staticmethod
     def _c2_session_allows(

@@ -481,6 +481,49 @@ def test_resistance_sell_orders_remain_available_for_c3_armed_position() -> None
     ]
 
 
+def test_resistance_orders_are_exact_with_only_the_required_121_bar_tail() -> None:
+    ticks = _sealed_tick_shape()
+    engine = PortfolioEngine(ticks)
+    sessions = [date(2014, 1, 1) + timedelta(days=index) for index in range(221)]
+    prefix = [
+        Bar(
+            session=session,
+            symbol="RESIST",
+            open=Decimal(5000),
+            high=Decimal(6000),
+            low=Decimal(4000),
+            close=Decimal(5000),
+        )
+        for session in sessions[:100]
+    ]
+    full = prefix + _resistance_probe_bars(sessions[100:])
+    position = Position(
+        symbol="RESIST",
+        quantity=10,
+        average_price=Decimal(9000),
+        invested_cost_basis=Decimal(90000),
+    )
+
+    full_orders = engine._resistance_orders(
+        symbol="RESIST",
+        session=sessions[-1],
+        history=full,
+        index=220,
+        position=position,
+        first_order_number=7,
+    )
+    tail_orders = engine._resistance_orders(
+        symbol="RESIST",
+        session=sessions[-1],
+        history=full[-121:],
+        index=120,
+        position=position,
+        first_order_number=7,
+    )
+
+    assert full_orders == tail_orders
+
+
 def test_day_order_expiry_returns_cash_and_c1_reservation() -> None:
     engine = PortfolioEngine(_sealed_tick_shape())
     session = date(2014, 1, 2)

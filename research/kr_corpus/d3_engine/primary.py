@@ -164,13 +164,28 @@ class PrimaryPortfolioEngine(PortfolioEngine):
         self._trace_previous_contribution = Decimal(0)
         try:
             self._trace.engine_invocations += 1
-            result = super()._run(
-                run_input,
-                b0_demand_pairs=b0_demand_pairs,
-            )
+            gc_was_enabled = gc.isenabled()
+            if gc_was_enabled:
+                gc.disable()
+            try:
+                result = super()._run(
+                    run_input,
+                    b0_demand_pairs=b0_demand_pairs,
+                )
+            finally:
+                if gc_was_enabled:
+                    gc.enable()
         finally:
             self._capture = False
         return result, self._trace
+
+    @staticmethod
+    def _signal_history(
+        symbol_bars: list[Any], *, index: int, segment_start: int
+    ) -> list[Any]:
+        """The exact signal tape only needs t and its prior 120-bar association."""
+
+        return symbol_bars[max(segment_start, index - 120) : index + 1]
 
     def _signal_for_session(
         self, history: list[Any], decision_index: int
@@ -424,6 +439,12 @@ class PrimaryRunHarness:
             f"clamp rows={clamp.row_count} files={clamp.parquet_files} · "
             f"SEALED_ACCESS_MEASURED={access_evidence['sealed_access_spy']}\n"
         )
+        gc.collect()
+        gc.freeze()
+        self._append_progress(
+            f"\nEXECUTION_GC_HEAP_FROZEN = {gc.get_freeze_count()} objects · "
+            "semantics-neutral performance isolation\n"
+        )
 
         completed: list[dict[str, object]] = []
         b0_demand: dict[
@@ -563,6 +584,7 @@ class PrimaryRunHarness:
             "\nRUNS = 16/16 physical · DETERMINISTIC_2RUNS = 16/16 PASS · "
             "DUAL_VIEW_PAIRED = 8/8 · WINNER_SELECTED = NO\n"
         )
+        gc.unfreeze()
         return manifest
 
     def _preflight(self) -> None:
@@ -604,6 +626,10 @@ class PrimaryRunHarness:
                 "settlement": "T+2",
                 "same_bar": "buy-first same symbol",
                 "sensitivity": False,
+                "gc_isolation": (
+                    "long-lived corpus heap frozen; cyclic GC suspended per attempt; "
+                    "reference-count semantics unchanged"
+                ),
             },
         }
 
