@@ -23,10 +23,13 @@ from research.kr_corpus.d3_engine.indicators import rsi_wilder
 from research.kr_corpus.d3_engine.models import Arm, CashflowView, DataView
 from research.kr_corpus.d3_engine.primary import (
     PhysicalRun,
+    PrimaryHarnessPaths,
     PrimaryPortfolioEngine,
     PrimaryRunInvalid,
+    _allowed_rows_comparison,
     _funding_p05,
     _seal_determinism,
+    _value_hash_comparison,
     measure_primary_run_executed,
     primary_matrix,
 )
@@ -90,6 +93,77 @@ def test_primary_matrix_is_exactly_four_by_two_by_two() -> None:
         DataView.CLAMP_ADMIT_V1,
     }
     assert len({(run.arm, run.cashflow_view) for run in matrix}) == 8
+
+
+def test_correction_defaults_preserve_the_superseded_primary_root() -> None:
+    paths = PrimaryHarnessPaths.defaults()
+
+    assert paths.superseded_root.name == "d3-primary-run-v1"
+    assert paths.output_root.name == "d3-r1c-correction-replay-v1"
+    assert paths.output_root != paths.superseded_root
+
+
+def test_bitexact_wrapper_comparison_ignores_stamps_but_not_payload(
+    tmp_path: Path,
+) -> None:
+    before = tmp_path / "before.json"
+    after = tmp_path / "after.json"
+    before.write_bytes(
+        canonical_bytes(
+            {
+                "artifact_kind": "nav-unit-price-daily",
+                "run_id": "B0__no_contribution__original_valid_bar",
+                "schema_version": "d3.primary_run.v1",
+                "stamps": {"commit": "old"},
+                "rows": [
+                    {
+                        "session": "2015-01-02",
+                        "nav": "100",
+                        "locked_share": "0",
+                    }
+                ],
+            }
+        )
+    )
+    after.write_bytes(
+        canonical_bytes(
+            {
+                "artifact_kind": "nav-unit-price-daily",
+                "run_id": "B0__no_contribution__original_valid_bar",
+                "schema_version": "d3.primary_run.v1",
+                "stamps": {"commit": "new"},
+                "rows": [
+                    {
+                        "session": "2015-01-02",
+                        "nav": "100",
+                        "locked_share": "0",
+                    }
+                ],
+            }
+        )
+    )
+
+    assert _value_hash_comparison(before, after)["identical"] is True
+
+    payload = json.loads(after.read_bytes())
+    payload["rows"][0]["locked_share"] = "0.5"
+    after.write_bytes(canonical_bytes(payload))
+    allowed = _allowed_rows_comparison(
+        before,
+        after,
+        allowed_keys=frozenset({"locked_share"}),
+    )
+    assert allowed["non_allowed_fields_identical"] is True
+    assert allowed["allowed_field_changed_rows"] == 1
+
+    payload["rows"][0]["nav"] = "99"
+    after.write_bytes(canonical_bytes(payload))
+    disallowed = _allowed_rows_comparison(
+        before,
+        after,
+        allowed_keys=frozenset({"locked_share"}),
+    )
+    assert disallowed["non_allowed_fields_identical"] is False
 
 
 def test_corpus_partition_accepts_frozen_krx_alphanumeric_issue_codes() -> None:

@@ -180,3 +180,71 @@ class SealedAccessGuard:
                 f"sealed path resolved during measured read: {path.name}"
             )
         self.spy.actual_file_reads += 1
+
+
+def measure_sealed_fail_closed_probes() -> dict[str, object]:
+    """Exercise the three named sealed routes without completing a read."""
+
+    class MetadataProbe(Mapping[str, object]):
+        def __init__(self) -> None:
+            self.lookups = 0
+
+        def __getitem__(self, key: str) -> object:
+            self.lookups += 1
+            return {"D3_CALIBRATION_2025": "sealed"}[key]
+
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            return iter(("D3_CALIBRATION_2025",))
+
+        def __len__(self) -> int:
+            return 1
+
+    spy = SealedAccessSpy()
+    guard = SealedAccessGuard(spy)
+    loader_calls = 0
+
+    def loader() -> str:
+        nonlocal loader_calls
+        loader_calls += 1
+        return "forbidden"
+
+    metadata = MetadataProbe()
+    probes = {
+        "holdout": lambda: guard.read_manifest(
+            path="/tmp/HOLDOUT/manifest.json", loader=loader
+        ),
+        "D3_CALIBRATION_2025": lambda: guard.read_metadata(
+            metadata, "D3_CALIBRATION_2025"
+        ),
+        "prospective": lambda: guard.read_parquet(
+            path="/tmp/prospective/bars.parquet", loader=loader
+        ),
+    }
+    outcomes: dict[str, str] = {}
+    for name, probe in probes.items():
+        try:
+            probe()
+        except SealedAccessBlocked:
+            outcomes[name] = "PASS"
+        else:
+            outcomes[name] = "FAIL"
+
+    evidence = spy.evidence()
+    passed = (
+        all(value == "PASS" for value in outcomes.values())
+        and loader_calls == 0
+        and metadata.lookups == 0
+        and evidence["sealed_access_spy"] == 0
+        and evidence["sealed_access_blocked_attempts"] == 3
+        and evidence["measured_file_reads"] == 0
+        and evidence["measured_metadata_key_reads"] == 0
+    )
+    return {
+        "status": "PASS" if passed else "FAIL",
+        "paths": outcomes,
+        "loader_calls": loader_calls,
+        "metadata_key_lookups": metadata.lookups,
+        "sealed_access_measured": evidence["sealed_access_spy"],
+        "blocked_attempts": evidence["sealed_access_blocked_attempts"],
+        "spy_evidence": evidence,
+    }

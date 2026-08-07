@@ -7,7 +7,6 @@ import ast
 import shutil
 import tempfile
 from collections import defaultdict
-from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
@@ -18,12 +17,13 @@ from research.kr_corpus.d3_engine import engine as engine_module
 from research.kr_corpus.d3_engine.canonical import canonical_bytes
 from research.kr_corpus.d3_engine.cash import CashLedger
 from research.kr_corpus.d3_engine.constants import ArtifactPaths, runtime_pins
+from research.kr_corpus.d3_engine.correction import correction_acceptance_payload
 from research.kr_corpus.d3_engine.engine import PortfolioEngine
 from research.kr_corpus.d3_engine.golden import GoldenSuite, GoldenSuiteResult
 from research.kr_corpus.d3_engine.guards import (
-    SealedAccessBlocked,
     SealedAccessGuard,
     SealedAccessSpy,
+    measure_sealed_fail_closed_probes,
 )
 from research.kr_corpus.d3_engine.models import (
     Arm,
@@ -378,21 +378,6 @@ def _engine_contract_probes(
     }
 
 
-class _MetadataSpy(Mapping[str, object]):
-    def __init__(self) -> None:
-        self.lookups = 0
-
-    def __getitem__(self, key: str) -> object:
-        self.lookups += 1
-        return {"D3_CALIBRATION_2025": "sealed"}[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(("D3_CALIBRATION_2025",))
-
-    def __len__(self) -> int:
-        return 1
-
-
 def _negative_tests(
     paths: ArtifactPaths, tick_table: TickTable, index: FrozenKospiIndex
 ) -> tuple[dict[str, Any], dict[str, int]]:
@@ -454,50 +439,12 @@ def _negative_tests(
         "previous": previous,
     }
 
-    spy = SealedAccessSpy()
-    guard = SealedAccessGuard(spy)
-    loader_calls = 0
-
-    def loader() -> str:
-        nonlocal loader_calls
-        loader_calls += 1
-        return "forbidden"
-
-    blocked = 0
-    attempts = (
-        lambda: guard.read_bar(
-            path="/tmp/exploration/bars.parquet",
-            session=date(2025, 1, 2),
-            loader=loader,
-        ),
-        lambda: guard.read_manifest(path="/tmp/HOLDOUT/manifest.json", loader=loader),
-    )
-    for attempt in attempts:
-        try:
-            attempt()
-        except SealedAccessBlocked:
-            blocked += 1
-    metadata = _MetadataSpy()
-    try:
-        guard.read_metadata(metadata, "D3_CALIBRATION_2025")
-    except SealedAccessBlocked:
-        blocked += 1
+    sealed = measure_sealed_fail_closed_probes()
     results["sealed_access"] = {
-        "status": (
-            "PASS"
-            if blocked == 3
-            and loader_calls == 0
-            and metadata.lookups == 0
-            and spy.sealed_reads == 0
-            else "FAIL"
-        ),
-        "blocked_attempts": blocked,
-        "loader_calls": loader_calls,
-        "metadata_key_lookups": metadata.lookups,
-        "sealed_access_spy": spy.sealed_reads,
+        key: value for key, value in sealed.items() if key != "spy_evidence"
     }
     tick_table.validate()
-    return results, spy.evidence()
+    return results, sealed["spy_evidence"]  # type: ignore[return-value]
 
 
 def _prove_no_tick_python_import() -> dict[str, Any]:
@@ -553,6 +500,7 @@ def run_acceptance(
     )
 
     mutants = run_mutant_probes(paths.golden_root, ticks)
+    correction = correction_acceptance_payload(ticks)
     negatives, sealed_evidence = _negative_tests(paths, ticks, index)
     tick_proof = _prove_no_tick_python_import()
     all_excluded = sorted(
@@ -581,6 +529,10 @@ def run_acceptance(
         raise AssertionError("determinism check failed")
     if not all(probe.differs for probe in mutants):
         raise AssertionError("one or more mutant probes did not differ")
+    if correction["golden"]["passed"] != correction["golden"]["total"]:
+        raise AssertionError("one or more correction golden cases failed")
+    if correction["mutants"]["passed"] != correction["mutants"]["total"]:
+        raise AssertionError("one or more correction mutants survived")
     if any(result["status"] != "PASS" for result in negatives.values()):
         raise AssertionError("one or more negative tests failed")
     if tick_proof["python_import_count"] != 0:
@@ -639,6 +591,8 @@ def run_acceptance(
                 for probe in mutants
             ],
         },
+        "correction_golden": correction["golden"],
+        "correction_mutants": correction["mutants"],
         "negative_tests": negatives,
         "sealed_access_spy": sealed_evidence["sealed_access_spy"],
         "engine_input_explanation_keys": 0,
@@ -679,6 +633,12 @@ def main() -> int:
                     f"GOLDEN_EXACT={result['golden_exact']['passed']}/33",
                     f"DETERMINISTIC_2RUNS={result['deterministic_2runs']}",
                     f"MUTANT_DIFFS={result['mutant_diffs']['passed']}/23",
+                    "CORRECTION_GOLDEN="
+                    f"{result['correction_golden']['passed']}/"
+                    f"{result['correction_golden']['total']}",
+                    "CORRECTION_MUTANTS="
+                    f"{result['correction_mutants']['passed']}/"
+                    f"{result['correction_mutants']['total']}",
                     f"NEGATIVE_TESTS={negative_passed}/{negative_total}",
                     f"SEALED_ACCESS_SPY={result['sealed_access_spy']}",
                     f"PRIMARY_RUN_EXECUTED={result['primary_run_executed']}",

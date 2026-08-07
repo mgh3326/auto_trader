@@ -59,8 +59,10 @@ from research.kr_corpus.d3_engine.policies import (
     c3_trim_quantity,
     mark_c3_trim_filled,
     mark_c3_trim_skipped,
+    reset_underwater_close,
     unresolved_terminal_status,
     update_c3_close,
+    update_underwater_close,
 )
 from research.kr_corpus.d3_engine.signals import (
     PriceLevel,
@@ -91,6 +93,26 @@ class PortfolioEngine:
         tick_table.validate()
         self._ticks = tick_table
         self._guard = access_guard or SealedAccessGuard()
+
+    @staticmethod
+    def _underwater_clock_enabled(arm: Arm) -> bool:
+        """The locked-capital metric clock is defined for every arm."""
+
+        return True
+
+    @staticmethod
+    def _c3_time_trim_policy_enabled(arm: Arm) -> bool:
+        """Only C3 may turn clock thresholds into trim policy actions."""
+
+        return arm is Arm.C3
+
+    @staticmethod
+    def _update_metric_close(position: Position, *, close: Decimal) -> object:
+        return update_underwater_close(position, close=close)
+
+    @staticmethod
+    def _reset_metric_close(position: Position) -> None:
+        reset_underwater_close(position)
 
     def run(self, run_input: PortfolioRunInput) -> EngineResult:
         """Run one arm under the contract's fixed Decimal arithmetic context."""
@@ -281,7 +303,7 @@ class PortfolioEngine:
             )
 
             c3_time_trim_symbols: set[str] = set()
-            if run_input.arm is Arm.C3:
+            if self._c3_time_trim_policy_enabled(run_input.arm):
                 c3_time_trim_symbols = self._execute_armed_time_trims(
                     state=state,
                     cash=cash,
@@ -358,7 +380,7 @@ class PortfolioEngine:
             for rank, candidate in enumerate(ranked, start=1):
                 position = state.positions.get(candidate.symbol)
                 if (
-                    run_input.arm is Arm.C3
+                    self._c3_time_trim_policy_enabled(run_input.arm)
                     and position
                     and (
                         c3_buy_suppressed(position)
@@ -613,38 +635,42 @@ class PortfolioEngine:
                 if position.quantity == 0:
                     c1_cycles.pop(order.symbol, None)
 
-            if run_input.arm is Arm.C3:
+            if self._underwater_clock_enabled(run_input.arm):
                 for symbol in sorted(state.positions):
                     position = state.positions[symbol]
                     bar = by_session.get((session, symbol))
                     if bar is None:
                         if position.quantity > 0:
-                            position.underwater_streak = 0
-                            state.events.append(
-                                {
-                                    "event": "c3_close_clock",
-                                    "session": session,
-                                    "symbol": symbol,
-                                    "underwater": False,
-                                    "streak": 0,
-                                    "reset_reason": "missing_session_close",
-                                    "armed_90": False,
-                                    "armed_180": False,
-                                }
-                            )
+                            self._reset_metric_close(position)
+                            if self._c3_time_trim_policy_enabled(run_input.arm):
+                                state.events.append(
+                                    {
+                                        "event": "c3_close_clock",
+                                        "session": session,
+                                        "symbol": symbol,
+                                        "underwater": False,
+                                        "streak": 0,
+                                        "reset_reason": "missing_session_close",
+                                        "armed_90": False,
+                                        "armed_180": False,
+                                    }
+                                )
                         continue
-                    outcome = update_c3_close(position, close=bar.close)
-                    state.events.append(
-                        {
-                            "event": "c3_close_clock",
-                            "session": session,
-                            "symbol": symbol,
-                            "underwater": outcome.underwater,
-                            "streak": outcome.streak,
-                            "armed_90": outcome.armed_90,
-                            "armed_180": outcome.armed_180,
-                        }
-                    )
+                    if self._c3_time_trim_policy_enabled(run_input.arm):
+                        outcome = update_c3_close(position, close=bar.close)
+                        state.events.append(
+                            {
+                                "event": "c3_close_clock",
+                                "session": session,
+                                "symbol": symbol,
+                                "underwater": outcome.underwater,
+                                "streak": outcome.streak,
+                                "armed_90": outcome.armed_90,
+                                "armed_180": outcome.armed_180,
+                            }
+                        )
+                    else:
+                        self._update_metric_close(position, close=bar.close)
 
             self._finish_day(
                 state=state,
