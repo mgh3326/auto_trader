@@ -34,6 +34,9 @@ CONTRACT_SHA256 = {
     "checksums.sha256": (
         "f03208c6f1e6ea360a743f261ea0698055493f3cf6800caeb98cd827313f89c0"
     ),
+    "d3-amendment-a1-20260807.md": (
+        "cb26fc5093b73d4bf7835424319ebebab3914001f888e181f34086a22e8f87d2"
+    ),
 }
 
 TICK_TABLE_SHA256 = CONTRACT_SHA256["krx_tick_table_frozen.yaml"]
@@ -85,6 +88,7 @@ class ArtifactPaths:
     tick_yaml: Path
     tick_python_provenance: Path
     golden_root: Path
+    amendment_a1: Path
 
     @classmethod
     def defaults(cls) -> ArtifactPaths:
@@ -100,6 +104,7 @@ class ArtifactPaths:
             tick_yaml=inputs / "krx_tick_table_frozen.yaml",
             tick_python_provenance=inputs / "krx_tick_size_frozen.py",
             golden_root=golden,
+            amendment_a1=inbox / "d3-amendment-a1-20260807.md",
         )
 
 

@@ -16,6 +16,11 @@ from research.kr_corpus.d3_engine.constants import (
     TICK_TABLE_SHA256,
     runtime_pins,
 )
+from research.kr_corpus.d3_engine.costs import (
+    cash_required,
+    fee_amount,
+    proceeds_after_fee,
+)
 from research.kr_corpus.d3_engine.guards import SealedAccessGuard
 from research.kr_corpus.d3_engine.indicators import (
     OhlcPoint,
@@ -294,7 +299,11 @@ class PortfolioEngine:
                     continue
                 index = history_index[(session, symbol)]
                 segment_start = contiguous_start[(session, symbol)]
-                history = histories[symbol][segment_start : index + 1]
+                history = self._signal_history(
+                    histories[symbol],
+                    index=index,
+                    segment_start=segment_start,
+                )
                 decision_index = len(history) - 1
                 signal = self._signal_for_session(history, decision_index)
                 if signal is None:
@@ -340,6 +349,7 @@ class PortfolioEngine:
                             "reason": "not_arm_eligible_against_b0_demand",
                             "session": session,
                             "symbol": symbol,
+                            "side": OrderSide.BUY,
                         }
                     )
                     unserved_sessions.add(session)
@@ -361,6 +371,20 @@ class PortfolioEngine:
                             "reason": "c3_time_trim_armed",
                             "session": session,
                             "symbol": candidate.symbol,
+                            "side": OrderSide.BUY,
+                            "class": (
+                                OrderClass.ADD if candidate.is_add else OrderClass.NEW
+                            ),
+                            "rungs": [
+                                {"rung": rung, "limit": limit}
+                                for rung, limit in build_buy_rungs(
+                                    close=histories[candidate.symbol][
+                                        history_index[(session, candidate.symbol)] - 1
+                                    ].close,
+                                    l2_price=candidate_clusters[candidate.symbol],
+                                    tick_table=self._ticks,
+                                )
+                            ],
                         }
                     )
                     unserved_sessions.add(session)
@@ -378,6 +402,20 @@ class PortfolioEngine:
                             "reason": "c2_below_sma200_or_missing",
                             "session": session,
                             "symbol": candidate.symbol,
+                            "side": OrderSide.BUY,
+                            "class": (
+                                OrderClass.ADD if candidate.is_add else OrderClass.NEW
+                            ),
+                            "rungs": [
+                                {"rung": rung, "limit": limit}
+                                for rung, limit in build_buy_rungs(
+                                    close=histories[candidate.symbol][
+                                        history_index[(session, candidate.symbol)] - 1
+                                    ].close,
+                                    l2_price=candidate_clusters[candidate.symbol],
+                                    tick_table=self._ticks,
+                                )
+                            ],
                         }
                     )
                     unserved_sessions.add(session)
@@ -420,14 +458,23 @@ class PortfolioEngine:
                                     "reason": reason,
                                     "session": session,
                                     "symbol": candidate.symbol,
+                                    "side": OrderSide.BUY,
+                                    "class": order.order_class,
                                     "rung": rung,
+                                    "limit": order.limit,
+                                    "quantity": order.quantity,
+                                    "required_cash": cash_required(
+                                        order.gross_limit_notional,
+                                        run_input.config.fee_rate,
+                                    ),
                                 }
                             )
                             unserved_sessions.add(session)
                             unserved_notional += order.gross_limit_notional
                             continue
-                    reservation = order.gross_limit_notional * (
-                        Decimal(1) + run_input.config.fee_rate
+                    reservation = cash_required(
+                        order.gross_limit_notional,
+                        run_input.config.fee_rate,
                     )
                     if not cash.reserve_order(order.order_id, reservation):
                         if run_input.arm is Arm.C1:
@@ -441,7 +488,12 @@ class PortfolioEngine:
                                 "event": "cash_rejected",
                                 "session": session,
                                 "symbol": candidate.symbol,
+                                "side": OrderSide.BUY,
+                                "class": order.order_class,
                                 "rung": rung,
+                                "limit": order.limit,
+                                "quantity": order.quantity,
+                                "required_cash": reservation,
                             }
                         )
                         unserved_sessions.add(session)
@@ -460,10 +512,10 @@ class PortfolioEngine:
                     continue
                 index = history_index[(session, symbol)]
                 segment_start = contiguous_start[(session, symbol)]
-                history = histories[symbol][segment_start : index + 1]
-                decision_index = len(history) - 1
-                if decision_index < 120:
+                if index - segment_start < 120:
                     continue
+                history = histories[symbol][index - 120 : index + 1]
+                decision_index = 120
                 new_sell_orders = self._resistance_orders(
                     symbol=symbol,
                     session=session,
@@ -485,7 +537,7 @@ class PortfolioEngine:
                     state.pending_orders.append(order)
                     continue
                 gross = fill_price * order.quantity
-                fee = gross * run_input.config.fee_rate
+                fee = fee_amount(gross, run_input.config.fee_rate)
                 cash.fill_buy(
                     order_id=order.order_id,
                     actual_amount=gross + fee,
@@ -537,7 +589,7 @@ class PortfolioEngine:
                 if quantity < 1:
                     continue
                 gross = fill_price * quantity
-                fee = gross * run_input.config.fee_rate
+                fee = fee_amount(gross, run_input.config.fee_rate)
                 cash.fill_sell(
                     net_amount=gross - fee,
                     trade_session_index=session_index,
@@ -688,7 +740,6 @@ class PortfolioEngine:
                 "order_issue_reserve",
                 "fill_buy_before_sell",
             ],
-            "primary_run_executed": False,
             "runtime_pins": runtime_pins(),
             **self._guard.spy.evidence(),
         }
@@ -735,6 +786,14 @@ class PortfolioEngine:
         if l2 is None:
             raise AssertionError("eligible signal has no qualifying L2")
         return rounded_rsi, l2.representative, window.high, window.low
+
+    @staticmethod
+    def _signal_history(
+        symbol_bars: list[Bar], *, index: int, segment_start: int
+    ) -> list[Bar]:
+        """Preserve the full contiguous Wilder history for the base engine."""
+
+        return symbol_bars[segment_start : index + 1]
 
     @staticmethod
     def _c2_session_allows(
@@ -844,7 +903,7 @@ class PortfolioEngine:
                 )
                 continue
             gross = bar.open * quantity
-            fee = gross * fee_rate
+            fee = fee_amount(gross, fee_rate)
             cash.fill_sell(net_amount=gross - fee, trade_session_index=session_index)
             position.apply_sell(quantity=quantity)
             mark_c3_trim_filled(position, stage=stage)
@@ -887,6 +946,11 @@ class PortfolioEngine:
                     "session": session,
                     "order_id": order.order_id,
                     "symbol": order.symbol,
+                    "side": order.side,
+                    "class": order.order_class,
+                    "rung": order.rung,
+                    "limit": order.limit,
+                    "quantity": order.quantity,
                 }
             )
         state.pending_orders.clear()
@@ -942,7 +1006,9 @@ class PortfolioEngine:
             if close is None:
                 continue
             gross = close * position.quantity
-            positions_value += gross * (Decimal(1) - fee_rate) if terminal else gross
+            positions_value += (
+                proceeds_after_fee(gross, fee_rate) if terminal else gross
+            )
         nav_series.append(
             cash.orderable_cash + reserved_cash + receivable_cash + positions_value
         )

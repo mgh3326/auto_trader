@@ -164,7 +164,19 @@ def rank_candidates(
     )
     additions = [item for item in ordered if item.is_add]
     new_entries = [item for item in ordered if not item.is_add][:max_new]
-    return tuple(additions + new_entries)
+    selected = additions + new_entries
+    signal_ranks = {id(item): rank for rank, item in enumerate(ordered, start=1)}
+    return tuple(
+        sorted(
+            selected,
+            key=lambda item: order_class_sort_key(
+                is_add=item.is_add,
+                signal_rank=signal_ranks[id(item)],
+                symbol=item.symbol,
+                rung="L1",
+            ),
+        )
+    )
 
 
 def order_class_sort_key(

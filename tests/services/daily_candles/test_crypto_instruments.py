@@ -80,7 +80,7 @@ async def test_crypto_instrument_orm_roundtrip(db_session: AsyncSession) -> None
     inst = CryptoInstrument(
         venue="binance",
         product="spot",
-        venue_symbol="BTCUSDT",
+        venue_symbol="ROB284ORMBTCUSDT",
         base_asset="BTC",
         quote_asset="USDT",
         status="active",

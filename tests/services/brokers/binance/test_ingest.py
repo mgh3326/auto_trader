@@ -17,7 +17,7 @@ from app.services.brokers.binance.ws_client import KlineEvent
 
 def _mk_event(
     *,
-    symbol: str = "BTCUSDT",
+    symbol: str = "ROB285INGESTBTCUSDT",
     open_time: dt.datetime | None = None,
     is_closed: bool = True,
 ) -> KlineEvent:
@@ -47,7 +47,7 @@ async def test_ingest_closed_kline_persists_via_repository(
     inst = CryptoInstrument(
         venue="binance",
         product="spot",
-        venue_symbol="BTCUSDT",
+        venue_symbol="ROB285INGESTBTCUSDT",
         base_asset="BTC",
         quote_asset="USDT",
         status="active",
@@ -55,7 +55,7 @@ async def test_ingest_closed_kline_persists_via_repository(
     db_session.add(inst)
     await db_session.flush()
     ingester = BinanceCandleIngester(session=db_session)
-    persisted = await ingester.ingest(_mk_event(symbol="BTCUSDT"))
+    persisted = await ingester.ingest(_mk_event(symbol="ROB285INGESTBTCUSDT"))
     assert persisted is True
     row = (
         await db_session.execute(
@@ -91,7 +91,7 @@ async def test_ingest_idempotent_upsert(db_session: AsyncSession) -> None:
     inst = CryptoInstrument(
         venue="binance",
         product="spot",
-        venue_symbol="ETHUSDT",
+        venue_symbol="ROB285INGESTETHUSDT",
         base_asset="ETH",
         quote_asset="USDT",
         status="active",
@@ -99,7 +99,7 @@ async def test_ingest_idempotent_upsert(db_session: AsyncSession) -> None:
     db_session.add(inst)
     await db_session.flush()
     ingester = BinanceCandleIngester(session=db_session)
-    event = _mk_event(symbol="ETHUSDT")
+    event = _mk_event(symbol="ROB285INGESTETHUSDT")
     assert await ingester.ingest(event) is True
     assert await ingester.ingest(event) is True
     count = (
@@ -117,7 +117,9 @@ async def test_ingest_drops_in_progress_kline_defensively(
 ) -> None:
     """Even if a caller forgets to filter, the ingester drops non-closed klines."""
     ingester = BinanceCandleIngester(session=db_session)
-    persisted = await ingester.ingest(_mk_event(symbol="BTCUSDT", is_closed=False))
+    persisted = await ingester.ingest(
+        _mk_event(symbol="ROB285INGESTBTCUSDT", is_closed=False)
+    )
     assert persisted is False
 
 
@@ -129,7 +131,7 @@ async def test_ingest_caches_instrument_id_across_calls(
     inst = CryptoInstrument(
         venue="binance",
         product="spot",
-        venue_symbol="SOLUSDT",
+        venue_symbol="ROB285INGESTSOLUSDT",
         base_asset="SOL",
         quote_asset="USDT",
         status="active",
@@ -138,7 +140,7 @@ async def test_ingest_caches_instrument_id_across_calls(
     await db_session.flush()
     ingester = BinanceCandleIngester(session=db_session)
     # First call populates the cache.
-    await ingester.ingest(_mk_event(symbol="SOLUSDT"))
-    assert "SOLUSDT" in ingester._cache  # noqa: SLF001 — testing internal cache
-    cached_id = ingester._cache["SOLUSDT"]
+    await ingester.ingest(_mk_event(symbol="ROB285INGESTSOLUSDT"))
+    assert "ROB285INGESTSOLUSDT" in ingester._cache  # noqa: SLF001 — testing internal cache
+    cached_id = ingester._cache["ROB285INGESTSOLUSDT"]
     assert cached_id == inst.id

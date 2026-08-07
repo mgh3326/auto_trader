@@ -58,6 +58,10 @@ def verify_start_gate(paths: ArtifactPaths) -> tuple[dict[str, str], ...]:
             paths.golden_root / "checksums.sha256",
             CONTRACT_SHA256["checksums.sha256"],
         ),
+        (
+            paths.amendment_a1,
+            CONTRACT_SHA256["d3-amendment-a1-20260807.md"],
+        ),
     )
     results: list[dict[str, str]] = []
     for path, expected in targets:

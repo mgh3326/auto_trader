@@ -183,7 +183,7 @@ async def test_daily_candle_orm_roundtrip(db_session: AsyncSession) -> None:
     inst = CryptoInstrument(
         venue="binance",
         product="spot",
-        venue_symbol="ETHUSDT",
+        venue_symbol="ROB2841DORMETHUSDT",
         base_asset="ETH",
         quote_asset="USDT",
         status="active",
