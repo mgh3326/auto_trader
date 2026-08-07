@@ -15,7 +15,6 @@ from research.kr_corpus.d3_engine.calibration_corpus import (
     CalibrationAccessBlocked,
     CalibrationAccessGuard,
     CalibrationAccessSpy,
-    CalibrationCorpusInvalid,
     measure_calibration_fail_closed_probes,
 )
 from research.kr_corpus.d3_engine.guards import SealedAccessBlocked, SealedAccessGuard
@@ -63,9 +62,7 @@ def test_path_gate_refuses_2026_partition_even_under_holdout_root() -> None:
 
 def test_precheck_anomaly_line_never_decodes_2026_json() -> None:
     guard = CalibrationAccessGuard()
-    line_2025 = json.dumps(
-        {"session": "2025-06-02", "detail": {"open": 1}}
-    ).encode()
+    line_2025 = json.dumps({"session": "2025-06-02", "detail": {"open": 1}}).encode()
     line_2026 = json.dumps(
         {"session": "2026-01-05", "detail": {"open": 999999}}
     ).encode()

@@ -25,10 +25,11 @@ import hashlib
 import json
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from research.kr_corpus.backtest.holdout_guard import (
     HOLDOUT_DIR,
@@ -447,7 +448,7 @@ class CalibrationCorpusLoader:
             )
             sessions = [date.fromisoformat(str(row["session"])) for row in rows]
             self.guard.record_bar_rows(sessions)
-            for row, session in zip(rows, sessions):
+            for row, session in zip(rows, sessions, strict=True):
                 by_symbol[ticker].append(
                     CalibrationBar(
                         session=session,
