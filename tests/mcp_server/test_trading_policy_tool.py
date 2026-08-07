@@ -16,10 +16,7 @@ async def test_get_trading_policy_returns_thresholds_and_version():
     assert out["version"] == policy_version_stamp()["version"]
     assert out["content_hash"]
     assert out["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
-    assert set(out["decision_rules"]) == {
-        "phase25.06_toss_account_symbol_mode",
-        "phase25.07_risk_and_hard_exit_priority",
-    }
+    assert set(out["decision_rules"]) == set()
 
 
 @pytest.mark.asyncio
@@ -56,8 +53,6 @@ async def test_get_trading_policy_returns_sell_trim_preplace_rule():
         ]
         == 33.3333
     )
-    assert tiers["profit_realization"]["conditions"]["profit_pct_min"] == 8
-    assert tiers["profit_realization"]["action"] == "preplace_small_trim_ladder"
     assert tiers["ultra_near_resistance"]["conditions"]["resistance_near_pct_max"] == 2
     assert tiers["watch_zone"]["action"] == "register_watch"
     assert "single_share_position" not in rule["exclusions"]

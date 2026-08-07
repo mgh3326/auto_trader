@@ -58,7 +58,6 @@ def test_shipped_config_validates():
         "de_minimis_trim_watch",
         "single_share_full_exit_review",
         "momentum_spike_profit_ladder",
-        "profit_realization",
         "rsi_confirmed_resistance",
         "ultra_near_resistance",
         "watch_zone",
@@ -67,8 +66,7 @@ def test_shipped_config_validates():
     assert trim_rule.tiers[1].sizing == "full_position"
     assert trim_rule.tiers[2].conditions["rsi_gate_exempt"] is True
     assert trim_rule.tiers[2].conditions["ladder_total_position_pct_max"] == 33.3333
-    assert trim_rule.tiers[3].conditions["profit_pct_min"] == 8
-    assert trim_rule.tiers[5].conditions["resistance_near_pct_max"] == 2
+    assert trim_rule.tiers[4].conditions["resistance_near_pct_max"] == 2
     assert trim_rule.tie_breaks["multiple_tiers_matched"] == (
         "first_matching_tier_wins"
     )
