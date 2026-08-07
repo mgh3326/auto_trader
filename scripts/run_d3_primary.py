@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the frozen D3-R1 16-physical primary matrix."""
+"""Execute the frozen D3-R1c 16-physical locked-clock correction replay."""
 
 from __future__ import annotations
 

@@ -41,6 +41,7 @@ from research.kr_corpus.d3_engine.policies import (
     C1Cycle,
     c3_buy_suppressed,
     update_c3_close,
+    update_underwater_close,
 )
 from research.kr_corpus.d3_engine.signals import SignalCandidate
 from research.kr_corpus.d3_engine.tick import (
@@ -215,6 +216,24 @@ def test_c3_uses_post_fill_average_and_suppresses_add_when_armed() -> None:
     armed = update_c3_close(position, close=Decimal("8900"))
     assert armed.armed_90
     assert c3_buy_suppressed(position)
+
+
+def test_arm_neutral_clock_does_not_arm_c3_trim_policy() -> None:
+    position = Position(
+        symbol="005930",
+        quantity=9,
+        average_price=Decimal("10000"),
+        invested_cost_basis=Decimal("90000"),
+        underwater_streak=179,
+    )
+
+    outcome = update_underwater_close(position, close=Decimal("9000"))
+
+    assert outcome.streak == 180
+    assert not position.trim90_triggered
+    assert not position.trim90_armed
+    assert not position.trim180_triggered
+    assert not position.trim180_armed
 
 
 def test_sealed_bar_manifest_and_metadata_block_before_access() -> None:

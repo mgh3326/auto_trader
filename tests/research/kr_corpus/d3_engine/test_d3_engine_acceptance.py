@@ -62,7 +62,25 @@ def test_d3_e1_full_local_acceptance(tmp_path: Path) -> None:
         "c3_buy_suppression_bound": True,
     }
     assert result["mutant_diffs"]["passed"] == 23
+    assert result["mutant_diffs"]["total"] == 23
+    assert result["correction_golden"]["passed"] == 3
+    assert result["correction_golden"]["total"] == 3
+    assert result["correction_mutants"]["passed"] == 4
+    assert result["correction_mutants"]["total"] == 4
+    assert {row["name"] for row in result["correction_mutants"]["cases"]} == {
+        "C3-only-clock",
+        "missing-close-reset",
+        "B0-trim-fires",
+        "close-ge-average-keeps-streak",
+    }
     assert all(row["status"] == "PASS" for row in result["negative_tests"].values())
+    assert result["negative_tests"]["sealed_access"]["paths"] == {
+        "holdout": "PASS",
+        "D3_CALIBRATION_2025": "PASS",
+        "prospective": "PASS",
+    }
+    assert result["negative_tests"]["sealed_access"]["loader_calls"] == 0
+    assert result["negative_tests"]["sealed_access"]["metadata_key_lookups"] == 0
     assert result["sealed_access_spy"] == 0
     assert result["engine_input_explanation_keys"] == 0
     assert result["fib_window_excludes_t"] is True

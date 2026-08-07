@@ -4,9 +4,11 @@ This package is the deterministic, research-only D3 engine for arms B0/C1/C2/C3.
 It is isolated from D2 Stage-B and from broker, order, account, database, scheduler,
 environment, and in-process LLM surfaces.
 
-The local acceptance command consumes the immutable external golden artifact as a
-read-only oracle. It never regenerates expected values and never imports the
-provenance-only `krx_tick_size_frozen.py` file.
+The local acceptance command consumes the immutable external 33-case golden
+artifact as a read-only oracle. It never regenerates expected values and never
+imports the provenance-only `krx_tick_size_frozen.py` file. The additive R1c
+correction suite executes three 180+ session arm-neutral clock cases and four
+mutants without changing any of the frozen 33 cases or 23 prior mutants.
 
 Production research callers provide the complete, ascending XKRX session axis in
 `PortfolioRunInput.market_sessions`; this makes missing symbol bars reset indicator
@@ -27,9 +29,13 @@ temporary omission. The engine then marks the run
 ```bash
 uv run python -m research.kr_corpus.d3_engine.acceptance
 uv run pytest tests/research/kr_corpus/d3_engine -v
+uv run python scripts/run_d3_primary.py
 ```
 
 The acceptance smoke runs a natural, non-vacuous indicator signal and exact L1/L2
 fills for all four arms, plus isolated engine contract probes. It does not run the
-primary 16 physical exploration jobs and does not access any 2025+ holdout or
-calibration input.
+primary 16 physical correction jobs and does not access any 2025+ holdout,
+calibration, or prospective input. The correction harness writes to
+`~/work/herdr-artifacts/d3-r1c-correction-replay-v1`, verifies the old/new
+bit-exact contract, and preserves the original `d3-primary-run-v1` tree with a
+`superseded-by.json` sidecar only after all acceptance gates pass.

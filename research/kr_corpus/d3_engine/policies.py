@@ -75,14 +75,35 @@ class C3CloseOutcome:
     armed_180: bool
 
 
-def update_c3_close(position: Position, *, close: Decimal) -> C3CloseOutcome:
-    """Evaluate with the post-fill average; equality resets the streak."""
+@dataclass(frozen=True, slots=True)
+class UnderwaterClockOutcome:
+    underwater: bool
+    streak: int
+
+
+def update_underwater_close(
+    position: Position, *, close: Decimal
+) -> UnderwaterClockOutcome:
+    """Advance the arm-neutral post-fill close metric clock."""
 
     if position.quantity == 0:
         position.underwater_streak = 0
-        return C3CloseOutcome(False, 0, False, False)
+        return UnderwaterClockOutcome(False, 0)
     underwater = close < position.average_price
     position.underwater_streak = position.underwater_streak + 1 if underwater else 0
+    return UnderwaterClockOutcome(underwater, position.underwater_streak)
+
+
+def reset_underwater_close(position: Position) -> None:
+    """Reset the metric clock when the session close is unavailable."""
+
+    position.underwater_streak = 0
+
+
+def update_c3_close(position: Position, *, close: Decimal) -> C3CloseOutcome:
+    """Advance the shared metric clock, then arm C3-only trim policy."""
+
+    clock = update_underwater_close(position, close=close)
     armed_90 = False
     armed_180 = False
     if position.underwater_streak >= 90 and not position.trim90_triggered:
@@ -100,8 +121,8 @@ def update_c3_close(position: Position, *, close: Decimal) -> C3CloseOutcome:
         position.trim180_armed = True
         armed_180 = True
     return C3CloseOutcome(
-        underwater,
-        position.underwater_streak,
+        clock.underwater,
+        clock.streak,
         armed_90,
         armed_180,
     )

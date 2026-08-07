@@ -1,4 +1,4 @@
-"""Deterministic 16-physical D3 primary exploration harness.
+"""Deterministic 16-physical D3 locked-clock correction replay harness.
 
 This module adds only the corpus-to-E1-engine execution and artifact surface. It
 does not select a winner, compute Pareto dominance, run sensitivity variants, or
@@ -25,7 +25,11 @@ from research.kr_corpus.d3_engine.cash import CashLedger, Settlement
 from research.kr_corpus.d3_engine.constants import FEE_RATE, ArtifactPaths
 from research.kr_corpus.d3_engine.costs import cash_required
 from research.kr_corpus.d3_engine.engine import PortfolioEngine
-from research.kr_corpus.d3_engine.guards import SealedAccessGuard, SealedAccessSpy
+from research.kr_corpus.d3_engine.guards import (
+    SealedAccessGuard,
+    SealedAccessSpy,
+    measure_sealed_fail_closed_probes,
+)
 from research.kr_corpus.d3_engine.metrics import nearest_rank
 from research.kr_corpus.d3_engine.models import (
     Arm,
@@ -34,6 +38,7 @@ from research.kr_corpus.d3_engine.models import (
     DataView,
     EngineResult,
     Fill,
+    OrderClass,
     OrderSide,
     PortfolioRunInput,
     RunState,
@@ -70,10 +75,27 @@ STATE_PRIORITY_A1 = (
     "CALIBRATION_MISMATCH",
     "verdict",
 )
+TRIAL_COUNT = 0
+CORRECTION_REPLAY_COUNT = 1
+SUPERSEDED_MANIFEST_SHA256 = (
+    "30ae19f9d3892e76b848796f45df260741a120d23a8676d42bf914b78fc8f5d3"
+)
+CLAMPED_ROWS_SCHEMA_SHA256 = (
+    "57a55bfb41a0bbb70a36c098a9f561ca90e28098eca8f7845dee0a1d4ec7b5b2"
+)
+CLAMPED_ROWS_SHA256 = "a01cb786f7c7d6743473d42ee524de948995084e5af6fd93e372386d6abde28a"
+CLAMPED_ROWS_COUNT = 817_576
+CLAMPED_UNIT_IDS_SHA256 = (
+    "248fd8f3b0c03d76eaa803aff8e1b1d5fb971b5b5949c14327fa1dd957dcaf91"
+)
 
 
 class PrimaryRunInvalid(RuntimeError):
     code = "RUN_INVALID_PRIMARY_HARNESS"
+
+
+class ClampedRowsChanged(PrimaryRunInvalid):
+    code = "NEEDS_UPSTREAM(clamped_rows_changed_by_correction)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +104,7 @@ class PrimaryHarnessPaths:
     corpus: PrimaryCorpusPaths
     delist_root: Path
     fidelity_root: Path
+    superseded_root: Path
     output_root: Path
     progress_report: Path
 
@@ -93,12 +116,13 @@ class PrimaryHarnessPaths:
             corpus=PrimaryCorpusPaths.defaults(),
             delist_root=work / "herdr-artifacts" / "kr-delist-events-v1",
             fidelity_root=work / "herdr-artifacts" / "d3-fidelity-method-v1",
-            output_root=work / "herdr-artifacts" / "d3-primary-run-v1",
+            superseded_root=work / "herdr-artifacts" / "d3-primary-run-v1",
+            output_root=work / "herdr-artifacts" / "d3-r1c-correction-replay-v1",
             progress_report=(
                 work
                 / "herdr-inbox"
                 / "jobs"
-                / "d3-r1-primary-20260807-0850"
+                / "d3-r1c-locked-clock-20260807-1700"
                 / "events"
                 / "impl.md"
             ),
@@ -529,16 +553,84 @@ class PrimaryRunHarness:
             gc.collect()
 
         completed.sort(key=lambda row: str(row["run_id"]))
+        comparison = _compare_correction_replay(
+            correction_root=self.paths.output_root,
+            superseded_root=self.paths.superseded_root,
+        )
+        _write_bytes(
+            self.paths.output_root / "bitexact-comparison.json",
+            canonical_bytes(
+                {
+                    "schema_version": PRIMARY_SCHEMA_VERSION,
+                    "artifact_kind": "locked-clock-bitexact-comparison",
+                    "stamps": self._stamps,
+                    "payload": comparison,
+                }
+            ),
+        )
+        if comparison["status"] != "PASS":
+            self._append_progress(
+                "\nRUN_INVALID = correction bit-exact mismatch · "
+                f"differences={comparison['unexpected_differences']}\n"
+            )
+            raise PrimaryRunInvalid("RUN_INVALID_CORRECTION_BITEXACT")
+
         clamped_pair_exposure = _build_clamped_pair_exposure(
             output_root=self.paths.output_root,
             completed=completed,
             stamps=self._stamps,
         )
+        superseded_manifest = json.loads(
+            (self.paths.superseded_root / "manifest.json").read_bytes()
+        )
         pairing = _build_order_changing_rows(
             output_root=self.paths.output_root,
             completed=completed,
             stamps=self._stamps,
+            frozen_source_shas={
+                str(row["run_id"]): str(row["run_json_sha256"])
+                for row in superseded_manifest["matrix"]["runs"]
+            },
+            binding_stamps=superseded_manifest["stamps"],
         )
+        clamped_invariance = _measure_clamped_rows_invariance(
+            root=self.paths.output_root,
+            row_count=int(pairing["summary"]["row_count"]),
+            unit_ids_sha256=str(pairing["summary"]["unit_ids_sha256"]),
+        )
+        comparison["root_artifacts"] = _compare_root_artifacts(
+            correction_root=self.paths.output_root,
+            superseded_root=self.paths.superseded_root,
+        )
+        comparison["clamped_rows"] = clamped_invariance
+        if not all(
+            bool(row["identical"]) for row in comparison["root_artifacts"].values()
+        ):
+            comparison["status"] = "FAIL"
+            comparison["unexpected_differences"].append("root_artifact_payload_changed")
+        _write_bytes(
+            self.paths.output_root / "bitexact-comparison.json",
+            canonical_bytes(
+                {
+                    "schema_version": PRIMARY_SCHEMA_VERSION,
+                    "artifact_kind": "locked-clock-bitexact-comparison",
+                    "stamps": self._stamps,
+                    "payload": comparison,
+                }
+            ),
+        )
+        if not clamped_invariance["unchanged"]:
+            self._append_progress(
+                "\nNEEDS_UPSTREAM(clamped_rows_changed_by_correction) = "
+                f"{clamped_invariance}\n"
+            )
+            raise ClampedRowsChanged(ClampedRowsChanged.code)
+        if comparison["status"] != "PASS":
+            raise PrimaryRunInvalid("RUN_INVALID_CORRECTION_ROOT_ARTIFACT")
+
+        fail_closed = measure_sealed_fail_closed_probes()
+        if fail_closed["status"] != "PASS":
+            raise PrimaryRunInvalid("sealed three-route fail-closed probe failed")
         sealed_payload = {
             "schema_version": PRIMARY_SCHEMA_VERSION,
             "stamps": self._stamps,
@@ -550,6 +642,7 @@ class PrimaryRunHarness:
                     "sealed_access_blocked_attempts"
                 ],
             },
+            "fail_closed_probes": fail_closed,
         }
         _write_bytes(
             self.paths.output_root / "sealed-access.json",
@@ -569,7 +662,13 @@ class PrimaryRunHarness:
             "dual_view_pairing": pairing["pairing"],
             "order_changing_clamped_rows": pairing["summary"],
             "clamped_pair_exposure": clamped_pair_exposure,
+            "bitexact_comparison_path": "bitexact-comparison.json",
+            "bitexact_invariants_passed": comparison["status"] == "PASS",
+            "clamped_rows_unchanged": clamped_invariance,
             "sealed_access_path": "sealed-access.json",
+            "supersedes": self._stamps["supersedes"],
+            "trial_count": TRIAL_COUNT,
+            "correction_replay_count": CORRECTION_REPLAY_COUNT,
             "winner_selected": False,
             "pareto_computed": False,
             "sensitivity_runs": 0,
@@ -580,9 +679,23 @@ class PrimaryRunHarness:
         measured = measure_primary_run_executed(self.paths.output_root)
         if not measured["primary_run_executed"]:
             raise PrimaryRunInvalid(f"primary measurement failed:{measured}")
+        _write_superseded_link(
+            superseded_root=self.paths.superseded_root,
+            correction_root=self.paths.output_root,
+        )
         self._append_progress(
             "\nRUNS = 16/16 physical · DETERMINISTIC_2RUNS = 16/16 PASS · "
             "DUAL_VIEW_PAIRED = 8/8 · WINNER_SELECTED = NO\n"
+            "\nBITEXACT_TABLE = PASS · C3_FULL_EXACT = YES · "
+            "B0_C1_C2_TRIM_FIRES = 0\n"
+            "\nCLAMPED_ROWS_UNCHANGED = YES · "
+            f"schema_sha={clamped_invariance['schema_after_sha256']} · "
+            f"rows_sha={clamped_invariance['rows_after_sha256']} · "
+            f"row_count={clamped_invariance['row_count_after']} · "
+            "unit_id_identical=YES\n"
+            "\nSEALED_ACCESS_MEASURED = 0 · "
+            "holdout/D3_CALIBRATION_2025/prospective fail-closed PASS\n"
+            "\ntrial_count = 0 · correction_replay_count = 1\n"
         )
         gc.unfreeze()
         return manifest
@@ -595,6 +708,26 @@ class PrimaryRunHarness:
             FIDELITY_METHOD_CHECKSUMS_SHA256
         ):
             raise PrimaryRunInvalid("fidelity method checksum drift")
+        if self.paths.output_root.resolve() == self.paths.superseded_root.resolve():
+            raise PrimaryRunInvalid(
+                "correction output cannot overwrite superseded root"
+            )
+        if sha256_file(self.paths.superseded_root / "manifest.json") != (
+            SUPERSEDED_MANIFEST_SHA256
+        ):
+            raise PrimaryRunInvalid("superseded primary manifest drift")
+        if (
+            sha256_file(
+                self.paths.superseded_root / "order-changing-clamped-rows-schema.json"
+            )
+            != CLAMPED_ROWS_SCHEMA_SHA256
+        ):
+            raise PrimaryRunInvalid("superseded clamped schema drift")
+        if (
+            sha256_file(self.paths.superseded_root / "order-changing-clamped-rows.json")
+            != CLAMPED_ROWS_SHA256
+        ):
+            raise PrimaryRunInvalid("superseded clamped rows drift")
         self.paths.progress_report.parent.mkdir(parents=True, exist_ok=True)
 
     def _build_stamps(
@@ -607,8 +740,19 @@ class PrimaryRunHarness:
     ) -> dict[str, object]:
         return {
             "input_sha256": {str(row["file"]): row["sha256"] for row in self._sha_gate},
-            "engine_commit": ENGINE_BASE_COMMIT,
+            "engine_base_commit": ENGINE_BASE_COMMIT,
+            "engine_commit": self.harness_commit,
             "harness_commit": self.harness_commit,
+            "trial_count": TRIAL_COUNT,
+            "correction_replay_count": CORRECTION_REPLAY_COUNT,
+            "supersedes": {
+                "artifact_root": str(self.paths.superseded_root.resolve()),
+                "manifest_sha256": SUPERSEDED_MANIFEST_SHA256,
+                "status": "RUN_INVALID_PENDING_LOCKED_CLOCK_CORRECTION",
+            },
+            "superseded_by_link": str(
+                (self.paths.superseded_root / "superseded-by.json").resolve()
+            ),
             "corpus": {
                 **CORPUS_BINDINGS,
                 "original_rows": original.row_count,
@@ -1279,6 +1423,8 @@ def _build_order_changing_rows(
     output_root: Path,
     completed: list[dict[str, object]],
     stamps: dict[str, object],
+    frozen_source_shas: dict[str, str] | None = None,
+    binding_stamps: dict[str, object] | None = None,
 ) -> dict[str, object]:
     by_combo = {
         (
@@ -1331,7 +1477,11 @@ def _build_order_changing_rows(
                         "data_view_role": role,
                         **material,
                         "oc_codes": codes,
-                        "source_artifact_sha": source["run_json_sha256"],
+                        "source_artifact_sha": (
+                            frozen_source_shas[str(source["run_id"])]
+                            if frozen_source_shas is not None
+                            else source["run_json_sha256"]
+                        ),
                     }
                     fidelity["unit_id"] = _fidelity_unit_id(fidelity)
                     rows.append(fidelity)
@@ -1347,13 +1497,14 @@ def _build_order_changing_rows(
             )
     rows.sort(key=lambda row: (row["pair_id"], row["data_view_role"]))
     schema = _order_changing_schema()
+    frozen_stamps = binding_stamps if binding_stamps is not None else stamps
     _write_bytes(
         output_root / "order-changing-clamped-rows.json",
         canonical_bytes(
             {
                 "schema_version": ORDER_CHANGING_SCHEMA_VERSION,
                 "artifact_kind": "order-changing-clamped-rows",
-                "stamps": stamps,
+                "stamps": frozen_stamps,
                 "rows": rows,
             }
         ),
@@ -1364,7 +1515,7 @@ def _build_order_changing_rows(
             {
                 "schema_version": ORDER_CHANGING_SCHEMA_VERSION,
                 "artifact_kind": "order-changing-clamped-rows-schema",
-                "stamps": stamps,
+                "stamps": frozen_stamps,
                 "payload": schema,
             }
         ),
@@ -1390,6 +1541,7 @@ def _build_order_changing_rows(
         "summary": {
             "schema_version": ORDER_CHANGING_SCHEMA_VERSION,
             "row_count": len(rows),
+            "unit_ids_sha256": _line_sha256([str(row["unit_id"]) for row in rows]),
             "pair_count": len({row["pair_id"] for row in rows}),
             "artifact": "order-changing-clamped-rows.json",
             "schema": "order-changing-clamped-rows-schema.json",
@@ -1749,6 +1901,306 @@ def _read_completed_run(target: Path, physical: PhysicalRun) -> dict[str, object
         "run_json_sha256": hashlib.sha256(raw).hexdigest(),
         "bundle_sha256": _directory_bundle_sha(target),
     }
+
+
+_RESULT_ARTIFACTS = (
+    "signals.json",
+    "submitted.json",
+    "fills.json",
+    "skips.json",
+    "policy-rejects.json",
+    "cash-rejects.json",
+    "clamped-exposure.json",
+    "open-lots.json",
+    "capital-days.json",
+    "cash-daily.json",
+    "nav-unit-price-daily.json",
+    "events.json",
+    "orders.json",
+    "metrics.json",
+    "evidence.json",
+)
+_NON_C3_EXACT_ARTIFACTS = (
+    "signals.json",
+    "submitted.json",
+    "fills.json",
+    "skips.json",
+    "policy-rejects.json",
+    "cash-rejects.json",
+    "clamped-exposure.json",
+    "cash-daily.json",
+    "events.json",
+    "orders.json",
+    "evidence.json",
+)
+_LOCKED_METRIC_KEYS = frozenset(
+    {"locked_share_tw_mean", "locked_share_p95", "locked_share_max"}
+)
+
+
+def _compare_correction_replay(
+    *, correction_root: Path, superseded_root: Path
+) -> dict[str, object]:
+    unexpected: list[str] = []
+    run_rows: list[dict[str, object]] = []
+    for physical in primary_matrix():
+        before_root = superseded_root / "runs" / physical.run_id
+        after_root = correction_root / "runs" / physical.run_id
+        exact: dict[str, dict[str, object]] = {}
+        if physical.arm is Arm.C3:
+            for name in _RESULT_ARTIFACTS:
+                row = _value_hash_comparison(before_root / name, after_root / name)
+                exact[name] = row
+                if not row["identical"]:
+                    unexpected.append(f"{physical.run_id}:{name}")
+            run_rows.append(
+                {
+                    "run_id": physical.run_id,
+                    "arm": physical.arm.value,
+                    "c3_full_bitexact": not any(
+                        not bool(row["identical"]) for row in exact.values()
+                    ),
+                    "exact_artifacts": exact,
+                    "allowed_locked_axis": None,
+                    "non_c3_time_trim_fills": None,
+                }
+            )
+            continue
+
+        for name in _NON_C3_EXACT_ARTIFACTS:
+            row = _value_hash_comparison(before_root / name, after_root / name)
+            exact[name] = row
+            if not row["identical"]:
+                unexpected.append(f"{physical.run_id}:{name}")
+
+        metrics_before = _read_wrapped_value(before_root / "metrics.json")
+        metrics_after = _read_wrapped_value(after_root / "metrics.json")
+        if not isinstance(metrics_before, dict) or not isinstance(metrics_after, dict):
+            raise PrimaryRunInvalid("metrics artifact payload malformed")
+        metric_differences = sorted(
+            key
+            for key in set(metrics_before) | set(metrics_after)
+            if metrics_before.get(key) != metrics_after.get(key)
+        )
+        unexpected_metrics = sorted(set(metric_differences) - _LOCKED_METRIC_KEYS)
+        if unexpected_metrics:
+            unexpected.extend(
+                f"{physical.run_id}:metrics:{key}" for key in unexpected_metrics
+            )
+
+        nav = _allowed_rows_comparison(
+            before_root / "nav-unit-price-daily.json",
+            after_root / "nav-unit-price-daily.json",
+            allowed_keys=frozenset({"locked_share"}),
+        )
+        lots = _allowed_rows_comparison(
+            before_root / "open-lots.json",
+            after_root / "open-lots.json",
+            allowed_keys=frozenset({"underwater_streak"}),
+        )
+        capital = _allowed_rows_comparison(
+            before_root / "capital-days.json",
+            after_root / "capital-days.json",
+            allowed_keys=frozenset({"locked_capital_days_krw"}),
+        )
+        for name, row in (
+            ("nav-unit-price-daily.json", nav),
+            ("open-lots.json", lots),
+            ("capital-days.json", capital),
+        ):
+            if not row["non_allowed_fields_identical"]:
+                unexpected.append(f"{physical.run_id}:{name}:non_allowed_fields")
+
+        fills_after = _read_wrapped_value(after_root / "fills.json")
+        if not isinstance(fills_after, list):
+            raise PrimaryRunInvalid("fills artifact rows malformed")
+        trim_fills = sum(
+            row.get("class") == OrderClass.TIME_TRIM.value for row in fills_after
+        )
+        if trim_fills:
+            unexpected.append(f"{physical.run_id}:time_trim_fills={trim_fills}")
+        locked_before = {
+            key: metrics_before[key] for key in sorted(_LOCKED_METRIC_KEYS)
+        }
+        locked_after = {key: metrics_after[key] for key in sorted(_LOCKED_METRIC_KEYS)}
+        if Decimal(str(locked_after["locked_share_tw_mean"])) <= 0:
+            unexpected.append(f"{physical.run_id}:locked_share_tw_mean_not_nonzero")
+        if Decimal(str(locked_after["locked_share_max"])) <= 0:
+            unexpected.append(f"{physical.run_id}:locked_share_max_not_nonzero")
+        run_rows.append(
+            {
+                "run_id": physical.run_id,
+                "arm": physical.arm.value,
+                "c3_full_bitexact": None,
+                "exact_artifacts": exact,
+                "allowed_locked_axis": {
+                    "metrics": {
+                        "before": locked_before,
+                        "after": locked_after,
+                        "changed_keys": metric_differences,
+                        "unexpected_keys": unexpected_metrics,
+                    },
+                    "nav_unit_price": nav,
+                    "open_lots": lots,
+                    "capital_days": capital,
+                },
+                "non_c3_time_trim_fills": trim_fills,
+            }
+        )
+
+    return {
+        "status": "PASS" if not unexpected else "FAIL",
+        "unexpected_differences": unexpected,
+        "runs": run_rows,
+        "summary": {
+            "B0_C1_C2_non_locked_fields_bitexact": not any(
+                item for item in unexpected if not item.startswith("C3__")
+            ),
+            "C3_full_bitexact": not any(
+                item for item in unexpected if item.startswith("C3__")
+            ),
+            "B0_C1_C2_time_trim_fills": sum(
+                int(row["non_c3_time_trim_fills"] or 0)
+                for row in run_rows
+                if row["arm"] != Arm.C3.value
+            ),
+        },
+    }
+
+
+def _compare_root_artifacts(
+    *, correction_root: Path, superseded_root: Path
+) -> dict[str, dict[str, object]]:
+    return {
+        name: _value_hash_comparison(
+            superseded_root / name,
+            correction_root / name,
+        )
+        for name in ("clamped-pair-exposure.json", "dual-view-pairing.json")
+    }
+
+
+def _value_hash_comparison(before: Path, after: Path) -> dict[str, object]:
+    before_sha = hashlib.sha256(_wrapped_value_bytes(before)).hexdigest()
+    after_sha = hashlib.sha256(_wrapped_value_bytes(after)).hexdigest()
+    return {
+        "before_sha256": before_sha,
+        "after_sha256": after_sha,
+        "identical": before_sha == after_sha,
+    }
+
+
+def _wrapped_value_bytes(path: Path) -> bytes:
+    raw = path.read_bytes().rstrip(b"\n")
+    positions = [
+        (raw.find(marker), marker)
+        for marker in (b'"payload":', b'"rows":')
+        if raw.find(marker) >= 0
+    ]
+    if not positions:
+        raise PrimaryRunInvalid(f"artifact lacks payload/rows wrapper:{path}")
+    marker_at, marker = min(positions, key=lambda item: item[0])
+    start = marker_at + len(marker)
+    end = raw.rfind(b',"run_id":')
+    if end < start:
+        end = raw.rfind(b',"schema_version":')
+    if end < start:
+        raise PrimaryRunInvalid(f"artifact wrapper boundary malformed:{path}")
+    return raw[start:end]
+
+
+def _read_wrapped_value(path: Path) -> object:
+    payload = json.loads(path.read_bytes())
+    if "payload" in payload:
+        return payload["payload"]
+    if "rows" in payload:
+        return payload["rows"]
+    raise PrimaryRunInvalid(f"artifact lacks payload/rows:{path}")
+
+
+def _allowed_rows_comparison(
+    before: Path, after: Path, *, allowed_keys: frozenset[str]
+) -> dict[str, object]:
+    before_rows = _read_wrapped_value(before)
+    after_rows = _read_wrapped_value(after)
+    if not isinstance(before_rows, list) or not isinstance(after_rows, list):
+        raise PrimaryRunInvalid("allowed-axis artifact rows malformed")
+
+    def projection(row: object) -> object:
+        if not isinstance(row, dict):
+            raise PrimaryRunInvalid("allowed-axis row malformed")
+        return {key: value for key, value in row.items() if key not in allowed_keys}
+
+    non_allowed_identical = len(before_rows) == len(after_rows) and [
+        projection(row) for row in before_rows
+    ] == [projection(row) for row in after_rows]
+    changed_rows = 0
+    if len(before_rows) == len(after_rows):
+        for old, new in zip(before_rows, after_rows, strict=True):
+            if not isinstance(old, dict) or not isinstance(new, dict):
+                raise PrimaryRunInvalid("allowed-axis row malformed")
+            if any(old.get(key) != new.get(key) for key in allowed_keys):
+                changed_rows += 1
+    return {
+        "row_count_before": len(before_rows),
+        "row_count_after": len(after_rows),
+        "allowed_keys": sorted(allowed_keys),
+        "allowed_field_changed_rows": changed_rows,
+        "non_allowed_fields_identical": non_allowed_identical,
+    }
+
+
+def _measure_clamped_rows_invariance(
+    *, root: Path, row_count: int, unit_ids_sha256: str
+) -> dict[str, object]:
+    schema_after = sha256_file(root / "order-changing-clamped-rows-schema.json")
+    rows_after = sha256_file(root / "order-changing-clamped-rows.json")
+    unchanged = (
+        schema_after == CLAMPED_ROWS_SCHEMA_SHA256
+        and rows_after == CLAMPED_ROWS_SHA256
+        and row_count == CLAMPED_ROWS_COUNT
+        and unit_ids_sha256 == CLAMPED_UNIT_IDS_SHA256
+    )
+    return {
+        "unchanged": unchanged,
+        "schema_before_sha256": CLAMPED_ROWS_SCHEMA_SHA256,
+        "schema_after_sha256": schema_after,
+        "rows_before_sha256": CLAMPED_ROWS_SHA256,
+        "rows_after_sha256": rows_after,
+        "row_count_before": CLAMPED_ROWS_COUNT,
+        "row_count_after": row_count,
+        "unit_ids_before_sha256": CLAMPED_UNIT_IDS_SHA256,
+        "unit_ids_after_sha256": unit_ids_sha256,
+        "unit_id_identical": unit_ids_sha256 == CLAMPED_UNIT_IDS_SHA256,
+    }
+
+
+def _line_sha256(values: list[str]) -> str:
+    digest = hashlib.sha256()
+    for value in values:
+        digest.update(value.encode())
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _write_superseded_link(*, superseded_root: Path, correction_root: Path) -> None:
+    correction_manifest = correction_root / "manifest.json"
+    payload = canonical_bytes(
+        {
+            "schema_version": PRIMARY_SCHEMA_VERSION,
+            "artifact_kind": "superseded-by",
+            "superseded_manifest_sha256": SUPERSEDED_MANIFEST_SHA256,
+            "superseded_by": str(correction_manifest.resolve()),
+            "superseded_by_manifest_sha256": sha256_file(correction_manifest),
+            "reason": "RUN_INVALID_PENDING_LOCKED_CLOCK_CORRECTION",
+            "trial_count": TRIAL_COUNT,
+            "correction_replay_count": CORRECTION_REPLAY_COUNT,
+        }
+    )
+    target = superseded_root / "superseded-by.json"
+    if target.exists() and target.read_bytes() != payload:
+        raise PrimaryRunInvalid(f"conflicting superseded_by link:{target}")
+    _write_bytes(target, payload)
 
 
 def _demand_from_orders_file(path: Path) -> frozenset[tuple[date, str]]:
