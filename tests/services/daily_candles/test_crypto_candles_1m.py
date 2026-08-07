@@ -96,7 +96,7 @@ async def test_minute_repository_idempotent_upsert(db_session: AsyncSession) -> 
     inst = CryptoInstrument(
         venue="binance",
         product="spot",
-        venue_symbol="BTCUSDT",
+        venue_symbol="ROB284IDEMBTCUSDT",
         base_asset="BTC",
         quote_asset="USDT",
         status="active",
@@ -143,8 +143,8 @@ async def test_cross_venue_same_bucket_coexistence(db_session: AsyncSession) -> 
 
     instruments = [
         ("upbit", "spot", "KRW-BTC-COEXIST", "BTC", "KRW"),
-        ("binance", "spot", "BTCUSDT", "BTC", "USDT"),
-        ("binance", "usdm_futures", "BTCUSDT", "BTC", "USDT"),
+        ("binance", "spot", "ROB284COEXBTCUSDT", "BTC", "USDT"),
+        ("binance", "usdm_futures", "ROB284COEXBTCUSDT", "BTC", "USDT"),
         ("alpaca", "paper", "BTC/USD", "BTC", "USD"),
     ]
     ids = []
