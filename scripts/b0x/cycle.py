@@ -92,13 +92,20 @@ def _table_or_reason(
     return result, None
 
 
-def _base_record(
-    *, lane: str, now: dt.datetime, envelope: Envelope, labels: tuple[str, ...]
+def base_record(
+    *,
+    market: str,
+    lane: str,
+    now: dt.datetime,
+    envelope: Envelope,
+    labels: tuple[str, ...],
 ) -> dict[str, Any]:
+    """Market-agnostic observation-record skeleton, shared by every lane."""
+
     return {
         "schema": "b0x.observation.v1",
         "lane": lane,
-        "market": MARKET,
+        "market": market,
         "at": now.isoformat(),
         "labels": list(labels),
         "envelope": envelope.canonical(),
@@ -107,7 +114,7 @@ def _base_record(
     }
 
 
-def _render_report(record: dict[str, Any], *, labels: tuple[str, ...]) -> str:
+def render_cycle_report(record: dict[str, Any], *, labels: tuple[str, ...]) -> str:
     lines = [
         f"# B0-X {record['lane']} — {record['at']}",
         "",
@@ -189,7 +196,9 @@ async def run_shadow_cycle(
         )
         day_rolled = portfolio.roll_utc_day(now=now)
 
-        record = _base_record(lane=lane, now=now, envelope=envelope, labels=labels)
+        record = base_record(
+            market=MARKET, lane=lane, now=now, envelope=envelope, labels=labels
+        )
         record["envelope_application"] = SHADOW_ENVELOPE_NOT_APPLIED
         record["touch_rule"] = {
             "id": shadow_lane.TOUCH_RULE_ID,
@@ -231,7 +240,7 @@ async def run_shadow_cycle(
             outcome.record = record
             outcome.artifact_path = ledger.write_artifact(
                 name=f"{now.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
-                content=_render_report(record, labels=labels),
+                content=render_cycle_report(record, labels=labels),
             )
             return outcome
 
@@ -290,7 +299,7 @@ async def run_shadow_cycle(
         outcome.record = record
         outcome.artifact_path = ledger.write_artifact(
             name=f"{now.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
-            content=_render_report(record, labels=labels),
+            content=render_cycle_report(record, labels=labels),
         )
         return outcome
 
@@ -368,7 +377,9 @@ async def run_sidecar_cycle(
         ledger.ensure()
         state_path = ledger.lane_dir / "attributed_book.json"
 
-        record = _base_record(lane=lane, now=now, envelope=envelope, labels=labels)
+        record = base_record(
+            market=MARKET, lane=lane, now=now, envelope=envelope, labels=labels
+        )
         record["policy"] = {
             "version": policy.version,
             "policy_hash": policy.policy_hash,
@@ -403,7 +414,7 @@ async def run_sidecar_cycle(
                 outcome.record = record
                 outcome.artifact_path = ledger.write_artifact(
                     name=f"{now.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
-                    content=_render_report(record, labels=labels),
+                    content=render_cycle_report(record, labels=labels),
                 )
                 return outcome
 
@@ -497,7 +508,7 @@ async def run_sidecar_cycle(
             outcome.record = record
             outcome.artifact_path = ledger.write_artifact(
                 name=f"{now.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
-                content=_render_report(record, labels=labels),
+                content=render_cycle_report(record, labels=labels),
             )
             return outcome
         finally:
@@ -539,4 +550,10 @@ async def _cancel_b0x_open_orders(
     return cancelled
 
 
-__all__ = ["CycleOutcome", "run_shadow_cycle", "run_sidecar_cycle"]
+__all__ = [
+    "CycleOutcome",
+    "base_record",
+    "render_cycle_report",
+    "run_shadow_cycle",
+    "run_sidecar_cycle",
+]
