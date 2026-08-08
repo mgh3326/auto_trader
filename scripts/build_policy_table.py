@@ -131,7 +131,9 @@ def _render_summary_md(payload: dict[str, Any]) -> str:
         return (rsi_val, rank_val)
 
     ranked = sorted(payload["rows"], key=blend_key)
-    lines.append("| symbol | held | RSI | buy_l1 | buy_l2 | sell_r1 | resistance_mismatch |")
+    lines.append(
+        "| symbol | held | RSI | buy_l1 | buy_l2 | sell_r1 | resistance_mismatch |"
+    )
     lines.append("|---|---|---:|---:|---:|---:|---|")
     for row in ranked[:30]:
         if row.get("insufficient_history"):
@@ -178,7 +180,11 @@ async def _run(args: argparse.Namespace) -> int:
         payload["stamps"] = _build_stamps(payload)
 
         artifact_bytes = canonical_json_bytes(payload)
-        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") if not args.fixed_ts else args.fixed_ts
+        ts = (
+            datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            if not args.fixed_ts
+            else args.fixed_ts
+        )
         json_path = out_dir / f"{ts}-{args.market}.json"
         md_path = out_dir / f"{ts}-{args.market}-summary.md"
 

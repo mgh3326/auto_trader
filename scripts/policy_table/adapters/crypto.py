@@ -122,9 +122,7 @@ async def _fetch_holdings_raw() -> list[dict[str, str]]:
 async def _fetch_watch_alerts_raw(*, as_of: datetime) -> list[dict[str, Any]]:
     async with AsyncSessionLocal() as db:
         repo = InvestmentReportsRepository(db)
-        alerts = await repo.list_active_alerts(
-            market=MARKET, valid_at=as_of, limit=250
-        )
+        alerts = await repo.list_active_alerts(market=MARKET, valid_at=as_of, limit=250)
     return [
         {
             "alert_uuid": str(alert.alert_uuid),
@@ -302,7 +300,9 @@ def _build_row(
 
     average_price = Decimal(holding["average_price"]) if holding else None
     cost_basis = (
-        average_price * Decimal(holding["quantity"]) if holding and average_price else None
+        average_price * Decimal(holding["quantity"])
+        if holding and average_price
+        else None
     )
 
     averaging: dict[str, Any] | None = None

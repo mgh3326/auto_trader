@@ -49,9 +49,12 @@ def canonical_json_bytes(payload: dict[str, Any]) -> bytes:
     """Deterministic (sorted-key, fixed-indent) UTF-8 JSON bytes."""
 
     jsonable = to_jsonable(payload)
-    return json.dumps(
-        jsonable, sort_keys=True, ensure_ascii=False, indent=2
-    ).encode("utf-8") + b"\n"
+    return (
+        json.dumps(jsonable, sort_keys=True, ensure_ascii=False, indent=2).encode(
+            "utf-8"
+        )
+        + b"\n"
+    )
 
 
 def compute_policy_table_hash(payload_without_hash: dict[str, Any]) -> str:

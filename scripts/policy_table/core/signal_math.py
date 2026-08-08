@@ -131,9 +131,7 @@ def compute_symbol_signal(
     if n < FIB_WINDOW:
         raise InsufficientHistory(f"need >= {FIB_WINDOW} closed bars, got {n}")
 
-    points = [
-        OhlcPoint(high=highs[i], low=lows[i], close=closes[i]) for i in range(n)
-    ]
+    points = [OhlcPoint(high=highs[i], low=lows[i], close=closes[i]) for i in range(n)]
     points.append(points[-1])  # synthetic "t" placeholder — values never read
     decision_index = n
 
