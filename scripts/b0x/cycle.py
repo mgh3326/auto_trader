@@ -31,6 +31,11 @@ from app.services.brokers.binance.spot_demo.execution_client import (
     SpotDemoDryRunResult,
 )
 from scripts.b0x import kill_switch as kill_switch_module
+from scripts.b0x.contract import (
+    SIDECAR_SCOPE,
+    account_map_stamp,
+    contract_stamp,
+)
 from scripts.b0x.crypto import shadow as shadow_lane
 from scripts.b0x.crypto import sidecar as sidecar_lane
 from scripts.b0x.derivation import DerivationResult, derive_orders
@@ -92,22 +97,6 @@ def _table_or_reason(
     return result, None
 
 
-#: Binding = version string + section citation, NOT the whole-file sha (the
-#: file is amended in place as the operator signs off further sections;
-#: re-stamping every record on each amendment would be noise). The sha below
-#: is carried as a reference/reproducibility field only — see contract
-#: preamble: "결속 = 버전 문자열 v1.3 + 인용 절 (전체파일 sha … 는 참고값)".
-CONTRACT_CITATION = "b0x-experiment-contract-v1 v1.3 (2026-08-09, operator-confirmed)"
-CONTRACT_FILE = "~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md"
-CONTRACT_FILE_SHA256_REFERENCE_ONLY = (
-    "0125e2ea96b1a54cf0b0a50e6ed85ae1f3a72e7870abe727d2734dbe20e19b1f"
-)
-#: operator_contract.yaml HEAD at last verification — PR #33 (B0-X 3-surface
-#: registration: kis_mock/alpaca_paper_lab/binance_demo). Update alongside
-#: any re-verification of the account-map gate.
-ACCOUNT_MAP_SHA = "3f402919fca5b68bda187e8e521fc886aefb022a"
-
-
 def base_record(
     *,
     market: str,
@@ -125,10 +114,8 @@ def base_record(
         "at": now.isoformat(),
         "labels": list(labels),
         "envelope": envelope.canonical(),
-        "contract": CONTRACT_CITATION,
-        "contract_file": CONTRACT_FILE,
-        "contract_file_sha256_reference_only": CONTRACT_FILE_SHA256_REFERENCE_ONLY,
-        "account_map_sha": ACCOUNT_MAP_SHA,
+        "contract": contract_stamp(),
+        "account_map": account_map_stamp(),
     }
 
 
@@ -146,7 +133,20 @@ def render_cycle_report(record: dict[str, Any], *, labels: tuple[str, ...]) -> s
             f"detail: {record.get('zero_order_detail', '')}",
             "",
         ]
+    contract = record.get("contract") or {}
+    account_map = record.get("account_map") or {}
     lines += [
+        f"contract: `{contract.get('version', '-')}` "
+        f"({', '.join(contract.get('clauses') or {}) or '-'}) · "
+        f"file sha256 (reference only): `{contract.get('file_sha256_reference_only', '-')}`",
+        f"account map: `{account_map.get('repo', '-')}@"
+        f"{account_map.get('commit', '-')}` "
+        f"canonical=`{account_map.get('canonical_surface', '-')}`",
+    ]
+    if record.get("sidecar_scope"):
+        lines.append(f"sidecar scope: `{record['sidecar_scope']}`")
+    lines += [
+        "",
         f"policy_table_hash: `{record.get('policy_table_hash', '-')}`",
         f"account_state_hash: `{record.get('account_state_hash', '-')}`",
         f"cycle_id: `{record.get('cycle_id', '-')}`",
@@ -405,6 +405,11 @@ async def run_sidecar_cycle(
         }
         record["symbols"] = dict(sidecar_lane.B0X_SIDECAR_SYMBOLS)
         record["confirm"] = confirm
+        # Contract v1.3 ②: this lane samples buy-side fill fidelity only. The
+        # sell side is unreachable here (the v1 attribution rule halts the lane
+        # on its own first fill), so it is observed on the Upbit shadow lane.
+        # Stamped per-cycle so no artifact can be read as a round-trip result.
+        record["sidecar_scope"] = SIDECAR_SCOPE
 
         owns_client = client is None
         base_url = sidecar_lane.base_url()

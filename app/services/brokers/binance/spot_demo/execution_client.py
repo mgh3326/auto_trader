@@ -472,6 +472,39 @@ class BinanceSpotDemoExecutionClient:
         ]
         return SpotDemoOpenOrdersResult(orders=orders)
 
+    async def get_all_open_orders(self) -> SpotDemoOpenOrdersResult:
+        """Account-wide open orders — every symbol, not just one.
+
+        Binance returns the whole account's resting orders when ``symbol``
+        is omitted from ``GET /api/v3/openOrders``. This is additive and
+        leaves :meth:`get_open_orders` byte-identical; it exists because a
+        symbol-scoped read cannot answer "is anything else resting on this
+        account?".
+
+        That question is not academic here. The Spot Demo credentials are
+        shared with other demo lanes (see the strategy-loop runbook §5), so
+        a caller that is about to cancel, or that is deciding whether the
+        book is clean, has to look at the whole account. Attribution is the
+        caller's job: this read reports every order and judges none.
+        """
+        params = {"recvWindow": str(BINANCE_SPOT_DEMO_RECV_WINDOW_MS)}
+        signed = _sign_request_params(params=params, api_secret=self._api_secret)
+        resp = await self._client.get(_OPEN_ORDERS_PATH, params=signed)
+        resp.raise_for_status()
+        body = resp.json()
+        orders = [
+            SpotDemoOpenOrder(
+                client_order_id=str(entry.get("clientOrderId", "")),
+                broker_order_id=str(entry.get("orderId", "")),
+                symbol=str(entry.get("symbol", "")),
+                side=str(entry.get("side", "")),
+                qty=Decimal(str(entry.get("origQty", "0"))),
+                status=str(entry.get("status", "")),
+            )
+            for entry in body
+        ]
+        return SpotDemoOpenOrdersResult(orders=orders)
+
     async def get_order_status(
         self, *, symbol: str, client_order_id: str
     ) -> dict[str, Any]:

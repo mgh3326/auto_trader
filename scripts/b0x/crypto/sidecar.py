@@ -1,8 +1,15 @@
 """Binance Spot Demo sidecar — B0-X crypto 체결 충실도 표본.
 
-Account map (operator repo ``mock/CLAUDE.md`` §1, SHA ``7f95897``):
-*Binance Demo = B0-X crypto 사이드카 (Spot Demo · 메이저 3종 BTC/ETH/SOL-USDT
-한정 · 체결충실도 표본 전용) … CR-S1 TPR 재개 시 TPR 우선권.*
+Account map — canonical surface is the machine-readable
+``operator_contract.yaml`` (operator repo ``3f40291``, contract v1.3 ①); the
+``mock/CLAUDE.md`` §1 prose is a *reference* surface and loses on conflict:
+``account_lanes.binance_demo = B0-X-crypto-sidecar`` ·
+``reassignments.binance_demo.sidecar_scope = buy_side_fill_fidelity_sample_only``
+· ``strategy_order_exceptions ∋ b0x-adapter-orders-20260808`` (surface
+``binance_spot_demo_sidecar_buy_side_only``, ``writer = b0x_adapter_single``).
+CR-S1 TPR 재개 시 TPR 우선권. The registration order matters: this lane's
+first cycle was re-run only after the YAML entries existed, because a lane
+listed in prose alone is a lane no checker can enforce.
 
 Why this lane exists: the Upbit shadow lane calls a level "filled" the moment
 a bar touches it (``scripts.b0x.crypto.shadow`` touch rule §4). Whether a real

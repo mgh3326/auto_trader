@@ -20,8 +20,13 @@ import pytest
 pytestmark = pytest.mark.unit
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3] / "scripts" / "b0x"
-RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "run_b0x_cycle.py"
-KR_RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "run_b0x_kr_cycle.py"
+#: Every B0-X entry point outside the package directory. A runner that is not
+#: listed here is a runner the guard does not scan, so new CLIs go in this
+#: tuple in the same commit that adds them.
+RUNNERS = tuple(
+    Path(__file__).resolve().parents[3] / "scripts" / name
+    for name in ("run_b0x_cycle.py", "run_b0x_kr_cycle.py", "run_b0x_cancel.py")
+)
 
 #: In-process LLM providers — the ROB-501 runtime ownership boundary.
 FORBIDDEN_LLM = (
@@ -72,7 +77,7 @@ FORBIDDEN_SCHEDULER = (
 
 
 def _python_files() -> list[Path]:
-    return sorted([*PACKAGE_ROOT.rglob("*.py"), RUNNER, KR_RUNNER])
+    return sorted([*PACKAGE_ROOT.rglob("*.py"), *RUNNERS])
 
 
 def _imported_modules(path: Path) -> set[str]:
