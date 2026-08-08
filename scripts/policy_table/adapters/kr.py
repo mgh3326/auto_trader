@@ -53,6 +53,7 @@ from research.kr_corpus.d3_engine.policies import update_underwater_close
 from research.kr_corpus.d3_engine.signals import support_distance
 from scripts.policy_table.core.averaging import averaging_math
 from scripts.policy_table.core.kr_tick import build_kr_krx_tick_table
+from scripts.policy_table.core.max_table_age import max_table_age_stamp
 from scripts.policy_table.core.signal_math import (
     D3_CONSTANTS_ECHO,
     FIB_WINDOW,
@@ -630,6 +631,8 @@ def compute_policy_table(raw: RawInputs) -> dict[str, Any]:
                     " (reused, not reinvented)"
                 ),
             },
+            # Contract v1.1 §2-2 literal (KR = 36h) — not a worker-chosen constant.
+            **max_table_age_stamp(MARKET),
         },
         "universe": {
             "holdings": sorted(holdings_by_symbol.keys()),

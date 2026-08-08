@@ -1,8 +1,13 @@
 """Load + validate the ``policy_table.v1`` artifact B0-X derives orders from.
 
-Contract §2-2: **표가 없거나 ``STALE`` 이면 그 사이클은 주문 0** (조용한 재사용·
-재계산 금지, 사유 기록). This module is where that rule lives, and it is the
-only door through which a table reaches derivation.
+Contract v1.1 §2-2 (literal)::
+
+    표가 없거나 STALE 이거나 MAX_TABLE_AGE 초과면 그 사이클은 주문 0
+    (조용한 재사용·재계산 금지, 사유 기록).
+    MAX_TABLE_AGE: crypto 8h · KR 36h · US 36h
+
+This module is where that rule lives, and it is the only door through which a
+table reaches derivation.
 
 The table generator (``scripts/build_policy_table.py``) is read-only to B0-X:
 this module never invokes it, never writes into its output directory, and
@@ -16,12 +21,12 @@ reason code:
   ``schema_mismatch``      — not a ``policy_table.v1`` payload, or wrong market.
   ``hash_mismatch``        — recomputed ``policy_table_hash`` != the stamped one
                              (the artifact was edited after generation).
-  ``stale_by_age``         — ``generated_at`` older than the lane's max age.
+  ``stale_by_age``         — ``generated_at`` older than the market's
+                             ``MAX_TABLE_AGE`` (contract v1.1 §2-2 literal).
 
-``stale_by_age`` is B0-X's own addition, not the generator's: a table whose
-build failed *silently* (process killed before the STALE marker was written)
-would otherwise be replayed forever. It can only ever *reduce* the number of
-orders a cycle emits, never increase it.
+Ages are **not** worker-chosen — they come from
+``scripts.policy_table.core.max_table_age`` (contract sha256 stamped there).
+Exceeding age can only ever *reduce* the number of orders a cycle emits.
 """
 
 from __future__ import annotations
@@ -32,6 +37,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
+from scripts.policy_table.core.max_table_age import (
+    CONTRACT_V11_SECTION_2_2,
+    MAX_TABLE_AGE,
+)
 from scripts.policy_table.core.schema import (
     SCHEMA_VERSION,
     compute_policy_table_hash,
@@ -43,11 +52,10 @@ DEFAULT_TABLE_DIR: Final[Path] = (
     Path.home() / "services" / "auto_trader-operator" / "policy-tables"
 )
 
-#: Contract §5: crypto tables are rebuilt on a 4h cadence. Two missed builds is
-#: the point at which a table stops describing "now" — locked, no CLI flag.
-MAX_TABLE_AGE: Final[dict[str, dt.timedelta]] = {
-    "crypto": dt.timedelta(hours=8),
-}
+# Re-export for callers/tests that import MAX_TABLE_AGE from this module.
+# Single source of truth = scripts.policy_table.core.max_table_age
+# (contract v1.1 §2-2: crypto 8h · kr 36h · us 36h).
+_ = CONTRACT_V11_SECTION_2_2  # keep import used for documentation linkage
 
 
 class TableReason:
@@ -213,11 +221,26 @@ def load_policy_table(
 
     age = now.astimezone(dt.UTC) - generated_at
     max_age = MAX_TABLE_AGE.get(market)
-    if max_age is not None and age > max_age:
+    if max_age is None:
+        # Unknown market must fail closed — do not silently skip the age gate.
+        return TableUnavailable(
+            market=market,
+            reason=TableReason.SCHEMA_MISMATCH,
+            detail=(
+                f"MAX_TABLE_AGE not defined for market={market!r} "
+                f"({CONTRACT_V11_SECTION_2_2})"
+            ),
+            path=latest,
+        )
+    if age > max_age:
         return TableUnavailable(
             market=market,
             reason=TableReason.STALE_BY_AGE,
-            detail=f"age={age} > max_age={max_age} (generated_at={generated_at.isoformat()})",
+            detail=(
+                f"age={age} > max_age={max_age} "
+                f"(generated_at={generated_at.isoformat()}; "
+                f"{CONTRACT_V11_SECTION_2_2})"
+            ),
             path=latest,
         )
     if age < -dt.timedelta(minutes=5):

@@ -98,6 +98,55 @@ def test_table_exactly_at_max_age_still_passes(tmp_path: Path) -> None:
     )
 
 
+def test_max_table_age_is_contract_v11_literal() -> None:
+    """Contract v1.1 §2-2: crypto 8h · KR 36h · US 36h — not worker-chosen."""
+
+    assert MAX_TABLE_AGE["crypto"] == dt.timedelta(hours=8)
+    assert MAX_TABLE_AGE["kr"] == dt.timedelta(hours=36)
+    assert MAX_TABLE_AGE["us"] == dt.timedelta(hours=36)
+
+
+def test_us_table_older_than_36h_is_stale(tmp_path: Path) -> None:
+    """US order-cycle gate uses contract 36h (not crypto's 8h)."""
+
+    payload = make_payload(
+        rows=[
+            make_row(
+                symbol="AAPL",
+                previous_close="100",
+                buy_l1="97",
+                sell_r1="103",
+            )
+        ],
+        generated_at=NOW - MAX_TABLE_AGE["us"] - dt.timedelta(minutes=1),
+        market="us",
+    )
+    write_table(tmp_path, payload, market="us")
+    result = load_policy_table(market="us", now=NOW, table_dir=tmp_path)
+    assert isinstance(result, TableUnavailable)
+    assert result.reason == TableReason.STALE_BY_AGE
+    assert "v1.1" in result.detail or "§2-2" in result.detail or "36" in result.detail
+
+
+def test_us_table_at_exactly_36h_still_passes(tmp_path: Path) -> None:
+    payload = make_payload(
+        rows=[
+            make_row(
+                symbol="AAPL",
+                previous_close="100",
+                buy_l1="97",
+                sell_r1="103",
+            )
+        ],
+        generated_at=NOW - MAX_TABLE_AGE["us"],
+        market="us",
+    )
+    write_table(tmp_path, payload, market="us")
+    assert isinstance(
+        load_policy_table(market="us", now=NOW, table_dir=tmp_path), PolicyTable
+    )
+
+
 def test_future_stamped_table_is_refused(tmp_path: Path) -> None:
     write_table(tmp_path, _good_payload(generated_at=NOW + dt.timedelta(hours=3)))
     result = load_policy_table(market="crypto", now=NOW, table_dir=tmp_path)

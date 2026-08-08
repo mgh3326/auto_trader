@@ -120,6 +120,23 @@ def _sample_raw(*, bars: list[list[str]] | None = None) -> us_adapter.RawInputs:
 
 
 @pytest.mark.unit
+def test_us_max_table_age_stamp_is_contract_v11_36h() -> None:
+    """US table stamps MAX_TABLE_AGE=36h from contract v1.1 §2-2 (not invented)."""
+
+    from scripts.policy_table.core.max_table_age import (
+        CONTRACT_V11_SECTION_2_2,
+        MAX_TABLE_AGE_HOURS,
+    )
+
+    assert MAX_TABLE_AGE_HOURS["us"] == 36
+    payload = us_adapter.compute_policy_table(_sample_raw())
+    assert payload["config"]["max_table_age_hours"] == 36
+    assert payload["config"]["max_table_age_source"] == CONTRACT_V11_SECTION_2_2
+    assert "§2-2" in payload["config"]["max_table_age_source"]
+    assert "97278b0e" in payload["config"]["max_table_age_source"]
+
+
+@pytest.mark.unit
 def test_us_trust_labels_are_four_including_cross_market() -> None:
     assert len(US_TRUST_LABELS) == 4
     assert US_TRUST_LABELS[:3] == TRUST_LABELS
