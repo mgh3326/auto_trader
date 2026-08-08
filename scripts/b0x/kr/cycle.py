@@ -56,12 +56,11 @@ from scripts.b0x.table_source import (
 MARKET = "kr"
 LANE = kr_mock.LANE
 
-#: KR has no per-market entry in ``table_source.MAX_TABLE_AGE`` (contract §2-2
-#: names only "표 부재" and "STALE 마커" for zero orders; the age gate is
-#: crypto's own §5-cadence addition, not a contract-wide rule — see
+#: KR's ``table_source.MAX_TABLE_AGE`` entry is 36h — contract §2-2 v1.1
+#: (operator-confirmed 2026-08-08, sha256 ``97278b0e8b8000e2e663c936328686001
+#: af5850087897270bc80a95ebf8f6b2e``), not a value this adapter chose. See
 #: ``tests/scripts/b0x/test_kr_envelope_and_kill_switch.py`` for the
-#: regression guard and ``docs/runbooks/b0x-kr-cycle.md`` for the orch
-#: instruction this follows).
+#: regression guard and ``docs/runbooks/b0x-kr-cycle.md`` §8 for the citation.
 ZeroOrderReason = str
 
 OUTSIDE_RTH_REASON: ZeroOrderReason = "outside_krx_regular_session"

@@ -117,6 +117,61 @@ async def test_stale_table_derives_zero_orders_even_inside_session(
 
 
 @pytest.mark.asyncio
+async def test_table_older_than_36h_derives_zero_orders_with_reason(
+    tmp_path: Path, out_dir: Path
+) -> None:
+    """Contract v1.1 §2-2: MAX_TABLE_AGE[kr] = 36h — not the pre-amendment 8h.
+
+    A table generated 37h before ``now`` must zero the cycle out with
+    ``stale_by_age`` and a detail string, not silently replay it.
+    """
+
+    directory = tmp_path / "policy-tables"
+    write_table(
+        directory,
+        make_payload(
+            market="kr",
+            rows=[make_row(symbol="005930", previous_close="97000", buy_l1="94090")],
+            generated_at=IN_SESSION_NOW - dt.timedelta(hours=37),
+        ),
+        market="kr",
+    )
+    outcome = await run_kr_cycle(
+        now=IN_SESSION_NOW, table_dir=directory, out_dir=out_dir, client=_FakeKrClient()
+    )
+    assert outcome.zero_order_reason == "stale_by_age"
+    assert outcome.order_count == 0
+    # timedelta(hours=36) stringifies as "1 day, 12:00:00", not "36:00:00".
+    assert "max_age=1 day, 12:00:00" in outcome.record["zero_order_detail"]
+
+
+@pytest.mark.asyncio
+async def test_table_just_under_36h_still_derives_orders(
+    tmp_path: Path, out_dir: Path
+) -> None:
+    """Boundary check the other side: 35h59m must NOT be zeroed by age."""
+
+    directory = tmp_path / "policy-tables"
+    write_table(
+        directory,
+        make_payload(
+            market="kr",
+            rows=[make_row(symbol="005930", previous_close="97000", buy_l1="94090")],
+            generated_at=IN_SESSION_NOW - dt.timedelta(hours=35, minutes=59),
+        ),
+        market="kr",
+    )
+    outcome = await run_kr_cycle(
+        now=IN_SESSION_NOW,
+        table_dir=directory,
+        out_dir=out_dir,
+        client=_FakeKrClient(orderable_cash="5000000"),
+    )
+    assert outcome.zero_order_reason is None
+    assert outcome.order_count > 0
+
+
+@pytest.mark.asyncio
 async def test_dry_run_plans_but_never_dispatches(
     table_dir: Path, out_dir: Path
 ) -> None:
