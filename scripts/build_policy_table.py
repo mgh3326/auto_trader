@@ -1,10 +1,11 @@
-"""ROB-1230 P-1/P-2 — build a policy_table.v1 artifact (crypto + KR adapters).
+"""ROB-1230 P-1/P-2 — build a policy_table.v1 artifact (crypto + KR + US).
 
 Scheduleless, read-only, advisory. Each market adapter fetches its own raw
 inputs (crypto: live Upbit + this repo's holdings/watch-alert tables; kr:
 the invest_screener_snapshots DB table + DB daily candles + a read-only KIS
-holdings query), runs the shared indicator core (a direct reuse of
-research/kr_corpus/d3_engine's fib/BB/RSI/tick code — see
+holdings query; us: invest_screener_snapshots US + DB daily candles + a
+read-only Alpaca paper lab positions query), runs the shared indicator core
+(a direct reuse of research/kr_corpus/d3_engine's fib/BB/RSI/tick code — see
 scripts/policy_table/core/signal_math.py), and writes a policy_table.v1 JSON
 artifact plus a human-readable Markdown summary.
 
@@ -16,6 +17,7 @@ Usage
 -----
     uv run python -m scripts.build_policy_table --market crypto
     uv run python -m scripts.build_policy_table --market kr
+    uv run python -m scripts.build_policy_table --market us
 
     # Reproducibility check (ROB-1230 acceptance #2): dump raw inputs once,
     # then replay the same inputs through the pure compute+serialize path
@@ -39,6 +41,7 @@ from typing import Any
 
 from scripts.policy_table.adapters import crypto as crypto_adapter
 from scripts.policy_table.adapters import kr as kr_adapter
+from scripts.policy_table.adapters import us as us_adapter
 from scripts.policy_table.core.schema import (
     canonical_json_bytes,
     compute_policy_table_hash,
@@ -158,7 +161,7 @@ def _render_summary_md(payload: dict[str, Any]) -> str:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    if args.market not in ("crypto", "kr"):
+    if args.market not in ("crypto", "kr", "us"):
         raise NotImplementedError(f"unsupported market: {args.market}")
 
     out_dir = Path(args.out_dir).expanduser()
@@ -185,7 +188,7 @@ async def _run(args: argparse.Namespace) -> int:
             payload = crypto_adapter.compute_policy_table(raw, top_n=top_n)
             payload["stamps"] = _build_stamps(payload)
             summary_md = _render_summary_md(payload)
-        else:
+        elif args.market == "kr":
             if args.replay_raw:
                 raw_payload = json.loads(Path(args.replay_raw).expanduser().read_text())
                 raw = kr_adapter.RawInputs.from_jsonable(raw_payload)
@@ -200,6 +203,21 @@ async def _run(args: argparse.Namespace) -> int:
             payload = kr_adapter.compute_policy_table(raw)
             payload["stamps"] = _build_stamps(payload)
             summary_md = kr_adapter.render_summary_md(payload, top_n=args.top_n or 50)
+        else:
+            if args.replay_raw:
+                raw_payload = json.loads(Path(args.replay_raw).expanduser().read_text())
+                raw = us_adapter.RawInputs.from_jsonable(raw_payload)
+            else:
+                raw = await us_adapter.fetch_raw_inputs()
+
+            if args.dump_raw:
+                Path(args.dump_raw).expanduser().write_text(
+                    json.dumps(raw.to_jsonable(), sort_keys=True, indent=2) + "\n"
+                )
+
+            payload = us_adapter.compute_policy_table(raw)
+            payload["stamps"] = _build_stamps(payload)
+            summary_md = us_adapter.render_summary_md(payload, top_n=args.top_n or 50)
 
         artifact_bytes = canonical_json_bytes(payload)
         ts = (
@@ -243,15 +261,15 @@ async def _run(args: argparse.Namespace) -> int:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--market", default="crypto", choices=["crypto", "kr"])
+    parser.add_argument("--market", default="crypto", choices=["crypto", "kr", "us"])
     parser.add_argument(
         "--top-n",
         type=int,
         default=None,
         help=(
             "crypto: universe top-N by 24h trade value (default "
-            f"{crypto_adapter.DEFAULT_TOP_N}); kr: summary.md display row cap "
-            "(default 50) — the KR JSON table itself is never top-N-capped"
+            f"{crypto_adapter.DEFAULT_TOP_N}); kr/us: summary.md display row "
+            "cap (default 50) — the JSON table itself is never top-N-capped"
         ),
     )
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
