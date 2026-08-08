@@ -21,6 +21,7 @@ pytestmark = pytest.mark.unit
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3] / "scripts" / "b0x"
 RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "run_b0x_cycle.py"
+KR_RUNNER = Path(__file__).resolve().parents[3] / "scripts" / "run_b0x_kr_cycle.py"
 
 #: In-process LLM providers — the ROB-501 runtime ownership boundary.
 FORBIDDEN_LLM = (
@@ -71,7 +72,7 @@ FORBIDDEN_SCHEDULER = (
 
 
 def _python_files() -> list[Path]:
-    return sorted([*PACKAGE_ROOT.rglob("*.py"), RUNNER])
+    return sorted([*PACKAGE_ROOT.rglob("*.py"), RUNNER, KR_RUNNER])
 
 
 def _imported_modules(path: Path) -> set[str]:

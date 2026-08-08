@@ -259,6 +259,7 @@ async def test_sidecar_is_bound_by_the_usdt_envelope(
         "max_concurrent_positions": 3,
         "max_new_entries_per_utc_day": 2,
         "daily_loss_kill": "5",
+        "daily_loss_kill_basis": "absolute",
     }
     for order in outcome.record["orders"]:
         assert order["notional"] == "10"

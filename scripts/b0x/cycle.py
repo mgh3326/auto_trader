@@ -92,22 +92,47 @@ def _table_or_reason(
     return result, None
 
 
-def _base_record(
-    *, lane: str, now: dt.datetime, envelope: Envelope, labels: tuple[str, ...]
+#: Binding = version string + section citation, NOT the whole-file sha (the
+#: file is amended in place as the operator signs off further sections;
+#: re-stamping every record on each amendment would be noise). The sha below
+#: is carried as a reference/reproducibility field only — see contract
+#: preamble: "결속 = 버전 문자열 v1.3 + 인용 절 (전체파일 sha … 는 참고값)".
+CONTRACT_CITATION = "b0x-experiment-contract-v1 v1.3 (2026-08-09, operator-confirmed)"
+CONTRACT_FILE = "~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md"
+CONTRACT_FILE_SHA256_REFERENCE_ONLY = (
+    "0125e2ea96b1a54cf0b0a50e6ed85ae1f3a72e7870abe727d2734dbe20e19b1f"
+)
+#: operator_contract.yaml HEAD at last verification — PR #33 (B0-X 3-surface
+#: registration: kis_mock/alpaca_paper_lab/binance_demo). Update alongside
+#: any re-verification of the account-map gate.
+ACCOUNT_MAP_SHA = "3f402919fca5b68bda187e8e521fc886aefb022a"
+
+
+def base_record(
+    *,
+    market: str,
+    lane: str,
+    now: dt.datetime,
+    envelope: Envelope,
+    labels: tuple[str, ...],
 ) -> dict[str, Any]:
+    """Market-agnostic observation-record skeleton, shared by every lane."""
+
     return {
         "schema": "b0x.observation.v1",
         "lane": lane,
-        "market": MARKET,
+        "market": market,
         "at": now.isoformat(),
         "labels": list(labels),
         "envelope": envelope.canonical(),
-        "contract": "~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md",
-        "account_map_sha": "7f9589712b1a81b87d65bca1b66a791ca22cfac4",
+        "contract": CONTRACT_CITATION,
+        "contract_file": CONTRACT_FILE,
+        "contract_file_sha256_reference_only": CONTRACT_FILE_SHA256_REFERENCE_ONLY,
+        "account_map_sha": ACCOUNT_MAP_SHA,
     }
 
 
-def _render_report(record: dict[str, Any], *, labels: tuple[str, ...]) -> str:
+def render_cycle_report(record: dict[str, Any], *, labels: tuple[str, ...]) -> str:
     lines = [
         f"# B0-X {record['lane']} — {record['at']}",
         "",
@@ -189,7 +214,9 @@ async def run_shadow_cycle(
         )
         day_rolled = portfolio.roll_utc_day(now=now)
 
-        record = _base_record(lane=lane, now=now, envelope=envelope, labels=labels)
+        record = base_record(
+            market=MARKET, lane=lane, now=now, envelope=envelope, labels=labels
+        )
         record["envelope_application"] = SHADOW_ENVELOPE_NOT_APPLIED
         record["touch_rule"] = {
             "id": shadow_lane.TOUCH_RULE_ID,
@@ -231,7 +258,7 @@ async def run_shadow_cycle(
             outcome.record = record
             outcome.artifact_path = ledger.write_artifact(
                 name=f"{now.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
-                content=_render_report(record, labels=labels),
+                content=render_cycle_report(record, labels=labels),
             )
             return outcome
 
@@ -290,7 +317,7 @@ async def run_shadow_cycle(
         outcome.record = record
         outcome.artifact_path = ledger.write_artifact(
             name=f"{now.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
-            content=_render_report(record, labels=labels),
+            content=render_cycle_report(record, labels=labels),
         )
         return outcome
 
@@ -368,7 +395,9 @@ async def run_sidecar_cycle(
         ledger.ensure()
         state_path = ledger.lane_dir / "attributed_book.json"
 
-        record = _base_record(lane=lane, now=now, envelope=envelope, labels=labels)
+        record = base_record(
+            market=MARKET, lane=lane, now=now, envelope=envelope, labels=labels
+        )
         record["policy"] = {
             "version": policy.version,
             "policy_hash": policy.policy_hash,
@@ -403,7 +432,7 @@ async def run_sidecar_cycle(
                 outcome.record = record
                 outcome.artifact_path = ledger.write_artifact(
                     name=f"{now.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
-                    content=_render_report(record, labels=labels),
+                    content=render_cycle_report(record, labels=labels),
                 )
                 return outcome
 
@@ -497,7 +526,7 @@ async def run_sidecar_cycle(
             outcome.record = record
             outcome.artifact_path = ledger.write_artifact(
                 name=f"{now.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
-                content=_render_report(record, labels=labels),
+                content=render_cycle_report(record, labels=labels),
             )
             return outcome
         finally:
@@ -539,4 +568,10 @@ async def _cancel_b0x_open_orders(
     return cancelled
 
 
-__all__ = ["CycleOutcome", "run_shadow_cycle", "run_sidecar_cycle"]
+__all__ = [
+    "CycleOutcome",
+    "base_record",
+    "render_cycle_report",
+    "run_shadow_cycle",
+    "run_sidecar_cycle",
+]
