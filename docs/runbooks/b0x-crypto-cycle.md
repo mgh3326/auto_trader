@@ -143,7 +143,13 @@ writer lock → 표 게이트 → 계좌 상태 → kill switch → 파생 → �
 
 `--confirm` 을 붙이기 전에 전부 확인한다.
 
-- [ ] `mock/CLAUDE.md` §1 Binance Demo 행이 여전히 B0-X 사이드카를 가리킨다
+- [ ] **`operator_contract.yaml` 이 B0-X 를 등재하고 있다** — 계좌맵 **기계판독 정본**
+      (계약 v1.3 ①). `account_lanes.binance_demo = B0-X-crypto-sidecar` ·
+      `reassignments.binance_demo.sidecar_scope = buy_side_fill_fidelity_sample_only` ·
+      `strategy_order_exceptions ∋ b0x-adapter-orders-20260808`
+- [ ] `mock/CLAUDE.md` §1 Binance Demo 행이 위와 **모순되지 않는다** (참조 표면 —
+      충돌 시 YAML 이 이긴다. 🔴 산문에만 등재된 레인은 검사기가 강제할 수 없어서, 그
+      상태로 나간 주문이 계약 v1.3 ① 의 취소 대상이 됐다)
 - [ ] **CR-S1 TPR 이 재개되지 않았다** — 재개 시 TPR 우선권 (별개 계약)
 - [ ] fresh truth 가 `contaminated: false` — 공유 Demo 계정에 다른 writer 의 미체결/**매도
       가능** 잔고 없음 (거래단위 미만 dust 는 예외 — §8-1)
@@ -184,6 +190,27 @@ SOL `0.00094600`(minQty `0.001`)을 실측했다. 청산이 물리적으로 불�
 다른 전략의 미체결은 **취소하지 않는다** (mock/CLAUDE.md §4). kill 시에도 `b0xc-` 접두
 주문만 취소한다.
 
+### 8-2. 잔여 주문 취소 — 자기 주문만 (계약 §2-4)
+
+kill switch 의 「잔여 주문 취소」와 계약 v1.3 ① 의 재등재 취소는 같은 도구를 쓴다.
+
+```bash
+# 스캔만 — 계좌 전체를 읽고 아무것도 취소하지 않는다. 항상 이걸 먼저 돌린다.
+B0X_SIDECAR_ENABLED=true BINANCE_SPOT_DEMO_ENABLED=true \
+  uv run python -m scripts.run_b0x_cancel --scan-only
+
+# 실제 취소 (운영자 게이트)
+... uv run python -m scripts.run_b0x_cancel --confirm
+```
+
+- 🔴 **읽기는 계좌 전체**(`get_all_open_orders`, symbol 생략)다. 심볼 3종만 훑으면
+  네 번째 심볼에 얹힌 남의 주문을 못 보고 "깨끗하다" 고 보고하게 된다.
+- 🔴 **취소 대상은 `b0xc-` 접두 주문뿐**이다. 그 외는 `NOT_MINE` 으로 출력만 하고 손대지
+  않으며, **취소하는 플래그는 존재하지 않는다.** 귀속 불가(=clientOrderId 없음)도 남의
+  것으로 친다(fail-closed).
+- 같은 심볼에 남의 주문이 얹혀 있어도 안전하다 — 판정 축은 심볼이 아니라 접두다.
+- foreign 주문이 하나라도 보이면 exit code 3 (실패가 아니라 **운영자가 봐야 할 사실**).
+
 ## 9. 알려진 경계 · 미해결
 
 - **KRW→USDT 이식은 미검증이다** (`CROSS_QUOTE_RATIO_TRANSFER`). 표는 KRW 호가고 Binance 는
@@ -198,11 +225,18 @@ SOL `0.00094600`(minQty `0.001`)을 실측했다. 청산이 물리적으로 불�
 - 🔴 **사이드카 v1 은 체결을 귀속 장부에 reconcile 하지 않는다.** B0-X 장부가 비어 있으므로
   *매도 가능한* base 잔고는 전부 `foreign` 으로 읽히며, **B0-X 자기 체결이 만든 잔고도
   그렇다** (§8-1 dust 예외는 이를 완화하지 않는다 — 체결된 주문은 정의상 minQty 이상이다).
-  결과적으로 첫 체결 다음 사이클은 `CONTAMINATED` 로 제출을 거부한다 —
-  **운영자 개입 1회당 왕복 1회**가 v1 의 실질 처리량이다.
+  결과적으로 첫 체결 다음 사이클은 `CONTAMINATED` 로 제출을 거부한다.
   과보수적이지만 방향은 옳다: 귀속 안 된 잔고를 "내 것 아님, 계속 진행" 으로 처리하면
   레인 자신의 재고가 §4 종목별·동시 포지션 캡을 우회하게 된다.
   체결 인식 reconcile 은 후속 작업이다.
+- 🔴 **그래서 이 레인의 지위는 「매수측 체결충실도 표본」으로 축소됐다**
+  (계약 v1.3 ②, 산출물에 `sidecar_scope=buy_side_fill_fidelity_sample_only` 로 박제).
+  🔵 이전 판(「운영자 개입 1회당 **왕복** 1회」)은 부정확했다 — 매도측 R1/R2 는 v1
+  자동 경로에서 **도달 불가**다. 이중 장벽이라 그렇다: ①파생 단계에서 B0-X 장부가 비어
+  `no_position_to_sell` 로 스킵되고, ②설령 매도가 파생돼도 그 잔고가 sellable 이라
+  `submit` 이 `SidecarContaminated` 로 막힌다. 이 레인이 실제로 산출하는 것은 **매수
+  지정가 안착 + 자기정지**이며, **매도측 관측은 본선(Upbit shadow, 왕복 가능)의 몫**이다.
+  귀속 기반 완화(자기 fill delta 분리 — ROB-993 선례)는 후속 **서명 후보**일 뿐 미승인.
 - 스케줄러 등록 없음 (v1 수동 kickoff). 연속 clean 사이클 N회 후 자동화는 별도 운영자 결정.
 
 ## 10. 테스트
