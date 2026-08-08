@@ -20,7 +20,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Final
+from typing import Final, Literal
+
+#: How ``daily_loss_kill`` is denominated.
+#:
+#: ``"absolute"`` (crypto's contract §4 value: *일 손실 5 USDT*) — the field is
+#: a currency amount in ``quote_currency``, compared directly against
+#: ``state.realized_pnl_today`` (same currency).
+#:
+#: ``"pct_of_nav"`` (KR's contract §4 value: *일 손실 −2.5% NAV*) — the field
+#: is a dimensionless ratio in (0, 1). It cannot be compared against
+#: ``realized_pnl_today`` directly (a ratio has no currency); ``kill_switch``
+#: multiplies it by a same-cycle NAV snapshot to get an absolute threshold in
+#: the *same* currency as ``realized_pnl_today`` before comparing. Mixing this
+#: up — comparing a raw ratio, or an absolute threshold denominated in a
+#: different currency than the P&L it is compared against — is the exact
+#: defect X-C's verification found in the crypto shadow lane (a USDT constant
+#: compared against a KRW-denominated P&L). See ``kill_switch.evaluate``.
+DailyLossKillBasis = Literal["absolute", "pct_of_nav"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +54,11 @@ class Envelope:
     max_concurrent_positions: int
     #: UTC 일자당 신규 *진입 종목* 수 (같은 종목의 L1/L2 사다리는 1건으로 센다).
     max_new_entries_per_utc_day: int
-    #: 이 값 이상의 일 손실이 실현되면 kill switch 발화.
+    #: kill switch 발화 임계값. ``daily_loss_kill_basis`` 가 그 단위를 정한다.
     daily_loss_kill: Decimal
+    #: 위 필드의 단위. 기본값 ``"absolute"`` 는 crypto 의 기존 동작을 그대로
+    #: 보존한다 — 이 필드를 추가하기 전까지 존재하던 유일한 의미였다.
+    daily_loss_kill_basis: DailyLossKillBasis = "absolute"
 
     def __post_init__(self) -> None:  # pragma: no cover - trivially exercised
         if self.per_order_notional <= 0:
@@ -51,6 +71,11 @@ class Envelope:
             raise ValueError("max_new_entries_per_utc_day must be > 0")
         if self.daily_loss_kill <= 0:
             raise ValueError("daily_loss_kill must be > 0")
+        if self.daily_loss_kill_basis == "pct_of_nav" and self.daily_loss_kill >= 1:
+            raise ValueError(
+                "daily_loss_kill_basis='pct_of_nav' requires a ratio in (0, 1); "
+                f"got {self.daily_loss_kill!r} — this field is not a currency amount"
+            )
 
     def canonical(self) -> dict[str, str | int]:
         """Stable dict used for hashing and artifact stamping."""
@@ -63,6 +88,7 @@ class Envelope:
             "max_concurrent_positions": self.max_concurrent_positions,
             "max_new_entries_per_utc_day": self.max_new_entries_per_utc_day,
             "daily_loss_kill": format(self.daily_loss_kill, "f"),
+            "daily_loss_kill_basis": self.daily_loss_kill_basis,
         }
 
 
@@ -80,6 +106,30 @@ CRYPTO_SIDECAR_ENVELOPE: Final[Envelope] = Envelope(
     daily_loss_kill=Decimal("5"),
 )
 
+# ---------------------------------------------------------------------------
+# Contract §4, KR (kis_mock) column, verbatim:
+#   종목당 신규 30만 KRW · 물타기 회차 상한 없음 단 종목당 총투입 ≤ 신규×5 ·
+#   동시 포지션 ≤ 10 · 일 신규 진입 ≤ 3 · 일 손실 −2.5% NAV → kill
+#
+# "물타기 회차 상한 없음" is not a cap this dataclass can express (it means
+# ``config.averaging_k_levels`` from the table is unbounded, not that a field
+# here is infinite) — the per-symbol total notional cap is what actually
+# bounds cumulative averaging spend, and it is present below.
+# ---------------------------------------------------------------------------
+KR_MOCK_ENVELOPE: Final[Envelope] = Envelope(
+    market="kr",
+    quote_currency="KRW",
+    per_order_notional=Decimal("300000"),
+    per_symbol_total_notional=Decimal("300000") * 5,
+    max_concurrent_positions=10,
+    max_new_entries_per_utc_day=3,
+    # A ratio, not a KRW amount — see DailyLossKillBasis. kill_switch.evaluate
+    # multiplies this by a same-cycle NAV snapshot to get the KRW threshold it
+    # compares against KRW-denominated realized_pnl_today.
+    daily_loss_kill=Decimal("0.025"),
+    daily_loss_kill_basis="pct_of_nav",
+)
+
 #: Contract §4 footnote — "Upbit shadow 는 합성이므로 envelope 미적용(기록만)".
 #: The shadow lane still *records* the sidecar envelope alongside every cycle so
 #: a reader can see what would have bound a real venue, but derivation does not
@@ -90,6 +140,7 @@ SHADOW_ENVELOPE_NOT_APPLIED: Final[str] = (
 
 _LOCKED_ENVELOPES: Final[dict[str, Envelope]] = {
     "crypto": CRYPTO_SIDECAR_ENVELOPE,
+    "kr": KR_MOCK_ENVELOPE,
 }
 
 
@@ -134,9 +185,11 @@ def load_envelope(market: str) -> Envelope:
 
 
 __all__ = [
+    "DailyLossKillBasis",
     "Envelope",
     "EnvelopeNotLocked",
     "CRYPTO_SIDECAR_ENVELOPE",
+    "KR_MOCK_ENVELOPE",
     "SHADOW_ENVELOPE_NOT_APPLIED",
     "assert_envelope_locked",
     "load_envelope",
