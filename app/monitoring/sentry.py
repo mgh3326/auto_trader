@@ -6,6 +6,7 @@ import copy
 import json
 import logging
 import math
+import os
 import re
 import subprocess
 from collections.abc import Mapping
@@ -1351,6 +1352,81 @@ def _set_span_data(span: Any, key: str, value: Any) -> None:
         set_data(key, value)
 
 
+# ROB-1232: lane/profile tags for tools/call span filtering.
+# Missing sources must record the literal "untagged" (never null/absent) so
+# Sentry span queries can partition by MCP_PROFILE / session_label after deploy.
+MCP_LANE_UNTAGGED = "untagged"
+MCP_PROFILE_TAG_KEY = "mcp.profile"
+MCP_SESSION_LABEL_TAG_KEY = "mcp.session_label"
+
+
+def resolve_mcp_profile_tag(*, env_value: str | None = None) -> str:
+    """Return MCP_PROFILE for span tags, or the literal ``untagged``.
+
+    Reads process env when ``env_value`` is omitted. Empty/whitespace-only
+    values become ``untagged`` — never ``None``. Exceptions also fall back to
+    ``untagged`` so tag resolution cannot break span emission.
+    """
+    try:
+        raw = os.environ.get("MCP_PROFILE") if env_value is None else env_value
+        if raw is None:
+            return MCP_LANE_UNTAGGED
+        cleaned = str(raw).strip()
+        if not cleaned:
+            return MCP_LANE_UNTAGGED
+        return cleaned[:_MAX_OBSERVABILITY_VALUE_LENGTH]
+    except Exception:  # noqa: BLE001 - telemetry must not raise
+        return MCP_LANE_UNTAGGED
+
+
+def resolve_mcp_session_label_tag(
+    arguments: Mapping[str, Any] | None,
+) -> str:
+    """Return request ``session_label`` for span tags, or ``untagged``.
+
+    ``session_label`` is optional tool-argument metadata (ROB-1048 artifact
+    renewal). When absent it is recorded as the literal ``untagged`` so the
+    tag is always present and filterable. Never returns ``None``.
+    """
+    try:
+        value = _first_unique_scalar((arguments or {},), ("session_label",))
+        if value is None:
+            return MCP_LANE_UNTAGGED
+        return value[:_MAX_OBSERVABILITY_VALUE_LENGTH]
+    except Exception:  # noqa: BLE001 - telemetry must not raise
+        return MCP_LANE_UNTAGGED
+
+
+def apply_mcp_lane_tags(
+    scope: sentry_sdk.Scope,
+    span: Any,
+    arguments: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    """Attach always-non-null lane tags to scope + span.
+
+    Additive only — never removes existing tags/data. Failures while resolving
+    or writing tags collapse to ``untagged`` and never raise; the tools/call
+    span itself must still be emitted.
+    """
+    tags = {
+        MCP_PROFILE_TAG_KEY: MCP_LANE_UNTAGGED,
+        MCP_SESSION_LABEL_TAG_KEY: MCP_LANE_UNTAGGED,
+    }
+    try:
+        tags[MCP_PROFILE_TAG_KEY] = resolve_mcp_profile_tag()
+        tags[MCP_SESSION_LABEL_TAG_KEY] = resolve_mcp_session_label_tag(arguments)
+    except Exception:  # noqa: BLE001 - keep untagged defaults
+        logger.debug("MCP lane tag resolution failed; using untagged defaults")
+
+    for key, value in tags.items():
+        try:
+            _set_scope_and_span_tag(scope, span, key, value)
+            _set_span_data(span, key, value)
+        except Exception:  # noqa: BLE001 - never block the tool/span path
+            logger.debug("Failed to set MCP lane tag %s", key, exc_info=True)
+    return tags
+
+
 def _apply_mcp_tool_observation(
     scope: sentry_sdk.Scope,
     span: Any,
@@ -1533,6 +1609,9 @@ def enrich_mcp_tool_call_scope(
 ) -> None:
     if span is None:
         span = sentry_sdk.get_current_span()
+    # Lane tags first and fail-soft: profile/session_label must not prevent the
+    # rest of tools/call observability (ROB-1232).
+    apply_mcp_lane_tags(scope, span, arguments)
     scope.set_tag("mcp.tool.name", tool_name)
     observation = build_mcp_tool_observation(
         tool_name,
@@ -1569,6 +1648,8 @@ def record_mcp_tool_call_result(
     """Attach semantic result, lineage, freshness, and span status."""
     if span is None:
         span = sentry_sdk.get_current_span()
+    # Re-apply so result-path tagging still holds if pre-call enrich was skipped.
+    apply_mcp_lane_tags(scope, span, arguments)
     observation = build_mcp_tool_observation(
         tool_name,
         arguments,
