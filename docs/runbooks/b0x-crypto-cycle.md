@@ -145,7 +145,8 @@ writer lock → 표 게이트 → 계좌 상태 → kill switch → 파생 → �
 
 - [ ] `mock/CLAUDE.md` §1 Binance Demo 행이 여전히 B0-X 사이드카를 가리킨다
 - [ ] **CR-S1 TPR 이 재개되지 않았다** — 재개 시 TPR 우선권 (별개 계약)
-- [ ] fresh truth 가 `contaminated: false` — 공유 Demo 계정에 다른 writer 의 미체결/잔고 없음
+- [ ] fresh truth 가 `contaminated: false` — 공유 Demo 계정에 다른 writer 의 미체결/**매도
+      가능** 잔고 없음 (거래단위 미만 dust 는 예외 — §8-1)
 - [ ] dry-run 사이클의 `planned` 를 눈으로 검토했다 (심볼 3종 · notional ≤ 10 USDT)
 - [ ] 표가 fresh 하다 (`policy_table_age_seconds` 확인)
 
@@ -159,8 +160,26 @@ writer lock → 표 게이트 → 계좌 상태 → kill switch → 파생 → �
 - `writer_lock` — B0-X **프로세스 두 개**가 같은 레인을 동시에 파생하지 못한다
   (`flock`, non-blocking, 두 번째는 즉시 실패).
 - `foreign_*` — B0-X 가 만들지 않은 **베뉴 상태**. `clientOrderId` 가 `b0xc-` 로 시작하지
-  않는 미체결, 또는 0 이 아닌 base 자산 잔고가 있으면 그 사이클은 `CONTAMINATED` 이며
+  않는 미체결, 또는 **매도 가능한** base 자산 잔고가 있으면 그 사이클은 `CONTAMINATED` 이며
   관측은 계속하되 제출은 막힌다.
+
+### 8-1. dust 예외 — 계약 v1.2 (2026-08-08)
+
+잔고 판정 기준은 **"0 이 아니다"** 가 아니라 **"floor(LOT_SIZE) 후 매도 가능 수량 > 0"**
+이다 (`sidecar.sellable_qty`). 최소 거래단위(`LOT_SIZE.minQty`) 미만 잔고는 floor 후 정확히
+0 이 되어 **어떤 가격으로도 주문을 구성할 수 없다** — 청산도, 캡 우회도 불가능하다.
+
+🔴 **MIN_NOTIONAL 로 확대하지 말 것.** 이 3종의 MIN_NOTIONAL 은 5 USDT 로 §4 주문 캡
+(10 USDT) 과 같은 자릿수다. notional 기준 dust 판정은 **이 레인 자기 주문만 한 외부 재고를
+통과시키는 게이트**가 된다. 규칙은 "팔 수 없으니까 dust" 이지 "작으니까 dust" 가 아니다.
+`spot_demo.sizing.compute_close_qty` 와 `portfolio_overview_service` 는 같은 단어를 더 넓은
+뜻(= MIN_NOTIONAL 미만)으로 쓰므로 **여기서 재사용 금지**.
+
+경위: X-S(2026-08-08)가 ROB-298/ROB-307 왕복이 남긴 BTC `0.00000972`(minQty `0.00001`)·
+SOL `0.00094600`(minQty `0.001`)을 실측했다. 청산이 물리적으로 불가능한데 오염 판정은
+이를 봐준 적이 없어 `SIDECAR_ARMED=YES` 가 **영구 도달 불가**였다. 계약 v1.2 가 판정을
+정합 수정했다. dust 는 숨겨지지 않는다 — 관측 기록의
+`base_assets_with_nonzero_balance` 에 그대로 남고, `foreign_base_assets` 에서만 빠진다.
 
 다른 전략의 미체결은 **취소하지 않는다** (mock/CLAUDE.md §4). kill 시에도 `b0xc-` 접두
 주문만 취소한다.
@@ -177,7 +196,8 @@ writer lock → 표 게이트 → 계좌 상태 → kill switch → 파생 → �
 - **가상 시드 잔고 100만 KRW** (`SEED_CASH_KRW`) 는 계약 숫자가 아니라 가상 장부에 경계를
   주기 위한 고정값이다. 모든 산출물에 박제된다.
 - 🔴 **사이드카 v1 은 체결을 귀속 장부에 reconcile 하지 않는다.** B0-X 장부가 비어 있으므로
-  *어떤* base 잔고도 `foreign` 으로 읽히며, **B0-X 자기 체결이 만든 잔고도 그렇다.**
+  *매도 가능한* base 잔고는 전부 `foreign` 으로 읽히며, **B0-X 자기 체결이 만든 잔고도
+  그렇다** (§8-1 dust 예외는 이를 완화하지 않는다 — 체결된 주문은 정의상 minQty 이상이다).
   결과적으로 첫 체결 다음 사이클은 `CONTAMINATED` 로 제출을 거부한다 —
   **운영자 개입 1회당 왕복 1회**가 v1 의 실질 처리량이다.
   과보수적이지만 방향은 옳다: 귀속 안 된 잔고를 "내 것 아님, 계속 진행" 으로 처리하면
