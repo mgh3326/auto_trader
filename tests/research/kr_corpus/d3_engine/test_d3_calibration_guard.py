@@ -544,9 +544,7 @@ def test_anomaly_precheck_never_decodes_a_prospective_json_line(
         spy=CalibrationAccessSpy(),
         holdout_root=sealed_root_with_valid_corpus,
     )
-    corpus = load_calibration_corpus(
-        guard, holdout_root=sealed_root_with_valid_corpus
-    )
+    corpus = load_calibration_corpus(guard, holdout_root=sealed_root_with_valid_corpus)
     assert corpus.anomaly_lines_prechecked == 2
     assert corpus.anomaly_lines_decoded_2025 == 1
     assert corpus.anomaly_lines_skipped_prospective == 1
