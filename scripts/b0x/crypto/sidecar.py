@@ -42,6 +42,21 @@ Fail-closed layers before any order can reach the venue
    notional, so the cap is verified against the *realized* value, not the
    requested one (ROB-993 R3).
 7. ``confirm=True`` per call, defaulted off, never derived from a config file.
+
+Known limitation — v1 attribution is fail-closed, not fail-live
+---------------------------------------------------------------
+This lane does not yet reconcile fills back into an attributed position book.
+The consequence is deliberate and safe rather than hidden: because B0-X's book
+starts empty, *any* non-zero base balance reads as ``foreign`` — including a
+balance B0-X's own fill just created. So the cycle after a first fill marks the
+account ``CONTAMINATED`` and refuses to submit again.
+
+That is over-conservative (the lane halts itself after one round trip) but it
+is the correct direction to err: the alternative, treating an unattributed
+balance as "not mine, carry on", would let the §4 per-symbol and
+concurrent-position caps be bypassed by the lane's own inventory. Fill-aware
+reconcile is follow-up work; until it lands, an armed sidecar produces one
+round trip per operator intervention, and the runbook says so.
 """
 
 from __future__ import annotations

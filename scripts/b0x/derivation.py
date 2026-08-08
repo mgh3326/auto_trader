@@ -396,12 +396,17 @@ def derive_orders(
             # decision to take a position, executed in two legs.
             entry_blocked: str | None = None
             if apply_envelope:
-                if symbol in new_entry_symbols_today:
-                    entry_blocked = None  # re-entry within the day is already counted
-                elif new_entries_used >= envelope.max_new_entries_per_utc_day:
-                    entry_blocked = SkipReason.DAILY_NEW_ENTRY_CAP
-                elif open_position_count >= envelope.max_concurrent_positions:
+                # The concurrent-position cap applies unconditionally. Only the
+                # *daily new entry* cap is exempt for a symbol already counted
+                # today: re-entering something entered and exited earlier today
+                # is not a new decision, but it is still another open position.
+                if open_position_count >= envelope.max_concurrent_positions:
                     entry_blocked = SkipReason.CONCURRENT_POSITION_CAP
+                elif (
+                    symbol not in new_entry_symbols_today
+                    and new_entries_used >= envelope.max_new_entries_per_utc_day
+                ):
+                    entry_blocked = SkipReason.DAILY_NEW_ENTRY_CAP
 
             if entry_blocked is not None:
                 skipped.append(
@@ -499,10 +504,13 @@ def derive_orders(
                     if symbol_headroom is not None:
                         symbol_headroom -= notional or Decimal("0")
 
-                if admitted_any and symbol not in new_entry_symbols_today:
-                    new_entry_symbols_today.add(symbol)
-                    new_entries_used += 1
+                if admitted_any:
+                    # A position is opening either way; the daily-entry counter
+                    # only moves for a symbol not already counted today.
                     open_position_count += 1
+                    if symbol not in new_entry_symbols_today:
+                        new_entry_symbols_today.add(symbol)
+                        new_entries_used += 1
         else:
             # ---------------- 물타기 (averaging down) ----------------
             leg_name = Leg.AVERAGING

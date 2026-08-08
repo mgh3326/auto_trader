@@ -422,3 +422,87 @@ def test_derivation_refuses_a_widened_envelope(tmp_path: Path) -> None:
     decision = kill_switch_module.evaluate(state=state, envelope=ENVELOPE)
     with pytest.raises(EnvelopeNotLocked):
         derive_orders(table=table, state=state, envelope=widened, kill_switch=decision)
+
+
+def test_same_day_reentry_still_respects_the_concurrent_position_cap(
+    tmp_path: Path,
+) -> None:
+    """The daily-entry counter is exempt on re-entry; the position cap is not.
+
+    Without this the lane could exceed 동시 포지션 ≤ 3 by re-entering a symbol it
+    had already entered and exited earlier the same UTC day.
+    """
+
+    table = _table(
+        tmp_path, [make_row(symbol="KRW-BTC", previous_close="100", buy_l1="97")]
+    )
+    held = tuple(
+        B0XPosition(
+            symbol=f"KRW-{name}",
+            quantity=Decimal("1"),
+            average_price=Decimal("50"),
+            invested_notional=Decimal("10"),
+            entry_count=1,
+        )
+        for name in ("AAA", "BBB", "CCC")
+    )
+    state = _state(
+        positions=held,
+        # KRW-BTC was entered earlier today, so the daily counter would exempt it.
+        new_entry_symbols_today=("KRW-BTC",),
+    )
+    result = _derive(table, state)
+    assert result.orders == ()
+    assert any(s.reason == SkipReason.CONCURRENT_POSITION_CAP for s in result.skipped)
+
+
+def test_same_day_reentry_is_allowed_when_there_is_position_headroom(
+    tmp_path: Path,
+) -> None:
+    """The exemption must still work — re-entry is not a *new* daily decision."""
+
+    table = _table(
+        tmp_path, [make_row(symbol="KRW-BTC", previous_close="100", buy_l1="97")]
+    )
+    state = _state(
+        # Daily cap (2) already saturated by two other symbols...
+        new_entry_symbols_today=("KRW-BTC", "KRW-ETH"),
+    )
+    result = _derive(table, state)
+    # ...but KRW-BTC is one of them, so its re-entry is not blocked.
+    assert [o.symbol for o in result.orders] == ["KRW-BTC"]
+
+
+def test_admitting_entries_consumes_the_position_cap_within_one_cycle(
+    tmp_path: Path,
+) -> None:
+    """Caps are consumed as the cycle walks rows, not evaluated against the
+    starting state only."""
+
+    table = _table(
+        tmp_path,
+        [
+            make_row(symbol="KRW-AAA", previous_close="100", buy_l1="97"),
+            make_row(symbol="KRW-BBB", previous_close="100", buy_l1="97"),
+            make_row(symbol="KRW-CCC", previous_close="100", buy_l1="97"),
+        ],
+    )
+    held = (
+        B0XPosition(
+            symbol="KRW-HELD",
+            quantity=Decimal("1"),
+            average_price=Decimal("50"),
+            invested_notional=Decimal("10"),
+            entry_count=1,
+        ),
+    )
+    # 1 held + max 3 concurrent => room for exactly 2 more, and the daily cap is
+    # also 2, so both bind at the same place.
+    result = _derive(table, _state(positions=held))
+    assert [o.symbol for o in result.orders] == ["KRW-AAA", "KRW-BBB"]
+    assert any(
+        s.symbol == "KRW-CCC"
+        and s.reason
+        in {SkipReason.CONCURRENT_POSITION_CAP, SkipReason.DAILY_NEW_ENTRY_CAP}
+        for s in result.skipped
+    )
