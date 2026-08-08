@@ -84,8 +84,17 @@ class KillSwitchDecision:
             ),
         }
 
-    def operator_notice(self, *, lane: str) -> str | None:
-        """Human-readable §2-4 notification text, or ``None`` when not tripped."""
+    def operator_notice(
+        self, *, lane: str, remaining_orders_note: str | None = None
+    ) -> str | None:
+        """Human-readable §2-4 notification text, or ``None`` when not tripped.
+
+        ``remaining_orders_note`` overrides the trailing "신규 주문 중단 + 잔여
+        주문 취소 완료" clause for a lane whose cancellation story differs from
+        the crypto default (e.g. a venue with no pending-order inquiry to
+        cancel against) — see ``scripts.b0x.kr.cycle.KILL_CANCEL_UNSUPPORTED_
+        NOTE``. Omitting it keeps the original text unchanged.
+        """
 
         if not self.tripped:
             return None
@@ -96,11 +105,15 @@ class KillSwitchDecision:
             and self.nav_snapshot is not None
             else ""
         )
+        note = (
+            remaining_orders_note
+            if remaining_orders_note is not None
+            else "신규 주문 중단 + 잔여 주문 취소 완료. 재개는 운영자 결정 (계약 §2-4)."
+        )
         return (
             f"[B0-X KILL SWITCH] lane={lane} — {', '.join(self.kill_reasons)}. "
             f"realized_pnl_today={format(self.realized_pnl_today, 'f')} "
-            f"(limit -{format(self.daily_loss_kill, 'f')}{basis_note}). "
-            "신규 주문 중단 + 잔여 주문 취소 완료. 재개는 운영자 결정 (계약 §2-4)."
+            f"(limit -{format(self.daily_loss_kill, 'f')}{basis_note}). {note}"
         )
 
 

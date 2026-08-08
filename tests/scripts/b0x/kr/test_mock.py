@@ -236,3 +236,91 @@ async def test_unwired_submit_order_always_raises() -> None:
     )
     with pytest.raises(kr_mock.KrMockSubmissionNotWired):
         await kr_mock.unwired_submit_order(planned=planned, confirm=True)
+
+
+# ---------------------------------------------------------------------------
+# submit_planned_order — wired to KisMockBroker (contract v1.3 ③).
+# ---------------------------------------------------------------------------
+
+
+class _FakeBroker:
+    """Records what it was called with; no network, no reservation DB write."""
+
+    def __init__(self) -> None:
+        self.buy_calls: list[dict[str, Any]] = []
+        self.sell_calls: list[dict[str, Any]] = []
+
+    async def submit_buy(self, **kwargs: Any) -> dict[str, Any]:
+        self.buy_calls.append(kwargs)
+        return {"success": True, "odno": "FAKE-BUY-1"}
+
+    async def submit_exit_sell(self, **kwargs: Any) -> dict[str, Any]:
+        self.sell_calls.append(kwargs)
+        return {"success": True, "odno": "FAKE-SELL-1"}
+
+
+@pytest.mark.asyncio
+async def test_submit_planned_order_routes_buy_to_submit_buy() -> None:
+    broker = _FakeBroker()
+    planned = kr_mock.PlannedOrder(
+        order_key="abc123",
+        client_order_id="b0xk-abc123",
+        symbol="005930",
+        side="buy",
+        leg="buy_l1",
+        price=97000,
+        quantity=3,
+        notional=Decimal("291000"),
+    )
+    result = await kr_mock.submit_planned_order(broker, planned=planned, confirm=True)
+    assert result["success"] is True
+    assert broker.buy_calls == [
+        {
+            "symbol": "005930",
+            "price": Decimal("97000"),
+            "quantity": Decimal("3"),
+            "correlation_id": "b0xk-abc123",
+            "confirm": True,
+        }
+    ]
+    assert broker.sell_calls == []
+
+
+@pytest.mark.asyncio
+async def test_submit_planned_order_routes_sell_to_submit_exit_sell() -> None:
+    broker = _FakeBroker()
+    planned = kr_mock.PlannedOrder(
+        order_key="def456",
+        client_order_id="b0xk-def456",
+        symbol="005930",
+        side="sell",
+        leg="sell_r1",
+        price=101850,
+        quantity=3,
+        notional=Decimal("305550"),
+    )
+    result = await kr_mock.submit_planned_order(broker, planned=planned, confirm=False)
+    assert result["success"] is True
+    assert broker.buy_calls == []
+    assert broker.sell_calls == [
+        {
+            "symbol": "005930",
+            "price": Decimal("101850"),
+            "quantity": Decimal("3"),
+            "exit_reason": "b0x_rule_exit",
+            "strategy_id": kr_mock.CLIENT_ORDER_ID_PREFIX,
+            "correlation_id": "b0xk-def456",
+            "confirm": False,
+        }
+    ]
+
+
+def test_build_kis_mock_broker_get_state_always_none() -> None:
+    """No live WS feed for B0-X — see module docstring. A real BUY dispatch
+    must fail closed via the broker's own PreSendFreshnessError, not a
+    fabricated quote.
+    """
+
+    broker = kr_mock.build_kis_mock_broker()
+    assert kr_mock._b0x_get_state("005930") is None
+    assert broker._get_state("005930") is None

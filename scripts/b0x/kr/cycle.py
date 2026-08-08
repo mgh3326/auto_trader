@@ -17,11 +17,27 @@ holidays.
     writer lock  →  RTH gate  →  table (or zero orders)  →  account state
                  →  kill switch  →  derive  →  plan  →  submit  →  record
 
-``submit`` is a no-op boundary in this PR — see ``scripts.b0x.kr.mock``'s
-module docstring for why, and ``KrCycleOutcome.submitted`` records exactly
-what happened (nothing, because it was never called) rather than a stamped
-``real_orders=0`` constant. orch's relayed X-C lesson was explicit about not
-repeating that pattern.
+``submit`` is wired to ``kr_mock.build_kis_mock_broker`` /
+``kr_mock.submit_planned_order`` (contract v1.3 ③) — see
+``scripts.b0x.kr.mock``'s module docstring for the one documented mismatch
+(BUY-leg freshness re-check with no live feed). No CLI path exercises it
+this PR: ``scripts/run_b0x_kr_cycle.py`` has no ``--confirm`` flag, so a
+cycle only ever reaches ``confirm=True`` when a caller (a test, or a future
+operator entrypoint) passes it explicitly. ``KrCycleOutcome.submitted``
+always records exactly what happened, never a stamped ``real_orders=0``
+constant. orch's relayed X-C lesson was explicit about not repeating that
+pattern.
+
+Kill-trip cancellation asymmetry with the crypto sidecar, documented rather
+than silently matched: the crypto lanes cancel outstanding B0-X orders on a
+kill trip (``scripts.b0x.cycle._cancel_b0x_open_orders``) because their
+venues expose an open-orders read. KIS mock's pending-order inquiry
+(``DomesticOrderClient.inquire_korea_orders``, TR ``TTTC8036R``) explicitly
+raises for ``is_mock=True`` — "모의투자에서 지원되지 않음" — so there is no
+way to discover what, if anything, is still resting on a kill trip. The
+kill-switch notice text is lane-specific for this reason (see
+``KILL_CANCEL_UNSUPPORTED_NOTE`` below); it does not claim a cancellation
+that cannot be structurally attempted.
 """
 
 from __future__ import annotations
@@ -64,6 +80,18 @@ LANE = kr_mock.LANE
 ZeroOrderReason = str
 
 OUTSIDE_RTH_REASON: ZeroOrderReason = "outside_krx_regular_session"
+
+#: Overrides ``KillSwitchDecision.operator_notice``'s default "잔여 주문 취소
+#: 완료" clause — kis_mock has no pending-order inquiry to discover, let
+#: alone cancel, what is still resting (see the module docstring). Stating
+#: "취소 완료" here would be a false claim from the moment submission is
+#: wired, not merely an untested one.
+KILL_CANCEL_UNSUPPORTED_NOTE = (
+    "신규 주문 중단. 잔여 주문 취소는 구조적으로 시도 불가 — KIS 모의투자 "
+    "미체결조회(TTTC8036R)가 is_mock=True 에 대해 지원되지 않아 "
+    "(DomesticOrderClient.inquire_korea_orders) 취소 대상을 조회할 수단이 "
+    "없음. 재개는 운영자 결정 (계약 §2-4)."
+)
 
 
 @dataclass
@@ -145,9 +173,13 @@ async def run_kr_cycle(
     out_dir: Path = DEFAULT_OBSERVATION_DIR,
     confirm: bool = False,
     client: Any | None = None,
+    broker: Any | None = None,
 ) -> KrCycleOutcome:
-    """One kis_mock cycle. ``confirm=True`` currently always fails closed —
-    see ``scripts.b0x.kr.mock`` module docstring; submission is unwired.
+    """One kis_mock cycle. ``broker`` mirrors the existing ``client`` DI seam
+    (tests inject a fake broker; production leaves it ``None`` and this
+    function builds ``kr_mock.build_kis_mock_broker()`` lazily, only when
+    there is something to submit). See ``scripts.b0x.kr.mock`` module
+    docstring for what submission wiring does and does not cover.
     """
 
     envelope = load_envelope(MARKET)
@@ -242,13 +274,21 @@ async def run_kr_cycle(
         )
 
         if decision.tripped:
-            notice = decision.operator_notice(lane=LANE)
+            notice = decision.operator_notice(
+                lane=LANE, remaining_orders_note=KILL_CANCEL_UNSUPPORTED_NOTE
+            )
             if notice:
                 ledger.record_notice(at=now, text=notice, lane=LANE)
                 record["operator_notice"] = notice
             record["planned"] = []
             record["blocked"] = []
             record["submitted"] = []
+            record["cancelled"] = []
+            record["cancellation_unsupported"] = (
+                "kis_mock has no pending-order inquiry for is_mock=True "
+                "(DomesticOrderClient.inquire_korea_orders raises); cancel "
+                "was not attempted, not attempted-and-failed"
+            )
         else:
             held = {pos.symbol: pos.quantity for pos in state.positions}
             planned, blocked = kr_mock.plan_orders(
@@ -261,20 +301,24 @@ async def run_kr_cycle(
             if not confirm:
                 # Preview only, like the crypto sidecar's confirm=False: zero
                 # dispatch attempts, planned orders are still fully recorded
-                # above. Does NOT call the unwired submit path — a dry
-                # preview must not depend on submission ever being wired.
+                # above. Does NOT construct a broker or call submit_planned_
+                # order — a dry preview must not depend on submission wiring
+                # at all.
                 record["submission_skipped"] = "confirm=False — preview only"
             else:
+                # contract v1.3 ③: KisMockBroker (ROB-321/341), reused as-is.
+                # See scripts.b0x.kr.mock module docstring for the one
+                # documented mismatch (BUY-leg freshness re-check with no
+                # live feed) and why it fails closed rather than fabricates
+                # a quote.
+                active_broker = (
+                    broker if broker is not None else (kr_mock.build_kis_mock_broker())
+                )
                 for order in planned:
-                    # Submission is a deliberately unwired extension point
-                    # (see scripts.b0x.kr.mock docstring) — this call always
-                    # raises KrMockSubmissionNotWired. Only reached when the
-                    # caller explicitly asked to dispatch (confirm=True), so
-                    # a preview cycle is never blocked by it.
-                    result = await kr_mock.unwired_submit_order(
-                        planned=order, confirm=confirm
+                    result = await kr_mock.submit_planned_order(
+                        active_broker, planned=order, confirm=confirm
                     )
-                    submitted.append(result)  # pragma: no cover - never reached
+                    submitted.append(result)
             record["submitted"] = submitted
 
         ledger.record_cycle(record)

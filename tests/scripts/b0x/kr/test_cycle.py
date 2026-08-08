@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 
 from scripts.b0x.kr.cycle import OUTSIDE_RTH_REASON, run_kr_cycle
-from scripts.b0x.kr.mock import KrMockSubmissionNotWired
 from scripts.b0x.labels import TRUST_LABELS
 from scripts.b0x.ledger import ObservationLedger
 from tests.scripts.b0x._table_fixtures import (
@@ -219,27 +218,62 @@ async def test_owns_client_path_constructs_and_closes_its_own_client(
     assert fake.closed is True
 
 
+class _FakeBroker:
+    """Stands in for ``KisMockBroker`` — no HTTP, no reservation DB write.
+
+    Records every call it received so a test can assert the cycle threaded
+    the right symbol/side/price/quantity/correlation_id through, without
+    touching a real kis_mock account (contract §7: 실주문 0 this round).
+    """
+
+    def __init__(self) -> None:
+        self.buy_calls: list[dict[str, Any]] = []
+        self.sell_calls: list[dict[str, Any]] = []
+
+    async def submit_buy(self, **kwargs: Any) -> dict[str, Any]:
+        self.buy_calls.append(kwargs)
+        return {"success": True, "odno": f"FAKE-BUY-{len(self.buy_calls)}"}
+
+    async def submit_exit_sell(self, **kwargs: Any) -> dict[str, Any]:
+        self.sell_calls.append(kwargs)
+        return {"success": True, "odno": f"FAKE-SELL-{len(self.sell_calls)}"}
+
+
 @pytest.mark.asyncio
-async def test_confirm_true_fails_closed_because_submission_is_unwired(
+async def test_confirm_true_dispatches_through_the_injected_broker(
     table_dir: Path, out_dir: Path
 ) -> None:
-    """``confirm=True`` must not silently no-op — it must fail loudly.
-
-    This is the load-bearing assertion for the module docstring's claim that
-    a cycle can never mistake "not yet built" for "submitted and confirmed
-    zero orders": with real orders planned and confirm=True, the cycle must
-    raise rather than return a clean-looking zero-submission record.
+    """``confirm=True`` now routes every planned order through the wired
+    ``KisMockBroker`` integration point (contract v1.3 ③) — proven here with
+    a fake broker so the assertion never touches a real kis_mock account.
+    ``unwired_submit_order``/``KrMockSubmissionNotWired`` is proven still
+    intact (kept, not deleted) by ``test_unwired_submit_order_always_raises``
+    in ``tests/scripts/b0x/kr/test_mock.py``.
     """
 
     client = _FakeKrClient(orderable_cash="5000000")
-    with pytest.raises(KrMockSubmissionNotWired):
-        await run_kr_cycle(
-            now=IN_SESSION_NOW,
-            table_dir=table_dir,
-            out_dir=out_dir,
-            confirm=True,
-            client=client,
-        )
+    broker = _FakeBroker()
+    outcome = await run_kr_cycle(
+        now=IN_SESSION_NOW,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=True,
+        client=client,
+        broker=broker,
+    )
+
+    assert outcome.zero_order_reason is None
+    planned = outcome.record["planned"]
+    assert planned, "fixture table must derive at least one planned order"
+    assert len(broker.buy_calls) == len([p for p in planned if p["side"] == "buy"])
+    assert not broker.sell_calls  # flat account, fixture table has no sells
+    submitted = outcome.record["submitted"]
+    assert len(submitted) == len(planned)
+    assert all(row.get("success") is True for row in submitted)
+    for order, call in zip(planned, broker.buy_calls, strict=True):
+        assert call["symbol"] == order["symbol"]
+        assert call["correlation_id"] == order["client_order_id"]
+        assert call["confirm"] is True
 
 
 @pytest.mark.asyncio

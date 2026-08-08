@@ -92,6 +92,22 @@ def _table_or_reason(
     return result, None
 
 
+#: Binding = version string + section citation, NOT the whole-file sha (the
+#: file is amended in place as the operator signs off further sections;
+#: re-stamping every record on each amendment would be noise). The sha below
+#: is carried as a reference/reproducibility field only — see contract
+#: preamble: "결속 = 버전 문자열 v1.3 + 인용 절 (전체파일 sha … 는 참고값)".
+CONTRACT_CITATION = "b0x-experiment-contract-v1 v1.3 (2026-08-09, operator-confirmed)"
+CONTRACT_FILE = "~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md"
+CONTRACT_FILE_SHA256_REFERENCE_ONLY = (
+    "0125e2ea96b1a54cf0b0a50e6ed85ae1f3a72e7870abe727d2734dbe20e19b1f"
+)
+#: operator_contract.yaml HEAD at last verification — PR #33 (B0-X 3-surface
+#: registration: kis_mock/alpaca_paper_lab/binance_demo). Update alongside
+#: any re-verification of the account-map gate.
+ACCOUNT_MAP_SHA = "3f402919fca5b68bda187e8e521fc886aefb022a"
+
+
 def base_record(
     *,
     market: str,
@@ -109,8 +125,10 @@ def base_record(
         "at": now.isoformat(),
         "labels": list(labels),
         "envelope": envelope.canonical(),
-        "contract": "~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md",
-        "account_map_sha": "7f9589712b1a81b87d65bca1b66a791ca22cfac4",
+        "contract": CONTRACT_CITATION,
+        "contract_file": CONTRACT_FILE,
+        "contract_file_sha256_reference_only": CONTRACT_FILE_SHA256_REFERENCE_ONLY,
+        "account_map_sha": ACCOUNT_MAP_SHA,
     }
 
 

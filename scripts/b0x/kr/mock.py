@@ -1,7 +1,12 @@
 """``kis_mock`` lane — B0-X KRX equities read/plan surface.
 
-Account map (operator repo ``mock/CLAUDE.md`` §1, SHA ``7f95897``): *kis_mock
-= B0-X KR (PROSPECTIVE_EXPERIMENT_ONLY) … 주문 writer 는 B0-X 어댑터 하나뿐*.
+Account map (operator repo ``operator_contract.yaml``, canonical per contract
+v1.3 ①; HEAD ``3f40291`` at wiring time, PR #33): *kis_mock exclusive_lane =
+B0-X-KR, mutation_policy = b0x_adapter_orders_only_within_envelope,
+strategy_order_exceptions ∋ b0x-adapter-orders-20260808 with kis_mock in its
+surfaces* — 주문 writer 는 B0-X 어댑터 하나뿐. ``mock/CLAUDE.md`` §1 is the
+human-readable reference row and defers to the YAML on conflict (its own
+§0/§4 rule).
 
 What is reused, unchanged
 --------------------------
@@ -23,35 +28,49 @@ What is reused, unchanged
   order price — unlike the Binance sidecar, kis_mock trades the same
   currency the table quotes in, so there is no ratio transfer to reconstruct.
 
-What is a deliberate, documented gap in this PR
-------------------------------------------------
-``submit_order`` (below) is an unwired extension point, not a working
-integration. Two separate reasons, neither of which this adapter resolves
-unilaterally:
+Submission — wired in this PR (contract v1.3 ③)
+-------------------------------------------------
+The account-map gate cleared 2026-08-09 (``operator_contract.yaml``
+``strategy_order_exceptions`` now lists ``b0x-adapter-orders-20260808`` with
+``kis_mock`` in its ``surfaces``; ``resolved_account_reassignments.kis_mock.
+mutation_policy`` is ``b0x_adapter_orders_only_within_envelope``, no longer
+``no_new_orders``) and the operator/reviewer sign-off on the integration
+point landed the same day: **reuse
+``app.services.brokers.kis.mock_scalping_exec.adapters.KisMockBroker``**
+(ROB-321/341) rather than importing ``order_execution``/
+``orders_kis_variants`` directly. That adapter already hardcodes
+``is_mock=True`` at every ``_place_order_impl`` call site (not a parameter),
+already writes ``kis_mock_order_ledger`` rows, and already has a reservation
++ pre-send-freshness-hook lifecycle this module does not need to
+reimplement. See ``build_kis_mock_broker``/``submit_planned_order`` below.
 
-1. The account-map gate (mock/CLAUDE.md §1 vs. the machine-readable
-   ``operator_contract.yaml`` ``strategy_order_exceptions`` list) is still
-   open as of this PR — the YAML has no B0-X KR entry and ``kis_mock`` is
-   explicitly ``mutation_policy_until_canonical_envelope_and_exception_
-   registration: no_new_orders``. No order call — mock or not, preview or
-   not — is permitted through this module until that clears.
-2. Unlike the Binance Spot Demo sidecar (which reuses a client that is
-   *structurally* incapable of reaching a live venue — host-allowlisted to
-   ``demo-api.binance.com``), KIS's order-placement implementation
-   (``app.mcp_server.tooling.order_execution._place_order_impl``) is a single
-   shared function serving both ``kis_live_*`` and ``kis_mock_*`` tools,
-   differentiated only by an ``is_mock`` boolean passed at the call site —
-   there is no dedicated mock-only client to reuse the way the crypto sidecar
-   does. Which integration point is safe to wire (the module-level
-   ``orders_kis_variants._place_order_variant`` helper the real
-   ``kis_mock_place_order`` tool calls, vs. something narrower purpose-built
-   for this package) is an explicit open question for operator/reviewer
-   sign-off, not a call this module makes on its own — see the runbook.
+One documented mismatch, not silently papered over: ``KisMockBroker``'s BUY
+leg re-validates a live per-symbol order book (bid/ask/spread/age) via a
+``get_state`` callback immediately before the real POST (ROB-843 P1-1) — a
+freshness model built for its own live WebSocket feed
+(``mock_scalping_ws``). B0-X has no such feed; it derives from a
+``policy_table.v1`` snapshot, not a live book. Rather than fabricate a
+synthetic quote (which would make a real safety check pass on invented
+data), ``build_kis_mock_broker`` supplies a ``get_state`` that always
+returns ``None``. Consequence: a real BUY dispatch (``confirm=True``) fails
+closed with ``PreSendFreshnessError(("no_market_state",))`` *before any
+HTTP POST* — safe, honest, and it is the adapter's own existing exception,
+not a special-cased block. SELL legs (``submit_exit_sell``) carry no such
+hook by ROB-321's own design ("a live position remains closable") and are
+unaffected. Wiring a real B0-X market-data feed to lift the BUY-side block
+is out of this PR's scope.
 
-``run_kr_cycle`` (``scripts/b0x/kr/cycle.py``) calls ``submit_order`` only
-when there is something to submit; until it is wired, that call raises
-``KrMockSubmissionNotWired`` rather than silently no-opping, so a cycle can
-never mistake "not yet built" for "submitted and confirmed zero".
+``KrMockSubmissionNotWired`` (below) is kept, not deleted, even though the
+main path no longer raises it: it is still the honest signal for any caller
+that reaches a submission attempt without going through
+``build_kis_mock_broker``/``submit_planned_order`` (e.g. a future second
+integration point, or a test double that deliberately leaves itself
+unwired). A "not yet built" state must never be mistaken for "submitted and
+confirmed zero".
+
+No orders were placed by writing this PR — see the runbook and
+``docs/runbooks/b0x-kr-cycle.md`` §9 for the record of what was, and was
+not, exercised.
 """
 
 from __future__ import annotations
@@ -65,6 +84,8 @@ from app.core.config import validate_kis_mock_config
 from app.mcp_server.tick_size import get_tick_size_kr
 from app.services.brokers.kis.account import AccountClient
 from app.services.brokers.kis.base import BaseKISClient
+from app.services.brokers.kis.mock_scalping_exec.adapters import KisMockBroker
+from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 from app.services.brokers.kis.protocols import KISClientProtocol
 from scripts.b0x.derivation import DerivedOrder
 from scripts.b0x.envelope import Envelope, assert_envelope_locked
@@ -394,7 +415,7 @@ def plan_orders(
 
 
 # ---------------------------------------------------------------------------
-# Submission — deliberately unwired. See module docstring.
+# Submission — wired to KisMockBroker (contract v1.3 ③). See module docstring.
 # ---------------------------------------------------------------------------
 
 
@@ -407,12 +428,76 @@ class SubmitOrderFn(Protocol):
 async def unwired_submit_order(
     *, planned: PlannedOrder, confirm: bool
 ) -> dict[str, Any]:
+    """Kept as the fail-closed signal for any caller that bypasses the wired
+    path (``build_kis_mock_broker`` + ``submit_planned_order``). Not deleted
+    — see the module docstring's "kept, not deleted" note.
+    """
+
     raise KrMockSubmissionNotWired(
         "scripts.b0x.kr.mock has no wired kis_mock order-submission function "
         f"(order_key={planned.order_key} symbol={planned.symbol} "
         f"side={planned.side} confirm={confirm}). See the module docstring "
         "for why this is a deliberate PR-scope boundary, not a bug."
     )
+
+
+def _b0x_get_state(symbol: str) -> MarketState | None:
+    """B0-X has no live WS book (unlike ROB-321's scalping engine) — always
+    ``None``. See the module docstring: this makes a real BUY dispatch fail
+    closed via the adapter's own ``PreSendFreshnessError``, honestly, rather
+    than fabricate a quote to satisfy a check built for a different feed.
+    """
+
+    return None
+
+
+def build_kis_mock_broker(
+    *, strategy_id: str = CLIENT_ORDER_ID_PREFIX
+) -> KisMockBroker:
+    """Construct the sanctioned kis_mock submission surface (contract v1.3 ③).
+
+    Reuses ``KisMockBroker`` as-is — no subclassing, no monkeypatching of its
+    ``is_mock=True``-locked internals. ``strategy_id`` tags
+    ``kis_mock_order_ledger`` rows; defaults to the B0-X KR
+    ``client_order_id`` prefix so ledger rows are attributable at a glance.
+    """
+
+    return KisMockBroker(get_state=_b0x_get_state, strategy_id=strategy_id)
+
+
+async def submit_planned_order(
+    broker: KisMockBroker, *, planned: PlannedOrder, confirm: bool
+) -> dict[str, Any]:
+    """Dispatch one :class:`PlannedOrder` through ``KisMockBroker``.
+
+    ``planned.client_order_id`` (``b0xk-<order_key>``, itself a pure function
+    of the cycle's inputs per the module docstring) is threaded through as
+    ``correlation_id`` so a replayed identical cycle re-derives the same
+    correlation id and a re-send is caught by the broker's own reservation
+    lifecycle rather than silently double-submitted.
+    """
+
+    price = Decimal(planned.price)
+    quantity = Decimal(planned.quantity)
+    if planned.side == "buy":
+        return await broker.submit_buy(
+            symbol=planned.symbol,
+            price=price,
+            quantity=quantity,
+            correlation_id=planned.client_order_id,
+            confirm=confirm,
+        )
+    if planned.side == "sell":
+        return await broker.submit_exit_sell(
+            symbol=planned.symbol,
+            price=price,
+            quantity=quantity,
+            exit_reason="b0x_rule_exit",
+            strategy_id=CLIENT_ORDER_ID_PREFIX,
+            correlation_id=planned.client_order_id,
+            confirm=confirm,
+        )
+    raise ValueError(f"unknown planned order side: {planned.side!r}")  # unreachable
 
 
 __all__ = [
@@ -434,4 +519,6 @@ __all__ = [
     "client_order_id_for",
     "plan_orders",
     "unwired_submit_order",
+    "build_kis_mock_broker",
+    "submit_planned_order",
 ]

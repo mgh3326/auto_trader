@@ -1,14 +1,20 @@
-"""KR-scoped static import guard — no order-submission surface anywhere.
+"""KR-scoped static import guard — denylist companion to the allowlist gate.
 
 ``tests/scripts/b0x/test_no_forbidden_imports.py`` already scans this whole
 package for LLM/scheduler/live-order imports, but its ``FORBIDDEN_LIVE_ORDER``
 tuple predates this lane and does not name any KIS module (crypto never
 needed one). This file adds the KIS-specific list so ``scripts/b0x/kr/**`` is
-held to the same standard, and documents *why* it currently passes: this PR
-does not wire order submission at all (see ``scripts.b0x.kr.mock`` module
-docstring) — ``KrMockSubmissionNotWired`` is the only thing standing in for
-it. When submission is wired in a follow-up, whichever module is chosen
-belongs in this list's "reviewed and accepted" companion, not a silent gap.
+held to the same standard.
+
+Submission is wired as of contract v1.3 ③ — see ``scripts.b0x.kr.mock``
+module docstring — through ``app.services.brokers.kis.mock_scalping_exec.
+adapters.KisMockBroker``, which is deliberately *not* in
+``FORBIDDEN_KIS_ORDER_SURFACES`` below (it is the reviewed-and-accepted
+integration point this docstring previously said would need one). The
+broader, allowlist-based guard covering the full "is_mock=False /
+live-module-import / string-bypass" surface lives in
+``test_submission_ast_guard.py`` in this same directory — this file is kept
+as an independent, narrower denylist check, not superseded by it.
 """
 
 from __future__ import annotations
