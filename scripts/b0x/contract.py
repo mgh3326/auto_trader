@@ -34,25 +34,22 @@ from typing import Any, Final
 CONTRACT_PATH: Final[str] = "~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md"
 
 #: Binding identity. Bump together with the clauses below.
-CONTRACT_VERSION: Final[str] = "v1.3"
+CONTRACT_VERSION: Final[str] = "v1.4"
 
 #: Provenance only — NOT a drift criterion. See the module docstring.
 CONTRACT_FILE_SHA256_REFERENCE_ONLY: Final[str] = (
-    "0125e2ea96b1a54cf0b0a50e6ed85ae1f3a72e7870abe727d2734dbe20e19b1f"
+    "bce7104bd1a3f36a253baecc05d8bc960ad1c41a82de4c345d6659320ad1f5f8"
 )
 
-#: Verbatim §8 v1.3 clauses this package implements.
+#: Verbatim §8 v1.4 clauses this package implements.
 CONTRACT_CLAUSES: Final[dict[str, str]] = {
-    "§8 v1.3 ①": (
-        "계좌맵 기계판독 정본 = operator_contract.yaml 확정 — B0-X 3곳 등재"
-        "(account_lanes·reassignments·strategy_order_exceptions "
-        "b0x-adapter-orders-20260808), MD 는 참조로 강등. 미등재 상태에서 나간 "
-        "매수 2건은 취소 후 등재 완료 상태에서 첫 사이클 재실행."
+    "§8 v1.4 ②": (
+        "관측 산출물에 **`SHARED_ACCOUNT_HISTORY` 라벨** 부착(**과거 dust·사고 "
+        "이력 계좌**)."
     ),
-    "§8 v1.3 ②": (
-        "사이드카 지위 = 매수측 체결충실도 표본으로 축소(자기오염 v1 성문 한계 — "
-        "자기 매수 체결 시 오염 판정, 매도측 도달 불가). 매도측 관측은 본선"
-        "(Upbit shadow, 왕복 가능)이 담당."
+    "§8 v1.4 ③": (
+        "writer=1 문언 정합: 「B0-X 측 단일 writer + 계좌 배타성은 운영 "
+        "조치(disarm)로 확보, 방어는 오염 게이트의 fail-closed 관측」."
     ),
 }
 

@@ -1,6 +1,6 @@
 """Contract/account-map stamp — the identity every artifact carries.
 
-Contract v1.3 ④ (job brief): the binding identity is the **version string
+Contract v1.4 ②③ (job brief): the binding identity is the **version string
 plus quoted clause**, and the whole-file digest is demoted to a reference
 field. These tests pin that shape, because the failure it prevents is silent:
 an artifact that looks stamped while naming a contract the code no longer
@@ -16,9 +16,9 @@ from scripts.b0x import contract as contract_module
 
 @pytest.mark.unit
 def test_version_is_the_binding_identity() -> None:
-    assert contract_module.CONTRACT_VERSION == "v1.3"
+    assert contract_module.CONTRACT_VERSION == "v1.4"
     stamp = contract_module.contract_stamp()
-    assert stamp["version"] == "v1.3"
+    assert stamp["version"] == "v1.4"
 
 
 @pytest.mark.unit
@@ -38,14 +38,12 @@ def test_clauses_are_quoted_verbatim_not_merely_referenced() -> None:
     """A clause number with no text cannot be checked against the document."""
 
     clauses = contract_module.contract_stamp()["clauses"]
-    assert set(clauses) == {"§8 v1.3 ①", "§8 v1.3 ②"}
+    assert set(clauses) == {"§8 v1.4 ②", "§8 v1.4 ③"}
     for key, text in clauses.items():
         assert len(text) > 40, f"{key} is a reference, not a quotation"
-    # ① is the re-registration decision this job executes.
-    assert "취소" in clauses["§8 v1.3 ①"]
-    assert "재실행" in clauses["§8 v1.3 ①"]
-    # ② is the narrowed sidecar standing.
-    assert "매수측" in clauses["§8 v1.3 ②"]
+    assert "SHARED_ACCOUNT_HISTORY" in clauses["§8 v1.4 ②"]
+    assert "disarm" in clauses["§8 v1.4 ③"]
+    assert "fail-closed" in clauses["§8 v1.4 ③"]
 
 
 @pytest.mark.unit

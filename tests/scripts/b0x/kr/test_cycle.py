@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from scripts.b0x.kr.cycle import OUTSIDE_RTH_REASON, run_kr_cycle
-from scripts.b0x.labels import TRUST_LABELS
+from scripts.b0x.labels import SHARED_ACCOUNT_HISTORY, TRUST_LABELS
 from scripts.b0x.ledger import ObservationLedger
 from tests.scripts.b0x._table_fixtures import (
     make_payload,
@@ -194,6 +194,8 @@ async def test_dry_run_plans_but_never_dispatches(
     artifact_text = outcome.artifact_path.read_text(encoding="utf-8")
     for label in TRUST_LABELS:
         assert label in artifact_text
+    assert SHARED_ACCOUNT_HISTORY not in outcome.record["labels"]
+    assert "SHARED_ACCOUNT_HISTORY" not in artifact_text
 
 
 @pytest.mark.asyncio
