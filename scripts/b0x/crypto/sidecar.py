@@ -34,10 +34,13 @@ Fail-closed layers before any order can reach the venue
 2. ``assert_envelope_locked`` — §4 caps cannot have been widened.
 3. Symbol must be in :data:`B0X_SIDECAR_SYMBOLS` (3 entries, frozen).
 4. Host re-asserted on every public read as well as every signed call.
-5. Account-wide fresh truth: any balance or open order this lane did not
-   create marks the cycle ``CONTAMINATED`` and blocks submission — a shared
-   Demo account is the ROB-993 §5 failure mode, and B0-X's per-symbol caps
-   are meaningless if someone else is trading the same book.
+5. Account-wide fresh truth: any open order, or any *sellable* balance, this
+   lane did not create marks the cycle ``CONTAMINATED`` and blocks submission
+   — a shared Demo account is the ROB-993 §5 failure mode, and B0-X's
+   per-symbol caps are meaningless if someone else is trading the same book.
+   "Sellable" = floor(LOT_SIZE) > 0 (contract v1.2 §8, :func:`sellable_qty`):
+   a balance under the venue's minimum trade unit cannot become an order, so
+   it can neither be liquidated nor used to bypass a cap.
 6. Post-floor notional re-check: LOT_SIZE flooring can move the realized
    notional, so the cap is verified against the *realized* value, not the
    requested one (ROB-993 R3).
@@ -47,9 +50,11 @@ Known limitation — v1 attribution is fail-closed, not fail-live
 ---------------------------------------------------------------
 This lane does not yet reconcile fills back into an attributed position book.
 The consequence is deliberate and safe rather than hidden: because B0-X's book
-starts empty, *any* non-zero base balance reads as ``foreign`` — including a
+starts empty, *any* sellable base balance reads as ``foreign`` — including a
 balance B0-X's own fill just created. So the cycle after a first fill marks the
-account ``CONTAMINATED`` and refuses to submit again.
+account ``CONTAMINATED`` and refuses to submit again. (The v1.2 dust rule does
+not soften this: a filled B0-X order is by construction above minQty, so it
+still halts the lane. Only unsellable residue is excused.)
 
 That is over-conservative (the lane halts itself after one round trip) but it
 is the correct direction to err: the alternative, treating an unattributed
@@ -197,6 +202,10 @@ class SymbolFilters:
     step_size: Decimal
     tick_size: Decimal
     min_notional: Decimal
+    #: ``LOT_SIZE.minQty`` — the venue's minimum trade unit. Read only by
+    #: :func:`sellable_qty` (the contamination judgment); sizing keeps using
+    #: ``step_size``/``min_notional`` exactly as before.
+    min_qty: Decimal = Decimal("0")
 
 
 def _parse_filters(body: dict[str, Any], symbol: str) -> SymbolFilters:
@@ -206,10 +215,12 @@ def _parse_filters(body: dict[str, Any], symbol: str) -> SymbolFilters:
     step_size: Decimal | None = None
     tick_size: Decimal | None = None
     min_notional: Decimal | None = None
+    min_qty: Decimal = Decimal("0")
     for entry in symbols[0].get("filters") or []:
         ftype = entry.get("filterType")
         if ftype == "LOT_SIZE":
             step_size = Decimal(str(entry.get("stepSize", "0")))
+            min_qty = Decimal(str(entry.get("minQty", "0")))
         elif ftype == "PRICE_FILTER":
             tick_size = Decimal(str(entry.get("tickSize", "0")))
         elif ftype in ("NOTIONAL", "MIN_NOTIONAL"):
@@ -225,6 +236,7 @@ def _parse_filters(body: dict[str, Any], symbol: str) -> SymbolFilters:
         tick_size=tick_size,
         # Conservative fallback matching the ROB-298 smoke CLI.
         min_notional=min_notional if min_notional is not None else Decimal("5"),
+        min_qty=min_qty,
     )
 
 
@@ -256,6 +268,46 @@ async def fetch_reference_price(*, base_url: str, symbol: str) -> Decimal:
 # ---------------------------------------------------------------------------
 # Fresh truth (read-only) — account map requirement before any assignment use.
 # ---------------------------------------------------------------------------
+
+
+def sellable_qty(balance: Decimal, *, filters: SymbolFilters) -> Decimal:
+    """Quantity of ``balance`` that could actually be turned into an order.
+
+    Floors to ``LOT_SIZE.stepSize`` and requires the result to clear
+    ``LOT_SIZE.minQty``. Never rounds up — same direction as
+    ``spot_demo.sizing``, where refusing to round up *is* the safety line.
+    A balance under the venue's minimum trade unit floors to exactly zero:
+    no SELL can be constructed from it at all, at any price.
+
+    This is the contamination predicate (contract v1.2 §8): a base balance is
+    foreign inventory when it is **sellable**, not merely when it is non-zero.
+    The previous ``free + locked > 0`` test deadlocked the lane — X-S measured
+    BTC ``0.00000972`` (minQty ``0.00001``) and SOL ``0.00094600``
+    (minQty ``0.001``) left by ROB-298/ROB-307 round trips, which are
+    physically impossible to liquidate, so ``contaminated`` could never clear.
+
+    🔴 ``MIN_NOTIONAL`` is deliberately **not** consulted here, and this is the
+    whole point of the rule's narrowness. MIN_NOTIONAL on these symbols is
+    5 USDT — the same order of magnitude as the §4 per-order cap (10 USDT).
+    A notional-based dust test would therefore wave through foreign inventory
+    as large as this lane's own orders, which is exactly the shared-book state
+    the gate exists to catch. "Too small to sell" is the rule; "small" is not.
+
+    Note the vocabulary clash with two neighbouring lanes, which use the *same
+    word* for a *wider* set and must not be reused here:
+    ``spot_demo.sizing.compute_close_qty`` and
+    ``portfolio_overview_service`` both call a below-min-notional balance
+    "dust". Under B0-X v1.2, a minQty-clearing balance is still contamination
+    however little it is worth.
+    """
+
+    step = filters.step_size
+    if step <= 0:
+        raise ValueError("step_size must be > 0 to judge sellability")
+    floored = (balance / step).quantize(Decimal("1"), rounding=ROUND_DOWN) * step
+    if floored <= 0 or floored < filters.min_qty:
+        return Decimal("0")
+    return floored
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,8 +355,24 @@ class FreshTruth:
         }
 
 
-async def read_fresh_truth(client: BinanceSpotDemoExecutionClient) -> FreshTruth:
-    """Read-only positions/open-orders/balances across the whole lane surface."""
+async def read_fresh_truth(
+    client: BinanceSpotDemoExecutionClient,
+    *,
+    filters: dict[str, SymbolFilters] | None = None,
+) -> FreshTruth:
+    """Read-only positions/open-orders/balances across the whole lane surface.
+
+    ``filters`` (venue LOT_SIZE per symbol) is fetched from the public
+    ``exchangeInfo`` endpoint when not supplied; it is needed because the
+    contamination predicate is now sellability, not presence
+    (:func:`sellable_qty`). These are unsigned, host-asserted reads.
+    """
+
+    if filters is None:
+        filters = {
+            symbol: await fetch_symbol_filters(base_url=base_url(), symbol=symbol)
+            for symbol in sorted(B0X_SIDECAR_BASE_ASSETS)
+        }
 
     quote = await client.get_asset_balance(asset=QUOTE_ASSET)
     base_balances: dict[str, tuple[Decimal, Decimal]] = {}
@@ -321,12 +389,29 @@ async def read_fresh_truth(client: BinanceSpotDemoExecutionClient) -> FreshTruth
             if not str(order.client_order_id).startswith(CLIENT_ORDER_ID_PREFIX):
                 foreign_orders.append(f"{symbol}:{order.client_order_id}")
 
-    # A non-zero base balance on a lane that has never filled anything is, by
+    # A *sellable* base balance on a lane that has never filled anything is, by
     # definition, someone else's. The cycle records it and refuses to submit
     # rather than silently treating it as B0-X inventory.
-    foreign_assets = [
-        asset for asset, (free, locked) in base_balances.items() if free + locked > 0
-    ]
+    #
+    # Contract v1.2 §8: judged on floor(LOT_SIZE) sellable quantity, not on
+    # presence. Balances below the venue's minimum trade unit cannot be sold,
+    # cannot be grown into a position, and cannot bypass a cap — see
+    # :func:`sellable_qty` for why the threshold stops at minQty and does not
+    # reach MIN_NOTIONAL. Free + locked is used (not free alone) so a balance
+    # tied up in an order still counts toward the judgment.
+    asset_to_symbol = {
+        asset: symbol for symbol, asset in B0X_SIDECAR_BASE_ASSETS.items()
+    }
+    foreign_assets = []
+    for asset, (free, locked) in base_balances.items():
+        symbol_filters = filters.get(asset_to_symbol[asset])
+        if symbol_filters is None:
+            # No filters => sellability is unknown => fail closed, as before.
+            if free + locked > 0:
+                foreign_assets.append(asset)
+            continue
+        if sellable_qty(free + locked, filters=symbol_filters) > 0:
+            foreign_assets.append(asset)
 
     return FreshTruth(
         quote_free=quote.free,
@@ -668,6 +753,7 @@ __all__ = [
     "fetch_symbol_filters",
     "fetch_reference_price",
     "read_fresh_truth",
+    "sellable_qty",
     "align_price",
     "client_order_id_for",
     "plan_orders",

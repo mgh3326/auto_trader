@@ -421,6 +421,189 @@ def test_flat_account_is_recognized() -> None:
     assert _fresh(base={"BTC": (Decimal("1"), Decimal("0"))}).flat is False
 
 
+# ---------------------------------------------------------------------------
+# Contamination judgment — contract v1.2 §8 dust rule.
+#
+# The whole rule in one line: "too small to sell" is excused, "small" is not.
+# ---------------------------------------------------------------------------
+
+
+class _FakeBalance:
+    def __init__(self, free: str, locked: str = "0") -> None:
+        self.free = Decimal(free)
+        self.locked = Decimal(locked)
+
+
+class _FakeOpenOrders:
+    orders: list[Any] = []
+
+
+class _ReadOnlyClient:
+    """Read-only stand-in. Any mutation attempt fails the test loudly."""
+
+    def __init__(self, balances: dict[str, str]) -> None:
+        self._balances = balances
+
+    async def get_asset_balance(self, *, asset: str) -> _FakeBalance:
+        return _FakeBalance(self._balances.get(asset, "0"))
+
+    async def get_open_orders(self, *, symbol: str) -> _FakeOpenOrders:
+        return _FakeOpenOrders()
+
+    async def submit_order(self, **kwargs: Any) -> None:
+        raise AssertionError("read_fresh_truth must never submit an order")
+
+
+# BTCUSDT/SOLUSDT venue reality as measured by X-S on 2026-08-08.
+_VENUE_FILTERS = {
+    "BTCUSDT": sidecar.SymbolFilters(
+        step_size=Decimal("0.00001"),
+        tick_size=Decimal("0.01"),
+        min_notional=Decimal("5"),
+        min_qty=Decimal("0.00001"),
+    ),
+    "ETHUSDT": sidecar.SymbolFilters(
+        step_size=Decimal("0.0001"),
+        tick_size=Decimal("0.01"),
+        min_notional=Decimal("5"),
+        min_qty=Decimal("0.0001"),
+    ),
+    "SOLUSDT": sidecar.SymbolFilters(
+        step_size=Decimal("0.001"),
+        tick_size=Decimal("0.01"),
+        min_notional=Decimal("5"),
+        min_qty=Decimal("0.001"),
+    ),
+}
+
+
+async def _truth(balances: dict[str, str]) -> sidecar.FreshTruth:
+    return await sidecar.read_fresh_truth(
+        _ReadOnlyClient(balances), filters=_VENUE_FILTERS
+    )
+
+
+@pytest.mark.asyncio
+async def test_mutant_1_sellable_balance_under_min_notional_is_still_contamination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """🔴 The load-bearing case. A balance that clears minQty but is worth far
+    less than MIN_NOTIONAL (5 USDT) is foreign inventory and must block.
+
+    If this ever passes, the gate has been widened to a notional threshold and
+    foreign holdings the size of the lane's own 10 USDT cap would walk through.
+    """
+
+    # 0.00009 BTC ~= 5.6 USDT at the price X-S measured... but sizing does not
+    # matter: it is 9 steps of minQty, so it is sellable, so it is foreign.
+    fresh = await _truth({"BTC": "0.00009"})
+    assert fresh.foreign_base_assets == ("BTC",)
+    assert fresh.contaminated is True
+
+    # And the pathological version: exactly one minQty unit, worth ~0.6 USDT —
+    # an order of magnitude below MIN_NOTIONAL, still contamination.
+    one_unit = await _truth({"BTC": "0.00001"})
+    assert one_unit.foreign_base_assets == ("BTC",)
+    assert one_unit.contaminated is True
+
+    # ...and it still blocks submission at the last line before the venue.
+    monkeypatch.setenv("B0X_SIDECAR_ENABLED", "true")
+    with pytest.raises(sidecar.SidecarContaminated):
+        await sidecar.submit_planned(
+            _ReadOnlyClient({}), [], envelope=ENVELOPE, fresh_truth=fresh, confirm=False
+        )
+
+
+@pytest.mark.asyncio
+async def test_mutant_2_unsellable_dust_is_not_contamination() -> None:
+    """The X-S deadlock: residue that floors to zero cannot be liquidated, so
+    treating it as contamination made ``SIDECAR_ARMED=YES`` unreachable."""
+
+    fresh = await _truth({"BTC": "0.00000972", "SOL": "0.00094600"})
+    assert fresh.foreign_base_assets == ()
+    assert fresh.contaminated is False
+
+    # Not hidden, though — the dust stays visible in the observation record.
+    assert fresh.status_only()["base_assets_with_nonzero_balance"] == ["BTC", "SOL"]
+
+
+@pytest.mark.asyncio
+async def test_mutant_3_judgment_does_not_consult_min_notional() -> None:
+    """Kill the notional-based variant: with MIN_NOTIONAL mutated to absurd
+    values in both directions, the verdict must not move. Only LOT_SIZE counts.
+    """
+
+    sellable = {"BTC": "0.00009"}
+    dust = {"BTC": "0.00000972"}
+
+    for min_notional in ("0", "5", "1000000"):
+        mutated = {
+            symbol: replace(filters, min_notional=Decimal(min_notional))
+            for symbol, filters in _VENUE_FILTERS.items()
+        }
+        assert (
+            await sidecar.read_fresh_truth(_ReadOnlyClient(sellable), filters=mutated)
+        ).contaminated is True, (
+            f"min_notional={min_notional} changed a sellable verdict"
+        )
+        assert (
+            await sidecar.read_fresh_truth(_ReadOnlyClient(dust), filters=mutated)
+        ).contaminated is False, f"min_notional={min_notional} changed a dust verdict"
+
+
+@pytest.mark.asyncio
+async def test_locked_balance_counts_toward_the_judgment() -> None:
+    """Inventory parked in someone else's resting order is still inventory."""
+
+    assert (await _truth({})).contaminated is False
+
+    class _Locked(_ReadOnlyClient):
+        async def get_asset_balance(self, *, asset: str) -> _FakeBalance:
+            if asset == "SOL":
+                return _FakeBalance("0", "0.5")
+            return _FakeBalance("0")
+
+    locked = await sidecar.read_fresh_truth(_Locked({}), filters=_VENUE_FILTERS)
+    assert locked.foreign_base_assets == ("SOL",)
+
+
+@pytest.mark.asyncio
+async def test_missing_filters_fail_closed_to_the_old_presence_test() -> None:
+    """If sellability is unknowable, fall back to the stricter rule."""
+
+    fresh = await sidecar.read_fresh_truth(
+        _ReadOnlyClient({"BTC": "0.00000972"}), filters={}
+    )
+    assert fresh.foreign_base_assets == ("BTC",)
+    assert fresh.contaminated is True
+
+
+def test_sellable_qty_requires_min_qty_not_just_a_whole_step() -> None:
+    """On all three authorized symbols ``stepSize == minQty``, so the two
+    thresholds coincide and a step-only implementation looks identical. Pin the
+    intended rule on a venue where they differ: a balance that is a whole
+    number of steps but below minQty is still refused by the matching engine,
+    so it is unsellable — dust.
+    """
+
+    wide = sidecar.SymbolFilters(
+        step_size=Decimal("0.001"),
+        tick_size=Decimal("0.01"),
+        min_notional=Decimal("5"),
+        min_qty=Decimal("0.01"),
+    )
+    assert sidecar.sellable_qty(Decimal("0.005"), filters=wide) == Decimal("0")
+    assert sidecar.sellable_qty(Decimal("0.01"), filters=wide) == Decimal("0.01")
+
+
+def test_sellable_qty_floors_and_never_rounds_up() -> None:
+    filters = _VENUE_FILTERS["SOLUSDT"]
+    assert sidecar.sellable_qty(Decimal("0.0009"), filters=filters) == Decimal("0")
+    assert sidecar.sellable_qty(Decimal("0.001"), filters=filters) == Decimal("0.001")
+    assert sidecar.sellable_qty(Decimal("0.0019"), filters=filters) == Decimal("0.001")
+    assert sidecar.sellable_qty(Decimal("0"), filters=filters) == Decimal("0")
+
+
 def test_per_order_cap_bounds_buys_only_not_exits() -> None:
     """The §4 per-order cap bounds capital deployment. Capping a sell would
     strand inventory the lane is trying to reduce."""
