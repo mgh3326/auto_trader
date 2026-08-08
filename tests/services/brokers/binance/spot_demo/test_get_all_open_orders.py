@@ -51,9 +51,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> BinanceSpotDemoExecutionClient:
 
 @pytest.mark.asyncio
 async def test_returns_orders_across_every_symbol(client, httpx_mock):
-    httpx_mock.add_response(
-        method="GET", url=_OPEN_ORDERS_RE, json=_ACCOUNT_WIDE_JSON
-    )
+    httpx_mock.add_response(method="GET", url=_OPEN_ORDERS_RE, json=_ACCOUNT_WIDE_JSON)
 
     result = await client.get_all_open_orders()
 
