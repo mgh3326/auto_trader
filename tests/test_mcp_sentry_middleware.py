@@ -20,12 +20,19 @@ from app.mcp_server import caller_identity_middleware
 from app.mcp_server.caller_identity_middleware import CallerIdentityMiddleware
 from app.mcp_server.sentry_middleware import McpToolCallSentryMiddleware
 from app.monitoring.sentry import (
+    MCP_LANE_UNTAGGED,
+    MCP_PROFILE_TAG_KEY,
+    MCP_SESSION_LABEL_TAG_KEY,
     _data_age_bucket,
     _truncate_for_sentry,
+    apply_mcp_lane_tags,
     build_mcp_tool_call_context,
     build_mcp_tool_observation,
+    enrich_mcp_tool_call_scope,
     extract_mcp_result_envelope,
     resolve_mcp_funnel_stage,
+    resolve_mcp_profile_tag,
+    resolve_mcp_session_label_tag,
 )
 
 
@@ -462,6 +469,212 @@ class TestBuildMcpToolObservation:
     )
     def test_data_age_bucket_boundaries(self, value: Any, expected: str):
         assert _data_age_bucket(value) == expected
+
+
+@pytest.mark.unit
+class TestMcpLaneTags:
+    """ROB-1232 — always-non-null mcp.profile / mcp.session_label on tools/call."""
+
+    def test_profile_tag_from_mcp_profile_env(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MCP_PROFILE", "hermes-paper-kis")
+        assert resolve_mcp_profile_tag() == "hermes-paper-kis"
+        monkeypatch.setenv("MCP_PROFILE", "  kiwoom  ")
+        assert resolve_mcp_profile_tag() == "kiwoom"
+
+    def test_profile_tag_missing_env_is_untagged_not_null(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("MCP_PROFILE", raising=False)
+        value = resolve_mcp_profile_tag()
+        assert value == MCP_LANE_UNTAGGED
+        assert value == "untagged"
+        assert value is not None
+
+    def test_profile_tag_empty_env_is_untagged(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MCP_PROFILE", "   ")
+        assert resolve_mcp_profile_tag() == "untagged"
+        assert resolve_mcp_profile_tag(env_value="") == "untagged"
+        assert resolve_mcp_profile_tag(env_value=None) == "untagged"
+
+    def test_session_label_from_arguments(self):
+        assert (
+            resolve_mcp_session_label_tag({"session_label": "kr-live-2026-08-08"})
+            == "kr-live-2026-08-08"
+        )
+        assert (
+            resolve_mcp_session_label_tag(
+                {"nested": {"session_label": "only-one-unique"}}
+            )
+            == "only-one-unique"
+        )
+
+    def test_session_label_missing_is_untagged_not_null(self):
+        value = resolve_mcp_session_label_tag({})
+        assert value == "untagged"
+        assert value is not None
+        assert resolve_mcp_session_label_tag(None) == "untagged"
+        assert resolve_mcp_session_label_tag({"session_label": "  "}) == "untagged"
+
+    def test_apply_mcp_lane_tags_writes_scope_and_span(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("MCP_PROFILE", "kiwoom")
+        scope = _ScopeRecorder()
+        span = _SpanRecorder()
+        written = apply_mcp_lane_tags(
+            scope,  # type: ignore[arg-type]
+            span,
+            {"session_label": "mock-lane-a", "symbol": "005930"},
+        )
+        assert written == {
+            MCP_PROFILE_TAG_KEY: "kiwoom",
+            MCP_SESSION_LABEL_TAG_KEY: "mock-lane-a",
+        }
+        assert scope.tags[MCP_PROFILE_TAG_KEY] == "kiwoom"
+        assert scope.tags[MCP_SESSION_LABEL_TAG_KEY] == "mock-lane-a"
+        assert span.tags[MCP_PROFILE_TAG_KEY] == "kiwoom"
+        assert span.tags[MCP_SESSION_LABEL_TAG_KEY] == "mock-lane-a"
+        assert span.data[MCP_PROFILE_TAG_KEY] == "kiwoom"
+        assert span.data[MCP_SESSION_LABEL_TAG_KEY] == "mock-lane-a"
+
+    def test_apply_survives_tag_resolution_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        scope = _ScopeRecorder()
+        span = _SpanRecorder()
+
+        def boom(*_args: Any, **_kwargs: Any) -> str:
+            raise RuntimeError("forced lane-tag failure")
+
+        monkeypatch.setattr(sentry_module, "resolve_mcp_profile_tag", boom)
+        monkeypatch.setattr(sentry_module, "resolve_mcp_session_label_tag", boom)
+
+        written = apply_mcp_lane_tags(scope, span, {"session_label": "x"})  # type: ignore[arg-type]
+        assert written[MCP_PROFILE_TAG_KEY] == "untagged"
+        assert written[MCP_SESSION_LABEL_TAG_KEY] == "untagged"
+        assert scope.tags[MCP_PROFILE_TAG_KEY] == "untagged"
+        assert scope.tags[MCP_SESSION_LABEL_TAG_KEY] == "untagged"
+        assert span.tags[MCP_PROFILE_TAG_KEY] == "untagged"
+
+    def test_apply_survives_set_tag_failure(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("MCP_PROFILE", "default")
+
+        class BrokenScope:
+            def set_tag(self, key: str, value: str) -> None:
+                raise RuntimeError(f"cannot set {key}")
+
+            def set_context(self, key: str, value: dict[str, Any]) -> None:
+                raise AssertionError("set_context should not be used by lane tags")
+
+        span = _SpanRecorder()
+        # Must not raise even when scope.set_tag always fails.
+        written = apply_mcp_lane_tags(
+            BrokenScope(),  # type: ignore[arg-type]
+            span,
+            {"session_label": "ok-label"},
+        )
+        assert written[MCP_PROFILE_TAG_KEY] == "default"
+        assert written[MCP_SESSION_LABEL_TAG_KEY] == "ok-label"
+
+    def test_enrich_adds_lane_tags_without_removing_existing_fields(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("MCP_PROFILE", "hermes-paper-kis")
+        scope = _ScopeRecorder()
+        span = _SpanRecorder()
+        # Pre-seed a tag that must remain (additive-only contract).
+        scope.set_tag("service", "auto-trader-mcp")
+        span.set_tag("service", "auto-trader-mcp")
+        span.set_data("mcp.method.name", "tools/call")
+
+        before_tag_keys = set(scope.tags) | set(span.tags)
+        before_data_keys = set(span.data)
+
+        enrich_mcp_tool_call_scope(
+            scope,  # type: ignore[arg-type]
+            "get_quote",
+            {
+                "symbol": "AAPL",
+                "session_label": "operator-us",
+                "analysis_run_id": "run-1",
+            },
+            caller_agent_id="operator",
+            caller_source="http_header",
+            transport_session_id="sess-1",
+            span=span,
+        )
+
+        after_tag_keys = set(scope.tags) | set(span.tags)
+        after_data_keys = set(span.data)
+
+        # Existing keys preserved; new lane keys added.
+        assert before_tag_keys <= after_tag_keys
+        assert before_data_keys <= after_data_keys
+        assert "service" in scope.tags
+        assert scope.tags["service"] == "auto-trader-mcp"
+        assert span.data["mcp.method.name"] == "tools/call"
+        assert scope.tags[MCP_PROFILE_TAG_KEY] == "hermes-paper-kis"
+        assert scope.tags[MCP_SESSION_LABEL_TAG_KEY] == "operator-us"
+        assert scope.tags["mcp.tool.name"] == "get_quote"
+        assert scope.tags["mcp.analysis_run_id"] == "run-1"
+        # Explicit non-null lane tags (null was the M-1 measurement failure).
+        assert scope.tags[MCP_PROFILE_TAG_KEY] is not None
+        assert scope.tags[MCP_SESSION_LABEL_TAG_KEY] is not None
+        assert "null" not in (
+            scope.tags[MCP_PROFILE_TAG_KEY],
+            scope.tags[MCP_SESSION_LABEL_TAG_KEY],
+        )
+
+    def test_enrich_untagged_when_profile_and_session_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.delenv("MCP_PROFILE", raising=False)
+        scope = _ScopeRecorder()
+        span = _SpanRecorder()
+        enrich_mcp_tool_call_scope(
+            scope,  # type: ignore[arg-type]
+            "list_tools",
+            {},
+            span=span,
+        )
+        assert scope.tags[MCP_PROFILE_TAG_KEY] == "untagged"
+        assert scope.tags[MCP_SESSION_LABEL_TAG_KEY] == "untagged"
+        assert span.tags[MCP_PROFILE_TAG_KEY] == "untagged"
+        assert span.data[MCP_SESSION_LABEL_TAG_KEY] == "untagged"
+
+    def test_local_span_dump_shape(self, monkeypatch: pytest.MonkeyPatch, capsys: Any):
+        """Produce a tangible span tag dump for acceptance / impl report."""
+        monkeypatch.setenv("MCP_PROFILE", "kiwoom")
+        scope = _ScopeRecorder()
+        span = _SpanRecorder()
+        enrich_mcp_tool_call_scope(
+            scope,  # type: ignore[arg-type]
+            "kiwoom_mock_get_positions",
+            {"session_label": "mock-kr-b1"},
+            caller_agent_id="mock-operator",
+            span=span,
+        )
+        dump = {
+            "op": "mcp.server",
+            "mcp.method.name": "tools/call",
+            "mcp.tool.name": scope.tags.get("mcp.tool.name"),
+            "tags": {
+                MCP_PROFILE_TAG_KEY: span.tags.get(MCP_PROFILE_TAG_KEY),
+                MCP_SESSION_LABEL_TAG_KEY: span.tags.get(MCP_SESSION_LABEL_TAG_KEY),
+                "mcp.tool.name": span.tags.get("mcp.tool.name")
+                or scope.tags.get("mcp.tool.name"),
+                "mcp.consumer": scope.tags.get("mcp.consumer"),
+            },
+            "data": {
+                MCP_PROFILE_TAG_KEY: span.data.get(MCP_PROFILE_TAG_KEY),
+                MCP_SESSION_LABEL_TAG_KEY: span.data.get(MCP_SESSION_LABEL_TAG_KEY),
+            },
+        }
+        # Visible in pytest -s output for LOCAL_SPAN_DUMP evidence.
+        print(f"LOCAL_SPAN_DUMP={dump!r}")
+        assert dump["tags"][MCP_PROFILE_TAG_KEY] == "kiwoom"
+        assert dump["tags"][MCP_SESSION_LABEL_TAG_KEY] == "mock-kr-b1"
+        assert dump["tags"]["mcp.tool.name"] == "kiwoom_mock_get_positions"
 
 
 def _make_tool_context(tool_name: str, arguments: dict[str, Any] | None = None) -> Mock:
