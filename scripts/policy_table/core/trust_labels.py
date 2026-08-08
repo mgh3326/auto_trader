@@ -5,6 +5,11 @@ Source of record: ~/work/herdr-inbox/rob1230-b0-policy-table-design-v1.md §0
 artifact carries all three, in this order, in its header. Never edit the
 wording here without updating the design doc first — the acceptance gate
 checks for exact-string presence (3/3).
+
+US (P-2-US / B0-X contract §1) additionally stamps
+``CROSS_MARKET_TRANSFER_UNVALIDATED`` — B0 was calibrated on KR scope; a US
+port is double-unvalidated. Crypto/KR adapters keep the original 3-label
+tuple; only the US adapter uses ``US_TRUST_LABELS``.
 """
 
 from __future__ import annotations
@@ -23,4 +28,18 @@ TRUST_LABELS: tuple[str, str, str] = (
     ),
 )
 
-__all__ = ["TRUST_LABELS"]
+# B0-X experiment contract §1 + design inheritance for US port.
+CROSS_MARKET_TRANSFER_UNVALIDATED = (
+    "CROSS_MARKET_TRANSFER_UNVALIDATED — B0 는 KR 스코프 계량 — US 이식은 이중 미검증."
+)
+
+US_TRUST_LABELS: tuple[str, str, str, str] = (
+    *TRUST_LABELS,
+    CROSS_MARKET_TRANSFER_UNVALIDATED,
+)
+
+__all__ = [
+    "TRUST_LABELS",
+    "CROSS_MARKET_TRANSFER_UNVALIDATED",
+    "US_TRUST_LABELS",
+]

@@ -1,27 +1,24 @@
-"""KR (KRX equities) adapter for ROB-1230 P-2 — policy_table.v1 rows.
+"""US equities adapter for ROB-1230 P-2-US / B0-X U-1 — policy_table.v1 rows.
 
 Read-only. Universe selection is the ``invest_screener_snapshots`` table
-(``market='kr'``) — the design doc is explicit that a live KRX market-data
-scan (``screen_stocks``) is unavailable at the night-batch build time the
-KRX session is closed, so the DB-cached snapshot partition is the mandatory
-source, not a live screener call. Indicator inputs (fib/BB/RSI need >=120
-daily bars) are read straight from the ``kr_candles_1d`` DB table via
-``DailyCandlesRepository`` — also DB-only, no live KIS candle fetch — so
-this adapter has no live-market dependency for the compute path at all.
+(``market='us'``) — same DB-snapshot-forced pattern as the KR adapter (design
+doc §2: night batch cannot depend on a live session scan). Indicator inputs
+(fib/BB/RSI need ≥120 daily bars) are read from ``us_candles_1d`` via
+``DailyCandlesRepository`` (partition = exchange from ``us_symbol_universe``).
 
-The one live call this adapter makes is a **read-only** KIS domestic-account
-query (holdings) via a minimal facade that composes only ``AccountClient``
-(``app.services.brokers.kis.account``), never importing
-``app.services.brokers.kis.client`` (the full ``KISClient`` facade, which
-unconditionally imports ``DomesticOrderClient``/``OverseasOrderClient`` at
-module scope) or any order/orders module. This keeps the P-1 "zero
-order-tool import graph, zero broker mutation" bar intact for KR too.
+Holdings come from **Alpaca paper lab** only
+(``account_mode=alpaca_paper_lab`` / profile ``lab``) — the B0-X US account
+per operator account map (``mock/CLAUDE.md`` §1). ``alpaca_paper`` (default
+identity) is deliberately never touched. The service is used for
+``list_positions`` (GET) only; this adapter never calls order placement /
+cancel / submit methods (U-1 scope: table only, no U-2 order adapter).
+
+Labels: base 3 trust labels + ``CROSS_MARKET_TRANSFER_UNVALIDATED`` (B0-X
+contract §1). Per-row sell side still carries ``SELL_SIDE_MODEL_MISMATCH``.
 
 Split into ``fetch_raw_inputs`` (network + DB I/O) and
 ``compute_policy_table`` (pure, deterministic given those inputs), same
-contract as the crypto adapter, so a run's raw inputs can be dumped and
-replayed to prove byte-identical output on identical input (ROB-1230
-acceptance #2/#3).
+contract as crypto/KR adapters.
 """
 
 from __future__ import annotations
@@ -30,29 +27,24 @@ import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any
+
+import sqlalchemy as sa
 
 from app.core.db import AsyncSessionLocal
-from app.services.brokers.kis.account import AccountClient
-from app.services.brokers.kis.base import BaseKISClient
-from app.services.brokers.kis.protocols import KISClientProtocol
+from app.models.market_valuation_snapshot import MarketValuationSnapshot
+from app.models.us_symbol_universe import USSymbolUniverse
+from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 from app.services.daily_candles.repository import DailyCandlesRepository, MarketKey
 from app.services.invest_screener_snapshots.repository import (
     InvestScreenerSnapshotsRepository,
 )
-from app.services.invest_screener_snapshots.support_proximity_policy import (
-    DEFAULT_MIN_MARKET_CAP_KRW,
-    DEFAULT_MIN_TURNOVER_KRW,
-)
+from app.services.invest_view_model.us_quality_guards import US_MIN_MARKET_CAP_USD
 from app.services.investment_reports.repository import InvestmentReportsRepository
-from app.services.market_valuation_snapshots.normalized_market_cap import (
-    load_normalized_kr_market_caps,
-)
 from research.kr_corpus.d3_engine.models import Position
 from research.kr_corpus.d3_engine.policies import update_underwater_close
 from research.kr_corpus.d3_engine.signals import support_distance
 from scripts.policy_table.core.averaging import averaging_math
-from scripts.policy_table.core.kr_tick import build_kr_krx_tick_table
 from scripts.policy_table.core.max_table_age import max_table_age_stamp
 from scripts.policy_table.core.signal_math import (
     D3_CONSTANTS_ECHO,
@@ -61,67 +53,45 @@ from scripts.policy_table.core.signal_math import (
     SymbolSignal,
     compute_symbol_signal,
 )
-from scripts.policy_table.core.trust_labels import TRUST_LABELS
+from scripts.policy_table.core.trust_labels import US_TRUST_LABELS
+from scripts.policy_table.core.us_tick import TICK_SOURCE, build_us_equity_tick_table
 
-MARKET = "kr"
-SNAPSHOT_MARKET = "kr"  # invest_screener_snapshots.market
-WATCH_MARKET = (
-    "equity_kr"  # InvestmentWatchAlert.market (app/jobs/watch_market_data.py)
-)
-DB_MARKET_KEY = MarketKey.KR
-DB_PARTITION = "KRX"  # app.mcp_server.tooling.market_data_indicators._cache_first_kr
-QUOTE_CURRENCY = "KRW"
+MARKET = "us"
+SNAPSHOT_MARKET = "us"
+WATCH_MARKET = "equity_us"  # InvestmentWatchAlert.market
+DB_MARKET_KEY = MarketKey.US
+QUOTE_CURRENCY = "USD"
 CANDLE_GRANULARITY = "1d"
-CANDLE_LOOKBACK_BARS = (
-    200  # >= FIB_WINDOW(120) with headroom, mirrors P-1 crypto choice
-)
+CANDLE_LOOKBACK_BARS = 200  # >= FIB_WINDOW(120) with headroom
 CANDLE_FETCH_CONCURRENCY = 8
-DEEP_BAND_LOWER_PCT = Decimal(
-    "-0.12"
-)  # design doc §1-A "성문 정책" — shared with crypto
+DEFAULT_EXCHANGE_PARTITION = "NASD"
+DEEP_BAND_LOWER_PCT = Decimal("-0.12")
 DEEP_BAND_UPPER_PCT = Decimal("-0.03")
-POSITION_ALERT_PCT = Decimal(
-    "-0.30"
-)  # design doc §1-C "성문 정책" — shared with crypto
-LOSS_GUARD_MULTIPLIER = Decimal(
-    "1.01"
-)  # design doc §1-B "코드 레일 미러" — shared with crypto
+POSITION_ALERT_PCT = Decimal("-0.30")
+LOSS_GUARD_MULTIPLIER = Decimal("1.01")
 AVERAGING_K_LEVELS: tuple[Decimal, Decimal] = (Decimal("0.05"), Decimal("0.10"))
-# design doc §7-1: "KR 30만(신규)" — new-entry sizing band, distinct from crypto's
-# settings.upbit_buy_amount (no KR equivalent env setting exists).
-KR_NEW_ENTRY_NOTIONAL_KRW = Decimal("300000")
-# Reused, not reinvented: same market-cap/turnover floor already governing the
-# support-proximity build over this same invest_screener_snapshots table
-# (app/services/invest_screener_snapshots/support_proximity_policy.py).
-MIN_MARKET_CAP_KRW = DEFAULT_MIN_MARKET_CAP_KRW
-MIN_TURNOVER_KRW = DEFAULT_MIN_TURNOVER_KRW
 
+# B0-X contract §4 US column — "B0 규칙($150~450)".
+US_NEW_ENTRY_NOTIONAL_USD_MIN = Decimal("150")
+US_NEW_ENTRY_NOTIONAL_USD_MAX = Decimal("450")
+# Mid of the band for single-value sizing_band echo (range also stamped in config).
+US_NEW_ENTRY_NOTIONAL_USD = Decimal("300")
 
-# ---------------------------------------------------------------------------
-# Minimal read-only KIS domestic-account facade.
-# ---------------------------------------------------------------------------
+# Reused US quality floor (app/services/invest_view_model/us_quality_guards.py).
+MIN_MARKET_CAP_USD = US_MIN_MARKET_CAP_USD  # $100M
+# US adapter liquidity floor (no pre-existing shared constant analogous to
+# DEFAULT_MIN_TURNOVER_KRW). $1M daily notional — conservative small-cap cut.
+MIN_TURNOVER_USD = Decimal("1000000")
 
+# Yahoo-backed valuation rows are the trusted US market-cap source (builder
+# stamps source='yahoo' for market='us'). invest_screener_snapshots.market_cap
+# is not filled by build_snapshot_for_symbol — same column often NULL for KR
+# and may be NULL for US; we join valuation and record which source won.
+US_VALUATION_MARKET_CAP_SOURCE = "yahoo"
 
-class _ReadOnlyKISDomesticClient(BaseKISClient):
-    """Live KIS domestic-account reads only — no order-tool imports.
-
-    Composes only ``AccountClient`` (balance/holdings reads). Deliberately
-    does not use ``app.services.brokers.kis.client.KISClient`` — that facade
-    unconditionally imports ``DomesticOrderClient``/``OverseasOrderClient``
-    at module scope, which would pull order-placement code into this
-    adapter's import graph even though only a read is ever called.
-    ``AccountClient`` only needs the auth/HTTP protocol ``BaseKISClient``
-    already implements (see ``KISClientProtocol``), so no other composition
-    is required.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        parent = cast(KISClientProtocol, cast(object, self))
-        self._account = AccountClient(parent)
-
-    async def fetch_my_stocks(self) -> list[dict[str, Any]]:
-        return await self._account.fetch_my_stocks(is_mock=False, is_overseas=False)
+# B0-X US account only — never fall back to default alpaca_paper.
+ALPACA_HOLDINGS_PROFILE = "lab"
+ALPACA_ACCOUNT_MODE = "alpaca_paper_lab"
 
 
 # ---------------------------------------------------------------------------
@@ -134,11 +104,12 @@ class RawInputs:
     as_of: str  # ISO8601, captured once at fetch time
     holdings: list[dict[str, str]]
     watch_alerts: list[dict[str, Any]]
-    universe_pool: list[dict[str, Any]]  # full invest_screener_snapshots(market='kr')
+    universe_pool: list[dict[str, Any]]
     snapshot_partition_date: str | None
     snapshot_breadth: dict[str, Any] | None
-    universe_symbols: list[str]  # filter_passed ∪ holdings ∪ watch (attempted set)
-    candles: dict[str, list[list[str]]]  # symbol -> [[close, high, low], ...] ascending
+    universe_symbols: list[str]
+    candles: dict[str, list[list[str]]]  # symbol -> [[close, high, low], ...]
+    market_cap_fill_stats: dict[str, Any]
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -150,6 +121,7 @@ class RawInputs:
             "snapshot_breadth": self.snapshot_breadth,
             "universe_symbols": self.universe_symbols,
             "candles": self.candles,
+            "market_cap_fill_stats": self.market_cap_fill_stats,
         }
 
     @classmethod
@@ -163,6 +135,7 @@ class RawInputs:
             snapshot_breadth=payload["snapshot_breadth"],
             universe_symbols=payload["universe_symbols"],
             candles=payload["candles"],
+            market_cap_fill_stats=payload.get("market_cap_fill_stats") or {},
         )
 
 
@@ -171,29 +144,34 @@ def _passes_liquidity_filter(row: dict[str, Any]) -> bool:
     turnover = row.get("daily_turnover")
     if not market_cap or not turnover:
         return False
+    # Common-stock gate: only True passes. None/False fail closed (US screener
+    # activation ROB-204 — preferred/warrant/unit noise).
+    if row.get("is_common_stock") is not True:
+        return False
     return (
-        Decimal(market_cap) >= MIN_MARKET_CAP_KRW
-        and Decimal(turnover) >= MIN_TURNOVER_KRW
+        Decimal(market_cap) >= MIN_MARKET_CAP_USD
+        and Decimal(turnover) >= MIN_TURNOVER_USD
     )
 
 
 async def _fetch_holdings_raw() -> list[dict[str, str]]:
-    client = _ReadOnlyKISDomesticClient()
-    stocks = await client.fetch_my_stocks()
+    """Read-only Alpaca paper lab positions. No order methods called."""
+
+    service = AlpacaPaperBrokerService(profile=ALPACA_HOLDINGS_PROFILE)
+    positions = await service.list_positions()
     rows: list[dict[str, str]] = []
-    for stock in stocks:
-        symbol = str(stock.get("pdno", "")).strip()
+    for pos in positions:
+        symbol = str(pos.symbol or "").strip().upper()
         if not symbol:
             continue
-        quantity = Decimal(str(stock.get("hldg_qty") or "0"))
+        quantity = Decimal(str(pos.qty))
         if quantity <= 0:
             continue
-        average_price = Decimal(str(stock.get("pchs_avg_pric") or "0"))
         rows.append(
             {
                 "symbol": symbol,
                 "quantity": str(quantity),
-                "average_price": str(average_price),
+                "average_price": str(Decimal(str(pos.avg_entry_price))),
             }
         )
     return rows
@@ -222,44 +200,115 @@ async def _fetch_watch_alerts_raw(*, as_of: datetime) -> list[dict[str, Any]]:
     ]
 
 
+async def _load_us_yahoo_market_caps(
+    session: Any, symbols: list[str]
+) -> dict[str, tuple[Decimal, str]]:
+    """Newest yahoo market_cap per symbol from market_valuation_snapshots."""
+
+    if not symbols:
+        return {}
+    result = await session.execute(
+        sa.select(
+            MarketValuationSnapshot.symbol,
+            MarketValuationSnapshot.market_cap,
+            MarketValuationSnapshot.source,
+        )
+        .where(
+            MarketValuationSnapshot.market == "us",
+            MarketValuationSnapshot.symbol.in_(symbols),
+            MarketValuationSnapshot.source == US_VALUATION_MARKET_CAP_SOURCE,
+            MarketValuationSnapshot.market_cap.is_not(None),
+            MarketValuationSnapshot.market_cap > 0,
+        )
+        .order_by(
+            MarketValuationSnapshot.symbol.asc(),
+            MarketValuationSnapshot.snapshot_date.desc(),
+            MarketValuationSnapshot.computed_at.desc(),
+        )
+    )
+    caps: dict[str, tuple[Decimal, str]] = {}
+    for row in result.all():
+        if row.symbol in caps:
+            continue
+        caps[row.symbol] = (Decimal(str(row.market_cap)), str(row.source))
+    return caps
+
+
+async def _load_us_symbol_meta(
+    session: Any, symbols: list[str]
+) -> dict[str, dict[str, Any]]:
+    """exchange + is_common_stock from us_symbol_universe."""
+
+    if not symbols:
+        return {}
+    result = await session.execute(
+        sa.select(
+            USSymbolUniverse.symbol,
+            USSymbolUniverse.exchange,
+            USSymbolUniverse.is_common_stock,
+        ).where(USSymbolUniverse.symbol.in_(symbols))
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for row in result.all():
+        out[row.symbol] = {
+            "exchange": row.exchange or DEFAULT_EXCHANGE_PARTITION,
+            "is_common_stock": row.is_common_stock,
+        }
+    return out
+
+
 async def _fetch_universe_pool_raw() -> tuple[
-    list[dict[str, Any]], str | None, dict[str, Any] | None
+    list[dict[str, Any]], str | None, dict[str, Any] | None, dict[str, Any]
 ]:
     async with AsyncSessionLocal() as db:
         repo = InvestScreenerSnapshotsRepository(db)
         rows = await repo.list_candidate_pool(market=SNAPSHOT_MARKET, limit=None)
         breadth = await repo.breadth(market=SNAPSHOT_MARKET)
-        # invest_screener_snapshots.market_cap is unpopulated for every KR row
-        # (verified empirically against prod 2026-08-07: 3,925/3,925 NULL) —
-        # the trusted KRW-normalized source is market_valuation_snapshots
-        # (naver_finance), the same one support_proximity_builder.py already
-        # uses for this exact quality-floor purpose. Reused, not reinvented.
-        market_caps = await load_normalized_kr_market_caps(
-            db, [row.symbol for row in rows]
+        symbols = [row.symbol for row in rows]
+        valuation_caps = await _load_us_yahoo_market_caps(db, symbols)
+        meta = await _load_us_symbol_meta(db, symbols)
+
+    # Empirical fill accounting for the report (MARKET_CAP_SOURCE).
+    snapshot_cap_filled = 0
+    valuation_cap_used = 0
+    neither = 0
+    pool: list[dict[str, Any]] = []
+    for row in rows:
+        snap_cap = row.market_cap
+        snap_src = row.market_cap_source
+        if snap_cap is not None:
+            snapshot_cap_filled += 1
+            market_cap = str(Decimal(str(snap_cap)))
+            market_cap_source = snap_src or "invest_screener_snapshots"
+        elif row.symbol in valuation_caps:
+            valuation_cap_used += 1
+            cap_val, cap_src = valuation_caps[row.symbol]
+            market_cap = str(cap_val)
+            market_cap_source = f"market_valuation_snapshots:{cap_src}"
+        else:
+            neither += 1
+            market_cap = None
+            market_cap_source = None
+
+        symbol_meta = meta.get(row.symbol, {})
+        pool.append(
+            {
+                "symbol": row.symbol,
+                "latest_close": str(row.latest_close),
+                "market_cap": market_cap,
+                "market_cap_source": market_cap_source,
+                "daily_turnover": (
+                    str(row.daily_turnover) if row.daily_turnover is not None else None
+                ),
+                "daily_volume": (
+                    str(row.daily_volume) if row.daily_volume is not None else None
+                ),
+                "snapshot_date": row.snapshot_date.isoformat(),
+                "exchange": symbol_meta.get("exchange", DEFAULT_EXCHANGE_PARTITION),
+                "is_common_stock": symbol_meta.get("is_common_stock"),
+            }
         )
 
-    pool = [
-        {
-            "symbol": row.symbol,
-            "latest_close": str(row.latest_close),
-            "market_cap": (
-                str(market_caps[row.symbol].value)
-                if row.symbol in market_caps
-                else None
-            ),
-            "market_cap_source": (
-                market_caps[row.symbol].source if row.symbol in market_caps else None
-            ),
-            "daily_turnover": (
-                str(row.daily_turnover) if row.daily_turnover is not None else None
-            ),
-            "daily_volume": (
-                str(row.daily_volume) if row.daily_volume is not None else None
-            ),
-            "snapshot_date": row.snapshot_date.isoformat(),
-        }
-        for row in rows
-    ]
     partition_date = rows[0].snapshot_date.isoformat() if rows else None
     breadth_dict = {
         "total": breadth.total,
@@ -270,16 +319,29 @@ async def _fetch_universe_pool_raw() -> tuple[
             breadth.partition_date.isoformat() if breadth.partition_date else None
         ),
     }
-    return pool, partition_date, breadth_dict
+    fill_stats = {
+        "snapshot_total": len(rows),
+        "snapshot_market_cap_non_null": snapshot_cap_filled,
+        "valuation_yahoo_fallback_used": valuation_cap_used,
+        "market_cap_missing": neither,
+        "note": (
+            "invest_screener_snapshots.builder does not write market_cap; "
+            "prefer snapshot column when present, else market_valuation_snapshots "
+            f"source={US_VALUATION_MARKET_CAP_SOURCE}."
+        ),
+    }
+    return pool, partition_date, breadth_dict, fill_stats
 
 
-async def _fetch_kr_daily_candles_raw(symbol: str) -> list[list[str]] | None:
+async def _fetch_us_daily_candles_raw(
+    symbol: str, *, partition: str
+) -> list[list[str]] | None:
     async with AsyncSessionLocal() as db:
         repo = DailyCandlesRepository(session=db)
         rows = await repo.fetch_recent(
             market=DB_MARKET_KEY,
             symbol=symbol,
-            partition=DB_PARTITION,
+            partition=partition,
             count=CANDLE_LOOKBACK_BARS,
         )
     if not rows:
@@ -298,7 +360,7 @@ async def fetch_raw_inputs() -> RawInputs:
     """Do all network/DB I/O once; return a JSON-safe, replayable snapshot."""
 
     as_of = datetime.now(UTC)
-    pool, partition_date, breadth = await _fetch_universe_pool_raw()
+    pool, partition_date, breadth, fill_stats = await _fetch_universe_pool_raw()
     watch_alerts = await _fetch_watch_alerts_raw(as_of=as_of)
     holdings = await _fetch_holdings_raw()
 
@@ -307,11 +369,27 @@ async def fetch_raw_inputs() -> RawInputs:
     watch_symbols = {row["symbol"] for row in watch_alerts}
     universe_symbols = sorted(filtered_symbols | holding_symbols | watch_symbols)
 
+    partition_by_symbol = {
+        row["symbol"]: row.get("exchange") or DEFAULT_EXCHANGE_PARTITION for row in pool
+    }
+    # Holdings/watch outside the snapshot pool still need an exchange.
+    missing = [s for s in universe_symbols if s not in partition_by_symbol]
+    if missing:
+        async with AsyncSessionLocal() as db:
+            meta = await _load_us_symbol_meta(db, missing)
+        for sym in missing:
+            partition_by_symbol[sym] = meta.get(sym, {}).get(
+                "exchange", DEFAULT_EXCHANGE_PARTITION
+            )
+
     semaphore = asyncio.Semaphore(CANDLE_FETCH_CONCURRENCY)
 
     async def _bounded_fetch(symbol: str) -> tuple[str, list[list[str]] | None]:
         async with semaphore:
-            return symbol, await _fetch_kr_daily_candles_raw(symbol)
+            partition = partition_by_symbol.get(symbol, DEFAULT_EXCHANGE_PARTITION)
+            return symbol, await _fetch_us_daily_candles_raw(
+                symbol, partition=partition
+            )
 
     fetched = await asyncio.gather(*(_bounded_fetch(sym) for sym in universe_symbols))
     candles = {symbol: rows for symbol, rows in fetched if rows is not None}
@@ -325,19 +403,13 @@ async def fetch_raw_inputs() -> RawInputs:
         snapshot_breadth=breadth,
         universe_symbols=universe_symbols,
         candles=candles,
+        market_cap_fill_stats=fill_stats,
     )
 
 
 # ---------------------------------------------------------------------------
 # Pure computation — deterministic given RawInputs.
-#
-# ``_cluster_view_row``/``_select_invalidation_line``/
-# ``_underwater_sessions_within_lookback`` intentionally mirror
-# ``scripts/policy_table/adapters/crypto.py``'s identical helpers byte-for-
-# byte (same market-agnostic logic, no crypto-specific behavior). P-2's brief
-# is explicit that P-1 must not be touched/reimplemented, so this duplicates
-# rather than extracting a shared core module — a candidate DRY pass for a
-# future PR, not this one.
+# Helpers mirror kr.py (market-agnostic); not extracted this PR (same note as KR).
 # ---------------------------------------------------------------------------
 
 
@@ -450,10 +522,8 @@ def _build_row(
         "reason": (
             "requires broker order-history classification of manual vs. DCA-"
             "tranche fills; not derivable from read-only account/candle data "
-            "(same read-only-data gap ROB-1230 P-1 hit for crypto)"
+            "(same read-only-data gap ROB-1230 P-1/P-2 hit)"
         ),
-        # Crypto's median_6 is an Upbit-specific empirical constant (08-08
-        # oper-coin session); no equivalent KR reference has been measured.
         "median_6": None,
     }
 
@@ -517,7 +587,12 @@ def _build_row(
             "nearest_support_distance_pct": nearest_support_distance_pct,
             "deep_band": deep_band,
             "averaging_math": averaging,
-            "sizing_band": {"new_entry_notional_krw": KR_NEW_ENTRY_NOTIONAL_KRW},
+            "sizing_band": {
+                "new_entry_notional_usd": US_NEW_ENTRY_NOTIONAL_USD,
+                "new_entry_notional_usd_min": US_NEW_ENTRY_NOTIONAL_USD_MIN,
+                "new_entry_notional_usd_max": US_NEW_ENTRY_NOTIONAL_USD_MAX,
+                "account_mode": ALPACA_ACCOUNT_MODE,
+            },
         },
         "B_sell_side": {
             "label": "SELL_SIDE_MODEL_MISMATCH",
@@ -548,6 +623,8 @@ def _build_row(
                 if pool_row and pool_row.get("daily_turnover")
                 else None
             ),
+            "is_common_stock": pool_row.get("is_common_stock") if pool_row else None,
+            "exchange": pool_row.get("exchange") if pool_row else None,
             "in_filtered_snapshot_pool": pool_row is not None
             and _passes_liquidity_filter(pool_row),
         },
@@ -558,7 +635,7 @@ def _build_row(
 def compute_policy_table(raw: RawInputs) -> dict[str, Any]:
     """Pure: build the full policy_table.v1 payload from RawInputs."""
 
-    tick_table = build_kr_krx_tick_table()
+    tick_table = build_us_equity_tick_table()
 
     holdings_by_symbol = {row["symbol"]: row for row in raw.holdings}
     alerts_by_symbol: dict[str, list[dict[str, Any]]] = {}
@@ -607,13 +684,23 @@ def compute_policy_table(raw: RawInputs) -> dict[str, Any]:
         "schema": "policy_table.v1",
         "market": MARKET,
         "generated_at": raw.as_of,
-        "trust_labels": list(TRUST_LABELS),
+        "trust_labels": list(US_TRUST_LABELS),
         "config": {
             "quote_currency": QUOTE_CURRENCY,
             "candle_granularity": CANDLE_GRANULARITY,
             "candle_lookback_bars": CANDLE_LOOKBACK_BARS,
-            "candle_source": "db_daily_candles(kr_candles_1d, partition=KRX) — no live fetch",
-            "tick_source": "app.mcp_server.tick_size.get_tick_size_kr (runtime, not D3 frozen)",
+            "candle_source": (
+                "db_daily_candles(us_candles_1d, partition=exchange from "
+                "us_symbol_universe) — no live fetch"
+            ),
+            "tick_source": TICK_SOURCE,
+            "account_mode": ALPACA_ACCOUNT_MODE,
+            "b0x_labels": [
+                "B0_UNVALIDATED",
+                "SELL_SIDE_MODEL_MISMATCH",
+                "FIDELITY_INCONCLUSIVE_COVERAGE",
+                "CROSS_MARKET_TRANSFER_UNVALIDATED",
+            ],
             "d3_constants": D3_CONSTANTS_ECHO,
             "deep_band_pct": {
                 "lower": DEEP_BAND_LOWER_PCT,
@@ -622,16 +709,24 @@ def compute_policy_table(raw: RawInputs) -> dict[str, Any]:
             "position_alert_pct": POSITION_ALERT_PCT,
             "loss_guard_multiplier": LOSS_GUARD_MULTIPLIER,
             "averaging_k_levels": list(AVERAGING_K_LEVELS),
-            "new_entry_notional_krw": KR_NEW_ENTRY_NOTIONAL_KRW,
+            "new_entry_notional_usd": US_NEW_ENTRY_NOTIONAL_USD,
+            "new_entry_notional_usd_min": US_NEW_ENTRY_NOTIONAL_USD_MIN,
+            "new_entry_notional_usd_max": US_NEW_ENTRY_NOTIONAL_USD_MAX,
             "universe_filter": {
-                "min_market_cap_krw": MIN_MARKET_CAP_KRW,
-                "min_turnover_krw": MIN_TURNOVER_KRW,
-                "source": (
-                    "app.services.invest_screener_snapshots.support_proximity_policy"
-                    " (reused, not reinvented)"
+                "min_market_cap_usd": MIN_MARKET_CAP_USD,
+                "min_turnover_usd": MIN_TURNOVER_USD,
+                "require_is_common_stock_true": True,
+                "market_cap_sources": [
+                    "invest_screener_snapshots.market_cap (if non-null)",
+                    f"market_valuation_snapshots source={US_VALUATION_MARKET_CAP_SOURCE}",
+                ],
+                "quality_floor_reused": (
+                    "app.services.invest_view_model.us_quality_guards."
+                    "US_MIN_MARKET_CAP_USD"
                 ),
             },
-            # Contract v1.1 §2-2 literal (KR = 36h) — not a worker-chosen constant.
+            "market_cap_fill_stats": raw.market_cap_fill_stats,
+            # Contract v1.1 §2-2 literal (US = 36h) — not a worker-chosen constant.
             **max_table_age_stamp(MARKET),
         },
         "universe": {
@@ -653,13 +748,9 @@ def compute_policy_table(raw: RawInputs) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Human-readable summary — blend ranking is display-only (design doc §2:
-# "표 자체엔 무영향 — 랭킹은 표시 순서일 뿐"), never affects the JSON rows.
+# Human-readable summary — blend ranking is display-only (design doc §2).
 # ---------------------------------------------------------------------------
 
-# Initial weights (pilot — adjust during use, per design doc §2). Support
-# proximity and RSI oversold are the two core buy-timing signals (weighted
-# equally); trade value is a secondary liquidity sanity check.
 BLEND_WEIGHT_RSI = 0.4
 BLEND_WEIGHT_SUPPORT = 0.4
 BLEND_WEIGHT_TURNOVER = 0.2
@@ -722,6 +813,15 @@ def render_summary_md(payload: dict[str, Any], *, top_n: int = 50) -> str:
             by_reason[s["reason"]] = by_reason.get(s["reason"], 0) + 1
         reason_str = ", ".join(f"{k}={v}" for k, v in sorted(by_reason.items()))
         lines.append(f"skipped: {len(u['skipped'])} ({reason_str})")
+    fill = payload.get("config", {}).get("market_cap_fill_stats") or {}
+    if fill:
+        lines.append(
+            "market_cap_fill: "
+            f"snapshot_non_null={fill.get('snapshot_market_cap_non_null')} / "
+            f"total={fill.get('snapshot_total')}; "
+            f"yahoo_fallback_used={fill.get('valuation_yahoo_fallback_used')}; "
+            f"missing={fill.get('market_cap_missing')}"
+        )
     lines.append("")
 
     breadth = payload["market_context"].get("snapshot_breadth")
@@ -767,4 +867,5 @@ __all__ = [
     "fetch_raw_inputs",
     "compute_policy_table",
     "render_summary_md",
+    "ALPACA_ACCOUNT_MODE",
 ]
