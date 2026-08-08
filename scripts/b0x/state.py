@@ -66,6 +66,18 @@ class LaneAccountState:
     new_entry_symbols_today: tuple[str, ...] = ()
     #: Realized P&L for the current UTC day; negative == loss (§4 kill switch).
     realized_pnl_today: Decimal = Decimal("0")
+    #: Same-cycle net asset value (cash + mark-to-market positions), in
+    #: ``quote_currency``. ``None`` for lanes whose envelope uses an absolute
+    #: ``daily_loss_kill`` (it is not read there). A lane whose envelope uses
+    #: ``daily_loss_kill_basis="pct_of_nav"`` (KR) must supply it —
+    #: ``kill_switch.evaluate`` fails closed otherwise, because a NAV-relative
+    #: threshold has no absolute value to compare ``realized_pnl_today``
+    #: against without it. Deliberately part of the hashed derivation input
+    #: (below): NAV depends on mark-to-market prices that are not otherwise
+    #: captured by ``positions`` (which carries cost basis, not current
+    #: price), so two cycles with identical cash/positions but different NAV
+    #: are, correctly, a different account state for a pct_of_nav lane.
+    nav: Decimal | None = None
     #: B0-X orders still working at the venue / in the virtual book.
     open_order_keys: tuple[str, ...] = ()
     #: Venue state NOT attributable to B0-X — the CONTAMINATED signal.
@@ -115,6 +127,7 @@ class LaneAccountState:
             ],
             "new_entry_symbols_today": sorted(self.new_entry_symbols_today),
             "realized_pnl_today": _dec(self.realized_pnl_today),
+            "nav": None if self.nav is None else _dec(self.nav),
             "foreign_open_order_count": self.foreign_open_order_count,
             "foreign_position_symbols": sorted(self.foreign_position_symbols),
         }

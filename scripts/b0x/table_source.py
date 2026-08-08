@@ -1,8 +1,10 @@
 """Load + validate the ``policy_table.v1`` artifact B0-X derives orders from.
 
-Contract §2-2: **표가 없거나 ``STALE`` 이면 그 사이클은 주문 0** (조용한 재사용·
-재계산 금지, 사유 기록). This module is where that rule lives, and it is the
-only door through which a table reaches derivation.
+Contract §2-2 (v1.1, sha256 ``97278b0e8b8000e2e663c936328686001af5850087897270
+bc80a95ebf8f6b2e``): **표가 없거나 ``STALE`` 이거나 ``MAX_TABLE_AGE`` 초과면 그
+사이클은 주문 0** (조용한 재사용·재계산 금지, 사유 기록). This module is where
+that rule lives, and it is the only door through which a table reaches
+derivation.
 
 The table generator (``scripts/build_policy_table.py``) is read-only to B0-X:
 this module never invokes it, never writes into its output directory, and
@@ -16,12 +18,14 @@ reason code:
   ``schema_mismatch``      — not a ``policy_table.v1`` payload, or wrong market.
   ``hash_mismatch``        — recomputed ``policy_table_hash`` != the stamped one
                              (the artifact was edited after generation).
-  ``stale_by_age``         — ``generated_at`` older than the lane's max age.
+  ``stale_by_age``         — ``generated_at`` older than ``MAX_TABLE_AGE[market]``.
 
-``stale_by_age`` is B0-X's own addition, not the generator's: a table whose
-build failed *silently* (process killed before the STALE marker was written)
-would otherwise be replayed forever. It can only ever *reduce* the number of
-orders a cycle emits, never increase it.
+``stale_by_age`` began as B0-X's own crypto-only addition (a table whose build
+failed *silently*, process killed before the ``STALE`` marker was written,
+would otherwise be replayed forever) and was promoted into the contract itself
+in v1.1 (2026-08-08, operator-confirmed, "X-C 검증 발 안전장치의 계약 승격, 3시장
+공통 적용" — the verification finding became the rule). It can only ever
+*reduce* the number of orders a cycle emits, never increase it.
 """
 
 from __future__ import annotations
@@ -43,10 +47,16 @@ DEFAULT_TABLE_DIR: Final[Path] = (
     Path.home() / "services" / "auto_trader-operator" / "policy-tables"
 )
 
-#: Contract §5: crypto tables are rebuilt on a 4h cadence. Two missed builds is
-#: the point at which a table stops describing "now" — locked, no CLI flag.
+#: Contract §2-2 (v1.1, operator-confirmed 2026-08-08, sha256 ``97278b0e8b800
+#: 0e2e663c936328686001af5850087897270bc80a95ebf8f6b2e``) — literal per-market
+#: values, not a worker-chosen number: *"MAX_TABLE_AGE (v1.1, 운영자 확정
+#: 2026-08-08): crypto 8h · KR 36h · US 36h"*. crypto's value predates v1.1 as
+#: this module's own §5-cadence-derived addition (4h rebuild x 2 missed
+#: builds); KR/US were added by X-K/X-U once the contract literal existed —
+#: locked here, no CLI flag, no env var.
 MAX_TABLE_AGE: Final[dict[str, dt.timedelta]] = {
     "crypto": dt.timedelta(hours=8),
+    "kr": dt.timedelta(hours=36),
 }
 
 
