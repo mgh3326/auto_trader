@@ -25,8 +25,9 @@ reason code:
                              ``MAX_TABLE_AGE`` (contract v1.1 §2-2 literal).
 
 Ages are **not** worker-chosen — they come from
-``scripts.policy_table.core.max_table_age`` (contract sha256 stamped there).
-Exceeding age can only ever *reduce* the number of orders a cycle emits.
+``scripts.policy_table.core.max_table_age`` (single source of truth for all
+three markets; contract citation stamped there). Exceeding age can only ever
+*reduce* the number of orders a cycle emits, never increase it.
 """
 
 from __future__ import annotations

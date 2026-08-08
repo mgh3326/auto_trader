@@ -78,7 +78,7 @@ uv run python -m scripts.run_b0x_kr_cycle --derivation-only --repeat 2
 | `kill_switch.py` | **재사용 + 추가.** `evaluate()` 가 `daily_loss_kill_basis="pct_of_nav"` 일 때 `state.nav × 비율` 로 절대 임계값을 계산 후 비교(§7). `state.nav is None` 이면 `MissingNavForRatioKill` 로 fail-closed. crypto 의 절대 비교 경로는 그대로. |
 | `state.py` | **재사용 + 추가.** `LaneAccountState.nav` 필드 추가(기본 `None`, 해시 대상 — NAV 는 cash/positions 만으로 재구성 불가한 mark-to-market 값이므로 결정성 주장이 성립하려면 해시 입력이어야 한다). |
 | `derivation.py` | **재사용, 무변경.** L1/L2·물타기·R1/R2 50/50 전부 시장무관 — KR 도 그대로 통과한다. |
-| `table_source.py` | **재사용, 무변경.** `MAX_TABLE_AGE` 에 `"kr"` 항목을 추가하지 않았다 — §8 참고. |
+| `table_source.py` | **재사용 + 추가.** `MAX_TABLE_AGE["kr"] = 36h` 등록(§8) — 계약 v1.1 §2-2 리터럴, 워커 임의 수치 아님. |
 | `ledger.py`, `labels.py` | **재사용, 무변경.** |
 | `cycle.py` | **재사용 + export.** `_base_record`/`_render_report` 를 `base_record`/`render_cycle_report` 로 공개해 KR 사이클이 재사용한다(이름만 바꿈, crypto 두 레인 동작 불변 — `tests/scripts/b0x/test_cycle.py` 로 확인). |
 | `scripts/b0x/kr/mock.py`, `scripts/b0x/kr/cycle.py` | **신규.** KIS 계좌 read facade·tick 정렬·사이징·RTH 게이트·사이클 골격. |
@@ -123,16 +123,33 @@ effective_kill = state.nav * envelope.daily_loss_kill   # basis="pct_of_nav" 일
 NAV = fresh 읽기의 `cash`(주문가능현금, 없으면 예수금총액) + Σ `evlu_amt`(보유종목 평가금액),
 매 사이클 재계산한다(`scripts.b0x.kr.mock.read_fresh_truth`) — 고정값이 아니다.
 
-## 8. `MAX_TABLE_AGE` — KR 에는 없다
+## 8. `MAX_TABLE_AGE` — KR = 36h (계약 v1.1 §2-2)
 
-계약 §2-2 는 "표 부재" 와 "STALE 마커" 두 가지만 zero-order 트리거로 명시한다. crypto 의
-`stale_by_age`(8h, §5 의 4h 재생성 주기 ×2)는 그 시장 고유의 §5 조항에서 나온 것이지
-계약 전체의 규칙이 아니다. `table_source.MAX_TABLE_AGE = {"crypto": ...}` 에 `"kr"` 항목을
-추가하지 않았다 — `tests/scripts/b0x/test_kr_envelope_and_kill_switch.py::
-test_max_table_age_has_no_kr_entry` 가 회귀를 막는다.
+🔴 **정정 이력**: 최초 지시는 "계약에 없으니 KR 에 age 게이트를 넣지 말고
+`NEEDS_UPSTREAM(table_age_gate_not_in_contract)` 로 보고하라"였다. 이 지시는
+**철회됐다** — 운영자가 X-C 검증이 찾은 안전장치(crypto 전용 8h)를 계약 자체로
+승격시켰다.
 
-KR 주기(일 1회, 장 전)에 나이 게이트가 필요하다고 판단되면 **코드에 넣지 말고**
-`NEEDS_UPSTREAM(table_age_gate_not_in_contract)` 로 보고한다 — orch 의 명시적 지시다.
+**계약 v1.1 §2-2** (sha256 `97278b0e8b8000e2e663c936328686001af5850087897270
+bc80a95ebf8f6b2e`, 운영자 확정 2026-08-08, 원문 = `~/work/herdr-inbox/
+b0x-experiment-contract-v1-20260808.md`):
+
+> 표가 없거나 `STALE` 이거나 `MAX_TABLE_AGE` 초과면 그 사이클은 주문 0
+> (조용한 재사용·재계산 금지, 사유 기록).
+> **MAX_TABLE_AGE (v1.1, 운영자 확정 2026-08-08): crypto 8h · KR 36h · US 36h**
+> — X-C 검증 발 안전장치의 계약 승격, 3시장 공통 적용.
+
+`table_source.MAX_TABLE_AGE["kr"] = timedelta(hours=36)` — 이 PR 이 리터럴 그대로
+등록했다(US 는 별도 잡(X-U)의 몫이므로 여기서 추가하지 않는다). 초과 시 사유 코드는
+기존 5경로와 동일한 문(`load_policy_table`)을 통해 `stale_by_age` 로 기록되며,
+5-경로 게이트 로직 자체는 무변경 — crypto 도 이미 쓰던 문에 값 하나를 더했을 뿐이다.
+
+회귀 가드:
+- `tests/scripts/b0x/test_kr_envelope_and_kill_switch.py::
+  test_max_table_age_kr_is_36h_per_contract_v1_1` — 값 자체.
+- `tests/scripts/b0x/kr/test_cycle.py::
+  test_table_older_than_36h_derives_zero_orders_with_reason` /
+  `test_table_just_under_36h_still_derives_orders` — 사이클 종단 경계 동작.
 
 ## 9. envelope — 덮어쓸 수 없는 상수
 
@@ -170,6 +187,7 @@ uv run pytest tests/scripts/b0x/kr/ -q       # kr 전용
 
 kr 전용 포함: tick 정렬(KRX 2023+ 표와 일치) · 매수/매도 사이징 whole-share floor ·
 NAV = cash + Σ evlu_amt · RTH 게이트(세션 밖 → zero-order, 표 I/O 전혀 없음) · 표 게이트
-5경로 재사용 · NAV 비율 kill(단위 정합성, 재계산됨을 증명) · `MAX_TABLE_AGE` 에 kr 없음
-회귀 · 결정성(2회 동일 해시) · `confirm=True` 가 항상 fail-closed 함 · CLI 에 envelope
-필드/`--confirm` 플래그 없음 · KIS 주문 서피스 금지 import 정적 가드.
+5경로 재사용 · `MAX_TABLE_AGE["kr"]=36h`(계약 v1.1 §2-2) 값 고정 + 37h/35h59m 경계
+사이클 종단 동작 · NAV 비율 kill(단위 정합성, 재계산됨을 증명) · 결정성(2회 동일 해시) ·
+`confirm=True` 가 항상 fail-closed 함 · CLI 에 envelope 필드/`--confirm` 플래그 없음 ·
+KIS 주문 서피스 금지 import 정적 가드.

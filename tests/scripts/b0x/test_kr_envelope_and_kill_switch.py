@@ -1,23 +1,29 @@
-"""KR §4 envelope (NAV-ratio kill) — the two X-C verification lessons.
+"""KR §4 envelope (NAV-ratio kill) + §2-2 v1.1 MAX_TABLE_AGE.
 
 orch-mock relayed two MEDIUM findings from the X-C (crypto) verification pass
-that this module exists to prove KR does not repeat:
+that this module exists to prove KR does not repeat, plus one amendment:
 
-1. ``MAX_TABLE_AGE`` must not silently apply to KR. It is crypto-only
-   (``table_source.MAX_TABLE_AGE == {"crypto": ...}``) — this file asserts
-   that "kr" is still absent, so an unrelated future edit cannot reintroduce a
-   contract-unwritten age gate for KR without a assertion failing here.
+1. ``MAX_TABLE_AGE`` initially had no contract basis for KR — the first
+   instruction was not to add one and to report
+   ``NEEDS_UPSTREAM(table_age_gate_not_in_contract)`` instead. That was then
+   **reversed**: the operator promoted the X-C-verification-found safety net
+   into contract v1.1 §2-2 (sha256
+   ``97278b0e8b8000e2e663c936328686001af5850087897270bc80a95ebf8f6b2e``,
+   confirmed 2026-08-08), which gives KR a literal value: 36h. This file now
+   pins *that* value, cited, rather than pinning its absence.
 2. The shadow lane's kill switch compared a USDT constant directly against a
    KRW-denominated ``realized_pnl_today`` — an absolute threshold in the
    wrong currency. KR's contract §4 value is not even an absolute amount (it
    is "일 손실 −2.5% NAV", a ratio), so this file proves the ratio is turned
    into a same-currency absolute threshold via a same-cycle NAV snapshot
    before ever being compared, and that a missing NAV snapshot fails closed
-   instead of silently comparing a ratio against a currency amount.
+   instead of silently comparing a ratio against a currency amount. This
+   guidance did **not** change.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import replace
 from decimal import Decimal
 
@@ -31,6 +37,14 @@ from scripts.b0x.envelope import (
 )
 from scripts.b0x.state import LaneAccountState
 from scripts.b0x.table_source import MAX_TABLE_AGE
+
+#: The literal this whole file's age-gate assertions trace back to —
+#: contract v1.1 §2-2, operator-confirmed 2026-08-08. Not a magic string:
+#: independently re-verifiable against
+#: ``~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md``.
+CONTRACT_V1_1_SHA256 = (
+    "97278b0e8b8000e2e663c936328686001af5850087897270bc80a95ebf8f6b2e"
+)
 
 pytestmark = pytest.mark.unit
 
@@ -56,21 +70,22 @@ def test_kr_envelope_is_locked() -> None:
         assert_envelope_locked(widened)
 
 
-def test_max_table_age_has_no_kr_entry() -> None:
-    """Lesson 1 — do not let a future edit quietly add an age gate for KR.
+def test_max_table_age_kr_is_36h_per_contract_v1_1() -> None:
+    """Lesson 1 (amended) — KR's age gate is a contract literal, not a guess.
 
-    Contract §2-2 defines exactly two zero-order triggers: table absent, or
-    ``STALE`` marker present. Contract §5 gives crypto (only) a 4h rebuild
-    cadence, which is why ``stale_by_age`` exists for crypto. KR's cadence
-    (일 1회, 장 전) has no such age gate in the contract, and orch's explicit
-    instruction was: if one seems needed, report
-    ``NEEDS_UPSTREAM(table_age_gate_not_in_contract)`` — do not add it.
+    Contract §2-2 v1.1: *"MAX_TABLE_AGE (v1.1, 운영자 확정 2026-08-08): crypto
+    8h · KR 36h · US 36h"* — promoted from an X-C-verification-found safety
+    net into a 3-market contract rule. This pins the exact value so a future
+    edit that silently drifts it (in either direction) fails here first.
     """
 
-    assert "kr" not in MAX_TABLE_AGE
-    assert set(MAX_TABLE_AGE) == {"crypto"}, (
-        "a new market entry appeared in MAX_TABLE_AGE without a contract "
-        "citation — table_source.py docstring only documents crypto's 4h cadence"
+    assert MAX_TABLE_AGE["kr"] == dt.timedelta(hours=36)
+    # crypto's pre-existing value is unchanged by the v1.1 promotion.
+    assert MAX_TABLE_AGE["crypto"] == dt.timedelta(hours=8)
+    # "us" belongs to a separate job (X-U) — not this file's concern to add.
+    assert set(MAX_TABLE_AGE) <= {"crypto", "kr", "us"}, (
+        f"unexpected market entries in MAX_TABLE_AGE: {set(MAX_TABLE_AGE)} — "
+        "every key must trace to contract v1.1 §2-2"
     )
 
 
