@@ -1,20 +1,23 @@
-"""ROB-1230 P-1 — build a policy_table.v1 artifact (crypto/Upbit adapter).
+"""ROB-1230 P-1/P-2 — build a policy_table.v1 artifact (crypto + KR adapters).
 
-Scheduleless, read-only, advisory. Fetches Upbit market data + this repo's
-holdings/watch-alert tables, runs the shared indicator core (a direct reuse
-of research/kr_corpus/d3_engine's fib/BB/RSI/tick code — see
+Scheduleless, read-only, advisory. Each market adapter fetches its own raw
+inputs (crypto: live Upbit + this repo's holdings/watch-alert tables; kr:
+the invest_screener_snapshots DB table + DB daily candles + a read-only KIS
+holdings query), runs the shared indicator core (a direct reuse of
+research/kr_corpus/d3_engine's fib/BB/RSI/tick code — see
 scripts/policy_table/core/signal_math.py), and writes a policy_table.v1 JSON
 artifact plus a human-readable Markdown summary.
 
 No broker mutation. No order-tool imports (verify: `grep -rn "orders import"
-scripts/policy_table` should be empty — only `client.py`'s read functions
-are used). Never merges, never places or cancels an order.
+scripts/policy_table` should be empty — only read-shaped client/account
+functions are used). Never merges, never places or cancels an order.
 
 Usage
 -----
     uv run python -m scripts.build_policy_table --market crypto
+    uv run python -m scripts.build_policy_table --market kr
 
-    # Reproducibility check (ROB-1230 acceptance #3): dump raw inputs once,
+    # Reproducibility check (ROB-1230 acceptance #2): dump raw inputs once,
     # then replay the same inputs through the pure compute+serialize path
     # twice and diff the bytes.
     uv run python -m scripts.build_policy_table --market crypto \\
@@ -35,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.policy_table.adapters import crypto as crypto_adapter
+from scripts.policy_table.adapters import kr as kr_adapter
 from scripts.policy_table.core.schema import (
     canonical_json_bytes,
     compute_policy_table_hash,
@@ -154,10 +158,8 @@ def _render_summary_md(payload: dict[str, Any]) -> str:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    if args.market != "crypto":
-        raise NotImplementedError(
-            "only market=crypto is implemented in P-1 (KR adapter is P-2)"
-        )
+    if args.market not in ("crypto", "kr"):
+        raise NotImplementedError(f"unsupported market: {args.market}")
 
     out_dir = Path(args.out_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -165,19 +167,39 @@ async def _run(args: argparse.Namespace) -> int:
     latest_link = out_dir / f"latest-{args.market}.json"
 
     try:
-        if args.replay_raw:
-            raw_payload = json.loads(Path(args.replay_raw).expanduser().read_text())
-            raw = crypto_adapter.RawInputs.from_jsonable(raw_payload)
-        else:
-            raw = await crypto_adapter.fetch_raw_inputs(top_n=args.top_n)
-
-        if args.dump_raw:
-            Path(args.dump_raw).expanduser().write_text(
-                json.dumps(raw.to_jsonable(), sort_keys=True, indent=2) + "\n"
+        if args.market == "crypto":
+            top_n = (
+                args.top_n if args.top_n is not None else crypto_adapter.DEFAULT_TOP_N
             )
+            if args.replay_raw:
+                raw_payload = json.loads(Path(args.replay_raw).expanduser().read_text())
+                raw = crypto_adapter.RawInputs.from_jsonable(raw_payload)
+            else:
+                raw = await crypto_adapter.fetch_raw_inputs(top_n=top_n)
 
-        payload = crypto_adapter.compute_policy_table(raw, top_n=args.top_n)
-        payload["stamps"] = _build_stamps(payload)
+            if args.dump_raw:
+                Path(args.dump_raw).expanduser().write_text(
+                    json.dumps(raw.to_jsonable(), sort_keys=True, indent=2) + "\n"
+                )
+
+            payload = crypto_adapter.compute_policy_table(raw, top_n=top_n)
+            payload["stamps"] = _build_stamps(payload)
+            summary_md = _render_summary_md(payload)
+        else:
+            if args.replay_raw:
+                raw_payload = json.loads(Path(args.replay_raw).expanduser().read_text())
+                raw = kr_adapter.RawInputs.from_jsonable(raw_payload)
+            else:
+                raw = await kr_adapter.fetch_raw_inputs()
+
+            if args.dump_raw:
+                Path(args.dump_raw).expanduser().write_text(
+                    json.dumps(raw.to_jsonable(), sort_keys=True, indent=2) + "\n"
+                )
+
+            payload = kr_adapter.compute_policy_table(raw)
+            payload["stamps"] = _build_stamps(payload)
+            summary_md = kr_adapter.render_summary_md(payload, top_n=args.top_n or 50)
 
         artifact_bytes = canonical_json_bytes(payload)
         ts = (
@@ -189,7 +211,7 @@ async def _run(args: argparse.Namespace) -> int:
         md_path = out_dir / f"{ts}-{args.market}-summary.md"
 
         json_path.write_bytes(artifact_bytes)
-        md_path.write_text(_render_summary_md(payload))
+        md_path.write_text(summary_md)
 
         if latest_link.is_symlink() or latest_link.exists():
             latest_link.unlink()
@@ -221,8 +243,17 @@ async def _run(args: argparse.Namespace) -> int:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--market", default="crypto", choices=["crypto"])
-    parser.add_argument("--top-n", type=int, default=crypto_adapter.DEFAULT_TOP_N)
+    parser.add_argument("--market", default="crypto", choices=["crypto", "kr"])
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=None,
+        help=(
+            "crypto: universe top-N by 24h trade value (default "
+            f"{crypto_adapter.DEFAULT_TOP_N}); kr: summary.md display row cap "
+            "(default 50) — the KR JSON table itself is never top-N-capped"
+        ),
+    )
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
     parser.add_argument(
         "--dump-raw", default=None, help="write fetched raw inputs to this path"
