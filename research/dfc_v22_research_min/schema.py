@@ -20,13 +20,17 @@ import pyarrow as pa
 
 __all__ = [
     "CANONICAL_TABLES",
+    "GAP_EXCLUSION_REQUIRED_KEYS",
     "KLINES_4H_SCHEMA",
+    "MANIFEST_GAP_REQUIRED_KEYS",
+    "MANIFEST_LIFECYCLE_REQUIRED_KEYS",
     "MANIFEST_REQUIRED_KEYS",
     "MANIFEST_SOURCE_REQUIRED_KEYS",
     "MANIFEST_TABLE_REQUIRED_KEYS",
     "OUTCOMES_SCHEMA",
     "PIT_UNIVERSE_SCHEMA",
     "PREMIUM_INDEX_4H_SCHEMA",
+    "PREMIUM_INDEX_GAP_AUDIT_SCHEMA",
     "RAW_KLINE_FIELD_NAMES",
 ]
 
@@ -132,11 +136,34 @@ OUTCOMES_SCHEMA = pa.schema(
     ]
 )
 
+#: One row per (epoch, in-window gap symbol) — A2-C7.  A symbol whose premium
+#: index the archive does not carry has to be *accounted for* at every epoch it
+#: could have ranked in, so that dropping it from the pool is a visible act
+#: rather than an absence.
+#:
+#: ``quote_volume_lookback`` is the one nullable column in the corpus, and the
+#: validator pins it both ways: present exactly when the row claims the symbol
+#: was eligible, absent exactly when it claims it was not.  A placeholder zero
+#: would read as "ranked last" rather than "not ranked", which is the confusion
+#: this column exists to prevent.
+PREMIUM_INDEX_GAP_AUDIT_SCHEMA = pa.schema(
+    [
+        pa.field("epoch_open_time", pa.int64(), nullable=False),
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("eligibility_status", pa.string(), nullable=False),
+        pa.field("eligibility_evidence_sha256", pa.string(), nullable=False),
+        pa.field("quote_volume_lookback", pa.string(), nullable=True),
+        pa.field("verdict", pa.string(), nullable=False),
+        *_provenance_fields(),
+    ]
+)
+
 CANONICAL_TABLES: MappingProxyType[str, pa.Schema] = MappingProxyType(
     {
         "klines_4h": KLINES_4H_SCHEMA,
         "premium_index_4h": PREMIUM_INDEX_4H_SCHEMA,
         "pit_universe": PIT_UNIVERSE_SCHEMA,
+        "premium_index_gap_audit": PREMIUM_INDEX_GAP_AUDIT_SCHEMA,
         "outcomes": OUTCOMES_SCHEMA,
     }
 )
@@ -154,9 +181,37 @@ MANIFEST_REQUIRED_KEYS: tuple[str, ...] = (
     "universe",
     "imputation",
     "prerequisite_readiness",
+    "lifecycle_eligibility",
+    "premium_index_gap",
     "sources",
     "tables",
     "admissibility",
+)
+
+#: A2-C6 / A2-C7.  ``symbols`` is the full archive diff; ``in_window_symbols``
+#: is the subset that gets a per-epoch audit row; ``exclusions`` must account
+#: for every symbol in the difference between the two.
+MANIFEST_GAP_REQUIRED_KEYS: tuple[str, ...] = (
+    "symbols",
+    "in_window_symbols",
+    "exclusions",
+    "listing_endpoint",
+    "listing_retrieved_at",
+    "measurement_sha256",
+)
+
+GAP_EXCLUSION_REQUIRED_KEYS: tuple[str, ...] = (
+    "symbol",
+    "reason",
+    "evidence_sha256",
+)
+
+#: A2-C6.  The corpus states the authority situation rather than leaving it
+#: implicit, so a later reader cannot assume one was found.
+MANIFEST_LIFECYCLE_REQUIRED_KEYS: tuple[str, ...] = (
+    "authoritative_public_source",
+    "evidence_kind",
+    "proxy_limits",
 )
 
 MANIFEST_SOURCE_REQUIRED_KEYS: tuple[str, ...] = (

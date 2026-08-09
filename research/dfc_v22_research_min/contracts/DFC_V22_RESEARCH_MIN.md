@@ -10,11 +10,12 @@ collection, no listing, no download and no backtest.
 | Judged dimensions | kline OFI · premium-index · PIT universe · outcome evidence |
 | Upstream wording (canonical) | `~/work/herdr-inbox/answer-codexmock-next-wave-1630.md`, sha256 `df7aee908e50af42…` (137 lines) |
 | Binding record | `~/work/herdr-inbox/operator-decisions-20260805-0830.md` §25차 |
+| Amendment binding record | same file, §26차 (A2-C6 · A2-C7) |
 | Schema | `research/dfc_v22_research_min/schema.py` |
 | Validators | `research/dfc_v22_research_min/validation.py` |
 | Golden cases | `tests/research/dfc_v22_research_min/golden/violation_cases.json` |
 
-The four upstream clauses are reproduced below **verbatim**, in the language they
+The five upstream clauses are reproduced below **verbatim**, in the language they
 were signed in. They are also carried byte-for-byte in
 `research/dfc_v22_research_min/nw_verbatim.py`, and a test asserts that this
 document and that module agree, so no later edit can quietly paraphrase a clause.
@@ -170,10 +171,119 @@ admissible.
 
 ---
 
+## A2-C6 / A2-C7 — Lifecycle authority, substitute evidence, archive gap (OD-26)
+
+> **§26차 Job A** (원문 축자 인용)
+>
+> **Job A (②+①)**: ②contract lifecycle 권위 소스 = 「없다」를 계약에 명시, 대체 증거 정의 — eligibility = kline 아카이브 자체(랭킹 창 내 완전한 4h kline + 비zero 거래량 = 거래가능의 직접 증거), 프록시 한계 명기. ①premiumIndexKlines ~70 심볼 격차 전수 diff(read-only) → epoch별 top-3 후보 pool 과 교집합: 0 이면 `NO_IMPACT` 리터럴 종결, 비어있지 않으면 해당 epoch = `RUN_INVALID_INPUT_EVIDENCE` (조용한 재랭킹 금지) 를 계약에 추가.
+
+A2-C2/A2-C3 list `contract lifecycle/eligibility evidence` among the required
+source material. These two clauses say what that material *is*, now that
+A2-MEASURE has looked for it.
+
+### A2-C6 — There is no authoritative public lifecycle source
+
+**There is no single authoritative public Binance source for contract lifecycle
+or eligibility.** This is a measured absence, not an unfinished search:
+A2-MEASURE looked, found two partial and non-identical proxies, and corroborated
+one of them against exactly one historical event. `contract.py` therefore freezes
+`LIFECYCLE_AUTHORITATIVE_PUBLIC_SOURCE = None`, and `validate_manifest` rejects
+any corpus that names one.
+
+The two proxies, and what each **cannot** answer:
+
+| Proxy | Answers | Does not answer |
+|---|---|---|
+| `exchangeInfo.symbols[].onboardDate` | when a **currently trading** contract was onboarded | anything about delisted or settled contracts, which are absent from the endpoint entirely, so the historical universe cannot be reconstructed from it. It is also not the first tradable epoch: UNFIUSDT's first 4h kline is 10 days after its `onboardDate` |
+| first/last monthly archive object per symbol | a coarse outer bound on when data exists | whether the contract was *listed and tradable*, since this is an inference from data presence rather than a record Binance publishes and stands behind. Corroborated against one real event (LUNAUSDT, 2022-05); silent about intra-month halts |
+
+Neither proxy may be declared as the eligibility evidence kind, and neither may
+be recorded as authoritative. `proxy_limits` must carry both limitation texts
+unchanged, so that a later reader cannot find a softened version of them.
+
+**Substitute evidence (the definition OD-26 signs).** Eligibility is decided by
+the **kline archive itself**: a symbol is eligible at an epoch when the ranking
+window holds **complete 4h klines with non-zero traded volume**. A completed bar
+with volume in it is direct evidence that the contract was tradable in that bar.
+
+This is **a different kind of evidence, not an approximation of the missing
+authority.** A lifecycle record would be a statement about listing status; this
+is a trace of trading having happened. They answer different questions, and
+neither stands in for the other in general. What OD-26 rules is narrower: for
+*ranking-window eligibility in this corpus*, the direct evidence is what is used.
+Nothing here claims the two are interchangeable, and the contract is not to be
+read as having recovered the authority it says does not exist.
+
+**Enforced as.** `manifest.lifecycle_eligibility` must declare
+`authoritative_public_source = null`, `evidence_kind = "kline_archive_direct"`,
+and `proxy_limits` equal to the frozen texts. Naming a source, or promoting
+either proxy to the evidence kind, raises `RUN_INVALID_INPUT_EVIDENCE`.
+
+### A2-C7 — The premium-index archive gap, and the per-epoch verdict
+
+The `klines` and `premiumIndexKlines` monthly archives do not carry the same
+symbol set. Every symbol in the difference is accounted for; the corpus does not
+get to treat the difference as empty.
+
+**The verdict literals.** Per epoch, the intersection of the gap set with that
+epoch's top-3 candidate pool is either empty or not:
+
+| Intersection | Epoch verdict |
+|---|---|
+| empty | `NO_IMPACT` |
+| non-empty | `RUN_INVALID_INPUT_EVIDENCE` |
+
+**Silent re-ranking is forbidden, and this is the failure OD-26 names first.**
+When a gap symbol belongs in an epoch's top 3, the epoch is marked invalid. It
+is **not** repaired by dropping that symbol and promoting the next-ranked one:
+that would convert an input-evidence failure into a clean-looking ranking, and
+the resulting corpus would carry no trace that anything was wrong. There is no
+substitution path in the contract and none in the code —
+`validate_premium_index_gap` returns nothing, names no replacement, and hands
+back no pool.
+
+**Enforced as.**
+
+1. `manifest.premium_index_gap` records the full diff (`symbols`), the subset
+   requiring per-epoch audit (`in_window_symbols`), the listing endpoint and
+   retrieval time, and the measurement's SHA-256.
+2. Every symbol in `symbols - in_window_symbols` carries an exclusion with
+   evidence and a reason from a **closed** set — `not_perpetual`,
+   `no_kline_evidence_in_corpus_span`, `same_instrument_as_base`. An unaccounted
+   gap symbol is a violation, so "it did not look relevant" cannot be silent.
+   `same_instrument_as_base` must name the base symbol, and that base may not
+   itself be in the gap set.
+3. The `premium_index_gap_audit` table carries one row per (epoch, in-window gap
+   symbol). A missing row is a violation: a gap symbol is accounted for at every
+   epoch, never omitted.
+4. The declared pool is checked to *be* the ranking it claims — ranks exactly
+   `1..3`, no duplicate symbol, and the declared order equal to the
+   `quote_volume` ordering with `canonical_symbol_ascending` ties. A pool
+   quietly re-ordered around a dropped symbol fails here.
+5. Each audit row's `verdict` is **recomputed** from its recorded lookback
+   volume against the rank-3 cut and compared, exactly as outcome numbers are in
+   A2-C4. A recorded `NO_IMPACT` that the evidence does not support fails; so
+   does a gap symbol found inside the pool.
+
+Recomputation binds the verdict to the recorded volume; the *volume itself* is
+held to the same standard as every other number in this corpus — A2-C5
+independent re-collection — and to nothing stronger. This clause does not claim
+to detect a builder that misreports a gap symbol's volume and its evidence hash
+consistently.
+
+---
+
 ## Terminal codes
+
+Adjudicated in this order — `contract.TERMINAL_CODE_PRIORITY`, enforced by
+`validate_corpus`. `RUN_INVALID_INPUT_EVIDENCE` is decided **first and
+unconditionally**: a corpus built on material the contract refuses is the wrong
+artifact, so any downstream code reported for it would name a symptom and hide
+the cause.
 
 | Code | Raised when |
 |---|---|
+| `RUN_INVALID_INPUT_EVIDENCE` | lifecycle authority claimed, proxy promoted to evidence kind, gap symbol unaccounted for, gap symbol inside or outranking the candidate pool, or a recorded epoch verdict the evidence does not support (A2-C6 / A2-C7) |
 | `RUN_INVALID_SCOPE_SEPARATION` | A1 (or anything else) declared as the DFC prerequisite (A2-C1) |
 | `RUN_INVALID_CORPUS_LITERALS` | a frozen id, path, window, universe rule or imputation literal was changed (A2-C2) |
 | `RUN_INVALID_FORBIDDEN_SOURCE` | funding / open interest / mark / index material present (A2-C3) |
@@ -196,3 +306,28 @@ read as fixing:
 Nothing here may be revised after A2 measurement results or backtest results are
 read. Changing a literal in this file after that point is not a correction; it is
 a different contract, and it needs a new ID and a new signature.
+
+## Amendment provenance (A2-C6 / A2-C7)
+
+That clause has to be applied to the amendment itself, in the open: **A2-C6 and
+A2-C7 were written after the A2-MEASURE verdict was read.** That is exactly the
+timing the paragraph above is suspicious of, so the record is:
+
+- **No frozen literal changed.** Corpus id, root, warmup and judgment windows,
+  outcome tail, universe rule (30 days · top 3 · canonical-ascending ties),
+  required and forbidden source material, imputation 0, the arm-label set and
+  every A2-C1..A2-C5 terminal code are unchanged. The amendment is additive: two
+  clauses, one terminal code, one canonical table (`premium_index_gap_audit`),
+  and two manifest keys (`lifecycle_eligibility`, `premium_index_gap`).
+- **It tightens; it cannot relax.** Every added rule can only reject corpora the
+  previous text would have accepted. No gate widened, no threshold moved.
+- **What was read did not move a number.** A2-MEASURE returned `UNDETERMINED`
+  and named two gaps. The amendment answers "which evidence does the contract
+  accept here", which the signed text left unspecified. It does not adjust any
+  criterion toward a result, because there is no result to adjust toward — the
+  backtest count is still zero.
+- **Signed separately.** §26차 of the binding record authorises it, after the
+  measurement, as its own decision.
+
+Should a *literal* ever need to change, the paragraph above still governs: new
+ID, new signature.

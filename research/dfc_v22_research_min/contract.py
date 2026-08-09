@@ -16,6 +16,8 @@ Clause        Upstream source   Subject
 ``A2-C3``     NW-F5             Required / forbidden source material
 ``A2-C4``     NW-F4             Outcome semantics
 ``A2-C5``     NW-F6             Authenticity and freeze procedure
+``A2-C6``     OD-26             Lifecycle authority absence and substitute
+``A2-C7``     OD-26             Premium-index archive gap and epoch verdict
 ============  ================  =========================================
 """
 
@@ -44,14 +46,22 @@ __all__ = [
     "CONTRACT_ID",
     "CORPUS_ID",
     "CORPUS_ROOT",
+    "ELIGIBILITY_EVIDENCE_KIND",
     "FORBIDDEN_SOURCE_KINDS",
+    "GAP_EPOCH_VERDICTS",
+    "GAP_EXCLUSION_REASONS",
     "IMPUTED_ROW_COUNT_MAX",
     "JUDGMENT_END",
     "JUDGMENT_START",
+    "LIFECYCLE_AUTHORITATIVE_PUBLIC_SOURCE",
+    "LIFECYCLE_PROXY_LIMITS",
+    "NO_IMPACT",
     "OUTCOME_HORIZON_BARS",
     "OUTCOME_TAIL_BARS",
     "OUTCOME_UNIT",
     "REQUIRED_SOURCE_KINDS",
+    "RUN_INVALID_INPUT_EVIDENCE",
+    "TERMINAL_CODE_PRIORITY",
     "UNIVERSE_LOOKBACK_CALENDAR_DAYS",
     "UNIVERSE_RANKING_METRIC",
     "UNIVERSE_TIE_BREAK",
@@ -224,6 +234,95 @@ ADMISSIBILITY_COMPARISON_KEYS: tuple[str, ...] = (
 )
 
 
+# --- A2-C6 (OD-26): lifecycle authority absence and substitute evidence ---
+
+#: There is no single authoritative public Binance source for contract
+#: lifecycle / eligibility.  This is a measured absence, not a gap in the
+#: search: A2-MEASURE looked and found two partial, non-identical proxies and
+#: one corroborated historical case.  The value is ``None`` because writing a
+#: source name here would be inventing one.
+LIFECYCLE_AUTHORITATIVE_PUBLIC_SOURCE: str | None = None
+
+#: The two proxies that do exist, each with the question it cannot answer.
+#: They are recorded so that a later reader cannot mistake either for the
+#: authority that A2-MEASURE established does not exist.
+LIFECYCLE_PROXY_LIMITS: MappingProxyType[str, str] = MappingProxyType(
+    {
+        "exchange_info_onboard_date": (
+            "covers only contracts that are currently trading; delisted and "
+            "settled contracts are absent from the endpoint entirely, so the "
+            "historical universe cannot be reconstructed from it. Its "
+            "onboardDate is also not the first tradable epoch — UNFIUSDT's "
+            "first 4h kline is 10 days after its onboardDate."
+        ),
+        "archive_month_range": (
+            "first/last monthly object per symbol is an inference from data "
+            "presence, not a lifecycle record Binance publishes and stands "
+            "behind; it was corroborated against exactly one real event "
+            "(LUNAUSDT, 2022-05) and says nothing about intra-month halts."
+        ),
+    }
+)
+
+#: The substitute defined by OD-26.  This is a *different kind of evidence*
+#: from a lifecycle record, not an approximation of one: a completed 4h kline
+#: carrying non-zero traded volume is direct evidence that the contract was
+#: tradable in that bar, whereas a lifecycle record would be a statement about
+#: listing status.  Neither substitutes for the other in general; OD-26 rules
+#: that for ranking-window eligibility, the direct evidence is what this
+#: corpus uses.
+ELIGIBILITY_EVIDENCE_KIND = "kline_archive_direct"
+ELIGIBILITY_REQUIRES_COMPLETE_KLINES = True
+ELIGIBILITY_REQUIRES_NONZERO_VOLUME = True
+
+#: A proxy may be recorded as context, never declared as the eligibility
+#: evidence kind, and never declared authoritative.
+LIFECYCLE_PROXY_KINDS: frozenset[str] = frozenset(LIFECYCLE_PROXY_LIMITS)
+
+ELIGIBLE = "eligible"
+NOT_ELIGIBLE = "not_eligible"
+ELIGIBILITY_STATUSES: tuple[str, ...] = (ELIGIBLE, NOT_ELIGIBLE)
+
+
+# --- A2-C7 (OD-26): premium-index archive gap and the per-epoch verdict ---
+
+#: The two literal outcomes of the gap/pool intersection, per epoch.
+NO_IMPACT = "NO_IMPACT"
+RUN_INVALID_INPUT_EVIDENCE = "RUN_INVALID_INPUT_EVIDENCE"
+GAP_EPOCH_VERDICTS: tuple[str, ...] = (NO_IMPACT, RUN_INVALID_INPUT_EVIDENCE)
+
+#: Why a symbol in the archive diff needs no per-epoch audit row.  Closed set:
+#: every gap symbol must be accounted for by one of these, with evidence.
+#: "It did not look relevant" is not on the list.
+GAP_EXCLUSION_REASONS: tuple[str, ...] = (
+    # dated delivery contract — outside UNIVERSE_INSTRUMENT_CLASS, and no
+    # premium index exists for a non-perpetual in the first place
+    "not_perpetual",
+    # no kline evidence anywhere in the corpus span, so never eligible in it
+    "no_kline_evidence_in_corpus_span",
+    # an archive rename artifact of an instrument that also appears under its
+    # base symbol, which does carry premium-index material
+    "same_instrument_as_base",
+)
+#: ``same_instrument_as_base`` is the only reason that leans on a second
+#: symbol, so it must name it and show the row-identity evidence.
+GAP_EXCLUSION_BASE_SYMBOL_REASON = "same_instrument_as_base"
+
+#: Terminal codes in adjudication order.  Input evidence is decided first: if
+#: the corpus was built on material the contract refuses, every later verdict
+#: is a statement about the wrong artifact.
+TERMINAL_CODE_PRIORITY: tuple[str, ...] = (
+    "RUN_INVALID_INPUT_EVIDENCE",
+    "RUN_INVALID_SCOPE_SEPARATION",
+    "RUN_INVALID_CORPUS_LITERALS",
+    "RUN_INVALID_FORBIDDEN_SOURCE",
+    "RUN_INVALID_MANIFEST_SCHEMA",
+    "RUN_INVALID_TABLE_SCHEMA",
+    "RUN_INVALID_AUTHENTICITY_EVIDENCE",
+    "RUN_INVALID_OUTCOME_EVIDENCE",
+)
+
+
 CLAUSE_SOURCES: MappingProxyType[str, str] = MappingProxyType(
     {
         "A2-C1": "NW-F2",
@@ -231,5 +330,7 @@ CLAUSE_SOURCES: MappingProxyType[str, str] = MappingProxyType(
         "A2-C3": "NW-F5",
         "A2-C4": "NW-F4",
         "A2-C5": "NW-F6",
+        "A2-C6": "OD-26",
+        "A2-C7": "OD-26",
     }
 )

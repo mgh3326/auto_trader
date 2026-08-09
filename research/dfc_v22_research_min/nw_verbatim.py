@@ -8,6 +8,13 @@ comparing against that document's SHA-256.
 The canonical document lives outside this repository (operator inbox), so tests
 in this repository can only pin the *transcript*: they assert that the contract
 document and the frozen literals quote these strings unchanged.
+
+``OD_26_JOB_A_VERBATIM`` comes from the binding record rather than the answer
+document, and it is stored de-wrapped: the source bullet is hard-wrapped across
+five lines, so the lines are joined with a single space and the leading list
+marker is dropped.  Nothing else about it is altered.  Its file is an
+append-only decisions log, so no whole-file SHA is pinned for it — the clause
+text itself is the pin.
 """
 
 from __future__ import annotations
@@ -18,6 +25,11 @@ CANONICAL_SOURCE_SHA256 = (
 )
 CANONICAL_SOURCE_LINE_COUNT = 137
 BINDING_RECORD = "~/work/herdr-inbox/operator-decisions-20260805-0830.md \u00a725\ucc28"
+#: The A2 gap-closure amendment (this file's A2-C6 / A2-C7) is bound by \u00a726\ucc28 of
+#: the same record, not by the answer document above.
+BINDING_RECORD_AMENDMENT = (
+    "~/work/herdr-inbox/operator-decisions-20260805-0830.md \u00a726\ucc28"
+)
 
 NW_F2_TOPIC = "A1과 DFC 최소 corpus의 범위 분리"
 NW_F2_VERBATIM = "**“A1의 funding/OI/mark/index 종합 readiness는 보존하되 DFC-v2.x의 선행조건으로 쓰지 않는다. 데이터 접촉 전에 `DFC_V22_RESEARCH_MIN` A2 계약을 새 ID/SHA로 등록한다. A2는 kline OFI·premium-index·PIT universe·outcome evidence만 판정한다.”** 이는 결과를 본 뒤 게이트를 완화하는 것이 아니라, 아직 백테스트 0회인 상태에서 계약-데이터 불일치를 교정하는 것이다."
@@ -31,11 +43,15 @@ NW_F5_VERBATIM = "**“corpus ID=`dfc-2c-4h-v22-corpus-v1`, root=`/Users/mgh3326
 NW_F6_TOPIC = "corpus 진정성·동결 절차"
 NW_F6_VERBATIM = "**“모든 원본 object/response에 endpoint·query·retrieved_at·schema·object/ZIP SHA-256·epoch별 payload SHA를 기록한다. manifest와 canonical parquet를 동결하고, 독립 검증자가 동일 public object를 재수집해 object SHA/행수/시각경계/원시 payload hash를 대조해야 admissible이다. 자기 일관성 검사만으로 Binance 진정성을 주장하지 않는다.”**"
 
+OD_26_JOB_A_TOPIC = "A2 공백 ②+① 폐쇄 경로"
+OD_26_JOB_A_VERBATIM = "**Job A (②+①)**: ②contract lifecycle 권위 소스 = 「없다」를 계약에 명시, 대체 증거 정의 — eligibility = kline 아카이브 자체(랭킹 창 내 완전한 4h kline + 비zero 거래량 = 거래가능의 직접 증거), 프록시 한계 명기. ①premiumIndexKlines ~70 심볼 격차 전수 diff(read-only) → epoch별 top-3 후보 pool 과 교집합: 0 이면 `NO_IMPACT` 리터럴 종결, 비어있지 않으면 해당 epoch = `RUN_INVALID_INPUT_EVIDENCE` (조용한 재랭킹 금지) 를 계약에 추가."
+
 VERBATIM_CLAUSES: dict[str, str] = {
     "NW-F2": NW_F2_VERBATIM,
     "NW-F4": NW_F4_VERBATIM,
     "NW-F5": NW_F5_VERBATIM,
     "NW-F6": NW_F6_VERBATIM,
+    "OD-26": OD_26_JOB_A_VERBATIM,
 }
 
 VERBATIM_TOPICS: dict[str, str] = {
@@ -43,4 +59,5 @@ VERBATIM_TOPICS: dict[str, str] = {
     "NW-F4": NW_F4_TOPIC,
     "NW-F5": NW_F5_TOPIC,
     "NW-F6": NW_F6_TOPIC,
+    "OD-26": OD_26_JOB_A_TOPIC,
 }

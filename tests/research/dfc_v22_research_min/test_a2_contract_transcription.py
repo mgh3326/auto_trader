@@ -61,7 +61,9 @@ def test_canonical_source_is_pinned() -> None:
         "NW-F4",
         "NW-F5",
         "NW-F6",
+        "OD-26",
     }
+    assert "§26차" in nw_verbatim.BINDING_RECORD_AMENDMENT
 
 
 @pytest.mark.unit
@@ -105,6 +107,75 @@ def test_clause_ids_map_to_upstream_clauses() -> None:
     doc = DOC_PATH.read_text(encoding="utf-8")
     for clause_id in c.CLAUSE_SOURCES:
         assert clause_id in doc, f"clause {clause_id} is undocumented"
+
+
+#: MUTANT ③ target.  The substitute evidence (A2-C6) is a *different kind* of
+#: evidence from the lifecycle authority that does not exist.  Any wording that
+#: closes that distance turns a stated absence back into a quiet claim, so the
+#: distance is pinned in text as well as in the literals.
+FORBIDDEN_EQUIVALENCE_PHRASES = (
+    "effectively equivalent",
+    "equally authoritative",
+    "as authoritative as",
+    "authoritative substitute",
+    "equivalent to a lifecycle record",
+    "equivalent to the authoritative",
+    "사실상 동등",
+    "사실상 권위",
+)
+
+#: Compared against the document with whitespace collapsed, so re-wrapping a
+#: paragraph does not fail a test about what the paragraph *says*.
+REQUIRED_A2_C6_WORDING = (
+    "There is no single authoritative public Binance source for contract "
+    "lifecycle or eligibility.",
+    "a different kind of evidence, not an approximation of the missing authority",
+    "Nothing here claims the two are interchangeable",
+)
+
+REQUIRED_A2_C7_WORDING = (
+    "Silent re-ranking is forbidden",
+    "promoting the next-ranked one",
+    "`NO_IMPACT`",
+    "`RUN_INVALID_INPUT_EVIDENCE`",
+)
+
+
+@pytest.mark.unit
+def test_substitute_evidence_is_never_called_equivalent_to_an_authority() -> None:
+    haystacks = {DOC_PATH.name: DOC_PATH.read_text(encoding="utf-8")}
+    for path in _package_sources():
+        haystacks[path.name] = path.read_text(encoding="utf-8")
+
+    offenders = [
+        f"{name}: {phrase!r}"
+        for name, text in haystacks.items()
+        for phrase in FORBIDDEN_EQUIVALENCE_PHRASES
+        if phrase in text.lower()
+    ]
+    assert not offenders, offenders
+
+
+@pytest.mark.unit
+def test_gap_closure_clauses_state_their_load_bearing_sentences() -> None:
+    doc = " ".join(DOC_PATH.read_text(encoding="utf-8").split())
+    for wording in REQUIRED_A2_C6_WORDING + REQUIRED_A2_C7_WORDING:
+        assert wording in doc, f"missing from the contract document: {wording!r}"
+
+
+@pytest.mark.unit
+def test_no_authoritative_lifecycle_source_is_frozen_as_absent() -> None:
+    assert c.LIFECYCLE_AUTHORITATIVE_PUBLIC_SOURCE is None
+    assert set(c.LIFECYCLE_PROXY_KINDS) == {
+        "exchange_info_onboard_date",
+        "archive_month_range",
+    }
+    assert c.ELIGIBILITY_EVIDENCE_KIND not in c.LIFECYCLE_PROXY_KINDS
+    assert c.GAP_EPOCH_VERDICTS == ("NO_IMPACT", "RUN_INVALID_INPUT_EVIDENCE")
+    assert c.TERMINAL_CODE_PRIORITY[0] == "RUN_INVALID_INPUT_EVIDENCE"
+    # Every proxy carries a stated limitation, not an empty placeholder.
+    for name, limit in c.LIFECYCLE_PROXY_LIMITS.items():
+        assert len(limit) > 80, f"{name} has no meaningful limitation text"
 
 
 @pytest.mark.unit

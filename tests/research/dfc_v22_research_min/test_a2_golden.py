@@ -12,6 +12,7 @@ Network-zero by construction: everything here is built in memory.
 
 from __future__ import annotations
 
+import ast
 import json
 import math
 from collections.abc import Callable
@@ -25,9 +26,12 @@ import pytest
 from research.dfc_v22_research_min import contract as c
 from research.dfc_v22_research_min import validation as v
 from research.dfc_v22_research_min.schema import (
+    CANONICAL_TABLES,
     KLINES_4H_SCHEMA,
     OUTCOMES_SCHEMA,
     PIT_UNIVERSE_SCHEMA,
+    PREMIUM_INDEX_4H_SCHEMA,
+    PREMIUM_INDEX_GAP_AUDIT_SCHEMA,
 )
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "violation_cases.json"
@@ -170,6 +174,49 @@ def _source(kind: str, **overrides: Any) -> dict[str, Any]:
     return source
 
 
+#: One gap symbol per disposition: audited per epoch, and one excluded under
+#: each of the two exclusion reasons that need no base symbol / need one.
+GAP_SYMBOLS = ("GAPUSDT", "BTCUSDT_210625", "LEGACYUSDTSETTLED")
+IN_WINDOW_GAP_SYMBOLS = ("GAPUSDT",)
+
+
+def lifecycle_eligibility(**overrides: Any) -> dict[str, Any]:
+    declared: dict[str, Any] = {
+        "authoritative_public_source": None,
+        "evidence_kind": c.ELIGIBILITY_EVIDENCE_KIND,
+        "proxy_limits": dict(c.LIFECYCLE_PROXY_LIMITS),
+    }
+    declared.update(overrides)
+    return declared
+
+
+def premium_index_gap(**overrides: Any) -> dict[str, Any]:
+    gap: dict[str, Any] = {
+        "symbols": list(GAP_SYMBOLS),
+        "in_window_symbols": list(IN_WINDOW_GAP_SYMBOLS),
+        "exclusions": [
+            {
+                "symbol": "BTCUSDT_210625",
+                "reason": "not_perpetual",
+                "evidence_sha256": "1" * 64,
+            },
+            {
+                "symbol": "LEGACYUSDTSETTLED",
+                "reason": "same_instrument_as_base",
+                "base_symbol": "LEGACYUSDT",
+                "evidence_sha256": "2" * 64,
+            },
+        ],
+        "listing_endpoint": (
+            "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
+        ),
+        "listing_retrieved_at": "2026-08-10T05:00:00Z",
+        "measurement_sha256": "3" * 64,
+    }
+    gap.update(overrides)
+    return gap
+
+
 def manifest(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "contract_id": c.CONTRACT_ID,
@@ -195,6 +242,8 @@ def manifest(**overrides: Any) -> dict[str, Any]:
             "contract_id": c.CONTRACT_ID,
             "dimensions": list(c.A2_JUDGED_DIMENSIONS),
         },
+        "lifecycle_eligibility": lifecycle_eligibility(),
+        "premium_index_gap": premium_index_gap(),
         "sources": [_source(kind) for kind in c.REQUIRED_SOURCE_KINDS],
         "tables": [
             {
@@ -204,7 +253,13 @@ def manifest(**overrides: Any) -> dict[str, Any]:
                 "row_count": 4,
                 "byte_size": 2048,
             }
-            for name in ("klines_4h", "premium_index_4h", "pit_universe", "outcomes")
+            for name in (
+                "klines_4h",
+                "premium_index_4h",
+                "pit_universe",
+                "premium_index_gap_audit",
+                "outcomes",
+            )
         ],
         "admissibility": {
             "basis": c.ADMISSIBILITY_BASIS,
@@ -216,18 +271,77 @@ def manifest(**overrides: Any) -> dict[str, Any]:
     return base
 
 
-def pit_universe_row() -> dict[str, Any]:
+def pit_universe_row(
+    rank: int = 1,
+    symbol: str = "XRPUSDT",
+    quote_volume: str = "123456.7",
+) -> dict[str, Any]:
     return {
         "epoch_open_time": T0,
-        "rank": 1,
-        "symbol": "XRPUSDT",
-        "quote_volume_lookback": "123456.7",
+        "rank": rank,
+        "symbol": symbol,
+        "quote_volume_lookback": quote_volume,
         "lookback_start_time": T0 - 30 * 24 * 60 * 60 * 1000,
         "lookback_end_time": T0,
         "lifecycle_evidence_sha256": "e" * 64,
         "eligibility_evidence_sha256": "f" * 64,
         **_provenance("p-univ-t0"),
     }
+
+
+#: A full pool: three ranks, strictly descending quote volume.  The rank-3 row
+#: is the cut every gap symbol is measured against.
+_POOL_ROWS: list[dict[str, Any]] = [
+    pit_universe_row(1, "XRPUSDT", "300.0"),
+    pit_universe_row(2, "SOLUSDT", "200.0"),
+    pit_universe_row(3, "ADAUSDT", "100.0"),
+]
+
+
+def pit_universe(rows: list[dict[str, Any]] | None = None) -> pa.Table:
+    return pa.Table.from_pylist(rows or _POOL_ROWS, schema=PIT_UNIVERSE_SCHEMA)
+
+
+def gap_audit_row(
+    symbol: str = "GAPUSDT",
+    *,
+    status: str = c.ELIGIBLE,
+    quote_volume: str | None = "50.0",
+    verdict: str = c.NO_IMPACT,
+    epoch: int = T0,
+) -> dict[str, Any]:
+    return {
+        "epoch_open_time": epoch,
+        "symbol": symbol,
+        "eligibility_status": status,
+        "eligibility_evidence_sha256": "9" * 64,
+        "quote_volume_lookback": quote_volume,
+        "verdict": verdict,
+        **_provenance("p-gap-t0"),
+    }
+
+
+def premium_index(rows: list[dict[str, Any]] | None = None) -> pa.Table:
+    rows = (
+        rows
+        if rows is not None
+        else [
+            {
+                "symbol": row["symbol"],
+                "open_time": row["open_time"],
+                "close_time": row["close_time"],
+                "premium_index_close": "0.00012",
+                **_provenance(f"pi-{row['payload_sha256']}"),
+            }
+            for row in _KLINE_ROWS
+        ]
+    )
+    return pa.Table.from_pylist(rows, schema=PREMIUM_INDEX_4H_SCHEMA)
+
+
+def gap_audit(rows: list[dict[str, Any]] | None = None) -> pa.Table:
+    rows = rows if rows is not None else [gap_audit_row()]
+    return pa.Table.from_pylist(rows, schema=PREMIUM_INDEX_GAP_AUDIT_SCHEMA)
 
 
 # --------------------------------------------------------------------------
@@ -465,6 +579,140 @@ def _case_manifest_missing_required_source_kind() -> None:
     v.validate_manifest(manifest(sources=sources))
 
 
+# --- A2-C6: lifecycle authority absence ------------------------------------
+
+
+def _case_lifecycle_authority_invented() -> None:
+    # The endpoint does not publish lifecycle state; naming it asserts an
+    # authority A2-MEASURE looked for and did not find.
+    v.validate_manifest(
+        manifest(
+            lifecycle_eligibility=lifecycle_eligibility(
+                authoritative_public_source="GET /fapi/v1/exchangeInfo"
+            )
+        )
+    )
+
+
+def _case_lifecycle_proxy_promoted_to_evidence() -> None:
+    v.validate_manifest(
+        manifest(
+            lifecycle_eligibility=lifecycle_eligibility(
+                evidence_kind="exchange_info_onboard_date"
+            )
+        )
+    )
+
+
+def _case_lifecycle_proxy_limit_softened() -> None:
+    limits = dict(c.LIFECYCLE_PROXY_LIMITS)
+    limits["archive_month_range"] = "effectively equivalent to a lifecycle record"
+    v.validate_manifest(
+        manifest(lifecycle_eligibility=lifecycle_eligibility(proxy_limits=limits))
+    )
+
+
+def _case_gap_symbol_missing_eligibility_evidence() -> None:
+    row = gap_audit_row()
+    row["eligibility_evidence_sha256"] = ""
+    v.validate_premium_index_gap(
+        gap_audit([row]), pit_universe(), IN_WINDOW_GAP_SYMBOLS
+    )
+
+
+# --- A2-C7: the archive gap and the per-epoch verdict -----------------------
+
+
+def _case_gap_symbol_unaccounted_for() -> None:
+    # Present in the measured diff, neither audited nor excluded: the silent
+    # disappearance the closed reason set exists to prevent.
+    gap = premium_index_gap(exclusions=premium_index_gap()["exclusions"][:1])
+    v.validate_manifest(manifest(premium_index_gap=gap))
+
+
+def _case_gap_exclusion_unknown_reason() -> None:
+    exclusions = [dict(e) for e in premium_index_gap()["exclusions"]]
+    exclusions[0]["reason"] = "not_relevant"
+    v.validate_manifest(
+        manifest(premium_index_gap=premium_index_gap(exclusions=exclusions))
+    )
+
+
+def _case_gap_exclusion_base_symbol_also_in_gap() -> None:
+    # "Same instrument as base" is worthless if the base has no premium index
+    # either — it just moves the gap one symbol along.
+    exclusions = [dict(e) for e in premium_index_gap()["exclusions"]]
+    exclusions[1]["base_symbol"] = "GAPUSDT"
+    v.validate_manifest(
+        manifest(premium_index_gap=premium_index_gap(exclusions=exclusions))
+    )
+
+
+def _case_gap_symbol_inside_candidate_pool() -> None:
+    pool = [dict(r) for r in _POOL_ROWS]
+    pool[2]["symbol"] = "GAPUSDT"
+    v.validate_premium_index_gap(
+        gap_audit([gap_audit_row(quote_volume="100.0")]),
+        pit_universe(pool),
+        IN_WINDOW_GAP_SYMBOLS,
+    )
+
+
+def _case_gap_epoch_audit_row_omitted() -> None:
+    v.validate_premium_index_gap(gap_audit([]), pit_universe(), IN_WINDOW_GAP_SYMBOLS)
+
+
+def _case_gap_outranking_symbol_reported_no_impact() -> None:
+    # MUTANT ②: the gap symbol beats the rank-3 cut, but the epoch is written
+    # up as clean.  The verdict is recomputed, so the claim does not survive.
+    v.validate_premium_index_gap(
+        gap_audit([gap_audit_row(quote_volume="250.0", verdict=c.NO_IMPACT)]),
+        pit_universe(),
+        IN_WINDOW_GAP_SYMBOLS,
+    )
+
+
+def _case_gap_outranking_symbol_silently_reranked() -> None:
+    # MUTANT ①: the gap symbol outranks the pool and the builder resolved it by
+    # promoting the next-ranked symbol into the vacancy, then recording the
+    # honest verdict for the symbol it dropped.  The epoch must still be
+    # RUN_INVALID_INPUT_EVIDENCE — a re-ranked pool is not a repair.
+    v.validate_premium_index_gap(
+        gap_audit(
+            [gap_audit_row(quote_volume="250.0", verdict=c.RUN_INVALID_INPUT_EVIDENCE)]
+        ),
+        pit_universe(),
+        IN_WINDOW_GAP_SYMBOLS,
+    )
+
+
+def _case_gap_pool_order_is_not_the_ranking() -> None:
+    # The pool was re-ordered so the promoted symbol looks like rank 3.
+    pool = [dict(r) for r in _POOL_ROWS]
+    pool[1]["quote_volume_lookback"] = "50.0"
+    v.validate_premium_index_gap(gap_audit(), pit_universe(pool), IN_WINDOW_GAP_SYMBOLS)
+
+
+def _case_gap_pool_shorter_than_top_n() -> None:
+    v.validate_premium_index_gap(
+        gap_audit(), pit_universe(_POOL_ROWS[:2]), IN_WINDOW_GAP_SYMBOLS
+    )
+
+
+def _case_gap_not_eligible_row_carries_volume() -> None:
+    v.validate_premium_index_gap(
+        gap_audit([gap_audit_row(status=c.NOT_ELIGIBLE, quote_volume="10.0")]),
+        pit_universe(),
+        IN_WINDOW_GAP_SYMBOLS,
+    )
+
+
+def _case_gap_declaration_absent() -> None:
+    base = manifest()
+    del base["premium_index_gap"]
+    v.validate_manifest(base)
+
+
 CASE_BUILDERS: dict[str, Callable[[], None]] = {
     "outcomes_free_bool_column": _case_outcomes_free_bool_column,
     "outcomes_free_price_column": _case_outcomes_free_price_column,
@@ -504,6 +752,27 @@ CASE_BUILDERS: dict[str, Callable[[], None]] = {
     "manifest_universe_top_five": _case_manifest_universe_top_five,
     "manifest_imputed_rows_present": _case_manifest_imputed_rows_present,
     "manifest_missing_required_source_kind": _case_manifest_missing_required_source_kind,
+    "lifecycle_authority_invented": _case_lifecycle_authority_invented,
+    "lifecycle_proxy_promoted_to_evidence": _case_lifecycle_proxy_promoted_to_evidence,
+    "lifecycle_proxy_limit_softened": _case_lifecycle_proxy_limit_softened,
+    "gap_symbol_missing_eligibility_evidence": (
+        _case_gap_symbol_missing_eligibility_evidence
+    ),
+    "gap_symbol_unaccounted_for": _case_gap_symbol_unaccounted_for,
+    "gap_exclusion_unknown_reason": _case_gap_exclusion_unknown_reason,
+    "gap_exclusion_base_symbol_also_in_gap": _case_gap_exclusion_base_symbol_also_in_gap,
+    "gap_symbol_inside_candidate_pool": _case_gap_symbol_inside_candidate_pool,
+    "gap_epoch_audit_row_omitted": _case_gap_epoch_audit_row_omitted,
+    "gap_outranking_symbol_reported_no_impact": (
+        _case_gap_outranking_symbol_reported_no_impact
+    ),
+    "gap_outranking_symbol_silently_reranked": (
+        _case_gap_outranking_symbol_silently_reranked
+    ),
+    "gap_pool_order_is_not_the_ranking": _case_gap_pool_order_is_not_the_ranking,
+    "gap_pool_shorter_than_top_n": _case_gap_pool_shorter_than_top_n,
+    "gap_not_eligible_row_carries_volume": _case_gap_not_eligible_row_carries_volume,
+    "gap_declaration_absent": _case_gap_declaration_absent,
 }
 
 
@@ -529,6 +798,134 @@ def test_baseline_artifacts_validate() -> None:
         pa.Table.from_pylist([pit_universe_row()], schema=PIT_UNIVERSE_SCHEMA),
     )
     v.validate_outcomes(outcomes(), klines(), _DECISIONS)
+    v.validate_premium_index_gap(gap_audit(), pit_universe(), IN_WINDOW_GAP_SYMBOLS)
+    v.validate_corpus(
+        manifest(),
+        pit_universe=pit_universe(),
+        gap_audit=gap_audit(),
+        klines=klines(),
+        premium_index=premium_index(),
+        outcomes=outcomes(),
+        decisions=_DECISIONS,
+    )
+
+
+@pytest.mark.unit
+def test_validate_corpus_covers_every_canonical_table() -> None:
+    """A canonical table absent from the orchestrator is a schema nobody checks.
+
+    ``validate_corpus`` is the whole entry point, so the set of tables it reaches
+    has to equal ``CANONICAL_TABLES`` — otherwise adding a table to the contract
+    silently adds one that no run validates.
+    """
+    reached: set[str] = set()
+    original = v.validate_table
+
+    def spy(name: str, table: pa.Table) -> None:
+        reached.add(name)
+        original(name, table)
+
+    v.validate_table = spy  # type: ignore[assignment]
+    try:
+        v.validate_corpus(
+            manifest(),
+            pit_universe=pit_universe(),
+            gap_audit=gap_audit(),
+            klines=klines(),
+            premium_index=premium_index(),
+            outcomes=outcomes(),
+            decisions=_DECISIONS,
+        )
+    finally:
+        v.validate_table = original  # type: ignore[assignment]
+
+    assert reached == set(CANONICAL_TABLES), {
+        "unvalidated": sorted(set(CANONICAL_TABLES) - reached),
+        "unexpected": sorted(reached - set(CANONICAL_TABLES)),
+    }
+
+
+@pytest.mark.unit
+def test_not_eligible_gap_symbol_is_no_impact() -> None:
+    """The other admissible baseline: no kline evidence, so nothing to rank."""
+    v.validate_premium_index_gap(
+        gap_audit([gap_audit_row(status=c.NOT_ELIGIBLE, quote_volume=None)]),
+        pit_universe(),
+        IN_WINDOW_GAP_SYMBOLS,
+    )
+
+
+@pytest.mark.unit
+def test_input_evidence_outranks_every_other_terminal_code() -> None:
+    """MUTANT ④: an artifact bad in two ways reports the input-evidence code.
+
+    The outcome table here is *also* broken (a hand-written return), so a
+    validator that adjudicated in declaration order would report
+    ``RUN_INVALID_OUTCOME_EVIDENCE`` and the operator would go looking at
+    outcome arithmetic for a corpus whose ranking input was never admissible.
+    """
+    bad_outcomes = [dict(r) for r in _OUTCOME_ROWS]
+    bad_outcomes[0]["outcome_abs_log_return_bps"] = 250.0
+
+    with pytest.raises(v.ContractViolation) as excinfo:
+        v.validate_corpus(
+            manifest(),
+            pit_universe=pit_universe(),
+            gap_audit=gap_audit([gap_audit_row(quote_volume="250.0")]),
+            klines=klines(),
+            premium_index=premium_index(),
+            outcomes=outcomes(bad_outcomes),
+            decisions=_DECISIONS,
+        )
+    assert excinfo.value.code == v.RUN_INVALID_INPUT_EVIDENCE
+
+    # ...and the outcome defect really is there, so the assertion above is
+    # about precedence and not about the second defect being absent.
+    with pytest.raises(v.ContractViolation) as outcome_only:
+        v.validate_outcomes(outcomes(bad_outcomes), klines(), _DECISIONS)
+    assert outcome_only.value.code == v.RUN_INVALID_OUTCOME_EVIDENCE
+
+    assert c.TERMINAL_CODE_PRIORITY[0] == v.RUN_INVALID_INPUT_EVIDENCE
+
+
+@pytest.mark.unit
+def test_gap_validator_offers_no_substitution_path() -> None:
+    """MUTANT ①: there is nowhere for a replacement symbol to come out.
+
+    The validator returns ``None`` and leaves its inputs alone, so a caller
+    cannot obtain a "repaired" pool from it even by accident.
+    """
+    pool = pit_universe()
+    before = pool.to_pylist()
+    assert (
+        v.validate_premium_index_gap(gap_audit(), pool, IN_WINDOW_GAP_SYMBOLS) is None
+    )
+    assert pool.to_pylist() == before
+
+    tree = ast.parse(Path(v.__file__).read_text(encoding="utf-8"))
+    functions = {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+
+    entry = functions["validate_premium_index_gap"]
+    assert isinstance(entry.returns, ast.Constant) and entry.returns.value is None
+    returned = [
+        node
+        for node in ast.walk(entry)
+        if isinstance(node, ast.Return) and node.value is not None
+    ]
+    assert not returned, "the gap validator hands something back to its caller"
+
+    # ``_ranked_pool`` computes the true ranking in order to *compare* it with
+    # the declared one.  Handing that recomputed order back would be the
+    # re-ranking itself, one call site away.
+    ranker = functions["_ranked_pool"]
+    handed_back = {
+        node.value.id
+        for node in ast.walk(ranker)
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Name)
+    }
+    assert handed_back == {"pool"}, handed_back
 
 
 @pytest.mark.unit
