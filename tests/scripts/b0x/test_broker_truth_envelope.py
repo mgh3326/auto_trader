@@ -525,3 +525,104 @@ def test_cap_inputs_cannot_default_to_empty() -> None:
 
     with pytest.raises(TypeError):
         LaneAccountState(lane="x", quote_currency="USDT", cash=Decimal("0"))
+
+
+# ---------------------------------------------------------------------------
+# Per-symbol deployment cap — cost basis is not cumulative deployment.
+# ---------------------------------------------------------------------------
+
+
+def test_additions_are_refused_when_cumulative_deployment_is_unreadable(
+    tmp_path: Path,
+) -> None:
+    """A cap fed an understated input is a cap that only appears to bind.
+
+    ``B0XPosition.invested_notional`` means *cumulative deployment* and must not
+    shrink on a partial sell — the §4 per-symbol cap bounds what was ever
+    committed, not what is currently held. A lane whose only available figure is
+    the current cost basis cannot honour that, so it refuses additions instead
+    of sizing them against a number it knows is too small.
+    """
+
+    from scripts.b0x import kill_switch as kill_switch_module
+    from scripts.b0x.derivation import SkipReason, derive_orders
+    from scripts.b0x.state import B0XPosition, LaneAccountState
+    from scripts.b0x.table_source import PolicyTable, load_policy_table
+
+    write_table(
+        tmp_path,
+        make_payload(
+            rows=[make_row(symbol="KRW-BTC", previous_close="100", buy_l1="97")],
+            generated_at=NOW - dt.timedelta(hours=1),
+        ),
+    )
+    table = load_policy_table(market="crypto", now=NOW, table_dir=tmp_path)
+    assert isinstance(table, PolicyTable)
+
+    held = (
+        B0XPosition(
+            symbol="KRW-BTC",
+            # Underwater against previous_close=100, so an add is actually due.
+            quantity=Decimal("1"),
+            average_price=Decimal("200"),
+            # Cost basis after a partial sell: below what was really deployed,
+            # so the cap would hand back headroom it has already spent.
+            invested_notional=Decimal("10"),
+            entry_count=1,
+        ),
+    )
+
+    def _derive(*, readable: bool):
+        state = LaneAccountState(
+            lane="test",
+            quote_currency="USDT",
+            cash=Decimal("1000"),
+            broker_truth=BrokerTruth(position_symbols=("KRW-BTC",), own_pending=()),
+            positions=held,
+            cumulative_deployment_readable=readable,
+        )
+        return derive_orders(
+            table=table,
+            state=state,
+            envelope=CRYPTO_SIDECAR_ENVELOPE,
+            kill_switch=kill_switch_module.evaluate(
+                state=state, envelope=CRYPTO_SIDECAR_ENVELOPE
+            ),
+        )
+
+    # A lane that *can* report cumulative deployment still averages down.
+    assert any(o.leg == "averaging" for o in _derive(readable=True).orders)
+
+    blocked = _derive(readable=False)
+    assert [o.leg for o in blocked.orders] == []
+    assert [s.reason for s in blocked.skipped if s.leg == "averaging"] == [
+        SkipReason.CUMULATIVE_DEPLOYMENT_UNREADABLE
+    ]
+
+
+def test_kr_declares_its_deployment_figure_unreadable() -> None:
+    """KR's ``invested_notional`` is a cost basis, and the lane says so."""
+
+    from decimal import Decimal as D
+
+    from scripts.b0x.kr import mock as kr_mock
+    from scripts.b0x.kr.cycle import broker_state
+
+    fresh = kr_mock.FreshTruth(
+        cash=D("1000000"),
+        nav=D("1500000"),
+        positions=(
+            kr_mock.RawPosition(
+                symbol="005930",
+                quantity=D("10"),
+                average_price=D("70000"),
+                evaluation_amount=D("750000"),
+            ),
+        ),
+    )
+    state = broker_state(fresh=fresh)
+    assert state.cumulative_deployment_readable is False
+    # It is the cost basis, exactly — no fabricated cumulative figure.
+    assert state.positions[0].invested_notional == D("700000")
+    # And it is part of the hashed derivation input, not a loose flag.
+    assert state.canonical_derivation_input()["cumulative_deployment_readable"] is False

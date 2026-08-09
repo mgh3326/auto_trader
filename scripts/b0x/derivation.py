@@ -86,6 +86,9 @@ class SkipReason:
     SYMBOL_TOTAL_CAP = "symbol_total_notional_cap_reached"
     INSUFFICIENT_CASH = "insufficient_cash"
     AVERAGING_ALREADY_SATISFIED = "averaging_already_satisfied"
+    #: The lane cannot supply cumulative deployment, so an addition cannot be
+    #: sized against the §4 per-symbol total cap without understating it.
+    CUMULATIVE_DEPLOYMENT_UNREADABLE = "cumulative_deployment_unreadable"
     NO_POSITION_TO_SELL = "no_position_to_sell"
     BELOW_LOSS_GUARD_FLOOR = "below_loss_guard_floor"
     SELL_LEVEL_NOT_ABOVE_CLOSE = "sell_level_not_above_close"
@@ -551,6 +554,27 @@ def derive_orders(
                     if symbol not in daily_new_symbols:
                         daily_new_symbols.add(symbol)
                         new_entries_used += 1
+        elif apply_envelope and not state.cumulative_deployment_readable:
+            # 물타기 sizes against the §4 per-symbol *total deployment* cap. A
+            # lane that can only report the current cost basis understates that
+            # figure the moment anything is partially sold, which hands back
+            # headroom the cap already spent. Refuse the addition instead of
+            # sizing it against a number known to be too small — see
+            # ``LaneAccountState.cumulative_deployment_readable``.
+            skipped.append(
+                SkippedLeg(
+                    symbol=symbol,
+                    leg=Leg.AVERAGING,
+                    reason=SkipReason.CUMULATIVE_DEPLOYMENT_UNREADABLE,
+                    detail=(
+                        "lane cannot report cumulative deployment (only current "
+                        "cost basis, which a partial sell lowers) — sizing an "
+                        "addition against it would understate the §4 per-symbol "
+                        f"total cap of {format(envelope.per_symbol_total_notional, 'f')} "
+                        f"{envelope.quote_currency}"
+                    ),
+                )
+            )
         else:
             # ---------------- 물타기 (averaging down) ----------------
             leg_name = Leg.AVERAGING

@@ -90,6 +90,24 @@ class LaneAccountState:
     #: price), so two cycles with identical cash/positions but different NAV
     #: are, correctly, a different account state for a pct_of_nav lane.
     nav: Decimal | None = None
+    #: Whether ``B0XPosition.invested_notional`` on this lane really is
+    #: *cumulative deployment* (its documented meaning) rather than a proxy.
+    #:
+    #: The §4 per-symbol total cap bounds how much capital was ever put into a
+    #: symbol, so the figure must not shrink when a position is partially sold.
+    #: A lane whose only available number is the current cost basis
+    #: (``quantity × average_price``) cannot honour that: a partial sell lowers
+    #: it and silently re-opens headroom the cap already spent. ``False`` makes
+    #: derivation refuse *additions* to an existing position rather than size
+    #: them against an understated figure — same posture as
+    #: :class:`~scripts.b0x.broker_truth.PendingUnreadable`, and for the same
+    #: reason: a cap fed an unknowable input is a cap that appears to bind.
+    #:
+    #: Known boundary this does **not** close: a position opened and fully
+    #: closed earlier leaves no row at all, so its past deployment is invisible
+    #: to a new entry. That gap predates the broker-truth wiring and is
+    #: recorded in ``docs/runbooks/b0x-kr-cycle.md`` §9.1.
+    cumulative_deployment_readable: bool = True
     #: B0-X orders still working at the venue / in the virtual book.
     open_order_keys: tuple[str, ...] = ()
     #: Venue state NOT attributable to B0-X — the CONTAMINATED signal.
@@ -138,6 +156,7 @@ class LaneAccountState:
                 for pos in sorted(self.positions, key=lambda p: p.symbol)
             ],
             "broker_truth": self.broker_truth.canonical(),
+            "cumulative_deployment_readable": self.cumulative_deployment_readable,
             "realized_pnl_today": _dec(self.realized_pnl_today),
             "nav": None if self.nav is None else _dec(self.nav),
             "foreign_open_order_count": self.foreign_open_order_count,

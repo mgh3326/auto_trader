@@ -145,9 +145,15 @@ def broker_state(*, fresh: kr_mock.FreshTruth) -> LaneAccountState:
     Contract v1.5 ①/③. Positions are the account's own holdings — "B0-X
     물타기/매도 = 자기(mock) 보유에서만 파생" (v1.5 ③), and under the account
     map kis_mock is B0-X's exclusive order lane, so a mock holding *is* B0-X's
-    book. ``average_price`` is the broker's own 매입평균가; ``invested_notional``
-    is the cost basis that follows from it, which is the only deployment figure
-    a single broker snapshot can support.
+    book. ``average_price`` is the broker's own 매입평균가.
+
+    🔴 ``invested_notional`` is the **cost basis**, not cumulative deployment,
+    because a single broker snapshot carries no cumulative figure — and a
+    partial sell lowers a cost basis. Since ``B0XPosition.invested_notional``
+    feeds the §4 per-symbol total cap, which bounds deployment precisely so it
+    does *not* shrink on a sell, this lane declares
+    ``cumulative_deployment_readable=False`` and derivation refuses additions
+    rather than sizing them against a figure it knows is understated.
 
     ``entry_count`` is reported as ``0``: how many separate entries built a
     holding is not in the snapshot, and derivation does not read it. Inventing
@@ -171,6 +177,7 @@ def broker_state(*, fresh: kr_mock.FreshTruth) -> LaneAccountState:
         cash=fresh.cash,
         broker_truth=fresh.broker_truth(),
         positions=positions,
+        cumulative_deployment_readable=False,
         realized_pnl_today=Decimal("0"),
         nav=fresh.nav,
     )
