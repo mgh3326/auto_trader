@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping, Sequence
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import pyarrow as pa
@@ -23,6 +24,9 @@ import pyarrow as pa
 from . import contract as c
 from .schema import (
     CANONICAL_TABLES,
+    GAP_EXCLUSION_REQUIRED_KEYS,
+    MANIFEST_GAP_REQUIRED_KEYS,
+    MANIFEST_LIFECYCLE_REQUIRED_KEYS,
     MANIFEST_REQUIRED_KEYS,
     MANIFEST_SOURCE_REQUIRED_KEYS,
     MANIFEST_TABLE_REQUIRED_KEYS,
@@ -34,12 +38,16 @@ __all__ = [
     "RUN_INVALID_AUTHENTICITY_EVIDENCE",
     "RUN_INVALID_CORPUS_LITERALS",
     "RUN_INVALID_FORBIDDEN_SOURCE",
+    "RUN_INVALID_INPUT_EVIDENCE",
     "RUN_INVALID_MANIFEST_SCHEMA",
     "RUN_INVALID_OUTCOME_EVIDENCE",
     "RUN_INVALID_SCOPE_SEPARATION",
     "RUN_INVALID_TABLE_SCHEMA",
+    "validate_corpus",
+    "validate_input_evidence",
     "validate_manifest",
     "validate_outcomes",
+    "validate_premium_index_gap",
     "validate_table",
 ]
 
@@ -50,6 +58,7 @@ RUN_INVALID_AUTHENTICITY_EVIDENCE = "RUN_INVALID_AUTHENTICITY_EVIDENCE"
 RUN_INVALID_SCOPE_SEPARATION = "RUN_INVALID_SCOPE_SEPARATION"
 RUN_INVALID_TABLE_SCHEMA = "RUN_INVALID_TABLE_SCHEMA"
 RUN_INVALID_OUTCOME_EVIDENCE = c.RUN_INVALID_OUTCOME_EVIDENCE
+RUN_INVALID_INPUT_EVIDENCE = c.RUN_INVALID_INPUT_EVIDENCE
 
 #: Re-exported so a reader of the validator sees the closed arm-label domain
 #: it enforces without following an import (A2-C4 / NW-F4).
@@ -416,8 +425,12 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
             declared a prerequisite (A2-C1), ``RUN_INVALID_FORBIDDEN_SOURCE``
             for funding/OI/mark/index material (A2-C3) and
             ``RUN_INVALID_AUTHENTICITY_EVIDENCE`` for missing provenance or a
-            self-consistency admissibility claim (A2-C5).
+            self-consistency admissibility claim (A2-C5), and
+            ``RUN_INVALID_INPUT_EVIDENCE`` for a lifecycle-authority or
+            archive-gap declaration the contract refuses (A2-C6 / A2-C7).
     """
+    validate_input_evidence(manifest)
+
     missing = [k for k in MANIFEST_REQUIRED_KEYS if k not in manifest]
     if missing:
         _fail(
@@ -669,6 +682,421 @@ def _validate_tables(tables: Sequence[Mapping[str, Any]]) -> None:
             "A2-C3",
             f"canonical table(s) absent from manifest: {absent}",
         )
+
+
+# --- A2-C6: lifecycle authority absence and substitute evidence -----------
+
+
+def _validate_lifecycle_eligibility(manifest: Mapping[str, Any]) -> None:
+    """The corpus must state that no authority exists, and use the substitute.
+
+    The failure this guards is not a builder inventing a Binance endpoint out
+    of nothing — it is a builder quietly promoting one of the two known proxies
+    to "the lifecycle source", which would make an inference from data presence
+    read as a record Binance stands behind.
+    """
+    declared = manifest.get("lifecycle_eligibility")
+    if not isinstance(declared, Mapping):
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C6",
+            "manifest does not declare lifecycle_eligibility; the absence of "
+            "an authoritative public lifecycle source is stated by this "
+            "corpus, never left to be assumed either way",
+        )
+        return
+
+    missing = [k for k in MANIFEST_LIFECYCLE_REQUIRED_KEYS if k not in declared]
+    if missing:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C6",
+            f"lifecycle_eligibility is missing {missing}",
+        )
+
+    authoritative = declared["authoritative_public_source"]
+    if authoritative is not c.LIFECYCLE_AUTHORITATIVE_PUBLIC_SOURCE:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C6",
+            f"authoritative_public_source must be "
+            f"{c.LIFECYCLE_AUTHORITATIVE_PUBLIC_SOURCE!r}: A2-MEASURE "
+            f"established that none exists, so naming {authoritative!r} "
+            "asserts an authority that was looked for and not found",
+        )
+
+    kind = declared["evidence_kind"]
+    if kind in c.LIFECYCLE_PROXY_KINDS:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C6",
+            f"evidence_kind {kind!r} is a proxy, not the eligibility evidence; "
+            f"{c.LIFECYCLE_PROXY_LIMITS[kind]}",
+        )
+    if kind != c.ELIGIBILITY_EVIDENCE_KIND:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C6",
+            f"evidence_kind must be {c.ELIGIBILITY_EVIDENCE_KIND!r} — a "
+            "completed 4h kline with non-zero traded volume across the "
+            f"ranking window — got {kind!r}",
+        )
+
+    limits = declared["proxy_limits"]
+    if not isinstance(limits, Mapping) or set(limits) != set(c.LIFECYCLE_PROXY_LIMITS):
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C6",
+            "proxy_limits must record exactly the known proxies "
+            f"{sorted(c.LIFECYCLE_PROXY_LIMITS)}; dropping one loses the "
+            "record of what it cannot answer",
+        )
+    for name, text in c.LIFECYCLE_PROXY_LIMITS.items():
+        if limits.get(name) != text:
+            _fail(
+                RUN_INVALID_INPUT_EVIDENCE,
+                "A2-C6",
+                f"proxy_limits[{name!r}] does not carry the frozen limitation "
+                "text; a proxy's limits may not be softened",
+            )
+
+
+# --- A2-C7: premium-index archive gap -------------------------------------
+
+
+def _decimal(value: Any, *, label: str) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            f"{label}: {value!r} is not a parsable quote volume",
+        )
+        raise
+
+
+def _validate_gap_section(manifest: Mapping[str, Any]) -> tuple[str, ...]:
+    """Validate the manifest's gap declaration; return the in-window subset."""
+    gap = manifest.get("premium_index_gap")
+    if not isinstance(gap, Mapping):
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            "manifest does not declare premium_index_gap; the klines vs "
+            "premiumIndexKlines archive diff is an input to this corpus and "
+            "is recorded, not assumed empty",
+        )
+        return ()
+
+    missing = [k for k in MANIFEST_GAP_REQUIRED_KEYS if k not in gap]
+    if missing:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            f"premium_index_gap is missing {missing}",
+        )
+
+    symbols = tuple(gap["symbols"])
+    in_window = tuple(gap["in_window_symbols"])
+    stray = [s for s in in_window if s not in symbols]
+    if stray:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            f"in_window_symbols are not part of the measured diff: {stray}",
+        )
+
+    exclusions = gap["exclusions"]
+    by_symbol: dict[str, Mapping[str, Any]] = {}
+    for index, entry in enumerate(exclusions):
+        label = f"exclusions[{index}]"
+        absent = [k for k in GAP_EXCLUSION_REQUIRED_KEYS if k not in entry]
+        if absent:
+            _fail(RUN_INVALID_INPUT_EVIDENCE, "A2-C7", f"{label}: missing {absent}")
+        reason = entry["reason"]
+        if reason not in c.GAP_EXCLUSION_REASONS:
+            _fail(
+                RUN_INVALID_INPUT_EVIDENCE,
+                "A2-C7",
+                f"{label}: reason {reason!r} is not one of "
+                f"{list(c.GAP_EXCLUSION_REASONS)}; the reason set is closed so "
+                "that no gap symbol is dropped on an unstated ground",
+            )
+        if not entry["evidence_sha256"]:
+            _fail(
+                RUN_INVALID_INPUT_EVIDENCE,
+                "A2-C7",
+                f"{label}: excluding a gap symbol requires evidence",
+            )
+        if reason == c.GAP_EXCLUSION_BASE_SYMBOL_REASON:
+            base = entry.get("base_symbol")
+            if not base:
+                _fail(
+                    RUN_INVALID_INPUT_EVIDENCE,
+                    "A2-C7",
+                    f"{label}: reason {reason!r} must name the base_symbol it "
+                    "claims the rows are identical to",
+                )
+            if base in symbols:
+                _fail(
+                    RUN_INVALID_INPUT_EVIDENCE,
+                    "A2-C7",
+                    f"{label}: base_symbol {base!r} is itself in the gap set, "
+                    "so it carries no premium-index material either",
+                )
+        by_symbol[str(entry["symbol"])] = entry
+
+    unaccounted = [s for s in symbols if s not in in_window and s not in by_symbol]
+    if unaccounted:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            f"{len(unaccounted)} gap symbol(s) are neither audited per epoch "
+            f"nor excluded with a reason (first={unaccounted[0]!r}); every "
+            "symbol in the diff is accounted for",
+        )
+    both = [s for s in in_window if s in by_symbol]
+    if both:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            f"gap symbol(s) both audited and excluded: {both}",
+        )
+    return in_window
+
+
+def validate_premium_index_gap(
+    gap_audit: pa.Table,
+    pit_universe: pa.Table,
+    in_window_symbols: Sequence[str],
+) -> None:
+    """Decide, per epoch, whether the archive gap touches the candidate pool.
+
+    The verdict is recorded by the builder and *recomputed* here, exactly as
+    outcome numbers are (A2-C4).  Nothing in this function returns a pool, edits
+    a pool, or names a replacement symbol: when a gap symbol outranks the
+    declared top 3, the epoch is reported ``RUN_INVALID_INPUT_EVIDENCE`` and
+    that is the whole of the response.  Promoting the next-ranked symbol into
+    the vacancy would turn an input-evidence failure into a clean-looking
+    ranking, which is the failure OD-26 names first.
+
+    Args:
+        gap_audit: The ``premium_index_gap_audit`` table.
+        pit_universe: The ``pit_universe`` table, carrying the declared ranks.
+        in_window_symbols: Gap symbols that require a per-epoch audit row.
+
+    Raises:
+        ContractViolation: Always with ``RUN_INVALID_INPUT_EVIDENCE``.
+    """
+    validate_table("premium_index_gap_audit", gap_audit)
+    validate_table("pit_universe", pit_universe)
+
+    pools: dict[int, list[dict[str, Any]]] = {}
+    for row in pit_universe.to_pylist():
+        pools.setdefault(row["epoch_open_time"], []).append(row)
+
+    audit: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in gap_audit.to_pylist():
+        key = (row["epoch_open_time"], row["symbol"])
+        if key in audit:
+            _fail(
+                RUN_INVALID_INPUT_EVIDENCE,
+                "A2-C7",
+                f"duplicate gap audit row for {key}",
+            )
+        audit[key] = row
+
+    expected = frozenset(in_window_symbols)
+    for epoch, symbol in audit:
+        if symbol not in expected:
+            _fail(
+                RUN_INVALID_INPUT_EVIDENCE,
+                "A2-C7",
+                f"gap audit row for {symbol!r} at epoch {epoch}, which is not "
+                "declared as an in-window gap symbol",
+            )
+        if epoch not in pools:
+            _fail(
+                RUN_INVALID_INPUT_EVIDENCE,
+                "A2-C7",
+                f"gap audit row at epoch {epoch}, which has no pit_universe pool",
+            )
+
+    for epoch in sorted(pools):
+        pool = _ranked_pool(epoch, pools[epoch])
+        cut_symbol = pool[-1]["symbol"]
+        cut_volume = _decimal(
+            pool[-1]["quote_volume_lookback"], label=f"epoch {epoch} rank cut"
+        )
+        pool_symbols = {row["symbol"] for row in pool}
+
+        for symbol in in_window_symbols:
+            if symbol in pool_symbols:
+                _fail(
+                    RUN_INVALID_INPUT_EVIDENCE,
+                    "A2-C7",
+                    f"epoch {epoch}: {symbol!r} is in the candidate pool but "
+                    "the archive carries no premium index for it; the epoch is "
+                    "invalid, and the pool is not re-ranked around it",
+                )
+            row = audit.get((epoch, symbol))
+            if row is None:
+                _fail(
+                    RUN_INVALID_INPUT_EVIDENCE,
+                    "A2-C7",
+                    f"epoch {epoch}: in-window gap symbol {symbol!r} has no "
+                    "audit row; a gap symbol is accounted for at every epoch, "
+                    "never omitted",
+                )
+                continue
+            _check_gap_row(epoch, row, cut_symbol=cut_symbol, cut_volume=cut_volume)
+
+
+def _ranked_pool(epoch: int, rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Return the pool in declared rank order, having checked it *is* the ranking."""
+    pool = sorted((dict(r) for r in rows), key=lambda r: r["rank"])
+    ranks = [r["rank"] for r in pool]
+    if ranks != list(range(1, c.UNIVERSE_TOP_N + 1)):
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            f"epoch {epoch}: pit_universe ranks are {ranks}, expected exactly "
+            f"1..{c.UNIVERSE_TOP_N}",
+        )
+    symbols = [r["symbol"] for r in pool]
+    if len(set(symbols)) != len(symbols):
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            f"epoch {epoch}: duplicate symbol in the candidate pool {symbols}",
+        )
+    reordered = sorted(
+        pool,
+        key=lambda r: (
+            -_decimal(r["quote_volume_lookback"], label=f"epoch {epoch} {r['symbol']}"),
+            r["symbol"],
+        ),
+    )
+    if [r["symbol"] for r in reordered] != symbols:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            f"epoch {epoch}: the declared pool order {symbols} is not the "
+            f"{c.UNIVERSE_RANKING_METRIC} ranking it claims to be "
+            f"({[r['symbol'] for r in reordered]}, ties broken "
+            f"{c.UNIVERSE_TIE_BREAK})",
+        )
+    return pool
+
+
+def _check_gap_row(
+    epoch: int,
+    row: Mapping[str, Any],
+    *,
+    cut_symbol: str,
+    cut_volume: Decimal,
+) -> None:
+    status = row["eligibility_status"]
+    if status not in c.ELIGIBILITY_STATUSES:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            f"epoch {epoch}: eligibility_status {status!r} is not one of "
+            f"{list(c.ELIGIBILITY_STATUSES)}",
+        )
+    if not row["eligibility_evidence_sha256"]:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C6",
+            f"epoch {epoch}: {row['symbol']!r} carries no eligibility evidence; "
+            f"eligibility is decided by {c.ELIGIBILITY_EVIDENCE_KIND}, and the "
+            "evidence it was decided from is recorded",
+        )
+
+    volume = row["quote_volume_lookback"]
+    if status == c.NOT_ELIGIBLE:
+        if volume is not None:
+            _fail(
+                RUN_INVALID_INPUT_EVIDENCE,
+                "A2-C7",
+                f"epoch {epoch}: {row['symbol']!r} is recorded not_eligible yet "
+                f"carries a lookback volume ({volume!r})",
+            )
+        recomputed = c.NO_IMPACT
+    else:
+        if volume is None:
+            _fail(
+                RUN_INVALID_INPUT_EVIDENCE,
+                "A2-C7",
+                f"epoch {epoch}: {row['symbol']!r} is recorded eligible with no "
+                "lookback volume, so it cannot be ranked against the pool",
+            )
+        value = _decimal(volume, label=f"epoch {epoch} {row['symbol']}")
+        outranks = value > cut_volume or (
+            value == cut_volume and str(row["symbol"]) < cut_symbol
+        )
+        recomputed = c.RUN_INVALID_INPUT_EVIDENCE if outranks else c.NO_IMPACT
+
+    verdict = row["verdict"]
+    if verdict not in c.GAP_EPOCH_VERDICTS:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            f"epoch {epoch}: verdict {verdict!r} is not one of "
+            f"{list(c.GAP_EPOCH_VERDICTS)}",
+        )
+    if verdict != recomputed:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            f"epoch {epoch}: {row['symbol']!r} is recorded {verdict} but the "
+            f"evidence supports {recomputed} (lookback volume {volume!r} "
+            f"against the rank-{c.UNIVERSE_TOP_N} cut {cut_symbol} "
+            f"{cut_volume}); the verdict is recomputed, not accepted",
+        )
+    if recomputed == c.RUN_INVALID_INPUT_EVIDENCE:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C7",
+            f"epoch {epoch}: gap symbol {row['symbol']!r} outranks the "
+            f"rank-{c.UNIVERSE_TOP_N} candidate {cut_symbol!r}, so the archive "
+            "gap intersects this epoch's pool. The epoch is invalid; it is not "
+            "repaired by promoting the next-ranked symbol",
+        )
+
+
+def validate_input_evidence(manifest: Mapping[str, Any]) -> tuple[str, ...]:
+    """Run the A2-C6 / A2-C7 manifest half and return the in-window gap subset."""
+    _validate_lifecycle_eligibility(manifest)
+    return _validate_gap_section(manifest)
+
+
+def validate_corpus(
+    manifest: Mapping[str, Any],
+    *,
+    pit_universe: pa.Table,
+    gap_audit: pa.Table,
+    klines: pa.Table,
+    outcomes: pa.Table,
+    decisions: Sequence[Mapping[str, Any]],
+) -> None:
+    """Validate a corpus in ``TERMINAL_CODE_PRIORITY`` order.
+
+    Input evidence is adjudicated first and unconditionally.  A corpus built on
+    material the contract refuses is the wrong artifact, so reporting some
+    downstream code for it would name a symptom and hide the cause — and it
+    would let a run whose ranking input is inadmissible be written up as an
+    outcome-level problem instead.
+
+    Raises:
+        ContractViolation: The highest-priority code the artifacts violate.
+    """
+    in_window = validate_input_evidence(manifest)
+    validate_premium_index_gap(gap_audit, pit_universe, in_window)
+    validate_manifest(manifest)  # re-runs the pure input-evidence half; idempotent
+    validate_table("klines_4h", klines)
+    validate_outcomes(outcomes, klines, decisions)
 
 
 def _validate_admissibility(admissibility: Mapping[str, Any]) -> None:

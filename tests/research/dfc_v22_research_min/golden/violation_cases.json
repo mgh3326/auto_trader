@@ -178,6 +178,96 @@
       "expected_detail_contains": "imputed_row_count must be 0"
     },
     {
+      "case_id": "lifecycle_authority_invented",
+      "clause": "A2-C6",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "asserts an authority that was looked for and not found"
+    },
+    {
+      "case_id": "lifecycle_proxy_promoted_to_evidence",
+      "clause": "A2-C6",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "is a proxy, not the eligibility evidence"
+    },
+    {
+      "case_id": "lifecycle_proxy_limit_softened",
+      "clause": "A2-C6",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "a proxy's limits may not be softened"
+    },
+    {
+      "case_id": "gap_symbol_missing_eligibility_evidence",
+      "clause": "A2-C6",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "carries no eligibility evidence"
+    },
+    {
+      "case_id": "gap_symbol_unaccounted_for",
+      "clause": "A2-C7",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "neither audited per epoch nor excluded with a reason"
+    },
+    {
+      "case_id": "gap_exclusion_unknown_reason",
+      "clause": "A2-C7",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "the reason set is closed"
+    },
+    {
+      "case_id": "gap_exclusion_base_symbol_also_in_gap",
+      "clause": "A2-C7",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "is itself in the gap set"
+    },
+    {
+      "case_id": "gap_symbol_inside_candidate_pool",
+      "clause": "A2-C7",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "the pool is not re-ranked around it"
+    },
+    {
+      "case_id": "gap_epoch_audit_row_omitted",
+      "clause": "A2-C7",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "accounted for at every epoch, never omitted"
+    },
+    {
+      "case_id": "gap_outranking_symbol_reported_no_impact",
+      "clause": "A2-C7",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "the verdict is recomputed, not accepted"
+    },
+    {
+      "case_id": "gap_outranking_symbol_silently_reranked",
+      "clause": "A2-C7",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "not repaired by promoting the next-ranked symbol"
+    },
+    {
+      "case_id": "gap_pool_order_is_not_the_ranking",
+      "clause": "A2-C7",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "is not the quote_volume ranking it claims to be"
+    },
+    {
+      "case_id": "gap_pool_shorter_than_top_n",
+      "clause": "A2-C7",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "expected exactly 1..3"
+    },
+    {
+      "case_id": "gap_not_eligible_row_carries_volume",
+      "clause": "A2-C7",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "recorded not_eligible yet carries a lookback volume"
+    },
+    {
+      "case_id": "gap_declaration_absent",
+      "clause": "A2-C7",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "recorded, not assumed empty"
+    },
+    {
       "case_id": "manifest_missing_required_source_kind",
       "clause": "A2-C3",
       "expected_code": "RUN_INVALID_MANIFEST_SCHEMA",
