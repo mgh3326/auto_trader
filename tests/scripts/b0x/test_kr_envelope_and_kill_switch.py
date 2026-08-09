@@ -30,6 +30,7 @@ from decimal import Decimal
 import pytest
 
 from scripts.b0x import kill_switch
+from scripts.b0x.broker_truth import BrokerTruth
 from scripts.b0x.envelope import (
     KR_MOCK_ENVELOPE,
     EnvelopeNotLocked,
@@ -94,6 +95,7 @@ def _kr_state(*, realized_pnl_today: Decimal, nav: Decimal | None) -> LaneAccoun
         lane="kis_mock",
         quote_currency="KRW",
         cash=Decimal("5000000"),
+        broker_truth=BrokerTruth(position_symbols=(), own_pending=()),
         realized_pnl_today=realized_pnl_today,
         nav=nav,
     )
@@ -184,6 +186,7 @@ def test_crypto_kill_switch_unaffected_by_basis_field() -> None:
         lane="binance_spot_demo_sidecar",
         quote_currency="USDT",
         cash=Decimal("100"),
+        broker_truth=BrokerTruth(position_symbols=(), own_pending=()),
         realized_pnl_today=Decimal("-5"),
         nav=None,
     )

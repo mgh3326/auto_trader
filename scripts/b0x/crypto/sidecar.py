@@ -51,7 +51,12 @@ Fail-closed layers before any order can reach the venue
 6. Post-floor notional re-check: LOT_SIZE flooring can move the realized
    notional, so the cap is verified against the *realized* value, not the
    requested one (ROB-993 R3).
-7. ``confirm=True`` per call, defaulted off, never derived from a config file.
+7. Contract v1.5 ① 동일 심볼 재제출 금지: a symbol already carrying one of this
+   lane's own resting orders (``b0xc`` prefix) is refused — in derivation, and
+   again in :func:`submit_planned` immediately before dispatch. The §4 caps are
+   fed from :meth:`FreshTruth.broker_truth`, i.e. from this cycle's account
+   read, so "일일 신규 ≤ 2" binds per UTC day rather than per cycle.
+8. ``confirm=True`` per call, defaulted off, never derived from a config file.
 
 Known limitation — v1 attribution is fail-closed, not fail-live
 ---------------------------------------------------------------
@@ -92,6 +97,7 @@ from app.services.brokers.binance.spot_demo.sizing import (
     SizingResult,
     compute_demo_order_qty,
 )
+from scripts.b0x.broker_truth import BrokerTruth, assert_resubmit_allowed
 from scripts.b0x.derivation import DerivedOrder
 from scripts.b0x.envelope import Envelope, assert_envelope_locked
 from scripts.b0x.scope import BINANCE_SPOT_DEMO_SIDECAR_SCOPE_KEY
@@ -328,10 +334,49 @@ class FreshTruth:
     open_orders: dict[str, list[Any]]  # binance symbol -> open orders
     foreign_open_orders: tuple[str, ...]
     foreign_base_assets: tuple[str, ...]
+    #: Binance symbols carrying one of *B0-X's own* resting orders (client order
+    #: id prefixed :data:`CLIENT_ORDER_ID_PREFIX`). Contract v1.5 ① — the input
+    #: to 동일 심볼 재제출 금지. Distinct from ``foreign_open_orders``, which is
+    #: everyone *else*'s: the two together are the whole open book.
+    own_open_order_symbols: tuple[str, ...] = ()
+    #: Base assets whose balance clears :func:`sellable_qty` — contract v1.5 ①
+    #: 동시 포지션, counted account-wide (attribution does not change what the
+    #: account is carrying). On this lane it currently coincides with
+    #: ``foreign_base_assets``, because the v1 attribution rule (module
+    #: docstring) makes every sellable balance foreign; keeping them as separate
+    #: fields is what lets fill-aware reconcile split them later without moving
+    #: the cap onto the wrong one.
+    sellable_base_assets: tuple[str, ...] = ()
 
     @property
     def contaminated(self) -> bool:
         return bool(self.foreign_open_orders or self.foreign_base_assets)
+
+    def broker_truth(self) -> BrokerTruth:
+        """Contract v1.5 ① cap inputs, in the policy table's symbol spelling.
+
+        Both terms are readable on this venue — Binance answers
+        ``GET /api/v3/openOrders`` and ``GET /api/v3/account`` — so this lane
+        never constructs :class:`~scripts.b0x.broker_truth.PendingUnreadable`.
+        """
+
+        asset_to_table = {
+            B0X_SIDECAR_BASE_ASSETS[venue]: table
+            for table, venue in B0X_SIDECAR_SYMBOLS.items()
+        }
+        venue_to_table = {venue: table for table, venue in B0X_SIDECAR_SYMBOLS.items()}
+        return BrokerTruth(
+            position_symbols=tuple(
+                asset_to_table[asset]
+                for asset in self.sellable_base_assets
+                if asset in asset_to_table
+            ),
+            own_pending=tuple(
+                venue_to_table[symbol]
+                for symbol in self.own_open_order_symbols
+                if symbol in venue_to_table
+            ),
+        )
 
     @property
     def flat(self) -> bool:
@@ -358,6 +403,8 @@ class FreshTruth:
             },
             "foreign_open_orders": list(self.foreign_open_orders),
             "foreign_base_assets": list(self.foreign_base_assets),
+            "own_open_order_symbols": list(self.own_open_order_symbols),
+            "sellable_base_assets": list(self.sellable_base_assets),
             "contaminated": self.contaminated,
             "flat": self.flat,
         }
@@ -390,11 +437,17 @@ async def read_fresh_truth(
 
     open_orders: dict[str, list[Any]] = {}
     foreign_orders: list[str] = []
+    own_order_symbols: set[str] = set()
     for symbol in sorted(B0X_SIDECAR_BASE_ASSETS):
         result = await client.get_open_orders(symbol=symbol)
         open_orders[symbol] = list(result.orders)
         for order in result.orders:
-            if not str(order.client_order_id).startswith(CLIENT_ORDER_ID_PREFIX):
+            if str(order.client_order_id).startswith(CLIENT_ORDER_ID_PREFIX):
+                # Contract v1.5 ①: the venue's own answer to "what of mine is
+                # still resting?" — the input that makes the daily-new cap bind
+                # across cycles instead of resetting with each one.
+                own_order_symbols.add(symbol)
+            else:
                 foreign_orders.append(f"{symbol}:{order.client_order_id}")
 
     # A *sellable* base balance on a lane that has never filled anything is, by
@@ -428,6 +481,12 @@ async def read_fresh_truth(
         open_orders=open_orders,
         foreign_open_orders=tuple(foreign_orders),
         foreign_base_assets=tuple(foreign_assets),
+        own_open_order_symbols=tuple(sorted(own_order_symbols)),
+        # Contract v1.5 ① 동시 포지션 = non-dust 매도가능 base 잔고의 수. Same
+        # ``sellable_qty`` predicate the contamination judgment uses — the dust
+        # definition (contract v1.2 §8, LOT_SIZE floor only, never
+        # MIN_NOTIONAL) is reused verbatim, not re-derived.
+        sellable_base_assets=tuple(foreign_assets),
     )
 
 
@@ -671,13 +730,17 @@ async def submit_planned(
 ) -> list[dict[str, Any]]:
     """Submit (or dry-run) the planned orders. ``confirm=False`` sends no HTTP.
 
-    Re-runs the enable gate, the envelope lock, the symbol allowlist, and the
-    contamination check *here* rather than trusting the caller — this is the
-    last line before the venue.
+    Re-runs the enable gate, the envelope lock, the symbol allowlist, the
+    contamination check, and — contract v1.5 ① — the 동일 심볼 재제출 guard
+    *here* rather than trusting the caller: this is the last line before the
+    venue. Before v1.5 this function consulted ``contaminated`` but never the
+    account's own resting book, which is how the same symbol at the same level
+    could be re-submitted every cycle and stack.
     """
 
     assert_sidecar_enabled()
     assert_envelope_locked(envelope)
+    truth = fresh_truth.broker_truth()
 
     if fresh_truth.contaminated:
         raise SidecarContaminated(
@@ -691,6 +754,7 @@ async def submit_planned(
     results: list[dict[str, Any]] = []
     for order in planned:
         assert_symbol_allowed(order.symbol)
+        assert_resubmit_allowed(truth, symbol=order.table_symbol, lane=LANE)
         # Buy-side only, for the same reason the planner caps buys only.
         if order.side == "buy" and order.notional > envelope.per_order_notional:
             raise AssertionError(

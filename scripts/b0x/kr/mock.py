@@ -68,6 +68,19 @@ integration point, or a test double that deliberately leaves itself
 unwired). A "not yet built" state must never be mistaken for "submitted and
 confirmed zero".
 
+Contract v1.5 ① — the one KR asymmetry, stated rather than papered over
+-----------------------------------------------------------------------
+The §4 caps are now fed from the broker (:meth:`FreshTruth.broker_truth`)
+instead of a state file. Two of the three inputs read cleanly on kis_mock:
+holdings give 동시 포지션, and 일일 신규 unions them with this cycle's
+admissions. The third — 자기(``b0xk``) 미체결 — **cannot be read at all**; see
+:data:`KR_PENDING_UNREADABLE` for the two surfaces that fail and how each was
+measured. That state fails closed, so while it holds this lane derives zero
+orders per cycle, every candidate row recorded as skipped with
+``own_pending_unreadable`` and its detail. The alternative — reading an
+unanswerable question as "nothing is resting" — is precisely how duplicate
+prevention gets silently disabled, which is the defect v1.5 ① exists to close.
+
 No orders were placed by writing this PR — see the runbook and
 ``docs/runbooks/b0x-kr-cycle.md`` §9 for the record of what was, and was
 not, exercised.
@@ -87,6 +100,11 @@ from app.services.brokers.kis.base import BaseKISClient
 from app.services.brokers.kis.mock_scalping_exec.adapters import KisMockBroker
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 from app.services.brokers.kis.protocols import KISClientProtocol
+from scripts.b0x.broker_truth import (
+    BrokerTruth,
+    PendingUnreadable,
+    assert_resubmit_allowed,
+)
 from scripts.b0x.derivation import DerivedOrder
 from scripts.b0x.envelope import Envelope, assert_envelope_locked
 from scripts.b0x.scope import KIS_MOCK_SCOPE_KEY
@@ -94,6 +112,43 @@ from scripts.b0x.scope import KIS_MOCK_SCOPE_KEY
 LANE = KIS_MOCK_SCOPE_KEY
 MARKET = "kr"
 QUOTE_CURRENCY = "KRW"
+
+#: KRX trades whole shares, so the minimum trade unit is 1 — a holding that
+#: floors to zero shares cannot become a SELL at any price. This is the KR
+#: spelling of the contract v1.2 dust rule (LOT_SIZE floor only, never
+#: MIN_NOTIONAL), the same predicate the Binance sidecar's ``sellable_qty``
+#: applies with a venue-supplied step size.
+KRX_MIN_TRADE_UNIT_SHARES: Decimal = Decimal("1")
+
+#: Contract v1.5 ①, KR column. ``kis_mock`` cannot answer "what of mine is
+#: still resting?" through **either** available surface, and both dead ends are
+#: already measured and documented in this repo:
+#:
+#: * ``DomesticOrderClient.inquire_korea_orders`` (TR ``TTTC8036R``, 미체결
+#:   주문 조회) raises outright for ``is_mock=True`` — "모의투자에서 지원되지
+#:   않음". This is the same limitation that makes kill-time cancellation
+#:   structurally impossible on this lane (``kr.cycle.KILL_CANCEL_UNSUPPORTED_
+#:   NOTE``).
+#: * ``inquire_daily_order_domestic`` (daily-ccld) *does* route to a mock TR,
+#:   but ROB-341 measured it returning ``rt_cd=0`` with **empty rows even after
+#:   same-day mock order activity** (``docs/runbooks/kis-mock-scalping-smoke.
+#:   md``), which is why the scalping engine demoted it to a non-gating
+#:   post-settlement diagnostic. An answer that can be empty while orders rest
+#:   cannot prove that none do.
+#:
+#: So this lane reports unreadable rather than empty, and
+#: :meth:`BrokerTruth.resubmit_block` fails closed on every symbol while it
+#: holds. Treating "조회 불가" as "미체결 없음" would silently disable duplicate
+#: prevention on the one lane whose venue cannot contradict it.
+KR_PENDING_UNREADABLE: PendingUnreadable = PendingUnreadable(
+    reason="kis_mock_pending_inquiry_unsupported",
+    detail=(
+        "KIS 모의투자 미체결조회(TTTC8036R)는 is_mock=True 에서 raise 하고, "
+        "일별체결조회(daily-ccld)는 당일 주문이 있어도 빈 행을 반환할 수 있어 "
+        "(ROB-341 실측) 미체결 부재를 증명하지 못한다 — 자기(b0xk) 미체결을 "
+        "조회할 수단이 없음"
+    ),
+)
 
 #: Idempotency prefix mirroring the crypto sidecar's ``clientOrderId`` scheme
 #: (``b0xc-<order_key>``) — ``b0xk`` = B0-X KR. ``order.order_key`` (16 hex
@@ -188,6 +243,32 @@ class FreshTruth:
     nav: Decimal
     positions: tuple[RawPosition, ...]
 
+    def non_dust_position_symbols(self) -> tuple[str, ...]:
+        """Contract v1.5 ① 동시 포지션 — holdings that could become a SELL.
+
+        KRX's minimum trade unit is one whole share, so a fractional residue
+        floors to zero and is the KR analogue of venue dust. Uses the held
+        quantity (not 매도가능수량) so shares locked inside a resting sell still
+        count: the cap bounds what the account carries, and an order does not
+        make the position disappear.
+        """
+
+        return tuple(
+            sorted(
+                pos.symbol
+                for pos in self.positions
+                if (pos.quantity // KRX_MIN_TRADE_UNIT_SHARES) >= 1
+            )
+        )
+
+    def broker_truth(self) -> BrokerTruth:
+        """Contract v1.5 ① cap inputs. Pending is unreadable on this venue."""
+
+        return BrokerTruth(
+            position_symbols=self.non_dust_position_symbols(),
+            own_pending=KR_PENDING_UNREADABLE,
+        )
+
     def status_only(self) -> dict[str, Any]:
         """Report-safe view: presence/counts, never raw balances."""
 
@@ -196,6 +277,9 @@ class FreshTruth:
             "cash_present": bool(self.cash > 0),
             "nav_present": bool(self.nav > 0),
             "position_symbols": sorted(pos.symbol for pos in self.positions),
+            "non_dust_position_symbols": list(self.non_dust_position_symbols()),
+            "own_pending_readable": False,
+            "own_pending_unreadable_reason": KR_PENDING_UNREADABLE.reason,
         }
 
 
@@ -467,7 +551,11 @@ def build_kis_mock_broker(
 
 
 async def submit_planned_order(
-    broker: KisMockBroker, *, planned: PlannedOrder, confirm: bool
+    broker: KisMockBroker,
+    *,
+    planned: PlannedOrder,
+    confirm: bool,
+    broker_truth: BrokerTruth,
 ) -> dict[str, Any]:
     """Dispatch one :class:`PlannedOrder` through ``KisMockBroker``.
 
@@ -476,8 +564,16 @@ async def submit_planned_order(
     ``correlation_id`` so a replayed identical cycle re-derives the same
     correlation id and a re-send is caught by the broker's own reservation
     lifecycle rather than silently double-submitted.
+
+    ``broker_truth`` is re-checked here, at the last line before the venue, the
+    same way the crypto sidecar re-checks its own gates in ``submit_planned``.
+    On this lane it is always the fail-closed :data:`KR_PENDING_UNREADABLE`
+    state, so a caller that reached this function with a planned order anyway
+    (derivation should already have refused the row) is stopped with
+    ``OwnPendingResubmitBlocked`` rather than double-submitting blind.
     """
 
+    assert_resubmit_allowed(broker_truth, symbol=planned.symbol, lane=LANE)
     price = Decimal(planned.price)
     quantity = Decimal(planned.quantity)
     if planned.side == "buy":
@@ -506,6 +602,8 @@ __all__ = [
     "MARKET",
     "QUOTE_CURRENCY",
     "CLIENT_ORDER_ID_PREFIX",
+    "KRX_MIN_TRADE_UNIT_SHARES",
+    "KR_PENDING_UNREADABLE",
     "KrLaneDisabled",
     "KrMockSubmissionNotWired",
     "ReadOnlyKISMockDomesticClient",

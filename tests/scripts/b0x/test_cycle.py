@@ -102,19 +102,39 @@ async def test_first_shadow_cycle_derives_and_records(
 async def test_shadow_cycle_is_idempotent_in_its_derivation(
     table_dir: Path, out_dir: Path
 ) -> None:
-    """Same table + same book → same cycle_id, orders, and derivation hash."""
+    """Same table + same book → same cycle_id, orders, and derivation hash.
 
+    "Same book" now includes the lane's resting orders, because contract v1.5 ①
+    made them a derivation *input* (동일 심볼 재제출 금지). So the replay is
+    staged explicitly: snapshot the book, run a cycle that changes it, restore,
+    and re-run. A test that simply ran two cycles back to back would be
+    asserting that placing orders does not change the account — which is the
+    assumption the phantom ``attributed_book.json`` encoded.
+    """
+
+    portfolio_path = (
+        ObservationLedger(lane=shadow.LANE, root=out_dir).lane_dir / "portfolio.json"
+    )
     first = await run_shadow_cycle(now=NOW, table_dir=table_dir, out_dir=out_dir)
+    book_after_first = portfolio_path.read_text(encoding="utf-8")
+
     second = await run_shadow_cycle(
         now=NOW + dt.timedelta(minutes=1), table_dir=table_dir, out_dir=out_dir
     )
     assert first.derivation is not None and second.derivation is not None
-    assert first.derivation.cycle_id == second.derivation.cycle_id
-    assert first.derivation.derivation_hash() == second.derivation.derivation_hash()
-    assert first.derivation.canonical_bytes() == second.derivation.canonical_bytes()
 
-    # Two cycles recorded — the ledger appends, never rewrites.
-    assert len(ObservationLedger(lane=shadow.LANE, root=out_dir).read_cycles()) == 2
+    # Restore the book the second cycle started from, then replay it.
+    portfolio_path.write_text(book_after_first, encoding="utf-8")
+    replay = await run_shadow_cycle(
+        now=NOW + dt.timedelta(minutes=2), table_dir=table_dir, out_dir=out_dir
+    )
+    assert replay.derivation is not None
+    assert replay.derivation.cycle_id == second.derivation.cycle_id
+    assert replay.derivation.derivation_hash() == second.derivation.derivation_hash()
+    assert replay.derivation.canonical_bytes() == second.derivation.canonical_bytes()
+
+    # Three cycles recorded — the ledger appends, never rewrites.
+    assert len(ObservationLedger(lane=shadow.LANE, root=out_dir).read_cycles()) == 3
 
 
 @pytest.mark.asyncio

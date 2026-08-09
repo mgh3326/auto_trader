@@ -67,8 +67,7 @@ async def _derivation_only(args: argparse.Namespace) -> int:
     from scripts.b0x import kill_switch as kill_switch_module
     from scripts.b0x.derivation import derive_orders
     from scripts.b0x.kr import mock as kr_mock
-    from scripts.b0x.kr.cycle import attributed_state
-    from scripts.b0x.ledger import ObservationLedger, load_json_state
+    from scripts.b0x.kr.cycle import broker_state
     from scripts.b0x.table_source import TableUnavailable, load_policy_table
 
     now = dt.datetime.now(dt.UTC) if args.now is None else args.now
@@ -88,9 +87,10 @@ async def _derivation_only(args: argparse.Namespace) -> int:
         if callable(close):
             await close()
 
-    ledger = ObservationLedger(lane=kr_mock.LANE, root=Path(args.out_dir).expanduser())
-    stored = load_json_state(ledger.lane_dir / "attributed_book.json")
-    state = attributed_state(stored, fresh=fresh, now=now)
+    # Contract v1.5 ①: account state is the fresh broker read and nothing else
+    # — there is no lane state file to load, and re-introducing one would put
+    # the per-cycle-reset defect straight back.
+    state = broker_state(fresh=fresh)
 
     hashes: list[str] = []
     result = None

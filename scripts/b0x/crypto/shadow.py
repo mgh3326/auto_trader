@@ -53,6 +53,7 @@ from decimal import Decimal
 from typing import Any, Final
 
 from app.services.brokers.upbit.client import fetch_ohlcv
+from scripts.b0x.broker_truth import BrokerTruth
 from scripts.b0x.derivation import DerivedOrder
 from scripts.b0x.scope import UPBIT_SHADOW_SCOPE_KEY
 from scripts.b0x.state import B0XPosition, LaneAccountState
@@ -179,6 +180,11 @@ class VirtualPortfolio:
     positions: dict[str, B0XPosition]
     open_orders: list[VirtualOrder]
     utc_day: str
+    #: Record-keeping only since contract v1.5 ①: the §4 daily-new cap is not
+    #: applied to this lane (§4 footnote) and, where it *is* applied, its input
+    #: is now the broker read (:class:`~scripts.b0x.broker_truth.BrokerTruth`),
+    #: never a persisted counter. Kept because the shadow book is a real
+    #: written artifact and the field describes what it actually did.
     new_entry_symbols_today: set[str]
     realized_pnl_today: Decimal
     realized_pnl_total: Decimal
@@ -248,14 +254,25 @@ class VirtualPortfolio:
         return True
 
     def account_state(self) -> LaneAccountState:
+        # Contract v1.5 ① cap inputs. This lane's "broker" is its own JSON book,
+        # which — unlike the ``attributed_book.json`` v1.5 deleted — is actually
+        # written every cycle, so its resting orders and positions are real
+        # answers rather than a file that never existed. The §4 envelope is not
+        # applied here at all (§4 footnote, 합성 레인), so these values only
+        # ever surface in the record; and ``place_derived_orders`` replaces the
+        # whole virtual book each cycle, so this lane cannot stack orders even
+        # in principle.
         return LaneAccountState(
             lane=LANE,
             quote_currency=QUOTE_CURRENCY,
             cash=self.cash,
+            broker_truth=BrokerTruth(
+                position_symbols=tuple(sorted(self.positions)),
+                own_pending=tuple(sorted({o.symbol for o in self.open_orders})),
+            ),
             positions=tuple(
                 self.positions[symbol] for symbol in sorted(self.positions)
             ),
-            new_entry_symbols_today=tuple(sorted(self.new_entry_symbols_today)),
             realized_pnl_today=self.realized_pnl_today,
             open_order_keys=tuple(
                 sorted(order.order_key for order in self.open_orders)

@@ -81,8 +81,12 @@ uv run python -m scripts.run_b0x_kr_cycle --derivation-only --repeat 2
 그 배선을 노출하지 않는다 — 실사이클은 별도 job(§0.1).
 
 산출물: `~/work/herdr-artifacts/b0x/kis_mock/` 아래
-`cycles.jsonl`(append-only) · `<ts>-cycle.md` · `attributed_book.json` ·
-`operator-notices.jsonl` — crypto 사이드카와 동일 레이아웃(`scripts.b0x.ledger`, 코어 그대로).
+`cycles.jsonl`(append-only) · `<ts>-cycle.md` · `operator-notices.jsonl`
+— crypto 사이드카와 동일 레이아웃(`scripts.b0x.ledger`, 코어 그대로).
+
+🔴 **레인 상태 파일은 없다.** 이전 판 런북은 `attributed_book.json` 을 산출물로 적었지만
+그런 파일은 **한 번도 생성된 적이 없다**(읽기 경로만, 쓰기 경로 0건). 계약 v1.5 ① 이 그
+경로를 폐기했다 — 아래 §9.1.
 
 ## 5. 코어 승계 — 무엇을 재사용했고 무엇을 더했는가
 
@@ -237,6 +241,71 @@ b0x-experiment-contract-v1-20260808.md`):
   재검사(ROB-993 R3 교훈, `scripts.b0x.kr.mock.plan_orders`).
 - "물타기 회차 상한 없음"(계약 §4)은 `config.averaging_k_levels` 가 무제한이라는 뜻이지
   이 envelope 의 어느 필드가 무한이라는 뜻이 아니다 — 누적 지출은 종목당 총투입 캡이 막는다.
+
+### 9.1 🔴 상한 입력 = 브로커 진실 (계약 v1.5 ①) — KR 은 한 입력이 조회 불가
+
+무엇이 틀렸었는지는 crypto 런북 §6.1 과 동일하다(상한이 사이클당으로만 구속, 상태 파일이
+한 번도 쓰이지 않음). KR 도 같은 코어(`scripts/b0x/broker_truth.py`)를 쓴다 — 레인별 복붙
+없음. 다만 **입력 하나가 KIS 모의투자에서 조회 불가**다.
+
+| 계약 v1.5 ① | KR 입력 |
+|---|---|
+| 동시 포지션 = non-dust 매도가능 잔고의 수 | `FreshTruth.non_dust_position_symbols()` — KRX 최소 거래단위 = 1주, 1주 미만은 dust |
+| 동일 심볼 재제출 = 자기(`b0xk`) 미체결 있으면 신규 제출 금지 | 🔴 **조회 불가** — 아래 |
+| 일일 신규 = {자기 미체결 ∪ non-dust 포지션 ∪ 당 사이클 신규 제출} distinct | 보유 + 당 사이클 (미체결 항은 조회 불가) |
+
+**🔴 왜 조회 불가인가 — 두 표면 모두 막혔고, 둘 다 이미 레포에 실측 기록이 있다.**
+
+1. `DomesticOrderClient.inquire_korea_orders` (TR `TTTC8036R`, 미체결 주문 조회) 는
+   `is_mock=True` 에 대해 **명시적으로 raise** 한다("모의투자에서 지원되지 않음").
+   §6.6 의 kill 취소 불가와 같은 뿌리다.
+2. `inquire_daily_order_domestic` (daily-ccld) 는 모의 TR 로 라우팅되긴 하지만, ROB-341
+   이 **당일 모의 주문 활동이 있었는데도 `rt_cd=0` + 빈 행**을 반환하는 것을 실측했다
+   (`docs/runbooks/kis-mock-scalping-smoke.md`). 그래서 스캘핑 엔진도 이걸 non-gating
+   post-settlement 진단으로 강등했다. **빈 응답이 미체결 부재를 증명하지 못한다.**
+
+**어떻게 처리했나 — fail-closed, 숨기지 않는다.** `kr_mock.KR_PENDING_UNREADABLE`
+(`PendingUnreadable` 센티널) 을 상태로 실어 나르고, `BrokerTruth.resubmit_block` 이 그
+상태에서 **모든 심볼을 거부**한다 — 마치 전 종목에 미체결이 걸린 것처럼. 「조회 불가」를
+「미체결 없음」으로 접으면 중복 방지가 조용히 죽는데, 그건 이 조항이 막으려는 결함
+그 자체다.
+
+**귀결 — 정직하게.** 이 상태가 유지되는 동안 KR 레인은 **매 사이클 파생 주문 0건**이며,
+후보 행마다 `own_pending_unreadable` + 사유가 skipped 표에 기록된다(사이클 산출물의
+skipped 표가 그대로 렌더링되므로 "무엇이 막혔는지"는 남는다). 검사는 파생과
+`submit_planned_order`(디스패치 직전) **두 곳**에 있다.
+
+🔵 운영상 영향은 오늘 기준 크지 않다: KR 매수 디스패치는 이미 `PreSendFreshnessError`
+로 구조적으로 막혀 있고(§10, §6), CLI 에 `--confirm` 이 없다. 즉 이 조치가 "되던 주문을
+막은" 것이 아니라 **되지 않던 이유가 하나 더 명시화**된 것에 가깝다.
+
+🔴 **미해결 (운영자/orch 판단 필요).** 자기 미체결의 대체 출처 후보는 `kis_mock_order_
+ledger`(`KISMockLifecycleService`) 다 — 레포가 이미 TTTC8036R 부재를 이 원장으로 대체하고
+있다(`resolve_mock_order_for_cancel`). 다만 그건 **브로커 진실이 아니라 자기 기록**이고,
+이 잡이 폐기한 `attributed_book` 과 같은 부류로 읽힐 수 있어 **이 PR 에서 채택하지
+않았다**. 채택 여부는 계약 판단이지 구현 판단이 아니다.
+
+🔴 **realized P&L 입력도 없다.** 상태 파일 제거로 `realized_pnl_today` 의 출처가
+사라졌다(원래도 파일이 없어 항상 0이었다). 따라서 `−2.5% NAV` kill 은 발화할 수 없으며,
+산출물이 `realized_pnl_source` 로 그 사실을 명시한다 — 측정된 0이 아니라 **입력 부재**다.
+
+**포지션 출처.** 계약 v1.5 ③("B0-X 물타기/매도 = 자기(mock) 보유에서만 파생") 대로
+`fetch_my_stocks` 보유가 곧 B0-X 장부다(kis_mock = B0-X 전용 주문 레인). `average_price`
+= 브로커 매입평균가. `entry_count` 는 스냅샷에 없으므로 `0` 으로 기록한다 — 파생이 읽지
+않는 값을 그럴듯하게 지어내 해시 입력에 넣지 않는다.
+
+🔴 **누적 투입액도 조회 불가 — 물타기 fail-closed.** `B0XPosition.invested_notional` 의
+정의는 **누적 투입(deployment)** 이며 "부분 매도로 줄지 않는다" — §4 종목당 총투입 캡이
+현재 보유가 아니라 *이제까지 넣은 돈* 을 묶기 때문이다. 그런데 브로커 스냅샷 1회로 얻을 수
+있는 건 **취득원가(`수량 × 매입평균가`)** 뿐이고, 이건 부분 매도 때 **줄어든다** → 캡이
+이미 쓴 헤드룸을 되돌려준다. 그래서 이 레인은
+`LaneAccountState.cumulative_deployment_readable=False` 를 선언하고, 파생이 **기존 포지션에
+대한 추가(물타기)를 거부**한다(`cumulative_deployment_unreadable`). 과소평가된 숫자에 대고
+사이징하느니 막는다 — 미체결 조회 불가와 같은 자세다.
+
+🔵 **이 조치가 닫지 **못하는** 경계**: 열었다가 **전량** 청산한 종목은 보유 행 자체가 사라져
+과거 투입액이 신규 진입에 보이지 않는다. 이건 브로커 진실 배선 이전부터 있던 설계 공백이며
+(어느 레인이든 동일), 이번 잡이 새로 만든 것이 아니다 — 후속 과제로 남긴다.
 
 ## 10. 알려진 경계 · 미해결
 

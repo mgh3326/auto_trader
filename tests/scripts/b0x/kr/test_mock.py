@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from scripts.b0x.broker_truth import BrokerTruth, OwnPendingResubmitBlocked
 from scripts.b0x.derivation import DerivedOrder
 from scripts.b0x.envelope import KR_MOCK_ENVELOPE
 from scripts.b0x.kr import mock as kr_mock
@@ -243,6 +244,14 @@ async def test_unwired_submit_order_always_raises() -> None:
 # ---------------------------------------------------------------------------
 
 
+#: A venue that *can* answer "what of mine is resting?" and answered "nothing".
+#: The real kis_mock lane reports ``KR_PENDING_UNREADABLE`` instead — see
+#: ``test_kr_pending_is_unreadable_and_fails_closed_at_the_submission_boundary``
+#: below, which pins that. These routing tests use a readable state so they
+#: exercise the wiring under the gate rather than re-testing the gate.
+_READABLE_EMPTY = BrokerTruth(position_symbols=(), own_pending=())
+
+
 class _FakeBroker:
     """Records what it was called with; no network, no reservation DB write."""
 
@@ -272,7 +281,9 @@ async def test_submit_planned_order_routes_buy_to_submit_buy() -> None:
         quantity=3,
         notional=Decimal("291000"),
     )
-    result = await kr_mock.submit_planned_order(broker, planned=planned, confirm=True)
+    result = await kr_mock.submit_planned_order(
+        broker, planned=planned, confirm=True, broker_truth=_READABLE_EMPTY
+    )
     assert result["success"] is True
     assert broker.buy_calls == [
         {
@@ -299,7 +310,9 @@ async def test_submit_planned_order_routes_sell_to_submit_exit_sell() -> None:
         quantity=3,
         notional=Decimal("305550"),
     )
-    result = await kr_mock.submit_planned_order(broker, planned=planned, confirm=False)
+    result = await kr_mock.submit_planned_order(
+        broker, planned=planned, confirm=False, broker_truth=_READABLE_EMPTY
+    )
     assert result["success"] is True
     assert broker.buy_calls == []
     assert broker.sell_calls == [
@@ -324,3 +337,117 @@ def test_build_kis_mock_broker_get_state_always_none() -> None:
     broker = kr_mock.build_kis_mock_broker()
     assert kr_mock._b0x_get_state("005930") is None
     assert broker._get_state("005930") is None
+
+
+# ---------------------------------------------------------------------------
+# Contract v1.5 ① — broker-derived cap inputs, and KR's unreadable pending.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_kr_pending_is_unreadable_and_fails_closed_at_the_submission_boundary() -> (
+    None
+):
+    """The last line before the venue re-checks ①, and KR always refuses.
+
+    Derivation already refuses every row on this lane, so reaching here means a
+    caller bypassed it. That must stop, not double-submit blind — same posture
+    as the sidecar re-running its own gates in ``submit_planned``.
+    """
+
+    truth = kr_mock.FreshTruth(
+        cash=Decimal("5000000"), nav=Decimal("5000000"), positions=()
+    ).broker_truth()
+    assert truth.pending_unreadable is kr_mock.KR_PENDING_UNREADABLE
+    assert truth.own_pending_symbols == ()  # empty is NOT "nothing is resting"
+
+    planned = kr_mock.PlannedOrder(
+        order_key="abc123",
+        client_order_id="b0xk-abc123",
+        symbol="005930",
+        side="buy",
+        leg="buy_l1",
+        price=97000,
+        quantity=3,
+        notional=Decimal("291000"),
+    )
+    broker = _FakeBroker()
+    with pytest.raises(OwnPendingResubmitBlocked):
+        await kr_mock.submit_planned_order(
+            broker, planned=planned, confirm=True, broker_truth=truth
+        )
+    assert broker.buy_calls == [] and broker.sell_calls == []
+
+
+def test_kr_unreadable_reason_names_both_dead_surfaces() -> None:
+    """Both KIS mock dead ends are cited, so the record is auditable.
+
+    A bare "unsupported" would leave a reader unable to tell whether the lane
+    simply had not wired an inquiry yet — the distinction the KR kill-switch
+    note already makes ("시도조차 구조적으로 불가", not untested).
+    """
+
+    detail = kr_mock.KR_PENDING_UNREADABLE.detail
+    assert "TTTC8036R" in detail  # pending-order inquiry raises for is_mock
+    assert "daily-ccld" in detail  # daily execution inquiry can be empty
+    assert (
+        kr_mock.KR_PENDING_UNREADABLE.reason == "kis_mock_pending_inquiry_unsupported"
+    )
+
+
+def test_kr_non_dust_positions_use_the_krx_whole_share_unit() -> None:
+    """① 동시 포지션 counts holdings that could become a SELL.
+
+    KRX's minimum trade unit is one whole share, so a sub-share residue floors
+    to zero and cannot be sold — the KR spelling of the contract v1.2 dust rule
+    (LOT_SIZE floor only). A notional-based widening stays forbidden: a 1-share
+    holding of a cheap stock is still a position.
+    """
+
+    truth = kr_mock.FreshTruth(
+        cash=Decimal("0"),
+        nav=Decimal("0"),
+        positions=(
+            kr_mock.RawPosition(
+                symbol="005930",
+                quantity=Decimal("1"),  # exactly one share — a position
+                average_price=Decimal("100"),
+                evaluation_amount=Decimal("100"),
+            ),
+            kr_mock.RawPosition(
+                symbol="000660",
+                quantity=Decimal("0.4"),  # floors to zero shares — dust
+                average_price=Decimal("200000"),
+                evaluation_amount=Decimal("80000"),
+            ),
+        ),
+    )
+    assert truth.non_dust_position_symbols() == ("005930",)
+    assert truth.broker_truth().concurrent_position_count == 1
+
+
+def test_kr_broker_truth_carries_no_persisted_state() -> None:
+    """v1.5 ① — the cap inputs are a pure function of one broker read.
+
+    Two ``FreshTruth`` values with identical contents produce identical cap
+    inputs, and nothing about them depends on a previous cycle. This is the
+    property ``attributed_book.json`` did not have (its contents were always
+    ``None``, so the counters always restarted).
+    """
+
+    def _truth() -> BrokerTruth:
+        return kr_mock.FreshTruth(
+            cash=Decimal("1"),
+            nav=Decimal("1"),
+            positions=(
+                kr_mock.RawPosition(
+                    symbol="005930",
+                    quantity=Decimal("5"),
+                    average_price=Decimal("100"),
+                    evaluation_amount=Decimal("500"),
+                ),
+            ),
+        ).broker_truth()
+
+    assert _truth().canonical() == _truth().canonical()
+    assert _truth().canonical()["position_symbols"] == ["005930"]

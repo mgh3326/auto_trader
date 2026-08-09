@@ -147,10 +147,15 @@ def evaluate(*, state: LaneAccountState, envelope: Envelope) -> KillSwitchDecisi
     if state.realized_pnl_today <= -effective_kill:
         kill_reasons.append(KillReason.DAILY_LOSS_BUDGET_REACHED)
 
+    # Cap saturation is reported off the same broker-derived inputs derivation
+    # enforces on (contract v1.5 ①) — not off the attributed position book.
+    # Reporting one number and enforcing another is how a cap gets believed to
+    # bind while it does not.
+    truth = state.broker_truth
     cap_status: list[str] = []
-    if len(state.positions) >= envelope.max_concurrent_positions:
+    if truth.concurrent_position_count >= envelope.max_concurrent_positions:
         cap_status.append(CapStatus.CONCURRENT_POSITIONS_SATURATED)
-    if len(set(state.new_entry_symbols_today)) >= envelope.max_new_entries_per_utc_day:
+    if len(truth.daily_new_entry_seed()) >= envelope.max_new_entries_per_utc_day:
         cap_status.append(CapStatus.DAILY_NEW_ENTRY_CAP_SATURATED)
 
     return KillSwitchDecision(

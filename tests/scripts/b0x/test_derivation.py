@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from scripts.b0x import kill_switch as kill_switch_module
+from scripts.b0x.broker_truth import BrokerTruth, PendingUnreadable
 from scripts.b0x.derivation import (
     SELL_LADDER_FRACTIONS,
     Leg,
@@ -40,13 +41,37 @@ def _table(tmp_path: Path, rows: list[dict]) -> PolicyTable:
     return table
 
 
-def _state(**kwargs) -> LaneAccountState:
+def _state(
+    *,
+    positions: tuple[B0XPosition, ...] = (),
+    pending: tuple[str, ...] | PendingUnreadable = (),
+    position_symbols: tuple[str, ...] | None = None,
+    **kwargs,
+) -> LaneAccountState:
+    """Build a state whose §4 cap inputs come from a broker read (v1.5 ①).
+
+    ``position_symbols`` defaults to the attributed positions' symbols, which is
+    the ordinary case: what B0-X holds is also what the account holds. It is
+    overridable because the two are genuinely different questions — the cap
+    counts the account, the position book drives sizing.
+    """
+
     base = {
         "lane": "test",
         "quote_currency": "USDT",
         "cash": Decimal("1000"),
     }
-    return LaneAccountState(**{**base, **kwargs})
+    truth = BrokerTruth(
+        position_symbols=(
+            tuple(pos.symbol for pos in positions)
+            if position_symbols is None
+            else position_symbols
+        ),
+        own_pending=pending,
+    )
+    return LaneAccountState(
+        **{**base, "positions": positions, "broker_truth": truth, **kwargs}
+    )
 
 
 def _derive(table: PolicyTable, state: LaneAccountState, **kwargs):
@@ -424,53 +449,115 @@ def test_derivation_refuses_a_widened_envelope(tmp_path: Path) -> None:
         derive_orders(table=table, state=state, envelope=widened, kill_switch=decision)
 
 
-def test_same_day_reentry_still_respects_the_concurrent_position_cap(
+def test_concurrent_position_cap_binds_on_the_account_wide_broker_count(
     tmp_path: Path,
 ) -> None:
-    """The daily-entry counter is exempt on re-entry; the position cap is not.
+    """동시 포지션 counts what the *account* carries, not what B0-X attributes.
 
-    Without this the lane could exceed 동시 포지션 ≤ 3 by re-entering a symbol it
-    had already entered and exited earlier the same UTC day.
+    Contract v1.5 ① reads the cap off non-dust sellable balances. On a shared
+    venue an unattributed balance still consumes the room a B0-X entry needs, so
+    a lane holding nothing of its own can still be at its position ceiling.
     """
 
     table = _table(
         tmp_path, [make_row(symbol="KRW-BTC", previous_close="100", buy_l1="97")]
     )
-    held = tuple(
-        B0XPosition(
-            symbol=f"KRW-{name}",
-            quantity=Decimal("1"),
-            average_price=Decimal("50"),
-            invested_notional=Decimal("10"),
-            entry_count=1,
-        )
-        for name in ("AAA", "BBB", "CCC")
-    )
     state = _state(
-        positions=held,
-        # KRW-BTC was entered earlier today, so the daily counter would exempt it.
-        new_entry_symbols_today=("KRW-BTC",),
+        positions=(),  # B0-X attributes nothing...
+        position_symbols=("KRW-AAA", "KRW-BBB", "KRW-CCC"),  # ...the account holds 3
     )
     result = _derive(table, state)
     assert result.orders == ()
     assert any(s.reason == SkipReason.CONCURRENT_POSITION_CAP for s in result.skipped)
 
 
-def test_same_day_reentry_is_allowed_when_there_is_position_headroom(
-    tmp_path: Path,
-) -> None:
-    """The exemption must still work — re-entry is not a *new* daily decision."""
+def test_daily_new_entry_seed_is_pending_union_positions(tmp_path: Path) -> None:
+    """일일 신규 starts from the broker read, so it does not reset per cycle.
+
+    Two symbols already accounted for (one resting order, one held position)
+    saturate the crypto cap of 2, and a third symbol is refused — with no state
+    file anywhere in the path. Before v1.5 ① this seed was always empty, so the
+    cap only ever bound inside a single cycle.
+    """
 
     table = _table(
         tmp_path, [make_row(symbol="KRW-BTC", previous_close="100", buy_l1="97")]
     )
-    state = _state(
-        # Daily cap (2) already saturated by two other symbols...
-        new_entry_symbols_today=("KRW-BTC", "KRW-ETH"),
-    )
+    state = _state(pending=("KRW-ETH",), position_symbols=("KRW-SOL",))
     result = _derive(table, state)
-    # ...but KRW-BTC is one of them, so its re-entry is not blocked.
-    assert [o.symbol for o in result.orders] == ["KRW-BTC"]
+    assert result.orders == ()
+    assert any(s.reason == SkipReason.DAILY_NEW_ENTRY_CAP for s in result.skipped)
+
+
+def test_a_symbol_with_an_own_resting_order_is_refused_before_any_leg(
+    tmp_path: Path,
+) -> None:
+    """계약 v1.5 ① 동일 심볼 재제출 금지 — the anti-stacking rule itself.
+
+    This is the defect the clause exists to close: the same symbol at the same
+    level, re-derived and re-submitted every cycle, piling up at the venue.
+    """
+
+    table = _table(
+        tmp_path,
+        [
+            make_row(symbol="KRW-BTC", previous_close="100", buy_l1="97"),
+            make_row(symbol="KRW-ETH", previous_close="100", buy_l1="97"),
+        ],
+    )
+    result = _derive(table, _state(pending=("KRW-BTC",)))
+    assert [order.symbol for order in result.orders] == ["KRW-ETH"]
+    blocked = [s for s in result.skipped if s.symbol == "KRW-BTC"]
+    assert [s.reason for s in blocked] == [SkipReason.OWN_PENDING_ORDER_EXISTS]
+    assert blocked[0].leg == "*"  # the whole row, not one leg
+
+
+def test_the_resubmit_rule_is_side_agnostic(tmp_path: Path) -> None:
+    """A resting order blocks the symbol, not just the side it points.
+
+    The literal names the symbol ("그 심볼에 자기 미체결이 있으면"), so a sell
+    rung on a symbol with a resting buy is refused too. Deliberately wider than
+    the repo's usual buys-only convention; narrower would be a contract breach.
+    """
+
+    table = _table(
+        tmp_path,
+        [make_row(symbol="KRW-BTC", previous_close="100", buy_l1="97", sell_r1="120")],
+    )
+    held = (
+        B0XPosition(
+            symbol="KRW-BTC",
+            quantity=Decimal("2"),
+            average_price=Decimal("50"),
+            invested_notional=Decimal("100"),
+            entry_count=1,
+        ),
+    )
+    # Sanity: without the resting order the sell rung is emitted.
+    assert any(o.side == "sell" for o in _derive(table, _state(positions=held)).orders)
+
+    result = _derive(table, _state(positions=held, pending=("KRW-BTC",)))
+    assert result.orders == ()
+    assert [s.reason for s in result.skipped] == [SkipReason.OWN_PENDING_ORDER_EXISTS]
+
+
+def test_unreadable_pending_fails_closed_on_every_symbol(tmp_path: Path) -> None:
+    """「조회 불가」 must not collapse into 「미체결 없음」 (v1.5 ①, KR column)."""
+
+    table = _table(
+        tmp_path,
+        [
+            make_row(symbol="KRW-BTC", previous_close="100", buy_l1="97"),
+            make_row(symbol="KRW-ETH", previous_close="100", buy_l1="97"),
+        ],
+    )
+    unreadable = PendingUnreadable(reason="venue_cannot_answer", detail="no such TR")
+    result = _derive(table, _state(pending=unreadable))
+    assert result.orders == ()
+    assert {s.reason for s in result.skipped} == {SkipReason.OWN_PENDING_UNREADABLE}
+    assert {s.symbol for s in result.skipped} == {"KRW-BTC", "KRW-ETH"}
+    # The reason why the venue cannot answer travels with the skip.
+    assert all("venue_cannot_answer" in s.detail for s in result.skipped)
 
 
 def test_admitting_entries_consumes_the_position_cap_within_one_cycle(
@@ -496,13 +583,15 @@ def test_admitting_entries_consumes_the_position_cap_within_one_cycle(
             entry_count=1,
         ),
     )
-    # 1 held + max 3 concurrent => room for exactly 2 more, and the daily cap is
-    # also 2, so both bind at the same place.
+    # The held symbol is already one member of the v1.5 ① daily-new distinct
+    # set ({pending ∪ positions ∪ this cycle}), so the cap of 2 leaves room for
+    # exactly one admission — and the second candidate is refused *within the
+    # same cycle*, not on the next one.
     result = _derive(table, _state(positions=held))
-    assert [o.symbol for o in result.orders] == ["KRW-AAA", "KRW-BBB"]
-    assert any(
-        s.symbol == "KRW-CCC"
-        and s.reason
-        in {SkipReason.CONCURRENT_POSITION_CAP, SkipReason.DAILY_NEW_ENTRY_CAP}
+    assert [o.symbol for o in result.orders] == ["KRW-AAA"]
+    assert {
+        s.symbol
         for s in result.skipped
-    )
+        if s.reason
+        in {SkipReason.CONCURRENT_POSITION_CAP, SkipReason.DAILY_NEW_ENTRY_CAP}
+    } == {"KRW-BBB", "KRW-CCC"}
