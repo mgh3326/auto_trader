@@ -8,15 +8,17 @@ constructs a real one.
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from scripts.b0x.broker_truth import BrokerTruth
 from scripts.b0x.kr.cycle import LANE as KR_LANE
 from scripts.b0x.kr.cycle import OUTSIDE_RTH_REASON, run_kr_cycle
 from scripts.b0x.labels import SHARED_ACCOUNT_HISTORY, TRUST_LABELS
-from scripts.b0x.ledger import ObservationLedger
 from tests.scripts.b0x._table_fixtures import (
     make_payload,
     make_row,
@@ -86,6 +88,32 @@ class _FakeKrClient:
 
     async def close(self) -> None:
         self.closed = True
+
+
+def _patch_readable_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Substitute a *readable, empty* pending state at the state boundary.
+
+    The real kis_mock lane reports :data:`kr_mock.KR_PENDING_UNREADABLE`, which
+    correctly refuses every row — so any test of what happens *downstream* of
+    derivation needs a venue that can answer. Patching ``broker_state`` (not
+    the fail-close itself) keeps the production path honest: nothing here makes
+    the real lane readable.
+    """
+
+    from scripts.b0x.kr import cycle as kr_cycle_module
+
+    real_broker_state = kr_cycle_module.broker_state
+
+    def _readable(**kwargs: Any):
+        state = real_broker_state(**kwargs)
+        return replace(
+            state,
+            broker_truth=BrokerTruth(
+                position_symbols=state.broker_truth.position_symbols, own_pending=()
+            ),
+        )
+
+    monkeypatch.setattr(kr_cycle_module, "broker_state", _readable)
 
 
 @pytest.mark.asyncio
@@ -168,7 +196,12 @@ async def test_table_just_under_36h_still_derives_orders(
         client=_FakeKrClient(orderable_cash="5000000"),
     )
     assert outcome.zero_order_reason is None
-    assert outcome.order_count > 0
+    # The age gate is not what stops this cycle — v1.5 ①'s unreadable-pending
+    # fail-close is (see test_kr_pending_is_unreadable_and_fails_closed). A
+    # 37h table would instead have set zero_order_reason=stale_by_age above.
+    assert {skip["reason"] for skip in outcome.record["skipped"]} == {
+        "own_pending_unreadable"
+    }
 
 
 @pytest.mark.asyncio
@@ -184,8 +217,6 @@ async def test_dry_run_plans_but_never_dispatches(
         client=client,
     )
     assert outcome.zero_order_reason is None
-    assert outcome.order_count > 0
-    assert outcome.record["planned"], "expected planned buy legs for both symbols"
     assert outcome.record["submitted"] == []
     assert outcome.record["submission_skipped"] == "confirm=False — preview only"
     # A caller-supplied client is caller-owned: the cycle must not close it.
@@ -197,6 +228,63 @@ async def test_dry_run_plans_but_never_dispatches(
         assert label in artifact_text
     assert SHARED_ACCOUNT_HISTORY not in outcome.record["labels"]
     assert "SHARED_ACCOUNT_HISTORY" not in artifact_text
+
+
+@pytest.mark.asyncio
+async def test_kr_pending_is_unreadable_and_fails_closed(
+    table_dir: Path, out_dir: Path
+) -> None:
+    """계약 v1.5 ①, KR column — 「조회 불가」 is not 「미체결 없음」.
+
+    kis_mock can answer neither of its two pending-order surfaces (TTTC8036R
+    raises for is_mock=True; daily-ccld can return empty rows even after
+    same-day mock activity, ROB-341). So every candidate row is refused with
+    ``own_pending_unreadable``, the refusal carries *why*, and the record says
+    plainly that pending is unreadable rather than reporting an empty book.
+    """
+
+    outcome = await run_kr_cycle(
+        now=IN_SESSION_NOW,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=False,
+        client=_FakeKrClient(orderable_cash="5000000"),
+    )
+
+    assert outcome.record["broker_truth"]["own_pending_readable"] is False
+    assert (
+        outcome.record["broker_truth"]["own_pending"]["reason"]
+        == "kis_mock_pending_inquiry_unsupported"
+    )
+    assert outcome.record["fresh_truth"]["own_pending_readable"] is False
+
+    # Zero orders, zero plans — and the whole row refused, not one leg.
+    assert outcome.order_count == 0
+    assert outcome.record["orders"] == []
+    assert outcome.record["planned"] == []
+    skipped = outcome.record["skipped"]
+    assert {skip["symbol"] for skip in skipped} == {"005930", "000660"}
+    assert all(skip["reason"] == "own_pending_unreadable" for skip in skipped)
+    assert all(skip["leg"] == "*" for skip in skipped)
+    assert all("TTTC8036R" in skip["detail"] for skip in skipped)
+
+
+@pytest.mark.asyncio
+async def test_kr_records_that_realized_pnl_has_no_source(
+    table_dir: Path, out_dir: Path
+) -> None:
+    """A structural absence must not read as a measured zero (v1.5 ①)."""
+
+    outcome = await run_kr_cycle(
+        now=IN_SESSION_NOW,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=False,
+        client=_FakeKrClient(orderable_cash="5000000"),
+    )
+    assert "Not a measured zero" in outcome.record["realized_pnl_source"]
+    assert outcome.derivation is not None
+    assert outcome.derivation.kill_switch.tripped is False
 
 
 @pytest.mark.asyncio
@@ -271,16 +359,46 @@ class _FakeBroker:
 
 
 @pytest.mark.asyncio
-async def test_confirm_true_dispatches_through_the_injected_broker(
+async def test_confirm_true_dispatches_nothing_while_pending_is_unreadable(
     table_dir: Path, out_dir: Path
 ) -> None:
-    """``confirm=True`` now routes every planned order through the wired
+    """The v1.5 ① fail-close reaches the dispatch path, not just derivation."""
+
+    broker = _FakeBroker()
+    outcome = await run_kr_cycle(
+        now=IN_SESSION_NOW,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=True,
+        client=_FakeKrClient(orderable_cash="5000000"),
+        broker=broker,
+    )
+    assert outcome.zero_order_reason is None
+    assert outcome.record["planned"] == []
+    assert outcome.record["submitted"] == []
+    assert broker.buy_calls == [] and broker.sell_calls == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_true_routes_through_the_injected_broker_when_pending_reads(
+    table_dir: Path, out_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``confirm=True`` routes every planned order through the wired
     ``KisMockBroker`` integration point (contract v1.3 ③) — proven here with
     a fake broker so the assertion never touches a real kis_mock account.
-    ``unwired_submit_order``/``KrMockSubmissionNotWired`` is proven still
+
+    The lane's own pending state is unreadable (see
+    ``test_kr_pending_is_unreadable_and_fails_closed``), which correctly stops
+    every row, so this test substitutes a *readable, empty* pending state to
+    exercise the submission wiring underneath. That keeps the wiring covered
+    without the test quietly asserting the fail-close away: the substitution is
+    at the state boundary, and the real lane still constructs the unreadable
+    state. ``unwired_submit_order``/``KrMockSubmissionNotWired`` is proven still
     intact (kept, not deleted) by ``test_unwired_submit_order_always_raises``
     in ``tests/scripts/b0x/kr/test_mock.py``.
     """
+
+    _patch_readable_pending(monkeypatch)
 
     client = _FakeKrClient(orderable_cash="5000000")
     broker = _FakeBroker()
@@ -309,32 +427,34 @@ async def test_confirm_true_dispatches_through_the_injected_broker(
 
 @pytest.mark.asyncio
 async def test_kill_switch_trips_on_nav_ratio_and_blocks_all_new_orders(
-    table_dir: Path, out_dir: Path
+    table_dir: Path, out_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A same-cycle NAV of 1,000,000 with a persisted -30,000 realized loss
-    is a 3% drawdown — over the KR envelope's 2.5% NAV kill.
+    """A same-cycle NAV of 1,000,000 with a -30,000 realized loss is a 3%
+    drawdown — over the KR envelope's 2.5% NAV kill.
+
+    The loss used to be read from ``attributed_book.json``; contract v1.5 ①
+    deleted that path and left the KR lane with no realized-P&L source at all
+    (``test_kr_records_that_realized_pnl_has_no_source``). The kill *wiring*
+    still has to work for the day one exists, so the loss is injected at the
+    state boundary here rather than through a file the lane no longer reads.
     """
 
-    ledger = ObservationLedger(lane="kis_mock", root=out_dir)
-    ledger.ensure()
-    from scripts.b0x.ledger import store_json_state
+    from scripts.b0x.kr import cycle as kr_cycle_module
 
-    store_json_state(
-        ledger.lane_dir / "attributed_book.json",
-        {
-            "utc_day": IN_SESSION_NOW.date().isoformat(),
-            "positions": {},
-            "new_entry_symbols_today": [],
-            "realized_pnl_today": "-30000",
-        },
-    )
-    client = _FakeKrClient(orderable_cash="1000000")
+    real_broker_state = kr_cycle_module.broker_state
+
+    def _with_loss(**kwargs: Any):
+        state = real_broker_state(**kwargs)
+        return replace(state, realized_pnl_today=Decimal("-30000"))
+
+    monkeypatch.setattr(kr_cycle_module, "broker_state", _with_loss)
+
     outcome = await run_kr_cycle(
         now=IN_SESSION_NOW,
         table_dir=table_dir,
         out_dir=out_dir,
         confirm=False,
-        client=client,
+        client=_FakeKrClient(orderable_cash="1000000"),
     )
     assert outcome.derivation is not None
     assert outcome.derivation.kill_switch.tripped

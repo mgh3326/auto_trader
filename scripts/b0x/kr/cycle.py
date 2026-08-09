@@ -28,6 +28,13 @@ always records exactly what happened, never a stamped ``real_orders=0``
 constant. orch's relayed X-C lesson was explicit about not repeating that
 pattern.
 
+Contract v1.5 ① lands here as ``broker_state`` (below): the §4 caps read this
+cycle's kis_mock account snapshot, and nothing is carried between cycles. The
+KR-specific consequence is that 자기 미체결 is unreadable on this venue
+(``kr_mock.KR_PENDING_UNREADABLE``) and therefore fails closed — the same
+"시도조차 구조적으로 불가" posture the kill-trip cancellation note below already
+takes, applied to a second KIS mock limitation with the same root.
+
 Kill-trip cancellation asymmetry with the crypto sidecar, documented rather
 than silently matched: the crypto lanes cancel outstanding B0-X orders on a
 kill trip (``scripts.b0x.cycle._cancel_b0x_open_orders``) because their
@@ -58,7 +65,6 @@ from scripts.b0x.labels import account_history_labels, header_labels
 from scripts.b0x.ledger import (
     DEFAULT_OBSERVATION_DIR,
     ObservationLedger,
-    load_json_state,
     writer_lock,
 )
 from scripts.b0x.state import B0XPosition, LaneAccountState
@@ -121,47 +127,51 @@ def _table_or_reason(
     return result, None
 
 
-def attributed_state(
-    stored: dict[str, Any] | None,
-    *,
-    fresh: kr_mock.FreshTruth,
-    now: dt.datetime,
-) -> LaneAccountState:
-    """B0-X-attributed book, cross-checked against a fresh cash/NAV read.
+#: Contract v1.5 ①: like the crypto sidecar, the KR lane has no realized-P&L
+#: source now that the never-written state file is gone — fills are not
+#: reconciled into a P&L ledger here. Recorded explicitly so a reader does not
+#: mistake a structural absence for a measured zero: with no P&L input the
+#: −2.5% NAV kill cannot fire.
+KR_REALIZED_PNL_UNAVAILABLE = (
+    "realized_pnl_today has no source on this lane — B0-X fills are not "
+    "reconciled into a P&L ledger, so the −2.5% NAV kill cannot fire. "
+    "Not a measured zero."
+)
 
-    Mirrors the crypto sidecar's ``_sidecar_state``: positions are the
-    locally persisted B0-X-owned book (their average_price/invested_notional
-    are B0-X's own cost basis, not derivable from a single venue snapshot),
-    while cash and NAV are always the fresh read so a kill decision is never
-    made against a stale balance.
+
+def broker_state(*, fresh: kr_mock.FreshTruth) -> LaneAccountState:
+    """kis_mock account state, derived entirely from this cycle's broker read.
+
+    Contract v1.5 ①/③. Positions are the account's own holdings — "B0-X
+    물타기/매도 = 자기(mock) 보유에서만 파생" (v1.5 ③), and under the account
+    map kis_mock is B0-X's exclusive order lane, so a mock holding *is* B0-X's
+    book. ``average_price`` is the broker's own 매입평균가; ``invested_notional``
+    is the cost basis that follows from it, which is the only deployment figure
+    a single broker snapshot can support.
+
+    ``entry_count`` is reported as ``0``: how many separate entries built a
+    holding is not in the snapshot, and derivation does not read it. Inventing
+    a plausible number would put a fabricated value into the hashed state.
     """
 
-    stored = stored or {}
-    today = now.astimezone(dt.UTC).date().isoformat()
-    same_day = stored.get("utc_day") == today
     positions = tuple(
         B0XPosition(
-            symbol=symbol,
-            quantity=Decimal(row["quantity"]),
-            average_price=Decimal(row["average_price"]),
-            invested_notional=Decimal(row["invested_notional"]),
-            entry_count=int(row["entry_count"]),
+            symbol=pos.symbol,
+            quantity=pos.quantity,
+            average_price=pos.average_price,
+            invested_notional=pos.quantity * pos.average_price,
+            entry_count=0,
         )
-        for symbol, row in sorted((stored.get("positions") or {}).items())
+        for pos in sorted(fresh.positions, key=lambda p: p.symbol)
+        if pos.symbol in set(fresh.non_dust_position_symbols())
     )
     return LaneAccountState(
         lane=LANE,
         quote_currency=kr_mock.QUOTE_CURRENCY,
         cash=fresh.cash,
+        broker_truth=fresh.broker_truth(),
         positions=positions,
-        new_entry_symbols_today=(
-            tuple(sorted(stored.get("new_entry_symbols_today") or []))
-            if same_day
-            else ()
-        ),
-        realized_pnl_today=(
-            Decimal(stored.get("realized_pnl_today", "0")) if same_day else Decimal("0")
-        ),
+        realized_pnl_today=Decimal("0"),
         nav=fresh.nav,
     )
 
@@ -193,12 +203,12 @@ async def run_kr_cycle(
     with writer_lock(lane=LANE, root=Path(out_dir).expanduser()):
         ledger = ObservationLedger(lane=LANE, root=Path(out_dir).expanduser())
         ledger.ensure()
-        state_path = ledger.lane_dir / "attributed_book.json"
 
         record = base_record(
             market=MARKET, lane=LANE, now=now, envelope=envelope, labels=labels
         )
         record["confirm"] = confirm
+        record["realized_pnl_source"] = KR_REALIZED_PNL_UNAVAILABLE
 
         # --- RTH gate: cheapest check, before any table/account I/O ---
         in_session = is_krx_regular_session(now)
@@ -254,7 +264,8 @@ async def run_kr_cycle(
         fresh = await kr_mock.read_fresh_truth(client)
         record["fresh_truth"] = fresh.status_only()
 
-        state = attributed_state(load_json_state(state_path), fresh=fresh, now=now)
+        state = broker_state(fresh=fresh)
+        record["broker_truth"] = state.broker_truth.canonical()
         decision = evaluate_kill_switch(state=state, envelope=envelope)
         derivation = derive_orders(
             table=table,
@@ -319,7 +330,10 @@ async def run_kr_cycle(
                 )
                 for order in planned:
                     result = await kr_mock.submit_planned_order(
-                        active_broker, planned=order, confirm=confirm
+                        active_broker,
+                        planned=order,
+                        confirm=confirm,
+                        broker_truth=state.broker_truth,
                     )
                     submitted.append(result)
             record["submitted"] = submitted
@@ -341,7 +355,8 @@ __all__ = [
     "MARKET",
     "LANE",
     "OUTSIDE_RTH_REASON",
+    "KR_REALIZED_PNL_UNAVAILABLE",
     "KrCycleOutcome",
-    "attributed_state",
+    "broker_state",
     "run_kr_cycle",
 ]

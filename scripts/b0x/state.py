@@ -12,6 +12,15 @@ only lifecycles carrying B0-X's correlation prefix. Positions the account
 already held for other reasons are recorded as ``foreign_*`` and drive the
 ``CONTAMINATED`` marking (contract §2-3, writer = 1) — they are never treated
 as B0-X inventory to average down or sell.
+
+:attr:`LaneAccountState.broker_truth` is the *other* kind of position view and
+the two must not be conflated: :attr:`~LaneAccountState.positions` is
+attribution-scoped and drives sizing (averaging needs B0-X's own cost basis),
+while :class:`~scripts.b0x.broker_truth.BrokerTruth` is account-wide and drives
+the §4 caps (contract v1.5 ①). It is a required field with no default,
+deliberately — the defect it replaces was a cap input that defaulted to empty
+every cycle because its state file never existed, so "forgot to pass it" must
+be a construction error rather than a silently-zero counter.
 """
 
 from __future__ import annotations
@@ -21,6 +30,8 @@ import json
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
+
+from scripts.b0x.broker_truth import BrokerTruth
 
 
 def _dec(value: Decimal) -> str:
@@ -61,9 +72,10 @@ class LaneAccountState:
     lane: str
     quote_currency: str
     cash: Decimal
+    #: Contract v1.5 ① cap inputs, read from the broker this cycle. Required:
+    #: see the module docstring on why this has no default.
+    broker_truth: BrokerTruth
     positions: tuple[B0XPosition, ...] = ()
-    #: Symbols B0-X newly entered during the current UTC day (§4 daily cap).
-    new_entry_symbols_today: tuple[str, ...] = ()
     #: Realized P&L for the current UTC day; negative == loss (§4 kill switch).
     realized_pnl_today: Decimal = Decimal("0")
     #: Same-cycle net asset value (cash + mark-to-market positions), in
@@ -125,7 +137,7 @@ class LaneAccountState:
                 pos.canonical()
                 for pos in sorted(self.positions, key=lambda p: p.symbol)
             ],
-            "new_entry_symbols_today": sorted(self.new_entry_symbols_today),
+            "broker_truth": self.broker_truth.canonical(),
             "realized_pnl_today": _dec(self.realized_pnl_today),
             "nav": None if self.nav is None else _dec(self.nav),
             "foreign_open_order_count": self.foreign_open_order_count,

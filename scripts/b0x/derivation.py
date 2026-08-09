@@ -25,6 +25,10 @@ dimensionless level/previous_close, which is what survives a venue whose quote
 currency differs (the Binance sidecar) — see
 ``scripts.b0x.labels.CROSS_QUOTE_RATIO_TRANSFER``.
 
+§4 cap inputs come from :class:`~scripts.b0x.broker_truth.BrokerTruth` — this
+cycle's broker read — not from any persisted counter. See that module for what
+went wrong when they did not.
+
 Scarcity tie-break: rows are processed in lexicographic symbol order, so when
 the daily-new-entry or concurrent-position cap can only admit some of the
 candidates, *which* ones is a fixed function of the input, not of iteration
@@ -40,6 +44,7 @@ from decimal import Decimal, localcontext
 from typing import Any, Final
 
 from research.kr_corpus.d3_engine.constants import DECIMAL_PRECISION, DECIMAL_ROUNDING
+from scripts.b0x import broker_truth as broker_truth_module
 from scripts.b0x.envelope import Envelope, assert_envelope_locked
 from scripts.b0x.kill_switch import KillSwitchDecision
 from scripts.b0x.state import LaneAccountState
@@ -71,6 +76,11 @@ class SkipReason:
     MISSING_LEVEL = "missing_level"
     NON_POSITIVE_LEVEL = "non_positive_level"
     KILL_SWITCH_ACTIVE = "kill_switch_active"
+    #: Contract v1.5 ① 동일 심볼 재제출 금지 — reasons owned by
+    #: :mod:`scripts.b0x.broker_truth`, re-exported here so a skipped-leg row
+    #: and the submission-boundary refusal carry the same string.
+    OWN_PENDING_ORDER_EXISTS = broker_truth_module.OWN_PENDING_ORDER_EXISTS
+    OWN_PENDING_UNREADABLE = broker_truth_module.OWN_PENDING_UNREADABLE
     DAILY_NEW_ENTRY_CAP = "daily_new_entry_cap_reached"
     CONCURRENT_POSITION_CAP = "concurrent_position_cap_reached"
     SYMBOL_TOTAL_CAP = "symbol_total_notional_cap_reached"
@@ -286,9 +296,16 @@ def derive_orders(
     )
 
     # Running budgets, consumed in lexicographic symbol order.
-    new_entry_symbols_today = set(state.new_entry_symbols_today)
-    new_entries_used = len(new_entry_symbols_today)
-    open_position_count = len(state.positions)
+    #
+    # Contract v1.5 ①: both counters start from *this cycle's broker read*, not
+    # from a carried-over file. That is the whole fix — the previous inputs came
+    # from ``attributed_book.json``, which nothing ever wrote, so both started
+    # at zero every cycle and a per-UTC-day cap only ever bound within one
+    # cycle (crypto: 6 cycles/day × 2 = 12 effective daily entries).
+    truth = state.broker_truth
+    daily_new_symbols = truth.daily_new_entry_seed()
+    new_entries_used = len(daily_new_symbols)
+    open_position_count = truth.concurrent_position_count
     cash_remaining = state.cash
 
     rows = sorted(table.rows, key=lambda row: str(row.get("symbol", "")))
@@ -380,6 +397,26 @@ def derive_orders(
             )
             continue
 
+        # Contract v1.5 ① 동일 심볼 재제출 금지 — before any leg of this row is
+        # considered, and side-agnostic: the literal names the symbol, not the
+        # side, because the failure it closes is *stacking* (same symbol, same
+        # level, one order per cycle, forever). Gated on ``apply_envelope`` like
+        # every other §4 cap: the Upbit shadow lane is exempt by the §4 footnote
+        # and cannot stack anyway — ``shadow.place_derived_orders`` replaces its
+        # whole virtual book each cycle rather than appending to it.
+        if apply_envelope:
+            resubmit_block = truth.resubmit_block(symbol)
+            if resubmit_block is not None:
+                skipped.append(
+                    SkippedLeg(
+                        symbol=symbol,
+                        leg="*",
+                        reason=resubmit_block[0],
+                        detail=resubmit_block[1],
+                    )
+                )
+                continue
+
         position = state.position(symbol)
         buy_side = dict(row.get("A_buy_side") or {})
         sell_side = dict(row.get("B_sell_side") or {})
@@ -403,7 +440,7 @@ def derive_orders(
                 if open_position_count >= envelope.max_concurrent_positions:
                     entry_blocked = SkipReason.CONCURRENT_POSITION_CAP
                 elif (
-                    symbol not in new_entry_symbols_today
+                    symbol not in daily_new_symbols
                     and new_entries_used >= envelope.max_new_entries_per_utc_day
                 ):
                     entry_blocked = SkipReason.DAILY_NEW_ENTRY_CAP
@@ -506,10 +543,13 @@ def derive_orders(
 
                 if admitted_any:
                     # A position is opening either way; the daily-entry counter
-                    # only moves for a symbol not already counted today.
+                    # only moves for a symbol not already in the distinct set.
+                    # This is the ``∪ 당 사이클 신규 제출`` term of the v1.5 ①
+                    # daily-new definition — the other two terms came from the
+                    # broker read that seeded ``daily_new_symbols``.
                     open_position_count += 1
-                    if symbol not in new_entry_symbols_today:
-                        new_entry_symbols_today.add(symbol)
+                    if symbol not in daily_new_symbols:
+                        daily_new_symbols.add(symbol)
                         new_entries_used += 1
         else:
             # ---------------- 물타기 (averaging down) ----------------

@@ -59,8 +59,13 @@ B0X_SIDECAR_ENABLED=true BINANCE_SPOT_DEMO_ENABLED=true \
 ```
 
 산출물: `~/work/herdr-artifacts/b0x/<lane>/` 아래
-`cycles.jsonl`(append-only) · `<ts>-cycle.md` · `portfolio.json` / `attributed_book.json` ·
-`operator-notices.jsonl`.
+`cycles.jsonl`(append-only) · `<ts>-cycle.md` · `operator-notices.jsonl` ·
+그리고 **shadow 레인만** `portfolio.json`(가상 장부 — 실제로 매 사이클 쓰인다).
+
+🔴 **사이드카에는 레인 상태 파일이 없다.** 이전 판 런북은 `attributed_book.json` 을
+산출물로 적었지만 그런 파일은 **한 번도 생성된 적이 없다** — 레포 전체에 읽기 경로만
+있고 쓰기 경로가 0건이었다. 계약 v1.5 ① 이 그 경로를 폐기했고(아래 §4.5), 사이드카
+계좌 상태는 매 사이클 브로커 읽기에서만 나온다.
 
 ## 4. 🔴 터치 규칙 — 본선이 무엇을 체결로 세는가
 
@@ -138,6 +143,40 @@ writer lock → 표 게이트 → 계좌 상태 → kill switch → 파생 → �
   정상 사이클 결과다.
 
 일 신규 캡이 후보보다 적을 때의 **동점 처리 = 심볼 사전순**. 기계에 재량이 없다.
+
+### 6.1 🔴 상한 입력 = 브로커 진실 (계약 v1.5 ①)
+
+**무엇이 틀렸었나.** 상한 입력이 `attributed_book.json` 에서 왔다 — 읽기 경로만 있고
+쓰기 경로가 0건인 파일. 매 사이클 `None` 을 읽었으므로 카운터가 항상 0에서 시작했고,
+계약이 **UTC 일자당** 이라 쓴 상한이 실제로는 **사이클 하나 안에서만** 구속했다.
+crypto 는 4h 표 = 일 6사이클이므로 실효 일일 신규 상한은 2가 아니라 **12** 였다. 게다가
+`submit_planned` 은 오염만 보고 계좌의 미체결 장부를 보지 않아 **같은 심볼·같은 레벨에
+매 사이클 주문이 적층**될 수 있었다.
+
+🔴 교훈: **「상한이 발화했다 ≠ 그 상한이 의도한 기간 동안 구속한다」.** 사이클 하나만
+보면 상한은 정상 발화했다. 그 발화가 작동 증거처럼 보였다. **2사이클 연속**만이 둘을
+구분한다.
+
+**지금.** `scripts/b0x/broker_truth.py` 가 세 정의를 리터럴로 구현한다:
+
+| 계약 v1.5 ① | 사이드카 입력 |
+|---|---|
+| 동시 포지션 = non-dust 매도가능 base 잔고의 수 | `FreshTruth.sellable_base_assets` (dust 판정 = `sellable_qty`, 계약 v1.2 §8 그대로 — MIN_NOTIONAL 확대 금지) |
+| 동일 심볼 재제출 = 자기 미체결 있으면 신규 제출 금지 | `FreshTruth.own_open_order_symbols` (`clientOrderId` 가 `b0xc` 로 시작하는 미체결) |
+| 일일 신규 = {자기 미체결 ∪ non-dust 포지션 ∪ 당 사이클 신규 제출} distinct | 위 둘의 합집합에서 시작해 파생 중 누적 |
+
+- **상태 파일 없음.** 사이클 간에 carry 되는 값이 0개 — 그래서 stale 이 될 수도, 조용히
+  비어버릴 수도 없다. `LaneAccountState.broker_truth` 는 기본값 없는 **필수** 필드다.
+- **동일 심볼 규칙은 side 무관.** 리터럴이 side 가 아니라 심볼을 지명한다 — 미체결 매수가
+  같은 심볼의 매도 rung 도 막는다. 레포 관행(「매수측만 캡」)보다 넓지만, 좁히면 계약 위반.
+- **두 곳에서 검사한다**: 파생(행 단위 skip)과 `submit_planned`(디스패치 직전). 후자가
+  이 결함의 실제 발생 지점이었다.
+- 🔵 shadow 레인은 §4 각주대로 envelope 미적용이라 이 규칙도 적용되지 않는다. 애초에
+  `place_derived_orders` 가 매 사이클 가상 장부를 **교체**하므로 적층이 불가능하다.
+- 🔴 **realized P&L 입력이 없다.** 사이드카는 체결을 귀속 장부로 reconcile 하지 않으므로
+  (계약 v1.3 ②, 매수측 표본 한정) `일 손실 5 USDT` kill 은 발화할 수 없다. 사라진 파일이
+  0을 공급하던 시절과 동작은 같지만, 이제 산출물이 `realized_pnl_source` 로 그 사실을
+  명시한다 — 측정된 0이 아니라 **입력 부재**다.
 
 ## 7. 사이드카 제출 전 체크리스트
 

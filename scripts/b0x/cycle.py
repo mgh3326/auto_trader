@@ -59,7 +59,7 @@ from scripts.b0x.ledger import (
     store_json_state,
     writer_lock,
 )
-from scripts.b0x.state import B0XPosition, LaneAccountState
+from scripts.b0x.state import LaneAccountState
 from scripts.b0x.table_source import (
     DEFAULT_TABLE_DIR,
     PolicyTable,
@@ -328,41 +328,39 @@ async def run_shadow_cycle(
 # ---------------------------------------------------------------------------
 
 
-def _sidecar_state(
-    stored: dict[str, Any] | None,
-    *,
-    fresh: sidecar_lane.FreshTruth,
-    now: dt.datetime,
-) -> LaneAccountState:
-    """B0-X-attributed book for the sidecar, cross-checked against fresh truth."""
+#: Contract v1.5 ①: the sidecar's realized-P&L input has no source. Fills are
+#: not reconciled back into an attributed book on this lane (see
+#: ``scripts.b0x.crypto.sidecar``'s "Known limitation" section), and the file
+#: this number used to be loaded from never existed, so it was always zero
+#: anyway. Recording the absence beats recording a zero that reads like a
+#: measurement: with no P&L source the 일 손실 5 USDT kill cannot fire here.
+SIDECAR_REALIZED_PNL_UNAVAILABLE: str = (
+    "realized_pnl_today has no source on this lane — fills are not reconciled "
+    "into an attributed book (사이드카 = 매수측 체결충실도 표본, 계약 v1.3 ②), "
+    "so the 일 손실 kill cannot fire. Not a measured zero."
+)
 
-    stored = stored or {}
-    today = now.astimezone(dt.UTC).date().isoformat()
-    same_day = stored.get("utc_day") == today
-    positions = tuple(
-        B0XPosition(
-            symbol=symbol,
-            quantity=Decimal(row["quantity"]),
-            average_price=Decimal(row["average_price"]),
-            invested_notional=Decimal(row["invested_notional"]),
-            entry_count=int(row["entry_count"]),
-        )
-        for symbol, row in sorted((stored.get("positions") or {}).items())
-    )
+
+def _sidecar_state(*, fresh: sidecar_lane.FreshTruth) -> LaneAccountState:
+    """Sidecar account state, derived entirely from this cycle's broker read.
+
+    Contract v1.5 ①. There is no persisted book to load: ``positions`` is empty
+    **by construction**, not by omission — the v1 attribution rule makes every
+    sellable base balance ``foreign`` (a B0-X fill included), so this lane never
+    owns an attributed position to average down or sell, which is exactly the
+    buy-side-only scope contract v1.3 ② assigned it. The §4 caps do not depend
+    on that emptiness: they read :meth:`FreshTruth.broker_truth`, which counts
+    the account's sellable balances and B0-X's own resting orders directly.
+    """
+
     return LaneAccountState(
         lane=sidecar_lane.LANE,
         quote_currency=sidecar_lane.QUOTE_ASSET,
         cash=fresh.quote_free,
-        positions=positions,
-        new_entry_symbols_today=(
-            tuple(sorted(stored.get("new_entry_symbols_today") or []))
-            if same_day
-            else ()
-        ),
-        realized_pnl_today=(
-            Decimal(stored.get("realized_pnl_today", "0")) if same_day else Decimal("0")
-        ),
-        open_order_keys=tuple(sorted(stored.get("open_order_keys") or [])),
+        broker_truth=fresh.broker_truth(),
+        positions=(),
+        realized_pnl_today=Decimal("0"),
+        open_order_keys=(),
         foreign_open_order_count=len(fresh.foreign_open_orders),
         foreign_position_symbols=fresh.foreign_base_assets,
     )
@@ -397,11 +395,11 @@ async def run_sidecar_cycle(
     with writer_lock(lane=lane, root=Path(out_dir).expanduser()):
         ledger = ObservationLedger(lane=lane, root=Path(out_dir).expanduser())
         ledger.ensure()
-        state_path = ledger.lane_dir / "attributed_book.json"
 
         record = base_record(
             market=MARKET, lane=lane, now=now, envelope=envelope, labels=labels
         )
+        record["realized_pnl_source"] = SIDECAR_REALIZED_PNL_UNAVAILABLE
         record["policy"] = {
             "version": policy.version,
             "policy_hash": policy.policy_hash,
@@ -453,7 +451,8 @@ async def run_sidecar_cycle(
             record["policy_table_generated_at"] = table.generated_at.isoformat()
             record["policy_table_age_seconds"] = int(table.age.total_seconds())
 
-            state = _sidecar_state(load_json_state(state_path), fresh=fresh, now=now)
+            state = _sidecar_state(fresh=fresh)
+            record["broker_truth"] = state.broker_truth.canonical()
             decision = kill_switch_module.evaluate(state=state, envelope=envelope)
             derivation = derive_orders(
                 table=table,

@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 
 from scripts.b0x import kill_switch as kill_switch_module
+from scripts.b0x.broker_truth import BrokerTruth
 from scripts.b0x.crypto import shadow
 from scripts.b0x.derivation import SkipReason, derive_orders
 from scripts.b0x.envelope import CRYPTO_SIDECAR_ENVELOPE
@@ -24,9 +25,25 @@ NOW = dt.datetime(2026, 8, 8, 12, 0, tzinfo=dt.UTC)
 ENVELOPE = CRYPTO_SIDECAR_ENVELOPE
 
 
-def _state(**kwargs) -> LaneAccountState:
+def _state(
+    *,
+    positions: tuple[B0XPosition, ...] = (),
+    pending: tuple[str, ...] = (),
+    position_symbols: tuple[str, ...] | None = None,
+    **kwargs,
+) -> LaneAccountState:
     base = {"lane": "test", "quote_currency": "USDT", "cash": Decimal("1000")}
-    return LaneAccountState(**{**base, **kwargs})
+    truth = BrokerTruth(
+        position_symbols=(
+            tuple(pos.symbol for pos in positions)
+            if position_symbols is None
+            else position_symbols
+        ),
+        own_pending=pending,
+    )
+    return LaneAccountState(
+        **{**base, "positions": positions, "broker_truth": truth, **kwargs}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +120,7 @@ def test_caps_are_reported_but_do_not_stop_the_lane() -> None:
         for name in ("AAA", "BBB", "CCC")
     )
     decision = kill_switch_module.evaluate(
-        state=_state(positions=held, new_entry_symbols_today=("KRW-AAA", "KRW-BBB")),
+        state=_state(positions=held, pending=("KRW-AAA", "KRW-BBB")),
         envelope=ENVELOPE,
     )
     assert decision.allow_new_orders is True
@@ -127,7 +144,7 @@ def test_all_tripped_reasons_are_reported_without_short_circuit() -> None:
     decision = kill_switch_module.evaluate(
         state=_state(
             positions=held,
-            new_entry_symbols_today=("KRW-A", "KRW-B"),
+            pending=("KRW-A", "KRW-B"),
             realized_pnl_today=Decimal("-10"),
         ),
         envelope=ENVELOPE,
