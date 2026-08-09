@@ -69,6 +69,18 @@ from scripts.b0x.table_source import (
 
 MARKET = "crypto"
 
+#: contract §4 assigns the shadow lane a synthetic, KRW-denominated book
+#: (``shadow.QUOTE_CURRENCY``), while the single "crypto" envelope column —
+#: shared with the sidecar — denominates ``daily_loss_kill`` in USDT
+#: (``CRYPTO_SIDECAR_ENVELOPE.quote_currency``). ``kill_switch.evaluate``
+#: fails closed on that mismatch (``CurrencyMismatchKill``) rather than
+#: silently comparing a KRW P&L against a USDT threshold — see
+#: ``scripts.b0x.kill_switch.CurrencyMismatchKill``. Until an operator
+#: defines a currency-correct kill threshold for this lane, every shadow
+#: cycle that reaches this point is, correctly, a zero-order cycle: this
+#: reason code makes that loud and observable instead of an unhandled crash.
+SHADOW_KILL_CURRENCY_MISMATCH_REASON: str = "kill_switch_currency_mismatch"
+
 
 @dataclass
 class CycleOutcome:
@@ -272,7 +284,28 @@ async def run_shadow_cycle(
         record["policy_table_age_seconds"] = int(table.age.total_seconds())
 
         state = portfolio.account_state()
-        decision = kill_switch_module.evaluate(state=state, envelope=envelope)
+        try:
+            decision = kill_switch_module.evaluate(state=state, envelope=envelope)
+        except kill_switch_module.CurrencyMismatchKill as exc:
+            record["zero_order_reason"] = SHADOW_KILL_CURRENCY_MISMATCH_REASON
+            record["zero_order_detail"] = str(exc)
+            record["orders"] = []
+            record["skipped"] = []
+            # Contract §2-2: no silent reuse. A kill decision this lane cannot
+            # safely evaluate is treated the same as an unusable table — the
+            # resting book from the last good cycle is cancelled rather than
+            # left working on intent nothing here re-validated.
+            record["cancelled_stale_orders"] = len(portfolio.open_orders)
+            portfolio.open_orders = []
+            outcome.zero_order_reason = SHADOW_KILL_CURRENCY_MISMATCH_REASON
+            store_json_state(portfolio_path, portfolio.to_json())
+            ledger.record_cycle(record)
+            outcome.record = record
+            outcome.artifact_path = ledger.write_artifact(
+                name=f"{now.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
+                content=render_cycle_report(record, labels=labels),
+            )
+            return outcome
         derivation = derive_orders(
             table=table,
             state=state,
