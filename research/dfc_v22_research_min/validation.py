@@ -30,6 +30,8 @@ from .schema import (
     MANIFEST_REQUIRED_KEYS,
     MANIFEST_SOURCE_REQUIRED_KEYS,
     MANIFEST_TABLE_REQUIRED_KEYS,
+    SAMPLE_REPORT_REQUIRED_KEYS,
+    SAMPLE_ROW_REQUIRED_KEYS,
 )
 
 __all__ = [
@@ -48,6 +50,7 @@ __all__ = [
     "validate_manifest",
     "validate_outcomes",
     "validate_premium_index_gap",
+    "validate_sample_readiness",
     "validate_table",
 ]
 
@@ -1133,4 +1136,162 @@ def _validate_admissibility(admissibility: Mapping[str, Any]) -> None:
             "A2-C5",
             "the independent verifier compares exactly "
             f"{list(c.ADMISSIBILITY_COMPARISON_KEYS)}, got {list(keys)}",
+        )
+
+
+# --- A2-C8 (OD-26 Job B): pre-registered sample readiness protocol --------
+
+
+def validate_sample_readiness(report: Mapping[str, Any]) -> None:
+    """Validate a Job-B sample-readiness report against the frozen A2-C8 rule.
+
+    The sample is not merely schema-checked: ``sample_rule`` and ``quarters``
+    are recomputed from :mod:`contract` and compared for equality, so a report
+    cannot claim a different rule or a hand-picked epoch set and still pass.
+    The verdict is likewise recomputed from the row-level completeness flags
+    and the reported ``run_invalid_epochs``, and it must be one of the two
+    closed outcomes — ``UNDETERMINED`` is not a re-judgeable third option here.
+
+    Raises:
+        ContractViolation: With ``RUN_INVALID_MANIFEST_SCHEMA`` for structural
+            problems or a verdict outside the closed domain, and
+            ``RUN_INVALID_CORPUS_LITERALS`` when the sample rule, the drawn
+            epochs, or the recomputed verdict do not match what the frozen
+            protocol requires.
+    """
+    missing = [k for k in SAMPLE_REPORT_REQUIRED_KEYS if k not in report]
+    if missing:
+        _fail(
+            RUN_INVALID_MANIFEST_SCHEMA,
+            "A2-C8",
+            f"sample readiness report is missing required key(s): {missing}",
+        )
+    unknown = [k for k in report if k not in SAMPLE_REPORT_REQUIRED_KEYS]
+    if unknown:
+        _fail(
+            RUN_INVALID_MANIFEST_SCHEMA,
+            "A2-C8",
+            f"sample readiness report carries unknown key(s): {sorted(unknown)}",
+        )
+
+    if report["contract_id"] != c.CONTRACT_ID:
+        _fail(
+            RUN_INVALID_CORPUS_LITERALS,
+            "A2-C8",
+            f"contract_id must be {c.CONTRACT_ID!r}, got {report['contract_id']!r}",
+        )
+
+    declared_rule = dict(report["sample_rule"])
+    frozen_rule = dict(c.SAMPLE_RULE)
+    if declared_rule != frozen_rule:
+        _fail(
+            RUN_INVALID_CORPUS_LITERALS,
+            "A2-C8",
+            f"sample_rule must be exactly {frozen_rule}, got {declared_rule}; "
+            "the sample rule is pre-registered and may not be tuned after "
+            "measurement results are read",
+        )
+
+    expected_plan = {k: list(v) for k, v in c.sample_plan().items()}
+    declared_plan = {k: list(v) for k, v in report["quarters"].items()}
+    if declared_plan != expected_plan:
+        _fail(
+            RUN_INVALID_CORPUS_LITERALS,
+            "A2-C8",
+            "declared sample epochs do not reproduce "
+            "contract.sample_plan(); the extraction algorithm is a pure "
+            "function of the frozen seed and quarter boundaries, so any "
+            "mismatch means the sample was drawn, then edited, or drawn "
+            "differently from the registered algorithm",
+        )
+
+    known_epochs: set[int] = set()
+    for epochs in expected_plan.values():
+        known_epochs.update(epochs)
+
+    rows = report["rows"]
+    if not rows:
+        _fail(
+            RUN_INVALID_MANIFEST_SCHEMA,
+            "A2-C8",
+            "sample readiness report carries no rows",
+        )
+
+    seen_keys: set[tuple[int, int]] = set()
+    all_complete = True
+    for index, row in enumerate(rows):
+        label = f"rows[{index}]"
+        row_missing = [k for k in SAMPLE_ROW_REQUIRED_KEYS if k not in row]
+        if row_missing:
+            _fail(
+                RUN_INVALID_MANIFEST_SCHEMA,
+                "A2-C8",
+                f"{label}: missing key(s) {row_missing}",
+            )
+        epoch = row["epoch_open_time"]
+        if epoch not in known_epochs:
+            _fail(
+                RUN_INVALID_CORPUS_LITERALS,
+                "A2-C8",
+                f"{label}: epoch_open_time {epoch} is not part of the "
+                "pre-registered sample; rows may only cover drawn epochs",
+            )
+        rank = row["rank"]
+        if rank not in (1, 2, 3):
+            _fail(
+                RUN_INVALID_MANIFEST_SCHEMA,
+                "A2-C8",
+                f"{label}: rank must be 1, 2 or 3 (top-{c.UNIVERSE_TOP_N}), "
+                f"got {rank!r}",
+            )
+        key = (epoch, rank)
+        if key in seen_keys:
+            _fail(
+                RUN_INVALID_MANIFEST_SCHEMA,
+                "A2-C8",
+                f"{label}: duplicate row for epoch {epoch} rank {rank}",
+            )
+        seen_keys.add(key)
+        if not row["provenance_sha256"]:
+            _fail(
+                RUN_INVALID_AUTHENTICITY_EVIDENCE,
+                "A2-C5",
+                f"{label}: provenance_sha256 is empty; every completeness "
+                "check must be traceable to the object it was decided from",
+            )
+        if not (row["kline_complete"] and row["premium_index_complete"]):
+            all_complete = False
+
+    invalid_epochs = tuple(report["run_invalid_epochs"])
+    for epoch in invalid_epochs:
+        if epoch not in known_epochs:
+            _fail(
+                RUN_INVALID_CORPUS_LITERALS,
+                "A2-C8",
+                f"run_invalid_epochs carries {epoch}, which is not part of "
+                "the pre-registered sample",
+            )
+
+    recomputed_verdict = (
+        c.READY if (all_complete and not invalid_epochs) else c.NOT_READY
+    )
+
+    verdict = report["verdict"]
+    if verdict not in c.SAMPLE_VERDICTS:
+        _fail(
+            RUN_INVALID_MANIFEST_SCHEMA,
+            "A2-C8",
+            f"verdict must be one of {list(c.SAMPLE_VERDICTS)}, got "
+            f"{verdict!r}; §26차 closed this to a two-way choice — "
+            "UNDETERMINED is not a re-judgeable outcome of this protocol",
+        )
+    if verdict != recomputed_verdict:
+        _fail(
+            RUN_INVALID_CORPUS_LITERALS,
+            "A2-C8",
+            f"declared verdict {verdict!r} does not match the recomputed "
+            f"verdict {recomputed_verdict!r} (all_rows_complete="
+            f"{all_complete}, run_invalid_epochs={list(invalid_epochs)}); "
+            "the verdict is derived from the row evidence, never accepted "
+            "as declared",
         )

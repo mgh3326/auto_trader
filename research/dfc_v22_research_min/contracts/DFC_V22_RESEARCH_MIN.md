@@ -273,6 +273,75 @@ consistently.
 
 ---
 
+## A2-C8 — Pre-registered sample readiness protocol (OD-26 Job B)
+
+> **§26차 Job B** (원문 축자 인용)
+>
+> **Job B (③)**: 측정 **전** 표본 규칙 사전등록 — 판정창 분기별 고정 seed 층화표본 epoch 12 (총 ~108), 각 표본 epoch 의 top-3 후보 심볼 kline+premiumIndex 완전성 검사. **READY = 표본 100% 무결 / 미달 = NOT_READY** (UNDETERMINED 재판정 없음 — 이지선다). 전수 검증은 FREEZE 가 fail-closed 수행 — READY 는 동결 노력 투입 결정일 뿐.
+
+Job A closed two of A2-MEASURE's three open items (lifecycle authority, the
+premium-index archive-directory gap). The third — coverage was only
+spot-checked, not measured across the corpus's actual shape — is what this
+clause closes, without re-litigating the full 5,494-epoch sweep that §26차
+explicitly rejected as duplicating the FREEZE job at no informational gain.
+
+**The literals, frozen before any sample is drawn:**
+
+| Literal | Frozen value |
+|---|---|
+| `seed` | `26` |
+| `epochs_per_quarter` | `12` |
+| `quarter_definition` | UTC calendar quarter (Jan–Mar / Apr–Jun / Jul–Sep / Oct–Dec), clipped to `[JUDGMENT_START, JUDGMENT_END)` |
+| `selection_algorithm` | `sha256(f"{seed}:{quarter_key}:{epoch_open_time_ms}")` ascending, take the first `epochs_per_quarter` (or all, if fewer exist in that quarter) |
+| `completeness_dimensions` | `kline_4h`, `premium_index_4h` |
+| verdict domain | `READY`, `NOT_READY` — closed, two members, no third |
+
+`contract.quarter_windows()` computes the quarter boundaries purely from
+`JUDGMENT_START`/`JUDGMENT_END` — a calendar fact, checkable without reference
+to this corpus. `contract.sample_epoch_open_times()` is a pure function of the
+seed, the quarter key and the quarter boundaries: SHA-256 has no version-
+dependent PRNG state to drift, so the same three inputs reproduce the same
+epoch set on any machine, in any process, indefinitely. This is what makes
+"the sample was drawn before the rule was edited" checkable after the fact,
+rather than merely asserted: `validate_sample_readiness` recomputes
+`contract.sample_plan()` and rejects a report whose `quarters` do not match it
+byte-for-byte (A2-C8, `RUN_INVALID_CORPUS_LITERALS`).
+
+**Completeness, defined.** For a sampled epoch's top-3 candidate pool (decided
+by the same universe rule as A2-C2/A2-C7 — trailing 30-calendar-day quote
+volume, ties broken canonical-symbol-ascending, over the then-eligible
+`usdm_perpetual` universe under the A2-C6 substitute eligibility evidence), a
+row is complete when both:
+
+1. `kline_4h`: a schema-conformant `usdm_kline_4h` bar exists for that symbol
+   at the epoch's `open_time`, with a matching `close_time` and no null field.
+2. `premium_index_4h`: a schema-conformant `premiumIndexKlines` bar exists for
+   that symbol at the same `open_time`, carrying `premium_index_close`.
+
+A gap symbol (A2-C7) landing inside a sampled epoch's top-3 is **not** scored
+as an incomplete row and is **not** silently re-ranked around: the epoch is
+recorded in `run_invalid_epochs` and disqualifies `READY` on its own, exactly
+as A2-C7 already rules for the full corpus.
+
+**The verdict rule.** `READY` iff every row in the sample reports both
+dimensions complete *and* `run_invalid_epochs` is empty; otherwise `NOT_READY`,
+with the failing epoch/symbol/dimension named. There is no `UNDETERMINED` exit
+from this specific protocol — §26차 rules it a two-way choice, and one broken
+row anywhere in the sample is enough for `NOT_READY`.
+
+**`READY` does not mean the whole corpus is clean.** It means the stratified
+sample the frozen rule drew is intact — a decision to invest in building the
+frozen corpus, not a claim that every one of the ~5,494 epochs will validate.
+The FREEZE job still validates the full corpus, fail-closed, independently of
+what this sample found.
+
+**Enforced as.** `validation.validate_sample_readiness` requires the report's
+`sample_rule` to equal `contract.SAMPLE_RULE` exactly, its `quarters` to equal
+`contract.sample_plan()` exactly, every row's `epoch_open_time` to be a member
+of that plan, the declared `verdict` to be one of `READY`/`NOT_READY`, and that
+declared verdict to equal the value recomputed from the row evidence and
+`run_invalid_epochs` — never accepted merely because it was declared.
+
 ## Terminal codes
 
 Adjudicated in this order — `contract.TERMINAL_CODE_PRIORITY`, enforced by
@@ -285,7 +354,7 @@ the cause.
 |---|---|
 | `RUN_INVALID_INPUT_EVIDENCE` | lifecycle authority claimed, proxy promoted to evidence kind, gap symbol unaccounted for, gap symbol inside or outranking the candidate pool, or a recorded epoch verdict the evidence does not support (A2-C6 / A2-C7) |
 | `RUN_INVALID_SCOPE_SEPARATION` | A1 (or anything else) declared as the DFC prerequisite (A2-C1) |
-| `RUN_INVALID_CORPUS_LITERALS` | a frozen id, path, window, universe rule or imputation literal was changed (A2-C2) |
+| `RUN_INVALID_CORPUS_LITERALS` | a frozen id, path, window, universe rule or imputation literal was changed (A2-C2), or a sample-readiness report's rule/epochs/verdict do not reproduce the frozen protocol (A2-C8) |
 | `RUN_INVALID_FORBIDDEN_SOURCE` | funding / open interest / mark / index material present (A2-C3) |
 | `RUN_INVALID_TABLE_SCHEMA` | canonical table column set, order, type or nullability violated (A2-C3) |
 | `RUN_INVALID_MANIFEST_SCHEMA` | manifest key set wrong, or required source kind / canonical table absent |
@@ -331,3 +400,24 @@ timing the paragraph above is suspicious of, so the record is:
 
 Should a *literal* ever need to change, the paragraph above still governs: new
 ID, new signature.
+
+## Amendment provenance (A2-C8)
+
+This amendment is the opposite timing from A2-C6/A2-C7, and the record says so:
+
+- **Written before the sample was drawn.** A2-C8 is committed to this document
+  and to `contract.py` before `DFC-A2-REMEASURE` (Job B) makes its first public
+  GET call. The job's own report is required to state the pre-registration
+  commit SHA and the measurement start time, in that order, so the sequencing
+  is checkable after the fact rather than merely asserted.
+- **No frozen literal changed.** Every A2-C1..A2-C7 literal, terminal code and
+  table is unchanged. The amendment is additive: one clause, one closed
+  verdict domain, three frozen sampling literals, and one validator
+  (`validate_sample_readiness`) that reads a report handed to it — it collects
+  nothing and repairs nothing.
+- **It cannot be loosened by what it finds.** The seed, the quarter
+  definition and the epochs-per-quarter count are fixed here, before
+  measurement; `validate_sample_readiness` recomputes the sample and the
+  verdict from the frozen rule and rejects any report that disagrees, so
+  neither a wider sample nor a softer verdict rule can be substituted after
+  the fact without failing this validator.
