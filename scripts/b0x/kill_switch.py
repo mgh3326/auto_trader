@@ -43,6 +43,26 @@ class MissingNavForRatioKill(ValueError):
     """
 
 
+class CurrencyMismatchKill(ValueError):
+    """``state.quote_currency`` and ``envelope.quote_currency`` disagree, or
+    either is empty (missing currency information is *not* treated as a
+    match).
+
+    ``realized_pnl_today`` is compared directly against an absolute
+    threshold derived from ``envelope.daily_loss_kill`` — that comparison is
+    meaningless, and silently dangerous, unless both sides are known to be
+    denominated in the same currency. This is the exact shape of the defect
+    X-C's verification found in the crypto shadow lane: a USDT-denominated
+    envelope constant (``CRYPTO_SIDECAR_ENVELOPE.daily_loss_kill``) compared
+    directly against a KRW-denominated ``realized_pnl_today`` (Upbit shadow
+    trades in KRW). Fails closed instead of silently comparing amounts in
+    different currencies, and instead of guessing an exchange rate to
+    reconcile them — an exchange rate is not this module's truth to assume,
+    and a wrong guess would only be forgiving in the direction that lets the
+    kill under-fire.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class KillSwitchDecision:
     """``allow_new_orders=False`` means: submit nothing, cancel everything."""
@@ -65,6 +85,16 @@ class KillSwitchDecision:
     daily_loss_kill_basis: str = "absolute"
     daily_loss_kill_config: Decimal = Decimal("0")
     nav_snapshot: Decimal | None = None
+    #: The currencies actually compared to reach this decision —
+    #: ``state.quote_currency`` and ``envelope.quote_currency`` respectively.
+    #: ``evaluate`` guarantees these are equal (and non-empty) by construction
+    #: for every ``KillSwitchDecision`` it returns — see
+    #: :class:`CurrencyMismatchKill`. Recording both, rather than a single
+    #: post-validation value, means an observation artifact shows exactly
+    #: what was compared without a reader having to trust that validation
+    #: ran at all.
+    state_quote_currency: str = ""
+    envelope_quote_currency: str = ""
 
     @property
     def tripped(self) -> bool:
@@ -82,6 +112,8 @@ class KillSwitchDecision:
             "nav_snapshot": (
                 None if self.nav_snapshot is None else format(self.nav_snapshot, "f")
             ),
+            "state_quote_currency": self.state_quote_currency,
+            "envelope_quote_currency": self.envelope_quote_currency,
         }
 
     def operator_notice(
@@ -127,7 +159,30 @@ def evaluate(*, state: LaneAccountState, envelope: Envelope) -> KillSwitchDecisi
     comparing a raw ratio, or an absolute value in the wrong currency, against
     ``realized_pnl_today`` is the currency-unit defect this function exists to
     make structurally impossible rather than merely style-guided against.
+
+    Before any of that: ``state.quote_currency`` and ``envelope.quote_currency``
+    must agree, and both must be non-empty — see :class:`CurrencyMismatchKill`.
+    This check runs unconditionally, regardless of ``daily_loss_kill_basis``,
+    because a ratio basis still ends up compared against
+    ``realized_pnl_today`` in whatever currency ``state`` claims once
+    multiplied by NAV, and an absolute basis is compared directly. Neither
+    path is safe without a currency match first. No conversion is ever
+    applied on a mismatch — this function does not know an exchange rate and
+    would not trust one it did not verify.
     """
+
+    if (
+        not state.quote_currency
+        or not envelope.quote_currency
+        or state.quote_currency != envelope.quote_currency
+    ):
+        raise CurrencyMismatchKill(
+            f"state.quote_currency={state.quote_currency!r} (lane={state.lane!r}) "
+            f"!= envelope.quote_currency={envelope.quote_currency!r} "
+            f"(market={envelope.market!r}) — the daily-loss kill cannot compare "
+            "realized_pnl_today against daily_loss_kill without both sides "
+            "denominated in the same, known currency."
+        )
 
     if envelope.daily_loss_kill_basis == "pct_of_nav":
         if state.nav is None:
@@ -167,6 +222,8 @@ def evaluate(*, state: LaneAccountState, envelope: Envelope) -> KillSwitchDecisi
         daily_loss_kill_basis=envelope.daily_loss_kill_basis,
         daily_loss_kill_config=envelope.daily_loss_kill,
         nav_snapshot=state.nav,
+        state_quote_currency=state.quote_currency,
+        envelope_quote_currency=envelope.quote_currency,
     )
 
 
@@ -175,5 +232,6 @@ __all__ = [
     "CapStatus",
     "KillSwitchDecision",
     "MissingNavForRatioKill",
+    "CurrencyMismatchKill",
     "evaluate",
 ]

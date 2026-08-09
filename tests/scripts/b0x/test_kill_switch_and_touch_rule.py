@@ -154,6 +154,107 @@ def test_all_tripped_reasons_are_reported_without_short_circuit() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Currency validation (ROB-1233) — the shadow lane's KRW-vs-USDT defect,
+# reproduced directly against ``evaluate`` rather than through a full cycle.
+# ---------------------------------------------------------------------------
+
+
+def test_defect_reproduced_krw_state_vs_usdt_envelope_used_to_pass_silently() -> None:
+    """DEFECT_REPRODUCED — this is exactly ``scripts.b0x.crypto.shadow``'s real
+    wiring: a KRW-denominated account state evaluated against the shared
+    crypto envelope, whose ``daily_loss_kill`` is a USDT amount. Before this
+    fix, ``state.realized_pnl_today <= -effective_kill`` compared these two
+    numbers with no unit check at all.
+    """
+
+    krw_state = _state(quote_currency="KRW", realized_pnl_today=Decimal("-9"))
+    assert ENVELOPE.quote_currency == "USDT"
+
+    with pytest.raises(kill_switch_module.CurrencyMismatchKill) as exc_info:
+        kill_switch_module.evaluate(state=krw_state, envelope=ENVELOPE)
+
+    assert "KRW" in str(exc_info.value)
+    assert "USDT" in str(exc_info.value)
+
+
+def test_currency_mismatch_is_not_bypassable_by_conversion() -> None:
+    """Mutant ③ — a "helpful" fix that converts instead of rejecting must
+    still fail this test. There is no rate this module may assume; -9 KRW
+    numerically satisfies ``<= -5`` (a plausible "converted" comparison a
+    unit-blind reviewer might wave through), so if mismatch handling were
+    changed to silently convert-and-compare instead of raising, this krw_state
+    would trip the kill "successfully" instead of raising — which is exactly
+    the silent-wrong-answer failure mode this test exists to catch.
+    """
+
+    krw_state = _state(quote_currency="KRW", realized_pnl_today=Decimal("-9"))
+    with pytest.raises(kill_switch_module.CurrencyMismatchKill):
+        kill_switch_module.evaluate(state=krw_state, envelope=ENVELOPE)
+
+
+def test_missing_currency_information_counts_as_mismatch_not_a_match() -> None:
+    """ "없음 ≠ 일치" — an empty/absent currency must not compare equal to
+    anything, including another empty string on the envelope side.
+    """
+
+    from dataclasses import replace
+
+    state = _state(quote_currency="", realized_pnl_today=Decimal("0"))
+    with pytest.raises(kill_switch_module.CurrencyMismatchKill):
+        kill_switch_module.evaluate(state=state, envelope=ENVELOPE)
+
+    # Even if *both* sides are empty, that is not a match either.
+    blank_envelope = replace(ENVELOPE, quote_currency="")
+    with pytest.raises(kill_switch_module.CurrencyMismatchKill):
+        kill_switch_module.evaluate(
+            state=_state(quote_currency="", realized_pnl_today=Decimal("0")),
+            envelope=blank_envelope,
+        )
+
+
+def test_matching_currency_decision_records_both_sides_for_audit() -> None:
+    """The success path must record what was actually compared — an
+    observation artifact should be verifiable without trusting that the
+    check silently ran."""
+
+    decision = kill_switch_module.evaluate(
+        state=_state(realized_pnl_today=Decimal("-1")), envelope=ENVELOPE
+    )
+    assert decision.state_quote_currency == "USDT"
+    assert decision.envelope_quote_currency == "USDT"
+    canonical = decision.canonical()
+    assert canonical["state_quote_currency"] == "USDT"
+    assert canonical["envelope_quote_currency"] == "USDT"
+
+
+def test_crypto_sidecar_and_kr_currency_checks_pass_unaffected() -> None:
+    """NO_REGRESSION — crypto sidecar (USDT/USDT) and KR (pct_of_nav, KRW/KRW)
+    both already have matching currencies; the new check must be a no-op for
+    both, leaving their existing kill behaviour exactly as before.
+    """
+
+    from scripts.b0x.envelope import KR_MOCK_ENVELOPE
+
+    crypto_decision = kill_switch_module.evaluate(
+        state=_state(realized_pnl_today=Decimal("-5")), envelope=ENVELOPE
+    )
+    assert crypto_decision.tripped
+
+    kr_state = LaneAccountState(
+        lane="kis_mock",
+        quote_currency="KRW",
+        cash=Decimal("5000000"),
+        broker_truth=BrokerTruth(position_symbols=(), own_pending=()),
+        realized_pnl_today=Decimal("-250000"),
+        nav=Decimal("10000000"),
+    )
+    kr_decision = kill_switch_module.evaluate(state=kr_state, envelope=KR_MOCK_ENVELOPE)
+    assert kr_decision.tripped
+    assert kr_decision.state_quote_currency == "KRW"
+    assert kr_decision.envelope_quote_currency == "KRW"
+
+
+# ---------------------------------------------------------------------------
 # Touch rule
 # ---------------------------------------------------------------------------
 
