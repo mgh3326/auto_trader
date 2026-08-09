@@ -30,10 +30,19 @@ pattern.
 
 Contract v1.5 ① lands here as ``broker_state`` (below): the §4 caps read this
 cycle's kis_mock account snapshot, and nothing is carried between cycles. The
-KR-specific consequence is that 자기 미체결 is unreadable on this venue
-(``kr_mock.KR_PENDING_UNREADABLE``) and therefore fails closed — the same
+KR-specific consequence was that 자기 미체결 is unreadable on this venue
+(``kr_mock.KR_PENDING_UNREADABLE``) and therefore failed closed — the same
 "시도조차 구조적으로 불가" posture the kill-trip cancellation note below already
 takes, applied to a second KIS mock limitation with the same root.
+
+Contract v1.6 ① supplies the missing input for that one field only, from the
+submission ledger (``scripts.b0x.kr.pending_ledger``, wired through the
+``pending_reader`` seam below). Everything else about the posture is unchanged:
+the reader can only *resolve* the unreadable state, never bypass it — a failed
+ledger read returns the same ``PendingUnreadable`` sentinel and every symbol is
+refused again. 포지션 진실 stays with the broker holdings read (v1.6 ②): the
+``positions`` this function builds come from ``fresh.positions`` and from
+nothing else, whatever the ledger says.
 
 Kill-trip cancellation asymmetry with the crypto sidecar, documented rather
 than silently matched: the crypto lanes cancel outstanding B0-X orders on a
@@ -56,11 +65,13 @@ from pathlib import Path
 from typing import Any
 
 from app.services.kis_mock_runner.session import is_krx_regular_session
+from scripts.b0x.broker_truth import PendingUnreadable
 from scripts.b0x.cycle import base_record, render_cycle_report
 from scripts.b0x.derivation import DerivationResult, derive_orders
 from scripts.b0x.envelope import assert_envelope_locked, load_envelope
 from scripts.b0x.kill_switch import evaluate as evaluate_kill_switch
 from scripts.b0x.kr import mock as kr_mock
+from scripts.b0x.kr import pending_ledger as kr_pending_ledger
 from scripts.b0x.labels import account_history_labels, header_labels
 from scripts.b0x.ledger import (
     DEFAULT_OBSERVATION_DIR,
@@ -139,7 +150,11 @@ KR_REALIZED_PNL_UNAVAILABLE = (
 )
 
 
-def broker_state(*, fresh: kr_mock.FreshTruth) -> LaneAccountState:
+def broker_state(
+    *,
+    fresh: kr_mock.FreshTruth,
+    own_pending: tuple[str, ...] | PendingUnreadable | None = None,
+) -> LaneAccountState:
     """kis_mock account state, derived entirely from this cycle's broker read.
 
     Contract v1.5 ①/③. Positions are the account's own holdings — "B0-X
@@ -158,6 +173,12 @@ def broker_state(*, fresh: kr_mock.FreshTruth) -> LaneAccountState:
     ``entry_count`` is reported as ``0``: how many separate entries built a
     holding is not in the snapshot, and derivation does not read it. Inventing
     a plausible number would put a fabricated value into the hashed state.
+
+    🔴 ``own_pending`` (contract v1.6 ①) reaches **only**
+    ``BrokerTruth.own_pending``. It is not read when building ``positions``
+    below, and it is not merged into ``broker_truth.position_symbols`` — v1.6
+    ② keeps 포지션 진실 on the broker. ``None`` (the default) leaves the lane
+    on ``KR_PENDING_UNREADABLE``.
     """
 
     positions = tuple(
@@ -175,7 +196,7 @@ def broker_state(*, fresh: kr_mock.FreshTruth) -> LaneAccountState:
         lane=LANE,
         quote_currency=kr_mock.QUOTE_CURRENCY,
         cash=fresh.cash,
-        broker_truth=fresh.broker_truth(),
+        broker_truth=fresh.broker_truth(own_pending),
         positions=positions,
         cumulative_deployment_readable=False,
         realized_pnl_today=Decimal("0"),
@@ -191,12 +212,19 @@ async def run_kr_cycle(
     confirm: bool = False,
     client: Any | None = None,
     broker: Any | None = None,
+    pending_reader: kr_pending_ledger.PendingReader | None = None,
 ) -> KrCycleOutcome:
     """One kis_mock cycle. ``broker`` mirrors the existing ``client`` DI seam
     (tests inject a fake broker; production leaves it ``None`` and this
     function builds ``kr_mock.build_kis_mock_broker()`` lazily, only when
     there is something to submit). See ``scripts.b0x.kr.mock`` module
     docstring for what submission wiring does and does not cover.
+
+    ``pending_reader`` is the contract v1.6 ① seam for 자기 미체결; production
+    leaves it ``None`` and gets
+    :func:`scripts.b0x.kr.pending_ledger.read_own_pending`. Whatever it
+    returns, a ``PendingUnreadable`` result still fails closed on every symbol
+    — the reader can resolve the tri-state, never remove it.
     """
 
     envelope = load_envelope(MARKET)
@@ -269,9 +297,18 @@ async def run_kr_cycle(
         if owns_client:
             client = kr_mock.ReadOnlyKISMockDomesticClient()
         fresh = await kr_mock.read_fresh_truth(client)
-        record["fresh_truth"] = fresh.status_only()
 
-        state = broker_state(fresh=fresh)
+        # Contract v1.6 ① — 자기 미체결 only. Read after the holdings snapshot
+        # and kept in its own variable so it can reach exactly one field
+        # (``BrokerTruth.own_pending``); positions below never see it.
+        reader = pending_reader or kr_pending_ledger.read_own_pending
+        own_pending = await reader(
+            now=now, correlation_prefix=f"{kr_mock.CLIENT_ORDER_ID_PREFIX}-"
+        )
+        record["fresh_truth"] = fresh.status_only(own_pending)
+        record["own_pending_source"] = kr_mock.OWN_PENDING_SOURCE
+
+        state = broker_state(fresh=fresh, own_pending=own_pending)
         record["broker_truth"] = state.broker_truth.canonical()
         decision = evaluate_kill_switch(state=state, envelope=envelope)
         derivation = derive_orders(

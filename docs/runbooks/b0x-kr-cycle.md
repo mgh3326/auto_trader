@@ -244,6 +244,12 @@ b0x-experiment-contract-v1-20260808.md`):
 
 ### 9.1 🔴 상한 입력 = 브로커 진실 (계약 v1.5 ①) — KR 은 한 입력이 조회 불가
 
+> 🔵 **이 절은 X-E1(계약 v1.5) 시점의 상태를 기술한다.** 자기 미체결 항목은
+> **계약 v1.6 ① 로 해소**됐다 — §9.2 를 먼저 읽어라. 아래 "왜 조회 불가인가"
+> 두 표면의 실측은 v1.6 이후에도 그대로 사실이며(브로커는 여전히 답하지 못한다),
+> `PendingUnreadable` 도 삭제되지 않고 **원장이 답하지 못할 때의 상태로 남아 있다**.
+> "매 사이클 파생 0건"만 v1.6 으로 대체된 서술이다.
+
 무엇이 틀렸었는지는 crypto 런북 §6.1 과 동일하다(상한이 사이클당으로만 구속, 상태 파일이
 한 번도 쓰이지 않음). KR 도 같은 코어(`scripts/b0x/broker_truth.py`)를 쓴다 — 레인별 복붙
 없음. 다만 **입력 하나가 KIS 모의투자에서 조회 불가**다.
@@ -279,11 +285,8 @@ skipped 표가 그대로 렌더링되므로 "무엇이 막혔는지"는 남는�
 로 구조적으로 막혀 있고(§10, §6), CLI 에 `--confirm` 이 없다. 즉 이 조치가 "되던 주문을
 막은" 것이 아니라 **되지 않던 이유가 하나 더 명시화**된 것에 가깝다.
 
-🔴 **미해결 (운영자/orch 판단 필요).** 자기 미체결의 대체 출처 후보는 `kis_mock_order_
-ledger`(`KISMockLifecycleService`) 다 — 레포가 이미 TTTC8036R 부재를 이 원장으로 대체하고
-있다(`resolve_mock_order_for_cancel`). 다만 그건 **브로커 진실이 아니라 자기 기록**이고,
-이 잡이 폐기한 `attributed_book` 과 같은 부류로 읽힐 수 있어 **이 PR 에서 채택하지
-않았다**. 채택 여부는 계약 판단이지 구현 판단이 아니다.
+🔵 **해소됨 — 계약 v1.6 ① (2026-08-09, 운영자 "승인이야").** X-E1 이 후보로만 등재했던
+`kis_mock_order_ledger` 가 조건부로 승인됐다. 상세 = **§9.2**.
 
 🔴 **realized P&L 입력도 없다.** 상태 파일 제거로 `realized_pnl_today` 의 출처가
 사라졌다(원래도 파일이 없어 항상 0이었다). 따라서 `−2.5% NAV` kill 은 발화할 수 없으며,
@@ -307,6 +310,75 @@ ledger`(`KISMockLifecycleService`) 다 — 레포가 이미 TTTC8036R 부재를 
 과거 투입액이 신규 진입에 보이지 않는다. 이건 브로커 진실 배선 이전부터 있던 설계 공백이며
 (어느 레인이든 동일), 이번 잡이 새로 만든 것이 아니다 — 후속 과제로 남긴다.
 
+### 9.2 🔴 KR 자기 미체결 출처 = `kis_mock_order_ledger` (계약 v1.6 ①, X-E2)
+
+**정본 모듈: `scripts/b0x/kr/pending_ledger.py`.** §9.1 이 「조회 불가」로 남겨 둔 세 번째
+입력(자기 `b0xk` 미체결)만 여기서 공급한다. 나머지 두 입력은 손대지 않았다.
+
+**왜 예외가 정당한가 — `attributed_book` 과 무엇이 다른가.** v1.5 가 `attributed_book.json`
+을 폐기한 사유는 「자기 기록」이라는 **개념**이 아니라 **쓰기 경로가 레포에 0건**이었다는
+사실이다(매 사이클 `None` 로드 → 카운터 상시 0). 이 원장은 반대로 **제출 chokepoint 가 매번
+강제로 쓴다**:
+
+- `app/mcp_server/tooling/order_execution.py` `_execute_and_record` 의 **첫 동작**이
+  `is_mock` 분기의 pre-submit 귀속 게이트다. 귀속 실패 → `MissingAttribution` → **브로커
+  read 조차 하기 전에** 반환. 귀속 성공 → `record_signal` 이 `review.kis_mock_signal_ledger`
+  행을 **전송 전에 커밋**하고, 그 쓰기가 실패하면 **주문 자체가 나가지 않는다**
+  (`error_code="signal_record_unavailable"`). `correlation_id`/`strategy`/`signal_source` 는
+  NOT NULL + 공백거부 CHECK.
+- 전송 후 `review.kis_mock_order_ledger` 행(계약이 지명한 표)이 같은 `correlation_id` 로 쓰인다.
+
+**두 표를 다 읽는다 — 넓힌 것은 예외가 아니라 차단이다.** 사후 order 행은 유실될 수 있고
+(`LedgerWriteError` → `ledger_id=None` → `ledger_tracking_unavailable`), 브로커에 존재하는
+주문의 원장 행이 없는 상태가 바로 v1.6 ③ 이 금지한 **관대한 방향(누락)** 이다. pre-submit
+signal 행은 유실되면 전송이 거부되므로 그 구멍을 닫는다. 둘 다 `kis_mock` 스코프이고 둘 다
+계약이 지명한 그 chokepoint 가 쓴다.
+
+**「미체결」의 정의 — 의도적 상위집합.** 🔴 이 모듈은 `lifecycle_state` 를 **보지 않는다**.
+어떤 상태 판정이든 「이미 체결/취소됐으니 풀어줘도 된다」는 추정이 되고, 추정이 틀리면
+아직 걸려 있는 주문을 푼다(= 관대한 방향). 그래서 **이 레인이 당일 그 심볼에 대해 남긴 행이
+하나라도 있으면 pending 이다.** 계약 v1.6 ③ 이 이 오류 방향을 문언으로 수용한다
+("체결·취소분이 pending 으로 보일 수 있음 — 안전한 실패로 수용").
+
+**유일한 경계 = KST 거래일.** KRX 주문은 당일 주문이다. ROB-671 분류기
+(`app/services/brokers/kis/live_order_expiry.py` — **인용만 하고 import 하지 않는다**;
+KR AST 가드가 금지 목록에 올려 뒀다)가 세션×매매구분 **전 조합의 최대 만료를 접수일 20:00
+KST** 로 못박는다(정규장 매도의 NXT 연장 포함). 즉 KST 일 *D* 에 접수된 주문이 *D+1* 까지
+걸려 있을 수 없다 — 시간 경과로 「체결됐겠지」를 추정하는 것이 아니라 **거래소의 주문 유효
+기간**이다. §4 일일 신규 캡의 경계와 동일하므로 두 규칙이 구조적으로 일치한다.
+
+**조회 실패 = 다시 unreadable (v1.6 ④).** 어떤 이유로든 조회가 실패하면
+`pending_ledger.ledger_unreadable(...)` 이 `PendingUnreadable`(reason=
+`kis_mock_ledger_pending_unreadable`) 을 돌려주고, `resubmit_block` 이 **다시 전 심볼을
+거부**한다. 실패를 `()` 로 접는 코드 경로는 이 모듈에 없다. detail 에는 예외 **타입 이름만**
+싣는다(DB 오류 메시지에 DSN·자격증명이 실릴 수 있고, 이 값은 산출물에 박제된다).
+X-E1 의 `KR_PENDING_UNREADABLE` 상수도 **삭제하지 않았고 여전히 기본값**이다 —
+`FreshTruth.broker_truth()` 를 인자 없이 부르면 v1.6 이전과 동일하게 fail-closed 다.
+
+**포지션 진실은 그대로 브로커 (v1.6 ②).** 원장은 미체결 dedup/캡 입력에만 들어간다.
+`positions` 는 계속 `fetch_my_stocks` 보유에서만 만들어지고, `broker_truth.position_symbols`
+는 `non_dust_position_symbols()` 뿐이다. AST 가드가 `positions=`/`position_symbols=` 인자에
+pending 파생 이름이 들어가는 것을 빌드 실패로 만든다.
+
+**kis_mock 한정 (v1.6 ① 🔴 crypto·US 확대 금지).** `scripts/b0x/kr/**` 밖의 어떤 b0x 모듈도
+`scripts.b0x.kr.pending_ledger`·`app.models.review`·kis_mock 원장 모듈을 import 할 수 없다
+(AST 가드). crypto 사이드카는 v1.5 그대로 venue 의 open-orders 를 `b0xc` 로 필터해 읽는다.
+
+**우회 제출 금지 (v1.6 ③ 신규 mutant).** 원장 기반 dedup 은 "나간 주문은 전부 원장에 있다"
+가 참일 때만 성립한다. AST 가드가 `scripts/b0x/kr/**` + 러너 안의 모든 제출 호출
+(`submit_buy`/`submit_exit_sell`/`_place_order_impl`/…) 이 **`kr.mock.submit_planned_order`
+안에만** 존재하도록 강제하고(그 함수만이 `KisMockBroker` → `order_execution` pre-submit
+게이트를 탄다), 그 안에서 `assert_resubmit_allowed` 가 제출보다 **앞줄**임을 확인한다.
+
+**귀결 — 월요일 첫 KR 사이클.** 이 레인은 아직 한 건도 제출한 적이 없으므로 원장이
+`b0xk-` 행을 0건으로 **답한다**(unreadable 아님) → 후보 행이 정상 파생된다. 같은 KST 일의
+2·3사이클차는 1사이클차가 남긴 행을 읽어 **파생 0**. 실측 = `test_kr_two_cycle_sim_the_
+same_symbol_is_never_submitted_twice` (고정 fixture, 실브로커 호출 0).
+
+🔵 §10 의 `PreSendFreshnessError`(BUY leg 실디스패치 구조적 차단)와 CLI `--confirm` 부재는
+**이 라운드에서도 그대로**다. 즉 v1.6 은 "파생이 되게" 만들었을 뿐 "실주문이 나가게" 만들지
+않았다.
+
 ## 10. 알려진 경계 · 미해결
 
 - **BUY leg 실 디스패치는 항상 `PreSendFreshnessError` 로 막힌다** — B0-X 용 실시간
@@ -317,6 +389,13 @@ ledger`(`KISMockLifecycleService`) 다 — 레포가 이미 TTTC8036R 부재를 
 - **오염(CONTAMINATED) 판정 미구현.** crypto 사이드카는 venue 의 `foreign_*` 잔고/미체결을
   탐지해 오염 시 제출을 막는다. KR 은 주문 읽기(order-history) 서피스를 아직 연결하지
   않았다 — 위 두 항목과 마찬가지로 KIS 모의투자의 미체결조회 API 한계와 같은 뿌리다.
+  🔴 §9.2 의 원장 출처는 **이 공백을 닫지 않는다**: 원장은 `b0xk-` 로 시작하는 **자기**
+  correlation_id 만 답하므로, 남이 이 계좌에 낸 주문은 여전히 보이지 않는다. v1.6 ① 의 예외
+  범위가 「자기 미체결」이라 넓히지 않았다.
+- **원장 조회는 DB 를 탄다.** §9.2 의 출처는 브로커 read 가 아니라 `DATABASE_URL` 로의
+  세션이다. DB 가 죽으면 사이클은 오류가 아니라 `own_pending_unreadable` 로 **전 심볼 차단**
+  하고 계속 진행한다(v1.6 ④). 파생 0 이 나왔는데 사유가 `own_pending_unreadable` +
+  reason=`kis_mock_ledger_pending_unreadable` 이면 **브로커가 아니라 DB 를 보라**.
 - **`B0X_KR_ENABLED`/`assert_kr_lane_enabled` 게이트가 `run_kr_cycle` 에서 호출되지
   않는다.** crypto 사이드카는 `run_sidecar_cycle` 진입 시 `assert_sidecar_enabled()` 를
   강제한다(대응 env: `B0X_SIDECAR_ENABLED`); KR 의 대응 함수는 정의만 되어 있고 아직
@@ -333,6 +412,16 @@ ledger`(`KISMockLifecycleService`) 다 — 레포가 이미 TTTC8036R 부재를 
 uv run pytest tests/scripts/b0x/ -q          # 코어 + crypto + kr 전부
 uv run pytest tests/scripts/b0x/kr/ -q       # kr 전용
 ```
+
+v1.6 ① 전용 (`tests/scripts/b0x/kr/test_ledger_pending_source.py`): KR 2사이클+ 시뮬
+(1사이클차 파생 2·제출 2 → 2·3사이클차 파생 0·제출 누계 2 → 익 KST 일 파생 2·누계 4) ·
+원장이 답한 심볼만 `own_pending_order_exists` 로 차단 · 조회 실패/세션 실패 → `()` 아닌
+`PendingUnreadable` (예외 **타입명만**, 메시지 비노출) · 상태 기반 해제 금지(모듈이
+`lifecycle_state`/`status` 를 참조하지 않음을 AST 로 고정) · KST 거래일 경계 · 원장이
+포지션이 되지 않음(행동 + AST) · 타 레인 import 금지(AST) · 원장 우회 제출 경로 금지(AST,
++ 제출보다 앞선 `assert_resubmit_allowed` 순서 확인). 각 detector 는 합성 소스로 자가검증.
+`tests/scripts/b0x/kr/conftest.py` 가 실 원장 리더 도달을 **AssertionError** 로 막는다
+(안 그러면 실수로 도달해도 `PendingUnreadable` 로 삼켜져 테스트가 조용히 무의미해진다).
 
 kr 전용 포함: tick 정렬(KRX 2023+ 표와 일치) · 매수/매도 사이징 whole-share floor ·
 NAV = cash + Σ evlu_amt · RTH 게이트(세션 밖 → zero-order, 표 I/O 전혀 없음) · 표 게이트

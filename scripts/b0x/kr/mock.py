@@ -68,18 +68,33 @@ integration point, or a test double that deliberately leaves itself
 unwired). A "not yet built" state must never be mistaken for "submitted and
 confirmed zero".
 
-Contract v1.5 ① — the one KR asymmetry, stated rather than papered over
------------------------------------------------------------------------
-The §4 caps are now fed from the broker (:meth:`FreshTruth.broker_truth`)
-instead of a state file. Two of the three inputs read cleanly on kis_mock:
-holdings give 동시 포지션, and 일일 신규 unions them with this cycle's
-admissions. The third — 자기(``b0xk``) 미체결 — **cannot be read at all**; see
+Contract v1.5 ① / v1.6 ① — the one KR asymmetry, stated rather than papered over
+--------------------------------------------------------------------------------
+The §4 caps are fed from the broker (:meth:`FreshTruth.broker_truth`) instead
+of a state file. Two of the three inputs read cleanly on kis_mock: holdings
+give 동시 포지션, and 일일 신규 unions them with this cycle's admissions. The
+third — 자기(``b0xk``) 미체결 — **cannot be read from the broker at all**; see
 :data:`KR_PENDING_UNREADABLE` for the two surfaces that fail and how each was
-measured. That state fails closed, so while it holds this lane derives zero
-orders per cycle, every candidate row recorded as skipped with
-``own_pending_unreadable`` and its detail. The alternative — reading an
-unanswerable question as "nothing is resting" — is precisely how duplicate
-prevention gets silently disabled, which is the defect v1.5 ① exists to close.
+measured.
+
+Contract **v1.6 ①** grants one narrow exception for that third input only:
+``review.kis_mock_order_ledger`` (+ its pre-submit signal row) may stand in,
+because kis_mock offers no pending surface *and* the submission chokepoint
+writes that ledger on every send. :mod:`scripts.b0x.kr.pending_ledger` owns
+that read and carries the full argument. Two things did **not** change:
+
+* :data:`KR_PENDING_UNREADABLE` is still here and is still the **default** —
+  :meth:`FreshTruth.broker_truth` called without an explicit ``own_pending``
+  fails closed exactly as it did before v1.6. Only a caller that wires the
+  ledger reader gets a readable answer, and a ledger read that fails returns
+  the same tri-state sentinel (``PendingUnreadable``), never ``()``.
+* 포지션 진실 stays with the broker (v1.6 ②). The ledger feeds 미체결 dedup /
+  cap inputs only; :meth:`FreshTruth.non_dust_position_symbols` and
+  ``LaneAccountState.positions`` never read it.
+
+The alternative — reading an unanswerable question as "nothing is resting" —
+is precisely how duplicate prevention gets silently disabled, which is the
+defect v1.5 ① exists to close and v1.6 ③④ re-affirm.
 
 No orders were placed by writing this PR — see the runbook and
 ``docs/runbooks/b0x-kr-cycle.md`` §9 for the record of what was, and was
@@ -140,6 +155,14 @@ KRX_MIN_TRADE_UNIT_SHARES: Decimal = Decimal("1")
 #: :meth:`BrokerTruth.resubmit_block` fails closed on every symbol while it
 #: holds. Treating "조회 불가" as "미체결 없음" would silently disable duplicate
 #: prevention on the one lane whose venue cannot contradict it.
+#:
+#: 🔴 **Kept, and still the default** after contract v1.6 (which requires the
+#: state be retained — "``PendingUnreadable`` 상태는 유지"). v1.6 ① routes
+#: around the *broker's* silence with the submission ledger
+#: (:mod:`scripts.b0x.kr.pending_ledger`); it does not make either surface
+#: below answerable, and it does not remove this state. A ledger read that
+#: fails lands back on the same tri-state via
+#: :func:`scripts.b0x.kr.pending_ledger.ledger_unreadable`.
 KR_PENDING_UNREADABLE: PendingUnreadable = PendingUnreadable(
     reason="kis_mock_pending_inquiry_unsupported",
     detail=(
@@ -149,6 +172,11 @@ KR_PENDING_UNREADABLE: PendingUnreadable = PendingUnreadable(
         "조회할 수단이 없음"
     ),
 )
+
+#: Recorded on every cycle so an observation artifact names *where* 자기 미체결
+#: came from. Contract v1.6 ① is a kis_mock-only exception; making the source
+#: explicit in the record is what keeps it from quietly spreading.
+OWN_PENDING_SOURCE = "kis_mock_order_ledger+kis_mock_signal_ledger (계약 v1.6 ①)"
 
 #: Idempotency prefix mirroring the crypto sidecar's ``clientOrderId`` scheme
 #: (``b0xc-<order_key>``) — ``b0xk`` = B0-X KR. ``order.order_key`` (16 hex
@@ -261,25 +289,47 @@ class FreshTruth:
             )
         )
 
-    def broker_truth(self) -> BrokerTruth:
-        """Contract v1.5 ① cap inputs. Pending is unreadable on this venue."""
+    def broker_truth(
+        self, own_pending: tuple[str, ...] | PendingUnreadable | None = None
+    ) -> BrokerTruth:
+        """Contract v1.5 ① cap inputs.
+
+        ``own_pending`` is the contract v1.6 ① seam: a caller that wired
+        :func:`scripts.b0x.kr.pending_ledger.read_own_pending` passes its
+        result. Omitting it keeps the pre-v1.6 fail-closed behaviour — the
+        venue itself still cannot answer, so the default is
+        :data:`KR_PENDING_UNREADABLE`, not an empty tuple.
+
+        🔴 ``position_symbols`` is unaffected by ``own_pending`` in every
+        case: 포지션 진실 is the broker holdings read (v1.6 ②).
+        """
 
         return BrokerTruth(
             position_symbols=self.non_dust_position_symbols(),
-            own_pending=KR_PENDING_UNREADABLE,
+            own_pending=KR_PENDING_UNREADABLE if own_pending is None else own_pending,
         )
 
-    def status_only(self) -> dict[str, Any]:
+    def status_only(
+        self, own_pending: tuple[str, ...] | PendingUnreadable | None = None
+    ) -> dict[str, Any]:
         """Report-safe view: presence/counts, never raw balances."""
 
+        resolved = KR_PENDING_UNREADABLE if own_pending is None else own_pending
+        unreadable = resolved if isinstance(resolved, PendingUnreadable) else None
         return {
             "quote_currency": QUOTE_CURRENCY,
             "cash_present": bool(self.cash > 0),
             "nav_present": bool(self.nav > 0),
             "position_symbols": sorted(pos.symbol for pos in self.positions),
             "non_dust_position_symbols": list(self.non_dust_position_symbols()),
-            "own_pending_readable": False,
-            "own_pending_unreadable_reason": KR_PENDING_UNREADABLE.reason,
+            "own_pending_readable": unreadable is None,
+            "own_pending_unreadable_reason": (
+                None if unreadable is None else unreadable.reason
+            ),
+            "own_pending_source": OWN_PENDING_SOURCE,
+            "own_pending_symbol_count": (
+                None if unreadable is not None else len(resolved)
+            ),
         }
 
 
@@ -604,6 +654,7 @@ __all__ = [
     "CLIENT_ORDER_ID_PREFIX",
     "KRX_MIN_TRADE_UNIT_SHARES",
     "KR_PENDING_UNREADABLE",
+    "OWN_PENDING_SOURCE",
     "KrLaneDisabled",
     "KrMockSubmissionNotWired",
     "ReadOnlyKISMockDomesticClient",
