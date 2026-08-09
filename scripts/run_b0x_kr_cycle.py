@@ -67,6 +67,7 @@ async def _derivation_only(args: argparse.Namespace) -> int:
     from scripts.b0x import kill_switch as kill_switch_module
     from scripts.b0x.derivation import derive_orders
     from scripts.b0x.kr import mock as kr_mock
+    from scripts.b0x.kr import pending_ledger as kr_pending_ledger
     from scripts.b0x.kr.cycle import broker_state
     from scripts.b0x.table_source import TableUnavailable, load_policy_table
 
@@ -89,8 +90,13 @@ async def _derivation_only(args: argparse.Namespace) -> int:
 
     # Contract v1.5 ①: account state is the fresh broker read and nothing else
     # — there is no lane state file to load, and re-introducing one would put
-    # the per-cycle-reset defect straight back.
-    state = broker_state(fresh=fresh)
+    # the per-cycle-reset defect straight back. Contract v1.6 ① adds exactly
+    # one non-broker input, 자기 미체결, from the submission ledger; a failed
+    # read of it returns the same PendingUnreadable state, not an empty book.
+    own_pending = await kr_pending_ledger.read_own_pending(
+        now=now, correlation_prefix=f"{kr_mock.CLIENT_ORDER_ID_PREFIX}-"
+    )
+    state = broker_state(fresh=fresh, own_pending=own_pending)
 
     hashes: list[str] = []
     result = None
