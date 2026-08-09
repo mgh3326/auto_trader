@@ -133,4 +133,5 @@ def test_writer_catalog_enumerates_all_approved_kis_mock_surfaces() -> None:
         "watch_auto_execute",
         "smoke_cli",
         "manual_mcp_mutation",
+        "b0x_adapter",
     }

@@ -25,7 +25,7 @@ import logging
 import math
 import time
 from collections.abc import Awaitable, Callable, Mapping
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.core.symbol import to_db_symbol
@@ -66,6 +66,7 @@ from app.services.brokers.kis.mock_scalping_exec.reservation import (
     release_entry,
     reserve_entry,
 )
+from app.services.brokers.kis.mock_scalping_ws.quote_parsers import OrderBookSnapshot
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.brokers.kis.send_outcome import (
@@ -97,7 +98,7 @@ def _to_decimal(value: Any) -> Decimal | None:
         return None
     try:
         return Decimal(str(value))
-    except (TypeError, ValueError):
+    except (InvalidOperation, TypeError, ValueError):
         return None
 
 
@@ -124,6 +125,24 @@ class KisMockBroker:
         self._limits = limits or ScalpingRiskLimits()
         self._clock = clock
         self._mock_client: KISClient | None = None
+        # A one-shot REST snapshot is only a supplement for callers that do
+        # not own the scalping WebSocket supervisor (B0-X KR is one).  The
+        # injected live state remains the first-class source; every snapshot
+        # still ages under the same pre-send hook below.
+        self._refreshed_states: dict[str, MarketState] = {}
+
+    def _current_state(self, symbol: str) -> MarketState | None:
+        """Return a caller-owned live state, or a just-read mock orderbook.
+
+        The fallback is intentionally stored by normalized symbol and is not
+        a fabricated quote: :meth:`refresh_market_state` populates it only
+        from the existing mock-host ``inquire_orderbook`` read.  If neither
+        source exists, the established pre-send guard still blocks the POST.
+        """
+
+        return self._get_state(symbol) or self._refreshed_states.get(
+            to_db_symbol(symbol)
+        )
 
     def _make_pre_send_hook(self, symbol: str):
         """A pre-send freshness re-check bound to ``symbol`` (ROB-843 P1-1).
@@ -136,7 +155,7 @@ class KisMockBroker:
 
         async def _hook() -> None:
             assert_market_fresh_for_send(
-                self._get_state(symbol),
+                self._current_state(symbol),
                 now=self._clock(),
                 max_data_age_seconds=self._limits.max_data_age_seconds,
                 max_spread_bps=self._limits.max_spread_bps,
@@ -213,6 +232,46 @@ class KisMockBroker:
                 await self._safe_release_reservation(correlation_id, side)
         # UNKNOWN or accepted-but-untracked: KEEP until explicit reconciliation.
         return result
+
+    async def refresh_market_state(
+        self,
+        *,
+        symbol: str,
+        market: str = "J",
+    ) -> MarketState:
+        """Refresh one mock-host orderbook for a non-WebSocket caller.
+
+        This is deliberately a narrow read-only bridge, not a second order
+        client or an alternate send path.  It feeds the adapter's existing
+        ``MarketState`` pre-send guard with an actual KIS mock orderbook and
+        leaves the guard's age/spread validation unchanged.
+        """
+
+        payload = await self._get_mock_client().inquire_orderbook(symbol, market)
+        bid = _to_decimal(payload.get("bidp1"))
+        ask = _to_decimal(payload.get("askp1"))
+        bid_qty = _to_decimal(payload.get("bidp_rsqn1")) or Decimal("0")
+        ask_qty = _to_decimal(payload.get("askp_rsqn1")) or Decimal("0")
+        last = _to_decimal(payload.get("stck_prpr"))
+
+        if bid is None or ask is None or bid <= 0 or ask <= 0:
+            raise PreSendFreshnessError(("invalid_orderbook",))
+
+        state = MarketState(symbol=symbol)
+        state.update_from_book(
+            OrderBookSnapshot(
+                symbol=symbol,
+                bid=float(bid),
+                ask=float(ask),
+                bid_qty=float(bid_qty),
+                ask_qty=float(ask_qty),
+            ),
+            now=self._clock(),
+        )
+        if last is not None and last > 0:
+            state.last_price = float(last)
+        self._refreshed_states[to_db_symbol(symbol)] = state
+        return state
 
     async def submit_buy(
         self,
@@ -456,7 +515,7 @@ class KisMockBroker:
         return classify_fill_evidence(order_no=str(order_no), rows=rows)
 
     def quote(self, symbol: str) -> Quote | None:
-        state = self._get_state(symbol)
+        state = self._current_state(symbol)
         if state is None:
             return None
         return Quote(

@@ -78,6 +78,7 @@ ALLOWED_KIS_SURFACE = {
     "app.services.brokers.kis.mock_scalping_exec.adapters",
     "app.services.brokers.kis.mock_scalping_ws.state",
     "app.services.kis_mock_runner.session",
+    "app.services.kis_mock_runner.singleton",
 }
 
 #: Prefixes treated as "the KIS/order surface" for the allowlist check.

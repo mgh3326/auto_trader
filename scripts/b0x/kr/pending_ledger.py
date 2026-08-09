@@ -84,6 +84,7 @@ failed read into ``()``.
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import dataclass
 from typing import Final, Protocol
 
 from sqlalchemy import select
@@ -111,6 +112,44 @@ class PendingReader(Protocol):
     async def __call__(
         self, *, now: dt.datetime, correlation_prefix: str
     ) -> tuple[str, ...] | PendingUnreadable: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ForeignLedgerTraces:
+    """Same-day non-B0-X ledger traces observed during confirm preflight.
+
+    KIS mock cannot answer its native pending-order query.  This is therefore
+    deliberately a *ledger-trace* contamination signal, not a claim that the
+    broker returned an open-order book.  A trace whose correlation id is not
+    this lane's prefix (including a missing id) is evidence of another writer
+    touching the exclusive account and must stop a confirmed B0-X dispatch.
+    """
+
+    symbols: tuple[str, ...]
+    order_trace_count: int
+    signal_trace_count: int
+
+    @property
+    def trace_count(self) -> int:
+        return self.order_trace_count + self.signal_trace_count
+
+    def canonical(self) -> dict[str, object]:
+        """Report-safe evidence: symbols/counts, never another writer's id."""
+
+        return {
+            "symbols": list(self.symbols),
+            "order_trace_count": self.order_trace_count,
+            "signal_trace_count": self.signal_trace_count,
+            "trace_count": self.trace_count,
+        }
+
+
+class ForeignTraceReader(Protocol):
+    """Confirm-preflight seam for non-B0-X traces on the exclusive lane."""
+
+    async def __call__(
+        self, *, now: dt.datetime, correlation_prefix: str
+    ) -> ForeignLedgerTraces | PendingUnreadable: ...
 
 
 def ledger_unreadable(cause: str) -> PendingUnreadable:
@@ -207,13 +246,99 @@ async def read_own_pending(
     return tuple(sorted(symbols))
 
 
+async def read_foreign_traces(
+    *, now: dt.datetime, correlation_prefix: str
+) -> ForeignLedgerTraces | PendingUnreadable:
+    """Read current-KST-day traces that do not belong to this B0-X lane.
+
+    The v1.6 own-pending reader remains the only cap/dedup input.  This
+    additional read exists solely for NW-B4's exclusive-account contamination
+    gate: any other correlation trace is a fail-closed preflight finding.  It
+    intentionally reads both the post-send order ledger and the durable
+    pre-send signal ledger, so a failed native-order write cannot hide another
+    writer's send attempt.
+
+    As with :func:`read_own_pending`, every query failure returns
+    :class:`PendingUnreadable`; confirm preflight treats it as an inability to
+    establish clean exclusive truth and submits zero orders.
+    """
+
+    since = kst_trading_day_start(now)
+    kst_date = kst_trading_day_label(now)
+
+    try:
+        async with AsyncSessionLocal() as db:
+            order_rows = (
+                await db.execute(
+                    select(
+                        KISMockOrderLedger.symbol, KISMockOrderLedger.correlation_id
+                    ).where(
+                        KISMockOrderLedger.account_mode == ACCOUNT_MODE,
+                        KISMockOrderLedger.trade_date >= since,
+                    )
+                )
+            ).all()
+            signal_rows = (
+                await db.execute(
+                    select(
+                        KISMockSignalLedger.symbol,
+                        KISMockSignalLedger.correlation_id,
+                    ).where(
+                        KISMockSignalLedger.account_mode == ACCOUNT_MODE,
+                        KISMockSignalLedger.kst_date == kst_date,
+                    )
+                )
+            ).all()
+    except Exception as exc:  # noqa: BLE001 — unavailable truth is fail-closed
+        return ledger_unreadable(type(exc).__name__)
+
+    def _is_foreign(row: object) -> bool:
+        correlation_id = getattr(row, "correlation_id", None)
+        if correlation_id is None:
+            # SQLAlchemy's row mapping also exposes labelled columns through
+            # the mapping.  Keep this fallback literal/static rather than a
+            # dynamic attribute lookup so the KR AST guard remains meaningful.
+            mapping = getattr(row, "_mapping", None)
+            correlation_id = (
+                mapping.get("correlation_id") if mapping is not None else None
+            )
+        return not str(correlation_id or "").startswith(correlation_prefix)
+
+    def _symbol(row: object) -> str:
+        symbol = getattr(row, "symbol", None)
+        if symbol is None:
+            mapping = getattr(row, "_mapping", None)
+            symbol = mapping.get("symbol") if mapping is not None else None
+        return str(symbol or "").strip()
+
+    foreign_order_rows = [row for row in order_rows if _is_foreign(row)]
+    foreign_signal_rows = [row for row in signal_rows if _is_foreign(row)]
+    symbols = tuple(
+        sorted(
+            {
+                symbol
+                for row in [*foreign_order_rows, *foreign_signal_rows]
+                if (symbol := _symbol(row))
+            }
+        )
+    )
+    return ForeignLedgerTraces(
+        symbols=symbols,
+        order_trace_count=len(foreign_order_rows),
+        signal_trace_count=len(foreign_signal_rows),
+    )
+
+
 __all__ = [
     "ACCOUNT_MODE",
     "KST",
     "LEDGER_UNREADABLE_REASON",
     "PendingReader",
+    "ForeignLedgerTraces",
+    "ForeignTraceReader",
     "kst_trading_day_label",
     "kst_trading_day_start",
     "ledger_unreadable",
     "read_own_pending",
+    "read_foreign_traces",
 ]

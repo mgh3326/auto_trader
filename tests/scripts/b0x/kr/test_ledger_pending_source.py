@@ -35,7 +35,11 @@ from scripts.b0x.kr import pending_ledger as kr_pending_ledger
 from scripts.b0x.kr.cycle import broker_state, run_kr_cycle
 from scripts.b0x.kr.mock import KR_PENDING_UNREADABLE, FreshTruth, RawPosition
 from tests.scripts.b0x._table_fixtures import make_payload, make_row, write_table
-from tests.scripts.b0x.kr._pending import StatefulPendingLedger, readable_pending
+from tests.scripts.b0x.kr._pending import (
+    StatefulPendingLedger,
+    foreign_traces,
+    readable_pending,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -44,6 +48,7 @@ pytestmark = pytest.mark.unit
 #: empty-vs-unreadable behaviour have to call the production function; every
 #: other test still goes through the guarded seam.
 REAL_READ_OWN_PENDING = kr_pending_ledger.read_own_pending
+REAL_READ_FOREIGN_TRACES = kr_pending_ledger.read_foreign_traces
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 KR_PACKAGE = REPO_ROOT / "scripts" / "b0x" / "kr"
@@ -147,7 +152,11 @@ class _RecordingBroker:
             symbol=kwargs["symbol"],
             correlation_id=kwargs["correlation_id"],
         )
-        return {"success": True, "odno": f"FAKE-BUY-{len(self.buy_calls)}"}
+        return {
+            "success": True,
+            "odno": f"FAKE-BUY-{len(self.buy_calls)}",
+            "ledger_id": len(self.buy_calls),
+        }
 
     async def submit_exit_sell(self, **kwargs: Any) -> dict[str, Any]:
         self.sell_calls.append(kwargs)
@@ -156,7 +165,11 @@ class _RecordingBroker:
             symbol=kwargs["symbol"],
             correlation_id=kwargs["correlation_id"],
         )
-        return {"success": True, "odno": f"FAKE-SELL-{len(self.sell_calls)}"}
+        return {
+            "success": True,
+            "odno": f"FAKE-SELL-{len(self.sell_calls)}",
+            "ledger_id": len(self.sell_calls),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -241,11 +254,13 @@ async def test_kr_two_cycle_sim_the_same_symbol_is_never_submitted_twice(
 ) -> None:
     """🔴 KR_TWO_CYCLE_SIM — fixed fixture, zero broker calls, zero network.
 
-    Cycle 1 derives and submits both rows; the submission chokepoint records
-    them. Cycle 2 and 3, on the same KRX trading day, read those rows back and
-    derive **nothing** — the venue never sees a second order for either symbol.
-    Cycle 4 crosses the KST day boundary (KRX day orders cannot survive it) and
-    derives again.
+    Cycle 1 derives both rows, then this test models the pre-submit signal rows
+    that the real chokepoint commits before a send. Cycle 2 and 3, on the same
+    KRX trading day, read those rows back and derive **nothing**. Cycle 4
+    crosses the KST day boundary (KRX day orders cannot survive it) and derives
+    again. The confirm-path mutation-boundary re-read is covered separately
+    below because confirmed production code intentionally uses wall-clock time
+    rather than this deterministic replay clock.
 
     This is the observation X-E1 established is the only one that can tell
     「상한이 발화했다」 from 「상한이 구속한다」: a single cycle looks identical
@@ -253,10 +268,8 @@ async def test_kr_two_cycle_sim_the_same_symbol_is_never_submitted_twice(
     """
 
     ledger = StatefulPendingLedger()
-    broker = _RecordingBroker(ledger, CYCLE_1)
     reader = ledger.reader()
     derived_per_cycle: list[list[str]] = []
-    submit_cum: list[int] = []
 
     for index, now in enumerate((CYCLE_1, CYCLE_2, CYCLE_3, NEXT_DAY)):
         # The table is regenerated each cycle so table age never becomes the
@@ -277,29 +290,21 @@ async def test_kr_two_cycle_sim_the_same_symbol_is_never_submitted_twice(
             now=now,
             table_dir=table_dir,
             out_dir=out_dir / f"cycle{index}",
-            confirm=True,
+            confirm=False,
             client=_FakeKrClient(),
-            broker=broker.at(now),
             pending_reader=reader,
         )
         assert outcome.zero_order_reason is None
         derived_per_cycle.append(
             sorted(order["symbol"] for order in outcome.record["orders"])
         )
-        submit_cum.append(len(broker.buy_calls))
-        if index == 1:
-            # Cycle 2's skipped table must name the ledger reason, per symbol.
-            reasons = {
-                skip["symbol"]: skip["reason"] for skip in outcome.record["skipped"]
-            }
-            assert reasons == {
-                "005930": "own_pending_order_exists",
-                "000660": "own_pending_order_exists",
-            }
-            assert outcome.record["broker_truth"]["own_pending"] == [
-                "000660",
-                "005930",
-            ]
+        if index == 0:
+            for planned in outcome.record["planned"]:
+                ledger.record(
+                    now=now,
+                    symbol=planned["symbol"],
+                    correlation_id=planned["client_order_id"],
+                )
 
     assert derived_per_cycle == [
         ["000660", "005930"],  # cycle 1 — nothing recorded yet
@@ -307,10 +312,46 @@ async def test_kr_two_cycle_sim_the_same_symbol_is_never_submitted_twice(
         [],  # cycle 3 — still held; no drift, no re-derivation
         ["000660", "005930"],  # next KST day — day orders cannot have survived
     ]
-    assert submit_cum == [2, 2, 2, 4]
-    assert broker.sell_calls == []
-    # Every cycle past the table gate really consulted the ledger.
     assert ledger.reads == ["2026-08-10", "2026-08-10", "2026-08-10", "2026-08-11"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_route_rechecks_and_observes_post_submit_dedup(
+    table_dir: Path, out_dir: Path, armed_confirm: list[str]
+) -> None:
+    """The actual confirm boundary observes its forced pre-submit trace.
+
+    Confirm uses a real wall clock for the five-minute preflight window, so
+    the fake ledger records on that same wall-clock day. No network or DB is
+    involved; ``_RecordingBroker`` models only the durable correlation row the
+    sanctioned adapter creates before its mock POST.
+    """
+
+    ledger = StatefulPendingLedger()
+    broker = _RecordingBroker(ledger, dt.datetime.now(dt.UTC))
+    outcome = await run_kr_cycle(
+        now=CYCLE_1,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=True,
+        client=_FakeKrClient(),
+        broker=broker,
+        pending_reader=ledger.reader(),
+        foreign_trace_reader=foreign_traces(),
+    )
+
+    assert outcome.zero_order_reason is None
+    assert len(broker.buy_calls) == 1
+    assert outcome.record["post_submit_dedup"] == [
+        {
+            "symbol": outcome.record["planned"][0]["symbol"],
+            "correlation_id": outcome.record["planned"][0]["client_order_id"],
+            "observed": True,
+        }
+    ]
+    assert outcome.record["submission_stopped"] == "acceptance_submission_limit=1"
+    assert len(ledger.reads) == 3  # preflight, mutation boundary, post-submit
+    assert armed_confirm == ["acquired", "released"]
 
 
 # ---------------------------------------------------------------------------
@@ -382,15 +423,18 @@ def test_the_only_bound_is_the_kst_trading_day() -> None:
 
 
 class _FakeResult:
-    def __init__(self, rows: list[str]) -> None:
+    def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
 
     def scalars(self) -> list[str]:
         return list(self._rows)
 
+    def all(self) -> list[Any]:
+        return list(self._rows)
+
 
 class _FakeSession:
-    def __init__(self, results: list[list[str]] | Exception) -> None:
+    def __init__(self, results: list[list[Any]] | Exception) -> None:
         self._results = results
         self.statements: list[Any] = []
 
@@ -467,6 +511,62 @@ async def test_a_session_that_cannot_be_opened_is_also_unreadable(
     result = await REAL_READ_OWN_PENDING(now=CYCLE_1, correlation_prefix="b0xk-")
     assert isinstance(result, PendingUnreadable)
     assert "OSError" in result.detail
+
+
+class _LedgerTraceRow:
+    def __init__(self, *, symbol: str, correlation_id: str | None) -> None:
+        self.symbol = symbol
+        self.correlation_id = correlation_id
+
+
+@pytest.mark.asyncio
+async def test_foreign_trace_reader_separates_b0x_from_other_writers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NW-B4: only another correlation is contamination; values stay redacted."""
+
+    session = _FakeSession(
+        [
+            [
+                _LedgerTraceRow(symbol="005930", correlation_id="b0xk-own"),
+                _LedgerTraceRow(symbol="000660", correlation_id="other-order"),
+            ],
+            [
+                _LedgerTraceRow(symbol="005930", correlation_id=None),
+                _LedgerTraceRow(symbol="035420", correlation_id="b0xk-other"),
+            ],
+        ]
+    )
+    monkeypatch.setattr(kr_pending_ledger, "AsyncSessionLocal", lambda: session)
+
+    result = await REAL_READ_FOREIGN_TRACES(now=CYCLE_1, correlation_prefix="b0xk-")
+
+    assert not isinstance(result, PendingUnreadable)
+    assert result.canonical() == {
+        "symbols": ["000660", "005930"],
+        "order_trace_count": 1,
+        "signal_trace_count": 1,
+        "trace_count": 2,
+    }
+    assert len(session.statements) == 2
+
+
+@pytest.mark.asyncio
+async def test_foreign_trace_reader_failure_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        kr_pending_ledger,
+        "AsyncSessionLocal",
+        lambda: _FakeSession(RuntimeError("boom: postgres://user:secret@host/db")),
+    )
+
+    result = await REAL_READ_FOREIGN_TRACES(now=CYCLE_1, correlation_prefix="b0xk-")
+
+    assert isinstance(result, PendingUnreadable)
+    assert result.reason == kr_pending_ledger.LEDGER_UNREADABLE_REASON
+    assert "RuntimeError" in result.detail
+    assert "secret" not in result.detail
 
 
 def test_pending_unreadable_is_still_the_default_without_a_reader() -> None:

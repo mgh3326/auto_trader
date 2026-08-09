@@ -15,8 +15,16 @@ from typing import Any
 
 import pytest
 
+from scripts.b0x.kr.cycle import (
+    KILL_TRIPPED_CANCEL_UNSUPPORTED,
+    KR_ACCOUNT_MAP_COMMIT,
+    KR_CONTRACT_VERSION,
+    KR_STATUS_LABEL,
+    MANUAL_CONFIRM_SUBMISSION_LIMIT,
+    OUTSIDE_RTH_REASON,
+    run_kr_cycle,
+)
 from scripts.b0x.kr.cycle import LANE as KR_LANE
-from scripts.b0x.kr.cycle import OUTSIDE_RTH_REASON, run_kr_cycle
 from scripts.b0x.labels import SHARED_ACCOUNT_HISTORY, TRUST_LABELS
 from tests.scripts.b0x._table_fixtures import (
     make_payload,
@@ -26,6 +34,7 @@ from tests.scripts.b0x._table_fixtures import (
 )
 from tests.scripts.b0x.kr._pending import (
     exploding_pending,
+    foreign_traces,
     readable_pending,
     unreadable_pending,
 )
@@ -216,8 +225,19 @@ async def test_dry_run_plans_but_never_dispatches(
     artifact_text = outcome.artifact_path.read_text(encoding="utf-8")
     for label in TRUST_LABELS:
         assert label in artifact_text
+    assert KR_STATUS_LABEL in outcome.record["labels"]
+    assert KR_STATUS_LABEL in artifact_text
     assert SHARED_ACCOUNT_HISTORY not in outcome.record["labels"]
     assert "SHARED_ACCOUNT_HISTORY" not in artifact_text
+    assert outcome.record["cycle_status"] == "OBSERVATION_DERIVATION_ONLY"
+    assert outcome.record["contract"]["version"] == KR_CONTRACT_VERSION
+    assert outcome.record["account_map"]["commit"] == KR_ACCOUNT_MAP_COMMIT
+    assert outcome.record["account_map"]["gate_values"] == {
+        "account_lanes.kis_mock": "B0-X-KR",
+        "exclusive_lane": "B0-X-KR",
+        "active_ordering_strategy": "B0-X-adapter-single-writer",
+        "surface": "kis_mock",
+    }
 
 
 @pytest.mark.asyncio
@@ -395,7 +415,7 @@ class _FakeBroker:
 
 @pytest.mark.asyncio
 async def test_confirm_true_dispatches_nothing_while_pending_is_unreadable(
-    table_dir: Path, out_dir: Path
+    table_dir: Path, out_dir: Path, armed_confirm: list[str]
 ) -> None:
     """The v1.5 ① fail-close reaches the dispatch path, not just derivation."""
 
@@ -408,16 +428,20 @@ async def test_confirm_true_dispatches_nothing_while_pending_is_unreadable(
         client=_FakeKrClient(orderable_cash="5000000"),
         broker=broker,
         pending_reader=unreadable_pending(),
+        foreign_trace_reader=foreign_traces(),
     )
-    assert outcome.zero_order_reason is None
+    assert outcome.zero_order_reason == "preflight_not_clean"
+    assert outcome.record["preflight"]["passed"] is False
+    assert "ledger_pending_unreadable" in outcome.record["preflight"]["reasons"]
     assert outcome.record["planned"] == []
     assert outcome.record["submitted"] == []
     assert broker.buy_calls == [] and broker.sell_calls == []
+    assert armed_confirm == ["acquired", "released"]
 
 
 @pytest.mark.asyncio
 async def test_confirm_true_routes_through_the_injected_broker_when_pending_reads(
-    table_dir: Path, out_dir: Path
+    table_dir: Path, out_dir: Path, armed_confirm: list[str]
 ) -> None:
     """``confirm=True`` routes every planned order through the wired
     ``KisMockBroker`` integration point (contract v1.3 ③) — proven here with
@@ -442,20 +466,166 @@ async def test_confirm_true_routes_through_the_injected_broker_when_pending_read
         client=client,
         broker=broker,
         pending_reader=EMPTY_PENDING,
+        foreign_trace_reader=foreign_traces(),
     )
 
     assert outcome.zero_order_reason is None
+    assert outcome.record["preflight"]["passed"] is True
+    assert outcome.record["preflight"]["reasons"] == []
+    assert outcome.record["preflight"]["account"] == {
+        "fingerprint": "sha256:test-account",
+        "product_suffix": "01",
+    }
+    assert outcome.record["preflight"]["cash"] == {"present": True}
+    assert outcome.record["preflight"]["positions"] == {
+        "non_dust_symbols": [],
+        "count": 0,
+    }
+    assert (
+        outcome.record["preflight"]["open_orders"]["native_broker"]["available"]
+        is False
+    )
+    assert outcome.record["preflight"]["writer_lease"] == {
+        "acquired": True,
+        "surface": "b0x_adapter",
+    }
     planned = outcome.record["planned"]
     assert planned, "fixture table must derive at least one planned order"
-    assert len(broker.buy_calls) == len([p for p in planned if p["side"] == "buy"])
+    assert len(broker.buy_calls) == MANUAL_CONFIRM_SUBMISSION_LIMIT
     assert not broker.sell_calls  # flat account, fixture table has no sells
     submitted = outcome.record["submitted"]
-    assert len(submitted) == len(planned)
+    assert len(submitted) == MANUAL_CONFIRM_SUBMISSION_LIMIT
     assert all(row.get("success") is True for row in submitted)
-    for order, call in zip(planned, broker.buy_calls, strict=True):
+    for order, call in zip(
+        planned[:MANUAL_CONFIRM_SUBMISSION_LIMIT], broker.buy_calls, strict=True
+    ):
         assert call["symbol"] == order["symbol"]
         assert call["correlation_id"] == order["client_order_id"]
         assert call["confirm"] is True
+    assert outcome.record["submission_stopped"] == "post_submit_dedup_unproven"
+    assert outcome.record["post_submit_dedup"] == [
+        {
+            "symbol": planned[0]["symbol"],
+            "correlation_id": planned[0]["client_order_id"],
+            "observed": False,
+        }
+    ]
+    assert armed_confirm == ["acquired", "released"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_preflight_contamination_stops_zero_orders(
+    table_dir: Path, out_dir: Path, armed_confirm: list[str]
+) -> None:
+    """NW-B4: any other writer's trace is contamination, never a cleanup cue."""
+
+    broker = _FakeBroker()
+    outcome = await run_kr_cycle(
+        now=IN_SESSION_NOW,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=True,
+        client=_FakeKrClient(orderable_cash="5000000"),
+        broker=broker,
+        pending_reader=EMPTY_PENDING,
+        foreign_trace_reader=foreign_traces(
+            "005930", order_trace_count=1, signal_trace_count=1
+        ),
+    )
+
+    assert outcome.zero_order_reason == "preflight_not_clean"
+    assert outcome.record["preflight"]["passed"] is False
+    assert (
+        "CONTAMINATED_foreign_correlation_trace"
+        in outcome.record["preflight"]["reasons"]
+    )
+    assert outcome.record["submitted"] == []
+    assert broker.buy_calls == [] and broker.sell_calls == []
+    assert armed_confirm == ["acquired", "released"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_rechecks_v1_6_dedup_at_the_mutation_boundary(
+    table_dir: Path, out_dir: Path, armed_confirm: list[str]
+) -> None:
+    """A trace that appears after preflight still blocks before broker submit."""
+
+    reads = 0
+
+    async def _pending_after_preflight(
+        *, now: dt.datetime, correlation_prefix: str
+    ) -> tuple[str, ...]:
+        del now
+        assert correlation_prefix == "b0xk-"
+        nonlocal reads
+        reads += 1
+        return () if reads == 1 else ("000660", "005930")
+
+    broker = _FakeBroker()
+    outcome = await run_kr_cycle(
+        now=IN_SESSION_NOW,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=True,
+        client=_FakeKrClient(orderable_cash="5000000"),
+        broker=broker,
+        pending_reader=_pending_after_preflight,
+        foreign_trace_reader=foreign_traces(),
+    )
+
+    assert outcome.zero_order_reason is None
+    assert outcome.record["preflight"]["passed"] is True
+    assert outcome.record["submitted"] == []
+    assert outcome.record["submission_stopped"] == "v1_6_dedup_blocked"
+    assert outcome.record["submission_dedup_blocked"] == [
+        {
+            "symbol": outcome.record["planned"][0]["symbol"],
+            "correlation_id": outcome.record["planned"][0]["client_order_id"],
+            "reason": "v1_6_pending_recheck_blocked",
+        }
+    ]
+    assert broker.buy_calls == [] and broker.sell_calls == []
+    assert reads == 2
+    assert armed_confirm == ["acquired", "released"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_preflight_unexpected_position_stops_zero_orders(
+    table_dir: Path, out_dir: Path, armed_confirm: list[str]
+) -> None:
+    """NW-B4 anomaly gate: report the position; never clean it up or submit."""
+
+    broker = _FakeBroker()
+    outcome = await run_kr_cycle(
+        now=IN_SESSION_NOW,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=True,
+        client=_FakeKrClient(
+            orderable_cash="5000000",
+            stocks=[
+                {
+                    "pdno": "005930",
+                    "hldg_qty": "1",
+                    "pchs_avg_pric": "70000",
+                    "evlu_amt": "70000",
+                }
+            ],
+        ),
+        broker=broker,
+        pending_reader=EMPTY_PENDING,
+        foreign_trace_reader=foreign_traces(),
+    )
+
+    assert outcome.zero_order_reason == "preflight_not_clean"
+    assert outcome.record["preflight"]["positions"] == {
+        "non_dust_symbols": ["005930"],
+        "count": 1,
+    }
+    assert outcome.record["preflight"]["reasons"] == ["unexpected_positions"]
+    assert outcome.record["submitted"] == []
+    assert broker.buy_calls == [] and broker.sell_calls == []
+    assert armed_confirm == ["acquired", "released"]
 
 
 @pytest.mark.asyncio
@@ -494,6 +664,10 @@ async def test_kill_switch_trips_on_nav_ratio_and_blocks_all_new_orders(
     assert outcome.derivation.kill_switch.tripped
     assert outcome.record["planned"] == []
     assert outcome.record["submitted"] == []
+    assert outcome.record["cancelled"] == []
+    assert outcome.record["cancel_status"] == KILL_TRIPPED_CANCEL_UNSUPPORTED
+    assert outcome.record["cancel_attempted"] is False
+    assert outcome.record["cancel_confirmed"] is False
     assert all(
         skip["reason"] == "kill_switch_active" for skip in outcome.record["skipped"]
     )

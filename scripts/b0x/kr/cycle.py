@@ -18,15 +18,13 @@ holidays.
                  →  kill switch  →  derive  →  plan  →  submit  →  record
 
 ``submit`` is wired to ``kr_mock.build_kis_mock_broker`` /
-``kr_mock.submit_planned_order`` (contract v1.3 ③) — see
-``scripts.b0x.kr.mock``'s module docstring for the one documented mismatch
-(BUY-leg freshness re-check with no live feed). No CLI path exercises it
-this PR: ``scripts/run_b0x_kr_cycle.py`` has no ``--confirm`` flag, so a
-cycle only ever reaches ``confirm=True`` when a caller (a test, or a future
-operator entrypoint) passes it explicitly. ``KrCycleOutcome.submitted``
-always records exactly what happened, never a stamped ``real_orders=0``
-constant. orch's relayed X-C lesson was explicit about not repeating that
-pattern.
+``kr_mock.submit_planned_order`` (contract v1.3 ③).  The manual CLI exposes
+the otherwise default-disabled confirm path only with an explicit
+``--confirm`` lever.  Before it can dispatch, that path must hold the
+account-wide kis_mock writer lease and pass the NW-B4 fresh-truth preflight;
+its one mock-host orderbook read then feeds the existing adapter pre-send
+guard.  ``KrCycleOutcome.submitted`` always records exactly what happened,
+never a stamped ``real_orders=0`` constant.
 
 Contract v1.5 ① lands here as ``broker_state`` (below): the §4 caps read this
 cycle's kis_mock account snapshot, and nothing is carried between cycles. The
@@ -62,13 +60,18 @@ import datetime as dt
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from app.services.kis_mock_runner.session import is_krx_regular_session
-from scripts.b0x.broker_truth import PendingUnreadable
+from app.services.kis_mock_runner.singleton import (
+    KISMockWriterLease,
+    WriterSingletonContended,
+    WriterSingletonUnavailable,
+)
+from scripts.b0x.broker_truth import OwnPendingResubmitBlocked, PendingUnreadable
 from scripts.b0x.cycle import base_record, render_cycle_report
 from scripts.b0x.derivation import DerivationResult, derive_orders
-from scripts.b0x.envelope import assert_envelope_locked, load_envelope
+from scripts.b0x.envelope import Envelope, assert_envelope_locked, load_envelope
 from scripts.b0x.kill_switch import evaluate as evaluate_kill_switch
 from scripts.b0x.kr import mock as kr_mock
 from scripts.b0x.kr import pending_ledger as kr_pending_ledger
@@ -89,6 +92,33 @@ from scripts.b0x.table_source import (
 MARKET = "kr"
 LANE = kr_mock.LANE
 
+# These provenance blocks are intentionally local to KR.  The shared
+# ``scripts.b0x.contract`` stamp is still v1.4 / the older account-map commit
+# for the untouched US and crypto lanes; letting it leak into a KR artifact
+# would make this v1.6 execution surface report the wrong governing facts.
+# Do not update the shared stamp as part of this KR-only job.
+KR_CONTRACT_VERSION: Final[str] = "v1.6"
+KR_CONTRACT_FILE_SHA256_REFERENCE_ONLY: Final[str] = (
+    "a3922894dcb91c2888daa2b33a9bfb9fab48a1c660ffc16deead09c530faea14"
+)
+KR_CONTRACT_CLAUSES: Final[dict[str, str]] = {
+    "§8 v1.6": (
+        "KR 자기 미체결은 kis_mock_order_ledger 조건부 예외이며, "
+        "미체결 dedup/캡 입력에만 쓴다. 포지션 진실은 계속 브로커 조회다."
+    ),
+}
+KR_ACCOUNT_MAP_COMMIT: Final[str] = "e93349e7ab9b1db414b1fba619e462cf84da1fa7"
+KR_ACCOUNT_MAP_VALUES: Final[dict[str, str]] = {
+    "account_lanes.kis_mock": "B0-X-KR",
+    "exclusive_lane": "B0-X-KR",
+    "active_ordering_strategy": "B0-X-adapter-single-writer",
+    "surface": "kis_mock",
+}
+KR_STATUS_LABEL: Final[str] = (
+    "OBSERVATION_DERIVATION_ONLY — KR cycle 지위는 유지된다. 이 수동 mock "
+    "acceptance lever는 모의 자동매매 가동 선언이나 스케줄러가 아니다."
+)
+
 #: KR's ``table_source.MAX_TABLE_AGE`` entry is 36h — contract §2-2 v1.1
 #: (operator-confirmed 2026-08-08, sha256 ``97278b0e8b8000e2e663c936328686001
 #: af5850087897270bc80a95ebf8f6b2e``), not a value this adapter chose. See
@@ -98,13 +128,28 @@ ZeroOrderReason = str
 
 OUTSIDE_RTH_REASON: ZeroOrderReason = "outside_krx_regular_session"
 
+#: NW-B4: every account/ledger observation used to authorize a confirmed
+#: dispatch must be taken in this bounded interval.  The value is a contract
+#: requirement, not a tunable CLI parameter.
+PREFLIGHT_MAX_AGE_SECONDS = 5 * 60
+
+#: This job exposes a one-shot, manual acceptance lever only.  It is a
+#: restrictive operational bound (not an envelope dial) and deliberately has
+#: no CLI or environment override.
+MANUAL_CONFIRM_SUBMISSION_LIMIT = 1
+
+#: NW-B6: KIS mock cannot discover a cancellable order while ``is_mock=True``.
+#: This literal distinguishes structural non-attempt from a failed attempt or
+#: an invented successful cancellation.
+KILL_TRIPPED_CANCEL_UNSUPPORTED = "KILL_TRIPPED_CANCEL_UNSUPPORTED"
+
 #: Overrides ``KillSwitchDecision.operator_notice``'s default "잔여 주문 취소
 #: 완료" clause — kis_mock has no pending-order inquiry to discover, let
 #: alone cancel, what is still resting (see the module docstring). Stating
 #: "취소 완료" here would be a false claim from the moment submission is
 #: wired, not merely an untested one.
 KILL_CANCEL_UNSUPPORTED_NOTE = (
-    "신규 주문 중단. 잔여 주문 취소는 구조적으로 시도 불가 — KIS 모의투자 "
+    f"{KILL_TRIPPED_CANCEL_UNSUPPORTED}: 신규 주문 중단. 잔여 주문 취소는 구조적으로 시도 불가 — KIS 모의투자 "
     "미체결조회(TTTC8036R)가 is_mock=True 에 대해 지원되지 않아 "
     "(DomesticOrderClient.inquire_korea_orders) 취소 대상을 조회할 수단이 "
     "없음. 재개는 운영자 결정 (계약 §2-4)."
@@ -136,6 +181,25 @@ def _table_or_reason(
     if isinstance(result, TableUnavailable):
         return None, result
     return result, None
+
+
+def _stamp_kr_contract_and_account_map(record: dict[str, Any]) -> None:
+    """Replace only KR's inherited generic provenance with current facts."""
+
+    record["contract"] = {
+        "path": "~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md",
+        "version": KR_CONTRACT_VERSION,
+        "clauses": dict(KR_CONTRACT_CLAUSES),
+        "file_sha256_reference_only": KR_CONTRACT_FILE_SHA256_REFERENCE_ONLY,
+    }
+    record["account_map"] = {
+        "repo": "auto_trader-operator",
+        "commit": KR_ACCOUNT_MAP_COMMIT,
+        "canonical_surface": "operator_contract.yaml",
+        "reference_surface": "mock/CLAUDE.md",
+        "gate_values": dict(KR_ACCOUNT_MAP_VALUES),
+    }
+    record["cycle_status"] = "OBSERVATION_DERIVATION_ONLY"
 
 
 #: Contract v1.5 ①: like the crypto sidecar, the KR lane has no realized-P&L
@@ -204,109 +268,259 @@ def broker_state(
     )
 
 
-async def run_kr_cycle(
+def _persist_outcome(
     *,
-    now: dt.datetime,
-    table_dir: Path = DEFAULT_TABLE_DIR,
-    out_dir: Path = DEFAULT_OBSERVATION_DIR,
-    confirm: bool = False,
-    client: Any | None = None,
-    broker: Any | None = None,
-    pending_reader: kr_pending_ledger.PendingReader | None = None,
+    outcome: KrCycleOutcome,
+    ledger: ObservationLedger,
+    record: dict[str, Any],
+    labels: tuple[str, ...],
 ) -> KrCycleOutcome:
-    """One kis_mock cycle. ``broker`` mirrors the existing ``client`` DI seam
-    (tests inject a fake broker; production leaves it ``None`` and this
-    function builds ``kr_mock.build_kis_mock_broker()`` lazily, only when
-    there is something to submit). See ``scripts.b0x.kr.mock`` module
-    docstring for what submission wiring does and does not cover.
+    """Append one immutable cycle record and render its matching artifact."""
 
-    ``pending_reader`` is the contract v1.6 ① seam for 자기 미체결; production
-    leaves it ``None`` and gets
-    :func:`scripts.b0x.kr.pending_ledger.read_own_pending`. Whatever it
-    returns, a ``PendingUnreadable`` result still fails closed on every symbol
-    — the reader can resolve the tri-state, never remove it.
+    ledger.record_cycle(record)
+    outcome.record = record
+    outcome.artifact_path = ledger.write_artifact(
+        name=f"{outcome.at.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
+        content=render_cycle_report(record, labels=labels),
+    )
+    return outcome
+
+
+def _finish_zero_order(
+    *,
+    outcome: KrCycleOutcome,
+    ledger: ObservationLedger,
+    record: dict[str, Any],
+    labels: tuple[str, ...],
+    reason: str,
+    detail: str,
+) -> KrCycleOutcome:
+    """Record a fail-closed, no-dispatch terminal outcome."""
+
+    record["zero_order_reason"] = reason
+    record["zero_order_detail"] = detail
+    record["orders"] = []
+    record["skipped"] = []
+    record["planned"] = []
+    record["blocked"] = []
+    record["submitted"] = []
+    outcome.zero_order_reason = reason
+    return _persist_outcome(
+        outcome=outcome, ledger=ledger, record=record, labels=labels
+    )
+
+
+def _confirm_preflight_record(
+    *,
+    started_at: dt.datetime,
+    completed_at: dt.datetime,
+    account_identity: dict[str, str],
+    fresh: kr_mock.FreshTruth,
+    own_pending: tuple[str, ...] | PendingUnreadable,
+    foreign_traces: kr_pending_ledger.ForeignLedgerTraces | PendingUnreadable,
+) -> dict[str, Any]:
+    """NW-B4 account truth, rendered without balances or account numbers.
+
+    KIS mock's native pending-order query is structurally unavailable.  The
+    v1.6-approved same-day signal/order-ledger union is therefore named as a
+    **ledger shadow** rather than misreported as a native open-order response.
+    A non-B0-X trace is contamination; an unreadable trace source is also a
+    failure because exclusive truth was not established.
     """
 
-    envelope = load_envelope(MARKET)
-    assert_envelope_locked(envelope)
-    # Keep the KR lane wired to the scope helper even while the initial scope
-    # remains sidecar-only. A future, explicit scope expansion must change the
-    # rendered KR artifact rather than disappear because this call was absent.
-    labels = header_labels(lane=LANE, extra=account_history_labels(LANE))
-    outcome = KrCycleOutcome(lane=LANE, at=now)
+    elapsed_seconds = (completed_at - started_at).total_seconds()
+    own_unreadable = own_pending if isinstance(own_pending, PendingUnreadable) else None
+    foreign_unreadable = (
+        foreign_traces if isinstance(foreign_traces, PendingUnreadable) else None
+    )
+    own_symbols = () if own_unreadable is not None else own_pending
+    foreign = None if foreign_unreadable is not None else foreign_traces
+    position_symbols = fresh.non_dust_position_symbols()
+    reasons: list[str] = []
 
-    with writer_lock(lane=LANE, root=Path(out_dir).expanduser()):
-        ledger = ObservationLedger(lane=LANE, root=Path(out_dir).expanduser())
-        ledger.ensure()
+    if elapsed_seconds > PREFLIGHT_MAX_AGE_SECONDS:
+        reasons.append("preflight_exceeded_5_minutes")
+    if fresh.cash <= 0:
+        reasons.append("cash_not_positive")
+    if position_symbols:
+        reasons.append("unexpected_positions")
+    if own_unreadable is not None:
+        reasons.append("ledger_pending_unreadable")
+    elif own_symbols:
+        reasons.append("ledger_pending_present")
+    if foreign_unreadable is not None:
+        reasons.append("foreign_trace_unreadable")
+    elif foreign is not None and foreign.trace_count:
+        reasons.append("CONTAMINATED_foreign_correlation_trace")
 
-        record = base_record(
-            market=MARKET, lane=LANE, now=now, envelope=envelope, labels=labels
-        )
-        record["confirm"] = confirm
-        record["realized_pnl_source"] = KR_REALIZED_PNL_UNAVAILABLE
+    return {
+        "started_at": started_at.isoformat(),
+        "completed_at": completed_at.isoformat(),
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "max_age_seconds": PREFLIGHT_MAX_AGE_SECONDS,
+        "account": account_identity,
+        "cash": {"present": bool(fresh.cash > 0)},
+        "positions": {
+            "non_dust_symbols": list(position_symbols),
+            "count": len(position_symbols),
+        },
+        "open_orders": {
+            "native_broker": {
+                "available": False,
+                "reason": "TTTC8036R is unsupported for is_mock=True",
+            },
+            "ledger_shadow": {
+                "own_pending_symbols": list(own_symbols),
+                "foreign_traces": (
+                    foreign_unreadable.canonical()
+                    if foreign_unreadable is not None
+                    else foreign.canonical()
+                    if foreign is not None
+                    else None
+                ),
+            },
+        },
+        "ledger_pending": (
+            own_unreadable.canonical()
+            if own_unreadable is not None
+            else {"symbols": list(own_symbols), "count": len(own_symbols)}
+        ),
+        "writer_lease": {"acquired": True, "surface": "b0x_adapter"},
+        "passed": not reasons,
+        "reasons": reasons,
+    }
 
-        # --- RTH gate: cheapest check, before any table/account I/O ---
-        in_session = is_krx_regular_session(now)
-        record["krx_regular_session"] = in_session
-        if not in_session:
-            record["zero_order_reason"] = OUTSIDE_RTH_REASON
-            record["zero_order_detail"] = (
-                f"now={now.isoformat()} is outside the XKRX regular session "
-                "(contract: KRX RTH v1 — 정규장만, NXT/시간외 금지)"
+
+def _preflight_truth_unavailable_record(
+    *,
+    started_at: dt.datetime,
+    completed_at: dt.datetime,
+    account_identity: dict[str, str],
+    error: Exception,
+) -> dict[str, Any]:
+    """Record an unreadable account snapshot without exposing exception text."""
+
+    elapsed_seconds = (completed_at - started_at).total_seconds()
+    return {
+        "started_at": started_at.isoformat(),
+        "completed_at": completed_at.isoformat(),
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "max_age_seconds": PREFLIGHT_MAX_AGE_SECONDS,
+        "account": account_identity,
+        "cash": {"present": None},
+        "positions": {"non_dust_symbols": None, "count": None},
+        "open_orders": {
+            "native_broker": {
+                "available": False,
+                "reason": "account truth unavailable before pending check",
+            },
+            "ledger_shadow": None,
+        },
+        "ledger_pending": None,
+        "writer_lease": {"acquired": True, "surface": "b0x_adapter"},
+        "passed": False,
+        "reasons": ["account_truth_unavailable"],
+        "error_type": type(error).__name__,
+    }
+
+
+async def _run_prepared_cycle(
+    *,
+    now: dt.datetime,
+    table: PolicyTable,
+    envelope: Envelope,
+    labels: tuple[str, ...],
+    outcome: KrCycleOutcome,
+    ledger: ObservationLedger,
+    record: dict[str, Any],
+    confirm: bool,
+    client: Any | None,
+    broker: Any | None,
+    pending_reader: kr_pending_ledger.PendingReader | None,
+    foreign_trace_reader: kr_pending_ledger.ForeignTraceReader | None,
+    account_identity: dict[str, str] | None,
+) -> KrCycleOutcome:
+    """Account truth → derive → plan → bounded confirm dispatch.
+
+    The caller holds the B0-X artifact lock and, on the confirm path, the
+    account-wide kis_mock writer lease.  Keeping the two locks separate is
+    deliberate: the local artifact lock protects B0-X's own records while the
+    durable lease checks every catalogued kis_mock mutation surface.
+    """
+
+    owns_client = client is None
+    if owns_client:
+        client = kr_mock.ReadOnlyKISMockDomesticClient()
+
+    try:
+        preflight_started_at = dt.datetime.now(dt.UTC) if confirm else None
+        try:
+            fresh = await kr_mock.read_fresh_truth(client)
+        except Exception as exc:
+            if not confirm:
+                raise
+            assert preflight_started_at is not None
+            assert account_identity is not None
+            completed_at = dt.datetime.now(dt.UTC)
+            record["preflight"] = _preflight_truth_unavailable_record(
+                started_at=preflight_started_at,
+                completed_at=completed_at,
+                account_identity=account_identity,
+                error=exc,
             )
-            record["orders"] = []
-            record["skipped"] = []
-            record["submitted"] = []
-            outcome.zero_order_reason = OUTSIDE_RTH_REASON
-            ledger.record_cycle(record)
-            outcome.record = record
-            outcome.artifact_path = ledger.write_artifact(
-                name=f"{now.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
-                content=render_cycle_report(record, labels=labels),
+            return _finish_zero_order(
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                labels=labels,
+                reason="preflight_not_clean",
+                detail="account_truth_unavailable",
             )
-            return outcome
 
-        # --- table gate ---
-        table, unavailable = _table_or_reason(now=now, table_dir=Path(table_dir))
-        if table is None:
-            assert unavailable is not None
-            record["zero_order_reason"] = unavailable.reason
-            record["zero_order_detail"] = unavailable.detail
-            record["orders"] = []
-            record["skipped"] = []
-            record["submitted"] = []
-            outcome.zero_order_reason = unavailable.reason
-            ledger.record_cycle(record)
-            outcome.record = record
-            outcome.artifact_path = ledger.write_artifact(
-                name=f"{now.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
-                content=render_cycle_report(record, labels=labels),
-            )
-            return outcome
-
-        outcome.table_hash = table.policy_table_hash
-        outcome.table_generated_at = table.generated_at.isoformat()
-        outcome.table_age_seconds = int(table.age.total_seconds())
-        record["policy_table_hash"] = table.policy_table_hash
-        record["policy_table_path"] = str(table.path)
-        record["policy_table_generated_at"] = table.generated_at.isoformat()
-        record["policy_table_age_seconds"] = int(table.age.total_seconds())
-
-        # --- account state (read-only) ---
-        owns_client = client is None
-        if owns_client:
-            client = kr_mock.ReadOnlyKISMockDomesticClient()
-        fresh = await kr_mock.read_fresh_truth(client)
-
-        # Contract v1.6 ① — 자기 미체결 only. Read after the holdings snapshot
-        # and kept in its own variable so it can reach exactly one field
-        # (``BrokerTruth.own_pending``); positions below never see it.
         reader = pending_reader or kr_pending_ledger.read_own_pending
-        own_pending = await reader(
-            now=now, correlation_prefix=f"{kr_mock.CLIENT_ORDER_ID_PREFIX}-"
-        )
+        pending_now = preflight_started_at if preflight_started_at is not None else now
+        try:
+            own_pending = await reader(
+                now=pending_now, correlation_prefix=f"{kr_mock.CLIENT_ORDER_ID_PREFIX}-"
+            )
+        except Exception as exc:
+            if not confirm:
+                raise
+            own_pending = kr_pending_ledger.ledger_unreadable(type(exc).__name__)
         record["fresh_truth"] = fresh.status_only(own_pending)
         record["own_pending_source"] = kr_mock.OWN_PENDING_SOURCE
+
+        if confirm:
+            foreign_reader = (
+                foreign_trace_reader or kr_pending_ledger.read_foreign_traces
+            )
+            try:
+                foreign_traces = await foreign_reader(
+                    now=pending_now,
+                    correlation_prefix=f"{kr_mock.CLIENT_ORDER_ID_PREFIX}-",
+                )
+            except Exception as exc:
+                foreign_traces = kr_pending_ledger.ledger_unreadable(type(exc).__name__)
+            assert preflight_started_at is not None
+            assert account_identity is not None
+            preflight = _confirm_preflight_record(
+                started_at=preflight_started_at,
+                completed_at=dt.datetime.now(dt.UTC),
+                account_identity=account_identity,
+                fresh=fresh,
+                own_pending=own_pending,
+                foreign_traces=foreign_traces,
+            )
+            record["preflight"] = preflight
+            if not preflight["passed"]:
+                return _finish_zero_order(
+                    outcome=outcome,
+                    ledger=ledger,
+                    record=record,
+                    labels=labels,
+                    reason="preflight_not_clean",
+                    detail=", ".join(preflight["reasons"]),
+                )
 
         state = broker_state(fresh=fresh, own_pending=own_pending)
         record["broker_truth"] = state.broker_truth.canonical()
@@ -342,11 +556,10 @@ async def run_kr_cycle(
             record["blocked"] = []
             record["submitted"] = []
             record["cancelled"] = []
-            record["cancellation_unsupported"] = (
-                "kis_mock has no pending-order inquiry for is_mock=True "
-                "(DomesticOrderClient.inquire_korea_orders raises); cancel "
-                "was not attempted, not attempted-and-failed"
-            )
+            record["cancel_status"] = KILL_TRIPPED_CANCEL_UNSUPPORTED
+            record["cancel_attempted"] = False
+            record["cancel_confirmed"] = False
+            record["cancellation_unsupported"] = KILL_CANCEL_UNSUPPORTED_NOTE
         else:
             held = {pos.symbol: pos.quantity for pos in state.positions}
             planned, blocked = kr_mock.plan_orders(
@@ -356,49 +569,290 @@ async def run_kr_cycle(
             record["blocked"] = [order.to_json() for order in blocked]
 
             submitted: list[dict[str, Any]] = []
+            fill_confirmation: list[dict[str, Any]] = []
             if not confirm:
-                # Preview only, like the crypto sidecar's confirm=False: zero
-                # dispatch attempts, planned orders are still fully recorded
-                # above. Does NOT construct a broker or call submit_planned_
-                # order — a dry preview must not depend on submission wiring
-                # at all.
                 record["submission_skipped"] = "confirm=False — preview only"
             else:
-                # contract v1.3 ③: KisMockBroker (ROB-321/341), reused as-is.
-                # See scripts.b0x.kr.mock module docstring for the one
-                # documented mismatch (BUY-leg freshness re-check with no
-                # live feed) and why it fails closed rather than fabricates
-                # a quote.
                 active_broker = (
-                    broker if broker is not None else (kr_mock.build_kis_mock_broker())
+                    broker if broker is not None else kr_mock.build_kis_mock_broker()
                 )
-                for order in planned:
-                    result = await kr_mock.submit_planned_order(
-                        active_broker,
-                        planned=order,
-                        confirm=confirm,
-                        broker_truth=state.broker_truth,
-                    )
-                    submitted.append(result)
-            record["submitted"] = submitted
+                for index, order in enumerate(planned):
+                    if index >= MANUAL_CONFIRM_SUBMISSION_LIMIT:
+                        record["submission_stopped"] = (
+                            "acceptance_submission_limit="
+                            f"{MANUAL_CONFIRM_SUBMISSION_LIMIT}"
+                        )
+                        break
+                    submitted_at = dt.datetime.now(dt.UTC)
+                    if (
+                        preflight_started_at is None
+                        or (submitted_at - preflight_started_at).total_seconds()
+                        > PREFLIGHT_MAX_AGE_SECONDS
+                    ):
+                        record["submission_stopped"] = "preflight_expired"
+                        break
 
-        ledger.record_cycle(record)
-        outcome.record = record
-        outcome.artifact_path = ledger.write_artifact(
-            name=f"{now.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
-            content=render_cycle_report(record, labels=labels),
+                    # v1.6's dedup is re-read immediately before every real
+                    # dispatch.  The artifact's first snapshot is evidence;
+                    # this re-read is the mutation boundary.
+                    try:
+                        current_pending = await reader(
+                            now=submitted_at,
+                            correlation_prefix=f"{kr_mock.CLIENT_ORDER_ID_PREFIX}-",
+                        )
+                    except Exception as exc:
+                        current_pending = kr_pending_ledger.ledger_unreadable(
+                            type(exc).__name__
+                        )
+                    current_truth = broker_state(
+                        fresh=fresh, own_pending=current_pending
+                    ).broker_truth
+                    try:
+                        result = await kr_mock.submit_planned_order(
+                            active_broker,
+                            planned=order,
+                            confirm=True,
+                            broker_truth=current_truth,
+                        )
+                    except OwnPendingResubmitBlocked:
+                        record.setdefault("submission_dedup_blocked", []).append(
+                            {
+                                "symbol": order.symbol,
+                                "correlation_id": order.client_order_id,
+                                "reason": "v1_6_pending_recheck_blocked",
+                            }
+                        )
+                        record["submission_stopped"] = "v1_6_dedup_blocked"
+                        break
+                    submitted.append(result)
+
+                    # Prove the mandatory pre-submit trace is visible after a
+                    # successful dispatch. The signal ledger is authoritative
+                    # for this check even if the post-send order-ledger insert
+                    # is unavailable, so it does not depend on ``ledger_id``.
+                    if result.get("success"):
+                        post_pending = await reader(
+                            now=dt.datetime.now(dt.UTC),
+                            correlation_prefix=f"{kr_mock.CLIENT_ORDER_ID_PREFIX}-",
+                        )
+                        observed = (
+                            not isinstance(post_pending, PendingUnreadable)
+                            and order.symbol in post_pending
+                        )
+                        record.setdefault("post_submit_dedup", []).append(
+                            {
+                                "symbol": order.symbol,
+                                "correlation_id": order.client_order_id,
+                                "observed": observed,
+                            }
+                        )
+                        if not observed:
+                            record["submission_stopped"] = "post_submit_dedup_unproven"
+                            break
+
+                    if result.get("success") and isinstance(
+                        active_broker, kr_mock.KisMockBroker
+                    ):
+                        try:
+                            fill = await active_broker.confirm_fill(result)
+                        except Exception as exc:  # noqa: BLE001 — observation only
+                            fill_confirmation.append(
+                                {
+                                    "symbol": order.symbol,
+                                    "correlation_id": order.client_order_id,
+                                    "confirmed": False,
+                                    "error_type": type(exc).__name__,
+                                }
+                            )
+                        else:
+                            fill_confirmation.append(
+                                {
+                                    "symbol": order.symbol,
+                                    "correlation_id": order.client_order_id,
+                                    "confirmed": fill is not None,
+                                    "quantity": (
+                                        None if fill is None else str(fill.quantity)
+                                    ),
+                                    "price": None if fill is None else str(fill.price),
+                                }
+                            )
+
+            record["submitted"] = submitted
+            if fill_confirmation:
+                record["fill_confirmation"] = fill_confirmation
+
+        return _persist_outcome(
+            outcome=outcome, ledger=ledger, record=record, labels=labels
         )
+    finally:
         if owns_client:
             close = getattr(client, "close", None)
             if callable(close):
                 await close()
-        return outcome
+
+
+async def run_kr_cycle(
+    *,
+    now: dt.datetime,
+    table_dir: Path = DEFAULT_TABLE_DIR,
+    out_dir: Path = DEFAULT_OBSERVATION_DIR,
+    confirm: bool = False,
+    client: Any | None = None,
+    broker: Any | None = None,
+    pending_reader: kr_pending_ledger.PendingReader | None = None,
+    foreign_trace_reader: kr_pending_ledger.ForeignTraceReader | None = None,
+) -> KrCycleOutcome:
+    """One manual kis_mock B0-X cycle.
+
+    ``confirm=False`` remains the ordinary observation/derivation path.  A
+    confirm call is a separate, default-disabled manual surface: it requires
+    the B0-X env gate, the per-call ``confirm=True`` argument, the
+    account-wide kis_mock writer lease, and a fresh clean NW-B4 preflight
+    before it reaches the existing ``KisMockBroker`` adapter.
+
+    ``pending_reader`` is the v1.6 own-pending seam.  ``foreign_trace_reader``
+    is intentionally separate: it never becomes position/cap truth and is
+    only the exclusive-account contamination check for a confirm preflight.
+    """
+
+    envelope = load_envelope(MARKET)
+    assert_envelope_locked(envelope)
+    # Keep the KR lane wired to the scope helper even while the initial scope
+    # remains sidecar-only. A future, explicit scope expansion must change the
+    # rendered KR artifact rather than disappear because this call was absent.
+    labels = header_labels(
+        lane=LANE,
+        extra=(*account_history_labels(LANE), KR_STATUS_LABEL),
+    )
+    outcome = KrCycleOutcome(lane=LANE, at=now)
+
+    with writer_lock(lane=LANE, root=Path(out_dir).expanduser()):
+        ledger = ObservationLedger(lane=LANE, root=Path(out_dir).expanduser())
+        ledger.ensure()
+
+        record = base_record(
+            market=MARKET, lane=LANE, now=now, envelope=envelope, labels=labels
+        )
+        _stamp_kr_contract_and_account_map(record)
+        record["confirm"] = confirm
+        record["realized_pnl_source"] = KR_REALIZED_PNL_UNAVAILABLE
+
+        # --- RTH gate: cheapest check, before any table/account I/O ---
+        in_session = is_krx_regular_session(now)
+        record["krx_regular_session"] = in_session
+        if not in_session:
+            return _finish_zero_order(
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                labels=labels,
+                reason=OUTSIDE_RTH_REASON,
+                detail=(
+                    f"now={now.isoformat()} is outside the XKRX regular session "
+                    "(contract: KRX RTH v1 — 정규장만, NXT/시간외 금지)"
+                ),
+            )
+
+        # --- table gate ---
+        table, unavailable = _table_or_reason(now=now, table_dir=Path(table_dir))
+        if table is None:
+            assert unavailable is not None
+            return _finish_zero_order(
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                labels=labels,
+                reason=unavailable.reason,
+                detail=unavailable.detail,
+            )
+
+        outcome.table_hash = table.policy_table_hash
+        outcome.table_generated_at = table.generated_at.isoformat()
+        outcome.table_age_seconds = int(table.age.total_seconds())
+        record["policy_table_hash"] = table.policy_table_hash
+        record["policy_table_path"] = str(table.path)
+        record["policy_table_generated_at"] = table.generated_at.isoformat()
+        record["policy_table_age_seconds"] = int(table.age.total_seconds())
+
+        if not confirm:
+            return await _run_prepared_cycle(
+                now=now,
+                table=table,
+                envelope=envelope,
+                labels=labels,
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                confirm=False,
+                client=client,
+                broker=broker,
+                pending_reader=pending_reader,
+                foreign_trace_reader=foreign_trace_reader,
+                account_identity=None,
+            )
+
+        try:
+            kr_mock.assert_kr_lane_enabled()
+            # Validate the configured account identity before any broker/DB
+            # truth read.  Only its one-way fingerprint enters the artifact.
+            account_identity = kr_mock.account_identity_summary()
+        except kr_mock.KrLaneDisabled as exc:
+            return _finish_zero_order(
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                labels=labels,
+                reason="confirm_gate_not_armed",
+                detail=str(exc),
+            )
+
+        try:
+            async with KISMockWriterLease(writer_surface="b0x_adapter"):
+                return await _run_prepared_cycle(
+                    now=now,
+                    table=table,
+                    envelope=envelope,
+                    labels=labels,
+                    outcome=outcome,
+                    ledger=ledger,
+                    record=record,
+                    confirm=True,
+                    client=client,
+                    broker=broker,
+                    pending_reader=pending_reader,
+                    foreign_trace_reader=foreign_trace_reader,
+                    account_identity=account_identity,
+                )
+        except WriterSingletonContended as exc:
+            return _finish_zero_order(
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                labels=labels,
+                reason="preflight_writer_contended",
+                detail=str(exc),
+            )
+        except WriterSingletonUnavailable as exc:
+            return _finish_zero_order(
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                labels=labels,
+                reason="preflight_writer_unavailable",
+                detail=str(exc),
+            )
 
 
 __all__ = [
     "MARKET",
     "LANE",
     "OUTSIDE_RTH_REASON",
+    "PREFLIGHT_MAX_AGE_SECONDS",
+    "MANUAL_CONFIRM_SUBMISSION_LIMIT",
+    "KILL_TRIPPED_CANCEL_UNSUPPORTED",
+    "KR_CONTRACT_VERSION",
+    "KR_ACCOUNT_MAP_COMMIT",
+    "KR_STATUS_LABEL",
     "KR_REALIZED_PNL_UNAVAILABLE",
     "KrCycleOutcome",
     "broker_state",

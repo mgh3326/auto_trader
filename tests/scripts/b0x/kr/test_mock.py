@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import replace
 from decimal import Decimal
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -295,6 +296,84 @@ async def test_submit_planned_order_routes_buy_to_submit_buy() -> None:
         }
     ]
     assert broker.sell_calls == []
+
+
+@pytest.mark.asyncio
+async def test_submit_planned_order_refreshes_the_reused_broker_before_buy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B0-X supplies a real mock-host book to the existing pre-send hook.
+
+    The test uses the actual sanctioned adapter type but replaces its network
+    methods, proving the thin B0-X chokepoint orders the read before submit
+    without creating another order implementation.
+    """
+
+    broker = kr_mock.build_kis_mock_broker()
+    events: list[str] = []
+
+    async def _refresh(*, symbol: str) -> object:
+        assert symbol == "005930"
+        events.append("refresh")
+        return object()
+
+    async def _submit_buy(**kwargs: Any) -> dict[str, Any]:
+        events.append("submit")
+        return {"success": True, "odno": "FAKE-BUY-1"}
+
+    monkeypatch.setattr(broker, "refresh_market_state", _refresh)
+    monkeypatch.setattr(broker, "submit_buy", _submit_buy)
+    planned = kr_mock.PlannedOrder(
+        order_key="abc123",
+        client_order_id="b0xk-abc123",
+        symbol="005930",
+        side="buy",
+        leg="buy_l1",
+        price=97000,
+        quantity=3,
+        notional=Decimal("291000"),
+    )
+
+    result = await kr_mock.submit_planned_order(
+        broker, planned=planned, confirm=True, broker_truth=_READABLE_EMPTY
+    )
+
+    assert result["success"] is True
+    assert events == ["refresh", "submit"]
+
+
+@pytest.mark.asyncio
+async def test_submit_planned_order_blocks_before_buy_when_mock_book_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker = kr_mock.build_kis_mock_broker()
+    refresh = AsyncMock(side_effect=RuntimeError("mock quote unavailable"))
+    submit = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(broker, "refresh_market_state", refresh)
+    monkeypatch.setattr(broker, "submit_buy", submit)
+    planned = kr_mock.PlannedOrder(
+        order_key="abc123",
+        client_order_id="b0xk-abc123",
+        symbol="005930",
+        side="buy",
+        leg="buy_l1",
+        price=97000,
+        quantity=3,
+        notional=Decimal("291000"),
+    )
+
+    result = await kr_mock.submit_planned_order(
+        broker, planned=planned, confirm=True, broker_truth=_READABLE_EMPTY
+    )
+
+    assert result == {
+        "success": False,
+        "pre_send_blocked": True,
+        "reason_codes": ["mock_orderbook_unavailable"],
+        "detail": "RuntimeError: mock orderbook refresh failed",
+        "dry_run": False,
+    }
+    submit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

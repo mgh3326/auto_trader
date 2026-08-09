@@ -74,6 +74,52 @@ async def test_submit_exit_sell_uses_scalping_exit(mocker) -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refresh_market_state_uses_mock_orderbook_for_existing_guard(
+    mocker,
+) -> None:
+    """A non-WebSocket caller gets a real mock-host book, not a synthetic quote."""
+
+    broker = KisMockBroker(get_state=lambda _s: None, clock=lambda: 100.0)
+    client = mocker.MagicMock()
+    client.inquire_orderbook = AsyncMock(
+        return_value={
+            "bidp1": "70000",
+            "askp1": "70100",
+            "bidp_rsqn1": "12",
+            "askp_rsqn1": "10",
+            "stck_prpr": "70050",
+        }
+    )
+    mocker.patch.object(broker, "_get_mock_client", return_value=client)
+
+    state = await broker.refresh_market_state(symbol="005930")
+
+    client.inquire_orderbook.assert_awaited_once_with("005930", "J")
+    assert state.bid == 70000.0
+    assert state.ask == 70100.0
+    assert broker.quote("005930") == Quote(
+        bid=Decimal("70000.0"), ask=Decimal("70100.0"), last=Decimal("70050.0")
+    )
+    await broker._make_pre_send_hook("005930")()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_refresh_market_state_rejects_malformed_orderbook(mocker) -> None:
+    broker = KisMockBroker(get_state=lambda _s: None)
+    client = mocker.MagicMock()
+    client.inquire_orderbook = AsyncMock(return_value={"bidp1": "0", "askp1": ""})
+    mocker.patch.object(broker, "_get_mock_client", return_value=client)
+
+    with pytest.raises(mod.PreSendFreshnessError) as exc_info:
+        await broker.refresh_market_state(symbol="005930")
+
+    assert exc_info.value.reason_codes == ("invalid_orderbook",)
+    assert broker.quote("005930") is None
+
+
+@pytest.mark.unit
 def test_quote_maps_market_state_to_decimal() -> None:
     state = MarketState(symbol="005930")
     state.bid, state.ask, state.last_price = 70000.0, 70100.0, 70050.0

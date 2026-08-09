@@ -1,12 +1,12 @@
 """``kis_mock`` lane — B0-X KRX equities read/plan surface.
 
 Account map (operator repo ``operator_contract.yaml``, canonical per contract
-v1.3 ①; HEAD ``3f40291`` at wiring time, PR #33): *kis_mock exclusive_lane =
-B0-X-KR, mutation_policy = b0x_adapter_orders_only_within_envelope,
-strategy_order_exceptions ∋ b0x-adapter-orders-20260808 with kis_mock in its
-surfaces* — 주문 writer 는 B0-X 어댑터 하나뿐. ``mock/CLAUDE.md`` §1 is the
-human-readable reference row and defers to the YAML on conflict (its own
-§0/§4 rule).
+v1.3 ① / v1.6; HEAD ``e93349e``, PR #36): *account_lanes.kis_mock = B0-X-KR,
+exclusive_lane = B0-X-KR, active_ordering_strategy =
+B0-X-adapter-single-writer, strategy_order_exceptions ∋
+b0x-adapter-orders-20260808 with kis_mock in its surfaces* — 주문 writer 는
+B0-X 어댑터 하나뿐. ``mock/CLAUDE.md`` §1 is the human-readable reference row
+and defers to the YAML on conflict (its own §0/§4 rule).
 
 What is reused, unchanged
 --------------------------
@@ -52,13 +52,14 @@ freshness model built for its own live WebSocket feed
 ``policy_table.v1`` snapshot, not a live book. Rather than fabricate a
 synthetic quote (which would make a real safety check pass on invented
 data), ``build_kis_mock_broker`` supplies a ``get_state`` that always
-returns ``None``. Consequence: a real BUY dispatch (``confirm=True``) fails
-closed with ``PreSendFreshnessError(("no_market_state",))`` *before any
-HTTP POST* — safe, honest, and it is the adapter's own existing exception,
-not a special-cased block. SELL legs (``submit_exit_sell``) carry no such
-hook by ROB-321's own design ("a live position remains closable") and are
-unaffected. Wiring a real B0-X market-data feed to lift the BUY-side block
-is out of this PR's scope.
+returns ``None``. The thin submission chokepoint then asks the reused
+``KisMockBroker`` for one fresh **mock-host** orderbook snapshot immediately
+before a BUY. The adapter converts that broker response to its existing
+``MarketState`` and still applies the same pre-send age/spread hook at the
+HTTP boundary. If that read is missing, malformed, stale, or too wide, the
+BUY fails closed with zero POSTs; no policy-table price is ever presented as
+a quote. SELL legs (``submit_exit_sell``) carry no such hook by ROB-321's own
+design ("a live position remains closable") and are unaffected.
 
 ``KrMockSubmissionNotWired`` (below) is kept, not deleted, even though the
 main path no longer raises it: it is still the honest signal for any caller
@@ -103,12 +104,13 @@ not, exercised.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Protocol, cast
 
-from app.core.config import validate_kis_mock_config
+from app.core.config import settings, validate_kis_mock_config
 from app.mcp_server.tick_size import get_tick_size_kr
 from app.services.brokers.kis.account import AccountClient
 from app.services.brokers.kis.base import BaseKISClient
@@ -220,6 +222,23 @@ def assert_kr_lane_enabled() -> None:
     missing = validate_kis_mock_config()
     if missing:
         raise KrLaneDisabled(f"KIS mock config incomplete, missing env: {missing}")
+
+
+def account_identity_summary() -> dict[str, str]:
+    """Return a report-safe fingerprint for the configured mock account.
+
+    The KIS balance response does not echo the full account number.  Confirm
+    preflight therefore records a stable one-way fingerprint plus only the
+    two-character product suffix; it never emits the account number itself.
+    """
+
+    compact = str(settings.kis_mock_account_no or "").replace("-", "").strip()
+    if len(compact) < 10:
+        raise KrLaneDisabled("KIS mock account identifier is unavailable or malformed")
+    return {
+        "fingerprint": f"sha256:{hashlib.sha256(compact.encode()).hexdigest()[:16]}",
+        "product_suffix": compact[-2:],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +588,7 @@ async def unwired_submit_order(
     """
 
     raise KrMockSubmissionNotWired(
-        "scripts.b0x.kr.mock has no wired kis_mock order-submission function "
+        "this caller bypassed the wired kis_mock order-submission function "
         f"(order_key={planned.order_key} symbol={planned.symbol} "
         f"side={planned.side} confirm={confirm}). See the module docstring "
         "for why this is a deliberate PR-scope boundary, not a bug."
@@ -577,10 +596,12 @@ async def unwired_submit_order(
 
 
 def _b0x_get_state(symbol: str) -> MarketState | None:
-    """B0-X has no live WS book (unlike ROB-321's scalping engine) — always
-    ``None``. See the module docstring: this makes a real BUY dispatch fail
-    closed via the adapter's own ``PreSendFreshnessError``, honestly, rather
-    than fabricate a quote to satisfy a check built for a different feed.
+    """B0-X has no WebSocket supervisor, so its injected state is absent.
+
+    :func:`submit_planned_order` compensates only by asking the sanctioned
+    adapter for a just-read mock-host orderbook.  It never uses a policy-table
+    value as a quote, and the adapter's normal pre-send guard remains the
+    final decision point.
     """
 
     return None
@@ -627,6 +648,23 @@ async def submit_planned_order(
     price = Decimal(planned.price)
     quantity = Decimal(planned.quantity)
     if planned.side == "buy":
+        # B0-X owns no WebSocket supervisor.  The sanctioned adapter therefore
+        # refreshes its *own* mock-host orderbook state here; this is a
+        # read-only bridge into the adapter's existing freshness guard, not a
+        # substitute quote or a second order path.  Do it before the adapter's
+        # pre-submit attribution/ledger write so a failed quote read leaves no
+        # synthetic pending trace behind.
+        if isinstance(broker, KisMockBroker):
+            try:
+                await broker.refresh_market_state(symbol=planned.symbol)
+            except Exception as exc:  # noqa: BLE001 — fresh quote is mandatory
+                return {
+                    "success": False,
+                    "pre_send_blocked": True,
+                    "reason_codes": ["mock_orderbook_unavailable"],
+                    "detail": f"{type(exc).__name__}: mock orderbook refresh failed",
+                    "dry_run": not confirm,
+                }
         return await broker.submit_buy(
             symbol=planned.symbol,
             price=price,
@@ -664,6 +702,7 @@ __all__ = [
     "BlockedOrder",
     "SubmitOrderFn",
     "assert_kr_lane_enabled",
+    "account_identity_summary",
     "read_fresh_truth",
     "align_price_kr",
     "client_order_id_for",

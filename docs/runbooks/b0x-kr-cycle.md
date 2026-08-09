@@ -2,41 +2,43 @@
 
 > `B0_UNVALIDATED` · `SELL_SIDE_MODEL_MISMATCH` · `FIDELITY_INCONCLUSIVE_COVERAGE`
 
-계약 정본: `~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md` — 결속은
-**버전 문자열(v1.3) + 절 인용**이며, 전체파일 sha256 은 참고 필드일 뿐이다(계약 본문
-"결속 = 버전 문자열 v1.3 + 인용 절"). 현재 참고 sha256 =
-`0125e2ea96b1a54cf0b0a50e6ed85ae1f3a72e7870abe727d2734dbe20e19b1f`.
+계약 정본: `~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md` — **v1.6**,
+§25차 결속. v1.6의 KR 예외는 `kis_mock_order_ledger`/signal ledger를 자기 미체결
+dedup에만 쓰는 것이며, 포지션 진실은 계속 브로커 조회다.
 계좌맵 정본: **`~/services/auto_trader-operator/operator_contract.yaml`**
-(기계판독, 2026-08-09 확정 — `mock/CLAUDE.md` §1 은 이제 참조 서술일 뿐이며 충돌 시
-YAML 이 이긴다). HEAD `3f40291`(PR #33) 에서 검증 — 아래 §0.
+(기계판독, 2026-08-09 PR #36 `e93349e` — `mock/CLAUDE.md` §1 은 참조 서술이며 충돌 시
+YAML 이 이긴다). 아래 §0의 두 표면 게이트를 매 실행 창에 다시 대조한다.
 코어 정본: `scripts/b0x/{envelope,kill_switch,state,derivation,ledger,labels,cycle}.py`
 (X-C, crypto, PR #1814 이 세웠다 — 이 잡은 코어를 재구현하지 않고 승계한다. 아래 §5)
 
-## 0. 계좌맵 게이트 — 2026-08-09 해소, 제출 배선 — 계약 v1.3 ③
+## 0. 계좌맵 게이트 — 전 계좌 배타, 제출 배선 — 계약 v1.3 ③ / v1.6
 
-**두 조건이 R1(첫 라운드) 시점엔 둘 다 열려 있었고, 이 라운드(R2) 시점엔 둘 다 닫혔다.**
+두 표면을 대조한다. 값이 다르면 더 보수적인 쪽으로 멈추고
+`NEEDS_UPSTREAM(account_map_conflict)` 이다.
 
-1. **계좌맵 게이트.** `operator_contract.yaml`
-   `mock_account_strategy_exclusive.strategy_order_exceptions` 에
-   `b0x-adapter-orders-20260808` 가 등재됐고, 그 예외의
-   `b0x_adapter_orders_20260808.surfaces` 에 `kis_mock` 이 포함된다.
-   `resolved_account_reassignments.kis_mock.mutation_policy` 는 더 이상
-   `no_new_orders` 가 아니라 `b0x_adapter_orders_only_within_envelope` 다.
-   `mock/CLAUDE.md` §1 kis_mock 행은 이와 모순되지 않는다(참조 표면, YAML 이 정본).
+1. **계좌맵 게이트.** YAML의 `account_lanes.kis_mock=B0-X-KR`,
+   `resolved_account_reassignments.kis_mock.exclusive_lane=B0-X-KR`,
+   `active_ordering_strategy=B0-X-adapter-single-writer`,
+   `strategy_order_exceptions`의 `b0x-adapter-orders-20260808`, 그리고
+   `surfaces ∋ kis_mock`를 확인한다. MD의 `B0-X KR` 표기는 사람이 읽는 표시일 뿐
+   YAML과 모순되지 않는다.
+   **계좌 전면 배타**는 MCP 도구만의 규칙이 아니다. 스크립트 직접 호출·스케줄러·세션·다른
+   프로세스를 포함한 모든 mutation writer를 운영 조치로 disarm해야 하며, 방어는 자기
+   correlation 외 흔적을 `CONTAMINATED`로 막는 fresh-truth gate다.
 2. **제출 통합점.** 계약 v1.3 ③ 이 `app.services.brokers.kis.mock_scalping_exec.
    adapters.KisMockBroker`(ROB-321/341) 를 지정했다 — 재구현이 아니라 기존 표면
    재사용. 아래 §6.
 
-**그럼에도 이 PR(R2) 은 실주문 0 이다** — 계좌맵/통합점이 풀렸다고 해서 이 라운드가
-실제로 kis_mock 을 향해 발사한다는 뜻은 아니다. §0.1 이 그 경계를 정확히 그린다.
+**상태 라벨은 바뀌지 않는다.** KR은 계속 `OBSERVATION_DERIVATION_ONLY`다. 이 경로는
+scheduleless 수동 acceptance lever일 뿐, “모의 자동매매 가동” 표기가 아니다.
 
 ### 0.1 이 PR 이 실제로 한 것과 하지 않은 것
 
-- **한 것**: `run_kr_cycle(confirm=True)` 가 이제 `KisMockBroker` 로 실제로 라우팅된다
-  (fake/stub 브로커로 오프라인 증명, §11).
-- **하지 않은 것**: `scripts/run_b0x_kr_cycle.py` CLI 에 `--confirm` 플래그가 없다
-  (여전히). 이 세션 동안 실 kis_mock 계정에 대한 preview/place 호출 0. 첫 실사이클은
-  월요일 KRX 세션, 별도 job.
+- **한 것**: `--confirm`은 기존 `KisMockBroker` 경로로 한 번만 dispatch할 수 있다.
+  환경 게이트, account-wide writer lease, NW-B4 preflight, v1.6 mutation-boundary
+  dedup, adapter의 mock-host 오더북 freshness check를 모두 통과해야 한다.
+- **하지 않는 것**: live 계좌 접촉, 스케줄러 등록, envelope override, KR 취소 성공 위장,
+  US/crypto 배선, 또는 상태 라벨 변경.
 
 ## 1. 이것이 무엇이 아닌가
 
@@ -64,7 +66,8 @@ RTH 밖이면 표·계좌 I/O **전혀 없이** `zero_order_reason=outside_krx_r
    출력 위치 = `~/services/auto_trader-operator/policy-tables/latest-kr.json`.
    B0-X 는 이 디렉토리를 **읽기만** 한다.
 2. `KIS_MOCK_ENABLED=true` + `KIS_MOCK_APP_KEY/APP_SECRET/ACCOUNT_NO` — read-only 계좌
-   조회(잔고·보유)에 필요하다. 주문 제출용이 아니다 (§0).
+   조회(잔고·보유)에 필요하다. 확인 경로는 여기에 `B0X_KR_ENABLED=true`와 per-call
+   `--confirm`을 추가로 요구한다. 어떤 값도 출력하지 않는다.
 
 ## 4. 실행
 
@@ -75,10 +78,14 @@ uv run python -m scripts.run_b0x_kr_cycle
 # 결정성 증명 (아무것도 쓰지 않음, fresh 계좌 스냅샷은 1회 읽는다)
 uv run python -m scripts.run_b0x_kr_cycle --derivation-only --repeat 2
 # → DERIVATION_DETERMINISM=IDENTICAL 이어야 한다
+
+# 수동 mock acceptance 1회. 실제 현재 시각만 사용하며 KRX RTH 밖이면 zero-order다.
+uv run python -m scripts.run_b0x_kr_cycle --confirm
 ```
 
-🔴 **`--confirm` 플래그가 없다.** 제출은 §6 대로 배선됐지만(계약 v1.3 ③), 이 CLI 는
-그 배선을 노출하지 않는다 — 실사이클은 별도 job(§0.1).
+`--confirm`은 `--now`·`--derivation-only`와 함께 쓸 수 없다. 시계 재생으로 제출 창을
+만드는 우회를 막고, 확인 경로는 한 제출만 허용한다. RTH·stale table·gate·lease·preflight
+중 하나라도 실패하면 제출 0과 사유만 기록한다.
 
 산출물: `~/work/herdr-artifacts/b0x/kis_mock/` 아래
 `cycles.jsonl`(append-only) · `<ts>-cycle.md` · `operator-notices.jsonl`
@@ -111,22 +118,18 @@ adapters.KisMockBroker`(ROB-321/341): `_place_order_impl(is_mock=True, ...)` 이
 그대로 재사용한다 — `scripts.b0x.kr.mock.build_kis_mock_broker`/`submit_planned_order`
 가 얇은 배선 레이어일 뿐, `KisMockBroker` 자체는 서브클래싱도 몽키패치도 하지 않는다.
 
-**하나의 문서화된 불일치, 덮지 않고 그대로 보고한다.** `KisMockBroker` 의 매수(BUY) leg
-는 실 POST 직전 살아있는 오더북(bid/ask/spread/age) 을 `get_state` 콜백으로 재검증한다
-(ROB-843 P1-1) — 이건 그 어댑터 자신의 라이브 WS 피드(`mock_scalping_ws`) 를 전제로 설계된
-freshness 모델이다. B0-X 는 그런 피드가 없다 — `policy_table.v1` 스냅샷에서 파생할 뿐, 실시간
-오더북을 보지 않는다. 가짜 호가를 지어내 안전장치를 통과시키는 대신,
-`build_kis_mock_broker` 는 `get_state` 가 **항상 `None`** 을 반환하게 한다. 결과: 실제
-BUY 디스패치(`confirm=True`) 는 실 HTTP POST **이전에** 그 어댑터 자신의
-`PreSendFreshnessError(("no_market_state",))` 로 fail-closed 한다 — 정직하고, 특별히
-새로 만든 차단이 아니라 어댑터 자신의 기존 예외다. SELL leg(`submit_exit_sell`) 는 ROB-321
-자체 설계상("포지션을 닫는 매도는 항상 허용돼야 한다") 이 훅이 없어 영향받지 않는다. B0-X 용
-실 시세 피드를 배선해 BUY 쪽 차단을 푸는 일은 이 PR 스코프 밖이다.
+**호가 보완은 재구현이 아니다.** B0-X에는 WebSocket supervisor가 없으므로
+`build_kis_mock_broker`의 injected `get_state`는 `None`일 수 있다. BUY 직전 얇은
+`submit_planned_order` chokepoint가 같은 `KisMockBroker.refresh_market_state()`를 호출해
+기존 mock-host `inquire_orderbook` 응답만 adapter의 `MarketState`로 넣는다. 정책표 가격을
+호가로 꾸미지 않으며, malformed/stale/wide/crossed book은 기존 pre-send guard가 POST 전에
+막는다. SELL leg에는 기존 설계대로 freshness hook이 없다.
 
-`confirm=False`(기본, CLI 가 유일하게 노출하는 경로)는 브로커를 아예 구성하지 않고 계획까지만
-한다. `confirm=True` 는 실제로 `KisMockBroker.submit_buy`/`submit_exit_sell` 을 호출한다 —
-"아직 안 만듦"이 "제출해서 0건 확인함"으로 둔갑하지 않도록, `KrCycleOutcome.record["submitted"]`
-는 실제 호출 결과를 그대로 담는다.
+`confirm=False`는 브로커를 구성하지 않고 계획까지만 한다. `confirm=True`는 성공한 preflight
+뒤에만 `KisMockBroker.submit_buy`/`submit_exit_sell`로 간다. 제출 직전 v1.6 원장을 다시 읽고,
+성공 응답 뒤에는 signal/order ledger union에서 자기 trace가 보이는지 확인한 뒤에만 체결
+관측을 남긴다. `KrCycleOutcome.record["submitted"]`는 실제 호출 결과이며, 차단은 별도
+`submission_dedup_blocked`/`submission_stopped`로 남긴다.
 
 **`unwired_submit_order`/`KrMockSubmissionNotWired` 는 삭제하지 않았다.** 주 경로는 더 이상
 그것을 부르지 않지만, `build_kis_mock_broker`/`submit_planned_order` 를 우회해 제출을
@@ -174,8 +177,9 @@ crypto 사이드카는 kill 발화 시 venue 의 open-orders 읽기를 이용해
 notice 문구를 lane 별로 분리했다(`KillSwitchDecision.operator_notice(remaining_orders_
 note=...)`). KR 은 crypto 의 "잔여 주문 취소 완료" 문구를 쓰지 않고
 `scripts.b0x.kr.cycle.KILL_CANCEL_UNSUPPORTED_NOTE` 로 사실대로 "취소는 구조적으로
-시도 불가"라고 말한다. `record["cancelled"] = []` + `record["cancellation_unsupported"]`
-로 "시도해서 실패"와 "애초에 시도 안 함"을 구분해 기록한다.
+시도 불가"라고 말한다. `record["cancelled"] = []`,
+`cancel_status="KILL_TRIPPED_CANCEL_UNSUPPORTED"`, `cancel_attempted=false`,
+`cancel_confirmed=false`로 "시도해서 실패"와 "애초에 시도 안 함"을 구분해 기록한다.
 
 ## 7. NAV 상대 kill switch — 통화 단위 정합성
 
@@ -281,9 +285,9 @@ b0x-experiment-contract-v1-20260808.md`):
 skipped 표가 그대로 렌더링되므로 "무엇이 막혔는지"는 남는다). 검사는 파생과
 `submit_planned_order`(디스패치 직전) **두 곳**에 있다.
 
-🔵 운영상 영향은 오늘 기준 크지 않다: KR 매수 디스패치는 이미 `PreSendFreshnessError`
-로 구조적으로 막혀 있고(§10, §6), CLI 에 `--confirm` 이 없다. 즉 이 조치가 "되던 주문을
-막은" 것이 아니라 **되지 않던 이유가 하나 더 명시화**된 것에 가깝다.
+🔵 이 브로커 한계 자체는 남아 있지만, v1.6 원장과 §6의 mock-host orderbook bridge는
+그 한계를 빈 미체결·가짜 호가로 덮지 않는다. 읽을 수 없으면 차단하고, 읽을 수 있으면 기존
+adapter guard를 그대로 통과시킨다.
 
 🔵 **해소됨 — 계약 v1.6 ① (2026-08-09, 운영자 "승인이야").** X-E1 이 후보로만 등재했던
 `kis_mock_order_ledger` 가 조건부로 승인됐다. 상세 = **§9.2**.
@@ -370,41 +374,27 @@ pending 파생 이름이 들어가는 것을 빌드 실패로 만든다.
 안에만** 존재하도록 강제하고(그 함수만이 `KisMockBroker` → `order_execution` pre-submit
 게이트를 탄다), 그 안에서 `assert_resubmit_allowed` 가 제출보다 **앞줄**임을 확인한다.
 
-**귀결 — 월요일 첫 KR 사이클.** 이 레인은 아직 한 건도 제출한 적이 없으므로 원장이
-`b0xk-` 행을 0건으로 **답한다**(unreadable 아님) → 후보 행이 정상 파생된다. 같은 KST 일의
-2·3사이클차는 1사이클차가 남긴 행을 읽어 **파생 0**. 실측 = `test_kr_two_cycle_sim_the_
-same_symbol_is_never_submitted_twice` (고정 fixture, 실브로커 호출 0).
+**귀결 — 첫 clean confirm.** 이 레인은 원장이 자기 `b0xk-` 행 0건을 읽고, 다른
+correlation trace·예상 밖 보유가 없고, writer lease가 확보될 때만 한 제출을 시도한다. 같은
+KST일에 자기 trace가 남으면 다음 confirm preflight는 `ledger_pending_present`로 zero-order다.
+`test_kr_two_cycle_sim_the_same_symbol_is_never_submitted_twice`는 v1.6 KST-day dedup을,
+`test_confirm_route_rechecks_and_observes_post_submit_dedup`은 제출 직전/직후의 실제
+mutation-boundary 순서를 오프라인으로 고정한다.
 
-🔵 §10 의 `PreSendFreshnessError`(BUY leg 실디스패치 구조적 차단)와 CLI `--confirm` 부재는
-**이 라운드에서도 그대로**다. 즉 v1.6 은 "파생이 되게" 만들었을 뿐 "실주문이 나가게" 만들지
-않았다.
+## 10. 알려진 경계 · fail-closed 처리
 
-## 10. 알려진 경계 · 미해결
-
-- **BUY leg 실 디스패치는 항상 `PreSendFreshnessError` 로 막힌다** — B0-X 용 실시간
-  시세 피드가 없어서다(§6). SELL leg 는 이 훅이 없어 영향받지 않는다 — 비대칭이며,
-  의도적으로 덮지 않고 문서화했다.
-- **kill 시 잔여 주문 취소가 구조적으로 불가능하다**(§6.6) — KIS 모의투자 미체결조회
-  API 자체가 `is_mock=True` 를 지원하지 않는다. crypto 패턴을 그대로 옮길 수 없다.
-- **오염(CONTAMINATED) 판정 미구현.** crypto 사이드카는 venue 의 `foreign_*` 잔고/미체결을
-  탐지해 오염 시 제출을 막는다. KR 은 주문 읽기(order-history) 서피스를 아직 연결하지
-  않았다 — 위 두 항목과 마찬가지로 KIS 모의투자의 미체결조회 API 한계와 같은 뿌리다.
-  🔴 §9.2 의 원장 출처는 **이 공백을 닫지 않는다**: 원장은 `b0xk-` 로 시작하는 **자기**
-  correlation_id 만 답하므로, 남이 이 계좌에 낸 주문은 여전히 보이지 않는다. v1.6 ① 의 예외
-  범위가 「자기 미체결」이라 넓히지 않았다.
-- **원장 조회는 DB 를 탄다.** §9.2 의 출처는 브로커 read 가 아니라 `DATABASE_URL` 로의
-  세션이다. DB 가 죽으면 사이클은 오류가 아니라 `own_pending_unreadable` 로 **전 심볼 차단**
-  하고 계속 진행한다(v1.6 ④). 파생 0 이 나왔는데 사유가 `own_pending_unreadable` +
-  reason=`kis_mock_ledger_pending_unreadable` 이면 **브로커가 아니라 DB 를 보라**.
-- **`B0X_KR_ENABLED`/`assert_kr_lane_enabled` 게이트가 `run_kr_cycle` 에서 호출되지
-  않는다.** crypto 사이드카는 `run_sidecar_cycle` 진입 시 `assert_sidecar_enabled()` 를
-  강제한다(대응 env: `B0X_SIDECAR_ENABLED`); KR 의 대응 함수는 정의만 되어 있고 아직
-  배선되지 않았다(R1 부터의 기존 갭, 이 라운드가 새로 만들지 않았다) — 배선하려면 기존
-  preview 테스트 다수가 이 env 를 설정하도록 함께 바뀌어야 해서 이번 스코프(제출 경로)
-  밖에 남겼다.
-- **NXT/시간외는 완전 배제.** 정규장 매도의 NXT 연장(ROB-671) 같은 다른 레인의 규칙은
-  B0-X 에 적용하지 않는다 — 계약이 "정규장만" 이라고 명시했다.
-- 스케줄러 등록 없음 (v1 수동 kickoff, crypto 와 동일). CLI 에 `--confirm` 없음(§0.1).
+- **KIS mock native open-orders는 unavailable이다.** `TTTC8036R`은 `is_mock=True`에서
+  구조적으로 raise하므로 native open-order=0이라고 주장하지 않는다. NW-B4 record에는 이
+  사실과 함께 v1.6 signal/order ledger shadow를 분리해 남긴다. shadow가 unreadable이거나
+  foreign correlation trace가 하나라도 있으면 `preflight_not_clean` zero-order다.
+- **예상 밖 포지션·cash 비정상·stale table·writer lease 불명확도 zero-order다.** 취소·청산·계좌
+  reset 같은 임의 정리는 하지 않는다.
+- **kill 시 잔여 주문 취소가 구조적으로 불가능하다**(§6.6). 성공 취소나 reconcile을 꾸미지
+  않고 `KILL_TRIPPED_CANCEL_UNSUPPORTED`와 false attempted/confirmed를 기록한다.
+- **원장 조회는 DB를 탄다.** own/foreign ledger 중 하나라도 읽을 수 없으면 preflight는
+  fail-closed다. 오류 detail에는 예외 타입만 남기며 DSN/credential 메시지는 남기지 않는다.
+- **NXT/시간외는 완전 배제.** `--confirm`은 실제 현재 시각만 쓰며 KRX RTH 밖이면 계좌 I/O
+  전에 zero-order다. 스케줄러 등록은 없고, 이 경로는 `OBSERVATION_DERIVATION_ONLY`를 유지한다.
 
 ## 11. 테스트
 
@@ -413,23 +403,19 @@ uv run pytest tests/scripts/b0x/ -q          # 코어 + crypto + kr 전부
 uv run pytest tests/scripts/b0x/kr/ -q       # kr 전용
 ```
 
-v1.6 ① 전용 (`tests/scripts/b0x/kr/test_ledger_pending_source.py`): KR 2사이클+ 시뮬
-(1사이클차 파생 2·제출 2 → 2·3사이클차 파생 0·제출 누계 2 → 익 KST 일 파생 2·누계 4) ·
-원장이 답한 심볼만 `own_pending_order_exists` 로 차단 · 조회 실패/세션 실패 → `()` 아닌
-`PendingUnreadable` (예외 **타입명만**, 메시지 비노출) · 상태 기반 해제 금지(모듈이
-`lifecycle_state`/`status` 를 참조하지 않음을 AST 로 고정) · KST 거래일 경계 · 원장이
-포지션이 되지 않음(행동 + AST) · 타 레인 import 금지(AST) · 원장 우회 제출 경로 금지(AST,
-+ 제출보다 앞선 `assert_resubmit_allowed` 순서 확인). 각 detector 는 합성 소스로 자가검증.
-`tests/scripts/b0x/kr/conftest.py` 가 실 원장 리더 도달을 **AssertionError** 로 막는다
-(안 그러면 실수로 도달해도 `PendingUnreadable` 로 삼켜져 테스트가 조용히 무의미해진다).
+v1.6 ① 전용 (`tests/scripts/b0x/kr/test_ledger_pending_source.py`): KST day 경계의
+자기-pending dedup, signal/order 양쪽 union, reader failure → `PendingUnreadable`(예외
+**타입명만**), lifecycle/state 추론 금지, position truth 분리, 타 레인 import 금지, 제출
+chokepoint AST guard, foreign correlation trace contamination, 그리고 confirm의 pre/post
+dedup observation을 고정한다. 각 detector는 합성 소스로 자가검증한다.
+`tests/scripts/b0x/kr/conftest.py`는 실 own/foreign ledger reader 도달을
+**AssertionError**로 막는다.
 
 kr 전용 포함: tick 정렬(KRX 2023+ 표와 일치) · 매수/매도 사이징 whole-share floor ·
 NAV = cash + Σ evlu_amt · RTH 게이트(세션 밖 → zero-order, 표 I/O 전혀 없음) · 표 게이트
 5경로 재사용 · `MAX_TABLE_AGE["kr"]=36h`(main SSOT `scripts.policy_table.core.
 max_table_age` 재수출, crypto 8h·us 36h 동반 확인) 값 고정 + 37h/35h59m 경계
 사이클 종단 동작 · NAV 비율 kill(단위 정합성, 재계산됨을 증명) · 결정성(2회 동일 해시) ·
-CLI 에 envelope 필드/`--confirm` 플래그 없음 · KIS 주문 서피스 금지 import 정적 가드
-(denylist, R1) · `submit_planned_order` 가 fake 브로커로 buy/sell 을 올바른 메서드에
-라우팅함(correlation_id/가격/수량 스레딩 포함) · `confirm=True` 가 fake 브로커를 통해
-실제로 디스패치됨(더 이상 무조건 raise 아님) · `unwired_submit_order` 가 여전히 raise
-함(kept, not deleted) · AST 가드(allowlist, R2) 3 금지 + 자체 detector self-test.
+CLI default-disabled `--confirm`과 replay clock 거부 · NW-B4 5분 preflight/lease/
+contamination/zero-order · 단일 제출 상한 · `KILL_TRIPPED_CANCEL_UNSUPPORTED` · mock-host
+orderbook→기존 pre-send guard · KIS 주문 서피스 금지 import 및 AST 3금지 self-test를 포함한다.
