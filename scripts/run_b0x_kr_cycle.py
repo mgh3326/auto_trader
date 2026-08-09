@@ -1,4 +1,4 @@
-"""B0-X kis_mock (KR) cycle runner — manual kickoff only (contract §5, v1).
+"""B0-X kis_mock (KR) cycle runner — scheduleless manual kickoff only.
 
     # Preview: derive + plan, dispatch nothing. Safe outside session too (the
     # RTH gate just produces a zero-order cycle with a recorded reason).
@@ -7,13 +7,18 @@
     # Determinism proof: derive twice, compare bytes (no writes, no venue).
     uv run python -m scripts.run_b0x_kr_cycle --derivation-only --repeat 2
 
-There is deliberately no ``--confirm`` flag that reaches a submission. Passing
-one would only ever raise ``KrMockSubmissionNotWired`` — see
-``scripts.b0x.kr.mock``'s module docstring for why order submission is an
-unwired, explicitly-out-of-scope extension point in this PR, not a working
-integration. There is also no flag that can move an envelope value — the §4
-caps live in ``scripts.b0x.envelope`` as module constants, re-asserted before
-every account read.
+    # One manually requested mock acceptance attempt.  It is default-disabled,
+    # is bounded to one submission, and fails closed unless the KR env gate,
+    # writer lease, and NW-B4 preflight all pass during KRX RTH.
+    uv run python -m scripts.run_b0x_kr_cycle --confirm
+
+``--confirm`` is not a status change: KR remains
+``OBSERVATION_DERIVATION_ONLY`` until an upstream decision says otherwise.
+It cannot be combined with ``--now`` or ``--derivation-only``, so an operator
+cannot replay an artificial session timestamp into the mutation path. There is
+also no flag that can move an envelope value — the §4 caps live in
+``scripts.b0x.envelope`` as module constants, re-asserted before every account
+read.
 
 No scheduler registration exists for this script — not TaskIQ, not Prefect,
 not launchd. A cycle happens because an operator ran it.
@@ -61,7 +66,7 @@ async def _derivation_only(args: argparse.Namespace) -> int:
 
     Reads the table and a fresh kis_mock account snapshot, then re-derives
     ``args.repeat`` times against the *same* in-memory state and compares
-    hashes. Writes nothing, submits nothing (submission is unwired anyway).
+    hashes. Writes nothing and submits nothing.
     """
 
     from scripts.b0x import kill_switch as kill_switch_module
@@ -124,6 +129,13 @@ async def _derivation_only(args: argparse.Namespace) -> int:
 
 
 async def _run(args: argparse.Namespace) -> int:
+    if args.confirm and args.derivation_only:
+        print("--confirm cannot be combined with --derivation-only", file=sys.stderr)
+        return 2
+    if args.confirm and args.now is not None:
+        print("--confirm cannot be combined with --now", file=sys.stderr)
+        return 2
+
     now = dt.datetime.now(dt.UTC) if args.now is None else args.now
 
     if args.derivation_only:
@@ -134,7 +146,7 @@ async def _run(args: argparse.Namespace) -> int:
             now=now,
             table_dir=Path(args.table_dir).expanduser(),
             out_dir=Path(args.out_dir).expanduser(),
-            confirm=False,
+            confirm=args.confirm,
         )
     except WriterLockUnavailable as exc:
         print(f"WRITER_LOCK_UNAVAILABLE — {exc}", file=sys.stderr)
@@ -173,6 +185,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "derive and print hashes; write nothing, contact no venue "
             "(still reads a fresh kis_mock account snapshot for account state)"
+        ),
+    )
+    parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help=(
+            "one manual kis_mock acceptance attempt; default-disabled and "
+            "fail-closed on every preflight gate (KRX RTH only)"
         ),
     )
     parser.add_argument(

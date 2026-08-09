@@ -28,6 +28,10 @@ MUTATION_WRITER_SURFACES = frozenset(
         "watch_auto_execute",
         "smoke_cli",
         "manual_mcp_mutation",
+        # B0-X KR is a separately approved, manual-only adapter path.  It
+        # acquires this same account-wide lease before its confirm preflight so
+        # it cannot overlap any catalogued kis_mock writer.
+        "b0x_adapter",
     }
 )
 _ACTIVE_WRITER_LEASE: ContextVar[bool] = ContextVar(

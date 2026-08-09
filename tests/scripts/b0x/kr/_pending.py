@@ -58,6 +58,40 @@ def exploding_pending(exc: Exception):
     return _read
 
 
+def foreign_traces(
+    *symbols: str,
+    order_trace_count: int = 0,
+    signal_trace_count: int = 0,
+):
+    """A confirm-preflight reader with explicitly controlled foreign traces."""
+
+    traces = kr_pending_ledger.ForeignLedgerTraces(
+        symbols=tuple(sorted(symbols)),
+        order_trace_count=order_trace_count,
+        signal_trace_count=signal_trace_count,
+    )
+
+    async def _read(
+        *, now: dt.datetime, correlation_prefix: str
+    ) -> kr_pending_ledger.ForeignLedgerTraces | PendingUnreadable:
+        return traces
+
+    return _read
+
+
+def unreadable_foreign_traces(
+    sentinel: PendingUnreadable = KR_PENDING_UNREADABLE,
+):
+    """A foreign-trace reader that cannot establish exclusive account truth."""
+
+    async def _read(
+        *, now: dt.datetime, correlation_prefix: str
+    ) -> kr_pending_ledger.ForeignLedgerTraces | PendingUnreadable:
+        return sentinel
+
+    return _read
+
+
 class StatefulPendingLedger:
     """An in-memory stand-in for the ledger the submission path writes to.
 
@@ -101,6 +135,8 @@ class StatefulPendingLedger:
 __all__ = [
     "StatefulPendingLedger",
     "exploding_pending",
+    "foreign_traces",
     "readable_pending",
+    "unreadable_foreign_traces",
     "unreadable_pending",
 ]

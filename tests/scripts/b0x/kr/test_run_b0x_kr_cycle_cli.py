@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from scripts.b0x.envelope import KR_MOCK_ENVELOPE, assert_envelope_locked, load_envelope
-from scripts.run_b0x_kr_cycle import _parse_args
+from scripts.run_b0x_kr_cycle import _parse_args, _run
 
 pytestmark = pytest.mark.unit
 
@@ -26,14 +26,23 @@ def test_no_cli_flag_can_reach_an_envelope_value() -> None:
     assert offenders == [], f"CLI exposes cap-shaped flags: {offenders}"
 
 
-def test_cli_exposes_no_confirm_flag() -> None:
-    """Unlike the crypto sidecar CLI, this one has no ``--confirm`` at all —
-    submission is unwired (scripts.b0x.kr.mock), so a flag that implied
-    "dispatch this" would be misleading.
-    """
+def test_cli_confirm_is_explicit_and_default_disabled() -> None:
+    """The only mutation lever is opt-in and carries no envelope override."""
 
-    dests = set(vars(_parse_args([])))
-    assert "confirm" not in dests
+    assert _parse_args([]).confirm is False
+    assert _parse_args(["--confirm"]).confirm is True
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_replay_clock_before_any_cycle_work() -> None:
+    args = _parse_args(["--confirm", "--now", "2026-08-10T02:00:00+00:00"])
+    assert await _run(args) == 2
+
+
+@pytest.mark.asyncio
+async def test_confirm_rejects_derivation_only_before_any_cycle_work() -> None:
+    args = _parse_args(["--confirm", "--derivation-only"])
+    assert await _run(args) == 2
 
 
 def test_environment_variables_cannot_move_the_kr_envelope(

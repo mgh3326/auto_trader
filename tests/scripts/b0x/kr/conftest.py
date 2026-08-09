@@ -20,6 +20,8 @@ import datetime as dt
 import pytest
 
 from scripts.b0x.broker_truth import PendingUnreadable
+from scripts.b0x.kr import cycle as kr_cycle
+from scripts.b0x.kr import mock as kr_mock
 from scripts.b0x.kr import pending_ledger as kr_pending_ledger
 
 
@@ -36,3 +38,48 @@ def _forbid_real_pending_ledger_reads(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(kr_pending_ledger, "read_own_pending", _refuse)
+
+    async def _refuse_foreign(
+        *, now: dt.datetime, correlation_prefix: str
+    ) -> kr_pending_ledger.ForeignLedgerTraces | PendingUnreadable:
+        raise AssertionError(
+            "a KR test reached the real foreign-trace ledger reader "
+            f"(now={now.isoformat()} prefix={correlation_prefix!r}). Pass "
+            "foreign_trace_reader=... explicitly — confirm-preflight tests "
+            "must prove their contamination input."
+        )
+
+    monkeypatch.setattr(kr_pending_ledger, "read_foreign_traces", _refuse_foreign)
+
+
+@pytest.fixture
+def armed_confirm(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Arm only the confirm gates needed by an offline unit test.
+
+    The production env/config and PostgreSQL advisory lease are deliberately
+    not exercised in a unit test.  Tests request this fixture explicitly, so
+    a confirm test cannot accidentally prove a route that skipped either gate.
+    """
+
+    lease_events: list[str] = []
+
+    class _Lease:
+        def __init__(self, *, writer_surface: str) -> None:
+            assert writer_surface == "b0x_adapter"
+
+        async def __aenter__(self) -> _Lease:
+            lease_events.append("acquired")
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            del exc
+            lease_events.append("released")
+
+    monkeypatch.setattr(kr_mock, "assert_kr_lane_enabled", lambda: None)
+    monkeypatch.setattr(
+        kr_mock,
+        "account_identity_summary",
+        lambda: {"fingerprint": "sha256:test-account", "product_suffix": "01"},
+    )
+    monkeypatch.setattr(kr_cycle, "KISMockWriterLease", _Lease)
+    return lease_events
