@@ -29,6 +29,7 @@ from .schema import (
 )
 
 __all__ = [
+    "ARM_LABELS",
     "ContractViolation",
     "RUN_INVALID_AUTHENTICITY_EVIDENCE",
     "RUN_INVALID_CORPUS_LITERALS",
@@ -49,6 +50,10 @@ RUN_INVALID_AUTHENTICITY_EVIDENCE = "RUN_INVALID_AUTHENTICITY_EVIDENCE"
 RUN_INVALID_SCOPE_SEPARATION = "RUN_INVALID_SCOPE_SEPARATION"
 RUN_INVALID_TABLE_SCHEMA = "RUN_INVALID_TABLE_SCHEMA"
 RUN_INVALID_OUTCOME_EVIDENCE = c.RUN_INVALID_OUTCOME_EVIDENCE
+
+#: Re-exported so a reader of the validator sees the closed arm-label domain
+#: it enforces without following an import (A2-C4 / NW-F4).
+ARM_LABELS = c.ARM_LABELS
 
 
 class ContractViolation(Exception):
@@ -192,6 +197,35 @@ def _outcome_column_guard(table: pa.Table) -> None:
         )
 
 
+def _require_arm_label(value: Any, *, origin: str, epoch: Any) -> str:
+    """Return ``value`` iff it is one of the two admissible arm labels (A2-C4).
+
+    There is no coercion path.  ``bool`` is checked first and by type, because
+    ``bool`` is what a silent ``bool(...)`` conversion produces and what NW-F4
+    names as forbidden free input; an arbitrary string is rejected right after,
+    because an arm label the contract never defined is not an arm label at all.
+    Either way the caller gets ``RUN_INVALID_OUTCOME_EVIDENCE`` — never a
+    repaired value.
+    """
+    if isinstance(value, bool):
+        _fail(
+            RUN_INVALID_OUTCOME_EVIDENCE,
+            "A2-C4",
+            f"epoch {epoch}: {origin} arm label is a free bool ({value!r}); "
+            f"candidate_any is an arm label, one of {list(c.ARM_LABELS)}, and "
+            "is never coerced from a truth value",
+        )
+    if not isinstance(value, str) or value not in c.ARM_LABELS:
+        _fail(
+            RUN_INVALID_OUTCOME_EVIDENCE,
+            "A2-C4",
+            f"epoch {epoch}: {origin} arm label {value!r} is not one of the "
+            f"admissible arm labels {list(c.ARM_LABELS)}; the arm-label domain "
+            "is closed by contract",
+        )
+    return str(value)
+
+
 def _kline_index(klines: pa.Table) -> dict[tuple[str, int], dict[str, Any]]:
     rows = klines.to_pylist()
     return {(row["symbol"], row["open_time"]): row for row in rows}
@@ -254,7 +288,13 @@ def validate_outcomes(
         epoch = decision["signal_epoch_open_time"]
         row = by_epoch[epoch]
 
-        if row["candidate_any"] != decision[c.OUTCOME_ARM_LABEL_FIELD]:
+        decision_arm = _require_arm_label(
+            decision[c.OUTCOME_ARM_LABEL_FIELD], origin="decision", epoch=epoch
+        )
+        row_arm = _require_arm_label(
+            row["candidate_any"], origin="outcome row", epoch=epoch
+        )
+        if row_arm != decision_arm:
             _fail(
                 RUN_INVALID_OUTCOME_EVIDENCE,
                 "A2-C4",

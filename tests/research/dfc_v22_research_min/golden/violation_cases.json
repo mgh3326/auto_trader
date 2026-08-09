@@ -58,6 +58,24 @@
       "expected_detail_contains": "does not match the decision's candidate_any"
     },
     {
+      "case_id": "outcomes_arbitrary_string_arm_label",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "is not one of the admissible arm labels"
+    },
+    {
+      "case_id": "outcomes_row_arm_label_outside_domain",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "is not one of the admissible arm labels"
+    },
+    {
+      "case_id": "outcomes_free_bool_arm_label",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "arm label is a free bool"
+    },
+    {
       "case_id": "manifest_funding_source_kind",
       "clause": "A2-C3",
       "expected_code": "RUN_INVALID_FORBIDDEN_SOURCE",

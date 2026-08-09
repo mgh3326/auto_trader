@@ -33,6 +33,9 @@ from .nw_verbatim import (
 __all__ = [
     "A1_READINESS_IDS",
     "A2_JUDGED_DIMENSIONS",
+    "ARM_CANDIDATE",
+    "ARM_CONTROL",
+    "ARM_LABELS",
     "BAR_INTERVAL_MS",
     "CANONICAL_SOURCE_PATH",
     "CANONICAL_SOURCE_SHA256",
@@ -144,6 +147,27 @@ IMPUTED_ROW_COUNT_MAX = 0
 
 
 # --- A2-C4 (NW-F4): outcome semantics -------------------------------------
+
+# DFC v2.2 arm-label wire contract (shared; byte-identical in both registrations)
+# =============================================================================
+# NW-F4 says ``BasketDecision.candidate_any`` *is an arm label*.  It is therefore
+# carried as a label, never as a truth value, and the label domain is closed:
+#
+#     ARM_CANDIDATE = "candidate"
+#     ARM_CONTROL   = "control"
+#     ARM_LABELS    = ("candidate", "control")
+#
+# Counterpart declaration: ``research_contracts/dfc_2c_4h_v22.py`` (PR #1825),
+# which declares the same three literals in the same order.  Both sides reject
+# anything outside this set and neither side coerces: a value that is not
+# exactly one of these two labels never becomes an arm, it becomes
+# ``RUN_INVALID_OUTCOME_EVIDENCE``.  A bare ``bool`` is rejected explicitly and
+# ahead of the membership test, because ``bool`` is precisely the shape NW-F4
+# forbids ("자유 bool ... 입력을 금지한다") and precisely the shape a silent
+# ``bool(...)`` coercion would manufacture.
+ARM_CANDIDATE = "candidate"
+ARM_CONTROL = "control"
+ARM_LABELS: tuple[str, ...] = (ARM_CANDIDATE, ARM_CONTROL)
 
 #: ``candidate_any`` of the ``BasketDecision`` at signal epoch ``t``.
 OUTCOME_ARM_LABEL_FIELD = "candidate_any"

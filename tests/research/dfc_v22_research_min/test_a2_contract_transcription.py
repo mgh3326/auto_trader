@@ -65,6 +65,27 @@ def test_canonical_source_is_pinned() -> None:
 
 
 @pytest.mark.unit
+def test_arm_label_domain_is_the_shared_closed_set() -> None:
+    """Pin the wire contract A2 shares with the v2.2 registration (PR #1825).
+
+    The two registrations live on disjoint paths and cannot import each other,
+    so the only thing that keeps them from drifting is that both pin this exact
+    literal.  Changing it here without changing it there is the split this test
+    exists to make loud.
+    """
+    assert c.ARM_LABELS == ("candidate", "control")
+    assert (c.ARM_CANDIDATE, c.ARM_CONTROL) == c.ARM_LABELS
+    assert all(isinstance(label, str) for label in c.ARM_LABELS)
+    assert not any(isinstance(label, bool) for label in c.ARM_LABELS)
+    doc = DOC_PATH.read_text(encoding="utf-8")
+    for label in c.ARM_LABELS:
+        assert f"`{label}`" in doc, f"arm label {label!r} is undocumented"
+    assert "research_contracts/dfc_2c_4h_v22.py" in (
+        (PACKAGE_DIR / "contract.py").read_text(encoding="utf-8")
+    ), "the counterpart declaration must be named at the point of declaration"
+
+
+@pytest.mark.unit
 def test_frozen_literals_appear_in_the_document() -> None:
     doc = DOC_PATH.read_text(encoding="utf-8")
     for literal in (

@@ -80,15 +80,16 @@ _KLINE_ROWS: list[dict[str, Any]] = [
     _kline_row("SOLUSDT", T1 + BAR, "1.9800", "p-sol-t1n"),
 ]
 
+#: One epoch on each arm, so the baseline exercises both admissible labels.
 _DECISIONS: list[dict[str, Any]] = [
     {
         "signal_epoch_open_time": T0,
-        "candidate_any": "arm_dfc_2c_4h",
+        "candidate_any": c.ARM_CANDIDATE,
         "winner_symbol": "XRPUSDT",
     },
     {
         "signal_epoch_open_time": T1,
-        "candidate_any": "arm_dfc_2c_4h",
+        "candidate_any": c.ARM_CONTROL,
         "winner_symbol": "SOLUSDT",
     },
 ]
@@ -105,11 +106,12 @@ def _outcome_row(
     next_payload: str,
     t_close: str,
     next_close: str,
+    arm: str,
 ) -> dict[str, Any]:
     return {
         "signal_epoch_open_time": epoch,
         "signal_epoch_close_time": epoch + BAR - 1,
-        "candidate_any": "arm_dfc_2c_4h",
+        "candidate_any": arm,
         "winner_symbol": symbol,
         "t_kline_open_time": epoch,
         "t_close_payload_sha256": t_payload,
@@ -122,8 +124,12 @@ def _outcome_row(
 
 
 _OUTCOME_ROWS: list[dict[str, Any]] = [
-    _outcome_row(T0, "XRPUSDT", "p-xrp-t0", "p-xrp-t0n", "1.0000", "1.0100"),
-    _outcome_row(T1, "SOLUSDT", "p-sol-t1", "p-sol-t1n", "2.0000", "1.9800"),
+    _outcome_row(
+        T0, "XRPUSDT", "p-xrp-t0", "p-xrp-t0n", "1.0000", "1.0100", c.ARM_CANDIDATE
+    ),
+    _outcome_row(
+        T1, "SOLUSDT", "p-sol-t1", "p-sol-t1n", "2.0000", "1.9800", c.ARM_CONTROL
+    ),
 ]
 
 
@@ -283,9 +289,37 @@ def _case_outcomes_close_payload_hash_mismatch() -> None:
 
 
 def _case_outcomes_arm_label_not_from_decision() -> None:
+    # An *admissible* label, but not the one this decision carries: the row was
+    # relabelled from candidate to control by hand.
     rows = [dict(r) for r in _OUTCOME_ROWS]
-    rows[0]["candidate_any"] = "arm_relabelled_by_hand"
+    rows[0]["candidate_any"] = c.ARM_CONTROL
     v.validate_outcomes(outcomes(rows), klines(), _DECISIONS)
+
+
+def _case_outcomes_arbitrary_string_arm_label() -> None:
+    # The v1 defect: an arm value outside the contract's label set was
+    # admissible on this side while the v2.2 side silently coerced it to True.
+    # Decision and row agree, so only the closed domain can shoot it down.
+    decisions = [dict(d) for d in _DECISIONS]
+    decisions[0]["candidate_any"] = "arbitrary-nonboolean-arm"
+    rows = [dict(r) for r in _OUTCOME_ROWS]
+    rows[0]["candidate_any"] = "arbitrary-nonboolean-arm"
+    v.validate_outcomes(outcomes(rows), klines(), decisions)
+
+
+def _case_outcomes_row_arm_label_outside_domain() -> None:
+    # Same defect reached from the row side only.
+    rows = [dict(r) for r in _OUTCOME_ROWS]
+    rows[0]["candidate_any"] = "arm_dfc_2c_4h"
+    v.validate_outcomes(outcomes(rows), klines(), _DECISIONS)
+
+
+def _case_outcomes_free_bool_arm_label() -> None:
+    # A truth value is not an arm label.  This is the shape a ``bool(...)``
+    # coercion produces, so it must fail before any comparison.
+    decisions = [dict(d) for d in _DECISIONS]
+    decisions[0]["candidate_any"] = True
+    v.validate_outcomes(outcomes(), klines(), decisions)
 
 
 def _case_manifest_funding_source_kind() -> None:
@@ -445,6 +479,9 @@ CASE_BUILDERS: dict[str, Callable[[], None]] = {
     "outcomes_hand_written_return": _case_outcomes_hand_written_return,
     "outcomes_close_payload_hash_mismatch": _case_outcomes_close_payload_hash_mismatch,
     "outcomes_arm_label_not_from_decision": _case_outcomes_arm_label_not_from_decision,
+    "outcomes_arbitrary_string_arm_label": _case_outcomes_arbitrary_string_arm_label,
+    "outcomes_row_arm_label_outside_domain": _case_outcomes_row_arm_label_outside_domain,
+    "outcomes_free_bool_arm_label": _case_outcomes_free_bool_arm_label,
     "manifest_funding_source_kind": _case_manifest_funding_source_kind,
     "manifest_open_interest_endpoint": _case_manifest_open_interest_endpoint,
     "table_klines_open_interest_column": _case_table_klines_open_interest_column,

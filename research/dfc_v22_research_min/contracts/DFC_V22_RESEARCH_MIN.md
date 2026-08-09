@@ -114,6 +114,29 @@ decision record as a separate input, and:
    `payload_sha256` of the raw bars they claim to come from; and
    `outcome_abs_log_return_bps` is recomputed from those two raw close tokens and
    compared within 1e-6 bps. A hand-written outcome number cannot survive this.
+5. **Closed arm-label domain.** `candidate_any` is a *label*, and the label set
+   is exactly two values — `candidate` and `control`, in that order. The wire
+   type is `string`, so the type alone cannot pin the domain; the validator
+   does, on both the decision side and the row side, before any comparison.
+
+### The arm label (`candidate_any`)
+
+NW-F4 says `BasketDecision.candidate_any` **is an arm label**. It is therefore
+carried as a label and not as a truth value, and its domain is closed:
+
+| | |
+|---|---|
+| Admissible values | `candidate`, `control` — exactly these two, in this order |
+| Wire type | `string` (a label is a name; `pa.bool_()` would re-introduce the free bool NW-F4 forbids) |
+| Counterpart declaration | `research_contracts/dfc_2c_4h_v22.py` — `ARM_LABELS`, the same three literals in the same order |
+| Rejected | any other string, any `bool`, any non-string — all as `RUN_INVALID_OUTCOME_EVIDENCE` |
+| Coercion | none. There is no `bool(...)`, no `str(...)`, no default. A value that is not exactly one of the two labels is refused, never converted |
+
+Both halves of the DFC v2.2 work — this corpus contract and the strategy
+contract registration — declare that same literal set and enforce it the same
+way, so an arm value admitted here means the same thing when it reaches the
+adjudication side. Admitting an arbitrary string here while the other side
+coerced it to `True` is precisely the split this clause closes.
 
 `outcome_abs_log_return_bps = |ln(next_close / t_close)| × 10000`. This is a
 measurement of bar-to-bar movement. It is **not** a PnL claim and **not** a

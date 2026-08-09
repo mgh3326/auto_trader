@@ -110,6 +110,12 @@ PIT_UNIVERSE_SCHEMA = pa.schema(
 
 #: One row per ``BasketDecision``.  Every column is either an identifier, a
 #: reference into ``klines_4h``, or the single derived outcome number.
+#:
+#: ``candidate_any`` is the NW-F4 *arm label*.  The wire type is ``string``
+#: because a label is a name, and it is a **closed** domain: the only two
+#: admissible values are ``contract.ARM_LABELS``.  Arrow can pin the type but
+#: not the domain, so ``validation._require_arm_label`` pins the domain — an
+#: arbitrary string is as inadmissible here as a boolean is.
 OUTCOMES_SCHEMA = pa.schema(
     [
         pa.field("signal_epoch_open_time", pa.int64(), nullable=False),
