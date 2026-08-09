@@ -1,0 +1,187 @@
+{
+  "contract_id": "DFC_V22_RESEARCH_MIN",
+  "canonical_source_sha256_prefix": "df7aee908e50af42",
+  "note": "Expected rejections, frozen with the contract. Each case_id has a builder in test_a2_golden.py that feeds one bad artifact to a validator; the test asserts the code AND the wording, so a validator that fails for a different reason does not count as a pass.",
+  "cases": [
+    {
+      "case_id": "outcomes_free_bool_column",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "free boolean column"
+    },
+    {
+      "case_id": "outcomes_free_price_column",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "free price/PnL column"
+    },
+    {
+      "case_id": "outcomes_unknown_column",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "unknown outcomes column"
+    },
+    {
+      "case_id": "outcomes_row_deleted_for_missing_next_bar",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "rows may not be deleted"
+    },
+    {
+      "case_id": "outcomes_next_bar_absent_from_corpus",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "is absent from the corpus"
+    },
+    {
+      "case_id": "outcomes_next_bar_not_immediately_next",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "immediately next 4h bar"
+    },
+    {
+      "case_id": "outcomes_hand_written_return",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "is not the value derived from the referenced raw closes"
+    },
+    {
+      "case_id": "outcomes_close_payload_hash_mismatch",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "payload hash does not match the raw"
+    },
+    {
+      "case_id": "outcomes_arm_label_not_from_decision",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "does not match the decision's candidate_any"
+    },
+    {
+      "case_id": "outcomes_arbitrary_string_arm_label",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "is not one of the admissible arm labels"
+    },
+    {
+      "case_id": "outcomes_row_arm_label_outside_domain",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "is not one of the admissible arm labels"
+    },
+    {
+      "case_id": "outcomes_free_bool_arm_label",
+      "clause": "A2-C4",
+      "expected_code": "RUN_INVALID_OUTCOME_EVIDENCE",
+      "expected_detail_contains": "arm label is a free bool"
+    },
+    {
+      "case_id": "manifest_funding_source_kind",
+      "clause": "A2-C3",
+      "expected_code": "RUN_INVALID_FORBIDDEN_SOURCE",
+      "expected_detail_contains": "excluded from this corpus"
+    },
+    {
+      "case_id": "manifest_open_interest_endpoint",
+      "clause": "A2-C3",
+      "expected_code": "RUN_INVALID_FORBIDDEN_SOURCE",
+      "expected_detail_contains": "forbidden source material referenced by"
+    },
+    {
+      "case_id": "table_klines_open_interest_column",
+      "clause": "A2-C3",
+      "expected_code": "RUN_INVALID_FORBIDDEN_SOURCE",
+      "expected_detail_contains": "forbidden source material referenced by"
+    },
+    {
+      "case_id": "table_klines_missing_ignore_field",
+      "clause": "A2-C3",
+      "expected_code": "RUN_INVALID_TABLE_SCHEMA",
+      "expected_detail_contains": "column set mismatch"
+    },
+    {
+      "case_id": "table_klines_float_close",
+      "clause": "A2-C3",
+      "expected_code": "RUN_INVALID_TABLE_SCHEMA",
+      "expected_detail_contains": "type mismatch"
+    },
+    {
+      "case_id": "table_pit_universe_free_bool_eligible",
+      "clause": "A2-C3",
+      "expected_code": "RUN_INVALID_TABLE_SCHEMA",
+      "expected_detail_contains": "column set mismatch"
+    },
+    {
+      "case_id": "manifest_missing_object_sha256",
+      "clause": "A2-C5",
+      "expected_code": "RUN_INVALID_AUTHENTICITY_EVIDENCE",
+      "expected_detail_contains": "missing provenance field"
+    },
+    {
+      "case_id": "manifest_missing_retrieved_at",
+      "clause": "A2-C5",
+      "expected_code": "RUN_INVALID_AUTHENTICITY_EVIDENCE",
+      "expected_detail_contains": "missing provenance field"
+    },
+    {
+      "case_id": "manifest_payload_sha_not_keyed_by_epoch",
+      "clause": "A2-C5",
+      "expected_code": "RUN_INVALID_AUTHENTICITY_EVIDENCE",
+      "expected_detail_contains": "payload_sha256_by_epoch must be a non-empty mapping"
+    },
+    {
+      "case_id": "manifest_table_missing_freeze_sha",
+      "clause": "A2-C5",
+      "expected_code": "RUN_INVALID_AUTHENTICITY_EVIDENCE",
+      "expected_detail_contains": "missing freeze evidence"
+    },
+    {
+      "case_id": "manifest_self_consistency_admissibility",
+      "clause": "A2-C5",
+      "expected_code": "RUN_INVALID_AUTHENTICITY_EVIDENCE",
+      "expected_detail_contains": "self-consistency claim"
+    },
+    {
+      "case_id": "manifest_not_frozen",
+      "clause": "A2-C5",
+      "expected_code": "RUN_INVALID_CORPUS_LITERALS",
+      "expected_detail_contains": "must declare frozen=true"
+    },
+    {
+      "case_id": "manifest_a1_as_prerequisite",
+      "clause": "A2-C1",
+      "expected_code": "RUN_INVALID_SCOPE_SEPARATION",
+      "expected_detail_contains": "not a prerequisite of DFC-v2.x"
+    },
+    {
+      "case_id": "manifest_scratch_root",
+      "clause": "A2-C2",
+      "expected_code": "RUN_INVALID_CORPUS_LITERALS",
+      "expected_detail_contains": "a scratch directory is not the frozen corpus"
+    },
+    {
+      "case_id": "manifest_widened_judgment_window",
+      "clause": "A2-C2",
+      "expected_code": "RUN_INVALID_CORPUS_LITERALS",
+      "expected_detail_contains": "judgment_window must be"
+    },
+    {
+      "case_id": "manifest_universe_top_five",
+      "clause": "A2-C2",
+      "expected_code": "RUN_INVALID_CORPUS_LITERALS",
+      "expected_detail_contains": "universe rule must be exactly"
+    },
+    {
+      "case_id": "manifest_imputed_rows_present",
+      "clause": "A2-C3",
+      "expected_code": "RUN_INVALID_CORPUS_LITERALS",
+      "expected_detail_contains": "imputed_row_count must be 0"
+    },
+    {
+      "case_id": "manifest_missing_required_source_kind",
+      "clause": "A2-C3",
+      "expected_code": "RUN_INVALID_MANIFEST_SCHEMA",
+      "expected_detail_contains": "required source material absent"
+    }
+  ]
+}
