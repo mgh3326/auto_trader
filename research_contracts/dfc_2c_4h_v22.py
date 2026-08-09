@@ -25,6 +25,15 @@ __all__ = [
     "MODULE_SOURCE_SHA256",
     "B6_CONTROL",
     "B7_RULE",
+    "ARM_CANDIDATE",
+    "ARM_CONTROL",
+    "ARM_LABELS",
+    "CANONICAL_SOURCE_PATH",
+    "CANONICAL_SOURCE_SHA256",
+    "NW_F4_VERBATIM",
+    "NW_F7_VERBATIM",
+    "NW_F7_PASS_FALSIFIED_UNIFICATION",
+    "require_arm_label",
     "IntegrityState",
     "SymbolScore",
     "BasketDecision",
@@ -58,7 +67,7 @@ __all__ = [
 # hashes the source with this one literal normalized, so the digest is not a
 # circular input.  Exactly one declaration is required.
 MODULE_SOURCE_SHA256: Final = (
-    "86efaf3db506f77981622b490465ab91b13c08825ff25465c81af72c687d26e9"
+    "750dd758c13ea42b93cff74b51d11bdd8be76e3282fa237472f790594685842d"
 )
 HARNESS_SOURCE_SHA256: Final = (
     "762b5884e0e1bba4dbd4b6270b17dfe695047b38d6bd1c5b3717f9fba25d9386"
@@ -92,6 +101,84 @@ STATUS_INCONCLUSIVE: Final = "INCONCLUSIVE"
 STATUS_FALSIFIED: Final = "FALSIFIED"
 STATUS_RUN_INVALID: Final = "RUN_INVALID"
 RUN_INVALID_OUTCOME_EVIDENCE: Final = "RUN_INVALID_OUTCOME_EVIDENCE"
+
+# --- Canonical upstream wording, verbatim ---------------------------------
+# The two clauses this registration implements are carried here byte-exactly,
+# in the language they were signed in.  They are quoted, not summarized and not
+# translated: an English restatement is a second contract, and the point of a
+# signed clause is that there is only one.  The canonical document lives outside
+# this repository, so what a test in here can pin is the transcript plus the
+# document's SHA-256.
+CANONICAL_SOURCE_PATH: Final = "~/work/herdr-inbox/answer-codexmock-next-wave-1630.md"
+CANONICAL_SOURCE_SHA256: Final = (
+    "df7aee908e50af42bb70dc48e09eee55dd30f881ced08e0145f8015269c36693"
+)
+CANONICAL_SOURCE_LINE_COUNT: Final = 137
+CANONICAL_BINDING_RECORD: Final = (
+    "~/work/herdr-inbox/operator-decisions-20260805-0830.md §25차"
+)
+
+NW_F4_TOPIC: Final = "outcome 의미론"
+NW_F4_VERBATIM: Final = "**“signal epoch t의 `BasketDecision.candidate_any`가 arm label, 같은 decision의 winner가 심볼이다. outcome은 그 심볼의 완결된 t kline close부터 즉시 다음 완결 4h kline close까지의 absolute log return bps다. 둘 모두 raw evidence에서만 생성한다. 다음 bar가 없거나 불완전하면 행을 임의 삭제하지 않고 `RUN_INVALID_OUTCOME_EVIDENCE`; 마지막 signal을 위해 corpus에는 한 개의 다음 4h bar를 추가한다. 이는 PnL/체결 가능성 주장이 아니다.”** 자유 bool·자유 가격 입력을 금지한다."
+
+NW_F7_TOPIC: Final = "역사검증 판정·예산"
+NW_F7_VERBATIM: Final = "**“역사검증은 정확히 1회다. candidate/control 각 ≥400, stationary block bootstrap 10,000회·block 24 epoch. `PASS`는 candidate−control 95% CI lower >5bp **AND** two-sided p<0.05; 표본 미달은 `INCONCLUSIVE`; 그 밖은 `FALSIFIED`; 입력/증거 위반 `RUN_INVALID`가 최우선이다. PASS/FALSIFIED 문언 불일치는 v2.2에서 `PASS 조건의 부정=FALSIFIED`로 단일화한다. 결과 열람 후 threshold·horizon·universe 변경 0.”** planning SD는 데이터 접촉 전 계약에 고정하거나 power claim을 제거한다."
+
+#: The single-verdict wording NW-F7 unifies on, quoted exactly as signed.
+NW_F7_PASS_FALSIFIED_UNIFICATION: Final = "PASS 조건의 부정=FALSIFIED"
+
+NW_VERBATIM_CLAUSES: Final = MappingProxyType(
+    {"NW-F4": NW_F4_VERBATIM, "NW-F7": NW_F7_VERBATIM}
+)
+
+# --- NW-F4 arm label ------------------------------------------------------
+# DFC v2.2 arm-label wire contract (shared; byte-identical in both registrations)
+# =============================================================================
+# NW-F4 says ``BasketDecision.candidate_any`` *is an arm label*.  It is therefore
+# carried as a label, never as a truth value, and the label domain is closed:
+#
+#     ARM_CANDIDATE = "candidate"
+#     ARM_CONTROL   = "control"
+#     ARM_LABELS    = ("candidate", "control")
+#
+# Counterpart declaration: ``research/dfc_v22_research_min/contract.py``
+# (PR #1826), which declares the same three literals in the same order and
+# validates the same closed domain on its outcome table.  Neither side coerces:
+# a value that is not exactly one of these two labels never becomes an arm, it
+# becomes ``RUN_INVALID_OUTCOME_EVIDENCE``.  ``bool`` is rejected explicitly and
+# ahead of the membership test, because ``bool`` is exactly the shape NW-F4
+# forbids ("자유 bool ... 입력을 금지한다") and exactly the shape a silent
+# ``bool(...)`` conversion would manufacture.
+ARM_CANDIDATE: Final = "candidate"
+ARM_CONTROL: Final = "control"
+ARM_LABELS: Final = (ARM_CANDIDATE, ARM_CONTROL)
+
+
+class ArmLabelViolation(ValueError):
+    """A value offered as an arm label that the closed domain refuses."""
+
+
+def require_arm_label(value: Any) -> str:
+    """Return ``value`` iff it is one of the two admissible arm labels.
+
+    There is no coercion path and no default.  ``bool`` is tested first, by
+    type, so ``True``/``False`` can never be read as an arm; an arbitrary
+    string is refused next, because a label the contract never defined is not
+    a label.  Callers that must not raise translate the exception into
+    ``RUN_INVALID_OUTCOME_EVIDENCE`` — never into a repaired value.
+    """
+    if isinstance(value, bool):
+        raise ArmLabelViolation(
+            f"arm label must be one of {list(ARM_LABELS)}; a free bool "
+            f"({value!r}) is not an arm label and is never coerced into one"
+        )
+    if not isinstance(value, str) or value not in ARM_LABELS:
+        raise ArmLabelViolation(
+            f"arm label {value!r} is not one of the admissible arm labels "
+            f"{list(ARM_LABELS)}; the arm-label domain is closed by contract"
+        )
+    return value
+
 
 # NW-F7: power claim removed — planning_sd cannot be validated without data
 # contact; do not ship an unverifiable power claim.
@@ -191,9 +278,19 @@ class SymbolScore:
 
 @dataclass(frozen=True, slots=True)
 class BasketDecision:
-    candidate_any: bool | None
+    """``candidate_any`` is the NW-F4 arm label, not a truth value.
+
+    ``None`` means *no decision was reached* for this epoch (an incomplete
+    basket); it is not a third arm, and the outcome layer refuses it.
+    """
+
+    candidate_any: str | None
     winner: str | None
     scores: tuple[SymbolScore, ...]
+
+    def __post_init__(self) -> None:
+        if self.candidate_any is not None:
+            require_arm_label(self.candidate_any)
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +313,7 @@ class _OutcomeBinding:
     signal_epoch_start_ms: int
     entry_payload_sha256: str
     exit_payload_sha256: str
-    decision_candidate_any: bool
+    decision_candidate_any: str
     decision_winner: str
 
 
@@ -224,7 +321,7 @@ class _OutcomeBinding:
 class OutcomeObservation:
     """Arm label and bps are never free inputs — only factory-produced bindings."""
 
-    candidate: bool
+    arm_label: str
     outcome_bps: float
     binding: _OutcomeBinding
 
@@ -236,7 +333,11 @@ class OutcomeObservation:
         object.__setattr__(
             self, "outcome_bps", _finite("outcome_bps", self.outcome_bps)
         )
-        if self.candidate != self.binding.decision_candidate_any:
+        # Both sides of the comparison are domain-checked first, so a bool that
+        # slipped into the binding cannot be matched by a bool on the label.
+        require_arm_label(self.arm_label)
+        require_arm_label(self.binding.decision_candidate_any)
+        if self.arm_label != self.binding.decision_candidate_any:
             raise ValueError("arm label must equal BasketDecision.candidate_any")
         if self.binding.decision_winner != self.binding.winner_symbol:
             raise ValueError("winner symbol must equal BasketDecision.winner")
@@ -401,9 +502,12 @@ def evaluate_basket(inputs: _PITBasket) -> BasketDecision:
     )
     candidates = tuple(score for score in scores if score.is_candidate)
     # Selection is identical in both arms: all symbols are eligible for the
-    # argmax, while candidate_any remains an arm label for the outcome layer.
+    # argmax, while candidate_any is the arm label the outcome layer reads.
+    # The label is chosen here, once, from the closed domain — the boolean
+    # ``candidates`` is a local predicate and is never itself the arm.
     winner = min(scores, key=lambda score: (-abs(score.composite), score.symbol))
-    return BasketDecision(bool(candidates), winner.symbol, scores)
+    arm_label = ARM_CANDIDATE if candidates else ARM_CONTROL
+    return BasketDecision(arm_label, winner.symbol, scores)
 
 
 def _mean(values: Sequence[float]) -> float:
@@ -507,12 +611,20 @@ def make_outcome_epoch_record(
     extract_kline_close_evidence (raw payload).  Free bool / free price inputs
     are not accepted.  Missing or incomplete next bar → RUN_INVALID_OUTCOME_EVIDENCE
     (row deletion is forbidden).
+
+    The arm label is carried through unchanged after a domain check.  There is
+    deliberately no ``bool(...)`` here: coercing an out-of-domain value into a
+    truth value is how a wrong input stops being detectable.
     """
     if not isinstance(decision, BasketDecision):
         return OutcomeEpochRecord(status=RUN_INVALID_OUTCOME_EVIDENCE)
     if not isinstance(entry, _KlineCloseEvidence):
         return OutcomeEpochRecord(status=RUN_INVALID_OUTCOME_EVIDENCE)
     if decision.candidate_any is None or decision.winner is None:
+        return OutcomeEpochRecord(status=RUN_INVALID_OUTCOME_EVIDENCE)
+    try:
+        arm_label = require_arm_label(decision.candidate_any)
+    except ArmLabelViolation:
         return OutcomeEpochRecord(status=RUN_INVALID_OUTCOME_EVIDENCE)
     if not entry.complete or entry.source_id != "binance_usdm.klines_4h":
         return OutcomeEpochRecord(status=RUN_INVALID_OUTCOME_EVIDENCE)
@@ -534,14 +646,14 @@ def make_outcome_epoch_record(
     except ValueError:
         return OutcomeEpochRecord(status=RUN_INVALID_OUTCOME_EVIDENCE)
     observation = OutcomeObservation(
-        candidate=bool(decision.candidate_any),
+        arm_label=arm_label,
         outcome_bps=bps,
         binding=_OutcomeBinding(
             winner_symbol=decision.winner,
             signal_epoch_start_ms=entry.epoch_start_ms,
             entry_payload_sha256=entry.payload_sha256,
             exit_payload_sha256=next_bar.payload_sha256,
-            decision_candidate_any=bool(decision.candidate_any),
+            decision_candidate_any=arm_label,
             decision_winner=decision.winner,
         ),
     )
@@ -654,11 +766,29 @@ def adjudicate_outcomes(
                 (),
                 RUN_INVALID_OUTCOME_EVIDENCE,
             )
+        # An out-of-domain arm is an evidence violation, not a control epoch.
+        # ``not candidate`` would have silently swept it into the control arm.
+        try:
+            require_arm_label(item.observation.arm_label)
+        except ArmLabelViolation:
+            return AdjudicationResult(
+                STATUS_RUN_INVALID,
+                None,
+                None,
+                None,
+                None,
+                (),
+                RUN_INVALID_OUTCOME_EVIDENCE,
+            )
 
     observations = tuple(item.observation for item in materialized)
     assert all(obs is not None for obs in observations)
-    candidate = tuple(item.outcome_bps for item in observations if item.candidate)
-    control = tuple(item.outcome_bps for item in observations if not item.candidate)
+    candidate = tuple(
+        item.outcome_bps for item in observations if item.arm_label == ARM_CANDIDATE
+    )
+    control = tuple(
+        item.outcome_bps for item in observations if item.arm_label == ARM_CONTROL
+    )
     rule = B7_RULE
 
     # 2) INCONCLUSIVE on sample shortfall.
@@ -804,7 +934,12 @@ def contract_as_machine_data() -> dict[str, Any]:
                 "absolute_log_return_bps of BasketDecision.winner from completed "
                 "signal-epoch kline close to the immediately next completed 4h kline close"
             ),
-            "arm_label": "BasketDecision.candidate_any (not a free bool)",
+            "arm_label": "BasketDecision.candidate_any (a closed-domain arm label, not a free bool)",
+            "arm_labels": list(ARM_LABELS),
+            "arm_label_wire_type": "string",
+            "arm_label_domain": "closed",
+            "arm_label_coercion": "forbidden",
+            "arm_label_counterpart_module": "research.dfc_v22_research_min.contract",
             "symbol": "BasketDecision.winner (not a free symbol)",
             "candidate_term": "mean outcome of argmax absolute composite on candidate epochs",
             "control_term": "mean outcome of argmax absolute composite on non-candidate epochs",
@@ -818,6 +953,18 @@ def contract_as_machine_data() -> dict[str, Any]:
             "bootstrap_implementation": "stationary_block_bootstrap",
             "adjudication_implementation": "adjudicate_outcomes",
             "pnl_claim": False,
+        },
+        "canonical_wording": {
+            "source_path": CANONICAL_SOURCE_PATH,
+            "source_sha256": CANONICAL_SOURCE_SHA256,
+            "source_line_count": CANONICAL_SOURCE_LINE_COUNT,
+            "binding_record": CANONICAL_BINDING_RECORD,
+            "paraphrase": "forbidden",
+            "nw_f4_topic": NW_F4_TOPIC,
+            "nw_f4_verbatim": NW_F4_VERBATIM,
+            "nw_f7_topic": NW_F7_TOPIC,
+            "nw_f7_verbatim": NW_F7_VERBATIM,
+            "pass_falsified_unification_verbatim": NW_F7_PASS_FALSIFIED_UNIFICATION,
         },
         "adjudication": B7_RULE,
         "implementation": {

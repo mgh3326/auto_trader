@@ -129,9 +129,10 @@ def _epoch(symbol: str, *, current: float = 1.0):
     )
 
 
-def _decision(*, candidate_any: bool, winner: str) -> contract.BasketDecision:
+def _decision(*, candidate_any: str, winner: str) -> contract.BasketDecision:
+    is_candidate = candidate_any == contract.ARM_CANDIDATE
     scores = (
-        contract.SymbolScore(winner, 1.0 if candidate_any else 0.0, 0.5, candidate_any),
+        contract.SymbolScore(winner, 1.0 if is_candidate else 0.0, 0.5, is_candidate),
         contract.SymbolScore("BBBUSDT", 0.1, 0.5, False),
         contract.SymbolScore("CCCUSDT", 0.0, 0.5, False),
     )
@@ -166,13 +167,13 @@ def _close_evidence(
 
 def _ok_record(
     *,
-    candidate: bool,
+    arm_label: str,
     entry_close: str,
     exit_close: str,
     winner: str = "AAAUSDT",
     epoch_start_ms: int = 0,
 ) -> contract.OutcomeEpochRecord:
-    decision = _decision(candidate_any=candidate, winner=winner)
+    decision = _decision(candidate_any=arm_label, winner=winner)
     entry = _close_evidence(winner, epoch_start_ms, close=entry_close)
     nxt = _close_evidence(
         winner, epoch_start_ms + contract.INTERVAL_MS, close=exit_close
@@ -191,7 +192,7 @@ def _records_with_delta(
     for index in range(n_candidate):
         records.append(
             _ok_record(
-                candidate=True,
+                arm_label=contract.ARM_CANDIDATE,
                 entry_close="100",
                 exit_close=candidate_exit,
                 epoch_start_ms=index * contract.INTERVAL_MS,
@@ -200,7 +201,7 @@ def _records_with_delta(
     for index in range(n_control):
         records.append(
             _ok_record(
-                candidate=False,
+                arm_label=contract.ARM_CONTROL,
                 entry_close="100",
                 exit_close=control_exit,
                 epoch_start_ms=(n_candidate + index) * contract.INTERVAL_MS,
@@ -378,7 +379,10 @@ def test_control_arm_executes_same_selection() -> None:
         },
     )
     assert basket.winner == "AAAUSDT"
-    assert basket.candidate_any is True
+    assert basket.candidate_any == contract.ARM_CANDIDATE
+    # The arm is a label, not a truth value: `is True` must no longer hold.
+    assert basket.candidate_any is not True
+    assert not isinstance(basket.candidate_any, bool)
 
 
 def test_contract_remains_offline_only() -> None:
@@ -407,13 +411,13 @@ def test_v21_port_blobs_are_importable_and_unmodified_identity() -> None:
 
 
 def test_outcome_from_decision_and_raw_kline_evidence() -> None:
-    decision = _decision(candidate_any=True, winner="AAAUSDT")
+    decision = _decision(candidate_any=contract.ARM_CANDIDATE, winner="AAAUSDT")
     entry = _close_evidence("AAAUSDT", 0, close="100")
     nxt = _close_evidence("AAAUSDT", contract.INTERVAL_MS, close="101")
     record = contract.make_outcome_epoch_record(decision, entry=entry, next_bar=nxt)
     assert record.status == "ok"
     assert record.observation is not None
-    assert record.observation.candidate is True
+    assert record.observation.arm_label == contract.ARM_CANDIDATE
     assert record.observation.outcome_bps == pytest.approx(
         abs(math.log(101 / 100)) * 10_000.0
     )
@@ -421,7 +425,7 @@ def test_outcome_from_decision_and_raw_kline_evidence() -> None:
 
 
 def test_harness_outcome_from_candles_binds_decision() -> None:
-    decision = _decision(candidate_any=False, winner="AAAUSDT")
+    decision = _decision(candidate_any=contract.ARM_CONTROL, winner="AAAUSDT")
     entry = _candle(
         "AAAUSDT", 0, source="kline", payload=_kline_payload(0, close="100")
     )
@@ -436,7 +440,7 @@ def test_harness_outcome_from_candles_binds_decision() -> None:
     )
     assert record.status == "ok"
     assert record.observation is not None
-    assert record.observation.candidate is False
+    assert record.observation.arm_label == contract.ARM_CONTROL
 
 
 def test_absolute_log_return_bps_is_not_a_free_outcome_surface() -> None:
@@ -448,6 +452,164 @@ def test_absolute_log_return_bps_is_not_a_free_outcome_surface() -> None:
     assert not hasattr(contract, "make_outcome_observation")
     sig = inspect.signature(contract.make_outcome_epoch_record)
     assert list(sig.parameters) == ["decision", "entry", "next_bar"]
+
+
+def _forged_decision(arm: object, winner: str = "AAAUSDT") -> contract.BasketDecision:
+    """Build a BasketDecision past its own validator.
+
+    The dataclass refuses a bad arm, which is the first line of defence.  This
+    bypass exists so the *second* line — the factory and the adjudicator — is
+    tested on its own: a guard that only works because another guard already
+    ran is not a guard.
+    """
+    forged = object.__new__(contract.BasketDecision)
+    object.__setattr__(forged, "candidate_any", arm)
+    object.__setattr__(forged, "winner", winner)
+    object.__setattr__(forged, "scores", ())
+    return forged
+
+
+# ---------------------------------------------------------------------------
+# NW-F4 arm label: closed domain, no coercion
+# ---------------------------------------------------------------------------
+
+
+def test_arm_label_domain_is_the_shared_closed_set() -> None:
+    """Pin the wire contract v2.2 shares with the A2 registration (PR #1826).
+
+    The two registrations live on disjoint paths and cannot import each other,
+    so the only thing keeping them from drifting is that both pin this exact
+    literal.  Changing it here without changing it there is the split this test
+    exists to make loud.
+    """
+    assert contract.ARM_LABELS == ("candidate", "control")
+    assert (contract.ARM_CANDIDATE, contract.ARM_CONTROL) == contract.ARM_LABELS
+    assert all(isinstance(label, str) for label in contract.ARM_LABELS)
+    assert not any(isinstance(label, bool) for label in contract.ARM_LABELS)
+    estimand = contract.contract_as_machine_data()["estimand"]
+    assert estimand["arm_labels"] == list(contract.ARM_LABELS)
+    assert estimand["arm_label_domain"] == "closed"
+    assert estimand["arm_label_coercion"] == "forbidden"
+    assert estimand["arm_label_wire_type"] == "string"
+    assert (
+        estimand["arm_label_counterpart_module"]
+        == "research.dfc_v22_research_min.contract"
+    )
+    assert "research/dfc_v22_research_min/contract.py" in inspect.getsource(contract)
+
+
+def test_arbitrary_string_arm_is_rejected_at_every_layer() -> None:
+    """The v1 split: A2 admitted this string while v2.2 coerced it to True."""
+    arbitrary = "arbitrary-nonboolean-arm"
+    with pytest.raises(contract.ArmLabelViolation, match="admissible arm labels"):
+        contract.require_arm_label(arbitrary)
+    with pytest.raises(contract.ArmLabelViolation, match="admissible arm labels"):
+        contract.BasketDecision(arbitrary, "AAAUSDT", ())  # type: ignore[arg-type]
+
+    # Past the dataclass, the factory still refuses — and does not coerce.
+    entry = _close_evidence("AAAUSDT", 0, close="100")
+    nxt = _close_evidence("AAAUSDT", contract.INTERVAL_MS, close="101")
+    record = contract.make_outcome_epoch_record(
+        _forged_decision(arbitrary), entry=entry, next_bar=nxt
+    )
+    assert record.status == contract.RUN_INVALID_OUTCOME_EVIDENCE
+    assert record.observation is None
+
+
+def test_free_bool_arm_is_rejected_and_never_coerced() -> None:
+    entry = _close_evidence("AAAUSDT", 0, close="100")
+    nxt = _close_evidence("AAAUSDT", contract.INTERVAL_MS, close="101")
+    for value in (True, False):
+        with pytest.raises(contract.ArmLabelViolation, match="free bool"):
+            contract.require_arm_label(value)
+        record = contract.make_outcome_epoch_record(
+            _forged_decision(value), entry=entry, next_bar=nxt
+        )
+        assert record.status == contract.RUN_INVALID_OUTCOME_EVIDENCE
+        assert record.observation is None
+
+
+def test_out_of_domain_arm_is_run_invalid_not_swept_into_control() -> None:
+    """`not candidate` used to make every non-True value a control epoch."""
+    good = _records_with_delta(
+        n_candidate=400, n_control=400, candidate_exit="100.6", control_exit="100.1"
+    )
+    forged = object.__new__(contract.OutcomeObservation)
+    object.__setattr__(forged, "arm_label", "arbitrary-nonboolean-arm")
+    object.__setattr__(forged, "outcome_bps", 12.5)
+    object.__setattr__(forged, "binding", good[0].observation.binding)
+    holder = object.__new__(contract.OutcomeEpochRecord)
+    object.__setattr__(holder, "status", "ok")
+    object.__setattr__(holder, "observation", forged)
+
+    result = contract.adjudicate_outcomes((holder, *good))
+    assert result.status == contract.STATUS_RUN_INVALID
+    assert result.reason_code == contract.RUN_INVALID_OUTCOME_EVIDENCE
+
+
+def test_no_silent_bool_coercion_of_the_arm_remains_in_source() -> None:
+    """Static guard against reintroducing the coercion this round removed."""
+    source = inspect.getsource(contract)
+    for forbidden in (
+        "bool(decision.candidate_any)",
+        "bool(candidates)",
+        "if item.candidate",
+        "if not item.candidate",
+    ):
+        assert forbidden not in source, forbidden
+    assert "arm_label = ARM_CANDIDATE if candidates else ARM_CONTROL" in source
+
+
+# ---------------------------------------------------------------------------
+# Verbatim upstream wording (NW-F4, NW-F7)
+# ---------------------------------------------------------------------------
+
+
+def test_nw_f4_and_nw_f7_are_carried_verbatim() -> None:
+    """No paraphrase, no translation, no summary — the signed text itself."""
+    assert contract.CANONICAL_SOURCE_SHA256.startswith("df7aee908e50af42")
+    assert len(contract.CANONICAL_SOURCE_SHA256) == 64
+    assert contract.CANONICAL_SOURCE_LINE_COUNT == 137
+
+    assert contract.NW_F4_VERBATIM == (
+        "**“signal epoch t의 `BasketDecision.candidate_any`가 arm label, 같은 "
+        "decision의 winner가 심볼이다. outcome은 그 심볼의 완결된 t kline close부터 "
+        "즉시 다음 완결 4h kline close까지의 absolute log return bps다. 둘 모두 raw "
+        "evidence에서만 생성한다. 다음 bar가 없거나 불완전하면 행을 임의 삭제하지 않고 "
+        "`RUN_INVALID_OUTCOME_EVIDENCE`; 마지막 signal을 위해 corpus에는 한 개의 다음 "
+        "4h bar를 추가한다. 이는 PnL/체결 가능성 주장이 아니다.”** 자유 bool·자유 가격 "
+        "입력을 금지한다."
+    )
+    assert contract.NW_F7_VERBATIM == (
+        "**“역사검증은 정확히 1회다. candidate/control 각 ≥400, stationary block "
+        "bootstrap 10,000회·block 24 epoch. `PASS`는 candidate−control 95% CI lower "
+        ">5bp **AND** two-sided p<0.05; 표본 미달은 `INCONCLUSIVE`; 그 밖은 "
+        "`FALSIFIED`; 입력/증거 위반 `RUN_INVALID`가 최우선이다. PASS/FALSIFIED 문언 "
+        "불일치는 v2.2에서 `PASS 조건의 부정=FALSIFIED`로 단일화한다. 결과 열람 후 "
+        "threshold·horizon·universe 변경 0.”** planning SD는 데이터 접촉 전 계약에 "
+        "고정하거나 power claim을 제거한다."
+    )
+    # The unification clause specifically, as its own quotable literal.
+    assert contract.NW_F7_PASS_FALSIFIED_UNIFICATION == "PASS 조건의 부정=FALSIFIED"
+    assert contract.NW_F7_PASS_FALSIFIED_UNIFICATION in contract.NW_F7_VERBATIM
+    assert "`BasketDecision.candidate_any`가 arm label" in contract.NW_F4_VERBATIM
+
+    # Carried in the source, and inside the canonical contract hash.
+    source = inspect.getsource(contract)
+    assert contract.NW_F4_VERBATIM in source
+    assert contract.NW_F7_VERBATIM in source
+    wording = contract.contract_as_machine_data()["canonical_wording"]
+    assert wording["nw_f4_verbatim"] == contract.NW_F4_VERBATIM
+    assert wording["nw_f7_verbatim"] == contract.NW_F7_VERBATIM
+    assert wording["pass_falsified_unification_verbatim"] == (
+        contract.NW_F7_PASS_FALSIFIED_UNIFICATION
+    )
+    assert wording["paraphrase"] == "forbidden"
+    assert wording["source_sha256"] == contract.CANONICAL_SOURCE_SHA256
+    assert dict(contract.NW_VERBATIM_CLAUSES) == {
+        "NW-F4": contract.NW_F4_VERBATIM,
+        "NW-F7": contract.NW_F7_VERBATIM,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -463,22 +625,41 @@ def test_mutant1_free_bool_outcome_construction_is_rejected() -> None:
     # Forged non-_OutcomeBinding binding is also rejected.
     with pytest.raises(TypeError, match="evidence binding"):
         contract.OutcomeObservation(  # type: ignore[arg-type]
-            candidate=True,
+            arm_label=contract.ARM_CANDIDATE,
             outcome_bps=50.0,
             binding=SimpleNamespace(
                 winner_symbol="AAAUSDT",
                 signal_epoch_start_ms=0,
                 entry_payload_sha256="a" * 64,
                 exit_payload_sha256="b" * 64,
-                decision_candidate_any=True,
+                decision_candidate_any=contract.ARM_CANDIDATE,
                 decision_winner="AAAUSDT",
             ),
         )
+    # A real binding does not make a bool an arm: True/False are refused on
+    # both the observation and the binding, so a self-consistent pair of bools
+    # cannot slip past the equality check.
+    with pytest.raises(contract.ArmLabelViolation, match="free bool"):
+        contract.OutcomeObservation(  # type: ignore[arg-type]
+            arm_label=True,
+            outcome_bps=50.0,
+            binding=contract._OutcomeBinding(
+                winner_symbol="AAAUSDT",
+                signal_epoch_start_ms=0,
+                entry_payload_sha256="a" * 64,
+                exit_payload_sha256="b" * 64,
+                decision_candidate_any=True,  # type: ignore[arg-type]
+                decision_winner="AAAUSDT",
+            ),
+        )
+    # A BasketDecision cannot even be built with a bool arm.
+    with pytest.raises(contract.ArmLabelViolation, match="free bool"):
+        contract.BasketDecision(True, "AAAUSDT", ())  # type: ignore[arg-type]
 
 
 def test_mutant2_free_price_outside_raw_evidence_is_rejected() -> None:
     """② free price (outside raw evidence) → rejected."""
-    decision = _decision(candidate_any=True, winner="AAAUSDT")
+    decision = _decision(candidate_any=contract.ARM_CANDIDATE, winner="AAAUSDT")
     # Free floats are not accepted — entry/next_bar must be _KlineCloseEvidence.
     record = contract.make_outcome_epoch_record(
         decision,
@@ -518,7 +699,7 @@ def test_mutant2_free_price_outside_raw_evidence_is_rejected() -> None:
 
 def test_mutant3_missing_next_bar_is_run_invalid_not_row_drop() -> None:
     """③ missing next bar → RUN_INVALID_OUTCOME_EVIDENCE, not silent deletion."""
-    decision = _decision(candidate_any=True, winner="AAAUSDT")
+    decision = _decision(candidate_any=contract.ARM_CANDIDATE, winner="AAAUSDT")
     entry = _close_evidence("AAAUSDT", 0, close="100")
     record = contract.make_outcome_epoch_record(decision, entry=entry, next_bar=None)
     assert record.status == contract.RUN_INVALID_OUTCOME_EVIDENCE
@@ -611,7 +792,7 @@ def test_pass_vs_falsified_unification() -> None:
 
 
 def test_incomplete_next_bar_is_run_invalid() -> None:
-    decision = _decision(candidate_any=True, winner="AAAUSDT")
+    decision = _decision(candidate_any=contract.ARM_CANDIDATE, winner="AAAUSDT")
     entry = _close_evidence("AAAUSDT", 0, close="100")
     # Wrong interval (not immediate next 4h bar).
     far = _close_evidence("AAAUSDT", 2 * contract.INTERVAL_MS, close="101")
@@ -620,7 +801,7 @@ def test_incomplete_next_bar_is_run_invalid() -> None:
 
 
 def test_winner_symbol_mismatch_is_run_invalid() -> None:
-    decision = _decision(candidate_any=True, winner="AAAUSDT")
+    decision = _decision(candidate_any=contract.ARM_CANDIDATE, winner="AAAUSDT")
     entry = _close_evidence("BBBUSDT", 0, close="100")
     nxt = _close_evidence("BBBUSDT", contract.INTERVAL_MS, close="101")
     record = contract.make_outcome_epoch_record(decision, entry=entry, next_bar=nxt)
@@ -648,7 +829,7 @@ def test_false_green_guard_mutant_goldens_have_failing_negations() -> None:
     assert (not raised) is False  # inverted golden would fail
 
     # ③ missing next bar is INVALID (inverted: status == "ok" is False).
-    decision = _decision(candidate_any=True, winner="AAAUSDT")
+    decision = _decision(candidate_any=contract.ARM_CANDIDATE, winner="AAAUSDT")
     entry = _close_evidence("AAAUSDT", 0, close="100")
     record = contract.make_outcome_epoch_record(decision, entry=entry, next_bar=None)
     assert record.status == contract.RUN_INVALID_OUTCOME_EVIDENCE
