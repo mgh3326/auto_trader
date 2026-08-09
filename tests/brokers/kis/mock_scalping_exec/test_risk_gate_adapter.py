@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import pytest
@@ -178,6 +178,17 @@ async def test_holdings_read_failure_fail_closes() -> None:
 
     with pytest.raises(RuntimeError):
         await _gate(_FakeState(), holdings=_boom).load(symbol="005930", side="BUY")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_malformed_holding_qty_fail_closes_reentry_gate() -> None:
+    """An unreadable holding must block the production re-entry decision."""
+
+    gate = _gate(_FakeState(), holdings=_holdings(("005930", "N/A")))
+
+    with pytest.raises(InvalidOperation):
+        await gate.load(symbol="005930", side="BUY")
 
 
 @pytest.mark.unit

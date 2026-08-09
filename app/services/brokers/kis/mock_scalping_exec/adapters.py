@@ -98,7 +98,7 @@ def _to_decimal(value: Any) -> Decimal | None:
         return None
     try:
         return Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
+    except (TypeError, ValueError):
         return None
 
 
@@ -248,11 +248,17 @@ class KisMockBroker:
         """
 
         payload = await self._get_mock_client().inquire_orderbook(symbol, market)
-        bid = _to_decimal(payload.get("bidp1"))
-        ask = _to_decimal(payload.get("askp1"))
-        bid_qty = _to_decimal(payload.get("bidp_rsqn1")) or Decimal("0")
-        ask_qty = _to_decimal(payload.get("askp_rsqn1")) or Decimal("0")
-        last = _to_decimal(payload.get("stck_prpr"))
+        try:
+            bid = _to_decimal(payload.get("bidp1"))
+            ask = _to_decimal(payload.get("askp1"))
+            bid_qty = _to_decimal(payload.get("bidp_rsqn1")) or Decimal("0")
+            ask_qty = _to_decimal(payload.get("askp_rsqn1")) or Decimal("0")
+            last = _to_decimal(payload.get("stck_prpr"))
+        except InvalidOperation:
+            # Keep malformed mock-host orderbooks on the existing local
+            # pre-send fail-closed path. Shared holdings parsing must still
+            # surface this error to preserve fill-evidence and risk-gate guards.
+            raise PreSendFreshnessError(("invalid_orderbook",)) from None
 
         if bid is None or ask is None or bid <= 0 or ask <= 0:
             raise PreSendFreshnessError(("invalid_orderbook",))

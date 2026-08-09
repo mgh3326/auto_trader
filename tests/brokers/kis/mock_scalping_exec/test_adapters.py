@@ -120,6 +120,39 @@ async def test_refresh_market_state_rejects_malformed_orderbook(mocker) -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_malformed_holding_qty_makes_confirm_fill_fail_closed(mocker) -> None:
+    """A malformed baseline must remain unknown, never become a zero holding."""
+
+    broker = KisMockBroker(get_state=lambda _s: None)
+    client = mocker.MagicMock()
+    client.fetch_domestic_balance_snapshot = AsyncMock(
+        side_effect=[
+            {
+                "holdings": [{"pdno": "005930", "hldg_qty": "N/A"}],
+                "cash": {"dnca_tot_amt": "1000000"},
+            },
+            {
+                "holdings": [{"pdno": "005930", "hldg_qty": "1"}],
+                "cash": {"dnca_tot_amt": "930000"},
+            },
+        ]
+    )
+    mocker.patch.object(broker, "_get_mock_client", return_value=client)
+
+    baseline = await broker._capture_baseline(
+        symbol="005930",
+        side="buy",
+        qty=Decimal("1"),
+        limit_price=Decimal("70000"),
+    )
+
+    assert baseline["holdings_qty"] is None
+    assert await broker.confirm_fill({"_baseline": baseline}) is None
+    client.fetch_domestic_balance_snapshot.assert_awaited_once_with(is_mock=True)
+
+
+@pytest.mark.unit
 def test_quote_maps_market_state_to_decimal() -> None:
     state = MarketState(symbol="005930")
     state.bid, state.ask, state.last_price = 70000.0, 70100.0, 70050.0
