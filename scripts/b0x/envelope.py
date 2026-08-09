@@ -130,6 +130,28 @@ KR_MOCK_ENVELOPE: Final[Envelope] = Envelope(
     daily_loss_kill_basis="pct_of_nav",
 )
 
+# ---------------------------------------------------------------------------
+# Contract §4, US (alpaca_paper_lab) column, verbatim:
+#   종목당 신규 $150~450 · 종목당 총투입 = 신규×5 · 동시 포지션 ≤10 ·
+#   일 신규 진입 ≤3 · 일 손실 −2.5% NAV → kill · 세션 US RTH
+#
+# ``per_order_notional`` is the immutable *upper* bound.  The lower bound and
+# B0's selected $300 point inside the signed $150–450 band belong to the US
+# venue planner, because ``Envelope`` deliberately models caps rather than a
+# venue's lot/price-aware sizing rule.  Keeping that distinction explicit
+# prevents a caller from mistaking $450 for the requested order size.
+# ---------------------------------------------------------------------------
+US_ALPACA_PAPER_LAB_ENVELOPE: Final[Envelope] = Envelope(
+    market="us",
+    quote_currency="USD",
+    per_order_notional=Decimal("450"),
+    per_symbol_total_notional=Decimal("450") * 5,
+    max_concurrent_positions=10,
+    max_new_entries_per_utc_day=3,
+    daily_loss_kill=Decimal("0.025"),
+    daily_loss_kill_basis="pct_of_nav",
+)
+
 #: Contract §4 footnote — "Upbit shadow 는 합성이므로 envelope 미적용(기록만)".
 #: The shadow lane still *records* the sidecar envelope alongside every cycle so
 #: a reader can see what would have bound a real venue, but derivation does not
@@ -141,6 +163,7 @@ SHADOW_ENVELOPE_NOT_APPLIED: Final[str] = (
 _LOCKED_ENVELOPES: Final[dict[str, Envelope]] = {
     "crypto": CRYPTO_SIDECAR_ENVELOPE,
     "kr": KR_MOCK_ENVELOPE,
+    "us": US_ALPACA_PAPER_LAB_ENVELOPE,
 }
 
 
@@ -190,6 +213,7 @@ __all__ = [
     "EnvelopeNotLocked",
     "CRYPTO_SIDECAR_ENVELOPE",
     "KR_MOCK_ENVELOPE",
+    "US_ALPACA_PAPER_LAB_ENVELOPE",
     "SHADOW_ENVELOPE_NOT_APPLIED",
     "assert_envelope_locked",
     "load_envelope",

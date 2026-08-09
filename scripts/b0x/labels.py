@@ -54,8 +54,10 @@ WRITER_SINGLETON_SCOPE_CAVEATS: Final[dict[str, str]] = {
         "주장하지 않는다."
     ),
     ALPACA_PAPER_LAB_SCOPE_KEY: (
-        "WRITER_SINGLETON_SCOPE_CAVEAT — Alpaca paper lab은 operator account "
-        "map에서 B0-X-US 점유자로 지정된 레인이다."
+        "WRITER_SINGLETON_SCOPE_CAVEAT — operator_contract.yaml의 "
+        "account_lanes.alpaca_paper_lab=B0-X-US 이고, "
+        "strategy_order_exceptions.b0x-adapter-orders-20260808의 "
+        "writer=b0x_adapter_single 및 surfaces에 alpaca_paper_lab이 등재돼 있다."
     ),
 }
 

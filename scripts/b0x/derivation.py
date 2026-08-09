@@ -294,9 +294,14 @@ def derive_orders(
     loss_guard_multiplier = _decimal(config.get("loss_guard_multiplier")) or Decimal(
         "1"
     )
+    # The policy-table schema predates the US adapter, so the original KRW
+    # sizing field lives under ``sizing`` while the US builder stamps its
+    # signed USD band under ``config``.  Prefer the existing field unchanged
+    # for crypto/KR, then consume the US builder's explicit selected point.
+    # This is table evidence, not a new adapter-local default.
     new_entry_notional_table = _decimal(
         (table.sizing or {}).get("new_entry_notional_krw")
-    )
+    ) or _decimal(config.get("new_entry_notional_usd"))
 
     # Running budgets, consumed in lexicographic symbol order.
     #
@@ -784,6 +789,16 @@ def _size_buy(
     size = envelope.per_order_notional
     if requested is not None and requested < size:
         size = requested
+    elif (
+        envelope.market == "us"
+        and table_new_entry_notional is not None
+        and table_new_entry_notional < size
+    ):
+        # The US builder's signed $300 point is intentionally below its $450
+        # ceiling and must not be widened merely because the envelope is an
+        # upper bound.  Crypto/KR retain their existing envelope-first sizing:
+        # their fixture/schema values are not a US-style selected USD point.
+        size = table_new_entry_notional
     if symbol_headroom is not None and symbol_headroom < size:
         size = symbol_headroom
     if size <= 0:

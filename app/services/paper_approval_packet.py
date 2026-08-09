@@ -144,7 +144,7 @@ class PaperApprovalPacket(BaseModel):
     signal_source: str
     artifact_id: uuid.UUID
     signal_symbol: str
-    signal_venue: Literal["upbit", "binance_public_spot"]
+    signal_venue: Literal["upbit", "binance_public_spot", "policy_table_us"]
     execution_symbol: str
     execution_venue: Literal["alpaca_paper"]
     execution_asset_class: Literal["crypto", "us_equity"]
