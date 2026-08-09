@@ -12,7 +12,11 @@ import pytest
 
 from scripts.b0x.crypto import shadow, sidecar
 from scripts.b0x.cycle import run_shadow_cycle, run_sidecar_cycle
-from scripts.b0x.labels import SHADOW_SYNTHETIC_FILL, TRUST_LABELS
+from scripts.b0x.labels import (
+    SHADOW_SYNTHETIC_FILL,
+    SHARED_ACCOUNT_HISTORY,
+    TRUST_LABELS,
+)
 from scripts.b0x.ledger import ObservationLedger
 from tests.scripts.b0x._table_fixtures import (
     make_payload,
@@ -232,6 +236,9 @@ async def test_sidecar_dry_run_plans_but_dispatches_nothing(
     assert all(row["dispatched"] is False for row in outcome.record["submitted"])
     assert all(call["confirm"] is False for call in client.submitted)
     assert outcome.record["base_url_host"] == "demo-api.binance.com"
+    assert SHARED_ACCOUNT_HISTORY in outcome.record["labels"]
+    artifact_text = outcome.artifact_path.read_text(encoding="utf-8")
+    assert f"> {SHARED_ACCOUNT_HISTORY}" in artifact_text
 
     # Only the three authorized symbols can appear.
     for row in outcome.record["planned"]:

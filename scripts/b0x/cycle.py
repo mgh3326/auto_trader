@@ -48,6 +48,7 @@ from scripts.b0x.envelope import (
 from scripts.b0x.labels import (
     CROSS_QUOTE_RATIO_TRANSFER,
     SHADOW_SYNTHETIC_FILL,
+    account_history_labels,
     header_labels,
     render_header,
 )
@@ -386,8 +387,10 @@ async def run_sidecar_cycle(
     assert_envelope_locked(envelope)
     sidecar_lane.assert_sidecar_enabled()
     policy = sidecar_lane.build_policy(envelope)
-    labels = header_labels(extra=(CROSS_QUOTE_RATIO_TRANSFER,))
     lane = sidecar_lane.LANE
+    labels = header_labels(
+        extra=(*account_history_labels(lane), CROSS_QUOTE_RATIO_TRANSFER)
+    )
     outcome = CycleOutcome(lane=lane, at=now)
 
     with writer_lock(lane=lane, root=Path(out_dir).expanduser()):
