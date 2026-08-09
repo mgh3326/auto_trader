@@ -26,9 +26,11 @@ import pytest
 from research.dfc_v22_research_min import contract as c
 from research.dfc_v22_research_min import validation as v
 from research.dfc_v22_research_min.schema import (
+    CANONICAL_TABLES,
     KLINES_4H_SCHEMA,
     OUTCOMES_SCHEMA,
     PIT_UNIVERSE_SCHEMA,
+    PREMIUM_INDEX_4H_SCHEMA,
     PREMIUM_INDEX_GAP_AUDIT_SCHEMA,
 )
 
@@ -317,6 +319,24 @@ def gap_audit_row(
         "verdict": verdict,
         **_provenance("p-gap-t0"),
     }
+
+
+def premium_index(rows: list[dict[str, Any]] | None = None) -> pa.Table:
+    rows = (
+        rows
+        if rows is not None
+        else [
+            {
+                "symbol": row["symbol"],
+                "open_time": row["open_time"],
+                "close_time": row["close_time"],
+                "premium_index_close": "0.00012",
+                **_provenance(f"pi-{row['payload_sha256']}"),
+            }
+            for row in _KLINE_ROWS
+        ]
+    )
+    return pa.Table.from_pylist(rows, schema=PREMIUM_INDEX_4H_SCHEMA)
 
 
 def gap_audit(rows: list[dict[str, Any]] | None = None) -> pa.Table:
@@ -784,9 +804,45 @@ def test_baseline_artifacts_validate() -> None:
         pit_universe=pit_universe(),
         gap_audit=gap_audit(),
         klines=klines(),
+        premium_index=premium_index(),
         outcomes=outcomes(),
         decisions=_DECISIONS,
     )
+
+
+@pytest.mark.unit
+def test_validate_corpus_covers_every_canonical_table() -> None:
+    """A canonical table absent from the orchestrator is a schema nobody checks.
+
+    ``validate_corpus`` is the whole entry point, so the set of tables it reaches
+    has to equal ``CANONICAL_TABLES`` — otherwise adding a table to the contract
+    silently adds one that no run validates.
+    """
+    reached: set[str] = set()
+    original = v.validate_table
+
+    def spy(name: str, table: pa.Table) -> None:
+        reached.add(name)
+        original(name, table)
+
+    v.validate_table = spy  # type: ignore[assignment]
+    try:
+        v.validate_corpus(
+            manifest(),
+            pit_universe=pit_universe(),
+            gap_audit=gap_audit(),
+            klines=klines(),
+            premium_index=premium_index(),
+            outcomes=outcomes(),
+            decisions=_DECISIONS,
+        )
+    finally:
+        v.validate_table = original  # type: ignore[assignment]
+
+    assert reached == set(CANONICAL_TABLES), {
+        "unvalidated": sorted(set(CANONICAL_TABLES) - reached),
+        "unexpected": sorted(reached - set(CANONICAL_TABLES)),
+    }
 
 
 @pytest.mark.unit
@@ -817,6 +873,7 @@ def test_input_evidence_outranks_every_other_terminal_code() -> None:
             pit_universe=pit_universe(),
             gap_audit=gap_audit([gap_audit_row(quote_volume="250.0")]),
             klines=klines(),
+            premium_index=premium_index(),
             outcomes=outcomes(bad_outcomes),
             decisions=_DECISIONS,
         )

@@ -124,10 +124,12 @@ FORBIDDEN_EQUIVALENCE_PHRASES = (
     "사실상 권위",
 )
 
+#: Compared against the document with whitespace collapsed, so re-wrapping a
+#: paragraph does not fail a test about what the paragraph *says*.
 REQUIRED_A2_C6_WORDING = (
     "There is no single authoritative public Binance source for contract "
-    "lifecycle\nor eligibility.",
-    "a different kind of evidence, not an approximation of the missing\nauthority",
+    "lifecycle or eligibility.",
+    "a different kind of evidence, not an approximation of the missing authority",
     "Nothing here claims the two are interchangeable",
 )
 
@@ -156,7 +158,7 @@ def test_substitute_evidence_is_never_called_equivalent_to_an_authority() -> Non
 
 @pytest.mark.unit
 def test_gap_closure_clauses_state_their_load_bearing_sentences() -> None:
-    doc = DOC_PATH.read_text(encoding="utf-8")
+    doc = " ".join(DOC_PATH.read_text(encoding="utf-8").split())
     for wording in REQUIRED_A2_C6_WORDING + REQUIRED_A2_C7_WORDING:
         assert wording in doc, f"missing from the contract document: {wording!r}"
 

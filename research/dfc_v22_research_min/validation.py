@@ -1078,6 +1078,7 @@ def validate_corpus(
     pit_universe: pa.Table,
     gap_audit: pa.Table,
     klines: pa.Table,
+    premium_index: pa.Table,
     outcomes: pa.Table,
     decisions: Sequence[Mapping[str, Any]],
 ) -> None:
@@ -1089,6 +1090,9 @@ def validate_corpus(
     would let a run whose ranking input is inadmissible be written up as an
     outcome-level problem instead.
 
+    Every canonical table is checked here, so that this function is the whole
+    entry point: a table left out would be a schema nobody validates.
+
     Raises:
         ContractViolation: The highest-priority code the artifacts violate.
     """
@@ -1096,6 +1100,7 @@ def validate_corpus(
     validate_premium_index_gap(gap_audit, pit_universe, in_window)
     validate_manifest(manifest)  # re-runs the pure input-evidence half; idempotent
     validate_table("klines_4h", klines)
+    validate_table("premium_index_4h", premium_index)
     validate_outcomes(outcomes, klines, decisions)
 
 

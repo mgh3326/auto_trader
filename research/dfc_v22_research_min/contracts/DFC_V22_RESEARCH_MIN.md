@@ -317,7 +317,8 @@ timing the paragraph above is suspicious of, so the record is:
   outcome tail, universe rule (30 days · top 3 · canonical-ascending ties),
   required and forbidden source material, imputation 0, the arm-label set and
   every A2-C1..A2-C5 terminal code are unchanged. The amendment is additive: two
-  clauses, one terminal code, one canonical table, three manifest keys.
+  clauses, one terminal code, one canonical table (`premium_index_gap_audit`),
+  and two manifest keys (`lifecycle_eligibility`, `premium_index_gap`).
 - **It tightens; it cannot relax.** Every added rule can only reject corpora the
   previous text would have accepted. No gate widened, no threshold moved.
 - **What was read did not move a number.** A2-MEASURE returned `UNDETERMINED`
