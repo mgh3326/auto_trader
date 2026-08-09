@@ -54,9 +54,10 @@ from typing import Any, Final
 
 from app.services.brokers.upbit.client import fetch_ohlcv
 from scripts.b0x.derivation import DerivedOrder
+from scripts.b0x.scope import UPBIT_SHADOW_SCOPE_KEY
 from scripts.b0x.state import B0XPosition, LaneAccountState
 
-LANE: Final[str] = "upbit_shadow"
+LANE: Final[str] = UPBIT_SHADOW_SCOPE_KEY
 QUOTE_CURRENCY: Final[str] = "KRW"
 
 #: Upbit KRW market fee, maker == taker == 0.05%.

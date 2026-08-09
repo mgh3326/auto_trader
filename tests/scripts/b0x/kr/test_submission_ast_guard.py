@@ -116,12 +116,11 @@ FORBIDDEN_LIVE_MODULES = (
 #: any of these that omits the kwarg silently defaults to ``is_mock=False``
 #: (live). Named by attribute/function name (static, no type inference).
 #:
-#: ``fetch_my_stocks`` is deliberately excluded: this package's own
-#: ``ReadOnlyKISMockDomesticClient.fetch_my_stocks`` wrapper shares that name
-#: with the underlying ``AccountClient`` method it calls (with an explicit,
-#: guard-checked ``is_mock=True``) but itself takes no ``is_mock`` parameter
-#: at all — it is mock-only by construction. Including the name here would
-#: flag every *caller* of the wrapper as a false positive.
+#: ``fetch_my_stocks`` is handled by the scoped receiver check below rather
+#: than added here: this package's own ``ReadOnlyKISMockDomesticClient``
+#: wrapper shares that name with the underlying ``AccountClient`` method it
+#: calls, but the wrapper itself takes no ``is_mock`` parameter. A bare name
+#: match would flag every caller of the mock-only wrapper as a false positive.
 IS_MOCK_BEARING_CALLABLES = {
     "inquire_domestic_cash_balance",
     "fetch_domestic_balance_snapshot",
@@ -133,6 +132,26 @@ IS_MOCK_BEARING_CALLABLES = {
     "modify_korea_order",
     "inquire_daily_order_domestic",
 }
+
+
+def _is_account_client_fetch_my_stocks(func: ast.expr) -> bool:
+    """Identify the composed ``AccountClient`` call without matching our wrapper.
+
+    The only AccountClient composition in ``scripts/b0x/kr`` is
+    ``self._account = AccountClient(...)``. The wrapper call sites use
+    ``client.fetch_my_stocks()``; their receiver is not the exact
+    ``self._account`` shape below, so adding this targeted guard does not
+    resurrect the old false positive.
+    """
+
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "fetch_my_stocks"
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr == "_account"
+        and isinstance(func.value.value, ast.Name)
+        and func.value.value.id == "self"
+    )
 
 
 def _python_files() -> list[Path]:
@@ -167,9 +186,12 @@ def find_is_mock_violations(tree: ast.AST) -> list[str]:
                     f"line {node.lineno}: is_mock kwarg is not the literal True "
                     f"({ast.dump(is_mock_kw.value)})"
                 )
-        elif callee in IS_MOCK_BEARING_CALLABLES:
+        elif callee in IS_MOCK_BEARING_CALLABLES or _is_account_client_fetch_my_stocks(
+            node.func
+        ):
             violations.append(
-                f"line {node.lineno}: call to {callee}(...) omits is_mock kwarg "
+                f"line {node.lineno}: call to {callee or 'AccountClient.fetch_my_stocks'}"
+                "(...) omits is_mock kwarg "
                 "— its default is False (live)"
             )
     return violations
@@ -277,6 +299,16 @@ def test_detector_catches_is_mock_expression() -> None:
 def test_detector_catches_is_mock_omitted_on_known_callable() -> None:
     tree = ast.parse("client.inquire_domestic_cash_balance()")
     assert find_is_mock_violations(tree) != []
+
+
+def test_detector_catches_account_client_fetch_my_stocks_omission() -> None:
+    tree = ast.parse("self._account.fetch_my_stocks(is_overseas=False)")
+    assert find_is_mock_violations(tree) != []
+
+
+def test_detector_allows_mock_wrapper_fetch_my_stocks_without_is_mock() -> None:
+    tree = ast.parse("client.fetch_my_stocks()")
+    assert find_is_mock_violations(tree) == []
 
 
 def test_detector_allows_is_mock_true_literal() -> None:

@@ -54,7 +54,7 @@ from scripts.b0x.derivation import DerivationResult, derive_orders
 from scripts.b0x.envelope import assert_envelope_locked, load_envelope
 from scripts.b0x.kill_switch import evaluate as evaluate_kill_switch
 from scripts.b0x.kr import mock as kr_mock
-from scripts.b0x.labels import header_labels
+from scripts.b0x.labels import account_history_labels, header_labels
 from scripts.b0x.ledger import (
     DEFAULT_OBSERVATION_DIR,
     ObservationLedger,
@@ -184,7 +184,10 @@ async def run_kr_cycle(
 
     envelope = load_envelope(MARKET)
     assert_envelope_locked(envelope)
-    labels = header_labels()
+    # Keep the KR lane wired to the scope helper even while the initial scope
+    # remains sidecar-only. A future, explicit scope expansion must change the
+    # rendered KR artifact rather than disappear because this call was absent.
+    labels = header_labels(lane=LANE, extra=account_history_labels(LANE))
     outcome = KrCycleOutcome(lane=LANE, at=now)
 
     with writer_lock(lane=LANE, root=Path(out_dir).expanduser()):
