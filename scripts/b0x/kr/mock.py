@@ -89,8 +89,9 @@ from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 from app.services.brokers.kis.protocols import KISClientProtocol
 from scripts.b0x.derivation import DerivedOrder
 from scripts.b0x.envelope import Envelope, assert_envelope_locked
+from scripts.b0x.scope import KIS_MOCK_SCOPE_KEY
 
-LANE = "kis_mock"
+LANE = KIS_MOCK_SCOPE_KEY
 MARKET = "kr"
 QUOTE_CURRENCY = "KRW"
 

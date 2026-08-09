@@ -198,7 +198,7 @@ async def run_shadow_cycle(
 
     envelope = load_envelope(MARKET)
     assert_envelope_locked(envelope)
-    labels = header_labels(extra=(SHADOW_SYNTHETIC_FILL,))
+    labels = header_labels(lane=shadow_lane.LANE, extra=(SHADOW_SYNTHETIC_FILL,))
     lane = shadow_lane.LANE
     outcome = CycleOutcome(lane=lane, at=now)
 
@@ -389,7 +389,8 @@ async def run_sidecar_cycle(
     policy = sidecar_lane.build_policy(envelope)
     lane = sidecar_lane.LANE
     labels = header_labels(
-        extra=(*account_history_labels(lane), CROSS_QUOTE_RATIO_TRANSFER)
+        lane=lane,
+        extra=(*account_history_labels(lane), CROSS_QUOTE_RATIO_TRANSFER),
     )
     outcome = CycleOutcome(lane=lane, at=now)
 

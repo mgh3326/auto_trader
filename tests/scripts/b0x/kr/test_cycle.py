@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from scripts.b0x.kr.cycle import LANE as KR_LANE
 from scripts.b0x.kr.cycle import OUTSIDE_RTH_REASON, run_kr_cycle
 from scripts.b0x.labels import SHARED_ACCOUNT_HISTORY, TRUST_LABELS
 from scripts.b0x.ledger import ObservationLedger
@@ -196,6 +197,34 @@ async def test_dry_run_plans_but_never_dispatches(
         assert label in artifact_text
     assert SHARED_ACCOUNT_HISTORY not in outcome.record["labels"]
     assert "SHARED_ACCOUNT_HISTORY" not in artifact_text
+
+
+@pytest.mark.asyncio
+async def test_kr_dry_run_reacts_when_shared_history_scope_expands(
+    table_dir: Path, out_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """KR wiring must become observable if an operator expands the scope."""
+
+    from scripts.b0x import labels as labels_module
+
+    monkeypatch.setattr(
+        labels_module,
+        "SHARED_HISTORY_ACCOUNTS",
+        labels_module.SHARED_HISTORY_ACCOUNTS | {KR_LANE},
+    )
+    outcome = await run_kr_cycle(
+        now=IN_SESSION_NOW,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=False,
+        client=_FakeKrClient(orderable_cash="5000000"),
+    )
+
+    assert SHARED_ACCOUNT_HISTORY in outcome.record["labels"]
+    assert outcome.artifact_path is not None
+    assert f"> {SHARED_ACCOUNT_HISTORY}" in outcome.artifact_path.read_text(
+        encoding="utf-8"
+    )
 
 
 @pytest.mark.asyncio

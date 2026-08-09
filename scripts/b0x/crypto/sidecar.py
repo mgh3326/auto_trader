@@ -94,8 +94,9 @@ from app.services.brokers.binance.spot_demo.sizing import (
 )
 from scripts.b0x.derivation import DerivedOrder
 from scripts.b0x.envelope import Envelope, assert_envelope_locked
+from scripts.b0x.scope import BINANCE_SPOT_DEMO_SIDECAR_SCOPE_KEY
 
-LANE: Final[str] = "binance_spot_demo_sidecar"
+LANE: Final[str] = BINANCE_SPOT_DEMO_SIDECAR_SCOPE_KEY
 
 #: Table symbol -> Binance Spot symbol. Frozen: the account map authorizes
 #: exactly these three and nothing else. Adding a row here is an account-map
