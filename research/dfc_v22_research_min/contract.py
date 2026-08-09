@@ -18,11 +18,13 @@ Clause        Upstream source   Subject
 ``A2-C5``     NW-F6             Authenticity and freeze procedure
 ``A2-C6``     OD-26             Lifecycle authority absence and substitute
 ``A2-C7``     OD-26             Premium-index archive gap and epoch verdict
+``A2-C8``     OD-26 (Job B)     Pre-registered sample readiness protocol
 ============  ================  =========================================
 """
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from types import MappingProxyType
 
@@ -56,11 +58,19 @@ __all__ = [
     "LIFECYCLE_AUTHORITATIVE_PUBLIC_SOURCE",
     "LIFECYCLE_PROXY_LIMITS",
     "NO_IMPACT",
+    "NOT_READY",
     "OUTCOME_HORIZON_BARS",
     "OUTCOME_TAIL_BARS",
     "OUTCOME_UNIT",
+    "READY",
     "REQUIRED_SOURCE_KINDS",
     "RUN_INVALID_INPUT_EVIDENCE",
+    "SAMPLE_COMPLETENESS_DIMENSIONS",
+    "SAMPLE_EPOCHS_PER_QUARTER",
+    "SAMPLE_QUARTER_DEFINITION",
+    "SAMPLE_RULE",
+    "SAMPLE_SEED",
+    "SAMPLE_VERDICTS",
     "TERMINAL_CODE_PRIORITY",
     "UNIVERSE_LOOKBACK_CALENDAR_DAYS",
     "UNIVERSE_RANKING_METRIC",
@@ -69,6 +79,10 @@ __all__ = [
     "VERBATIM_CLAUSES",
     "WARMUP_END",
     "WARMUP_START",
+    "quarter_key",
+    "quarter_windows",
+    "sample_epoch_open_times",
+    "sample_plan",
 ]
 
 
@@ -323,6 +337,116 @@ TERMINAL_CODE_PRIORITY: tuple[str, ...] = (
 )
 
 
+# --- A2-C8 (OD-26 Job B): pre-registered sample readiness protocol -------
+
+#: Registered *before* any sample measurement (Job B).  Nothing here may be
+#: tuned after a completeness result is read; that is exactly the sequencing
+#: violation this clause exists to make impossible, and the enforcement is a
+#: recomputation, not a re-declaration: ``sample_epoch_open_times`` is a pure
+#: function of these three literals plus the quarter key, so a report's
+#: claimed sample either reproduces byte-for-byte or it is rejected.
+SAMPLE_SEED = 26
+SAMPLE_EPOCHS_PER_QUARTER = 12
+#: UTC calendar quarters (Jan-Mar/Apr-Jun/Jul-Sep/Oct-Dec), clipped to
+#: ``[JUDGMENT_START, JUDGMENT_END)``.  This is the standard meaning of
+#: "quarter"; it is not anchored to ``JUDGMENT_START`` and it is not a
+#: window-length division, so the boundaries are checkable against a
+#: calendar without reference to this corpus at all.
+SAMPLE_QUARTER_DEFINITION = "utc_calendar_quarter_clipped_to_judgment_window"
+#: The two dimensions checked for each sampled epoch's top-3 pool.  Outcome
+#: evidence (A2-C4) and lifecycle/gap evidence (A2-C6/A2-C7) are unchanged by
+#: this clause; it narrows *which epochs* get audited, not what "complete"
+#: means for kline/premium-index rows.
+SAMPLE_COMPLETENESS_DIMENSIONS: tuple[str, ...] = ("kline_4h", "premium_index_4h")
+
+#: The sample-readiness verdict is a closed two-way choice.  A1's own
+#: ``UNDETERMINED`` precedent is not reused here: §26차 rules that for this
+#: specific sample-adequacy question there is no third outcome, because the
+#: measurement either found the sample intact or it did not.
+READY = "READY"
+NOT_READY = "NOT_READY"
+SAMPLE_VERDICTS: tuple[str, ...] = (READY, NOT_READY)
+
+#: The frozen rule record a sample-readiness report must reproduce exactly.
+SAMPLE_RULE: MappingProxyType[str, object] = MappingProxyType(
+    {
+        "seed": SAMPLE_SEED,
+        "epochs_per_quarter": SAMPLE_EPOCHS_PER_QUARTER,
+        "quarter_definition": SAMPLE_QUARTER_DEFINITION,
+        "selection_algorithm": (
+            "sha256(f'{seed}:{quarter_key}:{epoch_open_time_ms}') ascending, "
+            "take the first epochs_per_quarter (or all, if fewer exist)"
+        ),
+        "completeness_dimensions": SAMPLE_COMPLETENESS_DIMENSIONS,
+    }
+)
+
+
+def _quarter_start(year: int, quarter: int) -> datetime:
+    return _utc(year, (quarter - 1) * 3 + 1, 1)
+
+
+def quarter_windows() -> tuple[tuple[datetime, datetime], ...]:
+    """UTC calendar-quarter windows intersecting the judgment window.
+
+    Each window is half-open ``[start, end)`` and clipped to
+    ``[JUDGMENT_START, JUDGMENT_END)``; the first and last windows are
+    typically partial quarters. Order is chronological.
+    """
+    out: list[tuple[datetime, datetime]] = []
+    year, quarter = JUDGMENT_START.year, (JUDGMENT_START.month - 1) // 3 + 1
+    while True:
+        start = _quarter_start(year, quarter)
+        year, quarter = (year, quarter + 1) if quarter < 4 else (year + 1, 1)
+        end = _quarter_start(year, quarter)
+        if start >= JUDGMENT_END:
+            break
+        clipped_start = max(start, JUDGMENT_START)
+        clipped_end = min(end, JUDGMENT_END)
+        out.append((clipped_start, clipped_end))
+        if end >= JUDGMENT_END:
+            break
+    return tuple(out)
+
+
+def quarter_key(window: tuple[datetime, datetime]) -> str:
+    """Deterministic label for a quarter window, e.g. ``"2021Q2"``."""
+    start = window[0]
+    return f"{start.year}Q{(start.month - 1) // 3 + 1}"
+
+
+def sample_epoch_open_times(
+    quarter_start: datetime, quarter_end: datetime, key: str
+) -> tuple[int, ...]:
+    """Deterministically select up to ``SAMPLE_EPOCHS_PER_QUARTER`` epochs.
+
+    Every 4h epoch open-time in ``[quarter_start, quarter_end)`` is ranked by
+    ``sha256(f"{SAMPLE_SEED}:{key}:{epoch_ms}")`` and the smallest
+    ``SAMPLE_EPOCHS_PER_QUARTER`` are kept, sorted ascending. SHA-256 is a pure
+    function of these inputs, so the result is stable across processes,
+    machines and Python versions — no PRNG state to pin.
+    """
+    start_ms = int(quarter_start.timestamp() * 1000)
+    end_ms = int(quarter_end.timestamp() * 1000)
+    all_epochs = list(range(start_ms, end_ms, BAR_INTERVAL_MS))
+
+    def _rank(epoch_ms: int) -> str:
+        digest = f"{SAMPLE_SEED}:{key}:{epoch_ms}".encode()
+        return hashlib.sha256(digest).hexdigest()
+
+    chosen = sorted(all_epochs, key=_rank)[:SAMPLE_EPOCHS_PER_QUARTER]
+    return tuple(sorted(chosen))
+
+
+def sample_plan() -> MappingProxyType[str, tuple[int, ...]]:
+    """The full pre-registered sample: quarter key -> chosen epoch open-times."""
+    plan = {}
+    for window in quarter_windows():
+        key = quarter_key(window)
+        plan[key] = sample_epoch_open_times(window[0], window[1], key)
+    return MappingProxyType(plan)
+
+
 CLAUSE_SOURCES: MappingProxyType[str, str] = MappingProxyType(
     {
         "A2-C1": "NW-F2",
@@ -332,5 +456,6 @@ CLAUSE_SOURCES: MappingProxyType[str, str] = MappingProxyType(
         "A2-C5": "NW-F6",
         "A2-C6": "OD-26",
         "A2-C7": "OD-26",
+        "A2-C8": "OD-26-JOB-B",
     }
 )

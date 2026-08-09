@@ -62,6 +62,7 @@ def test_canonical_source_is_pinned() -> None:
         "NW-F5",
         "NW-F6",
         "OD-26",
+        "OD-26-JOB-B",
     }
     assert "§26차" in nw_verbatim.BINDING_RECORD_AMENDMENT
 

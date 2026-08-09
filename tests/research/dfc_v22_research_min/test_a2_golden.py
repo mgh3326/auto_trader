@@ -713,6 +713,64 @@ def _case_gap_declaration_absent() -> None:
     v.validate_manifest(base)
 
 
+# --------------------------------------------------------------------------
+# A2-C8: pre-registered sample readiness protocol
+# --------------------------------------------------------------------------
+
+
+def _sample_report(**overrides: Any) -> dict[str, Any]:
+    plan = c.sample_plan()
+    first_quarter = next(iter(plan))
+    first_epoch = plan[first_quarter][0]
+    base: dict[str, Any] = {
+        "contract_id": c.CONTRACT_ID,
+        "contract_doc_sha256": "0" * 64,
+        "sample_rule": dict(c.SAMPLE_RULE),
+        "quarters": {k: list(v_) for k, v_ in plan.items()},
+        "rows": [
+            {
+                "quarter": first_quarter,
+                "epoch_open_time": first_epoch,
+                "rank": 1,
+                "symbol": "BTCUSDT",
+                "kline_complete": True,
+                "premium_index_complete": True,
+                "missing_detail": None,
+                "provenance_sha256": "a" * 64,
+            }
+        ],
+        "run_invalid_epochs": [],
+        "verdict": c.READY,
+        "measured_at": "2026-08-10T00:00:00Z",
+    }
+    base.update(overrides)
+    return base
+
+
+def _case_sample_verdict_undetermined() -> None:
+    v.validate_sample_readiness(_sample_report(verdict="UNDETERMINED"))
+
+
+def _case_sample_rule_tampered() -> None:
+    tampered = dict(c.SAMPLE_RULE)
+    tampered["seed"] = 99
+    v.validate_sample_readiness(_sample_report(sample_rule=tampered))
+
+
+def _case_sample_verdict_not_recomputed() -> None:
+    report = _sample_report()
+    report["rows"][0]["kline_complete"] = False
+    report["rows"][0]["missing_detail"] = "kline absent"
+    # verdict is left as READY even though the only row is incomplete.
+    v.validate_sample_readiness(report)
+
+
+def _case_sample_epoch_outside_registered_plan() -> None:
+    report = _sample_report()
+    report["rows"][0]["epoch_open_time"] = report["rows"][0]["epoch_open_time"] + 1
+    v.validate_sample_readiness(report)
+
+
 CASE_BUILDERS: dict[str, Callable[[], None]] = {
     "outcomes_free_bool_column": _case_outcomes_free_bool_column,
     "outcomes_free_price_column": _case_outcomes_free_price_column,
@@ -773,6 +831,10 @@ CASE_BUILDERS: dict[str, Callable[[], None]] = {
     "gap_pool_shorter_than_top_n": _case_gap_pool_shorter_than_top_n,
     "gap_not_eligible_row_carries_volume": _case_gap_not_eligible_row_carries_volume,
     "gap_declaration_absent": _case_gap_declaration_absent,
+    "sample_verdict_undetermined": _case_sample_verdict_undetermined,
+    "sample_rule_tampered": _case_sample_rule_tampered,
+    "sample_verdict_not_recomputed": _case_sample_verdict_not_recomputed,
+    "sample_epoch_outside_registered_plan": _case_sample_epoch_outside_registered_plan,
 }
 
 

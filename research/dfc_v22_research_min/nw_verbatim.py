@@ -46,12 +46,19 @@ NW_F6_VERBATIM = "**“모든 원본 object/response에 endpoint·query·retriev
 OD_26_JOB_A_TOPIC = "A2 공백 ②+① 폐쇄 경로"
 OD_26_JOB_A_VERBATIM = "**Job A (②+①)**: ②contract lifecycle 권위 소스 = 「없다」를 계약에 명시, 대체 증거 정의 — eligibility = kline 아카이브 자체(랭킹 창 내 완전한 4h kline + 비zero 거래량 = 거래가능의 직접 증거), 프록시 한계 명기. ①premiumIndexKlines ~70 심볼 격차 전수 diff(read-only) → epoch별 top-3 후보 pool 과 교집합: 0 이면 `NO_IMPACT` 리터럴 종결, 비어있지 않으면 해당 epoch = `RUN_INVALID_INPUT_EVIDENCE` (조용한 재랭킹 금지) 를 계약에 추가."
 
+#: §26차 확정 문단의 두 번째 항목, Job B(③).  Job A와 같은 이유로 이 문서의 소스가
+#: 아니라 바인딩 레코드 자체가 소스이고, 하드랩된 원문 두 줄을 공백 하나로 합치고
+#: 목록 마커만 제거했을 뿐 그 외에는 손대지 않았다.
+OD_26_JOB_B_TOPIC = "A2 공백 ③ 폐쇄 경로(사전등록 표본 프로토콜)"
+OD_26_JOB_B_VERBATIM = "**Job B (③)**: 측정 **전** 표본 규칙 사전등록 — 판정창 분기별 고정 seed 층화표본 epoch 12 (총 ~108), 각 표본 epoch 의 top-3 후보 심볼 kline+premiumIndex 완전성 검사. **READY = 표본 100% 무결 / 미달 = NOT_READY** (UNDETERMINED 재판정 없음 — 이지선다). 전수 검증은 FREEZE 가 fail-closed 수행 — READY 는 동결 노력 투입 결정일 뿐."
+
 VERBATIM_CLAUSES: dict[str, str] = {
     "NW-F2": NW_F2_VERBATIM,
     "NW-F4": NW_F4_VERBATIM,
     "NW-F5": NW_F5_VERBATIM,
     "NW-F6": NW_F6_VERBATIM,
     "OD-26": OD_26_JOB_A_VERBATIM,
+    "OD-26-JOB-B": OD_26_JOB_B_VERBATIM,
 }
 
 VERBATIM_TOPICS: dict[str, str] = {
@@ -60,4 +67,5 @@ VERBATIM_TOPICS: dict[str, str] = {
     "NW-F5": NW_F5_TOPIC,
     "NW-F6": NW_F6_TOPIC,
     "OD-26": OD_26_JOB_A_TOPIC,
+    "OD-26-JOB-B": OD_26_JOB_B_TOPIC,
 }

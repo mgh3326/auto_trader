@@ -32,6 +32,8 @@ __all__ = [
     "PREMIUM_INDEX_4H_SCHEMA",
     "PREMIUM_INDEX_GAP_AUDIT_SCHEMA",
     "RAW_KLINE_FIELD_NAMES",
+    "SAMPLE_REPORT_REQUIRED_KEYS",
+    "SAMPLE_ROW_REQUIRED_KEYS",
 ]
 
 _TS = pa.timestamp("us", tz="UTC")
@@ -234,4 +236,33 @@ MANIFEST_TABLE_REQUIRED_KEYS: tuple[str, ...] = (
     "sha256",
     "row_count",
     "byte_size",
+)
+
+#: A2-C8 (Job B).  One row per (sampled epoch, ranked candidate symbol). This
+#: is a *readiness report*, not a corpus table — it is judged before any
+#: corpus manifest exists, so it carries no ``CANONICAL_TABLES`` entry.
+SAMPLE_ROW_REQUIRED_KEYS: tuple[str, ...] = (
+    "quarter",
+    "epoch_open_time",
+    "rank",
+    "symbol",
+    "kline_complete",
+    "premium_index_complete",
+    "missing_detail",
+    "provenance_sha256",
+)
+
+#: Top-level readiness report a Job-B measurement must produce. ``sample_rule``
+#: is compared against ``contract.SAMPLE_RULE`` verbatim; ``quarters`` is
+#: compared against ``contract.sample_plan()`` verbatim — both recomputed, not
+#: merely schema-checked, so a report cannot claim a sample it did not draw.
+SAMPLE_REPORT_REQUIRED_KEYS: tuple[str, ...] = (
+    "contract_id",
+    "contract_doc_sha256",
+    "sample_rule",
+    "quarters",
+    "rows",
+    "run_invalid_epochs",
+    "verdict",
+    "measured_at",
 )

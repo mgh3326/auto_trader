@@ -272,6 +272,30 @@
       "clause": "A2-C3",
       "expected_code": "RUN_INVALID_MANIFEST_SCHEMA",
       "expected_detail_contains": "required source material absent"
+    },
+    {
+      "case_id": "sample_verdict_undetermined",
+      "clause": "A2-C8",
+      "expected_code": "RUN_INVALID_MANIFEST_SCHEMA",
+      "expected_detail_contains": "UNDETERMINED is not a re-judgeable"
+    },
+    {
+      "case_id": "sample_rule_tampered",
+      "clause": "A2-C8",
+      "expected_code": "RUN_INVALID_CORPUS_LITERALS",
+      "expected_detail_contains": "pre-registered and may not be tuned"
+    },
+    {
+      "case_id": "sample_verdict_not_recomputed",
+      "clause": "A2-C8",
+      "expected_code": "RUN_INVALID_CORPUS_LITERALS",
+      "expected_detail_contains": "does not match the recomputed verdict"
+    },
+    {
+      "case_id": "sample_epoch_outside_registered_plan",
+      "clause": "A2-C8",
+      "expected_code": "RUN_INVALID_CORPUS_LITERALS",
+      "expected_detail_contains": "is not part of the pre-registered sample"
     }
   ]
 }
