@@ -16,7 +16,7 @@ from scripts.b0x.cycle import (
     run_shadow_cycle,
     run_sidecar_cycle,
 )
-from scripts.b0x.envelope import CRYPTO_SIDECAR_ENVELOPE
+from scripts.b0x.envelope import CRYPTO_SHADOW_ENVELOPE, CRYPTO_SIDECAR_ENVELOPE
 from scripts.b0x.labels import (
     SHADOW_SYNTHETIC_FILL,
     SHARED_ACCOUNT_HISTORY,
@@ -73,20 +73,16 @@ def _no_real_candles(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def _shadow_currency_aligned(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make ``shadow.account_state()`` report the same currency as the (shared,
-    crypto-market) envelope it is evaluated against.
+def _shadow_currency_misaligned_mutant(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reintroduce the pre-SHADOW-ALIGN defect on purpose (mutant ①).
 
-    Production wiring does *not* do this: the shadow lane's book is
-    genuinely KRW-denominated (Upbit) while ``CRYPTO_SIDECAR_ENVELOPE`` is
-    USDT — ``run_shadow_cycle`` now fails that comparison closed (see
-    ``test_shadow_cycle_blocked_by_kill_switch_currency_mismatch`` below,
-    which exercises the *real*, unpatched wiring). This fixture exists only
-    to decouple tests of unrelated shadow-cycle behaviour (order derivation,
-    idempotency, artifact structure) from that separate, tracked defect, the
-    same way the underlying determinism/sizing logic is independently
-    covered in ``tests/scripts/b0x/test_derivation.py`` without going
-    through ``run_shadow_cycle`` at all.
+    Production wiring (``run_shadow_cycle`` loading
+    ``envelope.CRYPTO_SHADOW_ENVELOPE``, ``quote_currency="KRW"``) does not
+    do this any more. This fixture exists only for
+    ``test_shadow_cycle_currency_mismatch_backstop_still_cancels_a_resting_book``
+    below, which proves the ``CurrencyMismatchKill`` fail-closed backstop
+    (#1822/ROB-1233) still fires — and still cancels a resting book — if a
+    future edit ever hands this lane a mismatched envelope again.
     """
 
     monkeypatch.setattr(
@@ -100,7 +96,6 @@ def _shadow_currency_aligned(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("_shadow_currency_aligned")
 async def test_first_shadow_cycle_derives_and_records(
     table_dir: Path, out_dir: Path
 ) -> None:
@@ -127,7 +122,6 @@ async def test_first_shadow_cycle_derives_and_records(
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("_shadow_currency_aligned")
 async def test_shadow_cycle_is_idempotent_in_its_derivation(
     table_dir: Path, out_dir: Path
 ) -> None:
@@ -167,7 +161,6 @@ async def test_shadow_cycle_is_idempotent_in_its_derivation(
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("_shadow_currency_aligned")
 async def test_stale_table_yields_zero_orders_and_cancels_the_book(
     table_dir: Path, out_dir: Path
 ) -> None:
@@ -200,7 +193,6 @@ async def test_missing_table_yields_zero_orders(tmp_path: Path, out_dir: Path) -
 
 
 @pytest.mark.asyncio
-@pytest.mark.usefixtures("_shadow_currency_aligned")
 async def test_shadow_lane_uses_b0_sizing_not_the_usdt_envelope(
     table_dir: Path, out_dir: Path
 ) -> None:
@@ -212,55 +204,73 @@ async def test_shadow_lane_uses_b0_sizing_not_the_usdt_envelope(
 
 
 @pytest.mark.asyncio
-async def test_shadow_cycle_blocked_by_kill_switch_currency_mismatch(
+async def test_shadow_cycle_is_currency_aligned_by_default_after_shadow_align(
     table_dir: Path, out_dir: Path
 ) -> None:
-    """The real, unpatched wiring: shadow's book is KRW, the shared crypto
-    envelope's kill threshold is USDT. ``kill_switch.evaluate`` fails that
-    comparison closed, and the cycle must not crash uncontrolled — it records
-    a zero-order cycle with a specific, auditable reason, exactly like an
-    unusable policy table.
+    """SHADOW-ALIGN regression: the real, unpatched wiring used to hit
+    ``kill_switch_currency_mismatch`` on *every* shadow cycle (shadow's book
+    is KRW, the shared crypto sidecar envelope's kill threshold was USDT —
+    see ``test_shadow_cycle_currency_mismatch_backstop_still_cancels_a_resting_book``
+    below for proof the fail-closed guard itself still works). ``run_shadow_cycle``
+    now loads ``envelope.CRYPTO_SHADOW_ENVELOPE`` (KRW), which matches
+    ``shadow.QUOTE_CURRENCY`` — so a normal cycle must derive orders, not zero
+    out on a currency reason.
     """
 
     outcome = await run_shadow_cycle(now=NOW, table_dir=table_dir, out_dir=out_dir)
 
-    assert outcome.zero_order_reason == SHADOW_KILL_CURRENCY_MISMATCH_REASON
-    assert outcome.order_count == 0
-    assert outcome.record["orders"] == []
-    assert "KRW" in outcome.record["zero_order_detail"]
-    assert "USDT" in outcome.record["zero_order_detail"]
-    assert outcome.artifact_path is not None and outcome.artifact_path.exists()
+    assert outcome.zero_order_reason is None
+    assert outcome.zero_order_reason != SHADOW_KILL_CURRENCY_MISMATCH_REASON
+    assert outcome.order_count == 2
+    assert outcome.record["orders"] != []
+
+    kill_switch = outcome.record["kill_switch"]
+    assert kill_switch["state_quote_currency"] == "KRW"
+    assert kill_switch["envelope_quote_currency"] == "KRW"
+    assert kill_switch["allow_new_orders"] is True
+
+    assert outcome.record["envelope"]["market"] == CRYPTO_SHADOW_ENVELOPE.market
+    assert outcome.record["envelope"]["quote_currency"] == "KRW"
 
     portfolio_path = (
         ObservationLedger(lane=shadow.LANE, root=out_dir).lane_dir / "portfolio.json"
     )
-    assert json.loads(portfolio_path.read_text())["open_orders"] == []
+    assert json.loads(portfolio_path.read_text())["open_orders"]
 
 
 @pytest.mark.asyncio
-async def test_shadow_cycle_currency_mismatch_cancels_a_resting_book(
+@pytest.mark.usefixtures("_shadow_currency_misaligned_mutant")
+async def test_shadow_cycle_currency_mismatch_backstop_still_cancels_a_resting_book(
     table_dir: Path, out_dir: Path
 ) -> None:
-    """A resting virtual book from a currency-aligned cycle must still be
-    cancelled — not silently carried forward — once the mismatch is hit.
+    """Mutant ① made permanent: if a future edit ever hands this lane a
+    mismatched envelope again (here simulated by patching
+    ``shadow.QUOTE_CURRENCY`` back to USDT, reproducing the pre-SHADOW-ALIGN
+    wiring), ``CurrencyMismatchKill`` (#1822/ROB-1233) must still fire, the
+    cycle must still degrade to a recorded zero-order cycle rather than
+    crash or silently miscompare, and a resting virtual book from an earlier,
+    genuinely-aligned cycle must still be cancelled rather than carried
+    forward.
     """
 
     portfolio_path = (
         ObservationLedger(lane=shadow.LANE, root=out_dir).lane_dir / "portfolio.json"
     )
     with pytest.MonkeyPatch.context() as aligned:
-        aligned.setattr(
-            shadow, "QUOTE_CURRENCY", CRYPTO_SIDECAR_ENVELOPE.quote_currency
-        )
+        aligned.setattr(shadow, "QUOTE_CURRENCY", CRYPTO_SHADOW_ENVELOPE.quote_currency)
         seeded = await run_shadow_cycle(now=NOW, table_dir=table_dir, out_dir=out_dir)
     assert seeded.order_count == 2
     assert json.loads(portfolio_path.read_text())["open_orders"]
 
+    # Fixture is active again here (outside the aligned context) — back to
+    # the mismatched wiring for this second cycle.
     outcome = await run_shadow_cycle(
         now=NOW + dt.timedelta(minutes=1), table_dir=table_dir, out_dir=out_dir
     )
 
     assert outcome.zero_order_reason == SHADOW_KILL_CURRENCY_MISMATCH_REASON
+    assert "KRW" in outcome.record["zero_order_detail"]
+    assert "USDT" in outcome.record["zero_order_detail"]
     assert outcome.record["cancelled_stale_orders"] == 2
     assert json.loads(portfolio_path.read_text())["open_orders"] == []
 

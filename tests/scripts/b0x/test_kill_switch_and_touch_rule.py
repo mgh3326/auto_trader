@@ -227,6 +227,31 @@ def test_matching_currency_decision_records_both_sides_for_audit() -> None:
     assert canonical["envelope_quote_currency"] == "USDT"
 
 
+def test_shadow_krw_state_against_the_shadow_envelope_passes_unaffected() -> None:
+    """SHADOW-ALIGN NO_REGRESSION: shadow's KRW state, evaluated against its
+    own ``CRYPTO_SHADOW_ENVELOPE`` (also KRW), must clear the currency check
+    cleanly — this is exactly the comparison that used to raise
+    ``CurrencyMismatchKill`` against the shared USDT sidecar envelope.
+    """
+
+    from scripts.b0x.envelope import CRYPTO_SHADOW_ENVELOPE
+
+    assert CRYPTO_SHADOW_ENVELOPE.quote_currency == "KRW"
+    shadow_state = _state(quote_currency="KRW", realized_pnl_today=Decimal("-1"))
+    decision = kill_switch_module.evaluate(
+        state=shadow_state, envelope=CRYPTO_SHADOW_ENVELOPE
+    )
+    assert decision.allow_new_orders is True
+    assert decision.state_quote_currency == "KRW"
+    assert decision.envelope_quote_currency == "KRW"
+
+    at_limit = kill_switch_module.evaluate(
+        state=_state(quote_currency="KRW", realized_pnl_today=Decimal("-7000")),
+        envelope=CRYPTO_SHADOW_ENVELOPE,
+    )
+    assert at_limit.tripped
+
+
 def test_crypto_sidecar_and_kr_currency_checks_pass_unaffected() -> None:
     """NO_REGRESSION — crypto sidecar (USDT/USDT) and KR (pct_of_nav, KRW/KRW)
     both already have matching currencies; the new check must be a no-op for
