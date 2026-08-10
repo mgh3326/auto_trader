@@ -108,12 +108,52 @@ uv run python -m scripts.run_b0x_kr_cycle --confirm
 | `cycle.py` | **재사용 + export.** `_base_record`/`_render_report` 를 `base_record`/`render_cycle_report` 로 공개해 KR 사이클이 재사용한다(이름만 바꿈, crypto 두 레인 동작 불변 — `tests/scripts/b0x/test_cycle.py` 로 확인). |
 | `scripts/b0x/kr/mock.py`, `scripts/b0x/kr/cycle.py` | **신규.** KIS 계좌 read facade·tick 정렬·사이징·RTH 게이트·사이클 골격. |
 
+## 5.1 읽기 클라이언트의 계좌 바인딩 — 2026-08-10 `EGW02005` 수리
+
+🔴 **`is_mock=True` 는 계좌를 바꾸지 않는다. TR id 하나만 고른다.** host·app key/secret·
+계좌번호·OAuth 토큰은 전부 `BaseKISClient` 가 `self._settings` 의 **live** 필드명에서
+읽으며, 기본값은 live 다. 초기 `ReadOnlyKISMockDomesticClient` 는 `AccountClient` 에
+`is_mock=True` 만 넘기고 나머지를 상속했고, 그 결과 **모의 TR(`VTTC8434R`)을 live 호스트에
+live 자격증명으로** 보냈다 → `EGW02005 실전투자 TR 이 아닙니다`.
+
+**전날(일요일) acceptance 통과는 이 경로가 정상이라는 증거가 아니었다.** RTH 게이트가 계좌
+I/O **이전에** zero-order 로 끝나 이 호출에 도달한 적이 없었을 뿐이고, 개장일 첫 사이클
+(2026-08-10 09:05 KST)에서 처음 도달하자마자 크래시했다.
+
+수리 = `ReadOnlyKISMockDomesticClient` 에 실제 바인딩 4종을 건다(전부 fail-closed):
+
+| 오버라이드 | 효과 |
+|---|---|
+| `_settings` → `KISMockSettingsView` | mock app key/secret·계좌번호·토큰 슬롯. **live 폴백 없음** |
+| `_kis_url` → `_assert_mock_host` | 만드는 **모든** URL(잔고 read + `/oauth2/token`)의 netloc 를 `openapivts.koreainvestment.com:29443` 로 재검증. 아니면 소켓 열기 전에 `KrMockHostViolation` |
+| `_token_manager` → `kis_mock` 네임스페이스 | mock 토큰이 live 토큰 캐시에 섞이지 않는다 |
+| `_is_mock_client = True` | ROB-892 VTS 분산 admit gate 가 이 read 에도 걸린다 |
+
+🔵 **보장 범위 — 정직하게.** 이제 **읽기 클라이언트에 한해** Binance Demo 식 host-allowlist
+가 생겼다(§6 첫 문단의 "KIS 에는 없다"는 이 범위에서 더는 사실이 아니다). **제출 경로는
+여전히 아니다** — `KisMockBroker` 는 `is_mock=True` 리터럴 고정 + AST 가드(§6.5)로 지켜지며
+transport 계층 host 검증은 없다. 두 표면의 보장 방식이 다르다는 점을 섞지 말 것.
+
+**현금 조회 불가는 0 이 아니다.** `AccountClient` 는 없는 현금 필드를 `0.0` 으로 강제하므로
+그 값만으로는 "빈 계좌"와 "응답이 아무것도 안 알려줌"을 구분할 수 없다. `read_fresh_truth`
+는 브로커가 echo 한 raw 필드 **존재 여부**로 둘을 가르고, 하나도 없으면
+`KrMockCashUnreadable` 로 fail-closed 한다(confirm 경로에서는
+`preflight_not_clean`/`account_truth_unavailable` zero-order). NAV = cash + Σ 평가액 이고
+§4 kill 이 **NAV 비율**이라, 조작된 `cash=0` 은 과소보고가 아니라 **kill 임계 자체를
+움직인다** — NAV·cash 는 추정하지 않는다.
+
+🔵 실측(2026-08-10 10:32 KST, KRX RTH 내): mock 브로커는 `dnca_tot_amt` **하나만** echo 하고
+`stck_cash_ord_psbl_amt` 는 응답에 없다. 그래서 존재 검사는 세 필드(`stck_cash_ord_psbl_amt`
+/`ord_psbl_cash`/`dnca_tot_amt`) 전부를 본다 — 주문가능현금 하나만 봤다면 정상 계좌를
+"조회 불가"로 오판했을 것이다.
+
 ## 6. 제출 배선 — `KisMockBroker` (계약 v1.3 ③)
 
 Binance 사이드카는 `demo-api.binance.com` 에만 닿을 수 있는 **전용 클라이언트**를 재사용해
-"mock 임을 코드 구조가 보장"한다. KIS 에는 그런 host-allowlisted 전용 클라이언트가 없다 —
-대신 계약 v1.3 ③ 이 지정한 통합점은 `app.services.brokers.kis.mock_scalping_exec.
-adapters.KisMockBroker`(ROB-321/341): `_place_order_impl(is_mock=True, ...)` 이 전
+"mock 임을 코드 구조가 보장"한다. KIS **제출** 경로에는 그런 host-allowlisted 전용
+클라이언트가 없다(읽기 경로는 §5.1 에서 생겼다) — 대신 계약 v1.3 ③ 이 지정한 통합점은
+`app.services.brokers.kis.mock_scalping_exec.adapters.KisMockBroker`(ROB-321/341):
+`_place_order_impl(is_mock=True, ...)` 이 전
 호출부에 **리터럴로 고정**된(인자 아님) 기존 리뷰·운영된 mock 전용 표면. 재구현하지 않고
 그대로 재사용한다 — `scripts.b0x.kr.mock.build_kis_mock_broker`/`submit_planned_order`
 가 얇은 배선 레이어일 뿐, `KisMockBroker` 자체는 서브클래싱도 몽키패치도 하지 않는다.

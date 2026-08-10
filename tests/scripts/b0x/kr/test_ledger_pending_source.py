@@ -115,7 +115,15 @@ class _FakeKrClient:
         self._stocks = stocks or []
 
     async def inquire_cash_balance(self) -> dict[str, Any]:
-        return {"dnca_tot_amt": 5_000_000.0, "stck_cash_ord_psbl_amt": 5_000_000.0}
+        return {
+            "dnca_tot_amt": 5_000_000.0,
+            "stck_cash_ord_psbl_amt": 5_000_000.0,
+            # AccountClient always echoes the broker row under ``raw``.
+            "raw": {
+                "dnca_tot_amt": "5000000",
+                "stck_cash_ord_psbl_amt": "5000000",
+            },
+        }
 
     async def fetch_my_stocks(self) -> list[dict[str, Any]]:
         return self._stocks
