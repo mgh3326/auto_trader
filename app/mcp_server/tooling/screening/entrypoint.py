@@ -14,6 +14,7 @@ from app.mcp_server.tooling.screening.crypto import _screen_crypto_with_fallback
 from app.mcp_server.tooling.screening.enrichment import (
     _decorate_screen_response_with_equity_enrichment,
 )
+from app.mcp_server.tooling.screening.halt_filter import exclude_halt_suspect_rows
 from app.mcp_server.tooling.screening.kr import _screen_kr_with_fallback
 from app.mcp_server.tooling.screening.us import _screen_us_with_fallback
 
@@ -286,6 +287,11 @@ async def screen_stocks_unified(
         min_dividend_yield=normalized_min_dividend_yield,
         apply_post_filters=apply_post_enrichment_filters,
     )
+
+    # ROB-1236 — last gate before the rows leave the screener: a symbol whose
+    # daily series has gone inert must not reach a ranking. Exclusions are
+    # reported in meta.halted_suspect_excluded, never dropped silently.
+    response = await exclude_halt_suspect_rows(response, market=normalized_market)
 
     filters_applied = response.get("filters_applied")
     normalized_filters_applied = (

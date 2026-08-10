@@ -51,6 +51,11 @@ from app.mcp_server.tooling.shared import (
 )
 from app.mcp_server.tooling.shared import resolve_market_type as _resolve_market_type
 from app.monitoring import build_yfinance_tracing_session, close_yfinance_session
+from app.services.halt_detection import (
+    HALTED_SUSPECT_DATA_STATE,
+    HaltSuspicion,
+    classify_ohlcv_frame,
+)
 from app.services.kr_symbol_universe_service import get_kr_nxt_tradability
 from app.services.symbol_analysis.floor import floored_action, insufficient_inputs
 
@@ -920,6 +925,44 @@ def _consensus_rows_present(consensus: Any) -> bool:
         return False
 
 
+#: Analysis fields derived from the daily bar series. When the series is inert
+#: every one of them is arithmetic over dead candles, so they are withheld —
+#: never estimated, interpolated, or carried over from an earlier session.
+_HALT_SUPPRESSED_ANALYSIS_FIELDS = ("indicators", "support_resistance")
+
+
+def _apply_halt_suspect(analysis: dict[str, Any], suspicion: HaltSuspicion) -> None:
+    """ROB-1236: stamp ``halted_suspect`` and null out bar-derived signals.
+
+    Runs after ``_apply_fetch_cache_metadata`` (so it overrides the freshness
+    verdict, which only ever looked at bar *existence*) and before
+    ``_apply_recommendation`` (so the recommendation is floored by its own
+    ``insufficient_inputs`` path off the nulled RSI rather than by a second,
+    parallel rule).
+
+    ``halted_suspect`` outranks ``fresh``/``stale``/``degraded``: an inert
+    series is not made trustworthy by being recently fetched.
+    """
+    if not suspicion.suspected:
+        return
+
+    for field in _HALT_SUPPRESSED_ANALYSIS_FIELDS:
+        analysis[field] = None
+
+    analysis["data_state"] = HALTED_SUSPECT_DATA_STATE
+    analysis["halt_suspect"] = suspicion.to_dict()
+
+    # The compact batch summary reads ``data_state`` off the quote, not off the
+    # top-level analysis — that is the field the 000880 session actually saw as
+    # "fresh". Both surfaces have to say the same thing.
+    quote = analysis.get("quote")
+    if isinstance(quote, dict):
+        quote["data_state"] = HALTED_SUSPECT_DATA_STATE
+        quote["data_state_reason"] = "halted_suspect_frozen_bars"
+        quote["price_usable"] = False
+        quote["is_stale_price"] = True
+
+
 def _apply_recommendation(
     analysis: dict[str, Any],
     market_type: str,
@@ -992,6 +1035,9 @@ async def analyze_stock_impl(
             normalized_symbol, market_type, count=250
         )
     ohlcv_60d = ohlcv_df.tail(60) if len(ohlcv_df) >= 60 else ohlcv_df
+    # ROB-1236 — judged on the same frame the indicators are computed from, so
+    # the verdict and the suppressed values can never disagree about the input.
+    halt_suspicion = classify_ohlcv_frame(ohlcv_df)
 
     preloaded_quote, named_tasks = _prepare_quote_tasks(
         normalized_symbol,
@@ -1032,6 +1078,9 @@ async def analyze_stock_impl(
             task_failures,
             market_type,
         )
+        # ROB-1236 — must follow the freshness stamp (it overrides it) and
+        # precede the recommendation (which then floors itself off null RSI).
+        _apply_halt_suspect(analysis, halt_suspicion)
         analysis["errors"] = []
         _apply_recommendation(analysis, market_type)
 

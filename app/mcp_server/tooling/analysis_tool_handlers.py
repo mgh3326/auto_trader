@@ -943,6 +943,15 @@ def _summarize_analysis_result(
         if _px_key in quote:
             summary[_px_key] = quote[_px_key]
 
+    # ROB-1236: an inert daily series (consecutive zero-volume / zero-variation
+    # sessions) makes every bar-derived number above meaningless, so the
+    # suspicion travels with the compact summary instead of being visible only
+    # in the full payload. ``data_state`` is already overridden on the quote.
+    halt_suspect = analysis.get("halt_suspect")
+    if isinstance(halt_suspect, dict):
+        summary["halt_suspect"] = halt_suspect
+        summary["data_state"] = analysis.get("data_state")
+
     if position_index is not None:
         summary["position"] = _lookup_position_for_symbol(
             symbol=symbol,
