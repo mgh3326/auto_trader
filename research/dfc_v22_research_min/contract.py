@@ -19,6 +19,7 @@ Clause        Upstream source   Subject
 ``A2-C6``     OD-26             Lifecycle authority absence and substitute
 ``A2-C7``     OD-26             Premium-index archive gap and epoch verdict
 ``A2-C8``     OD-26 (Job B)     Pre-registered sample readiness protocol
+``A2-C9``     OD-31             Ranking-input deficit epochs (enumerated)
 ============  ================  =========================================
 """
 
@@ -62,6 +63,15 @@ __all__ = [
     "OUTCOME_HORIZON_BARS",
     "OUTCOME_TAIL_BARS",
     "OUTCOME_UNIT",
+    "RANKING_INPUT_DEFICIT_ENUMERATION_PATH",
+    "RANKING_INPUT_DEFICIT_ENUMERATION_SHA256",
+    "RANKING_INPUT_DEFICIT_EPOCHS",
+    "RANKING_INPUT_DEFICIT_ROWS",
+    "RANKING_INPUT_DEFICIT_SCAN_PATH",
+    "RANKING_INPUT_DEFICIT_SCAN_RECORD_COUNT",
+    "RANKING_INPUT_DEFICIT_SCAN_SHA256",
+    "RANKING_INPUT_DEFICIT_UNCHANGED_HEAD",
+    "RANKING_INPUT_DEFICIT_VERDICT",
     "READY",
     "REQUIRED_SOURCE_KINDS",
     "RUN_INVALID_INPUT_EVIDENCE",
@@ -337,6 +347,150 @@ TERMINAL_CODE_PRIORITY: tuple[str, ...] = (
 )
 
 
+# --- A2-C9 (OD-31): ranking-input deficit epochs, enumerated and frozen ---
+
+# §26차's A2-C7 trigger fires in one direction only: a gap symbol that is
+# **inside** an epoch's top-3 pool.  §31차 measured the opposite direction — a
+# ranking *input* deficit that kept a symbol **out** of the pool it belonged in
+# — and ruled that reading A2-C7 as covering it would be widening a clause by
+# interpretation.  So this is a separate clause with its own literal, and the
+# set of epochs it applies to is an enumeration, not a rule: the list was fixed
+# by a measurement that has already been read, and re-deriving it here would
+# destroy the pre-registration it exists to preserve.
+
+#: §34차 2항 amended the enumeration exactly once, 38 -> 49, and changed nothing
+#: else about the clause.  The first 38 rows are the §31차 list reproduced
+#: unchanged; the 11 added were measured over the *same* scan by a later job
+#: that folded all 105 gap records into 8 windows and measured every one, where
+#: the earlier measurement had covered a single window.  The amendment widens
+#: what is enumerated, not what the clause permits: an added epoch is one more
+#: epoch marked ``RUN_INVALID_INPUT_EVIDENCE``, never one fewer.
+
+#: The measurement the enumeration is transcribed from.  Recorded as a path and
+#: a digest, never opened: this package does not read files (see
+#: ``test_package_does_not_write_files`` / ``..._cannot_reach_the_network``), so
+#: the pin is what makes a changed enumeration visible rather than silent.
+RANKING_INPUT_DEFICIT_ENUMERATION_PATH = (
+    "~/work/herdr-artifacts/dfc-v22-readiness-v1/gap-impact-full/"
+    "unified_flip_epochs.json"
+)
+RANKING_INPUT_DEFICIT_ENUMERATION_SHA256 = (
+    "1dcf41ff108d2a9b98e821c93cabb242e31317cb202ed0650f38c962bda33cc4"
+)
+
+#: The gap scan the enumeration was measured *over*, pinned by its own digest.
+#:
+#: §33차 requires both digests because they answer different questions.  The
+#: enumeration digest fixes *which epochs* are enumerated; this one fixes the
+#: **scope the word "exhaustive" was earned against** — the 105 internal-gap
+#: records, folded into 8 windows, that DFC-GAP-IMPACT-FULL measured one by one.
+#: An enumeration is only "every affected epoch" relative to some scan, and a
+#: scan that moved silently would leave the enumeration looking complete while
+#: the ground under it changed.  Pinning one without the other is how a
+#: completeness claim survives its own evidence being replaced.
+RANKING_INPUT_DEFICIT_SCAN_PATH = (
+    "~/work/herdr-artifacts/dfc-2c-4h-v22-corpus-v1/raw/phase3_investigation/"
+    "internal_gaps.json"
+)
+RANKING_INPUT_DEFICIT_SCAN_SHA256 = (
+    "f8cae492dddc58323211519d7b867a1de5efd5a06a56d4ee4aea40c0fca5050a"
+)
+#: Record count of that scan, carried as a second, independently checkable
+#: handle on the same file: a digest says "changed", this says "how".
+RANKING_INPUT_DEFICIT_SCAN_RECORD_COUNT = 105
+
+#: Ranks 1 and 2 are the same two symbols at every one of the 49 epochs — a
+#: measured property of the enumeration, not an assumption: only the rank-3
+#: slot moves, which is why the rows below carry that slot alone.
+RANKING_INPUT_DEFICIT_UNCHANGED_HEAD: tuple[str, ...] = ("BTCUSDT", "ETHUSDT")
+
+#: ``(epoch_open_time_ms, as_archived_rank3, would_have_been_rank3)``.
+#:
+#: ``as_archived_rank3`` is what the archive's own (deficient) ranking input
+#: produces and therefore what the corpus records; ``would_have_been_rank3`` is
+#: what the same rule produces once the deficit is made good.  The second column
+#: is carried so the substitution can be *detected*, not so it can be performed:
+#: writing it into the pool is the silent re-ranking §31차 forbids, and
+#: ``validate_ranking_input_deficit`` rejects exactly that.
+RANKING_INPUT_DEFICIT_ROWS: tuple[tuple[int, str, str], ...] = (
+    (1646193600000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-02T04:00:00Z
+    (1646208000000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-02T08:00:00Z
+    (1646222400000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-02T12:00:00Z
+    (1646236800000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-02T16:00:00Z
+    (1646251200000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-02T20:00:00Z
+    (1646265600000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-03T00:00:00Z
+    (1646280000000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-03T04:00:00Z
+    (1646294400000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-03T08:00:00Z
+    (1646308800000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-03T12:00:00Z
+    (1646323200000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-03T16:00:00Z
+    (1646337600000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-03T20:00:00Z
+    (1646352000000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-04T00:00:00Z
+    (1646366400000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-04T04:00:00Z
+    (1646380800000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-04T08:00:00Z
+    (1646395200000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-04T12:00:00Z
+    (1646409600000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-04T16:00:00Z
+    (1646424000000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-04T20:00:00Z
+    (1646438400000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-05T00:00:00Z
+    (1646452800000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-05T04:00:00Z
+    (1646467200000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-05T08:00:00Z
+    (1646481600000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-05T12:00:00Z
+    (1646496000000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-05T16:00:00Z
+    (1646510400000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-05T20:00:00Z
+    (1646524800000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-06T00:00:00Z
+    (1646539200000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-06T04:00:00Z
+    (1646553600000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-06T08:00:00Z
+    (1646568000000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-06T12:00:00Z
+    (1646582400000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-06T16:00:00Z
+    (1646596800000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-06T20:00:00Z
+    (1646611200000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-07T00:00:00Z
+    (1646625600000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-07T04:00:00Z
+    (1646640000000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-07T08:00:00Z
+    (1646654400000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-07T12:00:00Z
+    (1646668800000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-07T16:00:00Z
+    (1646683200000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-07T20:00:00Z
+    (1646697600000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-08T00:00:00Z
+    (1646712000000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-08T04:00:00Z
+    (1646726400000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-08T08:00:00Z
+    # --- added by §34차 2항: the second archive-gap window's flip epochs ---
+    #
+    # 🔴 Two different spans are in play here, and confusing them reads as a
+    # contradiction.  The *archive gap* — the bars Binance's objects are
+    # missing — is 2022-03-31T20:00Z..2022-04-03T00:00Z (50 symbols).  The
+    # epochs below are the *flips that gap causes*, 2022-04-05T00:00Z..
+    # 2022-04-06T16:00Z, and they are necessarily LATER: a bar missing at t
+    # skews the trailing-30-day sum at every epoch E with t < E <= t+30d, so
+    # the effect starts after the gap, not during it.  The already-frozen 38
+    # above have exactly the same relationship (gap 2022-02-25T20:00Z..
+    # 2022-03-01T00:00Z, flips 2022-03-02T04:00Z..2022-03-08T08:00Z).
+    #
+    # Same mechanism as those 38, different window: GMTUSDT's own 12 missing
+    # bars shortened its trailing sum and kept it out of a top 3 it belonged
+    # in.  Measured by DFC-GAP-IMPACT-FULL after the first 38 were already
+    # frozen; the 38 above are reproduced unchanged.
+    (1649116800000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-05T00:00:00Z
+    (1649131200000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-05T04:00:00Z
+    (1649145600000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-05T08:00:00Z
+    (1649160000000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-05T12:00:00Z
+    (1649174400000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-05T16:00:00Z
+    (1649188800000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-05T20:00:00Z
+    (1649203200000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-06T00:00:00Z
+    (1649217600000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-06T04:00:00Z
+    (1649232000000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-06T08:00:00Z
+    (1649246400000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-06T12:00:00Z
+    (1649260800000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-06T16:00:00Z
+)
+
+#: The enumeration itself — the 49 epochs, in ascending order.
+RANKING_INPUT_DEFICIT_EPOCHS: tuple[int, ...] = tuple(
+    row[0] for row in RANKING_INPUT_DEFICIT_ROWS
+)
+
+#: The verdict §31차 assigns them: the same terminal code A2-C7 assigns to the
+#: other direction.  A deficit epoch is recorded with its reason and is not
+#: scored, not deleted, and not re-ranked.
+RANKING_INPUT_DEFICIT_VERDICT = RUN_INVALID_INPUT_EVIDENCE
+
+
 # --- A2-C8 (OD-26 Job B): pre-registered sample readiness protocol -------
 
 #: Registered *before* any sample measurement (Job B).  Nothing here may be
@@ -457,5 +611,6 @@ CLAUSE_SOURCES: MappingProxyType[str, str] = MappingProxyType(
         "A2-C6": "OD-26",
         "A2-C7": "OD-26",
         "A2-C8": "OD-26-JOB-B",
+        "A2-C9": "OD-31",
     }
 )

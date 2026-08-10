@@ -27,9 +27,11 @@ from .schema import (
     GAP_EXCLUSION_REQUIRED_KEYS,
     MANIFEST_GAP_REQUIRED_KEYS,
     MANIFEST_LIFECYCLE_REQUIRED_KEYS,
+    MANIFEST_RANKING_INPUT_DEFICIT_REQUIRED_KEYS,
     MANIFEST_REQUIRED_KEYS,
     MANIFEST_SOURCE_REQUIRED_KEYS,
     MANIFEST_TABLE_REQUIRED_KEYS,
+    RANKING_INPUT_DEFICIT_ROW_REQUIRED_KEYS,
     SAMPLE_REPORT_REQUIRED_KEYS,
     SAMPLE_ROW_REQUIRED_KEYS,
 )
@@ -50,6 +52,7 @@ __all__ = [
     "validate_manifest",
     "validate_outcomes",
     "validate_premium_index_gap",
+    "validate_ranking_input_deficit",
     "validate_sample_readiness",
     "validate_table",
 ]
@@ -1069,10 +1072,255 @@ def _check_gap_row(
         )
 
 
+# --- A2-C9 (OD-31): ranking-input deficit epochs ---------------------------
+
+
+def _validate_ranking_input_deficit_section(
+    manifest: Mapping[str, Any],
+) -> tuple[int, ...]:
+    """Check the manifest's A2-C9 declaration against the frozen enumeration.
+
+    The enumeration is *restated* here and compared, not referenced: the frozen
+    list was fixed by a measurement that has already been read, so the only
+    thing standing between it and a quiet edit is that both the source digest
+    and the epochs themselves have to match ``contract`` exactly.
+    """
+    section = manifest.get("ranking_input_deficit")
+    if not isinstance(section, Mapping):
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            "manifest does not declare ranking_input_deficit; the enumerated "
+            "epochs whose top-3 a ranking-input deficit changed are an input to "
+            "this corpus and are recorded, not assumed empty",
+        )
+        return ()
+
+    missing = [
+        k for k in MANIFEST_RANKING_INPUT_DEFICIT_REQUIRED_KEYS if k not in section
+    ]
+    if missing:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            f"ranking_input_deficit is missing {missing}",
+        )
+    unknown = [
+        k for k in section if k not in MANIFEST_RANKING_INPUT_DEFICIT_REQUIRED_KEYS
+    ]
+    if unknown:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            f"ranking_input_deficit carries unknown key(s): {sorted(unknown)}",
+        )
+
+    if section["enumeration_path"] != c.RANKING_INPUT_DEFICIT_ENUMERATION_PATH:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            "ranking_input_deficit.enumeration_path must be "
+            f"{c.RANKING_INPUT_DEFICIT_ENUMERATION_PATH!r}, got "
+            f"{section['enumeration_path']!r}",
+        )
+    if section["enumeration_sha256"] != c.RANKING_INPUT_DEFICIT_ENUMERATION_SHA256:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            "the enumeration list changed: declared enumeration_sha256 "
+            f"{section['enumeration_sha256']!r} is not the frozen "
+            f"{c.RANKING_INPUT_DEFICIT_ENUMERATION_SHA256!r}. The list was fixed "
+            "by a measurement that has already been read, so a list that moves "
+            "afterwards is a pre-registration that was rewritten, not a "
+            "correction",
+        )
+    if section["scan_path"] != c.RANKING_INPUT_DEFICIT_SCAN_PATH:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            "ranking_input_deficit.scan_path must be "
+            f"{c.RANKING_INPUT_DEFICIT_SCAN_PATH!r}, got {section['scan_path']!r}",
+        )
+    if section["scan_sha256"] != c.RANKING_INPUT_DEFICIT_SCAN_SHA256:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            "the gap scan the enumeration was measured over changed: declared "
+            f"scan_sha256 {section['scan_sha256']!r} is not the frozen "
+            f"{c.RANKING_INPUT_DEFICIT_SCAN_SHA256!r}. The epoch list can be "
+            "restated unchanged while the scan beneath it moves, and then "
+            "'every affected epoch' is a claim about a scope that no longer "
+            "exists — so the scope is pinned too, not just the list",
+        )
+    if section["scan_record_count"] != c.RANKING_INPUT_DEFICIT_SCAN_RECORD_COUNT:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            "ranking_input_deficit.scan_record_count must be "
+            f"{c.RANKING_INPUT_DEFICIT_SCAN_RECORD_COUNT}, got "
+            f"{section['scan_record_count']!r}",
+        )
+    if section["verdict"] != c.RANKING_INPUT_DEFICIT_VERDICT:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            f"ranking_input_deficit.verdict must be "
+            f"{c.RANKING_INPUT_DEFICIT_VERDICT!r}, got {section['verdict']!r}; a "
+            "deficit epoch carries the same terminal code as the other "
+            "direction, never a softer one",
+        )
+
+    epochs = tuple(section["epochs"])
+    if epochs != c.RANKING_INPUT_DEFICIT_EPOCHS:
+        extra = sorted(set(epochs) - set(c.RANKING_INPUT_DEFICIT_EPOCHS))
+        absent = sorted(set(c.RANKING_INPUT_DEFICIT_EPOCHS) - set(epochs))
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            f"declared deficit epochs are not the frozen enumeration of "
+            f"{len(c.RANKING_INPUT_DEFICIT_EPOCHS)} (extra={extra}, "
+            f"absent={absent}); the enumeration is fixed, not recomputed",
+        )
+
+    rows = list(section["rows"])
+    if len(rows) != len(c.RANKING_INPUT_DEFICIT_ROWS):
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            f"ranking_input_deficit.rows carries {len(rows)} row(s), the frozen "
+            f"enumeration has {len(c.RANKING_INPUT_DEFICIT_ROWS)}",
+        )
+    for index, (row, frozen) in enumerate(
+        zip(rows, c.RANKING_INPUT_DEFICIT_ROWS, strict=True)
+    ):
+        label = f"ranking_input_deficit.rows[{index}]"
+        absent_keys = [
+            k for k in RANKING_INPUT_DEFICIT_ROW_REQUIRED_KEYS if k not in row
+        ]
+        if absent_keys:
+            _fail(
+                RUN_INVALID_INPUT_EVIDENCE, "A2-C9", f"{label}: missing {absent_keys}"
+            )
+        declared = (
+            row["epoch_open_time"],
+            row["as_archived_rank3"],
+            row["would_have_been_rank3"],
+        )
+        if declared != frozen:
+            _fail(
+                RUN_INVALID_INPUT_EVIDENCE,
+                "A2-C9",
+                f"{label}: declared {declared} is not the frozen enumeration row "
+                f"{frozen}",
+            )
+    return epochs
+
+
+def validate_ranking_input_deficit(
+    manifest: Mapping[str, Any],
+    pit_universe: pa.Table,
+    outcomes: pa.Table | None = None,
+    decisions: Sequence[Mapping[str, Any]] = (),
+) -> None:
+    """Enforce A2-C9 on the frozen artifacts.
+
+    Three things have to hold at every enumerated epoch, and each is one of the
+    ways the clause could be evaded:
+
+    1. The epoch is still **there**.  Deleting it is how a deficit disappears
+       without leaving a trace, so an absent pool is a violation rather than a
+       tidy corpus.
+    2. The pool is the one the archive's own (deficient) input ranks.  Writing
+       ``would_have_been_rank3`` into it is the silent re-ranking §31차 names —
+       and it is the *more* tempting direction here, because the corrected
+       ranking looks more accurate.  It is still a ranking nobody can reproduce
+       from the recorded input.
+    3. The epoch is not **scored**.  ``RUN_INVALID_INPUT_EVIDENCE`` is a
+       terminal code, so an enumerated epoch that carries a decision or an
+       outcome row was processed as if it were clean.
+
+    Nothing here returns a pool or names a replacement, for the same reason
+    :func:`validate_premium_index_gap` does not.
+
+    Raises:
+        ContractViolation: Always with ``RUN_INVALID_INPUT_EVIDENCE``.
+    """
+    epochs = _validate_ranking_input_deficit_section(manifest)
+    if not epochs:
+        return
+
+    validate_table("pit_universe", pit_universe)
+
+    pools: dict[int, list[dict[str, Any]]] = {}
+    for row in pit_universe.to_pylist():
+        pools.setdefault(row["epoch_open_time"], []).append(row)
+
+    frozen_by_epoch = {row[0]: row for row in c.RANKING_INPUT_DEFICIT_ROWS}
+    head = c.RANKING_INPUT_DEFICIT_UNCHANGED_HEAD
+
+    #: Presence is required *within the table's own covered range* only.  An
+    #: enumerated epoch outside ``[min, max]`` was never in this table's scope
+    #: and nothing is claimed about it; one inside the range and missing is a
+    #: hole, which is exactly how a deficit epoch would be made to disappear.
+    #: Interior deletion cannot shrink the range, so the bound cannot be gamed
+    #: by deleting the rows the check is looking for.
+    covered_from, covered_to = (min(pools), max(pools)) if pools else (1, 0)
+
+    for epoch in epochs:
+        _, as_archived_rank3, would_have_been_rank3 = frozen_by_epoch[epoch]
+        rows = pools.get(epoch)
+        if not rows:
+            if covered_from <= epoch <= covered_to:
+                _fail(
+                    RUN_INVALID_INPUT_EVIDENCE,
+                    "A2-C9",
+                    f"epoch {epoch} is enumerated as a ranking-input deficit and "
+                    f"falls inside the pit_universe range "
+                    f"[{covered_from}, {covered_to}] but has no pool; the epoch "
+                    "is recorded with its reason, not removed",
+                )
+            continue
+        declared = tuple(row["symbol"] for row in sorted(rows, key=lambda r: r["rank"]))
+        if would_have_been_rank3 in declared:
+            _fail(
+                RUN_INVALID_INPUT_EVIDENCE,
+                "A2-C9",
+                f"epoch {epoch}: {would_have_been_rank3!r} is in the declared "
+                f"pool {list(declared)}, which is the ranking complete input "
+                "would have produced, not the one the recorded input produces "
+                f"({[*head, as_archived_rank3]}). The epoch is invalid; it "
+                "is not repaired by ranking it as if the deficit were not there",
+            )
+        if declared != (*head, as_archived_rank3):
+            _fail(
+                RUN_INVALID_INPUT_EVIDENCE,
+                "A2-C9",
+                f"epoch {epoch}: declared pool {list(declared)} is not the "
+                f"as-archived ranking {[*head, as_archived_rank3]} the "
+                "enumeration recorded for it",
+            )
+
+    scored: set[int] = {d["signal_epoch_open_time"] for d in decisions}
+    if outcomes is not None:
+        scored |= {row["signal_epoch_open_time"] for row in outcomes.to_pylist()}
+    processed = sorted(scored & set(epochs))
+    if processed:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            f"{len(processed)} enumerated deficit epoch(s) carry a decision or "
+            f"an outcome row (first={processed[0]}); "
+            f"{c.RANKING_INPUT_DEFICIT_VERDICT} is terminal, so a deficit epoch "
+            "is not scored as if its ranking input were complete",
+        )
+
+
 def validate_input_evidence(manifest: Mapping[str, Any]) -> tuple[str, ...]:
-    """Run the A2-C6 / A2-C7 manifest half and return the in-window gap subset."""
+    """Run the A2-C6 / A2-C7 / A2-C9 manifest half; return the in-window subset."""
     _validate_lifecycle_eligibility(manifest)
-    return _validate_gap_section(manifest)
+    in_window = _validate_gap_section(manifest)
+    _validate_ranking_input_deficit_section(manifest)
+    return in_window
 
 
 def validate_corpus(
@@ -1101,6 +1349,7 @@ def validate_corpus(
     """
     in_window = validate_input_evidence(manifest)
     validate_premium_index_gap(gap_audit, pit_universe, in_window)
+    validate_ranking_input_deficit(manifest, pit_universe, outcomes, decisions)
     validate_manifest(manifest)  # re-runs the pure input-evidence half; idempotent
     validate_table("klines_4h", klines)
     validate_table("premium_index_4h", premium_index)

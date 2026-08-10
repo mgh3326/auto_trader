@@ -24,6 +24,7 @@ __all__ = [
     "KLINES_4H_SCHEMA",
     "MANIFEST_GAP_REQUIRED_KEYS",
     "MANIFEST_LIFECYCLE_REQUIRED_KEYS",
+    "MANIFEST_RANKING_INPUT_DEFICIT_REQUIRED_KEYS",
     "MANIFEST_REQUIRED_KEYS",
     "MANIFEST_SOURCE_REQUIRED_KEYS",
     "MANIFEST_TABLE_REQUIRED_KEYS",
@@ -31,6 +32,7 @@ __all__ = [
     "PIT_UNIVERSE_SCHEMA",
     "PREMIUM_INDEX_4H_SCHEMA",
     "PREMIUM_INDEX_GAP_AUDIT_SCHEMA",
+    "RANKING_INPUT_DEFICIT_ROW_REQUIRED_KEYS",
     "RAW_KLINE_FIELD_NAMES",
     "SAMPLE_REPORT_REQUIRED_KEYS",
     "SAMPLE_ROW_REQUIRED_KEYS",
@@ -185,6 +187,7 @@ MANIFEST_REQUIRED_KEYS: tuple[str, ...] = (
     "prerequisite_readiness",
     "lifecycle_eligibility",
     "premium_index_gap",
+    "ranking_input_deficit",
     "sources",
     "tables",
     "admissibility",
@@ -206,6 +209,35 @@ GAP_EXCLUSION_REQUIRED_KEYS: tuple[str, ...] = (
     "symbol",
     "reason",
     "evidence_sha256",
+)
+
+#: A2-C9 (OD-31).  The manifest restates the frozen enumeration rather than
+#: pointing at it, and both the source digest and the epoch list are compared
+#: against ``contract`` — a corpus that quietly widened, narrowed or re-derived
+#: the list has to say so here, where the comparison happens.
+MANIFEST_RANKING_INPUT_DEFICIT_REQUIRED_KEYS: tuple[str, ...] = (
+    "enumeration_path",
+    "enumeration_sha256",
+    #: The scan the enumeration was measured over (A2-C9, §33차 binding).  Both
+    #: digests are required: the enumeration one says which epochs, this one
+    #: says what scope "every affected epoch" was earned against.  A manifest
+    #: that restates the epochs while the scan under them moved is declaring a
+    #: completeness it no longer has.
+    "scan_path",
+    "scan_sha256",
+    "scan_record_count",
+    "epochs",
+    "verdict",
+    "rows",
+)
+
+#: One entry per enumerated epoch: the epoch, the rank-3 symbol the deficient
+#: archive input actually ranks (which the corpus records), and the rank-3
+#: symbol complete input would have ranked (which it must not).
+RANKING_INPUT_DEFICIT_ROW_REQUIRED_KEYS: tuple[str, ...] = (
+    "epoch_open_time",
+    "as_archived_rank3",
+    "would_have_been_rank3",
 )
 
 #: A2-C6.  The corpus states the authority situation rather than leaving it
