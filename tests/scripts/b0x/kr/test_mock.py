@@ -171,12 +171,20 @@ class _FakeKrClient:
         *,
         cash: dict[str, Any],
         stocks: list[dict[str, Any]],
+        raw: dict[str, Any] | None = None,
     ) -> None:
         self._cash = cash
         self._stocks = stocks
+        # ``AccountClient.inquire_domestic_cash_balance`` always echoes the
+        # broker's own ``output2`` row under ``raw``; the parsed top-level
+        # floats are coerced (missing -> 0.0), so ``raw`` is the only place an
+        # *absent* cash field can still be told apart from a zero balance.
+        # Defaults to mirroring ``cash`` so a faithful double stays the easy
+        # path; pass ``raw={}`` to simulate a response that echoed nothing.
+        self._raw = dict(cash) if raw is None else raw
 
     async def inquire_cash_balance(self) -> dict[str, Any]:
-        return self._cash
+        return {**self._cash, "raw": self._raw}
 
     async def fetch_my_stocks(self) -> list[dict[str, Any]]:
         return self._stocks

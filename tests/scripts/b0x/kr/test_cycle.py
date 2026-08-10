@@ -90,6 +90,13 @@ class _FakeKrClient:
             "dnca_tot_amt": float(orderable_cash),
             "stck_cash_ord_psbl_amt": float(orderable_cash),
         }
+        # Faithful to AccountClient: the broker's own row is echoed under
+        # ``raw``, which is what distinguishes an absent cash field from a
+        # zero balance.
+        self._cash["raw"] = {
+            "dnca_tot_amt": str(orderable_cash),
+            "stck_cash_ord_psbl_amt": str(orderable_cash),
+        }
         self._stocks = stocks or []
         self.closed = False
 

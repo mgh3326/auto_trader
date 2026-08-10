@@ -16,11 +16,20 @@ What is reused, unchanged
   already established for the (unrelated) live-account read this module's
   sibling table generator does: compose only ``AccountClient`` against
   ``BaseKISClient``, never import ``app.services.brokers.kis.client.KISClient``
-  (which unconditionally imports the order clients at module scope). This
-  module's version reads ``is_mock=True`` instead of ``False`` — everything
-  else about the pattern, including its documented caveat that the KIS
-  package's own ``__init__.py`` still transitively loads those classes
-  regardless, is unchanged.
+  (which unconditionally imports the order clients at module scope) — including
+  its documented caveat that the KIS package's own ``__init__.py`` still
+  transitively loads those classes regardless.
+
+  🔴 What is **not** reused from that sibling is its account binding, and this
+  is the correction of a defect that reached production. Reading
+  ``is_mock=True`` where the table generator reads ``False`` is *not* the whole
+  difference: ``is_mock`` selects the **TR id only**, while host, credentials,
+  account number and token come from ``BaseKISClient``'s live defaults. A
+  client that flips only ``is_mock`` therefore sends a **mock TR to the live
+  host** — which KIS rejects with ``EGW02005 실전투자 TR 이 아닙니다``, exactly
+  what crashed the first KR cycle to reach account I/O inside KRX RTH
+  (2026-08-10). ``ReadOnlyKISMockDomesticClient`` below carries the four
+  overrides that actually bind it to the mock (VTS) account, each fail-closed.
 * ``app.mcp_server.tick_size.get_tick_size_kr`` — the *runtime* order-path
   tick rule (not a frozen research copy), same source ``kr_tick.py`` binds
   for the table generator, per that module's own documented rationale.
@@ -109,14 +118,17 @@ import os
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Protocol, cast
+from urllib.parse import urlsplit
 
 from app.core.config import settings, validate_kis_mock_config
 from app.mcp_server.tick_size import get_tick_size_kr
 from app.services.brokers.kis.account import AccountClient
-from app.services.brokers.kis.base import BaseKISClient
+from app.services.brokers.kis.base import _KIS_MOCK_REST_HOSTS, BaseKISClient
 from app.services.brokers.kis.mock_scalping_exec.adapters import KisMockBroker
 from app.services.brokers.kis.mock_scalping_ws.state import MarketState
 from app.services.brokers.kis.protocols import KISClientProtocol
+from app.services.kis_mock_settings_view import KISMockSettingsView
+from app.services.redis_token_manager import get_kis_mock_token_manager
 from scripts.b0x.broker_truth import (
     BrokerTruth,
     PendingUnreadable,
@@ -199,6 +211,34 @@ class KrLaneDisabled(RuntimeError):
     """
 
 
+class KrMockHostViolation(RuntimeError):
+    """A dispatch was about to leave for a host that is not the KIS mock (VTS).
+
+    Raised **before** the socket is opened. This lane's contract is "live 계좌
+    접촉 0"; a host that is not ``openapivts.koreainvestment.com:29443`` is a
+    configuration failure that must stop the cycle, never something to paper
+    over with a default host.
+    """
+
+
+class KrMockCashUnreadable(RuntimeError):
+    """The balance response carried no readable cash figure.
+
+    🔴 Deliberately distinct from "cash is zero". ``AccountClient.
+    inquire_domestic_cash_balance`` coerces missing/blank cash fields to
+    ``0.0`` for its live callers, so at this boundary an *absent* balance and a
+    genuinely *empty* account are indistinguishable by value alone — they are
+    told apart by whether the broker echoed the field at all.
+
+    Treating the first as ``0`` would be the worst available failure mode on
+    this lane: NAV is ``cash + Σ evlu_amt`` and the §4 envelope kill is
+    evaluated as a **percentage of NAV**, so a fabricated ``cash=0`` does not
+    merely under-report — it silently moves the kill threshold. Contract: NAV
+    and cash are never estimated. Unreadable fails closed, and the confirm path
+    turns that into a ``preflight_not_clean`` zero-order termination.
+    """
+
+
 class KrMockSubmissionNotWired(RuntimeError):
     """No concrete kis_mock order-submission function has been wired.
 
@@ -249,15 +289,93 @@ def account_identity_summary() -> dict[str, str]:
 class ReadOnlyKISMockDomesticClient(BaseKISClient):
     """kis_mock domestic-account reads only — no order-tool imports.
 
-    See the module docstring: same composition ``scripts/policy_table/
-    adapters/kr.py``'s ``_ReadOnlyKISDomesticClient`` uses, with
-    ``is_mock=True`` instead of ``False``.
+    Composition follows ``scripts/policy_table/adapters/kr.py``'s
+    ``_ReadOnlyKISDomesticClient`` (compose ``AccountClient`` over
+    ``BaseKISClient``, never import ``...kis.client.KISClient``), but — unlike
+    that live-account sibling — this client must be **bound to the mock (VTS)
+    account**, and binding is not something ``is_mock=True`` does on its own.
+
+    🔴 The distinction that a prior version of this class got wrong, stated
+    explicitly so it cannot be re-introduced: ``AccountClient``'s ``is_mock``
+    parameter selects the **TR id only**. Host, app key/secret, account number
+    and OAuth token all come from ``self._settings`` under the *live* field
+    names, which ``BaseKISClient`` resolves to the live values by default.
+    Passing ``is_mock=True`` while inheriting those defaults sends a mock
+    ``tr_id`` (``VTTC8434R``) to the **live** host with **live** credentials —
+    which KIS rejects with ``EGW02005 실전투자 TR 이 아닙니다``. That is what
+    happened on 2026-08-10, and it is why the four overrides below exist:
+
+    * :attr:`_settings` → :class:`KISMockSettingsView` (mock credentials,
+      mock account number, mock token slot — no live fallback anywhere),
+    * :meth:`_kis_url` → the mock base URL, **re-asserted** against the
+      official VTS host on every single URL it builds (see
+      :meth:`_assert_mock_host`),
+    * ``_token_manager`` → the ``kis_mock`` Redis namespace, so a mock token
+      is never minted into (or read from) the live token cache,
+    * ``_is_mock_client`` → ``True``, which is also what makes ROB-892's
+      distributed VTS admit gate engage for these reads.
+
+    Every one of those is fail-closed: a misconfiguration raises
+    :class:`KrMockHostViolation` **before** any socket is opened, rather than
+    quietly reaching the live account.
     """
 
     def __init__(self) -> None:
+        # Must precede super().__init__(): the base builds ``_hdr_base``
+        # (appkey/appsecret) from ``self._settings`` during construction.
+        self._mock_settings = KISMockSettingsView(settings)
+        # Marks this dispatch as mock for ROB-892's distributed admit gate.
+        self._is_mock_client = True
         super().__init__()
+        self._token_manager = get_kis_mock_token_manager(
+            base_url=self._assert_mock_host(self._mock_settings.kis_base_url),
+            app_key=self._mock_settings.kis_app_key,
+        )
         parent = cast(KISClientProtocol, cast(object, self))
         self._account = AccountClient(parent)
+
+    @property
+    def _settings(self) -> Any:  # type: ignore[override]
+        return self._mock_settings
+
+    @staticmethod
+    def _assert_mock_host(url: str) -> str:
+        """Return ``url`` iff it points at the official KIS mock (VTS) host.
+
+        The lane's one structural promise is "this client cannot reach the live
+        account". Checking the fully-built URL — rather than trusting the
+        configured base — is what makes that promise hold even if
+        ``KIS_MOCK_BASE_URL`` is edited to a live/other host, and it covers the
+        OAuth token POST as well as every account read, since both are built
+        through :meth:`_kis_url`.
+
+        Raises:
+            KrMockHostViolation: on an empty, malformed, or non-VTS host. Never
+                falls back to a default host — an unusable configuration must
+                stop the lane, not silently redirect it.
+        """
+
+        try:
+            netloc = urlsplit(url).netloc.lower()
+        except ValueError as exc:
+            raise KrMockHostViolation(
+                f"KIS mock base URL is malformed and cannot be host-checked: {exc}"
+            ) from exc
+        if netloc not in _KIS_MOCK_REST_HOSTS:
+            raise KrMockHostViolation(
+                "B0-X KR is a kis_mock-only lane; refusing to dispatch to host "
+                f"{netloc or '(empty)'} — the only permitted host is "
+                f"{', '.join(sorted(_KIS_MOCK_REST_HOSTS))}"
+            )
+        return url
+
+    def _kis_url(self, path: str) -> str:
+        base_url = self._assert_mock_host(self._mock_settings.kis_base_url)
+        return f"{base_url.rstrip('/')}{path}"
+
+    def _token_request_timeout(self) -> float:
+        # ROB-600/ROB-270: the VTS host answers near the 5s boundary.
+        return 10.0
 
     async def fetch_my_stocks(self) -> list[dict[str, Any]]:
         return await self._account.fetch_my_stocks(is_mock=True, is_overseas=False)
@@ -358,6 +476,60 @@ def _dec(value: Any) -> Decimal:
     return Decimal(str(value))
 
 
+#: Cash fields the KIS domestic balance response may carry, in the same
+#: precedence order ``AccountClient.inquire_domestic_cash_balance`` applies.
+_CASH_FIELDS: tuple[str, ...] = (
+    "stck_cash_ord_psbl_amt",
+    "ord_psbl_cash",
+    "dnca_tot_amt",
+)
+
+
+def _echoed_cash_fields(raw: Any) -> frozenset[str]:
+    """Return which cash fields the broker actually echoed with a value.
+
+    Presence, not value: ``"0"`` counts as echoed (a genuinely empty account),
+    while a missing key or a blank string does not. This is the only thing that
+    distinguishes "the account holds nothing" from "the response told us
+    nothing" once ``AccountClient`` has coerced both to ``0.0``.
+    """
+
+    if not isinstance(raw, dict):
+        return frozenset()
+    return frozenset(
+        field for field in _CASH_FIELDS if str(raw.get(field, "")).strip() != ""
+    )
+
+
+def _read_cash_or_fail(payload: dict[str, Any]) -> Decimal:
+    """Resolve KRW cash from a balance payload, or raise.
+
+    Preserves the lane's documented preference (주문가능현금, falling back to
+    예수금총액) exactly — both are real broker figures. What it adds is the
+    fail-closed branch: if the broker echoed **no** cash field at all, this
+    raises :class:`KrMockCashUnreadable` instead of returning ``Decimal("0")``
+    for a number nobody reported.
+    """
+
+    echoed = _echoed_cash_fields(payload.get("raw"))
+    if not echoed:
+        raise KrMockCashUnreadable(
+            "KIS mock 국내잔고 응답이 현금 필드를 하나도 echo 하지 않았다 "
+            f"(기대: {', '.join(_CASH_FIELDS)}). 조회 불가를 0 으로 읽으면 "
+            "NAV(=cash+평가액)가 축소되어 §4 envelope 의 NAV 비율 kill 임계가 "
+            "왜곡되므로, 추정하지 않고 fail-closed 한다."
+        )
+
+    orderable = payload.get("stck_cash_ord_psbl_amt")
+    if orderable:
+        return _dec(orderable)
+    if "dnca_tot_amt" in echoed:
+        return _dec(payload.get("dnca_tot_amt"))
+    # 주문가능현금이 echo 된 0 이고 예수금총액은 응답에 없다 — 0 은 추정이 아니라
+    # 브로커가 실제로 보고한 값이므로 그대로 쓴다.
+    return _dec(orderable)
+
+
 async def read_fresh_truth(client: ReadOnlyKISMockDomesticClient) -> FreshTruth:
     """Read-only cash + holdings snapshot, and the NAV derived from them.
 
@@ -365,11 +537,17 @@ async def read_fresh_truth(client: ReadOnlyKISMockDomesticClient) -> FreshTruth:
     every held symbol. This is the same-cycle NAV snapshot
     ``scripts.b0x.kill_switch.evaluate`` requires for a ``pct_of_nav`` kill —
     see ``scripts.b0x.envelope.KR_MOCK_ENVELOPE``.
+
+    Raises:
+        KrMockHostViolation: if the client would dispatch anywhere but the KIS
+            mock (VTS) host — raised before any socket is opened.
+        KrMockCashUnreadable: if the balance response echoed no cash field.
+            NAV is never estimated; see the exception's own docstring for why a
+            fabricated ``0`` would distort the §4 NAV-ratio kill threshold.
     """
 
     cash_payload = await client.inquire_cash_balance()
-    orderable = cash_payload.get("stck_cash_ord_psbl_amt")
-    cash = _dec(orderable if orderable else cash_payload.get("dnca_tot_amt"))
+    cash = _read_cash_or_fail(cash_payload)
 
     stocks = await client.fetch_my_stocks()
     positions: list[RawPosition] = []
@@ -694,6 +872,8 @@ __all__ = [
     "KR_PENDING_UNREADABLE",
     "OWN_PENDING_SOURCE",
     "KrLaneDisabled",
+    "KrMockCashUnreadable",
+    "KrMockHostViolation",
     "KrMockSubmissionNotWired",
     "ReadOnlyKISMockDomesticClient",
     "RawPosition",
