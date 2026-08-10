@@ -542,7 +542,12 @@ _FRESHNESS_FIELD_NAMES = (
     "fallback_source",
     "provider_provenance",
 )
-_FRESHNESS_DATA_STATES = frozenset({"fresh", "stale", "degraded", "missing"})
+# ROB-1236 added "halted_suspect": a series of inert daily bars. It is a valid
+# classification, not an invalid envelope — but it is never a success state.
+_FRESHNESS_DATA_STATES = frozenset(
+    {"fresh", "stale", "degraded", "missing", "halted_suspect"}
+)
+_NON_FRESH_DATA_STATES = frozenset({"stale", "degraded", "missing", "halted_suspect"})
 _PROVENANCE_FIELD_NAMES = frozenset(
     {"provider", "served_by", "mode", "status", "error_code"}
 )
@@ -1144,7 +1149,7 @@ def _extract_error_code(
     if semantic_success:
         return None
     data_state = freshness.get("data_state")
-    if data_state in {"stale", "degraded", "missing"}:
+    if data_state in _NON_FRESH_DATA_STATES:
         return f"{data_state}_data"
     if _has_true_flag(envelope, frozenset({"stale", "is_stale"})):
         return "stale_data"

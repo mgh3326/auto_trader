@@ -37,6 +37,7 @@ from app.services.brokers.kis.account import AccountClient
 from app.services.brokers.kis.base import BaseKISClient
 from app.services.brokers.kis.protocols import KISClientProtocol
 from app.services.daily_candles.repository import DailyCandlesRepository, MarketKey
+from app.services.halt_detection import classify_ohlcv_rows
 from app.services.invest_screener_snapshots.repository import (
     InvestScreenerSnapshotsRepository,
 )
@@ -138,7 +139,10 @@ class RawInputs:
     snapshot_partition_date: str | None
     snapshot_breadth: dict[str, Any] | None
     universe_symbols: list[str]  # filter_passed ∪ holdings ∪ watch (attempted set)
-    candles: dict[str, list[list[str]]]  # symbol -> [[close, high, low], ...] ascending
+    # symbol -> [[close, high, low, volume], ...] ascending. ROB-1236 appended
+    # ``volume`` for halt detection; three-element rows from an older replay
+    # dump still classify (zero-variation rule only), so existing dumps replay.
+    candles: dict[str, list[list[str]]]
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -289,6 +293,7 @@ async def _fetch_kr_daily_candles_raw(symbol: str) -> list[list[str]] | None:
             str(Decimal(str(r.close))),
             str(Decimal(str(r.high))),
             str(Decimal(str(r.low))),
+            str(Decimal(str(r.volume))),
         ]
         for r in rows
     ]
@@ -573,8 +578,33 @@ def compute_policy_table(raw: RawInputs) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    halted_suspect: list[dict[str, Any]] = []
     for symbol in raw.universe_symbols:
         bars = raw.candles.get(symbol, [])
+        # ROB-1236: a symbol whose recent bars are inert (consecutive
+        # zero-volume or zero-variation sessions) is dropped from ``rows``
+        # entirely rather than emitted with signals computed off dead candles.
+        # Dropping is fail-closed for every downstream consumer of this payload
+        # (B0-X reads these rows) and needs no change on their side; the
+        # symbol stays visible under ``universe.halted_suspect`` so the removal
+        # is auditable and can be overruled.
+        halt = classify_ohlcv_rows(bars)
+        if halt.suspected:
+            halted_suspect.append(
+                {
+                    "symbol": symbol,
+                    "held": symbol in holdings_by_symbol,
+                    **halt.to_dict(),
+                }
+            )
+            skipped.append(
+                {
+                    "symbol": symbol,
+                    "reason": "halted_suspect",
+                    "bars_available": len(bars),
+                }
+            )
+            continue
         closes = [Decimal(bar[0]) for bar in bars]
         highs = [Decimal(bar[1]) for bar in bars]
         lows = [Decimal(bar[2]) for bar in bars]
@@ -643,6 +673,9 @@ def compute_policy_table(raw: RawInputs) -> dict[str, Any]:
             "attempted_symbols": len(raw.universe_symbols),
             "computed_symbols": len(raw.universe_symbols) - len(skipped),
             "skipped": skipped,
+            # ROB-1236 — excluded from ``rows``, kept visible here. Suspicion
+            # from inert bars, not a confirmed halt (no KRX halt master).
+            "halted_suspect": halted_suspect,
         },
         "market_context": {
             "snapshot_breadth": raw.snapshot_breadth,
@@ -722,6 +755,15 @@ def render_summary_md(payload: dict[str, Any], *, top_n: int = 50) -> str:
             by_reason[s["reason"]] = by_reason.get(s["reason"], 0) + 1
         reason_str = ", ".join(f"{k}={v}" for k, v in sorted(by_reason.items()))
         lines.append(f"skipped: {len(u['skipped'])} ({reason_str})")
+    # ROB-1236 — name the excluded symbols; a silent drop of a real candidate
+    # is the failure mode of this filter, so it has to be readable.
+    for entry in u.get("halted_suspect") or []:
+        lines.append(
+            f"halted_suspect (excluded, NOT a confirmed halt): {entry['symbol']}"
+            f"{' [held]' if entry.get('held') else ''} — "
+            f"{entry['frozen_sessions']} inert sessions, "
+            f"reasons={'+'.join(entry['reasons'])}"
+        )
     lines.append("")
 
     breadth = payload["market_context"].get("snapshot_breadth")

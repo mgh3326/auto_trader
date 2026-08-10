@@ -430,6 +430,32 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
   `FINNHUB_NEWS_TIMEOUT_S`×`FINNHUB_NEWS_MAX_ATTEMPTS` 재시도, 전 실패 시
   degraded + DB stale 폴백.
 
+### 정지 종목 오염 차단 — `halted_suspect` (ROB-1236)
+
+일봉이 **3거래일 연속 죽어 있으면**(`volume=0` **또는** `high==low==close` 이면서
+직전 close 와 동일) `data_state: "halted_suspect"`. 🔴 **`fresh` 금지 · 지표 null ·
+스크리너/정책표에서 제외.** 실사례 = 000880 한화(8거래일 동결인데 `fresh` + RSI 35.40 로
+매수 후보 rank 2 랭킹).
+
+- **판정기**: `app/services/halt_detection.py` (순수·stdlib, DB/네트워크/시계 없음)
+- **소비자 3곳**: `analyze_stock_impl::_apply_halt_suspect`(indicators·support_resistance
+  = None, quote/top-level 양쪽 data_state 덮어씀) · `screening/halt_filter.py`
+  (`screen_stocks_unified` 단일 깔때기) · `scripts/policy_table/adapters/{kr,us,crypto}.py`
+- **런북**: `docs/runbooks/halted-suspect-data-state.md`
+
+**주의**:
+- 🔴 **`halted_suspect` 는 확정이 아니라 의심.** KRX 거래정지 마스터가 레포에 **없다**
+  (`krx_halt_master: "unavailable"` 를 응답에 명시). 확정 정지로 단정 금지.
+- 🔴 **N=3 은 양방향 오차를 감수한 값** — 1~2일 정지는 못 잡고(위음성), 3일 연속 무거래
+  초저유동 종목은 잡힌다(위양성). 그래서 **제외는 항상 심볼·근거와 함께 보고**된다
+  (`meta.halted_suspect_excluded` / `universe.halted_suspect`). 조용한 삭제 금지.
+- **상한가/하한가 잠김**은 `open=high=low=close` 지만 직전 close 와 가격이 다르므로
+  잡히지 않는다 — 0-변동 조건의 "직전 close 동일" 절을 제거하지 말 것.
+- 봉 이력 조회 실패는 **fail-open**(행 유지 + warning). DB 장애는 정지의 증거가 아니다.
+- 🔴 스크리너는 **최신봉 거래량 > 0 이면 이력 조회를 건너뛴다**(장중 일봉 캐시 우회 →
+  100행 스크린이 KIS 라이브 100회를 때리는 것 방지). 감수하는 구멍 = 거래량 있는
+  0-변동 구간. analyze/정책표는 이력을 무조건 읽으므로 그쪽에서 잡힌다.
+
 ### 데이터베이스 정규화 구조
 
 **주식 정보와 분석 결과 분리:**

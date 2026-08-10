@@ -30,6 +30,7 @@ from app.services.brokers.upbit.client import (
     fetch_top_traded_coins,
     parse_upbit_account_row,
 )
+from app.services.halt_detection import classify_ohlcv_rows
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from research.kr_corpus.d3_engine.models import Position
 from research.kr_corpus.d3_engine.policies import update_underwater_close
@@ -74,7 +75,10 @@ class RawInputs:
     watch_alerts: list[dict[str, Any]]
     top_traded: list[dict[str, str]]
     orderable_krw: str
-    candles: dict[str, list[list[str]]]  # symbol -> [[close, high, low], ...] ascending
+    # symbol -> [[close, high, low, volume], ...] ascending. ROB-1236 appended
+    # ``volume`` for halt detection; three-element rows from an older replay
+    # dump still classify (zero-variation rule only), so existing dumps replay.
+    candles: dict[str, list[list[str]]]
 
     def to_jsonable(self) -> dict[str, Any]:
         return {
@@ -154,6 +158,7 @@ async def _fetch_candles_raw(symbol: str) -> list[list[str]] | None:
                 str(Decimal(str(bar["close"]))),
                 str(Decimal(str(bar["high"]))),
                 str(Decimal(str(bar["low"]))),
+                str(Decimal(str(bar["volume"]))),
             ]
         )
     return rows
@@ -459,8 +464,24 @@ def compute_policy_table(
     )
 
     rows: list[dict[str, Any]] = []
+    halted_suspect: list[dict[str, Any]] = []
     for symbol in universe_symbols:
         bars = raw.candles[symbol]
+        # ROB-1236: an inert recent series (consecutive zero-volume or
+        # zero-variation sessions) is dropped from ``rows`` entirely rather
+        # than emitted with signals computed off dead candles. On an Upbit KRW
+        # market this reads as a dead or suspended feed rather than a KRX-style
+        # halt, but the contamination it causes downstream is identical.
+        halt = classify_ohlcv_rows(bars)
+        if halt.suspected:
+            halted_suspect.append(
+                {
+                    "symbol": symbol,
+                    "held": symbol in holdings_by_symbol,
+                    **halt.to_dict(),
+                }
+            )
+            continue
         closes = [Decimal(bar[0]) for bar in bars]
         highs = [Decimal(bar[1]) for bar in bars]
         lows = [Decimal(bar[2]) for bar in bars]
@@ -534,6 +555,9 @@ def compute_policy_table(
             "symbols_with_insufficient_history": sorted(
                 row["symbol"] for row in rows if row["insufficient_history"]
             ),
+            # ROB-1236 — excluded from ``rows``, kept visible here. Suspicion
+            # from inert bars, not a confirmed suspension.
+            "halted_suspect": halted_suspect,
         },
         "market_context": {
             "alt_breadth": {
