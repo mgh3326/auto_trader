@@ -126,6 +126,35 @@ async def test_zero_volume_row_still_gets_the_full_history_read():
 
 
 @pytest.mark.asyncio
+async def test_crypto_rows_are_gated_on_their_own_field_names():
+    """Crypto rows carry volume_24h / trade_amount_24h, not ``volume``."""
+    response = {
+        "results": [
+            {
+                "symbol": "KRW-BTC",
+                "market": "crypto",
+                "volume_24h": 1200.0,
+                "trade_amount_24h": 900_000_000_000.0,
+            }
+        ],
+        "total_count": 1,
+        "returned_count": 1,
+        "market": "crypto",
+        "meta": {},
+    }
+
+    fetch = AsyncMock(side_effect=AssertionError("history must not be read"))
+    with patch(
+        "app.mcp_server.tooling.screening.halt_filter._fetch_ohlcv_for_indicators",
+        new=fetch,
+    ):
+        result = await exclude_halt_suspect_rows(response, market="crypto")
+
+    assert fetch.await_count == 0
+    assert result is response
+
+
+@pytest.mark.asyncio
 async def test_unparseable_volume_falls_through_to_the_history_read():
     """The cheap gate must never be the reason a halt slips through."""
     response = _response()
@@ -201,7 +230,13 @@ async def test_history_read_failure_keeps_the_row_and_warns():
         "000880",
         "000660",
     ]
-    assert any("halt check skipped" in w for w in result["warnings"])
+    # Diagnostics only — ``warnings`` is a contract callers assert on exactly,
+    # and a transient candle-store error is not an operator action item.
+    assert any(
+        "halt check skipped" in entry
+        for entry in result["meta"]["halted_suspect_check_skipped"]
+    )
+    assert "warnings" not in result
 
 
 @pytest.mark.asyncio

@@ -62,20 +62,35 @@ _MARKET_TYPE_BY_SCREEN_MARKET = {
 }
 
 
-def _latest_bar_traded(row: dict[str, Any]) -> bool:
-    """True when the row's own newest bar shows real volume.
+#: Per-market names for "how much traded on the newest bar". Turnover counts
+#: as well as share volume — either being positive proves the bar traded.
+_TRADED_FIELDS = (
+    "volume",
+    "volume_24h",
+    "daily_volume",
+    "trade_amount",
+    "trade_amount_24h",
+    "daily_turnover",
+)
 
-    Missing or unparseable volume returns ``False`` so the row still gets the
-    full history read — the cheap gate must never be the reason a halt slips
-    through.
+
+def _latest_bar_traded(row: dict[str, Any]) -> bool:
+    """True when the row's own newest bar shows real volume or turnover.
+
+    A row carrying none of the known fields, or only unparseable ones, returns
+    ``False`` so it still gets the full history read — the cheap gate must
+    never be the reason a halt slips through.
     """
-    raw = row.get("volume")
-    if raw is None:
-        return False
-    try:
-        return float(raw) > 0
-    except (TypeError, ValueError):
-        return False
+    for field in _TRADED_FIELDS:
+        raw = row.get(field)
+        if raw is None:
+            continue
+        try:
+            if float(raw) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 async def _classify_row(
@@ -130,10 +145,15 @@ async def exclude_halt_suspect_rows(
 
     kept: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
+    check_skipped: list[str] = []
     warnings: list[str] = []
-    for row, (symbol, suspicion, warning) in zip(rows, verdicts, strict=True):
-        if warning:
-            warnings.append(warning)
+    for row, (symbol, suspicion, skip_reason) in zip(rows, verdicts, strict=True):
+        if skip_reason:
+            # Diagnostics, not an operator warning: ``warnings`` is a contract
+            # some callers assert on exactly, and a transient candle-store
+            # error is not something an operator acts on. Only an actual
+            # exclusion earns a warning.
+            check_skipped.append(skip_reason)
         if suspicion is None or not suspicion.suspected:
             kept.append(row)
             continue
@@ -146,7 +166,13 @@ async def exclude_halt_suspect_rows(
             "confirmed halt; verify before overriding"
         )
 
-    if not excluded and not warnings:
+    if check_skipped:
+        logger.warning(
+            "halt check skipped for %d screener row(s): %s",
+            len(check_skipped),
+            "; ".join(check_skipped[:5]),
+        )
+    if not excluded and not check_skipped:
         return response
 
     dropped = len(rows) - len(kept)
@@ -162,7 +188,10 @@ async def exclude_halt_suspect_rows(
     )
 
     meta = dict(response.get("meta") or {})
-    meta["halted_suspect_excluded"] = excluded
+    if excluded:
+        meta["halted_suspect_excluded"] = excluded
+    if check_skipped:
+        meta["halted_suspect_check_skipped"] = check_skipped
 
     merged_warnings = list(response.get("warnings") or [])
     merged_warnings.extend(warnings)
