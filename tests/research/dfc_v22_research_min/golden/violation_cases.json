@@ -296,6 +296,54 @@
       "clause": "A2-C8",
       "expected_code": "RUN_INVALID_CORPUS_LITERALS",
       "expected_detail_contains": "is not part of the pre-registered sample"
+    },
+    {
+      "case_id": "deficit_epoch_processed_normally",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "carry a decision or an outcome row"
+    },
+    {
+      "case_id": "deficit_epoch_scored_in_outcomes",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "is terminal, so a deficit epoch"
+    },
+    {
+      "case_id": "deficit_epoch_silently_reranked",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "not repaired by ranking it as if the deficit were not there"
+    },
+    {
+      "case_id": "deficit_enumeration_list_changed",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "the enumeration list changed"
+    },
+    {
+      "case_id": "deficit_epochs_narrowed",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "the enumeration is fixed, not recomputed"
+    },
+    {
+      "case_id": "deficit_row_disagrees_with_enumeration",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "is not the frozen enumeration row"
+    },
+    {
+      "case_id": "deficit_epoch_row_deleted",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "but has no pool; the epoch is recorded with its reason, not removed"
+    },
+    {
+      "case_id": "deficit_declaration_absent",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "recorded, not assumed empty"
     }
   ]
 }

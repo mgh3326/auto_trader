@@ -217,6 +217,53 @@ def premium_index_gap(**overrides: Any) -> dict[str, Any]:
     return gap
 
 
+#: A2-C9.  The baseline restates the frozen enumeration exactly, so every
+#: mutant below is a *single* deviation from a manifest that otherwise passes.
+def ranking_input_deficit(**overrides: Any) -> dict[str, Any]:
+    section: dict[str, Any] = {
+        "enumeration_path": c.RANKING_INPUT_DEFICIT_ENUMERATION_PATH,
+        "enumeration_sha256": c.RANKING_INPUT_DEFICIT_ENUMERATION_SHA256,
+        "epochs": list(c.RANKING_INPUT_DEFICIT_EPOCHS),
+        "verdict": c.RANKING_INPUT_DEFICIT_VERDICT,
+        "rows": [
+            {
+                "epoch_open_time": epoch,
+                "as_archived_rank3": as_archived,
+                "would_have_been_rank3": would_have_been,
+            }
+            for epoch, as_archived, would_have_been in c.RANKING_INPUT_DEFICIT_ROWS
+        ],
+    }
+    section.update(overrides)
+    return section
+
+
+#: The pool the corpus must record at a deficit epoch: the ranking the archive's
+#: own (short) input produces.  ``DEFICIT_EPOCH`` is the first enumerated one.
+DEFICIT_EPOCH = c.RANKING_INPUT_DEFICIT_EPOCHS[0]
+DEFICIT_AS_ARCHIVED = (
+    *c.RANKING_INPUT_DEFICIT_UNCHANGED_HEAD,
+    c.RANKING_INPUT_DEFICIT_ROWS[0][1],
+)
+DEFICIT_WOULD_HAVE_BEEN = (
+    *c.RANKING_INPUT_DEFICIT_UNCHANGED_HEAD,
+    c.RANKING_INPUT_DEFICIT_ROWS[0][2],
+)
+
+
+def deficit_pool_rows(
+    symbols: tuple[str, ...] = DEFICIT_AS_ARCHIVED,
+) -> list[dict[str, Any]]:
+    """A three-rank pool at the first enumerated deficit epoch."""
+    return [
+        {
+            **pit_universe_row(rank, symbol, str(300 - 100 * (rank - 1)) + ".0"),
+            "epoch_open_time": DEFICIT_EPOCH,
+        }
+        for rank, symbol in enumerate(symbols, start=1)
+    ]
+
+
 def manifest(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "contract_id": c.CONTRACT_ID,
@@ -244,6 +291,7 @@ def manifest(**overrides: Any) -> dict[str, Any]:
         },
         "lifecycle_eligibility": lifecycle_eligibility(),
         "premium_index_gap": premium_index_gap(),
+        "ranking_input_deficit": ranking_input_deficit(),
         "sources": [_source(kind) for kind in c.REQUIRED_SOURCE_KINDS],
         "tables": [
             {
@@ -771,6 +819,113 @@ def _case_sample_epoch_outside_registered_plan() -> None:
     v.validate_sample_readiness(report)
 
 
+# --- A2-C9 (OD-31) — the three mutants the amendment must shoot down --------
+
+
+def _deficit_decisions(epoch: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "signal_epoch_open_time": epoch,
+            "candidate_any": c.ARM_CANDIDATE,
+            "winner_symbol": DEFICIT_AS_ARCHIVED[0],
+        }
+    ]
+
+
+def _case_deficit_epoch_processed_normally() -> None:
+    # MUTANT ①: an enumerated epoch is scored as if its ranking input had been
+    # complete.  Everything else about the corpus is well-formed, so only the
+    # terminal-code check can catch it.
+    v.validate_ranking_input_deficit(
+        manifest(),
+        pit_universe(deficit_pool_rows()),
+        None,
+        _deficit_decisions(DEFICIT_EPOCH),
+    )
+
+
+def _case_deficit_epoch_scored_in_outcomes() -> None:
+    # Same mutant reached from the outcomes table rather than the decision set:
+    # a builder that never registered the decision but still emitted a row.
+    rows = [
+        _outcome_row(
+            DEFICIT_EPOCH,
+            "XRPUSDT",
+            "p-xrp-t0",
+            "p-xrp-t0n",
+            "1.0000",
+            "1.0100",
+            c.ARM_CANDIDATE,
+        )
+    ]
+    v.validate_ranking_input_deficit(
+        manifest(), pit_universe(deficit_pool_rows()), outcomes(rows), ()
+    )
+
+
+def _case_deficit_epoch_silently_reranked() -> None:
+    # MUTANT ②: the pool records the ranking *complete* input would have
+    # produced.  It looks more accurate, and it is exactly what §31차 forbids —
+    # no reader can reproduce it from the evidence the corpus carries.
+    v.validate_ranking_input_deficit(
+        manifest(), pit_universe(deficit_pool_rows(DEFICIT_WOULD_HAVE_BEEN)), None, ()
+    )
+
+
+def _case_deficit_enumeration_list_changed() -> None:
+    # MUTANT ③: the enumeration file moved after the list was pre-registered.
+    # The manifest is internally consistent; only the pinned digest exposes it.
+    v.validate_manifest(
+        manifest(
+            ranking_input_deficit=ranking_input_deficit(
+                enumeration_sha256="9" * 64,
+            )
+        )
+    )
+
+
+def _case_deficit_epochs_narrowed() -> None:
+    # The same edit reached from the list itself: drop the inconvenient epochs
+    # and re-hash nothing.
+    v.validate_manifest(
+        manifest(
+            ranking_input_deficit=ranking_input_deficit(
+                epochs=list(c.RANKING_INPUT_DEFICIT_EPOCHS[:-1]),
+            )
+        )
+    )
+
+
+def _case_deficit_row_disagrees_with_enumeration() -> None:
+    rows = [dict(r) for r in ranking_input_deficit()["rows"]]
+    rows[0]["would_have_been_rank3"] = rows[0]["as_archived_rank3"]
+    v.validate_manifest(
+        manifest(ranking_input_deficit=ranking_input_deficit(rows=rows))
+    )
+
+
+def _case_deficit_epoch_row_deleted() -> None:
+    # Deleting the epoch is how a deficit disappears without leaving a trace.
+    # The first and last enumerated epochs are kept so the table's covered range
+    # still spans the whole enumeration — the deletion is an interior hole,
+    # which is the only shape this can actually take.
+    kept: list[dict[str, Any]] = []
+    for epoch, as_archived, _ in (
+        c.RANKING_INPUT_DEFICIT_ROWS[0],
+        c.RANKING_INPUT_DEFICIT_ROWS[-1],
+    ):
+        symbols = (*c.RANKING_INPUT_DEFICIT_UNCHANGED_HEAD, as_archived)
+        kept.extend(
+            {**row, "epoch_open_time": epoch} for row in deficit_pool_rows(symbols)
+        )
+    v.validate_ranking_input_deficit(manifest(), pit_universe(kept), None, ())
+
+
+def _case_deficit_declaration_absent() -> None:
+    bare = {k: val for k, val in manifest().items() if k != "ranking_input_deficit"}
+    v.validate_input_evidence(bare)
+
+
 CASE_BUILDERS: dict[str, Callable[[], None]] = {
     "outcomes_free_bool_column": _case_outcomes_free_bool_column,
     "outcomes_free_price_column": _case_outcomes_free_price_column,
@@ -835,6 +990,16 @@ CASE_BUILDERS: dict[str, Callable[[], None]] = {
     "sample_rule_tampered": _case_sample_rule_tampered,
     "sample_verdict_not_recomputed": _case_sample_verdict_not_recomputed,
     "sample_epoch_outside_registered_plan": _case_sample_epoch_outside_registered_plan,
+    "deficit_epoch_processed_normally": _case_deficit_epoch_processed_normally,
+    "deficit_epoch_scored_in_outcomes": _case_deficit_epoch_scored_in_outcomes,
+    "deficit_epoch_silently_reranked": _case_deficit_epoch_silently_reranked,
+    "deficit_enumeration_list_changed": _case_deficit_enumeration_list_changed,
+    "deficit_epochs_narrowed": _case_deficit_epochs_narrowed,
+    "deficit_row_disagrees_with_enumeration": (
+        _case_deficit_row_disagrees_with_enumeration
+    ),
+    "deficit_epoch_row_deleted": _case_deficit_epoch_row_deleted,
+    "deficit_declaration_absent": _case_deficit_declaration_absent,
 }
 
 
