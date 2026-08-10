@@ -12,6 +12,7 @@ collection, no listing, no download and no backtest.
 | Binding record | `~/work/herdr-inbox/operator-decisions-20260805-0830.md` §25차 |
 | Amendment binding record | same file, §26차 (A2-C6 · A2-C7 · A2-C8) |
 | Amendment binding record | same file, §31차 (A2-C9) |
+| Amendment binding record | same file, §34차 2항 (A2-C9 enumeration 38 → 49) |
 | Schema | `research/dfc_v22_research_min/schema.py` |
 | Validators | `research/dfc_v22_research_min/validation.py` |
 | Golden cases | `tests/research/dfc_v22_research_min/golden/violation_cases.json` |
@@ -374,17 +375,37 @@ from is pinned by digest:
 
 | Literal | Frozen value |
 |---|---|
-| `enumeration_path` | `~/work/herdr-artifacts/dfc-v22-readiness-v1/gap-impact/flipped_epochs.json` |
-| `enumeration_sha256` | `2a04dd6d0c666b683cc099132d0dca5ebb5a40fe8e573c6a7ef2da54c3b7112f` |
-| epoch count | 38 |
-| span | `2022-03-02T04:00:00Z` … `2022-03-08T08:00:00Z`, contiguous on the 4h grid |
-| shape | ranks 1–2 unchanged (`BTCUSDT`, `ETHUSDT`); rank 3 `GALAUSDT` as archived, `LUNAUSDT` under complete input |
+| `enumeration_path` | `~/work/herdr-artifacts/dfc-v22-readiness-v1/gap-impact-full/unified_flip_epochs.json` |
+| `enumeration_sha256` | `1dcf41ff108d2a9b98e821c93cabb242e31317cb202ed0650f38c962bda33cc4` |
+| `scan_path` | `~/work/herdr-artifacts/dfc-2c-4h-v22-corpus-v1/raw/phase3_investigation/internal_gaps.json` |
+| `scan_sha256` | `f8cae492dddc58323211519d7b867a1de5efd5a06a56d4ee4aea40c0fca5050a` |
+| `scan_record_count` | 105 internal gaps, 53 symbols, folded into 8 windows |
+| epoch count | 49 (38 + 11) |
+| span | `2022-03-02T04:00:00Z` … `2022-04-06T16:00:00Z`, two contiguous 4h runs |
+| shape | ranks 1–2 unchanged (`BTCUSDT`, `ETHUSDT`) at all 49; rank 3 `GALAUSDT`→`LUNAUSDT` (38) and `LUNAUSDT`→`GMTUSDT` (11) |
 | verdict | `RUN_INVALID_INPUT_EVIDENCE` |
 
-The digest is not decoration. `contract.py` never opens that file — this package
-cannot read files at all — so the digest is what makes an enumeration that moved
-*visible* instead of silent: a manifest built against a changed list declares a
-different `enumeration_sha256`, and the validator rejects it by name.
+**Two digests, because they fix different things.** `enumeration_sha256` fixes
+*which epochs* are enumerated. `scan_sha256` fixes the **scope against which
+"every affected epoch" was earned** — the 105 internal-gap records, folded into
+8 windows, that were measured one window at a time. An enumeration is only
+exhaustive relative to some scan; pinning the list while leaving the scan
+unpinned lets the ground move under a completeness claim that still reads as
+true. Both are compared, and either one moving is rejected by name.
+
+The digests are not decoration. `contract.py` never opens either file — this
+package cannot read files at all — so the digest is what makes a list that moved
+*visible* instead of silent: a manifest built against a changed list or a changed
+scan declares a different digest, and the validator refuses it.
+
+**The enumeration was amended once, 38 → 49 (§34차 2항).** §31차 froze 38 epochs
+from a single measured window. A later job folded the same 105-record scan into
+all 8 of its windows and measured each — reproducing those 38 unchanged, finding
+11 more in a second window (`2022-03-31T20:00Z`…`2022-04-03T00:00Z`, 50 symbols,
+`GMTUSDT`'s own 12 missing bars), and positively closing the remaining 6
+single-symbol windows at 0 flips each. The amendment adds epochs to the invalid
+set; it removes none and softens no verdict. The pre-registration it protects is
+the *list*, and the 38 already in it were carried across untouched.
 
 **Re-ranking is forbidden here too, and here it is the more tempting
 direction.** In A2-C7 the repair would be to drop a symbol; here it would be to
@@ -413,10 +434,27 @@ as-archived pool, marks the epoch invalid, and stops there.
 reason `validate_premium_index_gap` does: there is nowhere for a repaired pool
 to come out.
 
-**What this clause does not cover.** It covers exactly the 38 enumerated epochs.
+**What this clause does not cover.** It covers exactly the 49 enumerated epochs.
 Any other archive gap — a different symbol, a different window, a deficit whose
 ranking impact was never measured — is *not* absorbed by it, and a FREEZE that
-meets one is a fail-closed stop, not a case for this clause.
+meets one is a fail-closed stop, not a case for this clause. That the list grew
+once does not make it growable: an out-of-enumeration gap found during a FREEZE
+is a **scan failure**, escalated upstream, not a 50th row added on the spot.
+
+**A bounded limitation, recorded rather than closed.** The scan this clause is
+pinned to finds gaps by *row absence*. A row that is present but carries
+`quote_volume = 0` is therefore not a gap to it, even though it contributes zero
+to the same trailing sum. 47 symbols have runs of ≥3 consecutive zero-volume 4h
+bars. They were inspected by shape — nearly all run to the end of that symbol's
+archived data, starting at its delisting date (`FTTUSDT`/`FTTBUSD`/`SRMUSDT`/
+`RAYUSDT` at the FTX collapse, `BTCSTUSDT` for 21,668h), which is the
+delisting-tail pattern the eligibility mechanism already handles and where zero
+is the true traded volume, not a missing one. They were **not** individually
+cross-checked against REST. That check was judged disproportionate and was not
+performed, so this is a shape-based judgment, not a proof. It is non-blocking for
+this freeze by explicit ruling (§34차), and it is written here rather than left
+in a job report so that a later reader finds the limit attached to the clause it
+limits.
 
 
 ## Terminal codes
@@ -493,7 +531,7 @@ written. The record, in the open:
   additive: one clause, one manifest key (`ranking_input_deficit`), one
   validator, and no new terminal code.
 - **It tightens; it cannot relax.** Every corpus A2-C9 rejects would have been
-  accepted before it. The 38 epochs move from scored to `RUN_INVALID`, never
+  accepted before it. The 49 epochs move from scored to `RUN_INVALID`, never
   the other way.
 - **The alternative that would have relaxed it was refused.** Back-filling the
   missing bars from REST ("A") would have made the corpus *look* complete while
@@ -506,6 +544,29 @@ written. The record, in the open:
   extension — see the last paragraph of A2-C9.
 - **Signed separately.** §31차 of the binding record authorises it as its own
   decision, with the backtest count still zero.
+
+### The 38 → 49 amendment (§34차 2항), and why it is not the growth just forbidden
+
+The paragraph above says the enumeration cannot grow to fit what FREEZE finds,
+and then it grew. Both are true, and the distinction is the whole point of the
+rule, so it is written out rather than left to inference:
+
+- **FREEZE did not absorb it.** The 2차 FREEZE attempt hit 11 flip epochs
+  outside the frozen 38, and it *stopped* — it did not add a row, did not widen
+  A2-C9 to reach them, and did not freeze a corpus that quietly covered them.
+  That stop is the rule working, and it is what produced the escalation.
+- **A separate, later job measured them; a separate decision admitted them.**
+  The 11 came back through the upstream path (§34차 2항), not through the job
+  that met them. The amendment is authorised the same way A2-C9 itself was.
+- **The sequencing is intact because the 38 did not move.** All 38 pre-registered
+  rows are reproduced unchanged, epoch for epoch and symbol for symbol; nothing
+  already frozen was re-derived, re-ranked, or dropped. What changed is that
+  more epochs are now refused, which is the direction the clause is allowed to
+  move in.
+- **Amended exactly once.** §34차 2항 authorises this single replacement. A
+  second one is a new decision with a new ID, not a continuation of this one —
+  an enumeration that can be topped up whenever a measurement improves is not a
+  pre-registration at all.
 
 
 ## Amendment provenance (A2-C8)

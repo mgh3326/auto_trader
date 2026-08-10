@@ -1134,6 +1134,32 @@ def _validate_ranking_input_deficit_section(
             "afterwards is a pre-registration that was rewritten, not a "
             "correction",
         )
+    if section["scan_path"] != c.RANKING_INPUT_DEFICIT_SCAN_PATH:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            "ranking_input_deficit.scan_path must be "
+            f"{c.RANKING_INPUT_DEFICIT_SCAN_PATH!r}, got {section['scan_path']!r}",
+        )
+    if section["scan_sha256"] != c.RANKING_INPUT_DEFICIT_SCAN_SHA256:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            "the gap scan the enumeration was measured over changed: declared "
+            f"scan_sha256 {section['scan_sha256']!r} is not the frozen "
+            f"{c.RANKING_INPUT_DEFICIT_SCAN_SHA256!r}. The epoch list can be "
+            "restated unchanged while the scan beneath it moves, and then "
+            "'every affected epoch' is a claim about a scope that no longer "
+            "exists — so the scope is pinned too, not just the list",
+        )
+    if section["scan_record_count"] != c.RANKING_INPUT_DEFICIT_SCAN_RECORD_COUNT:
+        _fail(
+            RUN_INVALID_INPUT_EVIDENCE,
+            "A2-C9",
+            "ranking_input_deficit.scan_record_count must be "
+            f"{c.RANKING_INPUT_DEFICIT_SCAN_RECORD_COUNT}, got "
+            f"{section['scan_record_count']!r}",
+        )
     if section["verdict"] != c.RANKING_INPUT_DEFICIT_VERDICT:
         _fail(
             RUN_INVALID_INPUT_EVIDENCE,

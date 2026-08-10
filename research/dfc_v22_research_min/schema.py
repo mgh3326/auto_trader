@@ -218,6 +218,14 @@ GAP_EXCLUSION_REQUIRED_KEYS: tuple[str, ...] = (
 MANIFEST_RANKING_INPUT_DEFICIT_REQUIRED_KEYS: tuple[str, ...] = (
     "enumeration_path",
     "enumeration_sha256",
+    #: The scan the enumeration was measured over (A2-C9, §33차 binding).  Both
+    #: digests are required: the enumeration one says which epochs, this one
+    #: says what scope "every affected epoch" was earned against.  A manifest
+    #: that restates the epochs while the scan under them moved is declaring a
+    #: completeness it no longer has.
+    "scan_path",
+    "scan_sha256",
+    "scan_record_count",
     "epochs",
     "verdict",
     "rows",

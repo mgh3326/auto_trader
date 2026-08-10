@@ -36,6 +36,14 @@ BINDING_RECORD_AMENDMENT = (
 BINDING_RECORD_AMENDMENT_C9 = (
     "~/work/herdr-inbox/operator-decisions-20260805-0830.md \u00a731\ucc28"
 )
+#: A2-C9's *enumeration* was replaced once, 38 -> 49, bound by \u00a734\ucc28 2\ud56d of the
+#: same record.  The clause wording is untouched: \u00a734\ucc28 authorises a longer list
+#: of epochs to refuse, not a different rule for refusing them.  Recorded as its
+#: own literal so the amendment has a signature of its own, the way every other
+#: post-measurement change to this contract does.
+BINDING_RECORD_AMENDMENT_C9_ENUMERATION = (
+    "~/work/herdr-inbox/operator-decisions-20260805-0830.md \u00a734\ucc28 2\ud56d"
+)
 
 NW_F2_TOPIC = "A1과 DFC 최소 corpus의 범위 분리"
 NW_F2_VERBATIM = "**“A1의 funding/OI/mark/index 종합 readiness는 보존하되 DFC-v2.x의 선행조건으로 쓰지 않는다. 데이터 접촉 전에 `DFC_V22_RESEARCH_MIN` A2 계약을 새 ID/SHA로 등록한다. A2는 kline OFI·premium-index·PIT universe·outcome evidence만 판정한다.”** 이는 결과를 본 뒤 게이트를 완화하는 것이 아니라, 아직 백테스트 0회인 상태에서 계약-데이터 불일치를 교정하는 것이다."

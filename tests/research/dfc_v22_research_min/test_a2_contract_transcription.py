@@ -148,9 +148,15 @@ REQUIRED_A2_C7_WORDING = (
 #: are the kind of sentence a later edit would soften first.
 REQUIRED_A2_C9_WORDING = (
     "The epochs are an enumeration, not a rule.",
-    "It covers exactly the 38 enumerated epochs.",
+    "It covers exactly the 49 enumerated epochs.",
     "a FREEZE that meets one is a fail-closed stop, not a case for this clause",
     "The enumeration cannot grow to fit what FREEZE finds.",
+    # The amendment does not get to quietly retire the sentence it looks like
+    # a counterexample to.  Both stay, and the reconciliation is written out.
+    "an out-of-enumeration gap found during a FREEZE is a **scan failure**, "
+    "escalated upstream, not a 50th row added on the spot",
+    "They were **not** individually cross-checked against REST.",
+    "Amended exactly once.",
 )
 
 
@@ -292,26 +298,49 @@ def test_c9_enumeration_is_a_literal_the_package_cannot_recompute() -> None:
     decision procedure re-run after seeing its inputs. The only permitted
     computation over the frozen rows is projecting out their first column.
     """
-    assert len(c.RANKING_INPUT_DEFICIT_ROWS) == 38
-    assert len(c.RANKING_INPUT_DEFICIT_EPOCHS) == 38
+    assert len(c.RANKING_INPUT_DEFICIT_ROWS) == 49
+    assert len(c.RANKING_INPUT_DEFICIT_EPOCHS) == 49
     assert list(c.RANKING_INPUT_DEFICIT_EPOCHS) == sorted(
         c.RANKING_INPUT_DEFICIT_EPOCHS
     )
-    assert len(set(c.RANKING_INPUT_DEFICIT_EPOCHS)) == 38
+    assert len(set(c.RANKING_INPUT_DEFICIT_EPOCHS)) == 49
     assert c.RANKING_INPUT_DEFICIT_EPOCHS[0] == 1646193600000
-    assert c.RANKING_INPUT_DEFICIT_EPOCHS[-1] == 1646726400000
+    assert c.RANKING_INPUT_DEFICIT_EPOCHS[-1] == 1649260800000
+
+    # §34차 2항 replaced the list once, 38 -> 49.  The 38 already
+    # pre-registered by §31차 are carried across unchanged — asserted here
+    # because "we only added rows" is exactly the claim an amendment makes
+    # about itself, and the amendment is the moment it is cheapest to break.
+    assert c.RANKING_INPUT_DEFICIT_ROWS[:38] == tuple(
+        (epoch, "GALAUSDT", "LUNAUSDT")
+        for epoch in range(1646193600000, 1646726400000 + 1, c.BAR_INTERVAL_MS)
+    )
+    assert c.RANKING_INPUT_DEFICIT_ROWS[38:] == tuple(
+        (epoch, "LUNAUSDT", "GMTUSDT")
+        for epoch in range(1649116800000, 1649260800000 + 1, c.BAR_INTERVAL_MS)
+    )
+
+    # Two contiguous 4h runs, one per source window — not one run, and not 49
+    # scattered epochs.  Exactly one step in the list is larger than a bar.
     step = c.BAR_INTERVAL_MS
-    assert all(
-        b - a == step
+    steps = [
+        b - a
         for a, b in zip(
             c.RANKING_INPUT_DEFICIT_EPOCHS,
             c.RANKING_INPUT_DEFICIT_EPOCHS[1:],
             strict=False,
         )
-    )
+    ]
+    assert steps.count(step) == len(steps) - 1
+    assert steps[37] > step
+
     assert len(c.RANKING_INPUT_DEFICIT_ENUMERATION_SHA256) == 64
-    assert c.RANKING_INPUT_DEFICIT_ENUMERATION_SHA256.startswith("2a04dd6d0c666b68")
-    assert c.RANKING_INPUT_DEFICIT_ENUMERATION_PATH.endswith("flipped_epochs.json")
+    assert c.RANKING_INPUT_DEFICIT_ENUMERATION_SHA256.startswith("1dcf41ff108d2a9b")
+    assert c.RANKING_INPUT_DEFICIT_ENUMERATION_PATH.endswith("unified_flip_epochs.json")
+    assert len(c.RANKING_INPUT_DEFICIT_SCAN_SHA256) == 64
+    assert c.RANKING_INPUT_DEFICIT_SCAN_SHA256.startswith("f8cae492dddc5832")
+    assert c.RANKING_INPUT_DEFICIT_SCAN_PATH.endswith("internal_gaps.json")
+    assert c.RANKING_INPUT_DEFICIT_SCAN_RECORD_COUNT == 105
 
     source = (PACKAGE_DIR / "contract.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -325,7 +354,7 @@ def test_c9_enumeration_is_a_literal_the_package_cannot_recompute() -> None:
         if isinstance(target, ast.Name)
         and target.id.startswith("RANKING_INPUT_DEFICIT")
     ]
-    assert len(assignments) == 6, [ast.unparse(a).split("=")[0] for a in assignments]
+    assert len(assignments) == 9, [ast.unparse(a).split("=")[0] for a in assignments]
     for node in assignments:
         value = node.value
         if value is None:
@@ -392,4 +421,31 @@ def test_c9_frozen_rows_reproduce_the_pinned_enumeration_file() -> None:
         assert row["epoch_open_time"] == epoch
         assert row["current_top3"] == [*head, as_archived]
         assert row["corrected_top3"] == [*head, would_have_been]
-        assert row["membership_changed"] is True
+        # Membership actually moved — computed here rather than read from a
+        # flag in the file, so a mislabelled record cannot pass by asserting
+        # its own correctness.  An order-only change would leave the sets
+        # equal, and A2-C9 is about who is in the pool, not their order.
+        assert set(row["current_top3"]) != set(row["corrected_top3"])
+
+
+#: The scan the enumeration was measured over is pinned by its own digest
+#: (§33차).  Same posture as the enumeration file: checked where the operator
+#: artifact tree exists.  This is the other half of MUTANT ③ — the list can be
+#: restated perfectly while the scan beneath it moves, and then "exhaustive"
+#: describes a scope that is gone.
+SCAN_FILE = Path(c.RANKING_INPUT_DEFICIT_SCAN_PATH.replace("~", str(Path.home()), 1))
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(
+    not SCAN_FILE.is_file(), reason="operator artifact tree not present"
+)
+def test_c9_pinned_scan_file_still_matches_its_digest_and_record_count() -> None:
+    import hashlib
+    import json
+
+    raw = SCAN_FILE.read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == c.RANKING_INPUT_DEFICIT_SCAN_SHA256, (
+        "the gap scan the enumeration was measured over changed on disk"
+    )
+    assert len(json.loads(raw)) == c.RANKING_INPUT_DEFICIT_SCAN_RECORD_COUNT

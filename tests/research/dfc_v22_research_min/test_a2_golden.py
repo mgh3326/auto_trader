@@ -223,6 +223,9 @@ def ranking_input_deficit(**overrides: Any) -> dict[str, Any]:
     section: dict[str, Any] = {
         "enumeration_path": c.RANKING_INPUT_DEFICIT_ENUMERATION_PATH,
         "enumeration_sha256": c.RANKING_INPUT_DEFICIT_ENUMERATION_SHA256,
+        "scan_path": c.RANKING_INPUT_DEFICIT_SCAN_PATH,
+        "scan_sha256": c.RANKING_INPUT_DEFICIT_SCAN_SHA256,
+        "scan_record_count": c.RANKING_INPUT_DEFICIT_SCAN_RECORD_COUNT,
         "epochs": list(c.RANKING_INPUT_DEFICIT_EPOCHS),
         "verdict": c.RANKING_INPUT_DEFICIT_VERDICT,
         "rows": [
@@ -251,14 +254,32 @@ DEFICIT_WOULD_HAVE_BEEN = (
 )
 
 
+#: The §34차 2항 additions.  The first 38 enumerated epochs were already frozen
+#: by §31차, so a mutant aimed at ``DEFICIT_EPOCH`` alone proves only that the
+#: *old* list is enforced — it would still pass if the amendment had been
+#: written down and never wired up.  These name one of the 11 added epochs so
+#: the enforcement is asserted where the amendment actually moved.
+ADDED_DEFICIT_INDEX = 38
+ADDED_DEFICIT_EPOCH = c.RANKING_INPUT_DEFICIT_EPOCHS[ADDED_DEFICIT_INDEX]
+ADDED_DEFICIT_AS_ARCHIVED = (
+    *c.RANKING_INPUT_DEFICIT_UNCHANGED_HEAD,
+    c.RANKING_INPUT_DEFICIT_ROWS[ADDED_DEFICIT_INDEX][1],
+)
+ADDED_DEFICIT_WOULD_HAVE_BEEN = (
+    *c.RANKING_INPUT_DEFICIT_UNCHANGED_HEAD,
+    c.RANKING_INPUT_DEFICIT_ROWS[ADDED_DEFICIT_INDEX][2],
+)
+
+
 def deficit_pool_rows(
     symbols: tuple[str, ...] = DEFICIT_AS_ARCHIVED,
+    epoch: int = DEFICIT_EPOCH,
 ) -> list[dict[str, Any]]:
-    """A three-rank pool at the first enumerated deficit epoch."""
+    """A three-rank pool at an enumerated deficit epoch."""
     return [
         {
             **pit_universe_row(rank, symbol, str(300 - 100 * (rank - 1)) + ".0"),
-            "epoch_open_time": DEFICIT_EPOCH,
+            "epoch_open_time": epoch,
         }
         for rank, symbol in enumerate(symbols, start=1)
     ]
@@ -872,6 +893,46 @@ def _case_deficit_epoch_silently_reranked() -> None:
     )
 
 
+def _case_added_deficit_epoch_processed_normally() -> None:
+    # MUTANT ① aimed at the amendment: one of the 11 epochs added by §34차 2항
+    # is scored normally.  A corpus built against the pre-amendment 38-row list
+    # passes every other check and fails only here.
+    v.validate_ranking_input_deficit(
+        manifest(),
+        pit_universe(deficit_pool_rows(ADDED_DEFICIT_AS_ARCHIVED, ADDED_DEFICIT_EPOCH)),
+        None,
+        _deficit_decisions(ADDED_DEFICIT_EPOCH),
+    )
+
+
+def _case_added_deficit_epoch_silently_reranked() -> None:
+    # MUTANT ② aimed at the amendment: at an added epoch the pool records
+    # GMTUSDT, the rank 3 that complete input would have produced.  This is the
+    # exact substitution the 2차 FREEZE stopped rather than perform.
+    v.validate_ranking_input_deficit(
+        manifest(),
+        pit_universe(
+            deficit_pool_rows(ADDED_DEFICIT_WOULD_HAVE_BEEN, ADDED_DEFICIT_EPOCH)
+        ),
+        None,
+        (),
+    )
+
+
+def _case_deficit_enumeration_reverted_to_pre_amendment_list() -> None:
+    # The amendment undone: the 11 added epochs are dropped and the enumeration
+    # is restated as the §31차 38.  This is the cheapest way to make a corpus
+    # that ignores the second window look contract-clean.
+    v.validate_manifest(
+        manifest(
+            ranking_input_deficit=ranking_input_deficit(
+                epochs=list(c.RANKING_INPUT_DEFICIT_EPOCHS[:ADDED_DEFICIT_INDEX]),
+                rows=ranking_input_deficit()["rows"][:ADDED_DEFICIT_INDEX],
+            )
+        )
+    )
+
+
 def _case_deficit_enumeration_list_changed() -> None:
     # MUTANT ③: the enumeration file moved after the list was pre-registered.
     # The manifest is internally consistent; only the pinned digest exposes it.
@@ -879,6 +940,32 @@ def _case_deficit_enumeration_list_changed() -> None:
         manifest(
             ranking_input_deficit=ranking_input_deficit(
                 enumeration_sha256="9" * 64,
+            )
+        )
+    )
+
+
+def _case_deficit_scan_file_changed() -> None:
+    # MUTANT ③, other half: the epoch list is restated perfectly, but the gap
+    # scan it was measured over has moved.  "Every affected epoch" is then a
+    # claim about a scope that no longer exists, and nothing in the epoch list
+    # itself can show it.
+    v.validate_manifest(
+        manifest(
+            ranking_input_deficit=ranking_input_deficit(
+                scan_sha256="9" * 64,
+            )
+        )
+    )
+
+
+def _case_deficit_scan_record_count_changed() -> None:
+    # The same drift reached without touching a digest: a scan with a different
+    # number of gap records in it is a different scan.
+    v.validate_manifest(
+        manifest(
+            ranking_input_deficit=ranking_input_deficit(
+                scan_record_count=104,
             )
         )
     )
@@ -993,6 +1080,17 @@ CASE_BUILDERS: dict[str, Callable[[], None]] = {
     "deficit_epoch_processed_normally": _case_deficit_epoch_processed_normally,
     "deficit_epoch_scored_in_outcomes": _case_deficit_epoch_scored_in_outcomes,
     "deficit_epoch_silently_reranked": _case_deficit_epoch_silently_reranked,
+    "added_deficit_epoch_processed_normally": (
+        _case_added_deficit_epoch_processed_normally
+    ),
+    "added_deficit_epoch_silently_reranked": (
+        _case_added_deficit_epoch_silently_reranked
+    ),
+    "deficit_enumeration_reverted_to_pre_amendment_list": (
+        _case_deficit_enumeration_reverted_to_pre_amendment_list
+    ),
+    "deficit_scan_file_changed": _case_deficit_scan_file_changed,
+    "deficit_scan_record_count_changed": _case_deficit_scan_record_count_changed,
     "deficit_enumeration_list_changed": _case_deficit_enumeration_list_changed,
     "deficit_epochs_narrowed": _case_deficit_epochs_narrowed,
     "deficit_row_disagrees_with_enumeration": (

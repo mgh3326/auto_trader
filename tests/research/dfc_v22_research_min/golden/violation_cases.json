@@ -316,6 +316,36 @@
       "expected_detail_contains": "not repaired by ranking it as if the deficit were not there"
     },
     {
+      "case_id": "added_deficit_epoch_processed_normally",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "carry a decision or an outcome row"
+    },
+    {
+      "case_id": "added_deficit_epoch_silently_reranked",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "not repaired by ranking it as if the deficit were not there"
+    },
+    {
+      "case_id": "deficit_enumeration_reverted_to_pre_amendment_list",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "the enumeration is fixed, not recomputed"
+    },
+    {
+      "case_id": "deficit_scan_file_changed",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "the gap scan the enumeration was measured over changed"
+    },
+    {
+      "case_id": "deficit_scan_record_count_changed",
+      "clause": "A2-C9",
+      "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
+      "expected_detail_contains": "ranking_input_deficit.scan_record_count must be 105"
+    },
+    {
       "case_id": "deficit_enumeration_list_changed",
       "clause": "A2-C9",
       "expected_code": "RUN_INVALID_INPUT_EVIDENCE",
