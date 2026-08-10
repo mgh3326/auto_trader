@@ -36,7 +36,7 @@ from scripts.b0x.cycle import (
     run_shadow_cycle,
     run_sidecar_cycle,
 )
-from scripts.b0x.envelope import load_envelope
+from scripts.b0x.envelope import CRYPTO_SHADOW_MARKET_KEY, load_envelope
 from scripts.b0x.ledger import DEFAULT_OBSERVATION_DIR, WriterLockUnavailable
 from scripts.b0x.table_source import DEFAULT_TABLE_DIR
 
@@ -84,7 +84,12 @@ async def _derivation_only(args: argparse.Namespace) -> int:
     from scripts.b0x.table_source import TableUnavailable, load_policy_table
 
     now = _dt.datetime.now(_dt.UTC) if args.now is None else args.now
-    envelope = load_envelope(MARKET)
+    # SHADOW-ALIGN: this path always runs the shadow lane's pure derivation
+    # (see the docstring above), so it must load the shadow lane's own
+    # KRW-denominated envelope — matching ``run_shadow_cycle`` in
+    # ``scripts.b0x.cycle`` — not the USDT sidecar envelope ``MARKET``
+    # ("crypto") resolves to. ``MARKET`` itself stays the policy-table key.
+    envelope = load_envelope(CRYPTO_SHADOW_MARKET_KEY)
     table = load_policy_table(
         market=MARKET, now=now, table_dir=Path(args.table_dir).expanduser()
     )

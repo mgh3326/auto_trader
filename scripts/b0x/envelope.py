@@ -107,6 +107,63 @@ CRYPTO_SIDECAR_ENVELOPE: Final[Envelope] = Envelope(
 )
 
 # ---------------------------------------------------------------------------
+# Contract §4, crypto **본선** (Upbit shadow-sim) — SHADOW-ALIGN (2026-08-11).
+#
+# §4's table has no numeric column for this lane at all — only the footnote
+# "Upbit shadow 는 합성이므로 envelope 미적용(기록만)". ``derive_orders`` already
+# honours that (shadow calls it with ``apply_envelope=False``, so none of these
+# notional/count fields ever bind a shadow order). But ``kill_switch.evaluate``
+# runs unconditionally regardless of ``apply_envelope``, and it compares
+# ``state.quote_currency`` against ``envelope.quote_currency`` before doing
+# anything else (``CurrencyMismatchKill``, ROB-1233/#1822) — shadow's account
+# state is genuinely KRW (Upbit), so handing it the USDT-denominated
+# ``CRYPTO_SIDECAR_ENVELOPE`` trips that guard on *every* cycle (X-C's
+# real-environment observation, 2026-08-10T19:02Z). #1822's fail-closed
+# behaviour is correct; the fix here is to give the shadow lane its own,
+# correctly-denominated envelope rather than to touch that guard.
+#
+# No KRW literal exists in the contract to reuse, so this is a conversion of
+# the sidecar's USDT literal — done at MODULE-IMPORT TIME from fixed Decimal
+# constants only (no FX service call, no env var, no network — see
+# ``test_envelope_module_reads_no_environment`` and the shadow-specific AST
+# guard in ``tests/scripts/b0x/test_envelope_and_locks.py``).
+#
+# Rate literal source: this repo's own USD/KRW spot lookup
+# (``mcp__auto_trader_readonly__get_fx_rate``, source=toss) returned
+# mid_rate=1420.84 KRW/USD, valid_from=2026-08-10T19:13:23Z. USDT is treated
+# 1:1 with USD (its dollar peg) — an approximation, not a USDT/KRW market
+# quote. Floored to a round **1400 KRW/USDT**, deliberately BELOW the
+# observed 1420.84: every field below is therefore an UNDERSTATEMENT of its
+# USDT-equivalent, never an overstatement, which is the only direction that
+# cannot widen a §4 cap. Concretely, converted back at the observed rate:
+#   daily_loss_kill  7000 KRW / 1420.84 ≈ 4.93 USDT  (<= 5 USDT — tighter, not wider)
+#   per_order_notional      14000 KRW / 1420.84 ≈  9.85 USDT (<= 10 USDT)
+#   per_symbol_total_notional 70000 KRW / 1420.84 ≈ 49.27 USDT (<= 50 USDT)
+# The rate is a fixed literal: it does not move if the market rate moves, by
+# design (a cap that re-prices itself every cycle is not a locked cap).
+# ``max_concurrent_positions``/``max_new_entries_per_utc_day`` are unit-less
+# counts, not currency amounts, and are carried over unconverted.
+# ---------------------------------------------------------------------------
+CRYPTO_SHADOW_MARKET_KEY: Final[str] = "crypto_shadow"
+
+#: KRW per 1 USDT — see the derivation note above. Fixed literal; nothing in
+#: this module or its callers may read this from config/env/network.
+CRYPTO_SHADOW_FX_KRW_PER_USDT: Final[Decimal] = Decimal("1400")
+
+CRYPTO_SHADOW_ENVELOPE: Final[Envelope] = Envelope(
+    market=CRYPTO_SHADOW_MARKET_KEY,
+    quote_currency="KRW",
+    per_order_notional=CRYPTO_SIDECAR_ENVELOPE.per_order_notional
+    * CRYPTO_SHADOW_FX_KRW_PER_USDT,
+    per_symbol_total_notional=CRYPTO_SIDECAR_ENVELOPE.per_symbol_total_notional
+    * CRYPTO_SHADOW_FX_KRW_PER_USDT,
+    max_concurrent_positions=CRYPTO_SIDECAR_ENVELOPE.max_concurrent_positions,
+    max_new_entries_per_utc_day=CRYPTO_SIDECAR_ENVELOPE.max_new_entries_per_utc_day,
+    daily_loss_kill=CRYPTO_SIDECAR_ENVELOPE.daily_loss_kill
+    * CRYPTO_SHADOW_FX_KRW_PER_USDT,
+)
+
+# ---------------------------------------------------------------------------
 # Contract §4, KR (kis_mock) column, verbatim:
 #   종목당 신규 30만 KRW · 물타기 회차 상한 없음 단 종목당 총투입 ≤ 신규×5 ·
 #   동시 포지션 ≤ 10 · 일 신규 진입 ≤ 3 · 일 손실 −2.5% NAV → kill
@@ -162,6 +219,7 @@ SHADOW_ENVELOPE_NOT_APPLIED: Final[str] = (
 
 _LOCKED_ENVELOPES: Final[dict[str, Envelope]] = {
     "crypto": CRYPTO_SIDECAR_ENVELOPE,
+    CRYPTO_SHADOW_MARKET_KEY: CRYPTO_SHADOW_ENVELOPE,
     "kr": KR_MOCK_ENVELOPE,
     "us": US_ALPACA_PAPER_LAB_ENVELOPE,
 }
@@ -212,6 +270,9 @@ __all__ = [
     "Envelope",
     "EnvelopeNotLocked",
     "CRYPTO_SIDECAR_ENVELOPE",
+    "CRYPTO_SHADOW_ENVELOPE",
+    "CRYPTO_SHADOW_MARKET_KEY",
+    "CRYPTO_SHADOW_FX_KRW_PER_USDT",
     "KR_MOCK_ENVELOPE",
     "US_ALPACA_PAPER_LAB_ENVELOPE",
     "SHADOW_ENVELOPE_NOT_APPLIED",

@@ -40,6 +40,7 @@ from scripts.b0x.crypto import shadow as shadow_lane
 from scripts.b0x.crypto import sidecar as sidecar_lane
 from scripts.b0x.derivation import DerivationResult, derive_orders
 from scripts.b0x.envelope import (
+    CRYPTO_SHADOW_MARKET_KEY,
     SHADOW_ENVELOPE_NOT_APPLIED,
     Envelope,
     assert_envelope_locked,
@@ -70,15 +71,22 @@ from scripts.b0x.table_source import (
 MARKET = "crypto"
 
 #: contract §4 assigns the shadow lane a synthetic, KRW-denominated book
-#: (``shadow.QUOTE_CURRENCY``), while the single "crypto" envelope column —
-#: shared with the sidecar — denominates ``daily_loss_kill`` in USDT
-#: (``CRYPTO_SIDECAR_ENVELOPE.quote_currency``). ``kill_switch.evaluate``
-#: fails closed on that mismatch (``CurrencyMismatchKill``) rather than
-#: silently comparing a KRW P&L against a USDT threshold — see
-#: ``scripts.b0x.kill_switch.CurrencyMismatchKill``. Until an operator
-#: defines a currency-correct kill threshold for this lane, every shadow
-#: cycle that reaches this point is, correctly, a zero-order cycle: this
-#: reason code makes that loud and observable instead of an unhandled crash.
+#: (``shadow.QUOTE_CURRENCY``). Before SHADOW-ALIGN (2026-08-11), this lane
+#: was evaluated against the single "crypto" envelope column shared with the
+#: sidecar, whose ``daily_loss_kill`` is USDT-denominated
+#: (``CRYPTO_SIDECAR_ENVELOPE.quote_currency``) — ``kill_switch.evaluate``
+#: correctly failed that comparison closed (``CurrencyMismatchKill``, see
+#: ``scripts.b0x.kill_switch.CurrencyMismatchKill``) rather than silently
+#: comparing a KRW P&L against a USDT threshold, but the practical effect was
+#: that *every* shadow cycle hit this reason code (confirmed against the
+#: real environment 2026-08-10T19:02Z). The lane now loads
+#: ``envelope.CRYPTO_SHADOW_ENVELOPE`` (``quote_currency="KRW"``,
+#: SHADOW-ALIGN) instead, so this exception branch should no longer fire in
+#: normal operation — it stays as the same fail-closed backstop
+#: ``CurrencyMismatchKill`` always was, not dead code: if the two currencies
+#: are ever misaligned again (e.g. a future edit hands this lane the wrong
+#: envelope), the cycle still degrades to zero orders with an auditable
+#: reason instead of crashing or silently miscomparing.
 SHADOW_KILL_CURRENCY_MISMATCH_REASON: str = "kill_switch_currency_mismatch"
 
 
@@ -208,7 +216,14 @@ async def run_shadow_cycle(
 ) -> CycleOutcome:
     """One Upbit shadow-sim cycle. Places zero real orders on any venue."""
 
-    envelope = load_envelope(MARKET)
+    # SHADOW-ALIGN: the shadow lane's own KRW-denominated envelope, not the
+    # sidecar's USDT one — see the note above ``CRYPTO_SHADOW_ENVELOPE`` in
+    # ``scripts.b0x.envelope`` for the conversion. ``MARKET`` ("crypto")
+    # remains the *policy table* market key (both lanes read the same table)
+    # and the record's ``market`` field — unrelated to which envelope binds
+    # the kill switch, so it is deliberately left unchanged everywhere else
+    # in this function.
+    envelope = load_envelope(CRYPTO_SHADOW_MARKET_KEY)
     assert_envelope_locked(envelope)
     labels = header_labels(lane=shadow_lane.LANE, extra=(SHADOW_SYNTHETIC_FILL,))
     lane = shadow_lane.LANE
