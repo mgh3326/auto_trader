@@ -401,11 +401,20 @@ scan declares a different digest, and the validator refuses it.
 **The enumeration was amended once, 38 → 49 (§34차 2항).** §31차 froze 38 epochs
 from a single measured window. A later job folded the same 105-record scan into
 all 8 of its windows and measured each — reproducing those 38 unchanged, finding
-11 more in a second window (`2022-03-31T20:00Z`…`2022-04-03T00:00Z`, 50 symbols,
-`GMTUSDT`'s own 12 missing bars), and positively closing the remaining 6
-single-symbol windows at 0 flips each. The amendment adds epochs to the invalid
-set; it removes none and softens no verdict. The pre-registration it protects is
-the *list*, and the 38 already in it were carried across untouched.
+11 more caused by a second window (`2022-03-31T20:00Z`…`2022-04-03T00:00Z`, 50
+symbols, `GMTUSDT`'s own 12 missing bars), and positively closing the remaining
+6 single-symbol windows at 0 flips each. The amendment adds epochs to the
+invalid set; it removes none and softens no verdict. The pre-registration it
+protects is the *list*, and the 38 already in it were carried across untouched.
+
+**Gap window ≠ flip span, and the table above states the latter.** The window
+named for each group is the interval whose *archive bars are missing*; the
+enumerated epochs are the ones whose ranking that gap changes, and they fall
+**after** it — a bar missing at `t` skews the trailing-30-day sum at every epoch
+`E` with `t < E ≤ t+30d`. So the 2022-02-25→03-01 gap yields flips at
+2022-03-02→03-08, and the 2022-03-31→04-03 gap yields flips at
+2022-04-05→04-06. Read as one span, the two look like a contradiction; they are
+cause and effect, and the frozen enumeration carries the effect.
 
 **Re-ranking is forbidden here too, and here it is the more tempting
 direction.** In A2-C7 the repair would be to drop a symbol; here it would be to

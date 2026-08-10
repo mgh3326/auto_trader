@@ -451,11 +451,22 @@ RANKING_INPUT_DEFICIT_ROWS: tuple[tuple[int, str, str], ...] = (
     (1646697600000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-08T00:00:00Z
     (1646712000000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-08T04:00:00Z
     (1646726400000, "GALAUSDT", "LUNAUSDT"),  # 2022-03-08T08:00:00Z
-    # --- second window (2022-03-31T20:00Z..2022-04-03T00:00Z, 50 symbols) ---
-    # Added by §34차 2항.  Same mechanism, different window: GMTUSDT's own 12
-    # missing bars shortened its trailing sum and kept it out of a top 3 it
-    # belonged in.  These 11 were measured by DFC-GAP-IMPACT-FULL after the
-    # first 38 were already frozen; the 38 above are reproduced unchanged.
+    # --- added by §34차 2항: the second archive-gap window's flip epochs ---
+    #
+    # 🔴 Two different spans are in play here, and confusing them reads as a
+    # contradiction.  The *archive gap* — the bars Binance's objects are
+    # missing — is 2022-03-31T20:00Z..2022-04-03T00:00Z (50 symbols).  The
+    # epochs below are the *flips that gap causes*, 2022-04-05T00:00Z..
+    # 2022-04-06T16:00Z, and they are necessarily LATER: a bar missing at t
+    # skews the trailing-30-day sum at every epoch E with t < E <= t+30d, so
+    # the effect starts after the gap, not during it.  The already-frozen 38
+    # above have exactly the same relationship (gap 2022-02-25T20:00Z..
+    # 2022-03-01T00:00Z, flips 2022-03-02T04:00Z..2022-03-08T08:00Z).
+    #
+    # Same mechanism as those 38, different window: GMTUSDT's own 12 missing
+    # bars shortened its trailing sum and kept it out of a top 3 it belonged
+    # in.  Measured by DFC-GAP-IMPACT-FULL after the first 38 were already
+    # frozen; the 38 above are reproduced unchanged.
     (1649116800000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-05T00:00:00Z
     (1649131200000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-05T04:00:00Z
     (1649145600000, "LUNAUSDT", "GMTUSDT"),  # 2022-04-05T08:00:00Z
