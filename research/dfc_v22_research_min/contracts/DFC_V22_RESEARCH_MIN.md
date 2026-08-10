@@ -10,7 +10,8 @@ collection, no listing, no download and no backtest.
 | Judged dimensions | kline OFI · premium-index · PIT universe · outcome evidence |
 | Upstream wording (canonical) | `~/work/herdr-inbox/answer-codexmock-next-wave-1630.md`, sha256 `df7aee908e50af42…` (137 lines) |
 | Binding record | `~/work/herdr-inbox/operator-decisions-20260805-0830.md` §25차 |
-| Amendment binding record | same file, §26차 (A2-C6 · A2-C7) |
+| Amendment binding record | same file, §26차 (A2-C6 · A2-C7 · A2-C8) |
+| Amendment binding record | same file, §31차 (A2-C9) |
 | Schema | `research/dfc_v22_research_min/schema.py` |
 | Validators | `research/dfc_v22_research_min/validation.py` |
 | Golden cases | `tests/research/dfc_v22_research_min/golden/violation_cases.json` |
@@ -342,6 +343,82 @@ of that plan, the declared `verdict` to be one of `READY`/`NOT_READY`, and that
 declared verdict to equal the value recomputed from the row evidence and
 `run_invalid_epochs` — never accepted merely because it was declared.
 
+---
+
+## A2-C9 — The ranking-input deficit, and the enumerated epochs (OD-31)
+
+> **§31차** (원문 축자 인용)
+>
+> 유형③: 랭킹 입력 결손으로 top-3 구성이 달라졌을 것으로 전수 증명된 epoch(열거 목록 고정)도 동일하게 RUN_INVALID_INPUT_EVIDENCE, 재랭킹 금지
+
+A2-C7 fires in one direction: a gap symbol that is **inside** an epoch's top-3
+pool. A2-MEASURE's successor measurement found the opposite direction. Some
+symbols' `klines` archive objects carry silent internal holes — bars missing
+from the middle of an actively-trading history, contradicted by the public REST
+endpoint — and a missing bar is read by the trailing-30-day ranking sum as zero
+volume. A symbol whose input is short that way ranks lower than its own traded
+volume warrants, and can be pushed **out** of a top 3 it belonged in.
+
+Read literally, A2-C7 does not reach this: the affected symbol is not in the
+pool, which is precisely the complaint. §31차 declined to stretch the existing
+wording over it — an interpretation that wide would also cover cases nobody
+measured — and wrote this clause instead. It is the same verdict for a
+different mechanism, arrived at explicitly.
+
+**The epochs are an enumeration, not a rule.** The measurement that produced
+them has already been read. Re-deriving the list from the corpus at validation
+time would therefore be re-running a decision procedure *after* seeing its
+inputs, which is the sequencing every other clause in this document exists to
+prevent. So the list is frozen as a literal, and the file it was transcribed
+from is pinned by digest:
+
+| Literal | Frozen value |
+|---|---|
+| `enumeration_path` | `~/work/herdr-artifacts/dfc-v22-readiness-v1/gap-impact/flipped_epochs.json` |
+| `enumeration_sha256` | `2a04dd6d0c666b683cc099132d0dca5ebb5a40fe8e573c6a7ef2da54c3b7112f` |
+| epoch count | 38 |
+| span | `2022-03-02T04:00:00Z` … `2022-03-08T08:00:00Z`, contiguous on the 4h grid |
+| shape | ranks 1–2 unchanged (`BTCUSDT`, `ETHUSDT`); rank 3 `GALAUSDT` as archived, `LUNAUSDT` under complete input |
+| verdict | `RUN_INVALID_INPUT_EVIDENCE` |
+
+The digest is not decoration. `contract.py` never opens that file — this package
+cannot read files at all — so the digest is what makes an enumeration that moved
+*visible* instead of silent: a manifest built against a changed list declares a
+different `enumeration_sha256`, and the validator rejects it by name.
+
+**Re-ranking is forbidden here too, and here it is the more tempting
+direction.** In A2-C7 the repair would be to drop a symbol; here it would be to
+*promote* one — to record the ranking complete input would have produced, which
+looks more accurate than the one the archive supports. It is still a ranking no
+reader can reproduce from the recorded evidence, and it would leave the corpus
+carrying no trace that the input was ever short. So the corpus records the
+as-archived pool, marks the epoch invalid, and stops there.
+
+**Enforced as.**
+
+1. `manifest.ranking_input_deficit` restates the enumeration —
+   `enumeration_path`, `enumeration_sha256`, `epochs`, `verdict` and one `rows`
+   entry per epoch — and every one of those is compared against the frozen
+   literal rather than merely type-checked.
+2. Every enumerated epoch is **present** in `pit_universe`. An absent pool is a
+   deleted row, which is how a deficit disappears without a trace.
+3. Every enumerated epoch's declared pool equals the as-archived ranking. If
+   `would_have_been_rank3` appears in the pool, that is the silent re-ranking
+   this clause forbids, and it is rejected under its own message.
+4. No enumerated epoch carries a decision or an outcome row.
+   `RUN_INVALID_INPUT_EVIDENCE` is terminal, so an epoch that was scored was
+   processed as if its ranking input had been complete.
+
+`validate_ranking_input_deficit` returns nothing and edits nothing, for the same
+reason `validate_premium_index_gap` does: there is nowhere for a repaired pool
+to come out.
+
+**What this clause does not cover.** It covers exactly the 38 enumerated epochs.
+Any other archive gap — a different symbol, a different window, a deficit whose
+ranking impact was never measured — is *not* absorbed by it, and a FREEZE that
+meets one is a fail-closed stop, not a case for this clause.
+
+
 ## Terminal codes
 
 Adjudicated in this order — `contract.TERMINAL_CODE_PRIORITY`, enforced by
@@ -352,7 +429,7 @@ the cause.
 
 | Code | Raised when |
 |---|---|
-| `RUN_INVALID_INPUT_EVIDENCE` | lifecycle authority claimed, proxy promoted to evidence kind, gap symbol unaccounted for, gap symbol inside or outranking the candidate pool, or a recorded epoch verdict the evidence does not support (A2-C6 / A2-C7) |
+| `RUN_INVALID_INPUT_EVIDENCE` | lifecycle authority claimed, proxy promoted to evidence kind, gap symbol unaccounted for, gap symbol inside or outranking the candidate pool, or a recorded epoch verdict the evidence does not support (A2-C6 / A2-C7); an enumerated ranking-input-deficit epoch deleted, re-ranked, scored, or declared against a changed enumeration (A2-C9) |
 | `RUN_INVALID_SCOPE_SEPARATION` | A1 (or anything else) declared as the DFC prerequisite (A2-C1) |
 | `RUN_INVALID_CORPUS_LITERALS` | a frozen id, path, window, universe rule or imputation literal was changed (A2-C2), or a sample-readiness report's rule/epochs/verdict do not reproduce the frozen protocol (A2-C8) |
 | `RUN_INVALID_FORBIDDEN_SOURCE` | funding / open interest / mark / index material present (A2-C3) |
@@ -400,6 +477,36 @@ timing the paragraph above is suspicious of, so the record is:
 
 Should a *literal* ever need to change, the paragraph above still governs: new
 ID, new signature.
+
+## Amendment provenance (A2-C9)
+
+A2-C9 has the same suspicious timing as A2-C6/A2-C7 — the list of epochs it
+freezes *is* a measurement result, and it was read before the clause was
+written. The record, in the open:
+
+- **No frozen literal changed.** The judgment window is not narrowed (that
+  option was on the table as "B" and was refused: shortening the window hides
+  the problem without recording it). The universe rule, the lookback, the
+  tie-break, `imputation 0`, the required and forbidden source kinds, NW-F5's
+  corpus literals, NW-F6's authenticity definition and the
+  candidate/control ≥400 sample requirement are all untouched. The amendment is
+  additive: one clause, one manifest key (`ranking_input_deficit`), one
+  validator, and no new terminal code.
+- **It tightens; it cannot relax.** Every corpus A2-C9 rejects would have been
+  accepted before it. The 38 epochs move from scored to `RUN_INVALID`, never
+  the other way.
+- **The alternative that would have relaxed it was refused.** Back-filling the
+  missing bars from REST ("A") would have made the corpus *look* complete while
+  promoting the single worst-provenanced symbol in the span — `LUNAUSDT`, the
+  same symbol carrying the delisting tail and its own archive hole — into the
+  top 3. §31차 refused it, and refused the NW-F6 authenticity re-definition it
+  would have required.
+- **The enumeration cannot grow to fit what FREEZE finds.** It is pinned by
+  digest and compared row by row. A gap outside it is a stop, not an
+  extension — see the last paragraph of A2-C9.
+- **Signed separately.** §31차 of the binding record authorises it as its own
+  decision, with the backtest count still zero.
+
 
 ## Amendment provenance (A2-C8)
 

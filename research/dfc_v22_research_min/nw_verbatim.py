@@ -30,6 +30,12 @@ BINDING_RECORD = "~/work/herdr-inbox/operator-decisions-20260805-0830.md \u00a72
 BINDING_RECORD_AMENDMENT = (
     "~/work/herdr-inbox/operator-decisions-20260805-0830.md \u00a726\ucc28"
 )
+#: A2-C9 is bound by \u00a731\ucc28 of the same record.  It is a *separate* amendment
+#: from \u00a726\ucc28: \u00a726\ucc28 closed the direction where a gap symbol is **in** the pool,
+#: \u00a731\ucc28 closes the opposite direction, where the deficit kept a symbol **out**.
+BINDING_RECORD_AMENDMENT_C9 = (
+    "~/work/herdr-inbox/operator-decisions-20260805-0830.md \u00a731\ucc28"
+)
 
 NW_F2_TOPIC = "A1과 DFC 최소 corpus의 범위 분리"
 NW_F2_VERBATIM = "**“A1의 funding/OI/mark/index 종합 readiness는 보존하되 DFC-v2.x의 선행조건으로 쓰지 않는다. 데이터 접촉 전에 `DFC_V22_RESEARCH_MIN` A2 계약을 새 ID/SHA로 등록한다. A2는 kline OFI·premium-index·PIT universe·outcome evidence만 판정한다.”** 이는 결과를 본 뒤 게이트를 완화하는 것이 아니라, 아직 백테스트 0회인 상태에서 계약-데이터 불일치를 교정하는 것이다."
@@ -52,6 +58,15 @@ OD_26_JOB_A_VERBATIM = "**Job A (②+①)**: ②contract lifecycle 권위 소스
 OD_26_JOB_B_TOPIC = "A2 공백 ③ 폐쇄 경로(사전등록 표본 프로토콜)"
 OD_26_JOB_B_VERBATIM = "**Job B (③)**: 측정 **전** 표본 규칙 사전등록 — 판정창 분기별 고정 seed 층화표본 epoch 12 (총 ~108), 각 표본 epoch 의 top-3 후보 심볼 kline+premiumIndex 완전성 검사. **READY = 표본 100% 무결 / 미달 = NOT_READY** (UNDETERMINED 재판정 없음 — 이지선다). 전수 검증은 FREEZE 가 fail-closed 수행 — READY 는 동결 노력 투입 결정일 뿐."
 
+#: §31차 확정 문단의 「명시 개정 한 줄」.  §26차 항목들과 같은 이유로 이 파일의
+#: 답변 문서가 아니라 바인딩 레코드 자체가 소스이고, 하드랩된 원문 세 줄을 공백
+#: 하나로 합치고 굵은따옴표 마커만 벗겼을 뿐 그 외에는 손대지 않았다.  §31차가
+#: 명시 개정을 고른 이유가 이 한 줄 안에 들어 있다: 기존 트리거는 격차 심볼이
+#: 후보 pool 에 **든** 방향이라 결손으로 **빠진** 반대 방향에는 문언 그대로는
+#: 발동하지 않으므로, 해석으로 넓히지 않고 조항을 하나 더 쓴다.
+OD_31_TOPIC = "A2 공백 유형③ 폐쇄 경로(랭킹 입력 결손 epoch 열거)"
+OD_31_VERBATIM = "유형③: 랭킹 입력 결손으로 top-3 구성이 달라졌을 것으로 전수 증명된 epoch(열거 목록 고정)도 동일하게 RUN_INVALID_INPUT_EVIDENCE, 재랭킹 금지"
+
 VERBATIM_CLAUSES: dict[str, str] = {
     "NW-F2": NW_F2_VERBATIM,
     "NW-F4": NW_F4_VERBATIM,
@@ -59,6 +74,7 @@ VERBATIM_CLAUSES: dict[str, str] = {
     "NW-F6": NW_F6_VERBATIM,
     "OD-26": OD_26_JOB_A_VERBATIM,
     "OD-26-JOB-B": OD_26_JOB_B_VERBATIM,
+    "OD-31": OD_31_VERBATIM,
 }
 
 VERBATIM_TOPICS: dict[str, str] = {
@@ -68,4 +84,5 @@ VERBATIM_TOPICS: dict[str, str] = {
     "NW-F6": NW_F6_TOPIC,
     "OD-26": OD_26_JOB_A_TOPIC,
     "OD-26-JOB-B": OD_26_JOB_B_TOPIC,
+    "OD-31": OD_31_TOPIC,
 }
