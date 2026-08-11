@@ -60,7 +60,11 @@ from app.services.order_proposals.buying_power import (
     default_buying_power_releaser,
     required_cash,
 )
-from app.services.order_proposals.errors import OrderProposalError
+from app.services.order_proposals.errors import (
+    OrderProposalDispatchNoLongerAuthorized,
+    OrderProposalError,
+    OrderProposalInvalidStateTransition,
+)
 from app.services.order_proposals.service import (
     OrderProposalsService,
     proposal_approval_block_reason,
@@ -185,6 +189,60 @@ async def _pre_mutation_window_gate(
     )
 
 
+async def _pre_submit_lifecycle_gate(
+    *,
+    service: OrderProposalsService,
+    group: OrderProposal,
+    rung: OrderProposalRung,
+    now_fn: Clock,
+) -> RungOutcome | None:
+    """Atomic last look at the proposal row before any broker mutation (ROB-1238).
+
+    ``revalidate_and_submit`` reads the group once and then awaits preview,
+    eligibility, buying-power and calendar I/O for every rung. ``group`` is a
+    snapshot from before all of that. A concurrent ``order_proposal_void`` --
+    a different session, a different transaction -- can retire the proposal in
+    that gap, and nothing downstream would notice: the submit would proceed off
+    the stale snapshot.
+
+    This re-reads the row ``FOR UPDATE`` and keeps that lock for the remainder
+    of the transaction, i.e. across the submit itself. So the check is not
+    merely "recent": no writer can interleave between the verdict and the send.
+    ``assert_dispatch_still_authorized`` also burns the approval nonce when it
+    refuses, so a stale Telegram card cannot be tapped into a retry.
+    """
+    try:
+        await service.assert_dispatch_still_authorized(
+            group.proposal_id,
+            now=now_fn(),
+            expected_nonce=group.approval_nonce,
+        )
+    except OrderProposalDispatchNoLongerAuthorized as exc:
+        try:
+            await service.transition_rung(
+                group.proposal_id, rung.rung_index, new_state="pending_approval"
+            )
+        except OrderProposalInvalidStateTransition:
+            # The concurrent writer that retired the proposal already moved this
+            # rung to a terminal state (voided/expired). That is the durable
+            # outcome we want; do not fight it back to pending_approval.
+            logger.info(
+                "proposal %s rung %s already terminal at lifecycle recheck (%s)",
+                group.proposal_id,
+                rung.rung_index,
+                exc.reason,
+            )
+        return RungOutcome(
+            rung.rung_index,
+            "guard_blocked",
+            {
+                "error": f"dispatch_no_longer_authorized:{exc.reason}",
+                "lifecycle_recheck": exc.reason,
+            },
+        )
+    return None
+
+
 async def _post_cancel_replace_window_gate(
     *,
     service: OrderProposalsService,
@@ -295,6 +353,26 @@ def _is_guard_blocked_preview(preview: dict[str, Any]) -> bool:
     error = str(preview.get("error") or "").lower()
     return error_code in _GUARD_ERROR_CODES or any(
         marker in error for marker in _GUARD_ERROR_MARKERS
+    )
+
+
+# ROB-1238: the strict subset of guard blocks that mean "this proposal's price
+# violates the avg-cost loss guard". Deliberately narrower than
+# _GUARD_ERROR_MARKERS -- insufficient balance, opposite-pending and stop-loss
+# cooldown are guard blocks too, but they are transient account conditions, not
+# proof that the proposal itself is invalid, and must not grant void authority.
+# Both messages this matches are emitted by evaluate_limit_sell_price_guard /
+# evaluate_market_sell_loss_guard, the single source of truth for the threshold
+# (order_validation.py); nothing here re-derives avg x 1.01.
+_LOSS_GUARD_ERROR_CODES = frozenset({"loss_sell_blocked"})
+_LOSS_GUARD_ERROR_MARKERS = ("avg_buy_price * 1.01",)
+
+
+def _is_loss_guard_preview(preview: dict[str, Any]) -> bool:
+    error_code = str(preview.get("error_code") or "").lower()
+    error = str(preview.get("error") or "").lower()
+    return error_code in _LOSS_GUARD_ERROR_CODES or any(
+        marker in error for marker in _LOSS_GUARD_ERROR_MARKERS
     )
 
 
@@ -1007,9 +1085,21 @@ async def _revalidate_place_rung(
         await service.transition_rung(
             proposal_id, rung_index, new_state="pending_approval"
         )
+        guard_blocked = _is_guard_blocked_preview(preview)
+        if guard_blocked and _is_loss_guard_preview(preview):
+            # ROB-1238: the server just proved this proposal violates the
+            # loss-sell guard. Record it so the row becomes retirable via the
+            # ``server_loss_guard_invalid`` void authority instead of surviving
+            # as a phantom behind a live approval button (BSX dd7a68d7).
+            await service.record_loss_guard_verdict(
+                proposal_id,
+                rung_index=rung_index,
+                error=str(preview.get("error") or ""),
+                now=now_fn(),
+            )
         return RungOutcome(
             rung_index,
-            "guard_blocked" if _is_guard_blocked_preview(preview) else "error",
+            "guard_blocked" if guard_blocked else "error",
             {"error": preview.get("error"), "preview": preview},
         )
 
@@ -1147,6 +1237,20 @@ async def _revalidate_place_rung(
             reservation=buying_power_reservation,
         )
         return window_outcome
+
+    lifecycle_outcome = await _pre_submit_lifecycle_gate(
+        service=service,
+        group=group,
+        rung=rung,
+        now_fn=now_fn,
+    )
+    if lifecycle_outcome is not None:
+        await _release_after_rejection(
+            buying_power_releaser=buying_power_releaser,
+            group=group,
+            reservation=buying_power_reservation,
+        )
+        return lifecycle_outcome
 
     await service.transition_rung(proposal_id, rung_index, new_state="approved")
     await service.transition_rung(proposal_id, rung_index, new_state="submitting")

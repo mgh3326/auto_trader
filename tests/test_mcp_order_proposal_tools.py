@@ -10,6 +10,7 @@ import pytest
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.mcp_server.caller_identity import caller_agent_id_var
 from app.mcp_server.tooling import order_proposal_tools as opt
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals import dispatch as dispatch_module
@@ -22,6 +23,21 @@ from app.services.order_proposals.redispatch import RedispatchValidation
 from app.services.order_proposals.target_order import TargetOrderSnapshot
 from app.telegram_contract import TelegramMethodResult, telegram_text_length
 from tests.services.order_proposals.window_fakes import allow_known_session
+
+# ROB-1238: production always runs these tools behind CallerIdentityMiddleware,
+# which resolves one agent id per call. Pin the same identity here so create and
+# void share an owner and the existing void tests keep testing what they were
+# written to test rather than the new authorization gate.
+_TOOL_CALLER_AGENT = "test-mcp-agent"
+
+
+@pytest.fixture(autouse=True)
+def _mcp_caller_identity():
+    token = caller_agent_id_var.set(_TOOL_CALLER_AGENT)
+    try:
+        yield _TOOL_CALLER_AGENT
+    finally:
+        caller_agent_id_var.reset(token)
 
 
 @pytest.fixture(autouse=True)
@@ -910,7 +926,7 @@ async def test_void_requires_reason_and_terminalizes_proposal():
     result = await opt.order_proposal_void(created["proposal_id"], "superseded thesis")
     assert result["success"] is True
     assert result["lifecycle_state"] == "voided"
-    assert result["void_reason"] == "superseded thesis"
+    assert result["void_reason"] == "superseded thesis [authority=self_created]"
 
 
 @pytest.mark.asyncio
@@ -993,7 +1009,8 @@ async def test_void_unverified_uses_broker_evidence_and_disables_telegram_button
         (
             chat,
             4242,
-            "🗑️ 제안 무효화됨\n사유: " + result["void_reason"].replace("_", "\\_"),
+            "🗑️ 제안 무효화됨\n사유: "
+            + opt._escape_telegram_markdown(result["void_reason"]),
             {"inline_keyboard": []},
         )
     ]

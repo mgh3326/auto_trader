@@ -112,6 +112,12 @@ def _target_snapshot_payload(**overrides):
     return payload
 
 
+# ROB-1238: void authority requires a server-recorded creator identity. These
+# fixtures create as the owner so the existing void tests keep exercising the
+# broker-evidence branch rather than tripping the new authorization gate.
+_TEST_OWNER_AGENT = "test-owner-agent"
+
+
 def _target_action_create_kwargs(action: str, **overrides):
     kwargs = {
         "symbol": "KRW-AVAX",
@@ -124,6 +130,7 @@ def _target_action_create_kwargs(action: str, **overrides):
         "target_broker_order_id": "manual-upbit-1",
         "target_order_snapshot": _target_snapshot_payload(),
         "rungs": [RungInput(0, "sell", Decimal("3.5"), Decimal("42000"), None)],
+        "creator_agent_id": _TEST_OWNER_AGENT,
     }
     kwargs.update(overrides)
     return kwargs
@@ -374,6 +381,8 @@ async def test_replace_persists_target_snapshot_and_allows_independent_proposals
     assert first.source_asof == {
         "origin": "manual",
         "target_order_snapshot": _target_snapshot_payload(),
+        # ROB-1238: server-recorded ownership for the void authorization gate.
+        "creator_agent_id": _TEST_OWNER_AGENT,
     }
     assert first.payload_hash != second.payload_hash
 
@@ -394,6 +403,7 @@ async def _create_single_rung(
         order_type="limit",
         proposer="p",
         rungs=[RungInput(0, "buy", Decimal("1"), Decimal("100"), None)],
+        creator_agent_id=_TEST_OWNER_AGENT,
     )
     await db_session.commit()
     return service, group
@@ -1059,6 +1069,7 @@ async def test_terminal_group_blocks_both_approval_nonce_consumers(db_session):
     await svc.void_proposal(
         group.proposal_id,
         reason="operator void",
+        requester_agent_id=_TEST_OWNER_AGENT,
         now=terminalized_at,
     )
 
@@ -1227,7 +1238,10 @@ async def test_void_refuses_unverified_rung_without_partial_mutation(db_session)
     )
     with pytest.raises(OrderProposalError, match="cannot void"):
         await service.void_proposal(
-            group.proposal_id, reason="operator cleanup", now=datetime.now(UTC)
+            group.proposal_id,
+            reason="operator cleanup",
+            now=datetime.now(UTC),
+            requester_agent_id=_TEST_OWNER_AGENT,
         )
 
 
@@ -1267,6 +1281,7 @@ async def test_void_unverified_with_absent_broker_evidence_records_audit(db_sess
     rows = await service.void_proposal(
         group.proposal_id,
         reason="operator cleanup",
+        requester_agent_id=_TEST_OWNER_AGENT,
         now=now,
         broker_evidence=broker_evidence,
     )
@@ -1326,6 +1341,7 @@ async def test_void_unverified_refuses_when_accepted_toss_ledger_row_exists(db_s
         await service.void_proposal(
             group.proposal_id,
             reason="operator cleanup",
+            requester_agent_id=_TEST_OWNER_AGENT,
             now=now,
             broker_evidence=broker_evidence,
         )
@@ -1376,6 +1392,7 @@ async def test_void_unverified_ignores_rejected_toss_ledger_without_order_id(
     rows = await service.void_proposal(
         group.proposal_id,
         reason="operator cleanup",
+        requester_agent_id=_TEST_OWNER_AGENT,
         now=now,
         broker_evidence=broker_evidence,
     )
@@ -1412,6 +1429,7 @@ async def test_void_unverified_refuses_existing_broker_order(db_session, broker_
         await service.void_proposal(
             group.proposal_id,
             reason="operator cleanup",
+            requester_agent_id=_TEST_OWNER_AGENT,
             now=now,
             broker_evidence=broker_evidence,
         )
@@ -1439,6 +1457,7 @@ async def test_void_unverified_refuses_broker_lookup_failure(db_session, error):
         await service.void_proposal(
             group.proposal_id,
             reason="operator cleanup",
+            requester_agent_id=_TEST_OWNER_AGENT,
             now=now,
             broker_evidence=broker_evidence,
         )
@@ -1466,6 +1485,7 @@ async def test_void_unverified_refuses_during_broker_settlement_grace(db_session
         await service.void_proposal(
             group.proposal_id,
             reason="operator cleanup",
+            requester_agent_id=_TEST_OWNER_AGENT,
             now=now,
             broker_evidence=broker_evidence,
         )
@@ -1486,7 +1506,10 @@ async def test_void_terminal_rung_still_refused(db_session, terminal_state):
 
     with pytest.raises(OrderProposalError, match="cannot void proposal"):
         await service.void_proposal(
-            group.proposal_id, reason="operator cleanup", now=now
+            group.proposal_id,
+            reason="operator cleanup",
+            now=now,
+            requester_agent_id=_TEST_OWNER_AGENT,
         )
 
 
@@ -1504,16 +1527,21 @@ async def test_void_multi_rung_sets_audit_and_invalidates_nonce(db_session):
             RungInput(0, "buy", Decimal("1"), Decimal("70000"), None),
             RungInput(1, "buy", Decimal("1"), Decimal("69000"), None),
         ],
+        creator_agent_id=_TEST_OWNER_AGENT,
     )
     await service.set_approval_nonce(group.proposal_id, "nonce")
     rows = await service.void_proposal(
-        group.proposal_id, reason="thesis invalidated", now=datetime.now(UTC)
+        group.proposal_id,
+        reason="thesis invalidated",
+        now=datetime.now(UTC),
+        requester_agent_id=_TEST_OWNER_AGENT,
     )
     refreshed, _ = await service.get_proposal(group.proposal_id)
     assert [row.state for row in rows] == ["voided", "voided"]
     assert refreshed.lifecycle_state == "voided"
     assert refreshed.no_resubmit is True
-    assert refreshed.void_reason == "thesis invalidated"
+    # ROB-1238: the audit trail now records which authority permitted the void.
+    assert refreshed.void_reason == "thesis invalidated [authority=self_created]"
     assert refreshed.approval_nonce is None
 
 
@@ -3169,10 +3197,14 @@ async def test_expired_defensive_handoff_includes_voided_loss_cut(
         exit_reason="stop_loss",
         retrospective_id=42,
         now=_HANDOFF_RECENT,
+        creator_agent_id=_TEST_OWNER_AGENT,
     )
     await db_session.commit()
     await service.void_proposal(
-        group.proposal_id, reason="operator abort", now=_HANDOFF_RECENT
+        group.proposal_id,
+        reason="operator abort",
+        now=_HANDOFF_RECENT,
+        requester_agent_id=_TEST_OWNER_AGENT,
     )
     group.updated_at = _HANDOFF_RECENT
     await db_session.commit()

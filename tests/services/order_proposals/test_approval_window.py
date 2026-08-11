@@ -23,6 +23,7 @@ from app.services.order_proposals.approval_window import (
     evaluate_approval_window,
     evaluate_approval_window_boundary,
 )
+from app.services.order_proposals.approval_window_contract import valid_until_block
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
     ApprovalDispatchState,
@@ -31,10 +32,22 @@ from app.services.order_proposals.dispatch_contract import (
     build_membership_digest,
     build_proposal_dispatch_binding,
 )
-from app.services.order_proposals.errors import OrderProposalError
+from app.services.order_proposals.errors import (
+    OrderProposalDispatchNoLongerAuthorized,
+    OrderProposalError,
+)
 from app.services.order_proposals.revalidation import RungOutcome, revalidate_and_submit
-from app.services.order_proposals.service import OrderProposalsService
+from app.services.order_proposals.service import (
+    OrderProposalsService,
+    proposal_approval_block_reason,
+)
 from app.services.order_proposals.target_order import TargetOrderSnapshot
+from app.services.order_proposals.void_authorization import (
+    LOSS_GUARD_VERDICT_KEY,
+    SERVER_LOSS_GUARD_SOURCE,
+    extract_loss_guard_violation,
+)
+from tests.services.order_proposals.window_fakes import allow_known_session
 
 
 def _group(
@@ -886,6 +899,7 @@ class _FakeRevalidationService:
             approved_by_telegram_user_id=None,
             approved_at=None,
             commit_lease_until=None,
+            no_resubmit=False,
         )
         self.rung = SimpleNamespace(
             rung_index=0,
@@ -900,6 +914,8 @@ class _FakeRevalidationService:
         self.cancelled_calls = 0
         self.nonce_consumes = 0
         self.allow_nonce_consume = False
+        self.lifecycle_recheck_calls = 0
+        self.no_resubmit = False
 
     async def get_proposal(self, proposal_id):
         assert proposal_id == self.group.proposal_id
@@ -949,6 +965,52 @@ class _FakeRevalidationService:
 
     async def acquire_target_mutation_lock(self, group):
         assert group is self.group
+
+    async def record_loss_guard_verdict(self, proposal_id, *, rung_index, error, now):
+        assert proposal_id == self.group.proposal_id
+        self.group.source_asof = {
+            **(self.group.source_asof or {}),
+            LOSS_GUARD_VERDICT_KEY: {
+                "violated": True,
+                "source": SERVER_LOSS_GUARD_SOURCE,
+                "observed_at": now.isoformat(),
+                "rung_index": rung_index,
+                "error": str(error or ""),
+            },
+        }
+        return self.group
+
+    async def assert_dispatch_still_authorized(
+        self, proposal_id, *, now, expected_nonce=None
+    ):
+        """Mirror the real gate against this fake's mutable group (ROB-1238).
+
+        Deliberately re-reads ``self.group`` at call time rather than closing
+        over a snapshot, so a test that retires the proposal mid-flight
+        reproduces the production race.
+        """
+        assert proposal_id == self.group.proposal_id
+        self.lifecycle_recheck_calls += 1
+        reason = proposal_approval_block_reason(self.group)
+        if reason is None and getattr(self.group, "no_resubmit", False):
+            reason = "proposal_no_resubmit"
+        if reason is None:
+            validity_block = valid_until_block(self.group.valid_until, now=now)
+            if validity_block is not None:
+                reason = f"proposal_{validity_block[1]}"
+        if reason is None and extract_loss_guard_violation(self.group.source_asof):
+            reason = "proposal_loss_guard_invalid"
+        if (
+            reason is None
+            and expected_nonce is not None
+            and self.group.approval_nonce != expected_nonce
+        ):
+            reason = "approval_nonce_superseded"
+        if reason is not None:
+            self.group.approval_nonce = None
+            self.group.approval_nonce_used_at = now
+            raise OrderProposalDispatchNoLongerAuthorized(reason)
+        return self.group
 
     async def preflight_published_proposal_callback(self, proposal_id, *, callback):
         assert proposal_id == self.group.proposal_id
@@ -1952,7 +2014,10 @@ async def test_transport_hook_rechecks_after_all_preview_work_before_http():
 
     initial = await evaluator(service.group, now=started)
     service.group.source_asof = {"approval_window_policy_stamp": initial.policy_stamp}
-    clock_values = iter((*([started] * 9), boundary))
+    # ROB-1238 added one clock read: the pre-submit lifecycle recheck samples
+    # `now_fn()` between the last window gate and the submit. The boundary value
+    # still has to land on the transport pre-send hook, so shift by one.
+    clock_values = iter((*([started] * 10), boundary))
     outcomes = await revalidate_and_submit(
         service=service,
         proposal_id=service.group.proposal_id,
@@ -2511,3 +2576,163 @@ async def test_default_execution_adapter_threads_transport_hook(
         )
 
     assert transport_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# ROB-1238: pre-submit lifecycle recheck + loss-guard verdict recording
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_void_between_preview_and_submit_aborts_the_send():
+    """MUTANT atomicity: retire the proposal mid-flight; nothing may reach the broker.
+
+    `revalidate_and_submit` snapshots the group once, then awaits preview,
+    eligibility and calendar work per rung. Without a re-read under the row lock
+    a void landing in that gap is invisible and the submit proceeds anyway.
+    """
+    now = datetime(2026, 7, 22, 14, 0, tzinfo=UTC)
+    service = _FakeRevalidationService(valid_until=now + timedelta(days=2))
+    broker_http_calls = 0
+
+    async def place(**kwargs):
+        nonlocal broker_http_calls
+        if kwargs["dry_run"]:
+            # A concurrent `order_proposal_void` commits while the preview is
+            # still in flight.
+            service.group.lifecycle_state = "voided"
+            service.group.no_resubmit = True
+            return {
+                "success": True,
+                "approval_hash": "fresh",
+                "price": "100",
+                "quantity": "1",
+            }
+        broker_http_calls += 1
+        raise AssertionError("submit must not run after a concurrent void")
+
+    initial = await allow_known_session(service.group, now=now)
+    service.group.source_asof = {"approval_window_policy_stamp": initial.policy_stamp}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=service.group.proposal_id,
+        now=now,
+        place_order_fn=place,
+        correlation_mint=lambda **kwargs: "corr-never-sent",
+        window_evaluator=allow_known_session,
+        expected_policy_stamp=initial.policy_stamp,
+        now_fn=lambda: now,
+    )
+
+    assert broker_http_calls == 0
+    assert [outcome.result for outcome in outcomes] == ["guard_blocked"]
+    assert outcomes[0].detail["lifecycle_recheck"] == "proposal_terminal:voided"
+    assert service.lifecycle_recheck_calls == 1
+    # The approval token is burned, so the stale card cannot be tapped again.
+    assert service.group.approval_nonce is None
+    assert "submitting" not in service.transitions
+
+
+@pytest.mark.asyncio
+async def test_healthy_proposal_still_submits_through_the_lifecycle_gate():
+    """The new gate must not block the happy path."""
+    now = datetime(2026, 7, 22, 14, 0, tzinfo=UTC)
+    service = _FakeRevalidationService(valid_until=now + timedelta(days=2))
+    submits = 0
+
+    async def place(**kwargs):
+        nonlocal submits
+        if kwargs["dry_run"]:
+            return {
+                "success": True,
+                "approval_hash": "fresh",
+                "price": "100",
+                "quantity": "1",
+            }
+        submits += 1
+        return {
+            "success": True,
+            "status": "resting",
+            "broker_order_id": "broker-1",
+            "correlation_id": "corr-1",
+            "idempotency_key": "idem-1",
+            "approval_hash_digest": "digest-1",
+        }
+
+    initial = await allow_known_session(service.group, now=now)
+    service.group.source_asof = {"approval_window_policy_stamp": initial.policy_stamp}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=service.group.proposal_id,
+        now=now,
+        place_order_fn=place,
+        correlation_mint=lambda **kwargs: "corr-1",
+        window_evaluator=allow_known_session,
+        expected_policy_stamp=initial.policy_stamp,
+        now_fn=lambda: now,
+    )
+
+    assert submits == 1
+    assert service.lifecycle_recheck_calls == 1
+    assert [outcome.result for outcome in outcomes] != ["guard_blocked"]
+
+
+@pytest.mark.asyncio
+async def test_loss_guard_preview_records_a_server_confirmed_verdict():
+    """MUTANT BSX: the server must durably record the violation it just observed."""
+    now = datetime(2026, 7, 22, 14, 0, tzinfo=UTC)
+    service = _FakeRevalidationService(valid_until=now + timedelta(days=2))
+
+    async def place(**kwargs):
+        assert kwargs["dry_run"] is True
+        return {
+            "success": False,
+            "error": "Sell price 48.4 below minimum (avg_buy_price * 1.01 = 48.48)",
+        }
+
+    initial = await allow_known_session(service.group, now=now)
+    service.group.source_asof = {"approval_window_policy_stamp": initial.policy_stamp}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=service.group.proposal_id,
+        now=now,
+        place_order_fn=place,
+        correlation_mint=lambda **kwargs: "corr-never-sent",
+        window_evaluator=allow_known_session,
+        expected_policy_stamp=initial.policy_stamp,
+        now_fn=lambda: now,
+    )
+
+    assert [outcome.result for outcome in outcomes] == ["guard_blocked"]
+    assert extract_loss_guard_violation(service.group.source_asof) is not None
+
+
+@pytest.mark.asyncio
+async def test_transient_guard_preview_records_no_loss_guard_verdict():
+    """A non-loss-guard block must not mint void authority."""
+    now = datetime(2026, 7, 22, 14, 0, tzinfo=UTC)
+    service = _FakeRevalidationService(valid_until=now + timedelta(days=2))
+
+    async def place(**kwargs):
+        assert kwargs["dry_run"] is True
+        return {"success": False, "error": "opposite pending order exists"}
+
+    initial = await allow_known_session(service.group, now=now)
+    service.group.source_asof = {"approval_window_policy_stamp": initial.policy_stamp}
+
+    outcomes = await revalidate_and_submit(
+        service=service,
+        proposal_id=service.group.proposal_id,
+        now=now,
+        place_order_fn=place,
+        correlation_mint=lambda **kwargs: "corr-never-sent",
+        window_evaluator=allow_known_session,
+        expected_policy_stamp=initial.policy_stamp,
+        now_fn=lambda: now,
+    )
+
+    assert [outcome.result for outcome in outcomes] == ["guard_blocked"]
+    assert extract_loss_guard_violation(service.group.source_asof) is None
