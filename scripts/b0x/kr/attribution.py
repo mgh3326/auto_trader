@@ -70,6 +70,7 @@ DB 장애·스키마 드리프트 등 어떤 실패든 :class:`AttributionUnread
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Final, Protocol
@@ -412,7 +413,7 @@ async def read_own_attribution(
     return build_attribution(rows)
 
 
-def build_attribution(rows: object) -> OwnFillAttribution:
+def build_attribution(rows: Iterable[Sequence[Any]]) -> OwnFillAttribution:
     """원장 행 → 귀속. 순수 함수(쿼리 결과 모양만 알면 되고 DB 는 모른다).
 
     행은 ``(symbol, side, quantity, price, lifecycle_state, scalping_role,
@@ -425,7 +426,7 @@ def build_attribution(rows: object) -> OwnFillAttribution:
     buy_rows: dict[str, int] = {}
     sell_rows: dict[str, int] = {}
 
-    for row in rows:  # type: ignore[union-attr]
+    for row in rows:
         symbol_raw, side, quantity_raw, price_raw, state, role, reason = row
         symbol = str(symbol_raw or "").strip()
         if not symbol or _is_control_row(symbol, role, reason):
@@ -441,7 +442,7 @@ def build_attribution(rows: object) -> OwnFillAttribution:
             continue
         if side_text != "buy":
             continue
-        if str(state or "").strip() not in OWN_FILL_EVIDENCE_STATES:
+        if str(state or "").strip().lower() not in OWN_FILL_EVIDENCE_STATES:
             # 체결 증거 없는 매수는 아직 우리 수량이 아니다.
             continue
         bought[symbol] = bought.get(symbol, Decimal("0")) + quantity

@@ -605,6 +605,7 @@ def test_kr_declares_its_deployment_figure_unreadable() -> None:
 
     from decimal import Decimal as D
 
+    from scripts.b0x.kr import attribution as kr_attribution
     from scripts.b0x.kr import mock as kr_mock
     from scripts.b0x.kr.cycle import broker_state
 
@@ -622,8 +623,6 @@ def test_kr_declares_its_deployment_figure_unreadable() -> None:
     )
     # §36차 2항: 보유가 자동으로 B0-X 것이 되지는 않는다 — 자기 원장 귀속이
     # 있어야 포지션이 된다. 귀속 10주 × 자기 체결단가 70,000.
-    from scripts.b0x.kr import attribution as kr_attribution
-
     attribution = kr_attribution.OwnFillAttribution(
         lots=(
             kr_attribution.AttributedLot(

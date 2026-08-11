@@ -197,11 +197,13 @@ async def test_mutant_1_legacy_holdings_never_become_sell_candidates(
     assert sells == [], "legacy 보유가 매도 후보로 파생됐다 — §36차 2항 위반 (mutant ①)"
     # 이유가 「매도할 포지션이 없다」로 남아야 한다: 조용히 사라지는 것이 아니라
     # 자기 장부에 없다는 기록이다.
+    # 🔴 부분집합이 아니라 등호다 — sell skip 행이 통째로 사라져도 통과하는
+    # 공허한 assert 는 mutant 를 잡지 못한다.
     assert {
         skip["reason"]
         for skip in outcome.record["skipped"]
         if skip["leg"].startswith("sell")
-    } <= {"no_position_to_sell"}
+    } == {"no_position_to_sell"}
     # 그러면서 계좌 진실은 지워지지 않는다.
     assert outcome.record["fresh_truth"]["non_dust_position_symbols"] == [
         "000660",
@@ -281,11 +283,9 @@ async def test_mutant_2_legacy_holdings_never_become_averaging_candidates(
     ] == [], "legacy 보유에 물타기가 파생됐다 (mutant ②)"
     # legacy 는 자기 포지션이 아니므로 「신규 진입」 경로로 들어오고, 물타기
     # 경로(기존 포지션에 대한 추가)는 애초에 열리지 않는다.
-    assert all(
-        order["leg"] in {"buy_l1", "buy_l2"}
-        for order in outcome.record["orders"]
-        if order["side"] == "buy"
-    )
+    buys = [order for order in outcome.record["orders"] if order["side"] == "buy"]
+    assert buys, "매수 후보가 0 이면 아래 assert 가 공허해진다"
+    assert all(order["leg"] in {"buy_l1", "buy_l2"} for order in buys)
 
 
 def test_mutant_2_additions_stay_refused_even_for_attributed_positions() -> None:
@@ -544,6 +544,29 @@ def test_mutant_5_the_attribution_module_cannot_reach_the_pending_reader() -> No
     assert "scripts.b0x.kr.pending_ledger" not in imported
 
 
+@pytest.mark.asyncio
+async def test_a_forgotten_reader_injection_fails_loudly_instead_of_silently(
+    table_dir: Path, out_dir: Path
+) -> None:
+    """🔴 conftest 의 AssertionError 가드는 사이클에 삼켜지면 안 된다.
+
+    사이클은 귀속 리더의 어떤 실패든 ``attribution_unreadable`` 로 바꾼다. 그 절이
+    ``AssertionError`` 까지 삼키면, 리더 주입을 잊은 테스트가 조용히 fail-closed
+    분기로 통과하면서 게이트를 하나도 증명하지 않는다 — 테스트 가드가 있으나 마나가
+    된다. 깨진 불변식은 「조회 불가」가 아니다.
+    """
+
+    with pytest.raises(AssertionError, match="귀속 reader"):
+        await run_kr_cycle(
+            now=IN_SESSION_NOW,
+            table_dir=table_dir,
+            out_dir=out_dir,
+            confirm=False,
+            client=_FakeKrClient(stocks=LEGACY_HOLDINGS),
+            pending_reader=EMPTY_PENDING,
+        )
+
+
 # ---------------------------------------------------------------------------
 # NAV — 판정된 항목이고, 넓어지지 않는 방향이다
 # ---------------------------------------------------------------------------
@@ -614,7 +637,9 @@ async def test_an_attributed_position_does_derive_its_sell_ladder(
     assert "000660" not in {order["symbol"] for order in sells}
 
 
-def _static_attribution(attribution: kr_attribution.OwnFillAttribution):
+def _static_attribution(
+    attribution: kr_attribution.OwnFillAttribution,
+) -> kr_attribution.AttributionReader:
     async def _read(*, correlation_prefix: str) -> kr_attribution.OwnFillAttribution:
         assert correlation_prefix == "b0xk-"
         return attribution

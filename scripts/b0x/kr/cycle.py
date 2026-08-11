@@ -645,6 +645,11 @@ async def _run_prepared_cycle(
             attribution = await attribution_read(
                 correlation_prefix=f"{kr_mock.CLIENT_ORDER_ID_PREFIX}-"
             )
+        except AssertionError:
+            # 🔴 깨진 불변식은 「조회 불가」가 아니다. 이것을 삼키면 테스트 conftest
+            # 의 AssertionError 가드까지 무력화되어, 귀속 리더 주입을 잊은 테스트가
+            # 조용히 fail-closed 분기로 통과한다 — 게이트를 증명하지 않은 채.
+            raise
         except Exception as exc:  # noqa: BLE001 — 어떤 실패든 「알 수 없음」
             attribution = kr_attribution.attribution_unreadable(type(exc).__name__)
         scoped = scoped_positions(fresh=fresh, attribution=attribution)

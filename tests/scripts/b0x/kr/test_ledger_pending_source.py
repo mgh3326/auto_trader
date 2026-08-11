@@ -753,16 +753,28 @@ def test_the_two_position_sources_are_the_broker_read_and_nothing_else() -> None
         (KR_PACKAGE / "attribution.py").read_text(encoding="utf-8")
     )
     scope = next(
-        node
-        for node in ast.walk(attribution_tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "scope_positions"
+        (
+            node
+            for node in ast.walk(attribution_tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "scope_positions"
+        ),
+        None,
     )
+    assert scope is not None, "scope_positions 가 사라졌거나 이름이 바뀌었다"
     iterated = {
         name.id
         for node in ast.walk(scope)
         if isinstance(node, ast.For)
         for name in ast.walk(node.iter)
         if isinstance(name, ast.Name)
+    } | {
+        # 속성 접근으로 순회해도 잡아야 한다 — ``for row in truth.own_pending``
+        # 같은 형태가 아래 PENDING_DERIVED_NAMES 검사를 통과하면 가드가 아니다.
+        attribute.attr
+        for node in ast.walk(scope)
+        if isinstance(node, ast.For)
+        for attribute in ast.walk(node.iter)
+        if isinstance(attribute, ast.Attribute)
     }
     assert "positions" in iterated, (
         "scope_positions stopped iterating the broker holdings snapshot"
@@ -789,10 +801,14 @@ def test_the_two_position_sources_are_the_broker_read_and_nothing_else() -> None
     # cycle.broker_state 는 그 결과만 §4 상한 입력으로 쓴다.
     cycle_tree = ast.parse((KR_PACKAGE / "cycle.py").read_text(encoding="utf-8"))
     func = next(
-        node
-        for node in ast.walk(cycle_tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "broker_state"
+        (
+            node
+            for node in ast.walk(cycle_tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "broker_state"
+        ),
+        None,
     )
+    assert func is not None, "broker_state 가 사라졌거나 이름이 바뀌었다"
     cap_inputs = [
         keyword.value
         for node in ast.walk(func)
