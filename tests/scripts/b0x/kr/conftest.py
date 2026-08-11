@@ -20,6 +20,7 @@ import datetime as dt
 import pytest
 
 from scripts.b0x.broker_truth import PendingUnreadable
+from scripts.b0x.kr import attribution as kr_attribution
 from scripts.b0x.kr import cycle as kr_cycle
 from scripts.b0x.kr import mock as kr_mock
 from scripts.b0x.kr import pending_ledger as kr_pending_ledger
@@ -50,6 +51,19 @@ def _forbid_real_pending_ledger_reads(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     monkeypatch.setattr(kr_pending_ledger, "read_foreign_traces", _refuse_foreign)
+
+    async def _refuse_attribution(
+        *, correlation_prefix: str
+    ) -> kr_attribution.OwnFillAttribution | kr_attribution.AttributionUnreadable:
+        raise AssertionError(
+            "a KR test reached the real kis_mock 귀속 reader "
+            f"(prefix={correlation_prefix!r}). Pass attribution_reader=... "
+            "explicitly — an accidental read would be swallowed into "
+            "AttributionUnreadable, which silently means 'legacy 취급, 자기 "
+            "포지션 0' and proves nothing about the §36차 2항 gate."
+        )
+
+    monkeypatch.setattr(kr_attribution, "read_own_attribution", _refuse_attribution)
 
 
 @pytest.fixture

@@ -42,6 +42,18 @@ refused again. 포지션 진실 stays with the broker holdings read (v1.6 ②): 
 ``positions`` this function builds come from ``fresh.positions`` and from
 nothing else, whatever the ledger says.
 
+§36차 2항 (2026-08-11) — 귀속 게이트가 flat 요구를 대체한다
+------------------------------------------------------------
+
+이 계좌에는 B0-X 가 만들지 않은 **legacy 보유**가 있다. 이전 confirm preflight 는
+「보유가 하나라도 있으면 이상」이었고, 그래서 (a) 한 건도 제출할 수 없었으며
+(b) 계약 v1.5 ③ 의 「매도는 자기 보유에서 파생」과 모순이었다(보유가 있어야
+매도가 나오는데 보유가 있으면 막혔다). 운영자 결정은 flatten 기각 · 귀속 기반
+공존이다: :mod:`scripts.b0x.kr.attribution` 이 자기 원장 fill 로 own/legacy 를
+가르고, legacy 는 **읽히되 파생 입력에서 빠지며 매도 경로에 도달하지 못한다**.
+무엇이 어디에 포함/제외되는지와 그 근거는 :func:`broker_state` 의 docstring 에
+있다(이 판정은 §36차 2항 이 명시적으로 위임한 것이다).
+
 Kill-trip cancellation asymmetry with the crypto sidecar, documented rather
 than silently matched: the crypto lanes cancel outstanding B0-X orders on a
 kill trip (``scripts.b0x.cycle._cancel_b0x_open_orders``) because their
@@ -68,11 +80,16 @@ from app.services.kis_mock_runner.singleton import (
     WriterSingletonContended,
     WriterSingletonUnavailable,
 )
-from scripts.b0x.broker_truth import OwnPendingResubmitBlocked, PendingUnreadable
+from scripts.b0x.broker_truth import (
+    BrokerTruth,
+    OwnPendingResubmitBlocked,
+    PendingUnreadable,
+)
 from scripts.b0x.cycle import base_record, render_cycle_report
 from scripts.b0x.derivation import DerivationResult, derive_orders
 from scripts.b0x.envelope import Envelope, assert_envelope_locked, load_envelope
 from scripts.b0x.kill_switch import evaluate as evaluate_kill_switch
+from scripts.b0x.kr import attribution as kr_attribution
 from scripts.b0x.kr import mock as kr_mock
 from scripts.b0x.kr import pending_ledger as kr_pending_ledger
 from scripts.b0x.labels import account_history_labels, header_labels
@@ -81,7 +98,7 @@ from scripts.b0x.ledger import (
     ObservationLedger,
     writer_lock,
 )
-from scripts.b0x.state import B0XPosition, LaneAccountState
+from scripts.b0x.state import LaneAccountState
 from scripts.b0x.table_source import (
     DEFAULT_TABLE_DIR,
     PolicyTable,
@@ -214,17 +231,85 @@ KR_REALIZED_PNL_UNAVAILABLE = (
 )
 
 
+#: 🔴 귀속 리더를 배선하지 않은 호출자가 받는 상태. 「자기 것이 없다」가 아니라
+#: 「자기 것이 무엇인지 확인하지 않았다」이며, 두 방향 모두 닫힌다(자기 포지션 0
+#: + §4 상한 입력 = 계좌 전체). ``KR_PENDING_UNREADABLE`` 이 미배선 호출자에게
+#: 하는 일과 같은 자세다.
+ATTRIBUTION_NOT_WIRED: Final[kr_attribution.AttributionUnreadable] = (
+    kr_attribution.AttributionUnreadable(
+        reason="kis_mock_own_fill_attribution_not_wired",
+        detail=(
+            "호출자가 자기 원장 귀속 리더를 배선하지 않았다 — 어떤 보유가 자기 "
+            "것인지 확인되지 않았으므로 legacy 로 취급한다(매도/물타기 파생 0) "
+            "+ §4 상한은 계좌 전체 기준. 「미배선」을 「귀속 없음」으로도 "
+            "「legacy 없음」으로도 읽지 않는다 (§36차 2항)"
+        ),
+    )
+)
+
+
+#: 🔴 §36차 2항 이 판정을 위임한 항목 중 하나 — legacy 평가금액의 NAV 포함 여부.
+#: 기록에 남겨 두는 이유: pct_of_nav kill 의 절대 임계는 NAV 에 비례하므로, 이
+#: 선택은 「어느 방향으로 틀릴 것인가」의 선택이다.
+KR_ATTRIBUTED_NAV_BASIS: Final[str] = (
+    "nav = cash + 자기 귀속 평가금액(지분 비례). legacy 평가금액은 제외 — §4 "
+    "daily_loss_kill 이 pct_of_nav 이므로 legacy 를 포함하면 kill 이 발화하는 "
+    "절대 손실액이 커진다(임계가 넓어진다). 귀속 불가면 자기 평가금액 0 → "
+    "nav = cash 로 더 좁아진다. 어느 경우에도 넓어지지 않는다."
+)
+
+
 def broker_state(
     *,
     fresh: kr_mock.FreshTruth,
     own_pending: tuple[str, ...] | PendingUnreadable | None = None,
+    attribution: (
+        kr_attribution.OwnFillAttribution | kr_attribution.AttributionUnreadable | None
+    ) = None,
 ) -> LaneAccountState:
     """kis_mock account state, derived entirely from this cycle's broker read.
 
-    Contract v1.5 ①/③. Positions are the account's own holdings — "B0-X
-    물타기/매도 = 자기(mock) 보유에서만 파생" (v1.5 ③), and under the account
-    map kis_mock is B0-X's exclusive order lane, so a mock holding *is* B0-X's
-    book. ``average_price`` is the broker's own 매입평균가.
+    Contract v1.5 ①/③, **as amended by §36차 2항 (귀속 기반 공존)**. Positions
+    are no longer "every mock holding": the account carries legacy holdings
+    B0-X did not create, and those belong to an observation-only coexisting
+    lane. ``attribution`` (자기 원장 fill 귀속) is what separates the two —
+    see :mod:`scripts.b0x.kr.attribution` for the evidence rules and the
+    deliberately asymmetric error direction. Omitting it is fail-closed
+    (:data:`ATTRIBUTION_NOT_WIRED`), never "everything is mine".
+
+    ``average_price`` for an attributed position is the weighted average of
+    **B0-X's own fills**, not the broker's 매입평균가: on a symbol shared with
+    a legacy holding the broker's average blends someone else's cost in.
+
+    🔴 What legacy holdings are excluded from, and why (§36차 2항 delegates
+    this judgement, so it is stated here rather than left implicit):
+
+    * **매도/물타기 파생** — excluded. This is the literal instruction, and
+      the whole reason the gate exists: a legacy symbol must never become a
+      sell or an averaging candidate.
+    * **§4 동시포지션 / 일일신규 상한 입력** — excluded (``cap_position_
+      symbols`` = attributed only). This diverges from the shared
+      ``broker_truth`` docstring's "account-wide" reading and from the US
+      lane's comment that foreign sellable positions consume a slot, and the
+      divergence is deliberate: with 11 legacy holdings against a cap of 10,
+      an account-wide count means this lane derives **zero** new entries
+      forever, which is exactly the coexistence the operator's (b) decision
+      replaced flatten with. The §4 *numbers* are untouched; what changed is
+      whose positions they count. 🔴 The cost, stated plainly: the account can
+      now carry legacy + up to 10 B0-X positions, so account-level exposure is
+      wider than the cap alone suggests.
+    * **NAV (kill 임계 기준)** — excluded, pro-rated by attributed share.
+      The §4 kill is ``pct_of_nav``, so a *larger* NAV means a *larger*
+      absolute loss is tolerated before it fires. Including legacy market
+      value would therefore widen the threshold; excluding it can only
+      narrow it. Where a judgement was free, it was made in the direction
+      that never widens the kill (unreadable attribution → attributed
+      evaluation 0 → NAV = cash, the tightest defensible basis).
+    * **계좌 진실 · 오염 판정 · preflight 기록** — *included*. Legacy holdings
+      are read, counted and named in the artifact (``positions.legacy_
+      symbols``); the CONTAMINATED judgement stays exactly what it was
+      (non-``b0xk`` correlation *traces*, i.e. another **writer**), because a
+      sanctioned coexisting holding is not another writer.
 
     🔴 ``invested_notional`` is the **cost basis**, not cumulative deployment,
     because a single broker snapshot carries no cumulative figure — and a
@@ -243,28 +328,48 @@ def broker_state(
     below, and it is not merged into ``broker_truth.position_symbols`` — v1.6
     ② keeps 포지션 진실 on the broker. ``None`` (the default) leaves the lane
     on ``KR_PENDING_UNREADABLE``.
+
+    🔴 v1.6 ② still holds under the attribution gate: the broker holdings read
+    remains the only source of *whether* a position exists and how large it
+    is. The ledger answers only *whose* it is, and can never conjure a
+    position the broker did not report (``scope_positions`` iterates the
+    broker's rows and caps every attributed quantity by the held quantity).
     """
 
-    positions = tuple(
-        B0XPosition(
-            symbol=pos.symbol,
-            quantity=pos.quantity,
-            average_price=pos.average_price,
-            invested_notional=pos.quantity * pos.average_price,
-            entry_count=0,
-        )
-        for pos in sorted(fresh.positions, key=lambda p: p.symbol)
-        if pos.symbol in set(fresh.non_dust_position_symbols())
-    )
+    scoped = scoped_positions(fresh=fresh, attribution=attribution)
     return LaneAccountState(
         lane=LANE,
         quote_currency=kr_mock.QUOTE_CURRENCY,
         cash=fresh.cash,
-        broker_truth=fresh.broker_truth(own_pending),
-        positions=positions,
+        broker_truth=BrokerTruth(
+            position_symbols=scoped.cap_position_symbols,
+            own_pending=(
+                kr_mock.KR_PENDING_UNREADABLE if own_pending is None else own_pending
+            ),
+        ),
+        positions=scoped.own_positions,
         cumulative_deployment_readable=False,
         realized_pnl_today=Decimal("0"),
-        nav=fresh.nav,
+        # 🔴 NAV = cash + 자기 귀속 평가금액. legacy 평가금액을 넣으면 pct_of_nav
+        # kill 의 절대 임계가 커진다 — 넓히지 않는 방향을 고른다(위 docstring).
+        nav=fresh.cash + scoped.attributed_evaluation,
+    )
+
+
+def scoped_positions(
+    *,
+    fresh: kr_mock.FreshTruth,
+    attribution: (
+        kr_attribution.OwnFillAttribution | kr_attribution.AttributionUnreadable | None
+    ),
+) -> kr_attribution.ScopedPositions:
+    """One place where 자기 보유 / legacy 보유 is decided for this lane."""
+
+    return kr_attribution.scope_positions(
+        positions=fresh.positions,
+        attribution=ATTRIBUTION_NOT_WIRED if attribution is None else attribution,
+        account_wide_non_dust=fresh.non_dust_position_symbols(),
+        min_trade_unit=kr_mock.KRX_MIN_TRADE_UNIT_SHARES,
     )
 
 
@@ -316,6 +421,7 @@ def _confirm_preflight_record(
     completed_at: dt.datetime,
     account_identity: dict[str, str],
     fresh: kr_mock.FreshTruth,
+    scoped: kr_attribution.ScopedPositions,
     own_pending: tuple[str, ...] | PendingUnreadable,
     foreign_traces: kr_pending_ledger.ForeignLedgerTraces | PendingUnreadable,
 ) -> dict[str, Any]:
@@ -326,6 +432,17 @@ def _confirm_preflight_record(
     **ledger shadow** rather than misreported as a native open-order response.
     A non-B0-X trace is contamination; an unreadable trace source is also a
     failure because exclusive truth was not established.
+
+    🔴 §36차 2항 — the flat-account requirement is **gone**, replaced by the
+    attribution gate. Until 2026-08-11 this record failed on
+    ``unexpected_positions`` whenever the account carried *any* non-dust
+    holding, which on this account (11 legacy holdings B0-X never created)
+    meant the confirm path could never dispatch, and which also contradicted
+    contract v1.5 ③ (매도는 자기 보유에서 파생되는데 보유가 있으면 막혔다).
+    Legacy holdings are now recorded as a named, coexisting fact instead of an
+    anomaly; what still fails closed is being unable to *tell them apart*
+    (``attribution_unreadable``), because that is the state in which a sell
+    could reach someone else's shares.
     """
 
     elapsed_seconds = (completed_at - started_at).total_seconds()
@@ -342,8 +459,9 @@ def _confirm_preflight_record(
         reasons.append("preflight_exceeded_5_minutes")
     if fresh.cash <= 0:
         reasons.append("cash_not_positive")
-    if position_symbols:
-        reasons.append("unexpected_positions")
+    if scoped.unreadable is not None:
+        # 🔴 「보유가 있다」가 아니라 「누구 것인지 모른다」가 실패 사유다.
+        reasons.append("attribution_unreadable")
     if own_unreadable is not None:
         reasons.append("ledger_pending_unreadable")
     elif own_symbols:
@@ -363,7 +481,27 @@ def _confirm_preflight_record(
         "positions": {
             "non_dust_symbols": list(position_symbols),
             "count": len(position_symbols),
+            # 🔴 계좌 전체(위)와 귀속 분리(아래)를 같은 블록에 나란히 둔다 —
+            # legacy 를 조용히 지우지 않는다 (§36차 2항 「무시」 ≠ 「삭제」).
+            "own_attributed_symbols": [pos.symbol for pos in scoped.own_positions],
+            "own_attributed_count": len(scoped.own_positions),
+            "legacy_symbols": list(scoped.legacy_symbols),
+            "legacy_count": len(scoped.legacy_symbols),
         },
+        "attribution": (
+            {
+                "source": kr_attribution.ATTRIBUTION_SOURCE,
+                "readable": False,
+                "unreadable": scoped.unreadable.canonical(),
+                "cap_basis": scoped.cap_basis,
+            }
+            if scoped.unreadable is not None
+            else {
+                "source": kr_attribution.ATTRIBUTION_SOURCE,
+                "readable": True,
+                "cap_basis": scoped.cap_basis,
+            }
+        ),
         "open_orders": {
             "native_broker": {
                 "available": False,
@@ -408,7 +546,15 @@ def _preflight_truth_unavailable_record(
         "max_age_seconds": PREFLIGHT_MAX_AGE_SECONDS,
         "account": account_identity,
         "cash": {"present": None},
-        "positions": {"non_dust_symbols": None, "count": None},
+        "positions": {
+            "non_dust_symbols": None,
+            "count": None,
+            "own_attributed_symbols": None,
+            "own_attributed_count": None,
+            "legacy_symbols": None,
+            "legacy_count": None,
+        },
+        "attribution": None,
         "open_orders": {
             "native_broker": {
                 "available": False,
@@ -438,6 +584,7 @@ async def _run_prepared_cycle(
     broker: Any | None,
     pending_reader: kr_pending_ledger.PendingReader | None,
     foreign_trace_reader: kr_pending_ledger.ForeignTraceReader | None,
+    attribution_reader: kr_attribution.AttributionReader | None,
     account_identity: dict[str, str] | None,
 ) -> KrCycleOutcome:
     """Account truth → derive → plan → bounded confirm dispatch.
@@ -490,6 +637,23 @@ async def _run_prepared_cycle(
         record["fresh_truth"] = fresh.status_only(own_pending)
         record["own_pending_source"] = kr_mock.OWN_PENDING_SOURCE
 
+        # §36차 2항 — 자기 원장 귀속.  Read inside the same NW-B4 window as the
+        # account snapshot: the two are compared against each other, so a stale
+        # attribution against a fresh holdings read is not a usable answer.
+        attribution_read = attribution_reader or kr_attribution.read_own_attribution
+        try:
+            attribution = await attribution_read(
+                correlation_prefix=f"{kr_mock.CLIENT_ORDER_ID_PREFIX}-"
+            )
+        except Exception as exc:  # noqa: BLE001 — 어떤 실패든 「알 수 없음」
+            attribution = kr_attribution.attribution_unreadable(type(exc).__name__)
+        scoped = scoped_positions(fresh=fresh, attribution=attribution)
+        record["attribution"] = {
+            **scoped.canonical(),
+            "source": kr_attribution.ATTRIBUTION_SOURCE,
+            "nav_basis": KR_ATTRIBUTED_NAV_BASIS,
+        }
+
         if confirm:
             foreign_reader = (
                 foreign_trace_reader or kr_pending_ledger.read_foreign_traces
@@ -508,6 +672,7 @@ async def _run_prepared_cycle(
                 completed_at=dt.datetime.now(dt.UTC),
                 account_identity=account_identity,
                 fresh=fresh,
+                scoped=scoped,
                 own_pending=own_pending,
                 foreign_traces=foreign_traces,
             )
@@ -522,7 +687,9 @@ async def _run_prepared_cycle(
                     detail=", ".join(preflight["reasons"]),
                 )
 
-        state = broker_state(fresh=fresh, own_pending=own_pending)
+        state = broker_state(
+            fresh=fresh, own_pending=own_pending, attribution=attribution
+        )
         record["broker_truth"] = state.broker_truth.canonical()
         decision = evaluate_kill_switch(state=state, envelope=envelope)
         derivation = derive_orders(
@@ -592,6 +759,35 @@ async def _run_prepared_cycle(
                         record["submission_stopped"] = "preflight_expired"
                         break
 
+                    # 🔴 §36차 2항, at the mutation boundary: a SELL may only
+                    # ever reach shares this lane's own fills paid for. The
+                    # derivation already refused legacy symbols (they are not
+                    # in ``state.positions`` at all), and this second line is
+                    # deliberately redundant — a one-line regression there
+                    # would otherwise become a sale of someone else's shares,
+                    # the one irreversible mistake available on this lane.
+                    if order.side == "sell":
+                        try:
+                            kr_attribution.assert_sell_is_own(
+                                scoped,
+                                symbol=order.symbol,
+                                quantity=Decimal(order.quantity),
+                                lane=LANE,
+                            )
+                        except kr_attribution.LegacyPositionSellBlocked as exc:
+                            record.setdefault("submission_blocked", []).append(
+                                {
+                                    "symbol": order.symbol,
+                                    "correlation_id": order.client_order_id,
+                                    "reason": "legacy_position_sell_blocked",
+                                    "detail": str(exc),
+                                }
+                            )
+                            record["submission_stopped"] = (
+                                "legacy_position_sell_blocked"
+                            )
+                            break
+
                     # v1.6's dedup is re-read immediately before every real
                     # dispatch.  The artifact's first snapshot is evidence;
                     # this re-read is the mutation boundary.
@@ -605,7 +801,9 @@ async def _run_prepared_cycle(
                             type(exc).__name__
                         )
                     current_truth = broker_state(
-                        fresh=fresh, own_pending=current_pending
+                        fresh=fresh,
+                        own_pending=current_pending,
+                        attribution=attribution,
                     ).broker_truth
                     try:
                         result = await kr_mock.submit_planned_order(
@@ -701,6 +899,7 @@ async def run_kr_cycle(
     broker: Any | None = None,
     pending_reader: kr_pending_ledger.PendingReader | None = None,
     foreign_trace_reader: kr_pending_ledger.ForeignTraceReader | None = None,
+    attribution_reader: kr_attribution.AttributionReader | None = None,
 ) -> KrCycleOutcome:
     """One manual kis_mock B0-X cycle.
 
@@ -788,6 +987,7 @@ async def run_kr_cycle(
                 broker=broker,
                 pending_reader=pending_reader,
                 foreign_trace_reader=foreign_trace_reader,
+                attribution_reader=attribution_reader,
                 account_identity=None,
             )
 
@@ -821,6 +1021,7 @@ async def run_kr_cycle(
                     broker=broker,
                     pending_reader=pending_reader,
                     foreign_trace_reader=foreign_trace_reader,
+                    attribution_reader=attribution_reader,
                     account_identity=account_identity,
                 )
         except WriterSingletonContended as exc:
@@ -854,6 +1055,9 @@ __all__ = [
     "KR_ACCOUNT_MAP_COMMIT",
     "KR_STATUS_LABEL",
     "KR_REALIZED_PNL_UNAVAILABLE",
+    "KR_ATTRIBUTED_NAV_BASIS",
+    "ATTRIBUTION_NOT_WIRED",
+    "scoped_positions",
     "KrCycleOutcome",
     "broker_state",
     "run_kr_cycle",

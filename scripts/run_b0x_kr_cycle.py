@@ -71,9 +71,11 @@ async def _derivation_only(args: argparse.Namespace) -> int:
 
     from scripts.b0x import kill_switch as kill_switch_module
     from scripts.b0x.derivation import derive_orders
+    from scripts.b0x.kr import attribution as kr_attribution
     from scripts.b0x.kr import mock as kr_mock
     from scripts.b0x.kr import pending_ledger as kr_pending_ledger
     from scripts.b0x.kr.cycle import broker_state
+    from scripts.b0x.kr.cycle import scoped_positions as kr_cycle_scope
     from scripts.b0x.table_source import TableUnavailable, load_policy_table
 
     now = dt.datetime.now(dt.UTC) if args.now is None else args.now
@@ -101,7 +103,13 @@ async def _derivation_only(args: argparse.Namespace) -> int:
     own_pending = await kr_pending_ledger.read_own_pending(
         now=now, correlation_prefix=f"{kr_mock.CLIENT_ORDER_ID_PREFIX}-"
     )
-    state = broker_state(fresh=fresh, own_pending=own_pending)
+    # §36차 2항: legacy 보유(B0-X 가 만들지 않은 것)를 자기 원장 fill 귀속으로
+    # 갈라 낸다. 읽기 실패는 「자기 것 없음」이 아니라 tri-state 로 떨어지고,
+    # 그 상태에서는 자기 포지션 0 + §4 상한 입력 = 계좌 전체가 된다.
+    attribution = await kr_attribution.read_own_attribution(
+        correlation_prefix=f"{kr_mock.CLIENT_ORDER_ID_PREFIX}-"
+    )
+    state = broker_state(fresh=fresh, own_pending=own_pending, attribution=attribution)
 
     hashes: list[str] = []
     result = None
@@ -117,8 +125,15 @@ async def _derivation_only(args: argparse.Namespace) -> int:
         )
         hashes.append(result.derivation_hash())
 
+    scoped = kr_cycle_scope(fresh=fresh, attribution=attribution)
     print(f"policy_table_hash={table.policy_table_hash}")
     print(f"account_state_hash={state.state_hash()}")
+    print(
+        f"attribution_readable={scoped.unreadable is None} "
+        f"own_positions={len(scoped.own_positions)} "
+        f"legacy_positions={len(scoped.legacy_symbols)} "
+        f"cap_basis={scoped.cap_basis}"
+    )
     for index, digest in enumerate(hashes):
         print(f"run[{index}] derivation_hash={digest}")
     identical = len(set(hashes)) == 1

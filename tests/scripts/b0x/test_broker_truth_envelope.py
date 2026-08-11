@@ -620,7 +620,25 @@ def test_kr_declares_its_deployment_figure_unreadable() -> None:
             ),
         ),
     )
-    state = broker_state(fresh=fresh)
+    # §36차 2항: 보유가 자동으로 B0-X 것이 되지는 않는다 — 자기 원장 귀속이
+    # 있어야 포지션이 된다. 귀속 10주 × 자기 체결단가 70,000.
+    from scripts.b0x.kr import attribution as kr_attribution
+
+    attribution = kr_attribution.OwnFillAttribution(
+        lots=(
+            kr_attribution.AttributedLot(
+                symbol="005930",
+                quantity=D("10"),
+                average_price=D("70000"),
+                buy_fill_rows=1,
+                sell_rows=0,
+            ),
+        )
+    )
+    assert broker_state(fresh=fresh).positions == (), (
+        "귀속 리더 미배선은 「전부 내 것」이 아니라 fail-closed 여야 한다"
+    )
+    state = broker_state(fresh=fresh, attribution=attribution)
     assert state.cumulative_deployment_readable is False
     # It is the cost basis, exactly — no fabricated cumulative figure.
     assert state.positions[0].invested_notional == D("700000")
