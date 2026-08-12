@@ -226,6 +226,44 @@ def test_expanded_marketable_orders_keep_the_veto_button_meaningful():
     assert (sell.eligible, sell.reason) == (False, "marketable_not_resting")
 
 
+def test_expanded_limit_exactly_on_the_market_is_marketable():
+    """A limit priced ON the market can fill before the card is seen."""
+    buy = _evaluate(
+        limit_price=Decimal("100000"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+    sell = _evaluate(
+        side="sell",
+        limit_price=Decimal("100000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(),
+    )
+
+    assert (buy.eligible, buy.reason) == (False, "marketable_not_resting")
+    assert (sell.eligible, sell.reason) == (False, "marketable_not_resting")
+
+
+def test_off_mode_keeps_its_non_strict_distance_boundary():
+    """ROB-871 boundary unchanged: exactly min_distance_pct away stays eligible."""
+    buy = _evaluate(
+        limits=_LIMITS,
+        limit_price=Decimal("97000"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+    sell = _evaluate(
+        limits=_LIMITS,
+        side="sell",
+        limit_price=Decimal("103000"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+
+    assert buy.eligible is True
+    assert sell.eligible is True
+
+
 def test_expanded_take_profit_sell_is_eligible():
     """§40차 ② — profit proven at the limit price, net of round-trip cost."""
     decision = _evaluate(

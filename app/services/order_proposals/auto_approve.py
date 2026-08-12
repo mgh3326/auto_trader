@@ -28,8 +28,10 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
     ``expanded`` drops ``min_distance_pct`` but NOT the requirement that the
     rung actually rest: a marketable order can fill before the operator sees
     the card, which would make the veto button (§40차 safety invariant ①) a
-    lie. That is narrower than the §40차 literal, which is the permitted
-    direction -- see docs/runbooks/order-proposal-auto-approve-expand.md §3.
+    lie. A buy must price strictly below the market and a sell strictly above
+    it -- a limit exactly ON the market is marketable and is rejected. That is
+    narrower than the §40차 literal, which is the permitted direction -- see
+    docs/runbooks/order-proposal-auto-approve-expand.md §3.
 """
 
 from __future__ import annotations
@@ -335,35 +337,35 @@ def evaluate_auto_approve_eligibility(
 
     # `expanded` drops the min_distance_pct floor but still requires the rung
     # to rest: a buy at or above the market (a sell at or below it) can fill
-    # before the operator ever sees the veto card.
+    # before the operator ever sees the veto card. Hence the strict comparison
+    # in `expanded` -- a limit exactly ON the market is marketable. `off` keeps
+    # ROB-871's non-strict boundary (a rung exactly `min_distance_pct` away is
+    # eligible), so this cannot change any verdict the shipped mode reaches.
+    expanded = mode == "expanded"
     min_fraction = (
-        Decimal("0") if mode == "expanded" else limits.min_distance_pct / Decimal("100")
+        Decimal("0") if expanded else limits.min_distance_pct / Decimal("100")
     )
     profit_details: dict[str, str] = {}
     if side == "buy":
         threshold = current_price * (Decimal("1") - min_fraction)
         distance_pct = (current_price - limit_price) / current_price * Decimal("100")
-        if limit_price > threshold:
+        if (limit_price >= threshold) if expanded else (limit_price > threshold):
             return reject(
-                "marketable_not_resting"
-                if mode == "expanded"
-                else "distance_below_minimum"
+                "marketable_not_resting" if expanded else "distance_below_minimum"
             )
         loss_guard = "not_applicable"
     else:
         threshold = current_price * (Decimal("1") + min_fraction)
         distance_pct = (limit_price - current_price) / current_price * Decimal("100")
-        if limit_price < threshold:
+        if (limit_price <= threshold) if expanded else (limit_price < threshold):
             return reject(
-                "marketable_not_resting"
-                if mode == "expanded"
-                else "distance_below_minimum"
+                "marketable_not_resting" if expanded else "distance_below_minimum"
             )
         # A successful fresh sell preview means the existing avg-cost loss
         # guard ran and passed. We record that provenance instead of
         # reimplementing the guard with a potentially different threshold.
         loss_guard = "preview_passed"
-        if mode == "expanded":
+        if expanded:
             # ...but the preview guard fails open on unknown cost basis and is
             # bypassable (defensive_trim / loss_cut / mock), so `expanded`
             # proves the profit itself rather than inheriting that verdict.

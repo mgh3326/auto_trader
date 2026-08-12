@@ -44,33 +44,41 @@ Then, per mode:
 
 | | `off` | `expanded` |
 | --- | --- | --- |
-| buy | limit ≤ market × (1 − `min_distance_pct`) | limit ≤ market |
-| sell | limit ≥ market × (1 + `min_distance_pct`) | limit ≥ market **and** proven profit-take |
+| buy | limit ≤ market × (1 − `min_distance_pct`) | limit **<** market |
+| sell | limit ≥ market × (1 + `min_distance_pct`) | limit **>** market **and** proven profit-take |
+
+The `expanded` comparison is strict on purpose: a limit priced exactly *on* the
+market is marketable. `off` keeps ROB-871's non-strict boundary (a rung exactly
+`min_distance_pct` away stays eligible), so the strictness cannot change any
+verdict the shipped mode reaches.
 
 "Proven profit-take" (`classify_sell_profit`), evaluated in this order:
 
-1. **break-even band first.** `|limit − avg_buy_price| ≤ avg_buy_price × breakeven_band_pct`
-   → `breakeven_band`. Checked before the sign test on purpose: §40차 sends the
-   band to a human *whatever the sign*, so a sell 0.5% above cost is still a
-   human's call. The band is inclusive — exactly ±1% is inside it.
-2. **net P&L strictly positive.**
+1. **no cost basis, no verdict.** A missing, zero or unparseable
+   `avg_buy_price` → `sell_classification_unavailable`, ahead of both tests
+   below — an unpriceable sell never reports a band or a P&L verdict. The
+   preview's own avg×1.01 guard fails *open* on unknown cost basis and is
+   bypassable (`defensive_trim` / `loss_cut` / mock), so a passing preview is
+   not evidence of profit and `expanded` proves it independently.
+2. **break-even band before the sign test.**
+   `|limit − avg_buy_price| ≤ avg_buy_price × breakeven_band_pct`
+   → `breakeven_band`. Ahead of the sign test on purpose: §40차 sends the band
+   to a human *whatever the sign*, so a sell 0.5% above cost is still a human's
+   call. The band is inclusive — exactly ±1% is inside it.
+3. **net P&L strictly positive.**
    `net = (limit − avg) × qty − max(limit, avg) × qty × round_trip_cost_bps / 10000`.
    `net > 0` → `take_profit`; `net == 0` → `expected_pnl_not_positive`. Exactly
    zero is not "> 0".
-3. **no cost basis, no verdict.** A missing, zero or unparseable
-   `avg_buy_price` → `sell_classification_unavailable`. The preview's own
-   avg×1.01 guard fails *open* on unknown cost basis and is bypassable
-   (`defensive_trim` / `loss_cut` / mock), so a passing preview is not evidence
-   of profit and `expanded` proves it independently.
 
 ## 3. Deliberately narrower than the §40차 literal
 
 `expanded` drops `min_distance_pct` but still requires the rung to **rest** —
 a buy at or above the market, or a sell at or below it, can fill before the
 operator ever sees the card, which would make the veto button that §40차 safety
-invariant ① depends on a lie. §40차 forbids being *broader* than its literal;
-this is narrower, which is the permitted direction. Relaxing it is an operator
-decision, not a code cleanup.
+invariant ① depends on a lie. "At" counts: a limit exactly on the market is
+rejected as `marketable_not_resting`. §40차 forbids being *broader* than its
+literal; this is narrower, which is the permitted direction. Relaxing it is an
+operator decision, not a code cleanup.
 
 The tag gate (step 6) also applies in `off` mode. It can only reject, so it is
 a tightening of ROB-871, not a widening.
