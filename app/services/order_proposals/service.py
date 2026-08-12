@@ -47,9 +47,11 @@ from app.services.order_proposals.dispatch_contract import (
     build_membership_digest,
 )
 from app.services.order_proposals.errors import (
+    OrderProposalDispatchNoLongerAuthorized,
     OrderProposalError,
     OrderProposalNotFound,
     OrderProposalUnsupportedTargetAction,
+    OrderProposalVoidNotAuthorized,
 )
 from app.services.order_proposals.payload import (
     ProposalRungSpec,
@@ -59,6 +61,14 @@ from app.services.order_proposals.repository import OrderProposalRepository
 from app.services.order_proposals.target_order import (
     TargetOrderSnapshot,
     canonical_decimal,
+)
+from app.services.order_proposals.void_authorization import (
+    CREATOR_AGENT_ID_KEY,
+    LOSS_GUARD_VERDICT_KEY,
+    SERVER_LOSS_GUARD_SOURCE,
+    authorize_void,
+    extract_creator_agent_id,
+    extract_loss_guard_violation,
 )
 from app.services.trade_journal.trade_retrospective_service import (
     get_retrospective_by_id,
@@ -457,6 +467,7 @@ class OrderProposalsService:
         approval_issue_id: str | None = None,
         correlation_id: str | None = None,
         source_asof: dict | None = None,
+        creator_agent_id: str | None = None,
         supersedes_proposal_id: uuid.UUID | None = None,
         action: str | None = None,
         target_broker_order_id: str | None = None,
@@ -482,6 +493,15 @@ class OrderProposalsService:
         merged_source_asof = dict(source_asof or {})
         if normalized_target_snapshot is not None:
             merged_source_asof["target_order_snapshot"] = normalized_target_snapshot
+        # ROB-1238: ownership for the void authorization gate. Written here from
+        # the server-resolved MCP caller identity, never from a tool argument,
+        # and unconditionally overwritten so a caller-supplied ``source_asof``
+        # cannot pre-seed someone else's id. An unknown caller stores nothing,
+        # which leaves the row voidable only by a server-confirmed authority.
+        merged_source_asof.pop(CREATOR_AGENT_ID_KEY, None)
+        normalized_creator = (creator_agent_id or "").strip()
+        if normalized_creator:
+            merged_source_asof[CREATOR_AGENT_ID_KEY] = normalized_creator
         now = now or datetime.now(UTC)
         self._require_timezone_aware(now)
         defensive_floor = (
@@ -910,8 +930,17 @@ class OrderProposalsService:
         *,
         reason: str,
         now: datetime,
+        requester_agent_id: str | None,
         broker_evidence: Callable[..., Any] | None = None,
     ) -> list[OrderProposalRung]:
+        """Retire a proposal the requester is authorized to retire (ROB-1238).
+
+        ``requester_agent_id`` is keyword-required (pass ``None`` explicitly for
+        an unidentified caller) so no existing call site silently inherits
+        owner-level authority. See ``void_authorization`` for the rule; the
+        authority chosen there also decides whether rungs converge to
+        ``voided`` or to ``expired``.
+        """
         self._require_timezone_aware(now)
         reason = reason.strip()
         if not reason:
@@ -920,6 +949,18 @@ class OrderProposalsService:
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
+        # Authorize under the same row lock that the mutation below runs in, so
+        # the valid_until / loss-guard / ownership evidence cannot change between
+        # the decision and the writes it authorizes.
+        decision = authorize_void(
+            requester_agent_id=requester_agent_id,
+            creator_agent_id=extract_creator_agent_id(group.source_asof),
+            valid_until=group.valid_until,
+            now=now,
+            loss_guard_violation=extract_loss_guard_violation(group.source_asof),
+        )
+        if not decision.allowed:
+            raise OrderProposalVoidNotAuthorized(decision)
         rungs = await self._repo.list_rungs(group.id)
         allowed_states = _VOIDABLE_RUNG_STATES | {"unverified"}
         invalid_rung = next(
@@ -1065,12 +1106,17 @@ class OrderProposalsService:
                 )
             evidence_summary = " | broker_evidence: " + "; ".join(summaries)
 
-        audit_reason = reason + evidence_summary
+        audit_reason = f"{reason} [authority={decision.authority}]{evidence_summary}"
 
         voided_rungs = []
         for rung in rungs:
+            # ``unverified`` keeps ``voided_local_stale`` under every authority:
+            # that state records "the server proved the broker holds no order",
+            # which the authority does not change.
             target_state = (
-                "voided_local_stale" if rung.state == "unverified" else "voided"
+                "voided_local_stale"
+                if rung.state == "unverified"
+                else str(decision.terminal_state)
             )
             sm.assert_rung_transition(rung.state, target_state)
             audit_fields: dict[str, Any] = {
@@ -1089,6 +1135,91 @@ class OrderProposalsService:
             approval_nonce_used_at=now,
         )
         return voided_rungs
+
+    # -- ROB-1238 lifecycle safety ------------------------------------------
+    async def record_loss_guard_verdict(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        rung_index: int,
+        error: str | None,
+        now: datetime,
+    ) -> OrderProposal:
+        """Durably record that the server's own revalidation hit the loss guard.
+
+        This is the only writer of the ``loss_guard_verdict`` envelope that
+        ``authorize_void`` will accept, which is what makes
+        ``server_loss_guard_invalid`` a server-confirmed authority rather than a
+        caller assertion. Called from the revalidation guard-blocked branch: a
+        proposal like BSX dd7a68d7 (limit below avg x 1.01) becomes retirable
+        the moment the server observes the violation, instead of sitting
+        ``proposed`` behind a live approval button.
+        """
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = dict(group.source_asof or {})
+        source_asof[LOSS_GUARD_VERDICT_KEY] = {
+            "violated": True,
+            "source": SERVER_LOSS_GUARD_SOURCE,
+            "observed_at": now.isoformat(),
+            "rung_index": rung_index,
+            "error": (str(error) if error is not None else "")[:500],
+        }
+        return await self._repo.update_group(group, source_asof=source_asof)
+
+    async def assert_dispatch_still_authorized(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        now: datetime,
+        expected_nonce: str | None = None,
+    ) -> OrderProposal:
+        """Re-read under the row lock and refuse a no-longer-dispatchable send.
+
+        ``revalidate_and_submit`` loads the group once and then walks its rungs
+        through preview, eligibility, buying-power and window gates -- each of
+        which awaits I/O. A concurrent ``order_proposal_void`` (its own session,
+        its own transaction) can land in that gap, so the in-memory group the
+        submit path is about to act on may already be retired. This re-reads the
+        row ``FOR UPDATE`` immediately before the broker mutation and holds that
+        lock through the submit, which is what makes the recheck atomic with
+        respect to the send rather than merely recent.
+
+        Failing here also clears the approval nonce, so the stale Telegram card
+        cannot be tapped into a second attempt.
+        """
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        reason = proposal_approval_block_reason(group)
+        if reason is None and group.no_resubmit:
+            reason = "proposal_no_resubmit"
+        if reason is None:
+            # Reuse the shared validity contract rather than a second expiry
+            # rule, so this gate can never disagree with the approval window
+            # about what "expired" means. The value it reads is the freshly
+            # locked row, which is the part the window gate could not see.
+            validity_block = valid_until_block(group.valid_until, now=now)
+            if validity_block is not None:
+                reason = f"proposal_{validity_block[1]}"
+        if reason is None and extract_loss_guard_violation(group.source_asof):
+            reason = "proposal_loss_guard_invalid"
+        if reason is None and expected_nonce is not None:
+            if group.approval_nonce != expected_nonce:
+                reason = "approval_nonce_superseded"
+        if reason is not None:
+            # Burn the approval surface before surfacing the refusal so the
+            # same token cannot be replayed into another dispatch attempt.
+            await self._repo.update_group(
+                group,
+                approval_nonce=None,
+                approval_nonce_used_at=now,
+            )
+            raise OrderProposalDispatchNoLongerAuthorized(reason)
+        return group
 
     # -- PR-2 helpers -------------------------------------------------------
     async def set_approval_nonce(

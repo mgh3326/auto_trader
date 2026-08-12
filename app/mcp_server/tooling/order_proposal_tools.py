@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
+from app.mcp_server.caller_identity import get_caller_agent_id
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_window import ApprovalWindowDecision
@@ -48,6 +49,7 @@ from app.services.order_proposals.errors import (
     OrderProposalError,
     OrderProposalNotFound,
     OrderProposalUnsupportedTargetAction,
+    OrderProposalVoidNotAuthorized,
 )
 from app.services.order_proposals.redispatch import validate_proposal_redispatch
 from app.services.order_proposals.service import RungInput, check_action_capability
@@ -566,6 +568,10 @@ async def order_proposal_create(
                 retrospective_id=retrospective_id,
                 approval_issue_id=approval_issue_id,
                 supersedes_proposal_id=sup,
+                # ROB-1238: server-resolved caller identity, so `order_proposal_void`
+                # can later tell "the session that created this" from "some other
+                # lane". Never taken from a tool argument.
+                creator_agent_id=get_caller_agent_id(),
                 action=normalized_action,
                 target_broker_order_id=target_broker_order_id,
                 target_order_snapshot=(
@@ -667,6 +673,23 @@ async def order_proposal_list(
 
 
 async def order_proposal_void(proposal_id: str, reason: str) -> dict[str, Any]:
+    """Retire a proposal you created, or one the server confirms is dead.
+
+    Authorization is narrow by design (ROB-1238) -- proposals are a surface every
+    lane shares, so a broad void would let one session cancel another lane's live
+    proposal. Exactly three authorities are accepted:
+
+    * ``self_created`` -- the calling agent created this proposal. Ownership uses
+      the server-recorded MCP caller identity, not the ``proposer`` text field.
+    * ``server_loss_guard_invalid`` -- the server itself observed the loss-sell
+      guard reject this proposal during revalidation.
+    * ``server_expired`` -- ``valid_until`` has elapsed. Rungs converge to
+      ``expired`` (not ``voided``) here, because expiry is what was proven.
+
+    Anything else returns ``success=False`` with ``error="void_not_authorized"``
+    and the evidence that was considered. Retiring always clears the approval
+    nonce, so the Telegram approval button dies with the proposal.
+    """
     try:
         pid = uuid.UUID(proposal_id)
         normalized_reason = reason.strip()
@@ -679,6 +702,7 @@ async def order_proposal_void(proposal_id: str, reason: str) -> dict[str, Any]:
                 pid,
                 reason=normalized_reason,
                 now=now,
+                requester_agent_id=get_caller_agent_id(),
                 broker_evidence=_fetch_void_evidence,
             )
             group, rungs = await service.get_proposal(pid)
@@ -699,6 +723,13 @@ async def order_proposal_void(proposal_id: str, reason: str) -> dict[str, Any]:
             void_reason=result["void_reason"],
         )
         return result
+    except OrderProposalVoidNotAuthorized as exc:
+        return {
+            "success": False,
+            "error": exc.decision.reason_code,
+            "proposal_id": proposal_id,
+            "authorization": exc.decision.to_dict(),
+        }
     except (ValueError, OrderProposalError) as exc:
         return {"success": False, "error": str(exc)}
 

@@ -334,3 +334,53 @@ def test_buy_discovery_have_negative_class_constraint():
         assert "confidence" in joined
         assert "forecast" in joined
         assert "outcome_rule_version='window-touch-v1-high-gte-low-lte'" in joined
+
+
+# ---------------------------------------------------------------------------
+# ROB-1238: order_proposal_void lane surface
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("intent", ["buy_analysis", "profit_taking"])
+def test_proposal_lanes_unblock_order_proposal_void(intent: str):
+    """The lane that owns proposals must be able to retire one.
+
+    `order_proposal_void` is in PROPOSAL_LIFECYCLE_TOOLS -> MUTATION_TOOLS but
+    was in no lane's allowed set, so every lane reported it blocked and phantom
+    proposals accumulated with nothing able to clear them.
+    """
+    plan = _plan(intent, "kr")
+    allowed = set(plan["allowed_tools"])
+    blocked = set(plan["blocked_actions"])
+    steps = set(_step_tools(plan))
+
+    assert "order_proposal_void" in allowed
+    assert "order_proposal_void" not in blocked
+    # A cleanup lever, not a workflow step: it must not enter the sequence.
+    assert "order_proposal_void" not in steps
+
+
+@pytest.mark.parametrize("intent", ["discovery", "market_brief"])
+def test_non_proposal_lanes_keep_order_proposal_void_blocked(intent: str):
+    """MUTANT cross-lane: the unblock is scoped, not a wholesale opening."""
+    plan = _plan(intent, "kr")
+
+    assert "order_proposal_void" not in set(plan["allowed_tools"])
+    if "order_proposal_void" in _ALL:
+        assert "order_proposal_void" in set(plan["blocked_actions"])
+
+
+def test_lifecycle_allowance_never_widens_beyond_void():
+    """The other lifecycle tools stay blocked everywhere.
+
+    `order_proposal_expire_sweep` and `order_proposal_redispatch` were not part
+    of the ROB-1238 incident; widening this map is a deliberate act, not a
+    side effect of the void fix.
+    """
+    granted = set().union(*L.LANE_PROPOSAL_LIFECYCLE_ALLOWED.values())
+    assert granted == {"order_proposal_void"}
+    assert granted <= L.PROPOSAL_LIFECYCLE_TOOLS
+    assert set(L.LANE_PROPOSAL_LIFECYCLE_ALLOWED) == set(L.PROPOSAL_LED_LANES)
+    for intent in ("discovery", "market_brief"):
+        plan = _plan(intent, "kr")
+        assert (L.PROPOSAL_LIFECYCLE_TOOLS & _ALL).isdisjoint(plan["allowed_tools"])

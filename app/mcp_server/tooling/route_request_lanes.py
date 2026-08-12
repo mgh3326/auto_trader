@@ -404,6 +404,24 @@ LANE_RECONCILE_ALLOWED: dict[str, frozenset[str]] = {
     "sell": RECONCILE_TOOLS,
 }
 
+# ROB-1238. `order_proposal_void` sits in PROPOSAL_LIFECYCLE_TOOLS, which is
+# unioned into MUTATION_TOOLS, but it was never in any lane's allowed set -- so
+# `blocked_actions` listed it in *every* lane and no session could retire a dead
+# proposal. Phantoms accumulated (8 rows on 07-27, 27 by 08-10), including a
+# loss-guard-violating BSX proposal still carrying a live approval button.
+#
+# The fix is scoped, not wholesale: only the proposal-led lanes get it, because
+# only they own proposals. discovery/bootstrap stay blocked.
+#
+# This is a *surface* allowance and nothing more. It does not decide what may be
+# voided -- `OrderProposalsService.void_proposal` fails closed unless the caller
+# created the proposal or the server itself confirmed expiry / a loss-guard
+# violation (see void_authorization.py). Widening this map cannot widen that.
+LANE_PROPOSAL_LIFECYCLE_ALLOWED: dict[str, frozenset[str]] = {
+    "buy": frozenset({"order_proposal_void"}),
+    "sell": frozenset({"order_proposal_void"}),
+}
+
 # Purpose text for discovery's legacy market execution injection.
 _MARKET_EXEC_PURPOSE: dict[str, str] = {
     "discovery": "execute buy on ranked winners via generic place_order (crypto/US limit)",
@@ -777,6 +795,7 @@ def build_route_plan(
     lane_preview = PREVIEW_TOOLS if lane == "discovery" else frozenset()
     lane_extra = LANE_EXTRA_ALLOWED.get(lane, frozenset())
     lane_reconcile = LANE_RECONCILE_ALLOWED.get(lane, frozenset())
+    lane_lifecycle = LANE_PROPOSAL_LIFECYCLE_ALLOWED.get(lane, frozenset())
     safe_lane_tools = (
         lane_tools - DIRECT_BROKER_MUTATION_TOOLS if proposal_led else lane_tools
     )
@@ -786,6 +805,7 @@ def build_route_plan(
         | lane_preview
         | lane_extra
         | lane_reconcile
+        | lane_lifecycle
         | set(READ_ONLY_ADVISORY_TOOLS)
     )
     allowed = allowed_candidates & registered_tools
@@ -836,6 +856,7 @@ __all__ = [
     "DIRECT_BROKER_MUTATION_TOOLS",
     "PROPOSAL_LED_TOOLS",
     "PROPOSAL_LIFECYCLE_TOOLS",
+    "LANE_PROPOSAL_LIFECYCLE_ALLOWED",
     "ORDER_PROPOSAL_READ_TOOLS",
     "PREVIEW_REVALIDATION_TOOLS",
     "RECONCILE_TOOLS",
