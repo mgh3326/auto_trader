@@ -6,6 +6,7 @@ import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 CMD = REPO / ".claude" / "commands" / "fill-event-triage.md"
+RUNBOOK = REPO / "docs" / "runbooks" / "fill-event-claude-triage.md"
 pytestmark = pytest.mark.unit
 
 
@@ -34,6 +35,37 @@ def test_command_covers_sell_and_redeploy():
 def test_command_states_readonly_contract():
     body = CMD.read_text(encoding="utf-8").lower()
     assert ("read-only" in body) or ("주문" in body and "금지" in body)
+
+
+def test_command_encodes_support_reserve_net_fill_state_machine():
+    body = CMD.read_text(encoding="utf-8")
+    for token in (
+        "buy.support_reserve_net",
+        "confirmed broker fill",
+        "FREEZE_NEW_SUBMITS",
+        "PROPOSAL_REQUIRES_APPROVAL",
+        "KEEP_RESERVED_AND_BLOCK",
+        "broker CANCELLED/terminal",
+        "same-session rearm",
+        "cash_reservation=KEEP",
+        "cancel proposal은 broker cancellation이 아니다",
+    ):
+        assert token in body, f"reserve-net fill 계약에 {token} 누락"
+
+
+def test_runbook_keeps_reserve_net_triage_contract_only_and_toss_human_gated():
+    body = RUNBOOK.read_text(encoding="utf-8")
+    for token in (
+        "contract/specification extension only",
+        "does not alter this\npoller",
+        "approval-gated cancel-proposal **draft**",
+        "KEEP_RESERVED_AND_BLOCK",
+        "Broker terminal confirmation is required before releasing\ncash.",
+        "Toss 는 승인 카드 경유",
+        "intentionally **not** in\nthis job",
+        "automatic cancellation implemented here",
+    ):
+        assert token in body, f"runbook reserve-net 계약에 {token} 누락"
 
 
 def test_command_does_not_reference_denied_tools():

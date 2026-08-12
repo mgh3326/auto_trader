@@ -96,6 +96,47 @@ scripts/list_recent_fill_events.py  (레포 내, read-only DB 조회)
 
 ---
 
+## 2.1 `buy.support_reserve_net` fill-triage contract (operator §45/§46)
+
+This is a **contract/specification extension only**. It does not alter this
+poller, add a launchd registration, persist an order proposal, invoke a broker
+cancel, or release cash. The command remains ROB-755 read-only; its output is an
+approval-gated cancel-proposal **draft** for a later authorized consumer.
+
+Apply the state machine only after both conditions are evidenced: (a) a confirmed
+broker fill and (b) durable attribution of the filled order to
+`buy.support_reserve_net` plus its policy version/content hash. Do not infer the
+tier from price, symbol, or current indicators. Missing attribution or an
+unknown/ambiguous broker state is `KEEP_RESERVED_AND_BLOCK`: no target is guessed
+and no reservation is released.
+
+```text
+confirmed broker fill
+→ account×currency triage lock
+→ FREEZE_NEW_SUBMITS for support_reserve_net
+→ coalesce same-batch fills by [broker_account_id, currency, market_session]
+→ fresh positions/cash/open-orders reread
+→ remaining reserve-net orders receive cancel-proposal drafts
+→ operator approval
+→ broker CANCELLED/terminal evidence
+→ only next trading session + fresh policy table may regenerate DAY candidates
+```
+
+The lock is a logical triage state in this contract, not a database write made by
+the ROB-755 command. Each draft must retain its same-account/currency
+`required_cash` reservation and identify its target order, burst key, fresh-read
+timestamp, and policy version/content hash. `cancel proposal` is never treated as
+broker cancellation. **Broker terminal confirmation is required before releasing
+cash.** Same-session rearm is false; a later observed fill while approval is
+pending remains in the same burst and keeps the block in place.
+
+Toss is human approval only until veto wiring exists: **Toss 는 승인 카드 경유**.
+The two separate Toss acceptance tests — veto-to-real-cancel smoke and
+fill→freeze→cancel-proposal→approval→terminal E2E — are intentionally **not** in
+this job. Nor is automatic cancellation implemented here.
+
+---
+
 ## 3. Poller 스크립트
 
 운영자 머신 `~/ops/fill-event-triage/poller.sh` 에 저장. **레포에 커밋하지 않음** — 다만

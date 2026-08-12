@@ -128,6 +128,72 @@ lanes:
 7. Foreign-cascade names (e.g. semis): no market order until **price band
    reached AND foreign selling stops** — until both, only a small deep rung.
 
+### 1.1 `buy.support_reserve_net` — support reserve net consumer rules (operator §45/§46)
+
+This is a separately named consumer tier of
+`decision_rules.buy.support_reserve_net`, not a rewrite of the regular discovery
+or `buy.deep_limit_pct_range` path. It remains proposal-led and advisory until a
+separately authorized runtime consumer exists.
+
+1. **Eligibility and evidence:** regular discovery has precedence. A candidate is
+   eligible only when all regular gates except RSI pass and the only failure (or
+   missing input) is RSI; an ordinary discovery survivor stays on the existing
+   deep-limit tier, and a symbol cannot receive both tiers. Require `moderate`+
+   support within 8% of current price and at least two distinct families from
+   `fib`, `bb_lower`, and `volume_profile` (two levels from one family still count
+   as one). Honest upside is at least 40%, measured once against the
+   **decision-time current price**; never recalculate it against the proposed
+   limit price. Candidate count zero is not permission to relax any of those
+   gates at runtime.
+2. **Anchor and order form:** derive the candidate limit as
+   `tick_floor(S × (1-d))`, with `d` in 5–10% below support. Its final distance
+   from the decision-time current price must remain within the inclusive
+   `[-15%, -5%]` band. A value outside that band is **excluded**; it is never
+   clamped. The only form is one `limit` + `DAY` order (no market/GTC/multi-rung
+   substitution). It may be **매일 재생성** only on the next trading session with a
+   fresh policy table, never as a same-session rearm.
+3. **Budget, cash, and concentration:** the whole-account pending-buy
+   `required_cash` ceiling is 90%; this tier's simultaneously armed
+   `required_cash` ceiling is 50%. Cap at two owned-or-open symbols per market,
+   one per sector cluster, and one active order per symbol; `unknown_sector` is
+   `INELIGIBLE`. Use `net_orderable = fresh broker orderable cash − not-yet-
+   reached-broker pending required_cash` for the same account and currency.
+   `required_cash` is preview `estimated_value + fee`, falling back only to
+   `quantity × limit_price`. Missing/error broker orderable data is
+   **fail-closed** for this tier. A cancel *proposal* leaves its cash reserved
+   until broker terminal cancellation evidence exists. Automatic notional remains
+   KRW 200,000 / USD 150; a larger amount in the existing band needs a human.
+4. **Add candidate:** only an R-931 `PASS` review no older than seven days and a
+   policy table no older than 36 hours may enter. Recalculate `A_limit(10%)` at
+   `proposed_limit_price` with `k=0.10`; a partial `A_limit` fill is forbidden,
+   as are a second add symbol in one market or a second reserve-net add fill for
+   the same symbol/policy version. Do not inherit the ordinary crash-day
+   averaging exemption. Do not reissue next-day adds until fresh cost basis,
+   quantity, and `A_limit` are available, and aggregate active buys across
+   accounts by beneficial owner.
+5. **Confirmed-fill triage:** a confirmed broker fill takes an
+   account×currency triage lock, blocks every new reserve-net submit/rearm,
+   coalesces same-batch fills by `[broker_account_id, currency, market_session]`,
+   then rereads positions/cash/open orders. It emits approval-gated cancel
+   proposals for remaining reserve-net orders; no automatic broker cancellation
+   is allowed. Cash remains reserved until a broker `CANCELLED`/terminal proof.
+   `unknown_or_ambiguous_order_state = KEEP_RESERVED_AND_BLOCK`; same-session
+   rearm remains false. The ROB-755 command records this as a read-only proposal
+   draft and does not persist or execute it.
+6. **Toss approval boundary:** until veto wiring and the two separate Toss
+   acceptance tests exist, **Toss 는 승인 카드 경유** only. `toss_live` is outside
+   the auto-veto-capable combination list; do not treat this policy as an
+   auto-approve expansion.
+
+#### 최종 권고 리터럴 요약
+
+- gate: RSI-only relaxation, 2 independent support families, moderate+, support within 8%, honest upside 40% 유지.
+- anchor: support 아래 5~10%, 동시에 현재가 대비 5~15% 아래; 범위 밖은 제외, clamp 금지.
+- budget: global 90% hard ceiling 유지, 이 티어 armed 50%, 시장당 2종목·섹터당 1·종목당 1주문.
+- sizing: 자동은 현행 20만원/$150만; 그 이상은 사람 승인. Toss는 veto wiring 전 전량 사람 승인.
+- fill: confirmed fill 즉시 신규 동결, cancel proposal 승인 경유, broker terminal 전 현금 해제 금지, same-session rearm 금지.
+- add: R-931 PASS, `A_limit(10%)` 완전충족, 부분 A 금지, policy version당 symbol 1회, crash-day 예외 없음.
+
 8. **Negative-class recording (ROB-712):** every reviewed-but-rejected candidate
    leaves a `decision_bucket=deferred_no_action` item with `confidence` +
    rejection reason, plus a resolvable `forecast_save(kind="price_target",

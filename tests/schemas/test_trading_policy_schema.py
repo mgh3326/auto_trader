@@ -5,7 +5,11 @@ import yaml
 from pydantic import ValidationError
 
 import app.schemas.trading_policy as policy_schema
-from app.schemas.trading_policy import TradingPolicyDocument
+from app.schemas.trading_policy import (
+    SupportReserveNetDecisionRule,
+    TradingPolicyDocument,
+)
+from app.services.order_proposals.auto_approve import _VETO_CAPABLE_ACCOUNT_MARKETS
 from app.services.trading_policy_service import load_trading_policy
 
 _CONFIG = Path(__file__).resolve().parents[2] / "config" / "trading_policy.yaml"
@@ -72,6 +76,167 @@ def test_shipped_config_validates():
     )
     assert trim_rule.tie_breaks["sell.upside_place_max_pct"] == "size_limit_only"
     assert "single_share_position" not in trim_rule.exclusions
+
+
+def test_support_reserve_net_literal_policy_blocks_are_frozen():
+    rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
+        "buy.support_reserve_net"
+    ]
+
+    assert isinstance(rule, SupportReserveNetDecisionRule)
+    assert rule.lanes == ["buy"]
+
+    # §Q1 literal: reserve-net is an RSI-only exception, never a wider gate.
+    assert rule.regular_discovery_precedence is True
+    assert rule.eligible_only_when_regular_gate_failure == "RSI_ONLY"
+    assert rule.rsi_gate == "omitted_for_this_tier_only"
+    assert rule.support_strength_min == "moderate"
+    assert rule.independent_support_source_count_min == 2
+    assert rule.independent_support_source_families == [
+        "fib",
+        "bb_lower",
+        "volume_profile",
+    ]
+    assert rule.support_within_current_pct_max == 8
+    assert rule.honest_upside_pct_min == 40
+    assert rule.honest_upside_reference == "decision_time_current_price"
+    assert rule.discount_below_support_pct_range == [5, 10]
+    assert rule.final_limit_distance_from_current_pct_range == [-15, -5]
+    assert rule.anchor_price_formula == "tick_floor(S × (1-d))"
+    assert rule.final_limit_distance_out_of_range == "EXCLUDE"
+    assert rule.order_type == "limit"
+    assert rule.tif == "DAY"
+
+    # §Q2 literal plus its accounting contract.
+    assert rule.all_pending_buy_required_cash_hard_cap_pct == 90
+    assert rule.tier_armed_required_cash_cap_pct == 50
+    assert rule.max_owned_or_open_symbols_per_market == 2
+    assert rule.max_active_orders_per_symbol == 1
+    assert rule.max_symbols_per_sector_cluster == 1
+    assert rule.unknown_sector == "INELIGIBLE"
+    assert rule.auto_submit_notional.krw == 200000
+    assert rule.auto_submit_notional.usd == 150
+    assert rule.larger_notional_within_existing_band == "HUMAN_APPROVAL_REQUIRED"
+    assert rule.daily_auto_cap_includes_all_buy_tiers is True
+    assert rule.cash_reservation.net_orderable == (
+        "fresh_broker_orderable_cash_minus_same_account_currency_pending_required_cash"
+    )
+    assert rule.cash_reservation.pending_required_cash_scope == "not_yet_reached_broker"
+    assert rule.cash_reservation.required_cash_primary == (
+        "preview_estimated_value_plus_fee"
+    )
+    assert rule.cash_reservation.required_cash_fallback == "quantity_times_limit_price"
+    assert rule.cash_reservation.broker_orderable_unavailable_or_error == "FAIL_CLOSED"
+    assert rule.cash_reservation.cancel_proposal_cash_reservation == (
+        "KEEP_RESERVED_UNTIL_BROKER_TERMINAL_CONFIRMATION"
+    )
+
+    # §Q3 literal: the read-only triage consumer cannot release or rearm.
+    triage = rule.fill_triage
+    assert triage.on_first_confirmed_fill == "FREEZE_NEW_SUBMITS"
+    assert triage.cancellation_mode == "PROPOSAL_REQUIRES_APPROVAL"
+    assert triage.broker_cancel_confirmation_required_before_releasing_cash is True
+    assert triage.same_session_rearm is False
+    assert triage.unknown_or_ambiguous_order_state == "KEEP_RESERVED_AND_BLOCK"
+    assert triage.burst_key == ["broker_account_id", "currency", "market_session"]
+
+    # §Q4 literal: an add is full A_limit feasibility, not an undersized buy.
+    add = rule.add_candidate
+    assert add.r931_review_required == "PASS"
+    assert add.r931_review_max_age_days == 7
+    assert add.policy_table_max_age_hours == 36
+    assert add.k_used == 0.10
+    assert add.sizing_price == "proposed_limit_price"
+    assert add.partial_A_limit_fill == "FORBIDDEN"
+    assert add.max_add_symbols_per_market == 1
+    assert add.max_reserve_net_add_fills_per_symbol_per_policy_version == 1
+    assert add.same_day_rearm_after_fill is False
+    assert add.crash_day_averaging_exemption is False
+
+    prohibitions = rule.prohibitions
+    assert prohibitions.no_new_add_or_deep_limit_rung_overlap is True
+    assert prohibitions.aggregate_active_buy_by_beneficial_owner_across_accounts is True
+    assert prohibitions.fresh_cost_basis_quantity_and_A_limit_before_next_day_reissue
+    assert prohibitions.partial_A_limit_fill == "FORBIDDEN"
+    assert prohibitions.candidate_zero_runtime_gate_relaxation == "FORBIDDEN"
+    assert prohibitions.crash_day_averaging_exemption is False
+    assert prohibitions.cancel_proposal_is_not_broker_cancellation is True
+    assert prohibitions.unconfirmed_cancel_keeps_required_cash_reserved is True
+    assert prohibitions.market_order == "FORBIDDEN"
+    assert prohibitions.gtc == "FORBIDDEN"
+    assert prohibitions.multi_rung == "FORBIDDEN"
+    assert prohibitions.daily_regeneration == "REQUIRED"
+    assert rule.toss_live_approval == "HUMAN_APPROVAL_REQUIRED_UNTIL_VETO_WIRING"
+
+
+@pytest.mark.parametrize(
+    ("path", "mutant_value"),
+    [
+        (("honest_upside_pct_min",), 39),
+        (("independent_support_source_count_min",), 1),
+        (("final_limit_distance_from_current_pct_range",), [-15, -4]),
+        (("prohibitions", "candidate_zero_runtime_gate_relaxation"), "ALLOWED"),
+    ],
+)
+def test_support_reserve_net_rejects_candidate_zero_gate_relaxation(
+    path: tuple[str, ...], mutant_value: object
+):
+    """§Q4-5: candidate count zero never makes a runtime gate looser."""
+    raw = _raw()
+    target = raw["decision_rules"]["buy.support_reserve_net"]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = mutant_value
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_support_reserve_net_rejects_armed_cap_above_50_percent():
+    raw = _raw()
+    raw["decision_rules"]["buy.support_reserve_net"][
+        "tier_armed_required_cash_cap_pct"
+    ] = 51
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_support_reserve_net_rejects_clamping_an_out_of_band_anchor():
+    raw = _raw()
+    raw["decision_rules"]["buy.support_reserve_net"][
+        "final_limit_distance_out_of_range"
+    ] = "CLAMP"
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_support_reserve_net_rejects_partial_A_limit_fill():
+    raw = _raw()
+    raw["decision_rules"]["buy.support_reserve_net"]["add_candidate"][
+        "partial_A_limit_fill"
+    ] = "ALLOWED"
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_support_reserve_net_boundary_values_are_inclusive_and_exact():
+    rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
+        "buy.support_reserve_net"
+    ]
+    assert isinstance(rule, SupportReserveNetDecisionRule)
+    assert rule.tier_armed_required_cash_cap_pct == 50
+    assert rule.final_limit_distance_from_current_pct_range[0] == -15
+    assert rule.final_limit_distance_from_current_pct_range[1] == -5
+    assert rule.honest_upside_pct_min == 40
+
+
+def test_support_reserve_net_keeps_toss_outside_auto_veto_capable_combinations():
+    assert all(
+        account_mode != "toss_live" for account_mode, _ in _VETO_CAPABLE_ACCOUNT_MARKETS
+    )
 
 
 def test_single_share_exit_rule_is_provisional_shadow_only():

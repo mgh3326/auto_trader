@@ -16,7 +16,30 @@ async def test_get_trading_policy_returns_thresholds_and_version():
     assert out["version"] == policy_version_stamp()["version"]
     assert out["content_hash"]
     assert out["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
-    assert set(out["decision_rules"]) == set()
+    assert set(out["decision_rules"]) == {"buy.support_reserve_net"}
+    reserve = out["decision_rules"]["buy.support_reserve_net"]
+    assert reserve["eligible_only_when_regular_gate_failure"] == "RSI_ONLY"
+    assert reserve["honest_upside_reference"] == "decision_time_current_price"
+    assert reserve["discount_below_support_pct_range"] == [5, 10]
+    assert reserve["final_limit_distance_from_current_pct_range"] == [-15, -5]
+    assert reserve["final_limit_distance_out_of_range"] == "EXCLUDE"
+    assert reserve["tier_armed_required_cash_cap_pct"] == 50
+    assert reserve["unknown_sector"] == "INELIGIBLE"
+    assert reserve["cash_reservation"]["broker_orderable_unavailable_or_error"] == (
+        "FAIL_CLOSED"
+    )
+    assert reserve["fill_triage"] == {
+        "on_first_confirmed_fill": "FREEZE_NEW_SUBMITS",
+        "cancellation_mode": "PROPOSAL_REQUIRES_APPROVAL",
+        "broker_cancel_confirmation_required_before_releasing_cash": True,
+        "same_session_rearm": False,
+        "unknown_or_ambiguous_order_state": "KEEP_RESERVED_AND_BLOCK",
+        "burst_key": ["broker_account_id", "currency", "market_session"],
+    }
+    assert reserve["add_candidate"]["partial_A_limit_fill"] == "FORBIDDEN"
+    assert reserve["toss_live_approval"] == (
+        "HUMAN_APPROVAL_REQUIRED_UNTIL_VETO_WIRING"
+    )
 
 
 @pytest.mark.asyncio
