@@ -11,6 +11,8 @@ from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.auto_approve import (
     AutoApproveLimits,
     evaluate_auto_approve_eligibility,
+    find_approval_required_tags,
+    limits_for_market,
 )
 from app.services.order_proposals.service import RungInput
 
@@ -94,7 +96,12 @@ def test_sell_requires_distance_and_previewed_loss_guard():
         ({"order_type": "market"}, {}, "order_type_not_limit"),
         ({"action": "replace"}, {}, "action_not_place"),
         ({"action": "cancel"}, {}, "action_not_place"),
-        ({"exit_intent": "loss_cut"}, {"side": "sell"}, "exit_intent_present"),
+        ({"exit_intent": "loss_cut"}, {"side": "sell"}, "loss_cut_intent"),
+        (
+            {"exit_intent": "unknown_future_intent"},
+            {"side": "sell"},
+            "exit_intent_present",
+        ),
         ({"account_mode": "toss_live"}, {}, "account_not_veto_capable"),
         ({}, {"limit_price": Decimal("98000")}, "distance_below_minimum"),
         ({}, {"quantity": Decimal("3")}, "per_order_cap_exceeded"),
@@ -126,6 +133,411 @@ def test_daily_cap_one_unit_over_boundary_is_ineligible():
 
     assert decision.eligible is False
     assert decision.reason == "daily_cap_exceeded"
+
+
+# ---------------------------------------------------------------------------
+# AUTO-APPROVE-EXPAND (§40차) — expanded-mode classification
+# ---------------------------------------------------------------------------
+
+# Cost rate deliberately 200bps so the "net P&L exactly zero" boundary lands on
+# round numbers: net == 0 <=> limit * (1 - 0.02) == avg_buy_price.
+_EXPANDED = AutoApproveLimits(
+    min_distance_pct=Decimal("3"),
+    per_order_cap=Decimal("200000"),
+    daily_cap=Decimal("500000"),
+    policy_version="test-policy",
+    mode="expanded",
+    breakeven_band_pct=Decimal("1"),
+    round_trip_cost_bps=Decimal("200"),
+)
+
+
+def _evaluate(
+    *, limits=_EXPANDED, group_overrides=None, preview=None, **rung_overrides
+):
+    return evaluate_auto_approve_eligibility(
+        group=_group(**(group_overrides or {})),
+        rung=_rung(**rung_overrides),
+        preview=preview if preview is not None else {"success": True},
+        limits=limits,
+        daily_notional=Decimal("0"),
+    )
+
+
+def _sell_preview(*, current_price="100000", avg_buy_price="98000", **extra):
+    preview = {
+        "success": True,
+        "current_price": current_price,
+        "avg_buy_price": avg_buy_price,
+    }
+    preview.update(extra)
+    return preview
+
+
+def test_expanded_buy_inside_min_distance_is_eligible():
+    """§40차 ① — a buy no longer has to rest 3% away, only below the market."""
+    decision = _evaluate(
+        limit_price=Decimal("99500"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+
+    assert decision.eligible is True
+    assert decision.details["mode"] == "expanded"
+
+
+def test_off_mode_rejects_what_expanded_would_allow():
+    """Mutant ⑧ — the §40차 rules must not leak into the default mode."""
+    near_market_buy = {
+        "limit_price": Decimal("99500"),
+        "quantity": Decimal("1"),
+        "preview": {"success": True, "current_price": "100000"},
+    }
+    profitable_near_market_sell = {
+        "side": "sell",
+        "limit_price": Decimal("100500"),
+        "quantity": Decimal("1"),
+        "preview": _sell_preview(),
+    }
+
+    for kwargs in (near_market_buy, profitable_near_market_sell):
+        off = _evaluate(limits=_LIMITS, **kwargs)
+        expanded = _evaluate(**kwargs)
+
+        assert off.eligible is False
+        assert off.reason == "distance_below_minimum"
+        assert expanded.eligible is True
+
+
+def test_expanded_marketable_orders_keep_the_veto_button_meaningful():
+    buy = _evaluate(
+        limit_price=Decimal("100001"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+    sell = _evaluate(
+        side="sell",
+        limit_price=Decimal("99999"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(),
+    )
+
+    assert (buy.eligible, buy.reason) == (False, "marketable_not_resting")
+    assert (sell.eligible, sell.reason) == (False, "marketable_not_resting")
+
+
+def test_expanded_limit_exactly_on_the_market_is_marketable():
+    """A limit priced ON the market can fill before the card is seen."""
+    buy = _evaluate(
+        limit_price=Decimal("100000"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+    sell = _evaluate(
+        side="sell",
+        limit_price=Decimal("100000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(),
+    )
+
+    assert (buy.eligible, buy.reason) == (False, "marketable_not_resting")
+    assert (sell.eligible, sell.reason) == (False, "marketable_not_resting")
+
+
+def test_off_mode_keeps_its_non_strict_distance_boundary():
+    """ROB-871 boundary unchanged: exactly min_distance_pct away stays eligible."""
+    buy = _evaluate(
+        limits=_LIMITS,
+        limit_price=Decimal("97000"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+    sell = _evaluate(
+        limits=_LIMITS,
+        side="sell",
+        limit_price=Decimal("103000"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+
+    assert buy.eligible is True
+    assert sell.eligible is True
+
+
+def test_expanded_take_profit_sell_is_eligible():
+    """§40차 ② — profit proven at the limit price, net of round-trip cost."""
+    decision = _evaluate(
+        side="sell",
+        limit_price=Decimal("105000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(),
+    )
+
+    assert decision.eligible is True
+    assert decision.details["loss_guard"] == "net_profit_proven"
+    # gross 7000 - 105000 * 2% = 4900
+    assert decision.details["gross_pnl"] == "7000"
+    assert decision.details["round_trip_cost"] == "2100"
+    assert decision.details["net_pnl"] == "4900"
+
+
+def test_expanded_loss_cut_intent_never_auto_submits():
+    """Mutant ① — the highest-priority leak."""
+    decision = _evaluate(
+        group_overrides={"exit_intent": "loss_cut"},
+        side="sell",
+        limit_price=Decimal("105000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "loss_cut_intent"
+
+
+def test_expanded_sell_below_cost_is_not_auto_approved():
+    """Mutant ② — negative expected P&L, even with a passing preview."""
+    decision = _evaluate(
+        side="sell",
+        limit_price=Decimal("105000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(avg_buy_price="110000"),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "expected_pnl_not_positive"
+
+
+def test_expanded_net_pnl_exactly_zero_requires_approval():
+    """Mutant ③ — "> 0" excludes 0. 100000 * (1 - 2%) == 98000."""
+    at_zero = _evaluate(
+        side="sell",
+        limit_price=Decimal("100000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(current_price="99000"),
+    )
+    one_tick_above = _evaluate(
+        side="sell",
+        limit_price=Decimal("100001"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(current_price="99000"),
+    )
+
+    assert at_zero.details["net_pnl"] == "0"
+    assert at_zero.eligible is False
+    assert at_zero.reason == "expected_pnl_not_positive"
+    assert one_tick_above.eligible is True
+
+
+def test_expanded_fee_rate_is_charged_before_the_sign_test():
+    """A gross-positive sell that round-trip cost drags to <= 0 is not a profit."""
+    gross_only = (Decimal("100000") - Decimal("98000")) * Decimal("1")
+    decision = _evaluate(
+        side="sell",
+        limit_price=Decimal("100000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(current_price="99000"),
+    )
+
+    assert gross_only > 0
+    assert Decimal(decision.details["round_trip_cost"]) >= gross_only
+    assert decision.eligible is False
+
+
+def test_expanded_trusts_the_more_pessimistic_preview_pnl():
+    decision = _evaluate(
+        side="sell",
+        limit_price=Decimal("105000"),
+        quantity=Decimal("1"),
+        preview=_sell_preview(realized_pnl="1000"),
+    )
+
+    assert decision.details["gross_pnl"] == "1000"
+    assert decision.eligible is False
+    assert decision.reason == "expected_pnl_not_positive"
+
+
+@pytest.mark.parametrize(
+    ("limit_price", "current_price", "avg_buy_price"),
+    [
+        # +1% exactly above avg cost — the avg*1.01 guard's own boundary.
+        (Decimal("101000"), Decimal("100000"), "100000"),
+        # -1% exactly below avg cost, still resting above the market.
+        (Decimal("99000"), Decimal("98000"), "100000"),
+    ],
+)
+def test_expanded_breakeven_band_requires_approval(
+    limit_price, current_price, avg_buy_price
+):
+    """Mutant ④ — ±1% around cost is a human's call whatever the P&L sign."""
+    decision = _evaluate(
+        side="sell",
+        limit_price=limit_price,
+        quantity=Decimal("1"),
+        preview=_sell_preview(current_price=current_price, avg_buy_price=avg_buy_price),
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "breakeven_band"
+
+
+@pytest.mark.parametrize("mode_limits", [_LIMITS, _EXPANDED])
+@pytest.mark.parametrize(
+    "group_overrides",
+    [
+        {"rationale": {"tags": ["policy_deviation"]}},
+        {"rationale": {"decision": {"flags": ["table_disagreement"]}}},
+        {"thesis": "reviewed under Policy_Deviation waiver"},
+        {"source_asof": {"table_disagreement": True}},
+        {"lot_context": {"notes": ["table_disagreement"]}},
+    ],
+)
+def test_tagged_proposals_require_approval_in_every_mode(mode_limits, group_overrides):
+    """Mutant ⑤ — no pricing can buy a tagged proposal past the operator."""
+    decision = _evaluate(
+        limits=mode_limits,
+        group_overrides=group_overrides,
+        limit_price=Decimal("97000"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "approval_required_tag"
+
+
+def test_untagged_proposal_is_not_falsely_flagged():
+    assert find_approval_required_tags(_group(thesis="ordinary support retest")) == ()
+
+
+def test_unserializable_metadata_is_treated_as_tagged():
+    class _Hostile:
+        def __getattr__(self, name):
+            raise RuntimeError("metadata unavailable")
+
+    assert find_approval_required_tags(_Hostile()) == (
+        "policy_deviation",
+        "table_disagreement",
+    )
+
+
+@pytest.mark.parametrize(
+    ("preview_overrides", "expected_reason"),
+    [
+        ({"avg_buy_price": None}, "sell_classification_unavailable"),
+        ({"avg_buy_price": "0"}, "sell_classification_unavailable"),
+        ({"avg_buy_price": "not-a-number"}, "sell_classification_unavailable"),
+    ],
+)
+def test_expanded_unclassifiable_sell_fails_closed(preview_overrides, expected_reason):
+    """Mutant ⑥ — an unknown cost basis is not a clearance."""
+    preview = _sell_preview()
+    preview.update(preview_overrides)
+    decision = _evaluate(
+        side="sell",
+        limit_price=Decimal("105000"),
+        quantity=Decimal("1"),
+        preview=preview,
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == expected_reason
+
+
+def test_expanded_does_not_widen_the_eligible_account_set():
+    """Mutant ⑦ — §40차 must not hand auto-approval to a non-cancellable lane."""
+    for account_mode, market in (
+        ("toss_live", "equity_kr"),
+        ("kis_mock", "equity_kr"),
+        ("kiwoom_mock", "equity_kr"),
+        ("alpaca_paper", "equity_us"),
+    ):
+        decision = _evaluate(
+            group_overrides={"account_mode": account_mode, "market": market},
+            limit_price=Decimal("99500"),
+            quantity=Decimal("1"),
+            preview={"success": True, "current_price": "100000"},
+        )
+
+        assert decision.eligible is False
+        assert decision.reason == "account_not_veto_capable"
+
+
+def test_unknown_mode_fails_closed():
+    decision = _evaluate(
+        limits=AutoApproveLimits(
+            min_distance_pct=Decimal("3"),
+            per_order_cap=Decimal("200000"),
+            daily_cap=Decimal("500000"),
+            policy_version="test-policy",
+            mode="on",
+        ),
+        limit_price=Decimal("97000"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+
+    assert decision.eligible is False
+    assert decision.reason == "unknown_auto_approve_mode"
+
+
+def test_expanded_still_honours_the_existing_caps():
+    per_order = _evaluate(
+        limit_price=Decimal("99000"),
+        quantity=Decimal("3"),
+        preview={"success": True, "current_price": "100000"},
+    )
+    daily = evaluate_auto_approve_eligibility(
+        group=_group(),
+        rung=_rung(limit_price=Decimal("99000"), quantity=Decimal("1")),
+        preview={"success": True, "current_price": "100000"},
+        limits=_EXPANDED,
+        daily_notional=Decimal("401001"),
+    )
+
+    assert per_order.reason == "per_order_cap_exceeded"
+    assert daily.reason == "daily_cap_exceeded"
+
+
+def test_shipped_default_mode_is_off(monkeypatch):
+    """ENV_GATE — the repo ships the expansion inert."""
+    from app.core.config import Settings
+
+    assert Settings.model_fields["ORDER_PROPOSALS_AUTO_APPROVE_MODE"].default == "off"
+    assert limits_for_market("equity_kr").mode == "off"
+
+
+def test_policy_cost_rate_cannot_be_edited_below_the_code_floor(monkeypatch):
+    """FEE_RATE — a cheaper YAML must not widen the profit-take test."""
+    from app.services.order_proposals import auto_approve as module
+
+    cheap = SimpleNamespace(
+        version="probe",
+        order_proposals=SimpleNamespace(
+            auto_approve=SimpleNamespace(
+                min_distance_pct=3,
+                per_order_cap={"kr": 200000, "us": 150, "crypto": 100000},
+                daily_cap={"kr": 500000, "us": 400, "crypto": 300000},
+                breakeven_band_pct=1,
+                round_trip_cost_bps={"kr": 0, "us": 0, "crypto": 0},
+            )
+        ),
+    )
+    monkeypatch.setattr(module, "load_trading_policy", lambda: cheap)
+
+    assert limits_for_market("equity_kr").round_trip_cost_bps == Decimal("47.4")
+    assert limits_for_market("equity_us").round_trip_cost_bps == Decimal("90")
+    assert limits_for_market("crypto").round_trip_cost_bps == Decimal("10")
+
+
+def test_expanded_mode_flows_from_settings(monkeypatch):
+    from app.services.order_proposals import auto_approve as module
+
+    monkeypatch.setattr(
+        module.settings, "ORDER_PROPOSALS_AUTO_APPROVE_MODE", "expanded"
+    )
+
+    assert limits_for_market("equity_kr").mode == "expanded"
 
 
 @pytest.mark.asyncio
