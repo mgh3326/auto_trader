@@ -127,6 +127,13 @@ lanes:
    route has no `account_mode`, so it does not choose one reconcile tool.
 7. Foreign-cascade names (e.g. semis): no market order until **price band
    reached AND foreign selling stops** — until both, only a small deep rung.
+8. **Negative-class recording (ROB-712):** every reviewed-but-rejected candidate
+   leaves a `decision_bucket=deferred_no_action` item with `confidence` +
+   rejection reason, plus a resolvable `forecast_save(kind="price_target",
+   outcome_rule_version="window-touch-v1-high-gte-low-lte", …)`
+   (e.g. "no +X% within N days") so calibration isn't censored. The
+   `investment_report_create` response surfaces a `warnings` advisory when an
+   item is missing `confidence`.
 
 ### 1.1 `buy.support_reserve_net` — support reserve net consumer rules (operator §45/§46)
 
@@ -163,15 +170,22 @@ separately authorized runtime consumer exists.
    **fail-closed** for this tier. A cancel *proposal* leaves its cash reserved
    until broker terminal cancellation evidence exists. Automatic notional remains
    KRW 200,000 / USD 150; a larger amount in the existing band needs a human.
-4. **Add candidate:** only an R-931 `PASS` review no older than seven days and a
+4. **Allocation priority and tie-break:** apply this exact order.
+   1. 이미 active/resting인 동일 symbol을 먼저 dedupe한다.
+   2. 첫 슬롯은 eligible 신규 후보에 우선 배정한다.
+   3. 물타기는 R-931 재심사 PASS와 Q4의 `A_limit(10%)` 완전충족 조건을 모두 만족할 때만 두 번째 후보군에 들어간다. 시장당 물타기 심볼은 최대 1개다.
+   4. 같은 intent class 안에서는 `strong > moderate`, `3-source > 2-source`, 더 큰 honest upside, 더 작은 post-fill sector 증가, 더 작은 required cash 순으로 정렬한다. 완전 동률이면 신규가 물타기보다 먼저다.
+5. **Add candidate:** only an R-931 `PASS` review no older than seven days and a
    policy table no older than 36 hours may enter. Recalculate `A_limit(10%)` at
    `proposed_limit_price` with `k=0.10`; a partial `A_limit` fill is forbidden,
    as are a second add symbol in one market or a second reserve-net add fill for
-   the same symbol/policy version. Do not inherit the ordinary crash-day
+   the same symbol/policy version. `A_limit<=0` (already target met) is
+   **NO_ORDER**: never turn `ceil(0 / proposed_limit_price)=0` into a zero-quantity
+   order. Do not inherit the ordinary crash-day
    averaging exemption. Do not reissue next-day adds until fresh cost basis,
    quantity, and `A_limit` are available, and aggregate active buys across
    accounts by beneficial owner.
-5. **Confirmed-fill triage:** a confirmed broker fill takes an
+6. **Confirmed-fill triage:** a confirmed broker fill takes an
    account×currency triage lock, blocks every new reserve-net submit/rearm,
    coalesces same-batch fills by `[broker_account_id, currency, market_session]`,
    then rereads positions/cash/open orders. It emits approval-gated cancel
@@ -180,7 +194,7 @@ separately authorized runtime consumer exists.
    `unknown_or_ambiguous_order_state = KEEP_RESERVED_AND_BLOCK`; same-session
    rearm remains false. The ROB-755 command records this as a read-only proposal
    draft and does not persist or execute it.
-6. **Toss approval boundary:** until veto wiring and the two separate Toss
+7. **Toss approval boundary:** until veto wiring and the two separate Toss
    acceptance tests exist, **Toss 는 승인 카드 경유** only. `toss_live` is outside
    the auto-veto-capable combination list; do not treat this policy as an
    auto-approve expansion.
@@ -193,14 +207,6 @@ separately authorized runtime consumer exists.
 - sizing: 자동은 현행 20만원/$150만; 그 이상은 사람 승인. Toss는 veto wiring 전 전량 사람 승인.
 - fill: confirmed fill 즉시 신규 동결, cancel proposal 승인 경유, broker terminal 전 현금 해제 금지, same-session rearm 금지.
 - add: R-931 PASS, `A_limit(10%)` 완전충족, 부분 A 금지, policy version당 symbol 1회, crash-day 예외 없음.
-
-8. **Negative-class recording (ROB-712):** every reviewed-but-rejected candidate
-   leaves a `decision_bucket=deferred_no_action` item with `confidence` +
-   rejection reason, plus a resolvable `forecast_save(kind="price_target",
-   outcome_rule_version="window-touch-v1-high-gte-low-lte", …)`
-   (e.g. "no +X% within N days") so calibration isn't censored. The
-   `investment_report_create` response surfaces a `warnings` advisory when an
-   item is missing `confidence`.
 
 ```yaml
 # playbook-machine-readable: buy lane (ROB-649 source)

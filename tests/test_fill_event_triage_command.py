@@ -64,6 +64,9 @@ def test_runbook_keeps_reserve_net_triage_contract_only_and_toss_human_gated():
         "Toss 는 승인 카드 경유",
         "intentionally **not** in\nthis job",
         "automatic cancellation implemented here",
+        "TODO — future consumer job",
+        "promote the account×currency triage lock\n> to a durable lock",
+        "no automatic submission consumer exists today",
     ):
         assert token in body, f"runbook reserve-net 계약에 {token} 누락"
 

@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-08-12.2"
+version: "2026-08-12.3"
 captured_as_of: "2026-08-12"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation)"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change)"
 
 authority:
   scope: judgment_policy_only
@@ -298,11 +298,32 @@ decision_rules:
       policy_table_max_age_hours: 36
       k_used: 0.10
       sizing_price: proposed_limit_price
+      a_limit_lte_zero: NO_ORDER
       partial_A_limit_fill: FORBIDDEN
       max_add_symbols_per_market: 1
       max_reserve_net_add_fills_per_symbol_per_policy_version: 1
       same_day_rearm_after_fill: false
       crash_day_averaging_exemption: false
+    # §Q2 lines 82–87 — allocation order for constrained armed cash. This
+    # fixes new-entry precedence before an add can consume the first slot.
+    priority_rules:
+      allocation_order:
+        - dedupe_active_or_resting_same_symbol
+        - first_slot_eligible_new_candidate
+        - add_secondary_pool_only_after_r931_pass_and_full_a_limit_10
+      same_symbol_active_or_resting: DEDUPE_FIRST
+      first_slot: ELIGIBLE_NEW_CANDIDATE_FIRST
+      add_candidate_rank: SECONDARY_CANDIDATE_POOL
+      add_candidate_r931_review_required: PASS
+      add_candidate_a_limit_10: FULLY_SATISFIED
+      max_add_symbols_per_market: 1
+      same_intent_class_sort_order:
+        - support_strength_desc
+        - independent_support_source_count_desc
+        - honest_upside_pct_desc
+        - post_fill_sector_increase_asc
+        - required_cash_asc
+      exact_tie_break: NEW_BEFORE_ADD
     # §Q4 "must not" items 1–8, made machine-checkable as a contract.
     prohibitions:
       no_new_add_or_deep_limit_rung_overlap: true

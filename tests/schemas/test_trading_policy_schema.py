@@ -1,3 +1,4 @@
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 
 import pytest
@@ -147,11 +148,34 @@ def test_support_reserve_net_literal_policy_blocks_are_frozen():
     assert add.policy_table_max_age_hours == 36
     assert add.k_used == 0.10
     assert add.sizing_price == "proposed_limit_price"
+    assert add.a_limit_lte_zero == "NO_ORDER"
     assert add.partial_A_limit_fill == "FORBIDDEN"
     assert add.max_add_symbols_per_market == 1
     assert add.max_reserve_net_add_fills_per_symbol_per_policy_version == 1
     assert add.same_day_rearm_after_fill is False
     assert add.crash_day_averaging_exemption is False
+
+    # §Q2 lines 82–87: constrained cash is assigned in this exact order.
+    priority = rule.priority_rules
+    assert priority.allocation_order == [
+        "dedupe_active_or_resting_same_symbol",
+        "first_slot_eligible_new_candidate",
+        "add_secondary_pool_only_after_r931_pass_and_full_a_limit_10",
+    ]
+    assert priority.same_symbol_active_or_resting == "DEDUPE_FIRST"
+    assert priority.first_slot == "ELIGIBLE_NEW_CANDIDATE_FIRST"
+    assert priority.add_candidate_rank == "SECONDARY_CANDIDATE_POOL"
+    assert priority.add_candidate_r931_review_required == "PASS"
+    assert priority.add_candidate_a_limit_10 == "FULLY_SATISFIED"
+    assert priority.max_add_symbols_per_market == 1
+    assert priority.same_intent_class_sort_order == [
+        "support_strength_desc",
+        "independent_support_source_count_desc",
+        "honest_upside_pct_desc",
+        "post_fill_sector_increase_asc",
+        "required_cash_asc",
+    ]
+    assert priority.exact_tie_break == "NEW_BEFORE_ADD"
 
     prohibitions = rule.prohibitions
     assert prohibitions.no_new_add_or_deep_limit_rung_overlap is True
@@ -217,6 +241,67 @@ def test_support_reserve_net_rejects_partial_A_limit_fill():
     raw["decision_rules"]["buy.support_reserve_net"]["add_candidate"][
         "partial_A_limit_fill"
     ] = "ALLOWED"
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_support_reserve_net_a_limit_exactly_zero_is_no_order():
+    rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
+        "buy.support_reserve_net"
+    ]
+    assert isinstance(rule, SupportReserveNetDecisionRule)
+
+    a_limit = Decimal("0")
+    proposed_limit_price = Decimal("12345")
+    quantity_from_ceiling = (a_limit / proposed_limit_price).to_integral_value(
+        rounding=ROUND_CEILING
+    )
+    outcome = "NO_ORDER" if a_limit <= Decimal("0") else "ELIGIBLE_TO_SIZE"
+    proposed_order_quantity: Decimal | None = (
+        None if a_limit <= Decimal("0") else quantity_from_ceiling
+    )
+
+    # `ceil(0 / price) == 0` must never become a zero-quantity order.
+    assert quantity_from_ceiling == Decimal("0")
+    assert outcome == rule.add_candidate.a_limit_lte_zero
+    assert proposed_order_quantity is None
+
+
+@pytest.mark.parametrize(
+    ("path", "mutant_value"),
+    [
+        (("add_candidate", "a_limit_lte_zero"), "ALLOW_ZERO_QUANTITY_ORDER"),
+        (
+            ("priority_rules", "allocation_order"),
+            [
+                "first_slot_eligible_new_candidate",
+                "dedupe_active_or_resting_same_symbol",
+                "add_secondary_pool_only_after_r931_pass_and_full_a_limit_10",
+            ],
+        ),
+        (("priority_rules", "first_slot"), "ADD_CANDIDATE_FIRST"),
+        (
+            ("priority_rules", "same_intent_class_sort_order"),
+            [
+                "independent_support_source_count_desc",
+                "support_strength_desc",
+                "honest_upside_pct_desc",
+                "post_fill_sector_increase_asc",
+                "required_cash_asc",
+            ],
+        ),
+        (("priority_rules", "exact_tie_break"), "ADD_BEFORE_NEW"),
+    ],
+)
+def test_support_reserve_net_rejects_priority_or_zero_order_contract_mutation(
+    path: tuple[str, ...], mutant_value: object
+):
+    raw = _raw()
+    target = raw["decision_rules"]["buy.support_reserve_net"]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = mutant_value
 
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)

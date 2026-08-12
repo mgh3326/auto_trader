@@ -140,6 +140,7 @@ class SupportReserveNetAddCandidatePolicy(BaseModel):
     policy_table_max_age_hours: Literal[36]
     k_used: float
     sizing_price: Literal["proposed_limit_price"]
+    a_limit_lte_zero: Literal["NO_ORDER"]
     partial_A_limit_fill: Literal["FORBIDDEN"]
     max_add_symbols_per_market: Literal[1]
     max_reserve_net_add_fills_per_symbol_per_policy_version: Literal[1]
@@ -151,6 +152,52 @@ class SupportReserveNetAddCandidatePolicy(BaseModel):
     def validate_k_used(cls, value: float) -> float:
         if value != 0.10:
             raise ValueError("k_used must be 0.10")
+        return value
+
+
+class SupportReserveNetPriorityRules(BaseModel):
+    """Deterministic allocation order for the constrained reserve-net slots.
+
+    This remains a consumer contract only. A later authorized consumer must use
+    this order when selecting among otherwise eligible candidates.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    allocation_order: list[str]
+    same_symbol_active_or_resting: Literal["DEDUPE_FIRST"]
+    first_slot: Literal["ELIGIBLE_NEW_CANDIDATE_FIRST"]
+    add_candidate_rank: Literal["SECONDARY_CANDIDATE_POOL"]
+    add_candidate_r931_review_required: Literal["PASS"]
+    add_candidate_a_limit_10: Literal["FULLY_SATISFIED"]
+    max_add_symbols_per_market: Literal[1]
+    same_intent_class_sort_order: list[str]
+    exact_tie_break: Literal["NEW_BEFORE_ADD"]
+
+    @field_validator("allocation_order")
+    @classmethod
+    def validate_allocation_order(cls, value: list[str]) -> list[str]:
+        required = [
+            "dedupe_active_or_resting_same_symbol",
+            "first_slot_eligible_new_candidate",
+            "add_secondary_pool_only_after_r931_pass_and_full_a_limit_10",
+        ]
+        if value != required:
+            raise ValueError(f"allocation_order must be exactly {required}")
+        return value
+
+    @field_validator("same_intent_class_sort_order")
+    @classmethod
+    def validate_same_intent_class_sort_order(cls, value: list[str]) -> list[str]:
+        required = [
+            "support_strength_desc",
+            "independent_support_source_count_desc",
+            "honest_upside_pct_desc",
+            "post_fill_sector_increase_asc",
+            "required_cash_asc",
+        ]
+        if value != required:
+            raise ValueError(f"same_intent_class_sort_order must be exactly {required}")
         return value
 
 
@@ -211,6 +258,7 @@ class SupportReserveNetDecisionRule(BaseModel):
     cash_reservation: SupportReserveNetCashReservation
     fill_triage: SupportReserveNetFillTriagePolicy
     add_candidate: SupportReserveNetAddCandidatePolicy
+    priority_rules: SupportReserveNetPriorityRules
     prohibitions: SupportReserveNetProhibitions
     toss_live_approval: Literal["HUMAN_APPROVAL_REQUIRED_UNTIL_VETO_WIRING"]
 

@@ -130,6 +130,12 @@ broker cancellation. **Broker terminal confirmation is required before releasing
 cash.** Same-session rearm is false; a later observed fill while approval is
 pending remains in the same burst and keeps the block in place.
 
+> **TODO — future consumer job:** Before any automatic `support_reserve_net`
+> submit/rearm consumer is authorized, promote the account×currency triage lock
+> to a durable lock. This contract deliberately does not implement that
+> persistence: no automatic submission consumer exists today, so this logical
+> lock's non-durability cannot open an automated live-submission path.
+
 Toss is human approval only until veto wiring exists: **Toss 는 승인 카드 경유**.
 The two separate Toss acceptance tests — veto-to-real-cancel smoke and
 fill→freeze→cancel-proposal→approval→terminal E2E — are intentionally **not** in
