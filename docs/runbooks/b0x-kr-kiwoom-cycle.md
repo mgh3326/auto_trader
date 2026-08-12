@@ -6,7 +6,8 @@
 기본 지위는 **`OBSERVATION_DERIVATION_ONLY`**(preview)다. `--confirm` 단독은
 **`ACCEPTANCE_ONLY`** — 기존의 1건 submit→cancel→reconcile 검증 레버다.
 `--interim-ordering --confirm` 을 함께 명시한 경우만 **`INTERIM_ORDERING`** 으로
-전환해 envelope 파생 전건을 DAY 주문으로 남긴다. 위험한 쪽은 기본값이 아니다.
+전환해 envelope 파생 **매수** 전건을 DAY 주문으로 남긴다. 매도는 기본 ON인
+매수 전용 게이트가 제출 경계에서 차단한다. 위험한 쪽은 기본값이 아니다.
 
 ---
 
@@ -50,7 +51,8 @@
 | 세션 | KRX 정규장만 (`is_krx_regular_session`, XKRX 캘린더) |
 | envelope | §4 KR 열 **그대로 재사용** (`load_envelope("kr")`). 레인 전용 envelope 상수 없음 — 테스트가 강제 |
 | Acceptance 1건 한정 | `ACCEPTANCE_SUBMISSION_LIMIT = 1`, CLI/env override 없음. `--confirm` 단독에만 적용 |
-| Interim 전건 제출 | `--interim-ordering --confirm` 에서만 envelope 파생 전건 제출. 별도 제출 상한/CLI/env override 없음 — §4 30만·동시 10·일신규 3이 파생 단계에서 계속 강제 |
+| Interim 매수 전건 제출 | `--interim-ordering --confirm` 에서만 envelope 파생 매수 leg 전건 제출. 별도 제출 상한/CLI/env override 없음 — §4 30만·동시 10·일신규 3이 파생 단계에서 계속 강제 |
+| Interim 매수 전용 | 매도 leg는 파생되더라도 제출 경계의 `interim_buy_only_sell_gate`가 차단하고 artifact에 사유를 남긴다. 기본 ON이며 CLI/env 해제 경로 없음; 명시 운영자 승인 또는 B-track merge 전까지 유지 |
 | Acceptance 왕복 강제 | `--no-cancel` 같은 플래그가 **존재하지 않는다**. `ACCEPTANCE_ONLY` 취소 미확인 = `RoundTripIncomplete` + exit 2 |
 | DAY 주문 잔존 | `INTERIM_ORDERING` 은 즉시 취소하지 않는다. `submitted` 는 접수/주문번호 증거만 뜻하고 filled를 뜻하지 않는다 |
 | halted | 표가 이미 제외(ROB-1236). 레인이 `universe.halted_suspect` 를 두 번째 선으로 재검사 |
@@ -146,7 +148,8 @@ B0X_KR_KIWOOM_ENABLED=true uv run python -m scripts.run_b0x_kr_kiwoom_cycle \
     --table-dir ~/services/auto_trader-operator/policy-tables --confirm
 
 # ④ INTERIM_ORDERING — 이중 명시가 있어야만 DAY 주문을 남긴다.
-#    §4 envelope 파생 전건만 제출하며, 자동 취소하지 않는다.
+#    §4 envelope 파생 매수 leg 전건만 제출하며, 자동 취소하지 않는다.
+#    매도 leg는 기본 ON 매수 전용 게이트가 명시 사유와 함께 차단한다.
 B0X_KR_KIWOOM_ENABLED=true uv run python -m scripts.run_b0x_kr_kiwoom_cycle \
     --table-dir ~/services/auto_trader-operator/policy-tables \
     --interim-ordering --confirm

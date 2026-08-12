@@ -116,6 +116,17 @@ PREVIEW_STATUS: Final[str] = "OBSERVATION_DERIVATION_ONLY"
 ACCEPTANCE_ONLY_STATUS: Final[str] = "ACCEPTANCE_ONLY"
 INTERIM_ORDERING_STATUS: Final[str] = "INTERIM_ORDERING"
 
+#: §50차 2항: first INTERIM sessions are deliberately buy-only. This is a
+#: code-level default, not a CLI/environment dial; lifting it needs explicit
+#: operator approval or the B-track's proper sell path.
+INTERIM_BUY_ONLY_SELL_GATE_ENABLED: Final[bool] = True
+INTERIM_BUY_ONLY_SELL_GATE_REASON: Final[str] = "interim_buy_only_sell_gate"
+INTERIM_BUY_ONLY_SELL_GATE_DETAIL: Final[str] = (
+    "INTERIM_ORDERING first sessions are buy-only; sell submission is blocked "
+    "until explicit operator approval or B-track merge"
+)
+INTERIM_BUY_ONLY_CONSTRAINT: Final[str] = "매수 전용(매도 게이트 ON)"
+
 PREVIEW_STATUS_LABEL: Final[str] = (
     "OBSERVATION_DERIVATION_ONLY — kiwoom_mock cycle 지위는 유지된다. 이 수동 mock "
     "acceptance lever는 모의 자동매매 가동 선언이나 스케줄러가 아니다."
@@ -137,7 +148,7 @@ INTERIM_ORDERING_STATUS_LABEL: Final[str] = (
     "INTERIM_ORDERING — kiwoom_mock 한시 DAY 주문 잔존 모드. 제약: 일손실 kill "
     "미배선(realized_pnl_today 소스 없음 → −2.5% NAV kill 발화 불가); 공존 계좌 "
     "TOCTOU 잔존(KR-B1 foreign trace는 착수 preflight 1회); kiwoom 한정; "
-    "KRX RTH only."
+    "KRX RTH only; 매수 전용(매도 게이트 ON)."
 )
 
 INTERIM_ORDERING_CONSTRAINTS: Final[dict[str, str]] = {
@@ -149,6 +160,7 @@ INTERIM_ORDERING_CONSTRAINTS: Final[dict[str, str]] = {
     ),
     "venue": "kiwoom 한정",
     "session": "KRX RTH only",
+    "buy_only": INTERIM_BUY_ONLY_CONSTRAINT,
 }
 
 #: This account is not B0-X's alone, and the artifact must say so every time.
@@ -815,6 +827,22 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — linear cycle script, kept fl
                 )
                 record["submission_stopped"] = "sell_leg_not_wired"
                 break
+            if INTERIM_BUY_ONLY_SELL_GATE_ENABLED:
+                # §50차 2항: preserve the sell wiring and its own-attribution
+                # check above, but keep first INTERIM sessions buy-only at the
+                # final submission boundary. The artifact must name every
+                # suppressed sell; a quiet ``continue`` would be unauditable.
+                record.setdefault("submission_blocked", []).append(
+                    {
+                        "symbol": order.symbol,
+                        "correlation_id": order.client_order_id,
+                        "side": order.side,
+                        "leg": order.leg,
+                        "reason": INTERIM_BUY_ONLY_SELL_GATE_REASON,
+                        "detail": INTERIM_BUY_ONLY_SELL_GATE_DETAIL,
+                    }
+                )
+                continue
 
         if order.symbol in halted:
             record.setdefault("submission_blocked", []).append(
@@ -970,6 +998,13 @@ def _stamp_contract_and_account_map(
     record["cycle_status_label"] = status_label
     if cycle_status == INTERIM_ORDERING_STATUS:
         record["interim_ordering_constraints"] = dict(INTERIM_ORDERING_CONSTRAINTS)
+        record["interim_buy_only_sell_gate"] = {
+            "enabled": INTERIM_BUY_ONLY_SELL_GATE_ENABLED,
+            "reason_code": INTERIM_BUY_ONLY_SELL_GATE_REASON,
+            "scope": "submission_stage_sell_legs",
+            "cli_disable_available": False,
+            "release": "explicit_operator_approval_or_b_track_merge",
+        }
 
 
 async def run_kiwoom_cycle(
@@ -1128,6 +1163,10 @@ __all__ = [
     "PREVIEW_STATUS",
     "ACCEPTANCE_ONLY_STATUS",
     "INTERIM_ORDERING_STATUS",
+    "INTERIM_BUY_ONLY_SELL_GATE_ENABLED",
+    "INTERIM_BUY_ONLY_SELL_GATE_REASON",
+    "INTERIM_BUY_ONLY_SELL_GATE_DETAIL",
+    "INTERIM_BUY_ONLY_CONSTRAINT",
     "OUTSIDE_RTH_REASON",
     "PREFLIGHT_MAX_AGE_SECONDS",
     "ACCEPTANCE_SUBMISSION_LIMIT",

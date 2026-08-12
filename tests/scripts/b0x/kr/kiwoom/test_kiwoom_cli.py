@@ -20,6 +20,17 @@ def test_cli_defaults_to_preview_and_preserves_acceptance_form() -> None:
     assert acceptance.interim_ordering is False
     assert interim.confirm is True
     assert interim.interim_ordering is True
+    # A sell-gate override would necessarily add a parser destination. There
+    # is deliberately no CLI release path for the default-on INTERIM gate.
+    assert set(vars(interim)) == {
+        "table_dir",
+        "out_dir",
+        "readiness",
+        "confirm",
+        "interim_ordering",
+        "now",
+        "json",
+    }
 
 
 @pytest.mark.asyncio

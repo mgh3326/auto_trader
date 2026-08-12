@@ -16,10 +16,11 @@
 
 ``--confirm`` alone is ``ACCEPTANCE_ONLY``: one submit followed by broker-proven
 cancel. ``--interim-ordering --confirm`` is ``INTERIM_ORDERING``: it submits
-every envelope-derived DAY order and deliberately does not auto-cancel. Both
-are default-disabled, cannot be combined with ``--now``, and expose no envelope
-override. The §4 caps are module constants in ``scripts.b0x.envelope``,
-re-asserted before every read.
+every eligible envelope-derived **buy** DAY order and deliberately does not
+auto-cancel. Sell wiring remains behind a default-on, non-CLI buy-only gate
+until explicit approval or B-track merge. Both are default-disabled, cannot be
+combined with ``--now``, and expose no envelope override. The §4 caps are
+module constants in ``scripts.b0x.envelope``, re-asserted before every read.
 
 🔴 There is no ``--no-cancel`` for acceptance. The cancellation it requires
 must be broker-proven or exits ``2``; that safe acceptance behavior is not

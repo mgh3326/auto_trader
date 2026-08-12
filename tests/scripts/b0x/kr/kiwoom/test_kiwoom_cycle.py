@@ -35,6 +35,8 @@ def _write_table(
     generated_at: dt.datetime,
     symbols: tuple[str, ...] = ("005930",),
     halted: list[str] | None = None,
+    buy_l1: str | None = "70000",
+    sell_r1: str | None = None,
 ) -> None:
     """Write a real, hash-valid ``policy_table.v1`` for the KR market.
 
@@ -45,7 +47,12 @@ def _write_table(
 
     payload = make_payload(
         rows=[
-            make_row(symbol=symbol, previous_close="72000.00", buy_l1="70000.00")
+            make_row(
+                symbol=symbol,
+                previous_close="72000.00",
+                buy_l1=buy_l1,
+                sell_r1=sell_r1,
+            )
             for symbol in symbols
         ],
         generated_at=generated_at,
@@ -445,6 +452,72 @@ async def test_interim_ordering_submits_every_envelope_derived_day_order_without
     )
     assert "acceptance_submission_limit" not in outcome.record
     assert outcome.record["day_order_policy"] == kiwoom_cycle.DAY_ORDER_RETAINED_NOTE
+
+
+@pytest.mark.asyncio
+async def test_interim_buy_only_sell_gate_blocks_derived_sell_with_audit_reason(
+    table_dir, out_dir, armed, monkeypatch
+) -> None:  # noqa: ANN001, ARG001
+    """§50차 2항: a valid derived sell is visible but cannot reach Kiwoom."""
+
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        buy_l1=None,
+        sell_r1="80000.00",
+    )
+    own_attribution = kr_attribution.OwnFillAttribution(
+        lots=(
+            kr_attribution.AttributedLot(
+                symbol="005930",
+                quantity=Decimal("10"),
+                average_price=Decimal("70000"),
+                buy_fill_rows=1,
+                sell_rows=0,
+            ),
+        )
+    )
+
+    async def _read_own_attribution(**_kwargs):  # noqa: ANN003, ANN202
+        return own_attribution
+
+    monkeypatch.setattr(kiwoom_attr, "read_own_attribution", _read_own_attribution)
+    account = FakeAccount(positions=(position("005930", 10, average_price=70_000),))
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        interim_ordering=True,
+    )
+
+    assert outcome.exit_code == 0
+    assert outcome.derivation is not None
+    assert [order.side for order in outcome.derivation.orders] == ["sell"]
+    assert [order["side"] for order in outcome.record["planned"]] == ["sell"]
+    # Keep this assertion before the artifact checks: disabling the gate must
+    # prove that the sell reached the fake venue, rather than only changing a
+    # descriptive field.
+    assert account.sell_calls == []
+    assert account.buy_calls == []
+    assert outcome.record["day_orders"] == []
+    assert outcome.record["submitted"] == []
+    assert outcome.record["interim_buy_only_sell_gate"] == {
+        "enabled": True,
+        "reason_code": "interim_buy_only_sell_gate",
+        "scope": "submission_stage_sell_legs",
+        "cli_disable_available": False,
+        "release": "explicit_operator_approval_or_b_track_merge",
+    }
+    blocked = outcome.record["submission_blocked"]
+    assert [(item["side"], item["leg"], item["reason"]) for item in blocked] == [
+        ("sell", "sell_r1", "interim_buy_only_sell_gate")
+    ]
+    assert blocked[0]["detail"] == kiwoom_cycle.INTERIM_BUY_ONLY_SELL_GATE_DETAIL
+    assert kiwoom_cycle.INTERIM_BUY_ONLY_SELL_GATE_ENABLED is True
+    assert outcome.record["interim_ordering_constraints"]["buy_only"] == (
+        "매수 전용(매도 게이트 ON)"
+    )
 
 
 @pytest.mark.asyncio
