@@ -100,6 +100,28 @@ async def test_get_trading_policy_returns_sell_trim_preplace_rule():
     )
     assert tiers["ultra_near_resistance"]["conditions"]["resistance_near_pct_max"] == 2
     assert tiers["watch_zone"]["action"] == "register_watch"
+    reserve_trim = tiers["sell.breakeven_reserve_trim"]
+    assert reserve_trim["conditions"]["anchor_operator"] == "max"
+    assert reserve_trim["conditions"]["anchor_operands"] == [
+        "average_cost_times_loss_guard",
+        "d7_compliant_lowest_price",
+    ]
+    assert (
+        reserve_trim["conditions"]["d7_min_expected_net_realized_gain_krw_policy_key"]
+        == "sell.trim_min_expected_net_realized_gain_krw"
+    )
+    assert reserve_trim["conditions"]["regeneration"] == "daily_rep"
+    assert (
+        reserve_trim["conditions"]["submission_contract"]
+        == "section_40_auto_approve_with_veto"
+    )
+    assert reserve_trim["conditions"]["watch_fallback"] == "anchor_uncomputable_only"
+    assert reserve_trim["conditions"]["advisory"] is True
+    assert reserve_trim["action"] == "preplace_resting_breakeven_reserve_trim"
+    assert reserve_trim["sizing"] == "existing_trim_rule"
+    assert rule["tie_breaks"]["tier_priority"].startswith(
+        "de_minimis_trim_watch > sell.breakeven_reserve_trim >"
+    )
     assert "single_share_position" not in rule["exclusions"]
     single_share = out["decision_rules"]["sell.single_share_exit"]
     assert single_share["activation_state"] == "shadow"

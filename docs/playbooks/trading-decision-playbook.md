@@ -257,6 +257,24 @@ lanes:
      RSI-neutral 2-6% resistance becomes a system watch. In this conflict,
      `sell.upside_place_max_pct` limits trim size rather than blocking
      pre-placement eligibility.
+   - **Breakeven reserve trim (§44차)** = before the regular resistance tiers,
+     consume `sell.breakeven_reserve_trim` for a lot whose P&L (current price
+     versus average cost) is at or above
+     `-sell.breakeven_near_pct` and whose current-price multiple is strictly
+     below `sell.loss_guard_min_multiple`. Calculate the resting-limit anchor as
+     `max(average_cost × sell.loss_guard_min_multiple, D7-compliant lowest
+     price)`, where the D7 price is the lowest price at which **one share** has
+     expected net realized gain at or above
+     `sell.trim_min_expected_net_realized_gain_krw` after estimated fees and
+     taxes. Use the existing trim sizing rule unchanged. The resulting DAY limit
+     is the §40 auto-submit + veto-card contract for this advisory tier; actual
+     dispatch still follows the runtime `approval_dispatch` truth.
+   - If either anchor operand cannot be calculated, register the tier's WATCH
+     fallback only; do not invent a local anchor or use WATCH as a substitute
+     for a calculated reserve trim. Regenerate the eligible resting DAY limit
+     on **every daily rep** so a prior day's expiry never leaves the reserve net
+     dead. The lower P&L boundary (exactly −2% at the current policy value) is
+     included; the exact loss-guard multiple is excluded.
 4. Build the sell-into-strength **split ladder** just under resistance.
    [ROB-477](https://linear.app/mgh3326/issue/ROB-477) requires a bottom-anchor
    rung; run the pure `sell_ladder_fill_preview` fill-safety check **before**

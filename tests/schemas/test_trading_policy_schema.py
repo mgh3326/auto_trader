@@ -20,6 +20,64 @@ def _raw() -> dict:
     return yaml.safe_load(_CONFIG.read_text(encoding="utf-8"))
 
 
+def _breakeven_reserve_trim_tier():
+    rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
+        "sell.trim_preplace"
+    ]
+    return next(tier for tier in rule.tiers if tier.id == "sell.breakeven_reserve_trim")
+
+
+def _threshold_decimal(doc: TradingPolicyDocument, key: str) -> Decimal:
+    return Decimal(str(doc.thresholds[key].value))
+
+
+def _breakeven_reserve_trim_anchor(
+    tier,
+    *,
+    average_cost: Decimal,
+    d7_compliant_lowest_price: Decimal,
+) -> Decimal:
+    """Test-only interpreter for the declarative advisory anchor contract."""
+
+    conditions = tier.conditions
+    guard = _threshold_decimal(
+        TradingPolicyDocument.model_validate(_raw()),
+        str(conditions["anchor_guard_policy_key"]),
+    )
+    operands = {
+        "average_cost_times_loss_guard": average_cost * guard,
+        "d7_compliant_lowest_price": d7_compliant_lowest_price,
+    }
+    resolved = [operands[str(name)] for name in conditions["anchor_operands"]]
+    operator = conditions["anchor_operator"]
+    if operator == "max":
+        return max(resolved)
+    if operator == "min":
+        return min(resolved)
+    raise AssertionError(f"unsupported advisory anchor operator: {operator!r}")
+
+
+def _breakeven_reserve_trim_triggered(
+    tier,
+    *,
+    pnl_pct: Decimal,
+    current_price_multiple: Decimal,
+) -> bool:
+    """Test-only interpreter for the declarative pre-guard trigger band."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    conditions = tier.conditions
+    lower_bound = -_threshold_decimal(
+        doc,
+        str(conditions["lot_pnl_pct_min_inclusive_negated_policy_key"]),
+    )
+    guard = _threshold_decimal(
+        doc,
+        str(conditions["lot_pre_guard_average_cost_multiple_max_exclusive_policy_key"]),
+    )
+    return pnl_pct >= lower_bound and current_price_multiple < guard
+
+
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
@@ -61,6 +119,7 @@ def test_shipped_config_validates():
     assert trim_rule.lanes == ["sell"]
     assert [tier.id for tier in trim_rule.tiers] == [
         "de_minimis_trim_watch",
+        "sell.breakeven_reserve_trim",
         "single_share_full_exit_review",
         "momentum_spike_profit_ladder",
         "rsi_confirmed_resistance",
@@ -68,10 +127,11 @@ def test_shipped_config_validates():
         "watch_zone",
     ]
     assert trim_rule.tiers[0].action == "register_watch_instead_of_trim"
-    assert trim_rule.tiers[1].sizing == "full_position"
-    assert trim_rule.tiers[2].conditions["rsi_gate_exempt"] is True
-    assert trim_rule.tiers[2].conditions["ladder_total_position_pct_max"] == 33.3333
-    assert trim_rule.tiers[4].conditions["resistance_near_pct_max"] == 2
+    assert trim_rule.tiers[1].sizing == "existing_trim_rule"
+    assert trim_rule.tiers[2].sizing == "full_position"
+    assert trim_rule.tiers[3].conditions["rsi_gate_exempt"] is True
+    assert trim_rule.tiers[3].conditions["ladder_total_position_pct_max"] == 33.3333
+    assert trim_rule.tiers[5].conditions["resistance_near_pct_max"] == 2
     assert trim_rule.tie_breaks["multiple_tiers_matched"] == (
         "first_matching_tier_wins"
     )
@@ -322,6 +382,117 @@ def test_support_reserve_net_keeps_toss_outside_auto_veto_capable_combinations()
     assert all(
         account_mode != "toss_live" for account_mode, _ in _VETO_CAPABLE_ACCOUNT_MARKETS
     )
+
+
+
+
+def test_breakeven_reserve_trim_policy_contract_is_machine_readable():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    rule = doc.decision_rules["sell.trim_preplace"]
+    tier = _breakeven_reserve_trim_tier()
+
+    assert [candidate.id for candidate in rule.tiers] == [
+        "de_minimis_trim_watch",
+        "sell.breakeven_reserve_trim",
+        "single_share_full_exit_review",
+        "momentum_spike_profit_ladder",
+        "rsi_confirmed_resistance",
+        "ultra_near_resistance",
+        "watch_zone",
+    ]
+    assert tier.conditions == {
+        "markets": ["kr", "us", "crypto"],
+        "lot_pnl_basis": "current_price_vs_average_cost",
+        "lot_pnl_pct_min_inclusive_negated_policy_key": ("sell.breakeven_near_pct"),
+        "lot_pre_guard_average_cost_multiple_max_exclusive_policy_key": (
+            "sell.loss_guard_min_multiple"
+        ),
+        "anchor_operator": "max",
+        "anchor_operands": [
+            "average_cost_times_loss_guard",
+            "d7_compliant_lowest_price",
+        ],
+        "anchor_guard_policy_key": "sell.loss_guard_min_multiple",
+        "d7_min_expected_net_realized_gain_krw_policy_key": (
+            "sell.trim_min_expected_net_realized_gain_krw"
+        ),
+        "d7_minimum_price_basis": (
+            "one_share_expected_net_realized_gain_after_estimated_fees_and_taxes"
+        ),
+        "resting_limit_order": True,
+        "time_in_force": "DAY",
+        "regeneration": "daily_rep",
+        "day_expiry_policy_key": "order.day_expiry_kst",
+        "submission_contract": "section_40_auto_approve_with_veto",
+        "watch_fallback": "anchor_uncomputable_only",
+        "advisory": True,
+    }
+    assert tier.action == "preplace_resting_breakeven_reserve_trim"
+    assert tier.sizing == "existing_trim_rule"
+    assert rule.tie_breaks["tier_priority"] == (
+        "de_minimis_trim_watch > sell.breakeven_reserve_trim > "
+        "single_share_full_exit_review > momentum_spike_profit_ladder > "
+        "rsi_confirmed_resistance > ultra_near_resistance > watch_zone"
+    )
+    assert _threshold_decimal(doc, "sell.loss_guard_min_multiple") == Decimal("1.01")
+    assert _threshold_decimal(doc, "sell.breakeven_near_pct") == Decimal("2")
+    assert _threshold_decimal(
+        doc, "sell.trim_min_expected_net_realized_gain_krw"
+    ) == Decimal("5000")
+
+
+def test_breakeven_reserve_trim_trigger_band_is_lower_inclusive_and_pre_guard():
+    tier = _breakeven_reserve_trim_tier()
+
+    assert _breakeven_reserve_trim_triggered(
+        tier,
+        pnl_pct=Decimal("-2"),
+        current_price_multiple=Decimal("0.98"),
+    )
+    assert _breakeven_reserve_trim_triggered(
+        tier,
+        pnl_pct=Decimal("0.9999"),
+        current_price_multiple=Decimal("1.009999"),
+    )
+    assert not _breakeven_reserve_trim_triggered(
+        tier,
+        pnl_pct=Decimal("-2.0001"),
+        current_price_multiple=Decimal("0.979999"),
+    )
+    assert not _breakeven_reserve_trim_triggered(
+        tier,
+        pnl_pct=Decimal("1"),
+        current_price_multiple=Decimal("1.01"),
+    )
+
+
+def test_breakeven_reserve_trim_anchor_never_below_guard_floor():
+    tier = _breakeven_reserve_trim_tier()
+    average_cost = Decimal("100")
+    guard_floor = Decimal("101")
+
+    anchor = _breakeven_reserve_trim_anchor(
+        tier,
+        average_cost=average_cost,
+        d7_compliant_lowest_price=Decimal("100.50"),
+    )
+
+    assert anchor >= guard_floor
+    assert anchor == guard_floor
+
+
+def test_breakeven_reserve_trim_anchor_never_below_d7_floor():
+    tier = _breakeven_reserve_trim_tier()
+    d7_compliant_lowest_price = Decimal("105")
+
+    anchor = _breakeven_reserve_trim_anchor(
+        tier,
+        average_cost=Decimal("100"),
+        d7_compliant_lowest_price=d7_compliant_lowest_price,
+    )
+
+    assert anchor >= d7_compliant_lowest_price
+    assert anchor == d7_compliant_lowest_price
 
 
 def test_single_share_exit_rule_is_provisional_shadow_only():
