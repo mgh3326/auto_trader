@@ -15,9 +15,9 @@ functions are used). Never merges, never places or cancels an order.
 
 Usage
 -----
-    uv run python -m scripts.build_policy_table --market crypto
-    uv run python -m scripts.build_policy_table --market kr
-    uv run python -m scripts.build_policy_table --market us
+    uv run python -m scripts.build_policy_table --market crypto --out-dir /path/to/policy-tables
+    uv run python -m scripts.build_policy_table --market kr --out-dir /path/to/policy-tables
+    uv run python -m scripts.build_policy_table --market us --out-dir /path/to/policy-tables
 
     # Reproducibility check (ROB-1230 acceptance #2): dump raw inputs once,
     # then replay the same inputs through the pure compute+serialize path
@@ -48,7 +48,12 @@ from scripts.policy_table.core.schema import (
     sha256_of_bytes,
 )
 
-DEFAULT_OUT_DIR = Path.home() / "services" / "auto_trader-operator" / "policy-tables"
+#: The canonical path used by the Prefect table-build flows.  It is deliberately
+#: not a CLI default: writing into the shared operator checkout requires an
+#: explicit ``--out-dir`` at each invocation.
+OPERATOR_POLICY_TABLE_DIR = (
+    Path.home() / "services" / "auto_trader-operator" / "policy-tables"
+)
 
 # The exact D3 engine module files this job reuses (not reimplements). Their
 # content hashes are stamped into every artifact so a reviewer can confirm
@@ -272,7 +277,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "cap (default 50) — the JSON table itself is never top-N-capped"
         ),
     )
-    parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
+    parser.add_argument(
+        "--out-dir",
+        required=True,
+        help=(
+            "output directory (required; pass the Prefect-owned "
+            f"{OPERATOR_POLICY_TABLE_DIR} explicitly when that shared checkout "
+            "is the intended destination)"
+        ),
+    )
     parser.add_argument(
         "--dump-raw", default=None, help="write fetched raw inputs to this path"
     )

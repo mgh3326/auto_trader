@@ -156,13 +156,18 @@ def render_cycle_report(record: dict[str, Any], *, labels: tuple[str, ...]) -> s
         ]
     contract = record.get("contract") or {}
     account_map = record.get("account_map") or {}
+    account_map_line = (
+        f"account map: `{account_map.get('repo', '-')}@"
+        f"{account_map.get('commit', '-')}` "
+        f"canonical=`{account_map.get('canonical_surface', '-')}`"
+    )
+    if reason := account_map.get("commit_reason"):
+        account_map_line += f" reason=`{reason}`"
     lines += [
         f"contract: `{contract.get('version', '-')}` "
         f"({', '.join(contract.get('clauses') or {}) or '-'}) · "
         f"file sha256 (reference only): `{contract.get('file_sha256_reference_only', '-')}`",
-        f"account map: `{account_map.get('repo', '-')}@"
-        f"{account_map.get('commit', '-')}` "
-        f"canonical=`{account_map.get('canonical_surface', '-')}`",
+        account_map_line,
     ]
     if record.get("sidecar_scope"):
         lines.append(f"sidecar scope: `{record['sidecar_scope']}`")

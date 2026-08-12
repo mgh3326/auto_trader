@@ -29,35 +29,39 @@ the coupling the digest was failing to provide.
 
 from __future__ import annotations
 
+import re
+import subprocess
+from pathlib import Path
 from typing import Any, Final
 
 CONTRACT_PATH: Final[str] = "~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md"
 
 #: Binding identity. Bump together with the clauses below.
-CONTRACT_VERSION: Final[str] = "v1.4"
+CONTRACT_VERSION: Final[str] = "v1.7"
 
 #: Provenance only — NOT a drift criterion. See the module docstring.
 CONTRACT_FILE_SHA256_REFERENCE_ONLY: Final[str] = (
-    "bce7104bd1a3f36a253baecc05d8bc960ad1c41a82de4c345d6659320ad1f5f8"
+    "0d09e1ce4d175da75de17958880491965ea6cae8d13764853f23fbc0348f596a"
 )
 
-#: Verbatim §8 v1.4 clauses this package implements.
+#: Verbatim §8 v1.7 amendment this package records.
 CONTRACT_CLAUSES: Final[dict[str, str]] = {
-    "§8 v1.4 ②": (
-        "관측 산출물에 **`SHARED_ACCOUNT_HISTORY` 라벨** 부착(**과거 dust·사고 "
-        "이력 계좌**)."
-    ),
-    "§8 v1.4 ③": (
-        "writer=1 문언 정합: 「B0-X 측 단일 writer + 계좌 배타성은 운영 "
-        "조치(disarm)로 확보, 방어는 오염 게이트의 fail-closed 관측」."
+    "§8 v1.7": (
+        "「스케줄러 등록 없음」 개정 — **스케줄러 (Prefect)는 시각만 소유한다**: "
+        "표 빌드 실행(KR 07:45·US 22:00)과 orch 기상 nudge(사이클 슬롯)에 한정. "
+        "전략 판단·주문 파생·dispatch·워커 실행은 불변(orch/워커 소유, "
+        "harvest-before-dispatch 유지). 근거 = 수동 원샷 장전 누락 4회 실측. "
+        "실행 표면·envelope·승격 절차 무변경."
     ),
 }
 
 #: Account map — the machine-readable surface is canonical (v1.3 ①).
 ACCOUNT_MAP_REPO: Final[str] = "auto_trader-operator"
-ACCOUNT_MAP_COMMIT: Final[str] = "3f402919fca5b68bda187e8e521fc886aefb022a"
+ACCOUNT_MAP_REPO_PATH: Final[Path] = Path.home() / "services" / ACCOUNT_MAP_REPO
+ACCOUNT_MAP_COMMIT_UNAVAILABLE: Final[str] = "UNAVAILABLE"
 ACCOUNT_MAP_CANONICAL_SURFACE: Final[str] = "operator_contract.yaml"
 ACCOUNT_MAP_REFERENCE_SURFACE: Final[str] = "mock/CLAUDE.md"
+_GIT_COMMIT_RE: Final[re.Pattern[str]] = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 
 #: Sidecar lane standing, narrowed by v1.3 ②. Stamped on sidecar artifacts so
 #: a reader cannot mistake a buy-side fill-fidelity sample for a round-trip
@@ -77,12 +81,48 @@ def contract_stamp() -> dict[str, Any]:
     }
 
 
+def _resolve_account_map_head() -> tuple[str, str | None]:
+    """Read the exact operator-repo HEAD used for this account-map stamp.
+
+    The operator repository is a read-only dependency here.  A missing or
+    unreadable checkout is observation degradation, not evidence for a
+    historical commit, so callers receive an explicit unavailable marker
+    instead of a stale fallback.
+    """
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ACCOUNT_MAP_REPO_PATH,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except OSError:
+        return ACCOUNT_MAP_COMMIT_UNAVAILABLE, "account_map_head_unavailable"
+    except subprocess.SubprocessError:
+        return ACCOUNT_MAP_COMMIT_UNAVAILABLE, "account_map_head_query_failed"
+
+    if result.returncode != 0:
+        return ACCOUNT_MAP_COMMIT_UNAVAILABLE, "account_map_head_query_failed"
+
+    commit = result.stdout.strip()
+    if not _GIT_COMMIT_RE.fullmatch(commit):
+        return ACCOUNT_MAP_COMMIT_UNAVAILABLE, "account_map_head_invalid"
+    return commit, None
+
+
 def account_map_stamp() -> dict[str, Any]:
-    """Account-map identity block — canonical surface named explicitly."""
+    """Account-map identity block — canonical surface and actual HEAD."""
+
+    commit, reason = _resolve_account_map_head()
 
     return {
         "repo": ACCOUNT_MAP_REPO,
-        "commit": ACCOUNT_MAP_COMMIT,
+        "commit": commit,
+        "commit_status": "available" if reason is None else "unavailable",
+        "commit_reason": reason,
         "canonical_surface": ACCOUNT_MAP_CANONICAL_SURFACE,
         "reference_surface": ACCOUNT_MAP_REFERENCE_SURFACE,
     }
@@ -90,9 +130,10 @@ def account_map_stamp() -> dict[str, Any]:
 
 __all__ = [
     "ACCOUNT_MAP_CANONICAL_SURFACE",
-    "ACCOUNT_MAP_COMMIT",
+    "ACCOUNT_MAP_COMMIT_UNAVAILABLE",
     "ACCOUNT_MAP_REFERENCE_SURFACE",
     "ACCOUNT_MAP_REPO",
+    "ACCOUNT_MAP_REPO_PATH",
     "CONTRACT_CLAUSES",
     "CONTRACT_FILE_SHA256_REFERENCE_ONLY",
     "CONTRACT_PATH",
