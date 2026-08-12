@@ -7,18 +7,9 @@ middleware is a separate follow-up issue (mutation tools only; reads
 unrestricted; caller-header-keyed because MCP session state resets on
 reconnect — ROB-469).
 
-ROB-1239 — advisory/enforcement dual structure. `blocked_actions` in the
-response is advice, not access control: nothing here reads it to refuse a
-tool call, and a tool it names as blocked may still be physically callable if
-it is registered on the caller's MCP profile (`app/mcp_server/profiles.py`,
-`app/mcp_server/tooling/registry.py::register_all_tools`) — that registration
-step is the only layer that removes a tool from the surface a session can
-even see. The two facts are not in tension: the caller MUST still treat
-`blocked_actions` as binding session discipline (this is the operator's
-standing decision — compliance is not optional just because the call would
-succeed); a session that calls a `blocked_actions` tool because it noticed
-the call was technically possible is violating that discipline, not finding
-a loophole.
+ROB-1239: the canonical statement of what `blocked_actions` does and does
+not mean is the `route_request` tool `description=` string below — read
+there, not here.
 """
 
 from __future__ import annotations

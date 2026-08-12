@@ -46,6 +46,11 @@ for the procedure-contract vs. operator-instruction boundary.
 
 All tool names below are registered in the **DEFAULT** MCP profile.
 
+> **ROB-1239 pointer.** The canonical statement of what "route_request is
+> advisory" means (below, e.g. §1 step 5, §2 step 6) is the `route_request`
+> tool `description=` string in
+> `app/mcp_server/tooling/route_request_registration.py`.
+
 ---
 
 ## 0) Common frame (precedes every decision)
