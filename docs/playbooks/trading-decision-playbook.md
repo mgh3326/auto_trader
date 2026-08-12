@@ -266,9 +266,13 @@ lanes:
      price)`, where the D7 price is the lowest price at which **one share** has
      expected net realized gain at or above
      `sell.trim_min_expected_net_realized_gain_krw` after estimated fees and
-     taxes. Use the existing trim sizing rule unchanged. The resulting DAY limit
-     is the §40 auto-submit + veto-card contract for this advisory tier; actual
-     dispatch still follows the runtime `approval_dispatch` truth.
+     taxes. For this tier, that is a one-share value, not a total-trim value;
+     it relies on the consumer's estimated fees and taxes and adds no fee or tax
+     model. After the `max`, snap the anchor **upward (`ceil`)** to the applicable
+     market tick; never floor it below the guard. Use the existing trim sizing
+     rule unchanged. The resulting DAY limit is the §40 auto-submit + veto-card
+     contract for this advisory tier; actual dispatch still follows the runtime
+     `approval_dispatch` truth.
    - If either anchor operand cannot be calculated, register the tier's WATCH
      fallback only; do not invent a local anchor or use WATCH as a substitute
      for a calculated reserve trim. Regenerate the eligible resting DAY limit
@@ -304,6 +308,21 @@ lanes:
     steps:
       - tool: toss_get_positions
       - tool: analyze_stock_batch
+      - policy_tier: sell.breakeven_reserve_trim
+        advisory: true
+        priority_source: decision_rules.sell.trim_preplace.tie_breaks.tier_priority
+        trigger:
+          pnl_pct_min_inclusive_negated_policy_key: sell.breakeven_near_pct
+          pre_guard_average_cost_multiple_max_exclusive_policy_key: sell.loss_guard_min_multiple
+        anchor:
+          operator: max
+          operands: [average_cost_times_loss_guard, d7_compliant_lowest_price]
+          post_max_tick_snap_direction: ceil
+        sizing: existing_trim_rule
+        time_in_force: DAY
+        regeneration: daily_rep
+        submission_contract: section_40_auto_approve_with_veto
+        watch_fallback: anchor_uncomputable_only
       - tool: sell_ladder_fill_preview  # ROB-477 bottom-anchor rung, fill-safety
       - tool: order_proposal_create
         actions: [place, cancel, replace]

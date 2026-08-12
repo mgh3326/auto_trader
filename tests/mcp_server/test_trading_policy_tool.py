@@ -110,6 +110,15 @@ async def test_get_trading_policy_returns_sell_trim_preplace_rule():
         reserve_trim["conditions"]["d7_min_expected_net_realized_gain_krw_policy_key"]
         == "sell.trim_min_expected_net_realized_gain_krw"
     )
+    assert (
+        reserve_trim["conditions"]["d7_scope_semantics"]
+        == "one_share_net_realized_gain_not_total_trim"
+    )
+    assert (
+        reserve_trim["conditions"]["d7_estimation_limit_semantics"]
+        == "consumer_estimated_fees_and_taxes_required_no_fee_or_tax_model_added_by_this_tier"
+    )
+    assert reserve_trim["conditions"]["post_max_tick_snap_direction"] == "ceil"
     assert reserve_trim["conditions"]["regeneration"] == "daily_rep"
     assert (
         reserve_trim["conditions"]["submission_contract"]
