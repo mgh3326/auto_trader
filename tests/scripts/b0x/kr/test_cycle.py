@@ -32,6 +32,10 @@ from tests.scripts.b0x._table_fixtures import (
     write_stale_marker,
     write_table,
 )
+from tests.scripts.b0x.kr._attribution import (
+    no_attribution,
+    unreadable_attribution,
+)
 from tests.scripts.b0x.kr._pending import (
     exploding_pending,
     foreign_traces,
@@ -117,13 +121,22 @@ class _FakeKrClient:
 #: never implicit, and (per ``conftest.py``) never accidental.
 EMPTY_PENDING = readable_pending()
 
+#: 🔴 §36차 2항 기본값 — 「원장이 답했고 이 레인 소유는 없다」. 계좌 보유가
+#: 있어도 그것은 legacy 이며, 매도/물타기 후보가 되어서는 안 된다. 자기 귀속을
+#: 증명해야 하는 테스트는 ``attributed(...)`` 를 명시적으로 주입한다.
+NO_ATTRIBUTION = no_attribution()
+
 
 @pytest.mark.asyncio
 async def test_outside_regular_session_derives_zero_orders(
     table_dir: Path, out_dir: Path
 ) -> None:
     outcome = await run_kr_cycle(
-        now=WEEKEND_NOW, table_dir=table_dir, out_dir=out_dir, client=_FakeKrClient()
+        now=WEEKEND_NOW,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        client=_FakeKrClient(),
+        attribution_reader=NO_ATTRIBUTION,
     )
     assert outcome.zero_order_reason == OUTSIDE_RTH_REASON
     assert outcome.order_count == 0
@@ -140,7 +153,11 @@ async def test_stale_table_derives_zero_orders_even_inside_session(
 ) -> None:
     write_stale_marker(table_dir, market="kr")
     outcome = await run_kr_cycle(
-        now=IN_SESSION_NOW, table_dir=table_dir, out_dir=out_dir, client=_FakeKrClient()
+        now=IN_SESSION_NOW,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        client=_FakeKrClient(),
+        attribution_reader=NO_ATTRIBUTION,
     )
     assert outcome.zero_order_reason == "stale_marker_present"
     assert outcome.order_count == 0
@@ -167,7 +184,11 @@ async def test_table_older_than_36h_derives_zero_orders_with_reason(
         market="kr",
     )
     outcome = await run_kr_cycle(
-        now=IN_SESSION_NOW, table_dir=directory, out_dir=out_dir, client=_FakeKrClient()
+        now=IN_SESSION_NOW,
+        table_dir=directory,
+        out_dir=out_dir,
+        client=_FakeKrClient(),
+        attribution_reader=NO_ATTRIBUTION,
     )
     assert outcome.zero_order_reason == "stale_by_age"
     assert outcome.order_count == 0
@@ -197,6 +218,7 @@ async def test_table_just_under_36h_still_derives_orders(
         out_dir=out_dir,
         client=_FakeKrClient(orderable_cash="5000000"),
         pending_reader=EMPTY_PENDING,
+        attribution_reader=NO_ATTRIBUTION,
     )
     assert outcome.zero_order_reason is None
     # Under contract v1.6 ① a lane that has not traded today reads a readable
@@ -220,6 +242,7 @@ async def test_dry_run_plans_but_never_dispatches(
         confirm=False,
         client=client,
         pending_reader=EMPTY_PENDING,
+        attribution_reader=NO_ATTRIBUTION,
     )
     assert outcome.zero_order_reason is None
     assert outcome.record["planned"], "a readable-empty book must still plan"
@@ -269,6 +292,7 @@ async def test_kr_pending_is_unreadable_and_fails_closed(
         confirm=False,
         client=_FakeKrClient(orderable_cash="5000000"),
         pending_reader=unreadable_pending(),
+        attribution_reader=NO_ATTRIBUTION,
     )
 
     assert outcome.record["broker_truth"]["own_pending_readable"] is False
@@ -307,6 +331,7 @@ async def test_a_failed_ledger_read_falls_back_to_unreadable(
         confirm=False,
         client=_FakeKrClient(orderable_cash="5000000"),
         pending_reader=exploding_pending(OSError("connection refused")),
+        attribution_reader=NO_ATTRIBUTION,
     )
 
     truth = outcome.record["broker_truth"]
@@ -338,6 +363,7 @@ async def test_kr_records_that_realized_pnl_has_no_source(
         confirm=False,
         client=_FakeKrClient(orderable_cash="5000000"),
         pending_reader=EMPTY_PENDING,
+        attribution_reader=NO_ATTRIBUTION,
     )
     assert "Not a measured zero" in outcome.record["realized_pnl_source"]
     assert outcome.derivation is not None
@@ -364,6 +390,7 @@ async def test_kr_dry_run_reacts_when_shared_history_scope_expands(
         confirm=False,
         client=_FakeKrClient(orderable_cash="5000000"),
         pending_reader=EMPTY_PENDING,
+        attribution_reader=NO_ATTRIBUTION,
     )
 
     assert SHARED_ACCOUNT_HISTORY in outcome.record["labels"]
@@ -394,6 +421,7 @@ async def test_owns_client_path_constructs_and_closes_its_own_client(
         out_dir=out_dir,
         confirm=False,
         pending_reader=EMPTY_PENDING,
+        attribution_reader=NO_ATTRIBUTION,
     )
     assert outcome.zero_order_reason is None
     assert fake.closed is True
@@ -436,6 +464,7 @@ async def test_confirm_true_dispatches_nothing_while_pending_is_unreadable(
         broker=broker,
         pending_reader=unreadable_pending(),
         foreign_trace_reader=foreign_traces(),
+        attribution_reader=NO_ATTRIBUTION,
     )
     assert outcome.zero_order_reason == "preflight_not_clean"
     assert outcome.record["preflight"]["passed"] is False
@@ -474,6 +503,7 @@ async def test_confirm_true_routes_through_the_injected_broker_when_pending_read
         broker=broker,
         pending_reader=EMPTY_PENDING,
         foreign_trace_reader=foreign_traces(),
+        attribution_reader=NO_ATTRIBUTION,
     )
 
     assert outcome.zero_order_reason is None
@@ -487,6 +517,10 @@ async def test_confirm_true_routes_through_the_injected_broker_when_pending_read
     assert outcome.record["preflight"]["positions"] == {
         "non_dust_symbols": [],
         "count": 0,
+        "own_attributed_symbols": [],
+        "own_attributed_count": 0,
+        "legacy_symbols": [],
+        "legacy_count": 0,
     }
     assert (
         outcome.record["preflight"]["open_orders"]["native_broker"]["available"]
@@ -538,6 +572,7 @@ async def test_confirm_preflight_contamination_stops_zero_orders(
         foreign_trace_reader=foreign_traces(
             "005930", order_trace_count=1, signal_trace_count=1
         ),
+        attribution_reader=NO_ATTRIBUTION,
     )
 
     assert outcome.zero_order_reason == "preflight_not_clean"
@@ -578,6 +613,7 @@ async def test_confirm_rechecks_v1_6_dedup_at_the_mutation_boundary(
         broker=broker,
         pending_reader=_pending_after_preflight,
         foreign_trace_reader=foreign_traces(),
+        attribution_reader=NO_ATTRIBUTION,
     )
 
     assert outcome.zero_order_reason is None
@@ -597,10 +633,16 @@ async def test_confirm_rechecks_v1_6_dedup_at_the_mutation_boundary(
 
 
 @pytest.mark.asyncio
-async def test_confirm_preflight_unexpected_position_stops_zero_orders(
+async def test_legacy_holdings_do_not_block_confirm_preflight(
     table_dir: Path, out_dir: Path, armed_confirm: list[str]
 ) -> None:
-    """NW-B4 anomaly gate: report the position; never clean it up or submit."""
+    """🔴 §36차 2항 (mutant ④) — flat 요구는 사라졌고 귀속 게이트가 대신한다.
+
+    이 계좌에는 B0-X 가 만들지 않은 legacy 보유가 있다. 예전 게이트는
+    ``unexpected_positions`` 로 **영구히** 제출을 막았고, 그 상태로는 계약
+    v1.5 ③ 의 매도 파생도 도달 불가였다. 이제 legacy 는 이름이 적히고 공존하되,
+    파생 입력에서는 빠진다.
+    """
 
     broker = _FakeBroker()
     outcome = await run_kr_cycle(
@@ -622,14 +664,64 @@ async def test_confirm_preflight_unexpected_position_stops_zero_orders(
         broker=broker,
         pending_reader=EMPTY_PENDING,
         foreign_trace_reader=foreign_traces(),
+        attribution_reader=NO_ATTRIBUTION,
+    )
+
+    preflight = outcome.record["preflight"]
+    assert preflight["reasons"] == []
+    assert preflight["passed"] is True
+    assert outcome.zero_order_reason != "preflight_not_clean"
+    # 🔴 조용히 지워지지 않는다: 계좌 진실과 귀속 분리가 나란히 기록된다.
+    assert preflight["positions"] == {
+        "non_dust_symbols": ["005930"],
+        "count": 1,
+        "own_attributed_symbols": [],
+        "own_attributed_count": 0,
+        "legacy_symbols": ["005930"],
+        "legacy_count": 1,
+    }
+    assert preflight["attribution"]["readable"] is True
+    assert preflight["attribution"]["cap_basis"] == "attributed_own_positions"
+    assert armed_confirm == ["acquired", "released"]
+    # 🔴 그리고 legacy 는 매도 후보가 되지 않는다 (mutant ①).
+    assert [order["symbol"] for order in outcome.record["orders"]] == [
+        order["symbol"] for order in outcome.record["orders"] if order["side"] == "buy"
+    ]
+    assert broker.sell_calls == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_preflight_stops_when_attribution_is_unreadable(
+    table_dir: Path, out_dir: Path, armed_confirm: list[str]
+) -> None:
+    """🔴 「보유가 있다」가 아니라 「누구 것인지 모른다」가 fail-closed 사유다."""
+
+    broker = _FakeBroker()
+    outcome = await run_kr_cycle(
+        now=IN_SESSION_NOW,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=True,
+        client=_FakeKrClient(
+            orderable_cash="5000000",
+            stocks=[
+                {
+                    "pdno": "005930",
+                    "hldg_qty": "1",
+                    "pchs_avg_pric": "70000",
+                    "evlu_amt": "70000",
+                }
+            ],
+        ),
+        broker=broker,
+        pending_reader=EMPTY_PENDING,
+        foreign_trace_reader=foreign_traces(),
+        attribution_reader=unreadable_attribution(),
     )
 
     assert outcome.zero_order_reason == "preflight_not_clean"
-    assert outcome.record["preflight"]["positions"] == {
-        "non_dust_symbols": ["005930"],
-        "count": 1,
-    }
-    assert outcome.record["preflight"]["reasons"] == ["unexpected_positions"]
+    assert outcome.record["preflight"]["reasons"] == ["attribution_unreadable"]
+    assert outcome.record["preflight"]["attribution"]["readable"] is False
     assert outcome.record["submitted"] == []
     assert broker.buy_calls == [] and broker.sell_calls == []
     assert armed_confirm == ["acquired", "released"]
@@ -666,6 +758,7 @@ async def test_kill_switch_trips_on_nav_ratio_and_blocks_all_new_orders(
         confirm=False,
         client=_FakeKrClient(orderable_cash="1000000"),
         pending_reader=EMPTY_PENDING,
+        attribution_reader=NO_ATTRIBUTION,
     )
     assert outcome.derivation is not None
     assert outcome.derivation.kill_switch.tripped
@@ -699,6 +792,7 @@ async def test_determinism_same_inputs_same_derivation_hash(
             confirm=False,
             client=_FakeKrClient(orderable_cash="5000000"),
             pending_reader=EMPTY_PENDING,
+            attribution_reader=NO_ATTRIBUTION,
         )
         assert outcome.derivation is not None
         hashes.append(outcome.derivation.derivation_hash())

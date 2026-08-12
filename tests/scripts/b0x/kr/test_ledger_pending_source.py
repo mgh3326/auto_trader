@@ -31,15 +31,19 @@ from typing import Any
 import pytest
 
 from scripts.b0x.broker_truth import PendingUnreadable
+from scripts.b0x.kr import attribution as kr_attribution
 from scripts.b0x.kr import pending_ledger as kr_pending_ledger
 from scripts.b0x.kr.cycle import broker_state, run_kr_cycle
 from scripts.b0x.kr.mock import KR_PENDING_UNREADABLE, FreshTruth, RawPosition
 from tests.scripts.b0x._table_fixtures import make_payload, make_row, write_table
+from tests.scripts.b0x.kr._attribution import no_attribution
 from tests.scripts.b0x.kr._pending import (
     StatefulPendingLedger,
     foreign_traces,
     readable_pending,
 )
+
+NO_ATTRIBUTION = no_attribution()
 
 pytestmark = pytest.mark.unit
 
@@ -204,6 +208,7 @@ async def test_a_ledger_named_symbol_is_refused_and_the_rest_still_derive(
         confirm=False,
         client=_FakeKrClient(),
         pending_reader=readable_pending("005930"),
+        attribution_reader=NO_ATTRIBUTION,
     )
 
     truth = outcome.record["broker_truth"]
@@ -301,6 +306,7 @@ async def test_kr_two_cycle_sim_the_same_symbol_is_never_submitted_twice(
             confirm=False,
             client=_FakeKrClient(),
             pending_reader=reader,
+            attribution_reader=NO_ATTRIBUTION,
         )
         assert outcome.zero_order_reason is None
         derived_per_cycle.append(
@@ -346,6 +352,7 @@ async def test_confirm_route_rechecks_and_observes_post_submit_dedup(
         broker=broker,
         pending_reader=ledger.reader(),
         foreign_trace_reader=foreign_traces(),
+        attribution_reader=NO_ATTRIBUTION,
     )
 
     assert outcome.zero_order_reason is None
@@ -739,31 +746,81 @@ def test_the_two_position_sources_are_the_broker_read_and_nothing_else() -> None
         assert isinstance(value.func, ast.Attribute)
         assert value.func.attr == "non_dust_position_symbols"
 
-    cycle_tree = ast.parse((KR_PACKAGE / "cycle.py").read_text(encoding="utf-8"))
-    func = next(
-        node
-        for node in ast.walk(cycle_tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "broker_state"
+    # §36차 2항 이후 포지션 조립은 ``attribution.scope_positions`` 로 옮겨갔다.
+    # 옮겨간 곳에서도 **브로커 보유 행**을 순회해야 한다 — 귀속 원장은 「누구
+    # 것인가」만 답하고 포지션을 만들어 내지 못한다 (v1.6 ②).
+    attribution_tree = ast.parse(
+        (KR_PACKAGE / "attribution.py").read_text(encoding="utf-8")
     )
+    scope = next(
+        (
+            node
+            for node in ast.walk(attribution_tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "scope_positions"
+        ),
+        None,
+    )
+    assert scope is not None, "scope_positions 가 사라졌거나 이름이 바뀌었다"
     iterated = {
-        inner.func.attr
-        for node in ast.walk(func)
-        if isinstance(node, ast.GeneratorExp)
-        for generator in node.generators
-        for inner in ast.walk(generator.iter)
-        if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Attribute)
+        name.id
+        for node in ast.walk(scope)
+        if isinstance(node, ast.For)
+        for name in ast.walk(node.iter)
+        if isinstance(name, ast.Name)
     } | {
-        inner.attr
-        for node in ast.walk(func)
-        if isinstance(node, ast.GeneratorExp)
-        for generator in node.generators
-        for inner in ast.walk(generator.iter)
-        if isinstance(inner, ast.Attribute)
+        # 속성 접근으로 순회해도 잡아야 한다 — ``for row in truth.own_pending``
+        # 같은 형태가 아래 PENDING_DERIVED_NAMES 검사를 통과하면 가드가 아니다.
+        attribute.attr
+        for node in ast.walk(scope)
+        if isinstance(node, ast.For)
+        for attribute in ast.walk(node.iter)
+        if isinstance(attribute, ast.Attribute)
     }
     assert "positions" in iterated, (
-        "broker_state stopped building positions from the holdings snapshot"
+        "scope_positions stopped iterating the broker holdings snapshot"
     )
     assert not (iterated & PENDING_DERIVED_NAMES)
+
+    # 그리고 귀속 수량은 반드시 브로커 보유 수량으로 상한이 걸려야 한다.
+    capped = [
+        node
+        for node in ast.walk(scope)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "min"
+        and any(
+            isinstance(arg, ast.Attribute) and arg.attr == "quantity"
+            for arg in node.args
+        )
+    ]
+    assert capped, (
+        "scope_positions stopped capping the attributed quantity by the "
+        "broker-held quantity — 원장이 계좌에 없는 주식을 만들어 낼 수 있다"
+    )
+
+    # cycle.broker_state 는 그 결과만 §4 상한 입력으로 쓴다.
+    cycle_tree = ast.parse((KR_PACKAGE / "cycle.py").read_text(encoding="utf-8"))
+    func = next(
+        (
+            node
+            for node in ast.walk(cycle_tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "broker_state"
+        ),
+        None,
+    )
+    assert func is not None, "broker_state 가 사라졌거나 이름이 바뀌었다"
+    cap_inputs = [
+        keyword.value
+        for node in ast.walk(func)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "position_symbols"
+    ]
+    assert cap_inputs, "broker_state stopped naming position_symbols"
+    for value in cap_inputs:
+        assert isinstance(value, ast.Attribute)
+        assert value.attr == "cap_position_symbols"
+        assert isinstance(value.value, ast.Name) and value.value.id == "scoped"
 
 
 @pytest.mark.asyncio
@@ -784,6 +841,7 @@ async def test_a_ledger_named_symbol_is_not_a_position(
         confirm=False,
         client=_FakeKrClient(stocks=[]),
         pending_reader=readable_pending("005930", "000660"),
+        attribution_reader=NO_ATTRIBUTION,
     )
 
     truth = outcome.record["broker_truth"]
@@ -807,7 +865,27 @@ def test_positions_are_built_from_holdings_even_when_pending_disagrees() -> None
             ),
         ),
     )
-    state = broker_state(fresh=fresh, own_pending=("005930",))
+    attribution = kr_attribution.OwnFillAttribution(
+        lots=(
+            kr_attribution.AttributedLot(
+                symbol="035720",
+                quantity=Decimal("10"),
+                average_price=Decimal("50000"),
+                buy_fill_rows=1,
+                sell_rows=0,
+            ),
+            # 🔴 원장이 이름을 대도 브로커가 보유를 보고하지 않은 심볼은 포지션이
+            # 되지 않는다 — v1.6 ② 는 귀속 게이트 이후에도 그대로다.
+            kr_attribution.AttributedLot(
+                symbol="005930",
+                quantity=Decimal("99"),
+                average_price=Decimal("70000"),
+                buy_fill_rows=1,
+                sell_rows=0,
+            ),
+        )
+    )
+    state = broker_state(fresh=fresh, own_pending=("005930",), attribution=attribution)
 
     assert [pos.symbol for pos in state.positions] == ["035720"]
     assert state.broker_truth.position_symbols == ("035720",)

@@ -415,11 +415,55 @@ pending 파생 이름이 들어가는 것을 빌드 실패로 만든다.
 게이트를 탄다), 그 안에서 `assert_resubmit_allowed` 가 제출보다 **앞줄**임을 확인한다.
 
 **귀결 — 첫 clean confirm.** 이 레인은 원장이 자기 `b0xk-` 행 0건을 읽고, 다른
-correlation trace·예상 밖 보유가 없고, writer lease가 확보될 때만 한 제출을 시도한다. 같은
+correlation trace가 없고, **legacy/자기 보유를 귀속으로 가를 수 있고**(§9.3), writer lease가
+확보될 때만 한 제출을 시도한다. 같은
 KST일에 자기 trace가 남으면 다음 confirm preflight는 `ledger_pending_present`로 zero-order다.
 `test_kr_two_cycle_sim_the_same_symbol_is_never_submitted_twice`는 v1.6 KST-day dedup을,
 `test_confirm_route_rechecks_and_observes_post_submit_dedup`은 제출 직전/직후의 실제
 mutation-boundary 순서를 오프라인으로 고정한다.
+
+### 9.3 🔴 legacy 보유와의 공존 — 자기 원장(fill) 귀속 게이트 (§36차 2항, 2026-08-11)
+
+이 계좌에는 **B0-X 가 만들지 않은 legacy 보유 11종목**이 있다(2026-08-11 실측: 계좌 non-dust
+보유 11 · `b0xk-` 원장 행 **0**). 종전 confirm preflight 는 「보유가 하나라도 있으면
+`unexpected_positions`」였으므로 두 가지가 동시에 참이었다:
+
+1. 이 계좌에서는 **영구히** 한 건도 제출할 수 없다(2026-08-11 04:30 job 이 실측한 정지 사유).
+2. 계약 v1.5 ③(「B0-X 물타기/매도 = 자기 보유에서만 파생」)과 **모순**이다 — 매도가 파생되려면
+   보유가 있어야 하는데, 보유가 있으면 preflight 가 막는다.
+
+운영자 결정(§36차 2항)은 **flatten 기각 · 귀속 기반 공존**이다. 임의 청산은 여전히 금지이며,
+대신 `scripts/b0x/kr/attribution.py` 가 **자기 원장 fill 로 own/legacy 를 가른다**.
+
+**증거 규칙 (비대칭이 요점이다).** 과소 귀속 = 매도 못 함 = 안전. 과대 귀속 = **legacy 매도 =
+남의 포지션 처분**. 그래서:
+
+| 방향 | 증거 기준 | 오차 방향 |
+|---|---|---|
+| 매수(귀속 +) | `lifecycle_state ∈ {fill, reconciled}` 인 자기 `b0xk-` 행만 | 과소(안전) |
+| 매도(귀속 −) | 자기 `b0xk-` sell 행 **전부**(상태 무관) | 과소(안전) |
+| 상한 | 귀속 수량 ≤ **브로커 보유 수량** | 계좌에 없는 주식은 우리 것이 아니다 |
+
+**legacy 는 무엇에 들어가고 무엇에서 빠지는가** (§36차 2항이 판정을 위임한 항목):
+
+| 항목 | legacy 포함? | 근거 |
+|---|---|---|
+| 매도·물타기 파생 | ❌ 제외 | §36차 2항 리터럴. legacy 는 후보로 올라오지 않는다 |
+| §4 동시포지션 / 일일신규 상한 | ❌ 제외(자기 귀속만 계수) | 11 ≥ cap 10 이라 포함하면 신규 진입이 **영구 0** — 공존 결정이 무의미해진다. 🔴 대가 = 계좌는 legacy + 최대 10 B0-X 를 함께 지닐 수 있다. §4 **수치는 무변경** |
+| NAV(= kill 임계 기준) | ❌ 제외(지분 비례) | kill 이 `pct_of_nav` 이므로 legacy 평가액을 넣으면 발화 손실 절대액이 **커진다**. 넓히지 않는 방향을 택했다. 귀속 불가면 `nav = cash` 로 더 좁아진다 |
+| 계좌 진실·아티팩트 기록 | ✅ 포함 | `positions.legacy_symbols` 로 **이름까지** 남는다. 「무시」는 「삭제」가 아니다 |
+| CONTAMINATED 판정 | — 무변경 | 오염은 **다른 writer**(비-`b0xk` correlation trace)이며, 승인된 공존 보유는 다른 writer 가 아니다 |
+
+**두 겹의 매도 방어.** ① 파생: legacy 는 `LaneAccountState.positions` 에 없으므로 매도 레그가
+만들어지지 않는다. ② 제출 경계: `attribution.assert_sell_is_own` 이 자기 귀속 수량을 넘는
+매도를 `LegacyPositionSellBlocked` 로 죽인다. 같은 심볼을 legacy 와 공유해도 **자기 수량까지만**
+팔 수 있다.
+
+**fail-closed.** 귀속 조회가 실패하면 「자기 것 없음」이 아니라 「알 수 없음」이다: 자기 포지션 0
+(매도/물타기 0) **그리고** §4 상한 입력이 계좌 전체로 되돌아가(신규 진입도 0) 양쪽이 닫히며,
+confirm preflight 는 `attribution_unreadable` 로 zero-order 다.
+
+테스트: `tests/scripts/b0x/kr/test_attribution_gate.py` (필수 mutant ①~⑤ 각각 격추 확인).
 
 ## 10. 알려진 경계 · fail-closed 처리
 
@@ -427,8 +471,10 @@ mutation-boundary 순서를 오프라인으로 고정한다.
   구조적으로 raise하므로 native open-order=0이라고 주장하지 않는다. NW-B4 record에는 이
   사실과 함께 v1.6 signal/order ledger shadow를 분리해 남긴다. shadow가 unreadable이거나
   foreign correlation trace가 하나라도 있으면 `preflight_not_clean` zero-order다.
-- **예상 밖 포지션·cash 비정상·stale table·writer lease 불명확도 zero-order다.** 취소·청산·계좌
-  reset 같은 임의 정리는 하지 않는다.
+- **cash 비정상·stale table·writer lease 불명확·귀속 조회 불가는 zero-order다.** 취소·청산·계좌
+  reset 같은 임의 정리는 하지 않는다. 🔴 **보유가 있다는 사실 자체는 더 이상 실패 사유가
+  아니다**(§9.3, §36차 2항) — 실패 사유는 「누구 것인지 모른다」(`attribution_unreadable`)로
+  옮겨갔다.
 - **kill 시 잔여 주문 취소가 구조적으로 불가능하다**(§6.6). 성공 취소나 reconcile을 꾸미지
   않고 `KILL_TRIPPED_CANCEL_UNSUPPORTED`와 false attempted/confirmed를 기록한다.
 - **원장 조회는 DB를 탄다.** own/foreign ledger 중 하나라도 읽을 수 없으면 preflight는
@@ -448,8 +494,15 @@ v1.6 ① 전용 (`tests/scripts/b0x/kr/test_ledger_pending_source.py`): KST day 
 **타입명만**), lifecycle/state 추론 금지, position truth 분리, 타 레인 import 금지, 제출
 chokepoint AST guard, foreign correlation trace contamination, 그리고 confirm의 pre/post
 dedup observation을 고정한다. 각 detector는 합성 소스로 자가검증한다.
-`tests/scripts/b0x/kr/conftest.py`는 실 own/foreign ledger reader 도달을
+`tests/scripts/b0x/kr/conftest.py`는 실 own/foreign ledger reader **및 귀속 reader** 도달을
 **AssertionError**로 막는다.
+
+§36차 2항 전용 (`tests/scripts/b0x/kr/test_attribution_gate.py`): legacy 보유가 매도(①)·
+물타기(②) 후보가 되지 않음, 귀속 없는 보유가 자기 것으로 분류되지 않음(③ — 미체결 매수 불산입·
+미체결 매도 선차감·브로커 보유 상한·control 행 배제·미배선 호출자 fail-closed), preflight 의
+flat 요구 회귀 금지(④)와 그럼에도 `attribution_unreadable`·CONTAMINATED 는 여전히 fail-closed,
+v1.6 dedup 우회 금지(⑤), NAV 기준이 kill 임계를 넓히지 않음, 그리고 **자기 귀속 포지션은 실제로
+매도 사다리를 파생한다**(v1.5 ③ 가 처음으로 도달 가능해졌다는 증명)를 고정한다.
 
 kr 전용 포함: tick 정렬(KRX 2023+ 표와 일치) · 매수/매도 사이징 whole-share floor ·
 NAV = cash + Σ evlu_amt · RTH 게이트(세션 밖 → zero-order, 표 I/O 전혀 없음) · 표 게이트
