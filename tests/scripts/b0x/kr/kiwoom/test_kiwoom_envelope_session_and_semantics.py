@@ -126,6 +126,7 @@ async def test_lane_order_surface_offers_no_exchange_parameter() -> None:
 
     for method in (
         kiwoom_lane.ReadOnlyKiwoomMockAccount.place_limit_buy,
+        kiwoom_lane.ReadOnlyKiwoomMockAccount.place_limit_sell,
         kiwoom_lane.ReadOnlyKiwoomMockAccount.cancel,
     ):
         params = set(inspect.signature(method).parameters)

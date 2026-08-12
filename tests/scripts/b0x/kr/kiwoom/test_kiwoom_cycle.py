@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.b0x.kr import attribution as kr_attribution
 from scripts.b0x.kr import kiwoom as kiwoom_lane
 from scripts.b0x.kr import kiwoom_attribution as kiwoom_attr
 from scripts.b0x.kr import kiwoom_cycle
@@ -87,6 +88,7 @@ async def _run(
     out_dir,
     table_dir,
     confirm=False,
+    interim_ordering=False,
     now=IN_SESSION,  # noqa: ANN001
 ):  # noqa: ANN202
     return await kiwoom_cycle.run_kiwoom_cycle(
@@ -94,6 +96,7 @@ async def _run(
         table_dir=table_dir,
         out_dir=out_dir,
         confirm=confirm,
+        interim_ordering=interim_ordering,
         account=account,
     )
 
@@ -158,6 +161,25 @@ async def test_record_carries_the_account_map_and_status_label(
     )
 
 
+@pytest.mark.asyncio
+async def test_interim_ordering_requires_confirm_and_keeps_preview_safe(
+    table_dir, out_dir
+) -> None:  # noqa: ANN001
+    account = FakeAccount()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        interim_ordering=True,
+    )
+
+    assert outcome.zero_order_reason == "interim_ordering_requires_confirm"
+    assert outcome.record["cycle_status"] == kiwoom_cycle.PREVIEW_STATUS
+    assert account.buy_calls == []
+    assert account.sell_calls == []
+    assert account.cancel_calls == []
+
+
 # ---------------------------------------------------------------------------
 # Confirm preflight — each reason, each with zero venue calls.
 # ---------------------------------------------------------------------------
@@ -184,7 +206,46 @@ async def test_confirm_blocks_on_same_day_foreign_orders(
         "CONTAMINATED_foreign_same_day_orders_kr_b1_active_suspect"
         in outcome.record["preflight"]["reasons"]
     )
+    assert outcome.record["preflight"]["kr_b1_inactive_gate"]["passed"] is False
     assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_blocks_when_kr_b1_foreign_trace_read_fails(
+    table_dir, out_dir, armed, monkeypatch
+) -> None:  # noqa: ANN001, ARG001
+    """🔴 Read failure is not a clean KR-B1-inactive observation."""
+
+    async def readable_empty_attribution(**_kwargs):  # noqa: ANN003, ANN202
+        return kr_attribution.OwnFillAttribution(lots=())
+
+    monkeypatch.setattr(kiwoom_attr, "read_own_attribution", readable_empty_attribution)
+
+    class ForeignTraceUnreadableAccount(FakeAccount):
+        async def read_order_detail(self, *, order_date=None, symbol=None):  # noqa: ANN001, ANN201, ARG002
+            raise RuntimeError("kt00007 foreign trace timeout")
+
+    account = ForeignTraceUnreadableAccount()
+    outcome = await _run(
+        account=account, out_dir=out_dir, table_dir=table_dir, confirm=True
+    )
+
+    assert outcome.zero_order_reason == "preflight_not_clean"
+    assert "foreign_same_day_trace_unreadable" in outcome.record["preflight"]["reasons"]
+    assert outcome.record["preflight"]["kr_b1_inactive_gate"] == {
+        "required": True,
+        "source": "kt00007 same-day rows not authored by b0xkw journal",
+        "foreign_trace_readable": False,
+        "foreign_trace_count": None,
+        "passed": False,
+        "fail_closed": (
+            "foreign trace read failure is not clean; any unreadable answer or "
+            "non-zero foreign trace produces zero orders"
+        ),
+        "residual_toctou": "preflight_once_before_submission",
+    }
+    assert account.buy_calls == []
+    assert account.sell_calls == []
 
 
 @pytest.mark.asyncio
@@ -305,6 +366,85 @@ async def test_confirm_submits_exactly_one_order_and_cancels_it(
         "acceptance_submission_limit="
     )
     assert outcome.record["round_trip_policy"] == kiwoom_cycle.ROUND_TRIP_MANDATORY_NOTE
+    assert outcome.record["cycle_status"] == kiwoom_cycle.ACCEPTANCE_ONLY_STATUS
+    assert outcome.record["cycle_status_label"] == (
+        kiwoom_cycle.ACCEPTANCE_ONLY_STATUS_LABEL
+    )
+    assert outcome.record["day_orders"] == []
+
+
+@pytest.mark.asyncio
+async def test_interim_ordering_submits_every_envelope_derived_day_order_without_cancel(
+    table_dir, out_dir, armed
+) -> None:  # noqa: ANN001, ARG001
+    """DAY retention replaces neither the derivation caps nor acceptance mode."""
+
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        symbols=("005930", "000660", "035420", "051910"),
+    )
+
+    class DistinctOrderNumbers(FakeAccount):
+        async def place_limit_buy(self, *, symbol, quantity, price):  # noqa: ANN001, ANN201
+            payload = await super().place_limit_buy(
+                symbol=symbol, quantity=quantity, price=price
+            )
+            payload["ord_no"] = f"{len(self.buy_calls):010d}"
+            return payload
+
+    account = DistinctOrderNumbers()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        interim_ordering=True,
+    )
+
+    assert outcome.exit_code == 0
+    assert outcome.record["cycle_status"] == "INTERIM_ORDERING"
+    assert outcome.record["cycle_status_label"] == (
+        kiwoom_cycle.INTERIM_ORDERING_STATUS_LABEL
+    )
+    assert outcome.record["interim_ordering_constraints"] == (
+        kiwoom_cycle.INTERIM_ORDERING_CONSTRAINTS
+    )
+    assert kiwoom_cycle.INTERIM_ORDERING_STATUS_LABEL in outcome.record["labels"]
+    for constraint in kiwoom_cycle.INTERIM_ORDERING_CONSTRAINTS.values():
+        assert constraint.split(" — ")[0] in kiwoom_cycle.INTERIM_ORDERING_STATUS_LABEL
+
+    # Four candidates reach derivation, but the locked daily-new cap admits
+    # exactly three. INTERIM_ORDERING sends all three, not the old one-order
+    # acceptance limit, and none reaches cancellation.
+    assert outcome.derivation is not None
+    assert len(outcome.derivation.orders) == 3
+    assert any(
+        skipped["reason"] == "daily_new_entry_cap_reached"
+        for skipped in outcome.record["skipped"]
+    )
+    assert len(account.buy_calls) == len(outcome.derivation.orders)
+    assert account.sell_calls == []
+    assert account.cancel_calls == []
+    assert outcome.record["round_trip"] == []
+    assert len(outcome.record["day_orders"]) == 3
+    assert outcome.record["submitted"] == outcome.record["day_orders"]
+    assert all(
+        order["time_in_force"] == "DAY" for order in outcome.record["day_orders"]
+    )
+    assert all(
+        order["automatic_cancel"] is False for order in outcome.record["day_orders"]
+    )
+    assert all(
+        order["fill_status"] == "unverified" for order in outcome.record["day_orders"]
+    )
+    assert all(
+        Decimal(order["notional_krw"])
+        <= Decimal(outcome.record["envelope"]["per_order_notional"])
+        for order in outcome.record["day_orders"]
+    )
+    assert "acceptance_submission_limit" not in outcome.record
+    assert outcome.record["day_order_policy"] == kiwoom_cycle.DAY_ORDER_RETAINED_NOTE
 
 
 @pytest.mark.asyncio

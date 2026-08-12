@@ -70,15 +70,20 @@ absolute loss tolerated before the kill fires. Excluding it can only narrow the
 threshold, never widen it, and an unreadable attribution narrows it further
 (attributed evaluation 0 → ``nav = cash``).
 
-Round trip is mandatory, not optional
----------------------------------------
+Two explicitly separate mutation modes
+--------------------------------------
 
-The confirm path submits **one** order and then always tries to take it back:
+``ACCEPTANCE_ONLY`` submits **one** order and always tries to take it back:
 submit → broker pending re-read → cancel → reconcile. There is no flag that
-skips the cancel. This lane's status is ``OBSERVATION_DERIVATION_ONLY``; it
-exists to prove the execution surface works end to end, not to hold inventory.
-A cancel that fails is recorded as a failure and exits non-zero — never
-laundered into a clean success (see :class:`RoundTripIncomplete`).
+skips the cancel. It exists to prove the execution surface works end to end,
+not to hold inventory. A cancel that fails is recorded as a failure and exits
+non-zero — never laundered into a clean success (see
+:class:`RoundTripIncomplete`).
+
+``INTERIM_ORDERING`` uses :func:`submit_day_order` instead. That function
+records only broker acceptance and the assigned order number; it deliberately
+does not claim a fill and never invokes cancellation. The caller is responsible
+for the stricter preflight and for choosing that non-default mode.
 """
 
 from __future__ import annotations
@@ -596,7 +601,7 @@ class ReadOnlyKiwoomMockAccount:
         )
         return normalize_order_detail(payload)
 
-    # -- the one mutation surface -----------------------------------------
+    # -- mutation surfaces -------------------------------------------------
 
     async def place_limit_buy(
         self, *, symbol: str, quantity: int, price: int
@@ -614,6 +619,24 @@ class ReadOnlyKiwoomMockAccount:
                 symbol=symbol, quantity=quantity, price=price
             ),
             api="kt10000",
+        )
+
+    async def place_limit_sell(
+        self, *, symbol: str, quantity: int, price: int
+    ) -> dict[str, Any]:
+        """kt10001. ``exchange`` remains fixed to the KRX default.
+
+        This is reachable only after the cycle's attributed-holding boundary;
+        exposing no exchange parameter keeps the NXT/SOR prohibition structural
+        for both sides of an INTERIM_ORDERING day order.
+        """
+
+        await self._pace()
+        return assert_broker_ok(
+            await self._orders.place_sell_order(
+                symbol=symbol, quantity=quantity, price=price
+            ),
+            api="kt10001",
         )
 
     async def cancel(
@@ -948,11 +971,47 @@ def plan_orders(
 
 
 # ---------------------------------------------------------------------------
-# Submission + mandatory cancel round trip.
+# Submission: DAY retention or mandatory acceptance cancel round trip.
 # ---------------------------------------------------------------------------
 
 #: Kiwoom's order response field carrying the assigned order number.
 ORDER_NO_FIELD: Final[str] = "ord_no"
+
+
+@dataclass
+class DayOrderResult:
+    """Broker-accepted KRX DAY order retained for ``INTERIM_ORDERING``.
+
+    This records only what the submit response establishes: the request was
+    accepted and assigned an order number. It is intentionally not a fill
+    record, and its ``automatic_cancel`` field is a literal guard against
+    accidentally reusing acceptance-round-trip semantics here.
+    """
+
+    correlation_id: str
+    symbol: str
+    side: str
+    price: int
+    quantity: int
+    submitted: bool = False
+    order_no: str | None = None
+    submit_response: dict[str, Any] = field(default_factory=dict)
+
+    def canonical(self) -> dict[str, Any]:
+        return {
+            "correlation_id": self.correlation_id,
+            "symbol": self.symbol,
+            "side": self.side,
+            "price": self.price,
+            "quantity": self.quantity,
+            "notional_krw": self.price * self.quantity,
+            "submitted": self.submitted,
+            "order_no": self.order_no,
+            "submit_response": self.submit_response,
+            "time_in_force": "DAY",
+            "automatic_cancel": False,
+            "fill_status": "unverified",
+        }
 
 
 @dataclass
@@ -1037,6 +1096,52 @@ def assert_resting_echo(
             "kt00009 resting row does not echo the submitted order: "
             + "; ".join(problems)
         )
+
+
+async def submit_day_order(
+    account: ReadOnlyKiwoomMockAccount,
+    *,
+    planned: PlannedOrder,
+    broker_truth: BrokerTruth,
+    record_order_no: Any,
+    now: dt.datetime,
+) -> DayOrderResult:
+    """Submit one KRX limit order and deliberately leave its DAY lifecycle open.
+
+    The pre-dispatch resubmit gate and immediate journal append are identical
+    to the acceptance path. What differs is deliberate: no post-submit
+    cancellation, no inferred fill, and no claim that a still-open order is a
+    successful reconciliation.
+    """
+
+    assert_resubmit_allowed(broker_truth, symbol=planned.symbol, lane=LANE)
+    result = DayOrderResult(
+        correlation_id=planned.client_order_id,
+        symbol=planned.symbol,
+        side=planned.side,
+        price=planned.price,
+        quantity=planned.quantity,
+    )
+
+    if planned.side == "buy":
+        submit_payload = await account.place_limit_buy(
+            symbol=planned.symbol, quantity=planned.quantity, price=planned.price
+        )
+    elif planned.side == "sell":
+        submit_payload = await account.place_limit_sell(
+            symbol=planned.symbol, quantity=planned.quantity, price=planned.price
+        )
+    else:
+        raise ValueError(f"kiwoom day order has unsupported side: {planned.side}")
+
+    result.submitted = True
+    result.submit_response = dict(submit_payload)
+    order_no = _extract_order_no(submit_payload)
+    result.order_no = order_no
+    # A later same-day foreign-trace check must know that this broker order is
+    # ours even while it remains resting; write before returning to the caller.
+    record_order_no(order_no=order_no, planned=planned, at=now)
+    return result
 
 
 async def submit_and_cancel(
@@ -1195,6 +1300,7 @@ __all__ = [
     "BlockedOrder",
     "BrokerEchoMismatch",
     "BrokerPending",
+    "DayOrderResult",
     "FreshTruth",
     "KiwoomBrokerRejected",
     "KiwoomCashUnreadable",
@@ -1219,5 +1325,6 @@ __all__ = [
     "plan_orders",
     "read_broker_pending",
     "read_fresh_truth",
+    "submit_day_order",
     "submit_and_cancel",
 ]

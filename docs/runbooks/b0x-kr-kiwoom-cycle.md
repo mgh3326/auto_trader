@@ -3,8 +3,10 @@
 `scripts/run_b0x_kr_kiwoom_cycle.py` — 수동 kickoff 전용. **스케줄러 등록 없음**
 (TaskIQ·Prefect·launchd 어디에도 없다). 사이클은 운영자가 실행해서 일어난다.
 
-지위: **`OBSERVATION_DERIVATION_ONLY`**. `--confirm` 은 지위 변경이 아니라,
-실행 표면이 끝까지 동작하는지 증명하는 **1건 한정 acceptance 레버**다.
+기본 지위는 **`OBSERVATION_DERIVATION_ONLY`**(preview)다. `--confirm` 단독은
+**`ACCEPTANCE_ONLY`** — 기존의 1건 submit→cancel→reconcile 검증 레버다.
+`--interim-ordering --confirm` 을 함께 명시한 경우만 **`INTERIM_ORDERING`** 으로
+전환해 envelope 파생 전건을 DAY 주문으로 남긴다. 위험한 쪽은 기본값이 아니다.
 
 ---
 
@@ -47,8 +49,10 @@
 | KRX only | 주문 클라이언트가 `NXT`/`SOR` 를 네트워크 호출 **전에** 거부. 레인은 `exchange` 파라미터를 아예 노출하지 않는다 |
 | 세션 | KRX 정규장만 (`is_krx_regular_session`, XKRX 캘린더) |
 | envelope | §4 KR 열 **그대로 재사용** (`load_envelope("kr")`). 레인 전용 envelope 상수 없음 — 테스트가 강제 |
-| 1건 한정 | `MANUAL_CONFIRM_SUBMISSION_LIMIT = 1`, CLI/env override 없음 |
-| 왕복 강제 | `--no-cancel` 같은 플래그가 **존재하지 않는다**. 취소 미확인 = `RoundTripIncomplete` + exit 2 |
+| Acceptance 1건 한정 | `ACCEPTANCE_SUBMISSION_LIMIT = 1`, CLI/env override 없음. `--confirm` 단독에만 적용 |
+| Interim 전건 제출 | `--interim-ordering --confirm` 에서만 envelope 파생 전건 제출. 별도 제출 상한/CLI/env override 없음 — §4 30만·동시 10·일신규 3이 파생 단계에서 계속 강제 |
+| Acceptance 왕복 강제 | `--no-cancel` 같은 플래그가 **존재하지 않는다**. `ACCEPTANCE_ONLY` 취소 미확인 = `RoundTripIncomplete` + exit 2 |
+| DAY 주문 잔존 | `INTERIM_ORDERING` 은 즉시 취소하지 않는다. `submitted` 는 접수/주문번호 증거만 뜻하고 filled를 뜻하지 않는다 |
 | halted | 표가 이미 제외(ROB-1236). 레인이 `universe.halted_suspect` 를 두 번째 선으로 재검사 |
 
 ## 4. 🔴 자기 미체결 = 브로커 직접 조회, 원장 예외 **미사용**
@@ -102,9 +106,11 @@ v1.5 ① 이 실격시키는 성질이고, ROB-341 이 KIS 일별체결조회를
 ### 5.1 저널 = 「이 ord_no 는 우리 것이다」
 
 `<out-dir>/kiwoom_mock/own-orders.jsonl`, append-only.
-🔴 **취소도 자기 주문번호를 갖는다** (실측: 매수 `0107387` → 취소 `0107388`).
-취소 ord_no 를 기록하지 않으면 다음 사이클의 당일 외부흔적 게이트가 **자기 취소를
-제2 writer 로 오인**해 정지한다 — 2026-08-12 12:13 KST 에 실제로 발생했다.
+🔴 제출 직후의 자기 주문번호는 즉시 저널한다. `INTERIM_ORDERING` 의 DAY 주문도
+다음 사이클의 당일 외부흔적 게이트가 자기 주문으로 식별할 수 있어야 한다.
+`ACCEPTANCE_ONLY` 에서는 **취소도** 자기 주문번호를 갖는다(실측: 매수 `0107387` →
+취소 `0107388`). 취소 ord_no 를 기록하지 않으면 다음 사이클의 당일 외부흔적 게이트가
+자기 취소를 제2 writer 로 오인해 정지한다 — 2026-08-12 12:13 KST 에 실제로 발생했다.
 그래서 취소도 `side="cancel"` 로 저널한다(귀속 수량에는 영향 없음).
 
 ## 6. Rate limit — 페이싱은 안전 속성이다
@@ -135,14 +141,20 @@ B0X_KR_KIWOOM_ENABLED=true uv run python -m scripts.run_b0x_kr_kiwoom_cycle --re
 uv run python -m scripts.run_b0x_kr_kiwoom_cycle \
     --table-dir ~/services/auto_trader-operator/policy-tables
 
-# ③ acceptance 왕복 1건 (KRX 정규장 안에서만)
+# ③ acceptance 왕복 1건 (KRX 정규장 안에서만, 기본 안전 mutation 모드)
 B0X_KR_KIWOOM_ENABLED=true uv run python -m scripts.run_b0x_kr_kiwoom_cycle \
     --table-dir ~/services/auto_trader-operator/policy-tables --confirm
+
+# ④ INTERIM_ORDERING — 이중 명시가 있어야만 DAY 주문을 남긴다.
+#    §4 envelope 파생 전건만 제출하며, 자동 취소하지 않는다.
+B0X_KR_KIWOOM_ENABLED=true uv run python -m scripts.run_b0x_kr_kiwoom_cycle \
+    --table-dir ~/services/auto_trader-operator/policy-tables \
+    --interim-ordering --confirm
 ```
 
-exit code: `0` 정상 · `2` writer lock 경합 **또는 왕복 미완(취소 미확인)**.
-🔴 `2` 를 보면 계좌에 미회수 주문이 남았을 수 있다 — `--readiness` 로 즉시
-`pending` 을 확인하고, 남아 있으면 운영자가 직접 취소한다.
+exit code: `0` 정상 · `2` writer lock 경합, acceptance 왕복 미완(취소 미확인),
+또는 interim 제출 증거 미확인. 🔴 `2` 를 보면 계좌에 미회수 주문이 남았을 수 있다 —
+`--readiness` 로 즉시 `pending` 을 확인하고, 남아 있으면 운영자가 직접 취소한다.
 
 ## 8. 아티팩트
 
@@ -161,9 +173,11 @@ exit code: `0` 정상 · `2` writer lock 경합 **또는 왕복 미완(취소 �
 2. **legacy 귀속 게이트는 2026-08-12 실환경에서 *증명되지 않았다*.** 그날
    kiwoom_mock 계좌의 보유가 **0종목**이라 legacy 분기에 도달할 입력이 없었다.
    단위 테스트로만 증명된 상태다(보유가 생기는 첫 사이클이 첫 실환경 검증 기회).
-3. **dedup(동일 심볼 재제출 차단)도 실환경 미증명.** 이 레인은 같은 사이클 안에서
-   항상 취소하므로 재제출 시점에 자기 미체결이 남아 있지 않다. 단위 테스트 +
-   preflight 의 `account_has_resting_orders` 사유가 코드 경로를 덮는다.
+3. **dedup(동일 심볼 재제출 차단)도 실환경 미증명.** `ACCEPTANCE_ONLY` 는 같은
+   사이클 안에서 취소하므로 재제출 시점에 자기 미체결이 남아 있지 않다.
+   `INTERIM_ORDERING` 은 DAY 주문을 남기므로 kt00007 재조회가 같은 심볼 재제출을
+   막아야 한다. 단위 테스트 + preflight 의 `account_has_resting_orders` 사유가 코드
+   경로를 덮는다.
 4. **kill switch 는 발화 입력이 없다.** `realized_pnl_today` 소스가 이 레인에도
    없으므로 −2.5% NAV kill 은 발화할 수 없다. 구조적 부재이지 측정된 0 이 아니다.
 5. **저널 유실 방향은 안전하다** (과소 귀속 → 매도 못 함). 다만 저널이 사라지면

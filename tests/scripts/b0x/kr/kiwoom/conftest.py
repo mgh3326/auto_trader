@@ -84,6 +84,7 @@ class FakeAccount:
         self.resting_calls = 0
         self.diagnostic_calls = 0
         self.buy_calls: list[dict[str, Any]] = []
+        self.sell_calls: list[dict[str, Any]] = []
         self.cancel_calls: list[dict[str, Any]] = []
         self.detail_calls: list[dict[str, Any]] = []
 
@@ -124,6 +125,14 @@ class FakeAccount:
         self, *, symbol: str, quantity: int, price: int
     ) -> dict[str, Any]:
         self.buy_calls.append({"symbol": symbol, "quantity": quantity, "price": price})
+        if self._buy_error is not None:
+            raise self._buy_error
+        return dict(self._buy_response)
+
+    async def place_limit_sell(
+        self, *, symbol: str, quantity: int, price: int
+    ) -> dict[str, Any]:
+        self.sell_calls.append({"symbol": symbol, "quantity": quantity, "price": price})
         if self._buy_error is not None:
             raise self._buy_error
         return dict(self._buy_response)
