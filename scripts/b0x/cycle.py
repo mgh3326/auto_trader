@@ -125,8 +125,14 @@ def base_record(
     now: dt.datetime,
     envelope: Envelope,
     labels: tuple[str, ...],
+    account_map_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Market-agnostic observation-record skeleton, shared by every lane."""
+    """Market-agnostic observation-record skeleton, shared by every lane.
+
+    The crypto runners pass the exact table directory they read. Other lanes
+    overwrite this generic block with their own lane-local provenance until
+    their contract-stamp repair is separately authorized.
+    """
 
     return {
         "schema": "b0x.observation.v1",
@@ -136,7 +142,7 @@ def base_record(
         "labels": list(labels),
         "envelope": envelope.canonical(),
         "contract": contract_stamp(),
-        "account_map": account_map_stamp(),
+        "account_map": account_map_stamp(account_map_path=account_map_path),
     }
 
 
@@ -163,6 +169,16 @@ def render_cycle_report(record: dict[str, Any], *, labels: tuple[str, ...]) -> s
     )
     if reason := account_map.get("commit_reason"):
         account_map_line += f" reason=`{reason}`"
+    if source_path := account_map.get("source_path"):
+        account_map_line += f" source=`{source_path}`"
+    if branch := account_map.get("branch"):
+        account_map_line += f" branch=`{branch}`"
+    if "reachable_from_origin_main" in account_map:
+        reachable = account_map["reachable_from_origin_main"]
+        rendered_reachability = (
+            "unknown" if reachable is None else str(bool(reachable)).lower()
+        )
+        account_map_line += f" origin/main-reachable=`{rendered_reachability}`"
     lines += [
         f"contract: `{contract.get('version', '-')}` "
         f"({', '.join(contract.get('clauses') or {}) or '-'}) · "
@@ -233,6 +249,7 @@ async def run_shadow_cycle(
     labels = header_labels(lane=shadow_lane.LANE, extra=(SHADOW_SYNTHETIC_FILL,))
     lane = shadow_lane.LANE
     outcome = CycleOutcome(lane=lane, at=now)
+    table_dir = Path(table_dir).expanduser()
 
     with writer_lock(lane=lane, root=Path(out_dir).expanduser()):
         ledger = ObservationLedger(lane=lane, root=Path(out_dir).expanduser())
@@ -248,7 +265,12 @@ async def run_shadow_cycle(
         day_rolled = portfolio.roll_utc_day(now=now)
 
         record = base_record(
-            market=MARKET, lane=lane, now=now, envelope=envelope, labels=labels
+            market=MARKET,
+            lane=lane,
+            now=now,
+            envelope=envelope,
+            labels=labels,
+            account_map_path=table_dir,
         )
         record["envelope_application"] = SHADOW_ENVELOPE_NOT_APPLIED
         record["touch_rule"] = {
@@ -274,7 +296,7 @@ async def run_shadow_cycle(
         }
 
         # --- table gate ---
-        table, unavailable = _table_or_reason(now=now, table_dir=Path(table_dir))
+        table, unavailable = _table_or_reason(now=now, table_dir=table_dir)
         if table is None:
             assert unavailable is not None
             record["zero_order_reason"] = unavailable.reason
@@ -444,13 +466,19 @@ async def run_sidecar_cycle(
         extra=(*account_history_labels(lane), CROSS_QUOTE_RATIO_TRANSFER),
     )
     outcome = CycleOutcome(lane=lane, at=now)
+    table_dir = Path(table_dir).expanduser()
 
     with writer_lock(lane=lane, root=Path(out_dir).expanduser()):
         ledger = ObservationLedger(lane=lane, root=Path(out_dir).expanduser())
         ledger.ensure()
 
         record = base_record(
-            market=MARKET, lane=lane, now=now, envelope=envelope, labels=labels
+            market=MARKET,
+            lane=lane,
+            now=now,
+            envelope=envelope,
+            labels=labels,
+            account_map_path=table_dir,
         )
         record["realized_pnl_source"] = SIDECAR_REALIZED_PNL_UNAVAILABLE
         record["policy"] = {
@@ -479,7 +507,7 @@ async def run_sidecar_cycle(
             if fresh.contaminated:
                 record["contaminated"] = True
 
-            table, unavailable = _table_or_reason(now=now, table_dir=Path(table_dir))
+            table, unavailable = _table_or_reason(now=now, table_dir=table_dir)
             if table is None:
                 assert unavailable is not None
                 record["zero_order_reason"] = unavailable.reason

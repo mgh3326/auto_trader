@@ -57,7 +57,6 @@ CONTRACT_CLAUSES: Final[dict[str, str]] = {
 
 #: Account map — the machine-readable surface is canonical (v1.3 ①).
 ACCOUNT_MAP_REPO: Final[str] = "auto_trader-operator"
-ACCOUNT_MAP_REPO_PATH: Final[Path] = Path.home() / "services" / ACCOUNT_MAP_REPO
 ACCOUNT_MAP_COMMIT_UNAVAILABLE: Final[str] = "UNAVAILABLE"
 ACCOUNT_MAP_CANONICAL_SURFACE: Final[str] = "operator_contract.yaml"
 ACCOUNT_MAP_REFERENCE_SURFACE: Final[str] = "mock/CLAUDE.md"
@@ -81,48 +80,137 @@ def contract_stamp() -> dict[str, Any]:
     }
 
 
-def _resolve_account_map_head() -> tuple[str, str | None]:
-    """Read the exact operator-repo HEAD used for this account-map stamp.
-
-    The operator repository is a read-only dependency here.  A missing or
-    unreadable checkout is observation degradation, not evidence for a
-    historical commit, so callers receive an explicit unavailable marker
-    instead of a stale fallback.
-    """
+def _run_git(
+    command: list[str], *, cwd: Path
+) -> subprocess.CompletedProcess[str] | None:
+    """Run a bounded, read-only Git query without raising into a cycle."""
 
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ACCOUNT_MAP_REPO_PATH,
+        return subprocess.run(
+            ["git", *command],
+            cwd=cwd,
             check=False,
             capture_output=True,
             text=True,
             timeout=5,
         )
     except OSError:
-        return ACCOUNT_MAP_COMMIT_UNAVAILABLE, "account_map_head_unavailable"
+        return None
     except subprocess.SubprocessError:
-        return ACCOUNT_MAP_COMMIT_UNAVAILABLE, "account_map_head_query_failed"
+        return None
 
-    if result.returncode != 0:
-        return ACCOUNT_MAP_COMMIT_UNAVAILABLE, "account_map_head_query_failed"
 
-    commit = result.stdout.strip()
+def _unavailable_account_map_stamp(
+    *,
+    source_path: Path | None,
+    reason: str,
+    repository_path: Path | None = None,
+) -> dict[str, Any]:
+    """Return an explicit unknown rather than inventing a historic commit."""
+
+    return {
+        "repo": ACCOUNT_MAP_REPO,
+        "commit": ACCOUNT_MAP_COMMIT_UNAVAILABLE,
+        "commit_status": "unavailable",
+        "commit_reason": reason,
+        "source_path": None if source_path is None else str(source_path),
+        "repository_path": (None if repository_path is None else str(repository_path)),
+        "branch": ACCOUNT_MAP_COMMIT_UNAVAILABLE,
+        "branch_reason": reason,
+        "reachable_from_origin_main": None,
+        "canonical_surface": ACCOUNT_MAP_CANONICAL_SURFACE,
+        "reference_surface": ACCOUNT_MAP_REFERENCE_SURFACE,
+    }
+
+
+def account_map_stamp(*, account_map_path: Path | None) -> dict[str, Any]:
+    """Stamp the account-map worktree that supplied this cycle's table path.
+
+    `account_map_path` is injected by the cycle from its actual
+    ``--table-dir`` value. The resolver never consults a separate shared
+    checkout: using one would let a later branch switch rewrite provenance for
+    a table the cycle did not consume.
+    """
+
+    if account_map_path is None:
+        return _unavailable_account_map_stamp(
+            source_path=None, reason="account_map_source_not_supplied"
+        )
+
+    source_path = Path(account_map_path).expanduser()
+    root_result = _run_git(["rev-parse", "--show-toplevel"], cwd=source_path)
+    if root_result is None:
+        return _unavailable_account_map_stamp(
+            source_path=source_path, reason="account_map_source_query_unavailable"
+        )
+    if root_result.returncode != 0:
+        return _unavailable_account_map_stamp(
+            source_path=source_path, reason="account_map_source_not_git_repository"
+        )
+
+    root_text = root_result.stdout.strip()
+    if not root_text:
+        return _unavailable_account_map_stamp(
+            source_path=source_path, reason="account_map_repository_path_invalid"
+        )
+    repository_path = Path(root_text)
+    if not (repository_path / ACCOUNT_MAP_CANONICAL_SURFACE).is_file():
+        return _unavailable_account_map_stamp(
+            source_path=source_path,
+            repository_path=repository_path,
+            reason="account_map_canonical_surface_missing",
+        )
+
+    head_result = _run_git(["rev-parse", "HEAD"], cwd=repository_path)
+    if head_result is None or head_result.returncode != 0:
+        return _unavailable_account_map_stamp(
+            source_path=source_path,
+            repository_path=repository_path,
+            reason="account_map_head_query_failed",
+        )
+    commit = head_result.stdout.strip()
     if not _GIT_COMMIT_RE.fullmatch(commit):
-        return ACCOUNT_MAP_COMMIT_UNAVAILABLE, "account_map_head_invalid"
-    return commit, None
+        return _unavailable_account_map_stamp(
+            source_path=source_path,
+            repository_path=repository_path,
+            reason="account_map_head_invalid",
+        )
 
+    branch_result = _run_git(["branch", "--show-current"], cwd=repository_path)
+    if branch_result is None or branch_result.returncode != 0:
+        branch = ACCOUNT_MAP_COMMIT_UNAVAILABLE
+        branch_reason: str | None = "account_map_branch_query_failed"
+    else:
+        branch = branch_result.stdout.strip() or "detached"
+        branch_reason = None
 
-def account_map_stamp() -> dict[str, Any]:
-    """Account-map identity block — canonical surface and actual HEAD."""
-
-    commit, reason = _resolve_account_map_head()
+    reachability_result = _run_git(
+        ["merge-base", "--is-ancestor", commit, "origin/main"],
+        cwd=repository_path,
+    )
+    if reachability_result is not None and reachability_result.returncode == 0:
+        reachable_from_origin_main: bool | None = True
+        commit_status = "available"
+        commit_reason: str | None = None
+    elif reachability_result is not None and reachability_result.returncode == 1:
+        reachable_from_origin_main = False
+        commit_status = "unpublished"
+        commit_reason = "account_map_head_not_reachable_from_origin_main"
+    else:
+        reachable_from_origin_main = None
+        commit_status = "reachability_unavailable"
+        commit_reason = "account_map_origin_main_query_failed"
 
     return {
         "repo": ACCOUNT_MAP_REPO,
         "commit": commit,
-        "commit_status": "available" if reason is None else "unavailable",
-        "commit_reason": reason,
+        "commit_status": commit_status,
+        "commit_reason": commit_reason,
+        "source_path": str(source_path),
+        "repository_path": str(repository_path),
+        "branch": branch,
+        "branch_reason": branch_reason,
+        "reachable_from_origin_main": reachable_from_origin_main,
         "canonical_surface": ACCOUNT_MAP_CANONICAL_SURFACE,
         "reference_surface": ACCOUNT_MAP_REFERENCE_SURFACE,
     }
@@ -133,7 +221,6 @@ __all__ = [
     "ACCOUNT_MAP_COMMIT_UNAVAILABLE",
     "ACCOUNT_MAP_REFERENCE_SURFACE",
     "ACCOUNT_MAP_REPO",
-    "ACCOUNT_MAP_REPO_PATH",
     "CONTRACT_CLAUSES",
     "CONTRACT_FILE_SHA256_REFERENCE_ONLY",
     "CONTRACT_PATH",

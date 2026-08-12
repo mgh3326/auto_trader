@@ -10,7 +10,7 @@ implements.
 from __future__ import annotations
 
 import subprocess
-from typing import Any
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +27,35 @@ V17_SCHEDULER_CLAUSE = (
 V17_CONTRACT_FILE_SHA256 = (
     "0d09e1ce4d175da75de17958880491965ea6cae8d13764853f23fbc0348f596a"
 )
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _make_operator_table_repo(tmp_path: Path) -> tuple[Path, Path]:
+    """Make an isolated operator worktree with a local origin/main reference."""
+
+    repository_path = tmp_path / "operator.tbl"
+    repository_path.mkdir()
+    _git(repository_path, "init", "-q")
+    _git(repository_path, "config", "user.email", "test@example.invalid")
+    _git(repository_path, "config", "user.name", "B0-X test")
+    (repository_path / "operator_contract.yaml").write_text("contract: test\n")
+    _git(repository_path, "add", "operator_contract.yaml")
+    _git(repository_path, "commit", "-q", "-m", "operator contract")
+    _git(repository_path, "branch", "-M", "main")
+    _git(repository_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    table_dir = repository_path / "policy-tables"
+    table_dir.mkdir()
+    return repository_path, table_dir
 
 
 @pytest.mark.unit
@@ -71,84 +100,87 @@ def test_sidecar_scope_is_the_narrowed_v13_standing() -> None:
 
 
 @pytest.mark.unit
-def test_account_map_stamp_is_the_exact_head_read_by_the_gate(
-    monkeypatch: pytest.MonkeyPatch,
+def test_account_map_stamp_uses_the_injected_table_worktree(
+    tmp_path: Path,
 ) -> None:
-    """A stamp cannot name a different commit than the account-map gate used."""
+    """The stamped commit comes from the table directory the cycle supplied."""
 
-    gate_head = "a" * 40
-    monkeypatch.setattr(
-        contract_module, "_resolve_account_map_head", lambda: (gate_head, None)
-    )
+    repository_path, table_dir = _make_operator_table_repo(tmp_path)
+    expected_head = _git(repository_path, "rev-parse", "HEAD")
 
-    stamp = contract_module.account_map_stamp()
+    stamp = contract_module.account_map_stamp(account_map_path=table_dir)
+
     assert stamp["canonical_surface"] == "operator_contract.yaml"
     assert stamp["reference_surface"] == "mock/CLAUDE.md"
     assert stamp["repo"] == "auto_trader-operator"
-    assert stamp["commit"] == gate_head
+    assert stamp["source_path"] == str(table_dir)
+    assert stamp["repository_path"] == str(repository_path)
+    assert stamp["commit"] == expected_head
+    assert stamp["branch"] == "main"
+    assert stamp["reachable_from_origin_main"] is True
     assert stamp["commit_status"] == "available"
     assert stamp["commit_reason"] is None
 
 
 @pytest.mark.unit
-def test_account_map_head_lookup_queries_the_operator_repo_head(
-    monkeypatch: pytest.MonkeyPatch,
+def test_detached_orphan_account_map_head_is_marked_unpublished(
+    tmp_path: Path,
 ) -> None:
-    """The provenance source is exactly ``git rev-parse HEAD`` in that repo."""
+    """A local-only detached commit is visible, not silently presented as main."""
 
-    expected_head = "b" * 40
-    captured: dict[str, Any] = {}
+    repository_path, table_dir = _make_operator_table_repo(tmp_path)
+    _git(repository_path, "checkout", "-q", "--detach", "HEAD")
+    (repository_path / "orphan.txt").write_text("not on origin/main\n")
+    _git(repository_path, "add", "orphan.txt")
+    _git(repository_path, "commit", "-q", "-m", "detached orphan")
+    orphan_head = _git(repository_path, "rev-parse", "HEAD")
 
-    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        captured["command"] = command
-        captured.update(kwargs)
-        return subprocess.CompletedProcess(command, 0, stdout=f"{expected_head}\n")
+    stamp = contract_module.account_map_stamp(account_map_path=table_dir)
 
-    monkeypatch.setattr(contract_module.subprocess, "run", fake_run)
-
-    commit, reason = contract_module._resolve_account_map_head()
-
-    assert commit == expected_head
-    assert reason is None
-    assert captured["command"] == ["git", "rev-parse", "HEAD"]
-    assert captured["cwd"] == contract_module.ACCOUNT_MAP_REPO_PATH
+    assert stamp["commit"] == orphan_head
+    assert stamp["branch"] == "detached"
+    assert stamp["reachable_from_origin_main"] is False
+    assert stamp["commit_status"] == "unpublished"
+    assert stamp["commit_reason"] == ("account_map_head_not_reachable_from_origin_main")
 
 
 @pytest.mark.unit
-def test_failed_account_map_lookup_is_honestly_stamped_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
+def test_non_git_account_map_source_is_honestly_stamped_unavailable(
+    tmp_path: Path,
 ) -> None:
-    """A failed lookup cannot silently revive a historic hard-coded commit."""
+    """An invalid table path cannot silently revive a historic hard-coded SHA."""
 
-    def fail_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        raise OSError("operator checkout unavailable")
-
-    monkeypatch.setattr(contract_module.subprocess, "run", fail_run)
-
-    stamp = contract_module.account_map_stamp()
+    source_path = tmp_path / "not-an-operator-worktree"
+    source_path.mkdir()
+    stamp = contract_module.account_map_stamp(account_map_path=source_path)
 
     assert stamp["commit"] == "UNAVAILABLE"
     assert stamp["commit_status"] == "unavailable"
-    assert stamp["commit_reason"] == "account_map_head_unavailable"
+    assert stamp["commit_reason"] == "account_map_source_not_git_repository"
+    assert stamp["source_path"] == str(source_path)
+    assert stamp["reachable_from_origin_main"] is None
     assert "3f402919fca5b68bda187e8e521fc886aefb022a" not in repr(stamp)
 
 
 @pytest.mark.unit
-def test_unavailable_account_map_reason_is_visible_in_the_artifact_header() -> None:
+def test_unavailable_account_map_reason_is_visible_in_the_artifact_header(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "not-an-operator-worktree"
+    source_path.mkdir()
+    stamp = contract_module.account_map_stamp(account_map_path=source_path)
     report = render_cycle_report(
         {
             "lane": "binance_spot_demo_sidecar_buy_side_only",
             "at": "2026-08-13T00:00:00+00:00",
             "contract": contract_module.contract_stamp(),
-            "account_map": {
-                "repo": "auto_trader-operator",
-                "commit": "UNAVAILABLE",
-                "canonical_surface": "operator_contract.yaml",
-                "commit_reason": "account_map_head_unavailable",
-            },
+            "account_map": stamp,
         },
         labels=(),
     )
 
     assert "auto_trader-operator@UNAVAILABLE" in report
-    assert "reason=`account_map_head_unavailable`" in report
+    assert "reason=`account_map_source_not_git_repository`" in report
+    assert f"source=`{source_path}`" in report
+    assert "branch=`UNAVAILABLE`" in report
+    assert "origin/main-reachable=`unknown`" in report

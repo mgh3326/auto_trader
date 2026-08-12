@@ -15,9 +15,12 @@ functions are used). Never merges, never places or cancels an order.
 
 Usage
 -----
-    uv run python -m scripts.build_policy_table --market crypto --out-dir /path/to/policy-tables
-    uv run python -m scripts.build_policy_table --market kr --out-dir /path/to/policy-tables
-    uv run python -m scripts.build_policy_table --market us --out-dir /path/to/policy-tables
+    # §47 Prefect caller: uses the shared, commit-owned destination and emits
+    # an explicit warning to stderr.
+    uv run python -m scripts.build_policy_table --market crypto
+
+    # Manual/isolated invocation: name a non-shared output directory.
+    uv run python -m scripts.build_policy_table --market kr --out-dir /tmp/policy-tables
 
     # Reproducibility check (ROB-1230 acceptance #2): dump raw inputs once,
     # then replay the same inputs through the pure compute+serialize path
@@ -37,7 +40,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from scripts.policy_table.adapters import crypto as crypto_adapter
 from scripts.policy_table.adapters import kr as kr_adapter
@@ -48,11 +51,17 @@ from scripts.policy_table.core.schema import (
     sha256_of_bytes,
 )
 
-#: The canonical path used by the Prefect table-build flows.  It is deliberately
-#: not a CLI default: writing into the shared operator checkout requires an
-#: explicit ``--out-dir`` at each invocation.
-OPERATOR_POLICY_TABLE_DIR = (
+#: §47's existing Prefect caller omits ``--out-dir`` and commits this directory.
+#: Keep that compatible default; `_warn_if_shared_operator_out_dir` makes the
+#: otherwise hazardous shared-checkout write explicit on stderr.
+DEFAULT_OUT_DIR: Final[Path] = (
     Path.home() / "services" / "auto_trader-operator" / "policy-tables"
+)
+OPERATOR_POLICY_TABLE_DIR: Final[Path] = DEFAULT_OUT_DIR
+_SHARED_OPERATOR_OUT_DIR_WARNING: Final[str] = (
+    "WARNING: --out-dir is using the shared operator checkout "
+    f"({DEFAULT_OUT_DIR}); this is the Prefect-owned policy-tables destination. "
+    "Pass an explicit isolated --out-dir for manual builds."
 )
 
 # The exact D3 engine module files this job reuses (not reimplements). Their
@@ -279,11 +288,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--out-dir",
-        required=True,
+        default=str(DEFAULT_OUT_DIR),
         help=(
-            "output directory (required; pass the Prefect-owned "
-            f"{OPERATOR_POLICY_TABLE_DIR} explicitly when that shared checkout "
-            "is the intended destination)"
+            "output directory (default: the shared Prefect-owned "
+            f"{OPERATOR_POLICY_TABLE_DIR}; emits a warning when used)"
         ),
     )
     parser.add_argument(
@@ -299,7 +307,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="use this filename timestamp instead of now() (testing only)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    _warn_if_shared_operator_out_dir(args.out_dir)
+    return args
+
+
+def _warn_if_shared_operator_out_dir(out_dir: str) -> None:
+    """Make a shared operator-checkout write visible without breaking Prefect."""
+
+    if Path(out_dir).expanduser() == DEFAULT_OUT_DIR:
+        print(_SHARED_OPERATOR_OUT_DIR_WARNING, file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
