@@ -839,6 +839,18 @@ class Settings(BaseSettings):
     # ROB-871 — master gate for resting-class automatic submission. Telegram
     # approvals remain the fallback whenever this is off or eligibility fails.
     ORDER_PROPOSALS_AUTO_APPROVE: bool = False
+    # AUTO-APPROVE-EXPAND (§40차) — selects which eligibility classification
+    # `evaluate_auto_approve_eligibility` applies. Subordinate to
+    # ORDER_PROPOSALS_AUTO_APPROVE: with that master gate off, nothing here runs.
+    #   "off"      (default) ROB-871 resting-class rules, unchanged.
+    #   "expanded" §40차: buys and *proven* profit-take sells drop the
+    #              min_distance_pct floor (they must still be non-marketable so
+    #              the veto button has an order left to cancel). Loss cuts, sells
+    #              whose fee-netted expected P&L is <= 0, the ±1% break-even band,
+    #              tagged proposals and anything unclassifiable stay
+    #              approval-required.
+    # Turning this to "expanded" is an operator decision; this repo ships "off".
+    ORDER_PROPOSALS_AUTO_APPROVE_MODE: Literal["off", "expanded"] = "off"
     # ROB-816 PR 2 — Telegram approval flow (default off)
     ORDER_PROPOSALS_TELEGRAM_ENABLED: bool = False
     ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN: str = ""

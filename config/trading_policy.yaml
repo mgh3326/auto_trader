@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-08-08.1"
+version: "2026-08-12.1"
 captured_as_of: "2026-08-08"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner)"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off)"
 
 authority:
   scope: judgment_policy_only
@@ -45,6 +45,37 @@ order_proposals:
       kr: 500000
       us: 400
       crypto: 300000
+    # AUTO-APPROVE-EXPAND (§40차) — inputs to the profit-take classification,
+    # consumed only when ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded.
+    #
+    # breakeven_band_pct: the ±% band around avg_buy_price inside which a sell
+    # is treated as a break-even boundary case and must go to a human, whatever
+    # the sign of the P&L. §40차 fixes this at 1%.
+    breakeven_band_pct: 1
+    #
+    # round_trip_cost_bps: total both-leg cost (commission + transaction tax +
+    # FX spread where applicable), used to net down expected realized P&L
+    # before the "> 0" test.
+    #
+    # These are NOT measured rates. The veto-capable ledgers
+    # (review.kis_live_order_ledger, review.live_order_ledger) have no
+    # commission/tax columns, so this repo has no realized fee evidence for
+    # kis_live or upbit to derive a rate from — only review.toss_live_order_ledger
+    # records commission/tax, and toss_live is not veto-capable. Until a measured
+    # rate exists these are the CONSERVATIVE MAXIMUM of the rates this repo
+    # already declares, so the profit-take test is narrower than reality:
+    #   kr     47.4 = 14.7bp x 2 legs (account_routing kis_domestic commission_bps)
+    #                 + 18bp sell tax (paper_trading FEE_RATES equity_kr tax_sell)
+    #                 vs the 21bp the paper_trading commission alone implies.
+    #   us     90.0 = (25bp commission + 20bp fx spread) x 2 legs
+    #                 (account_routing kis_overseas) vs 14bp from paper_trading.
+    #   crypto 10.0 = 5bp x 2 legs (paper_trading FEE_RATES crypto).
+    # auto_approve.py enforces the same values as a floor, so lowering a number
+    # here cannot widen auto-approval — only raising one has any effect.
+    round_trip_cost_bps:
+      kr: 47.4
+      us: 90
+      crypto: 10
 
 # Raw-sector -> cluster grouping for the concentration cap. A member matches a
 # symbol's symbol_sectors label (name_kr / name_en / source_key) when the member

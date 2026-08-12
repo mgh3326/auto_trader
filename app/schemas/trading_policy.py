@@ -281,6 +281,13 @@ class OrderProposalAutoApprovePolicy(BaseModel):
 
     Caps are denominated in each market's settlement currency: KRW for KR
     equities and crypto, USD for US equities.
+
+    ``breakeven_band_pct`` and ``round_trip_cost_bps`` are the operator-owned
+    inputs to the expanded classification (see
+    ``order_proposals/auto_approve.py``). They are optional so a deployment
+    pinned to an older YAML still loads; the defaults are the same conservative
+    values the code floor enforces, and the code floor means a policy edit can
+    only ever make the profit-take classification *narrower*, never wider.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -288,6 +295,10 @@ class OrderProposalAutoApprovePolicy(BaseModel):
     min_distance_pct: float = Field(gt=0, le=100)
     per_order_cap: dict[Market, float]
     daily_cap: dict[Market, float]
+    breakeven_band_pct: float = Field(default=1.0, gt=0, le=100)
+    round_trip_cost_bps: dict[Market, float] = Field(
+        default_factory=lambda: {"kr": 47.4, "us": 90.0, "crypto": 10.0}
+    )
 
     @field_validator("per_order_cap", "daily_cap")
     @classmethod
@@ -297,6 +308,20 @@ class OrderProposalAutoApprovePolicy(BaseModel):
             raise ValueError(f"market caps must contain exactly {sorted(required)}")
         if any(cap <= 0 for cap in value.values()):
             raise ValueError("market caps must be positive")
+        return value
+
+    @field_validator("round_trip_cost_bps")
+    @classmethod
+    def validate_round_trip_cost(
+        cls, value: dict[Market, float]
+    ) -> dict[Market, float]:
+        required = {"kr", "us", "crypto"}
+        if set(value) != required:
+            raise ValueError(
+                f"round_trip_cost_bps must contain exactly {sorted(required)}"
+            )
+        if any(bps < 0 for bps in value.values()):
+            raise ValueError("round_trip_cost_bps must be non-negative")
         return value
 
     @model_validator(mode="after")
