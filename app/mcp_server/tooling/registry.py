@@ -1,5 +1,18 @@
 """Tool registration orchestration for MCP server.
 
+ROB-1239: registration below is the physical enforcement half of the
+route_request advisory/enforcement dual structure (see
+`app/mcp_server/tooling/route_request_registration.py` module docstring). A
+tool `route_request` lists in `blocked_actions` for a lane may still be
+callable here if this file registers it on the caller's profile — e.g. the
+five KR `*_mock_get_order_*` / `*_mock_get_positions` / `*_mock_get_orderable_cash`
+read tools are route-BLOCK on every lane yet physically registered on
+McpProfile.DEFAULT (below) because DEFAULT unconditionally registers
+`register_kis_mock_order_tools` and, when `settings.kiwoom_mock_enabled`,
+`orders_kiwoom_variants.register`. Removing a tool from *this* mapping is
+what actually removes it from a session's callable surface; changing its
+`route_request` lane classification does not.
+
 Profile → tool surface mapping
 ────────────────────────────────────────────────────────────────────────────
 "default" (McpProfile.DEFAULT):
