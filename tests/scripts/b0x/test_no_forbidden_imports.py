@@ -25,7 +25,12 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[3] / "scripts" / "b0x"
 #: tuple in the same commit that adds them.
 RUNNERS = tuple(
     Path(__file__).resolve().parents[3] / "scripts" / name
-    for name in ("run_b0x_cycle.py", "run_b0x_kr_cycle.py", "run_b0x_cancel.py")
+    for name in (
+        "run_b0x_cycle.py",
+        "run_b0x_kr_cycle.py",
+        "run_b0x_kr_kiwoom_cycle.py",
+        "run_b0x_cancel.py",
+    )
 )
 
 #: In-process LLM providers — the ROB-501 runtime ownership boundary.
@@ -63,6 +68,30 @@ FORBIDDEN_LIVE_ORDER = (
     "app.services.brokers.binance.futures_demo",
     "app.services.brokers.binance.rest_client",
 )
+
+#: Narrow, per-file exemptions from :data:`FORBIDDEN_LIVE_ORDER`.
+#:
+#: 🔴 The only entry is ``app.services.brokers.kiwoom.domestic_orders``, and it
+#: is a **mis-classification correction**, not a relaxation. That module is
+#: KRX-mock-only by construction: it is a thin body builder over an injected
+#: ``post_api``, it rejects ``NXT``/``SOR`` before any network call, and the
+#: only client in this repo that satisfies its protocol for KRX orders is
+#: ``KiwoomMockClient``, which refuses any base URL other than
+#: ``mockapi.kiwoom.com`` in its constructor *and* re-validates the built
+#: request's host immediately before ``send``. It was listed above because no
+#: B0-X lane touched kiwoom at all until §39차 ① sanctioned exactly these three
+#: classes for the ``kiwoom_mock`` lane.
+#:
+#: The exemption is per-file so it cannot spread: every other file in the
+#: package (including the kis lane and both crypto lanes) is still refused, and
+#: the exempted files carry a *stricter* guard of their own in
+#: ``tests/scripts/b0x/kr/kiwoom/test_kiwoom_static_guards.py`` — allowlisted
+#: imports plus a string sweep for the live host.
+LIVE_ORDER_EXEMPTIONS: dict[str, frozenset[str]] = {
+    "app.services.brokers.kiwoom.domestic_orders": frozenset(
+        {"kiwoom.py", "kiwoom_cycle.py", "run_b0x_kr_kiwoom_cycle.py"}
+    ),
+}
 
 #: Scheduler registration — v1 is manual kickoff only.
 FORBIDDEN_SCHEDULER = (
@@ -115,9 +144,37 @@ def test_no_live_order_surface_imports(path: Path) -> None:
         module
         for module in _imported_modules(path)
         for forbidden in FORBIDDEN_LIVE_ORDER
-        if module == forbidden or module.startswith(f"{forbidden}.")
+        if (module == forbidden or module.startswith(f"{forbidden}."))
+        and path.name not in LIVE_ORDER_EXEMPTIONS.get(forbidden, frozenset())
     ]
     assert offenders == [], f"{path.name} imports a live order surface: {offenders}"
+
+
+def test_live_order_exemptions_stay_narrow() -> None:
+    """The exemption table must not grow silently.
+
+    Pinned to the exact §39차 ① set: one module, three files. Widening it is a
+    scope decision that belongs in a review, not in a passing test run.
+    """
+
+    assert LIVE_ORDER_EXEMPTIONS == {
+        "app.services.brokers.kiwoom.domestic_orders": frozenset(
+            {"kiwoom.py", "kiwoom_cycle.py", "run_b0x_kr_kiwoom_cycle.py"}
+        )
+    }
+    # Every exempted module must still be in the denylist — an exemption for a
+    # module nobody forbids is dead config that hides the next real one.
+    for module in LIVE_ORDER_EXEMPTIONS:
+        assert module in FORBIDDEN_LIVE_ORDER
+
+
+@pytest.mark.parametrize("path", _python_files(), ids=lambda p: p.name)
+def test_kis_and_crypto_lanes_get_no_kiwoom_exemption(path: Path) -> None:
+    """The exemption is per-file; prove the other lanes are still refused."""
+
+    if path.name in {"kiwoom.py", "kiwoom_cycle.py", "run_b0x_kr_kiwoom_cycle.py"}:
+        pytest.skip("this is the exempted kiwoom lane")
+    assert "app.services.brokers.kiwoom.domestic_orders" not in _imported_modules(path)
 
 
 @pytest.mark.parametrize("path", _python_files(), ids=lambda p: p.name)

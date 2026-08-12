@@ -1,0 +1,398 @@
+"""Cycle orchestration — the gates in the order they actually fire.
+
+Every test here drives :func:`scripts.b0x.kr.kiwoom_cycle.run_kiwoom_cycle`
+with a fake account and a synthetic policy table, and asserts on **what
+reached the venue**, not only on the record. A record that says "blocked"
+while an order went out is the failure mode these tests exist to catch, so
+``account.buy_calls`` is checked alongside every zero-order reason.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from scripts.b0x.kr import kiwoom as kiwoom_lane
+from scripts.b0x.kr import kiwoom_attribution as kiwoom_attr
+from scripts.b0x.kr import kiwoom_cycle
+from scripts.policy_table.core.schema import compute_policy_table_hash
+from tests.scripts.b0x._table_fixtures import make_payload, make_row, write_table
+from tests.scripts.b0x.kr.kiwoom.conftest import FakeAccount, position, resting
+
+pytestmark = pytest.mark.unit
+
+IN_SESSION = dt.datetime(2026, 8, 12, 3, 0, tzinfo=dt.UTC)  # 12:00 KST, Wednesday
+OUT_OF_SESSION = dt.datetime(2026, 8, 12, 7, 30, tzinfo=dt.UTC)  # 16:30 KST
+
+
+def _write_table(
+    table_dir: Path,
+    *,
+    generated_at: dt.datetime,
+    symbols: tuple[str, ...] = ("005930",),
+    halted: list[str] | None = None,
+) -> None:
+    """Write a real, hash-valid ``policy_table.v1`` for the KR market.
+
+    Built through ``tests.scripts.b0x._table_fixtures`` so the fixture passes
+    the same integrity check a generated table does — a hand-stamped hash
+    would test a door the lane does not actually use.
+    """
+
+    payload = make_payload(
+        rows=[
+            make_row(symbol=symbol, previous_close="72000.00", buy_l1="70000.00")
+            for symbol in symbols
+        ],
+        generated_at=generated_at,
+        market="kr",
+    )
+    payload["universe"]["halted_suspect"] = list(halted or [])
+    payload["stamps"]["policy_table_hash"] = compute_policy_table_hash(
+        {key: value for key, value in payload.items() if key != "stamps"}
+    )
+    write_table(table_dir, payload, market="kr")
+
+
+@pytest.fixture
+def table_dir(tmp_path: Path) -> Path:
+    directory = tmp_path / "policy-tables"
+    _write_table(directory, generated_at=IN_SESSION - dt.timedelta(hours=4))
+    return directory
+
+
+@pytest.fixture
+def out_dir(tmp_path: Path) -> Path:
+    return tmp_path / "artifacts"
+
+
+@pytest.fixture
+def armed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Arm only the confirm gates a unit test can honestly satisfy."""
+
+    monkeypatch.setattr(kiwoom_lane, "assert_kiwoom_lane_enabled", lambda: None)
+    monkeypatch.setattr(
+        kiwoom_lane,
+        "account_identity_summary",
+        lambda: {"fingerprint": "sha256:test-account", "product_suffix": "28"},
+    )
+
+
+async def _run(
+    *,
+    account,
+    out_dir,
+    table_dir,
+    confirm=False,
+    now=IN_SESSION,  # noqa: ANN001
+):  # noqa: ANN202
+    return await kiwoom_cycle.run_kiwoom_cycle(
+        now=now,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=confirm,
+        account=account,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Preview path.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preview_plans_without_touching_the_order_surface(
+    table_dir, out_dir
+) -> None:  # noqa: ANN001
+    account = FakeAccount()
+    outcome = await _run(account=account, out_dir=out_dir, table_dir=table_dir)
+
+    assert outcome.zero_order_reason is None
+    assert outcome.record["planned"], "preview should still plan"
+    assert outcome.record["submission_skipped"].startswith("confirm=False")
+    assert account.buy_calls == []
+    assert account.cancel_calls == []
+    assert outcome.artifact_path is not None and outcome.artifact_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_outside_rth_is_a_zero_order_cycle(table_dir, out_dir) -> None:  # noqa: ANN001
+    account = FakeAccount()
+    outcome = await _run(
+        account=account, out_dir=out_dir, table_dir=table_dir, now=OUT_OF_SESSION
+    )
+    assert outcome.zero_order_reason == kiwoom_cycle.OUTSIDE_RTH_REASON
+    assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_missing_table_is_a_zero_order_cycle(tmp_path, out_dir) -> None:  # noqa: ANN001
+    account = FakeAccount()
+    outcome = await _run(account=account, out_dir=out_dir, table_dir=tmp_path / "empty")
+    assert outcome.zero_order_reason == "table_missing"
+    assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_record_carries_the_account_map_and_status_label(
+    table_dir, out_dir
+) -> None:  # noqa: ANN001
+    outcome = await _run(account=FakeAccount(), out_dir=out_dir, table_dir=table_dir)
+    record = outcome.record
+
+    assert record["cycle_status"] == "OBSERVATION_DERIVATION_ONLY"
+    assert record["account_map"]["commit"] == kiwoom_cycle.KR_ACCOUNT_MAP_COMMIT
+    assert record["account_map"]["gate_values"]["account_lanes.kiwoom_mock"] == "KR-B1"
+    assert (
+        "kiwoom_mock"
+        in record["account_map"]["gate_values"]["b0x_adapter_orders_20260808.surfaces"]
+    )
+    # 🔴 The lane must never claim the kis ledger as its pending source.
+    assert "kt00009" in record["own_pending_source"]
+    assert "원장 예외 미사용" in record["own_pending_source"]
+    assert any("COEXISTING_ACCOUNT_LANE" in label for label in record["labels"]), (
+        "the coexistence caveat must be on every artifact"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Confirm preflight — each reason, each with zero venue calls.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_confirm_blocks_on_same_day_foreign_orders(
+    table_dir, out_dir, armed
+) -> None:  # noqa: ANN001, ARG001
+    """🔴 The empirical KR-B1-is-active gate."""
+
+    account = FakeAccount(
+        order_detail={
+            kiwoom_attr.kst_order_date(IN_SESSION): [
+                {"order_id": "0000009999", "symbol": "005380", "filled_quantity": 1}
+            ]
+        }
+    )
+    outcome = await _run(
+        account=account, out_dir=out_dir, table_dir=table_dir, confirm=True
+    )
+    assert outcome.zero_order_reason == "preflight_not_clean"
+    assert (
+        "CONTAMINATED_foreign_same_day_orders_kr_b1_active_suspect"
+        in outcome.record["preflight"]["reasons"]
+    )
+    assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_blocks_when_the_account_already_has_resting_orders(
+    table_dir, out_dir, armed
+) -> None:  # noqa: ANN001, ARG001
+    account = FakeAccount(resting=[(resting("777", "005930"),)])
+    outcome = await _run(
+        account=account, out_dir=out_dir, table_dir=table_dir, confirm=True
+    )
+    assert outcome.zero_order_reason == "preflight_not_clean"
+    assert "account_has_resting_orders" in outcome.record["preflight"]["reasons"]
+    assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_blocks_when_pending_is_unreadable(
+    table_dir, out_dir, armed
+) -> None:  # noqa: ANN001, ARG001
+    account = FakeAccount(resting_error=RuntimeError("kt00009 down"))
+    outcome = await _run(
+        account=account, out_dir=out_dir, table_dir=table_dir, confirm=True
+    )
+    assert outcome.zero_order_reason == "preflight_not_clean"
+    assert "broker_pending_unreadable" in outcome.record["preflight"]["reasons"]
+    assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_blocks_when_attribution_is_unreadable(
+    table_dir, out_dir, armed, tmp_path
+) -> None:  # noqa: ANN001, ARG001
+    corrupt = tmp_path / "corrupt.jsonl"
+    corrupt.write_text("{oops\n", encoding="utf-8")
+    account = FakeAccount(positions=(position("005930", 10),))
+
+    outcome = await kiwoom_cycle.run_kiwoom_cycle(
+        now=IN_SESSION,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=True,
+        account=account,
+        journal=kiwoom_attr.OwnOrderJournal(path=corrupt),
+    )
+    assert outcome.zero_order_reason == "preflight_not_clean"
+    assert "attribution_unreadable" in outcome.record["preflight"]["reasons"]
+    assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_blocks_when_cash_is_not_positive(
+    table_dir, out_dir, armed
+) -> None:  # noqa: ANN001, ARG001
+    account = FakeAccount(cash=Decimal("0"))
+    outcome = await _run(
+        account=account, out_dir=out_dir, table_dir=table_dir, confirm=True
+    )
+    assert outcome.zero_order_reason == "preflight_not_clean"
+    assert "cash_not_positive" in outcome.record["preflight"]["reasons"]
+    assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_without_the_env_gate_is_zero_order(
+    table_dir, out_dir, monkeypatch
+) -> None:  # noqa: ANN001
+    """Default-off is real: the unarmed lane cannot dispatch."""
+
+    monkeypatch.delenv("B0X_KR_KIWOOM_ENABLED", raising=False)
+    account = FakeAccount()
+    outcome = await _run(
+        account=account, out_dir=out_dir, table_dir=table_dir, confirm=True
+    )
+    assert outcome.zero_order_reason == "confirm_gate_not_armed"
+    assert account.buy_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Confirm happy path — one order, always cancelled.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_confirm_submits_exactly_one_order_and_cancels_it(
+    table_dir, out_dir, armed
+) -> None:  # noqa: ANN001, ARG001
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        symbols=("005930", "000660"),
+    )
+    # Derivation consumes rows in lexicographic symbol order, so the bounded
+    # lever's single submission is 000660 — asserted explicitly rather than
+    # assumed, because "which one of several" is exactly what the limit decides.
+    account = FakeAccount(
+        resting=[
+            (),  # preflight: clean account
+            (),  # pre-dispatch re-read
+            (resting("0000123456", "000660", price=70_000, remaining=4),),  # resting
+            (),  # reconcile: gone
+        ]
+    )
+
+    outcome = await _run(
+        account=account, out_dir=out_dir, table_dir=table_dir, confirm=True
+    )
+
+    assert outcome.exit_code == 0
+    assert len(account.buy_calls) == 1, "the bounded lever must submit exactly one"
+    assert account.buy_calls[0]["symbol"] == "000660"
+    assert len(account.cancel_calls) == 1
+    trips = outcome.record["round_trip"]
+    assert len(trips) == 1
+    assert trips[0]["cancel_confirmed"] is True
+    assert trips[0]["round_trip_complete"] is True
+    assert trips[0]["correlation_id"].startswith("b0xkw-")
+    assert outcome.record["submission_stopped"].startswith(
+        "acceptance_submission_limit="
+    )
+    assert outcome.record["round_trip_policy"] == kiwoom_cycle.ROUND_TRIP_MANDATORY_NOTE
+
+
+@pytest.mark.asyncio
+async def test_confirm_writes_the_order_number_to_the_journal(
+    table_dir, out_dir, armed, tmp_path
+) -> None:  # noqa: ANN001, ARG001
+    journal = kiwoom_attr.OwnOrderJournal(path=tmp_path / "journal.jsonl")
+    account = FakeAccount(
+        resting=[
+            (),
+            (),
+            (resting("0000123456", "005930", price=70_000, remaining=4),),
+            (),
+        ]
+    )
+    await kiwoom_cycle.run_kiwoom_cycle(
+        now=IN_SESSION,
+        table_dir=table_dir,
+        out_dir=out_dir,
+        confirm=True,
+        account=account,
+        journal=journal,
+    )
+    records = journal.read_all()
+    assert [record.order_no for record in records] == ["0000123456"]
+    assert records[0].correlation_id.startswith("b0xkw-")
+    assert records[0].order_date == kiwoom_attr.kst_order_date(IN_SESSION)
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_cancel_exits_non_zero(table_dir, out_dir, armed) -> None:  # noqa: ANN001, ARG001
+    """🔴 mutant ⑤ at cycle level — a stuck order is not a clean run."""
+
+    account = FakeAccount(
+        resting=[
+            (),
+            (),
+            (resting("0000123456", "005930", price=70_000, remaining=4),),
+            (resting("0000123456", "005930", price=70_000, remaining=4),),
+        ]
+    )
+    outcome = await _run(
+        account=account, out_dir=out_dir, table_dir=table_dir, confirm=True
+    )
+    assert outcome.exit_code == 2
+    assert outcome.record["submission_stopped"] == "round_trip_incomplete"
+    assert outcome.record["round_trip"] == []
+    assert outcome.record["round_trip_failures"]
+
+
+@pytest.mark.asyncio
+async def test_halted_suspect_symbol_never_reaches_the_venue(
+    table_dir, out_dir, armed
+) -> None:  # noqa: ANN001, ARG001
+    """The table already drops these; this is the second, independent line."""
+
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        halted=["005930"],
+    )
+    account = FakeAccount()
+    outcome = await _run(
+        account=account, out_dir=out_dir, table_dir=table_dir, confirm=True
+    )
+    assert outcome.record["halted_suspect"]["symbols"] == ["005930"]
+    assert outcome.record["submission_stopped"] == "halted_suspect_symbol"
+    assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stale_table_is_a_zero_order_cycle(table_dir, out_dir, armed) -> None:  # noqa: ANN001, ARG001
+    """MAX_TABLE_AGE for KR is 36h and this lane does not get its own value."""
+
+    _write_table(table_dir, generated_at=IN_SESSION - dt.timedelta(hours=48))
+    account = FakeAccount()
+    outcome = await _run(
+        account=account, out_dir=out_dir, table_dir=table_dir, confirm=True
+    )
+    assert outcome.zero_order_reason == "stale_by_age"
+    assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_second_process_is_refused_by_the_writer_lock(table_dir, out_dir) -> None:  # noqa: ANN001
+    from scripts.b0x.ledger import WriterLockUnavailable, writer_lock
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with writer_lock(lane=kiwoom_cycle.LANE, root=out_dir):
+        with pytest.raises(WriterLockUnavailable):
+            await _run(account=FakeAccount(), out_dir=out_dir, table_dir=table_dir)

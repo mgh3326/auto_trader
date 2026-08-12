@@ -17,6 +17,7 @@ from scripts.b0x.scope import (
     ALPACA_PAPER_LAB_SCOPE_KEY,
     BINANCE_SPOT_DEMO_SIDECAR_SCOPE_KEY,
     KIS_MOCK_SCOPE_KEY,
+    KIWOOM_MOCK_SCOPE_KEY,
     KNOWN_B0X_SCOPE_KEYS,
     UPBIT_SHADOW_SCOPE_KEY,
 )
@@ -47,6 +48,15 @@ WRITER_SINGLETON_SCOPE_CAVEATS: Final[dict[str, str]] = {
         "WRITER_SINGLETON_SCOPE_CAVEAT — kis_mock(KR) 계좌 배타성의 근거는 "
         "operator account map의 exclusive_lane 및 B0-X 단일 writer 할당이다. "
         "posture-v1 shadow와 방향성 랩은 관측 전용으로 공존한다."
+    ),
+    KIWOOM_MOCK_SCOPE_KEY: (
+        "WRITER_SINGLETON_SCOPE_CAVEAT — kiwoom_mock 계좌의 operator "
+        "account_lanes 값은 KR-B1이며, B0-X는 §39차 한시 **공존** 배정이다"
+        "(strategy_order_exceptions.b0x-adapter-orders-20260808 의 surfaces 에 "
+        "kiwoom_mock 등재, KRX RTH only). 따라서 이 레인은 계좌 단독 소유를 "
+        "주장하지 않는다: KR-B1 주문 발행과 동시 사용은 금지이고, 배타성은 "
+        "KR-B1 비활성 확인이라는 운영 조치로만 확보된다. 방어는 브로커 직접 "
+        "조회 기반 오염 게이트(당일 자기 외 주문 흔적 = fail-closed)에 둔다."
     ),
     UPBIT_SHADOW_SCOPE_KEY: (
         "WRITER_SINGLETON_SCOPE_CAVEAT — Upbit shadow-sim은 실계좌가 아닌 "
