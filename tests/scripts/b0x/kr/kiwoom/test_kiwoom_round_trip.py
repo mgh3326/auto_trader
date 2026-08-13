@@ -51,8 +51,8 @@ def _sink():  # noqa: ANN202
 
 
 @pytest.mark.asyncio
-async def test_interim_day_submission_never_calls_cancel(now) -> None:  # noqa: ANN001
-    """INTERIM_ORDERING records acceptance, not a synthetic fill or cleanup."""
+async def test_ordering_day_submission_never_calls_cancel(now) -> None:  # noqa: ANN001
+    """ORDERING records acceptance, not a synthetic fill or cleanup."""
 
     account = FakeAccount()
     writer = _sink()

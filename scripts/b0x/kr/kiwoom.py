@@ -80,7 +80,7 @@ not to hold inventory. A cancel that fails is recorded as a failure and exits
 non-zero — never laundered into a clean success (see
 :class:`RoundTripIncomplete`).
 
-``INTERIM_ORDERING`` uses :func:`submit_day_order` instead. That function
+``ORDERING`` uses :func:`submit_day_order` instead. That function
 records only broker acceptance and the assigned order number; it deliberately
 does not claim a fill and never invokes cancellation. The caller is responsible
 for the stricter preflight and for choosing that non-default mode.
@@ -211,6 +211,16 @@ class BrokerEchoMismatch(RuntimeError):
     ROB-993 R3's lesson, reused: a submit or cancel response that does not echo
     the request is not evidence for the request. Fail closed rather than
     recording someone else's order as ours.
+    """
+
+
+class BrokerOrderReadbackUnavailable(RuntimeError):
+    """The broker did not provide a complete, echoing post-submit readback.
+
+    A successful ``kt10000``/``kt10001`` response is acknowledgement evidence,
+    not lifecycle evidence.  ORDERING therefore does not promote a DAY order
+    to any terminal state until the broker detail surface identifies the exact
+    order and supplies fill/remaining fields.
     """
 
 
@@ -363,7 +373,7 @@ class RestingOrder:
 
 @dataclass(frozen=True, slots=True)
 class BrokerPending:
-    """kt00009's answer, split into account-wide and own.
+    """kt00007's answer, split into account-wide and own.
 
     ``own_*`` is the intersection with the local order journal; ``account_*``
     is everything the broker reported. The gate consumes the account-wide set
@@ -407,6 +417,45 @@ class BrokerPending:
             "own_order_count": len(self.own_orders),
             "foreign_order_count": len(self.foreign_orders),
         }
+
+
+def resting_orders_from_detail_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[RestingOrder, ...]:
+    """Derive the broker's current resting set from normalized ``kt00007`` rows.
+
+    Keeping this pure lets a mutation boundary take *one* full same-day
+    ``kt00007`` answer and derive both pending and foreign-trace gates from it;
+    the two facts cannot then accidentally be taken from different moments.
+    """
+
+    resting: list[RestingOrder] = []
+    for entry in rows:
+        remaining = int(entry.get("remaining_quantity") or 0)
+        if remaining <= 0:
+            continue
+        resting.append(
+            RestingOrder(
+                order_id=str(entry["order_id"]),
+                symbol=str(entry["symbol"]),
+                status=str(entry["status"]),
+                remaining_quantity=remaining,
+                ordered_price=int(entry.get("ordered_price") or 0),
+                unfilled_quantity=int(entry.get("unfilled_quantity") or 0),
+            )
+        )
+    return tuple(sorted(resting, key=lambda order: order.order_id))
+
+
+def broker_pending_from_detail_rows(
+    *, rows: list[dict[str, Any]], own_order_ids: frozenset[str]
+) -> BrokerPending:
+    """Build pending ownership facts from one normalized detail read."""
+
+    return BrokerPending(
+        account_orders=resting_orders_from_detail_rows(rows),
+        own_order_ids=own_order_ids,
+    )
 
 
 #: 🔴 Minimum spacing between consecutive Kiwoom calls from this lane.
@@ -539,22 +588,7 @@ class ReadOnlyKiwoomMockAccount:
         rows = await self.read_order_detail(
             order_date=order_date or kst_order_date(dt.datetime.now(dt.UTC))
         )
-        resting: list[RestingOrder] = []
-        for entry in rows:
-            remaining = int(entry.get("remaining_quantity") or 0)
-            if remaining <= 0:
-                continue
-            resting.append(
-                RestingOrder(
-                    order_id=str(entry["order_id"]),
-                    symbol=str(entry["symbol"]),
-                    status=str(entry["status"]),
-                    remaining_quantity=remaining,
-                    ordered_price=int(entry.get("ordered_price") or 0),
-                    unfilled_quantity=int(entry.get("unfilled_quantity") or 0),
-                )
-            )
-        return tuple(sorted(resting, key=lambda order: order.order_id))
+        return resting_orders_from_detail_rows(rows)
 
     async def read_order_status_diagnostic(self) -> dict[str, Any]:
         """kt00009, recorded but **never** used as a gate.
@@ -628,7 +662,7 @@ class ReadOnlyKiwoomMockAccount:
 
         This is reachable only after the cycle's attributed-holding boundary;
         exposing no exchange parameter keeps the NXT/SOR prohibition structural
-        for both sides of an INTERIM_ORDERING day order.
+        for both sides of an ORDERING DAY order.
         """
 
         await self._pace()
@@ -749,7 +783,7 @@ async def read_fresh_truth(account: ReadOnlyKiwoomMockAccount) -> FreshTruth:
 
 
 def pending_unreadable(cause: str) -> PendingUnreadable:
-    """Tri-state for a failed kt00009 read.
+    """Tri-state for a failed kt00007 read.
 
     🔴 Not the normal path on this lane. ``kis_mock`` is *structurally*
     unreadable; kiwoom answers, so landing here means the read genuinely
@@ -768,15 +802,18 @@ def pending_unreadable(cause: str) -> PendingUnreadable:
 
 
 async def read_broker_pending(
-    account: ReadOnlyKiwoomMockAccount, *, own_order_ids: frozenset[str]
+    account: ReadOnlyKiwoomMockAccount,
+    *,
+    own_order_ids: frozenset[str],
+    order_date: str | None = None,
 ) -> BrokerPending | PendingUnreadable:
     """자기 미체결 = 브로커 직접 조회 (§39차 ②). Any failure → tri-state."""
 
     try:
-        resting = await account.read_resting_orders()
+        rows = await account.read_order_detail(order_date=order_date)
     except Exception as exc:  # noqa: BLE001 — any failure is "unknown"
         return pending_unreadable(type(exc).__name__)
-    return BrokerPending(account_orders=resting, own_order_ids=own_order_ids)
+    return broker_pending_from_detail_rows(rows=rows, own_order_ids=own_order_ids)
 
 
 def broker_truth_from(
@@ -980,7 +1017,7 @@ ORDER_NO_FIELD: Final[str] = "ord_no"
 
 @dataclass
 class DayOrderResult:
-    """Broker-accepted KRX DAY order retained for ``INTERIM_ORDERING``.
+    """Broker-accepted KRX DAY order retained for ``ORDERING``.
 
     This records only what the submit response establishes: the request was
     accepted and assigned an order number. It is intentionally not a fill
@@ -1011,6 +1048,63 @@ class DayOrderResult:
             "time_in_force": "DAY",
             "automatic_cancel": False,
             "fill_status": "unverified",
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerOrderReadback:
+    """One exact broker-detail observation for an ORDERING DAY order.
+
+    ``filled_quantity`` / ``remaining_quantity`` stay broker-derived.  The
+    VWAP and slippage fields are only populated for an actual non-zero fill;
+    an unfilled acknowledgement is neither a synthetic fill nor a completed
+    lifecycle.
+    """
+
+    at: dt.datetime
+    order_no: str
+    symbol: str
+    side: str
+    intended_limit: int
+    ordered_quantity: int
+    filled_quantity: int
+    remaining_quantity: int
+    unfilled_quantity: int
+    status: str
+    fill_vwap: Decimal | None
+    slippage_krw: Decimal | None
+
+    @property
+    def complete(self) -> bool:
+        return (
+            self.filled_quantity == self.ordered_quantity
+            and self.remaining_quantity == 0
+        )
+
+    @property
+    def partial(self) -> bool:
+        return 0 < self.filled_quantity < self.ordered_quantity
+
+    def canonical(self) -> dict[str, Any]:
+        return {
+            "at": self.at.isoformat(),
+            "order_no": self.order_no,
+            "symbol": self.symbol,
+            "side": self.side,
+            "intended_limit": self.intended_limit,
+            "ordered_quantity": self.ordered_quantity,
+            "filled_quantity": self.filled_quantity,
+            "remaining_quantity": self.remaining_quantity,
+            "unfilled_quantity": self.unfilled_quantity,
+            "status": self.status,
+            "fill_vwap": (
+                None if self.fill_vwap is None else format(self.fill_vwap, "f")
+            ),
+            "slippage_krw": (
+                None if self.slippage_krw is None else format(self.slippage_krw, "f")
+            ),
+            "complete": self.complete,
+            "partial": self.partial,
         }
 
 
@@ -1093,9 +1187,106 @@ def assert_resting_echo(
         problems.append(f"price {order.ordered_price} != {planned.price}")
     if problems:
         raise BrokerEchoMismatch(
-            "kt00009 resting row does not echo the submitted order: "
+            "kt00007 resting row does not echo the submitted order: "
             + "; ".join(problems)
         )
+
+
+def _readback_from_detail_row(
+    *,
+    row: dict[str, Any],
+    planned: PlannedOrder,
+    order_no: str,
+    at: dt.datetime,
+) -> BrokerOrderReadback:
+    """Validate and preserve one exact normalized ``kt00007`` row."""
+
+    problems: list[str] = []
+    if str(row.get("order_id") or "") != order_no:
+        problems.append(f"order_no {row.get('order_id')!r} != {order_no!r}")
+    if str(row.get("symbol") or "") != planned.symbol:
+        problems.append(f"symbol {row.get('symbol')!r} != {planned.symbol!r}")
+    if int(row.get("ordered_quantity") or 0) != planned.quantity:
+        problems.append(
+            f"ordered_quantity {row.get('ordered_quantity')!r} != {planned.quantity!r}"
+        )
+    if int(row.get("ordered_price") or 0) != planned.price:
+        problems.append(
+            f"ordered_price {row.get('ordered_price')!r} != {planned.price!r}"
+        )
+    filled = int(row.get("filled_quantity") or 0)
+    remaining = int(row.get("remaining_quantity") or 0)
+    unfilled = int(row.get("unfilled_quantity") or 0)
+    if filled < 0 or remaining < 0 or unfilled < 0:
+        problems.append("negative fill/remaining quantity")
+    if filled > planned.quantity:
+        problems.append(f"filled_quantity {filled} > submitted {planned.quantity}")
+    if remaining > unfilled:
+        problems.append(
+            f"remaining_quantity {remaining} > unfilled_quantity {unfilled}"
+        )
+    if problems:
+        raise BrokerEchoMismatch(
+            "kt00007 order detail does not echo the submitted ORDERING request: "
+            + "; ".join(problems)
+        )
+
+    fill_vwap: Decimal | None = None
+    slippage: Decimal | None = None
+    if filled > 0:
+        fill_vwap = Decimal(int(row.get("average_price") or 0))
+        if fill_vwap <= 0:
+            raise BrokerOrderReadbackUnavailable(
+                f"kt00007 reports filled_quantity={filled} for {order_no} but no "
+                "positive broker VWAP; fill fidelity cannot be conserved"
+            )
+        # Positive is adverse slippage for both directions.
+        slippage = (
+            fill_vwap - Decimal(planned.price)
+            if planned.side == "buy"
+            else Decimal(planned.price) - fill_vwap
+        )
+
+    return BrokerOrderReadback(
+        at=at,
+        order_no=order_no,
+        symbol=planned.symbol,
+        side=planned.side,
+        intended_limit=planned.price,
+        ordered_quantity=planned.quantity,
+        filled_quantity=filled,
+        remaining_quantity=remaining,
+        unfilled_quantity=unfilled,
+        status=str(row.get("status") or "unknown"),
+        fill_vwap=fill_vwap,
+        slippage_krw=slippage,
+    )
+
+
+async def read_order_readback(
+    account: ReadOnlyKiwoomMockAccount,
+    *,
+    planned: PlannedOrder,
+    order_no: str,
+    order_date: str,
+    at: dt.datetime,
+) -> BrokerOrderReadback:
+    """Read the exact broker row after acknowledgement; absence fails closed."""
+
+    try:
+        rows = await account.read_order_detail(order_date=order_date)
+    except Exception as exc:  # noqa: BLE001 — no readback is no lifecycle proof
+        raise BrokerOrderReadbackUnavailable(
+            f"kt00007 readback failed for {order_no} ({type(exc).__name__})"
+        ) from exc
+    row = next(
+        (item for item in rows if str(item.get("order_id") or "") == order_no), None
+    )
+    if row is None:
+        raise BrokerOrderReadbackUnavailable(
+            f"kt00007 readback did not return acknowledged order {order_no}"
+        )
+    return _readback_from_detail_row(row=row, planned=planned, order_no=order_no, at=at)
 
 
 async def submit_day_order(
@@ -1280,7 +1471,7 @@ async def submit_and_cancel(
         result.failure = "cancel_unconfirmed"
         raise RoundTripIncomplete(
             f"order {order_no} ({planned.symbol}) is still reported as resting by "
-            f"kt00009 after kt10003 — remaining="
+            f"kt00007 after kt10003 — remaining="
             f"{still_resting.remaining_quantity if still_resting else '?'}. "
             "Refusing to report a cancellation the broker did not confirm."
         )
@@ -1299,6 +1490,8 @@ __all__ = [
     "OWN_PENDING_SOURCE",
     "BlockedOrder",
     "BrokerEchoMismatch",
+    "BrokerOrderReadback",
+    "BrokerOrderReadbackUnavailable",
     "BrokerPending",
     "DayOrderResult",
     "FreshTruth",
@@ -1319,12 +1512,15 @@ __all__ = [
     "assert_kiwoom_lane_enabled",
     "assert_mock_host",
     "assert_resting_echo",
+    "broker_pending_from_detail_rows",
     "broker_truth_from",
     "client_order_id_for",
     "pending_unreadable",
     "plan_orders",
     "read_broker_pending",
     "read_fresh_truth",
+    "read_order_readback",
+    "resting_orders_from_detail_rows",
     "submit_day_order",
     "submit_and_cancel",
 ]

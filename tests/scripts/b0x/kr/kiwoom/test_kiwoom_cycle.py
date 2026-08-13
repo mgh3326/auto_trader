@@ -20,6 +20,7 @@ from scripts.b0x.kr import attribution as kr_attribution
 from scripts.b0x.kr import kiwoom as kiwoom_lane
 from scripts.b0x.kr import kiwoom_attribution as kiwoom_attr
 from scripts.b0x.kr import kiwoom_cycle
+from scripts.b0x.kr import kiwoom_ordering as ordering_support
 from scripts.policy_table.core.schema import compute_policy_table_hash
 from tests.scripts.b0x._table_fixtures import make_payload, make_row, write_table
 from tests.scripts.b0x.kr.kiwoom.conftest import FakeAccount, position, resting
@@ -126,16 +127,18 @@ async def _run(
     out_dir,
     table_dir,
     confirm=False,
-    interim_ordering=False,
+    ordering=False,
     now=IN_SESSION,  # noqa: ANN001
+    **kwargs,
 ):  # noqa: ANN202
     return await kiwoom_cycle.run_kiwoom_cycle(
         now=now,
         table_dir=table_dir,
         out_dir=out_dir,
         confirm=confirm,
-        interim_ordering=interim_ordering,
+        ordering=ordering,
         account=account,
+        **kwargs,
     )
 
 
@@ -200,7 +203,7 @@ async def test_record_carries_the_account_map_and_status_label(
 
 
 @pytest.mark.asyncio
-async def test_interim_ordering_requires_confirm_and_keeps_preview_safe(
+async def test_ordering_requires_confirm_and_keeps_preview_safe(
     table_dir, out_dir
 ) -> None:  # noqa: ANN001
     account = FakeAccount()
@@ -208,10 +211,10 @@ async def test_interim_ordering_requires_confirm_and_keeps_preview_safe(
         account=account,
         out_dir=out_dir,
         table_dir=table_dir,
-        interim_ordering=True,
+        ordering=True,
     )
 
-    assert outcome.zero_order_reason == "interim_ordering_requires_confirm"
+    assert outcome.zero_order_reason == "ordering_requires_confirm"
     assert outcome.record["cycle_status"] == kiwoom_cycle.PREVIEW_STATUS
     assert account.buy_calls == []
     assert account.sell_calls == []
@@ -416,85 +419,396 @@ async def test_confirm_submits_exactly_one_order_and_cancels_it(
     assert outcome.record["day_orders"] == []
 
 
+class _TestOrderingLease:
+    def __init__(self) -> None:
+        self.held = False
+        self.checks = 0
+
+    def acquire(self) -> None:
+        self.held = True
+
+    def assert_held(self) -> None:
+        self.checks += 1
+        if not self.held:
+            raise RuntimeError("lease lost")
+
+    def release(self) -> None:
+        self.held = False
+
+    def canonical(self) -> dict[str, object]:
+        return {"acquired": self.held, "test_lease": True}
+
+
+class _DynamicOrderingAccount(FakeAccount):
+    """Fake kt00007 whose rows are updated by the fake broker mutations."""
+
+    def __init__(self, *, rows=None, **kwargs) -> None:  # noqa: ANN001
+        super().__init__(**kwargs)
+        self.rows: list[dict[str, object]] = list(rows or [])
+        self._next_order_no = 1
+
+    async def read_order_detail(self, *, order_date=None, symbol=None):  # noqa: ANN001, ANN201, ARG002
+        self.detail_calls.append({"order_date": order_date, "symbol": symbol})
+        return [dict(row) for row in self.rows]
+
+    async def place_limit_buy(self, *, symbol, quantity, price):  # noqa: ANN001, ANN201
+        await super().place_limit_buy(symbol=symbol, quantity=quantity, price=price)
+        return self._append_order(
+            symbol=symbol, side="buy", quantity=quantity, price=price
+        )
+
+    async def place_limit_sell(self, *, symbol, quantity, price):  # noqa: ANN001, ANN201
+        await super().place_limit_sell(symbol=symbol, quantity=quantity, price=price)
+        return self._append_order(
+            symbol=symbol, side="sell", quantity=quantity, price=price
+        )
+
+    def _append_order(self, *, symbol, side, quantity, price):  # noqa: ANN001, ANN202
+        order_no = f"{self._next_order_no:010d}"
+        self._next_order_no += 1
+        partial = len(self.rows) == 0
+        filled = 1 if partial else 0
+        self.rows.append(
+            {
+                "order_id": order_no,
+                "symbol": symbol,
+                "status": "partial" if partial else "open",
+                "ordered_quantity": quantity,
+                "filled_quantity": filled,
+                "remaining_quantity": quantity - filled,
+                "unfilled_quantity": quantity - filled,
+                "ordered_price": price,
+                "average_price": price + 100 if filled else 0,
+            }
+        )
+        return {"return_code": 0, "ord_no": order_no}
+
+
 @pytest.mark.asyncio
-async def test_interim_ordering_submits_every_envelope_derived_day_order_without_cancel(
-    table_dir, out_dir, armed
+async def test_ordering_submits_table_derived_day_orders_with_readback_fidelity(
+    table_dir, out_dir, armed, frozen_cycle_clock
 ) -> None:  # noqa: ANN001, ARG001
-    """DAY retention replaces neither the derivation caps nor acceptance mode."""
+    """ORDERING has a distinct lifecycle, not an acceptance status rename."""
 
     _write_table(
         table_dir,
         generated_at=IN_SESSION - dt.timedelta(hours=4),
         symbols=("005930", "000660", "035420", "051910"),
     )
-
-    class DistinctOrderNumbers(FakeAccount):
-        async def place_limit_buy(self, *, symbol, quantity, price):  # noqa: ANN001, ANN201
-            payload = await super().place_limit_buy(
-                symbol=symbol, quantity=quantity, price=price
-            )
-            payload["ord_no"] = f"{len(self.buy_calls):010d}"
-            return payload
-
-    account = DistinctOrderNumbers()
+    lease = _TestOrderingLease()
+    account = _DynamicOrderingAccount()
     outcome = await _run(
         account=account,
         out_dir=out_dir,
         table_dir=table_dir,
         confirm=True,
-        interim_ordering=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: lease,
     )
 
     assert outcome.exit_code == 0
-    assert outcome.record["cycle_status"] == "INTERIM_ORDERING"
-    assert outcome.record["cycle_status_label"] == (
-        kiwoom_cycle.INTERIM_ORDERING_STATUS_LABEL
-    )
-    assert outcome.record["interim_ordering_constraints"] == (
-        kiwoom_cycle.INTERIM_ORDERING_CONSTRAINTS
-    )
-    assert kiwoom_cycle.INTERIM_ORDERING_STATUS_LABEL in outcome.record["labels"]
-    for constraint in kiwoom_cycle.INTERIM_ORDERING_CONSTRAINTS.values():
-        assert constraint.split(" — ")[0] in kiwoom_cycle.INTERIM_ORDERING_STATUS_LABEL
-
-    # Four candidates reach derivation, but the locked daily-new cap admits
-    # exactly three. INTERIM_ORDERING sends all three, not the old one-order
-    # acceptance limit, and none reaches cancellation.
+    assert outcome.record["cycle_status"] == kiwoom_cycle.ORDERING_STATUS
+    assert outcome.record["cycle_status_label"] == kiwoom_cycle.ORDERING_STATUS_LABEL
+    assert outcome.record["ordering_requirements"] == kiwoom_cycle.ORDERING_REQUIREMENTS
     assert outcome.derivation is not None
     assert len(outcome.derivation.orders) == 3
-    assert any(
-        skipped["reason"] == "daily_new_entry_cap_reached"
-        for skipped in outcome.record["skipped"]
-    )
     assert len(account.buy_calls) == len(outcome.derivation.orders)
     assert account.sell_calls == []
     assert account.cancel_calls == []
     assert outcome.record["round_trip"] == []
     assert len(outcome.record["day_orders"]) == 3
-    assert outcome.record["submitted"] == outcome.record["day_orders"]
     assert all(
         order["time_in_force"] == "DAY" for order in outcome.record["day_orders"]
     )
     assert all(
         order["automatic_cancel"] is False for order in outcome.record["day_orders"]
     )
-    assert all(
-        order["fill_status"] == "unverified" for order in outcome.record["day_orders"]
+    assert all("broker_readback" in order for order in outcome.record["day_orders"])
+    first_readback = outcome.record["day_orders"][0]["broker_readback"]
+    assert first_readback["partial"] is True
+    assert first_readback["complete"] is False
+    assert first_readback["remaining_quantity"] > 0
+    assert first_readback["fill_vwap"] is not None
+    assert first_readback["slippage_krw"] == "100"
+    events = outcome.record["fidelity_events"]
+    assert {event["event"] for event in events} >= {
+        "table_price_to_intended_limit",
+        "broker_ack",
+        "broker_readback_reconcile",
+    }
+    persisted_events = ordering_support.OrderingEventJournal.for_lane(
+        root=out_dir, lane=kiwoom_cycle.LANE
+    ).read_all()
+    assert tuple(event["at"] for event in persisted_events) == tuple(
+        event["at"] for event in events
     )
-    assert all(
-        Decimal(order["notional_krw"])
-        <= Decimal(outcome.record["envelope"]["per_order_notional"])
-        for order in outcome.record["day_orders"]
-    )
-    assert "acceptance_submission_limit" not in outcome.record
-    assert outcome.record["day_order_policy"] == kiwoom_cycle.DAY_ORDER_RETAINED_NOTE
+    assert all(event["at"] and event["event"] for event in persisted_events)
+    assert lease.checks >= len(outcome.record["day_orders"]) + 1
 
 
 @pytest.mark.asyncio
-async def test_interim_buy_only_sell_gate_blocks_derived_sell_with_audit_reason(
-    table_dir, out_dir, armed, monkeypatch
+async def test_ordering_allows_a_sell_only_when_the_broker_fill_is_attributed(
+    table_dir, out_dir, armed, frozen_cycle_clock, tmp_path
 ) -> None:  # noqa: ANN001, ARG001
-    """§50차 2항: a valid derived sell is visible but cannot reach Kiwoom."""
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        buy_l1=None,
+        sell_r1="80000.00",
+    )
+    journal = kiwoom_attr.OwnOrderJournal(path=tmp_path / "own-orders.jsonl")
+    journal.append(
+        kiwoom_attr.OwnOrderRecord(
+            at=frozen_cycle_clock.isoformat(),
+            order_no="0000000042",
+            correlation_id="b0xkw-prior-buy",
+            symbol="005930",
+            side="buy",
+            price=70_000,
+            quantity=10,
+            order_date=kiwoom_attr.kst_order_date(frozen_cycle_clock),
+        )
+    )
+    account = _DynamicOrderingAccount(
+        positions=(position("005930", 10, average_price=70_000),),
+        rows=[
+            {
+                "order_id": "0000000042",
+                "symbol": "005930",
+                "status": "filled",
+                "ordered_quantity": 10,
+                "filled_quantity": 10,
+                "remaining_quantity": 0,
+                "unfilled_quantity": 0,
+                "ordered_price": 70_000,
+                "average_price": 70_000,
+            }
+        ],
+    )
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        journal=journal,
+        lease_factory=lambda *_: _TestOrderingLease(),
+        realized_pnl_reader=lambda **_kwargs: kiwoom_attr.RealizedPnlInput(
+            value=Decimal("0"), source="test"
+        ),
+    )
+
+    assert outcome.exit_code == 0
+    assert account.buy_calls == []
+    assert len(account.sell_calls) == 1
+    assert outcome.record["day_orders"][0]["side"] == "sell"
+
+
+@pytest.mark.asyncio
+async def test_ordering_blocks_when_realized_pnl_cannot_be_proven(
+    table_dir, out_dir, armed, frozen_cycle_clock, tmp_path
+) -> None:  # noqa: ANN001, ARG001
+    journal = kiwoom_attr.OwnOrderJournal(path=tmp_path / "own-orders.jsonl")
+    journal.append(
+        kiwoom_attr.OwnOrderRecord(
+            at=frozen_cycle_clock.isoformat(),
+            order_no="0000000042",
+            correlation_id="b0xkw-prior-buy",
+            symbol="005930",
+            side="buy",
+            price=70_000,
+            quantity=1,
+            order_date=kiwoom_attr.kst_order_date(frozen_cycle_clock),
+        )
+    )
+    account = _DynamicOrderingAccount(
+        rows=[
+            {
+                "order_id": "0000000042",
+                "symbol": "005930",
+                "status": "filled",
+                "ordered_quantity": 1,
+                "filled_quantity": 1,
+                "remaining_quantity": 0,
+                "unfilled_quantity": 0,
+                "ordered_price": 70_000,
+                "average_price": 70_000,
+            }
+        ]
+    )
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        journal=journal,
+        lease_factory=lambda *_: _TestOrderingLease(),
+    )
+
+    assert outcome.zero_order_reason == kiwoom_cycle.REALIZED_PNL_UNAVAILABLE_REASON
+    assert outcome.record["realized_pnl_input"]["readable"] is False
+    assert account.buy_calls == []
+    assert account.sell_calls == []
+    assert account.cancel_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ordering_rechecks_foreign_trace_at_the_submit_boundary(
+    table_dir, out_dir, armed, frozen_cycle_clock
+) -> None:  # noqa: ANN001, ARG001
+    class ForeignAfterPreflight(_DynamicOrderingAccount):
+        def __init__(self) -> None:
+            super().__init__()
+            self.boundary_reads = 0
+
+        async def read_order_detail(self, *, order_date=None, symbol=None):  # noqa: ANN001, ANN201, ARG002
+            self.detail_calls.append({"order_date": order_date, "symbol": symbol})
+            self.boundary_reads += 1
+            if self.boundary_reads == 1:
+                return []
+            return [
+                {
+                    "order_id": "foreign-1",
+                    "symbol": "000660",
+                    "status": "open",
+                    "ordered_quantity": 1,
+                    "filled_quantity": 0,
+                    "remaining_quantity": 1,
+                    "unfilled_quantity": 1,
+                    "ordered_price": 70_000,
+                    "average_price": 0,
+                }
+            ]
+
+    account = ForeignAfterPreflight()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: _TestOrderingLease(),
+    )
+
+    assert outcome.zero_order_reason == "mutation_boundary_not_clean"
+    assert len(outcome.record["mutation_boundaries"]) >= 2
+    assert (
+        outcome.record["mutation_boundaries"][-1]["foreign_same_day_orders"]["count"]
+        == 1
+    )
+    assert account.buy_calls == []
+    assert account.sell_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ordering_blocks_when_its_writer_lease_is_lost_before_submit(
+    table_dir, out_dir, armed, frozen_cycle_clock
+) -> None:  # noqa: ANN001, ARG001
+    class LostBeforeSubmit(_TestOrderingLease):
+        def assert_held(self) -> None:
+            self.checks += 1
+            if self.checks >= 2:
+                raise RuntimeError("lease disappeared")
+
+    account = _DynamicOrderingAccount()
+    lease = LostBeforeSubmit()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: lease,
+    )
+
+    assert outcome.zero_order_reason == "mutation_boundary_not_clean"
+    assert outcome.record["mutation_boundaries"][-1]["blocking_reason"] == (
+        "writer_lease_lost"
+    )
+    assert account.buy_calls == []
+    assert account.sell_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ordering_rechecks_own_fill_quantity_before_a_sell(
+    table_dir, out_dir, armed, frozen_cycle_clock, tmp_path
+) -> None:  # noqa: ANN001, ARG001
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        buy_l1=None,
+        sell_r1="80000.00",
+    )
+    journal = kiwoom_attr.OwnOrderJournal(path=tmp_path / "own-orders.jsonl")
+    journal.append(
+        kiwoom_attr.OwnOrderRecord(
+            at=frozen_cycle_clock.isoformat(),
+            order_no="0000000042",
+            correlation_id="b0xkw-prior-buy",
+            symbol="005930",
+            side="buy",
+            price=70_000,
+            quantity=10,
+            order_date=kiwoom_attr.kst_order_date(frozen_cycle_clock),
+        )
+    )
+    full_fill = {
+        "order_id": "0000000042",
+        "symbol": "005930",
+        "status": "filled",
+        "ordered_quantity": 10,
+        "filled_quantity": 10,
+        "remaining_quantity": 0,
+        "unfilled_quantity": 0,
+        "ordered_price": 70_000,
+        "average_price": 70_000,
+    }
+    missing_fill = {**full_fill, "filled_quantity": 0, "average_price": 0}
+
+    class FillDisappearsBeforeSell(_DynamicOrderingAccount):
+        def __init__(self) -> None:
+            super().__init__(positions=(position("005930", 10),))
+            self.answers = [[full_fill], [full_fill], [missing_fill]]
+            self.answer_index = 0
+
+        async def read_order_detail(self, *, order_date=None, symbol=None):  # noqa: ANN001, ANN201, ARG002
+            self.detail_calls.append({"order_date": order_date, "symbol": symbol})
+            answer = self.answers[min(self.answer_index, len(self.answers) - 1)]
+            self.answer_index += 1
+            return [dict(row) for row in answer]
+
+    account = FillDisappearsBeforeSell()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        journal=journal,
+        lease_factory=lambda *_: _TestOrderingLease(),
+        realized_pnl_reader=lambda **_kwargs: kiwoom_attr.RealizedPnlInput(
+            value=Decimal("0"), source="test"
+        ),
+    )
+
+    assert account.sell_calls == []
+    assert outcome.record["submission_blocked"][0]["reason"] == (
+        "own_fill_sell_gate_blocked"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ordering_stops_the_cycle_when_fresh_sell_attribution_is_unreadable(
+    table_dir, out_dir, armed, frozen_cycle_clock, monkeypatch
+) -> None:  # noqa: ANN001, ARG001
+    """A failed sell-side evidence read cannot be bypassed by later buys."""
 
     _write_table(
         table_dir,
@@ -502,57 +816,111 @@ async def test_interim_buy_only_sell_gate_blocks_derived_sell_with_audit_reason(
         buy_l1=None,
         sell_r1="80000.00",
     )
-    own_attribution = kr_attribution.OwnFillAttribution(
-        lots=(
-            kr_attribution.AttributedLot(
-                symbol="005930",
-                quantity=Decimal("10"),
-                average_price=Decimal("70000"),
-                buy_fill_rows=1,
-                sell_rows=0,
-            ),
-        )
-    )
+    calls = 0
 
-    async def _read_own_attribution(**_kwargs):  # noqa: ANN003, ANN202
-        return own_attribution
+    async def _attribution(**_kwargs):  # noqa: ANN003, ANN202
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return kr_attribution.OwnFillAttribution(
+                lots=(
+                    kr_attribution.AttributedLot(
+                        symbol="005930",
+                        quantity=Decimal("10"),
+                        average_price=Decimal("70000"),
+                        buy_fill_rows=1,
+                        sell_rows=0,
+                    ),
+                )
+            )
+        return kr_attribution.attribution_unreadable("OSError")
 
-    monkeypatch.setattr(kiwoom_attr, "read_own_attribution", _read_own_attribution)
-    account = FakeAccount(positions=(position("005930", 10, average_price=70_000),))
+    monkeypatch.setattr(kiwoom_attr, "read_own_attribution", _attribution)
+    account = _DynamicOrderingAccount(positions=(position("005930", 10),))
     outcome = await _run(
         account=account,
         out_dir=out_dir,
         table_dir=table_dir,
         confirm=True,
-        interim_ordering=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: _TestOrderingLease(),
+        realized_pnl_reader=lambda **_kwargs: kiwoom_attr.RealizedPnlInput(
+            value=Decimal("0"), source="test"
+        ),
     )
 
-    assert outcome.exit_code == 0
-    assert outcome.derivation is not None
-    assert [order.side for order in outcome.derivation.orders] == ["sell"]
-    assert [order["side"] for order in outcome.record["planned"]] == ["sell"]
-    # Keep this assertion before the artifact checks: disabling the gate must
-    # prove that the sell reached the fake venue, rather than only changing a
-    # descriptive field.
-    assert account.sell_calls == []
+    assert outcome.zero_order_reason == "fresh_sell_attribution_unavailable"
     assert account.buy_calls == []
-    assert outcome.record["day_orders"] == []
-    assert outcome.record["submitted"] == []
-    assert outcome.record["interim_buy_only_sell_gate"] == {
-        "enabled": True,
-        "reason_code": "interim_buy_only_sell_gate",
-        "scope": "submission_stage_sell_legs",
-        "cli_disable_available": False,
-        "release": "explicit_operator_approval_or_b_track_merge",
-    }
-    blocked = outcome.record["submission_blocked"]
-    assert [(item["side"], item["leg"], item["reason"]) for item in blocked] == [
-        ("sell", "sell_r1", "interim_buy_only_sell_gate")
-    ]
-    assert blocked[0]["detail"] == kiwoom_cycle.INTERIM_BUY_ONLY_SELL_GATE_DETAIL
-    assert kiwoom_cycle.INTERIM_BUY_ONLY_SELL_GATE_ENABLED is True
-    assert outcome.record["interim_ordering_constraints"]["buy_only"] == (
-        "매수 전용(매도 게이트 ON)"
+    assert account.sell_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ordering_kill_cancels_own_pending_and_proves_it_gone(
+    table_dir, out_dir, armed, frozen_cycle_clock, tmp_path
+) -> None:  # noqa: ANN001, ARG001
+    journal = kiwoom_attr.OwnOrderJournal(path=tmp_path / "own-orders.jsonl")
+    journal.append(
+        kiwoom_attr.OwnOrderRecord(
+            at=frozen_cycle_clock.isoformat(),
+            order_no="0000000042",
+            correlation_id="b0xkw-prior-buy",
+            symbol="005930",
+            side="buy",
+            price=70_000,
+            quantity=3,
+            order_date=kiwoom_attr.kst_order_date(frozen_cycle_clock),
+        )
+    )
+
+    class KillAccount(_DynamicOrderingAccount):
+        async def cancel(self, *, original_order_no, symbol, cancel_quantity):  # noqa: ANN001, ANN201
+            await super().cancel(
+                original_order_no=original_order_no,
+                symbol=symbol,
+                cancel_quantity=cancel_quantity,
+            )
+            self.rows = [
+                row for row in self.rows if row["order_id"] != original_order_no
+            ]
+            return {"return_code": 0, "ord_no": "0000000043"}
+
+    account = KillAccount(
+        rows=[
+            {
+                "order_id": "0000000042",
+                "symbol": "005930",
+                "status": "open",
+                "ordered_quantity": 3,
+                "filled_quantity": 0,
+                "remaining_quantity": 3,
+                "unfilled_quantity": 3,
+                "ordered_price": 70_000,
+                "average_price": 0,
+            }
+        ]
+    )
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        journal=journal,
+        lease_factory=lambda *_: _TestOrderingLease(),
+        realized_pnl_reader=lambda **_kwargs: kiwoom_attr.RealizedPnlInput(
+            value=Decimal("-300000"), source="test_kill"
+        ),
+    )
+
+    assert outcome.record["kill_switch"]["allow_new_orders"] is False
+    assert account.buy_calls == []
+    assert account.sell_calls == []
+    assert len(account.cancel_calls) == 1
+    assert outcome.record["kill_cancellation"]["confirmed"] is True
+    assert any(
+        event["event"] == "cancel_ack" for event in outcome.record["fidelity_events"]
     )
 
 
