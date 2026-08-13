@@ -807,13 +807,23 @@ async def read_broker_pending(
     own_order_ids: frozenset[str],
     order_date: str | None = None,
 ) -> BrokerPending | PendingUnreadable:
-    """자기 미체결 = 브로커 직접 조회 (§39차 ②). Any failure → tri-state."""
+    """자기 미체결 = 당일 브로커 resting 조회 (§39차 ②). Any failure → tri-state.
+
+    `read_resting_orders` owns the current-day default. Keeping the wrapper
+    here (rather than calling `read_order_detail(order_date=None)` directly)
+    preserves the existing ACCEPTANCE_ONLY/readiness contract: an omitted date
+    is a trading-day query, never a broker-default historical query.
+    """
 
     try:
-        rows = await account.read_order_detail(order_date=order_date)
+        resting = (
+            await account.read_resting_orders()
+            if order_date is None
+            else await account.read_resting_orders(order_date=order_date)
+        )
     except Exception as exc:  # noqa: BLE001 — any failure is "unknown"
         return pending_unreadable(type(exc).__name__)
-    return broker_pending_from_detail_rows(rows=rows, own_order_ids=own_order_ids)
+    return BrokerPending(account_orders=resting, own_order_ids=own_order_ids)
 
 
 def broker_truth_from(

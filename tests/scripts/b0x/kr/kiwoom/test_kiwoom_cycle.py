@@ -484,6 +484,37 @@ class _DynamicOrderingAccount(FakeAccount):
         return {"return_code": 0, "ord_no": order_no}
 
 
+def _own_pending_record(
+    *, now: dt.datetime, order_no: str = "0000000042", quantity: int = 3
+) -> kiwoom_attr.OwnOrderRecord:
+    return kiwoom_attr.OwnOrderRecord(
+        at=now.isoformat(),
+        order_no=order_no,
+        correlation_id="b0xkw-prior-buy",
+        symbol="005930",
+        side="buy",
+        price=70_000,
+        quantity=quantity,
+        order_date=kiwoom_attr.kst_order_date(now),
+    )
+
+
+def _own_pending_row(
+    *, order_no: str = "0000000042", quantity: int = 3
+) -> dict[str, object]:
+    return {
+        "order_id": order_no,
+        "symbol": "005930",
+        "status": "open",
+        "ordered_quantity": quantity,
+        "filled_quantity": 0,
+        "remaining_quantity": quantity,
+        "unfilled_quantity": quantity,
+        "ordered_price": 70_000,
+        "average_price": 0,
+    }
+
+
 @pytest.mark.asyncio
 async def test_ordering_submits_table_derived_day_orders_with_readback_fidelity(
     table_dir, out_dir, armed, frozen_cycle_clock
@@ -545,6 +576,71 @@ async def test_ordering_submits_table_derived_day_orders_with_readback_fidelity(
     )
     assert all(event["at"] and event["event"] for event in persisted_events)
     assert lease.checks >= len(outcome.record["day_orders"]) + 1
+
+
+@pytest.mark.asyncio
+async def test_ordering_stops_after_ack_when_its_readback_row_is_absent(
+    table_dir, out_dir, armed, frozen_cycle_clock
+) -> None:  # noqa: ANN001, ARG001
+    """E2: one unproved ACK stops the rest of the DAY submission sequence."""
+
+    class AckWithoutReadback(_DynamicOrderingAccount):
+        async def place_limit_buy(self, *, symbol, quantity, price):  # noqa: ANN001, ANN201
+            await FakeAccount.place_limit_buy(
+                self, symbol=symbol, quantity=quantity, price=price
+            )
+            return {"return_code": 0, "ord_no": "0000000001"}
+
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        symbols=("005930", "000660", "035420", "051910"),
+    )
+    account = AckWithoutReadback()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: _TestOrderingLease(),
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.record["submission_stopped"] == "broker_readback_unavailable"
+    assert len(account.buy_calls) == 1
+    assert len(outcome.record["day_orders"]) == 1
+    assert "readback_failure" in outcome.record["day_orders"][0]
+
+
+@pytest.mark.asyncio
+async def test_ordering_blocks_when_fidelity_journal_is_unreadable(
+    table_dir, out_dir, armed, frozen_cycle_clock
+) -> None:  # noqa: ANN001, ARG001
+    """E9: corrupt lifecycle evidence closes ORDERING before the venue."""
+
+    fidelity = ordering_support.OrderingEventJournal.for_lane(
+        root=out_dir, lane=kiwoom_cycle.LANE
+    )
+    fidelity.path.parent.mkdir(parents=True)
+    fidelity.path.write_text("{not json\n", encoding="utf-8")
+    account = _DynamicOrderingAccount()
+
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: _TestOrderingLease(),
+    )
+
+    assert outcome.zero_order_reason == "ordering_fidelity_journal_unreadable"
+    assert account.buy_calls == []
+    assert account.sell_calls == []
+    assert fidelity.path.read_text(encoding="utf-8") == "{not json\n"
 
 
 @pytest.mark.asyncio
@@ -922,6 +1018,89 @@ async def test_ordering_kill_cancels_own_pending_and_proves_it_gone(
     assert any(
         event["event"] == "cancel_ack" for event in outcome.record["fidelity_events"]
     )
+
+
+@pytest.mark.asyncio
+async def test_ordering_kill_rejects_cancel_ack_when_own_order_still_rests(
+    table_dir, out_dir, armed, frozen_cycle_clock, tmp_path
+) -> None:  # noqa: ANN001, ARG001
+    """E4: a cancel ACK is not proof until its per-order broker re-read clears."""
+
+    journal = kiwoom_attr.OwnOrderJournal(path=tmp_path / "own-orders.jsonl")
+    journal.append(_own_pending_record(now=frozen_cycle_clock))
+    account = _DynamicOrderingAccount(rows=[_own_pending_row()])
+
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        journal=journal,
+        lease_factory=lambda *_: _TestOrderingLease(),
+        realized_pnl_reader=lambda **_kwargs: kiwoom_attr.RealizedPnlInput(
+            value=Decimal("-300000"), source="test_kill"
+        ),
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.zero_order_reason == "kill_cancel_not_confirmed"
+    assert len(account.cancel_calls) == 1
+    assert outcome.record["kill_cancellation"]["confirmed"] is False
+    assert any(
+        event["action"].startswith("kill_cancel_reconcile:")
+        for event in outcome.record["fidelity_events"]
+        if event["event"] == "mutation_boundary"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ordering_kill_rejects_own_pending_reappearing_at_final_reconcile(
+    table_dir, out_dir, armed, frozen_cycle_clock, monkeypatch, tmp_path
+) -> None:  # noqa: ANN001, ARG001
+    """E1: all per-order rechecks passing is insufficient without final proof."""
+
+    async def empty_attribution(**_kwargs):  # noqa: ANN003, ANN202
+        return kr_attribution.OwnFillAttribution(lots=())
+
+    monkeypatch.setattr(kiwoom_attr, "read_own_attribution", empty_attribution)
+    journal = kiwoom_attr.OwnOrderJournal(path=tmp_path / "own-orders.jsonl")
+    journal.append(_own_pending_record(now=frozen_cycle_clock))
+    row = _own_pending_row()
+
+    class ReappearsOnFinalReconcile(_DynamicOrderingAccount):
+        def __init__(self) -> None:
+            super().__init__(rows=[row])
+            self.boundary_reads = 0
+
+        async def read_order_detail(self, *, order_date=None, symbol=None):  # noqa: ANN001, ANN201, ARG002
+            self.detail_calls.append({"order_date": order_date, "symbol": symbol})
+            self.boundary_reads += 1
+            if self.boundary_reads == 4:
+                return []
+            return [dict(row)]
+
+    account = ReappearsOnFinalReconcile()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        journal=journal,
+        lease_factory=lambda *_: _TestOrderingLease(),
+        realized_pnl_reader=lambda **_kwargs: kiwoom_attr.RealizedPnlInput(
+            value=Decimal("-300000"), source="test_kill"
+        ),
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.zero_order_reason == "kill_own_pending_remains"
+    assert len(account.cancel_calls) == 1
+    assert account.boundary_reads == 5
+    assert outcome.record["kill_cancellation"]["confirmed"] is False
 
 
 @pytest.mark.asyncio
