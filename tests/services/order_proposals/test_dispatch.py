@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -884,6 +885,89 @@ async def test_dispatch_auto_ineligible_degrades_to_human_approval(
     )
     assert rungs[0].state == "pending_approval"
     assert "auto_approved" not in (refreshed.source_asof or {})
+    audit = refreshed.source_asof["auto_approve_rejections"][-1]
+    evidence = audit["rungs"][0]
+    assert evidence["rung_index"] == 0
+    assert evidence["reason_code"] == "distance_below_minimum"
+    expected_inputs = {
+        "mode": "off",
+        "policy_version": policy_version_stamp()["version"],
+        "current_price": "101",
+        "limit_price": "100",
+        "quantity": "10",
+    }
+    assert {key: evidence["inputs"][key] for key in expected_inputs} == expected_inputs
+
+
+@pytest.mark.asyncio
+async def test_dispatch_auto_tag_rejection_persists_safe_token_evidence_and_card(
+    monkeypatch, db_session
+):
+    """A manual fallback keeps token + location, never the matched prose."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    raw_match_context = "private-context-policy_deviation-marker"
+    group = await _seed_proposal(
+        db_session,
+        broker_account_id="dispatch-auto-tag-evidence",
+        thesis="ordinary support retest",
+        strategy="ladder",
+        source_asof={"context": {"tags": [raw_match_context]}},
+    )
+
+    async def fake_revalidate(*, service, proposal_id, now, eligibility_gate):
+        fresh_group, rungs = await service.get_proposal(proposal_id)
+        decision = await eligibility_gate(
+            group=fresh_group,
+            rung=rungs[0],
+            preview={
+                "success": True,
+                "current_price": "110",
+                "price": "100",
+                "quantity": "10",
+            },
+            now=now,
+        )
+        assert decision.reason == "approval_required_tag"
+        return [RungOutcome(0, "approval_required", {"reason": decision.reason})]
+
+    notifier = _FakeNotifier()
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime(2026, 7, 14, 1, 0, tzinfo=UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+    )
+
+    refreshed, _rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    audit = refreshed.source_asof["auto_approve_rejections"][-1]
+    evidence = audit["rungs"][0]
+    assert evidence["reason_code"] == "approval_required_tag"
+    assert evidence["inputs"]["tags"] == ["policy_deviation"]
+    assert evidence["inputs"]["tag_matches"] == [
+        {
+            "token": "policy_deviation",
+            "field": "source_asof",
+            "path": "$.context.tags[0]",
+            "kind": "json_value",
+            "char_start": raw_match_context.index("policy_deviation"),
+        }
+    ]
+    assert raw_match_context not in json.dumps(audit)
+
+    card_text = notifier.sent_messages[0][0]
+    assert "자동 승인 제외" in card_text
+    assert "approval_required_tag" in card_text
+    assert "policy_deviation" in card_text
+    assert "source_asof.context.tags[0]" in card_text
+    assert raw_match_context not in card_text
 
 
 @pytest.mark.asyncio

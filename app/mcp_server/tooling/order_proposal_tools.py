@@ -25,6 +25,9 @@ from app.mcp_server.caller_identity import get_caller_agent_id
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_window import ApprovalWindowDecision
+from app.services.order_proposals.auto_approve_audit import (
+    project_auto_approve_rejections,
+)
 from app.services.order_proposals.broker_gateway import (
     fetch_operator_void_evidence,
     fetch_target_order,
@@ -122,6 +125,7 @@ def _group_dict(g: Any) -> dict[str, Any]:
         "approval_dispatch_failure_code": g.approval_dispatch_failure_code,
         "approval_dispatch_payload_chars": g.approval_dispatch_payload_chars,
         "approval_dispatch_alert": (g.source_asof or {}).get("approval_dispatch_alert"),
+        "auto_approve_rejections": project_auto_approve_rejections(g.source_asof),
         "created_at": g.created_at.isoformat() if g.created_at else None,
     }
 

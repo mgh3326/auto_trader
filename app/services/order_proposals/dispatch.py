@@ -48,6 +48,9 @@ from app.services.order_proposals.auto_approve import (
     evaluate_auto_approve_eligibility,
     limits_for_market,
 )
+from app.services.order_proposals.auto_approve_audit import (
+    build_auto_approve_rejection_card_block,
+)
 from app.services.order_proposals.auto_veto import (
     TargetCancelFn,
     TargetFetchFn,
@@ -444,6 +447,16 @@ async def send_proposal_for_approval(
         messages = build_approval_dispatch_messages(
             group=group,
             rungs=rungs,
+            suffix_blocks=(
+                (rejection_block,)
+                if (
+                    rejection_block := build_auto_approve_rejection_card_block(
+                        group.source_asof
+                    )
+                )
+                is not None
+                else ()
+            ),
             binding=binding,
         )
 
@@ -779,6 +792,16 @@ async def dispatch_proposal(
                     payload_chars=messages.payload_chars,
                     context_message_count=0,
                 )
+            else:
+                rejected_decisions = [
+                    decision for decision in decisions if decision["eligible"] is False
+                ]
+                if rejected_decisions:
+                    await service.record_auto_approve_rejections(
+                        proposal_id,
+                        decisions=rejected_decisions,
+                        now=gate_now,
+                    )
         # Persist broker outcomes and the audit/nonce before Telegram I/O.
         await session.commit()
 

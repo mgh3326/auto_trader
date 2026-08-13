@@ -12,6 +12,7 @@ from app.services.order_proposals.auto_approve import (
     AutoApproveLimits,
     build_auto_approved_message,
     evaluate_auto_approve_eligibility,
+    find_approval_required_tag_matches,
     find_approval_required_tags,
     limits_for_market,
 )
@@ -394,7 +395,7 @@ def test_expanded_breakeven_band_requires_approval(
     [
         {"rationale": {"tags": ["policy_deviation"]}},
         {"rationale": {"decision": {"flags": ["table_disagreement"]}}},
-        {"thesis": "reviewed under Policy_Deviation waiver"},
+        {"exit_reason": "reviewed under Policy_Deviation waiver"},
         {"source_asof": {"table_disagreement": True}},
         {"lot_context": {"notes": ["table_disagreement"]}},
     ],
@@ -415,6 +416,35 @@ def test_tagged_proposals_require_approval_in_every_mode(mode_limits, group_over
 
 def test_untagged_proposal_is_not_falsely_flagged():
     assert find_approval_required_tags(_group(thesis="ordinary support retest")) == ()
+
+
+def test_tag_match_evidence_records_token_and_structural_location_only():
+    group = _group(
+        rationale={"context": {"tags": ["policy_deviation"]}},
+        thesis="ordinary support retest",
+        strategy="ladder",
+    )
+
+    decision = evaluate_auto_approve_eligibility(
+        group=group,
+        rung=_rung(limit_price=Decimal("97000"), quantity=Decimal("1")),
+        preview={"success": True, "current_price": "100000"},
+        limits=_LIMITS,
+        daily_notional=Decimal("0"),
+    )
+
+    expected = [
+        {
+            "token": "policy_deviation",
+            "field": "rationale",
+            "path": "$.context.tags[0]",
+            "kind": "json_value",
+            "char_start": 0,
+        }
+    ]
+    assert decision.reason == "approval_required_tag"
+    assert decision.details["tag_matches"] == expected
+    assert find_approval_required_tag_matches(group) == expected
 
 
 def test_unserializable_metadata_is_treated_as_tagged():

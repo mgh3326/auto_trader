@@ -30,6 +30,9 @@ from app.models.order_proposals import (
 from app.models.review import TossLiveOrderLedger
 from app.services.order_proposals import state_machine as sm
 from app.services.order_proposals.approval_window_contract import valid_until_block
+from app.services.order_proposals.auto_approve_audit import (
+    append_auto_approve_rejection_attempt,
+)
 from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
 from app.services.order_proposals.defensive_ttl import (
     DEFENSIVE_EXIT_INTENTS,
@@ -2479,6 +2482,30 @@ class OrderProposalsService:
                 "outcomes": outcomes,
             },
         }
+        return await self._repo.update_group(group, source_asof=source_asof)
+
+    async def record_auto_approve_rejections(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        decisions: list[dict[str, Any]],
+        now: datetime,
+    ) -> OrderProposal:
+        """Durably retain safe auto-approve demotion evidence for operators.
+
+        The audit helper permits only reason codes, fixed decision inputs, and
+        tag token/location metadata. Proposal free text and arbitrary preview
+        payloads deliberately cannot reach this JSONB path.
+        """
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = append_auto_approve_rejection_attempt(
+            group.source_asof,
+            decisions=decisions,
+            now=now,
+        )
         return await self._repo.update_group(group, source_asof=source_asof)
 
     async def record_auto_veto(
