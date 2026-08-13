@@ -1542,6 +1542,7 @@ async def test_auto_dispatch_compensates_only_current_failed_result(
         account_mode="kis_live",
         action="place",
         order_type="limit",
+        thesis="unit fixture thesis",
         valid_until=NOW + timedelta(minutes=5),
         approval_dispatch_membership_revision=None,
     )

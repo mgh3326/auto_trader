@@ -23,6 +23,7 @@ from app.services.order_proposals.approval_window import (
     SubmissionSessionEvidence,
     evaluate_approval_window,
 )
+from app.services.order_proposals.auto_veto import reconcile_toss_auto_veto_terminal
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
     ApprovalPublication,
@@ -249,16 +250,23 @@ async def _seed_proposal(db_session, *, nonce="nonce-abc123", symbol="A", rungs=
     return group
 
 
-async def _seed_auto_resting(db_session, *, nonce="veto-nonce"):
+async def _seed_auto_resting(
+    db_session,
+    *,
+    nonce="veto-nonce",
+    account_mode="kis_live",
+    market="equity_kr",
+):
     service = OrderProposalsService(db_session)
     now = datetime.now(UTC)
     group = await service.create_proposal(
         symbol="005930",
-        market="equity_kr",
-        account_mode="kis_live",
+        market=market,
+        account_mode=account_mode,
         side="buy",
         order_type="limit",
         proposer="p",
+        thesis="acceptance fixture thesis",
         rungs=[RungInput(0, "buy", Decimal("1"), Decimal("97000"), None)],
         source_asof={
             "auto_approved": {
@@ -864,6 +872,260 @@ async def test_auto_veto_cancel_failure_that_is_filled_edits_filled(
     )
     assert rungs[0].state == "filled"
     assert "체결됨" in notifier.edited[-1][2]
+
+
+@pytest.mark.asyncio
+async def test_acceptance_a_toss_veto_needs_broker_terminal_and_ledger_reconcile(
+    monkeypatch, db_session
+):
+    """Offline A fixture: request → original terminal → reconcile → local close."""
+    _allow_chat(monkeypatch)
+    group = await _seed_auto_resting(db_session, account_mode="toss_live")
+    notifier = _FakeNotifier()
+    calls: list[str] = []
+
+    async def cancel_fn(**kwargs):
+        calls.append(f"cancel:{kwargs['order_id']}")
+        # Deliberately only an acknowledgement: the test requires the next two
+        # proof steps before the local rung can close.
+        return {"success": True, "replacement_order_id": "cancel-request-1"}
+
+    async def fetch_fn(**kwargs):
+        calls.append(f"terminal:{kwargs['order_id']}")
+        return TargetOrderSnapshot(
+            broker_order_id="broker-auto-1",
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            limit_price="97000",
+            remaining_quantity="0",
+            status="cancelled",
+            observed_at=kwargs["now"].isoformat(),
+        )
+
+    async def reconcile_fn(**kwargs):
+        calls.append(f"reconcile:{kwargs['order_id']}")
+        return {"confirmed": True, "reconciled_order_count": 1}
+
+    result = await handle_callback_update(
+        _make_update(
+            data=_proposal_callback_data(group, action="vc", nonce="veto-nonce")
+        ),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        veto_cancel_fn=cancel_fn,
+        veto_fetch_fn=fetch_fn,
+        veto_toss_reconcile_fn=reconcile_fn,
+    )
+
+    assert result["reason"] == "auto_veto_cancelled"
+    assert calls == [
+        "cancel:broker-auto-1",
+        "terminal:broker-auto-1",
+        "reconcile:broker-auto-1",
+    ]
+    _refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "cancelled"
+    outcome = result["outcomes"][0]
+    assert outcome["terminal_confirmation"] == (
+        "broker_terminal_and_toss_ledger_reconciled"
+    )
+    assert outcome["reconcile"]["confirmed"] is True
+
+
+@pytest.mark.asyncio
+async def test_toss_auto_veto_never_marks_cancelled_without_reconcile_terminal(
+    monkeypatch, db_session
+):
+    """Mutant ③ guard: a cancel acknowledgement plus fetch is insufficient."""
+    _allow_chat(monkeypatch)
+    group = await _seed_auto_resting(db_session, account_mode="toss_live")
+
+    async def cancel_fn(**_kwargs):
+        return {"success": True}
+
+    async def fetch_fn(**kwargs):
+        return TargetOrderSnapshot(
+            broker_order_id="broker-auto-1",
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            limit_price="97000",
+            remaining_quantity="0",
+            status="cancelled",
+            observed_at=kwargs["now"].isoformat(),
+        )
+
+    async def unconfirmed_reconcile(**_kwargs):
+        return {"confirmed": False, "error": "original_order_not_terminal_in_ledger"}
+
+    result = await handle_callback_update(
+        _make_update(
+            data=_proposal_callback_data(group, action="vc", nonce="veto-nonce")
+        ),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=_FakeNotifier(),
+        veto_cancel_fn=cancel_fn,
+        veto_fetch_fn=fetch_fn,
+        veto_toss_reconcile_fn=unconfirmed_reconcile,
+    )
+
+    assert result["reason"] == "auto_veto_failed"
+    _refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "resting"
+    assert result["outcomes"][0]["error"] == "toss_terminal_reconcile_unconfirmed"
+
+
+@pytest.mark.asyncio
+async def test_toss_veto_terminal_reconcile_binds_the_original_order_id(monkeypatch):
+    from app.mcp_server.tooling import toss_live_ledger
+
+    calls: list[dict] = []
+
+    async def fake_impl(**kwargs):
+        calls.append(kwargs)
+        return {
+            "reconciled": [
+                {
+                    "order_id": "original-order",
+                    "local_status": "cancelled",
+                    "action": "marked_cancelled",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(toss_live_ledger, "toss_reconcile_orders_impl", fake_impl)
+    result = await reconcile_toss_auto_veto_terminal(
+        order_id="original-order",
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+    )
+
+    assert result["confirmed"] is True
+    assert calls == [
+        {
+            "symbol": "005930",
+            "order_id": "original-order",
+            "market": "kr",
+            "dry_run": False,
+            "limit": 10,
+            "project_proposal_rungs": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_toss_veto_terminal_reconcile_requires_cancelled_status_and_terminal_action(
+    monkeypatch, db_session
+):
+    """MUTANT-3b: original ID alone is not terminal cancellation proof."""
+    from app.mcp_server.tooling import kis_live_ledger, toss_live_ledger
+
+    order_id = f"nonterminal-original-{uuid.uuid4()}"
+
+    async def fake_impl(**_kwargs):
+        return {
+            "reconciled": [
+                {
+                    "order_id": order_id,
+                    "local_status": "resting",
+                    "action": "marked_cancelled",
+                },
+                {
+                    "order_id": order_id,
+                    "local_status": "cancelled",
+                    "action": "noop_pending",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(toss_live_ledger, "toss_reconcile_orders_impl", fake_impl)
+    monkeypatch.setattr(
+        kis_live_ledger,
+        "_order_session_factory",
+        lambda: _session_factory(db_session),
+    )
+
+    result = await reconcile_toss_auto_veto_terminal(
+        order_id=order_id,
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+    )
+
+    assert result == {
+        "confirmed": False,
+        "reconciled_order_count": 0,
+        "error": "toss_terminal_reconcile_unconfirmed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_toss_veto_accepts_an_already_reconciled_original_terminal_row(
+    monkeypatch, db_session
+):
+    """A prior reconcile remains terminal proof; a cancel ACK alone does not."""
+    from app.mcp_server.tooling import kis_live_ledger, toss_live_ledger
+    from app.services.toss_live_order_ledger_service import TossLiveOrderLedgerService
+
+    order_id = f"already-reconciled-{uuid.uuid4()}"
+    ledger = TossLiveOrderLedgerService(db_session)
+    row = await ledger.record_send(
+        operation_kind="place",
+        market="kr",
+        symbol="005930",
+        side="buy",
+        order_type="limit",
+        time_in_force="DAY",
+        quantity=Decimal("1"),
+        price=Decimal("97000"),
+        order_amount=None,
+        currency="KRW",
+        client_order_id=f"client-{uuid.uuid4()}",
+        broker_order_id=order_id,
+        original_order_id=None,
+        status="accepted",
+        broker_status=None,
+        response_code="0",
+        response_message=None,
+        raw_response={},
+    )
+    await ledger.update_reconcile_outcome(
+        ledger_id=row.id,
+        status="cancelled",
+        broker_status="CANCELED",
+    )
+
+    async def no_open_rows(**_kwargs):
+        return {"reconciled": []}
+
+    monkeypatch.setattr(toss_live_ledger, "toss_reconcile_orders_impl", no_open_rows)
+    monkeypatch.setattr(
+        kis_live_ledger,
+        "_order_session_factory",
+        lambda: _session_factory(db_session),
+    )
+
+    result = await reconcile_toss_auto_veto_terminal(
+        order_id=order_id,
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+    )
+
+    assert result == {
+        "confirmed": True,
+        "reconciled_order_count": 1,
+        "confirmed_from": "existing_terminal_ledger_reconcile",
+        "error": None,
+    }
 
 
 @pytest.mark.asyncio

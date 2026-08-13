@@ -79,6 +79,225 @@ class PolicyDecisionRule(BaseModel):
     exclusions: list[str] = Field(default_factory=list)
 
 
+class SupportReserveNetAutoSubmitNotional(BaseModel):
+    """The existing, unchanged auto-submit ceiling by settlement currency."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    krw: Literal[200000]
+    usd: Literal[150]
+
+
+class SupportReserveNetCashReservation(BaseModel):
+    """Reserve-net cash accounting contract; advisory until a future consumer.
+
+    This schema deliberately describes the fail-closed accounting boundary but
+    does not implement it in an order-proposal or broker service.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    net_orderable: Literal[
+        "fresh_broker_orderable_cash_minus_same_account_currency_pending_required_cash"
+    ]
+    pending_required_cash_scope: Literal["not_yet_reached_broker"]
+    required_cash_primary: Literal["preview_estimated_value_plus_fee"]
+    required_cash_fallback: Literal["quantity_times_limit_price"]
+    broker_orderable_unavailable_or_error: Literal["FAIL_CLOSED"]
+    cancel_proposal_cash_reservation: Literal[
+        "KEEP_RESERVED_UNTIL_BROKER_TERMINAL_CONFIRMATION"
+    ]
+
+
+class SupportReserveNetFillTriagePolicy(BaseModel):
+    """ROB-755 consumer contract; no broker mutation is enabled here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    on_first_confirmed_fill: Literal["FREEZE_NEW_SUBMITS"]
+    cancellation_mode: Literal["PROPOSAL_REQUIRES_APPROVAL"]
+    broker_cancel_confirmation_required_before_releasing_cash: Literal[True]
+    same_session_rearm: Literal[False]
+    unknown_or_ambiguous_order_state: Literal["KEEP_RESERVED_AND_BLOCK"]
+    burst_key: list[str]
+
+    @field_validator("burst_key")
+    @classmethod
+    def validate_burst_key(cls, value: list[str]) -> list[str]:
+        required = ["broker_account_id", "currency", "market_session"]
+        if value != required:
+            raise ValueError(f"burst_key must be exactly {required}")
+        return value
+
+
+class SupportReserveNetAddCandidatePolicy(BaseModel):
+    """Averaging-down feasibility contract for the reserve-net tier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    r931_review_required: Literal["PASS"]
+    r931_review_max_age_days: Literal[7]
+    policy_table_max_age_hours: Literal[36]
+    k_used: float
+    sizing_price: Literal["proposed_limit_price"]
+    a_limit_lte_zero: Literal["NO_ORDER"]
+    partial_A_limit_fill: Literal["FORBIDDEN"]
+    max_add_symbols_per_market: Literal[1]
+    max_reserve_net_add_fills_per_symbol_per_policy_version: Literal[1]
+    same_day_rearm_after_fill: Literal[False]
+    crash_day_averaging_exemption: Literal[False]
+
+    @field_validator("k_used")
+    @classmethod
+    def validate_k_used(cls, value: float) -> float:
+        if value != 0.10:
+            raise ValueError("k_used must be 0.10")
+        return value
+
+
+class SupportReserveNetPriorityRules(BaseModel):
+    """Deterministic allocation order for the constrained reserve-net slots.
+
+    This remains a consumer contract only. A later authorized consumer must use
+    this order when selecting among otherwise eligible candidates.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    allocation_order: list[str]
+    same_symbol_active_or_resting: Literal["DEDUPE_FIRST"]
+    first_slot: Literal["ELIGIBLE_NEW_CANDIDATE_FIRST"]
+    add_candidate_rank: Literal["SECONDARY_CANDIDATE_POOL"]
+    add_candidate_r931_review_required: Literal["PASS"]
+    add_candidate_a_limit_10: Literal["FULLY_SATISFIED"]
+    max_add_symbols_per_market: Literal[1]
+    same_intent_class_sort_order: list[str]
+    exact_tie_break: Literal["NEW_BEFORE_ADD"]
+
+    @field_validator("allocation_order")
+    @classmethod
+    def validate_allocation_order(cls, value: list[str]) -> list[str]:
+        required = [
+            "dedupe_active_or_resting_same_symbol",
+            "first_slot_eligible_new_candidate",
+            "add_secondary_pool_only_after_r931_pass_and_full_a_limit_10",
+        ]
+        if value != required:
+            raise ValueError(f"allocation_order must be exactly {required}")
+        return value
+
+    @field_validator("same_intent_class_sort_order")
+    @classmethod
+    def validate_same_intent_class_sort_order(cls, value: list[str]) -> list[str]:
+        required = [
+            "support_strength_desc",
+            "independent_support_source_count_desc",
+            "honest_upside_pct_desc",
+            "post_fill_sector_increase_asc",
+            "required_cash_asc",
+        ]
+        if value != required:
+            raise ValueError(f"same_intent_class_sort_order must be exactly {required}")
+        return value
+
+
+class SupportReserveNetProhibitions(BaseModel):
+    """One-to-one encoding of the eight §Q4 prohibitions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    no_new_add_or_deep_limit_rung_overlap: Literal[True]
+    aggregate_active_buy_by_beneficial_owner_across_accounts: Literal[True]
+    fresh_cost_basis_quantity_and_A_limit_before_next_day_reissue: Literal[True]
+    partial_A_limit_fill: Literal["FORBIDDEN"]
+    candidate_zero_runtime_gate_relaxation: Literal["FORBIDDEN"]
+    crash_day_averaging_exemption: Literal[False]
+    cancel_proposal_is_not_broker_cancellation: Literal[True]
+    unconfirmed_cancel_keeps_required_cash_reserved: Literal[True]
+    market_order: Literal["FORBIDDEN"]
+    gtc: Literal["FORBIDDEN"]
+    multi_rung: Literal["FORBIDDEN"]
+    daily_regeneration: Literal["REQUIRED"]
+
+
+class SupportReserveNetDecisionRule(BaseModel):
+    """Operator-owned support reserve net contract (operator §45/§46).
+
+    It is intentionally a policy/consumer contract only.  It does not route a
+    proposal, write a ledger row, invoke an MCP tool, or mutate a broker.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    lanes: list[Literal["buy"]]
+    semantics: str
+    regular_discovery_precedence: Literal[True]
+    eligible_only_when_regular_gate_failure: Literal["RSI_ONLY"]
+    rsi_gate: Literal["omitted_for_this_tier_only"]
+    support_strength_min: Literal["moderate"]
+    independent_support_source_count_min: Literal[2]
+    independent_support_source_families: list[str]
+    support_within_current_pct_max: Literal[8]
+    honest_upside_pct_min: Literal[40]
+    honest_upside_reference: Literal["decision_time_current_price"]
+    discount_below_support_pct_range: list[int]
+    final_limit_distance_from_current_pct_range: list[int]
+    anchor_price_formula: Literal["tick_floor(S × (1-d))"]
+    final_limit_distance_out_of_range: Literal["EXCLUDE"]
+    order_type: Literal["limit"]
+    tif: Literal["DAY"]
+    all_pending_buy_required_cash_hard_cap_pct: Literal[90]
+    tier_armed_required_cash_cap_pct: Literal[50]
+    max_owned_or_open_symbols_per_market: Literal[2]
+    max_active_orders_per_symbol: Literal[1]
+    max_symbols_per_sector_cluster: Literal[1]
+    unknown_sector: Literal["INELIGIBLE"]
+    auto_submit_notional: SupportReserveNetAutoSubmitNotional
+    larger_notional_within_existing_band: Literal["HUMAN_APPROVAL_REQUIRED"]
+    daily_auto_cap_includes_all_buy_tiers: Literal[True]
+    cash_reservation: SupportReserveNetCashReservation
+    fill_triage: SupportReserveNetFillTriagePolicy
+    add_candidate: SupportReserveNetAddCandidatePolicy
+    priority_rules: SupportReserveNetPriorityRules
+    prohibitions: SupportReserveNetProhibitions
+    toss_live_approval: Literal["HUMAN_APPROVAL_REQUIRED_UNTIL_VETO_WIRING"]
+
+    @field_validator("lanes")
+    @classmethod
+    def validate_buy_lane_only(
+        cls, value: list[Literal["buy"]]
+    ) -> list[Literal["buy"]]:
+        if value != ["buy"]:
+            raise ValueError("support_reserve_net applies to the buy lane only")
+        return value
+
+    @field_validator("independent_support_source_families")
+    @classmethod
+    def validate_independent_support_families(cls, value: list[str]) -> list[str]:
+        required = ["fib", "bb_lower", "volume_profile"]
+        if value != required:
+            raise ValueError(
+                f"independent_support_source_families must be exactly {required}"
+            )
+        return value
+
+    @field_validator("discount_below_support_pct_range")
+    @classmethod
+    def validate_discount_below_support_range(cls, value: list[int]) -> list[int]:
+        if value != [5, 10]:
+            raise ValueError("discount_below_support_pct_range must be [5, 10]")
+        return value
+
+    @field_validator("final_limit_distance_from_current_pct_range")
+    @classmethod
+    def validate_final_distance_range(cls, value: list[int]) -> list[int]:
+        if value != [-15, -5]:
+            raise ValueError(
+                "final_limit_distance_from_current_pct_range must be [-15, -5]"
+            )
+        return value
+
+
 class SingleShareExitScope(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -408,9 +627,12 @@ class TradingPolicyDocument(BaseModel):
     order_proposals: OrderProposalsPolicy
     sector_clusters: dict[str, list[str]]
     thresholds: dict[str, PolicyThreshold]
-    decision_rules: dict[str, PolicyDecisionRule | SingleShareExitDecisionRule] = Field(
-        default_factory=dict
-    )
+    decision_rules: dict[
+        str,
+        PolicyDecisionRule
+        | SingleShareExitDecisionRule
+        | SupportReserveNetDecisionRule,
+    ] = Field(default_factory=dict)
     market_rules: dict[Literal["crypto"], CryptoMarketRules]
     market_overrides: dict[Market, dict[str, ThresholdValue]]
     crash_day: CrashDayPolicy

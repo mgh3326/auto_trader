@@ -139,6 +139,22 @@ class OrderProposalRepository:
         value = (await self._session.execute(stmt)).scalar_one()
         return Decimal(value)
 
+    async def list_groups_for_toss_auto_submission_freeze(
+        self,
+        *,
+        broker_account_id: str | None,
+    ) -> list[OrderProposal]:
+        """Return one Toss account's auto groups for a same-day freeze."""
+        stmt = select(OrderProposal).where(
+            OrderProposal.account_mode == "toss_live",
+            OrderProposal.source_asof.op("?")("auto_approved"),
+        )
+        if broker_account_id is None:
+            stmt = stmt.where(OrderProposal.broker_account_id.is_(None))
+        else:
+            stmt = stmt.where(OrderProposal.broker_account_id == broker_account_id)
+        return list((await self._session.execute(stmt)).scalars().all())
+
     async def acquire_auto_approve_lock(self, lock_key: str) -> None:
         """Serialize an auto-approval critical section until transaction commit."""
         await self._session.execute(

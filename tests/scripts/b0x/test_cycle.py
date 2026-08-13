@@ -122,6 +122,23 @@ async def test_first_shadow_cycle_derives_and_records(
 
 
 @pytest.mark.asyncio
+async def test_shadow_cycle_stamps_the_exact_table_directory_it_consumed(
+    table_dir: Path, out_dir: Path
+) -> None:
+    """The cycle forwards its actual table source into account-map provenance."""
+
+    outcome = await run_shadow_cycle(now=NOW, table_dir=table_dir, out_dir=out_dir)
+
+    account_map = outcome.record["account_map"]
+    assert account_map["source_path"] == str(table_dir)
+    # This test table is intentionally not a Git worktree, so the cycle must
+    # record an honest unknown instead of consulting any unrelated checkout.
+    assert account_map["commit"] == "UNAVAILABLE"
+    assert account_map["commit_status"] == "unavailable"
+    assert account_map["commit_reason"] == "account_map_source_not_git_repository"
+
+
+@pytest.mark.asyncio
 async def test_shadow_cycle_is_idempotent_in_its_derivation(
     table_dir: Path, out_dir: Path
 ) -> None:

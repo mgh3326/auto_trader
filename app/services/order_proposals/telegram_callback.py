@@ -78,8 +78,10 @@ from app.services.order_proposals.approval_window import (
 from app.services.order_proposals.auto_veto import (
     TargetCancelFn,
     TargetFetchFn,
+    TossVetoReconcileFn,
     acquire_auto_veto_locks,
     cancel_auto_submitted_rungs,
+    reconcile_toss_auto_veto_terminal,
 )
 from app.services.order_proposals.broker_gateway import (
     cancel_target_order,
@@ -545,6 +547,7 @@ async def _handle_auto_veto(
     telegram_user_id: str,
     cancel_fn: TargetCancelFn,
     fetch_fn: TargetFetchFn,
+    toss_reconcile_fn: TossVetoReconcileFn = reconcile_toss_auto_veto_terminal,
 ) -> dict[str, Any]:
     """Cancel every still-open auto-submitted rung and converge evidence."""
     preflight_failure = await _preflight_proposal_callback(
@@ -577,6 +580,7 @@ async def _handle_auto_veto(
         now=now,
         cancel_fn=cancel_fn,
         fetch_fn=fetch_fn,
+        toss_reconcile_fn=toss_reconcile_fn,
     )
     saw_filled = any(outcome["result"] == "filled" for outcome in outcomes)
     saw_failure = any(
@@ -1626,6 +1630,7 @@ async def handle_callback_update(
     loss_cut_preview_fn: RevalidateFn | None = None,
     veto_cancel_fn: TargetCancelFn = cancel_target_order,
     veto_fetch_fn: TargetFetchFn = fetch_target_order,
+    veto_toss_reconcile_fn: TossVetoReconcileFn = reconcile_toss_auto_veto_terminal,
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
 ) -> dict[str, Any]:
@@ -1702,6 +1707,7 @@ async def handle_callback_update(
                     ),
                     cancel_fn=veto_cancel_fn,
                     fetch_fn=veto_fetch_fn,
+                    toss_reconcile_fn=veto_toss_reconcile_fn,
                 )
             elif callback.action == "dn":
                 result = await _handle_deny(

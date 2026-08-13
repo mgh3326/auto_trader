@@ -86,11 +86,12 @@ a tightening of ROB-871, not a widening.
 ## 4. Fee rate provenance
 
 `round_trip_cost_bps` is **not a measured rate**, and there is currently no way
-to make it one from inside this repo: the two veto-capable ledgers
-(`review.kis_live_order_ledger`, `review.live_order_ledger`) have no
+to make it one from inside this repo: the two default-active veto-capable
+ledgers (`review.kis_live_order_ledger`, `review.live_order_ledger`) have no
 `commission`/`tax` columns, so no realized fee evidence exists for `kis_live`
-or `upbit`. Only `review.toss_live_order_ledger` records commission and tax,
-and `toss_live` is not veto-capable.
+or `upbit`. `review.toss_live_order_ledger` records commission and tax;
+`toss_live` remains non-veto-capable by default and is eligible only after the
+separate, default-off TOSS-AUTO-FULL gate and its acceptance procedure.
 
 Until that changes, the values are the **conservative maximum of the rates this
 repo already declares**, so the profit-take test is narrower than reality:
@@ -143,3 +144,8 @@ Not part of the introducing change. When the time comes:
 3. Roll back by setting the mode back to `off`. Orders already submitted are
    unaffected — cancel those through the veto button or
    `order_proposal_cancel`.
+
+These generic gates do not arm Toss. The separately default-off
+`ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED` gate, terminal-evidence acceptance,
+and rollback sequence are operator-only and documented in
+`docs/runbooks/toss-auto-acceptance.md`.

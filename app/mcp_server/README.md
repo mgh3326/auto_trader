@@ -2084,6 +2084,10 @@ MCP session state resets on reconnect — ROB-469) is a separate follow-up issue
 In particular, the contract below cannot physically prevent an enabled
 auto-approval path.
 
+**ROB-1239:** the canonical statement of what a `blocked_actions` verdict
+does and does not mean is the `route_request` tool `description=` string in
+`app/mcp_server/tooling/route_request_registration.py`, not this section.
+
 Lane definitions come from the machine-readable `lanes:` blocks in
 `docs/playbooks/trading-decision-playbook.md`; `route_request_lanes.LANE_SEQUENCES`
 is kept in exact order by `tests/test_route_request_registry_diff.py`. Every

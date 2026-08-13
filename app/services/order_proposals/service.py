@@ -76,6 +76,8 @@ from app.services.trade_journal.trade_retrospective_service import (
 
 logger = logging.getLogger(__name__)
 
+_TOSS_AUTO_SUBMISSION_FREEZE_KEY = "toss_auto_submission_freeze"
+
 
 def _log_dispatch_outcome(result: TelegramDispatchResult, *, surface: str) -> None:
     logger.log(
@@ -2524,6 +2526,84 @@ class OrderProposalsService:
         source_asof["auto_approved"] = auto
         return await self._repo.update_group(group, source_asof=source_asof)
 
+    @staticmethod
+    def _toss_auto_freeze_lock_key(group: OrderProposal, *, now: datetime) -> str:
+        account_key = group.broker_account_id or "default"
+        return (
+            "order_proposals:toss_auto_submission_freeze:"
+            f"{account_key}:{now.astimezone(KST).date()}"
+        )
+
+    async def active_toss_auto_submission_freeze(
+        self, group: OrderProposal, *, now: datetime
+    ) -> dict[str, Any] | None:
+        """Return a current-session fill freeze for this Toss account/market.
+
+        Any confirmed Toss fill blocks further automatic submission across the
+        account until the next KST session.  This is intentionally broader
+        than the separate KRW/USD cap lanes: an unresolved partial fill and
+        its cancellation proposal are an account-level operational event.
+        Human approval remains available.
+        """
+        self._require_timezone_aware(now)
+        if group.account_mode != "toss_live":
+            return None
+        await self._repo.acquire_auto_approve_lock(
+            self._toss_auto_freeze_lock_key(group, now=now)
+        )
+        session_date = now.astimezone(KST).date().isoformat()
+        candidates = await self._repo.list_groups_for_toss_auto_submission_freeze(
+            broker_account_id=group.broker_account_id,
+        )
+        for candidate in candidates:
+            auto = (candidate.source_asof or {}).get("auto_approved")
+            freeze = (
+                auto.get(_TOSS_AUTO_SUBMISSION_FREEZE_KEY)
+                if isinstance(auto, dict)
+                else None
+            )
+            if (
+                isinstance(freeze, dict)
+                and freeze.get("state") == "frozen"
+                and freeze.get("session_date") == session_date
+            ):
+                return dict(freeze)
+        return None
+
+    async def _freeze_toss_auto_submission_on_fill(
+        self,
+        group: OrderProposal,
+        *,
+        filled_qty: Decimal | None,
+        now: datetime,
+    ) -> None:
+        """Durably stop same-session Toss auto entries after verified fill proof."""
+        if group.account_mode != "toss_live" or filled_qty is None or filled_qty <= 0:
+            return
+        source_asof = dict(group.source_asof or {})
+        auto = source_asof.get("auto_approved")
+        if not isinstance(auto, dict):
+            # A human-approved Toss order must not mutate the auto-submission
+            # control plane merely because it filled.
+            return
+        await self._repo.acquire_auto_approve_lock(
+            self._toss_auto_freeze_lock_key(group, now=now)
+        )
+        auto = dict(auto)
+        existing = auto.get(_TOSS_AUTO_SUBMISSION_FREEZE_KEY)
+        if isinstance(existing, dict) and existing.get("state") == "frozen":
+            return
+        auto[_TOSS_AUTO_SUBMISSION_FREEZE_KEY] = {
+            "state": "frozen",
+            "reason": "broker_fill_evidence",
+            "filled_qty": str(filled_qty),
+            "frozen_at": now.isoformat(),
+            "session_date": now.astimezone(KST).date().isoformat(),
+            "market": group.market,
+        }
+        source_asof["auto_approved"] = auto
+        await self._repo.update_group(group, source_asof=source_asof)
+
     async def auto_approved_daily_notional(
         self, group: OrderProposal, *, now: datetime
     ) -> Decimal:
@@ -2718,6 +2798,11 @@ class OrderProposalsService:
         audit: dict[str, Any] = {"updated_at": now}
         if filled_qty is not None:
             audit["filled_qty"] = filled_qty
+        await self._freeze_toss_auto_submission_on_fill(
+            group,
+            filled_qty=filled_qty,
+            now=now,
+        )
         if locked.state == terminal_state:
             # Repeated non-terminal evidence (e.g. a larger partial fill on an
             # already-partially_filled rung): refresh audit fields in place
@@ -2864,6 +2949,11 @@ class OrderProposalsService:
         audit: dict[str, Any] = {"updated_at": now}
         if filled_qty is not None:
             audit["filled_qty"] = filled_qty
+        await self._freeze_toss_auto_submission_on_fill(
+            group,
+            filled_qty=filled_qty,
+            now=now,
+        )
         return await self._transition_locked_rung(
             group, locked, new_state=terminal_state, **audit
         )
