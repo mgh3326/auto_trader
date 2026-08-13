@@ -64,6 +64,9 @@ RTH 밖이면 표·계좌 I/O **전혀 없이** `zero_order_reason=outside_krx_r
    uv run python -m scripts.build_policy_table --market kr
    ```
    출력 위치 = `~/services/auto_trader-operator/policy-tables/latest-kr.json`.
+   이 기본 경로는 §47 Prefect가 `policy-tables/`만 직접 커밋하는 정상 경로라 CLI가
+   stderr에 공유 체크아웃 경고를 남긴다. 수동·격리 빌드는 반드시 별도
+   `--out-dir /안전한/개인/경로`를 명시한다.
    B0-X 는 이 디렉토리를 **읽기만** 한다.
 2. `KIS_MOCK_ENABLED=true` + `KIS_MOCK_APP_KEY/APP_SECRET/ACCOUNT_NO` — read-only 계좌
    조회(잔고·보유)에 필요하다. 확인 경로는 여기에 `B0X_KR_ENABLED=true`와 per-call
