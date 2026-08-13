@@ -318,10 +318,27 @@ def test_support_reserve_net_boundary_values_are_inclusive_and_exact():
     assert rule.honest_upside_pct_min == 40
 
 
-def test_support_reserve_net_keeps_toss_outside_auto_veto_capable_combinations():
-    assert all(
-        account_mode != "toss_live" for account_mode, _ in _VETO_CAPABLE_ACCOUNT_MARKETS
+def test_support_reserve_net_keeps_toss_auto_veto_behind_dedicated_gate(monkeypatch):
+    # TOSS-AUTO-FULL (#1844) added toss_live to the veto-capable set, so the
+    # reserve-net invariant this test protects is no longer set membership:
+    # a toss_live proposal must not auto-submit unless the operator armed the
+    # dedicated ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED gate (default false).
+    assert ("toss_live", "equity_kr") in _VETO_CAPABLE_ACCOUNT_MARKETS
+    assert ("toss_live", "equity_us") in _VETO_CAPABLE_ACCOUNT_MARKETS
+
+    from app.services.order_proposals import auto_approve
+
+    monkeypatch.setattr(
+        auto_approve.settings, "ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED", False
     )
+    for market in ("equity_kr", "equity_us"):
+        assert not auto_approve._is_veto_capable_account_market("toss_live", market)
+
+    monkeypatch.setattr(
+        auto_approve.settings, "ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED", True
+    )
+    for market in ("equity_kr", "equity_us"):
+        assert auto_approve._is_veto_capable_account_market("toss_live", market)
 
 
 def test_single_share_exit_rule_is_provisional_shadow_only():
