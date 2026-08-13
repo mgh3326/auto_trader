@@ -210,8 +210,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - Discord button flows: `cancel_order(order_id="...", market="...")` — symbol auto-lookup enabled
 - `modify_order` Discord button flow example:
   - `modify_order(order_id="...", symbol="...", market="...", new_price=123.45, dry_run=false)`
-- `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters. **Single candidate-discovery entrypoint.**
+- `screen_stocks(...)` - Screen stocks across different markets (KR/US/Crypto) with various filters. **Generic candidate-discovery entrypoint.**
   - If the response has `meta.reason="krx_session_expired"`, KRX re-authentication was attempted once and did not recover the session. Use `screen_stocks_snapshot(market="kr")` for persisted-preset discovery, or `get_momentum_candidates(market="kr")` for intraday momentum candidates.
+- `discover_buy_candidates_fanout()` - KR-only, read-only bounded discovery across RSI ordering (without a `max_rsi` prefilter), pullback, turnover, snapshot support/flow, and snapshot value/catalyst source families. Each source is capped at 10 rows, snapshot groups at 5 presets, and only the top 10 deduped DB-standard symbols receive full-analysis revalidation with top-level `data_state` freshness proof. Missing freshness is recorded as undetermined observation only, never eligibility. It never creates a proposal/order or reads broker/account state, so budget is deferred. Do not use it for PnL scoring or immediate threshold tuning.
 - `get_krx_session_health()`
   - Read-only authenticated KRX-session probe. It uses the normal KRX login/re-authentication path and reports `status`, `reason`, `retryable`, and `authenticated`; no market, broker, or order state is changed.
 - `screen_stocks_snapshot(preset=None, presets=None, market="kr", filters=None, exclude_watched=false, exclude_held=false, exclude_symbols=None, min_analyst_count=None, min_analyst_buy_count=None, min_market_cap=None, min_market_cap_eok=None, max_market_cap_eok=None, sort=None, limit=40, offset=0)`
@@ -2083,6 +2084,10 @@ middleware (mutation tools only, reads unrestricted, caller-header-keyed because
 MCP session state resets on reconnect — ROB-469) is a separate follow-up issue.
 In particular, the contract below cannot physically prevent an enabled
 auto-approval path.
+
+**ROB-1239:** the canonical statement of what a `blocked_actions` verdict
+does and does not mean is the `route_request` tool `description=` string in
+`app/mcp_server/tooling/route_request_registration.py`, not this section.
 
 Lane definitions come from the machine-readable `lanes:` blocks in
 `docs/playbooks/trading-decision-playbook.md`; `route_request_lanes.LANE_SEQUENCES`

@@ -57,6 +57,7 @@ class _FakeNotifier:
         self.sent_messages: list[tuple[str, dict | None, str]] = []
         self.parse_modes: list[str | None] = []
         self.edited_messages: list[tuple[str, int, str, dict | None]] = []
+        self.auto_veto_mirrors: list[dict] = []
         self._message_id = message_id
 
     async def send_approval_message(
@@ -92,6 +93,10 @@ class _FakeNotifier:
             error_classification=None,
             payload_chars=telegram_text_length(text),
         )
+
+    async def send_auto_veto_card_mirror(self, **kwargs):
+        self.auto_veto_mirrors.append(kwargs)
+        return True
 
 
 class _RaisingNotifier:
@@ -228,7 +233,7 @@ async def _seed_proposal(
     target_order_snapshot=None,
     rungs=None,
     broker_account_id=None,
-    thesis=None,
+    thesis="test thesis",
     strategy=None,
 ):
     service = OrderProposalsService(db_session)
@@ -803,6 +808,16 @@ async def test_dispatch_auto_eligible_buy_or_sell_rests_without_approval(
     assert f"auto:policy@{loaded_policy_version}" in text
     assert keyboard["inline_keyboard"][0][0]["text"] == "취소"
     assert keyboard["inline_keyboard"][0][0]["callback_data"].startswith("vc:")
+    assert notifier.auto_veto_mirrors == [
+        {
+            "symbol": "005930",
+            "market": "equity_kr",
+            "quantities": ["1"],
+            "prices": [str(limit_price)],
+            "thesis_summary": "resting entry",
+            "policy_version": loaded_policy_version,
+        }
+    ]
 
     async def duplicate_must_not_revalidate(**kwargs):
         raise AssertionError("an already-submitted proposal must not dispatch twice")
@@ -864,6 +879,43 @@ async def test_dispatch_auto_ineligible_degrades_to_human_approval(
         revalidate_fn=fake_revalidate,
     )
 
+    refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "pending_approval"
+    assert "auto_approved" not in (refreshed.source_asof or {})
+
+
+@pytest.mark.asyncio
+async def test_missing_auto_veto_thesis_never_revalidates_or_submits(
+    monkeypatch, db_session
+):
+    """CARD_FIELDS: no thesis means manual approval before any broker edge."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    group = await _seed_proposal(
+        db_session,
+        broker_account_id=f"missing-thesis-{uuid.uuid4()}",
+        thesis=" ",
+    )
+
+    async def must_not_revalidate(**_kwargs):
+        raise AssertionError("missing thesis must block before broker revalidation")
+
+    notifier = _FakeNotifier()
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=notifier,
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=must_not_revalidate,
+    )
+
+    assert "주문 제안 승인" in notifier.sent_messages[-1][0]
     refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
         group.proposal_id
     )
@@ -1065,6 +1117,7 @@ async def test_auto_notify_failure_compensates_by_cancelling_live_order(
         side="buy",
         order_type="limit",
         proposer="p",
+        thesis="notification delivery compensation fixture",
         rungs=[RungInput(0, "buy", Decimal("1"), Decimal("97000"), None)],
     )
     await db_session.commit()

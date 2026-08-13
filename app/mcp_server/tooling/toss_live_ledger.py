@@ -390,6 +390,7 @@ async def _reconcile_one_toss_row(
     dry_run: bool,
     evidence_source: Any | None = None,
     fallback_client: Any | None = None,
+    project_proposal_rungs: bool = True,
 ) -> dict[str, Any]:
     base = {
         "ledger_id": row.id,
@@ -443,13 +444,19 @@ async def _reconcile_one_toss_row(
     if evidence.verdict == "none":
         base["action"] = f"marked_{evidence.local_status}"
         if not dry_run:
-            converged = await _converge_toss_proposal_rung(
-                row,
-                ledger_status=evidence.local_status,
-                filled_qty=row.filled_qty,
-            )
-            if converged is not None:
-                base["proposal_rung"] = converged
+            # The auto-veto path owns a locked proposal rung and uses this
+            # reconciler solely to close the independent Toss ledger.  Do not
+            # re-enter proposal-rung projection from a separate session there;
+            # the caller records cancellation only after this result confirms
+            # the original broker order's terminal status.
+            if project_proposal_rungs:
+                converged = await _converge_toss_proposal_rung(
+                    row,
+                    ledger_status=evidence.local_status,
+                    filled_qty=row.filled_qty,
+                )
+                if converged is not None:
+                    base["proposal_rung"] = converged
             async with _order_session_factory()() as db:
                 await TossLiveOrderLedgerService(db).update_reconcile_outcome(
                     ledger_id=row.id,
@@ -470,7 +477,7 @@ async def _reconcile_one_toss_row(
     base["avg_price"] = float(avg_price)
     base["delta_qty"] = float(delta)
 
-    if not dry_run:
+    if not dry_run and project_proposal_rungs:
         projection_status = (
             "cancelled" if evidence.local_status == "cancelled" else evidence.verdict
         )
@@ -757,9 +764,10 @@ async def toss_reconcile_orders_impl(
     market: str | None = None,
     dry_run: bool = True,
     limit: int = 100,
+    project_proposal_rungs: bool = True,
 ) -> dict[str, Any]:
     projection_repair = {"candidates": 0, "converged": 0, "failed": 0, "anomalies": {}}
-    if not dry_run:
+    if not dry_run and project_proposal_rungs:
         projection_repair = await _repair_terminal_toss_proposal_projections(
             symbol=symbol,
             order_id=order_id,
@@ -842,6 +850,7 @@ async def toss_reconcile_orders_impl(
                     dry_run=dry_run,
                     evidence_source=evidence_source,
                     fallback_client=shared_client,
+                    project_proposal_rungs=project_proposal_rungs,
                 )
             except Exception as exc:  # noqa: BLE001 — classified in the handler
                 outcome = await _handle_reconcile_row_error(row, exc, dry_run=dry_run)

@@ -260,6 +260,31 @@ class TossLiveOrderLedgerService:
             self._db.expunge(row)
         return rows
 
+    async def reconciled_terminal_status_for_place_order(
+        self, *, broker_order_id: str
+    ) -> str | None:
+        """Return only evidence-backed terminal state for one original order.
+
+        A Toss cancel request creates a separate replacement ledger row and
+        leaves the original `place` row open.  This narrow read lets an
+        auto-veto caller recognize a prior completed reconciliation without
+        treating a cancel-request acknowledgement as a terminal result.
+        """
+        stmt = select(
+            TossLiveOrderLedger.status,
+            TossLiveOrderLedger.reconciled_at,
+        ).where(
+            TossLiveOrderLedger.broker_order_id == broker_order_id,
+            TossLiveOrderLedger.operation_kind == "place",
+        )
+        row = (await self._db.execute(stmt)).one_or_none()
+        if row is None:
+            return None
+        status, reconciled_at = row
+        if status != "cancelled" or reconciled_at is None:
+            return None
+        return str(status)
+
     async def list_terminal_projection_candidates(
         self,
         *,

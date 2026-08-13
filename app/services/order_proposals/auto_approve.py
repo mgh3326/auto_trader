@@ -73,6 +73,18 @@ _VETO_CAPABLE_ACCOUNT_MARKETS = frozenset(
         ("kis_live", "equity_kr"),
         ("kis_live", "equity_us"),
         ("upbit", "crypto"),
+        # TOSS-AUTO-FULL: this membership is *not* sufficient by itself.
+        # ``_is_veto_capable_account_market`` keeps both Toss surfaces
+        # default-disabled behind the independently armed setting below.
+        ("toss_live", "equity_kr"),
+        ("toss_live", "equity_us"),
+    }
+)
+
+_TOSS_LIVE_VETO_ACCOUNT_MARKETS = frozenset(
+    {
+        ("toss_live", "equity_kr"),
+        ("toss_live", "equity_us"),
     }
 )
 
@@ -140,6 +152,34 @@ def _decimal(value: Any) -> Decimal | None:
 def _text(value: Decimal) -> str:
     normalized = format(value.normalize(), "f")
     return normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
+
+
+def auto_veto_thesis_summary(group: Any) -> str | None:
+    """Return the mandatory, bounded thesis for an auto-veto card.
+
+    A strategy label is not a thesis: accepting it as a fallback would turn a
+    missing reason into a seemingly complete cancellation card.  The caller
+    must route the proposal to ordinary human approval whenever this returns
+    ``None``.
+    """
+    thesis = getattr(group, "thesis", None)
+    if not isinstance(thesis, str):
+        return None
+    normalized = " ".join(thesis.split())
+    if not normalized:
+        return None
+    return normalized[:119] + "…" if len(normalized) > 120 else normalized
+
+
+def _is_veto_capable_account_market(account_mode: Any, market: Any) -> bool:
+    candidate = (account_mode, market)
+    if candidate not in _VETO_CAPABLE_ACCOUNT_MARKETS:
+        return False
+    if candidate in _TOSS_LIVE_VETO_ACCOUNT_MARKETS:
+        # The live Toss expansion is explicitly a second gate.  The default is
+        # false, including when the master auto-approve gate is switched on.
+        return bool(settings.ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED)
+    return True
 
 
 def limits_for_market(market: str) -> AutoApproveLimits | None:
@@ -289,10 +329,10 @@ def evaluate_auto_approve_eligibility(
         return reject("loss_cut_intent")
     if exit_intent is not None:
         return reject("exit_intent_present", exit_intent=str(exit_intent))
-    if (
+    if not _is_veto_capable_account_market(
         getattr(group, "account_mode", None),
         getattr(group, "market", None),
-    ) not in _VETO_CAPABLE_ACCOUNT_MARKETS:
+    ):
         return reject("account_not_veto_capable")
     # Applied in both modes: this can only ever reject.
     tags = find_approval_required_tags(group)
@@ -387,6 +427,14 @@ def evaluate_auto_approve_eligibility(
                 )
             loss_guard = "net_profit_proven"
 
+    if auto_veto_thesis_summary(group) is None:
+        # The post-submit card must name the decision reason.  This sits after
+        # every existing safety classifier so missing prose never masks a
+        # stronger reason (loss-cut, cap, marketability, tag, or unknown
+        # classification), while an otherwise eligible order still cannot
+        # reach the broker with an unrenderable veto card.
+        return reject("thesis_required_for_veto_card")
+
     return AutoApproveDecision(
         True,
         "eligible",
@@ -429,13 +477,20 @@ def build_auto_approved_message(
         f"- 종목: `{_escape_inline_code(group.symbol)}`",
         f"- 방향: `{_escape_inline_code(group.side)}`",
     ]
-    for rung in sorted(rungs, key=lambda item: item.rung_index):
-        lines.append(f"- #{rung.rung_index + 1}: {rung.quantity} × {rung.limit_price}")
-    rationale = " ".join(str(group.thesis or group.strategy or "근거 미기재").split())
-    if len(rationale) > 120:
-        rationale = rationale[:119] + "…"
+    ordered_rungs = sorted(rungs, key=lambda item: item.rung_index)
+    quantities = ", ".join(
+        f"#{rung.rung_index + 1} {rung.quantity}" for rung in ordered_rungs
+    )
+    prices = ", ".join(
+        f"#{rung.rung_index + 1} {rung.limit_price}" for rung in ordered_rungs
+    )
+    rationale = auto_veto_thesis_summary(group)
+    if rationale is None:
+        raise ValueError("auto-veto card requires a non-empty thesis")
     lines.extend(
         [
+            f"- 수량: {quantities}",
+            f"- 가격: {prices}",
             f"- 근거: {_escape_markdown(rationale)}",
             f"- `auto:policy@{policy_version}`",
         ]
@@ -449,6 +504,7 @@ __all__ = [
     "AutoApproveDecision",
     "AutoApproveLimits",
     "SellProfitVerdict",
+    "auto_veto_thesis_summary",
     "build_auto_approved_message",
     "classify_sell_profit",
     "evaluate_auto_approve_eligibility",
