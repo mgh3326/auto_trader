@@ -655,7 +655,9 @@ def test_order_detail_kis_kr_returns_row_from_kis_ledger():
     db = _recording_db_get({(KISLiveOrderLedger, 42): row})
     client = TestClient(_make_order_detail_app(db))
 
-    resp = client.get("/trading/api/invest/fills/order-detail?broker=kis&market=kr&ledger_id=42")
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=kis&market=kr&ledger_id=42"
+    )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -674,7 +676,9 @@ def test_order_detail_toss_kr_returns_row_from_toss_ledger():
     db = _recording_db_get({(TossLiveOrderLedger, 3): row})
     client = TestClient(_make_order_detail_app(db))
 
-    resp = client.get("/trading/api/invest/fills/order-detail?broker=toss&market=kr&ledger_id=3")
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=toss&market=kr&ledger_id=3"
+    )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -691,7 +695,9 @@ def test_order_detail_upbit_crypto_returns_row_from_live_ledger():
     db = _recording_db_get({(LiveOrderLedger, 7): row})
     client = TestClient(_make_order_detail_app(db))
 
-    resp = client.get("/trading/api/invest/fills/order-detail?broker=upbit&market=crypto&ledger_id=7")
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=upbit&market=crypto&ledger_id=7"
+    )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -708,12 +714,19 @@ def test_order_detail_kis_us_returns_row_from_live_ledger():
     from app.models.review import LiveOrderLedger
 
     row = _live_order_row(
-        id=99, broker="kis", account_scope="kis_live", market="us", symbol="AAPL", side="sell"
+        id=99,
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        symbol="AAPL",
+        side="sell",
     )
     db = _recording_db_get({(LiveOrderLedger, 99): row})
     client = TestClient(_make_order_detail_app(db))
 
-    resp = client.get("/trading/api/invest/fills/order-detail?broker=kis&market=us&ledger_id=99")
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=kis&market=us&ledger_id=99"
+    )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -745,11 +758,17 @@ def test_order_detail_disambiguates_colliding_ledger_id_across_ledgers_by_market
         thesis="US 밸류에이션 부담으로 축소",
         exit_reason=None,
     )
-    db = _recording_db_get({(KISLiveOrderLedger, 42): kr_row, (LiveOrderLedger, 42): us_row})
+    db = _recording_db_get(
+        {(KISLiveOrderLedger, 42): kr_row, (LiveOrderLedger, 42): us_row}
+    )
     client = TestClient(_make_order_detail_app(db))
 
-    kr_resp = client.get("/trading/api/invest/fills/order-detail?broker=kis&market=kr&ledger_id=42")
-    us_resp = client.get("/trading/api/invest/fills/order-detail?broker=kis&market=us&ledger_id=42")
+    kr_resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=kis&market=kr&ledger_id=42"
+    )
+    us_resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=kis&market=us&ledger_id=42"
+    )
 
     assert kr_resp.status_code == 200
     assert us_resp.status_code == 200
@@ -770,7 +789,9 @@ def test_order_detail_rejects_unrecognized_broker_market_combination():
     db = _recording_db_get({})
     client = TestClient(_make_order_detail_app(db))
 
-    resp = client.get("/trading/api/invest/fills/order-detail?broker=upbit&market=kr&ledger_id=1")
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=upbit&market=kr&ledger_id=1"
+    )
 
     assert resp.status_code == 400
     assert resp.json()["detail"] == "unknown_ledger_combination"
@@ -783,7 +804,9 @@ def test_order_detail_returns_404_when_missing():
     db = _recording_db_get({})
     client = TestClient(_make_order_detail_app(db))
 
-    resp = client.get("/trading/api/invest/fills/order-detail?broker=kis&market=kr&ledger_id=999")
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=kis&market=kr&ledger_id=999"
+    )
 
     assert resp.status_code == 404
 
@@ -827,5 +850,7 @@ def test_unauthenticated_returns_401():
     app.dependency_overrides[get_db] = lambda: AsyncMock()
 
     client = TestClient(app, raise_server_exceptions=False)
-    resp = client.get("/trading/api/invest/fills/order-detail?broker=kis&market=kr&ledger_id=1")
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=kis&market=kr&ledger_id=1"
+    )
     assert resp.status_code == 401
