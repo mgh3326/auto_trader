@@ -43,6 +43,7 @@ from app.services.order_proposals.approval_window import (
     recheck_approval_window_decision,
 )
 from app.services.order_proposals.auto_approve import (
+    auto_veto_thesis_summary,
     build_auto_approved_message,
     evaluate_auto_approve_eligibility,
     limits_for_market,
@@ -50,8 +51,10 @@ from app.services.order_proposals.auto_approve import (
 from app.services.order_proposals.auto_veto import (
     TargetCancelFn,
     TargetFetchFn,
+    TossVetoReconcileFn,
     acquire_auto_veto_locks,
     cancel_auto_submitted_rungs,
+    reconcile_toss_auto_veto_terminal,
 )
 from app.services.order_proposals.broker_gateway import (
     cancel_target_order,
@@ -82,6 +85,62 @@ logger = logging.getLogger(__name__)
 ServiceFactory = Callable[[], Any]
 RevalidateFn = Callable[..., Any]
 Clock = Callable[[], datetime]
+
+
+def _mirror_decimal_text(value: Any) -> str:
+    """Keep Discord card quantities/prices legible after DB numeric coercion."""
+    try:
+        normalized = format(Decimal(str(value)).normalize(), "f")
+    except Exception:  # noqa: BLE001 - display degradation must not raise
+        return str(value)
+    return normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
+
+
+async def _mirror_auto_veto_card(
+    *,
+    notifier: Any,
+    group: Any,
+    rungs: list[Any],
+    policy_version: str,
+) -> bool:
+    """Mirror the already-published auto-veto card through TradeNotifier.
+
+    Telegram remains the action surface.  The Discord delivery is a best-effort
+    operational mirror and cannot turn an otherwise valid order into a false
+    cancellation state.  A missing thesis is treated as a failed mirror too,
+    although the eligibility gate prevents that case before broker submit.
+    """
+    thesis_summary = auto_veto_thesis_summary(group)
+    if thesis_summary is None:
+        logger.error(
+            "order_proposals.auto_veto_discord_mirror_skipped_missing_thesis",
+            extra={"proposal_id": str(group.proposal_id)},
+        )
+        return False
+    sender = getattr(notifier, "send_auto_veto_card_mirror", None)
+    if not callable(sender):
+        logger.warning(
+            "order_proposals.auto_veto_discord_mirror_unavailable",
+            extra={"proposal_id": str(group.proposal_id)},
+        )
+        return False
+    try:
+        return bool(
+            await sender(
+                symbol=group.symbol,
+                market=group.market,
+                quantities=[_mirror_decimal_text(rung.quantity) for rung in rungs],
+                prices=[_mirror_decimal_text(rung.limit_price) for rung in rungs],
+                thesis_summary=thesis_summary,
+                policy_version=policy_version,
+            )
+        )
+    except Exception:  # noqa: BLE001 - an alert mirror cannot roll back a card
+        logger.exception(
+            "order_proposals.auto_veto_discord_mirror_failed",
+            extra={"proposal_id": str(group.proposal_id)},
+        )
+        return False
 
 
 def _generate_nonce() -> str:
@@ -568,6 +627,7 @@ async def dispatch_proposal(
     revalidate_fn: RevalidateFn = revalidate_and_submit,
     cancel_target_fn: TargetCancelFn = cancel_target_order,
     fetch_target_fn: TargetFetchFn = fetch_target_order,
+    toss_veto_reconcile_fn: TossVetoReconcileFn = reconcile_toss_auto_veto_terminal,
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
 ) -> TelegramDispatchResult | ApprovalWindowDecision:
@@ -586,6 +646,8 @@ async def dispatch_proposal(
     auto_submitted = False
     messages: ApprovalDispatchMessages | None = None
     attempt_id: uuid.UUID | None = None
+    mirror_card: tuple[Any, list[Any], str] | None = None
+    auto_policy_version: str | None = None
     async with service_factory() as session:
         service = OrderProposalsService(session)
         await service.acquire_auto_dispatch_lock(proposal_id)
@@ -617,6 +679,23 @@ async def dispatch_proposal(
             )
         limits = limits_for_market(group.market)
         decisions: list[dict[str, Any]] = []
+        if limits is not None and group.account_mode == "toss_live":
+            toss_freeze = await service.active_toss_auto_submission_freeze(
+                group, now=gate_now
+            )
+            if toss_freeze is not None:
+                # A verified Toss fill closes the same-session auto lane.  Do
+                # not even enter revalidation (which can reach a broker) here;
+                # the ordinary approval card is the intentional fail-closed
+                # continuation while the operator considers a cancel proposal.
+                limits = None
+        if limits is not None and auto_veto_thesis_summary(group) is None:
+            # This is deliberately outside the revalidation callback.  The
+            # production callback consults the same gate, but this second
+            # boundary prevents a future revalidation regression from
+            # submitting first and discovering an unrenderable veto card only
+            # after the broker accepted it.
+            limits = None
         if limits is not None:
             daily_notional = await service.auto_approved_daily_notional(group, now=now)
 
@@ -661,6 +740,7 @@ async def dispatch_proposal(
                 and all(outcome.result in submitted_results for outcome in outcomes)
             )
             if auto_submitted:
+                auto_policy_version = limits.policy_version
                 await service.record_auto_approval(
                     proposal_id,
                     policy_version=limits.policy_version,
@@ -751,6 +831,7 @@ async def dispatch_proposal(
                 now=now,
                 cancel_fn=cancel_target_fn,
                 fetch_fn=fetch_target_fn,
+                toss_reconcile_fn=toss_veto_reconcile_fn,
             )
             await service.record_auto_notification_failure(
                 proposal_id,
@@ -758,7 +839,22 @@ async def dispatch_proposal(
                 outcomes=outcomes,
                 now=now,
             )
+        elif result.state is ApprovalDispatchState.SENT_CURRENT:
+            group, rungs = await service.get_proposal(proposal_id)
+            # This branch is reachable only after `auto_submitted` above set
+            # the policy version.  Keep the guard defensive so a future
+            # refactor cannot emit an unversioned mirror card.
+            if auto_policy_version is not None:
+                mirror_card = (group, rungs, auto_policy_version)
         await session.commit()
+    if mirror_card is not None:
+        group, rungs, policy_version = mirror_card
+        await _mirror_auto_veto_card(
+            notifier=notifier,
+            group=group,
+            rungs=rungs,
+            policy_version=policy_version,
+        )
     return result
 
 
