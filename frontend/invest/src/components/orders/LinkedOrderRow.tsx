@@ -46,12 +46,17 @@ export function linkedOrderKey(order: LinkedOrder): string {
 }
 
 // Route to the standalone order detail page (INVEST-WATCH-UI §57차 item ②).
-// broker disambiguates which of the three live ledgers ledgerId refers to
-// (mirrors the backend's /fills/order-detail lookup) — without it there's
-// nothing safe to link to.
+// verify-r1 BLOCKER-1: `broker` alone is NOT unique — the literal "kis" is
+// written to two different ledger tables with independent id sequences (KR
+// domestic orders vs. US live orders placed via the KIS broker), so a
+// broker-only link can resolve to a completely different order. `market`
+// must travel with `broker`+`ledgerId` (mirrors `linkedOrderKey` above, and
+// the backend's matching (broker, market) -> table allowlist in
+// invest_fills.py::order_detail — this function and that endpoint must agree
+// on the same key or a generated link opens the wrong order).
 export function orderDetailPath(order: LinkedOrder): string | null {
-  if (!order.broker || !order.ledgerId) return null;
-  return `/orders/${encodeURIComponent(order.broker)}/${order.ledgerId}`;
+  if (!order.broker || !order.market || !order.ledgerId) return null;
+  return `/orders/${encodeURIComponent(order.broker)}/${encodeURIComponent(order.market)}/${order.ledgerId}`;
 }
 
 // Pydantic serializes Decimal to a JSON string; sub-1e-6 magnitudes come through

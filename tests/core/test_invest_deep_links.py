@@ -31,17 +31,35 @@ def test_build_watches_url_uses_public_base_url(monkeypatch):
 
 @pytest.mark.unit
 def test_build_order_detail_url():
-    url = build_order_detail_url(broker="kis", ledger_id=42)
+    url = build_order_detail_url(broker="kis", market="kr", ledger_id=42)
     assert url is not None
-    assert url.endswith("/invest/orders/kis/42")
+    assert url.endswith("/invest/orders/kis/kr/42")
+
+
+# verify-r1 BLOCKER-1 regression: broker="kis" alone is ambiguous between the
+# KR domestic ledger and the US live ledger (independent id sequences), so
+# the same broker+ledger_id must produce DIFFERENT urls depending on market.
+@pytest.mark.unit
+def test_build_order_detail_url_market_disambiguates_same_broker_and_ledger_id():
+    kr_url = build_order_detail_url(broker="kis", market="kr", ledger_id=42)
+    us_url = build_order_detail_url(broker="kis", market="us", ledger_id=42)
+    assert kr_url != us_url
+    assert kr_url.endswith("/invest/orders/kis/kr/42")
+    assert us_url.endswith("/invest/orders/kis/us/42")
 
 
 @pytest.mark.unit
 def test_build_order_detail_url_missing_broker_returns_none():
-    assert build_order_detail_url(broker=None, ledger_id=42) is None
-    assert build_order_detail_url(broker="", ledger_id=42) is None
+    assert build_order_detail_url(broker=None, market="kr", ledger_id=42) is None
+    assert build_order_detail_url(broker="", market="kr", ledger_id=42) is None
+
+
+@pytest.mark.unit
+def test_build_order_detail_url_missing_market_returns_none():
+    assert build_order_detail_url(broker="kis", market=None, ledger_id=42) is None
+    assert build_order_detail_url(broker="kis", market="", ledger_id=42) is None
 
 
 @pytest.mark.unit
 def test_build_order_detail_url_missing_ledger_id_returns_none():
-    assert build_order_detail_url(broker="kis", ledger_id=None) is None
+    assert build_order_detail_url(broker="kis", market="kr", ledger_id=None) is None

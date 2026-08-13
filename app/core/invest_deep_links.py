@@ -44,15 +44,29 @@ def build_watches_url(
     return f"{base}?{'&'.join(params)}"
 
 
-def build_order_detail_url(*, broker: str | None, ledger_id: int | None) -> str | None:
+def build_order_detail_url(
+    *, broker: str | None, market: str | None, ledger_id: int | None
+) -> str | None:
     """URL to the standalone order/fill detail view for one ledger row.
 
-    Example: https://mgh3326.duckdns.org/invest/orders/kis/482
-    Returns None when either identifier is missing (same fail-open convention
-    as ``build_position_detail_url``) — callers should skip attaching a link
-    rather than send a broken one.
+    Example: https://mgh3326.duckdns.org/invest/orders/kis/us/482
+
+    ``market`` is required alongside ``broker`` — the literal broker value
+    "kis" is written to two different ledger tables with independent id
+    sequences (KR domestic orders vs. US live orders placed via KIS), so
+    broker alone cannot disambiguate which row ``ledger_id`` refers to (see
+    the matching guard in ``app/routers/invest_fills.py::order_detail`` —
+    this builder and that endpoint must agree on the same
+    broker+market+ledger_id key, or a generated link resolves to the wrong
+    order). Returns None when any identifier is missing (same fail-open
+    convention as ``build_position_detail_url``) — callers should skip
+    attaching a link rather than send a broken or ambiguous one.
     """
-    if not broker or not ledger_id:
+    if not broker or not market or not ledger_id:
         return None
     broker_key = quote(broker.strip().lower())
-    return f"{settings.public_base_url.rstrip('/')}/invest/orders/{broker_key}/{ledger_id}"
+    market_key = quote(market.strip().lower())
+    return (
+        f"{settings.public_base_url.rstrip('/')}/invest/orders/"
+        f"{broker_key}/{market_key}/{ledger_id}"
+    )

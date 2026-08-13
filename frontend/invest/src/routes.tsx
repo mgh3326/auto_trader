@@ -25,9 +25,11 @@
 // /invest/watches           — Watch-alert browsing, grouped by symbol
 //                             (ladder view). Mobile-first (INVEST-WATCH-UI
 //                             §57차 item ①).
-// /invest/orders/:broker/:ledgerId — Standalone order/fill detail (ledger +
-//                             thesis + lifecycle). INVEST-WATCH-UI §57차
-//                             item ②.
+// /invest/orders/:broker/:market/:ledgerId — Standalone order/fill detail
+//                             (ledger + thesis + lifecycle). INVEST-WATCH-UI
+//                             §57차 item ②. `market` is required alongside
+//                             `broker` (verify-r1 BLOCKER-1) — broker alone
+//                             is ambiguous between two ledger tables.
 // ─────────────────────────────────────────────────────────────────────────────
 import { createBrowserRouter, Navigate, useLocation, useParams } from "react-router-dom";
 import { DiscoverIssueDetailPage } from "./pages/DiscoverIssueDetailPage";
@@ -101,7 +103,7 @@ export const router = createBrowserRouter(
     { path: "/reports/:reportUuid", element: <InvestmentReportBundleRoute /> },
     { path: "/stocks/:market/:symbol", element: <StockDetailPage /> },
     { path: "/watches", element: <WatchesRoute /> },
-    { path: "/orders/:broker/:ledgerId", element: <OrderDetailRoute /> },
+    { path: "/orders/:broker/:market/:ledgerId", element: <OrderDetailRoute /> },
 
     // Legacy /invest/app/* URLs redirect to their canonical /invest/*
     // siblings. The retired legacy components were removed after the

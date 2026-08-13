@@ -5,6 +5,7 @@
 // content, since a single-column card stack already reads fine at desktop
 // width (unlike WatchAlertsPanel's wide table, which needs horizontal room).
 import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { fetchWatches } from "../../api/watches";
 import { Pill } from "../../ds";
 import type { WatchesResponse, WatchMarket, WatchStatus } from "../../types/watches";
@@ -26,6 +27,18 @@ const STATUS_OPTIONS: { key: WatchStatus; label: string }[] = [
   { key: "expired", label: "만료됨" },
   { key: "canceled", label: "취소됨" },
 ];
+
+const VALID_MARKETS = MARKET_OPTIONS.map((o) => o.key);
+const VALID_STATUSES = STATUS_OPTIONS.map((o) => o.key);
+
+// verify-r1 SHOULD-1: `build_watches_url` (app/core/invest_deep_links.py)
+// generates ?market=&status=&symbol= but this page used to ignore them
+// entirely — a "워치 카드 → watches" deep link scoped to one symbol landed on
+// the unscoped full list. Read + validate on mount; unrecognized values fall
+// back to the same defaults as an un-scoped visit rather than 애매하게 breaking.
+function paramOrDefault<T extends string>(raw: string | null, valid: readonly T[], fallback: T): T {
+  return raw && (valid as readonly string[]).includes(raw) ? (raw as T) : fallback;
+}
 
 function FilterRow<T extends string>({
   options,
@@ -66,10 +79,21 @@ function FilterRow<T extends string>({
 }
 
 export function WatchesPageBody() {
+  const [searchParams] = useSearchParams();
   // Default to "active" — this is a live browsing surface for what's being
   // watched right now, not a history log (that's what status=all is for).
-  const [market, setMarket] = useState<WatchMarket>("all");
-  const [status, setStatus] = useState<WatchStatus>("active");
+  // Deep-link filters (?market=&status=) seed the initial toggle state; the
+  // toggle buttons still work normally afterward. ?symbol= has no UI toggle
+  // (it's a one-shot scope from a "워치 카드 → watches" link, not a filter a
+  // user picks from this page), so it's read directly rather than mirrored
+  // into component state.
+  const [market, setMarket] = useState<WatchMarket>(() =>
+    paramOrDefault(searchParams.get("market"), VALID_MARKETS, "all"),
+  );
+  const [status, setStatus] = useState<WatchStatus>(() =>
+    paramOrDefault(searchParams.get("status"), VALID_STATUSES, "active"),
+  );
+  const scopedSymbol = searchParams.get("symbol")?.trim() || undefined;
   const [state, setState] = useState<
     | { status: "loading" }
     | { status: "ready"; data: WatchesResponse }
@@ -79,7 +103,7 @@ export function WatchesPageBody() {
   useEffect(() => {
     let cancelled = false;
     setState({ status: "loading" });
-    fetchWatches(market, status)
+    fetchWatches(market, status, scopedSymbol)
       .then((data) => {
         if (!cancelled) setState({ status: "ready", data });
       })
@@ -91,7 +115,7 @@ export function WatchesPageBody() {
     return () => {
       cancelled = true;
     };
-  }, [market, status]);
+  }, [market, status, scopedSymbol]);
 
   const groups = useMemo(
     () => (state.status === "ready" ? groupWatchesBySymbol(state.data.items) : []),
@@ -114,6 +138,28 @@ export function WatchesPageBody() {
         tag="Phase 1"
         items={["주문·승인·watch 등록/수정 mutation을 호출하지 않습니다.", "감시 조건 변경은 이 화면에서 할 수 없습니다."]}
       />
+
+      {scopedSymbol && (
+        <div
+          role="status"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            padding: "8px 12px",
+            borderRadius: 10,
+            background: "var(--accent-soft)",
+            color: "var(--fg-1)",
+            fontSize: 12,
+          }}
+        >
+          <span><strong>{scopedSymbol}</strong> 종목으로 범위가 좁혀졌습니다.</span>
+          <Link to="/watches" style={{ color: "var(--accent)", fontWeight: 700 }}>
+            전체 목록 보기
+          </Link>
+        </div>
+      )}
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "grid", gap: 8 }}>
