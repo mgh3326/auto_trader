@@ -1022,6 +1022,52 @@ async def test_toss_veto_terminal_reconcile_binds_the_original_order_id(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_toss_veto_terminal_reconcile_requires_cancelled_status_and_terminal_action(
+    monkeypatch, db_session
+):
+    """MUTANT-3b: original ID alone is not terminal cancellation proof."""
+    from app.mcp_server.tooling import kis_live_ledger, toss_live_ledger
+
+    order_id = f"nonterminal-original-{uuid.uuid4()}"
+
+    async def fake_impl(**_kwargs):
+        return {
+            "reconciled": [
+                {
+                    "order_id": order_id,
+                    "local_status": "resting",
+                    "action": "marked_cancelled",
+                },
+                {
+                    "order_id": order_id,
+                    "local_status": "cancelled",
+                    "action": "noop_pending",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(toss_live_ledger, "toss_reconcile_orders_impl", fake_impl)
+    monkeypatch.setattr(
+        kis_live_ledger,
+        "_order_session_factory",
+        lambda: _session_factory(db_session),
+    )
+
+    result = await reconcile_toss_auto_veto_terminal(
+        order_id=order_id,
+        symbol="005930",
+        market="equity_kr",
+        account_mode="toss_live",
+    )
+
+    assert result == {
+        "confirmed": False,
+        "reconciled_order_count": 0,
+        "error": "toss_terminal_reconcile_unconfirmed",
+    }
+
+
+@pytest.mark.asyncio
 async def test_toss_veto_accepts_an_already_reconciled_original_terminal_row(
     monkeypatch, db_session
 ):
