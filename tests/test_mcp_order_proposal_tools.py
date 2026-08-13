@@ -908,7 +908,7 @@ async def test_get_and_list_project_safe_auto_approve_rejection_evidence():
                     "rung_index": 0,
                     "eligible": False,
                     "reason": "approval_required_tag",
-                    "policy_version": "test-policy",
+                    "policy_version": "2026-08-12.3",
                     "mode": "expanded",
                     "tags": "policy_deviation",
                     "tag_matches": [
@@ -932,13 +932,13 @@ async def test_get_and_list_project_safe_auto_approve_rejection_evidence():
     expected = [
         {
             "evaluated_at": now.isoformat(),
-            "policy_version": "test-policy",
+            "policy_version": "2026-08-12.3",
             "rungs": [
                 {
                     "rung_index": 0,
                     "reason_code": "approval_required_tag",
                     "inputs": {
-                        "policy_version": "test-policy",
+                        "policy_version": "2026-08-12.3",
                         "mode": "expanded",
                         "tags": ["policy_deviation"],
                         "tag_matches": [

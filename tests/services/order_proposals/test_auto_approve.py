@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -15,6 +16,10 @@ from app.services.order_proposals.auto_approve import (
     find_approval_required_tag_matches,
     find_approval_required_tags,
     limits_for_market,
+)
+from app.services.order_proposals.auto_approve_audit import (
+    append_auto_approve_rejection_attempt,
+    project_auto_approve_rejections,
 )
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
@@ -416,6 +421,94 @@ def test_tagged_proposals_require_approval_in_every_mode(mode_limits, group_over
 
 def test_untagged_proposal_is_not_falsely_flagged():
     assert find_approval_required_tags(_group(thesis="ordinary support retest")) == ()
+
+
+def test_repeated_dispatch_does_not_scan_its_own_rejection_audit():
+    """Prior audit tokens stay evidence, never become new classifier input."""
+    original = _group(
+        rationale={"context": {"tags": ["policy_deviation"]}},
+        thesis="ordinary support retest",
+        strategy="ladder",
+    )
+    original_matches = find_approval_required_tag_matches(original)
+    source_asof = append_auto_approve_rejection_attempt(
+        {},
+        decisions=[
+            {
+                "rung_index": 0,
+                "eligible": False,
+                "reason": "approval_required_tag",
+                "policy_version": "2026-08-12.3",
+                "tag_matches": original_matches,
+            }
+        ],
+        now=datetime(2026, 8, 14, 0, 0, tzinfo=UTC),
+    )
+
+    audit_only = _group(source_asof=source_asof)
+    repeated = _group(
+        rationale=original.rationale,
+        thesis="ordinary support retest",
+        strategy="ladder",
+        source_asof=source_asof,
+    )
+
+    assert find_approval_required_tags(audit_only) == ()
+    assert find_approval_required_tags(repeated) == ("policy_deviation",)
+    assert find_approval_required_tag_matches(repeated) == original_matches
+
+
+def test_rejection_projection_drops_untrusted_metadata_without_losing_reason():
+    raw_input = "private-metadata-must-not-escape"
+    source_asof = {
+        "auto_approve_rejections": [
+            {
+                "evaluated_at": "2026-08-14T00:00:00+00:00",
+                "policy_version": raw_input,
+                "rungs": [
+                    {
+                        "rung_index": 0,
+                        "reason_code": "approval_required_tag",
+                        "inputs": {
+                            "policy_version": raw_input,
+                            "tag_matches": [
+                                {
+                                    "token": "policy_deviation",
+                                    "field": "rationale",
+                                    "path": f"$.{raw_input}",
+                                    "kind": "json_value",
+                                    "char_start": 0,
+                                }
+                            ],
+                            "error": raw_input,
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+    projected = project_auto_approve_rejections(source_asof)
+
+    assert projected == [
+        {
+            "evaluated_at": "2026-08-14T00:00:00+00:00",
+            "rungs": [
+                {
+                    "rung_index": 0,
+                    "reason_code": "approval_required_tag",
+                    "inputs": {},
+                }
+            ],
+        }
+    ]
+    assert raw_input not in json.dumps(projected)
+    malformed_time = dict(source_asof["auto_approve_rejections"][0])
+    malformed_time["evaluated_at"] = raw_input
+    assert (
+        project_auto_approve_rejections({"auto_approve_rejections": [malformed_time]})
+        == []
+    )
 
 
 def test_tag_match_evidence_records_token_and_structural_location_only():

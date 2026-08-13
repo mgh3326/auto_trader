@@ -1436,20 +1436,26 @@ class _OrchestrationSession:
         (ApprovalDispatchState.SENT_SUPERSEDED, 0),
     ],
 )
+@pytest.mark.parametrize("source_asof_state", ["absent", "none"])
 async def test_send_orchestration_registers_batch_only_for_current_result(
     monkeypatch,
     state: ApprovalDispatchState,
     expected_batch_calls: int,
+    source_asof_state: str,
 ) -> None:
-    group = SimpleNamespace(
-        proposal_id=PROPOSAL_ID,
-        market="equity_kr",
-        account_mode="kis_live",
-        action="place",
-        order_type="limit",
-        valid_until=NOW + timedelta(minutes=5),
-        approval_dispatch_membership_revision=None,
-    )
+    group_fields = {
+        "proposal_id": PROPOSAL_ID,
+        "market": "equity_kr",
+        "account_mode": "kis_live",
+        "action": "place",
+        "order_type": "limit",
+        "valid_until": NOW + timedelta(minutes=5),
+        "approval_dispatch_membership_revision": None,
+    }
+    if source_asof_state == "none":
+        # Explicit ORM-column null still passes through the safe projector.
+        group_fields["source_asof"] = None
+    group = SimpleNamespace(**group_fields)
     first_service = SimpleNamespace(
         set_approval_nonce=AsyncMock(),
         get_proposal=AsyncMock(return_value=(group, [])),
@@ -1497,6 +1503,12 @@ async def test_send_orchestration_registers_batch_only_for_current_result(
             payload_chars=4,
         ),
     )
+    rejection_card = MagicMock(return_value=None)
+    monkeypatch.setattr(
+        dispatch_module,
+        "build_auto_approve_rejection_card_block",
+        rejection_card,
+    )
     monkeypatch.setattr(
         dispatch_module,
         "publish_approval_messages",
@@ -1518,6 +1530,10 @@ async def test_send_orchestration_registers_batch_only_for_current_result(
 
     assert returned is result
     assert register.await_count == expected_batch_calls
+    if source_asof_state == "absent":
+        rejection_card.assert_not_called()
+    else:
+        rejection_card.assert_called_once_with(None)
 
 
 @pytest.mark.unit

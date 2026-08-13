@@ -53,6 +53,7 @@ _NUMERIC_INPUT_KEYS = frozenset(
         "gross_pnl",
         "round_trip_cost",
         "net_pnl",
+        "pending_rung_count",
     }
 )
 _ENUM_INPUT_VALUES = {
@@ -67,11 +68,23 @@ _ENUM_INPUT_VALUES = {
     "side": frozenset({"buy", "sell", "unrecognized"}),
     "preview_success": frozenset({"false", "invalid"}),
 }
-_BOOLEAN_INPUT_KEYS = frozenset({"exit_intent_present", "thesis_present"})
+_BOOLEAN_INPUT_KEYS = frozenset(
+    {
+        "eligibility_error",
+        "exit_intent_present",
+        "thesis_present",
+        "toss_auto_submission_frozen",
+    }
+)
 _MISSING_INPUT_FIELDS = frozenset({"current_price", "limit_price", "quantity"})
 _REASON_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,79}")
 _DECIMAL_TEXT_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
-_LOCATION_PATH_PATTERN = re.compile(r"\$[A-Za-z0-9_$.[\]#:-]{0,191}")
+_POLICY_VERSION_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\.[0-9]{1,4})?")
+_SAFE_PATH_SEGMENT = (
+    r"(?:\.(?:context|decision|flags|labels|metadata|notes|reason|review|tag|tags)"
+    r"|\[(?:0|[1-9][0-9]{0,3})\])"
+)
+_LOCATION_PATH_PATTERN = re.compile(rf"\$(?:{_SAFE_PATH_SEGMENT}){{0,32}}")
 
 
 def _safe_reason_code(value: Any) -> str:
@@ -87,10 +100,21 @@ def _safe_decimal_text(value: Any) -> str | None:
 
 
 def _safe_policy_version(value: Any) -> str | None:
-    if not isinstance(value, str) or not value or len(value) > 160:
+    if not isinstance(value, str) or not _POLICY_VERSION_PATTERN.fullmatch(value):
         return None
-    # Policy versions are repository-controlled identifiers, not free text.
     return value
+
+
+def _safe_evaluated_at(value: Any) -> str | None:
+    if not isinstance(value, str) or len(value) > 80:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.isoformat()
 
 
 def _safe_mode(value: Any) -> str | None:
@@ -133,7 +157,11 @@ def _safe_tag_matches(value: Any) -> list[dict[str, Any]]:
         char_start = raw.get("char_start")
         if token not in _ALLOWED_TAGS or field not in _ALLOWED_TAG_FIELDS:
             continue
-        if not isinstance(path, str) or not _LOCATION_PATH_PATTERN.fullmatch(path):
+        if (
+            not isinstance(path, str)
+            or len(path) > 192
+            or not _LOCATION_PATH_PATTERN.fullmatch(path)
+        ):
             continue
         if kind not in _ALLOWED_MATCH_KINDS:
             continue
@@ -250,9 +278,9 @@ def build_auto_approve_rejection_attempt(
 def _safe_attempt(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
-    evaluated_at = value.get("evaluated_at")
+    evaluated_at = _safe_evaluated_at(value.get("evaluated_at"))
     raw_rungs = value.get("rungs")
-    if not isinstance(evaluated_at, str) or not isinstance(raw_rungs, Sequence):
+    if evaluated_at is None or not isinstance(raw_rungs, Sequence):
         return None
     rungs = [
         safe
@@ -261,7 +289,7 @@ def _safe_attempt(value: Any) -> dict[str, Any] | None:
     ]
     if not rungs:
         return None
-    attempt: dict[str, Any] = {"evaluated_at": evaluated_at[:80], "rungs": rungs}
+    attempt: dict[str, Any] = {"evaluated_at": evaluated_at, "rungs": rungs}
     policy_version = _safe_policy_version(value.get("policy_version"))
     if policy_version is not None:
         attempt["policy_version"] = policy_version

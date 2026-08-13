@@ -89,6 +89,91 @@ ServiceFactory = Callable[[], Any]
 RevalidateFn = Callable[..., Any]
 Clock = Callable[[], datetime]
 
+_SOURCE_ASOF_ABSENT = object()
+_AUDITABLE_REVALIDATION_FALLBACK_REASONS = frozenset(
+    {"eligibility_error", "multi_rung_requires_approval"}
+)
+
+
+def _auto_approve_rejection_card_block_for_group(group: Any) -> str | None:
+    """Read optional audit provenance without inventing a missing value.
+
+    ORM groups always expose ``source_asof``.  Some narrow dispatch callers
+    intentionally use shape-only group objects, though, where absence means
+    there is no provenance column at all; that is distinct from an ORM value
+    explicitly stored as ``None``.  Neither case may create a rejection
+    record while rendering a card.  The latter still flows through the safe
+    projector so its ``None`` contract remains exercised.
+    """
+    source_asof = getattr(group, "source_asof", _SOURCE_ASOF_ABSENT)
+    if source_asof is _SOURCE_ASOF_ABSENT:
+        return None
+    return build_auto_approve_rejection_card_block(source_asof)
+
+
+def _manual_fallback_decisions(
+    *,
+    rungs: list[Any],
+    reason: str,
+    policy_version: str,
+    **inputs: Any,
+) -> list[dict[str, Any]]:
+    """Describe a pre-classifier fail-closed fallback using safe primitives."""
+    return [
+        {
+            "rung_index": rung.rung_index,
+            "eligible": False,
+            "reason": reason,
+            "policy_version": policy_version,
+            **inputs,
+        }
+        for rung in rungs
+        if rung.state == "pending_approval"
+    ]
+
+
+def _unrecorded_revalidation_fallbacks(
+    *,
+    outcomes: list[RungOutcome],
+    decisions: list[dict[str, Any]],
+    policy_version: str,
+    pending_count: int,
+) -> list[dict[str, Any]]:
+    """Retain safe revalidation fallbacks that never reached ``reject()``.
+
+    The classifier's decisions are already appended by the eligibility
+    closure.  Multi-rung short-circuiting and a gate exception happen outside
+    that closure, so their typed outcome reasons need a separate audit row.
+    Raw exception detail is deliberately not copied.
+    """
+    recorded = {
+        (decision.get("rung_index"), decision.get("reason"))
+        for decision in decisions
+        if decision.get("eligible") is False
+    }
+    fallbacks: list[dict[str, Any]] = []
+    for outcome in outcomes:
+        detail = outcome.detail if isinstance(outcome.detail, dict) else {}
+        reason = detail.get("reason")
+        key = (outcome.rung_index, reason)
+        if reason not in _AUDITABLE_REVALIDATION_FALLBACK_REASONS or key in recorded:
+            continue
+        inputs: dict[str, Any] = {}
+        if reason == "eligibility_error":
+            inputs["eligibility_error"] = True
+        elif reason == "multi_rung_requires_approval":
+            inputs["pending_rung_count"] = str(pending_count)
+        fallbacks.append(
+            {
+                "rung_index": outcome.rung_index,
+                "eligible": False,
+                "reason": reason,
+                "policy_version": policy_version,
+                **inputs,
+            }
+        )
+    return fallbacks
+
 
 def _mirror_decimal_text(value: Any) -> str:
     """Keep Discord card quantities/prices legible after DB numeric coercion."""
@@ -450,8 +535,8 @@ async def send_proposal_for_approval(
             suffix_blocks=(
                 (rejection_block,)
                 if (
-                    rejection_block := build_auto_approve_rejection_card_block(
-                        group.source_asof
+                    rejection_block := _auto_approve_rejection_card_block_for_group(
+                        group
                     )
                 )
                 is not None
@@ -692,6 +777,7 @@ async def dispatch_proposal(
             )
         limits = limits_for_market(group.market)
         decisions: list[dict[str, Any]] = []
+        fallback_decisions: list[dict[str, Any]] = []
         if limits is not None and group.account_mode == "toss_live":
             toss_freeze = await service.active_toss_auto_submission_freeze(
                 group, now=gate_now
@@ -701,6 +787,14 @@ async def dispatch_proposal(
                 # not even enter revalidation (which can reach a broker) here;
                 # the ordinary approval card is the intentional fail-closed
                 # continuation while the operator considers a cancel proposal.
+                fallback_decisions.extend(
+                    _manual_fallback_decisions(
+                        rungs=initial_rungs,
+                        reason="toss_auto_submission_frozen",
+                        policy_version=limits.policy_version,
+                        toss_auto_submission_frozen=True,
+                    )
+                )
                 limits = None
         if limits is not None and auto_veto_thesis_summary(group) is None:
             # This is deliberately outside the revalidation callback.  The
@@ -708,6 +802,14 @@ async def dispatch_proposal(
             # boundary prevents a future revalidation regression from
             # submitting first and discovering an unrenderable veto card only
             # after the broker accepted it.
+            fallback_decisions.extend(
+                _manual_fallback_decisions(
+                    rungs=initial_rungs,
+                    reason="auto_veto_thesis_missing",
+                    policy_version=limits.policy_version,
+                    thesis_present=False,
+                )
+            )
             limits = None
         if limits is not None:
             daily_notional = await service.auto_approved_daily_notional(group, now=now)
@@ -793,15 +895,25 @@ async def dispatch_proposal(
                     context_message_count=0,
                 )
             else:
-                rejected_decisions = [
-                    decision for decision in decisions if decision["eligible"] is False
-                ]
-                if rejected_decisions:
-                    await service.record_auto_approve_rejections(
-                        proposal_id,
-                        decisions=rejected_decisions,
-                        now=gate_now,
+                fallback_decisions.extend(
+                    _unrecorded_revalidation_fallbacks(
+                        outcomes=outcomes,
+                        decisions=decisions,
+                        policy_version=limits.policy_version,
+                        pending_count=pending_count,
                     )
+                )
+        if not auto_submitted:
+            rejected_decisions = [
+                decision for decision in decisions if decision["eligible"] is False
+            ]
+            rejected_decisions.extend(fallback_decisions)
+            if rejected_decisions:
+                await service.record_auto_approve_rejections(
+                    proposal_id,
+                    decisions=rejected_decisions,
+                    now=gate_now,
+                )
         # Persist broker outcomes and the audit/nonce before Telegram I/O.
         await session.commit()
 

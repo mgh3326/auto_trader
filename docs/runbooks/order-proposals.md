@@ -567,6 +567,27 @@ uses the same cancel-and-confirm routine and records its result under
 `source_asof.auto_approved.notification_failure`; it never silently leaves a
 resting order without attempting compensating cancellation.
 
+### Manual-fallback evidence (ROB-1244)
+
+Every auto-approve demotion is retained before the ordinary approval card is
+published at `source_asof.auto_approve_rejections[]`. This JSON audit is
+bounded to the latest 8 attempts, 16 rungs per attempt, and 12 tag matches per
+rung. Each rung carries a stable `reason_code` plus a restricted set of
+decision inputs; it never carries a thesis, strategy, preview error, or other
+free-text proposal payload.
+
+The record covers both classifier rejections and the fail-closed paths that
+do not invoke the classifier: a Toss verified-fill freeze, missing auto-veto
+thesis, multi-rung all-or-human fallback, and an eligibility-gate exception.
+For a tag rejection it stores only token, scanned field, structural path, and
+character offset. The manual Telegram card shows the latest reasons (and tag
+locations); `order_proposal_get` and `order_proposal_list` expose the same safe
+projection as `auto_approve_rejections`.
+
+Do not treat the audit object as proposal input. The tag scanner intentionally
+excludes its own `auto_approve_rejections` key, so a second dispatch cannot
+turn prior evidence into a new match or crowd out the original location.
+
 Canary sequence: deploy with the flag off; enable only the smallest checked-in
 caps and confirm one resting order plus veto; verify DB/broker convergence;
 then raise caps in a reviewed policy PR. Never enable by changing both the env

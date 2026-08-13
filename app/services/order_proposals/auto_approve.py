@@ -37,6 +37,7 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -46,6 +47,9 @@ from app.services.order_proposals.approval_message import (
     _escape_inline_code,
     _escape_markdown,
     build_callback_data,
+)
+from app.services.order_proposals.auto_approve_audit import (
+    AUTO_APPROVE_REJECTIONS_KEY,
 )
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
@@ -240,6 +244,16 @@ def _scan_approval_required_tags(group: Any) -> _ApprovalRequiredTagScan:
             value = getattr(group, field, None)
             if value is None:
                 continue
+            if field == "source_asof" and isinstance(value, Mapping):
+                # This is system-generated audit output, not proposal input.
+                # Re-scanning it on a later dispatch would turn its own tag
+                # evidence into a new match location and eventually crowd out
+                # the original evidence under the match cap.
+                value = {
+                    key: child
+                    for key, child in value.items()
+                    if key != AUTO_APPROVE_REJECTIONS_KEY
+                }
             fields.append(
                 (
                     field,

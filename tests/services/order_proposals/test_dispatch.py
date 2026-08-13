@@ -229,6 +229,8 @@ async def _seed_proposal(
     db_session,
     *,
     source_asof=None,
+    market="equity_kr",
+    account_mode="kis_live",
     action=None,
     target_broker_order_id=None,
     target_order_snapshot=None,
@@ -240,8 +242,8 @@ async def _seed_proposal(
     service = OrderProposalsService(db_session)
     group = await service.create_proposal(
         symbol="005930",
-        market="equity_kr",
-        account_mode="kis_live",
+        market=market,
+        account_mode=account_mode,
         side="buy",
         order_type="limit",
         proposer="p",
@@ -1006,6 +1008,158 @@ async def test_missing_auto_veto_thesis_never_revalidates_or_submits(
     assert rungs[0].state == "pending_approval"
     assert "auto_approved" not in (refreshed.source_asof or {})
     assert "주문 제안 승인" in notifier.sent_messages[0][0]
+    evidence = refreshed.source_asof["auto_approve_rejections"][-1]["rungs"]
+    assert evidence == [
+        {
+            "rung_index": 0,
+            "reason_code": "auto_veto_thesis_missing",
+            "inputs": {
+                "policy_version": policy_version_stamp()["version"],
+                "thesis_present": False,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_records_multi_rung_fallback_reason_for_manual_card(
+    monkeypatch, db_session
+):
+    """The revalidation short-circuit is observable without a broker call."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR",
+        f"multi-rung-{uuid.uuid4().hex}",
+    )
+    group = await _seed_proposal(
+        db_session,
+        broker_account_id=f"multi-rung-{uuid.uuid4()}",
+        rungs=[
+            RungInput(0, "buy", Decimal("10"), Decimal("100"), None),
+            RungInput(1, "buy", Decimal("10"), Decimal("99"), None),
+        ],
+    )
+
+    async def multi_rung_fallback(**_kwargs):
+        return [
+            RungOutcome(
+                0, "approval_required", {"reason": "multi_rung_requires_approval"}
+            ),
+            RungOutcome(
+                1, "approval_required", {"reason": "multi_rung_requires_approval"}
+            ),
+        ]
+
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=_FakeNotifier(),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=multi_rung_fallback,
+    )
+
+    refreshed, _rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    evidence = refreshed.source_asof["auto_approve_rejections"][-1]["rungs"]
+    assert [row["reason_code"] for row in evidence] == [
+        "multi_rung_requires_approval",
+        "multi_rung_requires_approval",
+    ]
+    assert all(row["inputs"]["pending_rung_count"] == "2" for row in evidence)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_records_eligibility_error_without_raw_exception_detail(
+    monkeypatch, db_session
+):
+    """A fail-closed gate error retains its typed cause, not exception prose."""
+    from app.core.config import settings
+
+    raw_error = "private-eligibility-error-must-not-escape"
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR",
+        f"eligibility-error-{uuid.uuid4().hex}",
+    )
+    group = await _seed_proposal(
+        db_session, broker_account_id=f"eligibility-error-{uuid.uuid4()}"
+    )
+
+    async def failed_gate(**_kwargs):
+        return [
+            RungOutcome(
+                0,
+                "approval_required",
+                {"reason": "eligibility_error", "error": raw_error},
+            )
+        ]
+
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=_FakeNotifier(),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=failed_gate,
+    )
+
+    refreshed, _rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    evidence = refreshed.source_asof["auto_approve_rejections"][-1]["rungs"][0]
+    assert evidence["reason_code"] == "eligibility_error"
+    assert evidence["inputs"]["eligibility_error"] is True
+    assert raw_error not in json.dumps(evidence)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_records_toss_freeze_without_entering_revalidation(
+    monkeypatch, db_session
+):
+    """A verified-fill freeze is a manual fallback with durable reason input."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings,
+        "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR",
+        f"toss-freeze-{uuid.uuid4().hex}",
+    )
+    group = await _seed_proposal(
+        db_session,
+        account_mode="toss_live",
+        broker_account_id=f"toss-freeze-{uuid.uuid4()}",
+    )
+
+    async def frozen_lane(self, group, *, now):
+        return {"state": "frozen"}
+
+    async def must_not_revalidate(**_kwargs):
+        raise AssertionError("freeze must stop revalidation")
+
+    monkeypatch.setattr(
+        OrderProposalsService,
+        "active_toss_auto_submission_freeze",
+        frozen_lane,
+    )
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=_FakeNotifier(),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        revalidate_fn=must_not_revalidate,
+    )
+
+    refreshed, _rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    evidence = refreshed.source_asof["auto_approve_rejections"][-1]["rungs"][0]
+    assert evidence["reason_code"] == "toss_auto_submission_frozen"
+    assert evidence["inputs"]["toss_auto_submission_frozen"] is True
 
 
 @pytest.mark.asyncio
