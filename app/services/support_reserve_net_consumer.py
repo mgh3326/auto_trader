@@ -1,31 +1,28 @@
 """Fail-closed candidate consumer for ``buy.support_reserve_net``.
 
-This module deliberately owns *selection*, not broker access.  It is an
-operator-policy consumer which turns already-collected evidence into a bounded
-set of proposal-shaped candidates.  It does not read a broker, open a DB
-session, register a scheduler, invoke MCP, or send an order.
+This module owns deterministic selection and proposal persistence only through
+the public watcher-scope seam.  It does not read a broker, open a DB session,
+register a scheduler, invoke MCP, or send an order.  Its caller supplies the
+same ``OrderProposalsService`` instance and uncommitted transaction for every
+inspect/create pair.
 
-ATOMICITY_STANCE = (a): **지금은 원자적이지 않다**.  The public
-``OrderProposalsService`` surface has no transactionally locked read for a
-beneficial owner's same-symbol non-terminal order.  Calling
-``create_proposal`` after a best-effort read could therefore coexist with a
-resting order.  Until the dedicated public seam exists, ``consume`` stops at
-the proposal-creation boundary even when every candidate gate passes.
-
-The dormant call site is intentionally kept small and explicit so the future
-seam job has one integration point to review.  The hard false gate below is
-not an environment setting and is not operator-configurable.
+``consume`` verifies the actual seam capability on that supplied object.  It
+then locks and inspects both the legacy unscoped account representation and the
+canonical concrete account scope before any companion create.  A missing
+capability, lock failure, active group, or account-id representation ambiguity
+is a zero-create result.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, localcontext
-from typing import Any, Final, Literal, Protocol
+from typing import Any, Final, Literal, Protocol, TypeGuard
 
 from app.core.symbol import to_db_symbol
 from app.schemas.trading_policy import SupportReserveNetDecisionRule
+from app.services.order_proposals.service import RungInput, WatchToOrderScopeInspection
 from app.services.trading_policy_service import (
     load_trading_policy,
     policy_version_stamp,
@@ -36,22 +33,16 @@ CandidateIntent = Literal["new", "add"]
 ReserveNetState = Literal["armed", "open", "filled"]
 
 STRATEGY: Final = "buy.support_reserve_net"
-ATOMICITY_STANCE: Final = "a_candidate_only_before_proposal_creation"
+ATOMICITY_STANCE: Final = "watch_to_order_scope_seam_required"
 ATOMICITY_BLOCK_CODE: Final = "atomic_self_open_order_read_seam_unavailable"
-UNATOMICITY_NOTICE: Final = (
-    "지금은 원자적이지 않다: same-symbol self-open-order read+lock public seam이 없다"
-)
+UNATOMICITY_NOTICE: Final = "watch-to-order scope seam의 실제 inspect/create capability가 없으면 proposal은 생성하지 않는다"
 PROPOSAL_CREATION_CALL_SITE: Final = (
-    "SupportReserveNetConsumer._create_after_atomic_self_open_order_check"
+    "SupportReserveNetConsumer._create_after_atomic_watch_to_order_scope_check"
 )
 
 # §56차 3항 (b).  This is an additional fail-closed deployment boundary,
 # deliberately not a policy-file edit owned by #1840.
 KR_NEW_MIN_AVAILABLE_CASH: Final = Decimal("400000")
-
-# The seam does not exist in this revision.  Do not replace this with an env
-# flag, a best-effort list_recent read, or a direct repository import.
-_ATOMIC_SELF_OPEN_ORDER_READ_SEAM_AVAILABLE: Final = False
 
 _SUPPORTED_ACCOUNT_MODES: Final[dict[str, frozenset[str]]] = {
     "equity_kr": frozenset({"kis_live", "toss_live"}),
@@ -68,18 +59,66 @@ _COUNTED_RESERVE_NET_STATES: Final = frozenset({"armed", "open", "filled"})
 
 
 class ProposalCreator(Protocol):
-    """Future-only public proposal-service port.
+    """Public seam capability required for an automatic proposal create.
 
-    The existing ``OrderProposalsService`` implements this method.  The type is
-    deliberately structural so planning remains free of DB/model imports.
+    The consumer never falls back to ordinary ``create_proposal``.  A caller
+    must supply the same service instance and open transaction for both seam
+    operations.
     """
 
-    async def create_proposal(self, **kwargs: Any) -> Any: ...
+    async def inspect_watch_to_order_scope(
+        self,
+        symbol: str,
+        market: str,
+        account_mode: str,
+        broker_account_id: str | None,
+        action: str = "place",
+    ) -> WatchToOrderScopeInspection: ...
+
+    async def create_proposal_in_watch_to_order_scope(
+        self,
+        inspection: WatchToOrderScopeInspection,
+        **kwargs: Any,
+    ) -> Any: ...
+
+
+def _atomic_self_open_order_read_seam_available(
+    proposal_creator: object | None,
+) -> TypeGuard[ProposalCreator]:
+    """Check the supplied object for both public seam operations at runtime."""
+
+    return proposal_creator is not None and all(
+        callable(getattr(proposal_creator, method, None))
+        for method in (
+            "inspect_watch_to_order_scope",
+            "create_proposal_in_watch_to_order_scope",
+        )
+    )
+
+
+# This preserves the original safety-gate name while making it a runtime
+# predicate over the caller-supplied public seam, never a static ``True``.
+_ATOMIC_SELF_OPEN_ORDER_READ_SEAM_AVAILABLE: Final = (
+    _atomic_self_open_order_read_seam_available
+)
+
+
+def _canonical_broker_account_id(value: object) -> str | None:
+    """Accept only the exact opaque account-id representation from evidence."""
+
+    if not isinstance(value, str) or not value or value != value.strip():
+        return None
+    return value
 
 
 @dataclass(frozen=True, slots=True)
 class CashSnapshot:
-    """Fresh, caller-collected cash evidence for one account/currency."""
+    """Fresh, caller-collected cash evidence for one account/currency.
+
+    ``broker_account_id`` is an opaque canonical identifier.  It must be the
+    exact non-empty representation supplied by the account-evidence source;
+    this consumer does not guess aliases, case, punctuation, or a missing id.
+    """
 
     account_mode: str
     broker_account_id: str
@@ -136,6 +175,10 @@ class ReserveNetCandidate:
     ``deep_loss_pct`` is retained for diagnostics only.  It is deliberately
     absent from ``_rank_key``: a deeper loss must never be a positive ranking
     criterion for an add.
+
+    ``broker_account_id`` follows ``CashSnapshot``'s opaque canonical-id
+    contract.  A non-canonical or unavailable identity rejects the candidate
+    before any seam inspection or proposal create.
     """
 
     normalized_symbol: str
@@ -193,7 +236,7 @@ class CandidateRejection:
 
 @dataclass(frozen=True, slots=True)
 class PreparedReserveNetProposal:
-    """A proposal-shaped candidate, never a persisted proposal in this release."""
+    """A selected payload that may be persisted only through the public seam."""
 
     normalized_symbol: str
     market: Market
@@ -215,14 +258,14 @@ class PreparedReserveNetProposal:
 
 @dataclass(frozen=True, slots=True)
 class ReserveNetPlan:
-    """Deterministic output of the candidate-only phase."""
+    """Deterministic selection output before seam inspection and persistence."""
 
     selected: tuple[PreparedReserveNetProposal, ...]
     rejected: tuple[CandidateRejection, ...]
     atomicity_stance: str = ATOMICITY_STANCE
-    proposal_creation_permitted: Literal[False] = False
-    proposal_creation_block_code: str = ATOMICITY_BLOCK_CODE
-    unatomicity_notice: str = UNATOMICITY_NOTICE
+    proposal_creation_permitted: bool = False
+    proposal_creation_block_code: str | None = ATOMICITY_BLOCK_CODE
+    unatomicity_notice: str | None = UNATOMICITY_NOTICE
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,7 +281,7 @@ class ReserveNetPolicyContractError(ValueError):
 
 
 class SupportReserveNetConsumer:
-    """Policy-driven selector with an intentionally closed proposal boundary."""
+    """Policy-driven selector with a seam-gated proposal boundary."""
 
     def __init__(
         self,
@@ -377,7 +420,7 @@ class SupportReserveNetConsumer:
         *,
         proposal_creator: ProposalCreator | None = None,
     ) -> ReserveNetConsumeResult:
-        """Plan, then stop before proposal creation until the atomic seam lands."""
+        """Plan, then create only through a live atomic seam capability."""
 
         plan = self.plan(request)
         if not plan.selected:
@@ -386,87 +429,126 @@ class SupportReserveNetConsumer:
                 proposal_creation_status="not_attempted_no_selected_candidates",
             )
 
-        # 지금은 원자적이지 않다.  A non-atomic read followed by create is not
-        # a safety check; it is a TOCTOU window that can create a second live
-        # resting buy.  This branch is deliberately unreachable in this job.
-        if not _ATOMIC_SELF_OPEN_ORDER_READ_SEAM_AVAILABLE:
+        if not _ATOMIC_SELF_OPEN_ORDER_READ_SEAM_AVAILABLE(proposal_creator):
             return ReserveNetConsumeResult(
                 plan=plan,
                 proposal_creation_status=ATOMICITY_BLOCK_CODE,
             )
 
-        if proposal_creator is None:
-            # Kept for the future seam integration, where the caller must own
-            # the proposal transaction and post-commit dispatch boundary.
-            return ReserveNetConsumeResult(
-                plan=plan,
-                proposal_creation_status="proposal_creator_unavailable",
-            )
-        created = await self._create_after_atomic_self_open_order_check(
+        plan = replace(
+            plan,
+            proposal_creation_permitted=True,
+            proposal_creation_block_code=None,
+            unatomicity_notice=None,
+        )
+        status, created = await self._create_after_atomic_watch_to_order_scope_check(
             plan, proposal_creator
         )
         return ReserveNetConsumeResult(
             plan=plan,
-            proposal_creation_status="created_after_atomic_seam",
+            proposal_creation_status=status,
             proposals_created=tuple(created),
         )
 
-    async def _create_after_atomic_self_open_order_check(
+    async def _create_after_atomic_watch_to_order_scope_check(
         self,
         plan: ReserveNetPlan,
         proposal_creator: ProposalCreator,
-    ) -> list[Any]:
-        """The sole future call location for ``OrderProposalsService.create_proposal``.
+    ) -> tuple[str, list[Any]]:
+        """Inspect every scope before a companion create in the same transaction."""
 
-        The required public atomic read+lock seam is intentionally not
-        implemented here.  A future seam owner must make the caller prove that
-        it held the lock and observed no same-owner/symbol non-terminal order
-        immediately before this method becomes reachable.
-        """
-
-        # Delayed import keeps candidate planning free of proposal models and
-        # makes this explicit dependency dormant while the hard gate is false.
-        from app.services.order_proposals.service import RungInput
-
-        created: list[Any] = []
+        inspections: list[
+            tuple[PreparedReserveNetProposal, WatchToOrderScopeInspection]
+        ] = []
         for proposal in plan.selected:
+            # The legacy ``None`` account scope is distinct from a concrete
+            # account scope in the seam.  It is inspected and locked first so
+            # an active unscoped proposal blocks this automatic create rather
+            # than being silently skipped by the concrete-scope read.
+            legacy_inspection = await proposal_creator.inspect_watch_to_order_scope(
+                symbol=proposal.normalized_symbol,
+                market=proposal.market,
+                account_mode=proposal.account_mode,
+                broker_account_id=None,
+                action="place",
+            )
+            if not legacy_inspection.lock_acquired:
+                return "watch_to_order_scope_lock_unavailable", []
+            if legacy_inspection.active_groups:
+                return "legacy_unscoped_active_proposal_exists", []
+
+            # Residual race: this serializes callers using the seam, but the
+            # manual MCP ``order_proposal_create`` path does not hold this
+            # lock.  The dedicated runbook records the remaining window and
+            # its operating constraint; this consumer never treats it as a
+            # proof that an out-of-seam manual create cannot intervene.
+            inspection = await proposal_creator.inspect_watch_to_order_scope(
+                symbol=proposal.normalized_symbol,
+                market=proposal.market,
+                account_mode=proposal.account_mode,
+                broker_account_id=proposal.broker_account_id,
+                action="place",
+            )
+            if not inspection.lock_acquired:
+                return "watch_to_order_scope_lock_unavailable", []
+            if inspection.active_groups:
+                return "watch_to_order_scope_active_groups_present", []
+            inspections.append((proposal, inspection))
+
+        # Do not commit or roll back here: every companion create must retain
+        # the same service instance and transaction that acquired its scope
+        # reservation.  A caller owns the later commit/rollback boundary.
+        created: list[Any] = []
+        for proposal, inspection in inspections:
             created.append(
-                await proposal_creator.create_proposal(
-                    symbol=proposal.normalized_symbol,
-                    market=proposal.market,
-                    account_mode=proposal.account_mode,
-                    broker_account_id=proposal.broker_account_id,
-                    side="buy",
-                    order_type=proposal.order_type,
-                    proposer="support_reserve_net_consumer",
-                    strategy=proposal.strategy,
-                    rungs=[
-                        RungInput(
-                            rung_index=0,
-                            side="buy",
-                            quantity=proposal.quantity,
-                            limit_price=proposal.limit_price,
-                            notional=None,
-                        )
-                    ],
-                    thesis=proposal.thesis,
-                    rationale={
-                        "tier": STRATEGY,
-                        "intent": proposal.intent,
-                        "tif": proposal.tif,
-                        "required_cash": str(proposal.required_cash),
-                    },
-                    lot_context={
-                        "beneficial_owner_id": proposal.beneficial_owner_id,
-                        "approval_route": proposal.approval_route,
-                    },
-                    source_asof={
-                        "policy_version": proposal.policy_version,
-                        "policy_content_hash": proposal.policy_content_hash,
-                    },
+                await proposal_creator.create_proposal_in_watch_to_order_scope(
+                    inspection,
+                    **self._proposal_create_kwargs(proposal),
                 )
             )
-        return created
+        return "created_after_atomic_seam", created
+
+    @staticmethod
+    def _proposal_create_kwargs(
+        proposal: PreparedReserveNetProposal,
+    ) -> dict[str, Any]:
+        """Build the buy-only, place-only payload accepted by the seam."""
+
+        return {
+            "symbol": proposal.normalized_symbol,
+            "market": proposal.market,
+            "account_mode": proposal.account_mode,
+            "broker_account_id": proposal.broker_account_id,
+            "side": "buy",
+            "order_type": proposal.order_type,
+            "proposer": "support_reserve_net_consumer",
+            "strategy": proposal.strategy,
+            "action": "place",
+            "rungs": [
+                RungInput(
+                    rung_index=0,
+                    side="buy",
+                    quantity=proposal.quantity,
+                    limit_price=proposal.limit_price,
+                    notional=None,
+                )
+            ],
+            "thesis": proposal.thesis,
+            "rationale": {
+                "tier": STRATEGY,
+                "intent": proposal.intent,
+                "tif": proposal.tif,
+                "required_cash": str(proposal.required_cash),
+            },
+            "lot_context": {
+                "beneficial_owner_id": proposal.beneficial_owner_id,
+                "approval_route": proposal.approval_route,
+            },
+            "source_asof": {
+                "policy_version": proposal.policy_version,
+                "policy_content_hash": proposal.policy_content_hash,
+            },
+        }
 
     def _assert_signed_policy_contract(self) -> None:
         """Reject a malformed policy object rather than silently widening it."""
@@ -524,8 +606,9 @@ class SupportReserveNetConsumer:
         )
         if not candidate.beneficial_owner_id.strip():
             return "beneficial_owner_required"
-        if not candidate.broker_account_id.strip():
-            return "broker_account_id_required"
+        broker_account_id = _canonical_broker_account_id(candidate.broker_account_id)
+        if broker_account_id is None:
+            return "broker_account_id_normalization_unavailable"
         if not normalized or normalized != candidate.normalized_symbol:
             return "normalized_symbol_required"
         if conflict_code := candidate_conflicts.get(candidate_key):
@@ -549,7 +632,7 @@ class SupportReserveNetConsumer:
 
         cash_key = (
             candidate.account_mode,
-            candidate.broker_account_id,
+            broker_account_id,
             self._currency(candidate.market),
         )
         if cash_key in ambiguous_cash_keys:
@@ -710,6 +793,11 @@ class SupportReserveNetConsumer:
         return None
 
     def _prepare(self, candidate: ReserveNetCandidate) -> PreparedReserveNetProposal:
+        broker_account_id = _canonical_broker_account_id(candidate.broker_account_id)
+        if broker_account_id is None:
+            raise ReserveNetPolicyContractError(
+                "broker account id became unavailable after candidate gating"
+            )
         approval_route = (
             "human_approval_required"
             if candidate.account_mode == "toss_live"
@@ -719,7 +807,7 @@ class SupportReserveNetConsumer:
             normalized_symbol=candidate.normalized_symbol,
             market=candidate.market,
             account_mode=candidate.account_mode,
-            broker_account_id=candidate.broker_account_id,
+            broker_account_id=broker_account_id,
             beneficial_owner_id=candidate.beneficial_owner_id,
             intent=candidate.intent,
             quantity=candidate.quantity,
@@ -841,9 +929,12 @@ class SupportReserveNetConsumer:
         index: dict[tuple[str, str, str], CashSnapshot] = {}
         ambiguous: set[tuple[str, str, str]] = set()
         for snapshot in snapshots:
+            broker_account_id = _canonical_broker_account_id(snapshot.broker_account_id)
+            if broker_account_id is None:
+                continue
             key = (
                 snapshot.account_mode,
-                snapshot.broker_account_id,
+                broker_account_id,
                 snapshot.currency,
             )
             if key in index:
@@ -856,7 +947,8 @@ class SupportReserveNetConsumer:
         return (
             cash.is_fresh
             and cash.same_account_currency_pending_accounted
-            and bool(cash.broker_account_id.strip())
+            and _canonical_broker_account_id(cash.broker_account_id)
+            == cash.broker_account_id
             and cash.fresh_broker_orderable_cash > 0
             and cash.net_orderable_cash >= 0
             and cash.net_orderable_cash <= cash.fresh_broker_orderable_cash
