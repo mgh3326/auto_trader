@@ -4,16 +4,15 @@ Same skeleton as :mod:`scripts.b0x.kr.cycle`, with three deliberate divergences
 that all come from the venue being *stronger*, not weaker:
 
     writer lock → RTH gate → table (or zero orders) → account truth
-                → 귀속 → kill switch → derive → plan → submit → cancel → reconcile
+                → 귀속 → kill switch → derive → plan → mode-specific submit
 
 1. **자기 미체결 = 브로커 직접 조회** (``kt00007``). The kis lane's contract
    v1.6 ① ledger exception is *not* used and must not be — it is scoped to a
    venue with no pending surface. See :mod:`scripts.b0x.kr.kiwoom`.
-2. **취소가 실제로 가능하다.** The kis lane records
-   ``KILL_TRIPPED_CANCEL_UNSUPPORTED`` because ``TTTC8036R`` cannot even
-   discover what is resting. Kiwoom can, so this lane cancels — and the confirm
-   path's round trip is *mandatory*, not conditional (see
-   :data:`ROUND_TRIP_MANDATORY_NOTE`).
+2. **Two mutation modes are deliberately separate.** ``ACCEPTANCE_ONLY``
+   remains one submit → cancel → reconcile round trip. ``INTERIM_ORDERING``
+   submits every envelope-derived DAY order and deliberately leaves it at the
+   broker; it is never the default and it never inherits the acceptance cancel.
 3. **No account-wide durable lease exists for this account.** The kis lane
    holds ``KISMockWriterLease``; there is no kiwoom equivalent in this repo and
    this module does not invent one. What it does instead is check the account's
@@ -50,7 +49,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from app.services.kis_mock_runner.session import is_krx_regular_session
 from scripts.b0x.broker_truth import (
@@ -93,7 +92,8 @@ KR_CONTRACT_CLAUSES: Final[dict[str, str]] = {
     ),
     "§39차 ①②③④⑤": (
         "별도 모듈 · 브로커 직접 미체결 · legacy 불가침 귀속 게이트 · "
-        "§4 KR 열 수치 불변 + KRX RTH only · 제출→조회→취소→reconcile 완전 왕복."
+        "§4 KR 열 수치 불변 + KRX RTH only · ACCEPTANCE_ONLY 제출→조회→취소→"
+        "reconcile 보존 + INTERIM_ORDERING DAY 주문 잔존."
     ),
 }
 KR_ACCOUNT_MAP_COMMIT: Final[str] = "09c3fc16fcacbc47060e8aa1aa3e8beed0a74028"
@@ -107,10 +107,61 @@ KR_ACCOUNT_MAP_VALUES: Final[dict[str, str]] = {
     ),
     "surface": "kiwoom_mock",
 }
-KR_STATUS_LABEL: Final[str] = (
+type CycleMode = Literal["acceptance", "interim_ordering"]
+
+ACCEPTANCE_MODE: Final[CycleMode] = "acceptance"
+INTERIM_ORDERING_MODE: Final[CycleMode] = "interim_ordering"
+
+PREVIEW_STATUS: Final[str] = "OBSERVATION_DERIVATION_ONLY"
+ACCEPTANCE_ONLY_STATUS: Final[str] = "ACCEPTANCE_ONLY"
+INTERIM_ORDERING_STATUS: Final[str] = "INTERIM_ORDERING"
+
+#: §50차 2항: first INTERIM sessions are deliberately buy-only. This is a
+#: code-level default, not a CLI/environment dial; lifting it needs explicit
+#: operator approval or the B-track's proper sell path.
+INTERIM_BUY_ONLY_SELL_GATE_ENABLED: Final[bool] = True
+INTERIM_BUY_ONLY_SELL_GATE_REASON: Final[str] = "interim_buy_only_sell_gate"
+INTERIM_BUY_ONLY_SELL_GATE_DETAIL: Final[str] = (
+    "INTERIM_ORDERING first sessions are buy-only; sell submission is blocked "
+    "until explicit operator approval or B-track merge"
+)
+INTERIM_BUY_ONLY_CONSTRAINT: Final[str] = "매수 전용(매도 게이트 ON)"
+
+PREVIEW_STATUS_LABEL: Final[str] = (
     "OBSERVATION_DERIVATION_ONLY — kiwoom_mock cycle 지위는 유지된다. 이 수동 mock "
     "acceptance lever는 모의 자동매매 가동 선언이나 스케줄러가 아니다."
 )
+
+#: Backward-compatible name for the preview-only label. Mutation paths select
+#: their own literal below; no order-capable artifact may inherit this label.
+KR_STATUS_LABEL: Final[str] = PREVIEW_STATUS_LABEL
+
+ACCEPTANCE_ONLY_STATUS_LABEL: Final[str] = (
+    "ACCEPTANCE_ONLY — 기존 1건 submit → cancel → reconcile 검증 경로. "
+    "기본값은 preview 이며, 이 경로는 DAY 주문 잔존을 만들지 않는다."
+)
+
+#: §49차 A's exact, deliberately non-clean status. Keep all accepted residual
+#: constraints in the visible artifact label, rather than implying a completed
+#: production-quality ordering surface.
+INTERIM_ORDERING_STATUS_LABEL: Final[str] = (
+    "INTERIM_ORDERING — kiwoom_mock 한시 DAY 주문 잔존 모드. 제약: 일손실 kill "
+    "미배선(realized_pnl_today 소스 없음 → −2.5% NAV kill 발화 불가); 공존 계좌 "
+    "TOCTOU 잔존(KR-B1 foreign trace는 착수 preflight 1회); kiwoom 한정; "
+    "KRX RTH only; 매수 전용(매도 게이트 ON)."
+)
+
+INTERIM_ORDERING_CONSTRAINTS: Final[dict[str, str]] = {
+    "daily_loss_kill": (
+        "일손실 kill 미배선 — realized_pnl_today 소스가 없어 −2.5% NAV kill은 발화 불가"
+    ),
+    "coexisting_account_toctou": (
+        "공존 계좌 TOCTOU 잔존 — KR-B1 foreign trace는 착수 preflight 1회 관측"
+    ),
+    "venue": "kiwoom 한정",
+    "session": "KRX RTH only",
+    "buy_only": INTERIM_BUY_ONLY_CONSTRAINT,
+}
 
 #: This account is not B0-X's alone, and the artifact must say so every time.
 COEXISTENCE_LABEL: Final[str] = (
@@ -128,14 +179,15 @@ OUTSIDE_RTH_REASON: ZeroOrderReason = "outside_krx_regular_session"
 #: this bounded interval. A contract requirement, not a CLI parameter.
 PREFLIGHT_MAX_AGE_SECONDS = 5 * 60
 
-#: One-shot manual acceptance lever. Restrictive operational bound with no CLI
-#: or environment override.
-MANUAL_CONFIRM_SUBMISSION_LIMIT = 1
+#: The legacy acceptance lever stays intentionally bounded. This constant is
+#: never consulted by ``INTERIM_ORDERING``; that mode submits the full,
+#: already-envelope-limited derivation.
+ACCEPTANCE_SUBMISSION_LIMIT = 1
 
-#: 🔴 There is no flag that skips the cancel. Recorded on every confirm cycle so
-#: a reader cannot mistake a resting order for an intended position.
+#: 🔴 There is no flag that skips the cancel on ACCEPTANCE_ONLY. Its record
+#: makes the retained DAY-order behavior unavailable by accident.
 ROUND_TRIP_MANDATORY_NOTE: Final[str] = (
-    "ROUND_TRIP_MANDATORY — confirm 경로는 제출 후 반드시 취소를 시도하고 "
+    "ROUND_TRIP_MANDATORY — ACCEPTANCE_ONLY 경로는 제출 후 반드시 취소를 시도하고 "
     "브로커 재조회로 확인한다. 취소를 건너뛰는 플래그는 존재하지 않으며, 취소 "
     "미확인은 실패(RoundTripIncomplete)로 기록되고 exit code 2 로 나간다."
 )
@@ -145,9 +197,15 @@ ROUND_TRIP_MANDATORY_NOTE: Final[str] = (
 KILL_CANCEL_SUPPORTED_NOTE: Final[str] = (
     "신규 주문 중단. 🔴 kiwoom 은 kt00007 미체결조회와 kt10003 취소를 지원하므로 "
     "kis_mock 의 「구조적 시도 불가」가 여기서는 성립하지 않는다. 다만 이 사이클은 "
-    "kill 발화로 파생 자체가 0 이라 취소 대상이 생기지 않았다 — 이 레인은 confirm "
-    "경로에서 자기 주문을 항상 같은 사이클 안에서 회수한다(ROUND_TRIP_MANDATORY). "
-    "재개는 운영자 결정 (계약 §2-4)."
+    "kill 발화로 파생 자체가 0 이라 취소 대상이 생기지 않았다. ACCEPTANCE_ONLY 는 "
+    "자기 주문을 같은 사이클 안에서 회수하지만, INTERIM_ORDERING 은 DAY 주문을 "
+    "자동 취소하지 않는다. 재개는 운영자 결정 (계약 §2-4)."
+)
+
+DAY_ORDER_RETAINED_NOTE: Final[str] = (
+    "DAY_ORDER_RETAINED — INTERIM_ORDERING 은 envelope 파생 전건을 broker에 "
+    "제출하고 즉시 취소하지 않는다. submitted는 접수/주문번호 증거만 뜻하며 "
+    "filled를 뜻하지 않는다."
 )
 
 #: Realized P&L has no source on this lane either — stated so a reader does not
@@ -398,6 +456,8 @@ def _confirm_preflight_record(
     pending_unreadable = pending if isinstance(pending, PendingUnreadable) else None
     foreign_unreadable = foreign if isinstance(foreign, PendingUnreadable) else None
     position_symbols = fresh.non_dust_position_symbols()
+    foreign_trace_readable = foreign_unreadable is None
+    foreign_trace_count = None if foreign_unreadable is not None else foreign.count
     reasons: list[str] = []
 
     if elapsed_seconds > PREFLIGHT_MAX_AGE_SECONDS:
@@ -465,6 +525,18 @@ def _confirm_preflight_record(
             if foreign_unreadable is not None
             else foreign.canonical()  # type: ignore[union-attr]
         ),
+        "kr_b1_inactive_gate": {
+            "required": True,
+            "source": "kt00007 same-day rows not authored by b0xkw journal",
+            "foreign_trace_readable": foreign_trace_readable,
+            "foreign_trace_count": foreign_trace_count,
+            "passed": foreign_trace_readable and foreign_trace_count == 0,
+            "fail_closed": (
+                "foreign trace read failure is not clean; any unreadable answer "
+                "or non-zero foreign trace produces zero orders"
+            ),
+            "residual_toctou": "preflight_once_before_submission",
+        },
         "writer_lease": {
             "acquired": False,
             "surface": "b0x_adapter",
@@ -506,6 +578,15 @@ def _preflight_truth_unavailable_record(
         "attribution": None,
         "open_orders": {"native_broker": None, "ledger_shadow": None},
         "foreign_same_day_orders": None,
+        "kr_b1_inactive_gate": {
+            "required": True,
+            "source": "kt00007 same-day rows not authored by b0xkw journal",
+            "foreign_trace_readable": False,
+            "foreign_trace_count": None,
+            "passed": False,
+            "fail_closed": "account truth unavailable before KR-B1 inactive check",
+            "residual_toctou": "preflight_once_before_submission",
+        },
         "writer_lease": {"acquired": False, "surface": "b0x_adapter"},
         "passed": False,
         "reasons": ["account_truth_unavailable"],
@@ -523,11 +604,12 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — linear cycle script, kept fl
     ledger: ObservationLedger,
     record: dict[str, Any],
     confirm: bool,
+    mode: CycleMode,
     account: kiwoom_lane.ReadOnlyKiwoomMockAccount | None,
     journal: kiwoom_attr.OwnOrderJournal,
     account_identity: dict[str, str] | None,
 ) -> KiwoomCycleOutcome:
-    """Account truth → 귀속 → derive → plan → bounded confirm round trip."""
+    """Account truth → 귀속 → derive → plan → explicitly selected mutation mode."""
 
     if account is None:
         account = kiwoom_lane.ReadOnlyKiwoomMockAccount()
@@ -673,21 +755,26 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — linear cycle script, kept fl
     record["blocked"] = [order.to_json() for order in blocked]
 
     round_trips: list[dict[str, Any]] = []
+    day_orders: list[dict[str, Any]] = []
     if not confirm:
         record["submission_skipped"] = "confirm=False — preview only"
         record["submitted"] = []
         record["round_trip"] = []
+        record["day_orders"] = []
         return _persist_outcome(
             outcome=outcome, ledger=ledger, record=record, labels=labels
         )
 
-    record["round_trip_policy"] = ROUND_TRIP_MANDATORY_NOTE
+    if mode == ACCEPTANCE_MODE:
+        record["round_trip_policy"] = ROUND_TRIP_MANDATORY_NOTE
+    else:
+        record["day_order_policy"] = DAY_ORDER_RETAINED_NOTE
     incomplete: kiwoom_lane.RoundTripIncomplete | None = None
 
     for index, order in enumerate(planned):
-        if index >= MANUAL_CONFIRM_SUBMISSION_LIMIT:
+        if mode == ACCEPTANCE_MODE and index >= ACCEPTANCE_SUBMISSION_LIMIT:
             record["submission_stopped"] = (
-                f"acceptance_submission_limit={MANUAL_CONFIRM_SUBMISSION_LIMIT}"
+                f"acceptance_submission_limit={ACCEPTANCE_SUBMISSION_LIMIT}"
             )
             break
         submitted_at = dt.datetime.now(dt.UTC)
@@ -721,20 +808,41 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — linear cycle script, kept fl
                         "detail": str(exc),
                     }
                 )
+                if mode == INTERIM_ORDERING_MODE:
+                    # A foreign/legacy SELL cannot prevent independently safe
+                    # envelope-derived symbols from being considered.
+                    continue
                 record["submission_stopped"] = "legacy_position_sell_blocked"
                 break
-            # 🔴 The acceptance lever is buy-only. Even an attributed sell is
-            # refused here rather than silently executed, because a sell that
-            # fills cannot be taken back by the mandatory cancel.
-            record.setdefault("submission_blocked", []).append(
-                {
-                    "symbol": order.symbol,
-                    "correlation_id": order.client_order_id,
-                    "reason": "sell_leg_not_wired_on_acceptance_lever",
-                }
-            )
-            record["submission_stopped"] = "sell_leg_not_wired"
-            break
+            if mode == ACCEPTANCE_MODE:
+                # 🔴 The acceptance lever is buy-only. Even an attributed sell
+                # is refused here rather than silently executed, because a sell
+                # that fills cannot be taken back by the mandatory cancel.
+                record.setdefault("submission_blocked", []).append(
+                    {
+                        "symbol": order.symbol,
+                        "correlation_id": order.client_order_id,
+                        "reason": "sell_leg_not_wired_on_acceptance_lever",
+                    }
+                )
+                record["submission_stopped"] = "sell_leg_not_wired"
+                break
+            if INTERIM_BUY_ONLY_SELL_GATE_ENABLED:
+                # §50차 2항: preserve the sell wiring and its own-attribution
+                # check above, but keep first INTERIM sessions buy-only at the
+                # final submission boundary. The artifact must name every
+                # suppressed sell; a quiet ``continue`` would be unauditable.
+                record.setdefault("submission_blocked", []).append(
+                    {
+                        "symbol": order.symbol,
+                        "correlation_id": order.client_order_id,
+                        "side": order.side,
+                        "leg": order.leg,
+                        "reason": INTERIM_BUY_ONLY_SELL_GATE_REASON,
+                        "detail": INTERIM_BUY_ONLY_SELL_GATE_DETAIL,
+                    }
+                )
+                continue
 
         if order.symbol in halted:
             record.setdefault("submission_blocked", []).append(
@@ -744,6 +852,10 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — linear cycle script, kept fl
                     "reason": "halted_suspect_symbol",
                 }
             )
+            if mode == INTERIM_ORDERING_MODE:
+                # A table-integrity backstop is scoped to this symbol; preserve
+                # the all-eligible-orders property for the remaining plan.
+                continue
             record["submission_stopped"] = "halted_suspect_symbol"
             break
 
@@ -756,13 +868,24 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — linear cycle script, kept fl
             position_symbols=scoped.cap_position_symbols, pending=current_pending
         )
         try:
-            trip = await kiwoom_lane.submit_and_cancel(
-                account,
-                planned=order,
-                broker_truth=current_truth,
-                record_order_no=_journal_writer(journal),
-                now=submitted_at,
-            )
+            if mode == ACCEPTANCE_MODE:
+                trip = await kiwoom_lane.submit_and_cancel(
+                    account,
+                    planned=order,
+                    broker_truth=current_truth,
+                    record_order_no=_journal_writer(journal),
+                    now=submitted_at,
+                )
+                round_trips.append(trip.canonical())
+            else:
+                day_order = await kiwoom_lane.submit_day_order(
+                    account,
+                    planned=order,
+                    broker_truth=current_truth,
+                    record_order_no=_journal_writer(journal),
+                    now=submitted_at,
+                )
+                day_orders.append(day_order.canonical())
         except OwnPendingResubmitBlocked as exc:
             record.setdefault("submission_dedup_blocked", []).append(
                 {
@@ -772,6 +895,11 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — linear cycle script, kept fl
                     "detail": str(exc),
                 }
             )
+            if mode == INTERIM_ORDERING_MODE:
+                # The broker's pending answer blocks this symbol only. Keep
+                # evaluating other envelope-derived symbols in this explicit
+                # all-eligible-orders mode.
+                continue
             record["submission_stopped"] = "dedup_blocked"
             break
         except kiwoom_lane.RoundTripIncomplete as exc:
@@ -779,18 +907,34 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — linear cycle script, kept fl
             record["submission_stopped"] = "round_trip_incomplete"
             record.setdefault("round_trip_failures", []).append(str(exc))
             break
-        round_trips.append(trip.canonical())
+        except (
+            kiwoom_lane.BrokerEchoMismatch,
+            kiwoom_lane.KiwoomBrokerRejected,
+        ) as exc:
+            # A submit response without usable acceptance evidence may have
+            # changed the external account. Stop immediately and preserve an
+            # auditable non-zero outcome instead of guessing about later legs.
+            if mode == ACCEPTANCE_MODE:
+                raise
+            outcome.exit_code = 2
+            record["submission_stopped"] = "day_order_submission_unverified"
+            record.setdefault("day_order_failures", []).append(str(exc))
+            break
 
     record["round_trip"] = round_trips
-    record["submitted"] = [
-        {
-            "correlation_id": trip["correlation_id"],
-            "symbol": trip["symbol"],
-            "order_no": trip["order_no"],
-            "submitted": trip["submitted"],
-        }
-        for trip in round_trips
-    ]
+    record["day_orders"] = day_orders
+    if mode == ACCEPTANCE_MODE:
+        record["submitted"] = [
+            {
+                "correlation_id": trip["correlation_id"],
+                "symbol": trip["symbol"],
+                "order_no": trip["order_no"],
+                "submitted": trip["submitted"],
+            }
+            for trip in round_trips
+        ]
+    else:
+        record["submitted"] = list(day_orders)
     if incomplete is not None:
         outcome.exit_code = 2
     return _persist_outcome(
@@ -799,7 +943,7 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — linear cycle script, kept fl
 
 
 def _journal_writer(journal: kiwoom_attr.OwnOrderJournal) -> Any:
-    """Return the append callback :func:`kiwoom.submit_and_cancel` invokes.
+    """Return the append callback both submission modes invoke.
 
     Kept as a tiny closure so the lane module owns *when* the journal is
     written (immediately after the broker returns an order number) while this
@@ -825,7 +969,19 @@ def _journal_writer(journal: kiwoom_attr.OwnOrderJournal) -> Any:
     return _record
 
 
-def _stamp_contract_and_account_map(record: dict[str, Any]) -> None:
+def _cycle_status(*, confirm: bool, mode: CycleMode) -> tuple[str, str]:
+    """Return the exact artifact literal for the behavior that actually ran."""
+
+    if not confirm:
+        return PREVIEW_STATUS, PREVIEW_STATUS_LABEL
+    if mode == ACCEPTANCE_MODE:
+        return ACCEPTANCE_ONLY_STATUS, ACCEPTANCE_ONLY_STATUS_LABEL
+    return INTERIM_ORDERING_STATUS, INTERIM_ORDERING_STATUS_LABEL
+
+
+def _stamp_contract_and_account_map(
+    record: dict[str, Any], *, cycle_status: str, status_label: str
+) -> None:
     record["contract"] = {
         "path": "~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md",
         "version": KR_CONTRACT_VERSION,
@@ -838,7 +994,17 @@ def _stamp_contract_and_account_map(record: dict[str, Any]) -> None:
         "reference_surface": "mock/CLAUDE.md",
         "gate_values": dict(KR_ACCOUNT_MAP_VALUES),
     }
-    record["cycle_status"] = "OBSERVATION_DERIVATION_ONLY"
+    record["cycle_status"] = cycle_status
+    record["cycle_status_label"] = status_label
+    if cycle_status == INTERIM_ORDERING_STATUS:
+        record["interim_ordering_constraints"] = dict(INTERIM_ORDERING_CONSTRAINTS)
+        record["interim_buy_only_sell_gate"] = {
+            "enabled": INTERIM_BUY_ONLY_SELL_GATE_ENABLED,
+            "reason_code": INTERIM_BUY_ONLY_SELL_GATE_REASON,
+            "scope": "submission_stage_sell_legs",
+            "cli_disable_available": False,
+            "release": "explicit_operator_approval_or_b_track_merge",
+        }
 
 
 async def run_kiwoom_cycle(
@@ -847,23 +1013,28 @@ async def run_kiwoom_cycle(
     table_dir: Path = DEFAULT_TABLE_DIR,
     out_dir: Path = DEFAULT_OBSERVATION_DIR,
     confirm: bool = False,
+    interim_ordering: bool = False,
     account: kiwoom_lane.ReadOnlyKiwoomMockAccount | None = None,
     journal: kiwoom_attr.OwnOrderJournal | None = None,
 ) -> KiwoomCycleOutcome:
     """One manual kiwoom_mock B0-X cycle.
 
-    ``confirm=False`` is the ordinary observation/derivation path. A confirm
-    call is a separate, default-disabled manual surface requiring the B0-X env
-    gate, the per-call ``confirm=True`` argument and a clean NW-B4 preflight
-    inside KRX RTH — and it always completes the mandatory cancel round trip.
+    ``confirm=False`` is the ordinary observation/derivation path. A confirmed
+    call is default-disabled and requires the B0-X env gate plus a clean NW-B4
+    preflight inside KRX RTH. With ``interim_ordering=False`` (the safe default)
+    it remains the one-order ``ACCEPTANCE_ONLY`` cancel round trip. The caller
+    must additionally set ``interim_ordering=True`` to leave envelope-derived
+    DAY orders at the broker.
     """
 
     envelope = load_envelope(MARKET)
     assert_envelope_locked(envelope)
     kiwoom_lane.assert_correlation_prefixes_disjoint()
+    mode: CycleMode = INTERIM_ORDERING_MODE if interim_ordering else ACCEPTANCE_MODE
+    cycle_status, status_label = _cycle_status(confirm=confirm, mode=mode)
     labels = header_labels(
         lane=LANE,
-        extra=(*account_history_labels(LANE), COEXISTENCE_LABEL, KR_STATUS_LABEL),
+        extra=(*account_history_labels(LANE), COEXISTENCE_LABEL, status_label),
     )
     outcome = KiwoomCycleOutcome(lane=LANE, at=now)
     root = Path(out_dir).expanduser()
@@ -880,9 +1051,26 @@ async def run_kiwoom_cycle(
         record = base_record(
             market=MARKET, lane=LANE, now=now, envelope=envelope, labels=labels
         )
-        _stamp_contract_and_account_map(record)
+        _stamp_contract_and_account_map(
+            record, cycle_status=cycle_status, status_label=status_label
+        )
         record["confirm"] = confirm
+        record["interim_ordering"] = interim_ordering
+        record["execution_mode"] = "preview" if not confirm else mode
         record["realized_pnl_source"] = KR_REALIZED_PNL_UNAVAILABLE
+
+        if interim_ordering and not confirm:
+            return _finish_zero_order(
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                labels=labels,
+                reason="interim_ordering_requires_confirm",
+                detail=(
+                    "INTERIM_ORDERING is not armed by its mode flag alone; "
+                    "the per-call confirm=True gate is required"
+                ),
+            )
 
         # --- RTH gate: cheapest check, before any table/account I/O ---
         in_session = is_krx_regular_session(now)
@@ -931,6 +1119,7 @@ async def run_kiwoom_cycle(
                 ledger=ledger,
                 record=record,
                 confirm=False,
+                mode=mode,
                 account=account,
                 journal=lane_journal,
                 account_identity=None,
@@ -958,6 +1147,7 @@ async def run_kiwoom_cycle(
             ledger=ledger,
             record=record,
             confirm=True,
+            mode=mode,
             account=account,
             journal=lane_journal,
             account_identity=account_identity,
@@ -967,15 +1157,30 @@ async def run_kiwoom_cycle(
 __all__ = [
     "MARKET",
     "LANE",
+    "CycleMode",
+    "ACCEPTANCE_MODE",
+    "INTERIM_ORDERING_MODE",
+    "PREVIEW_STATUS",
+    "ACCEPTANCE_ONLY_STATUS",
+    "INTERIM_ORDERING_STATUS",
+    "INTERIM_BUY_ONLY_SELL_GATE_ENABLED",
+    "INTERIM_BUY_ONLY_SELL_GATE_REASON",
+    "INTERIM_BUY_ONLY_SELL_GATE_DETAIL",
+    "INTERIM_BUY_ONLY_CONSTRAINT",
     "OUTSIDE_RTH_REASON",
     "PREFLIGHT_MAX_AGE_SECONDS",
-    "MANUAL_CONFIRM_SUBMISSION_LIMIT",
+    "ACCEPTANCE_SUBMISSION_LIMIT",
     "ROUND_TRIP_MANDATORY_NOTE",
     "KILL_CANCEL_SUPPORTED_NOTE",
+    "DAY_ORDER_RETAINED_NOTE",
     "KR_CONTRACT_VERSION",
     "KR_ACCOUNT_MAP_COMMIT",
     "KR_ACCOUNT_MAP_VALUES",
     "KR_STATUS_LABEL",
+    "PREVIEW_STATUS_LABEL",
+    "ACCEPTANCE_ONLY_STATUS_LABEL",
+    "INTERIM_ORDERING_STATUS_LABEL",
+    "INTERIM_ORDERING_CONSTRAINTS",
     "COEXISTENCE_LABEL",
     "KR_REALIZED_PNL_UNAVAILABLE",
     "KR_ATTRIBUTED_NAV_BASIS",

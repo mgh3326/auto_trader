@@ -6,19 +6,25 @@
     # Read-only preflight probe: account truth + 귀속 + broker pending, no plan.
     uv run python -m scripts.run_b0x_kr_kiwoom_cycle --readiness
 
-    # One manually requested mock acceptance round trip.  Default-disabled,
+    # One manually requested mock acceptance round trip. Default-disabled,
     # bounded to one submission, and it ALWAYS cancels what it sent.
     uv run python -m scripts.run_b0x_kr_kiwoom_cycle --confirm
 
-``--confirm`` is not a status change: this lane remains
-``OBSERVATION_DERIVATION_ONLY``. It cannot be combined with ``--now``, so an
-operator cannot replay an artificial session timestamp into the mutation path,
-and there is no flag whose value can reach an envelope field — the §4 caps are
+    # Explicitly selected INTERIM DAY-order path. It is never the default and
+    # requires the same per-call confirmation gate.
+    uv run python -m scripts.run_b0x_kr_kiwoom_cycle --interim-ordering --confirm
+
+``--confirm`` alone is ``ACCEPTANCE_ONLY``: one submit followed by broker-proven
+cancel. ``--interim-ordering --confirm`` is ``INTERIM_ORDERING``: it submits
+every eligible envelope-derived **buy** DAY order and deliberately does not
+auto-cancel. Sell wiring remains behind a default-on, non-CLI buy-only gate
+until explicit approval or B-track merge. Both are default-disabled, cannot be
+combined with ``--now``, and expose no envelope override. The §4 caps are
 module constants in ``scripts.b0x.envelope``, re-asserted before every read.
 
-🔴 There is no ``--no-cancel``. The confirm path submits one order and then
-proves, from the broker's own answer, that it is gone. A cancellation that
-cannot be proven exits ``2``.
+🔴 There is no ``--no-cancel`` for acceptance. The cancellation it requires
+must be broker-proven or exits ``2``; that safe acceptance behavior is not
+silently transformed into the interim mode.
 
 No scheduler registration exists for this script — not TaskIQ, not Prefect,
 not launchd. A cycle happens because an operator ran it.
@@ -69,6 +75,14 @@ def _print_outcome(outcome) -> None:  # noqa: ANN001 — local formatting helper
         )
     for failure in outcome.record.get("round_trip_failures") or []:
         print(f"ROUND_TRIP_FAILURE — {failure}", file=sys.stderr)
+    for order in outcome.record.get("day_orders") or []:
+        print(
+            f"DAY_ORDER symbol={order['symbol']} order_no={order['order_no']} "
+            f"side={order['side']} qty={order['quantity']} "
+            f"price={order['price']} automatic_cancel={order['automatic_cancel']}"
+        )
+    for failure in outcome.record.get("day_order_failures") or []:
+        print(f"DAY_ORDER_FAILURE — {failure}", file=sys.stderr)
     if outcome.artifact_path:
         print(f"artifact={outcome.artifact_path}")
 
@@ -119,6 +133,9 @@ async def _readiness(args: argparse.Namespace) -> int:
 
 
 async def _run(args: argparse.Namespace) -> int:
+    if args.interim_ordering and not args.confirm:
+        print("--interim-ordering requires --confirm", file=sys.stderr)
+        return 2
     if args.confirm and args.now is not None:
         print("--confirm cannot be combined with --now", file=sys.stderr)
         return 2
@@ -138,6 +155,7 @@ async def _run(args: argparse.Namespace) -> int:
             table_dir=Path(args.table_dir).expanduser(),
             out_dir=Path(args.out_dir).expanduser(),
             confirm=args.confirm,
+            interim_ordering=args.interim_ordering,
         )
     except WriterLockUnavailable as exc:
         print(f"WRITER_LOCK_UNAVAILABLE — {exc}", file=sys.stderr)
@@ -181,6 +199,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "arm the bounded acceptance round trip (submit 1 → verify resting → "
             "cancel → reconcile). Default-disabled; also needs B0X_KR_KIWOOM_ENABLED"
+        ),
+    )
+    parser.add_argument(
+        "--interim-ordering",
+        action="store_true",
+        help=(
+            "select INTERIM_ORDERING DAY-order retention; requires --confirm. "
+            "Without this flag, --confirm remains the one-order acceptance cancel"
         ),
     )
     parser.add_argument("--now", type=_iso, default=None, help="override cycle time")

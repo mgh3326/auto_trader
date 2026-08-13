@@ -51,6 +51,44 @@ def _sink():  # noqa: ANN202
 
 
 @pytest.mark.asyncio
+async def test_interim_day_submission_never_calls_cancel(now) -> None:  # noqa: ANN001
+    """INTERIM_ORDERING records acceptance, not a synthetic fill or cleanup."""
+
+    account = FakeAccount()
+    writer = _sink()
+
+    result = await kiwoom_lane.submit_day_order(
+        account,
+        planned=_planned(),
+        broker_truth=CLEAN_TRUTH,
+        record_order_no=writer,
+        now=now,
+    )
+
+    assert result.submitted is True
+    assert result.order_no == "0000123456"
+    assert account.buy_calls == [{"symbol": "005930", "quantity": 1, "price": 70_000}]
+    assert account.cancel_calls == []
+    assert result.canonical() == {
+        "correlation_id": "b0xkw-deadbeefdeadbeef",
+        "symbol": "005930",
+        "side": "buy",
+        "price": 70_000,
+        "quantity": 1,
+        "notional_krw": 70_000,
+        "submitted": True,
+        "order_no": "0000123456",
+        "submit_response": {"return_code": 0, "ord_no": "0000123456"},
+        "time_in_force": "DAY",
+        "automatic_cancel": False,
+        "fill_status": "unverified",
+    }
+    assert writer.written == [  # type: ignore[attr-defined]
+        {"order_no": "0000123456", "symbol": "005930", "at": now}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_happy_round_trip_confirms_cancellation_from_the_broker(now) -> None:  # noqa: ANN001
     planned = _planned()
     account = FakeAccount(
