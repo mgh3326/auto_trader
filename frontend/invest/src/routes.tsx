@@ -22,6 +22,14 @@
 // /invest/reports                 — Investment report list (ROB-265).
 // /invest/reports/:reportUuid     — Single investment report bundle.
 // /invest/stocks/:m/:sym    — Stock detail page.
+// /invest/watches           — Watch-alert browsing, grouped by symbol
+//                             (ladder view). Mobile-first (INVEST-WATCH-UI
+//                             §57차 item ①).
+// /invest/orders/:broker/:market/:ledgerId — Standalone order/fill detail
+//                             (ledger + thesis + lifecycle). INVEST-WATCH-UI
+//                             §57차 item ②. `market` is required alongside
+//                             `broker` (verify-r1 BLOCKER-1) — broker alone
+//                             is ambiguous between two ledger tables.
 // ─────────────────────────────────────────────────────────────────────────────
 import { createBrowserRouter, Navigate, useLocation, useParams } from "react-router-dom";
 import { DiscoverIssueDetailPage } from "./pages/DiscoverIssueDetailPage";
@@ -42,6 +50,8 @@ import {
   InvestmentReportsRoute,
 } from "./pages/desktop/DesktopInvestmentReportsPage";
 import { StockDetailPage } from "./pages/stock-detail/StockDetailPage";
+import { WatchesRoute } from "./pages/WatchesRoute";
+import { OrderDetailRoute } from "./pages/OrderDetailRoute";
 
 // Static legacy /app/* redirect that preserves any ?search and #hash
 // from the source URL so market-scoped or anchor-scoped bookmarks
@@ -92,6 +102,8 @@ export const router = createBrowserRouter(
     { path: "/reports", element: <InvestmentReportsRoute /> },
     { path: "/reports/:reportUuid", element: <InvestmentReportBundleRoute /> },
     { path: "/stocks/:market/:symbol", element: <StockDetailPage /> },
+    { path: "/watches", element: <WatchesRoute /> },
+    { path: "/orders/:broker/:market/:ledgerId", element: <OrderDetailRoute /> },
 
     // Legacy /invest/app/* URLs redirect to their canonical /invest/*
     // siblings. The retired legacy components were removed after the

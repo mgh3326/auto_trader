@@ -1,10 +1,19 @@
 // ROB-559 — per-symbol order history card on the stock detail page.
 
 import { render, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import { OrderLedgerCard } from "../desktop/stock-detail/OrderLedgerCard";
 import type { LinkedOrder } from "../types/investmentReports";
+
+// INVEST-WATCH-UI §57차 item ②: LinkedOrderRow now links to the standalone
+// order detail page, so it needs a Router in the tree even in this
+// stock-detail-page test.
+function renderWithRouter(ui: ReactElement) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 function makeOrder(overrides: Partial<LinkedOrder> = {}): LinkedOrder {
   return {
@@ -24,14 +33,14 @@ function makeOrder(overrides: Partial<LinkedOrder> = {}): LinkedOrder {
 
 describe("OrderLedgerCard (ROB-559)", () => {
   it("renders the 주문 기록 card with status badge + order id for an order", () => {
-    render(<OrderLedgerCard orders={[makeOrder()]} />);
+    renderWithRouter(<OrderLedgerCard orders={[makeOrder()]} />);
     expect(screen.getByText("주문 기록")).toBeInTheDocument();
     expect(screen.getByText("체결")).toBeInTheDocument();
     expect(screen.getByText(/order 7aeb17dd/)).toBeInTheDocument();
   });
 
   it("renders a 미체결 badge and no qty line for an unfilled order", () => {
-    render(
+    renderWithRouter(
       <OrderLedgerCard
         orders={[
           makeOrder({ status: "accepted", filledQty: null, avgFillPrice: null }),
@@ -43,7 +52,7 @@ describe("OrderLedgerCard (ROB-559)", () => {
   });
 
   it("formats tiny fill quantities without scientific notation", () => {
-    render(<OrderLedgerCard orders={[makeOrder({ filledQty: "1E-8" })]} />);
+    renderWithRouter(<OrderLedgerCard orders={[makeOrder({ filledQty: "1E-8" })]} />);
     expect(screen.getByText(/0\.00000001/)).toBeInTheDocument();
   });
 
