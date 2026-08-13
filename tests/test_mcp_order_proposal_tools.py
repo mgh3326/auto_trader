@@ -930,6 +930,42 @@ async def test_void_requires_reason_and_terminalizes_proposal():
 
 
 @pytest.mark.asyncio
+async def test_void_refusal_surfaces_structured_authorization_detail():
+    """ROB-1245: a stranger's void refusal must not be a bare error string.
+
+    Regression for the Acceptance A finding (tossacc-final-0813.md #3) that a
+    ``void_not_authorized`` response looked unactionable. It is not a bug in
+    ``authorize_void`` (the service layer already fails closed by design and
+    is locked by ``test_legacy_row_without_creator_is_not_owned_by_anyone``);
+    this test locks the *MCP surface* contract so a refusal always carries the
+    evidence the caller needs to see why, instead of silently vanishing like
+    ROB-1244's reasonless refusals.
+    """
+    created = await opt.order_proposal_create(**_create_kwargs())
+
+    token = caller_agent_id_var.set("a-different-lane-agent")
+    try:
+        result = await opt.order_proposal_void(created["proposal_id"], "not mine")
+    finally:
+        caller_agent_id_var.reset(token)
+
+    assert result["success"] is False
+    assert result["error"] == "void_not_authorized"
+    assert result["proposal_id"] == created["proposal_id"]
+    assert result["authorization"]["allowed"] is False
+    assert result["authorization"]["authority"] is None
+    assert result["authorization"]["reason_code"] == "void_not_authorized"
+    assert result["authorization"]["detail"]["requester_agent_id"] == (
+        "a-different-lane-agent"
+    )
+    assert result["authorization"]["detail"]["creator_agent_id"] == _TOOL_CALLER_AGENT
+
+    # Untouched: the live proposal survives the refused void attempt.
+    got = await opt.order_proposal_get(created["proposal_id"])
+    assert got["proposal"]["lifecycle_state"] == "proposed"
+
+
+@pytest.mark.asyncio
 async def test_fetch_void_evidence_forwards_group_valid_until(monkeypatch):
     valid_until = datetime(2026, 7, 15, 15, 0, tzinfo=UTC)
     now = datetime(2026, 7, 13, 9, 0, tzinfo=UTC)
