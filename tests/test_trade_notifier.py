@@ -120,6 +120,68 @@ async def test_dispatch_discord_success(trade_notifier):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_auto_veto_card_mirror_reuses_market_routed_discord_transport(
+    trade_notifier,
+):
+    webhook_url = "https://discord.com/api/webhooks/kr"
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_kr=webhook_url,
+    )
+
+    with patch.object(
+        trade_notifier,
+        "_send_to_discord_embed_single",
+        new_callable=AsyncMock,
+        return_value=True,
+    ) as send:
+        delivered = await trade_notifier.send_auto_veto_card_mirror(
+            symbol="005930",
+            market="equity_kr",
+            quantities=["1"],
+            prices=["97000"],
+            thesis_summary="valuation dislocation",
+            policy_version="fixture-policy",
+        )
+
+    assert delivered is True
+    embed, actual_webhook = send.call_args.args
+    assert actual_webhook == webhook_url
+    fields = {field["name"]: field["value"] for field in embed["fields"]}
+    assert fields == {
+        "종목": "005930",
+        "수량": "1",
+        "가격": "97000",
+        "사유": "valuation dislocation",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_auto_veto_card_mirror_fails_closed_without_thesis(trade_notifier):
+    trade_notifier.configure(
+        bot_token="test_token",
+        chat_ids=["123456"],
+        enabled=True,
+        discord_webhook_kr="https://discord.com/api/webhooks/kr",
+    )
+
+    delivered = await trade_notifier.send_auto_veto_card_mirror(
+        symbol="005930",
+        market="equity_kr",
+        quantities=["1"],
+        prices=["97000"],
+        thesis_summary=" ",
+        policy_version="fixture-policy",
+    )
+
+    assert delivered is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_dispatch_telegram_fallback(trade_notifier):
     """_dispatch falls back to Telegram when Discord fails."""
     trade_notifier.configure(

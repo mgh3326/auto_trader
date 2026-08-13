@@ -34,16 +34,23 @@ posture:
 
 # ROB-871 — master-gated by ORDER_PROPOSALS_AUTO_APPROVE=false. Caps use the
 # settlement currency for each market (KRW for kr/crypto, USD for us).
+# TOSS-AUTO-FULL (§51): KR per-order uses the upper bound of
+# ``buy.per_symbol_notional_krw_range`` [200000, 400000]; US uses the upper
+# bound of ``buy.per_symbol_notional_usd_range`` [150, 450].  The daily cap is
+# that upper bound × the one-new-entry limit stated at
+# ``user_stances[0].implications[0]`` ("동시 신규 최대 1종목"), hence KRW
+# 400000 and USD 450.  This comment intentionally records the derivation
+# without touching the separately owned buy/sell policy tiers.
 order_proposals:
   auto_approve:
     min_distance_pct: 3
     per_order_cap:
-      kr: 200000
-      us: 150
+      kr: 400000
+      us: 450
       crypto: 100000
     daily_cap:
-      kr: 500000
-      us: 400
+      kr: 400000
+      us: 450
       crypto: 300000
     # AUTO-APPROVE-EXPAND (§40차) — inputs to the profit-take classification,
     # consumed only when ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded.

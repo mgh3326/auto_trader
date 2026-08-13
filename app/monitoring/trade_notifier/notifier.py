@@ -358,6 +358,44 @@ class TradeNotifier:
         )
         return delivered
 
+    async def send_auto_veto_card_mirror(
+        self,
+        *,
+        symbol: str,
+        market: str,
+        quantities: list[str],
+        prices: list[str],
+        thesis_summary: str,
+        policy_version: str,
+    ) -> bool:
+        """Send a Discord-only mirror of the Telegram auto-veto card.
+
+        This uses the existing market-routed Discord transport (the mbp-server
+        notification route) and intentionally never falls back to Telegram:
+        Telegram already owns the action card and its single-use veto button.
+        """
+        if not self._enabled:
+            return False
+        webhook_url = self._get_webhook_for_market_type(market)
+        if webhook_url is None:
+            return False
+        try:
+            embed = fmt_discord.format_auto_veto_card_mirror(
+                symbol=symbol,
+                quantities=quantities,
+                prices=prices,
+                thesis_summary=thesis_summary,
+                policy_version=policy_version,
+            )
+            return await self._send_to_discord_embed_single(embed, webhook_url)
+        except Exception:
+            logger.exception(
+                "Auto-veto Discord mirror failed: market=%s symbol=%s",
+                market,
+                symbol,
+            )
+            return False
+
     # ── public notify methods ──────────────────────────────────────────
 
     async def notify_buy_order(
