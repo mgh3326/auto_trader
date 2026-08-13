@@ -115,3 +115,29 @@ def test_playbook_covers_core_lanes() -> None:
     assert {"bootstrap", "buy", "sell", "discovery"} <= lane_names, (
         f"playbook must define bootstrap/buy/sell/discovery lanes; found {sorted(lane_names)}"
     )
+
+
+def test_buy_pipeline_negative_recording_precedes_reserve_net_subsection() -> None:
+    text = _PLAYBOOK_PATH.read_text(encoding="utf-8")
+    negative_recording = text.index("8. **Negative-class recording (ROB-712):")
+    reserve_net = text.index("### 1.1 `buy.support_reserve_net`")
+    buy_lane_yaml = text.index("# playbook-machine-readable: buy lane")
+
+    assert negative_recording < reserve_net < buy_lane_yaml
+
+
+def test_reserve_net_playbook_repeats_machine_policy_priority_contract() -> None:
+    text = _PLAYBOOK_PATH.read_text(encoding="utf-8")
+    reserve_net = text.index("### 1.1 `buy.support_reserve_net`")
+    buy_lane_yaml = text.index("# playbook-machine-readable: buy lane")
+    section = text[reserve_net:buy_lane_yaml]
+
+    for requirement in (
+        "이미 active/resting인 동일 symbol을 먼저 dedupe한다.",
+        "첫 슬롯은 eligible 신규 후보에 우선 배정한다.",
+        "R-931 재심사 PASS와 Q4의 `A_limit(10%)` 완전충족",
+        "`strong > moderate`, `3-source > 2-source`",
+        "완전 동률이면 신규가 물타기보다 먼저다.",
+        "`A_limit<=0` (already target met) is\n   **NO_ORDER**",
+    ):
+        assert requirement in section

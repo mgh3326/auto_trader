@@ -42,6 +42,37 @@ description: 체결(fill) 이벤트, 특히 매도 체결 후 현금 재배치 �
 - 남은 rung(미체결 주문) 가정이 여전히 유효한가? (지정가, 노트, 손절선, max_action)
 - 운영자가 남은 주문을 **pause / tighten / leave** 중 어떻게 해야 하는가? 그 근거는 무엇인가?
 
+### 분기 C — `buy.support_reserve_net` confirmed fill (operator §45/§46)
+
+이 분기는 **confirmed broker fill** 이고, 해당 주문이 동일 policy version의
+`buy.support_reserve_net` 티어였다는 주문/제안 증거가 있을 때만 적용한다. 가격 모양,
+심볼, 또는 추정 RSI로 티어를 추론하지 않는다. 귀속 증거가 없거나 주문 상태가
+unknown/ambiguous이면 `KEEP_RESERVED_AND_BLOCK`으로 결론 내리고 취소 대상이나 가용
+현금을 만들어내지 않는다.
+
+상태기계는 다음 순서를 바꾸지 않는다.
+
+```text
+confirmed broker fill
+→ account×currency triage lock (logical triage state only)
+→ support_reserve_net 신규 submit/rearm 즉시 FREEZE_NEW_SUBMITS
+→ 같은 reconcile batch의 연쇄 fill을 burst_key=[broker_account_id, currency, market_session]로 coalesce
+→ fresh positions/cash/open-orders 재조회
+→ 남은 reserve-net 주문별 cancel proposal draft 작성 (PROPOSAL_REQUIRES_APPROVAL)
+→ 운영자 승인
+→ broker CANCELLED/terminal 증거 확인
+→ 다음 거래 세션 + fresh policy table에서만 DAY 후보 재생성
+```
+
+- 이 커맨드는 lock을 DB에 쓰거나 broker 상태를 바꾸지 않는다. `FREEZE_NEW_SUBMITS` /
+  `KEEP_RESERVED_AND_BLOCK`은 다음 승인·제안 소비자에게 남기는 명시적 트리아지 결론이다.
+- draft마다 broker account, currency, market session, target order, `required_cash`,
+  fresh-read timestamp, policy version/content hash, 그리고 `cash_reservation=KEEP`을
+  적는다. **cancel proposal은 broker cancellation이 아니다.** 운영자 승인 뒤에도
+  broker terminal 증거 전에는 현금을 풀지 않는다.
+- 자동 취소, same-session rearm, cancel proposal을 이유로 한 cash release는 모두 금지다.
+  Toss도 veto wiring 전에는 전량 사람 승인이다.
+
 ## 3. dry_run 미리보기 (read-only)
 
 - 체결 후 현금/포지션 변화를 위 기조 도구(get_cash_balance, get_portfolio_allocation) 데이터 기반으로 **머릿속에서** 시뮬레이션한다. 별도 시뮬레이션 도구 호출 없이 제안만 작성한다.
@@ -60,3 +91,6 @@ description: 체결(fill) 이벤트, 특히 매도 체결 후 현금 재배치 �
 
 - READ-ONLY 분석 + dry_run 제안까지만. place/modify/cancel/reconcile/report/watch mutation 금지(권한 차단됨).
 - 불확실하면 보수적으로(no-action) 제안하고 그 이유를 적는다. 현금 비중이 명확하면 redeploy 후보를 같이 제시하되, 마지막 결정은 운영자 몫으로 남긴다.
+- `buy.support_reserve_net`의 cancel proposal은 이 커맨드가 호출·저장하는 주문 제안이 아니라
+  approval-gated **draft**다. 자동 broker cancellation 및 현금 해제 구현은 이 ROB-755
+  read-only 계약의 범위 밖이다.

@@ -22,7 +22,25 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
     assert view["thresholds"]["portfolio.max_symbols_per_theme"]["value"] == 2
     assert view["thresholds"]["sell.loss_guard_min_multiple"]["value"] == 1.01
     assert "sell.rsi_place_min" not in view["thresholds"]
-    assert set(view["decision_rules"]) == set()
+    assert set(view["decision_rules"]) == {"buy.support_reserve_net"}
+    reserve = view["decision_rules"]["buy.support_reserve_net"]
+    assert reserve["discount_below_support_pct_range"] == [5, 10]
+    assert reserve["final_limit_distance_from_current_pct_range"] == [-15, -5]
+    assert reserve["fill_triage"]["same_session_rearm"] is False
+    assert reserve["priority_rules"]["allocation_order"] == [
+        "dedupe_active_or_resting_same_symbol",
+        "first_slot_eligible_new_candidate",
+        "add_secondary_pool_only_after_r931_pass_and_full_a_limit_10",
+    ]
+    assert reserve["priority_rules"]["same_intent_class_sort_order"] == [
+        "support_strength_desc",
+        "independent_support_source_count_desc",
+        "honest_upside_pct_desc",
+        "post_fill_sector_increase_asc",
+        "required_cash_asc",
+    ]
+    assert reserve["priority_rules"]["exact_tie_break"] == "NEW_BEFORE_ADD"
+    assert reserve["add_candidate"]["a_limit_lte_zero"] == "NO_ORDER"
 
 
 def test_get_policy_for_sell_lane_filters_thresholds():

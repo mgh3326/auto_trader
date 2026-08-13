@@ -2,9 +2,9 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-08-12.1"
-captured_as_of: "2026-08-08"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off)"
+version: "2026-08-12.3"
+captured_as_of: "2026-08-12"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change)"
 
 authority:
   scope: judgment_policy_only
@@ -233,6 +233,113 @@ thresholds:
     semantics: minimum honest upside for a candidate
 
 decision_rules:
+  # Operator §45/§46. This is a policy/consumer contract only: it neither
+  # creates a proposal nor calls a broker. The Q1/Q2/Q3/Q4 literals below are
+  # intentionally kept field-for-field, with supporting accounting and
+  # prohibition fields making their non-negotiable semantics explicit.
+  buy.support_reserve_net:
+    lanes: [buy]
+    semantics: >-
+      Advisory reserve-net tier for candidates that pass every regular discovery
+      condition except RSI failure or absence. Existing regular-discovery
+      candidates retain buy.deep_limit_pct_range; no candidate may receive both
+      tiers. No runtime relaxation is permitted when the candidate set is empty.
+    # Q1 — deep-only relaxation gate (literal)
+    regular_discovery_precedence: true
+    eligible_only_when_regular_gate_failure: RSI_ONLY
+    rsi_gate: omitted_for_this_tier_only
+    support_strength_min: moderate
+    independent_support_source_count_min: 2
+    independent_support_source_families: [fib, bb_lower, volume_profile]
+    support_within_current_pct_max: 8
+    honest_upside_pct_min: 40
+    honest_upside_reference: decision_time_current_price
+    discount_below_support_pct_range: [5, 10]
+    final_limit_distance_from_current_pct_range: [-15, -5]
+    order_type: limit
+    tif: DAY
+    # Q1 supporting anchor contract: tick floor is calculated below support;
+    # a final current-price distance outside the inclusive band is excluded,
+    # never clamped into it.
+    anchor_price_formula: "tick_floor(S × (1-d))"
+    final_limit_distance_out_of_range: EXCLUDE
+    # Q2 — budget/concurrency (literal)
+    all_pending_buy_required_cash_hard_cap_pct: 90
+    tier_armed_required_cash_cap_pct: 50
+    max_owned_or_open_symbols_per_market: 2
+    max_active_orders_per_symbol: 1
+    max_symbols_per_sector_cluster: 1
+    unknown_sector: INELIGIBLE
+    auto_submit_notional:
+      krw: 200000
+      usd: 150
+    larger_notional_within_existing_band: HUMAN_APPROVAL_REQUIRED
+    daily_auto_cap_includes_all_buy_tiers: true
+    cash_reservation:
+      net_orderable: fresh_broker_orderable_cash_minus_same_account_currency_pending_required_cash
+      pending_required_cash_scope: not_yet_reached_broker
+      required_cash_primary: preview_estimated_value_plus_fee
+      required_cash_fallback: quantity_times_limit_price
+      broker_orderable_unavailable_or_error: FAIL_CLOSED
+      cancel_proposal_cash_reservation: KEEP_RESERVED_UNTIL_BROKER_TERMINAL_CONFIRMATION
+    # Q3 — confirmed-fill triage (literal). A future consumer may create the
+    # approval-gated proposal; this policy never authorizes automatic cancel.
+    fill_triage:
+      on_first_confirmed_fill: FREEZE_NEW_SUBMITS
+      cancellation_mode: PROPOSAL_REQUIRES_APPROVAL
+      broker_cancel_confirmation_required_before_releasing_cash: true
+      same_session_rearm: false
+      unknown_or_ambiguous_order_state: KEEP_RESERVED_AND_BLOCK
+      burst_key: [broker_account_id, currency, market_session]
+    # Q4 — add-candidate constraints (literal)
+    add_candidate:
+      r931_review_required: PASS
+      r931_review_max_age_days: 7
+      policy_table_max_age_hours: 36
+      k_used: 0.10
+      sizing_price: proposed_limit_price
+      a_limit_lte_zero: NO_ORDER
+      partial_A_limit_fill: FORBIDDEN
+      max_add_symbols_per_market: 1
+      max_reserve_net_add_fills_per_symbol_per_policy_version: 1
+      same_day_rearm_after_fill: false
+      crash_day_averaging_exemption: false
+    # §Q2 lines 82–87 — allocation order for constrained armed cash. This
+    # fixes new-entry precedence before an add can consume the first slot.
+    priority_rules:
+      allocation_order:
+        - dedupe_active_or_resting_same_symbol
+        - first_slot_eligible_new_candidate
+        - add_secondary_pool_only_after_r931_pass_and_full_a_limit_10
+      same_symbol_active_or_resting: DEDUPE_FIRST
+      first_slot: ELIGIBLE_NEW_CANDIDATE_FIRST
+      add_candidate_rank: SECONDARY_CANDIDATE_POOL
+      add_candidate_r931_review_required: PASS
+      add_candidate_a_limit_10: FULLY_SATISFIED
+      max_add_symbols_per_market: 1
+      same_intent_class_sort_order:
+        - support_strength_desc
+        - independent_support_source_count_desc
+        - honest_upside_pct_desc
+        - post_fill_sector_increase_asc
+        - required_cash_asc
+      exact_tie_break: NEW_BEFORE_ADD
+    # §Q4 "must not" items 1–8, made machine-checkable as a contract.
+    prohibitions:
+      no_new_add_or_deep_limit_rung_overlap: true
+      aggregate_active_buy_by_beneficial_owner_across_accounts: true
+      fresh_cost_basis_quantity_and_A_limit_before_next_day_reissue: true
+      partial_A_limit_fill: FORBIDDEN
+      candidate_zero_runtime_gate_relaxation: FORBIDDEN
+      crash_day_averaging_exemption: false
+      cancel_proposal_is_not_broker_cancellation: true
+      unconfirmed_cancel_keeps_required_cash_reserved: true
+      market_order: FORBIDDEN
+      gtc: FORBIDDEN
+      multi_rung: FORBIDDEN
+      daily_regeneration: REQUIRED
+    toss_live_approval: HUMAN_APPROVAL_REQUIRED_UNTIL_VETO_WIRING
+
   sell.trim_preplace:
     lanes: [sell]
     semantics: >-
