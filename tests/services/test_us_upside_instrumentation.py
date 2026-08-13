@@ -30,27 +30,34 @@ def _payload(*, session_id: str = "2026-08-14-rth") -> dict[str, object]:
         "sources": [
             {
                 "source_id": "analyst-feed",
-                "upstream_total_known": 10,
+                "upstream_total_known": 1,
                 "upstream_total_unknown": False,
-                "returned_count": 3,
-                "timeout_or_error_count": 0,
-                "unqueried_count": 0,
-                "top_n_cap": 3,
-                "outside_top_n_count": 7,
-                "deduped_unique_count": 2,
-            },
-            {
-                "source_id": "support-feed",
-                "upstream_total_known": 2,
-                "upstream_total_unknown": False,
-                "returned_count": 2,
+                "returned_count": 1,
                 "timeout_or_error_count": 0,
                 "unqueried_count": 0,
                 "top_n_cap": None,
                 "outside_top_n_count": 0,
-                "deduped_unique_count": 2,
+                "deduped_unique_count": 1,
+            },
+            {
+                "source_id": "support-feed",
+                "upstream_total_known": 1,
+                "upstream_total_unknown": False,
+                "returned_count": 1,
+                "timeout_or_error_count": 0,
+                "unqueried_count": 0,
+                "top_n_cap": None,
+                "outside_top_n_count": 0,
+                "deduped_unique_count": 1,
             },
         ],
+        "candidate_array_coverage": {
+            "deduped_unique_count": 1,
+            "recorded_candidate_count": 1,
+            "truncated_candidate_count": 0,
+            "candidate_array_cap": None,
+            "candidate_truncation_reason": None,
+        },
         "candidates": [
             {
                 "symbol": "ACME",
@@ -175,14 +182,21 @@ def test_record_preserves_every_q4_field_and_is_read_only():
     assert record.input_hash == "d" * 64
     assert source.model_dump() == {
         "source_id": "analyst-feed",
-        "upstream_total_known": 10,
+        "upstream_total_known": 1,
         "upstream_total_unknown": False,
-        "returned_count": 3,
+        "returned_count": 1,
         "timeout_or_error_count": 0,
         "unqueried_count": 0,
-        "top_n_cap": 3,
-        "outside_top_n_count": 7,
-        "deduped_unique_count": 2,
+        "top_n_cap": None,
+        "outside_top_n_count": 0,
+        "deduped_unique_count": 1,
+    }
+    assert record.candidate_array_coverage.model_dump() == {
+        "deduped_unique_count": 1,
+        "recorded_candidate_count": 1,
+        "truncated_candidate_count": 0,
+        "candidate_array_cap": None,
+        "candidate_truncation_reason": None,
     }
     assert candidate.matched_sources[0].model_dump() == {
         "source_id": "analyst-feed",
@@ -269,6 +283,13 @@ def test_serialized_jsonl_keeps_caps_and_hypothetical_touch_name(tmp_path: Path)
     }
     assert "hypothetical_limit_touch" in payload["candidates"][0]
     assert payload["candidates"][0]["hypothetical_limit_touch"]["limit_touched"]
+    assert payload["candidate_array_coverage"] == {
+        "deduped_unique_count": 1,
+        "recorded_candidate_count": 1,
+        "truncated_candidate_count": 0,
+        "candidate_array_cap": None,
+        "candidate_truncation_reason": None,
+    }
 
 
 def test_dominant_constraint_rule_is_bounded_and_never_a_tuning_signal():
@@ -365,7 +386,10 @@ def test_unknown_timeout_or_unqueried_coverage_has_no_threshold_conclusion():
         "upstream_total_unknown_source_count": 1,
         "timeout_or_error_count": 1,
         "unqueried_count": 2,
-        "outside_top_n_count": 7,
+        "outside_top_n_count": 0,
+        "candidate_array_truncated_count": 0,
+        "candidate_array_cap": None,
+        "candidate_truncation_reason": None,
         "candidate_consensus_status_counts": {
             "value": 1,
             "missing": 0,
@@ -383,13 +407,103 @@ def test_unknown_timeout_or_unqueried_coverage_has_no_threshold_conclusion():
     )
 
 
-def test_silent_cap_or_missing_census_is_rejected_before_recording():
+def test_missing_top_n_census_is_rejected_before_recording():
     payload = _payload()
     source = payload["sources"][0]
     assert isinstance(source, dict)
     source.pop("outside_top_n_count")
 
     with pytest.raises(ValidationError, match="outside_top_n_count"):
+        InstrumentationInput.model_validate(payload)
+
+
+def test_top_n_capped_runbook_capture_is_coverage_insufficient(tmp_path: Path, capsys):
+    fixture = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures"
+        / "us_upside_instrumentation"
+        / "runbook_top_n_capped_capture.json"
+    )
+    output = tmp_path / "top-n-capped.jsonl"
+
+    assert main(["record", "--input", str(fixture), "--output", str(output)]) == 0
+
+    stdout = capsys.readouterr().out
+    record = load_session_jsonl(output)[0]
+    assert record.coverage.outside_top_n_count == 7
+    assert record.coverage.coverage_complete is False
+    assert (
+        record.interpretation.conclusion
+        == "coverage_insufficient_no_threshold_conclusion"
+    )
+    assert '"coverage_complete": false' in stdout
+    assert "coverage_insufficient_no_threshold_conclusion" in stdout
+
+
+def test_known_source_total_requires_every_loss_to_be_declared():
+    payload = _payload()
+    source = payload["sources"][0]
+    assert isinstance(source, dict)
+    source["upstream_total_known"] = 10
+
+    with pytest.raises(ValidationError, match="declared non-returned count"):
+        InstrumentationInput.model_validate(payload)
+
+
+def test_candidate_array_truncation_is_recorded_and_blocks_threshold_conclusion():
+    payload = _payload()
+    coverage = payload["candidate_array_coverage"]
+    assert isinstance(coverage, dict)
+    coverage.update(
+        {
+            "deduped_unique_count": 4,
+            "recorded_candidate_count": 1,
+            "truncated_candidate_count": 3,
+            "candidate_array_cap": 1,
+            "candidate_truncation_reason": "bounded_candidate_array",
+        }
+    )
+
+    record = evaluate_instrumentation(
+        InstrumentationInput.model_validate(payload), input_hash="d" * 64
+    )
+
+    assert record.candidate_array_coverage.truncated_candidate_count == 3
+    assert record.candidate_array_coverage.candidate_truncation_reason == (
+        "bounded_candidate_array"
+    )
+    assert record.coverage.candidate_array_truncated_count == 3
+    assert record.coverage.coverage_complete is False
+    assert (
+        record.interpretation.conclusion
+        == "coverage_insufficient_no_threshold_conclusion"
+    )
+
+
+def test_candidate_array_unrecorded_loss_is_rejected_before_recording():
+    payload = _payload()
+    coverage = payload["candidate_array_coverage"]
+    assert isinstance(coverage, dict)
+    coverage["deduped_unique_count"] = 4
+
+    with pytest.raises(ValidationError, match="truncated_candidate_count"):
+        InstrumentationInput.model_validate(payload)
+
+
+def test_candidate_array_truncation_requires_cap_and_reason():
+    payload = _payload()
+    coverage = payload["candidate_array_coverage"]
+    assert isinstance(coverage, dict)
+    coverage.update(
+        {
+            "deduped_unique_count": 2,
+            "truncated_candidate_count": 1,
+            "candidate_array_cap": None,
+            "candidate_truncation_reason": None,
+        }
+    )
+
+    with pytest.raises(ValidationError, match="candidate_array_cap"):
         InstrumentationInput.model_validate(payload)
 
 
@@ -400,6 +514,18 @@ def test_missing_candidate_evidence_is_rejected_instead_of_defaulting_to_unknown
     candidate.pop("current_price")
 
     with pytest.raises(ValidationError, match="current_price"):
+        InstrumentationInput.model_validate(payload)
+
+
+def test_matched_source_rank_must_be_declared_even_when_unknown():
+    payload = _payload()
+    candidate = payload["candidates"][0]
+    assert isinstance(candidate, dict)
+    matches = candidate["matched_sources"]
+    assert isinstance(matches, list)
+    matches[0].pop("rank")
+
+    with pytest.raises(ValidationError, match="rank"):
         InstrumentationInput.model_validate(payload)
 
 
@@ -421,8 +547,46 @@ def test_three_sessions_with_zero_b30_and_c25_only_diagnose_contracts():
     assert reading.a40_shadow_count == 0
     assert reading.b30_shadow_count == 0
     assert reading.c25_shadow_count == 0
+    assert reading.all_sessions_coverage_complete is True
+    assert reading.conclusion == "three_session_reading_complete"
     assert reading.next_step == "diagnose_target_coverage_or_support_source_contract"
     assert reading.threshold_tuning_permitted is False
+
+
+def test_three_session_reading_propagates_any_incomplete_coverage_to_unknown():
+    records = []
+    for index in range(3):
+        payload = _payload(session_id=f"2026-08-{14 + index}-rth")
+        if index == 1:
+            source = payload["sources"][0]
+            assert isinstance(source, dict)
+            source.update(
+                {
+                    "upstream_total_known": 10,
+                    "returned_count": 3,
+                    "top_n_cap": 3,
+                    "outside_top_n_count": 7,
+                    "deduped_unique_count": 1,
+                }
+            )
+        records.append(
+            evaluate_instrumentation(
+                InstrumentationInput.model_validate(payload), input_hash=str(index) * 64
+            )
+        )
+
+    reading = read_three_completed_sessions(records)
+
+    assert reading.all_sessions_coverage_complete is False
+    assert reading.conclusion == "coverage_insufficient_no_threshold_conclusion"
+    assert reading.next_step == "coverage_insufficient_no_threshold_conclusion"
+    assert reading.threshold_tuning_permitted is False
+    assert [coverage.coverage_complete for coverage in reading.session_coverage] == [
+        True,
+        False,
+        True,
+    ]
+    assert reading.session_coverage[1].outside_top_n_count == 7
 
 
 def test_three_session_read_rejects_a_mid_observation_code_change():
@@ -494,6 +658,15 @@ def test_cli_appends_records_and_reads_exactly_three(tmp_path: Path, capsys):
     stdout = capsys.readouterr().out
     assert "continue_bounded_cohort_reading_without_tuning" in stdout
     assert '"threshold_tuning_permitted": false' in stdout
+
+
+def test_record_rejects_duplicate_session_id_in_one_jsonl_artifact(tmp_path: Path):
+    output = tmp_path / "sessions.jsonl"
+
+    append_session_jsonl(output, _record())
+
+    with pytest.raises(ValueError, match="already contains this session_id"):
+        append_session_jsonl(output, _record())
 
 
 def test_input_rejects_unknown_source_reference():

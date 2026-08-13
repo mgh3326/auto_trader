@@ -37,8 +37,9 @@ present in the JSON when its value is not known.
 | --- | --- | --- |
 | Contract, policy, and code SHA | `contract_sha`, `policy_sha`, `code_sha` | `InstrumentationInput`, `SessionRecord` |
 | Corpus as-of, decision cutoff, universe/input hashes | `source_corpus_as_of`, `decision_cutoff`, `universe_hash`, derived `input_hash` | `InstrumentationInput`, CLI `_load_snapshot` |
-| Per-source upstream known/unknown total, returned, timeout/error, outside top-N, deduped unique | `sources[*].upstream_total_known`, `upstream_total_unknown`, `returned_count`, `timeout_or_error_count`, `outside_top_n_count`, `deduped_unique_count` | `SourceCoverage` |
+| Per-source upstream known/unknown total, returned, timeout/error, top-N cap/outside, deduped unique | `sources[*].upstream_total_known`, `upstream_total_unknown`, `returned_count`, `timeout_or_error_count`, `unqueried_count`, `top_n_cap`, `outside_top_n_count`, `deduped_unique_count` | `SourceCoverage` |
 | Explicit unqueried count | `sources[*].unqueried_count` | `SourceCoverage` / `CoverageSummary` |
+| Global post-dedupe candidate census and candidate-array truncation | `candidate_array_coverage.deduped_unique_count`, `recorded_candidate_count`, `truncated_candidate_count`, `candidate_array_cap`, `candidate_truncation_reason` | `CandidateArrayCoverage`, `CoverageSummary` |
 | Matched source IDs and ranks | `candidates[*].matched_sources[*].source_id`, `rank` | `MatchedSource` |
 | Fresh/stale/unknown and target evidence | `freshness`, `consensus_status`, `target_honesty`, `target_as_of`, `analyst_count` | `CandidateSnapshot` |
 | Current price, target, upside, RSI | `current_price`, `target`, derived `upside_pct`, `rsi` | `CandidateSnapshot`, `CandidateInstrumentationRecord` |
@@ -50,9 +51,20 @@ present in the JSON when its value is not known.
 
 `SourceCoverage` is intentionally strict: a source must say whether its total
 is known, and it must always provide numeric timeout/error, unqueried, and
-outside-top-N counts. A top-N cap is represented by `top_n_cap`; when absent,
-`outside_top_n_count` must be zero. This makes bounded scope visible instead
-of silently dropping it.
+outside-top-N counts. When the upstream total is known, it must equal
+`returned_count + timeout_or_error_count + unqueried_count +
+outside_top_n_count`; those loss categories are therefore disjoint and no
+bounded-read remainder can disappear. A top-N cap is represented by
+`top_n_cap`; when absent, `outside_top_n_count` must be zero.
+
+`CandidateArrayCoverage` performs the same explicit accounting after global
+dedupe: `deduped_unique_count` must equal `recorded_candidate_count +
+truncated_candidate_count`. A positive truncation count requires both the
+candidate-array cap and a non-empty reason. Any nonzero top-N-outside or
+candidate-array-truncated count makes `coverage_complete=false`.
+
+Every matched source object must include `rank`; use `null` when an upstream
+source cannot provide a rank rather than omitting the field.
 
 `hypothetical_limit_touch` is an always-present nullable field; its object is
 optional and is an observation only. When present it has `next_session_high`,
@@ -87,6 +99,13 @@ than omitted:
       "deduped_unique_count": 2
     }
   ],
+  "candidate_array_coverage": {
+    "deduped_unique_count": 2,
+    "recorded_candidate_count": 1,
+    "truncated_candidate_count": 1,
+    "candidate_array_cap": 1,
+    "candidate_truncation_reason": "bounded_candidate_array"
+  },
   "candidates": [
     {
       "symbol": "EXAMPLE",
@@ -128,10 +147,41 @@ than omitted:
 `policy_sha`, `code_sha`, and `universe_hash` above are placeholders only in
 the documentation. A real capture must use their exact decision-time values.
 
+### Capped top-N example: required coverage result
+
+`tests/fixtures/us_upside_instrumentation/runbook_top_n_capped_capture.json`
+is an executable example with `upstream_total_known=10`, `top_n_cap=3`,
+`returned_count=3`, and `outside_top_n_count=7`. Run it from the repository
+root with a disposable local path:
+
+```bash
+uv run python -m scripts.run_us_upside_instrumentation record \
+  --input tests/fixtures/us_upside_instrumentation/runbook_top_n_capped_capture.json \
+  --output /tmp/us-upside-top-n-capped.jsonl
+```
+
+Its stdout must contain `"coverage_complete": false` and
+`coverage_insufficient_no_threshold_conclusion`. The seven records outside
+the top-N bound must never yield a threshold conclusion.
+
 ## Fixed reading rules
 
 `_interpret_session` and `read_three_completed_sessions` encode these rules;
 the tests cover their decision branches.
+
+The frozen §Q4 wording is retained here without a threshold-change action:
+
+```text
+1. `passes_all_non_upside_gates > 0` 이고, 그 집합의 consensus 상태가 모두 value/missing/stale/error
+   로 종결됐고 timeout 이 없는데 `>=40 == 0` 이며 `25~40 > 0` 이면
+   → 해당 bounded cohort 에서 upside 가 지배 제약이다
+2. upside 전에 survivors 가 0 이면 지배 제약은 source·freshness·support 등 앞단이다
+3. 40/99 처럼 timeout·미조회·unknown 이 남으면 coverage 불충분이며 threshold 에 관해 모름이다
+4. FAN-OUT 으로 unique fresh 후보가 늘어도 성과나 alpha 가 개선됐다는 뜻은 아니다
+5. 3세션 뒤 B/C 가 0 이어도 25 아래로 더 내리지 않는다 — target coverage 나 support-source
+   계약을 먼저 진단한다
+3세션 후보 수나 hypothetical touch 로 threshold 를 튜닝하지 마라
+```
 
 1. If `passes_all_non_upside_gates > 0`, every survivor consensus state is
    `value`, `missing`, `stale`, or `error`, no timeout remains, `>=40` is zero,
@@ -139,15 +189,33 @@ the tests cover their decision branches.
    constraint in that bounded cohort.
 2. If there are zero survivors before the upside check, the constraint is an
    earlier source, freshness, support, or other declared non-upside gate.
-3. Any timeout, unqueried state, or unknown coverage produces
+3. Any timeout, unqueried state, unknown coverage, top-N-outside count, or
+   candidate-array truncation produces
    `coverage_insufficient_no_threshold_conclusion`; it does not answer a
-   threshold question.
+   threshold question. In the three-session reader, one incomplete session
+   produces the same result for the aggregate: no upside-dominant or
+   non-dominant conclusion is available.
 4. A larger unique-fresh result from source fan-out is not evidence of
    performance or alpha. The record therefore fixes
    `fanout_performance_or_alpha_inferred=false`.
 5. Once exactly three sessions are read, zero B30 and C25 counts lead only to
    `diagnose_target_coverage_or_support_source_contract`; the reader has no
    below-25 action or threshold-change output.
+
+## Truncation and coverage census
+
+Every bounded-read or aggregation loss point is declared below. A capture or
+reading with any unaccounted point is rejected or remains
+coverage-insufficient; none is treated as a complete cohort.
+
+| Boundary | Required numeric / state record | Enforcement | Coverage effect |
+| --- | --- | --- | --- |
+| Upstream collection outside this repository | `upstream_total_known` or `upstream_total_unknown` for every source | `SourceCoverage` requires exactly one state | Unknown total makes coverage incomplete |
+| Per-source top-N bound | `top_n_cap`, `outside_top_n_count` | Known totals must account for every record; no cap permits no outside count | Any outside count makes coverage incomplete |
+| Post-dedupe candidate array | `deduped_unique_count`, `recorded_candidate_count`, `truncated_candidate_count`, `candidate_array_cap`, `candidate_truncation_reason` | `CandidateArrayCoverage` requires exact accounting, cap, and reason | Any truncation makes coverage incomplete |
+| Timeout or error | `timeout_or_error_count` | Required per source and aggregated in `CoverageSummary` | Any count makes coverage incomplete |
+| Not queried | `unqueried_count` | Required per source and aggregated in `CoverageSummary` | Any count makes coverage incomplete |
+| Three-session aggregate | `session_coverage[*]`, `all_sessions_coverage_complete` | `read_three_completed_sessions` carries every session's coverage state | One incomplete session terminates as coverage-insufficient |
 
 ## Manual three-session procedure
 
@@ -160,7 +228,9 @@ repeat once per next two completed US regular sessions.
    source snapshot under an operator-owned directory, for example
    `/Users/mgh3326/work/us-upside-captures/20260814-2235.json`. The upstream
    process must be read-only. It must populate every source census field,
-   every candidate field in the table above, and the three SHA fields.
+   the global post-dedupe candidate census (including any candidate-array
+   cap/loss/reason), every recorded candidate field in the table above, and
+   the three SHA fields.
 2. Before recording, verify the contract and capture provenance without
    changing anything:
 
@@ -185,10 +255,12 @@ repeat once per next two completed US regular sessions.
    The only write is the explicitly named local JSONL output. Save its stdout
    next to the session evidence.
 4. Stop the collection immediately if a required JSON field, SHA, source
-   count, cap count, or validation result is absent or malformed. If a source
-   genuinely has an unknown total, timeout/error count, or unqueried count,
-   record that state explicitly instead of substituting a value; the log will
-   then be coverage-insufficient and must not be used to infer a threshold.
+   count, top-N count, candidate-array count, cap, truncation reason, or
+   validation result is absent or malformed. If a source genuinely has an
+   unknown total, timeout/error count, unqueried count, top-N-outside count,
+   or candidate-array truncation, record that state explicitly instead of
+   substituting a value; the log will then be coverage-insufficient and must
+   not be used to infer a threshold.
 5. Do not add following-session high/low data until it exists. If it is later
    available, it may be captured as `hypothetical_limit_touch` in a subsequent
    immutable observation record. Do not turn that observation into an
@@ -202,16 +274,24 @@ repeat once per next two completed US regular sessions.
 
    Read each session with Rules 1–4, then use the three-session output only
    for Rule 5. The reader requires one contract, policy, and code SHA across
-   all three records. Never use candidate counts or touch observations to
-   choose a threshold.
+   all three records. If even one session reports incomplete coverage, the
+   aggregate terminates as `coverage_insufficient_no_threshold_conclusion`.
+   Never use candidate counts or touch observations to choose a threshold.
+
+   Keep exactly one line per distinct `session_id` in this artifact. The
+   recorder rejects a duplicate `session_id`; if an input correction is
+   needed, preserve the first artifact and use a new explicitly named output
+   for the corrected observation. `read-three` deliberately rejects any file
+   with a count other than three rather than selecting lines silently.
 
 ## Stop conditions and scope boundary
 
-- A validation error, contract SHA mismatch, missing cap census, invalid
-  JSONL, source access failure, or any attempted connection to a runtime
-  mutation surface is a stop condition.
-- An explicit unknown/timeout/unqueried state is not silently repaired; it is
-  recorded and makes the threshold conclusion unavailable.
+- A validation error, contract SHA mismatch, missing top-N or candidate-array
+  census, invalid JSONL, source access failure, or any attempted connection to
+  a runtime mutation surface is a stop condition.
+- An explicit unknown/timeout/unqueried/top-N-outside/candidate-array-loss
+  state is not silently repaired; it is recorded and makes the threshold
+  conclusion unavailable.
 - The command accepts no credentials and has no broker/account, proposal,
   eligibility, database, scheduler, deployment, or production-policy path.
 - The US collection must not be implemented by extending the KR-only fan-out

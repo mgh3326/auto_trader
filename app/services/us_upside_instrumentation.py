@@ -67,12 +67,74 @@ class SourceCoverage(StrictModel):
             raise ValueError(
                 "outside_top_n_count must be zero when no top_n_cap is declared"
             )
+        if self.top_n_cap is not None and self.returned_count > self.top_n_cap:
+            raise ValueError("returned_count cannot exceed top_n_cap")
+        if self.deduped_unique_count > self.returned_count:
+            raise ValueError("deduped_unique_count cannot exceed returned_count")
+        if self.upstream_total_known is not None:
+            accounted_count = (
+                self.returned_count
+                + self.timeout_or_error_count
+                + self.unqueried_count
+                + self.outside_top_n_count
+            )
+            if accounted_count != self.upstream_total_known:
+                raise ValueError(
+                    "upstream_total_known must equal returned_count plus every "
+                    "declared non-returned count"
+                )
         return self
 
 
 class MatchedSource(StrictModel):
     source_id: str = Field(min_length=1)
-    rank: int | None = Field(default=None, ge=1)
+    rank: int | None = Field(..., ge=1)
+
+
+class CandidateArrayCoverage(StrictModel):
+    """Explicit global-dedupe to serialized-candidate-array accounting."""
+
+    deduped_unique_count: int = Field(ge=0)
+    recorded_candidate_count: int = Field(ge=0)
+    truncated_candidate_count: int = Field(ge=0)
+    candidate_array_cap: int | None = Field(..., ge=1)
+    candidate_truncation_reason: str | None = Field(...)
+
+    @model_validator(mode="after")
+    def _require_declared_candidate_truncation(self) -> CandidateArrayCoverage:
+        if (
+            self.deduped_unique_count
+            != self.recorded_candidate_count + self.truncated_candidate_count
+        ):
+            raise ValueError(
+                "deduped_unique_count must equal recorded_candidate_count plus "
+                "truncated_candidate_count"
+            )
+        if (
+            self.candidate_array_cap is not None
+            and self.recorded_candidate_count > self.candidate_array_cap
+        ):
+            raise ValueError(
+                "recorded_candidate_count cannot exceed candidate_array_cap"
+            )
+        if self.truncated_candidate_count:
+            if self.candidate_array_cap is None:
+                raise ValueError(
+                    "candidate_array_cap is required when candidates are truncated"
+                )
+            if not self.candidate_truncation_reason or not (
+                self.candidate_truncation_reason.strip()
+            ):
+                raise ValueError(
+                    "candidate_truncation_reason is required when candidates are "
+                    "truncated"
+                )
+        elif self.candidate_truncation_reason is not None:
+            raise ValueError(
+                "candidate_truncation_reason must be null when no candidates are "
+                "truncated"
+            )
+        return self
 
 
 class TickHandling(StrictModel):
@@ -166,6 +228,7 @@ class InstrumentationInput(StrictModel):
     decision_cutoff: str = Field(min_length=1)
     universe_hash: str = Field(min_length=12)
     sources: tuple[SourceCoverage, ...] = Field(min_length=1)
+    candidate_array_coverage: CandidateArrayCoverage
     candidates: tuple[CandidateSnapshot, ...]
 
     @field_validator("contract_sha")
@@ -181,6 +244,13 @@ class InstrumentationInput(StrictModel):
         if len(source_ids) != len(set(source_ids)):
             raise ValueError("sources must have unique source_id values")
         known_source_ids = set(source_ids)
+        if self.candidate_array_coverage.recorded_candidate_count != len(
+            self.candidates
+        ):
+            raise ValueError(
+                "candidate_array_coverage.recorded_candidate_count must equal the "
+                "serialized candidates array length"
+            )
         for candidate in self.candidates:
             for match in candidate.matched_sources:
                 if match.source_id not in known_source_ids:
@@ -260,6 +330,9 @@ class CoverageSummary(StrictModel):
     timeout_or_error_count: int = Field(ge=0)
     unqueried_count: int = Field(ge=0)
     outside_top_n_count: int = Field(ge=0)
+    candidate_array_truncated_count: int = Field(ge=0)
+    candidate_array_cap: int | None
+    candidate_truncation_reason: str | None
     candidate_consensus_status_counts: dict[ConsensusState, int]
     coverage_complete: bool
 
@@ -304,6 +377,7 @@ class SessionRecord(StrictModel):
     input_hash: str
     frozen_arms: tuple[ArmDefinition, ...]
     sources: tuple[SourceCoverage, ...]
+    candidate_array_coverage: CandidateArrayCoverage
     candidates: tuple[CandidateInstrumentationRecord, ...]
     arm_shadow_counts: dict[Literal["A40", "B30", "C25"], int]
     coverage: CoverageSummary
@@ -311,12 +385,35 @@ class SessionRecord(StrictModel):
     read_only_safety: ReadOnlySafety
 
 
+class SessionCoverageRollup(StrictModel):
+    session_id: str
+    coverage_complete: bool
+    upstream_total_unknown_source_count: int = Field(ge=0)
+    timeout_or_error_count: int = Field(ge=0)
+    unqueried_count: int = Field(ge=0)
+    outside_top_n_count: int = Field(ge=0)
+    candidate_array_truncated_count: int = Field(ge=0)
+    candidate_array_cap: int | None
+    candidate_truncation_reason: str | None
+
+
 class ThreeSessionReading(StrictModel):
     session_ids: tuple[str, str, str]
+    all_sessions_coverage_complete: bool
+    session_coverage: tuple[
+        SessionCoverageRollup,
+        SessionCoverageRollup,
+        SessionCoverageRollup,
+    ]
+    conclusion: Literal[
+        "coverage_insufficient_no_threshold_conclusion",
+        "three_session_reading_complete",
+    ]
     a40_shadow_count: int = Field(ge=0)
     b30_shadow_count: int = Field(ge=0)
     c25_shadow_count: int = Field(ge=0)
     next_step: Literal[
+        "coverage_insufficient_no_threshold_conclusion",
         "diagnose_target_coverage_or_support_source_contract",
         "continue_bounded_cohort_reading_without_tuning",
     ]
@@ -452,6 +549,10 @@ def _coverage_summary(snapshot: InstrumentationInput) -> CoverageSummary:
         source.upstream_total_unknown for source in snapshot.sources
     )
     candidate_unknown_count = consensus_counts["unknown"]
+    outside_top_n_count = sum(source.outside_top_n_count for source in snapshot.sources)
+    candidate_array_truncated_count = (
+        snapshot.candidate_array_coverage.truncated_candidate_count
+    )
 
     timeout_or_error_count = (
         source_timeout_or_error_count + candidate_timeout_or_error_count
@@ -462,13 +563,18 @@ def _coverage_summary(snapshot: InstrumentationInput) -> CoverageSummary:
         or candidate_unknown_count
         or timeout_or_error_count
         or unqueried_count
+        or outside_top_n_count
+        or candidate_array_truncated_count
     )
     return CoverageSummary(
         upstream_total_unknown_source_count=unknown_source_count,
         timeout_or_error_count=timeout_or_error_count,
         unqueried_count=unqueried_count,
-        outside_top_n_count=sum(
-            source.outside_top_n_count for source in snapshot.sources
+        outside_top_n_count=outside_top_n_count,
+        candidate_array_truncated_count=candidate_array_truncated_count,
+        candidate_array_cap=snapshot.candidate_array_coverage.candidate_array_cap,
+        candidate_truncation_reason=(
+            snapshot.candidate_array_coverage.candidate_truncation_reason
         ),
         candidate_consensus_status_counts={
             status: consensus_counts[status]
@@ -518,8 +624,8 @@ def _interpret_session(
         return SessionInterpretation(
             conclusion="coverage_insufficient_no_threshold_conclusion",
             reason=(
-                "timeout, unqueried, or unknown coverage remains; threshold "
-                "conclusion is unavailable"
+                "top-N, candidate-array, timeout, unqueried, or unknown coverage "
+                "remains; threshold conclusion is unavailable"
             ),
             passes_all_non_upside_gates=len(survivors),
             survivor_consensus_statuses=survivor_statuses,
@@ -608,6 +714,7 @@ def evaluate_instrumentation(
         input_hash=input_hash,
         frozen_arms=FROZEN_ARMS,
         sources=snapshot.sources,
+        candidate_array_coverage=snapshot.candidate_array_coverage,
         candidates=tuple(candidate_records),
         arm_shadow_counts=arm_shadow_counts,
         coverage=coverage,
@@ -619,6 +726,13 @@ def evaluate_instrumentation(
 def append_session_jsonl(path: Path, record: SessionRecord) -> None:
     """Append one local log record to an explicitly selected output path."""
 
+    if path.exists() and any(
+        prior.session_id == record.session_id for prior in load_session_jsonl(path)
+    ):
+        raise ValueError(
+            "output already contains this session_id; preserve the existing record "
+            "and choose a new artifact for a correction"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as artifact:
         artifact.write(
@@ -646,6 +760,10 @@ def read_three_completed_sessions(
 
     if len(records) != 3:
         raise ValueError("exactly three completed session records are required")
+    if len({record.session_id for record in records}) != 3:
+        raise ValueError(
+            "three-session reading requires three unique session_id values"
+        )
     if len({record.contract_sha for record in records}) != 1:
         raise ValueError("three-session reading requires one frozen contract_sha")
     if len({record.policy_sha for record in records}) != 1:
@@ -657,6 +775,42 @@ def read_three_completed_sessions(
         arm_id: sum(record.arm_shadow_counts[arm_id] for record in records)
         for arm_id in ("A40", "B30", "C25")
     }
+    session_coverage = tuple(
+        SessionCoverageRollup(
+            session_id=record.session_id,
+            coverage_complete=record.coverage.coverage_complete,
+            upstream_total_unknown_source_count=(
+                record.coverage.upstream_total_unknown_source_count
+            ),
+            timeout_or_error_count=record.coverage.timeout_or_error_count,
+            unqueried_count=record.coverage.unqueried_count,
+            outside_top_n_count=record.coverage.outside_top_n_count,
+            candidate_array_truncated_count=(
+                record.coverage.candidate_array_truncated_count
+            ),
+            candidate_array_cap=record.coverage.candidate_array_cap,
+            candidate_truncation_reason=(record.coverage.candidate_truncation_reason),
+        )
+        for record in records
+    )
+    all_sessions_coverage_complete = all(
+        coverage.coverage_complete for coverage in session_coverage
+    )
+    if not all_sessions_coverage_complete:
+        return ThreeSessionReading(
+            session_ids=(
+                records[0].session_id,
+                records[1].session_id,
+                records[2].session_id,
+            ),
+            all_sessions_coverage_complete=False,
+            session_coverage=session_coverage,
+            conclusion="coverage_insufficient_no_threshold_conclusion",
+            a40_shadow_count=counts["A40"],
+            b30_shadow_count=counts["B30"],
+            c25_shadow_count=counts["C25"],
+            next_step="coverage_insufficient_no_threshold_conclusion",
+        )
     next_step: Literal[
         "diagnose_target_coverage_or_support_source_contract",
         "continue_bounded_cohort_reading_without_tuning",
@@ -671,6 +825,9 @@ def read_three_completed_sessions(
             records[1].session_id,
             records[2].session_id,
         ),
+        all_sessions_coverage_complete=True,
+        session_coverage=session_coverage,
+        conclusion="three_session_reading_complete",
         a40_shadow_count=counts["A40"],
         b30_shadow_count=counts["B30"],
         c25_shadow_count=counts["C25"],
