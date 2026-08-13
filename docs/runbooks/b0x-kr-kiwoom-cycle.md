@@ -5,9 +5,10 @@
 
 기본 지위는 **`OBSERVATION_DERIVATION_ONLY`**(preview)다. `--confirm` 단독은
 **`ACCEPTANCE_ONLY`** — 기존의 1건 submit→cancel→reconcile 검증 레버다.
-`--interim-ordering --confirm` 을 함께 명시한 경우만 **`INTERIM_ORDERING`** 으로
-전환해 envelope 파생 **매수** 전건을 DAY 주문으로 남긴다. 매도는 기본 ON인
-매수 전용 게이트가 제출 경계에서 차단한다. 위험한 쪽은 기본값이 아니다.
+`--ordering --confirm` 을 함께 명시한 경우만 독립 모드인 **`ORDERING`** 으로
+전환한다. 정책표가 결정적으로 파생한 주문만 §4 cap 안에서 DAY로 제출하고,
+`ACCEPTANCE_ONLY` 의 즉시취소를 상속하지 않는다. 매도는 fresh broker fill로
+증명된 자기 귀속 수량까지만 가능하다. 위험한 쪽은 기본값이 아니다.
 
 ---
 
@@ -20,7 +21,7 @@
 `scripts/b0x/kr/mock.py`(kis) 는 **무접촉**이다. kis_mock 계좌 참가가 복구되면
 그 레인은 이 PR 이전과 완전히 동일하게 동작해야 한다.
 
-## 2. 계좌맵 (operator `09c3fc1`, PR #37)
+## 2. 계좌맵 (operator `a43e36e`, PR #39; merge 대기)
 
 | 표면 | 키 | 값 |
 | --- | --- | --- |
@@ -36,9 +37,10 @@
 - 배타성 확보 = **운영 조치**(KR-B1 비활성 확인). 코드가 제공하는 것은
   *탐지*뿐이다: 당일 자기 외 주문 흔적이 있으면 preflight 가 fail-closed
   (`CONTAMINATED_foreign_same_day_orders_kr_b1_active_suspect`).
-- 이 계좌에는 `kis_mock` 의 `KISMockWriterLease` 같은 durable lease 가 **없다**.
-  아티팩트의 `writer_lease.acquired` 는 `false` 로 기록되며, 이 레인은 lease 를
-  가졌다고 주장하지 않는다.
+- ORDERING 은 redacted account fingerprint를 키로 한 host-local `fcntl` writer
+  lease를 추가로 잡는다. 이는 다른 host/외부 writer를 대신하지 않으므로, **매
+  mutation 직전** kt00007의 pending과 당일 foreign trace를 같은 답에서 다시
+  만들고, lease 상실·조회 실패·foreign 흔적이면 그 뒤 주문은 0이다.
 
 ## 3. 안전 경계
 
@@ -51,10 +53,13 @@
 | 세션 | KRX 정규장만 (`is_krx_regular_session`, XKRX 캘린더) |
 | envelope | §4 KR 열 **그대로 재사용** (`load_envelope("kr")`). 레인 전용 envelope 상수 없음 — 테스트가 강제 |
 | Acceptance 1건 한정 | `ACCEPTANCE_SUBMISSION_LIMIT = 1`, CLI/env override 없음. `--confirm` 단독에만 적용 |
-| Interim 매수 전건 제출 | `--interim-ordering --confirm` 에서만 envelope 파생 매수 leg 전건 제출. 별도 제출 상한/CLI/env override 없음 — §4 30만·동시 10·일신규 3이 파생 단계에서 계속 강제 |
-| Interim 매수 전용 | 매도 leg는 파생되더라도 제출 경계의 `interim_buy_only_sell_gate`가 차단하고 artifact에 사유를 남긴다. 기본 ON이며 CLI/env 해제 경로 없음; 명시 운영자 승인 또는 B-track merge 전까지 유지 |
+| ORDERING 별도 모드 | `--ordering --confirm` 에서만 policy-table 결정 파생 주문을 제출. 별도 cap/CLI/env override 없음 — §4 30만·동시 10·일신규 3이 파생 단계에서 계속 강제 |
+| 매도 귀속 | 매도 직전 fresh broker fill × own-order journal로 자기 수량을 다시 계산해 `assert_sell_is_own`으로 제한. 귀속 불명/부족은 sell 0 |
 | Acceptance 왕복 강제 | `--no-cancel` 같은 플래그가 **존재하지 않는다**. `ACCEPTANCE_ONLY` 취소 미확인 = `RoundTripIncomplete` + exit 2 |
-| DAY 주문 잔존 | `INTERIM_ORDERING` 은 즉시 취소하지 않는다. `submitted` 는 접수/주문번호 증거만 뜻하고 filled를 뜻하지 않는다 |
+| DAY 주문 잔존 | `ORDERING` 은 즉시 취소하지 않는다. `broker_ack`은 접수/주문번호 증거일 뿐 filled가 아니며 후속 kt00007 readback이 partial/fill/remaining/VWAP/slippage를 보존 |
+| Mutation boundary | 매 submit/cancel 직전 lease + kt00007 one-read에서 pending과 same-day foreign trace를 동시 재조회. 읽기 실패·foreign·lease 상실은 다음 mutation 0 |
+| 일손실 입력 | dedicated realized P&L 증거가 없으면 current-day own activity 없는 bootstrap만 0을 증명할 수 있다. 그 밖의 unreadable은 kill 0으로 치환하지 않고 주문 0 |
+| Kill | kill 발화 시 신규 주문 0, 자기 resting 전부 kt10003 cancel 시도, 각각과 최종 상태를 kt00007 재조회로 확인. cancel 응답만으로 성공 기록 금지 |
 | halted | 표가 이미 제외(ROB-1236). 레인이 `universe.halted_suspect` 를 두 번째 선으로 재검사 |
 
 ## 4. 🔴 자기 미체결 = 브로커 직접 조회, 원장 예외 **미사용**
@@ -108,12 +113,20 @@ v1.5 ① 이 실격시키는 성질이고, ROB-341 이 KIS 일별체결조회를
 ### 5.1 저널 = 「이 ord_no 는 우리 것이다」
 
 `<out-dir>/kiwoom_mock/own-orders.jsonl`, append-only.
-🔴 제출 직후의 자기 주문번호는 즉시 저널한다. `INTERIM_ORDERING` 의 DAY 주문도
+🔴 제출 직후의 자기 주문번호는 즉시 저널한다. `ORDERING` 의 DAY 주문도
 다음 사이클의 당일 외부흔적 게이트가 자기 주문으로 식별할 수 있어야 한다.
 `ACCEPTANCE_ONLY` 에서는 **취소도** 자기 주문번호를 갖는다(실측: 매수 `0107387` →
 취소 `0107388`). 취소 ord_no 를 기록하지 않으면 다음 사이클의 당일 외부흔적 게이트가
 자기 취소를 제2 writer 로 오인해 정지한다 — 2026-08-12 12:13 KST 에 실제로 발생했다.
 그래서 취소도 `side="cancel"` 로 저널한다(귀속 수량에는 영향 없음).
+
+### 5.2 ORDERING fidelity journal
+
+`<out-dir>/kiwoom_mock/ordering-events.jsonl`도 append-only다. 한 주문의 evidence
+path는 `table_price → intended_limit → broker_ack → broker_readback
+(partial/fill VWAP/remaining) → reconcile`로 보존된다. kill에서는 같은 저널에
+`cancel_ack → cancel_reconcile → final_reconcile`가 추가된다. cycle artifact는 이
+저널의 요약일 뿐, ack/fill/cancel의 유일한 증거가 아니다.
 
 ## 6. Rate limit — 페이싱은 안전 속성이다
 
@@ -147,41 +160,43 @@ uv run python -m scripts.run_b0x_kr_kiwoom_cycle \
 B0X_KR_KIWOOM_ENABLED=true uv run python -m scripts.run_b0x_kr_kiwoom_cycle \
     --table-dir ~/services/auto_trader-operator/policy-tables --confirm
 
-# ④ INTERIM_ORDERING — 이중 명시가 있어야만 DAY 주문을 남긴다.
-#    §4 envelope 파생 매수 leg 전건만 제출하며, 자동 취소하지 않는다.
-#    매도 leg는 기본 ON 매수 전용 게이트가 명시 사유와 함께 차단한다.
+# ④ ORDERING — 이중 명시가 있어야만 DAY 주문을 남긴다.
+#    독립검증 PASS 및 배포 실증 전에는 이 명령을 실행하지 않는다.
+#    정책표 파생만, own-only sell, mutation-boundary 재조회, 자동취소 없음.
 B0X_KR_KIWOOM_ENABLED=true uv run python -m scripts.run_b0x_kr_kiwoom_cycle \
     --table-dir ~/services/auto_trader-operator/policy-tables \
-    --interim-ordering --confirm
+    --ordering --confirm
 ```
 
 exit code: `0` 정상 · `2` writer lock 경합, acceptance 왕복 미완(취소 미확인),
-또는 interim 제출 증거 미확인. 🔴 `2` 를 보면 계좌에 미회수 주문이 남았을 수 있다 —
+또는 ORDERING ack/readback/cancel 재확인 미완. 🔴 `2` 를 보면 계좌에 미회수 주문이 남았을 수 있다 —
 `--readiness` 로 즉시 `pending` 을 확인하고, 남아 있으면 운영자가 직접 취소한다.
 
 ## 8. 아티팩트
 
 `<out-dir>/kiwoom_mock/` — `cycles.jsonl`(append-only) ·
-`<ts>-cycle.md` · `own-orders.jsonl` · `operator-notices.jsonl`.
+`<ts>-cycle.md` · `own-orders.jsonl` · `ordering-events.jsonl` ·
+`operator-notices.jsonl`.
 
 모든 아티팩트에 `COEXISTING_ACCOUNT_LANE` 라벨이 붙는다: 이 계좌의 보유·체결
 이력 전부를 B0-X 산출로 읽으면 안 된다.
 
 ## 9. 알려진 경계 (조용히 넘어가지 않는 것들)
 
-1. **계좌 배타성은 코드가 보장하지 않는다.** flock writer lock 은 B0-X 프로세스
-   간 경합만 막는다. 계좌 단위 배타성은 운영 조치이고, 코드는 당일 외부 주문
-   흔적 탐지(fail-closed)만 제공한다. TOCTOU 는 완전히 제거되지 않았다 —
-   preflight 이후 제출 직전까지의 창이 남는다.
+1. **계좌 배타성은 여전히 운영 조치다.** account-keyed local lease는 같은 host의
+   B0-X writer만 배타화한다. 다른 host/KR-B1 writer는 broker foreign trace가
+   방어한다. ORDERING 은 preflight 1회에 의존하지 않고 매 mutation boundary에서
+   동일 kt00007 답으로 재검사하지만, broker 자체가 답한 뒤 발생한 외부 변화까지
+   원자적으로 잠글 수는 없다.
 2. **legacy 귀속 게이트는 2026-08-12 실환경에서 *증명되지 않았다*.** 그날
    kiwoom_mock 계좌의 보유가 **0종목**이라 legacy 분기에 도달할 입력이 없었다.
    단위 테스트로만 증명된 상태다(보유가 생기는 첫 사이클이 첫 실환경 검증 기회).
 3. **dedup(동일 심볼 재제출 차단)도 실환경 미증명.** `ACCEPTANCE_ONLY` 는 같은
    사이클 안에서 취소하므로 재제출 시점에 자기 미체결이 남아 있지 않다.
-   `INTERIM_ORDERING` 은 DAY 주문을 남기므로 kt00007 재조회가 같은 심볼 재제출을
-   막아야 한다. 단위 테스트 + preflight 의 `account_has_resting_orders` 사유가 코드
-   경로를 덮는다.
-4. **kill switch 는 발화 입력이 없다.** `realized_pnl_today` 소스가 이 레인에도
-   없으므로 −2.5% NAV kill 은 발화할 수 없다. 구조적 부재이지 측정된 0 이 아니다.
+   `ORDERING` 은 DAY 주문을 남기므로 매 mutation-boundary kt00007 재조회가 같은
+   심볼 재제출을 막아야 한다. 단위 테스트가 코드 경로를 덮는다.
+4. **dedicated realized P&L source는 아직 없다.** own-order journal이 current-day
+   activity 없음까지 증명하는 bootstrap에서만 0을 쓴다. activity·journal 오류·시간
+   정보 오류가 있으면 −2.5% NAV kill을 미발화로 꾸미지 않고 ORDERING 자체가 0이 된다.
 5. **저널 유실 방향은 안전하다** (과소 귀속 → 매도 못 함). 다만 저널이 사라지면
    자기 보유가 legacy 로 재분류되어 영영 팔 수 없게 된다 — 백업 대상이다.

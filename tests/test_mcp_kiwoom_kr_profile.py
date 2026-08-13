@@ -130,8 +130,8 @@ class TestRegistrarRegistersOnlyKrTools:
 
 
 class TestWholeProfileClosedWorld:
-    def test_base_inventory_is_exactly_118_tools(self) -> None:
-        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 118
+    def test_base_inventory_is_exactly_119_tools(self) -> None:
+        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 119
 
     def test_current_profile_matches_active_exact_set(self) -> None:
         mcp = DummyMCP()

@@ -119,7 +119,31 @@ class FakeAccount:
         if self._detail_error is not None:
             raise self._detail_error
         self.detail_calls.append({"order_date": order_date, "symbol": symbol})
-        return list(self._order_detail.get(order_date or "", []))
+        if order_date is not None:
+            return list(self._order_detail.get(order_date, []))
+        if self._resting_error is not None:
+            raise self._resting_error
+        # Legacy acceptance tests describe their broker-pending snapshots with
+        # ``resting=``.  The runtime now reads kt00007 directly, so translate
+        # that fixture shorthand into normalized detail rows only for its
+        # order-date-unspecified pending read.  Same-day foreign/readback
+        # vectors must supply explicit ``order_detail`` evidence.
+        index = min(self.resting_calls, len(self._resting) - 1)
+        self.resting_calls += 1
+        return [
+            {
+                "order_id": item.order_id,
+                "symbol": item.symbol,
+                "status": item.status,
+                "ordered_quantity": item.remaining_quantity,
+                "filled_quantity": 0,
+                "remaining_quantity": item.remaining_quantity,
+                "unfilled_quantity": item.remaining_quantity,
+                "ordered_price": item.ordered_price,
+                "average_price": 0,
+            }
+            for item in self._resting[index]
+        ]
 
     async def place_limit_buy(
         self, *, symbol: str, quantity: int, price: int

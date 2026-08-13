@@ -30,6 +30,7 @@ LANE_MODULES = (
     REPO_ROOT / "scripts" / "b0x" / "kr" / "kiwoom.py",
     REPO_ROOT / "scripts" / "b0x" / "kr" / "kiwoom_attribution.py",
     REPO_ROOT / "scripts" / "b0x" / "kr" / "kiwoom_cycle.py",
+    REPO_ROOT / "scripts" / "b0x" / "kr" / "kiwoom_ordering.py",
     REPO_ROOT / "scripts" / "run_b0x_kr_kiwoom_cycle.py",
 )
 
