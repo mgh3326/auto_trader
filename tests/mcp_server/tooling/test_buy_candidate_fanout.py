@@ -389,6 +389,64 @@ async def test_kr_regular_session_compact_shape_is_undetermined_not_a_zero_funne
     assert rsi_stats["funnel_stage_counts"] == digest["funnel_stage_counts"]
 
 
+@pytest.mark.asyncio
+async def test_undetermined_freshness_never_counts_as_rsi_only_fail_candidate() -> None:
+    """Unproven freshness must block both regular and RSI-only eligibility lanes."""
+
+    async def live_reader(source: Any, market: str, top_n: int) -> dict[str, Any]:
+        return {
+            "source": source.source,
+            "family": source.source,
+            "kind": "live",
+            "rows": [_source_row("005930")] if source.source == "rsi" else [],
+            "metadata": {},
+        }
+
+    async def snapshot_reader(
+        family: str, presets: tuple[str, ...], market: str, top_n: int
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "source": f"{family}:{preset}",
+                "family": family,
+                "kind": "snapshot",
+                "rows": [],
+                "metadata": {},
+            }
+            for preset in presets
+        ]
+
+    async def unknown_freshness_revalidator(
+        symbols: list[str], market: str
+    ) -> dict[str, dict[str, Any]]:
+        assert symbols == ["005930"]
+        assert market == "kr"
+        unknown = _fresh_row(rsi=62)
+        unknown.pop("data_state")
+        return {"005930": unknown}
+
+    result = await discover_buy_candidates_fanout_impl(
+        _live_reader=live_reader,
+        _snapshot_reader=snapshot_reader,
+        _fresh_revalidator=unknown_freshness_revalidator,
+    )
+
+    candidate = result["candidates"][0]
+    assert candidate["freshness"]["status"] == "undetermined"
+    assert candidate["funnel"]["rsi"]["status"] == "rsi_only_fail"
+    assert candidate["regular_evidence_eligible"] is False
+    assert candidate["rsi_only_fail_candidate"] is False
+
+    digest = result["digest_observation"]
+    assert digest["rsi_only_fail_candidate_count"] == 0
+    assert digest["final_eligible_counts"]["rsi_only_fail_candidate"] == 0
+    rsi_stats = next(
+        stats for stats in digest["source_stats"] if stats["source"] == "rsi"
+    )
+    assert rsi_stats["rsi_only_fail_candidate_count"] == 0
+    assert rsi_stats["final_eligible_counts"]["rsi_only_fail_candidate"] == 0
+
+
 def test_support_strength_and_independent_family_gates_are_pinned() -> None:
     gates = fanout._FanoutGates.from_policy(fanout.load_trading_policy())
 
