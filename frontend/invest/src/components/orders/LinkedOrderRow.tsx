@@ -2,6 +2,7 @@
 // InvestmentReportBundleContent (ROB-554) so the report-bundle decision log and
 // the stock-detail "주문 기록" card render live orders identically.
 
+import { Link } from "react-router-dom";
 import { Pill, type PillTone } from "../../ds";
 import type { LinkedOrder } from "../../types/investmentReports";
 
@@ -44,6 +45,15 @@ export function linkedOrderKey(order: LinkedOrder): string {
   return `${order.broker ?? ""}:${order.market ?? ""}:${order.ledgerId}`;
 }
 
+// Route to the standalone order detail page (INVEST-WATCH-UI §57차 item ②).
+// broker disambiguates which of the three live ledgers ledgerId refers to
+// (mirrors the backend's /fills/order-detail lookup) — without it there's
+// nothing safe to link to.
+export function orderDetailPath(order: LinkedOrder): string | null {
+  if (!order.broker || !order.ledgerId) return null;
+  return `/orders/${encodeURIComponent(order.broker)}/${order.ledgerId}`;
+}
+
 // Pydantic serializes Decimal to a JSON string; sub-1e-6 magnitudes come through
 // as scientific notation (e.g. "1E-8" for tiny BTC fractions). Render a readable
 // fixed-point number instead, falling back to the raw value if it isn't numeric.
@@ -56,20 +66,10 @@ function fmtAmount(value: number | string | null | undefined): string {
 }
 
 export function LinkedOrderRow({ order }: { order: LinkedOrder }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        gap: 8,
-        alignItems: "baseline",
-        flexWrap: "wrap",
-        fontSize: 12,
-        color: "var(--fg-3)",
-        background: "var(--surface-2)",
-        padding: "6px 10px",
-        borderRadius: 8,
-      }}
-    >
+  const detailPath = orderDetailPath(order);
+
+  const content = (
+    <>
       <Pill tone={LINKED_ORDER_STATUS_TONES[order.status ?? ""] ?? "paper"} size="sm">
         {LINKED_ORDER_STATUS_LABELS[order.status ?? ""] ?? order.status ?? "—"}
       </Pill>
@@ -87,6 +87,28 @@ export function LinkedOrderRow({ order }: { order: LinkedOrder }) {
       {order.exitReason || order.thesis ? (
         <span style={{ width: "100%" }}>{order.exitReason ?? order.thesis}</span>
       ) : null}
-    </div>
+    </>
   );
+
+  const rowStyle = {
+    display: "flex" as const,
+    gap: 8,
+    alignItems: "baseline" as const,
+    flexWrap: "wrap" as const,
+    fontSize: 12,
+    color: "var(--fg-3)",
+    background: "var(--surface-2)",
+    padding: "6px 10px",
+    borderRadius: 8,
+  };
+
+  if (detailPath) {
+    return (
+      <Link to={detailPath} style={{ ...rowStyle, textDecoration: "none" }}>
+        {content}
+      </Link>
+    );
+  }
+
+  return <div style={rowStyle}>{content}</div>;
 }
