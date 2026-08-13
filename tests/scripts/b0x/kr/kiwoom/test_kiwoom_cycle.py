@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -66,9 +67,39 @@ def _write_table(
 
 
 @pytest.fixture
-def table_dir(tmp_path: Path) -> Path:
+def cycle_now(request: pytest.FixtureRequest) -> dt.datetime:
+    """A KRX-RTH test clock; parametrized callers exercise another trading day."""
+
+    return getattr(request, "param", IN_SESSION)
+
+
+@pytest.fixture
+def frozen_cycle_clock(
+    monkeypatch: pytest.MonkeyPatch, cycle_now: dt.datetime
+) -> dt.datetime:
+    """Bind the cycle's wall clock to the same instant passed as ``now``."""
+
+    class FrozenDateTime:
+        @classmethod
+        def now(cls, tz: dt.tzinfo | None = None) -> dt.datetime:  # noqa: ANN102
+            return (
+                cycle_now.astimezone(tz)
+                if tz is not None
+                else cycle_now.replace(tzinfo=None)
+            )
+
+    monkeypatch.setattr(
+        kiwoom_cycle,
+        "dt",
+        SimpleNamespace(datetime=FrozenDateTime, UTC=dt.UTC),
+    )
+    return cycle_now
+
+
+@pytest.fixture
+def table_dir(tmp_path: Path, cycle_now: dt.datetime) -> Path:
     directory = tmp_path / "policy-tables"
-    _write_table(directory, generated_at=IN_SESSION - dt.timedelta(hours=4))
+    _write_table(directory, generated_at=cycle_now - dt.timedelta(hours=4))
     return directory
 
 
@@ -193,20 +224,25 @@ async def test_interim_ordering_requires_confirm_and_keeps_preview_safe(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cycle_now", (IN_SESSION, IN_SESSION + dt.timedelta(days=1)))
 async def test_confirm_blocks_on_same_day_foreign_orders(
-    table_dir, out_dir, armed
+    table_dir, out_dir, armed, frozen_cycle_clock
 ) -> None:  # noqa: ANN001, ARG001
     """🔴 The empirical KR-B1-is-active gate."""
 
     account = FakeAccount(
         order_detail={
-            kiwoom_attr.kst_order_date(IN_SESSION): [
+            kiwoom_attr.kst_order_date(frozen_cycle_clock): [
                 {"order_id": "0000009999", "symbol": "005380", "filled_quantity": 1}
             ]
         }
     )
     outcome = await _run(
-        account=account, out_dir=out_dir, table_dir=table_dir, confirm=True
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        now=frozen_cycle_clock,
     )
     assert outcome.zero_order_reason == "preflight_not_clean"
     assert (
@@ -521,8 +557,9 @@ async def test_interim_buy_only_sell_gate_blocks_derived_sell_with_audit_reason(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cycle_now", (IN_SESSION, IN_SESSION + dt.timedelta(days=1)))
 async def test_confirm_writes_the_order_number_to_the_journal(
-    table_dir, out_dir, armed, tmp_path
+    table_dir, out_dir, armed, tmp_path, frozen_cycle_clock
 ) -> None:  # noqa: ANN001, ARG001
     journal = kiwoom_attr.OwnOrderJournal(path=tmp_path / "journal.jsonl")
     account = FakeAccount(
@@ -534,7 +571,7 @@ async def test_confirm_writes_the_order_number_to_the_journal(
         ]
     )
     await kiwoom_cycle.run_kiwoom_cycle(
-        now=IN_SESSION,
+        now=frozen_cycle_clock,
         table_dir=table_dir,
         out_dir=out_dir,
         confirm=True,
@@ -544,7 +581,7 @@ async def test_confirm_writes_the_order_number_to_the_journal(
     records = journal.read_all()
     assert [record.order_no for record in records] == ["0000123456"]
     assert records[0].correlation_id.startswith("b0xkw-")
-    assert records[0].order_date == kiwoom_attr.kst_order_date(IN_SESSION)
+    assert records[0].order_date == kiwoom_attr.kst_order_date(frozen_cycle_clock)
 
 
 @pytest.mark.asyncio
