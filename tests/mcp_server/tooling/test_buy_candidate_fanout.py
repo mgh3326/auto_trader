@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -275,6 +276,8 @@ async def test_fresh_revalidation_requires_fresh_data_and_clear_restrictions() -
     stale = fanout._evaluate_funnel(
         candidate, {**_fresh_row(), "data_state": "stale"}, gates
     )
+    assert stale["freshness"]["status"] == "not_fresh"
+    assert stale["funnel"]["base_eligibility"]["status"] == "fail"
     assert stale["funnel"]["base_eligibility"]["reason"] == (
         "fresh_revalidation_data_state_not_fresh"
     )
@@ -283,6 +286,181 @@ async def test_fresh_revalidation_requires_fresh_data_and_clear_restrictions() -
         candidate, {**_fresh_row(), "trading_suspended": True}, gates
     )
     assert suspended["funnel"]["base_eligibility"]["reason"] == "trading_suspended"
+
+
+@pytest.mark.asyncio
+async def test_kr_regular_session_compact_shape_is_undetermined_not_a_zero_funnel() -> (
+    None
+):
+    """A KR RTH compact-shaped reply lacks data_state but remains observation-only."""
+
+    async def live_reader(source: Any, market: str, top_n: int) -> dict[str, Any]:
+        assert market == "kr"
+        assert top_n == TOP_N_PER_SOURCE
+        return {
+            "source": source.source,
+            "family": source.source,
+            "kind": "live",
+            "rows": [_source_row("005930")] if source.source == "rsi" else [],
+            "metadata": {},
+        }
+
+    async def snapshot_reader(
+        family: str, presets: tuple[str, ...], market: str, top_n: int
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "source": f"{family}:{preset}",
+                "family": family,
+                "kind": "snapshot",
+                "rows": [],
+                "metadata": {},
+            }
+            for preset in presets
+        ]
+
+    async def rth_compact_shaped_revalidator(
+        symbols: list[str], market: str
+    ) -> dict[str, dict[str, Any]]:
+        assert symbols == ["005930"]
+        assert market == "kr"
+        # This is the historic KR regular-session compact shape: all pricing
+        # evidence is present, but the top-level aggregate data_state is absent.
+        compact_shaped = _fresh_row()
+        compact_shaped.pop("data_state")
+        return {"005930": compact_shaped}
+
+    result = await discover_buy_candidates_fanout_impl(
+        _live_reader=live_reader,
+        _snapshot_reader=snapshot_reader,
+        _fresh_revalidator=rth_compact_shaped_revalidator,
+    )
+
+    candidate = result["candidates"][0]
+    assert candidate["freshness"] == {
+        "status": "undetermined",
+        "reason": "freshness_data_state_missing",
+        "data_state": None,
+        "evidence_source": "full_analysis_top_level_data_state",
+        "eligibility_blocked": True,
+    }
+    assert candidate["regular_evidence_eligible"] is False
+    assert candidate["rsi_only_fail_candidate"] is False
+    assert candidate["observation_gate_path_complete"] is True
+    assert candidate["actionable"] is False
+    assert {
+        stage: candidate["funnel"][stage]["status"]
+        for stage in result["funnel_stage_order"]
+    } == {
+        "source": "pass",
+        "base_eligibility": "undetermined",
+        "support_source_count": "pass",
+        "upside": "pass",
+        "rsi": "regular_pass",
+        "anchor_band": "pass",
+        "budget": "deferred",
+    }
+    assert candidate["funnel"]["base_eligibility"]["continued_as_observation_only"]
+    assert candidate["funnel"]["support_source_count"][
+        "eligibility_blocked_by_freshness"
+    ]
+
+    digest = result["digest_observation"]
+    assert digest["freshness_undetermined_count"] == 1
+    assert digest["freshness_undetermined_reasons"] == {
+        "freshness_data_state_missing": 1
+    }
+    assert digest["funnel_stage_counts"] == {
+        "source": {"pass": 1},
+        "base_eligibility": {"undetermined": 1},
+        "support_source_count": {"pass": 1},
+        "upside": {"pass": 1},
+        "rsi": {"regular_pass": 1},
+        "anchor_band": {"pass": 1},
+        "budget": {"deferred": 1},
+    }
+    rsi_stats = next(
+        stats for stats in digest["source_stats"] if stats["source"] == "rsi"
+    )
+    assert rsi_stats["freshness_undetermined_reasons"] == {
+        "freshness_data_state_missing": 1
+    }
+    assert "freshness_data_state_missing" not in rsi_stats["dropped_reasons"]
+    assert rsi_stats["funnel_stage_counts"] == digest["funnel_stage_counts"]
+
+
+def test_support_strength_and_independent_family_gates_are_pinned() -> None:
+    gates = fanout._FanoutGates.from_policy(fanout.load_trading_policy())
+
+    weak_support, weak_reason = fanout._support_evidence(
+        [
+            {
+                "price": 95,
+                "strength": "weak",
+                "sources": ["fib_50", "bb_lower"],
+            }
+        ],
+        current_price=100,
+        gates=gates,
+    )
+    one_family_support, one_family_reason = fanout._support_evidence(
+        [
+            {
+                "price": 95,
+                "strength": "moderate",
+                "sources": ["fib_50"],
+            }
+        ],
+        current_price=100,
+        gates=gates,
+    )
+
+    assert weak_support is None
+    assert weak_reason == "support_strength_below_moderate"
+    assert one_family_support is None
+    assert one_family_reason == "independent_support_family_count_below_2"
+
+
+def test_anchor_band_empty_intersection_stays_excluded() -> None:
+    gates = fanout._FanoutGates.from_policy(fanout.load_trading_policy())
+
+    anchor, reason = fanout._anchor_band(
+        support_price=70,
+        current_price=100,
+        gates=gates,
+    )
+
+    assert anchor is None
+    assert reason == "anchor_band_outside_final_distance_range"
+
+
+@pytest.mark.parametrize(
+    ("field", "drifted_value"),
+    [
+        ("rsi_max", 44),
+        ("independent_support_source_count_min", 1),
+        ("support_within_current_pct_max", 12),
+        ("honest_upside_pct_min", 30),
+        ("support_strength_min", "weak"),
+        ("independent_support_source_families", ["fib"]),
+        ("discount_below_support_pct_range", [4, 10]),
+        ("final_limit_distance_from_current_pct_range", [-20, -5]),
+        ("all_pending_buy_required_cash_hard_cap_pct", 91),
+        ("tier_armed_required_cash_cap_pct", 51),
+    ],
+)
+def test_frozen_gate_literal_guard_rejects_each_drift(
+    field: str, drifted_value: Any
+) -> None:
+    policy = fanout.load_trading_policy().model_copy(deep=True)
+    if field == "rsi_max":
+        policy.thresholds["screen.rsi_max"].value = drifted_value
+    else:
+        reserve = policy.decision_rules["buy.support_reserve_net"]
+        setattr(reserve, field, drifted_value)
+
+    with pytest.raises(ValueError, match="fanout gate literals"):
+        fanout._FanoutGates.from_policy(policy)
 
 
 def test_snapshot_group_contract_rejects_more_than_five_presets() -> None:
@@ -315,6 +493,199 @@ def test_snapshot_staleness_contract_allows_at_most_one_prior_session(
     assert too_old["reason"] == "snapshot_more_than_one_session_stale"
 
 
+@pytest.mark.asyncio
+async def test_live_reader_calls_real_screen_adapter_without_rsi_prefilter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import analysis_tool_handlers
+
+    received: dict[str, Any] = {}
+
+    async def fake_screen_stocks_impl(**request: Any) -> dict[str, Any]:
+        received.update(request)
+        return {"results": [{"code": "005930", "rank": 1}], "total_count": 73}
+
+    monkeypatch.setattr(
+        analysis_tool_handlers, "screen_stocks_impl", fake_screen_stocks_impl
+    )
+
+    payload = await fanout._read_live_source(
+        fanout._LIVE_SOURCES[0], "kr", TOP_N_PER_SOURCE
+    )
+
+    assert received == {
+        "market": "kr",
+        "sort_by": "rsi",
+        "sort_order": "asc",
+        "limit": TOP_N_PER_SOURCE,
+    }
+    assert "max_rsi" not in received
+    assert payload["rows"] == [{"code": "005930", "rank": 1}]
+    assert payload["metadata"]["upstream_total_count"] == 73
+    assert fanout._initial_source_stats(payload)["source_population"] == {
+        "status": "reported",
+        "reported_total_count": 73,
+        "top_n_read_count": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_snapshot_reader_calls_persisted_view_model_with_no_portfolio_relation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import date
+
+    import app.core.db as db
+    import app.services.invest_screener_snapshots.freshness as freshness
+    import app.services.invest_view_model.screener_service as view_model
+    import app.services.screener_service as screener_service
+
+    class _Dumpable:
+        def __init__(self, value: dict[str, Any]) -> None:
+            self.value = value
+
+        def model_dump(self, *, mode: str) -> dict[str, Any]:
+            assert mode == "json"
+            return dict(self.value)
+
+    class _Session:
+        async def __aenter__(self) -> _Session:
+            return self
+
+        async def __aexit__(
+            self,
+            exc_type: object,
+            exc: object,
+            traceback: object,
+        ) -> None:
+            return None
+
+    session_instance = _Session()
+    calls: list[str] = []
+
+    async def fake_build_screener_results(
+        preset: str,
+        service: object,
+        resolver: Any,
+        *,
+        market: str,
+        session: object,
+    ) -> SimpleNamespace:
+        assert service is not None
+        assert market == "kr"
+        assert session is session_instance
+        assert resolver.relation("kr", "005930") == "none"
+        calls.append(preset)
+        return SimpleNamespace(
+            results=[
+                _Dumpable({"symbol": "005930", "rank": rank})
+                for rank in range(TOP_N_PER_SOURCE + 1)
+            ],
+            freshness=_Dumpable({"primary": {"snapshotDate": "2026-08-13"}}),
+        )
+
+    # The fake session factory and fake view-model builder make this a direct
+    # contract test of the production reader body; no DB/MCP/broker call occurs.
+    monkeypatch.setattr(db, "AsyncSessionLocal", lambda: session_instance)
+    monkeypatch.setattr(screener_service, "ScreenerService", lambda: object())
+    monkeypatch.setattr(
+        view_model, "build_screener_results", fake_build_screener_results
+    )
+    monkeypatch.setattr(
+        freshness, "expected_baseline_date", lambda market: date(2026, 8, 13)
+    )
+
+    presets = ("one", "two", "three", "four", "five")
+    payloads = await fanout._read_snapshot_group(
+        "snapshot_support_flow", presets, "kr", TOP_N_PER_SOURCE
+    )
+
+    assert calls == list(presets)
+    assert len(payloads) == MAX_SNAPSHOT_PRESETS_PER_CALL
+    assert all(len(payload["rows"]) == TOP_N_PER_SOURCE for payload in payloads)
+    assert all(
+        payload["metadata"]["snapshot_staleness_contract"]["within_limit"]
+        for payload in payloads
+    )
+
+
+@pytest.mark.asyncio
+async def test_full_revalidator_preserves_rth_data_state_and_all_support_levels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.mcp_server.tooling import analysis_tool_handlers
+
+    received: dict[str, Any] = {}
+    supports = [
+        {
+            "price": 99 - index,
+            "strength": "moderate",
+            "sources": ["fib_50", "bb_lower"],
+        }
+        for index in range(4)
+    ]
+
+    async def fake_analyze_stock_batch_impl(**request: Any) -> dict[str, Any]:
+        received.update(request)
+        return {
+            "results": {
+                "005930": {
+                    "data_state": "fresh",
+                    "quote": {"price": 100},
+                    "indicators": {"rsi": {"14": 35}},
+                    "support_resistance": {"supports": supports},
+                    "opinions": {"consensus": {"avg_target_price": 145}},
+                    "trading_suspended": False,
+                }
+            }
+        }
+
+    monkeypatch.setattr(
+        analysis_tool_handlers,
+        "analyze_stock_batch_impl",
+        fake_analyze_stock_batch_impl,
+    )
+
+    revalidated = await fanout._fresh_revalidate(["005930"], "kr")
+
+    assert received == {
+        "symbols": ["005930"],
+        "market": "kr",
+        "include_peers": False,
+        "quick": False,
+        "include_position": False,
+        "refresh": False,
+    }
+    assert revalidated == {
+        "005930": {
+            "data_state": "fresh",
+            "current_price": 100.0,
+            "rsi_14": 35.0,
+            "supports": supports,
+            "consensus": {"avg_target_price": 145},
+            "trading_suspended": False,
+        }
+    }
+
+
+def test_live_source_population_is_explicitly_bounded_unknown_without_total() -> None:
+    stats = fanout._initial_source_stats(
+        {
+            "source": "rsi",
+            "family": "rsi",
+            "kind": "live",
+            "rows": [_source_row("005930")],
+            "metadata": {},
+        }
+    )
+
+    assert stats["source_population"] == {
+        "status": "bounded_unknown",
+        "reason": "upstream_total_not_reported_with_top_n_only_read",
+        "top_n_read_count": 1,
+    }
+
+
 def test_registration_is_read_only_and_observation_only() -> None:
     from app.mcp_server.tooling.analysis_readonly_registration import (
         ANALYSIS_READONLY_TOOL_NAMES,
@@ -341,6 +712,7 @@ def test_registration_is_read_only_and_observation_only() -> None:
     assert "read-only" in description
     assert "never a proposal or order" in description
     assert "threshold tuning" in description
+    assert "undetermined" in description
 
 
 def test_no_broker_or_order_surface_imported_by_fanout_module() -> None:
@@ -376,3 +748,5 @@ def test_runbook_states_observation_only_and_no_tuning() -> None:
     assert "do not use it as PnL scoring" in normalized
     assert "immediate threshold-tuning evidence" in normalized
     assert "actionable_count` is always zero" in normalized
+    assert "freshness_data_state_missing" in normalized
+    assert "bounded_unknown" in normalized

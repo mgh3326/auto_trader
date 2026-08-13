@@ -27,6 +27,14 @@ TOP_N_REVALIDATION = 10
 MAX_SNAPSHOT_PRESETS_PER_CALL = 5
 SNAPSHOT_MAX_STALE_SESSIONS = 1
 
+# Eligibility requires a named, top-level full-analysis freshness result.  A
+# compact/legacy payload that omits this field is neither fresh nor stale: it is
+# explicitly unprovable and may only continue through the observation funnel.
+_FRESHNESS_EVIDENCE_SOURCE = "full_analysis_top_level_data_state"
+_KNOWN_NOT_FRESH_DATA_STATES = frozenset(
+    {"stale", "partial", "degraded", "missing", "error", "fallback", "halted_suspect"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _LiveSource:
@@ -296,6 +304,71 @@ def _not_evaluated(reason: str) -> dict[str, Any]:
     return {"status": "not_evaluated", "reason": reason}
 
 
+def _freshness_contract(fresh: Mapping[str, Any]) -> dict[str, Any]:
+    """Classify freshness without treating an omitted key as a fresh pass.
+
+    The concrete revalidator requests a full analysis specifically because its
+    top-level ``data_state`` is the established aggregate freshness contract.
+    This defensive branch still accepts legacy compact-shaped input for
+    observation, but it never establishes eligibility from it.
+    """
+
+    if "data_state" not in fresh:
+        return {
+            "status": "undetermined",
+            "reason": "freshness_data_state_missing",
+            "data_state": None,
+            "evidence_source": _FRESHNESS_EVIDENCE_SOURCE,
+            "eligibility_blocked": True,
+        }
+    raw_state = fresh.get("data_state")
+    state = str(raw_state).strip().lower() if raw_state is not None else ""
+    if state == "fresh":
+        return {
+            "status": "proven_fresh",
+            "reason": "freshness_proven_by_data_state",
+            "data_state": state,
+            "evidence_source": _FRESHNESS_EVIDENCE_SOURCE,
+            "eligibility_blocked": False,
+        }
+    if state in _KNOWN_NOT_FRESH_DATA_STATES:
+        return {
+            "status": "not_fresh",
+            "reason": "fresh_revalidation_data_state_not_fresh",
+            "data_state": state,
+            "evidence_source": _FRESHNESS_EVIDENCE_SOURCE,
+            "eligibility_blocked": True,
+        }
+    return {
+        "status": "undetermined",
+        "reason": "freshness_data_state_unrecognized",
+        "data_state": raw_state,
+        "evidence_source": _FRESHNESS_EVIDENCE_SOURCE,
+        "eligibility_blocked": True,
+    }
+
+
+def _funnel_result(
+    funnel: dict[str, dict[str, Any]],
+    freshness: Mapping[str, Any],
+    *,
+    regular_rsi_pass: bool = False,
+    rsi_only_fail: bool = False,
+    observation_gate_path_complete: bool = False,
+) -> dict[str, Any]:
+    """Keep unproven freshness from becoming a regular or RSI-only pass."""
+
+    proven_fresh = freshness.get("status") == "proven_fresh"
+    return {
+        "funnel": funnel,
+        "freshness": dict(freshness),
+        "regular_evidence_eligible": proven_fresh and regular_rsi_pass,
+        "rsi_only_fail_candidate": proven_fresh and rsi_only_fail,
+        "observation_gate_path_complete": observation_gate_path_complete,
+        "actionable": False,
+    }
+
+
 def _minimum_snapshot_date(market: str) -> dt.date:
     """Return the oldest permitted date: current baseline minus one session."""
 
@@ -376,7 +449,12 @@ def _evaluate_funnel(
     fresh: Mapping[str, Any] | None,
     gates: _FanoutGates,
 ) -> dict[str, Any]:
-    """Record every fixed funnel stage without relaxing a failed gate."""
+    """Record every fixed funnel stage without relaxing a failed gate.
+
+    A missing freshness key is intentionally distinct from an explicit stale
+    result.  The former allows downstream gate *observation* so the digest can
+    diagnose the population, but it can never produce an eligibility pass.
+    """
 
     funnel: dict[str, dict[str, Any]] = {
         "source": {
@@ -385,62 +463,92 @@ def _evaluate_funnel(
         }
     }
     if fresh is None:
+        unavailable = {
+            "status": "unavailable",
+            "reason": "fresh_revalidation_unavailable",
+            "evidence_source": _FRESHNESS_EVIDENCE_SOURCE,
+            "eligibility_blocked": True,
+        }
         funnel["base_eligibility"] = {
             "status": "fail",
             "reason": "fresh_revalidation_unavailable",
         }
         for stage in _FUNNEL_STAGE_NAMES[2:]:
             funnel[stage] = _not_evaluated("base_eligibility_failed")
-        return {
-            "funnel": funnel,
-            "regular_evidence_eligible": False,
-            "rsi_only_fail_candidate": False,
-            "actionable": False,
-        }
+        return _funnel_result(funnel, unavailable)
 
-    data_state = str(fresh.get("data_state") or fresh.get("price_data_state") or "")
+    freshness = _freshness_contract(fresh)
     current_price = _first_float(fresh, "current_price", "price", "currentPrice")
     restriction_reason = _trading_restriction_reason(fresh)
-    if data_state != "fresh":
-        base_reason = "fresh_revalidation_data_state_not_fresh"
-    elif current_price is None or current_price <= 0:
-        base_reason = "fresh_current_price_missing"
-    elif restriction_reason is not None:
-        base_reason = restriction_reason
-    else:
-        base_reason = None
-    if base_reason is not None:
-        funnel["base_eligibility"] = {"status": "fail", "reason": base_reason}
+    if freshness["status"] == "not_fresh":
+        funnel["base_eligibility"] = {
+            "status": "fail",
+            "reason": freshness["reason"],
+            "data_state": freshness["data_state"],
+            "freshness_evidence_source": freshness["evidence_source"],
+        }
         for stage in _FUNNEL_STAGE_NAMES[2:]:
             funnel[stage] = _not_evaluated("base_eligibility_failed")
-        return {
-            "funnel": funnel,
-            "regular_evidence_eligible": False,
-            "rsi_only_fail_candidate": False,
-            "actionable": False,
+        return _funnel_result(funnel, freshness)
+    if current_price is None or current_price <= 0:
+        funnel["base_eligibility"] = {
+            "status": "fail",
+            "reason": "fresh_current_price_missing",
+            "freshness_status": freshness["status"],
+        }
+        for stage in _FUNNEL_STAGE_NAMES[2:]:
+            funnel[stage] = _not_evaluated("base_eligibility_failed")
+        return _funnel_result(funnel, freshness)
+    if restriction_reason is not None:
+        funnel["base_eligibility"] = {
+            "status": "fail",
+            "reason": restriction_reason,
+            "freshness_status": freshness["status"],
+        }
+        for stage in _FUNNEL_STAGE_NAMES[2:]:
+            funnel[stage] = _not_evaluated("base_eligibility_failed")
+        return _funnel_result(funnel, freshness)
+
+    observation_only_due_to_freshness = freshness["status"] == "undetermined"
+
+    def observed_stage(status: str, **evidence: Any) -> dict[str, Any]:
+        if observation_only_due_to_freshness:
+            evidence.update(
+                {
+                    "freshness_status": "undetermined",
+                    "eligibility_blocked_by_freshness": True,
+                }
+            )
+        return {"status": status, **evidence}
+
+    if observation_only_due_to_freshness:
+        funnel["base_eligibility"] = {
+            "status": "undetermined",
+            "reason": freshness["reason"],
+            "current_price": current_price,
+            "freshness_evidence_source": freshness["evidence_source"],
+            "continued_as_observation_only": True,
+            "eligibility_blocked_by_freshness": True,
+            "trading_restriction": "clear",
+        }
+    else:
+        funnel["base_eligibility"] = {
+            "status": "pass",
+            "current_price": current_price,
+            "data_state": freshness["data_state"],
+            "freshness_evidence_source": freshness["evidence_source"],
+            "trading_restriction": "clear",
         }
 
-    assert current_price is not None  # narrowed by the base eligibility branch
-    funnel["base_eligibility"] = {
-        "status": "pass",
-        "current_price": current_price,
-        "data_state": data_state,
-        "trading_restriction": "clear",
-    }
     support, support_reason = _support_evidence(
         fresh.get("supports"), current_price=current_price, gates=gates
     )
     if support is None:
-        funnel["support_source_count"] = {"status": "fail", "reason": support_reason}
+        funnel["support_source_count"] = observed_stage("fail", reason=support_reason)
         for stage in _FUNNEL_STAGE_NAMES[3:]:
             funnel[stage] = _not_evaluated("support_source_count_failed")
-        return {
-            "funnel": funnel,
-            "regular_evidence_eligible": False,
-            "rsi_only_fail_candidate": False,
-            "actionable": False,
-        }
-    funnel["support_source_count"] = {"status": "pass", **support}
+        return _funnel_result(funnel, freshness)
+    funnel["support_source_count"] = observed_stage("pass", **support)
 
     consensus = fresh.get("consensus")
     consensus_data = consensus if isinstance(consensus, Mapping) else {}
@@ -448,56 +556,46 @@ def _evaluate_funnel(
         consensus_data, "avg_target_price", "avgTargetPrice", "target_price"
     )
     if target_price is None or target_price <= 0:
-        funnel["upside"] = {"status": "fail", "reason": "fresh_consensus_missing"}
+        funnel["upside"] = observed_stage("fail", reason="fresh_consensus_missing")
         for stage in _FUNNEL_STAGE_NAMES[4:]:
             funnel[stage] = _not_evaluated("upside_failed")
-        return {
-            "funnel": funnel,
-            "regular_evidence_eligible": False,
-            "rsi_only_fail_candidate": False,
-            "actionable": False,
-        }
+        return _funnel_result(funnel, freshness)
     upside_pct = (target_price - current_price) / current_price * 100
     if upside_pct < gates.honest_upside_pct_min:
-        funnel["upside"] = {
-            "status": "fail",
-            "reason": "honest_upside_below_40pct",
-            "current_price": current_price,
-            "avg_target_price": target_price,
-            "honest_upside_pct": round(upside_pct, 6),
-        }
+        funnel["upside"] = observed_stage(
+            "fail",
+            reason="honest_upside_below_40pct",
+            current_price=current_price,
+            avg_target_price=target_price,
+            honest_upside_pct=round(upside_pct, 6),
+        )
         for stage in _FUNNEL_STAGE_NAMES[4:]:
             funnel[stage] = _not_evaluated("upside_failed")
-        return {
-            "funnel": funnel,
-            "regular_evidence_eligible": False,
-            "rsi_only_fail_candidate": False,
-            "actionable": False,
-        }
-    funnel["upside"] = {
-        "status": "pass",
-        "current_price": current_price,
-        "avg_target_price": target_price,
-        "honest_upside_pct": round(upside_pct, 6),
-    }
+        return _funnel_result(funnel, freshness)
+    funnel["upside"] = observed_stage(
+        "pass",
+        current_price=current_price,
+        avg_target_price=target_price,
+        honest_upside_pct=round(upside_pct, 6),
+    )
 
     rsi = _first_float(fresh, "rsi_14", "rsi14", "rsi")
     regular_rsi_pass = rsi is not None and rsi <= gates.rsi_max
     if regular_rsi_pass:
-        funnel["rsi"] = {
-            "status": "regular_pass",
-            "rsi_14": rsi,
-            "max_rsi": gates.rsi_max,
-        }
+        funnel["rsi"] = observed_stage(
+            "regular_pass",
+            rsi_14=rsi,
+            max_rsi=gates.rsi_max,
+        )
     else:
         # This is a classification only.  It cannot create a proposal, an order,
         # or an actionable candidate from this read-only surface.
-        funnel["rsi"] = {
-            "status": "rsi_only_fail",
-            "reason": "rsi_missing_or_above_regular_max",
-            "rsi_14": rsi,
-            "max_rsi": gates.rsi_max,
-        }
+        funnel["rsi"] = observed_stage(
+            "rsi_only_fail",
+            reason="rsi_missing_or_above_regular_max",
+            rsi_14=rsi,
+            max_rsi=gates.rsi_max,
+        )
 
     anchor, anchor_reason = _anchor_band(
         support_price=float(support["price"]),
@@ -505,31 +603,27 @@ def _evaluate_funnel(
         gates=gates,
     )
     if anchor is None:
-        funnel["anchor_band"] = {"status": "fail", "reason": anchor_reason}
+        funnel["anchor_band"] = observed_stage("fail", reason=anchor_reason)
         funnel["budget"] = _not_evaluated("anchor_band_failed")
-        return {
-            "funnel": funnel,
-            "regular_evidence_eligible": False,
-            "rsi_only_fail_candidate": False,
-            "actionable": False,
-        }
-    funnel["anchor_band"] = {"status": "pass", **anchor}
+        return _funnel_result(funnel, freshness)
+    funnel["anchor_band"] = observed_stage("pass", **anchor)
     # Account/broker evidence is deliberately unavailable in this task.  Keep
     # the cap literals visible but never infer a budget pass.
-    funnel["budget"] = {
-        "status": "deferred",
-        "reason": "broker_account_budget_out_of_scope",
-        "all_pending_buy_required_cash_hard_cap_pct": (
+    funnel["budget"] = observed_stage(
+        "deferred",
+        reason="broker_account_budget_out_of_scope",
+        all_pending_buy_required_cash_hard_cap_pct=(
             gates.all_pending_buy_required_cash_hard_cap_pct
         ),
-        "tier_armed_required_cash_cap_pct": gates.tier_armed_required_cash_cap_pct,
-    }
-    return {
-        "funnel": funnel,
-        "regular_evidence_eligible": regular_rsi_pass,
-        "rsi_only_fail_candidate": not regular_rsi_pass,
-        "actionable": False,
-    }
+        tier_armed_required_cash_cap_pct=gates.tier_armed_required_cash_cap_pct,
+    )
+    return _funnel_result(
+        funnel,
+        freshness,
+        regular_rsi_pass=regular_rsi_pass,
+        rsi_only_fail=not regular_rsi_pass,
+        observation_gate_path_complete=True,
+    )
 
 
 async def _read_live_source(
@@ -551,7 +645,13 @@ async def _read_live_source(
         "family": source.source,
         "kind": "live",
         "rows": list(response.get("results") or []),
-        "metadata": {"request": request},
+        "metadata": {
+            "request": request,
+            # Reading a server-reported total does not widen the top-N source
+            # read. It lets the digest distinguish a known population from a
+            # bounded/unknown one when the upstream does not report the total.
+            "upstream_total_count": response.get("total_count"),
+        },
     }
 
 
@@ -606,10 +706,77 @@ async def _read_snapshot_group(
     return payloads
 
 
+def _full_analysis_rsi(analysis: Mapping[str, Any]) -> float | None:
+    indicators = analysis.get("indicators")
+    indicators_data = indicators if isinstance(indicators, Mapping) else {}
+    nested = indicators_data.get("indicators")
+    flat = nested if isinstance(nested, Mapping) else indicators_data
+    rsi = flat.get("rsi")
+    rsi_data = rsi if isinstance(rsi, Mapping) else {}
+    rsi_value = rsi_data.get("14")
+    if rsi_value is None:
+        rsi_value = rsi_data.get(14)
+    return _as_float(rsi_value)
+
+
+def _normalize_full_revalidation_row(analysis: Mapping[str, Any]) -> dict[str, Any]:
+    """Adapt full analysis output without losing its top-level freshness state.
+
+    ``quick=True`` omits aggregate ``data_state`` on ordinary KR regular-session
+    compact rows. This adapter intentionally consumes the existing full-analysis
+    response so eligibility has an explicit freshness source; it does not change
+    the shared compact response contract.
+    """
+
+    output: dict[str, Any] = {}
+    quote = analysis.get("quote")
+    quote_data = quote if isinstance(quote, Mapping) else {}
+    support_resistance = analysis.get("support_resistance")
+    support_data = support_resistance if isinstance(support_resistance, Mapping) else {}
+    opinions = analysis.get("opinions")
+    opinions_data = opinions if isinstance(opinions, Mapping) else {}
+
+    # Presence is deliberately retained: missing top-level data_state must
+    # remain distinguishable from an explicit non-fresh value downstream.
+    for key in ("data_state", "price_data_state", "halt_suspect", "error"):
+        if key in analysis:
+            output[key] = analysis[key]
+    current_price = _first_float(quote_data, "price", "current_price")
+    if current_price is not None:
+        output["current_price"] = current_price
+    rsi_14 = _full_analysis_rsi(analysis)
+    if rsi_14 is not None:
+        output["rsi_14"] = rsi_14
+    supports = support_data.get("supports")
+    if isinstance(supports, list):
+        # Unlike quick compact summaries, do not silently cut this evidence to
+        # three levels; the fan-out still chooses one qualifying nearest support.
+        output["supports"] = list(supports)
+    consensus = opinions_data.get("consensus")
+    if isinstance(consensus, Mapping):
+        output["consensus"] = dict(consensus)
+    for key in (
+        "nxt_tradable",
+        "trading_suspended",
+        "trading_restricted",
+        "is_tradable",
+    ):
+        if key in analysis:
+            output[key] = analysis[key]
+        elif key in quote_data:
+            output[key] = quote_data[key]
+    return output
+
+
 async def _fresh_revalidate(
     symbols: list[str], market: str
 ) -> dict[str, dict[str, Any]]:
-    """Run bounded fresh market analysis with position attachment disabled."""
+    """Run bounded full analysis with position attachment disabled.
+
+    Full output is required only to retain the existing aggregate data_state
+    freshness contract. This remains a read-only market-analysis call and does
+    not add portfolio, account, or order access.
+    """
 
     from app.mcp_server.tooling.analysis_tool_handlers import analyze_stock_batch_impl
 
@@ -617,7 +784,7 @@ async def _fresh_revalidate(
         symbols=symbols,
         market=market,
         include_peers=False,
-        quick=True,
+        quick=False,
         include_position=False,
         # refresh=True writes provider data to its cache; this read-only fan-out
         # relies on the analysis path's fresh quote/RSI/support computation.
@@ -630,7 +797,7 @@ async def _fresh_revalidate(
     for returned_symbol, row in results.items():
         canonical = _canonical_symbol(returned_symbol)
         if canonical is not None and isinstance(row, Mapping):
-            output[canonical] = dict(row)
+            output[canonical] = _normalize_full_revalidation_row(row)
     return output
 
 
@@ -649,6 +816,22 @@ def _initial_source_stats(payload: Mapping[str, Any]) -> dict[str, Any]:
             + incoming_count
             - TOP_N_PER_SOURCE
         )
+    raw_upstream_total = metadata_data.get("upstream_total_count")
+    upstream_total = _as_float(raw_upstream_total)
+    if payload["kind"] == "live" and upstream_total is not None and upstream_total >= 0:
+        source_population = {
+            "status": "reported",
+            "reported_total_count": int(upstream_total),
+            "top_n_read_count": visible_count,
+        }
+    elif payload["kind"] == "live":
+        source_population = {
+            "status": "bounded_unknown",
+            "reason": "upstream_total_not_reported_with_top_n_only_read",
+            "top_n_read_count": visible_count,
+        }
+    else:
+        source_population = {"status": "snapshot_source"}
     return {
         "source": payload["source"],
         "family": payload["family"],
@@ -658,6 +841,9 @@ def _initial_source_stats(payload: Mapping[str, Any]) -> dict[str, Any]:
         "candidate_rows_after_source_validity": visible_count,
         "deduped_candidate_count": 0,
         "dropped_reasons": dropped_reasons,
+        "freshness_undetermined_reasons": {},
+        "source_population": source_population,
+        "funnel_stage_counts": _empty_funnel_stage_counts(),
         "regular_evidence_eligible_count": 0,
         "rsi_only_fail_candidate_count": 0,
         "actionable_count": 0,
@@ -672,6 +858,26 @@ def _initial_source_stats(payload: Mapping[str, Any]) -> dict[str, Any]:
 def _count_reason(stats: dict[str, Any], reason: str) -> None:
     dropped = stats["dropped_reasons"]
     dropped[reason] = int(dropped.get(reason, 0)) + 1
+
+
+def _empty_funnel_stage_counts() -> dict[str, dict[str, int]]:
+    return {stage: {} for stage in _FUNNEL_STAGE_NAMES}
+
+
+def _record_funnel_stage_counts(
+    stage_counts: dict[str, dict[str, int]],
+    funnel: Mapping[str, Mapping[str, Any]],
+) -> None:
+    for stage in _FUNNEL_STAGE_NAMES:
+        stage_data = funnel.get(stage) or {}
+        status = str(stage_data.get("status") or "missing")
+        counts = stage_counts.setdefault(stage, {})
+        counts[status] = int(counts.get(status, 0)) + 1
+
+
+def _count_undetermined_reason(stats: dict[str, Any], reason: str) -> None:
+    reasons = stats["freshness_undetermined_reasons"]
+    reasons[reason] = int(reasons.get(reason, 0)) + 1
 
 
 def _dedupe_candidates(
@@ -791,6 +997,9 @@ async def discover_buy_candidates_fanout_impl(
 
     regular_evidence_eligible_count = 0
     rsi_only_fail_candidate_count = 0
+    freshness_undetermined_count = 0
+    freshness_undetermined_reasons: dict[str, int] = {}
+    funnel_stage_counts = _empty_funnel_stage_counts()
     for index, candidate in enumerate(candidates):
         symbol = candidate["symbol"]
         if index >= TOP_N_REVALIDATION:
@@ -811,6 +1020,7 @@ async def discover_buy_candidates_fanout_impl(
             candidate["revalidation"] = {
                 "status": "received" if fresh is not None else "missing",
                 "scope": [
+                    "data_state",
                     "current_price",
                     "supports",
                     "consensus",
@@ -820,6 +1030,14 @@ async def discover_buy_candidates_fanout_impl(
             }
         evaluation = _evaluate_funnel(candidate, fresh, gates)
         candidate.update(evaluation)
+        _record_funnel_stage_counts(funnel_stage_counts, candidate["funnel"])
+        freshness = candidate["freshness"]
+        if freshness["status"] == "undetermined":
+            freshness_undetermined_count += 1
+            reason = str(freshness["reason"])
+            freshness_undetermined_reasons[reason] = (
+                int(freshness_undetermined_reasons.get(reason, 0)) + 1
+            )
         if candidate["regular_evidence_eligible"]:
             regular_evidence_eligible_count += 1
         if candidate["rsi_only_fail_candidate"]:
@@ -827,6 +1045,11 @@ async def discover_buy_candidates_fanout_impl(
         failure_reason = _first_failed_reason(candidate["funnel"])
         for source in candidate["matched_sources"]:
             stats = source_stats[source]
+            _record_funnel_stage_counts(
+                stats["funnel_stage_counts"], candidate["funnel"]
+            )
+            if freshness["status"] == "undetermined":
+                _count_undetermined_reason(stats, str(freshness["reason"]))
             if candidate["regular_evidence_eligible"]:
                 stats["regular_evidence_eligible_count"] += 1
                 stats["final_eligible_counts"]["regular_evidence"] += 1
@@ -867,6 +1090,9 @@ async def discover_buy_candidates_fanout_impl(
             "observation_only": True,
             "not_for_pnl_scoring_or_immediate_threshold_tuning": True,
             "source_stats": list(source_stats.values()),
+            "funnel_stage_counts": funnel_stage_counts,
+            "freshness_undetermined_count": freshness_undetermined_count,
+            "freshness_undetermined_reasons": freshness_undetermined_reasons,
             "regular_evidence_eligible_count": regular_evidence_eligible_count,
             "rsi_only_fail_candidate_count": rsi_only_fail_candidate_count,
             "actionable_count": 0,
