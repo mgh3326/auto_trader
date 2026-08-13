@@ -509,6 +509,16 @@ def test_rejection_projection_drops_untrusted_metadata_without_losing_reason():
         project_auto_approve_rejections({"auto_approve_rejections": [malformed_time]})
         == []
     )
+    untrusted_reason = dict(source_asof["auto_approve_rejections"][0])
+    untrusted_rung = dict(untrusted_reason["rungs"][0])
+    untrusted_rung["reason_code"] = raw_input
+    untrusted_reason["rungs"] = [untrusted_rung]
+    assert (
+        project_auto_approve_rejections(
+            {"auto_approve_rejections": [untrusted_reason]}
+        )[0]["rungs"][0]["reason_code"]
+        == "invalid_reason_code"
+    )
 
 
 def test_tag_match_evidence_records_token_and_structural_location_only():

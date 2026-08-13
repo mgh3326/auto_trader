@@ -77,7 +77,32 @@ _BOOLEAN_INPUT_KEYS = frozenset(
     }
 )
 _MISSING_INPUT_FIELDS = frozenset({"current_price", "limit_price", "quantity"})
-_REASON_CODE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,79}")
+_KNOWN_REASON_CODES = frozenset(
+    {
+        "account_not_veto_capable",
+        "action_not_place",
+        "approval_required_tag",
+        "auto_veto_thesis_missing",
+        "breakeven_band",
+        "daily_cap_exceeded",
+        "distance_below_minimum",
+        "eligibility_error",
+        "exit_intent_present",
+        "expected_pnl_not_positive",
+        "loss_cut_intent",
+        "marketable_not_resting",
+        "multi_rung_requires_approval",
+        "order_type_not_limit",
+        "per_order_cap_exceeded",
+        "preview_guard_failed",
+        "price_or_quantity_missing",
+        "sell_classification_unavailable",
+        "side_not_supported",
+        "thesis_required_for_veto_card",
+        "toss_auto_submission_frozen",
+        "unknown_auto_approve_mode",
+    }
+)
 _DECIMAL_TEXT_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
 _POLICY_VERSION_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\.[0-9]{1,4})?")
 _SAFE_PATH_SEGMENT = (
@@ -88,7 +113,7 @@ _LOCATION_PATH_PATTERN = re.compile(rf"\$(?:{_SAFE_PATH_SEGMENT}){{0,32}}")
 
 
 def _safe_reason_code(value: Any) -> str:
-    if isinstance(value, str) and _REASON_CODE_PATTERN.fullmatch(value):
+    if isinstance(value, str) and value in _KNOWN_REASON_CODES:
         return value
     return "invalid_reason_code"
 
