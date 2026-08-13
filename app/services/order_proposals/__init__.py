@@ -15,14 +15,26 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.services.order_proposals.service import OrderProposalsService
+    from app.services.order_proposals.service import (
+        OrderProposalsService,
+        WatchToOrderScope,
+        WatchToOrderScopeGroup,
+        WatchToOrderScopeInspection,
+        WatchToOrderScopeRung,
+    )
 
-__all__ = ["OrderProposalsService"]
+__all__ = [
+    "OrderProposalsService",
+    "WatchToOrderScope",
+    "WatchToOrderScopeGroup",
+    "WatchToOrderScopeInspection",
+    "WatchToOrderScopeRung",
+]
 
 
 def __getattr__(name: str):
-    if name == "OrderProposalsService":
-        from app.services.order_proposals.service import OrderProposalsService
+    if name in __all__:
+        from app.services.order_proposals import service
 
-        return OrderProposalsService
+        return getattr(service, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -739,7 +739,9 @@ def test_policy_caps_follow_the_declared_upper_bands_and_one_new_entry_limit():
     # buy.per_symbol_notional_usd_range=[150,450], and one concurrent new
     # entry; see the ownership-minimal derivation comment in the cap block.
     assert (kr.per_order_cap, kr.daily_cap) == (Decimal("400000"), Decimal("400000"))
-    assert (us.per_order_cap, us.daily_cap) == (Decimal("450"), Decimal("450"))
+    # §65차 (2026-08-14): US caps raised 450 -> 800 so single-share exits of
+    # $500-750 ETFs can auto-approve; the sizing band above is unchanged.
+    assert (us.per_order_cap, us.daily_cap) == (Decimal("800"), Decimal("800"))
 
 
 def test_policy_cost_rate_cannot_be_edited_below_the_code_floor(monkeypatch):

@@ -91,6 +91,11 @@ export function WatchAlertsPanel({ compact = false }: { compact?: boolean }) {
                 {dataState === "ok" ? "실시간" : dataState === "degraded" ? "시세 지연" : "확인 불가"}
               </Pill>
             )}
+            {compact && (
+              <Link to="/watches" style={{ fontSize: 11, color: "var(--fg-3)" }}>
+                전체보기 →
+              </Link>
+            )}
           </div>
           <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--fg-3)" }}>
             AI가 포착한 감시 대상과 실시간 조건 및 근접도를 표시합니다.

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 # ---------------------------------------------------------------------------
@@ -541,3 +541,316 @@ def test_sell_history_dedups_before_limit_and_reports_true_total():
     assert len(data["items"]) == 2  # trimmed page
     assert all(item["source"] == "reconciler" for item in data["items"])
     assert data["source_breakdown"]["websocket"] == 0
+
+
+# ---------------------------------------------------------------------------
+# /order-detail (INVEST-WATCH-UI §57차 item ②)
+# ---------------------------------------------------------------------------
+
+
+def _kis_order_row(**overrides):
+    defaults = {
+        "id": 42,
+        "broker": "kis",
+        "account_mode": "kis_live",
+        "order_no": "0001234500",
+        "symbol": "005930",
+        "side": "buy",
+        "status": "filled",
+        "filled_qty": Decimal("10"),
+        "avg_fill_price": Decimal("70000"),
+        "order_time": "093015",
+        "reconciled_at": datetime(2026, 5, 10, 9, 5, tzinfo=UTC),
+        "exit_reason": None,
+        "thesis": "실적 발표 전 저점 매수",
+        "report_item_uuid": None,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _live_order_row(**overrides):
+    defaults = {
+        "id": 7,
+        "broker": "upbit",
+        "account_scope": "live",
+        "market": "crypto",
+        "order_no": "abc-123",
+        "symbol": "KRW-BTC",
+        "side": "sell",
+        "status": "filled",
+        "filled_qty": Decimal("0.01"),
+        "avg_fill_price": Decimal("110000000"),
+        "order_time": None,
+        "reconciled_at": None,
+        "exit_reason": "target_hit",
+        "thesis": None,
+        "report_item_uuid": None,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _toss_order_row(**overrides):
+    defaults = {
+        "id": 3,
+        "broker": "toss",
+        "account_mode": "toss_live",
+        "market": "kr",
+        "broker_order_id": "toss-9",
+        "client_order_id": "toss-client-9",
+        "symbol": "005930",
+        "side": "buy",
+        "status": "accepted",
+        "filled_qty": None,
+        "avg_fill_price": None,
+        "reconciled_at": None,
+        "exit_reason": None,
+        "thesis": "분할매수 1구간",
+        "report_item_uuid": None,
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def _make_order_detail_app(db):
+    from app.core.db import get_db
+    from app.routers import invest_fills
+    from app.routers.dependencies import get_authenticated_user
+
+    app = FastAPI()
+    app.include_router(invest_fills.router)
+    app.dependency_overrides[get_authenticated_user] = lambda: SimpleNamespace(id=1)
+    app.dependency_overrides[get_db] = lambda: db
+    return app
+
+
+def _recording_db_get(rows_by_model_and_id: dict) -> AsyncMock:
+    """AsyncSession.get() stub that records which (model, pk) was queried.
+
+    verify-r1 BLOCKER-1 root cause: the original tests mocked ``db.get`` with
+    a flat ``return_value``, so they never asserted *which model class* was
+    queried — the router could look up the wrong table and every assertion
+    would still pass as long as *a* row came back. These tests instead key
+    the stub by ``(model, pk)`` so a wrong-table lookup returns ``None``
+    (surfacing as an unexpected 404) instead of silently returning content.
+    """
+    calls: list[tuple[type, int]] = []
+
+    async def _get(model, pk):
+        calls.append((model, pk))
+        return rows_by_model_and_id.get((model, pk))
+
+    db = AsyncMock()
+    db.get = AsyncMock(side_effect=_get)
+    db.get.calls = calls  # type: ignore[attr-defined]
+    return db
+
+
+@pytest.mark.unit
+def test_order_detail_kis_kr_returns_row_from_kis_ledger():
+    from app.models.review import KISLiveOrderLedger
+
+    row = _kis_order_row()
+    db = _recording_db_get({(KISLiveOrderLedger, 42): row})
+    client = TestClient(_make_order_detail_app(db))
+
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=kis&market=kr&ledger_id=42"
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ledger_id"] == 42
+    assert data["symbol"] == "005930"
+    assert data["thesis"] == "실적 발표 전 저점 매수"
+    assert data["market"] == "kr"
+    assert db.get.calls == [(KISLiveOrderLedger, 42)]
+
+
+@pytest.mark.unit
+def test_order_detail_toss_kr_returns_row_from_toss_ledger():
+    from app.models.review import TossLiveOrderLedger
+
+    row = _toss_order_row()
+    db = _recording_db_get({(TossLiveOrderLedger, 3): row})
+    client = TestClient(_make_order_detail_app(db))
+
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=toss&market=kr&ledger_id=3"
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["order_no"] == "toss-9"
+    assert data["thesis"] == "분할매수 1구간"
+    assert db.get.calls == [(TossLiveOrderLedger, 3)]
+
+
+@pytest.mark.unit
+def test_order_detail_upbit_crypto_returns_row_from_live_ledger():
+    from app.models.review import LiveOrderLedger
+
+    row = _live_order_row()
+    db = _recording_db_get({(LiveOrderLedger, 7): row})
+    client = TestClient(_make_order_detail_app(db))
+
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=upbit&market=crypto&ledger_id=7"
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["symbol"] == "KRW-BTC"
+    assert data["exit_reason"] == "target_hit"
+    assert db.get.calls == [(LiveOrderLedger, 7)]
+
+
+@pytest.mark.unit
+def test_order_detail_kis_us_returns_row_from_live_ledger():
+    """US live orders placed via the KIS broker (ROB-407) land in
+    LiveOrderLedger, NOT KISLiveOrderLedger — broker="kis" alone does not
+    imply the KR domestic table."""
+    from app.models.review import LiveOrderLedger
+
+    row = _live_order_row(
+        id=99,
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        symbol="AAPL",
+        side="sell",
+    )
+    db = _recording_db_get({(LiveOrderLedger, 99): row})
+    client = TestClient(_make_order_detail_app(db))
+
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=kis&market=us&ledger_id=99"
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["symbol"] == "AAPL"
+    assert data["market"] == "us"
+    assert db.get.calls == [(LiveOrderLedger, 99)]
+
+
+@pytest.mark.unit
+def test_order_detail_disambiguates_colliding_ledger_id_across_ledgers_by_market():
+    """verify-r1 BLOCKER-1 collision fixture (acceptance criterion COLLISION_TEST).
+
+    broker="kis" is written to BOTH KISLiveOrderLedger (KR) and LiveOrderLedger
+    (US, via KIS) — two independent id sequences. Seed id=42 in both tables
+    with DIFFERENT content and confirm the KR link and the US link each
+    resolve to their own correct row, never the other's."""
+    from app.models.review import KISLiveOrderLedger, LiveOrderLedger
+
+    kr_row = _kis_order_row(
+        id=42, symbol="005930", side="buy", thesis="KR 실적 발표 전 저점 매수"
+    )
+    us_row = _live_order_row(
+        id=42,
+        broker="kis",
+        account_scope="kis_live",
+        market="us",
+        symbol="AAPL",
+        side="sell",
+        thesis="US 밸류에이션 부담으로 축소",
+        exit_reason=None,
+    )
+    db = _recording_db_get(
+        {(KISLiveOrderLedger, 42): kr_row, (LiveOrderLedger, 42): us_row}
+    )
+    client = TestClient(_make_order_detail_app(db))
+
+    kr_resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=kis&market=kr&ledger_id=42"
+    )
+    us_resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=kis&market=us&ledger_id=42"
+    )
+
+    assert kr_resp.status_code == 200
+    assert us_resp.status_code == 200
+    kr_data, us_data = kr_resp.json(), us_resp.json()
+    assert kr_data["symbol"] == "005930"
+    assert kr_data["thesis"] == "KR 실적 발표 전 저점 매수"
+    assert us_data["symbol"] == "AAPL"
+    assert us_data["thesis"] == "US 밸류에이션 부담으로 축소"
+    assert kr_data != us_data
+    assert db.get.calls == [(KISLiveOrderLedger, 42), (LiveOrderLedger, 42)]
+
+
+@pytest.mark.unit
+def test_order_detail_rejects_unrecognized_broker_market_combination():
+    """Fail-closed on an unrecognized (broker, market) pair — e.g. a typo or
+    an unsupported combination — instead of silently falling through to an
+    arbitrary ledger table (the exact bug this rework fixes)."""
+    db = _recording_db_get({})
+    client = TestClient(_make_order_detail_app(db))
+
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=upbit&market=kr&ledger_id=1"
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "unknown_ledger_combination"
+    # never even queries the DB — the allowlist check happens first
+    assert db.get.calls == []
+
+
+@pytest.mark.unit
+def test_order_detail_returns_404_when_missing():
+    db = _recording_db_get({})
+    client = TestClient(_make_order_detail_app(db))
+
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=kis&market=kr&ledger_id=999"
+    )
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.unit
+def test_order_detail_requires_ledger_id():
+    db = AsyncMock()
+    client = TestClient(_make_order_detail_app(db))
+
+    resp = client.get("/trading/api/invest/fills/order-detail?broker=kis&market=kr")
+    assert resp.status_code == 422
+
+
+@pytest.mark.unit
+def test_order_detail_requires_market():
+    db = AsyncMock()
+    client = TestClient(_make_order_detail_app(db))
+
+    resp = client.get("/trading/api/invest/fills/order-detail?broker=kis&ledger_id=42")
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Auth — unauthenticated requests return 401
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_unauthenticated_returns_401():
+    from app.core.db import get_db
+    from app.routers import invest_fills
+    from app.routers.dependencies import get_authenticated_user
+
+    app = FastAPI()
+    app.include_router(invest_fills.router)
+
+    def _raise_401():
+        raise HTTPException(status_code=401)
+
+    app.dependency_overrides[get_authenticated_user] = _raise_401
+    app.dependency_overrides[get_db] = lambda: AsyncMock()
+
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get(
+        "/trading/api/invest/fills/order-detail?broker=kis&market=kr&ledger_id=1"
+    )
+    assert resp.status_code == 401

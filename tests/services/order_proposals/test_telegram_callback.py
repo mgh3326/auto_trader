@@ -925,6 +925,11 @@ async def test_acceptance_a_toss_veto_needs_broker_terminal_and_ledger_reconcile
         "terminal:broker-auto-1",
         "reconcile:broker-auto-1",
     ]
+    # ROB-1246 ACCEPTANCE_A_REPLAY: the real 2026-08-13 run reached this exact
+    # broker-terminal-then-reconciled sequence and the operator must see the
+    # success card, never "실패".
+    assert "취소됨" in notifier.edited[-1][2]
+    assert "실패" not in notifier.edited[-1][2]
     _refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
         group.proposal_id
     )
@@ -962,24 +967,117 @@ async def test_toss_auto_veto_never_marks_cancelled_without_reconcile_terminal(
     async def unconfirmed_reconcile(**_kwargs):
         return {"confirmed": False, "error": "original_order_not_terminal_in_ledger"}
 
+    notifier = _FakeNotifier()
     result = await handle_callback_update(
         _make_update(
             data=_proposal_callback_data(group, action="vc", nonce="veto-nonce")
         ),
         now=datetime.now(UTC),
         service_factory=_session_factory(db_session),
-        notifier=_FakeNotifier(),
+        notifier=notifier,
         veto_cancel_fn=cancel_fn,
         veto_fetch_fn=fetch_fn,
         veto_toss_reconcile_fn=unconfirmed_reconcile,
     )
 
-    assert result["reason"] == "auto_veto_failed"
+    # ROB-1246: broker terminal already reports "cancelled" here -- only the
+    # Toss-only second-stage ledger reconcile is unconfirmed. The evidence
+    # filter below (Mutant guard) must still refuse to mark the rung
+    # cancelled without that reconcile, but the operator-facing text must not
+    # claim the cancel "실패" (Acceptance A, 2026-08-13: this exact fixture
+    # shape was the real callback response for a cancel that had already
+    # succeeded and converged moments later via a follow-up reconcile).
+    assert result["reason"] == "auto_veto_unconfirmed"
+    assert "확인 중" in notifier.edited[-1][2]
+    assert "실패" not in notifier.edited[-1][2]
     _refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
         group.proposal_id
     )
     assert rungs[0].state == "resting"
     assert result["outcomes"][0]["error"] == "toss_terminal_reconcile_unconfirmed"
+
+
+@pytest.mark.asyncio
+async def test_auto_veto_still_open_after_cancel_attempt_reports_failure(
+    monkeypatch, db_session
+):
+    """실패 분기: fresh broker fetch shows the target still open, not cancelled."""
+    _allow_chat(monkeypatch)
+    group = await _seed_auto_resting(db_session)
+
+    async def cancel_fn(**_kwargs):
+        return {"success": False, "error": "broker_rejected"}
+
+    async def fetch_fn(**kwargs):
+        return TargetOrderSnapshot(
+            broker_order_id="broker-auto-1",
+            symbol="005930",
+            side="buy",
+            order_type="limit",
+            limit_price="97000",
+            remaining_quantity="1",
+            status="resting",
+            observed_at=kwargs["now"].isoformat(),
+        )
+
+    notifier = _FakeNotifier()
+    result = await handle_callback_update(
+        _make_update(
+            data=_proposal_callback_data(group, action="vc", nonce="veto-nonce")
+        ),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        veto_cancel_fn=cancel_fn,
+        veto_fetch_fn=fetch_fn,
+    )
+
+    assert result["reason"] == "auto_veto_failed"
+    assert "취소 실패" in notifier.edited[-1][2]
+    _refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "resting"
+
+
+@pytest.mark.asyncio
+async def test_auto_veto_status_fetch_failure_reports_unconfirmed_not_failure(
+    monkeypatch, db_session
+):
+    """미확정 분기: the post-cancel status fetch itself errors out.
+
+    A broker read failure proves nothing about whether the cancel took --
+    it must not be shown to the operator as a confirmed "취소 실패" any more
+    than the Toss reconcile-lag case is (ROB-1246).
+    """
+    _allow_chat(monkeypatch)
+    group = await _seed_auto_resting(db_session)
+
+    async def cancel_fn(**_kwargs):
+        return {"success": True}
+
+    async def fetch_fn(**_kwargs):
+        raise RuntimeError("broker_timeout")
+
+    notifier = _FakeNotifier()
+    result = await handle_callback_update(
+        _make_update(
+            data=_proposal_callback_data(group, action="vc", nonce="veto-nonce")
+        ),
+        now=datetime.now(UTC),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        veto_cancel_fn=cancel_fn,
+        veto_fetch_fn=fetch_fn,
+    )
+
+    assert result["reason"] == "auto_veto_unconfirmed"
+    assert "확인 중" in notifier.edited[-1][2]
+    assert "실패" not in notifier.edited[-1][2]
+    _refreshed, rungs = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
+    )
+    assert rungs[0].state == "resting"
 
 
 @pytest.mark.asyncio
