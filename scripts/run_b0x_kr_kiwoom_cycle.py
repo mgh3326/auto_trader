@@ -10,21 +10,22 @@
     # bounded to one submission, and it ALWAYS cancels what it sent.
     uv run python -m scripts.run_b0x_kr_kiwoom_cycle --confirm
 
-    # Explicitly selected INTERIM DAY-order path. It is never the default and
+    # Explicitly selected ORDERING DAY-order path. It is never the default and
     # requires the same per-call confirmation gate.
-    uv run python -m scripts.run_b0x_kr_kiwoom_cycle --interim-ordering --confirm
+    uv run python -m scripts.run_b0x_kr_kiwoom_cycle --ordering --confirm
 
 ``--confirm`` alone is ``ACCEPTANCE_ONLY``: one submit followed by broker-proven
-cancel. ``--interim-ordering --confirm`` is ``INTERIM_ORDERING``: it submits
-every eligible envelope-derived **buy** DAY order and deliberately does not
-auto-cancel. Sell wiring remains behind a default-on, non-CLI buy-only gate
-until explicit approval or B-track merge. Both are default-disabled, cannot be
-combined with ``--now``, and expose no envelope override. The §4 caps are
-module constants in ``scripts.b0x.envelope``, re-asserted before every read.
+cancel. ``--ordering --confirm`` is ``ORDERING``: it submits eligible
+envelope-derived DAY orders and deliberately does not auto-cancel them. Its
+separate runtime path re-reads pending and same-day foreign broker trace before
+every mutation, checks its account writer lease, and refuses an unreadable
+realized-P&L input. Both paths are default-disabled, cannot be combined with
+``--now``, and expose no envelope override. The §4 caps are module constants in
+``scripts.b0x.envelope``, re-asserted before every read.
 
 🔴 There is no ``--no-cancel`` for acceptance. The cancellation it requires
 must be broker-proven or exits ``2``; that safe acceptance behavior is not
-silently transformed into the interim mode.
+silently transformed into ORDERING.
 
 No scheduler registration exists for this script — not TaskIQ, not Prefect,
 not launchd. A cycle happens because an operator ran it.
@@ -133,8 +134,8 @@ async def _readiness(args: argparse.Namespace) -> int:
 
 
 async def _run(args: argparse.Namespace) -> int:
-    if args.interim_ordering and not args.confirm:
-        print("--interim-ordering requires --confirm", file=sys.stderr)
+    if args.ordering and not args.confirm:
+        print("--ordering requires --confirm", file=sys.stderr)
         return 2
     if args.confirm and args.now is not None:
         print("--confirm cannot be combined with --now", file=sys.stderr)
@@ -155,7 +156,7 @@ async def _run(args: argparse.Namespace) -> int:
             table_dir=Path(args.table_dir).expanduser(),
             out_dir=Path(args.out_dir).expanduser(),
             confirm=args.confirm,
-            interim_ordering=args.interim_ordering,
+            ordering=args.ordering,
         )
     except WriterLockUnavailable as exc:
         print(f"WRITER_LOCK_UNAVAILABLE — {exc}", file=sys.stderr)
@@ -202,10 +203,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--interim-ordering",
+        "--ordering",
         action="store_true",
         help=(
-            "select INTERIM_ORDERING DAY-order retention; requires --confirm. "
+            "select ORDERING DAY-order retention; requires --confirm. "
             "Without this flag, --confirm remains the one-order acceptance cancel"
         ),
     )

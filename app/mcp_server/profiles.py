@@ -2,6 +2,11 @@
 
 Profiles gate which tool subsets are registered at startup.
 Profile selection is driven by the MCP_PROFILE env var (default: "default").
+
+ROB-1239: for what `route_request`'s `blocked_actions` does and does not mean
+relative to this file's registration, see the canonical statement in
+`app/mcp_server/tooling/route_request_registration.py`'s `route_request` tool
+`description=` string.
 """
 
 from __future__ import annotations

@@ -61,6 +61,25 @@ See the full design in
   AST guard test (`tests/services/order_proposals/test_no_repository_imports.py`)
   enforces this. Direct SQL INSERT/UPDATE/DELETE against `review.order_proposals`
   / `review.order_proposal_rungs` is not permitted.
+- **Watcher read/create seam.** A watcher candidate that can create an order
+  proposal must call `inspect_watch_to_order_scope(symbol, market,
+  account_mode, broker_account_id, action="place")` and keep the same service
+  instance plus uncommitted transaction through
+  `create_proposal_in_watch_to_order_scope(inspection, ...)`. The scope is
+  exactly symbol, market, account mode, and broker account; the service takes a
+  nonblocking transaction advisory lock before its rung-level read. A false
+  `lock_acquired`, any returned active group, a changed transaction, a changed
+  scope, or a consumed reservation means zero creates. The returned groups
+  include every rung state, because a group marked `superseded` can still have a
+  `resting` rung. Commit or rollback releases the lock. Existing
+  `create_proposal` callers remain unchanged and are not this seam.
+- **Reserve-net consumer activation condition.**
+  `_ATOMIC_SELF_OPEN_ORDER_READ_SEAM_AVAILABLE` in
+  `support_reserve_net_consumer.py` must remain false until a separately
+  reviewed consumer-wiring change performs the preceding inspect → empty-result
+  → companion-create sequence in one `OrderProposalsService` transaction for
+  every proposed scope. Merely importing this service API, observing an empty
+  best-effort list, or changing that boolean is not readiness to create.
 - **Proposal persistence precedes every broker mutation.**
   `order_proposal_create` first commits the intended order. With
   `ORDER_PROPOSALS_AUTO_APPROVE=false` (default), creation does not submit.

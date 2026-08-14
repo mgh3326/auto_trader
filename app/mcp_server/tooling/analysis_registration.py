@@ -16,6 +16,9 @@ from app.mcp_server.tooling.analysis_tool_handlers import (
     get_top_stocks_impl,
     screen_stocks_impl,
 )
+from app.mcp_server.tooling.buy_candidate_fanout_registration import (
+    register_buy_candidate_fanout_tools,
+)
 from app.mcp_server.tooling.momentum_candidates import get_momentum_candidates_impl
 from app.mcp_server.tooling.research_pipeline_read import (
     research_session_get_impl,
@@ -38,8 +41,9 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "analyze_stock_batch",
     "screen_stocks",
     "screen_stocks_snapshot",
+    "discover_buy_candidates_fanout",
     # ROB-359: "recommend_stocks" is intentionally registry-hidden (parked).
-    # screen_stocks is the single candidate-discovery entrypoint; the
+    # screen_stocks is the generic candidate-discovery entrypoint; the
     # recommend_stocks_impl implementation is retained in
     # analysis_tool_handlers for a future narrow build_buy_plan tool.
     "get_top_stocks",
@@ -62,6 +66,8 @@ def register_analysis_tools(
     mcp: FastMCP,
 ) -> None:
     """Register MCP tools for analysis, screening, and ranking utilities."""
+
+    register_buy_candidate_fanout_tools(mcp)
 
     @mcp.tool(
         name="get_krx_session_health",
@@ -484,7 +490,7 @@ def register_analysis_tools(
     # ROB-359: recommend_stocks is intentionally NOT registered on the MCP tool
     # surface (registry-hidden / parked). Rationale: its role overlapped
     # ambiguously with screen_stocks and it could be invoked as a new-buy basis.
-    # screen_stocks is now the single candidate-discovery entrypoint. The
+    # screen_stocks remains the generic candidate-discovery entrypoint. The
     # read-only recommend_stocks_impl implementation is retained in
     # app.mcp_server.tooling.analysis_tool_handlers so it can be re-introduced
     # later as a narrow build_buy_plan tool. Do not call recommend_stocks from

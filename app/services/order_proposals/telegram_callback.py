@@ -78,8 +78,10 @@ from app.services.order_proposals.approval_window import (
 from app.services.order_proposals.auto_veto import (
     TargetCancelFn,
     TargetFetchFn,
+    TossVetoReconcileFn,
     acquire_auto_veto_locks,
     cancel_auto_submitted_rungs,
+    reconcile_toss_auto_veto_terminal,
 )
 from app.services.order_proposals.broker_gateway import (
     cancel_target_order,
@@ -531,6 +533,35 @@ async def _handle_deny(
     }
 
 
+def _classify_veto_outcome(outcome: Mapping[str, Any]) -> str:
+    """Map one ``cancel_auto_submitted_rungs`` outcome to a display bucket.
+
+    ``result: "cancel_failed"`` covers two evidentially distinct cases (see
+    ``auto_veto.cancel_auto_submitted_rungs``): (1) the fresh broker fetch
+    already reports the target ``cancelled`` but the Toss-only second-stage
+    ledger reconcile hasn't confirmed yet (``broker_status == "cancelled"``),
+    and (2) the fetch itself never produced a status (broker read failure ->
+    ``broker_status is None``). Neither is proof the cancel did NOT take
+    effect -- ROB-1246: the real Acceptance A run hit case (1) and the
+    operator saw a false "취소 실패" for a cancel that had already succeeded
+    at the broker and converged moments later via a follow-up reconcile.
+    Only a fetched, non-cancelled broker status is a confirmed failure.
+    """
+    result = outcome.get("result")
+    if result in {"filled", "cancelled"}:
+        return result
+    if result == "cancel_failed":
+        broker_status = outcome.get("broker_status")
+        if broker_status == "cancelled" or broker_status is None:
+            return "unconfirmed"
+        return "failed"
+    # "not_cancellable": the rung was never in a broker-cancellable state
+    # (already resolved via another path, or missing a broker_order_id) --
+    # there is no pending broker evidence to wait on, so this is a definite
+    # failure bucket rather than "unconfirmed".
+    return "failed"
+
+
 async def _handle_auto_veto(
     *,
     session: AsyncSession,
@@ -545,6 +576,7 @@ async def _handle_auto_veto(
     telegram_user_id: str,
     cancel_fn: TargetCancelFn,
     fetch_fn: TargetFetchFn,
+    toss_reconcile_fn: TossVetoReconcileFn = reconcile_toss_auto_veto_terminal,
 ) -> dict[str, Any]:
     """Cancel every still-open auto-submitted rung and converge evidence."""
     preflight_failure = await _preflight_proposal_callback(
@@ -577,12 +609,9 @@ async def _handle_auto_veto(
         now=now,
         cancel_fn=cancel_fn,
         fetch_fn=fetch_fn,
+        toss_reconcile_fn=toss_reconcile_fn,
     )
-    saw_filled = any(outcome["result"] == "filled" for outcome in outcomes)
-    saw_failure = any(
-        outcome["result"] in {"cancel_failed", "not_cancellable"}
-        for outcome in outcomes
-    )
+    outcome_kinds = {_classify_veto_outcome(outcome) for outcome in outcomes}
 
     await service.record_auto_veto(
         proposal_id,
@@ -592,12 +621,23 @@ async def _handle_auto_veto(
     )
     await session.commit()
 
-    if saw_filled:
+    # Priority order: a fill always wins (nothing left to cancel); a confirmed
+    # failure (broker still shows the target open after the cancel attempt,
+    # or nothing was cancellable) must not be masked by an unconfirmed rung
+    # elsewhere in the same batch; "unconfirmed" only wins over the default
+    # success text when no rung is a definite fill/failure.
+    if "filled" in outcome_kinds:
         reason = "auto_veto_filled"
         text = "✅ 체결됨 — 취소 시점에 이미 체결된 주문입니다."
-    elif saw_failure:
+    elif "failed" in outcome_kinds:
         reason = "auto_veto_failed"
         text = "⚠️ 취소 실패 — 브로커 주문 상태를 확인해 주세요."
+    elif "unconfirmed" in outcome_kinds:
+        reason = "auto_veto_unconfirmed"
+        text = (
+            "🔍 취소 확인 중 — 브로커 취소 처리를 아직 확정하지 못했습니다. "
+            "잠시 후 다시 확인해 주세요."
+        )
     else:
         reason = "auto_veto_cancelled"
         text = "🛑 취소됨"
@@ -1626,6 +1666,7 @@ async def handle_callback_update(
     loss_cut_preview_fn: RevalidateFn | None = None,
     veto_cancel_fn: TargetCancelFn = cancel_target_order,
     veto_fetch_fn: TargetFetchFn = fetch_target_order,
+    veto_toss_reconcile_fn: TossVetoReconcileFn = reconcile_toss_auto_veto_terminal,
     window_evaluator: WindowEvaluator | None = None,
     now_fn: Clock | None = None,
 ) -> dict[str, Any]:
@@ -1702,6 +1743,7 @@ async def handle_callback_update(
                     ),
                     cancel_fn=veto_cancel_fn,
                     fetch_fn=veto_fetch_fn,
+                    toss_reconcile_fn=veto_toss_reconcile_fn,
                 )
             elif callback.action == "dn":
                 result = await _handle_deny(

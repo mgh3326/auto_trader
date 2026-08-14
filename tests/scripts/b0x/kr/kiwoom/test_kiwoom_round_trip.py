@@ -18,8 +18,9 @@ from decimal import Decimal
 
 import pytest
 
-from scripts.b0x.broker_truth import BrokerTruth
+from scripts.b0x.broker_truth import BrokerTruth, OwnPendingResubmitBlocked
 from scripts.b0x.kr import kiwoom as kiwoom_lane
+from scripts.b0x.kr import kiwoom_attribution as kiwoom_attr
 from tests.scripts.b0x.kr.kiwoom.conftest import FakeAccount, resting
 
 pytestmark = pytest.mark.unit
@@ -50,9 +51,35 @@ def _sink():  # noqa: ANN202
     return _record
 
 
+def _readback_row(
+    *,
+    order_no: str = "0000123456",
+    symbol: str = "005930",
+    ordered_quantity: int = 3,
+    filled_quantity: int = 1,
+    remaining_quantity: int = 2,
+    unfilled_quantity: int = 2,
+    ordered_price: int = 70_000,
+    average_price: int = 70_100,
+) -> dict[str, object]:
+    """A broker-detail row for one partial DAY fill."""
+
+    return {
+        "order_id": order_no,
+        "symbol": symbol,
+        "status": "partial",
+        "ordered_quantity": ordered_quantity,
+        "filled_quantity": filled_quantity,
+        "remaining_quantity": remaining_quantity,
+        "unfilled_quantity": unfilled_quantity,
+        "ordered_price": ordered_price,
+        "average_price": average_price,
+    }
+
+
 @pytest.mark.asyncio
-async def test_interim_day_submission_never_calls_cancel(now) -> None:  # noqa: ANN001
-    """INTERIM_ORDERING records acceptance, not a synthetic fill or cleanup."""
+async def test_ordering_day_submission_never_calls_cancel(now) -> None:  # noqa: ANN001
+    """ORDERING records acceptance, not a synthetic fill or cleanup."""
 
     account = FakeAccount()
     writer = _sink()
@@ -86,6 +113,106 @@ async def test_interim_day_submission_never_calls_cancel(now) -> None:  # noqa: 
     assert writer.written == [  # type: ignore[attr-defined]
         {"order_no": "0000123456", "symbol": "005930", "at": now}
     ]
+
+
+@pytest.mark.asyncio
+async def test_ordering_day_submission_blocks_same_symbol_own_pending(now) -> None:  # noqa: ANN001
+    """E7: the DAY path repeats the dedup check at its mutation boundary."""
+
+    account = FakeAccount()
+    blocked_truth = BrokerTruth(position_symbols=(), own_pending=("005930",))
+
+    with pytest.raises(OwnPendingResubmitBlocked):
+        await kiwoom_lane.submit_day_order(
+            account,
+            planned=_planned(symbol="005930"),
+            broker_truth=blocked_truth,
+            record_order_no=_sink(),
+            now=now,
+        )
+
+    assert account.buy_calls == [], "a blocked DAY resubmit must not reach the venue"
+
+
+@pytest.mark.asyncio
+async def test_ordering_readback_missing_acknowledged_row_is_unavailable(
+    now,
+) -> None:  # noqa: ANN001
+    """E2: an ACK without its kt00007 row is not a fabricated fill."""
+
+    account = FakeAccount(
+        order_detail={kiwoom_attr.kst_order_date(now): []},
+    )
+
+    with pytest.raises(
+        kiwoom_lane.BrokerOrderReadbackUnavailable, match="did not return"
+    ):
+        await kiwoom_lane.read_order_readback(
+            account,
+            planned=_planned(quantity=3),
+            order_no="0000123456",
+            order_date=kiwoom_attr.kst_order_date(now),
+            at=now,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    (
+        ("order_id", "0000000999", "order_no"),
+        ("symbol", "000660", "symbol"),
+        ("ordered_quantity", 4, "ordered_quantity"),
+        ("ordered_price", 70_100, "ordered_price"),
+        ("filled_quantity", 4, "filled_quantity"),
+        ("remaining_quantity", 3, "remaining_quantity"),
+    ),
+)
+def test_ordering_readback_rejects_echo_or_quantity_inconsistency(
+    now, field: str, value: str | int, expected: str
+) -> None:  # noqa: ANN001
+    """E5: every broker echo and fill arithmetic mismatch is fail-closed."""
+
+    row = _readback_row()
+    row[field] = value
+
+    with pytest.raises(kiwoom_lane.BrokerEchoMismatch, match=expected):
+        kiwoom_lane._readback_from_detail_row(  # noqa: SLF001 - exact guard vector
+            row=row,
+            planned=_planned(quantity=3),
+            order_no="0000123456",
+            at=now,
+        )
+
+
+def test_ordering_partial_readback_conserves_remaining_vwap_and_slippage(now) -> None:  # noqa: ANN001
+    """The partial-fill artifact is broker-derived, not completion-shaped."""
+
+    readback = kiwoom_lane._readback_from_detail_row(  # noqa: SLF001 - exact guard vector
+        row=_readback_row(),
+        planned=_planned(quantity=3),
+        order_no="0000123456",
+        at=now,
+    )
+
+    assert readback.partial is True
+    assert readback.complete is False
+    assert readback.remaining_quantity == 2
+    assert readback.canonical()["fill_vwap"] == "70100"
+    assert readback.canonical()["slippage_krw"] == "100"
+
+
+def test_ordering_filled_readback_without_broker_vwap_is_unavailable(now) -> None:  # noqa: ANN001
+    """A fill with no positive broker VWAP cannot preserve its artifact."""
+
+    with pytest.raises(
+        kiwoom_lane.BrokerOrderReadbackUnavailable, match="positive broker VWAP"
+    ):
+        kiwoom_lane._readback_from_detail_row(  # noqa: SLF001 - exact guard vector
+            row=_readback_row(average_price=0),
+            planned=_planned(quantity=3),
+            order_no="0000123456",
+            at=now,
+        )
 
 
 @pytest.mark.asyncio

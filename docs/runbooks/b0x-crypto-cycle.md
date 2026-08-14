@@ -34,6 +34,9 @@
    uv run python -m scripts.build_policy_table --market crypto
    ```
    출력 위치 = `~/services/auto_trader-operator/policy-tables/latest-crypto.json`.
+   이 기본 경로는 §47 Prefect가 `policy-tables/`만 직접 커밋하는 정상 경로라 CLI가
+   stderr에 공유 체크아웃 경고를 남긴다. 수동·격리 빌드는 반드시 별도
+   `--out-dir /안전한/개인/경로`를 명시한다.
    B0-X 는 이 디렉토리를 **읽기만** 한다 (생성기를 호출하지 않는다).
 2. 사이드카를 쓸 경우에만: `B0X_SIDECAR_ENABLED=true` + `BINANCE_SPOT_DEMO_ENABLED=true`
    + `BINANCE_SPOT_DEMO_API_KEY/SECRET` (또는 canonical `BINANCE_DEMO_API_*`).

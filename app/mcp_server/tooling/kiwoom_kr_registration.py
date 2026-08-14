@@ -85,6 +85,7 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "analyze_portfolio",
         "analyze_stock",
         "analyze_stock_batch",
+        "discover_buy_candidates_fanout",
         "execution_ledger_fill_events_list_recent",
         "forecast_resolve",
         "forecast_save",

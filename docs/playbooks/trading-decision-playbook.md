@@ -46,6 +46,11 @@ for the procedure-contract vs. operator-instruction boundary.
 
 All tool names below are registered in the **DEFAULT** MCP profile.
 
+> **ROB-1239 pointer.** The canonical statement of what "route_request is
+> advisory" means (below, e.g. §1 step 5, §2 step 6) is the `route_request`
+> tool `description=` string in
+> `app/mcp_server/tooling/route_request_registration.py`.
+
 ---
 
 ## 0) Common frame (precedes every decision)
@@ -121,7 +126,9 @@ lanes:
    fresh preview/revalidation and broker submit belong to the proposal approval
    subsystem. `route_request` is advisory, so it cannot override a deployment's
    auto-approval configuration; the create response's `approval_dispatch` is
-   the runtime truth.
+   the runtime truth. (ROB-1239: canonical semantics for "advisory" — the
+   `route_request` tool `description=` string in
+   `app/mcp_server/tooling/route_request_registration.py`.)
 6. Broker acceptance/resting is not a fill. Converge fill/cancel state through
    the registered broker/account reconcile helper and broker evidence; the
    route has no `account_mode`, so it does not choose one reconcile tool.
@@ -293,8 +300,11 @@ lanes:
 6. Fresh broker preview/revalidation and submit belong to the proposal approval
    subsystem. `route_request` is advisory and cannot override auto-approval
    configuration; `approval_dispatch` in the create response is the runtime
-   truth. Broker acceptance/resting is not a fill, so converge the result with
-   the registered broker/account reconcile helper and broker evidence.
+   truth. (ROB-1239: canonical semantics for "advisory" — the `route_request`
+   tool `description=` string in
+   `app/mcp_server/tooling/route_request_registration.py`.) Broker
+   acceptance/resting is not a fill, so converge the result with the
+   registered broker/account reconcile helper and broker evidence.
 7. WATCH items are recorded as conditional trigger text (e.g. "when in-the-money
    AND resistance reached, place at <price>"). Today this depends on session
    memory / journal — [ROB-637](https://linear.app/mgh3326/issue/ROB-637)

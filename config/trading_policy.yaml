@@ -2,7 +2,7 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-version: "2026-08-12.5"
+version: "2026-08-14.1"
 captured_as_of: "2026-08-12"
 source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits)"
 
@@ -34,16 +34,29 @@ posture:
 
 # ROB-871 — master-gated by ORDER_PROPOSALS_AUTO_APPROVE=false. Caps use the
 # settlement currency for each market (KRW for kr/crypto, USD for us).
+# TOSS-AUTO-FULL (§51): KR per-order uses the upper bound of
+# ``buy.per_symbol_notional_krw_range`` [200000, 400000]; US uses the upper
+# bound of ``buy.per_symbol_notional_usd_range`` [150, 450].  The daily cap is
+# that upper bound × the one-new-entry limit stated at
+# ``user_stances[0].implications[0]`` ("동시 신규 최대 1종목"), hence KRW
+# 400000 and USD 450.  This comment intentionally records the derivation
+# without touching the separately owned buy/sell policy tiers.
 order_proposals:
   auto_approve:
     min_distance_pct: 3
     per_order_cap:
-      kr: 200000
-      us: 150
+      kr: 400000
+      # §65차 (2026-08-14): 450 → 800. The US book holds single-share lots of
+      # high-priced ETFs (QQQ/VOO/IVV/BRK.B at $500-750/share), so the band-
+      # derived 450 structurally excluded every single-share profit-take from
+      # auto-approve (25/25 sell proposals carded on 2026-08-13). 800 admits
+      # one-share exits while still capping multi-share notional.
+      us: 800
       crypto: 100000
     daily_cap:
-      kr: 500000
-      us: 400
+      kr: 400000
+      # §65차: paired with per_order_cap.us per the KR same-value pattern.
+      us: 800
       crypto: 300000
     # AUTO-APPROVE-EXPAND (§40차) — inputs to the profit-take classification,
     # consumed only when ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded.

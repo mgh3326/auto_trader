@@ -146,6 +146,37 @@ def format_cancel_notification(
     }
 
 
+def format_auto_veto_card_mirror(
+    *,
+    symbol: str,
+    quantities: list[str],
+    prices: list[str],
+    thesis_summary: str,
+    policy_version: str,
+) -> DiscordEmbed:
+    """Render the Discord mirror of a post-submit cancellation card.
+
+    The required fields deliberately remain separate rather than being packed
+    into one order-detail string: an operator must be able to see symbol,
+    quantity, price, and the decision thesis independently at a glance.
+    """
+    if not thesis_summary.strip():
+        raise ValueError("auto-veto mirror requires a thesis summary")
+    if not quantities or not prices or len(quantities) != len(prices):
+        raise ValueError("auto-veto mirror requires matched quantity and price")
+    return {
+        "title": "✅ 자동 접수됨 — 취소 가능",
+        "description": f"🕒 {format_datetime()}\n정책: {policy_version}",
+        "color": COLORS["buy"],
+        "fields": [
+            {"name": "종목", "value": symbol, "inline": True},
+            {"name": "수량", "value": "\n".join(quantities), "inline": True},
+            {"name": "가격", "value": "\n".join(prices), "inline": True},
+            {"name": "사유", "value": thesis_summary, "inline": False},
+        ],
+    }
+
+
 def _base_toss_fields(
     symbol: str,
     korean_name: str,

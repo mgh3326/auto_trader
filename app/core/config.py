@@ -851,6 +851,13 @@ class Settings(BaseSettings):
     #              approval-required.
     # Turning this to "expanded" is an operator decision; this repo ships "off".
     ORDER_PROPOSALS_AUTO_APPROVE_MODE: Literal["off", "expanded"] = "off"
+    # TOSS-AUTO-FULL (§51) — a separate, default-off expansion for the live
+    # Toss account.  It remains subordinate to ORDER_PROPOSALS_AUTO_APPROVE
+    # and requires the post-submit veto path to obtain both a broker-terminal
+    # cancellation snapshot and a Toss-ledger reconciliation result.  Keeping
+    # this false in code means a deployment cannot make Toss auto-submittable
+    # merely by enabling the pre-existing master/mode settings.
+    ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED: bool = False
     # ROB-816 PR 2 — Telegram approval flow (default off)
     ORDER_PROPOSALS_TELEGRAM_ENABLED: bool = False
     ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN: str = ""

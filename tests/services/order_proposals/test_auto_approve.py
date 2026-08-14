@@ -10,9 +10,14 @@ import pytest
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.auto_approve import (
     AutoApproveLimits,
+    build_auto_approved_message,
     evaluate_auto_approve_eligibility,
     find_approval_required_tags,
     limits_for_market,
+)
+from app.services.order_proposals.dispatch_contract import (
+    ApprovalCardKind,
+    build_proposal_dispatch_binding,
 )
 from app.services.order_proposals.service import RungInput
 
@@ -25,6 +30,7 @@ def _group(**overrides):
         "order_type": "limit",
         "action": "place",
         "exit_intent": None,
+        "thesis": "test thesis",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -32,6 +38,7 @@ def _group(**overrides):
 
 def _rung(**overrides):
     values = {
+        "rung_index": 0,
         "side": "buy",
         "limit_price": Decimal("97000"),
         "quantity": Decimal("2"),
@@ -504,7 +511,114 @@ def test_shipped_default_mode_is_off(monkeypatch):
     from app.core.config import Settings
 
     assert Settings.model_fields["ORDER_PROPOSALS_AUTO_APPROVE_MODE"].default == "off"
+    assert (
+        Settings.model_fields["ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED"].default is False
+    )
     assert limits_for_market("equity_kr").mode == "off"
+
+
+def test_toss_live_requires_its_separate_default_off_veto_gate(monkeypatch):
+    from app.services.order_proposals import auto_approve as module
+
+    blocked = _evaluate(
+        group_overrides={"account_mode": "toss_live", "market": "equity_kr"},
+        limit_price=Decimal("99500"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+    monkeypatch.setattr(module.settings, "ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED", True)
+    allowed = _evaluate(
+        group_overrides={"account_mode": "toss_live", "market": "equity_kr"},
+        limit_price=Decimal("99500"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+
+    assert (blocked.eligible, blocked.reason) == (False, "account_not_veto_capable")
+    assert (allowed.eligible, allowed.reason) == (True, "eligible")
+
+
+def test_auto_veto_card_requires_a_thesis_not_a_strategy_fallback():
+    decision = _evaluate(
+        group_overrides={"thesis": "", "strategy": "mean_reversion"},
+        limit_price=Decimal("99500"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+
+    assert (decision.eligible, decision.reason) == (
+        False,
+        "thesis_required_for_veto_card",
+    )
+
+
+def test_auto_veto_card_has_symbol_quantity_price_and_thesis_fields():
+    group = _group(
+        proposal_id=uuid.uuid4(),
+        symbol="005930",
+        side="buy",
+        thesis="valuation dislocation",
+    )
+    binding = build_proposal_dispatch_binding(
+        proposal_id=group.proposal_id,
+        nonce="fixture-nonce",
+        attempt_id=uuid.uuid4(),
+        card_kind=ApprovalCardKind.AUTO_VETO,
+        current_membership_revision=None,
+    )
+
+    text, _keyboard = build_auto_approved_message(
+        group=group,
+        rungs=[_rung(quantity=Decimal("2"), limit_price=Decimal("97000"))],
+        nonce="fixture-nonce",
+        policy_version="fixture-policy",
+        binding=binding,
+    )
+
+    assert "종목: `005930`" in text
+    assert "수량: #1 2" in text
+    assert "가격: #1 97000" in text
+    assert "근거: valuation dislocation" in text
+
+
+def test_auto_veto_card_raises_when_thesis_is_missing():
+    group = _group(
+        proposal_id=uuid.uuid4(),
+        symbol="005930",
+        side="buy",
+        thesis=" ",
+    )
+    binding = build_proposal_dispatch_binding(
+        proposal_id=group.proposal_id,
+        nonce="fixture-nonce",
+        attempt_id=uuid.uuid4(),
+        card_kind=ApprovalCardKind.AUTO_VETO,
+        current_membership_revision=None,
+    )
+
+    with pytest.raises(ValueError, match="non-empty thesis"):
+        build_auto_approved_message(
+            group=group,
+            rungs=[_rung()],
+            nonce="fixture-nonce",
+            policy_version="fixture-policy",
+            binding=binding,
+        )
+
+
+def test_policy_caps_follow_the_declared_upper_bands_and_one_new_entry_limit():
+    kr = limits_for_market("equity_kr")
+    us = limits_for_market("equity_us")
+
+    assert kr is not None
+    assert us is not None
+    # policy buy.per_symbol_notional_krw_range=[200000,400000],
+    # buy.per_symbol_notional_usd_range=[150,450], and one concurrent new
+    # entry; see the ownership-minimal derivation comment in the cap block.
+    assert (kr.per_order_cap, kr.daily_cap) == (Decimal("400000"), Decimal("400000"))
+    # §65차 (2026-08-14): US caps raised 450 -> 800 so single-share exits of
+    # $500-750 ETFs can auto-approve; the sizing band above is unchanged.
+    assert (us.per_order_cap, us.daily_cap) == (Decimal("800"), Decimal("800"))
 
 
 def test_policy_cost_rate_cannot_be_edited_below_the_code_floor(monkeypatch):

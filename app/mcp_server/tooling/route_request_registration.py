@@ -6,6 +6,10 @@ exposes a DIRECT lane->tool ADVISORY tool with NO enforcement. Blocking
 middleware is a separate follow-up issue (mutation tools only; reads
 unrestricted; caller-header-keyed because MCP session state resets on
 reconnect — ROB-469).
+
+ROB-1239: the canonical statement of what `blocked_actions` does and does
+not mean is the `route_request` tool `description=` string below — read
+there, not here.
 """
 
 from __future__ import annotations
@@ -172,7 +176,12 @@ def register_route_request_tools(mcp: FastMCP) -> None:
             "profit_taking: it exposes a read -> preflight -> exact reducing "
             "Alpaca Paper sell sequence, while keeping every other direct broker "
             "mutation blocked. Deterministic (same input -> same "
-            "output). ADVISORY ONLY — it does not block anything; it echoes "
+            "output). ADVISORY ONLY — it does not block anything; a tool listed "
+            "in blocked_actions may still be physically callable if your MCP "
+            "profile has it registered (physical enforcement, when it exists, "
+            "lives at profile tool-registration, a separate layer from this "
+            "response). Comply with blocked_actions as session discipline "
+            "regardless — callability is not authorization. It echoes "
             "get_trading_policy (ROB-646) with policy_version so a verdict can "
             "cite the criteria. Buy/sell use the proposal-led-v1 contract: "
             "order_proposal_create is the only order-intent surface, Telegram "

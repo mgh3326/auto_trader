@@ -74,6 +74,32 @@ async def _accepted(db_session, *, side: str = "buy", market: str = "us"):
     )
 
 
+async def test_original_place_terminal_lookup_requires_reconciled_cancel_evidence(
+    db_session,
+):
+    row = await _accepted(db_session, market="kr")
+    service = TossLiveOrderLedgerService(db_session)
+
+    assert (
+        await service.reconciled_terminal_status_for_place_order(
+            broker_order_id=row.broker_order_id
+        )
+        is None
+    )
+    await service.update_reconcile_outcome(
+        ledger_id=row.id,
+        status="cancelled",
+        broker_status="CANCELLED",
+    )
+
+    assert (
+        await service.reconciled_terminal_status_for_place_order(
+            broker_order_id=row.broker_order_id
+        )
+        == "cancelled"
+    )
+
+
 async def _seed_toss_resting_proposal(
     db_session, *, broker_order_id: str, correlation_id: str
 ):

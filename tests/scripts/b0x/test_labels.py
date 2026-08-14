@@ -1,4 +1,4 @@
-"""B0-X v1.4 account-history label scope and wording guards."""
+"""B0-X account-history label scope and contract-stamp wording guards."""
 
 from __future__ import annotations
 
@@ -116,10 +116,10 @@ def test_shared_history_wording_is_complete_and_non_exaggerated() -> None:
     assert "이제 단독" not in SHARED_ACCOUNT_HISTORY
 
 
-def test_contract_stamp_points_to_v1_4_reference() -> None:
-    assert contract_module.CONTRACT_VERSION == "v1.4"
-    assert set(contract_module.CONTRACT_CLAUSES) == {"§8 v1.4 ②", "§8 v1.4 ③"}
+def test_contract_stamp_points_to_v1_7_reference() -> None:
+    assert contract_module.CONTRACT_VERSION == "v1.7"
+    assert set(contract_module.CONTRACT_CLAUSES) == {"§8 v1.7"}
     assert (
         contract_module.CONTRACT_FILE_SHA256_REFERENCE_ONLY
-        == "bce7104bd1a3f36a253baecc05d8bc960ad1c41a82de4c345d6659320ad1f5f8"
+        == "0d09e1ce4d175da75de17958880491965ea6cae8d13764853f23fbc0348f596a"
     )

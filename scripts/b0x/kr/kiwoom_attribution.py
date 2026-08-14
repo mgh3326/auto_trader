@@ -193,6 +193,82 @@ class OwnOrderJournal:
         return frozenset(record.order_no for record in self.read_all())
 
 
+@dataclass(frozen=True, slots=True)
+class RealizedPnlInput:
+    """The only P&L fact this lane can currently prove without inventing one.
+
+    The Kiwoom mock detail surface provides fills and remaining quantity, but
+    not a dedicated net realized-P&L field (including fees).  A zero is safe
+    only for the bootstrap case where the complete append-only B0-X journal
+    proves that this UTC day has no B0-X order activity at all.  Once activity
+    exists, the correct value is unreadable until a dedicated P&L evidence
+    source is wired; it must never become a fabricated ``Decimal('0')``.
+    """
+
+    value: Decimal | None
+    source: str
+    reason: str | None = None
+
+    @property
+    def readable(self) -> bool:
+        return self.value is not None
+
+    def canonical(self) -> dict[str, Any]:
+        return {
+            "readable": self.readable,
+            "value": None if self.value is None else format(self.value, "f"),
+            "source": self.source,
+            "reason": self.reason,
+        }
+
+
+def realized_pnl_input_today(
+    *, journal: OwnOrderJournal, now: dt.datetime
+) -> RealizedPnlInput:
+    """Return a provable bootstrap zero or an explicit unreadable input."""
+
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    try:
+        records = journal.read_all()
+    except Exception as exc:  # noqa: BLE001 — corrupt evidence is not a zero
+        return RealizedPnlInput(
+            value=None,
+            source="own_order_journal",
+            reason=f"journal_unreadable:{type(exc).__name__}",
+        )
+
+    current_day = now.astimezone(dt.UTC).date()
+    for record in records:
+        try:
+            timestamp = dt.datetime.fromisoformat(record.at.replace("Z", "+00:00"))
+        except ValueError:
+            return RealizedPnlInput(
+                value=None,
+                source="own_order_journal",
+                reason="journal_timestamp_unreadable",
+            )
+        if timestamp.tzinfo is None:
+            return RealizedPnlInput(
+                value=None,
+                source="own_order_journal",
+                reason="journal_timestamp_timezone_missing",
+            )
+        if timestamp.astimezone(dt.UTC).date() == current_day:
+            return RealizedPnlInput(
+                value=None,
+                source="own_order_journal",
+                reason=(
+                    "own_order_activity_exists_today_without_dedicated_"
+                    "realized_pnl_source"
+                ),
+            )
+    return RealizedPnlInput(
+        value=Decimal("0"),
+        source="own_order_journal_no_b0x_activity_today",
+    )
+
+
 class OrderDetailReader(Protocol):
     """``ReadOnlyKiwoomMockAccount.read_order_detail`` — the injection seam."""
 
@@ -320,7 +396,9 @@ __all__ = [
     "OrderDetailReader",
     "OwnOrderJournal",
     "OwnOrderRecord",
+    "RealizedPnlInput",
     "build_attribution",
     "kst_order_date",
     "read_own_attribution",
+    "realized_pnl_input_today",
 ]

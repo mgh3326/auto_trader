@@ -1,5 +1,16 @@
 """Tool registration orchestration for MCP server.
 
+ROB-1239: for what a `route_request` `blocked_actions` verdict does and does
+not mean relative to what this file registers, see the canonical statement in
+`app/mcp_server/tooling/route_request_registration.py`'s `route_request` tool
+`description=` string. Concrete anchor, McpProfile.DEFAULT (below):
+`kis_mock_get_order_history` is route-BLOCK on every lane and registers
+unconditionally (`register_kis_mock_order_tools`); the other four route-BLOCK
+KR mock reads (`kiwoom_mock_get_order_history`, `kiwoom_mock_get_order_detail`,
+`kiwoom_mock_get_positions`, `kiwoom_mock_get_orderable_cash`) register only
+when `settings.kiwoom_mock_enabled` is true (`orders_kiwoom_variants.register`)
+— code default False (`app/core/config.py:250`, `env.example:39`).
+
 Profile → tool surface mapping
 ────────────────────────────────────────────────────────────────────────────
 "default" (McpProfile.DEFAULT):

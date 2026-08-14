@@ -284,6 +284,31 @@ async def test_pending_comes_from_the_broker_and_splits_own_vs_account() -> None
 
 
 @pytest.mark.asyncio
+async def test_pending_default_preserves_current_day_resting_surface() -> None:
+    """ACCEPTANCE_ONLY/readiness must not fall back to broker-default history."""
+
+    class CurrentDayRestingOnly:
+        def __init__(self) -> None:
+            self.resting_calls = 0
+
+        async def read_resting_orders(self):  # noqa: ANN201
+            self.resting_calls += 1
+            return (resting("111", "005930"),)
+
+        async def read_order_detail(self, **_kwargs):  # noqa: ANN003, ANN201
+            raise AssertionError("pending wrapper bypassed current-day resting surface")
+
+    account = CurrentDayRestingOnly()
+    pending = await kiwoom_lane.read_broker_pending(
+        account, own_order_ids=frozenset({"111"})
+    )
+
+    assert isinstance(pending, kiwoom_lane.BrokerPending)
+    assert pending.own_symbols == ("005930",)
+    assert account.resting_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_pending_read_failure_is_tri_state_and_blocks_every_symbol() -> None:
     account = FakeAccount(resting_error=RuntimeError("kt00009 timeout"))
     pending = await kiwoom_lane.read_broker_pending(account, own_order_ids=frozenset())

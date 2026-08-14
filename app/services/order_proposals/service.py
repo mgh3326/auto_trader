@@ -7,6 +7,7 @@ and never commits — callers own the transaction (see global-constraints.md).
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import secrets
 import uuid
@@ -76,6 +77,8 @@ from app.services.trade_journal.trade_retrospective_service import (
 
 logger = logging.getLogger(__name__)
 
+_TOSS_AUTO_SUBMISSION_FREEZE_KEY = "toss_auto_submission_freeze"
+
 
 def _log_dispatch_outcome(result: TelegramDispatchResult, *, surface: str) -> None:
     logger.log(
@@ -105,6 +108,98 @@ class RungInput:
     quantity: Decimal
     limit_price: Decimal | None
     notional: Decimal | None
+
+
+_WATCH_TO_ORDER_SCOPE_ORIGIN: Literal["order_proposals"] = "order_proposals"
+_WATCH_TO_ORDER_SCOPE_LOCK_UNAVAILABLE = "watch_to_order_scope_lock_unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class WatchToOrderScope:
+    """The four-axis identity protected for one watcher proposal attempt.
+
+    ``action`` is the caller's requested proposal action, not a fifth lookup
+    axis: the inspection always reports every active proposal action in the
+    protected account/symbol scope so an existing replace/cancel lineage cannot
+    be mistaken for absence.
+    """
+
+    symbol: str
+    market: str
+    account_mode: str
+    broker_account_id: str | None
+    action: str
+
+
+@dataclass(frozen=True, slots=True)
+class WatchToOrderScopeRung:
+    """One immutable rung snapshot returned by the watcher scope seam."""
+
+    rung_index: int
+    side: str
+    state: str
+    broker_order_id: str | None
+    correlation_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class WatchToOrderScopeGroup:
+    """One active group and every one of its rung states.
+
+    ``origin_marker`` identifies this as proposal-ledger evidence when callers
+    combine it with their own broker observations.  ``proposer`` and
+    ``strategy`` retain the group-level provenance without leaking repository
+    models outside this service boundary.
+    """
+
+    proposal_id: uuid.UUID
+    root_proposal_id: uuid.UUID
+    lifecycle_state: str
+    action: str
+    proposer: str
+    strategy: str | None
+    rungs: tuple[WatchToOrderScopeRung, ...]
+    origin_marker: Literal["order_proposals"] = _WATCH_TO_ORDER_SCOPE_ORIGIN
+
+    @property
+    def all_rung_states(self) -> tuple[str, ...]:
+        """Ordered state projection for consumers that only need states."""
+        return tuple(rung.state for rung in self.rungs)
+
+
+@dataclass(frozen=True, slots=True)
+class WatchToOrderScopeInspection:
+    """The lock-backed result for a watcher read-then-create transaction.
+
+    A caller may proceed only when ``lock_acquired`` is true, and must keep the
+    same ``OrderProposalsService`` and uncommitted transaction through
+    ``create_proposal_in_watch_to_order_scope``.  A lock failure deliberately
+    returns no snapshot: a stale or best-effort read is not clearance to create.
+    """
+
+    scope: WatchToOrderScope
+    lock_acquired: bool
+    active_groups: tuple[WatchToOrderScopeGroup, ...]
+    lock_failure_code: str | None = None
+    origin_marker: Literal["order_proposals"] = _WATCH_TO_ORDER_SCOPE_ORIGIN
+    _reservation_token: str | None = None
+
+    @property
+    def groups(self) -> tuple[WatchToOrderScopeGroup, ...]:
+        """Alias kept for consumers that name the collection generically."""
+        return self.active_groups
+
+    @property
+    def origin(self) -> Literal["order_proposals"]:
+        """Short provenance alias for evidence envelopes."""
+        return self.origin_marker
+
+
+@dataclass(frozen=True, slots=True)
+class _WatchToOrderScopeReservation:
+    token: str
+    transaction: Any
+    active_group_proposal_ids: frozenset[uuid.UUID]
 
 
 @dataclass(frozen=True)
@@ -404,6 +499,12 @@ class OrderProposalsService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
         self._repo = OrderProposalRepository(session)
+        # A reservation is intentionally service-instance local.  The public
+        # watcher create companion below requires the same service + open DB
+        # transaction that acquired the PostgreSQL xact lock.
+        self._watch_to_order_scope_reservations: dict[
+            str, _WatchToOrderScopeReservation
+        ] = {}
 
     async def acquire_target_mutation_lock(self, group: OrderProposal) -> bool:
         """Serialize replace/cancel transactions for one broker order target.
@@ -444,6 +545,180 @@ class OrderProposalsService:
             text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
             {"lock_key": lock_key},
         )
+
+    @staticmethod
+    def _watch_to_order_scope_lock_key(scope: WatchToOrderScope) -> str:
+        """Build an unambiguous lock key for the exact four-axis scope.
+
+        JSON preserves the distinction between a missing broker account
+        (``None``) and an empty identifier.  The requested action is excluded
+        on purpose: a watcher must not create while any action is reserving the
+        same account/symbol scope.
+        """
+        return json.dumps(
+            {
+                "namespace": "order_proposals.watch_to_order_scope.v1",
+                "symbol": scope.symbol,
+                "market": scope.market,
+                "account_mode": scope.account_mode,
+                "broker_account_id": scope.broker_account_id,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    async def inspect_watch_to_order_scope(
+        self,
+        symbol: str,
+        market: str,
+        account_mode: str,
+        broker_account_id: str | None,
+        action: str = "place",
+    ) -> WatchToOrderScopeInspection:
+        """Atomically reserve and inspect one watcher create scope.
+
+        The nonblocking transaction lock is obtained *before* the read and is
+        retained until the caller commits or rolls back this session.  A second
+        watcher for the same scope receives ``lock_acquired=False`` immediately
+        and no groups; it must create zero proposals.  The successful caller
+        must keep this same service/session transaction through
+        :meth:`create_proposal_in_watch_to_order_scope`.
+
+        ``active_groups`` means at least one non-terminal rung exists.  That is
+        deliberately rung-based instead of lifecycle-based: a superseded group
+        can still carry a broker-resting rung.
+        """
+        normalized_action = check_action_capability(
+            action=action,
+            account_mode=account_mode,
+            market=market,
+        )
+        scope = WatchToOrderScope(
+            symbol=symbol,
+            market=market,
+            account_mode=account_mode,
+            broker_account_id=broker_account_id,
+            action=normalized_action,
+        )
+        lock_key = self._watch_to_order_scope_lock_key(scope)
+        if not await self._repo.try_acquire_watch_to_order_scope_lock(lock_key):
+            return WatchToOrderScopeInspection(
+                scope=scope,
+                lock_acquired=False,
+                active_groups=(),
+                lock_failure_code=_WATCH_TO_ORDER_SCOPE_LOCK_UNAVAILABLE,
+            )
+
+        groups = await self._repo.list_active_watch_to_order_scope_groups(
+            symbol=scope.symbol,
+            market=scope.market,
+            account_mode=scope.account_mode,
+            broker_account_id=scope.broker_account_id,
+        )
+        snapshots: list[WatchToOrderScopeGroup] = []
+        for group in groups:
+            rungs = await self._repo.list_rungs(group.id)
+            snapshots.append(
+                WatchToOrderScopeGroup(
+                    proposal_id=group.proposal_id,
+                    root_proposal_id=group.root_proposal_id,
+                    lifecycle_state=group.lifecycle_state,
+                    action=group.action or "place",
+                    proposer=group.proposer,
+                    strategy=group.strategy,
+                    rungs=tuple(
+                        WatchToOrderScopeRung(
+                            rung_index=rung.rung_index,
+                            side=rung.side,
+                            state=rung.state,
+                            broker_order_id=rung.broker_order_id,
+                            correlation_id=rung.correlation_id,
+                        )
+                        for rung in rungs
+                    ),
+                )
+            )
+
+        transaction = self._session.sync_session.get_transaction()
+        if transaction is None or not transaction.is_active:
+            # A transaction-scoped lock without a live transaction cannot
+            # protect a later create.  This should be unreachable after the
+            # execute above, but returning a closed result keeps this boundary
+            # fail-closed under unusual session configurations.
+            return WatchToOrderScopeInspection(
+                scope=scope,
+                lock_acquired=False,
+                active_groups=(),
+                lock_failure_code=_WATCH_TO_ORDER_SCOPE_LOCK_UNAVAILABLE,
+            )
+        token = uuid.uuid4().hex
+        self._watch_to_order_scope_reservations[lock_key] = (
+            _WatchToOrderScopeReservation(
+                token=token,
+                transaction=transaction,
+                active_group_proposal_ids=frozenset(
+                    group.proposal_id for group in snapshots
+                ),
+            )
+        )
+        return WatchToOrderScopeInspection(
+            scope=scope,
+            lock_acquired=True,
+            active_groups=tuple(snapshots),
+            _reservation_token=token,
+        )
+
+    async def create_proposal_in_watch_to_order_scope(
+        self,
+        inspection: WatchToOrderScopeInspection,
+        **kwargs: Any,
+    ) -> OrderProposal:
+        """Create only from a still-held, empty watcher scope reservation.
+
+        This is additive: ordinary ``create_proposal`` remains unchanged for
+        existing callers.  New watcher consumers use this companion so a lost
+        try-lock, a transaction boundary, a scope mismatch, or any active rung
+        is a fail-closed zero-create result.
+        """
+        scope = inspection.scope
+        lock_key = self._watch_to_order_scope_lock_key(scope)
+        reservation = self._watch_to_order_scope_reservations.get(lock_key)
+        transaction = self._session.sync_session.get_transaction()
+        if (
+            not inspection.lock_acquired
+            or inspection._reservation_token is None
+            or reservation is None
+            or reservation.token != inspection._reservation_token
+            or transaction is None
+            or reservation.transaction is not transaction
+            or not transaction.is_active
+        ):
+            raise OrderProposalError("watch_to_order_scope_reservation_unavailable")
+
+        requested_scope = {
+            "symbol": kwargs.get("symbol"),
+            "market": kwargs.get("market"),
+            "account_mode": kwargs.get("account_mode"),
+            "broker_account_id": kwargs.get("broker_account_id"),
+            "action": kwargs.get("action") or "place",
+        }
+        expected_scope = {
+            "symbol": scope.symbol,
+            "market": scope.market,
+            "account_mode": scope.account_mode,
+            "broker_account_id": scope.broker_account_id,
+            "action": scope.action,
+        }
+        if requested_scope != expected_scope:
+            raise OrderProposalError("watch_to_order_scope_mismatch")
+        if reservation.active_group_proposal_ids:
+            raise OrderProposalError("watch_to_order_scope_active_rungs_present")
+        # One reservation authorizes one proposal group only.  Consume it before
+        # validation/insert so an exception cannot be retried into a second
+        # create from the same stale empty snapshot.
+        self._watch_to_order_scope_reservations.pop(lock_key, None)
+        return await self.create_proposal(**kwargs)
 
     async def create_proposal(
         self,
@@ -2524,6 +2799,84 @@ class OrderProposalsService:
         source_asof["auto_approved"] = auto
         return await self._repo.update_group(group, source_asof=source_asof)
 
+    @staticmethod
+    def _toss_auto_freeze_lock_key(group: OrderProposal, *, now: datetime) -> str:
+        account_key = group.broker_account_id or "default"
+        return (
+            "order_proposals:toss_auto_submission_freeze:"
+            f"{account_key}:{now.astimezone(KST).date()}"
+        )
+
+    async def active_toss_auto_submission_freeze(
+        self, group: OrderProposal, *, now: datetime
+    ) -> dict[str, Any] | None:
+        """Return a current-session fill freeze for this Toss account/market.
+
+        Any confirmed Toss fill blocks further automatic submission across the
+        account until the next KST session.  This is intentionally broader
+        than the separate KRW/USD cap lanes: an unresolved partial fill and
+        its cancellation proposal are an account-level operational event.
+        Human approval remains available.
+        """
+        self._require_timezone_aware(now)
+        if group.account_mode != "toss_live":
+            return None
+        await self._repo.acquire_auto_approve_lock(
+            self._toss_auto_freeze_lock_key(group, now=now)
+        )
+        session_date = now.astimezone(KST).date().isoformat()
+        candidates = await self._repo.list_groups_for_toss_auto_submission_freeze(
+            broker_account_id=group.broker_account_id,
+        )
+        for candidate in candidates:
+            auto = (candidate.source_asof or {}).get("auto_approved")
+            freeze = (
+                auto.get(_TOSS_AUTO_SUBMISSION_FREEZE_KEY)
+                if isinstance(auto, dict)
+                else None
+            )
+            if (
+                isinstance(freeze, dict)
+                and freeze.get("state") == "frozen"
+                and freeze.get("session_date") == session_date
+            ):
+                return dict(freeze)
+        return None
+
+    async def _freeze_toss_auto_submission_on_fill(
+        self,
+        group: OrderProposal,
+        *,
+        filled_qty: Decimal | None,
+        now: datetime,
+    ) -> None:
+        """Durably stop same-session Toss auto entries after verified fill proof."""
+        if group.account_mode != "toss_live" or filled_qty is None or filled_qty <= 0:
+            return
+        source_asof = dict(group.source_asof or {})
+        auto = source_asof.get("auto_approved")
+        if not isinstance(auto, dict):
+            # A human-approved Toss order must not mutate the auto-submission
+            # control plane merely because it filled.
+            return
+        await self._repo.acquire_auto_approve_lock(
+            self._toss_auto_freeze_lock_key(group, now=now)
+        )
+        auto = dict(auto)
+        existing = auto.get(_TOSS_AUTO_SUBMISSION_FREEZE_KEY)
+        if isinstance(existing, dict) and existing.get("state") == "frozen":
+            return
+        auto[_TOSS_AUTO_SUBMISSION_FREEZE_KEY] = {
+            "state": "frozen",
+            "reason": "broker_fill_evidence",
+            "filled_qty": str(filled_qty),
+            "frozen_at": now.isoformat(),
+            "session_date": now.astimezone(KST).date().isoformat(),
+            "market": group.market,
+        }
+        source_asof["auto_approved"] = auto
+        await self._repo.update_group(group, source_asof=source_asof)
+
     async def auto_approved_daily_notional(
         self, group: OrderProposal, *, now: datetime
     ) -> Decimal:
@@ -2718,6 +3071,11 @@ class OrderProposalsService:
         audit: dict[str, Any] = {"updated_at": now}
         if filled_qty is not None:
             audit["filled_qty"] = filled_qty
+        await self._freeze_toss_auto_submission_on_fill(
+            group,
+            filled_qty=filled_qty,
+            now=now,
+        )
         if locked.state == terminal_state:
             # Repeated non-terminal evidence (e.g. a larger partial fill on an
             # already-partially_filled rung): refresh audit fields in place
@@ -2864,6 +3222,11 @@ class OrderProposalsService:
         audit: dict[str, Any] = {"updated_at": now}
         if filled_qty is not None:
             audit["filled_qty"] = filled_qty
+        await self._freeze_toss_auto_submission_on_fill(
+            group,
+            filled_qty=filled_qty,
+            now=now,
+        )
         return await self._transition_locked_rung(
             group, locked, new_state=terminal_state, **audit
         )

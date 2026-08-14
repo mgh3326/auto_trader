@@ -25,6 +25,7 @@ from app.models.order_proposals import (
 )
 from app.services.order_proposals.defensive_ttl import DEFENSIVE_EXIT_INTENTS
 from app.services.order_proposals.dispatch_contract import ApprovalDispatchState
+from app.services.order_proposals.state_machine import PROPOSAL_TERMINAL_STATES
 
 
 class OrderProposalRepository:
@@ -139,11 +140,76 @@ class OrderProposalRepository:
         value = (await self._session.execute(stmt)).scalar_one()
         return Decimal(value)
 
+    async def list_groups_for_toss_auto_submission_freeze(
+        self,
+        *,
+        broker_account_id: str | None,
+    ) -> list[OrderProposal]:
+        """Return one Toss account's auto groups for a same-day freeze."""
+        stmt = select(OrderProposal).where(
+            OrderProposal.account_mode == "toss_live",
+            OrderProposal.source_asof.op("?")("auto_approved"),
+        )
+        if broker_account_id is None:
+            stmt = stmt.where(OrderProposal.broker_account_id.is_(None))
+        else:
+            stmt = stmt.where(OrderProposal.broker_account_id == broker_account_id)
+        return list((await self._session.execute(stmt)).scalars().all())
+
     async def acquire_auto_approve_lock(self, lock_key: str) -> None:
         """Serialize an auto-approval critical section until transaction commit."""
         await self._session.execute(
             select(func.pg_advisory_xact_lock(func.hashtextextended(lock_key, 0)))
         )
+
+    async def try_acquire_watch_to_order_scope_lock(self, lock_key: str) -> bool:
+        """Try to reserve one watch-to-order scope without waiting.
+
+        This is deliberately a transaction-scoped *try* lock.  A watcher that
+        loses the race must fail closed at its proposal boundary instead of
+        waiting and re-running a stale read.
+        """
+        result = await self._session.execute(
+            select(func.pg_try_advisory_xact_lock(func.hashtextextended(lock_key, 0)))
+        )
+        return bool(result.scalar_one())
+
+    async def list_active_watch_to_order_scope_groups(
+        self,
+        *,
+        symbol: str,
+        market: str,
+        account_mode: str,
+        broker_account_id: str | None,
+    ) -> list[OrderProposal]:
+        """Return scope groups with at least one non-terminal rung.
+
+        Group lifecycle is intentionally not the activity predicate: a
+        supersession can leave a broker-resting rung in a group whose rollup
+        lifecycle is already ``superseded``.  The public service seam reads all
+        rungs for every returned group, including its terminal rungs, so a
+        caller can make a fail-closed decision from the precise mixed state.
+        """
+        stmt = (
+            select(OrderProposal)
+            .join(
+                OrderProposalRung,
+                OrderProposalRung.proposal_pk == OrderProposal.id,
+            )
+            .where(
+                OrderProposal.symbol == symbol,
+                OrderProposal.market == market,
+                OrderProposal.account_mode == account_mode,
+                OrderProposalRung.state.not_in(PROPOSAL_TERMINAL_STATES),
+            )
+            .order_by(OrderProposal.id)
+            .distinct()
+        )
+        if broker_account_id is None:
+            stmt = stmt.where(OrderProposal.broker_account_id.is_(None))
+        else:
+            stmt = stmt.where(OrderProposal.broker_account_id == broker_account_id)
+        return list((await self._session.execute(stmt)).scalars().all())
 
     async def find_rung_by_evidence(
         self,
