@@ -268,6 +268,7 @@ repeat once per next two completed US regular sessions.
    including `cross_source_duplicate_count` and any candidate-array
    cap/loss/reason; every recorded candidate field in the table above; and the
    three SHA fields.
+   `duplicate_count` 는 동일 심볼 반복만 센다. 숫자를 맞추기 위해 잔여를 중복으로 쓰지 마라. 설명 불가면 record 를 쓰지 마라.
 2. Before recording, verify the contract and capture provenance without
    changing anything:
 
