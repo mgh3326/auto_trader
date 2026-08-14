@@ -1,0 +1,595 @@
+from __future__ import annotations
+
+import uuid
+from contextlib import AbstractAsyncContextManager
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from app.mcp_server.tooling.support_reserve_net_consumer_tool import (
+    support_reserve_net_consume_impl,
+)
+from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals.service import (
+    WatchToOrderScope,
+    WatchToOrderScopeInspection,
+)
+from app.services.support_reserve_net_consumer import SupportReserveNetConsumer
+
+
+def _candidate(
+    symbol: str = "WIRE-A",
+    *,
+    sector: str = "software",
+    broker_account_id: str = "acct-exact-1",
+) -> dict[str, Any]:
+    return {
+        "normalized_symbol": symbol,
+        "market": "equity_kr",
+        "account_mode": "kis_live",
+        "broker_account_id": broker_account_id,
+        "beneficial_owner_id": "owner-1",
+        "intent": "new",
+        "current_price": "100",
+        "support_price": "96",
+        "support_strength": "moderate",
+        "independent_support_families": ["fib", "bb_lower"],
+        "honest_upside_pct": "45",
+        "regular_gate_failure": "RSI_ONLY",
+        "discount_below_support_pct": "5",
+        "proposed_limit_price": "91.2",
+        "price_tick": "0.1",
+        "quantity": "1000",
+        "required_cash": "100000",
+        "sector_cluster": sector,
+        "post_fill_sector_concentration_pct": "5",
+        "post_fill_sector_increase": "0.01",
+        "thesis": "fresh support evidence from independent source families",
+    }
+
+
+def _request(*candidates: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "candidates": list(candidates or (_candidate(),)),
+        "cash_snapshots": [
+            {
+                "account_mode": "kis_live",
+                "broker_account_id": "acct-exact-1",
+                "currency": "KRW",
+                "fresh_broker_orderable_cash": "500000",
+                "net_orderable_cash": "500000",
+                "all_pending_buy_required_cash": "0",
+                "reserve_net_armed_required_cash": "0",
+                "is_fresh": True,
+                "same_account_currency_pending_accounted": True,
+            }
+        ],
+        "reserve_net_attributions": [],
+        "self_unfilled_orders": [],
+        "sector_exposures": [],
+        "self_unfilled_order_read_complete": True,
+        "sector_exposure_complete": True,
+        "submissions_frozen": False,
+    }
+
+
+class _FakeSession(AbstractAsyncContextManager):
+    def __init__(self) -> None:
+        self.commit_calls = 0
+        self.rollback_calls = 0
+
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    async def commit(self) -> None:
+        self.commit_calls += 1
+
+    async def rollback(self) -> None:
+        self.rollback_calls += 1
+
+
+class _LegacyProbeService:
+    def __init__(self) -> None:
+        self.inspected_account_ids: list[str | None] = []
+        self.create_calls = 0
+
+    async def inspect_watch_to_order_scope(self, **kwargs: Any) -> Any:
+        account_id = kwargs["broker_account_id"]
+        self.inspected_account_ids.append(account_id)
+        scope = WatchToOrderScope(**kwargs)
+        return WatchToOrderScopeInspection(
+            scope=scope,
+            lock_acquired=True,
+            active_groups=(object(),) if account_id is None else (),  # type: ignore[arg-type]
+        )
+
+    async def create_proposal_in_watch_to_order_scope(
+        self, inspection: Any, **kwargs: Any
+    ) -> Any:
+        self.create_calls += 1
+        raise AssertionError("Probe B must stop before companion create")
+
+
+@pytest.mark.asyncio
+async def test_caller_invokes_consume_and_probe_b_never_creates(
+    monkeypatch,
+) -> None:
+    session = _FakeSession()
+    service = _LegacyProbeService()
+    consume_calls = 0
+    original_consume = SupportReserveNetConsumer.consume
+
+    async def record_consume(self, request, *, proposal_creator=None):
+        nonlocal consume_calls
+        consume_calls += 1
+        return await original_consume(
+            self,
+            request,
+            proposal_creator=proposal_creator,
+        )
+
+    monkeypatch.setattr(SupportReserveNetConsumer, "consume", record_consume)
+
+    result = await support_reserve_net_consume_impl(
+        _request(),
+        session_factory=lambda: session,
+        service_factory=lambda _: service,
+    )
+
+    assert consume_calls == 1
+    assert result["success"] is True
+    assert result["proposal_creation_status"] == (
+        "legacy_unscoped_active_proposal_exists"
+    )
+    assert result["proposal_count"] == 0
+    assert result["proposals_created"] == []
+    assert service.inspected_account_ids == [None]
+    assert service.create_calls == 0
+    assert session.commit_calls == 0
+    assert session.rollback_calls == 1
+
+
+@pytest.mark.parametrize("account_id", [None, "", " acct-exact-1 "])
+@pytest.mark.asyncio
+async def test_unresolved_account_id_opens_no_session_and_creates_zero(
+    account_id: str | None,
+) -> None:
+    payload = _request()
+    payload["candidates"][0]["broker_account_id"] = account_id
+    session_factory_calls = 0
+
+    def forbidden_session_factory() -> _FakeSession:
+        nonlocal session_factory_calls
+        session_factory_calls += 1
+        raise AssertionError("unresolved account ID must stop before DB/seam")
+
+    result = await support_reserve_net_consume_impl(
+        payload,
+        session_factory=forbidden_session_factory,
+    )
+
+    assert result["success"] is False
+    assert result["error"] in {
+        "invalid_reserve_net_request",
+        "broker_account_id_normalization_unavailable",
+    }
+    assert result["proposal_count"] == 0
+    assert result["proposals_created"] == []
+    assert session_factory_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_account_id_opens_no_session_and_creates_zero() -> None:
+    payload = _request()
+    payload["candidates"][0].pop("broker_account_id")
+    session_factory_calls = 0
+
+    def forbidden_session_factory() -> _FakeSession:
+        nonlocal session_factory_calls
+        session_factory_calls += 1
+        raise AssertionError("missing account ID must stop before DB/seam")
+
+    result = await support_reserve_net_consume_impl(
+        payload,
+        session_factory=forbidden_session_factory,
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "invalid_reserve_net_request"
+    assert result["proposal_count"] == 0
+    assert result["proposals_created"] == []
+    assert session_factory_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_session_open_failure_returns_fixed_zero_create_boundary() -> None:
+    class SessionOpenFailure(AbstractAsyncContextManager):
+        async def __aenter__(self):
+            raise RuntimeError("injected session-open failure")
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    result = await support_reserve_net_consume_impl(
+        _request(),
+        session_factory=SessionOpenFailure,
+    )
+
+    assert result == {
+        "success": False,
+        "error": "proposal_session_unavailable",
+        "proposal_count": 0,
+        "proposals_created": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_account_alias_mismatch_is_not_guessed() -> None:
+    payload = _request(_candidate(broker_account_id="ACCT-EXACT-1"))
+    session = _FakeSession()
+
+    class SeamMustNotRun:
+        async def inspect_watch_to_order_scope(self, **kwargs: Any) -> Any:
+            raise AssertionError("mismatched opaque IDs must not inspect")
+
+        async def create_proposal_in_watch_to_order_scope(
+            self, inspection: Any, **kwargs: Any
+        ) -> Any:
+            raise AssertionError("mismatched opaque IDs must not create")
+
+    result = await support_reserve_net_consume_impl(
+        payload,
+        session_factory=lambda: session,
+        service_factory=lambda _: SeamMustNotRun(),
+    )
+
+    assert result["proposal_creation_status"] == (
+        "not_attempted_no_selected_candidates"
+    )
+    assert result["proposal_count"] == 0
+    assert result["plan"]["rejected"][0]["code"] == "cash_snapshot_unavailable"
+    assert session.rollback_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_stale_cash_and_missing_seam_both_fail_closed() -> None:
+    stale = _request()
+    stale["cash_snapshots"][0]["is_fresh"] = False
+    stale_session = _FakeSession()
+
+    class IncompleteService:
+        pass
+
+    stale_result = await support_reserve_net_consume_impl(
+        stale,
+        session_factory=lambda: stale_session,
+        service_factory=lambda _: IncompleteService(),
+    )
+    assert stale_result["proposal_count"] == 0
+    assert stale_result["plan"]["rejected"][0]["code"] == ("cash_snapshot_unavailable")
+
+    seam_session = _FakeSession()
+    seam_result = await support_reserve_net_consume_impl(
+        _request(),
+        session_factory=lambda: seam_session,
+        service_factory=lambda _: IncompleteService(),
+    )
+    assert seam_result["proposal_count"] == 0
+    assert seam_result["proposal_creation_status"] == (
+        "atomic_self_open_order_read_seam_unavailable"
+    )
+    assert seam_result["plan"]["proposal_creation_permitted"] is False
+    assert stale_session.rollback_calls == 1
+    assert seam_session.rollback_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_submissions_frozen_creates_zero_without_seam_use() -> None:
+    payload = _request()
+    payload["submissions_frozen"] = True
+    session = _FakeSession()
+
+    class SeamMustNotRun:
+        async def inspect_watch_to_order_scope(self, **kwargs: Any) -> Any:
+            raise AssertionError("freeze must stop before seam inspection")
+
+        async def create_proposal_in_watch_to_order_scope(
+            self, inspection: Any, **kwargs: Any
+        ) -> Any:
+            raise AssertionError("freeze must stop before proposal creation")
+
+    result = await support_reserve_net_consume_impl(
+        payload,
+        session_factory=lambda: session,
+        service_factory=lambda _: SeamMustNotRun(),
+    )
+
+    assert result["proposal_count"] == 0
+    assert result["proposal_creation_status"] == (
+        "not_attempted_no_selected_candidates"
+    )
+    assert session.commit_calls == 0
+    assert session.rollback_calls == 1
+
+
+class _StatefulSeamService:
+    def __init__(self) -> None:
+        self.groups: dict[uuid.UUID, Any] = {}
+        self.active: dict[tuple[str, str, str, str | None, str], Any] = {}
+        self.inspected_account_ids: list[str | None] = []
+        self.create_calls = 0
+
+    async def inspect_watch_to_order_scope(self, **kwargs: Any) -> Any:
+        scope = WatchToOrderScope(**kwargs)
+        key = (
+            scope.symbol,
+            scope.market,
+            scope.account_mode,
+            scope.broker_account_id,
+            scope.action,
+        )
+        self.inspected_account_ids.append(scope.broker_account_id)
+        active = self.active.get(key)
+        return WatchToOrderScopeInspection(
+            scope=scope,
+            lock_acquired=True,
+            active_groups=(active,) if active is not None else (),
+        )
+
+    async def create_proposal_in_watch_to_order_scope(
+        self, inspection: WatchToOrderScopeInspection, **kwargs: Any
+    ) -> Any:
+        self.create_calls += 1
+        group = SimpleNamespace(
+            proposal_id=uuid.uuid4(),
+            lifecycle_state="pending_approval",
+            action="place",
+            target_broker_order_id=None,
+            valid_until=None,
+            account_mode=kwargs["account_mode"],
+            side=kwargs["side"],
+            broker_account_id=kwargs["broker_account_id"],
+            market=kwargs["market"],
+        )
+        rung_input = kwargs["rungs"][0]
+        rung = SimpleNamespace(
+            rung_index=rung_input.rung_index,
+            side=rung_input.side,
+            quantity=rung_input.quantity,
+            limit_price=rung_input.limit_price,
+            notional=rung_input.notional,
+            state="pending_approval",
+            broker_order_id=None,
+            correlation_id=None,
+        )
+        self.groups[group.proposal_id] = (group, [rung])
+        scope = inspection.scope
+        key = (
+            scope.symbol,
+            scope.market,
+            scope.account_mode,
+            scope.broker_account_id,
+            scope.action,
+        )
+        self.active[key] = object()
+        return group
+
+    async def get_proposal(self, proposal_id: uuid.UUID) -> tuple[Any, list[Any]]:
+        return self.groups[proposal_id]
+
+
+async def _complete_for_test(
+    committed: dict[str, Any], **kwargs: Any
+) -> dict[str, Any]:
+    return {**committed, "approval_dispatch": {"state": "test_only"}}
+
+
+@pytest.mark.asyncio
+async def test_two_consecutive_calls_create_only_one_active_proposal() -> None:
+    service = _StatefulSeamService()
+    sessions: list[_FakeSession] = []
+
+    def session_factory() -> _FakeSession:
+        session = _FakeSession()
+        sessions.append(session)
+        return session
+
+    first = await support_reserve_net_consume_impl(
+        _request(),
+        session_factory=session_factory,
+        service_factory=lambda _: service,
+        complete_committed_create=_complete_for_test,
+    )
+    second = await support_reserve_net_consume_impl(
+        _request(),
+        session_factory=session_factory,
+        service_factory=lambda _: service,
+        complete_committed_create=_complete_for_test,
+    )
+
+    assert first["proposal_creation_status"] == "created_after_atomic_seam"
+    assert first["proposal_count"] == 1
+    assert second["proposal_creation_status"] == (
+        "watch_to_order_scope_active_groups_present"
+    )
+    assert second["proposal_count"] == 0
+    assert service.create_calls == 1
+    assert service.inspected_account_ids == [None, "acct-exact-1", None, "acct-exact-1"]
+    assert sessions[0].commit_calls == 1
+    assert sessions[1].rollback_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_selected_candidate_create_failure_rolls_back_whole_transaction(
+    db_session,
+    monkeypatch,
+) -> None:
+    first = _candidate(f"WIRE-PARTIAL-A-{uuid.uuid4().hex.upper()}")
+    second = _candidate(
+        f"WIRE-PARTIAL-B-{uuid.uuid4().hex.upper()}",
+        sector="hardware",
+    )
+    service = OrderProposalsService(db_session)
+    original_create = service.create_proposal_in_watch_to_order_scope
+    create_calls = 0
+
+    async def fail_second_create(inspection, **kwargs):
+        nonlocal create_calls
+        create_calls += 1
+        if create_calls == 2:
+            raise RuntimeError("injected second create failure")
+        return await original_create(inspection, **kwargs)
+
+    monkeypatch.setattr(
+        service,
+        "create_proposal_in_watch_to_order_scope",
+        fail_second_create,
+    )
+
+    class BorrowedSession(AbstractAsyncContextManager):
+        async def __aenter__(self):
+            return db_session
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+    result = await support_reserve_net_consume_impl(
+        _request(first, second),
+        session_factory=BorrowedSession,
+        service_factory=lambda _: service,
+        complete_committed_create=_complete_for_test,
+    )
+
+    assert result == {
+        "success": False,
+        "error": "proposal_transaction_failed",
+        "proposal_count": 0,
+        "proposals_created": [],
+    }
+    assert create_calls == 2
+    inspection = await service.inspect_watch_to_order_scope(
+        symbol=first["normalized_symbol"],
+        market="equity_kr",
+        account_mode="kis_live",
+        broker_account_id="acct-exact-1",
+        action="place",
+    )
+    assert inspection.active_groups == ()
+
+
+@pytest.mark.asyncio
+async def test_post_commit_failure_is_per_proposal_and_cannot_undo_batch() -> None:
+    service = _StatefulSeamService()
+    session = _FakeSession()
+    callback_calls = 0
+
+    async def fail_second_dispatch(committed, **kwargs):
+        nonlocal callback_calls
+        callback_calls += 1
+        if callback_calls == 2:
+            raise RuntimeError("injected post-commit failure")
+        return await _complete_for_test(committed, **kwargs)
+
+    result = await support_reserve_net_consume_impl(
+        _request(
+            _candidate("WIRE-DISPATCH-A"),
+            _candidate("WIRE-DISPATCH-B", sector="hardware"),
+        ),
+        session_factory=lambda: session,
+        service_factory=lambda _: service,
+        complete_committed_create=fail_second_dispatch,
+    )
+
+    assert result["success"] is True
+    assert result["proposal_count"] == 2
+    assert session.commit_calls == 1
+    assert session.rollback_calls == 0
+    assert result["proposals_created"][0]["approval_dispatch"]["state"] == "test_only"
+    assert result["proposals_created"][1]["approval_dispatch"] == {
+        "state": "failed",
+        "failure_code": "approval_dispatch_boundary_failed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_committed_create_uses_existing_post_commit_dispatch_path(
+    monkeypatch,
+) -> None:
+    from app.mcp_server.tooling import order_proposal_tools
+
+    service = _StatefulSeamService()
+    session = _FakeSession()
+    dispatch_calls: list[dict[str, Any]] = []
+
+    async def record_existing_path(committed, **kwargs):
+        dispatch_calls.append(kwargs)
+        return await _complete_for_test(committed, **kwargs)
+
+    monkeypatch.setattr(
+        order_proposal_tools,
+        "_complete_committed_proposal_create",
+        record_existing_path,
+    )
+
+    result = await support_reserve_net_consume_impl(
+        _request(),
+        session_factory=lambda: session,
+        service_factory=lambda _: service,
+    )
+
+    assert result["proposal_count"] == 1
+    assert len(dispatch_calls) == 1
+    assert dispatch_calls[0]["normalized_action"] == "place"
+    assert dispatch_calls[0]["side"] == "buy"
+    assert dispatch_calls[0]["broker_account_id"] == "acct-exact-1"
+
+
+@pytest.mark.asyncio
+async def test_session_close_failure_after_commit_keeps_durable_success() -> None:
+    service = _StatefulSeamService()
+
+    class ExitFailureSession(_FakeSession):
+        async def __aexit__(self, *args: Any) -> None:
+            raise RuntimeError("injected session-close failure")
+
+    session = ExitFailureSession()
+    result = await support_reserve_net_consume_impl(
+        _request(),
+        session_factory=lambda: session,
+        service_factory=lambda _: service,
+        complete_committed_create=_complete_for_test,
+    )
+
+    assert session.commit_calls == 1
+    assert result["success"] is True
+    assert result["proposal_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_commit_acknowledgement_failure_reports_unknown_not_zero() -> None:
+    service = _StatefulSeamService()
+
+    class CommitUnknownSession(_FakeSession):
+        async def commit(self) -> None:
+            self.commit_calls += 1
+            raise RuntimeError("injected commit acknowledgement failure")
+
+    session = CommitUnknownSession()
+    result = await support_reserve_net_consume_impl(
+        _request(),
+        session_factory=lambda: session,
+        service_factory=lambda _: service,
+        complete_committed_create=_complete_for_test,
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "proposal_commit_outcome_unknown"
+    assert result["proposal_count"] is None
+    assert result["proposals_created"] == []
+    assert result["proposal_ids_maybe_committed"] == [str(next(iter(service.groups)))]
+    assert session.commit_calls == 1
+    assert session.rollback_calls == 1

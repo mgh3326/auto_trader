@@ -141,7 +141,9 @@ HARD_CONSTRAINTS: dict[str, list[str]] = {
         "no two-sided (buy+sell) resting orders on same Toss symbol",
         "over-concentration cap: portfolio.sector_cluster_cap_pct per sector cluster",
         "portfolio.max_symbols_per_theme per theme; add-not-cut (average down, no stop-loss)",
-        "order intent: order_proposal_create only; Telegram human approval required",
+        "generic order-intent step: order_proposal_create with Telegram human "
+        "approval; conditional support_reserve_net_consume is non-sequenced "
+        "and seam-gated",
         "accepted/resting is not a fill; broker evidence reconcile is required",
         "negative class: record each reviewed-but-rejected candidate as a "
         "decision_bucket=deferred_no_action item with confidence + rejection "
@@ -265,6 +267,7 @@ PROPOSAL_LIFECYCLE_TOOLS: frozenset[str] = frozenset(
         "order_proposal_void",
     }
 )
+RESERVE_NET_CONSUMER_TOOLS: frozenset[str] = frozenset({"support_reserve_net_consume"})
 ORDER_PROPOSAL_READ_TOOLS: frozenset[str] = frozenset(
     {
         "order_proposal_get",
@@ -356,7 +359,10 @@ _LEGACY_MUTATION_TOOLS: frozenset[str] = frozenset(
 )
 
 MUTATION_TOOLS: frozenset[str] = (
-    _LEGACY_MUTATION_TOOLS | PROPOSAL_LED_TOOLS | PROPOSAL_LIFECYCLE_TOOLS
+    _LEGACY_MUTATION_TOOLS
+    | PROPOSAL_LED_TOOLS
+    | PROPOSAL_LIFECYCLE_TOOLS
+    | RESERVE_NET_CONSUMER_TOOLS
 )
 
 # ROB-658's market-aware direct execution mapping remains only for discovery,
@@ -420,6 +426,14 @@ LANE_RECONCILE_ALLOWED: dict[str, frozenset[str]] = {
 LANE_PROPOSAL_LIFECYCLE_ALLOWED: dict[str, frozenset[str]] = {
     "buy": frozenset({"order_proposal_void"}),
     "sell": frozenset({"order_proposal_void"}),
+}
+
+# The reserve-net consumer is a conditional buy helper, not a standard lane
+# step.  A session must explicitly assemble its evidence packet and call it;
+# sell/discovery/bootstrap keep it blocked and no unattended schedule is
+# implied by route visibility.
+LANE_RESERVE_NET_CONSUMER_ALLOWED: dict[str, frozenset[str]] = {
+    "buy": RESERVE_NET_CONSUMER_TOOLS,
 }
 
 # Purpose text for discovery's legacy market execution injection.
@@ -799,6 +813,7 @@ def build_route_plan(
     lane_extra = LANE_EXTRA_ALLOWED.get(lane, frozenset())
     lane_reconcile = LANE_RECONCILE_ALLOWED.get(lane, frozenset())
     lane_lifecycle = LANE_PROPOSAL_LIFECYCLE_ALLOWED.get(lane, frozenset())
+    lane_reserve_net = LANE_RESERVE_NET_CONSUMER_ALLOWED.get(lane, frozenset())
     safe_lane_tools = (
         lane_tools - DIRECT_BROKER_MUTATION_TOOLS if proposal_led else lane_tools
     )
@@ -809,6 +824,7 @@ def build_route_plan(
         | lane_extra
         | lane_reconcile
         | lane_lifecycle
+        | lane_reserve_net
         | set(READ_ONLY_ADVISORY_TOOLS)
     )
     allowed = allowed_candidates & registered_tools
@@ -859,7 +875,9 @@ __all__ = [
     "DIRECT_BROKER_MUTATION_TOOLS",
     "PROPOSAL_LED_TOOLS",
     "PROPOSAL_LIFECYCLE_TOOLS",
+    "RESERVE_NET_CONSUMER_TOOLS",
     "LANE_PROPOSAL_LIFECYCLE_ALLOWED",
+    "LANE_RESERVE_NET_CONSUMER_ALLOWED",
     "ORDER_PROPOSAL_READ_TOOLS",
     "PREVIEW_REVALIDATION_TOOLS",
     "RECONCILE_TOOLS",

@@ -68,7 +68,8 @@
       "mcp__auto_trader_local__sell_ladder_fill_preview",
       "mcp__auto_trader_local__set_user_setting",
       "mcp__auto_trader_local__update_manual_holdings",
-      "mcp__auto_trader_local__investment_report_prepare_intraday_context"
+      "mcp__auto_trader_local__investment_report_prepare_intraday_context",
+      "mcp__auto_trader_local__support_reserve_net_consume"
     ]
   }
 }

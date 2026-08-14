@@ -938,6 +938,16 @@ order mutation.
     batch instead of editing the published card. Batch callbacks recompute and
     verify the exact ordered membership digest, so a row not shown on the card
     cannot be approved.
+- `support_reserve_net_consume(request)`
+  - Explicitly invokes the deterministic reserve-net consumer with a complete
+    caller-supplied evidence packet. It performs no broker/account reads and
+    never infers, trims, or aliases `broker_account_id`.
+  - All selected proposal rows use the watcher-scope seam and commit in one DB
+    transaction. Existing proposal dispatch/classification runs only after the
+    commit; no new approval or submit rule is introduced.
+  - It is a conditional buy helper, not a scheduler or a generic route step.
+    Missing/stale evidence, a freeze, an unavailable seam, or an active legacy
+    or concrete scope creates zero proposals.
 - `order_proposal_redispatch(proposal_id, dry_run=true)`
   - This is a single-proposal manual lever; there is no automatic redispatch
     sweep. `dry_run=true` is read-only and must be reviewed before execution.
@@ -2097,9 +2107,12 @@ explicit mutation taxonomy or CI fails.
 
 **Buy/sell proposal contract (ROB-1045):**
 
-- `order_proposal_create` is the only order-intent surface in buy/sell
-  `standard_tool_sequence`. Registered direct broker place/cancel/modify tools
-  are excluded from `allowed_tools` and included in `blocked_actions`.
+- `order_proposal_create` is the only generic order-intent step in the buy/sell
+  `standard_tool_sequence`. `support_reserve_net_consume` is a separate,
+  non-sequenced conditional helper allowed only in the buy lane; it requires a
+  complete evidence packet and creates through the atomic watcher-scope seam.
+  Registered direct broker place/cancel/modify tools are excluded from
+  `allowed_tools` and included in `blocked_actions`.
 - The route contract requires a human Telegram approval click. Fresh broker
   preview/revalidation and submit are owned by the proposal approval subsystem;
   accepted/resting is not a fill, and broker-evidence reconciliation remains

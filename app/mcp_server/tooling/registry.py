@@ -421,9 +421,10 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     if settings.INVESTMENT_SNAPSHOTS_MCP_ENABLED:
         register_investment_snapshots_tools(mcp)
 
-    # ROB-816 — order_proposals SOT ledger read/create surface. Gated by
+    # ROB-816 — order_proposals SOT ledger read/create/consumer surface. Gated by
     # ``settings.ORDER_PROPOSALS_ENABLED`` (default off). No approve/submit
-    # tool is registered anywhere — approval is Telegram-only (PR 2).
+    # direct approve/submit tool is registered anywhere; committed creates use
+    # the existing proposal dispatch path.
     if settings.ORDER_PROPOSALS_ENABLED:
         register_order_proposal_tools(mcp)
 

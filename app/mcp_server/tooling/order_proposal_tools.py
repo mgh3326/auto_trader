@@ -1,6 +1,6 @@
-"""ROB-816 read/create/void MCP tools for order_proposals.
+"""ROB-816 read/create/consume/void MCP tools for order_proposals.
 
-READ + CREATE + VOID ONLY. There is deliberately no approve/submit tool —
+READ + CREATE + CONSUME + VOID ONLY. There is no direct approve/submit tool —
 approval is Telegram-only (PR 2). ``order_proposal_create`` persists a proposal
 row. Broker mutation remains behind Telegram dispatch; with ROB-871's separate
 default-off gate, a narrowly eligible resting order may submit only after the
@@ -22,6 +22,9 @@ from app.core.config import settings
 from app.core.db import AsyncSessionLocal
 from app.core.timezone import now_kst
 from app.mcp_server.caller_identity import get_caller_agent_id
+from app.mcp_server.tooling.support_reserve_net_consumer_tool import (
+    support_reserve_net_consume,
+)
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_window import ApprovalWindowDecision
@@ -71,6 +74,7 @@ ORDER_PROPOSAL_TOOL_NAMES: set[str] = {
     "order_proposal_expire_sweep",
     "order_proposal_list_expired_defensive",
     "order_proposal_redispatch",
+    "support_reserve_net_consume",
 }
 
 _MARKET_ALIASES = {"kr": "equity_kr", "us": "equity_us"}
@@ -1002,6 +1006,21 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
         ),
     )(order_proposal_create)
     _ = mcp.tool(
+        name="support_reserve_net_consume",
+        description=(
+            "Conditionally create buy.support_reserve_net proposals from one "
+            "fully evidenced request. This explicit session trigger performs no "
+            "broker/account reads and never guesses broker_account_id: every "
+            "nested ID must be the exact non-empty opaque representation. Missing "
+            "or stale evidence, submissions_frozen, an unavailable atomic seam, "
+            "or an existing active legacy/concrete-scope proposal yields zero new "
+            "proposals. All selected proposals commit in one DB transaction; only "
+            "then does the existing approval/auto-classification path run under "
+            "its unchanged default-off and live-safety gates. Not a scheduler and "
+            "not a direct broker tool."
+        ),
+    )(support_reserve_net_consume)
+    _ = mcp.tool(
         name="order_proposal_get",
         description="Read-only fetch of a proposal and its rungs by proposal_id.",
     )(order_proposal_get)
@@ -1065,4 +1084,5 @@ __all__ = [
     "order_proposal_void",
     "register_order_proposal_tools",
     "run_order_proposal_expire_sweep",
+    "support_reserve_net_consume",
 ]
