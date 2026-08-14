@@ -1,12 +1,15 @@
-"""Adversarial contract tests for the reserve-net candidate-only consumer."""
+"""Adversarial contracts for the seam-gated reserve-net consumer."""
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import replace
 from decimal import Decimal
 
 import pytest
 
+from app.services.order_proposals import OrderProposalsService
+from app.services.order_proposals.service import RungInput
 from app.services.support_reserve_net_consumer import (
     ATOMICITY_BLOCK_CODE,
     ATOMICITY_STANCE,
@@ -31,10 +34,11 @@ def _cash(
     net: str | None = None,
     all_pending: str = "0",
     reserve_armed: str = "0",
+    broker_account_id: str = "acct-1",
 ) -> CashSnapshot:
     return CashSnapshot(
         account_mode=account_mode,
-        broker_account_id="acct-1",
+        broker_account_id=broker_account_id,
         currency="USD" if market == "equity_us" else "KRW",
         fresh_broker_orderable_cash=Decimal(fresh),
         net_orderable_cash=Decimal(net if net is not None else fresh),
@@ -57,12 +61,13 @@ def _new(
     honest_upside: str = "45",
     proposed_limit: str = "91.2",
     sector: str = "software",
+    broker_account_id: str = "acct-1",
 ) -> ReserveNetCandidate:
     return ReserveNetCandidate(
         normalized_symbol=symbol,
         market=market,  # type: ignore[arg-type]
         account_mode=account_mode,
-        broker_account_id="acct-1",
+        broker_account_id=broker_account_id,
         beneficial_owner_id="owner-1",
         intent="new",
         current_price=Decimal("100"),
@@ -368,10 +373,10 @@ def test_duplicate_candidate_symbol_is_fail_closed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_atomicity_stance_blocks_proposal_creator_even_for_selected_candidate() -> (
+async def test_missing_seam_capability_blocks_proposal_creator_even_for_selected_candidate() -> (
     None
 ):
-    class SpyProposalCreator:
+    class IncompleteProposalCreator:
         def __init__(self) -> None:
             self.calls: list[dict] = []
 
@@ -379,14 +384,221 @@ async def test_atomicity_stance_blocks_proposal_creator_even_for_selected_candid
             self.calls.append(kwargs)
             return {"unexpected": True}
 
-    spy = SpyProposalCreator()
+    spy = IncompleteProposalCreator()
     result = await _consumer().consume(_request(_new()), proposal_creator=spy)
 
-    assert ATOMICITY_STANCE == "a_candidate_only_before_proposal_creation"
+    assert ATOMICITY_STANCE == "watch_to_order_scope_seam_required"
     assert result.proposal_creation_status == ATOMICITY_BLOCK_CODE
     assert result.plan.proposal_creation_permitted is False
-    assert "지금은 원자적이지 않다" in result.plan.unatomicity_notice
+    assert result.plan.proposal_creation_block_code == ATOMICITY_BLOCK_CODE
+    assert result.plan.unatomicity_notice is not None
     assert spy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_noncanonical_candidate_account_id_stops_before_seam_inspection() -> None:
+    class SeamSpy:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def inspect_watch_to_order_scope(self, **kwargs):
+            self.calls.append("inspect")
+            raise AssertionError("non-canonical account id must not inspect")
+
+        async def create_proposal_in_watch_to_order_scope(self, *args, **kwargs):
+            self.calls.append("create")
+            raise AssertionError("non-canonical account id must not create")
+
+    spy = SeamSpy()
+    result = await _consumer().consume(
+        _request(replace(_new(), broker_account_id=" acct-1 ")),
+        proposal_creator=spy,
+    )
+
+    assert result.plan.selected == ()
+    assert (
+        _rejection_codes(result.plan)["NEW"]
+        == "broker_account_id_normalization_unavailable"
+    )
+    assert result.proposal_creation_status == "not_attempted_no_selected_candidates"
+    assert spy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_noncanonical_cash_account_id_stops_before_seam_inspection() -> None:
+    class SeamSpy:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def inspect_watch_to_order_scope(self, **kwargs):
+            self.calls.append("inspect")
+            raise AssertionError("non-canonical account id must not inspect")
+
+        async def create_proposal_in_watch_to_order_scope(self, *args, **kwargs):
+            self.calls.append("create")
+            raise AssertionError("non-canonical account id must not create")
+
+    spy = SeamSpy()
+    result = await _consumer().consume(
+        _request(_new(), cash=(_cash(broker_account_id="acct-1 "),)),
+        proposal_creator=spy,
+    )
+
+    assert result.plan.selected == ()
+    assert _rejection_codes(result.plan)["NEW"] == "cash_snapshot_unavailable"
+    assert result.proposal_creation_status == "not_attempted_no_selected_candidates"
+    assert spy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_consume_inspects_all_scopes_before_companion_create_and_keeps_loss_cut_blocked(
+    db_session, monkeypatch
+) -> None:
+    suffix = uuid.uuid4().hex.upper()
+    first = _new(
+        f"A-SEAM-{suffix}",
+        required_cash="100000",
+        sector="software",
+    )
+    second = _new(
+        f"B-SEAM-{suffix}",
+        required_cash="100000",
+        sector="hardware",
+    )
+    service = OrderProposalsService(db_session)
+    events: list[tuple[str, str, str | None]] = []
+    original_inspect = service.inspect_watch_to_order_scope
+    original_create = service.create_proposal_in_watch_to_order_scope
+
+    async def record_inspect(**kwargs):
+        events.append(("inspect", kwargs["symbol"], kwargs["broker_account_id"]))
+        return await original_inspect(**kwargs)
+
+    async def record_create(inspection, **kwargs):
+        events.append(("create", kwargs["symbol"], inspection.scope.broker_account_id))
+        return await original_create(inspection, **kwargs)
+
+    monkeypatch.setattr(service, "inspect_watch_to_order_scope", record_inspect)
+    monkeypatch.setattr(
+        service,
+        "create_proposal_in_watch_to_order_scope",
+        record_create,
+    )
+
+    result = await _consumer().consume(
+        _request(first, second), proposal_creator=service
+    )
+
+    assert result.proposal_creation_status == "created_after_atomic_seam"
+    assert result.plan.proposal_creation_permitted is True
+    assert result.plan.proposal_creation_block_code is None
+    assert result.plan.unatomicity_notice is None
+    assert events == [
+        ("inspect", first.normalized_symbol, None),
+        ("inspect", first.normalized_symbol, "acct-1"),
+        ("inspect", second.normalized_symbol, None),
+        ("inspect", second.normalized_symbol, "acct-1"),
+        ("create", first.normalized_symbol, "acct-1"),
+        ("create", second.normalized_symbol, "acct-1"),
+    ]
+    assert len(result.proposals_created) == 2
+    for created in result.proposals_created:
+        group, rungs = await service.get_proposal(created.proposal_id)
+        assert group.side == "buy"
+        assert group.action == "place"
+        assert group.exit_intent is None
+        assert group.exit_reason is None
+        assert [(rung.side, rung.state) for rung in rungs] == [
+            ("buy", "pending_approval")
+        ]
+
+
+@pytest.mark.asyncio
+async def test_concrete_scope_active_group_blocks_companion_create(
+    db_session, monkeypatch
+) -> None:
+    symbol = f"CONCRETE-ACTIVE-{uuid.uuid4().hex.upper()}"
+    service = OrderProposalsService(db_session)
+    await service.create_proposal(
+        symbol=symbol,
+        market="equity_kr",
+        account_mode="kis_live",
+        broker_account_id="acct-1",
+        side="buy",
+        order_type="limit",
+        proposer="concrete-probe",
+        strategy="concrete_scope_probe",
+        action="place",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("91.2"), None)],
+    )
+    companion_calls = 0
+
+    async def forbid_companion_create(*args, **kwargs):
+        nonlocal companion_calls
+        companion_calls += 1
+        raise AssertionError("active concrete scope must block before companion create")
+
+    monkeypatch.setattr(
+        service,
+        "create_proposal_in_watch_to_order_scope",
+        forbid_companion_create,
+    )
+
+    result = await _consumer().consume(_request(_new(symbol)), proposal_creator=service)
+
+    assert (
+        result.proposal_creation_status == "watch_to_order_scope_active_groups_present"
+    )
+    assert result.proposals_created == ()
+    assert companion_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_probe_b_legacy_none_scope_blocks_concrete_create(
+    db_session, monkeypatch
+) -> None:
+    symbol = f"PROBE-B-{uuid.uuid4().hex.upper()}"
+    service = OrderProposalsService(db_session)
+    legacy = await service.create_proposal(
+        symbol=symbol,
+        market="equity_kr",
+        account_mode="kis_live",
+        broker_account_id=None,
+        side="buy",
+        order_type="limit",
+        proposer="legacy-probe",
+        strategy="legacy_scope_probe",
+        action="place",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("91.2"), None)],
+    )
+    companion_calls = 0
+
+    async def forbid_companion_create(*args, **kwargs):
+        nonlocal companion_calls
+        companion_calls += 1
+        raise AssertionError("legacy None scope must block before companion create")
+
+    monkeypatch.setattr(
+        service,
+        "create_proposal_in_watch_to_order_scope",
+        forbid_companion_create,
+    )
+
+    result = await _consumer().consume(_request(_new(symbol)), proposal_creator=service)
+
+    assert result.proposal_creation_status == "legacy_unscoped_active_proposal_exists"
+    assert result.proposals_created == ()
+    assert companion_calls == 0
+    concrete = await service.inspect_watch_to_order_scope(
+        symbol=symbol,
+        market="equity_kr",
+        account_mode="kis_live",
+        broker_account_id="acct-1",
+        action="place",
+    )
+    assert concrete.lock_acquired is True
+    assert concrete.active_groups == ()
+    assert legacy.broker_account_id is None
 
 
 def test_missing_precheck_evidence_fails_closed_before_selection() -> None:

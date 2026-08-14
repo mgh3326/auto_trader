@@ -73,13 +73,17 @@ See the full design in
   include every rung state, because a group marked `superseded` can still have a
   `resting` rung. Commit or rollback releases the lock. Existing
   `create_proposal` callers remain unchanged and are not this seam.
-- **Reserve-net consumer activation condition.**
-  `_ATOMIC_SELF_OPEN_ORDER_READ_SEAM_AVAILABLE` in
-  `support_reserve_net_consumer.py` must remain false until a separately
-  reviewed consumer-wiring change performs the preceding inspect → empty-result
-  → companion-create sequence in one `OrderProposalsService` transaction for
-  every proposed scope. Merely importing this service API, observing an empty
-  best-effort list, or changing that boolean is not readiness to create.
+- **Reserve-net consumer seam readiness.**
+  `SupportReserveNetConsumer.consume` verifies at runtime that its supplied
+  object exposes both public watcher-scope operations. For each selected
+  proposal it inspects the distinct legacy `broker_account_id=None` scope and
+  then the canonical four-axis scope, requires both locks and empty results,
+  and calls the companion create using the still-open same service transaction.
+  A missing method, unavailable lock, active group, or uncanonical account id
+  means zero creates. Merely importing the service API or observing a
+  best-effort list is not readiness to create. The remaining manual-create
+  race and its operating constraint are documented in
+  `support-reserve-net-consumer.md`.
 - **Proposal persistence precedes every broker mutation.**
   `order_proposal_create` first commits the intended order. With
   `ORDER_PROPOSALS_AUTO_APPROVE=false` (default), creation does not submit.
