@@ -750,6 +750,7 @@ async def _get_holdings_for_order(
                     "total_quantity": parsed["total_quantity"],
                     "locked": parsed["locked"],
                     "avg_price": parsed["avg_buy_price"],
+                    "sellable_observed": True,
                 }
         return None
 
@@ -760,9 +761,19 @@ async def _get_holdings_for_order(
             stock_code = str(stock.get("pdno", "")).strip().upper()
             if stock_code != symbol.upper():
                 continue
+            total_quantity = _to_float(stock.get("hldg_qty"), default=0.0)
+            orderable_raw = stock.get("ord_psbl_qty")
+            orderable_quantity = (
+                total_quantity
+                if orderable_raw in {None, ""}
+                else _to_float(orderable_raw, default=0.0)
+            )
             return {
-                "quantity": _to_float(stock.get("hldg_qty"), default=0.0),
+                "quantity": orderable_quantity,
+                "total_quantity": total_quantity,
+                "locked": max(total_quantity - orderable_quantity, 0.0),
                 "avg_price": _to_float(stock.get("pchs_avg_pric"), default=0.0),
+                "sellable_observed": orderable_raw not in {None, ""},
             }
         return None
 
@@ -771,9 +782,21 @@ async def _get_holdings_for_order(
         stock_code = str(stock.get("ovrs_pdno", "")).strip().upper()
         if stock_code != symbol.upper():
             continue
+        total_quantity = _to_float(stock.get("ovrs_cblc_qty"), default=0.0)
+        orderable_raw = stock.get("ord_psbl_qty")
+        if orderable_raw in {None, ""}:
+            orderable_raw = stock.get("ovrs_ord_psbl_qty")
+        orderable_quantity = (
+            total_quantity
+            if orderable_raw in {None, ""}
+            else _to_float(orderable_raw, default=0.0)
+        )
         return {
-            "quantity": _to_float(stock.get("ovrs_cblc_qty"), default=0.0),
+            "quantity": orderable_quantity,
+            "total_quantity": total_quantity,
+            "locked": max(total_quantity - orderable_quantity, 0.0),
             "avg_price": _to_float(stock.get("pchs_avg_pric"), default=0.0),
+            "sellable_observed": orderable_raw not in {None, ""},
         }
     return None
 
@@ -1026,6 +1049,24 @@ async def _preview_sell(
         return result
 
     avg_price = holdings["avg_price"]
+    if loss_cut_ctx is not None and holdings.get("sellable_observed") is not True:
+        result["error"] = "Fresh orderable quantity is required for a loss_cut preview."
+        return result
+    sellable_quantity = _to_float(holdings.get("quantity"), default=0.0)
+    total_quantity = _to_float(
+        holdings.get("total_quantity"), default=sellable_quantity
+    )
+    result["observed_sellable_qty"] = sellable_quantity
+    result["observed_total_qty"] = total_quantity
+    result["observed_locked_qty"] = _to_float(
+        holdings.get("locked"), default=max(total_quantity - sellable_quantity, 0.0)
+    )
+    if quantity is not None and quantity > sellable_quantity:
+        result["error"] = (
+            f"Requested sell quantity {quantity} exceeds orderable balance "
+            f"{sellable_quantity}."
+        )
+        return result
     if order_type == "market":
         # ROB-518 — market sells used to skip the price guards entirely, letting
         # a live sell realize a loss in one call. Same allow_loss_sell scope as
@@ -1048,7 +1089,7 @@ async def _preview_sell(
                 avg_price=avg_price,
                 phase="preview",
             )
-        order_quantity = holdings["quantity"]
+        order_quantity = sellable_quantity
         execution_price = current_price
         result["price"] = execution_price
     else:
@@ -1106,7 +1147,7 @@ async def _preview_sell(
                 avg_price=avg_price,
                 phase="preview",
             )
-        order_quantity = holdings["quantity"] if quantity is None else quantity
+        order_quantity = sellable_quantity if quantity is None else quantity
         execution_price = price
         result["price"] = execution_price
         # ROB-477: informational fill-risk surface. A sell limit above the

@@ -1871,6 +1871,42 @@ async def test_loss_cut_second_nonce_replay_is_rejected(monkeypatch, db_session)
 
 
 @pytest.mark.asyncio
+async def test_loss_cut_second_click_requires_same_telegram_principal(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    notifier = _FakeNotifier()
+    issued = datetime(2026, 7, 13, 10, 0, tzinfo=UTC)
+    await handle_callback_update(
+        _make_update(
+            data=_proposal_callback_data(group, action="op", nonce="loss-cut-first")
+        ),
+        now=issued,
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=_fake_noop_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    callback_data = notifier.edited[-1][3]["inline_keyboard"][0][0]["callback_data"]
+
+    result = await handle_callback_update(
+        _make_update(
+            data=callback_data,
+            callback_id="cbq-other-principal",
+            user_id=USER_ID + 1,
+        ),
+        now=issued + timedelta(seconds=1),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=_fake_noop_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+
+    assert result["reason"] == "loss_cut_confirmation_principal_mismatch"
+
+
+@pytest.mark.asyncio
 async def test_loss_cut_second_nonce_expires_after_90_seconds(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     group = await _seed_loss_cut_proposal(db_session, monkeypatch)

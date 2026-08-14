@@ -11,6 +11,7 @@ from datetime import datetime
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from typing import Any
 
+from app.core.invest_deep_links import build_loss_cut_approval_url
 from app.core.timezone import KST
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
@@ -462,12 +463,16 @@ def build_approval_message(
     lines.extend(["", "*근거*", *evidence_lines])
 
     if getattr(group, "exit_intent", None) == "loss_cut":
+        approval_url = build_loss_cut_approval_url(
+            proposal_id=getattr(group, "proposal_id", "")
+        )
         lines.extend(
             [
                 "",
                 "*손절 근거*",
                 f"- 사유: {_escape_markdown(getattr(group, 'exit_reason', None))}",
                 f"- 회고: #{getattr(group, 'retrospective_id', None)}",
+                f"- /invest 증거·확인: {approval_url}",
             ]
         )
 
@@ -522,6 +527,17 @@ def build_approval_message(
             ]
         ]
     }
+    if getattr(group, "exit_intent", None) == "loss_cut":
+        inline_keyboard["inline_keyboard"].append(
+            [
+                {
+                    "text": "🔎 /invest 증거",
+                    "url": build_loss_cut_approval_url(
+                        proposal_id=getattr(group, "proposal_id", "")
+                    ),
+                }
+            ]
+        )
     return text, inline_keyboard
 
 
@@ -657,6 +673,8 @@ def build_loss_cut_confirmation_message(
     if approval_note:
         lines.append(f"- 승인 감사 메모: {_escape_markdown(approval_note)}")
     lines.extend(["", "이 손절 주문을 다시 확인해 주세요."])
+    approval_url = build_loss_cut_approval_url(proposal_id=proposal_id)
+    lines.append(f"/invest 증거·확인: {approval_url}")
     text = "\n".join(lines).replace(str(nonce), "[비공개]")
     keyboard = {
         "inline_keyboard": [
@@ -682,6 +700,9 @@ def build_loss_cut_confirmation_message(
             ]
         ]
     }
+    keyboard["inline_keyboard"].append(
+        [{"text": "🔎 /invest 증거", "url": approval_url}]
+    )
     return text, keyboard
 
 

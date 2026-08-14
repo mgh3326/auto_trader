@@ -52,6 +52,10 @@ import {
 import { StockDetailPage } from "./pages/stock-detail/StockDetailPage";
 import { WatchesRoute } from "./pages/WatchesRoute";
 import { OrderDetailRoute } from "./pages/OrderDetailRoute";
+import {
+  LossCutApprovalRoute,
+  LossCutEvidenceRoute,
+} from "./pages/LossCutApprovalRoute";
 
 // Static legacy /app/* redirect that preserves any ?search and #hash
 // from the source URL so market-scoped or anchor-scoped bookmarks
@@ -104,6 +108,14 @@ export const router = createBrowserRouter(
     { path: "/stocks/:market/:symbol", element: <StockDetailPage /> },
     { path: "/watches", element: <WatchesRoute /> },
     { path: "/orders/:broker/:market/:ledgerId", element: <OrderDetailRoute /> },
+    {
+      path: "/approvals/loss-cut/evidence/:symbol",
+      element: <LossCutEvidenceRoute />,
+    },
+    {
+      path: "/approvals/loss-cut/:proposalId",
+      element: <LossCutApprovalRoute />,
+    },
 
     // Legacy /invest/app/* URLs redirect to their canonical /invest/*
     // siblings. The retired legacy components were removed after the

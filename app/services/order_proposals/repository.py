@@ -21,6 +21,8 @@ from app.models.order_proposals import (
     OrderProposalApprovalBatch,
     OrderProposalApprovalBatchMember,
     OrderProposalApprovalDispatchAttempt,
+    OrderProposalApprovalEvent,
+    OrderProposalLossCutScope,
     OrderProposalRung,
 )
 from app.services.order_proposals.defensive_ttl import DEFENSIVE_EXIT_INTENTS
@@ -51,6 +53,62 @@ class OrderProposalRepository:
     ) -> OrderProposalApprovalDispatchAttempt:
         row = OrderProposalApprovalDispatchAttempt(**cols)
         self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def insert_approval_event(self, **cols: Any) -> OrderProposalApprovalEvent:
+        row = OrderProposalApprovalEvent(**cols)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def get_approval_event(
+        self,
+        *,
+        proposal_pk: int,
+        ceremony_digest: str,
+        step: str,
+    ) -> OrderProposalApprovalEvent | None:
+        stmt = select(OrderProposalApprovalEvent).where(
+            OrderProposalApprovalEvent.proposal_pk == proposal_pk,
+            OrderProposalApprovalEvent.ceremony_digest == ceremony_digest,
+            OrderProposalApprovalEvent.step == step,
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def list_approval_events(
+        self, proposal_pk: int
+    ) -> list[OrderProposalApprovalEvent]:
+        stmt = (
+            select(OrderProposalApprovalEvent)
+            .where(OrderProposalApprovalEvent.proposal_pk == proposal_pk)
+            .order_by(
+                OrderProposalApprovalEvent.observed_at, OrderProposalApprovalEvent.id
+            )
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def get_loss_cut_scope(
+        self, proposal_pk: int, *, for_update: bool = False
+    ) -> OrderProposalLossCutScope | None:
+        stmt = select(OrderProposalLossCutScope).where(
+            OrderProposalLossCutScope.proposal_pk == proposal_pk
+        )
+        if for_update:
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def upsert_loss_cut_scope(self, **cols: Any) -> OrderProposalLossCutScope:
+        proposal_pk = int(cols["proposal_pk"])
+        row = await self.get_loss_cut_scope(proposal_pk, for_update=True)
+        if row is None:
+            row = OrderProposalLossCutScope(**cols)
+            self._session.add(row)
+        else:
+            for key, value in cols.items():
+                setattr(row, key, value)
         await self._session.flush()
         await self._session.refresh(row)
         return row

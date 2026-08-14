@@ -28,3 +28,9 @@ test("router still exposes /app and /app/paper", () => {
   expect(paths).toContain("/app/paper");
   expect(paths).toContain("/app/paper/:variant");
 });
+
+test("router exposes B0 evidence and B1 loss-cut approval routes", () => {
+  const paths = pathsOf((router as any).routes);
+  expect(paths).toContain("/approvals/loss-cut/evidence/:symbol");
+  expect(paths).toContain("/approvals/loss-cut/:proposalId");
+});

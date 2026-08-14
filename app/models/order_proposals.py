@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     TIMESTAMP,
@@ -69,6 +70,15 @@ class OrderProposal(Base):
             "approval_dispatch_card_kind IN "
             "('manual','reconfirm','auto_veto','loss_cut_confirmation')",
             name="order_proposals_approval_dispatch_card_kind",
+        ),
+        CheckConstraint(
+            "approval_dispatch_channel IS NULL OR "
+            "approval_dispatch_channel IN ('telegram','web')",
+            name="order_proposals_approval_dispatch_channel",
+        ),
+        CheckConstraint(
+            "approved_by_channel IS NULL OR approved_by_channel IN ('telegram','web')",
+            name="order_proposals_approved_by_channel",
         ),
         Index("ix_order_proposals_root", "root_proposal_id"),
         Index("ix_order_proposals_state", "lifecycle_state"),
@@ -133,12 +143,17 @@ class OrderProposal(Base):
     approval_dispatch_failure_code: Mapped[str | None] = mapped_column(Text)
     approval_dispatch_payload_chars: Mapped[int | None] = mapped_column(BigInteger)
     approval_dispatch_card_kind: Mapped[str | None] = mapped_column(Text)
+    approval_dispatch_channel: Mapped[str | None] = mapped_column(Text)
+    approval_dispatch_scope_hash: Mapped[str | None] = mapped_column(Text)
+    approval_dispatch_evidence_hash: Mapped[str | None] = mapped_column(Text)
     approval_dispatch_membership_revision: Mapped[int | None] = mapped_column(Integer)
     approval_dispatch_membership_digest: Mapped[str | None] = mapped_column(Text)
     approval_dispatch_published_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True)
     )
     approved_by_telegram_user_id: Mapped[str | None] = mapped_column(Text)
+    approved_by_channel: Mapped[str | None] = mapped_column(Text)
+    approved_by_subject: Mapped[str | None] = mapped_column(Text)
     approved_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
     commit_lease_until: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True)
@@ -219,6 +234,10 @@ class OrderProposalApprovalDispatchAttempt(Base):
             "card_kind IN ('manual','reconfirm','auto_veto','loss_cut_confirmation')",
             name="order_proposal_approval_dispatch_attempt_card_kind",
         ),
+        CheckConstraint(
+            "channel IN ('telegram','web')",
+            name="order_proposal_approval_dispatch_attempt_channel",
+        ),
         Index(
             "ix_order_proposal_approval_dispatch_attempts_proposal",
             "proposal_pk",
@@ -249,6 +268,12 @@ class OrderProposalApprovalDispatchAttempt(Base):
     error_classification: Mapped[str | None] = mapped_column(Text)
     failure_code: Mapped[str | None] = mapped_column(Text)
     card_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    channel: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="telegram"
+    )
+    scope_hash: Mapped[str | None] = mapped_column(Text)
+    evidence_hash: Mapped[str | None] = mapped_column(Text)
+    publication_ref_digest: Mapped[str | None] = mapped_column(Text)
     membership_revision: Mapped[int] = mapped_column(Integer, nullable=False)
     membership_digest: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -259,6 +284,134 @@ class OrderProposalApprovalDispatchAttempt(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+
+class OrderProposalLossCutScope(Base):
+    """Current typed position scope frozen by a web loss-cut ceremony."""
+
+    __tablename__ = "order_proposal_loss_cut_scopes"
+    __table_args__ = (
+        UniqueConstraint(
+            "proposal_pk", name="uq_order_proposal_loss_cut_scopes_proposal"
+        ),
+        Index("ix_order_proposal_loss_cut_scopes_scope_hash", "scope_hash"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    proposal_pk: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("review.order_proposals.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="1"
+    )
+    account_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    account_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    market: Mapped[str] = mapped_column(Text, nullable=False)
+    symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    requested_quantity: Mapped[Decimal] = mapped_column(Numeric(38, 12), nullable=False)
+    observed_total_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(38, 12), nullable=False
+    )
+    observed_sellable_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(38, 12), nullable=False
+    )
+    average_price: Mapped[Decimal] = mapped_column(Numeric(38, 12), nullable=False)
+    position_scope: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    decision_observed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    evidence_valid_until: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    scope_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class OrderProposalApprovalEvent(Base):
+    """Append-only actor/outcome ledger for both approval channels."""
+
+    __tablename__ = "order_proposal_approval_events"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_order_proposal_approval_events_event_id"),
+        UniqueConstraint(
+            "proposal_pk",
+            "ceremony_digest",
+            "step",
+            name="uq_order_proposal_approval_events_ceremony_step",
+        ),
+        CheckConstraint(
+            "channel IN ('telegram','web')",
+            name="order_proposal_approval_events_channel",
+        ),
+        CheckConstraint(
+            "step IN ('begin','confirm')",
+            name="order_proposal_approval_events_step",
+        ),
+        CheckConstraint(
+            "outcome IN ('accepted','rejected','needs_reconfirm','expired')",
+            name="order_proposal_approval_events_outcome",
+        ),
+        CheckConstraint(
+            "actor_kind IN ('user','telegram')",
+            name="order_proposal_approval_events_actor_kind",
+        ),
+        Index(
+            "ix_order_proposal_approval_events_proposal_observed",
+            "proposal_pk",
+            "observed_at",
+        ),
+        Index("ix_order_proposal_approval_events_ceremony", "ceremony_digest"),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=uuid.uuid4
+    )
+    proposal_pk: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("review.order_proposals.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    ceremony_digest: Mapped[str] = mapped_column(Text, nullable=False)
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    step: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_subject: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_role: Mapped[str | None] = mapped_column(Text)
+    dispatch_attempt_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    membership_revision: Mapped[int | None] = mapped_column(Integer)
+    membership_digest: Mapped[str | None] = mapped_column(Text)
+    nonce_digest: Mapped[str | None] = mapped_column(Text)
+    proposal_payload_hash: Mapped[str | None] = mapped_column(Text)
+    scope_hash: Mapped[str | None] = mapped_column(Text)
+    evidence_hash: Mapped[str | None] = mapped_column(Text)
+    evidence_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+    reason_code: Mapped[str | None] = mapped_column(Text)
+    expires_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+    observed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )
 
 

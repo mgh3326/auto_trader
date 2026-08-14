@@ -58,6 +58,8 @@ from .order_proposals import (
     OrderProposalApprovalBatch,
     OrderProposalApprovalBatchMember,
     OrderProposalApprovalDispatchAttempt,
+    OrderProposalApprovalEvent,
+    OrderProposalLossCutScope,
     OrderProposalRung,
 )
 from .paper_cohort import (
@@ -237,6 +239,8 @@ __all__ = [
     "OrderProposalApprovalBatch",
     "OrderProposalApprovalBatchMember",
     "OrderProposalApprovalDispatchAttempt",
+    "OrderProposalApprovalEvent",
+    "OrderProposalLossCutScope",
     "OrderProposalRung",
     "BrokerType",
     "MarketType",

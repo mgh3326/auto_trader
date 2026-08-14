@@ -266,18 +266,22 @@ def test_batch_result_groups_each_member_outcome():
 
 
 @pytest.mark.unit
-def test_loss_cut_approval_message_shows_reason_and_retrospective():
+def test_loss_cut_approval_message_shows_reason_retrospective_and_invest_link():
     group = _group(
         exit_intent="loss_cut",
         exit_reason="stop_loss",
         retrospective_id=42,
         approval_issue_id="ROB-800",
     )
-    text, _keyboard = build_approval_message(group=group, rungs=[_rung()])
+    text, keyboard = build_approval_message(group=group, rungs=[_rung()])
     assert "손절 근거" in text
     assert r"stop\_loss" in text
     assert "#42" in text
     assert "ROB-800" not in text
+    approval_url = keyboard["inline_keyboard"][1][0]["url"]
+    assert approval_url.endswith(f"/invest/approvals/loss-cut/{group.proposal_id}")
+    assert approval_url in text
+    assert group.approval_nonce not in approval_url
 
 
 @pytest.mark.unit
@@ -428,6 +432,10 @@ def test_loss_cut_confirmation_callback_and_summary():
         str(group.proposal_id)[:8],
         "secondnonce",
     )
+    approval_url = keyboard["inline_keyboard"][1][0]["url"]
+    assert approval_url.endswith(f"/invest/approvals/loss-cut/{group.proposal_id}")
+    assert approval_url in text
+    assert group.approval_nonce not in approval_url
 
 
 @pytest.mark.unit

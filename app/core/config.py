@@ -865,6 +865,10 @@ class Settings(BaseSettings):
     ORDER_PROPOSALS_TELEGRAM_TOKEN_HEADER: str = "X-Telegram-Bot-Api-Secret-Token"
     ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR: str = ""
     ORDER_PROPOSALS_SUBMIT_AGENT_ID: str = ""
+    # B0/B1 loss-cut web surfaces. Both are physically absent from the app
+    # unless an operator enables at least one flag after schema rollout.
+    INVEST_LOSS_CUT_EVIDENCE_ENABLED: bool = False
+    INVEST_LOSS_CUT_APPROVAL_ENABLED: bool = False
 
     # ROB-897: gate for the scheduleless order_proposal valid_until expiry sweep
     # TaskIQ task. Default off -- the sweep runs manually first (dry_run MCP tool

@@ -669,6 +669,55 @@ async def _sell_loss_guard(
     return None
 
 
+async def _loss_cut_position_scope(
+    client: TossReadClient,
+    *,
+    symbol: str,
+    requested_quantity: Decimal | None,
+    base: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Read exact Toss position quantities without changing price guards."""
+    try:
+        holding = await _find_holding(client, symbol)
+        sellable = (await client.sellable_quantity(symbol=symbol)).sellable_quantity
+    except Exception as exc:
+        return None, {
+            "success": False,
+            **base,
+            "error": (
+                "Failed to retrieve fresh position scope for loss_cut "
+                f"validation (fail closed): {exc}"
+            ),
+        }
+    if holding is None:
+        return None, {
+            "success": False,
+            **base,
+            "error": f"No holding found for symbol {symbol} (fail closed).",
+        }
+    total = holding.quantity
+    if sellable < Decimal("0") or total < Decimal("0") or sellable > total:
+        return None, {
+            "success": False,
+            **base,
+            "error": "Invalid Toss holding quantity scope (fail closed).",
+        }
+    if requested_quantity is not None and requested_quantity > sellable:
+        return None, {
+            "success": False,
+            **base,
+            "error": (
+                f"Requested sell quantity {requested_quantity} exceeds "
+                f"orderable balance {sellable}."
+            ),
+        }
+    return {
+        "observed_sellable_qty": _stringify_decimal(sellable),
+        "observed_total_qty": _stringify_decimal(total),
+        "observed_locked_qty": _stringify_decimal(total - sellable),
+    }, None
+
+
 async def _opposite_pending_error(
     client: TossReadClient,
     symbol: str,
@@ -979,22 +1028,32 @@ async def toss_preview_order(
                 ),
             }
         async with _client_context() as client:
+            base = {
+                "source": "toss",
+                "account_mode": ACCOUNT_MODE_TOSS_LIVE,
+                "preview": True,
+            }
             loss_cut_guard = await _sell_loss_guard(
                 client,
                 symbol,
                 order_type,
                 price_dec,
-                {
-                    "source": "toss",
-                    "account_mode": ACCOUNT_MODE_TOSS_LIVE,
-                    "preview": True,
-                },
+                base,
                 loss_cut_ctx=loss_cut_ctx,
                 current_price=current_price_dec,
                 evidence_context=loss_cut_evidence,
             )
-        if loss_cut_guard is not None:
-            return loss_cut_guard
+            if loss_cut_guard is not None:
+                return loss_cut_guard
+            position_scope, scope_error = await _loss_cut_position_scope(
+                client,
+                symbol=symbol,
+                requested_quantity=quantity_dec,
+                base=base,
+            )
+        if scope_error is not None:
+            return scope_error
+        loss_cut_evidence.update(position_scope or {})
 
     fill_warnings, fill_distance = _limit_fill_context(
         market=mkt,

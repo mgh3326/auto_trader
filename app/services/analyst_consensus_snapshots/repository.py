@@ -150,6 +150,25 @@ class AnalystConsensusSnapshotsRepository:
             total_symbols=int(row.total or 0),
         )
 
+    async def latest_for_symbol(
+        self, *, market: str, symbol: str
+    ) -> AnalystConsensusSnapshot | None:
+        """Return the newest durable snapshot for one canonical symbol."""
+        stmt = (
+            select(AnalystConsensusSnapshot)
+            .where(
+                AnalystConsensusSnapshot.market == market.strip().lower(),
+                AnalystConsensusSnapshot.symbol == symbol.strip().upper(),
+            )
+            .order_by(
+                AnalystConsensusSnapshot.snapshot_date.desc(),
+                AnalystConsensusSnapshot.collected_at.desc(),
+                AnalystConsensusSnapshot.id.desc(),
+            )
+            .limit(1)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
     async def existing_keys(
         self, rows: Iterable[AnalystConsensusSnapshotUpsert]
     ) -> set[tuple[str, str, dt.date, str]]:

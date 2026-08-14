@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.invest_deep_links import build_order_detail_url, build_watches_url
+from app.core.invest_deep_links import (
+    build_loss_cut_approval_url,
+    build_order_detail_url,
+    build_watches_url,
+)
 
 
 @pytest.mark.unit
@@ -27,6 +31,20 @@ def test_build_watches_url_uses_public_base_url(monkeypatch):
     monkeypatch.setattr(settings, "public_base_url", "https://example.test/")
     url = build_watches_url()
     assert url == "https://example.test/invest/watches"
+
+
+@pytest.mark.unit
+def test_build_loss_cut_approval_url_contains_only_proposal_id(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "public_base_url", "https://example.test/")
+    proposal_id = "11111111-2222-4333-8444-555555555555"
+
+    url = build_loss_cut_approval_url(proposal_id=proposal_id)
+
+    assert url == f"https://example.test/invest/approvals/loss-cut/{proposal_id}"
+    assert "nonce" not in url
+    assert "quantity" not in url
 
 
 @pytest.mark.unit
