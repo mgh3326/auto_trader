@@ -432,8 +432,6 @@ def test_support_reserve_net_keeps_toss_auto_veto_behind_dedicated_gate(monkeypa
         assert auto_approve._is_veto_capable_account_market("toss_live", market)
 
 
-
-
 def test_breakeven_reserve_trim_policy_contract_is_machine_readable():
     doc = TradingPolicyDocument.model_validate(_raw())
     rule = doc.decision_rules["sell.trim_preplace"]
