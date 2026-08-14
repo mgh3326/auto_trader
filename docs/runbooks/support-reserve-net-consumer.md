@@ -71,8 +71,8 @@ For every selected proposal, the required sequence is:
 
 ```text
 require explicit submissions_frozen evidence
-→ validate canonical broker_account_id
-→ validate one exact beneficial_owner_id across all owner-bearing records
+→ parse Literal-constrained request keys
+→ validate every MCP-boundary join-key representation
 → inspect legacy broker_account_id=None scope (lock + empty required)
 → inspect concrete four-axis scope (lock + empty required)
 → create_proposal_in_watch_to_order_scope on that concrete inspection
@@ -105,24 +105,55 @@ legacy ledger scope, not a wildcard. The consumer locks and checks that legacy
 scope first. An active legacy proposal blocks the concrete-id create with
 `legacy_unscoped_active_proposal_exists`; this closes the NULL-ledger probe.
 
-## Beneficial-owner representation contract
+## Join-key representation contract
 
-For this MCP surface, one request is one beneficial-owner scope. Every
-`beneficial_owner_id` in `candidates`, `reserve_net_attributions`,
-`self_unfilled_orders`, and `sector_exposures` must be the same exact non-empty
-opaque string. The caller and tool do not trim, case-fold, normalize Unicode,
-rewrite separators or punctuation, or map aliases. An empty value, surrounding
-whitespace, or more than one representation is rejected before consumer
-construction, DB-session opening, or seam inspection, and creates zero
-proposals.
+The complete consumer join/filter-key census and its primary protection are:
 
-This is a safety identity contract, not a convenience normalization. These four
-record groups are assembled from different evidence sources, while the consumer
-joins them by `beneficial_owner_id`. A case, whitespace, or separator drift can
-otherwise evade `max_active_orders_per_symbol`, same-symbol dedupe (including
-self-unfilled and active reserve-net checks), and the sector cap
-(`max_symbols_per_sector_cluster`). When an assembler cannot prove the one exact
-opaque representation, it must not call this create surface.
+| Key | Protection |
+|---|---|
+| `broker_account_id` | MCP exact-opaque gate; a nonjoining account/cash record also rejects the candidate |
+| `beneficial_owner_id` | MCP exact-opaque ambiguity gate across all four owner-bearing record groups |
+| `side` | MCP Pydantic `Literal["buy", "sell"]` adapter |
+| `strategy` | MCP exact-opaque gate plus exact reserve-net strategy vocabulary |
+| `sector_cluster` | MCP exact-opaque ambiguity gate within owner×market |
+| `market`, `state`, `intent` | request Pydantic `Literal` types |
+| `normalized_symbol` | both blocker records and candidates use the consumer's shared symbol normalization; candidates must already equal that canonical form |
+| `account_mode`, `currency` | a mismatch cannot find usable cash and rejects the candidate |
+
+Every `beneficial_owner_id` in `candidates`, `reserve_net_attributions`,
+`self_unfilled_orders`, and `sector_exposures` must be an exact non-empty opaque
+string without surrounding whitespace. Multiple records with the same exact ID
+and records for distinct owners may coexist. Two different raw IDs that collapse
+under the reject-only case/Unicode/separator fingerprint are ambiguous and stop
+the request. The fingerprint is never substituted into consumer evidence or
+used as a join value.
+
+Every `self_unfilled_orders[].side` must be exactly `buy` or `sell`. Upper-case,
+mixed-case, surrounding-whitespace, and other values are rejected; the boundary
+does not silently lower-case them. Every
+`reserve_net_attributions[].strategy` must be a non-empty exact string. If its
+reject-only fingerprint could mean `buy.support_reserve_net`, the raw value must
+equal that canonical strategy exactly. A genuinely different exact strategy is
+allowed and remains non-attributable to reserve-net.
+
+Every candidate and sector-exposure `sector_cluster` must be an exact non-empty
+string without surrounding whitespace. Within one beneficial-owner×market
+scope, different raw sectors with the same reject-only fingerprint are
+ambiguous and stop the request. Distinct sectors and independently consistent
+sector spellings for different owners may coexist.
+
+All five MCP-boundary guards run before consumer construction, DB-session
+opening, or seam inspection. A violation creates zero proposals. Without these
+contracts, evidence can silently miss the consumer joins and evade all three of
+the following invariants:
+
+1. same-symbol dedupe, including self-unfilled and active reserve-net checks;
+2. `max_active_orders_per_symbol`;
+3. the sector cap, `max_symbols_per_sector_cluster`.
+
+This is fail-closed ambiguity detection, not convenience normalization. An
+assembler that cannot prove its exact representation must not call this create
+surface.
 
 ## Residual race with the manual create path
 

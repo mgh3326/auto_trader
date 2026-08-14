@@ -8,15 +8,17 @@ transaction; approval dispatch starts only after that transaction commits.
 from __future__ import annotations
 
 import logging
+import unicodedata
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Final, Literal, TypeGuard
 
 from pydantic import TypeAdapter, ValidationError
 
 from app.core.db import AsyncSessionLocal
 from app.services.order_proposals import OrderProposalsService
 from app.services.support_reserve_net_consumer import (
+    STRATEGY,
     ReserveNetConsumeResult,
     ReserveNetPlan,
     ReserveNetRequest,
@@ -27,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _REQUEST_ADAPTER = TypeAdapter(ReserveNetRequest)
 _PLAN_ADAPTER = TypeAdapter(ReserveNetPlan)
+_SELF_UNFILLED_SIDE_ADAPTER = TypeAdapter(Literal["buy", "sell"])
 
 
 def _validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
@@ -41,8 +44,25 @@ def _validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
     ]
 
 
-def _is_exact_opaque_identifier(value: object) -> bool:
+def _is_exact_opaque_identifier(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and bool(value) and value == value.strip()
+
+
+def _join_key_collision_fingerprint(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return "".join(character for character in normalized if character.isalnum())
+
+
+def _has_no_ambiguous_exact_representations(values: list[object]) -> bool:
+    seen: dict[str, str] = {}
+    for value in values:
+        if not _is_exact_opaque_identifier(value):
+            return False
+        fingerprint = _join_key_collision_fingerprint(value)
+        previous = seen.setdefault(fingerprint, value)
+        if previous != value:
+            return False
+    return True
 
 
 def _has_exact_opaque_account_ids(request: ReserveNetRequest) -> bool:
@@ -57,17 +77,111 @@ def _has_exact_opaque_account_ids(request: ReserveNetRequest) -> bool:
 
 
 def _has_exact_opaque_beneficial_owner_ids(request: ReserveNetRequest) -> bool:
-    """Require one exact non-empty owner representation for the whole packet."""
+    """Allow distinct owners but reject ambiguous representations of one owner."""
     owner_ids = (
         [candidate.beneficial_owner_id for candidate in request.candidates]
         + [item.beneficial_owner_id for item in request.reserve_net_attributions]
         + [item.beneficial_owner_id for item in request.self_unfilled_orders]
         + [item.beneficial_owner_id for item in request.sector_exposures]
     )
-    return (
-        all(_is_exact_opaque_identifier(owner_id) for owner_id in owner_ids)
-        and len(set(owner_ids)) <= 1
-    )
+    return _has_no_ambiguous_exact_representations(owner_ids)
+
+
+def _has_exact_self_unfilled_sides(request: ReserveNetRequest) -> bool:
+    """Accept only the consumer's exact lower-case side vocabulary."""
+    try:
+        for order in request.self_unfilled_orders:
+            _SELF_UNFILLED_SIDE_ADAPTER.validate_python(order.side)
+    except ValidationError:
+        return False
+    return True
+
+
+def _has_exact_reserve_net_strategy_ids(request: ReserveNetRequest) -> bool:
+    """Reject any non-canonical spelling that could mean reserve-net."""
+    target = _join_key_collision_fingerprint(STRATEGY)
+    for attribution in request.reserve_net_attributions:
+        value = attribution.strategy
+        if not _is_exact_opaque_identifier(value):
+            return False
+        if _join_key_collision_fingerprint(value) == target and value != STRATEGY:
+            return False
+    return True
+
+
+def _has_exact_sector_clusters(request: ReserveNetRequest) -> bool:
+    """Reject ambiguous sector spellings within each owner and market scope."""
+    seen: dict[tuple[str, str, str], str] = {}
+    items = (*request.candidates, *request.sector_exposures)
+    for item in items:
+        value = item.sector_cluster
+        if not _is_exact_opaque_identifier(value):
+            return False
+        key = (
+            item.beneficial_owner_id,
+            item.market,
+            _join_key_collision_fingerprint(value),
+        )
+        previous = seen.setdefault(key, value)
+        if previous != value:
+            return False
+    return True
+
+
+_JOIN_KEY_BOUNDARY_GUARDS: Final = MappingProxyType(
+    {
+        "broker_account_id": (
+            _has_exact_opaque_account_ids,
+            "broker_account_id_normalization_unavailable",
+            "not_attempted_account_id_unavailable",
+        ),
+        "beneficial_owner_id": (
+            _has_exact_opaque_beneficial_owner_ids,
+            "beneficial_owner_id_normalization_unavailable",
+            "not_attempted_beneficial_owner_id_unavailable",
+        ),
+        "side": (
+            _has_exact_self_unfilled_sides,
+            "self_unfilled_side_contract_unavailable",
+            "not_attempted_self_unfilled_side_unavailable",
+        ),
+        "strategy": (
+            _has_exact_reserve_net_strategy_ids,
+            "reserve_net_strategy_contract_unavailable",
+            "not_attempted_reserve_net_strategy_unavailable",
+        ),
+        "sector_cluster": (
+            _has_exact_sector_clusters,
+            "sector_cluster_normalization_unavailable",
+            "not_attempted_sector_cluster_unavailable",
+        ),
+    }
+)
+
+RESERVE_NET_JOIN_KEY_CENSUS: Final = frozenset(
+    {
+        "account_mode",
+        "beneficial_owner_id",
+        "broker_account_id",
+        "currency",
+        "intent",
+        "market",
+        "normalized_symbol",
+        "sector_cluster",
+        "side",
+        "state",
+        "strategy",
+    }
+)
+
+RESERVE_NET_JOIN_KEY_PROTECTION_PARTITIONS: Final = MappingProxyType(
+    {
+        "mcp_boundary": frozenset(_JOIN_KEY_BOUNDARY_GUARDS),
+        "pydantic_literal": frozenset({"intent", "market", "state"}),
+        "shared_normalization": frozenset({"normalized_symbol"}),
+        "fail_closed_join_miss": frozenset({"account_mode", "currency"}),
+    }
+)
 
 
 async def _complete_committed_create(
@@ -150,28 +264,17 @@ async def support_reserve_net_consume_impl(
             "proposals_created": [],
         }
 
-    # This caller duplicates no identity mapping.  It accepts only exact opaque
-    # representations supplied consistently by the evidence assemblers.
-    # Missing/trimmed/aliased IDs stop before a DB session or seam call exists.
-    if not _has_exact_opaque_account_ids(parsed_request):
-        return {
-            "success": False,
-            "error": "broker_account_id_normalization_unavailable",
-            "proposal_creation_status": "not_attempted_account_id_unavailable",
-            "proposal_count": 0,
-            "proposals_created": [],
-        }
-
-    if not _has_exact_opaque_beneficial_owner_ids(parsed_request):
-        return {
-            "success": False,
-            "error": "beneficial_owner_id_normalization_unavailable",
-            "proposal_creation_status": (
-                "not_attempted_beneficial_owner_id_unavailable"
-            ),
-            "proposal_count": 0,
-            "proposals_created": [],
-        }
+    # Join-key guards never repair caller evidence.  Any invalid or ambiguous
+    # representation stops before consumer construction, DB, or seam access.
+    for guard, error, status in _JOIN_KEY_BOUNDARY_GUARDS.values():
+        if not guard(parsed_request):
+            return {
+                "success": False,
+                "error": error,
+                "proposal_creation_status": status,
+                "proposal_count": 0,
+                "proposals_created": [],
+            }
 
     make_consumer = consumer_factory or SupportReserveNetConsumer.from_current_policy
     try:
@@ -331,21 +434,23 @@ async def support_reserve_net_consume_impl(
 async def support_reserve_net_consume(request: dict[str, Any]) -> dict[str, Any]:
     """Consume one fully evidenced reserve-net packet.
 
-    ``broker_account_id`` is an exact opaque identifier in every nested record.
-    One request is also one beneficial-owner scope: every
-    ``beneficial_owner_id`` across its four owner-bearing record groups must be
-    the same exact non-empty opaque string.  Missing IDs, aliases, case changes,
-    punctuation changes, or surrounding whitespace are not inferred and
-    produce zero proposals.  This tool performs no broker/account reads: the
-    calling session owns evidence freshness and completeness, and must supply
-    ``submissions_frozen`` explicitly.  Proposal creation is one atomic DB
-    transaction; existing approval classification runs only after the commit
-    and keeps its own default-off/live safety gates.
+    Account and beneficial-owner IDs are exact opaque identifiers.  Distinct
+    owners may coexist, but ambiguous spellings of one owner fail closed.
+    Self-unfilled sides use the exact ``buy``/``sell`` vocabulary; a spelling
+    that could mean the reserve-net strategy must equal its canonical value;
+    sector spellings may not conflict within one owner/market scope.  The tool
+    never repairs aliases, case, whitespace, or separators.  It performs no
+    broker/account reads: the calling session owns evidence freshness and
+    completeness, and must supply ``submissions_frozen`` explicitly.  Proposal
+    creation is one atomic DB transaction; existing approval classification
+    runs only after the commit and keeps its own default-off/live safety gates.
     """
     return await support_reserve_net_consume_impl(request)
 
 
 __all__ = [
+    "RESERVE_NET_JOIN_KEY_CENSUS",
+    "RESERVE_NET_JOIN_KEY_PROTECTION_PARTITIONS",
     "support_reserve_net_consume",
     "support_reserve_net_consume_impl",
 ]

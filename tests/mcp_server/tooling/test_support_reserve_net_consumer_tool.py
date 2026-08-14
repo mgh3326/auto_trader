@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
 import uuid
+from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
+from itertools import combinations
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from app.mcp_server.tooling.support_reserve_net_consumer_tool import (
+    RESERVE_NET_JOIN_KEY_CENSUS,
+    RESERVE_NET_JOIN_KEY_PROTECTION_PARTITIONS,
     support_reserve_net_consume_impl,
 )
 from app.services.order_proposals import OrderProposalsService
@@ -75,45 +82,140 @@ def _request(*candidates: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _attribution(*, beneficial_owner_id: str = "owner-1") -> dict[str, Any]:
+def _attribution(
+    symbol: str = "WIRE-HISTORY",
+    *,
+    beneficial_owner_id: str = "owner-1",
+    strategy: str = "buy.unrelated",
+    state: str = "filled",
+    sector: str = "hardware",
+) -> dict[str, Any]:
     return {
-        "normalized_symbol": "WIRE-HISTORY",
+        "normalized_symbol": symbol,
         "market": "equity_kr",
         "beneficial_owner_id": beneficial_owner_id,
         "account_mode": "kis_live",
         "broker_account_id": "acct-exact-1",
-        "state": "filled",
-        "strategy": "buy.unrelated",
-        "sector_cluster": "hardware",
+        "state": state,
+        "strategy": strategy,
+        "sector_cluster": sector,
     }
 
 
-def _self_unfilled_order(*, beneficial_owner_id: str = "owner-1") -> dict[str, Any]:
+def _self_unfilled_order(
+    symbol: str = "WIRE-SELL",
+    *,
+    beneficial_owner_id: str = "owner-1",
+    side: str = "sell",
+) -> dict[str, Any]:
     return {
-        "normalized_symbol": "WIRE-SELL",
+        "normalized_symbol": symbol,
         "market": "equity_kr",
         "beneficial_owner_id": beneficial_owner_id,
         "account_mode": "kis_live",
         "broker_account_id": "acct-exact-1",
-        "side": "sell",
+        "side": side,
     }
 
 
-def _sector_exposure(*, beneficial_owner_id: str = "owner-1") -> dict[str, Any]:
+def _sector_exposure(
+    symbol: str = "WIRE-HARDWARE",
+    *,
+    beneficial_owner_id: str = "owner-1",
+    sector: str = "hardware",
+) -> dict[str, Any]:
     return {
-        "normalized_symbol": "WIRE-HARDWARE",
+        "normalized_symbol": symbol,
         "market": "equity_kr",
         "beneficial_owner_id": beneficial_owner_id,
-        "sector_cluster": "hardware",
+        "sector_cluster": sector,
     }
 
 
 def _request_with_all_owner_record_groups() -> dict[str, Any]:
-    payload = _request()
-    payload["reserve_net_attributions"] = [_attribution()]
-    payload["self_unfilled_orders"] = [_self_unfilled_order()]
-    payload["sector_exposures"] = [_sector_exposure()]
+    payload = _request(
+        _candidate(),
+        _candidate("WIRE-B", sector="hardware"),
+    )
+    payload["reserve_net_attributions"] = [
+        _attribution(),
+        _attribution("WIRE-HISTORY-2", sector="finance"),
+    ]
+    payload["self_unfilled_orders"] = [
+        _self_unfilled_order(),
+        _self_unfilled_order("WIRE-SELL-2"),
+    ]
+    payload["sector_exposures"] = [
+        _sector_exposure(),
+        _sector_exposure("WIRE-FINANCE", sector="finance"),
+    ]
     return payload
+
+
+def _consumer_join_key_fields() -> set[str]:
+    """Discover fields used by every request-fed index builder in ``plan``."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(SupportReserveNetConsumer)))
+    class_node = next(node for node in tree.body if isinstance(node, ast.ClassDef))
+    methods = {
+        node.name: node
+        for node in class_node.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    plan = methods["plan"]
+
+    def is_request_collection(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "request"
+        )
+
+    builder_names: set[str] = set()
+    for call in ast.walk(plan):
+        if not isinstance(call, ast.Call):
+            continue
+        arguments = [*call.args, *(keyword.value for keyword in call.keywords)]
+        if not (
+            isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "self"
+            and any(is_request_collection(argument) for argument in arguments)
+        ):
+            continue
+        builder_names.add(call.func.attr)
+
+    fields: set[str] = set()
+    for builder_name in builder_names:
+        method = methods[builder_name]
+        record_names: set[str] = set()
+        for node in ast.walk(method):
+            target: ast.expr | None = None
+            if isinstance(node, (ast.For, ast.comprehension)):
+                target = node.target
+            if isinstance(target, ast.Name):
+                record_names.add(target.id)
+            elif isinstance(target, (ast.Tuple, ast.List)):
+                record_names.update(
+                    item.id for item in target.elts if isinstance(item, ast.Name)
+                )
+        fields.update(
+            node.attr
+            for node in ast.walk(method)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in record_names
+        )
+    return fields
+
+
+def test_consumer_join_key_census_is_disjoint_total_and_source_derived() -> None:
+    discovered = _consumer_join_key_fields()
+    protected = tuple(RESERVE_NET_JOIN_KEY_PROTECTION_PARTITIONS.values())
+
+    for left, right in combinations(protected, 2):
+        assert left.isdisjoint(right)
+    assert frozenset().union(*protected) == RESERVE_NET_JOIN_KEY_CENSUS
+    assert discovered == set(RESERVE_NET_JOIN_KEY_CENSUS)
 
 
 class _FakeSession(AbstractAsyncContextManager):
@@ -420,7 +522,7 @@ async def test_owner_id_drift_in_each_record_group_stops_before_db_and_seam(
     drifted_owner_id: str,
 ) -> None:
     payload = _request_with_all_owner_record_groups()
-    payload[record_group][0]["beneficial_owner_id"] = drifted_owner_id
+    payload[record_group][1]["beneficial_owner_id"] = drifted_owner_id
     consumer_factory_calls = 0
     session_factory_calls = 0
     service_factory_calls = 0
@@ -454,6 +556,165 @@ async def test_owner_id_drift_in_each_record_group_stops_before_db_and_seam(
         "proposal_count": 0,
         "proposals_created": [],
     }
+    assert consumer_factory_calls == 0
+    assert session_factory_calls == 0
+    assert service_factory_calls == 0
+
+
+def _request_with_join_key_drift(
+    join_key: str,
+    drifted_value: str,
+) -> dict[str, Any]:
+    payload = _request()
+    if join_key == "side":
+        payload["self_unfilled_orders"] = [
+            _self_unfilled_order("WIRE-OTHER", side="sell"),
+            _self_unfilled_order("WIRE-A", side=drifted_value),
+        ]
+    elif join_key == "strategy":
+        payload["reserve_net_attributions"] = [
+            _attribution("WIRE-OTHER", strategy="buy.unrelated"),
+            _attribution(
+                "WIRE-A",
+                strategy=drifted_value,
+                state="armed",
+            ),
+        ]
+    else:
+        assert join_key == "sector_cluster"
+        payload["sector_exposures"] = [
+            _sector_exposure("WIRE-HARDWARE", sector="hardware"),
+            _sector_exposure("WIRE-SECTOR-BLOCK", sector=drifted_value),
+        ]
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("join_key", "drifted_value", "expected_error"),
+    [
+        pytest.param(
+            "side",
+            "BUY",
+            "self_unfilled_side_contract_unavailable",
+            id="side-case-upper",
+        ),
+        pytest.param(
+            "side",
+            "Buy",
+            "self_unfilled_side_contract_unavailable",
+            id="side-case-title",
+        ),
+        pytest.param(
+            "side",
+            " buy",
+            "self_unfilled_side_contract_unavailable",
+            id="side-leading-space",
+        ),
+        pytest.param(
+            "side",
+            "buy ",
+            "self_unfilled_side_contract_unavailable",
+            id="side-trailing-space",
+        ),
+        pytest.param(
+            "side",
+            "hold",
+            "self_unfilled_side_contract_unavailable",
+            id="side-outside-literal",
+        ),
+        pytest.param(
+            "strategy",
+            "BUY.SUPPORT_RESERVE_NET",
+            "reserve_net_strategy_contract_unavailable",
+            id="strategy-case",
+        ),
+        pytest.param(
+            "strategy",
+            "buy.support-reserve-net",
+            "reserve_net_strategy_contract_unavailable",
+            id="strategy-separator",
+        ),
+        pytest.param(
+            "strategy",
+            " buy.support_reserve_net",
+            "reserve_net_strategy_contract_unavailable",
+            id="strategy-leading-space",
+        ),
+        pytest.param(
+            "strategy",
+            "buy.support_reserve_net ",
+            "reserve_net_strategy_contract_unavailable",
+            id="strategy-trailing-space",
+        ),
+        pytest.param(
+            "sector_cluster",
+            "Software",
+            "sector_cluster_normalization_unavailable",
+            id="sector-case-title",
+        ),
+        pytest.param(
+            "sector_cluster",
+            "SOFTWARE",
+            "sector_cluster_normalization_unavailable",
+            id="sector-case-upper",
+        ),
+        pytest.param(
+            "sector_cluster",
+            " software",
+            "sector_cluster_normalization_unavailable",
+            id="sector-leading-space",
+        ),
+        pytest.param(
+            "sector_cluster",
+            "software ",
+            "sector_cluster_normalization_unavailable",
+            id="sector-trailing-space",
+        ),
+        pytest.param(
+            "sector_cluster",
+            "soft_ware",
+            "sector_cluster_normalization_unavailable",
+            id="sector-separator",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_non_owner_join_key_drift_stops_before_db_and_seam(
+    join_key: str,
+    drifted_value: str,
+    expected_error: str,
+) -> None:
+    payload = _request_with_join_key_drift(join_key, drifted_value)
+    consumer_factory_calls = 0
+    session_factory_calls = 0
+    service_factory_calls = 0
+
+    def forbidden_consumer_factory() -> SupportReserveNetConsumer:
+        nonlocal consumer_factory_calls
+        consumer_factory_calls += 1
+        raise AssertionError("join-key drift must stop before consumer")
+
+    def forbidden_session_factory() -> _FakeSession:
+        nonlocal session_factory_calls
+        session_factory_calls += 1
+        raise AssertionError("join-key drift must stop before DB")
+
+    def forbidden_service_factory(_: Any) -> Any:
+        nonlocal service_factory_calls
+        service_factory_calls += 1
+        raise AssertionError("join-key drift must stop before seam service")
+
+    result = await support_reserve_net_consume_impl(
+        payload,
+        consumer_factory=forbidden_consumer_factory,
+        session_factory=forbidden_session_factory,
+        service_factory=forbidden_service_factory,
+    )
+
+    assert result["success"] is False
+    assert result["error"] == expected_error
+    assert result["proposal_count"] == 0
+    assert result["proposals_created"] == []
     assert consumer_factory_calls == 0
     assert session_factory_calls == 0
     assert service_factory_calls == 0
@@ -529,6 +790,122 @@ async def _complete_for_test(
     committed: dict[str, Any], **kwargs: Any
 ) -> dict[str, Any]:
     return {**committed, "approval_dispatch": {"state": "test_only"}}
+
+
+def _same_owner_multiple_records_payload() -> dict[str, Any]:
+    payload = _request(
+        _candidate("WIRE-MULTI-A", sector="software"),
+        _candidate("WIRE-MULTI-B", sector="hardware"),
+    )
+    payload["reserve_net_attributions"] = [
+        _attribution("WIRE-HISTORY-A", strategy="buy.unrelated"),
+        _attribution("WIRE-HISTORY-B", strategy="sell.unrelated", sector="finance"),
+    ]
+    payload["self_unfilled_orders"] = [
+        _self_unfilled_order("WIRE-OPEN-A", side="buy"),
+        _self_unfilled_order("WIRE-OPEN-B", side="sell"),
+    ]
+    payload["sector_exposures"] = [
+        _sector_exposure("WIRE-FINANCE", sector="finance"),
+        _sector_exposure("WIRE-ENERGY", sector="energy"),
+    ]
+    return payload
+
+
+def _different_owners_payload() -> dict[str, Any]:
+    payload = _request(
+        _candidate(
+            "WIRE-OWNER-A",
+            sector="software",
+            beneficial_owner_id="owner-1",
+        ),
+        _candidate(
+            "WIRE-OWNER-B",
+            sector="Software",
+            beneficial_owner_id="owner-2",
+        ),
+    )
+    payload["reserve_net_attributions"] = [
+        _attribution("WIRE-HISTORY-A", beneficial_owner_id="owner-1"),
+        _attribution("WIRE-HISTORY-B", beneficial_owner_id="owner-2"),
+    ]
+    payload["self_unfilled_orders"] = [
+        _self_unfilled_order("WIRE-SELL-A", beneficial_owner_id="owner-1"),
+        _self_unfilled_order("WIRE-SELL-B", beneficial_owner_id="owner-2"),
+    ]
+    payload["sector_exposures"] = [
+        _sector_exposure(
+            "WIRE-OWNER-A",
+            beneficial_owner_id="owner-1",
+            sector="software",
+        ),
+        _sector_exposure(
+            "WIRE-OWNER-B",
+            beneficial_owner_id="owner-2",
+            sector="Software",
+        ),
+    ]
+    return payload
+
+
+def _distinct_join_vocabularies_payload() -> dict[str, Any]:
+    payload = _request()
+    payload["reserve_net_attributions"] = [
+        _attribution("WIRE-HISTORY-A", strategy="buy.unrelated"),
+        _attribution("WIRE-HISTORY-B", strategy="sell.unrelated"),
+    ]
+    payload["self_unfilled_orders"] = [
+        _self_unfilled_order("WIRE-OPEN-A", side="buy"),
+        _self_unfilled_order("WIRE-OPEN-B", side="sell"),
+    ]
+    payload["sector_exposures"] = [
+        _sector_exposure("WIRE-HARDWARE", sector="hardware"),
+        _sector_exposure("WIRE-FINANCE", sector="finance"),
+    ]
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("payload_factory", "expected_count"),
+    [
+        pytest.param(
+            _same_owner_multiple_records_payload,
+            2,
+            id="same-owner-multiple-records",
+        ),
+        pytest.param(
+            _different_owners_payload,
+            2,
+            id="different-owners-coexist",
+        ),
+        pytest.param(
+            _distinct_join_vocabularies_payload,
+            1,
+            id="distinct-valid-join-vocabularies",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_legitimate_multi_record_join_keys_commit_without_over_tightening(
+    payload_factory: Callable[[], dict[str, Any]],
+    expected_count: int,
+) -> None:
+    service = _StatefulSeamService()
+    session = _FakeSession()
+
+    result = await support_reserve_net_consume_impl(
+        payload_factory(),
+        session_factory=lambda: session,
+        service_factory=lambda _: service,
+        complete_committed_create=_complete_for_test,
+    )
+
+    assert result["success"] is True
+    assert result["proposal_creation_status"] == "created_after_atomic_seam"
+    assert result["proposal_count"] == expected_count
+    assert service.create_calls == expected_count
+    assert session.commit_calls == 1
+    assert session.rollback_calls == 0
 
 
 @pytest.mark.parametrize(
