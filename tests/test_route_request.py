@@ -12,6 +12,8 @@ from app.mcp_server.tooling.registry import register_all_tools
 from app.mcp_server.tooling.route_request_lanes import (
     ALL_KNOWN_TOOLS,
     DIRECT_BROKER_MUTATION_TOOLS,
+    PROPOSAL_LIFECYCLE_TOOLS,
+    STATUS_HELPER_TOOLS,
 )
 from app.mcp_server.tooling.route_request_registration import (
     ROUTE_REQUEST_TOOL_NAMES,
@@ -350,6 +352,33 @@ def test_discovery_preview_and_direct_execution_non_regression(
         proposal = asyncio.run(route(intent=intent, market="kr"))
         assert "toss_preview_order" in proposal["blocked_actions"]
         assert "toss_preview_order" not in proposal["allowed_tools"]
+
+
+@pytest.mark.parametrize("intent", ["buy_analysis", "profit_taking"])
+def test_default_profile_owner_lanes_expose_only_stage_one_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    intent: str,
+):
+    """Exercise the live registered route_request response, not just the map."""
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_ENABLED", True)
+    mcp = _build_profile_mcp(McpProfile.DEFAULT)
+    out = asyncio.run(mcp.tools["route_request"](intent=intent, market="kr"))
+
+    stage_one = {"investment_watch_expire", "order_proposal_expire_sweep"}
+    held_back_watch = {
+        name for name in STATUS_HELPER_TOOLS if name.startswith("investment_watch_")
+    } - {"investment_watch_expire"}
+    held_back_proposal = set(PROPOSAL_LIFECYCLE_TOOLS) - {
+        "order_proposal_void",
+        "order_proposal_expire_sweep",
+    }
+    held_back = held_back_watch | held_back_proposal
+    assert stage_one <= mcp.tools.keys()
+    assert stage_one <= set(out["allowed_tools"])
+    assert stage_one.isdisjoint(out["blocked_actions"])
+    assert held_back <= mcp.tools.keys()
+    assert held_back <= set(out["blocked_actions"])
+    assert held_back.isdisjoint(out["allowed_tools"])
 
 
 class TestRouteRequestRegisteredEveryProfile:

@@ -1511,8 +1511,12 @@ watch. `sweep_expired_watches(dry_run=true)` lists all active watches whose
 `valid_until` has passed; set `dry_run=false` to expire that set. The sweep is
 also available as a scheduleless, environment-gated TaskIQ task; production
 recurrence remains an operator decision after manual reps. These tools never
-touch a broker or order path. See the tool descriptions for the single-watch vs
-bulk-cleanup choice.
+touch a broker or order path. `investment_watch_expire` has no caller, owner,
+or `valid_until` authorization gate; its route-lane exposure is therefore not
+an authorization boundary. See the tool descriptions for the single-watch vs
+bulk-cleanup choice and
+[`docs/runbooks/route-request-lifecycle-cleanup.md`](../../docs/runbooks/route-request-lifecycle-cleanup.md)
+for the stage-one surface and authorization finding.
 
 ### `get_operating_briefing`
 

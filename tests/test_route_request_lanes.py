@@ -370,17 +370,62 @@ def test_non_proposal_lanes_keep_order_proposal_void_blocked(intent: str):
         assert "order_proposal_void" in set(plan["blocked_actions"])
 
 
-def test_lifecycle_allowance_never_widens_beyond_void():
-    """The other lifecycle tools stay blocked everywhere.
+def test_lifecycle_allowance_expands_only_through_expire_sweep():
+    """The separate re-dispatch lifecycle helper stays blocked everywhere.
 
     `order_proposal_expire_sweep` and `order_proposal_redispatch` were not part
     of the ROB-1238 incident; widening this map is a deliberate act, not a
     side effect of the void fix.
     """
     granted = set().union(*L.LANE_PROPOSAL_LIFECYCLE_ALLOWED.values())
-    assert granted == {"order_proposal_void"}
+    assert granted == {"order_proposal_void", "order_proposal_expire_sweep"}
     assert granted <= L.PROPOSAL_LIFECYCLE_TOOLS
     assert set(L.LANE_PROPOSAL_LIFECYCLE_ALLOWED) == set(L.PROPOSAL_LED_LANES)
     for intent in ("discovery", "market_brief"):
         plan = _plan(intent, "kr")
         assert (L.PROPOSAL_LIFECYCLE_TOOLS & _ALL).isdisjoint(plan["allowed_tools"])
+
+
+_STAGE_ONE_WATCH_LIFECYCLE_TOOLS = {"investment_watch_expire"}
+
+
+def _held_back_watch_lifecycle_tools() -> set[str]:
+    return {
+        name for name in L.STATUS_HELPER_TOOLS if name.startswith("investment_watch_")
+    } - _STAGE_ONE_WATCH_LIFECYCLE_TOOLS
+
+
+@pytest.mark.parametrize("intent", ["buy_analysis", "profit_taking"])
+def test_proposal_lanes_unblock_stage_one_watch_expire(intent: str):
+    """Watch cleanup is allowed only for the lanes owning proposal-led work."""
+    plan = _plan(intent, "kr")
+    allowed = set(plan["allowed_tools"])
+    blocked = set(plan["blocked_actions"])
+    steps = set(_step_tools(plan))
+
+    assert _STAGE_ONE_WATCH_LIFECYCLE_TOOLS <= allowed
+    assert _STAGE_ONE_WATCH_LIFECYCLE_TOOLS.isdisjoint(blocked)
+    assert _STAGE_ONE_WATCH_LIFECYCLE_TOOLS.isdisjoint(steps)
+    assert _held_back_watch_lifecycle_tools() <= blocked
+    assert _held_back_watch_lifecycle_tools().isdisjoint(allowed)
+
+
+@pytest.mark.parametrize("intent", ["discovery", "market_brief"])
+def test_non_owner_lanes_keep_watch_cleanup_blocked(intent: str):
+    """MUTANT wrong-lane guard: discovery/bootstrap inherits no watch cleanup."""
+    plan = _plan(intent, "kr")
+    allowed = set(plan["allowed_tools"])
+    blocked = set(plan["blocked_actions"])
+
+    assert _STAGE_ONE_WATCH_LIFECYCLE_TOOLS.isdisjoint(allowed)
+    assert _STAGE_ONE_WATCH_LIFECYCLE_TOOLS <= blocked
+
+
+def test_watch_lifecycle_allowance_is_exactly_stage_one():
+    """MUTANT scope guard: held-back watch helpers cannot join stage one."""
+    granted = set().union(*L.LANE_WATCH_LIFECYCLE_ALLOWED.values())
+
+    assert granted == _STAGE_ONE_WATCH_LIFECYCLE_TOOLS
+    assert granted <= L.STATUS_HELPER_TOOLS
+    assert set(L.LANE_WATCH_LIFECYCLE_ALLOWED) == set(L.PROPOSAL_LED_LANES)
+    assert _held_back_watch_lifecycle_tools().isdisjoint(granted)
