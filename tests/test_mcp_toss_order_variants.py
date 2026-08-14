@@ -1084,6 +1084,21 @@ async def test_toss_preview_sell_limit_below_market_returns_marketable_warning(
 ):
     otv = _enable_toss_preview(monkeypatch)
     mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "AVGO",
+            "quantity": Decimal("1"),
+            "average_purchase_price": Decimal("300"),
+            "last_price": Decimal("390"),
+            "name": "Broadcom",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
     mock_client.prices_list = [
         {"symbol": "AVGO", "last_price": Decimal("390"), "currency": "USD"}
     ]

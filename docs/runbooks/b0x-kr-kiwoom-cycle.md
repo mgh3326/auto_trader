@@ -8,7 +8,8 @@
 `--ordering --confirm` 을 함께 명시한 경우만 독립 모드인 **`ORDERING`** 으로
 전환한다. 정책표가 결정적으로 파생한 주문만 §4 cap 안에서 DAY로 제출하고,
 `ACCEPTANCE_ONLY` 의 즉시취소를 상속하지 않는다. 매도는 fresh broker fill로
-증명된 자기 귀속 수량까지만 가능하다. 위험한 쪽은 기본값이 아니다.
+증명된 자기 귀속 수량까지만 가능하다. 동일 cycle의 동일 symbol BUY 다단은
+v1.8의 KR 전용 일괄 경계를 사용한다. 위험한 쪽은 기본값이 아니다.
 
 ---
 
@@ -54,6 +55,8 @@
 | envelope | §4 KR 열 **그대로 재사용** (`load_envelope("kr")`). 레인 전용 envelope 상수 없음 — 테스트가 강제 |
 | Acceptance 1건 한정 | `ACCEPTANCE_SUBMISSION_LIMIT = 1`, CLI/env override 없음. `--confirm` 단독에만 적용 |
 | ORDERING 별도 모드 | `--ordering --confirm` 에서만 policy-table 결정 파생 주문을 제출. 별도 cap/CLI/env override 없음 — §4 30만·동시 10·일신규 3이 파생 단계에서 계속 강제 |
+| 같은-cycle BUY 묶음 | 동일 결정적 `cycle_id`·동일 symbol·BUY인 2개 이상 계획만 허용. 묶음 직전 공용 재제출 게이트 1회; 다른 cycle/symbol/SELL은 authorization 불가 |
+| 묶음 부분 실패 | 이미 ack된 DAY 주문은 보상 취소하지 않고 보존, 다음 mutation 즉시 중단, `partial_failure` + exit 2 + accepted/remaining key 기록. 성공 상태로 표시 금지 |
 | 매도 귀속 | 매도 직전 fresh broker fill × own-order journal로 자기 수량을 다시 계산해 `assert_sell_is_own`으로 제한. 귀속 불명/부족은 sell 0 |
 | Acceptance 왕복 강제 | `--no-cancel` 같은 플래그가 **존재하지 않는다**. `ACCEPTANCE_ONLY` 취소 미확인 = `RoundTripIncomplete` + exit 2 |
 | DAY 주문 잔존 | `ORDERING` 은 즉시 취소하지 않는다. `broker_ack`은 접수/주문번호 증거일 뿐 filled가 아니며 후속 kt00007 readback이 partial/fill/remaining/VWAP/slippage를 보존 |
@@ -98,6 +101,39 @@ v1.5 ① 이 실격시키는 성질이고, ROB-341 이 KIS 일별체결조회를
 않으려고 **계좌 전체 미체결**을 게이트 입력으로 쓴다 — 계약이 요구하는 자기
 미체결의 상위집합이라 항상 더 많이 막고 덜 막지 않는다. 자기 분은
 `own_symbols` 로 따로 기록한다.
+
+### 4.3 v1.8 — 같은 cycle BUY 사다리의 게이트 1회 + 묶음 제출
+
+**cycle 경계는 호출자가 붙이는 임의 문자열이 아니다.** `derive_orders`가
+`policy_table_hash + 제출 전 account_state_hash + locked envelope_hash + lane`으로
+계산한 결정적 `cycle_id`를 `plan_orders`가 각 `PlannedOrder`에 직접 스탬프한다.
+`authorize_same_cycle_buy_batch`는 2개 이상 주문의 `cycle_id`·symbol·side·order key
+순서가 정확히 같을 때만 authorization을 만들 수 있다. SELL과 단건 주문은 기존
+`submit_day_order`를 계속 사용하며 매 호출마다 공용 게이트를 탄다.
+
+ORDERING은 동일 symbol의 연속 BUY 다단을 하나로 묶고, 묶음 **직전**의 fresh
+`MutationBoundary`에서 만든 broker truth로 `assert_resubmit_allowed`를 정확히 1회
+검사한다. 첫 다리 뒤 생긴 자기 미체결은 같은 authorization의 후속 다리를 막지
+않는다. 대신 후속 다리마다 lease + kt00007 foreign trace를 다시 읽는다. 그 사이
+외부 주문이 끼면 다음 다리 전에 차단된다. 각 broker 답변과 실제 전송 사이의
+원자적 잠금은 venue가 제공하지 않으므로 기존과 같은 짧은 TOCTOU는 남으며,
+artifact의 mutation boundary 시각으로 드러낸다.
+
+**사이클 간 방어는 불변이다.** 다음 broker snapshot이 이전 cycle의 자기 미체결을
+보면 새 `account_state_hash`와 새 `cycle_id`가 만들어지고, 파생 단계의 v1.5 ①
+게이트가 해당 symbol 전체를 `own_pending_order_exists`로 제거한다. 이전 cycle의
+authorization은 cycle/order-key exact + 일회성이므로 재사용할 수 없다.
+
+**부분 실패 방침은 잔존이다.** 다리 N 전송이나 readback이 실패하면 앞서 ack된
+DAY 주문에 보상 cancel을 새로 보내지 않는다. cancel 자체가 추가 broker mutation이고
+원실패 뒤 증거가 불완전한 상태에서 위험을 키울 수 있기 때문이다. 추가 제출을
+즉시 중단하고 exit 2, `PARTIAL_BATCH_FAILURE`, accepted/remaining order key,
+`compensating_cancel_attempted=false`를 cycle JSONL과 Markdown 표 양쪽에 남긴다.
+
+**cap은 묶음 밖에서 이미 전량 소비된다.** derivation은 기존대로 다리마다 주문당
+30만과 종목 총 150만을 소비하고, L1/L2는 일일 신규 symbol 하나로 센다. 일일 신규
+3종목이면 최대 `3 symbols × 2 BUY legs × 300,000 = 1,800,000 KRW/cycle`이며,
+묶음 authorization은 주문을 추가하거나 크기를 다시 계산하지 않는다.
 
 ## 5. 🔴 legacy 불가침 귀속 게이트 (§39차 ③, #1835 패턴)
 
@@ -181,6 +217,10 @@ exit code: `0` 정상 · `2` writer lock 경합, acceptance 왕복 미완(취소
 모든 아티팩트에 `COEXISTING_ACCOUNT_LANE` 라벨이 붙는다: 이 계좌의 보유·체결
 이력 전부를 B0-X 산출로 읽으면 안 된다.
 
+BUY 묶음이 있으면 Markdown에 `Same-cycle BUY batches` 표가 추가된다. `cycle_id`,
+symbol, status, planned 수, accepted/remaining order key, 보상취소 여부와 실패 사유를
+표시한다. `partial_failure`는 헤더에도 `PARTIAL_BATCH_FAILURE`로 중복 표시된다.
+
 ## 9. 알려진 경계 (조용히 넘어가지 않는 것들)
 
 1. **계좌 배타성은 여전히 운영 조치다.** account-keyed local lease는 같은 host의
@@ -191,10 +231,10 @@ exit code: `0` 정상 · `2` writer lock 경합, acceptance 왕복 미완(취소
 2. **legacy 귀속 게이트는 2026-08-12 실환경에서 *증명되지 않았다*.** 그날
    kiwoom_mock 계좌의 보유가 **0종목**이라 legacy 분기에 도달할 입력이 없었다.
    단위 테스트로만 증명된 상태다(보유가 생기는 첫 사이클이 첫 실환경 검증 기회).
-3. **dedup(동일 심볼 재제출 차단)도 실환경 미증명.** `ACCEPTANCE_ONLY` 는 같은
-   사이클 안에서 취소하므로 재제출 시점에 자기 미체결이 남아 있지 않다.
-   `ORDERING` 은 DAY 주문을 남기므로 매 mutation-boundary kt00007 재조회가 같은
-   심볼 재제출을 막아야 한다. 단위 테스트가 코드 경로를 덮는다.
+3. **같은-cycle BUY 묶음과 cycle 간 dedup은 실환경 미증명.** 단위 테스트는 한
+   cycle의 L1/L2가 게이트 1회 뒤 모두 제출되고, 다음 cycle은 이전 DAY 미체결 때문에
+   `own_pending_order_exists`로 0건임을 함께 증명한다. venue는 묶음 원자 API를
+   제공하지 않으므로 다리별 ack/readback과 부분 실패 표면은 계속 필요하다.
 4. **dedicated realized P&L source는 아직 없다.** own-order journal이 current-day
    activity 없음까지 증명하는 bootstrap에서만 0을 쓴다. activity·journal 오류·시간
    정보 오류가 있으면 −2.5% NAV kill을 미발화로 꾸미지 않고 ORDERING 자체가 0이 된다.
