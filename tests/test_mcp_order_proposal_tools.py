@@ -967,6 +967,84 @@ async def test_get_and_list_project_safe_auto_approve_rejection_evidence():
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
+async def test_get_and_list_project_auto_approved_cap_observations():
+    created = await opt.order_proposal_create(
+        symbol="QQQ",
+        market="equity_us",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="operator:cap-observation",
+        thesis="ordinary support retest",
+        strategy="ladder",
+        rungs=[
+            {
+                "rung_index": 0,
+                "side": "buy",
+                "quantity": "1",
+                "limit_price": "741.41",
+                "notional": None,
+            }
+        ],
+    )
+    now = datetime(2026, 8, 14, 22, 35, tzinfo=UTC)
+    raw_input = "private-cap-observation-material-must-not-escape"
+    async with AsyncSessionLocal() as session:
+        service = OrderProposalsService(session)
+        await service.record_auto_approval(
+            uuid.UUID(created["proposal_id"]),
+            policy_version="2026-08-14.1",
+            policy_content_hash="51c789434f6a",
+            eligibility=[
+                {
+                    "rung_index": 0,
+                    "eligible": True,
+                    "reason": "eligible",
+                    "daily_cap": "800",
+                    "daily_notional_before": "0",
+                    "daily_notional_after": "741.41",
+                    "per_order_cap": "1000",
+                    "notional": "741.41",
+                    "policy_version": "2026-08-14.1",
+                    "private": raw_input,
+                }
+            ],
+            outcomes=["submitted_resting"],
+            now=now,
+            evaluated_at=now,
+        )
+        await session.commit()
+
+    got = await opt.order_proposal_get(created["proposal_id"])
+    listed = await opt.order_proposal_list(symbol="QQQ")
+    expected = [
+        {
+            "rung_index": 0,
+            "daily_cap": "800",
+            "daily_notional_before": "0",
+            "daily_notional_after": "741.41",
+            "per_order_cap": "1000",
+            "notional": "741.41",
+            "policy_version": "2026-08-14.1",
+            "content_hash": "51c789434f6a",
+            "evaluated_at": now.isoformat(),
+        }
+    ]
+    assert got["proposal"]["auto_approve_cap_observations"] == expected
+    assert got["proposal"]["auto_approve_rejections"] == []
+    row = next(
+        proposal
+        for proposal in listed["proposals"]
+        if proposal["proposal_id"] == created["proposal_id"]
+    )
+    assert row["auto_approve_cap_observations"] == expected
+    assert row["auto_approve_rejections"] == []
+    assert raw_input not in json.dumps(got)
+    assert raw_input not in json.dumps(listed)
+
+
+@pytest.mark.asyncio
 async def test_loss_cut_binding_round_trips_through_create_get_list(monkeypatch):
     async def fake_lookup(session, retrospective_id):
         return SimpleNamespace(

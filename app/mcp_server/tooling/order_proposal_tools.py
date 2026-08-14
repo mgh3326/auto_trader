@@ -26,6 +26,7 @@ from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_window import ApprovalWindowDecision
 from app.services.order_proposals.auto_approve_audit import (
+    project_auto_approve_cap_observations,
     project_auto_approve_rejections,
 )
 from app.services.order_proposals.broker_gateway import (
@@ -125,6 +126,9 @@ def _group_dict(g: Any) -> dict[str, Any]:
         "approval_dispatch_failure_code": g.approval_dispatch_failure_code,
         "approval_dispatch_payload_chars": g.approval_dispatch_payload_chars,
         "approval_dispatch_alert": (g.source_asof or {}).get("approval_dispatch_alert"),
+        "auto_approve_cap_observations": project_auto_approve_cap_observations(
+            g.source_asof
+        ),
         "auto_approve_rejections": project_auto_approve_rejections(g.source_asof),
         "created_at": g.created_at.isoformat() if g.created_at else None,
     }

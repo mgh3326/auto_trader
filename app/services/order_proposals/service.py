@@ -33,6 +33,7 @@ from app.services.order_proposals import state_machine as sm
 from app.services.order_proposals.approval_window_contract import valid_until_block
 from app.services.order_proposals.auto_approve_audit import (
     append_auto_approve_rejection_attempt,
+    build_auto_approve_cap_observations,
 )
 from app.services.order_proposals.broker_gateway import SUPPORTED_TARGET_ACTIONS
 from app.services.order_proposals.defensive_ttl import (
@@ -2737,23 +2738,34 @@ class OrderProposalsService:
         proposal_id: uuid.UUID,
         *,
         policy_version: str,
+        policy_content_hash: str | None = None,
         eligibility: list[dict[str, Any]],
         outcomes: list[str],
         now: datetime,
+        evaluated_at: datetime | None = None,
     ) -> OrderProposal:
         """Persist machine approval provenance without impersonating a human."""
         self._require_timezone_aware(now)
+        observation_time = evaluated_at or now
+        self._require_timezone_aware(observation_time)
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
+        auto_approved: dict[str, Any] = {
+            "policy_version": policy_version,
+            "approved_at": now.isoformat(),
+            "eligibility": eligibility,
+            "outcomes": outcomes,
+        }
+        if cap_observations := build_auto_approve_cap_observations(
+            decisions=eligibility,
+            policy_content_hash=policy_content_hash,
+            evaluated_at=observation_time,
+        ):
+            auto_approved["cap_observations"] = cap_observations
         source_asof = {
             **(group.source_asof or {}),
-            "auto_approved": {
-                "policy_version": policy_version,
-                "approved_at": now.isoformat(),
-                "eligibility": eligibility,
-                "outcomes": outcomes,
-            },
+            "auto_approved": auto_approved,
         }
         return await self._repo.update_group(group, source_asof=source_asof)
 
