@@ -859,9 +859,11 @@ async def dispatch_proposal(
                 await service.record_auto_approval(
                     proposal_id,
                     policy_version=limits.policy_version,
+                    policy_content_hash=getattr(limits, "policy_content_hash", None),
                     eligibility=decisions,
                     outcomes=[outcome.result for outcome in outcomes],
                     now=now,
+                    evaluated_at=gate_now,
                 )
                 veto_nonce = _generate_nonce()
                 await service.set_approval_nonce(proposal_id, veto_nonce)

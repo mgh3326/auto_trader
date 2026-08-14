@@ -55,7 +55,7 @@ from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
     DispatchBinding,
 )
-from app.services.trading_policy_service import load_trading_policy
+from app.services.trading_policy_service import load_trading_policy, policy_content_hash
 
 _POLICY_MARKET = {
     "equity_kr": "kr",
@@ -151,6 +151,9 @@ class AutoApproveLimits:
     mode: str = "off"
     breakeven_band_pct: Decimal = Decimal("1")
     round_trip_cost_bps: Decimal = Decimal("90")
+    # Audit-only policy provenance. Eligibility deliberately never reads this value.
+    # Kept last so legacy positional constructions retain their semantics.
+    policy_content_hash: str | None = None
 
 
 @dataclass(frozen=True)
@@ -210,6 +213,7 @@ def limits_for_market(market: str) -> AutoApproveLimits | None:
     if policy_market is None:
         return None
     document = load_trading_policy()
+    content_hash = policy_content_hash()
     policy = document.order_proposals.auto_approve
     declared_cost = Decimal(str(policy.round_trip_cost_bps[policy_market]))
     return AutoApproveLimits(
@@ -217,6 +221,7 @@ def limits_for_market(market: str) -> AutoApproveLimits | None:
         per_order_cap=Decimal(str(policy.per_order_cap[policy_market])),
         daily_cap=Decimal(str(policy.daily_cap[policy_market])),
         policy_version=document.version,
+        policy_content_hash=content_hash,
         mode=str(settings.ORDER_PROPOSALS_AUTO_APPROVE_MODE),
         breakeven_band_pct=Decimal(str(policy.breakeven_band_pct)),
         # The floor wins whenever the policy is cheaper than it.

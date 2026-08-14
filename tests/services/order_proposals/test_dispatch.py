@@ -24,6 +24,7 @@ from app.services.order_proposals.approval_window import (
     SubmissionSessionEvidence,
     evaluate_approval_window,
 )
+from app.services.order_proposals.auto_approve import AutoApproveLimits
 from app.services.order_proposals.dispatch import (
     dispatch_proposal,
     publish_approval_messages,
@@ -835,6 +836,94 @@ async def test_dispatch_auto_eligible_buy_or_sell_rests_without_approval(
     assert duplicate.ok is False
     assert duplicate.failure_code == "proposal_not_pending_approval"
     assert len(notifier.sent_messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_dispatch_auto_eligible_qqq_records_cap_observation(
+    monkeypatch, db_session
+):
+    from app.core.config import settings
+
+    now = datetime(2026, 8, 14, 22, 35, tzinfo=UTC)
+    limits = AutoApproveLimits(
+        min_distance_pct=Decimal("3"),
+        per_order_cap=Decimal("1000"),
+        daily_cap=Decimal("800"),
+        policy_version="2026-08-14.1",
+        policy_content_hash="51c789434f6a",
+    )
+    monkeypatch.setattr(settings, "ORDER_PROPOSALS_AUTO_APPROVE", True)
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", CHAT_ID
+    )
+    monkeypatch.setattr(dispatch_module, "limits_for_market", lambda _market: limits)
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="QQQ",
+        market="equity_us",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="cap-observation-fixture",
+        thesis="resting entry",
+        broker_account_id=f"cap-observation-{uuid.uuid4()}",
+        rungs=[RungInput(0, "buy", Decimal("1"), Decimal("741.41"), None)],
+        now=now,
+        valid_until=now + timedelta(hours=1),
+    )
+    await db_session.commit()
+
+    async def fake_revalidate(*, service, proposal_id, now, eligibility_gate):
+        fresh_group, rungs = await service.get_proposal(proposal_id)
+        decision = await eligibility_gate(
+            group=fresh_group,
+            rung=rungs[0],
+            preview={
+                "success": True,
+                "current_price": "800",
+                "price": "741.41",
+                "quantity": "1",
+            },
+            now=now,
+        )
+        assert decision.eligible is True
+        await service.transition_rung(proposal_id, 0, new_state="revalidating")
+        await service.transition_rung(proposal_id, 0, new_state="approved")
+        await service.transition_rung(proposal_id, 0, new_state="submitting")
+        await service.record_resting(
+            proposal_id,
+            0,
+            broker_order_id="cap-observation-order",
+            correlation_id="cap-observation-correlation",
+            idempotency_key="cap-observation-idempotency",
+            approval_hash_digest="cap-observation-digest",
+            now=now,
+        )
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    await dispatch_proposal(
+        group.proposal_id,
+        notifier=_FakeNotifier(),
+        now=now,
+        service_factory=_session_factory(db_session),
+        revalidate_fn=fake_revalidate,
+    )
+
+    refreshed, _rungs = await service.get_proposal(group.proposal_id)
+    assert refreshed.source_asof["auto_approved"]["cap_observations"] == [
+        {
+            "rung_index": 0,
+            "daily_cap": "800",
+            "daily_notional_before": "0",
+            "daily_notional_after": "741.41",
+            "per_order_cap": "1000",
+            "notional": "741.41",
+            "policy_version": "2026-08-14.1",
+            "content_hash": "51c789434f6a",
+            "evaluated_at": now.isoformat(),
+        }
+    ]
+    assert "auto_approve_rejections" not in refreshed.source_asof
 
 
 @pytest.mark.asyncio

@@ -15,10 +15,12 @@ from datetime import datetime
 from typing import Any
 
 AUTO_APPROVE_REJECTIONS_KEY = "auto_approve_rejections"
+AUTO_APPROVE_CAP_OBSERVATIONS_KEY = "cap_observations"
 
 _MAX_ATTEMPTS = 8
 _MAX_RUNGS_PER_ATTEMPT = 16
 _MAX_TAG_MATCHES_PER_RUNG = 12
+_MAX_CAP_OBSERVATIONS = 16
 _ALLOWED_TAGS = frozenset({"policy_deviation", "table_disagreement"})
 _ALLOWED_TAG_FIELDS = frozenset(
     {
@@ -105,6 +107,14 @@ _KNOWN_REASON_CODES = frozenset(
 )
 _DECIMAL_TEXT_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
 _POLICY_VERSION_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\.[0-9]{1,4})?")
+_POLICY_CONTENT_HASH_PATTERN = re.compile(r"[0-9a-f]{12,64}")
+_CAP_OBSERVATION_NUMERIC_KEYS = (
+    "daily_cap",
+    "daily_notional_before",
+    "daily_notional_after",
+    "per_order_cap",
+    "notional",
+)
 _SAFE_PATH_SEGMENT = (
     r"(?:\.(?:context|decision|flags|labels|metadata|notes|reason|review|tag|tags)"
     r"|\[(?:0|[1-9][0-9]{0,3})\])"
@@ -126,6 +136,12 @@ def _safe_decimal_text(value: Any) -> str | None:
 
 def _safe_policy_version(value: Any) -> str | None:
     if not isinstance(value, str) or not _POLICY_VERSION_PATTERN.fullmatch(value):
+        return None
+    return value
+
+
+def _safe_policy_content_hash(value: Any) -> str | None:
+    if not isinstance(value, str) or not _POLICY_CONTENT_HASH_PATTERN.fullmatch(value):
         return None
     return value
 
@@ -350,6 +366,76 @@ def append_auto_approve_rejection_attempt(
     return source
 
 
+def _safe_cap_observation(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    rung_index = _safe_rung_index(value.get("rung_index"))
+    policy_version = _safe_policy_version(value.get("policy_version"))
+    content_hash = _safe_policy_content_hash(value.get("content_hash"))
+    evaluated_at = _safe_evaluated_at(value.get("evaluated_at"))
+    numeric_values = {
+        key: _safe_decimal_text(value.get(key)) for key in _CAP_OBSERVATION_NUMERIC_KEYS
+    }
+    if (
+        rung_index is None
+        or policy_version is None
+        or content_hash is None
+        or evaluated_at is None
+        or any(item is None for item in numeric_values.values())
+    ):
+        return None
+    return {
+        "rung_index": rung_index,
+        **numeric_values,
+        "policy_version": policy_version,
+        "content_hash": content_hash,
+        "evaluated_at": evaluated_at,
+    }
+
+
+def build_auto_approve_cap_observations(
+    *,
+    decisions: Sequence[Mapping[str, Any]],
+    policy_content_hash: str | None,
+    evaluated_at: datetime,
+) -> list[dict[str, Any]]:
+    """Project complete, bounded cap evidence for eligible rungs only."""
+    observations: list[dict[str, Any]] = []
+    evaluated_at_text = evaluated_at.isoformat()
+    for decision in decisions[:_MAX_CAP_OBSERVATIONS]:
+        if decision.get("eligible") is not True:
+            continue
+        candidate = {
+            "rung_index": decision.get("rung_index"),
+            **{key: decision.get(key) for key in _CAP_OBSERVATION_NUMERIC_KEYS},
+            "policy_version": decision.get("policy_version"),
+            "content_hash": policy_content_hash,
+            "evaluated_at": evaluated_at_text,
+        }
+        if (safe := _safe_cap_observation(candidate)) is not None:
+            observations.append(safe)
+    return observations
+
+
+def project_auto_approve_cap_observations(source_asof: Any) -> list[dict[str, Any]]:
+    """Return only complete, safe cap evidence from an auto-approved proposal."""
+    if not isinstance(source_asof, Mapping):
+        return []
+    auto_approved = source_asof.get("auto_approved")
+    if not isinstance(auto_approved, Mapping):
+        return []
+    raw_observations = auto_approved.get(AUTO_APPROVE_CAP_OBSERVATIONS_KEY)
+    if not isinstance(raw_observations, Sequence) or isinstance(
+        raw_observations, (str, bytes)
+    ):
+        return []
+    return [
+        safe
+        for raw in raw_observations[:_MAX_CAP_OBSERVATIONS]
+        if (safe := _safe_cap_observation(raw)) is not None
+    ]
+
+
 def build_auto_approve_rejection_card_block(source_asof: Any) -> str | None:
     """Render a bounded safe summary for the existing manual approval card."""
     attempts = project_auto_approve_rejections(source_asof)
@@ -372,9 +458,12 @@ def build_auto_approve_rejection_card_block(source_asof: Any) -> str | None:
 
 
 __all__ = [
+    "AUTO_APPROVE_CAP_OBSERVATIONS_KEY",
     "AUTO_APPROVE_REJECTIONS_KEY",
     "append_auto_approve_rejection_attempt",
+    "build_auto_approve_cap_observations",
     "build_auto_approve_rejection_attempt",
     "build_auto_approve_rejection_card_block",
+    "project_auto_approve_cap_observations",
     "project_auto_approve_rejections",
 ]
