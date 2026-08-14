@@ -81,12 +81,19 @@ LANE = kiwoom_lane.LANE
 # Provenance is KR-lane-local on purpose (same reasoning as
 # ``scripts.b0x.kr.cycle``): the shared ``scripts.b0x.contract`` stamp still
 # describes the untouched US/crypto lanes.
-KR_CONTRACT_VERSION: Final[str] = "v1.6"
+KR_CONTRACT_VERSION: Final[str] = "v1.7"
 KR_CONTRACT_CLAUSES: Final[dict[str, str]] = {
     "§8 v1.6": (
         "KR 자기 미체결의 kis_mock_order_ledger 예외는 **브로커 표면 부재** 한정. "
         "kiwoom_mock 은 kt00007 미체결조회를 지원하므로 이 예외를 쓰지 않는다 "
         "(§39차 2항)."
+    ),
+    "§8 v1.7": (
+        "「스케줄러 등록 없음」 개정 — **스케줄러 (Prefect)는 시각만 소유한다**: "
+        "표 빌드 실행(KR 07:45·US 22:00)과 orch 기상 nudge(사이클 슬롯)에 한정. "
+        "전략 판단·주문 파생·dispatch·워커 실행은 불변(orch/워커 소유, "
+        "harvest-before-dispatch 유지). 근거 = 수동 원샷 장전 누락 4회 실측. "
+        "실행 표면·envelope·승격 절차 무변경."
     ),
     "§39차 ①②③④⑤": (
         "별도 모듈 · 브로커 직접 미체결 · legacy 불가침 귀속 게이트 · "
