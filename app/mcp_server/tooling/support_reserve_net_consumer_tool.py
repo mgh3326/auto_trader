@@ -73,18 +73,21 @@ def _has_exact_opaque_account_ids(request: ReserveNetRequest) -> bool:
         + [item.broker_account_id for item in request.reserve_net_attributions]
         + [item.broker_account_id for item in request.self_unfilled_orders]
     )
-    return all(_is_exact_opaque_identifier(account_id) for account_id in account_ids)
+    return _has_no_ambiguous_exact_representations(account_ids)
 
 
 def _has_exact_opaque_beneficial_owner_ids(request: ReserveNetRequest) -> bool:
-    """Allow distinct owners but reject ambiguous representations of one owner."""
+    """Require one exact non-empty owner representation for the whole packet."""
     owner_ids = (
         [candidate.beneficial_owner_id for candidate in request.candidates]
         + [item.beneficial_owner_id for item in request.reserve_net_attributions]
         + [item.beneficial_owner_id for item in request.self_unfilled_orders]
         + [item.beneficial_owner_id for item in request.sector_exposures]
     )
-    return _has_no_ambiguous_exact_representations(owner_ids)
+    return (
+        all(_is_exact_opaque_identifier(owner_id) for owner_id in owner_ids)
+        and len(set(owner_ids)) <= 1
+    )
 
 
 def _has_exact_self_unfilled_sides(request: ReserveNetRequest) -> bool:

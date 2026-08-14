@@ -374,29 +374,26 @@ async def test_session_open_failure_returns_fixed_zero_create_boundary() -> None
 @pytest.mark.asyncio
 async def test_account_alias_mismatch_is_not_guessed() -> None:
     payload = _request(_candidate(broker_account_id="ACCT-EXACT-1"))
-    session = _FakeSession()
+    session_factory_calls = 0
 
-    class SeamMustNotRun:
-        async def inspect_watch_to_order_scope(self, **kwargs: Any) -> Any:
-            raise AssertionError("mismatched opaque IDs must not inspect")
-
-        async def create_proposal_in_watch_to_order_scope(
-            self, inspection: Any, **kwargs: Any
-        ) -> Any:
-            raise AssertionError("mismatched opaque IDs must not create")
+    def forbidden_session_factory() -> _FakeSession:
+        nonlocal session_factory_calls
+        session_factory_calls += 1
+        raise AssertionError("ambiguous account IDs must stop before DB/seam")
 
     result = await support_reserve_net_consume_impl(
         payload,
-        session_factory=lambda: session,
-        service_factory=lambda _: SeamMustNotRun(),
+        session_factory=forbidden_session_factory,
     )
 
-    assert result["proposal_creation_status"] == (
-        "not_attempted_no_selected_candidates"
-    )
-    assert result["proposal_count"] == 0
-    assert result["plan"]["rejected"][0]["code"] == "cash_snapshot_unavailable"
-    assert session.rollback_calls == 1
+    assert result == {
+        "success": False,
+        "error": "broker_account_id_normalization_unavailable",
+        "proposal_creation_status": "not_attempted_account_id_unavailable",
+        "proposal_count": 0,
+        "proposals_created": [],
+    }
+    assert session_factory_calls == 0
 
 
 @pytest.mark.asyncio
@@ -506,22 +503,42 @@ async def test_missing_submissions_frozen_opens_no_session_and_creates_zero() ->
     ],
 )
 @pytest.mark.parametrize(
-    "drifted_owner_id",
+    ("canonical_owner_id", "drifted_owner_id"),
     [
-        pytest.param("OWNER-1", id="case"),
-        pytest.param(" owner-1", id="leading-space"),
-        pytest.param("owner-1 ", id="trailing-space"),
-        pytest.param("owner_1", id="separator"),
-        pytest.param("", id="empty"),
-        pytest.param("   ", id="whitespace-only"),
+        pytest.param("owner-1", "OWNER-1", id="case-upper"),
+        pytest.param("owner-1", " owner-1", id="leading-space"),
+        pytest.param("owner-1", "owner-1 ", id="trailing-space"),
+        pytest.param("owner-1", "owner_1", id="separator-underscore"),
+        pytest.param("owner-1", "", id="empty"),
+        pytest.param("owner-1", "   ", id="whitespace-only"),
+        pytest.param("owner-1", "\xa0owner-1", id="leading-nbsp"),
+        pytest.param("owner-1", "\u200bowner-1", id="leading-zero-width-space"),
+        pytest.param("owner-1", "\towner-1", id="leading-tab"),
+        pytest.param("owner-1", "owner-1\n", id="trailing-newline"),
+        pytest.param("owner-1", "owner.1", id="separator-dot"),
+        pytest.param("owner-1", "owner 1", id="separator-space"),
+        pytest.param("owner-1", "owner-01", id="alnum-alias"),
+        pytest.param("owner-1", "owner‑1", id="nonbreaking-hyphen"),
+        pytest.param("owner-1", "Owner-1", id="case-title"),
+        pytest.param("owner-1", "ownér-1", id="accented-alias"),
+        pytest.param("ownér-1", "owne\u0301r-1", id="unicode-nfc-nfd"),
     ],
 )
 @pytest.mark.asyncio
 async def test_owner_id_drift_in_each_record_group_stops_before_db_and_seam(
     record_group: str,
+    canonical_owner_id: str,
     drifted_owner_id: str,
 ) -> None:
     payload = _request_with_all_owner_record_groups()
+    for owner_record_group in (
+        "candidates",
+        "reserve_net_attributions",
+        "self_unfilled_orders",
+        "sector_exposures",
+    ):
+        for record in payload[owner_record_group]:
+            record["beneficial_owner_id"] = canonical_owner_id
     payload[record_group][1]["beneficial_owner_id"] = drifted_owner_id
     consumer_factory_calls = 0
     session_factory_calls = 0
@@ -812,42 +829,6 @@ def _same_owner_multiple_records_payload() -> dict[str, Any]:
     return payload
 
 
-def _different_owners_payload() -> dict[str, Any]:
-    payload = _request(
-        _candidate(
-            "WIRE-OWNER-A",
-            sector="software",
-            beneficial_owner_id="owner-1",
-        ),
-        _candidate(
-            "WIRE-OWNER-B",
-            sector="Software",
-            beneficial_owner_id="owner-2",
-        ),
-    )
-    payload["reserve_net_attributions"] = [
-        _attribution("WIRE-HISTORY-A", beneficial_owner_id="owner-1"),
-        _attribution("WIRE-HISTORY-B", beneficial_owner_id="owner-2"),
-    ]
-    payload["self_unfilled_orders"] = [
-        _self_unfilled_order("WIRE-SELL-A", beneficial_owner_id="owner-1"),
-        _self_unfilled_order("WIRE-SELL-B", beneficial_owner_id="owner-2"),
-    ]
-    payload["sector_exposures"] = [
-        _sector_exposure(
-            "WIRE-OWNER-A",
-            beneficial_owner_id="owner-1",
-            sector="software",
-        ),
-        _sector_exposure(
-            "WIRE-OWNER-B",
-            beneficial_owner_id="owner-2",
-            sector="Software",
-        ),
-    ]
-    return payload
-
-
 def _distinct_join_vocabularies_payload() -> dict[str, Any]:
     payload = _request()
     payload["reserve_net_attributions"] = [
@@ -872,11 +853,6 @@ def _distinct_join_vocabularies_payload() -> dict[str, Any]:
             _same_owner_multiple_records_payload,
             2,
             id="same-owner-multiple-records",
-        ),
-        pytest.param(
-            _different_owners_payload,
-            2,
-            id="different-owners-coexist",
         ),
         pytest.param(
             _distinct_join_vocabularies_payload,
