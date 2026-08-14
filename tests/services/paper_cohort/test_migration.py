@@ -158,6 +158,38 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # Same for the kis_mock pre-submit signal ledger, added after this
             # boundary and already present in Base.metadata.
             await connection.execute(text("DROP TABLE review.kis_mock_signal_ledger"))
+            # B1 loss-cut approval is later than this reconstructed boundary.
+            # Remove its current-head tables and additive columns so the head
+            # upgrade exercises the migration instead of colliding with
+            # objects materialized by Base.metadata.create_all.
+            await connection.execute(
+                text("DROP TABLE review.order_proposal_approval_events")
+            )
+            await connection.execute(
+                text("DROP TABLE review.order_proposal_loss_cut_scopes")
+            )
+            for column in (
+                "publication_ref_digest",
+                "evidence_hash",
+                "scope_hash",
+                "channel",
+            ):
+                await connection.execute(
+                    text(
+                        "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+                        f"DROP COLUMN {column}"
+                    )
+                )
+            for column in (
+                "approved_by_subject",
+                "approved_by_channel",
+                "approval_dispatch_evidence_hash",
+                "approval_dispatch_scope_hash",
+                "approval_dispatch_channel",
+            ):
+                await connection.execute(
+                    text(f"ALTER TABLE review.order_proposals DROP COLUMN {column}")
+                )
 
         env = {**os.environ, "DATABASE_URL": target_url_text}
 

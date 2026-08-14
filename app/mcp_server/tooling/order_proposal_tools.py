@@ -503,8 +503,10 @@ async def order_proposal_create(
 ) -> dict[str, Any]:
     """Create a place, replace, or cancel proposal without broker mutation.
 
-    ``loss_cut`` keeps retrospective/price/hash guards and is approved only by
-    Telegram's two-click confirmation. ``approval_issue_id`` is an optional
+    ``loss_cut`` keeps retrospective/price/hash guards and requires a single-use
+    two-click confirmation. Telegram remains the submit-capable channel. The
+    authenticated /invest B1 channel shares the nonce but stops at durable
+    validation without submitting an order. ``approval_issue_id`` is an optional
     free-text audit note; no external issue tracker is queried.
 
     Args:

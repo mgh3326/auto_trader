@@ -1135,6 +1135,7 @@ async def test_nonce_change_during_inflight_send_supersedes_same_attempt_id() ->
         approval_dispatch_attempt_id=ATTEMPT_ID,
         approval_dispatch_state=ApprovalDispatchState.PENDING.value,
         approval_dispatch_card_kind=ApprovalCardKind.MANUAL.value,
+        approval_dispatch_channel="telegram",
         approval_dispatch_membership_revision=1,
         approval_dispatch_membership_digest=old_digest,
         approval_dispatch_published_at=None,
@@ -1145,6 +1146,7 @@ async def test_nonce_change_during_inflight_send_supersedes_same_attempt_id() ->
     attempt = SimpleNamespace(
         attempt_id=ATTEMPT_ID,
         proposal_pk=1,
+        channel="telegram",
         state=ApprovalDispatchState.PENDING.value,
         card_kind=ApprovalCardKind.MANUAL.value,
         membership_revision=1,
@@ -1199,6 +1201,7 @@ async def test_response_loss_finalizes_failed_and_invalidates_visible_card() -> 
         approval_dispatch_attempt_id=ATTEMPT_ID,
         approval_dispatch_state=ApprovalDispatchState.PENDING.value,
         approval_dispatch_card_kind=ApprovalCardKind.MANUAL.value,
+        approval_dispatch_channel="telegram",
         approval_dispatch_membership_revision=1,
         approval_dispatch_membership_digest=digest,
         approval_nonce="safe-nonce",
@@ -1208,6 +1211,7 @@ async def test_response_loss_finalizes_failed_and_invalidates_visible_card() -> 
     attempt = SimpleNamespace(
         attempt_id=ATTEMPT_ID,
         proposal_pk=1,
+        channel="telegram",
         state=ApprovalDispatchState.PENDING.value,
         card_kind=ApprovalCardKind.MANUAL.value,
         membership_revision=1,
@@ -1279,6 +1283,7 @@ async def test_attempt_completion_order_preserves_current_owner_invariants(
         approval_dispatch_attempt_id=new_id,
         approval_dispatch_state=ApprovalDispatchState.PENDING.value,
         approval_dispatch_card_kind=ApprovalCardKind.MANUAL.value,
+        approval_dispatch_channel="telegram",
         approval_dispatch_membership_revision=2,
         approval_dispatch_membership_digest=new_digest,
         approval_nonce="new-nonce",
@@ -1288,6 +1293,7 @@ async def test_attempt_completion_order_preserves_current_owner_invariants(
         old_id: SimpleNamespace(
             attempt_id=old_id,
             proposal_pk=1,
+            channel="telegram",
             state=ApprovalDispatchState.PENDING.value,
             card_kind=ApprovalCardKind.MANUAL.value,
             membership_revision=1,
@@ -1296,6 +1302,7 @@ async def test_attempt_completion_order_preserves_current_owner_invariants(
         new_id: SimpleNamespace(
             attempt_id=new_id,
             proposal_pk=1,
+            channel="telegram",
             state=ApprovalDispatchState.PENDING.value,
             card_kind=ApprovalCardKind.MANUAL.value,
             membership_revision=2,
@@ -1364,6 +1371,7 @@ async def test_stale_failed_attempt_cannot_trigger_current_failure_compensation(
         approval_dispatch_attempt_id=new_id,
         approval_dispatch_state=ApprovalDispatchState.PENDING.value,
         approval_dispatch_card_kind=ApprovalCardKind.MANUAL.value,
+        approval_dispatch_channel="telegram",
         approval_dispatch_membership_revision=2,
         approval_dispatch_membership_digest=new_digest,
         approval_nonce="new-nonce",
@@ -1372,6 +1380,7 @@ async def test_stale_failed_attempt_cannot_trigger_current_failure_compensation(
     old_attempt = SimpleNamespace(
         attempt_id=old_id,
         proposal_pk=1,
+        channel="telegram",
         state=ApprovalDispatchState.PENDING.value,
         card_kind=ApprovalCardKind.MANUAL.value,
         membership_revision=1,

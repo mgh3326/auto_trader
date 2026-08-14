@@ -9,9 +9,8 @@ import and call these builders instead of constructing paths inline — mirrors
 the existing ``app/core/portfolio_links.py`` pattern (same ``public_base_url``
 source, same "pure builder, caller attaches" split).
 
-No builder here targets the Phase 2 approval page — it does not exist yet
-(§57차 explicitly forbids starting Phase 2 UI in this job), so there is
-nothing to link to for the third deep-link type ("승인 카드 → 승인 페이지").
+The loss-cut builder carries only a proposal UUID. Approval nonce, actor,
+account, quantity, and price never enter the URL.
 """
 
 from __future__ import annotations
@@ -19,6 +18,16 @@ from __future__ import annotations
 from urllib.parse import quote
 
 from app.core.config import settings
+
+
+def build_loss_cut_approval_url(*, proposal_id: object) -> str:
+    """URL to the authenticated evidence and two-step loss-cut page."""
+    proposal = quote(str(proposal_id).strip(), safe="")
+    if not proposal:
+        raise ValueError("proposal_id is required")
+    return (
+        f"{settings.public_base_url.rstrip('/')}/invest/approvals/loss-cut/{proposal}"
+    )
 
 
 def build_watches_url(

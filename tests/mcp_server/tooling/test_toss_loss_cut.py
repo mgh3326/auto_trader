@@ -31,6 +31,8 @@ class _TossClient:
         self.placed_payloads: list[dict] = []
         self.current_price = Decimal("100")
         self.average_purchase_price = Decimal("200")
+        self.quantity = Decimal("3")
+        self.sellable = Decimal("2")
 
     async def aclose(self) -> None:
         return None
@@ -44,10 +46,14 @@ class _TossClient:
                 SimpleNamespace(
                     symbol=symbol or "AAPL",
                     average_purchase_price=self.average_purchase_price,
+                    quantity=self.quantity,
                 )
             ],
             raw_overview={},
         )
+
+    async def sellable_quantity(self, *, symbol: str):
+        return SimpleNamespace(sellable_quantity=self.sellable)
 
     async def prices(self, symbols):
         return [
@@ -184,6 +190,9 @@ async def test_toss_loss_cut_preview_applies_slip_band(monkeypatch, price, succe
         assert result["retrospective_id"] == 42
         assert result["loss_cut_slip_band"] == pytest.approx(98.0)
         assert result["avg_buy_price"] == "200"
+        assert result["observed_sellable_qty"] == "2"
+        assert result["observed_total_qty"] == "3"
+        assert result["observed_locked_qty"] == "1"
         decision = evaluate_auto_approve_eligibility(
             group=SimpleNamespace(
                 action="place",
@@ -220,6 +229,19 @@ async def test_toss_loss_cut_preview_fails_closed_without_current_price(monkeypa
 
     assert result["success"] is False
     assert "current price" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_toss_loss_cut_preview_rejects_quantity_above_fresh_sellable(
+    monkeypatch,
+):
+    _configure_toss(monkeypatch)
+    _configure_loss_cut_preconditions(monkeypatch)
+
+    result = await _preview_loss_cut(quantity="2.5")
+
+    assert result["success"] is False
+    assert "exceeds orderable balance 2" in result["error"]
 
 
 @pytest.mark.asyncio
@@ -340,7 +362,10 @@ async def test_toss_sell_guard_keeps_the_avg_plus_one_percent_floor(monkeypatch)
 
 
 async def _preview_loss_cut(
-    *, price: str = "99", approval_issue_id: str | None = "ROB-858"
+    *,
+    price: str = "99",
+    quantity: str = "1",
+    approval_issue_id: str | None = "ROB-858",
 ) -> dict:
     with otv._bind_order_proposal_context(
         client_order_id="tosprop-loss-cut", correlation_id=None, rung=0
@@ -349,7 +374,7 @@ async def _preview_loss_cut(
             symbol="AAPL",
             side="sell",
             order_type="limit",
-            quantity="1",
+            quantity=quantity,
             price=price,
             market="us",
             account_mode="toss_live",

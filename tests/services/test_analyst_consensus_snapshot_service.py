@@ -196,6 +196,30 @@ async def test_existing_keys_pre_flight(db_session) -> None:
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_latest_for_symbol_is_exactly_scoped_and_newest(db_session) -> None:
+    symbol = _unique_symbol()
+    other = _unique_symbol()
+    await _cleanup(db_session, [symbol, other])
+    repo = AnalystConsensusSnapshotsRepository(db_session)
+    await repo.upsert(
+        [
+            _row(symbol=symbol, snapshot_date=dt.date(2026, 7, 1), buy_count=1),
+            _row(symbol=symbol, snapshot_date=dt.date(2026, 7, 3), buy_count=3),
+            _row(symbol=other, snapshot_date=dt.date(2026, 7, 4), buy_count=99),
+        ]
+    )
+    await db_session.commit()
+
+    latest = await repo.latest_for_symbol(market="kr", symbol=symbol.lower())
+
+    assert latest is not None
+    assert latest.symbol == symbol
+    assert latest.snapshot_date == dt.date(2026, 7, 3)
+    assert latest.buy_count == 3
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_different_sources_coexist(db_session) -> None:
     symbol = _unique_symbol()
     await _cleanup(db_session, [symbol])

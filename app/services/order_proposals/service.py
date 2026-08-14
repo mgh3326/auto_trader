@@ -26,6 +26,8 @@ from app.models.order_proposals import (
     OrderProposalApprovalBatch,
     OrderProposalApprovalBatchMember,
     OrderProposalApprovalDispatchAttempt,
+    OrderProposalApprovalEvent,
+    OrderProposalLossCutScope,
     OrderProposalRung,
 )
 from app.models.review import TossLiveOrderLedger
@@ -1776,6 +1778,8 @@ class OrderProposalsService:
         callback: CallbackEnvelope,
         now: datetime,
         telegram_user_id: str | None = None,
+        actor_channel: str | None = None,
+        actor_subject: str | None = None,
     ) -> OrderProposal:
         """The single nonce-consumption gate for every proposal card kind."""
         self._require_timezone_aware(now)
@@ -1790,10 +1794,13 @@ class OrderProposalsService:
 
         fields: dict[str, Any] = {"approval_nonce_used_at": now}
         if callback.action == "lc":
+            resolved_channel = actor_channel or "telegram"
+            resolved_subject = actor_subject or telegram_user_id or ""
             fields["source_asof"] = await self._validated_loss_cut_confirmation_source(
                 group,
                 nonce=callback.nonce,
-                telegram_user_id=telegram_user_id or "",
+                actor_channel=resolved_channel,
+                actor_subject=resolved_subject,
                 now=now,
             )
         return await self._repo.update_group(group, **fields)
@@ -1804,7 +1811,9 @@ class OrderProposalsService:
         *,
         first_nonce: str,
         confirmation_nonce: str,
-        telegram_user_id: str,
+        telegram_user_id: str | None = None,
+        actor_channel: str = "telegram",
+        actor_subject: str | None = None,
         now: datetime,
         ttl_seconds: int = 90,
     ) -> OrderProposal:
@@ -1817,6 +1826,9 @@ class OrderProposalsService:
             raise OrderProposalError("loss_cut_confirmation_requires_loss_cut")
         if group.approval_nonce != first_nonce or group.approval_nonce_used_at is None:
             raise OrderProposalError("loss_cut_first_nonce_not_consumed")
+        resolved_subject = actor_subject or telegram_user_id or ""
+        if actor_channel not in {"telegram", "web"} or not resolved_subject:
+            raise OrderProposalError("loss_cut_confirmation_actor_invalid")
         rungs = await self._repo.list_rungs(group.id)
         binding = [
             {
@@ -1835,7 +1847,11 @@ class OrderProposalsService:
             "issued_at": now.isoformat(),
             "expires_at": (now + timedelta(seconds=ttl_seconds)).isoformat(),
             "first_click": {
-                "telegram_user_id": telegram_user_id,
+                "actor_channel": actor_channel,
+                "actor_subject": resolved_subject,
+                "telegram_user_id": (
+                    resolved_subject if actor_channel == "telegram" else None
+                ),
                 "clicked_at": now.isoformat(),
                 "nonce": first_nonce,
             },
@@ -1857,7 +1873,9 @@ class OrderProposalsService:
         proposal_id: uuid.UUID,
         nonce: str,
         *,
-        telegram_user_id: str,
+        telegram_user_id: str | None = None,
+        actor_channel: str = "telegram",
+        actor_subject: str | None = None,
         now: datetime,
     ) -> OrderProposal:
         """Compatibility wrapper for the common published-callback gate."""
@@ -1872,6 +1890,8 @@ class OrderProposalsService:
             proposal_id,
             callback=callback,
             telegram_user_id=telegram_user_id,
+            actor_channel=actor_channel,
+            actor_subject=actor_subject,
             now=now,
         )
 
@@ -1880,7 +1900,8 @@ class OrderProposalsService:
         group: OrderProposal,
         *,
         nonce: str,
-        telegram_user_id: str,
+        actor_channel: str,
+        actor_subject: str,
         now: datetime,
     ) -> dict[str, Any]:
         envelope = (group.source_asof or {}).get(_LOSS_CUT_CONFIRMATION_KEY)
@@ -1893,6 +1914,17 @@ class OrderProposalsService:
         self._require_timezone_aware(expires_at)
         if now >= expires_at:
             raise OrderProposalError("loss_cut_confirmation_expired")
+        first_click = envelope.get("first_click")
+        if not isinstance(first_click, dict):
+            raise OrderProposalError("loss_cut_confirmation_invalid")
+        first_channel = str(first_click.get("actor_channel") or "telegram")
+        first_subject = str(
+            first_click.get("actor_subject")
+            or first_click.get("telegram_user_id")
+            or ""
+        )
+        if first_channel != actor_channel or first_subject != actor_subject:
+            raise OrderProposalError("loss_cut_confirmation_principal_mismatch")
         rungs = await self._repo.list_rungs(group.id)
         current_binding = [
             {
@@ -1911,7 +1943,11 @@ class OrderProposalsService:
         updated_envelope = {
             **envelope,
             "second_click": {
-                "telegram_user_id": telegram_user_id,
+                "actor_channel": actor_channel,
+                "actor_subject": actor_subject,
+                "telegram_user_id": (
+                    actor_subject if actor_channel == "telegram" else None
+                ),
                 "clicked_at": now.isoformat(),
                 "nonce": nonce,
             },
@@ -1934,8 +1970,38 @@ class OrderProposalsService:
         if group is None:
             raise OrderProposalNotFound(str(proposal_id))
         return await self._repo.update_group(
-            group, approved_by_telegram_user_id=telegram_user_id, approved_at=now
+            group,
+            approved_by_telegram_user_id=telegram_user_id,
+            approved_by_channel="telegram",
+            approved_by_subject=telegram_user_id,
+            approved_at=now,
         )
+
+    async def record_channel_approval(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        channel: str,
+        actor_subject: str,
+        now: datetime,
+    ) -> OrderProposal:
+        """Record approval validation without transitioning or submitting rungs."""
+        self._require_timezone_aware(now)
+        if channel not in {"telegram", "web"} or not actor_subject:
+            raise OrderProposalError("approval_actor_invalid")
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        fields: dict[str, Any] = {
+            "approved_by_channel": channel,
+            "approved_by_subject": actor_subject,
+            "approved_at": now,
+        }
+        if channel == "telegram":
+            fields["approved_by_telegram_user_id"] = actor_subject
+        else:
+            fields["approved_by_telegram_user_id"] = None
+        return await self._repo.update_group(group, **fields)
 
     async def record_approval_dispatch(
         self,
@@ -1991,13 +2057,19 @@ class OrderProposalsService:
         now: datetime,
         payload_chars: int,
         context_message_count: int,
+        channel: str = "telegram",
+        scope_hash: str | None = None,
+        evidence_hash: str | None = None,
+        publication_ref_digest: str | None = None,
     ) -> OrderProposalApprovalDispatchAttempt:
-        """Commit a pending attempt before any Telegram I/O begins."""
+        """Commit a pending attempt before channel publication begins."""
         self._require_timezone_aware(now)
         if payload_chars < 0:
             raise ValueError("payload_chars must be non-negative")
         if context_message_count < 0:
             raise ValueError("context_message_count must be non-negative")
+        if channel not in {"telegram", "web"}:
+            raise ValueError("approval dispatch channel must be telegram or web")
         if binding.attempt_id != attempt_id:
             raise ValueError("dispatch binding attempt_id mismatch")
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
@@ -2043,6 +2115,10 @@ class OrderProposalsService:
             payload_chars=payload_chars,
             context_message_count=context_message_count,
             card_kind=binding.card_kind.value,
+            channel=channel,
+            scope_hash=scope_hash,
+            evidence_hash=evidence_hash,
+            publication_ref_digest=publication_ref_digest,
             membership_revision=binding.membership_revision,
             membership_digest=binding.membership_digest,
         )
@@ -2055,6 +2131,9 @@ class OrderProposalsService:
             approval_dispatch_failure_code=None,
             approval_dispatch_payload_chars=payload_chars,
             approval_dispatch_card_kind=binding.card_kind.value,
+            approval_dispatch_channel=channel,
+            approval_dispatch_scope_hash=scope_hash,
+            approval_dispatch_evidence_hash=evidence_hash,
             approval_dispatch_membership_revision=binding.membership_revision,
             approval_dispatch_membership_digest=binding.membership_digest,
         )
@@ -2080,6 +2159,8 @@ class OrderProposalsService:
         )
         if attempt is None or attempt.proposal_pk != group.id:
             raise OrderProposalError("approval_dispatch_attempt_not_found")
+        if attempt.channel != "telegram":
+            raise OrderProposalError("approval_dispatch_channel_mismatch")
         if attempt.state != ApprovalDispatchState.PENDING.value:
             raise OrderProposalError("approval_dispatch_attempt_already_finished")
         if publication.card_published and (
@@ -2107,6 +2188,13 @@ class OrderProposalsService:
             group.approval_dispatch_state == ApprovalDispatchState.PENDING.value
             and group.approval_dispatch_attempt_id == attempt_id
             and group.approval_dispatch_card_kind == attempt.card_kind
+            and (
+                group.approval_dispatch_channel == attempt.channel
+                or (
+                    group.approval_dispatch_channel is None
+                    and attempt.channel == "telegram"
+                )
+            )
             and group.approval_dispatch_membership_revision
             == attempt.membership_revision
             and group.approval_dispatch_membership_digest == attempt.membership_digest
@@ -2183,6 +2271,106 @@ class OrderProposalsService:
         await self._repo.update_group(group, **fields)
         _log_dispatch_outcome(result, surface="proposal")
         return result
+
+    async def finish_web_approval_dispatch(
+        self,
+        proposal_id: uuid.UUID,
+        *,
+        attempt_id: uuid.UUID,
+        now: datetime,
+    ) -> OrderProposalApprovalDispatchAttempt:
+        """Publish a server-local web binding inside the caller transaction."""
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        attempt = await self._repo.get_approval_dispatch_attempt(
+            attempt_id, for_update=True
+        )
+        if attempt is None or attempt.proposal_pk != group.id:
+            raise OrderProposalError("approval_dispatch_attempt_not_found")
+        if attempt.channel != "web":
+            raise OrderProposalError("approval_dispatch_channel_mismatch")
+        if attempt.state != ApprovalDispatchState.PENDING.value:
+            raise OrderProposalError("approval_dispatch_attempt_already_finished")
+        try:
+            card_kind = ApprovalCardKind(str(attempt.card_kind))
+        except ValueError as exc:
+            raise OrderProposalError("approval_dispatch_card_kind_invalid") from exc
+        expected_digest = build_membership_digest(
+            card_kind=card_kind,
+            membership_revision=attempt.membership_revision,
+            members=[
+                {
+                    "proposal_id": str(group.proposal_id),
+                    "approval_nonce": group.approval_nonce,
+                }
+            ],
+        )
+        is_current_owner = all(
+            (
+                group.approval_dispatch_state == ApprovalDispatchState.PENDING.value,
+                group.approval_dispatch_attempt_id == attempt_id,
+                group.approval_dispatch_card_kind == attempt.card_kind,
+                group.approval_dispatch_channel == "web",
+                group.approval_dispatch_membership_revision
+                == attempt.membership_revision,
+                group.approval_dispatch_membership_digest == attempt.membership_digest,
+                expected_digest == attempt.membership_digest,
+                bool(group.approval_nonce),
+            )
+        )
+        if not is_current_owner:
+            raise OrderProposalError("approval_dispatch_sent_superseded")
+        await self._repo.update_approval_dispatch_attempt(
+            attempt,
+            state=ApprovalDispatchState.SENT_CURRENT.value,
+            completed_at=now,
+        )
+        await self._repo.update_group(
+            group,
+            approval_dispatch_state=ApprovalDispatchState.SENT_CURRENT.value,
+            approval_dispatch_failure_code=None,
+            approval_dispatch_published_at=now,
+        )
+        return attempt
+
+    async def current_callback_envelope(
+        self, proposal_id: uuid.UUID, *, action: str
+    ) -> CallbackEnvelope:
+        """Build callback material from the current server-side binding only."""
+        group = await self._repo.get_group_by_proposal_id(proposal_id)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        nonce = str(group.approval_nonce or "")
+        if not nonce:
+            raise OrderProposalError("approval_nonce_missing")
+        return self._current_callback_envelope(group, action=action, nonce=nonce)
+
+    async def append_approval_event(self, **cols: Any) -> OrderProposalApprovalEvent:
+        return await self._repo.insert_approval_event(**cols)
+
+    async def get_approval_event(
+        self, *, proposal_pk: int, ceremony_digest: str, step: str
+    ) -> OrderProposalApprovalEvent | None:
+        return await self._repo.get_approval_event(
+            proposal_pk=proposal_pk,
+            ceremony_digest=ceremony_digest,
+            step=step,
+        )
+
+    async def list_approval_events(
+        self, proposal_pk: int
+    ) -> list[OrderProposalApprovalEvent]:
+        return await self._repo.list_approval_events(proposal_pk)
+
+    async def upsert_loss_cut_scope(self, **cols: Any) -> OrderProposalLossCutScope:
+        return await self._repo.upsert_loss_cut_scope(**cols)
+
+    async def get_loss_cut_scope(
+        self, proposal_pk: int
+    ) -> OrderProposalLossCutScope | None:
+        return await self._repo.get_loss_cut_scope(proposal_pk)
 
     async def register_approval_batch_member(
         self,

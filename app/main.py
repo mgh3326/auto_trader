@@ -37,6 +37,7 @@ from app.routers import (
     invest_artifacts,
     invest_fills,
     invest_forecasts,
+    invest_loss_cut_approvals,
     invest_open_orders,
     invest_retrospectives,
     invest_scalping,
@@ -196,6 +197,11 @@ def create_app() -> FastAPI:
     app.include_router(symbol_settings.router)
     app.include_router(deprecated_pages.router)
     app.include_router(invest_api.router)
+    if (
+        settings.INVEST_LOSS_CUT_EVIDENCE_ENABLED
+        or settings.INVEST_LOSS_CUT_APPROVAL_ENABLED
+    ):
+        app.include_router(invest_loss_cut_approvals.router)
     app.include_router(invest_scalping.router)
     app.include_router(invest_fills.router)
     app.include_router(invest_open_orders.router)

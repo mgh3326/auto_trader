@@ -11,6 +11,7 @@ import pytest
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals import revalidation as revalidation_module
 from app.services.order_proposals.broker_gateway import SubmitEvidence
+from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.revalidation import (
     _adapt_live_submit_response,
     preview_loss_cut_confirmation,
@@ -512,16 +513,22 @@ async def test_loss_cut_confirmation_preview_is_read_only_and_builds_evidence(
             "current_price": "100",
             "avg_buy_price": "200",
             "loss_cut_slip_band": "98",
+            "observed_sellable_qty": "3",
+            "observed_total_qty": "4",
+            "observed_locked_qty": "1",
+            "fill_distance": {"pct": "-1"},
+            "warnings": ["fixture-warning"],
         }
 
     async def fake_retro_lookup(retrospective_id):
         assert retrospective_id == 42
         return retro
 
+    now = datetime.now(UTC)
     evidence = await preview_loss_cut_confirmation(
         service=service,
         proposal_id=group.proposal_id,
-        now=datetime.now(UTC),
+        now=now,
         place_order_fn=fake_preview,
         retrospective_lookup_fn=fake_retro_lookup,
     )
@@ -535,13 +542,80 @@ async def test_loss_cut_confirmation_preview_is_read_only_and_builds_evidence(
                 "avg_buy_price": "200",
                 "loss_pct": "-50.00",
                 "loss_cut_slip_band": "98",
+                "requested_quantity": "2",
+                "limit_price": "99",
+                "observed_sellable_qty": "3",
+                "observed_total_qty": "4",
+                "observed_locked_qty": "1",
+                "fill_distance": {"pct": "-1"},
+                "warnings": ["fixture-warning"],
+                "quote_observed_at": now.isoformat(),
             }
         ],
         "retrospective_id": 42,
         "lesson_excerpt": "손절 기준을 늦추지 않는다",
+        "retrospective_trigger_type": "stop_loss",
+        "retrospective_created_at": retro.created_at.isoformat(),
+        "exit_reason": "stop_loss",
+        "proposal_created_at": group.created_at.isoformat(),
+        "observed_at": now.isoformat(),
     }
     _group, rungs = await service.get_proposal(group.proposal_id)
     assert rungs[0].state == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_confirmation_preview_rejects_quantity_above_sellable(
+    db_session, monkeypatch
+):
+    retro = SimpleNamespace(
+        id=43,
+        symbol="005930",
+        trigger_type="stop_loss",
+        created_at=datetime.now(UTC),
+        lesson="fixture",
+    )
+
+    async def fake_lookup(session, retrospective_id):
+        return retro
+
+    monkeypatch.setattr(
+        "app.services.order_proposals.service.get_retrospective_by_id", fake_lookup
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="sell",
+        order_type="limit",
+        proposer="p",
+        rungs=[RungInput(0, "sell", Decimal("2"), Decimal("99"), None)],
+        exit_intent="loss_cut",
+        exit_reason="stop_loss",
+        retrospective_id=43,
+    )
+
+    async def fake_preview(**kwargs):
+        return {
+            "success": True,
+            "current_price": "100",
+            "avg_buy_price": "200",
+            "loss_cut_slip_band": "98",
+            "observed_sellable_qty": "1",
+            "observed_total_qty": "2",
+        }
+
+    with pytest.raises(
+        OrderProposalError, match="^loss_cut_confirmation_quantity_exceeds_sellable$"
+    ):
+        await preview_loss_cut_confirmation(
+            service=service,
+            proposal_id=group.proposal_id,
+            now=datetime.now(UTC),
+            place_order_fn=fake_preview,
+            retrospective_lookup_fn=lambda retrospective_id: retro,
+        )
 
 
 @pytest.mark.asyncio

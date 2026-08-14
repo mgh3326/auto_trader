@@ -70,7 +70,9 @@ from sqlalchemy import text
 # v35: review.kis_mock_signal_ledger (new ORM table via create_all). No
 # mirrored ALTER — the table is created wholesale; the bump only forces a
 # persistent local test DB to re-bootstrap once.
-SCHEMA_BOOTSTRAP_VERSION = 35
+# v36: web loss-cut approval events/scopes are new ORM tables. The production
+# migration is deliberately not run by tests; create_all owns the test copy.
+SCHEMA_BOOTSTRAP_VERSION = 36
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -135,6 +137,7 @@ _APPROVAL_PROPOSAL_CARD_KINDS = (
     "auto_veto",
     "loss_cut_confirmation",
 )
+_APPROVAL_CHANNELS = ("telegram", "web")
 _APPROVAL_ATTEMPT_NOT_NULL_COLUMNS = frozenset(
     {
         "attempt_id",
@@ -144,6 +147,7 @@ _APPROVAL_ATTEMPT_NOT_NULL_COLUMNS = frozenset(
         "payload_chars",
         "context_message_count",
         "card_kind",
+        "channel",
         "membership_revision",
         "membership_digest",
         "created_at",
@@ -171,6 +175,18 @@ _APPROVAL_REQUIRED_CHECKS = {
         "order_proposal_approval_dispatch_attempts",
         "order_proposal_approval_dispatch_attempt_card_kind",
     ): ("card_kind", frozenset(_APPROVAL_PROPOSAL_CARD_KINDS), False),
+    (
+        "order_proposals",
+        "order_proposals_approval_dispatch_channel",
+    ): ("approval_dispatch_channel", frozenset(_APPROVAL_CHANNELS), True),
+    (
+        "order_proposals",
+        "order_proposals_approved_by_channel",
+    ): ("approved_by_channel", frozenset(_APPROVAL_CHANNELS), True),
+    (
+        "order_proposal_approval_dispatch_attempts",
+        "order_proposal_approval_dispatch_attempt_channel",
+    ): ("channel", frozenset(_APPROVAL_CHANNELS), False),
     (
         "order_proposal_approval_batches",
         "order_proposal_approval_batches_dispatch_state",
@@ -1065,6 +1081,16 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ADD COLUMN IF NOT EXISTS approval_dispatch_membership_digest TEXT",
     "ALTER TABLE review.order_proposals "
     "ADD COLUMN IF NOT EXISTS approval_dispatch_published_at TIMESTAMPTZ",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_channel TEXT",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_scope_hash TEXT",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approval_dispatch_evidence_hash TEXT",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approved_by_channel TEXT",
+    "ALTER TABLE review.order_proposals "
+    "ADD COLUMN IF NOT EXISTS approved_by_subject TEXT",
     "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
     "ADD COLUMN IF NOT EXISTS error_classification TEXT",
     "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
@@ -1073,6 +1099,14 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "ADD COLUMN IF NOT EXISTS membership_revision INTEGER",
     "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
     "ADD COLUMN IF NOT EXISTS membership_digest TEXT",
+    "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+    "ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'telegram'",
+    "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+    "ADD COLUMN IF NOT EXISTS scope_hash TEXT",
+    "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+    "ADD COLUMN IF NOT EXISTS evidence_hash TEXT",
+    "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+    "ADD COLUMN IF NOT EXISTS publication_ref_digest TEXT",
     # Intermediate R1/R2 test schemas may contain attempts without the final
     # immutable binding columns. Those rows cannot truthfully be repaired, so
     # discard only invalid rows in the disposable test ledger before applying
@@ -1099,6 +1133,7 @@ _DDL_STATEMENTS: tuple[str, ...] = (
             "payload_chars",
             "context_message_count",
             "card_kind",
+            "channel",
             "membership_revision",
             "membership_digest",
             "created_at",
@@ -1115,6 +1150,48 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "('pending','sent_current','sent_superseded','failed',"
     "'partial_failed','failed_superseded')); "
     "END IF; END $$",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname = 'order_proposals_approval_dispatch_channel' "
+    "AND conrelid = 'review.order_proposals'::regclass) THEN "
+    "ALTER TABLE review.order_proposals "
+    "ADD CONSTRAINT order_proposals_approval_dispatch_channel "
+    "CHECK (approval_dispatch_channel IS NULL OR "
+    "approval_dispatch_channel IN ('telegram','web')); "
+    "END IF; END $$",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname = 'order_proposals_approved_by_channel' "
+    "AND conrelid = 'review.order_proposals'::regclass) THEN "
+    "ALTER TABLE review.order_proposals "
+    "ADD CONSTRAINT order_proposals_approved_by_channel "
+    "CHECK (approved_by_channel IS NULL OR "
+    "approved_by_channel IN ('telegram','web')); "
+    "END IF; END $$",
+    "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
+    "WHERE conname = 'order_proposal_approval_dispatch_attempt_channel' "
+    "AND conrelid = "
+    "'review.order_proposal_approval_dispatch_attempts'::regclass) THEN "
+    "ALTER TABLE review.order_proposal_approval_dispatch_attempts "
+    "ADD CONSTRAINT order_proposal_approval_dispatch_attempt_channel "
+    "CHECK (channel IN ('telegram','web')); "
+    "END IF; END $$",
+    "CREATE OR REPLACE FUNCTION "
+    "review.reject_order_proposal_approval_event_mutation() "
+    "RETURNS trigger AS $$ BEGIN RAISE EXCEPTION "
+    "'order proposal approval events are append-only' "
+    "USING ERRCODE = 'restrict_violation'; END; $$ LANGUAGE plpgsql",
+    "DROP TRIGGER IF EXISTS trg_order_proposal_approval_events_append_only "
+    "ON review.order_proposal_approval_events",
+    "CREATE TRIGGER trg_order_proposal_approval_events_append_only "
+    "BEFORE UPDATE OR DELETE ON review.order_proposal_approval_events "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "review.reject_order_proposal_approval_event_mutation()",
+    "DROP TRIGGER IF EXISTS "
+    "trg_order_proposal_approval_events_truncate_append_only "
+    "ON review.order_proposal_approval_events",
+    "CREATE TRIGGER trg_order_proposal_approval_events_truncate_append_only "
+    "BEFORE TRUNCATE ON review.order_proposal_approval_events "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_order_proposal_approval_event_mutation()",
     "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
     "WHERE conname = 'order_proposals_approval_dispatch_card_kind' "
     "AND conrelid = 'review.order_proposals'::regclass) THEN "

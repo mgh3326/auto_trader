@@ -847,9 +847,20 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
             holding = type(
                 "Holding",
                 (),
-                {"symbol": symbol or "AAPL", "average_purchase_price": Decimal("200")},
+                {
+                    "symbol": symbol or "AAPL",
+                    "quantity": Decimal("10"),
+                    "average_purchase_price": Decimal("200"),
+                },
             )()
             return type("Holdings", (), {"items": [holding], "raw_overview": {}})()
+
+        async def sellable_quantity(self, *, symbol):
+            return type(
+                "SellableQuantity",
+                (),
+                {"sellable_quantity": Decimal("10")},
+            )()
 
         async def prices(self, symbols):
             price = type(

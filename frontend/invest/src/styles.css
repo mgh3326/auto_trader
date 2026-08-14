@@ -12,6 +12,123 @@ body,
   font-family: var(--font-sans);
 }
 
+/* Authenticated loss-cut evidence and two-step approval surface. */
+.loss-cut-approval-page {
+  width: min(1120px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 32px 0 64px;
+  color: var(--text-primary, #172033);
+}
+
+.loss-cut-approval-hero,
+.loss-cut-position-panel,
+.loss-cut-fingerprint,
+.loss-cut-two-step {
+  padding: 24px;
+  border: 1px solid var(--border-subtle, #dce2eb);
+  border-radius: 18px;
+  background: var(--surface-card, #fff);
+  box-shadow: 0 8px 28px rgb(23 32 51 / 6%);
+}
+
+.loss-cut-approval-hero { margin-bottom: 20px; }
+.loss-cut-eyebrow { margin: 0 0 8px; color: #b42318; font-weight: 750; }
+.loss-cut-approval-hero h1 { margin: 0 0 10px; font-size: clamp(28px, 5vw, 44px); }
+.loss-cut-approval-hero p:last-child { margin-bottom: 0; color: #566176; }
+.loss-cut-position-panel { margin-bottom: 20px; }
+.loss-cut-position-panel dl,
+.loss-cut-evidence-card dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+.loss-cut-position-panel dl div,
+.loss-cut-evidence-card dl div { min-width: 0; }
+.loss-cut-position-panel dt,
+.loss-cut-evidence-card dt { color: #6b7280; font-size: 12px; }
+.loss-cut-position-panel dd,
+.loss-cut-evidence-card dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+
+.loss-cut-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.loss-cut-evidence-card {
+  padding: 18px;
+  border: 1px solid #dce2eb;
+  border-left: 5px solid #5f6b7a;
+  border-radius: 14px;
+  background: #fff;
+}
+.loss-cut-evidence-card.is-filled { border-left-color: #067647; }
+.loss-cut-evidence-card.is-stale { border-left-color: #b54708; }
+.loss-cut-evidence-card.is-missing,
+.loss-cut-evidence-card.is-unavailable,
+.loss-cut-evidence-card.is-source_error { border-left-color: #b42318; }
+.loss-cut-evidence-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.loss-cut-evidence-card h2 { margin: 0; font-size: 18px; }
+.loss-cut-evidence-card header span {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #eef2f7;
+  font-size: 12px;
+  font-weight: 700;
+}
+.loss-cut-evidence-card pre,
+.loss-cut-fingerprint pre {
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 10px;
+  background: #f6f8fb;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.loss-cut-evidence-reason { color: #b42318; }
+.loss-cut-fingerprint,
+.loss-cut-two-step { margin-top: 20px; }
+.loss-cut-two-step button {
+  width: 100%;
+  min-height: 48px;
+  border: 0;
+  border-radius: 12px;
+  background: #b42318;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.loss-cut-two-step button:disabled { opacity: 0.45; cursor: not-allowed; }
+.loss-cut-confirm-box {
+  padding: 16px;
+  border: 1px solid #f79009;
+  border-radius: 12px;
+  background: #fffaeb;
+}
+.loss-cut-error,
+.loss-cut-success {
+  padding: 14px 16px;
+  border-radius: 10px;
+}
+.loss-cut-error { background: #fef3f2; color: #b42318; }
+.loss-cut-success { background: #ecfdf3; color: #067647; }
+
+@media (max-width: 600px) {
+  .loss-cut-approval-page { width: min(100% - 20px, 1120px); padding-top: 16px; }
+  .loss-cut-approval-hero,
+  .loss-cut-position-panel,
+  .loss-cut-fingerprint,
+  .loss-cut-two-step { padding: 18px; border-radius: 14px; }
+}
+
 .app-shell {
   max-width: 420px;
   margin: 0 auto;

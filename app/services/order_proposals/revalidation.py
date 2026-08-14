@@ -30,7 +30,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from app.core.timezone import now_kst
@@ -710,7 +710,7 @@ async def preview_loss_cut_confirmation(
     place_order_fn: PlaceOrderFn = _default_place_order_fn,
     retrospective_lookup_fn: RetrospectiveLookupFn = _default_retrospective_lookup,
 ) -> dict[str, Any]:
-    """Build read-only, fresh evidence for Telegram's loss-cut second step."""
+    """Build read-only, fresh evidence for either loss-cut approval channel."""
     group, rungs = await service.get_proposal(proposal_id)
     if group.exit_intent != "loss_cut" or group.retrospective_id is None:
         raise OrderProposalError("loss_cut_confirmation_requires_loss_cut")
@@ -762,12 +762,24 @@ async def preview_loss_cut_confirmation(
             current_price = Decimal(str(preview["current_price"]))
             avg_buy_price = Decimal(str(preview["avg_buy_price"]))
             slip_band = Decimal(str(preview["loss_cut_slip_band"]))
-        except (KeyError, TypeError, ValueError) as exc:
+            observed_sellable_qty = Decimal(str(preview["observed_sellable_qty"]))
+            observed_total_qty = Decimal(str(preview["observed_total_qty"]))
+        except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
             raise OrderProposalError(
                 "loss_cut_confirmation_preview_missing_price_context"
             ) from exc
         if avg_buy_price <= 0:
             raise OrderProposalError("loss_cut_confirmation_invalid_average_cost")
+        requested_quantity = Decimal(str(rung.quantity))
+        if (
+            requested_quantity <= 0
+            or observed_sellable_qty < 0
+            or observed_total_qty < 0
+            or observed_sellable_qty > observed_total_qty
+        ):
+            raise OrderProposalError("loss_cut_confirmation_position_scope_invalid")
+        if requested_quantity > observed_sellable_qty:
+            raise OrderProposalError("loss_cut_confirmation_quantity_exceeds_sellable")
         loss_pct = ((current_price - avg_buy_price) / avg_buy_price * 100).quantize(
             Decimal("0.01")
         )
@@ -778,6 +790,14 @@ async def preview_loss_cut_confirmation(
                 "avg_buy_price": _norm(avg_buy_price),
                 "loss_pct": format(loss_pct, "f"),
                 "loss_cut_slip_band": _norm(slip_band),
+                "requested_quantity": _norm(requested_quantity),
+                "limit_price": _norm(rung.limit_price),
+                "observed_sellable_qty": _norm(observed_sellable_qty),
+                "observed_total_qty": _norm(observed_total_qty),
+                "observed_locked_qty": _norm(preview.get("observed_locked_qty")),
+                "fill_distance": preview.get("fill_distance"),
+                "warnings": list(preview.get("warnings") or []),
+                "quote_observed_at": now.isoformat(),
             }
         )
     if not evidence_rungs:
@@ -789,6 +809,17 @@ async def preview_loss_cut_confirmation(
         "rungs": evidence_rungs,
         "retrospective_id": group.retrospective_id,
         "lesson_excerpt": lesson,
+        "retrospective_trigger_type": getattr(retrospective, "trigger_type", None),
+        "retrospective_created_at": (
+            value.isoformat()
+            if isinstance(
+                (value := getattr(retrospective, "created_at", None)), datetime
+            )
+            else None
+        ),
+        "exit_reason": group.exit_reason,
+        "proposal_created_at": group.created_at.isoformat(),
+        "observed_at": now.isoformat(),
     }
 
 
