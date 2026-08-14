@@ -70,7 +70,9 @@ open-order answer, or ordinary `create_proposal`.
 For every selected proposal, the required sequence is:
 
 ```text
-validate canonical broker_account_id
+require explicit submissions_frozen evidence
+→ validate canonical broker_account_id
+→ validate one exact beneficial_owner_id across all owner-bearing records
 → inspect legacy broker_account_id=None scope (lock + empty required)
 → inspect concrete four-axis scope (lock + empty required)
 → create_proposal_in_watch_to_order_scope on that concrete inspection
@@ -103,6 +105,25 @@ legacy ledger scope, not a wildcard. The consumer locks and checks that legacy
 scope first. An active legacy proposal blocks the concrete-id create with
 `legacy_unscoped_active_proposal_exists`; this closes the NULL-ledger probe.
 
+## Beneficial-owner representation contract
+
+For this MCP surface, one request is one beneficial-owner scope. Every
+`beneficial_owner_id` in `candidates`, `reserve_net_attributions`,
+`self_unfilled_orders`, and `sector_exposures` must be the same exact non-empty
+opaque string. The caller and tool do not trim, case-fold, normalize Unicode,
+rewrite separators or punctuation, or map aliases. An empty value, surrounding
+whitespace, or more than one representation is rejected before consumer
+construction, DB-session opening, or seam inspection, and creates zero
+proposals.
+
+This is a safety identity contract, not a convenience normalization. These four
+record groups are assembled from different evidence sources, while the consumer
+joins them by `beneficial_owner_id`. A case, whitespace, or separator drift can
+otherwise evade `max_active_orders_per_symbol`, same-symbol dedupe (including
+self-unfilled and active reserve-net checks), and the sector cap
+(`max_symbols_per_sector_cluster`). When an assembler cannot prove the one exact
+opaque representation, it must not call this create surface.
+
 ## Residual race with the manual create path
 
 `app/mcp_server/tooling/order_proposal_tools.py::order_proposal_create` remains
@@ -131,10 +152,13 @@ operating constraint, not a serializability claim.
 | The seam is unavailable | `consume()` returns `atomic_self_open_order_read_seam_unavailable`; the caller rolls back to release transaction locks and creates zero proposals. | There is no fallback to ordinary create or cached open-order state. | The structured result and server log remain; an operator/session must fix capability wiring before retrying. |
 | One selected candidate fails while proposal rows are being created | Every selected scope was inspected first; any pre-commit exception rolls back the single DB transaction, so none of that batch's proposal rows remain. | DB persistence is all-or-none for the selected batch. | A commit acknowledgement failure is reported as `proposal_commit_outcome_unknown` with maybe-committed IDs; reconcile before retry. After a successful commit, approval/submit dispatch is per proposal and cannot be atomic across brokers: an earlier item may submit before a later dispatch fails. Durable proposal and dispatch evidence remains for each item. |
 
-`submissions_frozen=true` is a fail-closed input and yields zero proposals. This
-manual/session-triggered surface does not implement unattended fill-driven
-rearm. The fill-triage durable-lock prerequisite remains binding for any future
-scheduler or automatic rearm registration.
+`submissions_frozen` must be explicitly present in every MCP request; omission
+is rejected before consumer construction, DB-session opening, or seam
+inspection and yields zero proposals. `submissions_frozen=true` is a fail-closed
+input and also yields zero proposals. This manual/session-triggered surface does
+not implement unattended fill-driven rearm. The fill-triage durable-lock
+prerequisite remains binding for any future scheduler or automatic rearm
+registration.
 
 ## Candidate controls
 

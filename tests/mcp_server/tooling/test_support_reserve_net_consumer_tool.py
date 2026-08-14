@@ -23,13 +23,14 @@ def _candidate(
     *,
     sector: str = "software",
     broker_account_id: str = "acct-exact-1",
+    beneficial_owner_id: str = "owner-1",
 ) -> dict[str, Any]:
     return {
         "normalized_symbol": symbol,
         "market": "equity_kr",
         "account_mode": "kis_live",
         "broker_account_id": broker_account_id,
-        "beneficial_owner_id": "owner-1",
+        "beneficial_owner_id": beneficial_owner_id,
         "intent": "new",
         "current_price": "100",
         "support_price": "96",
@@ -72,6 +73,47 @@ def _request(*candidates: dict[str, Any]) -> dict[str, Any]:
         "sector_exposure_complete": True,
         "submissions_frozen": False,
     }
+
+
+def _attribution(*, beneficial_owner_id: str = "owner-1") -> dict[str, Any]:
+    return {
+        "normalized_symbol": "WIRE-HISTORY",
+        "market": "equity_kr",
+        "beneficial_owner_id": beneficial_owner_id,
+        "account_mode": "kis_live",
+        "broker_account_id": "acct-exact-1",
+        "state": "filled",
+        "strategy": "buy.unrelated",
+        "sector_cluster": "hardware",
+    }
+
+
+def _self_unfilled_order(*, beneficial_owner_id: str = "owner-1") -> dict[str, Any]:
+    return {
+        "normalized_symbol": "WIRE-SELL",
+        "market": "equity_kr",
+        "beneficial_owner_id": beneficial_owner_id,
+        "account_mode": "kis_live",
+        "broker_account_id": "acct-exact-1",
+        "side": "sell",
+    }
+
+
+def _sector_exposure(*, beneficial_owner_id: str = "owner-1") -> dict[str, Any]:
+    return {
+        "normalized_symbol": "WIRE-HARDWARE",
+        "market": "equity_kr",
+        "beneficial_owner_id": beneficial_owner_id,
+        "sector_cluster": "hardware",
+    }
+
+
+def _request_with_all_owner_record_groups() -> dict[str, Any]:
+    payload = _request()
+    payload["reserve_net_attributions"] = [_attribution()]
+    payload["self_unfilled_orders"] = [_self_unfilled_order()]
+    payload["sector_exposures"] = [_sector_exposure()]
+    return payload
 
 
 class _FakeSession(AbstractAsyncContextManager):
@@ -316,6 +358,107 @@ async def test_submissions_frozen_creates_zero_without_seam_use() -> None:
     assert session.rollback_calls == 1
 
 
+@pytest.mark.asyncio
+async def test_missing_submissions_frozen_opens_no_session_and_creates_zero() -> None:
+    payload = _request()
+    payload.pop("submissions_frozen")
+    consumer_factory_calls = 0
+    session_factory_calls = 0
+
+    def forbidden_consumer_factory() -> SupportReserveNetConsumer:
+        nonlocal consumer_factory_calls
+        consumer_factory_calls += 1
+        raise AssertionError("missing freeze evidence must stop before consumer")
+
+    def forbidden_session_factory() -> _FakeSession:
+        nonlocal session_factory_calls
+        session_factory_calls += 1
+        raise AssertionError("missing freeze evidence must stop before DB/seam")
+
+    result = await support_reserve_net_consume_impl(
+        payload,
+        consumer_factory=forbidden_consumer_factory,
+        session_factory=forbidden_session_factory,
+    )
+
+    assert result == {
+        "success": False,
+        "error": "submissions_frozen_evidence_required",
+        "proposal_creation_status": (
+            "not_attempted_submissions_frozen_evidence_unavailable"
+        ),
+        "proposal_count": 0,
+        "proposals_created": [],
+    }
+    assert consumer_factory_calls == 0
+    assert session_factory_calls == 0
+
+
+@pytest.mark.parametrize(
+    "record_group",
+    [
+        "candidates",
+        "reserve_net_attributions",
+        "self_unfilled_orders",
+        "sector_exposures",
+    ],
+)
+@pytest.mark.parametrize(
+    "drifted_owner_id",
+    [
+        pytest.param("OWNER-1", id="case"),
+        pytest.param(" owner-1", id="leading-space"),
+        pytest.param("owner-1 ", id="trailing-space"),
+        pytest.param("owner_1", id="separator"),
+        pytest.param("", id="empty"),
+        pytest.param("   ", id="whitespace-only"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_owner_id_drift_in_each_record_group_stops_before_db_and_seam(
+    record_group: str,
+    drifted_owner_id: str,
+) -> None:
+    payload = _request_with_all_owner_record_groups()
+    payload[record_group][0]["beneficial_owner_id"] = drifted_owner_id
+    consumer_factory_calls = 0
+    session_factory_calls = 0
+    service_factory_calls = 0
+
+    def forbidden_consumer_factory() -> SupportReserveNetConsumer:
+        nonlocal consumer_factory_calls
+        consumer_factory_calls += 1
+        raise AssertionError("owner drift must stop before consumer")
+
+    def forbidden_session_factory() -> _FakeSession:
+        nonlocal session_factory_calls
+        session_factory_calls += 1
+        raise AssertionError("owner drift must stop before DB")
+
+    def forbidden_service_factory(_: Any) -> Any:
+        nonlocal service_factory_calls
+        service_factory_calls += 1
+        raise AssertionError("owner drift must stop before seam service")
+
+    result = await support_reserve_net_consume_impl(
+        payload,
+        consumer_factory=forbidden_consumer_factory,
+        session_factory=forbidden_session_factory,
+        service_factory=forbidden_service_factory,
+    )
+
+    assert result == {
+        "success": False,
+        "error": "beneficial_owner_id_normalization_unavailable",
+        "proposal_creation_status": ("not_attempted_beneficial_owner_id_unavailable"),
+        "proposal_count": 0,
+        "proposals_created": [],
+    }
+    assert consumer_factory_calls == 0
+    assert session_factory_calls == 0
+    assert service_factory_calls == 0
+
+
 class _StatefulSeamService:
     def __init__(self) -> None:
         self.groups: dict[uuid.UUID, Any] = {}
@@ -386,6 +529,53 @@ async def _complete_for_test(
     committed: dict[str, Any], **kwargs: Any
 ) -> dict[str, Any]:
     return {**committed, "approval_dispatch": {"state": "test_only"}}
+
+
+@pytest.mark.parametrize(
+    ("record_group", "record"),
+    [
+        pytest.param("candidates", None, id="candidates"),
+        pytest.param(
+            "reserve_net_attributions",
+            _attribution(),
+            id="reserve-net-attributions",
+        ),
+        pytest.param(
+            "self_unfilled_orders",
+            _self_unfilled_order(),
+            id="self-unfilled-orders",
+        ),
+        pytest.param(
+            "sector_exposures",
+            _sector_exposure(),
+            id="sector-exposures",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_exact_owner_id_in_each_record_group_commits_one_proposal(
+    record_group: str,
+    record: dict[str, Any] | None,
+) -> None:
+    payload = _request()
+    if record is not None:
+        payload[record_group] = [record]
+    service = _StatefulSeamService()
+    session = _FakeSession()
+
+    result = await support_reserve_net_consume_impl(
+        payload,
+        session_factory=lambda: session,
+        service_factory=lambda _: service,
+        complete_committed_create=_complete_for_test,
+    )
+
+    assert result["success"] is True
+    assert result["proposal_creation_status"] == "created_after_atomic_seam"
+    assert result["proposal_count"] == 1
+    assert service.create_calls == 1
+    assert session.commit_calls == 1
+    assert session.rollback_calls == 0
 
 
 @pytest.mark.asyncio

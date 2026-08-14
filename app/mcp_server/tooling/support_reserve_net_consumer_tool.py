@@ -41,6 +41,10 @@ def _validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
     ]
 
 
+def _is_exact_opaque_identifier(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and value == value.strip()
+
+
 def _has_exact_opaque_account_ids(request: ReserveNetRequest) -> bool:
     """Accept exact non-empty opaque IDs; never trim, case-fold, or alias-map."""
     account_ids = (
@@ -49,11 +53,20 @@ def _has_exact_opaque_account_ids(request: ReserveNetRequest) -> bool:
         + [item.broker_account_id for item in request.reserve_net_attributions]
         + [item.broker_account_id for item in request.self_unfilled_orders]
     )
-    return all(
-        isinstance(account_id, str)
-        and bool(account_id)
-        and account_id == account_id.strip()
-        for account_id in account_ids
+    return all(_is_exact_opaque_identifier(account_id) for account_id in account_ids)
+
+
+def _has_exact_opaque_beneficial_owner_ids(request: ReserveNetRequest) -> bool:
+    """Require one exact non-empty owner representation for the whole packet."""
+    owner_ids = (
+        [candidate.beneficial_owner_id for candidate in request.candidates]
+        + [item.beneficial_owner_id for item in request.reserve_net_attributions]
+        + [item.beneficial_owner_id for item in request.self_unfilled_orders]
+        + [item.beneficial_owner_id for item in request.sector_exposures]
+    )
+    return (
+        all(_is_exact_opaque_identifier(owner_id) for owner_id in owner_ids)
+        and len(set(owner_ids)) <= 1
     )
 
 
@@ -115,6 +128,17 @@ async def support_reserve_net_consume_impl(
     complete_committed_create: Callable[..., Any] = _complete_committed_create,
 ) -> dict[str, Any]:
     """Validate evidence, call ``consume()``, commit, then dispatch approvals."""
+    if "submissions_frozen" not in request:
+        return {
+            "success": False,
+            "error": "submissions_frozen_evidence_required",
+            "proposal_creation_status": (
+                "not_attempted_submissions_frozen_evidence_unavailable"
+            ),
+            "proposal_count": 0,
+            "proposals_created": [],
+        }
+
     try:
         parsed_request = _REQUEST_ADAPTER.validate_python(request)
     except ValidationError as exc:
@@ -126,14 +150,25 @@ async def support_reserve_net_consume_impl(
             "proposals_created": [],
         }
 
-    # This caller duplicates no account mapping.  It accepts only the exact
-    # opaque representation supplied consistently by the evidence assemblers.
+    # This caller duplicates no identity mapping.  It accepts only exact opaque
+    # representations supplied consistently by the evidence assemblers.
     # Missing/trimmed/aliased IDs stop before a DB session or seam call exists.
     if not _has_exact_opaque_account_ids(parsed_request):
         return {
             "success": False,
             "error": "broker_account_id_normalization_unavailable",
             "proposal_creation_status": "not_attempted_account_id_unavailable",
+            "proposal_count": 0,
+            "proposals_created": [],
+        }
+
+    if not _has_exact_opaque_beneficial_owner_ids(parsed_request):
+        return {
+            "success": False,
+            "error": "beneficial_owner_id_normalization_unavailable",
+            "proposal_creation_status": (
+                "not_attempted_beneficial_owner_id_unavailable"
+            ),
             "proposal_count": 0,
             "proposals_created": [],
         }
@@ -297,12 +332,15 @@ async def support_reserve_net_consume(request: dict[str, Any]) -> dict[str, Any]
     """Consume one fully evidenced reserve-net packet.
 
     ``broker_account_id`` is an exact opaque identifier in every nested record.
-    Missing IDs, aliases, case changes, punctuation changes, or surrounding
-    whitespace are not inferred and produce zero proposals.  This tool performs
-    no broker/account reads: the calling session owns evidence freshness and
-    completeness, including ``submissions_frozen``.  Proposal creation is one
-    atomic DB transaction; existing approval classification runs only after the
-    commit and keeps its own default-off/live safety gates.
+    One request is also one beneficial-owner scope: every
+    ``beneficial_owner_id`` across its four owner-bearing record groups must be
+    the same exact non-empty opaque string.  Missing IDs, aliases, case changes,
+    punctuation changes, or surrounding whitespace are not inferred and
+    produce zero proposals.  This tool performs no broker/account reads: the
+    calling session owns evidence freshness and completeness, and must supply
+    ``submissions_frozen`` explicitly.  Proposal creation is one atomic DB
+    transaction; existing approval classification runs only after the commit
+    and keeps its own default-off/live safety gates.
     """
     return await support_reserve_net_consume_impl(request)
 
