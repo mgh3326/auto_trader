@@ -38,6 +38,7 @@ def _payload(*, session_id: str = "2026-08-14-rth") -> dict[str, object]:
                 "top_n_cap": None,
                 "outside_top_n_count": 0,
                 "deduped_unique_count": 1,
+                "duplicate_count": 0,
             },
             {
                 "source_id": "support-feed",
@@ -49,10 +50,12 @@ def _payload(*, session_id: str = "2026-08-14-rth") -> dict[str, object]:
                 "top_n_cap": None,
                 "outside_top_n_count": 0,
                 "deduped_unique_count": 1,
+                "duplicate_count": 0,
             },
         ],
         "candidate_array_coverage": {
             "deduped_unique_count": 1,
+            "cross_source_duplicate_count": 1,
             "recorded_candidate_count": 1,
             "truncated_candidate_count": 0,
             "candidate_array_cap": None,
@@ -190,9 +193,11 @@ def test_record_preserves_every_q4_field_and_is_read_only():
         "top_n_cap": None,
         "outside_top_n_count": 0,
         "deduped_unique_count": 1,
+        "duplicate_count": 0,
     }
     assert record.candidate_array_coverage.model_dump() == {
         "deduped_unique_count": 1,
+        "cross_source_duplicate_count": 1,
         "recorded_candidate_count": 1,
         "truncated_candidate_count": 0,
         "candidate_array_cap": None,
@@ -280,16 +285,20 @@ def test_serialized_jsonl_keeps_caps_and_hypothetical_touch_name(tmp_path: Path)
         "top_n_cap",
         "outside_top_n_count",
         "deduped_unique_count",
+        "duplicate_count",
     }
     assert "hypothetical_limit_touch" in payload["candidates"][0]
     assert payload["candidates"][0]["hypothetical_limit_touch"]["limit_touched"]
     assert payload["candidate_array_coverage"] == {
         "deduped_unique_count": 1,
+        "cross_source_duplicate_count": 1,
         "recorded_candidate_count": 1,
         "truncated_candidate_count": 0,
         "candidate_array_cap": None,
         "candidate_truncation_reason": None,
     }
+    assert payload["coverage"]["source_duplicate_count"] == 0
+    assert payload["coverage"]["cross_source_duplicate_count"] == 1
 
 
 def test_dominant_constraint_rule_is_bounded_and_never_a_tuning_signal():
@@ -387,6 +396,8 @@ def test_unknown_timeout_or_unqueried_coverage_has_no_threshold_conclusion():
         "timeout_or_error_count": 1,
         "unqueried_count": 2,
         "outside_top_n_count": 0,
+        "source_duplicate_count": 0,
+        "cross_source_duplicate_count": 1,
         "candidate_array_truncated_count": 0,
         "candidate_array_cap": None,
         "candidate_truncation_reason": None,
@@ -417,6 +428,174 @@ def test_missing_top_n_census_is_rejected_before_recording():
         InstrumentationInput.model_validate(payload)
 
 
+def test_missing_source_duplicate_census_is_rejected_before_recording():
+    payload = _payload()
+    source = payload["sources"][0]
+    assert isinstance(source, dict)
+    source.pop("duplicate_count")
+
+    with pytest.raises(ValidationError, match="duplicate_count"):
+        InstrumentationInput.model_validate(payload)
+
+
+def test_missing_cross_source_duplicate_census_is_rejected_before_recording():
+    payload = _payload()
+    coverage = payload["candidate_array_coverage"]
+    assert isinstance(coverage, dict)
+    coverage.pop("cross_source_duplicate_count")
+
+    with pytest.raises(ValidationError, match="cross_source_duplicate_count"):
+        InstrumentationInput.model_validate(payload)
+
+
+def test_verify_r2_l1_reproduction_is_fail_closed_before_a_verdict():
+    payload = _payload()
+    sources = payload["sources"]
+    assert isinstance(sources, list)
+    source = sources[0]
+    assert isinstance(source, dict)
+    source.update(
+        {
+            "upstream_total_known": 500,
+            "returned_count": 500,
+            "top_n_cap": 500,
+            "outside_top_n_count": 0,
+            "deduped_unique_count": 1,
+            "duplicate_count": 0,
+        }
+    )
+    payload["sources"] = [source]
+    candidate = payload["candidates"][0]
+    assert isinstance(candidate, dict)
+    candidate["matched_sources"] = [{"source_id": "analyst-feed", "rank": 1}]
+    coverage = payload["candidate_array_coverage"]
+    assert isinstance(coverage, dict)
+    coverage["cross_source_duplicate_count"] = 0
+
+    with pytest.raises(ValidationError, match="coverage is insufficient"):
+        InstrumentationInput.model_validate(payload)
+
+
+def test_verify_r2_l1_fixture_cannot_write_the_previously_false_green_record(
+    tmp_path: Path,
+):
+    fixture = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures"
+        / "us_upside_instrumentation"
+        / "verify_r2_l1_reproduction.json"
+    )
+    output = tmp_path / "verify-r2-l1.jsonl"
+
+    with pytest.raises(ValidationError, match="coverage is insufficient"):
+        main(["record", "--input", str(fixture), "--output", str(output)])
+
+    assert not output.exists()
+
+
+def test_l1_declared_duplicate_count_reconciles_a_source_census():
+    payload = _payload()
+    sources = payload["sources"]
+    assert isinstance(sources, list)
+    source = sources[0]
+    assert isinstance(source, dict)
+    source.update(
+        {
+            "upstream_total_known": 500,
+            "returned_count": 500,
+            "top_n_cap": 500,
+            "outside_top_n_count": 0,
+            "deduped_unique_count": 1,
+            "duplicate_count": 499,
+        }
+    )
+    payload["sources"] = [source]
+    candidate = payload["candidates"][0]
+    assert isinstance(candidate, dict)
+    candidate["matched_sources"] = [{"source_id": "analyst-feed", "rank": 1}]
+    coverage = payload["candidate_array_coverage"]
+    assert isinstance(coverage, dict)
+    coverage["cross_source_duplicate_count"] = 0
+
+    record = evaluate_instrumentation(
+        InstrumentationInput.model_validate(payload), input_hash="d" * 64
+    )
+
+    assert record.coverage.source_duplicate_count == 499
+    assert record.coverage.coverage_complete is True
+
+
+def test_l2_source_to_global_census_mismatch_is_fail_closed_before_a_verdict():
+    payload = _payload()
+    sources = payload["sources"]
+    assert isinstance(sources, list)
+    source = sources[0]
+    assert isinstance(source, dict)
+    source.update(
+        {
+            "upstream_total_known": 500,
+            "returned_count": 500,
+            "top_n_cap": 500,
+            "outside_top_n_count": 0,
+            "deduped_unique_count": 500,
+            "duplicate_count": 0,
+        }
+    )
+    payload["sources"] = [source]
+    candidate = payload["candidates"][0]
+    assert isinstance(candidate, dict)
+    candidate["matched_sources"] = [{"source_id": "analyst-feed", "rank": 1}]
+    coverage = payload["candidate_array_coverage"]
+    assert isinstance(coverage, dict)
+    coverage["cross_source_duplicate_count"] = 499
+
+    with pytest.raises(ValidationError, match="global deduped_unique_count"):
+        InstrumentationInput.model_validate(payload)
+
+
+def test_l2_cross_source_duplicate_count_must_reconcile_the_union_total():
+    payload = _payload()
+    coverage = payload["candidate_array_coverage"]
+    assert isinstance(coverage, dict)
+    coverage["cross_source_duplicate_count"] = 0
+
+    with pytest.raises(ValidationError, match="per-source deduped_unique_count total"):
+        InstrumentationInput.model_validate(payload)
+
+
+def test_l2_prevents_an_empty_serialized_cohort_from_claiming_an_earlier_gate():
+    payload = _payload()
+    sources = payload["sources"]
+    assert isinstance(sources, list)
+    source = sources[0]
+    assert isinstance(source, dict)
+    source.update(
+        {
+            "upstream_total_known": 500,
+            "returned_count": 500,
+            "top_n_cap": 500,
+            "outside_top_n_count": 0,
+            "deduped_unique_count": 500,
+            "duplicate_count": 0,
+        }
+    )
+    payload["sources"] = [source]
+    payload["candidates"] = []
+    coverage = payload["candidate_array_coverage"]
+    assert isinstance(coverage, dict)
+    coverage.update(
+        {
+            "deduped_unique_count": 0,
+            "cross_source_duplicate_count": 500,
+            "recorded_candidate_count": 0,
+            "truncated_candidate_count": 0,
+        }
+    )
+
+    with pytest.raises(ValidationError, match="global deduped_unique_count"):
+        InstrumentationInput.model_validate(payload)
+
+
 def test_top_n_capped_runbook_capture_is_coverage_insufficient(tmp_path: Path, capsys):
     fixture = (
         Path(__file__).resolve().parents[1]
@@ -440,6 +619,28 @@ def test_top_n_capped_runbook_capture_is_coverage_insufficient(tmp_path: Path, c
     assert "coverage_insufficient_no_threshold_conclusion" in stdout
 
 
+def test_coverage_complete_runbook_capture_has_a_bounded_dominant_reading(
+    tmp_path: Path, capsys
+):
+    fixture = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures"
+        / "us_upside_instrumentation"
+        / "runbook_coverage_complete_capture.json"
+    )
+    output = tmp_path / "coverage-complete.jsonl"
+
+    assert main(["record", "--input", str(fixture), "--output", str(output)]) == 0
+
+    stdout = capsys.readouterr().out
+    record = load_session_jsonl(output)[0]
+    assert record.coverage.coverage_complete is True
+    assert (
+        record.interpretation.conclusion == "upside_dominant_constraint_bounded_cohort"
+    )
+    assert '"coverage_complete": true' in stdout
+
+
 def test_known_source_total_requires_every_loss_to_be_declared():
     payload = _payload()
     source = payload["sources"][0]
@@ -452,11 +653,34 @@ def test_known_source_total_requires_every_loss_to_be_declared():
 
 def test_candidate_array_truncation_is_recorded_and_blocks_threshold_conclusion():
     payload = _payload()
+    sources = payload["sources"]
+    assert isinstance(sources, list)
+    source = sources[0]
+    assert isinstance(source, dict)
+    source.update(
+        {
+            "upstream_total_known": 4,
+            "returned_count": 4,
+            "deduped_unique_count": 4,
+            "duplicate_count": 0,
+        }
+    )
+    other_source = sources[1]
+    assert isinstance(other_source, dict)
+    other_source.update(
+        {
+            "upstream_total_known": 0,
+            "returned_count": 0,
+            "deduped_unique_count": 0,
+            "duplicate_count": 0,
+        }
+    )
     coverage = payload["candidate_array_coverage"]
     assert isinstance(coverage, dict)
     coverage.update(
         {
             "deduped_unique_count": 4,
+            "cross_source_duplicate_count": 0,
             "recorded_candidate_count": 1,
             "truncated_candidate_count": 3,
             "candidate_array_cap": 1,
@@ -567,6 +791,7 @@ def test_three_session_reading_propagates_any_incomplete_coverage_to_unknown():
                     "top_n_cap": 3,
                     "outside_top_n_count": 7,
                     "deduped_unique_count": 1,
+                    "duplicate_count": 2,
                 }
             )
         records.append(
@@ -587,6 +812,36 @@ def test_three_session_reading_propagates_any_incomplete_coverage_to_unknown():
         True,
     ]
     assert reading.session_coverage[1].outside_top_n_count == 7
+
+
+def test_three_session_reader_rejects_a_stored_coverage_flag_mismatch():
+    records = [_record(session_id=f"2026-08-{14 + index}-rth") for index in range(3)]
+    incomplete_payload = _payload(session_id="2026-08-15-rth")
+    source = incomplete_payload["sources"][0]
+    assert isinstance(source, dict)
+    source.update(
+        {
+            "upstream_total_known": 10,
+            "returned_count": 3,
+            "top_n_cap": 3,
+            "outside_top_n_count": 7,
+            "deduped_unique_count": 1,
+            "duplicate_count": 2,
+        }
+    )
+    incomplete = evaluate_instrumentation(
+        InstrumentationInput.model_validate(incomplete_payload), input_hash="e" * 64
+    )
+    tampered = incomplete.model_copy(
+        update={
+            "coverage": incomplete.coverage.model_copy(
+                update={"coverage_complete": True}
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="stored coverage_complete"):
+        read_three_completed_sessions((records[0], tampered, records[2]))
 
 
 def test_three_session_read_rejects_a_mid_observation_code_change():

@@ -1,5 +1,5 @@
 {
-  "session_id": "2026-08-14-runbook-top-n-cap",
+  "session_id": "2026-08-14-verify-r2-l1",
   "contract_sha": "2b8044a1cc39fbd830f68a3253ebdb20db987f2d9f76763edec8a2e3af3a5fe6",
   "policy_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "code_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -9,15 +9,15 @@
   "sources": [
     {
       "source_id": "upstream-source",
-      "upstream_total_known": 10,
+      "upstream_total_known": 500,
       "upstream_total_unknown": false,
-      "returned_count": 3,
+      "returned_count": 500,
       "timeout_or_error_count": 0,
       "unqueried_count": 0,
-      "top_n_cap": 3,
-      "outside_top_n_count": 7,
+      "top_n_cap": 500,
+      "outside_top_n_count": 0,
       "deduped_unique_count": 1,
-      "duplicate_count": 2
+      "duplicate_count": 0
     }
   ],
   "candidate_array_coverage": {

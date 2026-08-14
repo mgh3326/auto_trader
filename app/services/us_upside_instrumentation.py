@@ -55,6 +55,7 @@ class SourceCoverage(StrictModel):
     top_n_cap: int | None = Field(..., ge=1)
     outside_top_n_count: int = Field(ge=0)
     deduped_unique_count: int = Field(ge=0)
+    duplicate_count: int = Field(ge=0)
 
     @model_validator(mode="after")
     def _require_explicit_total_state(self) -> SourceCoverage:
@@ -69,8 +70,11 @@ class SourceCoverage(StrictModel):
             )
         if self.top_n_cap is not None and self.returned_count > self.top_n_cap:
             raise ValueError("returned_count cannot exceed top_n_cap")
-        if self.deduped_unique_count > self.returned_count:
-            raise ValueError("deduped_unique_count cannot exceed returned_count")
+        if self.returned_count != self.deduped_unique_count + self.duplicate_count:
+            raise ValueError(
+                "returned_count must equal deduped_unique_count plus "
+                "duplicate_count; coverage is insufficient"
+            )
         if self.upstream_total_known is not None:
             accounted_count = (
                 self.returned_count
@@ -95,6 +99,7 @@ class CandidateArrayCoverage(StrictModel):
     """Explicit global-dedupe to serialized-candidate-array accounting."""
 
     deduped_unique_count: int = Field(ge=0)
+    cross_source_duplicate_count: int = Field(ge=0)
     recorded_candidate_count: int = Field(ge=0)
     truncated_candidate_count: int = Field(ge=0)
     candidate_array_cap: int | None = Field(..., ge=1)
@@ -251,6 +256,25 @@ class InstrumentationInput(StrictModel):
                 "candidate_array_coverage.recorded_candidate_count must equal the "
                 "serialized candidates array length"
             )
+        per_source_deduped_unique_counts = tuple(
+            source.deduped_unique_count for source in self.sources
+        )
+        per_source_deduped_unique_total = sum(per_source_deduped_unique_counts)
+        global_deduped_unique_count = self.candidate_array_coverage.deduped_unique_count
+        if global_deduped_unique_count < max(per_source_deduped_unique_counts):
+            raise ValueError(
+                "global deduped_unique_count cannot be below the largest "
+                "per-source deduped_unique_count; coverage is insufficient"
+            )
+        if per_source_deduped_unique_total != (
+            global_deduped_unique_count
+            + self.candidate_array_coverage.cross_source_duplicate_count
+        ):
+            raise ValueError(
+                "per-source deduped_unique_count total must equal global "
+                "deduped_unique_count plus cross_source_duplicate_count; "
+                "coverage is insufficient"
+            )
         for candidate in self.candidates:
             for match in candidate.matched_sources:
                 if match.source_id not in known_source_ids:
@@ -330,6 +354,8 @@ class CoverageSummary(StrictModel):
     timeout_or_error_count: int = Field(ge=0)
     unqueried_count: int = Field(ge=0)
     outside_top_n_count: int = Field(ge=0)
+    source_duplicate_count: int = Field(ge=0)
+    cross_source_duplicate_count: int = Field(ge=0)
     candidate_array_truncated_count: int = Field(ge=0)
     candidate_array_cap: int | None
     candidate_truncation_reason: str | None
@@ -392,6 +418,8 @@ class SessionCoverageRollup(StrictModel):
     timeout_or_error_count: int = Field(ge=0)
     unqueried_count: int = Field(ge=0)
     outside_top_n_count: int = Field(ge=0)
+    source_duplicate_count: int = Field(ge=0)
+    cross_source_duplicate_count: int = Field(ge=0)
     candidate_array_truncated_count: int = Field(ge=0)
     candidate_array_cap: int | None
     candidate_truncation_reason: str | None
@@ -535,6 +563,27 @@ def _evaluate_arm(
     )
 
 
+def _coverage_is_complete_from_counts(
+    *,
+    upstream_total_unknown_source_count: int,
+    timeout_or_error_count: int,
+    unqueried_count: int,
+    outside_top_n_count: int,
+    candidate_array_truncated_count: int,
+    candidate_consensus_status_counts: dict[ConsensusState, int],
+) -> bool:
+    """Return the sole coverage predicate used for session and rollup reads."""
+
+    return not (
+        upstream_total_unknown_source_count
+        or candidate_consensus_status_counts["unknown"]
+        or timeout_or_error_count
+        or unqueried_count
+        or outside_top_n_count
+        or candidate_array_truncated_count
+    )
+
+
 def _coverage_summary(snapshot: InstrumentationInput) -> CoverageSummary:
     source_timeout_or_error_count = sum(
         source.timeout_or_error_count for source in snapshot.sources
@@ -548,8 +597,11 @@ def _coverage_summary(snapshot: InstrumentationInput) -> CoverageSummary:
     unknown_source_count = sum(
         source.upstream_total_unknown for source in snapshot.sources
     )
-    candidate_unknown_count = consensus_counts["unknown"]
     outside_top_n_count = sum(source.outside_top_n_count for source in snapshot.sources)
+    source_duplicate_count = sum(source.duplicate_count for source in snapshot.sources)
+    cross_source_duplicate_count = (
+        snapshot.candidate_array_coverage.cross_source_duplicate_count
+    )
     candidate_array_truncated_count = (
         snapshot.candidate_array_coverage.truncated_candidate_count
     )
@@ -558,36 +610,39 @@ def _coverage_summary(snapshot: InstrumentationInput) -> CoverageSummary:
         source_timeout_or_error_count + candidate_timeout_or_error_count
     )
     unqueried_count = source_unqueried_count + candidate_unqueried_count
-    coverage_complete = not (
-        unknown_source_count
-        or candidate_unknown_count
-        or timeout_or_error_count
-        or unqueried_count
-        or outside_top_n_count
-        or candidate_array_truncated_count
+    candidate_consensus_status_counts = {
+        status: consensus_counts[status]
+        for status in (
+            "value",
+            "missing",
+            "stale",
+            "error",
+            "timeout",
+            "unknown",
+            "unqueried",
+        )
+    }
+    coverage_complete = _coverage_is_complete_from_counts(
+        upstream_total_unknown_source_count=unknown_source_count,
+        timeout_or_error_count=timeout_or_error_count,
+        unqueried_count=unqueried_count,
+        outside_top_n_count=outside_top_n_count,
+        candidate_array_truncated_count=candidate_array_truncated_count,
+        candidate_consensus_status_counts=candidate_consensus_status_counts,
     )
     return CoverageSummary(
         upstream_total_unknown_source_count=unknown_source_count,
         timeout_or_error_count=timeout_or_error_count,
         unqueried_count=unqueried_count,
         outside_top_n_count=outside_top_n_count,
+        source_duplicate_count=source_duplicate_count,
+        cross_source_duplicate_count=cross_source_duplicate_count,
         candidate_array_truncated_count=candidate_array_truncated_count,
         candidate_array_cap=snapshot.candidate_array_coverage.candidate_array_cap,
         candidate_truncation_reason=(
             snapshot.candidate_array_coverage.candidate_truncation_reason
         ),
-        candidate_consensus_status_counts={
-            status: consensus_counts[status]
-            for status in (
-                "value",
-                "missing",
-                "stale",
-                "error",
-                "timeout",
-                "unknown",
-                "unqueried",
-            )
-        },
+        candidate_consensus_status_counts=candidate_consensus_status_counts,
         coverage_complete=coverage_complete,
     )
 
@@ -624,8 +679,8 @@ def _interpret_session(
         return SessionInterpretation(
             conclusion="coverage_insufficient_no_threshold_conclusion",
             reason=(
-                "top-N, candidate-array, timeout, unqueried, or unknown coverage "
-                "remains; threshold conclusion is unavailable"
+                "top-N, dedupe census, candidate-array, timeout, unqueried, or "
+                "unknown coverage remains; threshold conclusion is unavailable"
             ),
             passes_all_non_upside_gates=len(survivors),
             survivor_consensus_statuses=survivor_statuses,
@@ -770,6 +825,25 @@ def read_three_completed_sessions(
         raise ValueError("three-session reading requires one policy_sha")
     if len({record.code_sha for record in records}) != 1:
         raise ValueError("three-session reading requires one code_sha")
+    for record in records:
+        recomputed_coverage_complete = _coverage_is_complete_from_counts(
+            upstream_total_unknown_source_count=(
+                record.coverage.upstream_total_unknown_source_count
+            ),
+            timeout_or_error_count=record.coverage.timeout_or_error_count,
+            unqueried_count=record.coverage.unqueried_count,
+            outside_top_n_count=record.coverage.outside_top_n_count,
+            candidate_array_truncated_count=(
+                record.coverage.candidate_array_truncated_count
+            ),
+            candidate_consensus_status_counts=(
+                record.coverage.candidate_consensus_status_counts
+            ),
+        )
+        if record.coverage.coverage_complete != recomputed_coverage_complete:
+            raise ValueError(
+                "stored coverage_complete does not match the recorded coverage counts"
+            )
 
     counts = {
         arm_id: sum(record.arm_shadow_counts[arm_id] for record in records)
@@ -785,6 +859,8 @@ def read_three_completed_sessions(
             timeout_or_error_count=record.coverage.timeout_or_error_count,
             unqueried_count=record.coverage.unqueried_count,
             outside_top_n_count=record.coverage.outside_top_n_count,
+            source_duplicate_count=record.coverage.source_duplicate_count,
+            cross_source_duplicate_count=(record.coverage.cross_source_duplicate_count),
             candidate_array_truncated_count=(
                 record.coverage.candidate_array_truncated_count
             ),

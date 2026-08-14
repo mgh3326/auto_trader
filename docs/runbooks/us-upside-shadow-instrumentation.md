@@ -37,9 +37,9 @@ present in the JSON when its value is not known.
 | --- | --- | --- |
 | Contract, policy, and code SHA | `contract_sha`, `policy_sha`, `code_sha` | `InstrumentationInput`, `SessionRecord` |
 | Corpus as-of, decision cutoff, universe/input hashes | `source_corpus_as_of`, `decision_cutoff`, `universe_hash`, derived `input_hash` | `InstrumentationInput`, CLI `_load_snapshot` |
-| Per-source upstream known/unknown total, returned, timeout/error, top-N cap/outside, deduped unique | `sources[*].upstream_total_known`, `upstream_total_unknown`, `returned_count`, `timeout_or_error_count`, `unqueried_count`, `top_n_cap`, `outside_top_n_count`, `deduped_unique_count` | `SourceCoverage` |
+| Per-source upstream known/unknown total, returned, timeout/error, top-N cap/outside, deduped unique, declared duplicates | `sources[*].upstream_total_known`, `upstream_total_unknown`, `returned_count`, `timeout_or_error_count`, `unqueried_count`, `top_n_cap`, `outside_top_n_count`, `deduped_unique_count`, `duplicate_count` | `SourceCoverage` |
 | Explicit unqueried count | `sources[*].unqueried_count` | `SourceCoverage` / `CoverageSummary` |
-| Global post-dedupe candidate census and candidate-array truncation | `candidate_array_coverage.deduped_unique_count`, `recorded_candidate_count`, `truncated_candidate_count`, `candidate_array_cap`, `candidate_truncation_reason` | `CandidateArrayCoverage`, `CoverageSummary` |
+| Global post-dedupe candidate census, declared cross-source duplicates, and candidate-array truncation | `candidate_array_coverage.deduped_unique_count`, `cross_source_duplicate_count`, `recorded_candidate_count`, `truncated_candidate_count`, `candidate_array_cap`, `candidate_truncation_reason` | `CandidateArrayCoverage`, `CoverageSummary` |
 | Matched source IDs and ranks | `candidates[*].matched_sources[*].source_id`, `rank` | `MatchedSource` |
 | Fresh/stale/unknown and target evidence | `freshness`, `consensus_status`, `target_honesty`, `target_as_of`, `analyst_count` | `CandidateSnapshot` |
 | Current price, target, upside, RSI | `current_price`, `target`, derived `upside_pct`, `rsi` | `CandidateSnapshot`, `CandidateInstrumentationRecord` |
@@ -57,11 +57,24 @@ outside_top_n_count`; those loss categories are therefore disjoint and no
 bounded-read remainder can disappear. A top-N cap is represented by
 `top_n_cap`; when absent, `outside_top_n_count` must be zero.
 
+The next source boundary is also explicit:
+`returned_count == deduped_unique_count + duplicate_count`. A missing or
+mismatched `duplicate_count` is rejected as coverage-insufficient before a
+session record or threshold conclusion can be emitted. This count represents
+only source rows verified as duplicates; it is not a place to conceal a bound.
+
 `CandidateArrayCoverage` performs the same explicit accounting after global
 dedupe: `deduped_unique_count` must equal `recorded_candidate_count +
 truncated_candidate_count`. A positive truncation count requires both the
 candidate-array cap and a non-empty reason. Any nonzero top-N-outside or
 candidate-array-truncated count makes `coverage_complete=false`.
+
+The global union boundary is explicit as well. Across all sources,
+`sum(deduped_unique_count) == global deduped_unique_count +
+cross_source_duplicate_count`, and the global count must be at least the
+largest one-source unique count. A missing or inconsistent cross-source count
+is rejected as coverage-insufficient before a session record or threshold
+conclusion can be emitted.
 
 Every matched source object must include `rank`; use `null` when an upstream
 source cannot provide a rank rather than omitting the field.
@@ -96,11 +109,13 @@ than omitted:
       "unqueried_count": 0,
       "top_n_cap": 3,
       "outside_top_n_count": 7,
-      "deduped_unique_count": 2
+      "deduped_unique_count": 2,
+      "duplicate_count": 1
     }
   ],
   "candidate_array_coverage": {
     "deduped_unique_count": 2,
+    "cross_source_duplicate_count": 0,
     "recorded_candidate_count": 1,
     "truncated_candidate_count": 1,
     "candidate_array_cap": 1,
@@ -164,6 +179,22 @@ Its stdout must contain `"coverage_complete": false` and
 `coverage_insufficient_no_threshold_conclusion`. The seven records outside
 the top-N bound must never yield a threshold conclusion.
 
+### Coverage-complete example
+
+`tests/fixtures/us_upside_instrumentation/runbook_coverage_complete_capture.json`
+is the separate complete-census example: one returned row, one source unique,
+zero source duplicates, zero cross-source duplicates, and no candidate-array
+truncation. Run it with a separate disposable path:
+
+```bash
+uv run python -m scripts.run_us_upside_instrumentation record \
+  --input tests/fixtures/us_upside_instrumentation/runbook_coverage_complete_capture.json \
+  --output /tmp/us-upside-coverage-complete.jsonl
+```
+
+Its stdout contains `"coverage_complete": true`; its bounded reading is not a
+performance claim and cannot change a threshold.
+
 ## Fixed reading rules
 
 `_interpret_session` and `read_three_completed_sessions` encode these rules;
@@ -189,12 +220,14 @@ The frozen §Q4 wording is retained here without a threshold-change action:
    constraint in that bounded cohort.
 2. If there are zero survivors before the upside check, the constraint is an
    earlier source, freshness, support, or other declared non-upside gate.
-3. Any timeout, unqueried state, unknown coverage, top-N-outside count, or
-   candidate-array truncation produces
+3. Any timeout, unqueried state, unknown coverage, top-N-outside count,
+   source/global dedupe-census mismatch, or candidate-array truncation produces
    `coverage_insufficient_no_threshold_conclusion`; it does not answer a
    threshold question. In the three-session reader, one incomplete session
    produces the same result for the aggregate: no upside-dominant or
-   non-dominant conclusion is available.
+   non-dominant conclusion is available. A dedupe-census mismatch is rejected
+   before it can produce a session verdict, which is the same fail-closed
+   outcome.
 4. A larger unique-fresh result from source fan-out is not evidence of
    performance or alpha. The record therefore fixes
    `fanout_performance_or_alpha_inferred=false`.
@@ -208,14 +241,17 @@ Every bounded-read or aggregation loss point is declared below. A capture or
 reading with any unaccounted point is rejected or remains
 coverage-insufficient; none is treated as a complete cohort.
 
-| Boundary | Required numeric / state record | Enforcement | Coverage effect |
+| Boundary | Required numeric / state record | Arithmetic enforcement | Verdict effect |
 | --- | --- | --- | --- |
 | Upstream collection outside this repository | `upstream_total_known` or `upstream_total_unknown` for every source | `SourceCoverage` requires exactly one state | Unknown total makes coverage incomplete |
-| Per-source top-N bound | `top_n_cap`, `outside_top_n_count` | Known totals must account for every record; no cap permits no outside count | Any outside count makes coverage incomplete |
-| Post-dedupe candidate array | `deduped_unique_count`, `recorded_candidate_count`, `truncated_candidate_count`, `candidate_array_cap`, `candidate_truncation_reason` | `CandidateArrayCoverage` requires exact accounting, cap, and reason | Any truncation makes coverage incomplete |
+| Per-source top-N bound | `top_n_cap`, `outside_top_n_count` | Known total equals returned + timeout/error + unqueried + outside top-N | Any outside count makes coverage incomplete |
+| L1: returned to source unique | `returned_count`, `deduped_unique_count`, `duplicate_count` | `returned == unique + duplicate` | Missing/mismatch is rejected as coverage-insufficient before a verdict |
+| L2: source unique to global unique | per-source `deduped_unique_count`, global `deduped_unique_count`, `cross_source_duplicate_count` | `sum(source unique) == global unique + cross-source duplicate` and `global >= max(source unique)` | Missing/mismatch is rejected as coverage-insufficient before a verdict |
+| L3: global unique to recorded candidates | `deduped_unique_count`, `recorded_candidate_count`, `truncated_candidate_count`, `candidate_array_cap`, `candidate_truncation_reason` | `global unique == recorded + truncated`; positive truncation requires cap and reason | Any truncation makes coverage incomplete |
+| L4: recorded candidates to serialized array | `recorded_candidate_count`, `candidates` | declared recorded count equals array length | Mismatch is rejected before a verdict |
 | Timeout or error | `timeout_or_error_count` | Required per source and aggregated in `CoverageSummary` | Any count makes coverage incomplete |
 | Not queried | `unqueried_count` | Required per source and aggregated in `CoverageSummary` | Any count makes coverage incomplete |
-| Three-session aggregate | `session_coverage[*]`, `all_sessions_coverage_complete` | `read_three_completed_sessions` carries every session's coverage state | One incomplete session terminates as coverage-insufficient |
+| Three-session aggregate | `session_coverage[*]`, `all_sessions_coverage_complete` | reader recomputes each stored coverage flag from its counts | One incomplete session terminates as coverage-insufficient; a stored-flag mismatch is rejected |
 
 ## Manual three-session procedure
 
@@ -228,9 +264,10 @@ repeat once per next two completed US regular sessions.
    source snapshot under an operator-owned directory, for example
    `/Users/mgh3326/work/us-upside-captures/20260814-2235.json`. The upstream
    process must be read-only. It must populate every source census field,
-   the global post-dedupe candidate census (including any candidate-array
-   cap/loss/reason), every recorded candidate field in the table above, and
-   the three SHA fields.
+   including `duplicate_count`; the global post-dedupe candidate census,
+   including `cross_source_duplicate_count` and any candidate-array
+   cap/loss/reason; every recorded candidate field in the table above; and the
+   three SHA fields.
 2. Before recording, verify the contract and capture provenance without
    changing anything:
 
@@ -255,12 +292,13 @@ repeat once per next two completed US regular sessions.
    The only write is the explicitly named local JSONL output. Save its stdout
    next to the session evidence.
 4. Stop the collection immediately if a required JSON field, SHA, source
-   count, top-N count, candidate-array count, cap, truncation reason, or
-   validation result is absent or malformed. If a source genuinely has an
-   unknown total, timeout/error count, unqueried count, top-N-outside count,
-   or candidate-array truncation, record that state explicitly instead of
-   substituting a value; the log will then be coverage-insufficient and must
-   not be used to infer a threshold.
+   count, top-N count, duplicate count, cross-source duplicate count,
+   candidate-array count, cap, truncation reason, or validation result is
+   absent or malformed. Verify both dedupe equations in the census table. If a
+   source genuinely has an unknown total, timeout/error count, unqueried count,
+   top-N-outside count, dedupe-census mismatch, or candidate-array truncation,
+   record or stop on that state explicitly instead of substituting a value; it
+   is coverage-insufficient and must not be used to infer a threshold.
 5. Do not add following-session high/low data until it exists. If it is later
    available, it may be captured as `hypothetical_limit_touch` in a subsequent
    immutable observation record. Do not turn that observation into an
@@ -276,6 +314,8 @@ repeat once per next two completed US regular sessions.
    for Rule 5. The reader requires one contract, policy, and code SHA across
    all three records. If even one session reports incomplete coverage, the
    aggregate terminates as `coverage_insufficient_no_threshold_conclusion`.
+   The reader also rejects a stored `coverage_complete` value that does not
+   recompute from its saved counts. Never hand-edit that boolean.
    Never use candidate counts or touch observations to choose a threshold.
 
    Keep exactly one line per distinct `session_id` in this artifact. The
@@ -286,12 +326,14 @@ repeat once per next two completed US regular sessions.
 
 ## Stop conditions and scope boundary
 
-- A validation error, contract SHA mismatch, missing top-N or candidate-array
-  census, invalid JSONL, source access failure, or any attempted connection to
-  a runtime mutation surface is a stop condition.
-- An explicit unknown/timeout/unqueried/top-N-outside/candidate-array-loss
-  state is not silently repaired; it is recorded and makes the threshold
-  conclusion unavailable.
+- A validation error, contract SHA mismatch, missing top-N, source-duplicate,
+  cross-source-duplicate, or candidate-array census, invalid JSONL, source
+  access failure, or any attempted connection to a runtime mutation surface is
+  a stop condition.
+- An explicit unknown/timeout/unqueried/top-N-outside/dedupe-census-mismatch/
+  candidate-array-loss state is not silently repaired; it is recorded or
+  rejected as coverage-insufficient and makes the threshold conclusion
+  unavailable.
 - The command accepts no credentials and has no broker/account, proposal,
   eligibility, database, scheduler, deployment, or production-policy path.
 - The US collection must not be implemented by extending the KR-only fan-out
