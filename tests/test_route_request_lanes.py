@@ -370,15 +370,15 @@ def test_non_proposal_lanes_keep_order_proposal_void_blocked(intent: str):
         assert "order_proposal_void" in set(plan["blocked_actions"])
 
 
-def test_lifecycle_allowance_never_widens_beyond_void():
-    """The other lifecycle tools stay blocked everywhere.
+def test_lifecycle_allowance_expands_only_through_expire_sweep():
+    """The separate re-dispatch lifecycle helper stays blocked everywhere.
 
     `order_proposal_expire_sweep` and `order_proposal_redispatch` were not part
     of the ROB-1238 incident; widening this map is a deliberate act, not a
     side effect of the void fix.
     """
     granted = set().union(*L.LANE_PROPOSAL_LIFECYCLE_ALLOWED.values())
-    assert granted == {"order_proposal_void"}
+    assert granted == {"order_proposal_void", "order_proposal_expire_sweep"}
     assert granted <= L.PROPOSAL_LIFECYCLE_TOOLS
     assert set(L.LANE_PROPOSAL_LIFECYCLE_ALLOWED) == set(L.PROPOSAL_LED_LANES)
     for intent in ("discovery", "market_brief"):

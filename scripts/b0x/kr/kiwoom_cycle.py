@@ -100,6 +100,13 @@ KR_CONTRACT_CLAUSES: Final[dict[str, str]] = {
         "kiwoom_mock 은 kt00007 미체결조회를 지원하므로 이 예외를 쓰지 않는다 "
         "(§39차 2항)."
     ),
+    "§8 v1.7": (
+        "「스케줄러 등록 없음」 개정 — **스케줄러 (Prefect)는 시각만 소유한다**: "
+        "표 빌드 실행(KR 07:45·US 22:00)과 orch 기상 nudge(사이클 슬롯)에 한정. "
+        "전략 판단·주문 파생·dispatch·워커 실행은 불변(orch/워커 소유, "
+        "harvest-before-dispatch 유지). 근거 = 수동 원샷 장전 누락 4회 실측. "
+        "실행 표면·envelope·승격 절차 무변경."
+    ),
     "§39차 ①②③④⑤": (
         "별도 모듈 · 브로커 직접 미체결 · legacy 불가침 귀속 게이트 · "
         "§4 KR 열 수치 불변 + KRX RTH only · ACCEPTANCE_ONLY 제출→조회→취소→"

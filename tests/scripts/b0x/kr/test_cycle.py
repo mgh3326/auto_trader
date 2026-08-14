@@ -15,6 +15,9 @@ from typing import Any
 
 import pytest
 
+from scripts.b0x import contract as common_contract
+from scripts.b0x.kr import cycle as kr_cycle
+from scripts.b0x.kr import kiwoom_cycle
 from scripts.b0x.kr.cycle import (
     KILL_TRIPPED_CANCEL_UNSUPPORTED,
     KR_ACCOUNT_MAP_COMMIT,
@@ -50,6 +53,19 @@ pytestmark = pytest.mark.unit
 IN_SESSION_NOW = dt.datetime(2026, 8, 10, 2, 0, tzinfo=dt.UTC)
 # 2026-08-08 is a Saturday — outside any session, regardless of time of day.
 WEEKEND_NOW = dt.datetime(2026, 8, 8, 2, 0, tzinfo=dt.UTC)
+
+
+def test_kr_contracts_are_v17_and_keep_their_lane_clauses() -> None:
+    scheduler_clause = common_contract.CONTRACT_CLAUSES["§8 v1.7"]
+
+    assert kr_cycle.KR_CONTRACT_VERSION == "v1.7"
+    assert kr_cycle.KR_CONTRACT_CLAUSES["§8 v1.7"] == scheduler_clause
+    assert "§8 v1.6" in kr_cycle.KR_CONTRACT_CLAUSES
+
+    assert kiwoom_cycle.KR_CONTRACT_VERSION == "v1.7"
+    assert kiwoom_cycle.KR_CONTRACT_CLAUSES["§8 v1.7"] == scheduler_clause
+    assert "§8 v1.6" in kiwoom_cycle.KR_CONTRACT_CLAUSES
+    assert "§39차 ①②③④⑤" in kiwoom_cycle.KR_CONTRACT_CLAUSES
 
 
 @pytest.fixture

@@ -170,7 +170,7 @@ async def test_lab_dry_run_plans_without_preview_submit_or_cancel(
 
     assert read_calls == ["account", "positions", "orders", "ledger"]
     assert outcome.zero_order_reason is None
-    assert outcome.record["contract"]["version"] == "v1.6"
+    assert outcome.record["contract"]["version"] == "v1.7"
     assert outcome.record["submitted"] == []
     assert outcome.record["submission_skipped"].startswith("confirm=False")
     assert submit_calls == []

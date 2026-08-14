@@ -168,9 +168,11 @@ async def run_us_cycle(
             envelope=envelope,
             labels=labels,
         )
-        # US binding is v1.6 + clauses, not the older generic sidecar stamp.
+        # US binding is v1.7 + clauses, not the older generic sidecar stamp.
         record["contract"] = contract_stamp()
-        record["account_map"] = account_map_stamp()
+        record["account_map"] = account_map_stamp(
+            account_map_path=Path(table_dir).expanduser()
+        )
         record["confirm"] = confirm
 
         def finish_zero(reason: str, detail: str) -> UsCycleOutcome:
