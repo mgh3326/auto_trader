@@ -200,6 +200,10 @@ async def test_record_carries_the_account_map_and_status_label(
     assert any("COEXISTING_ACCOUNT_LANE" in label for label in record["labels"]), (
         "the coexistence caveat must be on every artifact"
     )
+    assert kiwoom_cycle.LADDER_MULTI_RUNG_OBSERVATION_LIMIT in record["labels"]
+    assert outcome.artifact_path is not None
+    artifact = outcome.artifact_path.read_text(encoding="utf-8")
+    assert "사다리 2단 이상은 현행 게이트로 제출되지 않는다(관측 한계)" in artifact
 
 
 @pytest.mark.asyncio
