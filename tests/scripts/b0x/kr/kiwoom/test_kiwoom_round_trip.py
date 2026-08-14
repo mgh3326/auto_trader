@@ -28,13 +28,22 @@ pytestmark = pytest.mark.unit
 CLEAN_TRUTH = BrokerTruth(position_symbols=(), own_pending=())
 
 
-def _planned(symbol: str = "005930", quantity: int = 1, price: int = 70_000):  # noqa: ANN202
+def _planned(  # noqa: PLR0913
+    symbol: str = "005930",
+    quantity: int = 1,
+    price: int = 70_000,
+    *,
+    cycle_id: str = "b0x-test-cycle",
+    order_key: str = "deadbeefdeadbeef",
+    leg: str = "buy_l1",
+):  # noqa: ANN202
     return kiwoom_lane.PlannedOrder(
-        order_key="deadbeefdeadbeef",
-        client_order_id="b0xkw-deadbeefdeadbeef",
+        cycle_id=cycle_id,
+        order_key=order_key,
+        client_order_id=f"b0xkw-{order_key}",
         symbol=symbol,
         side="buy",
-        leg="buy_l1",
+        leg=leg,
         price=price,
         quantity=quantity,
         notional=Decimal(price * quantity),
@@ -132,6 +141,80 @@ async def test_ordering_day_submission_blocks_same_symbol_own_pending(now) -> No
         )
 
     assert account.buy_calls == [], "a blocked DAY resubmit must not reach the venue"
+
+
+@pytest.mark.asyncio
+async def test_same_cycle_buy_batch_checks_the_common_gate_once(
+    now, monkeypatch
+) -> None:  # noqa: ANN001
+    """The batch proof is exact and the unchanged common gate runs once."""
+
+    calls: list[str] = []
+    real_assert = kiwoom_lane.assert_resubmit_allowed
+
+    def counted_assert(truth, *, symbol, lane):  # noqa: ANN001, ANN202
+        calls.append(symbol)
+        return real_assert(truth, symbol=symbol, lane=lane)
+
+    monkeypatch.setattr(kiwoom_lane, "assert_resubmit_allowed", counted_assert)
+    first = _planned(order_key="l1", leg="buy_l1")
+    second = _planned(order_key="l2", leg="buy_l2", price=68_000)
+    authorization = kiwoom_lane.authorize_same_cycle_buy_batch(
+        cycle_id="b0x-test-cycle",
+        planned=(first, second),
+        broker_truth=CLEAN_TRUTH,
+    )
+    account = FakeAccount()
+
+    await kiwoom_lane.submit_day_order_in_batch(
+        account,
+        planned=first,
+        authorization=authorization,
+        record_order_no=_sink(),
+        now=now,
+    )
+    await kiwoom_lane.submit_day_order_in_batch(
+        account,
+        planned=second,
+        authorization=authorization,
+        record_order_no=_sink(),
+        now=now,
+    )
+
+    assert calls == ["005930"]
+    assert authorization.attempted_count == 2
+    assert [call["price"] for call in account.buy_calls] == [70_000, 68_000]
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        _planned(cycle_id="b0x-other-cycle", order_key="l2", leg="buy_l2"),
+        _planned(symbol="000660", order_key="l2", leg="buy_l2"),
+    ],
+    ids=("cross-cycle", "cross-symbol"),
+)
+def test_same_cycle_buy_batch_rejects_boundary_widening(second) -> None:  # noqa: ANN001
+    first = _planned(order_key="l1", leg="buy_l1")
+
+    with pytest.raises(kiwoom_lane.SameCycleBuyBatchViolation):
+        kiwoom_lane.authorize_same_cycle_buy_batch(
+            cycle_id="b0x-test-cycle",
+            planned=(first, second),
+            broker_truth=CLEAN_TRUTH,
+        )
+
+
+def test_same_cycle_buy_batch_proof_cannot_be_forged() -> None:
+    with pytest.raises(
+        kiwoom_lane.SameCycleBuyBatchViolation, match="not minted by the gate"
+    ):
+        kiwoom_lane.SameCycleBuyBatchAuthorization(
+            cycle_id="b0x-test-cycle",
+            symbol="005930",
+            order_keys=("l1", "l2"),
+            _proof=object(),
+        )
 
 
 @pytest.mark.asyncio
@@ -383,6 +466,7 @@ async def test_sell_side_is_refused_by_the_acceptance_lever(now) -> None:  # noq
     """A sell cannot be taken back by the mandatory cancel, so it is not wired."""
 
     sell = kiwoom_lane.PlannedOrder(
+        cycle_id="b0x-test-cycle",
         order_key="k",
         client_order_id="b0xkw-k",
         symbol="005930",

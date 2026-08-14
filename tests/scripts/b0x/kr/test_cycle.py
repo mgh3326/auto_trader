@@ -55,14 +55,18 @@ IN_SESSION_NOW = dt.datetime(2026, 8, 10, 2, 0, tzinfo=dt.UTC)
 WEEKEND_NOW = dt.datetime(2026, 8, 8, 2, 0, tzinfo=dt.UTC)
 
 
-def test_kr_contracts_are_v17_and_keep_their_lane_clauses() -> None:
+def test_kr_contracts_keep_their_lane_clauses_at_current_versions() -> None:
     scheduler_clause = common_contract.CONTRACT_CLAUSES["§8 v1.7"]
 
     assert kr_cycle.KR_CONTRACT_VERSION == "v1.7"
     assert kr_cycle.KR_CONTRACT_CLAUSES["§8 v1.7"] == scheduler_clause
     assert "§8 v1.6" in kr_cycle.KR_CONTRACT_CLAUSES
 
-    assert kiwoom_cycle.KR_CONTRACT_VERSION == "v1.7"
+    # v1.8 = the kiwoom-lane ladder batch-submit amendment (§69차); it layers
+    # on top of the v1.7 scheduler clause and the v1.6 lane clauses, so all
+    # three must remain present.
+    assert kiwoom_cycle.KR_CONTRACT_VERSION == "v1.8"
+    assert "§8 v1.8 (v1.5 ① KR amendment)" in kiwoom_cycle.KR_CONTRACT_CLAUSES
     assert kiwoom_cycle.KR_CONTRACT_CLAUSES["§8 v1.7"] == scheduler_clause
     assert "§8 v1.6" in kiwoom_cycle.KR_CONTRACT_CLAUSES
     assert "§39차 ①②③④⑤" in kiwoom_cycle.KR_CONTRACT_CLAUSES

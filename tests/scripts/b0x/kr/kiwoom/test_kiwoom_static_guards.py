@@ -280,6 +280,46 @@ def test_kiwoom_broker_imports_are_only_the_three_sanctioned_classes() -> None:
     )
 
 
+def test_same_cycle_batch_api_is_kr_local_and_common_callers_are_unchanged() -> None:
+    """Lane isolation (A): only the kiwoom path can name the batch proof."""
+
+    common = REPO_ROOT / "scripts" / "b0x" / "broker_truth.py"
+    frozen_callers = (
+        REPO_ROOT / "scripts" / "b0x" / "crypto" / "sidecar.py",
+        REPO_ROOT / "scripts" / "b0x" / "us" / "alpaca.py",
+    )
+    batch_names = (
+        "SameCycleBuyBatchAuthorization",
+        "authorize_same_cycle_buy_batch",
+        "submit_day_order_in_batch",
+    )
+
+    for path in (common, *frozen_callers):
+        source = _source(path)
+        assert all(name not in source for name in batch_names), path
+
+    for path in frozen_callers:
+        calls = [
+            node
+            for node in ast.walk(ast.parse(_source(path)))
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "assert_resubmit_allowed"
+        ]
+        assert len(calls) == 1, (
+            f"{path.name} must retain its one existing common-gate call; got "
+            f"{len(calls)}"
+        )
+
+    common_tree = ast.parse(_source(common))
+    definition = next(
+        node
+        for node in common_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "assert_resubmit_allowed"
+    )
+    assert [arg.arg for arg in definition.args.args] == ["truth"]
+    assert [arg.arg for arg in definition.args.kwonlyargs] == ["symbol", "lane"]
+
+
 def test_guard_would_actually_catch_a_bypass() -> None:
     """FALSE-GREEN check: the guards must fail on a planted violation.
 
