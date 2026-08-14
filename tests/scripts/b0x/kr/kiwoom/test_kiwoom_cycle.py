@@ -698,6 +698,71 @@ async def test_ordering_partial_batch_failure_is_not_success_and_retains_ack(
 
 
 @pytest.mark.asyncio
+async def test_ordering_rechecks_foreign_trace_before_first_batch_leg(
+    table_dir, out_dir, armed, frozen_cycle_clock
+) -> None:  # noqa: ANN001, ARG001
+    """A foreign order appearing after preflight must stop the batch before L1."""
+
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        buy_l2="68000",
+    )
+
+    class ForeignWriterBeforeBatchGate(_DynamicOrderingAccount):
+        async def read_order_detail(  # noqa: ANN201
+            self,
+            *,
+            order_date=None,
+            symbol=None,  # noqa: ANN001
+        ):
+            rows = await super().read_order_detail(order_date=order_date, symbol=symbol)
+            if len(self.detail_calls) == 1:
+                self.rows.append(
+                    {
+                        "order_id": "foreign-writer-other-symbol",
+                        "symbol": "000660",
+                        "status": "open",
+                        "ordered_quantity": 1,
+                        "filled_quantity": 0,
+                        "remaining_quantity": 1,
+                        "unfilled_quantity": 1,
+                        "ordered_price": 100_000,
+                        "average_price": 0,
+                    }
+                )
+            return rows
+
+    account = ForeignWriterBeforeBatchGate()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: _TestOrderingLease(),
+    )
+
+    assert outcome.exit_code == 0
+    assert account.buy_calls == []
+    assert outcome.record["batch_submission_status"] == (
+        "failed_before_acknowledgement"
+    )
+    batch = outcome.record["same_cycle_buy_batches"][0]
+    assert batch["status"] == "failed_before_acknowledgement"
+    assert batch["accepted_order_keys"] == []
+    assert batch["failure"] == {
+        "reason": "mutation_boundary_not_clean",
+        "detail": "foreign_same_day_orders_present",
+    }
+    assert outcome.record["mutation_boundaries"][-1]["action"].startswith("batch_gate:")
+    assert outcome.record["mutation_boundaries"][-1]["foreign_same_day_orders"][
+        "symbols"
+    ] == ["000660"]
+
+
+@pytest.mark.asyncio
 async def test_ordering_rechecks_foreign_trace_between_batch_legs(
     table_dir, out_dir, armed, frozen_cycle_clock
 ) -> None:  # noqa: ANN001, ARG001
