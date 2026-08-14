@@ -1,0 +1,78 @@
+{
+  "session_id": "2026-08-14-runbook-top-n-cap",
+  "contract_sha": "2b8044a1cc39fbd830f68a3253ebdb20db987f2d9f76763edec8a2e3af3a5fe6",
+  "policy_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "code_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "source_corpus_as_of": "2026-08-14T22:35:00+09:00",
+  "decision_cutoff": "2026-08-14T22:35:00+09:00",
+  "universe_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "sources": [
+    {
+      "source_id": "upstream-source",
+      "upstream_total_known": 10,
+      "upstream_total_unknown": false,
+      "returned_count": 3,
+      "timeout_or_error_count": 0,
+      "unqueried_count": 0,
+      "top_n_cap": 3,
+      "outside_top_n_count": 7,
+      "deduped_unique_count": 1,
+      "duplicate_count": 2
+    }
+  ],
+  "candidate_array_coverage": {
+    "deduped_unique_count": 1,
+    "cross_source_duplicate_count": 0,
+    "recorded_candidate_count": 1,
+    "truncated_candidate_count": 0,
+    "candidate_array_cap": null,
+    "candidate_truncation_reason": null
+  },
+  "candidates": [
+    {
+      "symbol": "EXAMPLE",
+      "matched_sources": [
+        {
+          "source_id": "upstream-source",
+          "rank": 1
+        }
+      ],
+      "freshness": "fresh",
+      "consensus_status": "value",
+      "target_honesty": "honest",
+      "target_as_of": "2026-08-14T22:30:00+09:00",
+      "analyst_count": 4,
+      "current_price": 100.0,
+      "target": 130.0,
+      "rsi": 42.0,
+      "support_price": 90.0,
+      "support_strength": "strong",
+      "independent_support_families": [
+        "price",
+        "volume",
+        "trend"
+      ],
+      "non_upside_gate_bits": {
+        "source": "pass",
+        "freshness": "pass"
+      },
+      "proposed_limit": 87.0,
+      "tick_handling": {
+        "rule": "upstream tick rule",
+        "raw_limit": 87.004,
+        "snapped_limit": 87.0,
+        "direction": "down"
+      },
+      "feasibility": {
+        "sector": "Example",
+        "sector_feasibility": "pass",
+        "dedupe_feasibility": "pass",
+        "cash_feasibility": "pass",
+        "whole_share_feasibility": "pass",
+        "would_size": 1.0,
+        "required_cash": 87.0
+      },
+      "hypothetical_limit_touch": null
+    }
+  ]
+}
