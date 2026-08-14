@@ -9,8 +9,21 @@ import pytest
 
 from app.mcp_server.tooling import order_validation as ov
 from app.mcp_server.tooling import orders_toss_variants as otv
+from app.services.order_proposals.auto_approve import (
+    AutoApproveLimits,
+    evaluate_auto_approve_eligibility,
+)
 
 _TRADER_AGENT_ID = "6b2192cc-14fa-4335-b572-2fe1e0cb54a7"
+_AUTO_APPROVE_LIMITS = AutoApproveLimits(
+    min_distance_pct=Decimal("3"),
+    per_order_cap=Decimal("200000"),
+    daily_cap=Decimal("500000"),
+    policy_version="test-policy",
+    mode="expanded",
+    breakeven_band_pct=Decimal("1"),
+    round_trip_cost_bps=Decimal("200"),
+)
 
 
 class _TossClient:
@@ -171,6 +184,24 @@ async def test_toss_loss_cut_preview_applies_slip_band(monkeypatch, price, succe
         assert result["retrospective_id"] == 42
         assert result["loss_cut_slip_band"] == pytest.approx(98.0)
         assert result["avg_buy_price"] == "200"
+        decision = evaluate_auto_approve_eligibility(
+            group=SimpleNamespace(
+                action="place",
+                account_mode="toss_live",
+                market="equity_us",
+                order_type="limit",
+                exit_intent="loss_cut",
+                thesis="confirmed stop loss",
+            ),
+            rung=SimpleNamespace(
+                side="sell", limit_price=Decimal(price), quantity=Decimal("1")
+            ),
+            preview=result,
+            limits=_AUTO_APPROVE_LIMITS,
+            daily_notional=Decimal("0"),
+        )
+        assert decision.eligible is False
+        assert decision.reason == "loss_cut_intent"
     else:
         assert "slip band floor" in result["error"]
 
@@ -189,6 +220,123 @@ async def test_toss_loss_cut_preview_fails_closed_without_current_price(monkeypa
 
     assert result["success"] is False
     assert "current price" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_toss_normal_sell_preview_exposes_valid_cost_basis_for_profit_verdict(
+    monkeypatch,
+):
+    client = _configure_toss(monkeypatch)
+    client.current_price = Decimal("100")
+    client.average_purchase_price = Decimal("90")
+    monkeypatch.setattr(
+        otv.settings, "ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED", True, raising=False
+    )
+
+    with otv._bind_order_proposal_context(
+        client_order_id="tosprop-normal-sell", correlation_id=None, rung=0
+    ):
+        result = await otv.toss_preview_order(
+            symbol="AAPL",
+            side="sell",
+            order_type="limit",
+            quantity="1",
+            price="104",
+            market="us",
+            account_mode="toss_live",
+        )
+
+    assert result["success"] is True
+    assert result["avg_buy_price"] == "90"
+    decision = evaluate_auto_approve_eligibility(
+        group=SimpleNamespace(
+            action="place",
+            account_mode="toss_live",
+            market="equity_us",
+            order_type="limit",
+            exit_intent=None,
+            thesis="profit taking at a resting limit",
+        ),
+        rung=SimpleNamespace(
+            side="sell", limit_price=Decimal("104"), quantity=Decimal("1")
+        ),
+        preview=result,
+        limits=_AUTO_APPROVE_LIMITS,
+        daily_notional=Decimal("0"),
+    )
+
+    assert decision.eligible is True
+    assert decision.reason == "eligible"
+    assert decision.details["loss_guard"] == "net_profit_proven"
+
+
+@pytest.mark.asyncio
+async def test_toss_sell_guard_does_not_publish_invalid_cost_basis(monkeypatch):
+    client = _configure_toss(monkeypatch)
+    client.average_purchase_price = Decimal("0")
+    evidence_context: dict[str, object] = {}
+
+    result = await otv._sell_loss_guard(
+        client,
+        "AAPL",
+        "limit",
+        Decimal("104"),
+        {"source": "toss", "preview": True},
+        evidence_context=evidence_context,
+    )
+
+    assert result is not None
+    assert result["success"] is False
+    assert "Invalid holding average purchase price" in result["error"]
+    assert evidence_context == {}
+
+    preview = await otv.toss_preview_order(
+        symbol="AAPL",
+        side="sell",
+        order_type="limit",
+        quantity="1",
+        price="104",
+        market="us",
+        account_mode="toss_live",
+    )
+    assert preview["success"] is False
+    assert "avg_buy_price" not in preview
+
+    missing_evidence_context: dict[str, object] = {}
+    monkeypatch.setattr(otv, "_find_holding", AsyncMock(return_value=None))
+    missing = await otv._sell_loss_guard(
+        client,
+        "AAPL",
+        "limit",
+        Decimal("104"),
+        {"source": "toss", "preview": True},
+        evidence_context=missing_evidence_context,
+    )
+    assert missing is not None
+    assert missing["success"] is False
+    assert "No holding found" in missing["error"]
+    assert missing_evidence_context == {}
+
+
+@pytest.mark.asyncio
+async def test_toss_sell_guard_keeps_the_avg_plus_one_percent_floor(monkeypatch):
+    client = _configure_toss(monkeypatch)
+    client.average_purchase_price = Decimal("100")
+    evidence_context: dict[str, object] = {}
+
+    result = await otv._sell_loss_guard(
+        client,
+        "AAPL",
+        "limit",
+        Decimal("100.5"),
+        {"source": "toss", "preview": True},
+        evidence_context=evidence_context,
+    )
+
+    assert result is not None
+    assert result["success"] is False
+    assert "below average purchase price floor (101.00)" in result["error"]
+    assert evidence_context == {"avg_buy_price": "100"}
 
 
 async def _preview_loss_cut(

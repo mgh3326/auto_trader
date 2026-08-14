@@ -50,7 +50,22 @@ async def test_toss_preview_order_snaps_price_kr_sell(monkeypatch):
 
     monkeypatch.setattr(settings, "toss_api_enabled", True)
     monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
-    _ = MockTossClient(monkeypatch)
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "005930",
+            "quantity": Decimal("1"),
+            "average_purchase_price": Decimal("80000"),
+            "last_price": Decimal("87400"),
+            "name": "Samsung",
+            "market_country": "KR",
+            "currency": "KRW",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
 
     # KR 005930, price 87350. Sell should ceil to 87400.
     res = await toss_preview_order(
