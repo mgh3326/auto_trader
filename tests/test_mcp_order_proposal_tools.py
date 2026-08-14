@@ -1250,6 +1250,7 @@ def test_tools_registered_and_names_exported():
         "order_proposal_expire_sweep",
         "order_proposal_list_expired_defensive",
         "order_proposal_redispatch",
+        "support_reserve_net_consume",
     }
 
 

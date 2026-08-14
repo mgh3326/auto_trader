@@ -45,6 +45,7 @@ from app.mcp_server.tooling.route_request_lanes import (
     PROPOSAL_LIFECYCLE_TOOLS,
     READ_ONLY_ADVISORY_TOOLS,
     RECONCILE_TOOLS,
+    RESERVE_NET_CONSUMER_TOOLS,
     STATUS_HELPER_TOOLS,
     ordered_lane_tool_names,
 )
@@ -104,6 +105,7 @@ def test_mutation_action_taxonomy_is_disjoint_and_total():
         DIRECT_BROKER_MUTATION_TOOLS,
         PROPOSAL_LED_TOOLS,
         PROPOSAL_LIFECYCLE_TOOLS,
+        RESERVE_NET_CONSUMER_TOOLS,
         PREVIEW_REVALIDATION_TOOLS,
         RECONCILE_TOOLS,
         STATUS_HELPER_TOOLS,
@@ -187,10 +189,16 @@ def test_every_proposal_enabled_default_tool_is_classified(
     assert ORDER_PROPOSAL_TOOL_NAMES <= default
     assert default <= ALL_KNOWN_TOOLS
     assert ORDER_PROPOSAL_TOOL_NAMES == (
-        ORDER_PROPOSAL_READ_TOOLS | PROPOSAL_LED_TOOLS | PROPOSAL_LIFECYCLE_TOOLS
+        ORDER_PROPOSAL_READ_TOOLS
+        | PROPOSAL_LED_TOOLS
+        | PROPOSAL_LIFECYCLE_TOOLS
+        | RESERVE_NET_CONSUMER_TOOLS
     )
     assert ORDER_PROPOSAL_READ_TOOLS <= READ_ONLY_ADVISORY_TOOLS
-    assert PROPOSAL_LED_TOOLS | PROPOSAL_LIFECYCLE_TOOLS <= MUTATION_TOOLS
+    assert (
+        PROPOSAL_LED_TOOLS | PROPOSAL_LIFECYCLE_TOOLS | RESERVE_NET_CONSUMER_TOOLS
+        <= MUTATION_TOOLS
+    )
 
 
 def test_read_only_bucket_has_no_phantom_tools():

@@ -72,6 +72,7 @@ KNOWN_MUTATION_TOOLS = frozenset(
         "investment_watch_void",
         "investment_watch_expire",
         "sweep_expired_watches",
+        "support_reserve_net_consume",
     }
 )
 

@@ -76,6 +76,7 @@ def test_action_taxonomy_is_disjoint_and_total():
         L.DIRECT_BROKER_MUTATION_TOOLS,
         L.PROPOSAL_LED_TOOLS,
         L.PROPOSAL_LIFECYCLE_TOOLS,
+        L.RESERVE_NET_CONSUMER_TOOLS,
         L.PREVIEW_REVALIDATION_TOOLS,
         L.RECONCILE_TOOLS,
         L.STATUS_HELPER_TOOLS,
@@ -368,6 +369,26 @@ def test_non_proposal_lanes_keep_order_proposal_void_blocked(intent: str):
     assert "order_proposal_void" not in set(plan["allowed_tools"])
     if "order_proposal_void" in _ALL:
         assert "order_proposal_void" in set(plan["blocked_actions"])
+
+
+def test_buy_allows_reserve_net_consumer_without_sequencing_it() -> None:
+    plan = _plan("buy_analysis", "kr")
+
+    assert "support_reserve_net_consume" in set(plan["allowed_tools"])
+    assert "support_reserve_net_consume" not in set(plan["blocked_actions"])
+    assert "support_reserve_net_consume" not in {
+        step["tool"] for step in plan["standard_tool_sequence"]
+    }
+
+
+@pytest.mark.parametrize("intent", ["profit_taking", "discovery", "market_brief"])
+def test_non_buy_lanes_keep_reserve_net_consumer_blocked(intent: str) -> None:
+    market = "kr"
+    plan = _plan(intent, market)
+
+    assert "support_reserve_net_consume" not in set(plan["allowed_tools"])
+    if "support_reserve_net_consume" in _ALL:
+        assert "support_reserve_net_consume" in set(plan["blocked_actions"])
 
 
 def test_lifecycle_allowance_expands_only_through_expire_sweep():
