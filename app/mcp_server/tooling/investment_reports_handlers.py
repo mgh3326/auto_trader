@@ -1077,13 +1077,7 @@ async def investment_watch_void_impl(alert_uuid: str, reason: str) -> dict[str, 
 async def investment_watch_expire_impl(
     alert_uuid: str, reason: str = "operator_expired"
 ) -> dict[str, Any]:
-    """Expire one active watch explicitly; the expiry sweeper handles overdue rows.
-
-    Authorization finding: this handler has no caller, owner, or ``valid_until``
-    authorization gate. Any active alert UUID that reaches this surface can be
-    transitioned to ``expired`` with a non-blank reason (the default is
-    non-blank). Route-lane exposure does not narrow that existing authority.
-    """
+    """Expire one active watch explicitly; the expiry sweeper handles overdue rows."""
     return await _transition_watch_impl(
         alert_uuid=alert_uuid, reason=reason, action="expire"
     )
@@ -1641,9 +1635,7 @@ def register_investment_report_tools(
             "ROB-971 — explicitly expire one active investment watch by alert_uuid. "
             "Use for a known stale watch; for valid_until-based bulk cleanup use "
             "sweep_expired_watches (dry_run=True first). Never touches any broker "
-            "or order path. Authorization note: this tool has no caller, owner, or "
-            "valid_until authorization gate; any active alert_uuid reaching this "
-            "surface can be transitioned to expired."
+            "or order path."
         ),
     )(investment_watch_expire_impl)
     mcp.tool(

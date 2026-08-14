@@ -772,8 +772,9 @@ async def order_proposal_expire_sweep(dry_run: bool = True) -> dict[str, Any]:
     ``proposed``/``needs_reconfirm`` forever after ``valid_until`` passed. This
     is the manual operator lever -- run with dry_run=True first to review what
     would expire; recurring automation is a separate, later decision (see
-    ``app/tasks/order_proposal_expiry_tasks.py``). Candidates are derived by the
-    service from passed ``valid_until`` values; callers cannot select an arbitrary
+    ``app/tasks/order_proposal_expiry_tasks.py``). There is no caller or owner
+    authorization check: its safety boundary is server-side candidate selection
+    from passed ``valid_until`` values, so callers cannot select an arbitrary
     proposal. The service re-checks eligibility under a row lock and skips groups
     with non-voidable rungs. NOT a broker mutation.
     """

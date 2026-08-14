@@ -422,17 +422,6 @@ LANE_PROPOSAL_LIFECYCLE_ALLOWED: dict[str, frozenset[str]] = {
     "sell": frozenset({"order_proposal_void", "order_proposal_expire_sweep"}),
 }
 
-# ROUTE-GATE-STAGE1. Keep direct watch cleanup with the explicit proposal-led
-# resource-owner set above: buy/sell are the only PROPOSAL_LED_LANES, while
-# discovery/bootstrap remain outside this map. This is a surface allowance only.
-# In particular, it does not add a caller/owner/valid_until authorization gate
-# to investment_watch_expire; that handler's existing authority is documented
-# in docs/runbooks/route-request-lifecycle-cleanup.md.
-LANE_WATCH_LIFECYCLE_ALLOWED: dict[str, frozenset[str]] = {
-    "buy": frozenset({"investment_watch_expire"}),
-    "sell": frozenset({"investment_watch_expire"}),
-}
-
 # Purpose text for discovery's legacy market execution injection.
 _MARKET_EXEC_PURPOSE: dict[str, str] = {
     "discovery": "execute buy on ranked winners via generic place_order (crypto/US limit)",
@@ -810,7 +799,6 @@ def build_route_plan(
     lane_extra = LANE_EXTRA_ALLOWED.get(lane, frozenset())
     lane_reconcile = LANE_RECONCILE_ALLOWED.get(lane, frozenset())
     lane_lifecycle = LANE_PROPOSAL_LIFECYCLE_ALLOWED.get(lane, frozenset())
-    lane_watch_lifecycle = LANE_WATCH_LIFECYCLE_ALLOWED.get(lane, frozenset())
     safe_lane_tools = (
         lane_tools - DIRECT_BROKER_MUTATION_TOOLS if proposal_led else lane_tools
     )
@@ -821,7 +809,6 @@ def build_route_plan(
         | lane_extra
         | lane_reconcile
         | lane_lifecycle
-        | lane_watch_lifecycle
         | set(READ_ONLY_ADVISORY_TOOLS)
     )
     allowed = allowed_candidates & registered_tools
@@ -873,7 +860,6 @@ __all__ = [
     "PROPOSAL_LED_TOOLS",
     "PROPOSAL_LIFECYCLE_TOOLS",
     "LANE_PROPOSAL_LIFECYCLE_ALLOWED",
-    "LANE_WATCH_LIFECYCLE_ALLOWED",
     "ORDER_PROPOSAL_READ_TOOLS",
     "PREVIEW_REVALIDATION_TOOLS",
     "RECONCILE_TOOLS",
