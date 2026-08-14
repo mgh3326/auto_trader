@@ -1,4 +1,5 @@
-from decimal import ROUND_CEILING, Decimal
+import re
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
 
 import pytest
@@ -14,10 +15,98 @@ from app.services.order_proposals.auto_approve import _VETO_CAPABLE_ACCOUNT_MARK
 from app.services.trading_policy_service import load_trading_policy
 
 _CONFIG = Path(__file__).resolve().parents[2] / "config" / "trading_policy.yaml"
+_PLAYBOOK = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "playbooks"
+    / "trading-decision-playbook.md"
+)
 
 
 def _raw() -> dict:
     return yaml.safe_load(_CONFIG.read_text(encoding="utf-8"))
+
+
+def _breakeven_reserve_trim_tier():
+    rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
+        "sell.trim_preplace"
+    ]
+    return next(tier for tier in rule.tiers if tier.id == "sell.breakeven_reserve_trim")
+
+
+def _threshold_decimal(doc: TradingPolicyDocument, key: str) -> Decimal:
+    return Decimal(str(doc.thresholds[key].value))
+
+
+def _sell_lane_machine_block() -> dict:
+    text = _PLAYBOOK.read_text(encoding="utf-8")
+    for block in re.findall(r"```yaml\n(.*?)```", text, re.DOTALL):
+        if "# playbook-machine-readable: sell lane" in block:
+            parsed = yaml.safe_load(block)
+            return parsed["lanes"]["sell"]
+    raise AssertionError("sell lane machine-readable block missing")
+
+
+def _breakeven_reserve_trim_anchor(
+    tier,
+    *,
+    average_cost: Decimal,
+    d7_compliant_lowest_price: Decimal,
+) -> Decimal:
+    """Test-only interpreter for the declarative advisory anchor contract."""
+
+    conditions = tier.conditions
+    guard = _threshold_decimal(
+        TradingPolicyDocument.model_validate(_raw()),
+        str(conditions["anchor_guard_policy_key"]),
+    )
+    operands = {
+        "average_cost_times_loss_guard": average_cost * guard,
+        "d7_compliant_lowest_price": d7_compliant_lowest_price,
+    }
+    resolved = [operands[str(name)] for name in conditions["anchor_operands"]]
+    operator = conditions["anchor_operator"]
+    if operator == "max":
+        return max(resolved)
+    if operator == "min":
+        return min(resolved)
+    raise AssertionError(f"unsupported advisory anchor operator: {operator!r}")
+
+
+def _breakeven_reserve_trim_post_max_tick_snap(
+    tier,
+    *,
+    anchor: Decimal,
+    tick_size: Decimal,
+) -> Decimal:
+    """Test-only interpreter for the declarative post-max tick direction."""
+
+    direction = tier.conditions["post_max_tick_snap_direction"]
+    rounding = {"ceil": ROUND_CEILING, "floor": ROUND_FLOOR}.get(direction)
+    if rounding is None:
+        raise AssertionError(f"unsupported post-max tick direction: {direction!r}")
+    return (anchor / tick_size).to_integral_value(rounding=rounding) * tick_size
+
+
+def _breakeven_reserve_trim_triggered(
+    tier,
+    *,
+    pnl_pct: Decimal,
+    current_price_multiple: Decimal,
+) -> bool:
+    """Test-only interpreter for the declarative pre-guard trigger band."""
+
+    doc = TradingPolicyDocument.model_validate(_raw())
+    conditions = tier.conditions
+    lower_bound = -_threshold_decimal(
+        doc,
+        str(conditions["lot_pnl_pct_min_inclusive_negated_policy_key"]),
+    )
+    guard = _threshold_decimal(
+        doc,
+        str(conditions["lot_pre_guard_average_cost_multiple_max_exclusive_policy_key"]),
+    )
+    return pnl_pct >= lower_bound and current_price_multiple < guard
 
 
 def test_shipped_config_validates():
@@ -61,6 +150,7 @@ def test_shipped_config_validates():
     assert trim_rule.lanes == ["sell"]
     assert [tier.id for tier in trim_rule.tiers] == [
         "de_minimis_trim_watch",
+        "sell.breakeven_reserve_trim",
         "single_share_full_exit_review",
         "momentum_spike_profit_ladder",
         "rsi_confirmed_resistance",
@@ -68,10 +158,11 @@ def test_shipped_config_validates():
         "watch_zone",
     ]
     assert trim_rule.tiers[0].action == "register_watch_instead_of_trim"
-    assert trim_rule.tiers[1].sizing == "full_position"
-    assert trim_rule.tiers[2].conditions["rsi_gate_exempt"] is True
-    assert trim_rule.tiers[2].conditions["ladder_total_position_pct_max"] == 33.3333
-    assert trim_rule.tiers[4].conditions["resistance_near_pct_max"] == 2
+    assert trim_rule.tiers[1].sizing == "existing_trim_rule"
+    assert trim_rule.tiers[2].sizing == "full_position"
+    assert trim_rule.tiers[3].conditions["rsi_gate_exempt"] is True
+    assert trim_rule.tiers[3].conditions["ladder_total_position_pct_max"] == 33.3333
+    assert trim_rule.tiers[5].conditions["resistance_near_pct_max"] == 2
     assert trim_rule.tie_breaks["multiple_tiers_matched"] == (
         "first_matching_tier_wins"
     )
@@ -339,6 +430,184 @@ def test_support_reserve_net_keeps_toss_auto_veto_behind_dedicated_gate(monkeypa
     )
     for market in ("equity_kr", "equity_us"):
         assert auto_approve._is_veto_capable_account_market("toss_live", market)
+
+
+def test_breakeven_reserve_trim_policy_contract_is_machine_readable():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    rule = doc.decision_rules["sell.trim_preplace"]
+    tier = _breakeven_reserve_trim_tier()
+
+    assert [candidate.id for candidate in rule.tiers] == [
+        "de_minimis_trim_watch",
+        "sell.breakeven_reserve_trim",
+        "single_share_full_exit_review",
+        "momentum_spike_profit_ladder",
+        "rsi_confirmed_resistance",
+        "ultra_near_resistance",
+        "watch_zone",
+    ]
+    assert tier.conditions == {
+        "markets": ["kr", "us", "crypto"],
+        "lot_pnl_basis": "current_price_vs_average_cost",
+        "lot_pnl_pct_min_inclusive_negated_policy_key": ("sell.breakeven_near_pct"),
+        "lot_pre_guard_average_cost_multiple_max_exclusive_policy_key": (
+            "sell.loss_guard_min_multiple"
+        ),
+        "anchor_operator": "max",
+        "anchor_operands": [
+            "average_cost_times_loss_guard",
+            "d7_compliant_lowest_price",
+        ],
+        "anchor_guard_policy_key": "sell.loss_guard_min_multiple",
+        "d7_min_expected_net_realized_gain_krw_policy_key": (
+            "sell.trim_min_expected_net_realized_gain_krw"
+        ),
+        "d7_minimum_price_basis": (
+            "one_share_expected_net_realized_gain_after_estimated_fees_and_taxes"
+        ),
+        "d7_scope_semantics": "one_share_net_realized_gain_not_total_trim",
+        "d7_estimation_limit_semantics": (
+            "consumer_estimated_fees_and_taxes_required_no_fee_or_tax_model_added_by_this_tier"
+        ),
+        "post_max_tick_snap_direction": "ceil",
+        "resting_limit_order": True,
+        "time_in_force": "DAY",
+        "regeneration": "daily_rep",
+        "day_expiry_policy_key": "order.day_expiry_kst",
+        "submission_contract": "section_40_auto_approve_with_veto",
+        "watch_fallback": "anchor_uncomputable_only",
+        "advisory": True,
+    }
+    assert tier.action == "preplace_resting_breakeven_reserve_trim"
+    assert tier.sizing == "existing_trim_rule"
+    assert rule.tie_breaks["tier_priority"] == (
+        "de_minimis_trim_watch > sell.breakeven_reserve_trim > "
+        "single_share_full_exit_review > momentum_spike_profit_ladder > "
+        "rsi_confirmed_resistance > ultra_near_resistance > watch_zone"
+    )
+    assert _threshold_decimal(doc, "sell.loss_guard_min_multiple") == Decimal("1.01")
+    assert _threshold_decimal(doc, "sell.breakeven_near_pct") == Decimal("2")
+    assert _threshold_decimal(
+        doc, "sell.trim_min_expected_net_realized_gain_krw"
+    ) == Decimal("5000")
+
+
+def test_breakeven_reserve_trim_trigger_band_is_lower_inclusive_and_pre_guard():
+    tier = _breakeven_reserve_trim_tier()
+
+    assert _breakeven_reserve_trim_triggered(
+        tier,
+        pnl_pct=Decimal("-2"),
+        current_price_multiple=Decimal("0.98"),
+    )
+    assert _breakeven_reserve_trim_triggered(
+        tier,
+        pnl_pct=Decimal("0.9999"),
+        current_price_multiple=Decimal("1.009999"),
+    )
+    assert not _breakeven_reserve_trim_triggered(
+        tier,
+        pnl_pct=Decimal("-2.0001"),
+        current_price_multiple=Decimal("0.979999"),
+    )
+    assert not _breakeven_reserve_trim_triggered(
+        tier,
+        pnl_pct=Decimal("1"),
+        current_price_multiple=Decimal("1.01"),
+    )
+
+
+def test_breakeven_reserve_trim_anchor_never_below_guard_floor():
+    tier = _breakeven_reserve_trim_tier()
+    average_cost = Decimal("100")
+    guard_floor = Decimal("101")
+
+    anchor = _breakeven_reserve_trim_anchor(
+        tier,
+        average_cost=average_cost,
+        d7_compliant_lowest_price=Decimal("100.50"),
+    )
+
+    assert anchor >= guard_floor
+    assert anchor == guard_floor
+
+
+def test_breakeven_reserve_trim_anchor_never_below_d7_floor():
+    tier = _breakeven_reserve_trim_tier()
+    d7_compliant_lowest_price = Decimal("105")
+
+    anchor = _breakeven_reserve_trim_anchor(
+        tier,
+        average_cost=Decimal("100"),
+        d7_compliant_lowest_price=d7_compliant_lowest_price,
+    )
+
+    assert anchor >= d7_compliant_lowest_price
+    assert anchor == d7_compliant_lowest_price
+
+
+def test_breakeven_reserve_trim_post_max_tick_snap_ceil_preserves_guard_floor():
+    tier = _breakeven_reserve_trim_tier()
+    guard_exact = Decimal("256875") * Decimal("1.01")
+    tick_size = Decimal("500")
+    floor_snap = (guard_exact / tick_size).to_integral_value(
+        rounding=ROUND_FLOOR
+    ) * tick_size
+
+    snapped_anchor = _breakeven_reserve_trim_post_max_tick_snap(
+        tier,
+        anchor=guard_exact,
+        tick_size=tick_size,
+    )
+
+    assert guard_exact == Decimal("259443.75")
+    assert floor_snap == Decimal("259000")
+    assert floor_snap < guard_exact
+    assert snapped_anchor == Decimal("259500")
+    assert snapped_anchor >= guard_exact
+
+
+def test_sell_lane_machine_block_adds_breakeven_reserve_trim_without_tool_or_gate_drift():
+    sell = _sell_lane_machine_block()
+    policy_tier = next(
+        step
+        for step in sell["steps"]
+        if step.get("policy_tier") == "sell.breakeven_reserve_trim"
+    )
+
+    assert [step["tool"] for step in sell["steps"] if "tool" in step] == [
+        "toss_get_positions",
+        "analyze_stock_batch",
+        "sell_ladder_fill_preview",
+        "order_proposal_create",
+    ]
+    assert sell["gates"] == ["loss_guard", "tick_rule", "toss_two_sided"]
+    assert policy_tier == {
+        "policy_tier": "sell.breakeven_reserve_trim",
+        "advisory": True,
+        "priority_source": (
+            "decision_rules.sell.trim_preplace.tie_breaks.tier_priority"
+        ),
+        "trigger": {
+            "pnl_pct_min_inclusive_negated_policy_key": ("sell.breakeven_near_pct"),
+            "pre_guard_average_cost_multiple_max_exclusive_policy_key": (
+                "sell.loss_guard_min_multiple"
+            ),
+        },
+        "anchor": {
+            "operator": "max",
+            "operands": [
+                "average_cost_times_loss_guard",
+                "d7_compliant_lowest_price",
+            ],
+            "post_max_tick_snap_direction": "ceil",
+        },
+        "sizing": "existing_trim_rule",
+        "time_in_force": "DAY",
+        "regeneration": "daily_rep",
+        "submission_contract": "section_40_auto_approve_with_veto",
+        "watch_fallback": "anchor_uncomputable_only",
+    }
 
 
 def test_single_share_exit_rule_is_provisional_shadow_only():

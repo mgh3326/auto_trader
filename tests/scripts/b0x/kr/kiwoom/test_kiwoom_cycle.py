@@ -211,6 +211,9 @@ async def test_record_carries_the_account_map_and_status_label(
     assert any("COEXISTING_ACCOUNT_LANE" in label for label in record["labels"]), (
         "the coexistence caveat must be on every artifact"
     )
+    assert all(
+        "LADDER_MULTI_RUNG_OBSERVATION_LIMIT" not in label for label in record["labels"]
+    )
     assert outcome.artifact_path is not None
     artifact = outcome.artifact_path.read_text(encoding="utf-8")
     assert "LADDER_MULTI_RUNG_OBSERVATION_LIMIT" not in artifact
