@@ -234,6 +234,10 @@ class RoundTripIncomplete(RuntimeError):
     """
 
 
+class SameCycleBuyBatchViolation(RuntimeError):
+    """A caller tried to widen the KR-only same-cycle BUY batch boundary."""
+
+
 def _truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -868,6 +872,7 @@ def align_price_kr(price: Decimal, *, side: str) -> int:
 
 @dataclass(frozen=True, slots=True)
 class PlannedOrder:
+    cycle_id: str
     order_key: str
     client_order_id: str
     symbol: str
@@ -879,6 +884,7 @@ class PlannedOrder:
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "cycle_id": self.cycle_id,
             "order_key": self.order_key,
             "client_order_id": self.client_order_id,
             "symbol": self.symbol,
@@ -915,6 +921,7 @@ def client_order_id_for(order_key: str) -> str:
 def plan_orders(
     orders: tuple[DerivedOrder, ...],
     *,
+    cycle_id: str,
     envelope: Envelope,
     held_quantities: dict[str, Decimal],
 ) -> tuple[list[PlannedOrder], list[BlockedOrder]]:
@@ -927,6 +934,8 @@ def plan_orders(
     """
 
     assert_envelope_locked(envelope)
+    if not cycle_id.startswith("b0x-"):
+        raise ValueError(f"invalid deterministic B0-X cycle_id: {cycle_id!r}")
 
     planned: list[PlannedOrder] = []
     blocked: list[BlockedOrder] = []
@@ -1003,6 +1012,7 @@ def plan_orders(
 
         planned.append(
             PlannedOrder(
+                cycle_id=cycle_id,
                 order_key=order.order_key,
                 client_order_id=client_order_id_for(order.order_key),
                 symbol=order.symbol,
@@ -1059,6 +1069,101 @@ class DayOrderResult:
             "automatic_cancel": False,
             "fill_status": "unverified",
         }
+
+
+_SAME_CYCLE_BUY_BATCH_PROOF: Final[object] = object()
+
+
+@dataclass(slots=True)
+class SameCycleBuyBatchAuthorization:
+    """One-shot proof that a KR BUY batch cleared the resubmit gate once.
+
+    The proof is deliberately lane-local and order-key exact. It cannot be
+    used for a different cycle, symbol, side, order, or order sequence, and it
+    cannot be replayed after an attempted dispatch. Single-order and SELL
+    submissions never receive this object and retain their existing gate.
+    """
+
+    cycle_id: str
+    symbol: str
+    order_keys: tuple[str, ...]
+    _proof: object = field(repr=False)
+    _next_index: int = field(default=0, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self._proof is not _SAME_CYCLE_BUY_BATCH_PROOF:
+            raise SameCycleBuyBatchViolation(
+                "same-cycle BUY batch authorization was not minted by the gate"
+            )
+
+    @property
+    def attempted_count(self) -> int:
+        return self._next_index
+
+    def claim(self, planned: PlannedOrder) -> None:
+        if planned.cycle_id != self.cycle_id:
+            raise SameCycleBuyBatchViolation(
+                f"batch cycle_id={self.cycle_id!r} cannot submit "
+                f"planned cycle_id={planned.cycle_id!r}"
+            )
+        if planned.symbol != self.symbol or planned.side != "buy":
+            raise SameCycleBuyBatchViolation(
+                "same-cycle BUY batch proof cannot cross symbol or side "
+                f"(batch={self.symbol}/buy, planned={planned.symbol}/{planned.side})"
+            )
+        if self._next_index >= len(self.order_keys):
+            raise SameCycleBuyBatchViolation("same-cycle BUY batch proof is exhausted")
+        expected = self.order_keys[self._next_index]
+        if planned.order_key != expected:
+            raise SameCycleBuyBatchViolation(
+                f"batch expected order_key={expected!r}, got {planned.order_key!r}"
+            )
+        # Consume before the broker call. A failed attempt is not replayable
+        # through the same proof; the cycle stops and records the partial state.
+        self._next_index += 1
+
+
+def authorize_same_cycle_buy_batch(
+    *,
+    cycle_id: str,
+    planned: tuple[PlannedOrder, ...],
+    broker_truth: BrokerTruth,
+) -> SameCycleBuyBatchAuthorization:
+    """Check the unchanged common gate once for one exact KR BUY batch."""
+
+    if not cycle_id.startswith("b0x-"):
+        raise SameCycleBuyBatchViolation(
+            f"invalid deterministic B0-X cycle_id: {cycle_id!r}"
+        )
+    if len(planned) < 2:
+        raise SameCycleBuyBatchViolation(
+            "same-cycle batch authorization requires at least two BUY orders"
+        )
+    if any(order.cycle_id != cycle_id for order in planned):
+        raise SameCycleBuyBatchViolation(
+            "every planned order must carry the exact authorizing cycle_id"
+        )
+    symbols = {order.symbol for order in planned}
+    if len(symbols) != 1:
+        raise SameCycleBuyBatchViolation(
+            f"same-cycle batch cannot cross symbols: {sorted(symbols)}"
+        )
+    if any(order.side != "buy" for order in planned):
+        raise SameCycleBuyBatchViolation(
+            "same-cycle batching is BUY-only; SELL semantics are unchanged"
+        )
+    order_keys = tuple(order.order_key for order in planned)
+    if len(set(order_keys)) != len(order_keys):
+        raise SameCycleBuyBatchViolation("same-cycle batch order keys must be unique")
+
+    symbol = planned[0].symbol
+    assert_resubmit_allowed(broker_truth, symbol=symbol, lane=LANE)
+    return SameCycleBuyBatchAuthorization(
+        cycle_id=cycle_id,
+        symbol=symbol,
+        order_keys=order_keys,
+        _proof=_SAME_CYCLE_BUY_BATCH_PROOF,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1309,13 +1414,49 @@ async def submit_day_order(
 ) -> DayOrderResult:
     """Submit one KRX limit order and deliberately leave its DAY lifecycle open.
 
-    The pre-dispatch resubmit gate and immediate journal append are identical
-    to the acceptance path. What differs is deliberate: no post-submit
-    cancellation, no inferred fill, and no claim that a still-open order is a
-    successful reconciliation.
+    Existing single-order callers retain the pre-dispatch resubmit gate on
+    every call. Same-cycle multi-rung BUYs use
+    :func:`submit_day_order_in_batch`, which requires the exact one-shot proof
+    minted by :func:`authorize_same_cycle_buy_batch` instead.
     """
 
     assert_resubmit_allowed(broker_truth, symbol=planned.symbol, lane=LANE)
+    return await _submit_day_order_after_resubmit_gate(
+        account,
+        planned=planned,
+        record_order_no=record_order_no,
+        now=now,
+    )
+
+
+async def submit_day_order_in_batch(
+    account: ReadOnlyKiwoomMockAccount,
+    *,
+    planned: PlannedOrder,
+    authorization: SameCycleBuyBatchAuthorization,
+    record_order_no: Any,
+    now: dt.datetime,
+) -> DayOrderResult:
+    """Submit one member of an already-authorized same-cycle KR BUY batch."""
+
+    authorization.claim(planned)
+    return await _submit_day_order_after_resubmit_gate(
+        account,
+        planned=planned,
+        record_order_no=record_order_no,
+        now=now,
+    )
+
+
+async def _submit_day_order_after_resubmit_gate(
+    account: ReadOnlyKiwoomMockAccount,
+    *,
+    planned: PlannedOrder,
+    record_order_no: Any,
+    now: dt.datetime,
+) -> DayOrderResult:
+    """Send only after a single-order gate or an exact batch proof was consumed."""
+
     result = DayOrderResult(
         correlation_id=planned.client_order_id,
         symbol=planned.symbol,
@@ -1515,6 +1656,8 @@ __all__ = [
     "RestingOrder",
     "RoundTripIncomplete",
     "RoundTripResult",
+    "SameCycleBuyBatchAuthorization",
+    "SameCycleBuyBatchViolation",
     "align_price_kr",
     "account_identity_summary",
     "assert_broker_ok",
@@ -1522,6 +1665,7 @@ __all__ = [
     "assert_kiwoom_lane_enabled",
     "assert_mock_host",
     "assert_resting_echo",
+    "authorize_same_cycle_buy_batch",
     "broker_pending_from_detail_rows",
     "broker_truth_from",
     "client_order_id_for",
@@ -1532,5 +1676,6 @@ __all__ = [
     "read_order_readback",
     "resting_orders_from_detail_rows",
     "submit_day_order",
+    "submit_day_order_in_batch",
     "submit_and_cancel",
 ]

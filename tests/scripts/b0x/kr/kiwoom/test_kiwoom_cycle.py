@@ -38,6 +38,7 @@ def _write_table(
     symbols: tuple[str, ...] = ("005930",),
     halted: list[str] | None = None,
     buy_l1: str | None = "70000",
+    buy_l2: str | None = None,
     sell_r1: str | None = None,
 ) -> None:
     """Write a real, hash-valid ``policy_table.v1`` for the KR market.
@@ -53,6 +54,7 @@ def _write_table(
                 symbol=symbol,
                 previous_close="72000.00",
                 buy_l1=buy_l1,
+                buy_l2=buy_l2,
                 sell_r1=sell_r1,
             )
             for symbol in symbols
@@ -188,6 +190,15 @@ async def test_record_carries_the_account_map_and_status_label(
     record = outcome.record
 
     assert record["cycle_status"] == "OBSERVATION_DERIVATION_ONLY"
+    assert record["contract"]["version"] == "v1.8"
+    assert record["contract"]["file_sha256_reference_only"] == (
+        "7d2729bc4197dd167d40e3e881b64f30a778b1b1a7158acf81fd0c7d38d008c0"
+    )
+    v18 = record["contract"]["clauses"]["§8 v1.8 (v1.5 ① KR amendment)"]
+    assert "동일 cycle_id·동일 symbol·BUY 다단" in v18
+    assert "다음 cycle의 기존 자기 미체결 차단" in v18
+    assert "crypto/US와 공용 게이트는 불변" in v18
+    assert "partial_failure + exit 2" in v18
     assert record["account_map"]["commit"] == kiwoom_cycle.KR_ACCOUNT_MAP_COMMIT
     assert record["account_map"]["gate_values"]["account_lanes.kiwoom_mock"] == "KR-B1"
     assert (
@@ -200,10 +211,9 @@ async def test_record_carries_the_account_map_and_status_label(
     assert any("COEXISTING_ACCOUNT_LANE" in label for label in record["labels"]), (
         "the coexistence caveat must be on every artifact"
     )
-    assert kiwoom_cycle.LADDER_MULTI_RUNG_OBSERVATION_LIMIT in record["labels"]
     assert outcome.artifact_path is not None
     artifact = outcome.artifact_path.read_text(encoding="utf-8")
-    assert "사다리 2단 이상은 현행 게이트로 제출되지 않는다(관측 한계)" in artifact
+    assert "LADDER_MULTI_RUNG_OBSERVATION_LIMIT" not in artifact
 
 
 @pytest.mark.asyncio
@@ -580,6 +590,265 @@ async def test_ordering_submits_table_derived_day_orders_with_readback_fidelity(
     )
     assert all(event["at"] and event["event"] for event in persisted_events)
     assert lease.checks >= len(outcome.record["day_orders"]) + 1
+
+
+@pytest.mark.asyncio
+async def test_ordering_batches_same_cycle_buy_ladder_under_one_gate(
+    table_dir, out_dir, armed, frozen_cycle_clock, monkeypatch
+) -> None:  # noqa: ANN001, ARG001
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        buy_l2="68000",
+    )
+    gate_symbols: list[str] = []
+    real_assert = kiwoom_lane.assert_resubmit_allowed
+
+    def counted_assert(truth, *, symbol, lane):  # noqa: ANN001, ANN202
+        gate_symbols.append(symbol)
+        return real_assert(truth, symbol=symbol, lane=lane)
+
+    monkeypatch.setattr(kiwoom_lane, "assert_resubmit_allowed", counted_assert)
+    account = _DynamicOrderingAccount()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: _TestOrderingLease(),
+    )
+
+    assert outcome.exit_code == 0
+    assert gate_symbols == ["005930"]
+    assert len(account.buy_calls) == 2
+    assert {order["cycle_id"] for order in outcome.record["planned"]} == {
+        outcome.record["cycle_id"]
+    }
+    batch = outcome.record["same_cycle_buy_batches"][0]
+    assert batch["cycle_id"] == outcome.record["cycle_id"]
+    assert batch["status"] == "complete"
+    assert batch["gate_checks"] == 1
+    assert batch["mutation_boundary_checks"] == 2
+    assert batch["accepted_count"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "second_error",
+    [
+        kiwoom_lane.KiwoomBrokerRejected(
+            api="kt10000", return_code=1, return_msg="second rung rejected"
+        ),
+        OSError("second rung transport failed"),
+    ],
+    ids=("broker-rejected", "transport-error"),
+)
+async def test_ordering_partial_batch_failure_is_not_success_and_retains_ack(
+    table_dir, out_dir, armed, frozen_cycle_clock, second_error
+) -> None:  # noqa: ANN001, ARG001
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        buy_l2="68000",
+    )
+
+    class RejectsSecondRung(_DynamicOrderingAccount):
+        async def place_limit_buy(self, *, symbol, quantity, price):  # noqa: ANN001, ANN201
+            if self.buy_calls:
+                await FakeAccount.place_limit_buy(
+                    self, symbol=symbol, quantity=quantity, price=price
+                )
+                raise second_error
+            return await super().place_limit_buy(
+                symbol=symbol, quantity=quantity, price=price
+            )
+
+    account = RejectsSecondRung()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: _TestOrderingLease(),
+    )
+
+    assert outcome.exit_code == 2
+    assert outcome.record["batch_submission_status"] == "partial_failure"
+    assert outcome.record["submission_stopped"] == "day_order_submission_unverified"
+    batch = outcome.record["same_cycle_buy_batches"][0]
+    assert batch["status"] == "partial_failure"
+    assert batch["accepted_count"] == 1
+    assert len(batch["remaining_order_keys"]) == 1
+    assert batch["compensating_cancel_attempted"] is False
+    assert len(outcome.record["day_orders"]) == 1
+    assert outcome.record["day_orders"][0]["broker_readback"]["partial"] is True
+    assert len(account.buy_calls) == 2
+    assert account.cancel_calls == []
+    assert outcome.artifact_path is not None
+    artifact = outcome.artifact_path.read_text(encoding="utf-8")
+    assert "PARTIAL_BATCH_FAILURE" in artifact
+    assert "성공이 아니다" in artifact
+    assert batch["accepted_order_keys"][0] in artifact
+    assert batch["remaining_order_keys"][0] in artifact
+    assert "| false | day_order_submission_unverified:" in artifact
+
+
+@pytest.mark.asyncio
+async def test_ordering_rechecks_foreign_trace_between_batch_legs(
+    table_dir, out_dir, armed, frozen_cycle_clock
+) -> None:  # noqa: ANN001, ARG001
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        buy_l2="68000",
+    )
+
+    class ForeignWriterInterleaves(_DynamicOrderingAccount):
+        async def place_limit_buy(self, *, symbol, quantity, price):  # noqa: ANN001, ANN201
+            result = await super().place_limit_buy(
+                symbol=symbol, quantity=quantity, price=price
+            )
+            if len(self.buy_calls) == 1:
+                self.rows.append(
+                    {
+                        "order_id": "foreign-between-legs",
+                        "symbol": symbol,
+                        "status": "open",
+                        "ordered_quantity": 1,
+                        "filled_quantity": 0,
+                        "remaining_quantity": 1,
+                        "unfilled_quantity": 1,
+                        "ordered_price": price,
+                        "average_price": 0,
+                    }
+                )
+            return result
+
+    account = ForeignWriterInterleaves()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: _TestOrderingLease(),
+    )
+
+    assert outcome.exit_code == 2
+    assert len(account.buy_calls) == 1
+    assert account.cancel_calls == []
+    batch = outcome.record["same_cycle_buy_batches"][0]
+    assert batch["status"] == "partial_failure"
+    assert batch["failure"]["reason"] == "mutation_boundary_not_clean"
+    assert batch["failure"]["detail"] == "foreign_same_day_orders_present"
+    assert (
+        outcome.record["mutation_boundaries"][-1]["foreign_same_day_orders"]["count"]
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_next_cycle_still_blocks_the_same_symbol_batch(
+    table_dir, out_dir, armed, frozen_cycle_clock
+) -> None:  # noqa: ANN001, ARG001
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        buy_l2="68000",
+    )
+    account = _DynamicOrderingAccount()
+
+    def readable_zero(**_kwargs):  # noqa: ANN003, ANN202
+        return kiwoom_attr.RealizedPnlInput(value=Decimal("0"), source="test")
+
+    first = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: _TestOrderingLease(),
+        realized_pnl_reader=readable_zero,
+    )
+    second = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock + dt.timedelta(minutes=1),
+        lease_factory=lambda *_: _TestOrderingLease(),
+        realized_pnl_reader=readable_zero,
+    )
+
+    assert len(first.record["day_orders"]) == 2
+    assert len(account.buy_calls) == 2, "cycle 2 must not stack another ladder"
+    assert first.record["cycle_id"] != second.record["cycle_id"]
+    assert second.record["orders"] == []
+    assert second.record["submitted"] == []
+    assert second.record["same_cycle_buy_batches"] == []
+    assert [skip["reason"] for skip in second.record["skipped"]] == [
+        "own_pending_order_exists"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ladder_batches_preserve_the_1800000_cycle_cap_and_daily_symbol_cap(
+    table_dir, out_dir, armed, frozen_cycle_clock
+) -> None:  # noqa: ANN001, ARG001
+    _write_table(
+        table_dir,
+        generated_at=IN_SESSION - dt.timedelta(hours=4),
+        symbols=("005930", "000660", "035420", "051910"),
+        buy_l2="68000",
+    )
+    account = _DynamicOrderingAccount()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: _TestOrderingLease(),
+    )
+
+    assert outcome.exit_code == 0
+    assert len(outcome.record["day_orders"]) == 6
+    assert len({order["symbol"] for order in outcome.record["day_orders"]}) == 3
+    assert all(
+        order["notional_krw"] <= 300_000 for order in outcome.record["day_orders"]
+    )
+    assert (
+        sum(order["notional_krw"] for order in outcome.record["day_orders"])
+        <= 1_800_000
+    )
+    for symbol in {order["symbol"] for order in outcome.record["day_orders"]}:
+        assert (
+            sum(
+                order["notional_krw"]
+                for order in outcome.record["day_orders"]
+                if order["symbol"] == symbol
+            )
+            <= 1_500_000
+        )
+    assert [
+        batch["gate_checks"] for batch in outcome.record["same_cycle_buy_batches"]
+    ] == [
+        1,
+        1,
+        1,
+    ]
+    assert any(
+        skip["symbol"] == "051910" and skip["reason"] == "daily_new_entry_cap_reached"
+        for skip in outcome.record["skipped"]
+    )
 
 
 @pytest.mark.asyncio

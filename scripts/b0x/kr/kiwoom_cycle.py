@@ -81,8 +81,20 @@ LANE = kiwoom_lane.LANE
 # Provenance is KR-lane-local on purpose (same reasoning as
 # ``scripts.b0x.kr.cycle``): the shared ``scripts.b0x.contract`` stamp still
 # describes the untouched US/crypto lanes.
-KR_CONTRACT_VERSION: Final[str] = "v1.6"
+KR_CONTRACT_VERSION: Final[str] = "v1.8"
+KR_CONTRACT_FILE_SHA256_REFERENCE_ONLY: Final[str] = (
+    "7d2729bc4197dd167d40e3e881b64f30a778b1b1a7158acf81fd0c7d38d008c0"
+)
 KR_CONTRACT_CLAUSES: Final[dict[str, str]] = {
+    "§8 v1.8 (v1.5 ① KR amendment)": (
+        "같은 사이클 = policy table hash + 제출 전 broker account state hash + "
+        "locked envelope hash + lane으로 계산한 결정적 cycle_id. 동일 cycle_id·동일 "
+        "symbol·BUY 다단만 묶음 직전 공용 재제출 게이트를 1회 검사한다. 후속 다리 "
+        "직전 lease + kt00007 foreign trace 재검사는 유지한다. 다음 cycle의 기존 자기 "
+        "미체결 차단, §4/§50 180만 cap, 일일 신규 3종목, SELL, 손실가드, crypto/US와 "
+        "공용 게이트는 불변. 부분 실패는 accepted DAY 주문을 보상 취소하지 않고 "
+        "보존하며 추가 mutation 중단 + partial_failure + exit 2로 기록한다."
+    ),
     "§8 v1.6": (
         "KR 자기 미체결의 kis_mock_order_ledger 예외는 **브로커 표면 부재** 한정. "
         "kiwoom_mock 은 kt00007 미체결조회를 지원하므로 이 예외를 쓰지 않는다 "
@@ -137,10 +149,24 @@ ORDERING_STATUS_LABEL: Final[str] = (
     "확인한다. KRX RTH only."
 )
 
-LADDER_MULTI_RUNG_OBSERVATION_LIMIT: Final[str] = (
-    "LADDER_MULTI_RUNG_OBSERVATION_LIMIT — 사다리 2단 이상은 현행 게이트로 "
-    "제출되지 않는다(관측 한계). 사이클 내 일괄 제출 계약이 랜딩하기 전까지의 "
-    "한시 라벨이다."
+SAME_CYCLE_BUY_BATCH_POLICY: Final[str] = (
+    "SAME_CYCLE_BUY_BATCH — 하나의 결정적 cycle_id에서 파생된 동일 symbol BUY "
+    "다단만 한 묶음이다. 묶음 직전 broker truth로 공용 재제출 게이트를 정확히 "
+    "1회 검사하고, 각 후속 다리 직전에는 writer lease + kt00007 foreign trace를 "
+    "다시 검사한다. 다른 cycle_id·symbol·SELL은 이 경계를 사용할 수 없다."
+)
+
+PARTIAL_BATCH_RETAIN_POLICY: Final[str] = (
+    "PARTIAL_BATCH_RETAIN — 묶음 도중 실패하면 이미 broker-acknowledged 된 DAY "
+    "주문은 취소하지 않고 그대로 보존한다. 보상 취소는 별도 broker mutation이며 "
+    "원실패보다 더 위험할 수 있다. 추가 제출은 즉시 중단하고 exit 2 + 부분 실패 "
+    "라벨과 accepted/remaining order key를 산출물에 기록한다."
+)
+
+PARTIAL_BATCH_FAILURE_LABEL: Final[str] = (
+    "PARTIAL_BATCH_FAILURE — 같은 사이클 BUY 묶음 일부만 broker acknowledgement를 "
+    "받았다. 성공이 아니다. 이미 접수된 DAY 주문은 보상 취소하지 않았고 추가 "
+    "mutation은 중단됐다."
 )
 
 ORDERING_REQUIREMENTS: Final[dict[str, str]] = {
@@ -149,6 +175,8 @@ ORDERING_REQUIREMENTS: Final[dict[str, str]] = {
     "lifecycle": "journal immediately after broker acknowledgement plus broker readback",
     "sell": "sell quantity is bounded by fresh attributed broker fills",
     "mutation_boundary": "fresh pending + same-day foreign trace before every mutation",
+    "buy_batch": SAME_CYCLE_BUY_BATCH_POLICY,
+    "partial_batch": PARTIAL_BATCH_RETAIN_POLICY,
     "lease": "account-keyed writer lease checked before every mutation",
     "pnl": "unreadable realized P&L input yields zero new orders",
     "kill": "kill cancels every own pending order and re-reads broker confirmation",
@@ -236,6 +264,37 @@ class KiwoomCycleOutcome:
     @property
     def order_count(self) -> int:
         return 0 if self.derivation is None else len(self.derivation.orders)
+
+
+def _render_kiwoom_cycle_report(
+    record: dict[str, Any], *, labels: tuple[str, ...]
+) -> str:
+    """Add KR batch lifecycle state to the shared deterministic report."""
+
+    base = render_cycle_report(record, labels=labels)
+    batches = record.get("same_cycle_buy_batches") or []
+    if not batches:
+        return base
+    lines = [
+        base.rstrip(),
+        "",
+        "## Same-cycle BUY batches",
+        "",
+        "| cycle_id | symbol | status | planned | accepted keys | remaining keys | compensating cancel | failure |",
+        "|---|---|---|---:|---|---|---|---|",
+    ]
+    for batch in batches:
+        failure = batch.get("failure") or {}
+        lines.append(
+            f"| {batch.get('cycle_id', '-')} | {batch.get('symbol', '-')} | "
+            f"`{batch.get('status', '-')}` | {batch.get('planned_count', 0)} | "
+            f"{', '.join(batch.get('accepted_order_keys') or []) or '-'} | "
+            f"{', '.join(batch.get('remaining_order_keys') or []) or '-'} | "
+            f"{str(bool(batch.get('compensating_cancel_attempted'))).lower()} | "
+            f"{failure.get('reason', '-')}:{failure.get('detail', '-')} |"
+        )
+    lines += ["", f"retention policy: {PARTIAL_BATCH_RETAIN_POLICY}", ""]
+    return "\n".join(lines)
 
 
 def _table_or_reason(
@@ -334,11 +393,17 @@ def _persist_outcome(
     record: dict[str, Any],
     labels: tuple[str, ...],
 ) -> KiwoomCycleOutcome:
+    artifact_labels = (
+        (*labels, PARTIAL_BATCH_FAILURE_LABEL)
+        if record.get("batch_submission_status") == "partial_failure"
+        else labels
+    )
+    record["labels"] = list(artifact_labels)
     ledger.record_cycle(record)
     outcome.record = record
     outcome.artifact_path = ledger.write_artifact(
         name=f"{outcome.at.strftime('%Y%m%dT%H%M%SZ')}-cycle.md",
-        content=render_cycle_report(record, labels=labels),
+        content=_render_kiwoom_cycle_report(record, labels=artifact_labels),
     )
     return outcome
 
@@ -724,7 +789,10 @@ async def _run_prepared_cycle(  # noqa: PLR0915 — retained acceptance path
 
     held = {pos.symbol: pos.quantity for pos in state.positions}
     planned, blocked = kiwoom_lane.plan_orders(
-        derivation.orders, envelope=envelope, held_quantities=held
+        derivation.orders,
+        cycle_id=derivation.cycle_id,
+        envelope=envelope,
+        held_quantities=held,
     )
     record["planned"] = [order.to_json() for order in planned]
     record["blocked"] = [order.to_json() for order in blocked]
@@ -1008,6 +1076,319 @@ def _record_ordering_boundary(
         record=record,
         event={"at": boundary.at.isoformat(), "event": "mutation_boundary", **evidence},
     )
+
+
+def _ordering_submission_groups(
+    planned: list[kiwoom_lane.PlannedOrder],
+) -> tuple[tuple[kiwoom_lane.PlannedOrder, ...], ...]:
+    """Keep order sequence while grouping only contiguous same-symbol BUY legs."""
+
+    groups: list[tuple[kiwoom_lane.PlannedOrder, ...]] = []
+    index = 0
+    while index < len(planned):
+        first = planned[index]
+        if first.side != "buy":
+            groups.append((first,))
+            index += 1
+            continue
+        end = index + 1
+        while (
+            end < len(planned)
+            and planned[end].side == "buy"
+            and planned[end].symbol == first.symbol
+        ):
+            end += 1
+        groups.append(tuple(planned[index:end]))
+        index = end
+    return tuple(groups)
+
+
+def _append_order_intent(
+    *,
+    order: kiwoom_lane.PlannedOrder,
+    table_prices: dict[str, str],
+    fidelity: ordering_support.OrderingEventJournal,
+    record: dict[str, Any],
+) -> None:
+    intent = {
+        "at": dt.datetime.now(dt.UTC).isoformat(),
+        "event": "table_price_to_intended_limit",
+        "cycle_id": order.cycle_id,
+        "order_key": order.order_key,
+        "correlation_id": order.client_order_id,
+        "symbol": order.symbol,
+        "side": order.side,
+        "table_price": table_prices.get(order.order_key),
+        "intended_limit": order.price,
+        "quantity": order.quantity,
+        "time_in_force": "DAY",
+    }
+    _append_ordering_event(journal=fidelity, record=record, event=intent)
+
+
+async def _record_day_order_lifecycle(
+    *,
+    account: kiwoom_lane.ReadOnlyKiwoomMockAccount,
+    order: kiwoom_lane.PlannedOrder,
+    day_order: kiwoom_lane.DayOrderResult,
+    cycle_now: dt.datetime,
+    table_prices: dict[str, str],
+    day_orders: list[dict[str, Any]],
+    fidelity: ordering_support.OrderingEventJournal,
+    record: dict[str, Any],
+) -> tuple[str, str] | None:
+    """Persist acknowledgement first, then require exact broker readback."""
+
+    assert day_order.order_no is not None
+    ack = {
+        **day_order.canonical(),
+        "cycle_id": order.cycle_id,
+        "order_key": order.order_key,
+        "table_price": table_prices.get(order.order_key),
+    }
+    day_orders.append(ack)
+    _append_ordering_event(
+        journal=fidelity,
+        record=record,
+        event={
+            "at": dt.datetime.now(dt.UTC).isoformat(),
+            "event": "broker_ack",
+            "cycle_id": order.cycle_id,
+            "order_key": order.order_key,
+            "broker_ack": ack,
+        },
+    )
+    try:
+        readback = await kiwoom_lane.read_order_readback(
+            account,
+            planned=order,
+            order_no=day_order.order_no,
+            order_date=kiwoom_attr.kst_order_date(cycle_now),
+            at=dt.datetime.now(dt.UTC),
+        )
+    except (
+        kiwoom_lane.BrokerOrderReadbackUnavailable,
+        kiwoom_lane.BrokerEchoMismatch,
+    ) as exc:
+        ack["readback_failure"] = str(exc)
+        return "broker_readback_unavailable", type(exc).__name__
+
+    readback_evidence = readback.canonical()
+    ack["broker_readback"] = readback_evidence
+    _append_ordering_event(
+        journal=fidelity,
+        record=record,
+        event={
+            "at": readback.at.isoformat(),
+            "event": "broker_readback_reconcile",
+            "cycle_id": order.cycle_id,
+            "order_key": order.order_key,
+            "broker_readback": readback_evidence,
+        },
+    )
+    return None
+
+
+def _mark_buy_batch_failure(
+    *,
+    batch: dict[str, Any],
+    record: dict[str, Any],
+    reason: str,
+    detail: str,
+) -> str:
+    accepted = list(batch["accepted_order_keys"])
+    planned = list(batch["order_keys"])
+    if 0 < len(accepted) < len(planned):
+        status = "partial_failure"
+    elif accepted:
+        status = "incomplete_after_all_acknowledged"
+    else:
+        status = "failed_before_acknowledgement"
+    batch.update(
+        {
+            "status": status,
+            "accepted_count": len(accepted),
+            "remaining_order_keys": [key for key in planned if key not in accepted],
+            "failure": {"reason": reason, "detail": detail},
+            "compensating_cancel_attempted": False,
+            "retention_policy": PARTIAL_BATCH_RETAIN_POLICY,
+        }
+    )
+    record["batch_submission_status"] = status
+    return status
+
+
+async def _submit_same_cycle_buy_batch(  # noqa: PLR0913
+    *,
+    account: kiwoom_lane.ReadOnlyKiwoomMockAccount,
+    batch_orders: tuple[kiwoom_lane.PlannedOrder, ...],
+    cycle_id: str,
+    scoped: kr_attribution.ScopedPositions,
+    halted: set[str],
+    journal: kiwoom_attr.OwnOrderJournal,
+    lease: ordering_support.WriterLease,
+    fidelity: ordering_support.OrderingEventJournal,
+    record: dict[str, Any],
+    day_orders: list[dict[str, Any]],
+    table_prices: dict[str, str],
+    cycle_now: dt.datetime,
+) -> tuple[str, str, bool] | None:
+    """Gate once, then submit one exact same-cycle/symbol BUY group in order."""
+
+    batch = {
+        "cycle_id": cycle_id,
+        "symbol": batch_orders[0].symbol,
+        "side": "buy",
+        "order_keys": [order.order_key for order in batch_orders],
+        "planned_count": len(batch_orders),
+        "accepted_order_keys": [],
+        "accepted_order_nos": [],
+        "gate_checks": 0,
+        "mutation_boundary_checks": 0,
+        "status": "pending",
+        "retention_policy": PARTIAL_BATCH_RETAIN_POLICY,
+    }
+    record.setdefault("same_cycle_buy_batches", []).append(batch)
+    for order in batch_orders:
+        _append_order_intent(
+            order=order,
+            table_prices=table_prices,
+            fidelity=fidelity,
+            record=record,
+        )
+
+    if batch["symbol"] in halted:
+        record.setdefault("submission_blocked", []).append(
+            {"symbol": batch["symbol"], "reason": "halted_suspect_symbol"}
+        )
+        batch["status"] = "blocked_halted_suspect"
+        return None
+
+    boundary = await _read_mutation_boundary(
+        account=account,
+        journal=journal,
+        lease=lease,
+        at=dt.datetime.now(dt.UTC),
+    )
+    batch["mutation_boundary_checks"] += 1
+    _record_ordering_boundary(
+        boundary=boundary,
+        action=f"batch_gate:{cycle_id}:{batch['symbol']}",
+        fidelity=fidelity,
+        record=record,
+    )
+    if not boundary.clean:
+        reason = "mutation_boundary_not_clean"
+        detail = boundary.blocking_reason or "unknown_boundary_failure"
+        _mark_buy_batch_failure(
+            batch=batch, record=record, reason=reason, detail=detail
+        )
+        return reason, detail, False
+
+    current_truth = kiwoom_lane.broker_truth_from(
+        position_symbols=scoped.cap_position_symbols,
+        pending=boundary.pending,
+    )
+    batch["gate_checks"] = 1
+    batch["gate_checked_at"] = boundary.at.isoformat()
+    try:
+        authorization = kiwoom_lane.authorize_same_cycle_buy_batch(
+            cycle_id=cycle_id,
+            planned=batch_orders,
+            broker_truth=current_truth,
+        )
+    except OwnPendingResubmitBlocked as exc:
+        batch["status"] = "blocked_by_preexisting_pending"
+        batch["failure"] = {
+            "reason": "pending_recheck_blocked",
+            "detail": str(exc),
+        }
+        record.setdefault("submission_dedup_blocked", []).append(
+            {
+                "symbol": batch["symbol"],
+                "cycle_id": cycle_id,
+                "reason": "pending_recheck_blocked",
+                "detail": str(exc),
+            }
+        )
+        return None
+    except kiwoom_lane.SameCycleBuyBatchViolation as exc:
+        reason = "same_cycle_batch_invalid"
+        detail = str(exc)
+        _mark_buy_batch_failure(
+            batch=batch, record=record, reason=reason, detail=detail
+        )
+        return reason, detail, True
+
+    for index, order in enumerate(batch_orders):
+        if index:
+            boundary = await _read_mutation_boundary(
+                account=account,
+                journal=journal,
+                lease=lease,
+                at=dt.datetime.now(dt.UTC),
+            )
+            batch["mutation_boundary_checks"] += 1
+            _record_ordering_boundary(
+                boundary=boundary,
+                action=f"batch_continue:{cycle_id}:{order.order_key}",
+                fidelity=fidelity,
+                record=record,
+            )
+            if not boundary.clean:
+                reason = "mutation_boundary_not_clean"
+                detail = boundary.blocking_reason or "unknown_boundary_failure"
+                _mark_buy_batch_failure(
+                    batch=batch, record=record, reason=reason, detail=detail
+                )
+                return reason, detail, False
+        try:
+            day_order = await kiwoom_lane.submit_day_order_in_batch(
+                account,
+                planned=order,
+                authorization=authorization,
+                record_order_no=_journal_writer(journal),
+                now=dt.datetime.now(dt.UTC),
+            )
+        except Exception as exc:  # noqa: BLE001 — every batch failure is material
+            reason = "day_order_submission_unverified"
+            detail = type(exc).__name__
+            record.setdefault("day_order_failures", []).append(str(exc))
+            _mark_buy_batch_failure(
+                batch=batch, record=record, reason=reason, detail=detail
+            )
+            return reason, detail, True
+
+        assert day_order.order_no is not None
+        batch["accepted_order_keys"].append(order.order_key)
+        batch["accepted_order_nos"].append(day_order.order_no)
+        lifecycle_failure = await _record_day_order_lifecycle(
+            account=account,
+            order=order,
+            day_order=day_order,
+            cycle_now=cycle_now,
+            table_prices=table_prices,
+            day_orders=day_orders,
+            fidelity=fidelity,
+            record=record,
+        )
+        if lifecycle_failure is not None:
+            reason, detail = lifecycle_failure
+            _mark_buy_batch_failure(
+                batch=batch, record=record, reason=reason, detail=detail
+            )
+            return reason, detail, True
+
+    batch.update(
+        {
+            "status": "complete",
+            "accepted_count": len(batch["accepted_order_keys"]),
+            "remaining_order_keys": [],
+            "compensating_cancel_attempted": False,
+        }
+    )
+    record["batch_submission_status"] = "complete"
+    return None
 
 
 async def _cancel_own_pending_on_kill(  # noqa: PLR0915 — linear safety sequence
@@ -1398,7 +1779,10 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
 
     held = {pos.symbol: pos.quantity for pos in state.positions}
     planned, blocked = kiwoom_lane.plan_orders(
-        derivation.orders, envelope=envelope, held_quantities=held
+        derivation.orders,
+        cycle_id=derivation.cycle_id,
+        envelope=envelope,
+        held_quantities=held,
     )
     record["planned"] = [order.to_json() for order in planned]
     record["blocked"] = [order.to_json() for order in blocked]
@@ -1415,22 +1799,47 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
     # fails.  A broker-accepted order must not disappear from the summary just
     # because its lifecycle could not yet be proven complete.
     record["day_orders"] = day_orders
+    record["same_cycle_buy_batch_policy"] = SAME_CYCLE_BUY_BATCH_POLICY
+    record["partial_batch_retention_policy"] = PARTIAL_BATCH_RETAIN_POLICY
+    record["same_cycle_buy_batches"] = []
     halted = set(halted_suspect_symbols(table))
-    for order in planned:
-        intent_at = dt.datetime.now(dt.UTC)
-        intent = {
-            "at": intent_at.isoformat(),
-            "event": "table_price_to_intended_limit",
-            "order_key": order.order_key,
-            "correlation_id": order.client_order_id,
-            "symbol": order.symbol,
-            "side": order.side,
-            "table_price": table_prices.get(order.order_key),
-            "intended_limit": order.price,
-            "quantity": order.quantity,
-            "time_in_force": "DAY",
-        }
-        _append_ordering_event(journal=fidelity, record=record, event=intent)
+    for submission_group in _ordering_submission_groups(planned):
+        if len(submission_group) > 1:
+            stop = await _submit_same_cycle_buy_batch(
+                account=account,
+                batch_orders=submission_group,
+                cycle_id=derivation.cycle_id,
+                scoped=scoped,
+                halted=halted,
+                journal=journal,
+                lease=lease,
+                fidelity=fidelity,
+                record=record,
+                day_orders=day_orders,
+                table_prices=table_prices,
+                cycle_now=now,
+            )
+            if stop is not None:
+                reason, detail, force_exit_two = stop
+                if force_exit_two:
+                    outcome.exit_code = 2
+                return _finish_ordering_stopped(
+                    outcome=outcome,
+                    ledger=ledger,
+                    record=record,
+                    labels=labels,
+                    reason=reason,
+                    detail=detail,
+                )
+            continue
+
+        order = submission_group[0]
+        _append_order_intent(
+            order=order,
+            table_prices=table_prices,
+            fidelity=fidelity,
+            record=record,
+        )
         if order.symbol in halted:
             record.setdefault("submission_blocked", []).append(
                 {"symbol": order.symbol, "reason": "halted_suspect_symbol"}
@@ -1547,56 +1956,27 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
                 reason="day_order_submission_unverified",
                 detail=type(exc).__name__,
             )
-        assert day_order.order_no is not None
-        ack = {
-            **day_order.canonical(),
-            "table_price": table_prices.get(order.order_key),
-        }
-        day_orders.append(ack)
-        _append_ordering_event(
-            journal=fidelity,
+        lifecycle_failure = await _record_day_order_lifecycle(
+            account=account,
+            order=order,
+            day_order=day_order,
+            cycle_now=now,
+            table_prices=table_prices,
+            day_orders=day_orders,
+            fidelity=fidelity,
             record=record,
-            event={
-                "at": dt.datetime.now(dt.UTC).isoformat(),
-                "event": "broker_ack",
-                "order_key": order.order_key,
-                "broker_ack": ack,
-            },
         )
-        try:
-            readback = await kiwoom_lane.read_order_readback(
-                account,
-                planned=order,
-                order_no=day_order.order_no,
-                order_date=kiwoom_attr.kst_order_date(now),
-                at=dt.datetime.now(dt.UTC),
-            )
-        except (
-            kiwoom_lane.BrokerOrderReadbackUnavailable,
-            kiwoom_lane.BrokerEchoMismatch,
-        ) as exc:
+        if lifecycle_failure is not None:
+            reason, detail = lifecycle_failure
             outcome.exit_code = 2
-            ack["readback_failure"] = str(exc)
             return _finish_ordering_stopped(
                 outcome=outcome,
                 ledger=ledger,
                 record=record,
                 labels=labels,
-                reason="broker_readback_unavailable",
-                detail=type(exc).__name__,
+                reason=reason,
+                detail=detail,
             )
-        readback_evidence = readback.canonical()
-        ack["broker_readback"] = readback_evidence
-        _append_ordering_event(
-            journal=fidelity,
-            record=record,
-            event={
-                "at": readback.at.isoformat(),
-                "event": "broker_readback_reconcile",
-                "order_key": order.order_key,
-                "broker_readback": readback_evidence,
-            },
-        )
 
     record["fidelity_artifact"]["event_count_after_cycle"] = len(fidelity.read_all())
     return _persist_outcome(
@@ -1648,6 +2028,7 @@ def _stamp_contract_and_account_map(
         "path": "~/work/herdr-inbox/b0x-experiment-contract-v1-20260808.md",
         "version": KR_CONTRACT_VERSION,
         "clauses": dict(KR_CONTRACT_CLAUSES),
+        "file_sha256_reference_only": KR_CONTRACT_FILE_SHA256_REFERENCE_ONLY,
     }
     record["account_map"] = {
         "repo": "auto_trader-operator",
@@ -1692,12 +2073,7 @@ async def run_kiwoom_cycle(
     cycle_status, status_label = _cycle_status(confirm=confirm, mode=mode)
     labels = header_labels(
         lane=LANE,
-        extra=(
-            *account_history_labels(LANE),
-            COEXISTENCE_LABEL,
-            status_label,
-            LADDER_MULTI_RUNG_OBSERVATION_LIMIT,
-        ),
+        extra=(*account_history_labels(LANE), COEXISTENCE_LABEL, status_label),
     )
     outcome = KiwoomCycleOutcome(lane=LANE, at=now)
     root = Path(out_dir).expanduser()
