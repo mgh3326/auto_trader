@@ -137,6 +137,12 @@ ORDERING_STATUS_LABEL: Final[str] = (
     "확인한다. KRX RTH only."
 )
 
+LADDER_MULTI_RUNG_OBSERVATION_LIMIT: Final[str] = (
+    "LADDER_MULTI_RUNG_OBSERVATION_LIMIT — 사다리 2단 이상은 현행 게이트로 "
+    "제출되지 않는다(관측 한계). 사이클 내 일괄 제출 계약이 랜딩하기 전까지의 "
+    "한시 라벨이다."
+)
+
 ORDERING_REQUIREMENTS: Final[dict[str, str]] = {
     "table_only": "policy_table deterministic derivation within locked §4 envelope",
     "day": "default TIF is DAY; successful acknowledgement is never auto-cancelled",
@@ -1686,7 +1692,12 @@ async def run_kiwoom_cycle(
     cycle_status, status_label = _cycle_status(confirm=confirm, mode=mode)
     labels = header_labels(
         lane=LANE,
-        extra=(*account_history_labels(LANE), COEXISTENCE_LABEL, status_label),
+        extra=(
+            *account_history_labels(LANE),
+            COEXISTENCE_LABEL,
+            status_label,
+            LADDER_MULTI_RUNG_OBSERVATION_LIMIT,
+        ),
     )
     outcome = KiwoomCycleOutcome(lane=LANE, at=now)
     root = Path(out_dir).expanduser()
