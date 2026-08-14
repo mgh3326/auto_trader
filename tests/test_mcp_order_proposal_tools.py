@@ -1,5 +1,6 @@
 import contextlib
 import functools
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -873,6 +874,96 @@ async def test_create_then_get_then_list():
     listed = await opt.order_proposal_list(limit=10, symbol="000660")
     assert listed["success"] is True
     assert any(p["proposal_id"] == pid for p in listed["proposals"])
+
+
+@pytest.mark.asyncio
+async def test_get_and_list_project_safe_auto_approve_rejection_evidence():
+    created = await opt.order_proposal_create(
+        symbol="AUTO-REJECT-EVIDENCE",
+        market="equity_us",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="operator:sess-evidence",
+        thesis="ordinary support retest",
+        strategy="ladder",
+        rungs=[
+            {
+                "rung_index": 0,
+                "side": "buy",
+                "quantity": "1",
+                "limit_price": "100",
+                "notional": None,
+            }
+        ],
+    )
+    now = datetime(2026, 8, 13, 7, 50, tzinfo=UTC)
+    raw_input = "private-preview-material-must-not-escape"
+    async with AsyncSessionLocal() as session:
+        service = OrderProposalsService(session)
+        await service.record_auto_approve_rejections(
+            uuid.UUID(created["proposal_id"]),
+            decisions=[
+                {
+                    "rung_index": 0,
+                    "eligible": False,
+                    "reason": "approval_required_tag",
+                    "policy_version": "2026-08-12.3",
+                    "mode": "expanded",
+                    "tags": "policy_deviation",
+                    "tag_matches": [
+                        {
+                            "token": "policy_deviation",
+                            "field": "rationale",
+                            "path": "$.context.tags[0]",
+                            "kind": "json_value",
+                            "char_start": 0,
+                        }
+                    ],
+                    "error": raw_input,
+                }
+            ],
+            now=now,
+        )
+        await session.commit()
+
+    got = await opt.order_proposal_get(created["proposal_id"])
+    listed = await opt.order_proposal_list(symbol="AUTO-REJECT-EVIDENCE")
+    expected = [
+        {
+            "evaluated_at": now.isoformat(),
+            "policy_version": "2026-08-12.3",
+            "rungs": [
+                {
+                    "rung_index": 0,
+                    "reason_code": "approval_required_tag",
+                    "inputs": {
+                        "policy_version": "2026-08-12.3",
+                        "mode": "expanded",
+                        "tags": ["policy_deviation"],
+                        "tag_matches": [
+                            {
+                                "token": "policy_deviation",
+                                "field": "rationale",
+                                "path": "$.context.tags[0]",
+                                "kind": "json_value",
+                                "char_start": 0,
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+    ]
+    assert got["proposal"]["auto_approve_rejections"] == expected
+    row = next(
+        proposal
+        for proposal in listed["proposals"]
+        if proposal["proposal_id"] == created["proposal_id"]
+    )
+    assert row["auto_approve_rejections"] == expected
+    assert raw_input not in json.dumps(got)
+    assert raw_input not in json.dumps(listed)
 
 
 @pytest.mark.asyncio

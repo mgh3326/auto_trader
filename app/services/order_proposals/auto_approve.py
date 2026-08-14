@@ -37,6 +37,7 @@ Two classifications live here, selected by ``AutoApproveLimits.mode``
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -46,6 +47,9 @@ from app.services.order_proposals.approval_message import (
     _escape_inline_code,
     _escape_markdown,
     build_callback_data,
+)
+from app.services.order_proposals.auto_approve_audit import (
+    AUTO_APPROVE_REJECTIONS_KEY,
 )
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
@@ -104,6 +108,21 @@ _TAG_SCAN_FIELDS = (
     "exit_reason",
     "void_reason",
 )
+_TAG_PATH_KEY_ALLOWLIST = frozenset(
+    {
+        "context",
+        "decision",
+        "flags",
+        "labels",
+        "metadata",
+        "notes",
+        "reason",
+        "review",
+        "tag",
+        "tags",
+    }
+)
+_MAX_TAG_MATCHES = 24
 
 # Both-leg cost floor in basis points, per market. NOT measured rates: the two
 # veto-capable ledgers (review.kis_live_order_ledger, review.live_order_ledger)
@@ -138,7 +157,7 @@ class AutoApproveLimits:
 class AutoApproveDecision:
     eligible: bool
     reason: str
-    details: dict[str, str]
+    details: dict[str, Any]
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -152,6 +171,10 @@ def _decimal(value: Any) -> Decimal | None:
 def _text(value: Decimal) -> str:
     normalized = format(value.normalize(), "f")
     return normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
+
+
+def _known_value(value: Any, allowed: frozenset[str]) -> str:
+    return value if isinstance(value, str) and value in allowed else "unrecognized"
 
 
 def auto_veto_thesis_summary(group: Any) -> str | None:
@@ -206,27 +229,201 @@ def limits_for_market(market: str) -> AutoApproveLimits | None:
     )
 
 
+@dataclass(frozen=True)
+class _ApprovalRequiredTagScan:
+    fields: tuple[tuple[str, Any, str], ...]
+    tags: tuple[str, ...]
+    failed: bool
+
+
+def _scan_approval_required_tags(group: Any) -> _ApprovalRequiredTagScan:
+    """Scan once so an audit match cannot alter the classification result."""
+    fields: list[tuple[str, Any, str]] = []
+    try:
+        for field in _TAG_SCAN_FIELDS:
+            value = getattr(group, field, None)
+            if value is None:
+                continue
+            if field == "source_asof" and isinstance(value, Mapping):
+                # This is system-generated audit output, not proposal input.
+                # Re-scanning it on a later dispatch would turn its own tag
+                # evidence into a new match location and eventually crowd out
+                # the original evidence under the match cap.
+                value = {
+                    key: child
+                    for key, child in value.items()
+                    if key != AUTO_APPROVE_REJECTIONS_KEY
+                }
+            fields.append(
+                (
+                    field,
+                    value,
+                    value
+                    if isinstance(value, str)
+                    else json.dumps(value, default=str, ensure_ascii=False),
+                )
+            )
+    except Exception:  # noqa: BLE001 - unreadable metadata is not a clearance
+        return _ApprovalRequiredTagScan(
+            (), tuple(sorted(_APPROVAL_REQUIRED_TAGS)), True
+        )
+    haystack = "\n".join(rendered for _, _, rendered in fields).lower()
+    return _ApprovalRequiredTagScan(
+        tuple(fields),
+        tuple(sorted(tag for tag in _APPROVAL_REQUIRED_TAGS if tag in haystack)),
+        False,
+    )
+
+
 def find_approval_required_tags(group: Any) -> tuple[str, ...]:
     """Return the §40차 approval-required tags carried anywhere on ``group``.
 
     Fails closed: if any field resists serialization the proposal is treated
     as carrying every tag, which routes it to a human.
     """
-    parts: list[str] = []
-    try:
-        for field in _TAG_SCAN_FIELDS:
-            value = getattr(group, field, None)
-            if value is None:
-                continue
-            parts.append(
-                value
-                if isinstance(value, str)
-                else json.dumps(value, default=str, ensure_ascii=False)
+    return _scan_approval_required_tags(group).tags
+
+
+def _path_for_json_child(path: str, key: Any, index: int) -> str:
+    """Keep evidence locatable without exposing arbitrary JSON keys."""
+    if isinstance(key, str) and key in _TAG_PATH_KEY_ALLOWLIST:
+        return f"{path}.{key}"
+    return f"{path}[{index}]"
+
+
+def _find_text_matches(
+    text: str,
+    *,
+    token: str,
+    field: str,
+    path: str,
+    kind: str,
+) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    haystack = text.lower()
+    start = 0
+    while len(matches) < _MAX_TAG_MATCHES:
+        found = haystack.find(token, start)
+        if found < 0:
+            break
+        matches.append(
+            {
+                "token": token,
+                "field": field,
+                "path": path,
+                "kind": kind,
+                "char_start": found,
+            }
+        )
+        start = found + len(token)
+    return matches
+
+
+def _find_tag_matches_in_value(
+    value: Any,
+    *,
+    token: str,
+    field: str,
+    path: str,
+    nested: bool,
+) -> list[dict[str, Any]]:
+    if isinstance(value, str):
+        return _find_text_matches(
+            value,
+            token=token,
+            field=field,
+            path=path,
+            kind="json_value" if nested else "text",
+        )
+    if isinstance(value, dict):
+        matches: list[dict[str, Any]] = []
+        for index, (key, child) in enumerate(value.items()):
+            child_path = _path_for_json_child(path, key, index)
+            if isinstance(key, str):
+                matches.extend(
+                    _find_text_matches(
+                        key,
+                        token=token,
+                        field=field,
+                        path=child_path,
+                        kind="json_key",
+                    )
+                )
+            matches.extend(
+                _find_tag_matches_in_value(
+                    child,
+                    token=token,
+                    field=field,
+                    path=child_path,
+                    nested=True,
+                )
             )
-    except Exception:  # noqa: BLE001 - unreadable metadata is not a clearance
-        return tuple(sorted(_APPROVAL_REQUIRED_TAGS))
-    haystack = "\n".join(parts).lower()
-    return tuple(sorted(tag for tag in _APPROVAL_REQUIRED_TAGS if tag in haystack))
+            if len(matches) >= _MAX_TAG_MATCHES:
+                return matches[:_MAX_TAG_MATCHES]
+        return matches
+    if isinstance(value, (list, tuple)):
+        matches = []
+        for index, child in enumerate(value):
+            matches.extend(
+                _find_tag_matches_in_value(
+                    child,
+                    token=token,
+                    field=field,
+                    path=f"{path}[{index}]",
+                    nested=True,
+                )
+            )
+            if len(matches) >= _MAX_TAG_MATCHES:
+                return matches[:_MAX_TAG_MATCHES]
+        return matches
+    return []
+
+
+def _scan_unavailable_matches(tags: tuple[str, ...]) -> list[dict[str, Any]]:
+    return [
+        {
+            "token": token,
+            "field": "source_asof",
+            "path": "$",
+            "kind": "scan_unavailable",
+            "char_start": 0,
+        }
+        for token in tags
+    ]
+
+
+def _tag_matches_from_scan(scan: _ApprovalRequiredTagScan) -> list[dict[str, Any]]:
+    if not scan.tags:
+        return []
+    if scan.failed:
+        return _scan_unavailable_matches(scan.tags)
+
+    try:
+        matches: list[dict[str, Any]] = []
+        for token in scan.tags:
+            for field, value, rendered in scan.fields:
+                locations = _find_tag_matches_in_value(
+                    value, token=token, field=field, path="$", nested=False
+                )
+                if not locations and token in rendered.lower():
+                    locations = _find_text_matches(
+                        rendered,
+                        token=token,
+                        field=field,
+                        path="$",
+                        kind="serialized",
+                    )
+                matches.extend(locations)
+                if len(matches) >= _MAX_TAG_MATCHES:
+                    return matches[:_MAX_TAG_MATCHES]
+        return matches
+    except Exception:  # noqa: BLE001 - audit evidence must not clear a veto
+        return _scan_unavailable_matches(scan.tags)
+
+
+def find_approval_required_tag_matches(group: Any) -> list[dict[str, Any]]:
+    """Return only token + structural location, never the matched free text."""
+    return _tag_matches_from_scan(_scan_approval_required_tags(group))
 
 
 @dataclass(frozen=True)
@@ -308,51 +505,83 @@ def evaluate_auto_approve_eligibility(
 
     base = {"policy_version": limits.policy_version}
 
-    def reject(reason: str, **details: str) -> AutoApproveDecision:
+    def reject(reason: str, **details: Any) -> AutoApproveDecision:
         return AutoApproveDecision(False, reason, {**base, **details})
 
     mode = limits.mode
     if mode not in ("off", "expanded"):
         # An unrecognised mode is not a licence to submit.
-        return reject("unknown_auto_approve_mode", mode=str(mode))
+        return reject("unknown_auto_approve_mode", mode="unrecognized")
     base["mode"] = mode
 
-    if (getattr(group, "action", None) or "place") != "place":
-        return reject("action_not_place")
-    if getattr(group, "order_type", None) != "limit":
-        return reject("order_type_not_limit")
+    action = getattr(group, "action", None) or "place"
+    if action != "place":
+        return reject(
+            "action_not_place",
+            action=_known_value(action, frozenset({"place", "replace", "cancel"})),
+        )
+    order_type = getattr(group, "order_type", None)
+    if order_type != "limit":
+        return reject(
+            "order_type_not_limit",
+            order_type=_known_value(order_type, frozenset({"limit", "market"})),
+        )
     exit_intent = getattr(group, "exit_intent", None)
     if exit_intent == "loss_cut":
         # §40차: a loss cut is always a human's call. Kept as its own reason so
         # the audit row says why, and so a future exit-intent vocabulary cannot
         # dilute this branch.
-        return reject("loss_cut_intent")
+        return reject("loss_cut_intent", exit_intent_present=True)
     if exit_intent is not None:
-        return reject("exit_intent_present", exit_intent=str(exit_intent))
+        return reject("exit_intent_present", exit_intent_present=True)
+    account_mode = getattr(group, "account_mode", None)
+    market = getattr(group, "market", None)
     if not _is_veto_capable_account_market(
-        getattr(group, "account_mode", None),
-        getattr(group, "market", None),
+        account_mode,
+        market,
     ):
-        return reject("account_not_veto_capable")
+        return reject(
+            "account_not_veto_capable",
+            account_mode=_known_value(
+                account_mode,
+                frozenset(
+                    {"kis_live", "kis_mock", "toss_live", "upbit", "db_simulated"}
+                ),
+            ),
+            market=_known_value(
+                market,
+                frozenset({"equity_kr", "equity_us", "crypto", "forex", "index"}),
+            ),
+        )
     # Applied in both modes: this can only ever reject.
-    tags = find_approval_required_tags(group)
+    tag_scan = _scan_approval_required_tags(group)
+    tags = tag_scan.tags
     if tags:
-        return reject("approval_required_tag", tags=",".join(tags))
+        return reject(
+            "approval_required_tag",
+            tags=",".join(tags),
+            tag_matches=_tag_matches_from_scan(tag_scan),
+        )
     if preview.get("success") is not True:
-        return reject("preview_guard_failed")
+        return reject(
+            "preview_guard_failed",
+            preview_success="false" if preview.get("success") is False else "invalid",
+        )
 
     current_price = _decimal(preview.get("current_price"))
     limit_price = _decimal(getattr(rung, "limit_price", None))
     quantity = _decimal(getattr(rung, "quantity", None))
-    if (
-        current_price is None
-        or current_price <= 0
-        or limit_price is None
-        or limit_price <= 0
-        or quantity is None
-        or quantity <= 0
-    ):
-        return reject("price_or_quantity_missing")
+    missing_inputs = [
+        name
+        for name, value in (
+            ("current_price", current_price),
+            ("limit_price", limit_price),
+            ("quantity", quantity),
+        )
+        if value is None or value <= 0
+    ]
+    if missing_inputs:
+        return reject("price_or_quantity_missing", missing_inputs=missing_inputs)
 
     # Use the executable price × quantity, never proposer-supplied advisory
     # notional, so a stale or understated metadata field cannot bypass caps.
@@ -373,7 +602,10 @@ def evaluate_auto_approve_eligibility(
 
     side = getattr(rung, "side", None)
     if side not in ("buy", "sell"):
-        return reject("side_not_supported")
+        return reject(
+            "side_not_supported",
+            side=_known_value(side, frozenset({"buy", "sell"})),
+        )
 
     # `expanded` drops the min_distance_pct floor but still requires the rung
     # to rest: a buy at or above the market (a sell at or below it) can fill
@@ -391,7 +623,13 @@ def evaluate_auto_approve_eligibility(
         distance_pct = (current_price - limit_price) / current_price * Decimal("100")
         if (limit_price >= threshold) if expanded else (limit_price > threshold):
             return reject(
-                "marketable_not_resting" if expanded else "distance_below_minimum"
+                "marketable_not_resting" if expanded else "distance_below_minimum",
+                current_price=_text(current_price),
+                limit_price=_text(limit_price),
+                quantity=_text(quantity),
+                threshold=_text(threshold),
+                distance_pct=_text(distance_pct),
+                min_distance_pct=_text(limits.min_distance_pct),
             )
         loss_guard = "not_applicable"
     else:
@@ -399,7 +637,13 @@ def evaluate_auto_approve_eligibility(
         distance_pct = (limit_price - current_price) / current_price * Decimal("100")
         if (limit_price <= threshold) if expanded else (limit_price < threshold):
             return reject(
-                "marketable_not_resting" if expanded else "distance_below_minimum"
+                "marketable_not_resting" if expanded else "distance_below_minimum",
+                current_price=_text(current_price),
+                limit_price=_text(limit_price),
+                quantity=_text(quantity),
+                threshold=_text(threshold),
+                distance_pct=_text(distance_pct),
+                min_distance_pct=_text(limits.min_distance_pct),
             )
         # A successful fresh sell preview means the existing avg-cost loss
         # guard ran and passed. We record that provenance instead of
@@ -433,7 +677,7 @@ def evaluate_auto_approve_eligibility(
         # stronger reason (loss-cut, cap, marketability, tag, or unknown
         # classification), while an otherwise eligible order still cannot
         # reach the broker with an unrenderable veto card.
-        return reject("thesis_required_for_veto_card")
+        return reject("thesis_required_for_veto_card", thesis_present=False)
 
     return AutoApproveDecision(
         True,
@@ -509,5 +753,6 @@ __all__ = [
     "classify_sell_profit",
     "evaluate_auto_approve_eligibility",
     "find_approval_required_tags",
+    "find_approval_required_tag_matches",
     "limits_for_market",
 ]
