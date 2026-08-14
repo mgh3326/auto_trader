@@ -112,16 +112,23 @@ LANE = kr_mock.LANE
 # These provenance blocks are intentionally local to KR.  The shared
 # ``scripts.b0x.contract`` stamp is still v1.4 / the older account-map commit
 # for the untouched US and crypto lanes; letting it leak into a KR artifact
-# would make this v1.6 execution surface report the wrong governing facts.
+# would make this v1.7 execution surface report the wrong governing facts.
 # Do not update the shared stamp as part of this KR-only job.
-KR_CONTRACT_VERSION: Final[str] = "v1.6"
+KR_CONTRACT_VERSION: Final[str] = "v1.7"
 KR_CONTRACT_FILE_SHA256_REFERENCE_ONLY: Final[str] = (
-    "a3922894dcb91c2888daa2b33a9bfb9fab48a1c660ffc16deead09c530faea14"
+    "0d09e1ce4d175da75de17958880491965ea6cae8d13764853f23fbc0348f596a"
 )
 KR_CONTRACT_CLAUSES: Final[dict[str, str]] = {
     "§8 v1.6": (
         "KR 자기 미체결은 kis_mock_order_ledger 조건부 예외이며, "
         "미체결 dedup/캡 입력에만 쓴다. 포지션 진실은 계속 브로커 조회다."
+    ),
+    "§8 v1.7": (
+        "「스케줄러 등록 없음」 개정 — **스케줄러 (Prefect)는 시각만 소유한다**: "
+        "표 빌드 실행(KR 07:45·US 22:00)과 orch 기상 nudge(사이클 슬롯)에 한정. "
+        "전략 판단·주문 파생·dispatch·워커 실행은 불변(orch/워커 소유, "
+        "harvest-before-dispatch 유지). 근거 = 수동 원샷 장전 누락 4회 실측. "
+        "실행 표면·envelope·승격 절차 무변경."
     ),
 }
 KR_ACCOUNT_MAP_COMMIT: Final[str] = "e93349e7ab9b1db414b1fba619e462cf84da1fa7"

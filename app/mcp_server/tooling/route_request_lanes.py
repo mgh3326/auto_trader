@@ -424,8 +424,8 @@ LANE_RECONCILE_ALLOWED: dict[str, frozenset[str]] = {
 # created the proposal or the server itself confirmed expiry / a loss-guard
 # violation (see void_authorization.py). Widening this map cannot widen that.
 LANE_PROPOSAL_LIFECYCLE_ALLOWED: dict[str, frozenset[str]] = {
-    "buy": frozenset({"order_proposal_void"}),
-    "sell": frozenset({"order_proposal_void"}),
+    "buy": frozenset({"order_proposal_void", "order_proposal_expire_sweep"}),
+    "sell": frozenset({"order_proposal_void", "order_proposal_expire_sweep"}),
 }
 
 # The reserve-net consumer is a conditional buy helper, not a standard lane

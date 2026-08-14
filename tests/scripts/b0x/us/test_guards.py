@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import datetime as dt
+import subprocess
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -23,6 +24,8 @@ from scripts.b0x.state import LaneAccountState
 from scripts.b0x.table_source import PolicyTable
 from scripts.b0x.us import alpaca
 from scripts.b0x.us.contract import (
+    ACCOUNT_MAP_COMMIT_UNAVAILABLE,
+    ACCOUNT_MAP_FACTS,
     CONTRACT_FILE_SHA256_REFERENCE,
     CONTRACT_VERSION,
     account_map_stamp,
@@ -39,6 +42,40 @@ NOW = dt.datetime(2026, 8, 10, 15, 0, tzinfo=dt.UTC)
 ROOT = Path(__file__).resolve().parents[4]
 US_PACKAGE = ROOT / "scripts" / "b0x" / "us"
 RUNNER = ROOT / "scripts" / "run_b0x_us_cycle.py"
+V17_SCHEDULER_CLAUSE = (
+    "「스케줄러 등록 없음」 개정 — **스케줄러 (Prefect)는 시각만 소유한다**: "
+    "표 빌드 실행(KR 07:45·US 22:00)과 orch 기상 nudge(사이클 슬롯)에 한정. "
+    "전략 판단·주문 파생·dispatch·워커 실행은 불변(orch/워커 소유, "
+    "harvest-before-dispatch 유지). 근거 = 수동 원샷 장전 누락 4회 실측. "
+    "실행 표면·envelope·승격 절차 무변경."
+)
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _make_operator_table_repo(tmp_path: Path) -> tuple[Path, Path]:
+    repository_path = tmp_path / "operator.tbl"
+    repository_path.mkdir()
+    _git(repository_path, "init", "-q")
+    _git(repository_path, "config", "user.email", "test@example.invalid")
+    _git(repository_path, "config", "user.name", "B0-X test")
+    (repository_path / "operator_contract.yaml").write_text("contract: test\n")
+    _git(repository_path, "add", "operator_contract.yaml")
+    _git(repository_path, "commit", "-q", "-m", "operator contract")
+    _git(repository_path, "branch", "-M", "main")
+    _git(repository_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    table_dir = repository_path / "policy-tables"
+    table_dir.mkdir()
+    return repository_path, table_dir
 
 
 def _state(*, pnl: Decimal, nav: Decimal | None) -> LaneAccountState:
@@ -67,17 +104,55 @@ def test_us_envelope_matches_section_4_and_is_locked() -> None:
         assert_envelope_locked(replace(envelope, per_order_notional=Decimal("451")))
 
 
-def test_us_contract_stamp_is_v16_plus_quoted_clauses_with_reference_digest() -> None:
+def test_us_contract_stamp_is_v17_plus_quoted_clauses_with_reference_digest() -> None:
     stamp = contract_stamp()
-    assert stamp["version"] == CONTRACT_VERSION == "v1.6"
+    assert stamp["version"] == CONTRACT_VERSION == "v1.7"
     assert stamp["file_sha256_reference_only"] == CONTRACT_FILE_SHA256_REFERENCE
-    assert {"§1", "§2-2 v1.1", "§4 US", "§8 v1.5 ①", "§8 v1.6"} <= set(stamp["clauses"])
-    assert account_map_stamp()["account_lane"] == (
-        "account_lanes.alpaca_paper_lab=B0-X-US"
-    )
-    assert (
-        "reuse_after_execution" in account_map_stamp()["legacy_lab_cleanup_constraint"]
-    )
+    assert {
+        "§1",
+        "§2-2 v1.1",
+        "§4 US",
+        "§8 v1.5 ①",
+        "§8 v1.6",
+        "§8 v1.7",
+    } <= set(stamp["clauses"])
+    assert stamp["clauses"]["§8 v1.7"] == V17_SCHEDULER_CLAUSE
+
+
+def test_us_account_map_stamp_binds_the_injected_table_worktree(
+    tmp_path: Path,
+) -> None:
+    repository_path, table_dir = _make_operator_table_repo(tmp_path)
+    expected_head = _git(repository_path, "rev-parse", "HEAD")
+
+    stamp = account_map_stamp(account_map_path=table_dir)
+
+    assert stamp["repo"] == "auto_trader-operator"
+    assert stamp["commit"] == expected_head
+    assert stamp["branch"] == "main"
+    assert stamp["reachable_from_origin_main"] is True
+    assert stamp["commit_status"] == "available"
+    assert stamp["commit_reason"] is None
+    assert stamp["canonical_surface"] == "operator_contract.yaml"
+    assert stamp["source_path"] == str(table_dir)
+    for key, value in ACCOUNT_MAP_FACTS.items():
+        assert stamp[key] == value
+
+
+def test_us_account_map_stamp_fails_closed_but_keeps_us_facts(tmp_path: Path) -> None:
+    source_path = tmp_path / "not-an-operator-worktree"
+    source_path.mkdir()
+
+    stamp = account_map_stamp(account_map_path=source_path)
+
+    assert ACCOUNT_MAP_COMMIT_UNAVAILABLE == "UNAVAILABLE"
+    assert stamp["commit"] == "UNAVAILABLE"
+    assert stamp["branch"] == "UNAVAILABLE"
+    assert stamp["commit_status"] == "unavailable"
+    assert stamp["commit_reason"] == "account_map_source_not_git_repository"
+    assert stamp["reachable_from_origin_main"] is None
+    for key, value in ACCOUNT_MAP_FACTS.items():
+        assert stamp[key] == value
 
 
 def test_us_ratio_kill_uses_nav_and_missing_nav_fails_closed() -> None:

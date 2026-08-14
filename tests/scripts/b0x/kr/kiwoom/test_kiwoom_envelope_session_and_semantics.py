@@ -84,7 +84,10 @@ def test_realized_notional_over_the_cap_is_blocked_after_the_floor() -> None:
         order_key="k",
     )
     planned, blocked = kiwoom_lane.plan_orders(
-        (order,), envelope=KR_MOCK_ENVELOPE, held_quantities={}
+        (order,),
+        cycle_id="b0x-test-cycle",
+        envelope=KR_MOCK_ENVELOPE,
+        held_quantities={},
     )
     # 300,000 / 400,000 floors to 0 shares — blocked, never rounded up.
     assert planned == []

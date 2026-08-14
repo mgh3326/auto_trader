@@ -83,6 +83,7 @@ def test_trim_preplace_exposes_d2_d5_d7_advisory_contracts():
 
     assert list(tiers) == [
         "de_minimis_trim_watch",
+        "sell.breakeven_reserve_trim",
         "single_share_full_exit_review",
         "momentum_spike_profit_ladder",
         "rsi_confirmed_resistance",

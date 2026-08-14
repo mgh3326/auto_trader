@@ -29,6 +29,7 @@ from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_window import ApprovalWindowDecision
 from app.services.order_proposals.auto_approve_audit import (
+    project_auto_approve_cap_observations,
     project_auto_approve_rejections,
 )
 from app.services.order_proposals.broker_gateway import (
@@ -129,6 +130,9 @@ def _group_dict(g: Any) -> dict[str, Any]:
         "approval_dispatch_failure_code": g.approval_dispatch_failure_code,
         "approval_dispatch_payload_chars": g.approval_dispatch_payload_chars,
         "approval_dispatch_alert": (g.source_asof or {}).get("approval_dispatch_alert"),
+        "auto_approve_cap_observations": project_auto_approve_cap_observations(
+            g.source_asof
+        ),
         "auto_approve_rejections": project_auto_approve_rejections(g.source_asof),
         "created_at": g.created_at.isoformat() if g.created_at else None,
     }
@@ -776,7 +780,11 @@ async def order_proposal_expire_sweep(dry_run: bool = True) -> dict[str, Any]:
     ``proposed``/``needs_reconfirm`` forever after ``valid_until`` passed. This
     is the manual operator lever -- run with dry_run=True first to review what
     would expire; recurring automation is a separate, later decision (see
-    ``app/tasks/order_proposal_expiry_tasks.py``). NOT a broker mutation.
+    ``app/tasks/order_proposal_expiry_tasks.py``). There is no caller or owner
+    authorization check: its safety boundary is server-side candidate selection
+    from passed ``valid_until`` values, so callers cannot select an arbitrary
+    proposal. The service re-checks eligibility under a row lock and skips groups
+    with non-voidable rungs. NOT a broker mutation.
     """
     try:
         now = now_kst()

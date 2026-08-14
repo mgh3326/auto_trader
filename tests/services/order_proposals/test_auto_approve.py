@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import random
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -19,6 +21,7 @@ from app.services.order_proposals.auto_approve import (
 )
 from app.services.order_proposals.auto_approve_audit import (
     append_auto_approve_rejection_attempt,
+    project_auto_approve_cap_observations,
     project_auto_approve_rejections,
 )
 from app.services.order_proposals.dispatch_contract import (
@@ -60,6 +63,22 @@ _LIMITS = AutoApproveLimits(
     daily_cap=Decimal("500000"),
     policy_version="test-policy",
 )
+
+
+def test_limits_policy_content_hash_preserves_legacy_positional_order():
+    limits = AutoApproveLimits(
+        Decimal("3"),
+        Decimal("200000"),
+        Decimal("500000"),
+        "test-policy",
+        "expanded",
+        Decimal("1"),
+        Decimal("200"),
+    )
+
+    assert limits.mode == "expanded"
+    assert limits.round_trip_cost_bps == Decimal("200")
+    assert limits.policy_content_hash is None
 
 
 def test_buy_at_distance_and_daily_cap_boundary_is_eligible():
@@ -521,6 +540,127 @@ def test_rejection_projection_drops_untrusted_metadata_without_losing_reason():
     )
 
 
+def test_cap_observation_projection_requires_complete_safe_fields():
+    raw_input = "private-cap-observation-material-must-not-escape"
+    valid = {
+        "rung_index": 0,
+        "daily_cap": "800",
+        "daily_notional_before": "0",
+        "daily_notional_after": "741.41",
+        "per_order_cap": "1000",
+        "notional": "741.41",
+        "policy_version": "2026-08-14.1",
+        "content_hash": "51c789434f6a",
+        "evaluated_at": "2026-08-14T22:35:00+00:00",
+        "private": raw_input,
+    }
+    incomplete = dict(valid)
+    incomplete.pop("daily_notional_after")
+
+    projected = project_auto_approve_cap_observations(
+        {"auto_approved": {"cap_observations": [valid, incomplete]}}
+    )
+
+    assert projected == [
+        {
+            "rung_index": 0,
+            "daily_cap": "800",
+            "daily_notional_before": "0",
+            "daily_notional_after": "741.41",
+            "per_order_cap": "1000",
+            "notional": "741.41",
+            "policy_version": "2026-08-14.1",
+            "content_hash": "51c789434f6a",
+            "evaluated_at": "2026-08-14T22:35:00+00:00",
+        }
+    ]
+    assert raw_input not in json.dumps(projected)
+
+
+def test_cap_observation_stamp_is_decision_inert_across_26000_fuzz_cases():
+    randomizer = random.Random(1244)
+    unobserved_limits = replace(_EXPANDED, policy_content_hash=None)
+    observed_limits = replace(
+        _EXPANDED,
+        policy_content_hash="51c789434f6a",
+    )
+    observation = {
+        "rung_index": 0,
+        "daily_cap": "800",
+        "daily_notional_before": "0",
+        "daily_notional_after": "741.41",
+        "per_order_cap": "1000",
+        "notional": "741.41",
+        "policy_version": "2026-08-14.1",
+        "content_hash": "51c789434f6a",
+        "evaluated_at": "2026-08-14T22:35:00+00:00",
+    }
+    compared = 0
+    mismatches: list[int] = []
+    for case in range(26_000):
+        group_kwargs = {
+            "market": randomizer.choice(["equity_kr", "equity_us", "crypto", "index"]),
+            "account_mode": randomizer.choice(
+                ["kis_live", "toss_live", "upbit", "unknown"]
+            ),
+            "order_type": randomizer.choice(["limit", "market", "unknown"]),
+            "action": randomizer.choice(["place", "replace", "cancel", None]),
+            "exit_intent": randomizer.choice([None, "loss_cut", "other_exit"]),
+            "thesis": randomizer.choice(["cap fixture", "", None]),
+        }
+        rung = _rung(
+            side=randomizer.choice(["buy", "sell", "other"]),
+            limit_price=randomizer.choice(
+                [
+                    Decimal("0"),
+                    Decimal("741.41"),
+                    Decimal("800"),
+                    Decimal("1000"),
+                ]
+            ),
+            quantity=randomizer.choice(
+                [Decimal("0"), Decimal("1"), Decimal("2"), Decimal("3")]
+            ),
+        )
+        preview = {
+            "success": randomizer.choice([True, False, "true", None]),
+            "current_price": randomizer.choice(
+                [None, "0", "741.41", "800", "not-a-price"]
+            ),
+            "avg_buy_price": randomizer.choice(
+                [None, "700", "741.41", "800", "not-a-price"]
+            ),
+            "realized_pnl": randomizer.choice([None, "-1", "0", "1", "not-a-price"]),
+        }
+        daily_notional = Decimal(randomizer.randrange(0, 120_001)) / Decimal("100")
+        baseline = evaluate_auto_approve_eligibility(
+            group=_group(**group_kwargs, source_asof={}),
+            rung=rung,
+            preview=preview,
+            limits=unobserved_limits,
+            daily_notional=daily_notional,
+        )
+        observed = evaluate_auto_approve_eligibility(
+            group=_group(
+                **group_kwargs,
+                source_asof={"auto_approved": {"cap_observations": [observation]}},
+            ),
+            rung=rung,
+            preview=preview,
+            limits=observed_limits,
+            daily_notional=daily_notional,
+        )
+        compared += 1
+        if observed != baseline:
+            mismatches.append(case)
+
+    print(
+        f"decision_differential_cases={compared} decision_mismatches={len(mismatches)}"
+    )
+    assert compared == 26_000
+    assert mismatches == []
+
+
 def test_tag_match_evidence_records_token_and_structural_location_only():
     group = _group(
         rationale={"context": {"tags": ["policy_deviation"]}},
@@ -749,9 +889,10 @@ def test_policy_caps_follow_the_declared_upper_bands_and_one_new_entry_limit():
     # buy.per_symbol_notional_usd_range=[150,450], and one concurrent new
     # entry; see the ownership-minimal derivation comment in the cap block.
     assert (kr.per_order_cap, kr.daily_cap) == (Decimal("400000"), Decimal("400000"))
-    # §65차 (2026-08-14): US caps raised 450 -> 800 so single-share exits of
-    # $500-750 ETFs can auto-approve; the sizing band above is unchanged.
-    assert (us.per_order_cap, us.daily_cap) == (Decimal("800"), Decimal("800"))
+    # §65차/§71차 (2026-08-14): per-order 800 admits single-share exits of
+    # $500-750 ETFs; daily 5000 covers a full observed trim session instead of
+    # being consumed by its first rung. The sizing band above is unchanged.
+    assert (us.per_order_cap, us.daily_cap) == (Decimal("800"), Decimal("5000"))
 
 
 def test_policy_cost_rate_cannot_be_edited_below_the_code_floor(monkeypatch):
