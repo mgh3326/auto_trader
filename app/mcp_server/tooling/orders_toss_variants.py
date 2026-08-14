@@ -603,9 +603,10 @@ async def _sell_loss_guard(
 
     floor = avg * Decimal("1.01")
 
+    if evidence_context is not None:
+        evidence_context["avg_buy_price"] = _stringify_decimal(avg)
+
     if loss_cut_ctx is not None:
-        if evidence_context is not None:
-            evidence_context["avg_buy_price"] = _stringify_decimal(avg)
         if price is None:
             return {
                 "success": False,
@@ -965,9 +966,9 @@ async def toss_preview_order(
     if price_context_message is not None:
         order_warnings.append(_PRICE_CONTEXT_UNAVAILABLE)
 
-    loss_cut_evidence: dict[str, Any] = {}
-    if loss_cut_ctx is not None:
-        if current_price_dec is None:
+    sell_evidence: dict[str, Any] = {}
+    if side == "sell":
+        if loss_cut_ctx is not None and current_price_dec is None:
             return {
                 "success": False,
                 "source": "toss",
@@ -979,7 +980,7 @@ async def toss_preview_order(
                 ),
             }
         async with _client_context() as client:
-            loss_cut_guard = await _sell_loss_guard(
+            sell_guard = await _sell_loss_guard(
                 client,
                 symbol,
                 order_type,
@@ -991,10 +992,10 @@ async def toss_preview_order(
                 },
                 loss_cut_ctx=loss_cut_ctx,
                 current_price=current_price_dec,
-                evidence_context=loss_cut_evidence,
+                evidence_context=sell_evidence,
             )
-        if loss_cut_guard is not None:
-            return loss_cut_guard
+        if sell_guard is not None:
+            return sell_guard
 
     fill_warnings, fill_distance = _limit_fill_context(
         market=mkt,
@@ -1069,7 +1070,9 @@ async def toss_preview_order(
         response["loss_cut_slip_band"] = float(current_price_dec) * (
             1.0 - loss_cut_ctx.max_slip
         )
-        response.update(loss_cut_evidence)
+        response.update(sell_evidence)
+    elif side == "sell":
+        response.update(sell_evidence)
     return response
 
 
