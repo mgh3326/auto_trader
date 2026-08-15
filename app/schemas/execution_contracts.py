@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NewType
 
 from pydantic import (
     BaseModel,
@@ -214,10 +214,11 @@ class OrderLifecycleEvent(BaseModel):
 # scheduler, or an order path.
 J1NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 J1JsonObject = dict[str, Any]
+TimingOwner = NewType("TimingOwner", str)
 
 
-class LaneState(StrEnum):
-    """The complete ROB-1259 J1 lane-state allowlist."""
+class LaneStatus(StrEnum):
+    """The complete ROB-1259 J1 lane-status allowlist."""
 
     AUTO_ENABLED = "AUTO_ENABLED"
     AUTO_READY = "AUTO_READY"
@@ -232,7 +233,52 @@ class LaneState(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
-LANE_STATES: frozenset[str] = frozenset(state.value for state in LaneState)
+LaneState = LaneStatus
+LANE_STATUSES: frozenset[str] = frozenset(status.value for status in LaneStatus)
+LANE_STATES = LANE_STATUSES
+
+
+class ActivationStatus(StrEnum):
+    """Signed activation state kept distinct from a lane status."""
+
+    READY_FOR_MOCK_DEPLOYMENT = "READY_FOR_MOCK_DEPLOYMENT"
+
+
+ACTIVATION_STATUSES: frozenset[str] = frozenset(
+    status.value for status in ActivationStatus
+)
+
+
+class LaneRole(StrEnum):
+    """A registry role is one signed value, never a composite value."""
+
+    PRIMARY_AUTO = "PRIMARY_AUTO"
+    AUTO_MIRROR = "AUTO_MIRROR"
+    BROKER_REGRESSION = "BROKER_REGRESSION"
+    EXECUTION_AUTO = "EXECUTION_AUTO"
+
+
+LANE_ROLES: frozenset[str] = frozenset(role.value for role in LaneRole)
+
+
+class SchedulerOwner(StrEnum):
+    """The exact scheduler-owner vocabulary from the integration contract."""
+
+    TASKIQ = "taskiq"
+    PREFECT = "prefect"
+    ORCH = "orch"
+    MANUAL = "manual"
+    DISABLED = "disabled"
+
+
+SCHEDULER_OWNERS: frozenset[str] = frozenset(owner.value for owner in SchedulerOwner)
+
+CurrencyAlignmentError = Literal[
+    "currency_conversion_not_authorized", "lane_quote_currency_mismatch"
+]
+CURRENCY_ALIGNMENT_ERROR_CODES: frozenset[CurrencyAlignmentError] = frozenset(
+    {"currency_conversion_not_authorized", "lane_quote_currency_mismatch"}
+)
 
 
 class EvidenceTier(StrEnum):
@@ -263,6 +309,7 @@ class DecisionIntent(_J1FrozenContract):
     symbol: J1NonBlank
     side: Literal["buy", "sell"]
     target_notional: Decimal = Field(gt=0, allow_inf_nan=False)
+    target_notional_currency: Literal["KRW", "USD", "USDT"]
     limit_policy: J1JsonObject
     expiry_policy: J1JsonObject
     rationale: J1NonBlank
@@ -293,6 +340,7 @@ class ExecutionPlan(_J1FrozenContract):
     normalized_symbol: J1NonBlank
     quantity: Decimal = Field(gt=0, allow_inf_nan=False)
     limit_price: Decimal | None
+    quote_currency: Literal["KRW", "USD", "USDT"]
     tick_rounding: J1JsonObject
     session: J1NonBlank | None
     time_in_force: J1NonBlank | None
@@ -307,6 +355,25 @@ class ExecutionPlan(_J1FrozenContract):
         if value is not None and (not value.is_finite() or value <= 0):
             raise ValueError("limit_price must be finite and positive when present")
         return value
+
+
+def validate_plan_currency_alignment(
+    decision_intent: DecisionIntent, execution_plan: ExecutionPlan
+) -> None:
+    """Reject a decision/plan currency mismatch without conversion or I/O."""
+
+    if decision_intent.target_notional_currency != execution_plan.quote_currency:
+        raise ValueError("currency_conversion_not_authorized")
+
+
+def create_execution_plan(
+    decision_intent: DecisionIntent, /, **plan_values: Any
+) -> ExecutionPlan:
+    """Create a plan only when its supplied currency exactly matches the intent."""
+
+    if plan_values.get("quote_currency") != decision_intent.target_notional_currency:
+        raise ValueError("currency_conversion_not_authorized")
+    return ExecutionPlan(**plan_values)
 
 
 class OrderAttempt(_J1FrozenContract):
@@ -337,11 +404,24 @@ __all__ = [
     "OrderPreviewLine",
     "OrderBasketPreview",
     "OrderLifecycleEvent",
+    "TimingOwner",
+    "LaneStatus",
     "LaneState",
+    "LANE_STATUSES",
     "LANE_STATES",
+    "ActivationStatus",
+    "ACTIVATION_STATUSES",
+    "LaneRole",
+    "LANE_ROLES",
+    "SchedulerOwner",
+    "SCHEDULER_OWNERS",
+    "CurrencyAlignmentError",
+    "CURRENCY_ALIGNMENT_ERROR_CODES",
     "EvidenceTier",
     "EVIDENCE_TIERS",
     "DecisionIntent",
     "ExecutionPlan",
+    "validate_plan_currency_alignment",
+    "create_execution_plan",
     "OrderAttempt",
 ]

@@ -1,7 +1,9 @@
 """Tests for shared execution contracts (ROB-100)."""
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
@@ -479,6 +481,7 @@ class TestRob1259FrozenContracts:
             "symbol": "BRK.B",
             "side": "buy",
             "target_notional": Decimal("100"),
+            "target_notional_currency": "USD",
             "limit_policy": {"order_type": "limit"},
             "expiry_policy": {"kind": "day"},
             "rationale": "frozen contract example",
@@ -498,6 +501,7 @@ class TestRob1259FrozenContracts:
             "normalized_symbol": "BRK.B",
             "quantity": Decimal("1"),
             "limit_price": Decimal("100"),
+            "quote_currency": "USD",
             "tick_rounding": {"increment": "0.01"},
             "session": "regular",
             "time_in_force": "day",
@@ -534,6 +538,30 @@ class TestRob1259FrozenContracts:
                 "DISABLED_NO_STRATEGY",
                 "NOT_READY",
                 "UNKNOWN",
+            }
+        )
+
+    def test_common_control_vocabularies_remain_separate(self):
+        assert ec.LaneStatus is ec.LaneState
+        assert ec.LaneStatus is not ec.ActivationStatus
+        assert ec.LANE_STATUSES == ec.LANE_STATES
+        assert ec.ACTIVATION_STATUSES == frozenset({"READY_FOR_MOCK_DEPLOYMENT"})
+        assert ec.LANE_ROLES == frozenset(
+            {
+                "PRIMARY_AUTO",
+                "AUTO_MIRROR",
+                "BROKER_REGRESSION",
+                "EXECUTION_AUTO",
+            }
+        )
+        assert ec.SCHEDULER_OWNERS == frozenset(
+            {"taskiq", "prefect", "orch", "manual", "disabled"}
+        )
+        assert ec.TimingOwner is not ec.SchedulerOwner
+        assert ec.CURRENCY_ALIGNMENT_ERROR_CODES == frozenset(
+            {
+                "currency_conversion_not_authorized",
+                "lane_quote_currency_mismatch",
             }
         )
 
@@ -576,6 +604,7 @@ class TestRob1259FrozenContracts:
             "symbol",
             "side",
             "target_notional",
+            "target_notional_currency",
             "limit_policy",
             "expiry_policy",
             "rationale",
@@ -590,6 +619,7 @@ class TestRob1259FrozenContracts:
             "normalized_symbol",
             "quantity",
             "limit_price",
+            "quote_currency",
             "tick_rounding",
             "session",
             "time_in_force",
@@ -604,6 +634,16 @@ class TestRob1259FrozenContracts:
             "broker_client_order_id",
             "broker_order_id",
         }
+
+    def test_currency_fields_use_the_signed_literals(self):
+        assert (
+            ec.DecisionIntent.model_fields["target_notional_currency"].annotation
+            == (Literal["KRW", "USD", "USDT"])
+        )
+        assert (
+            ec.ExecutionPlan.model_fields["quote_currency"].annotation
+            == (Literal["KRW", "USD", "USDT"])
+        )
 
     def test_records_are_strict_frozen_definitions(self):
         intent = self._intent()
@@ -686,6 +726,80 @@ class TestRob1259FrozenContracts:
     def test_decision_side_is_limited_to_buy_or_sell(self):
         with pytest.raises(ValidationError):
             self._intent(side="hold")
+
+    @pytest.mark.parametrize(
+        ("factory_name", "field_name"),
+        [
+            ("_intent", "target_notional_currency"),
+            ("_plan", "quote_currency"),
+        ],
+    )
+    @pytest.mark.parametrize("invalid_currency", [None, "", " ", " KRW", "krw", "EUR"])
+    def test_currency_fields_reject_invalid_values(
+        self, factory_name, field_name, invalid_currency
+    ):
+        factory = getattr(self, factory_name)
+
+        with pytest.raises(ValidationError, match=field_name):
+            factory(**{field_name: invalid_currency})
+
+    @pytest.mark.parametrize(
+        ("model_type", "factory_name", "field_name"),
+        [
+            (ec.DecisionIntent, "_intent", "target_notional_currency"),
+            (ec.ExecutionPlan, "_plan", "quote_currency"),
+        ],
+    )
+    def test_currency_fields_are_required(self, model_type, factory_name, field_name):
+        payload = getattr(self, factory_name)().model_dump()
+        del payload[field_name]
+
+        with pytest.raises(ValidationError, match=field_name):
+            model_type(**payload)
+
+    @pytest.mark.parametrize("currency", ["KRW", "USD", "USDT"])
+    def test_matching_currency_records_support_strict_json_round_trip(self, currency):
+        intent = self._intent(target_notional_currency=currency)
+        plan = self._plan(quote_currency=currency)
+        intent_json = intent.model_dump_json()
+        plan_json = plan.model_dump_json()
+
+        assert ec.DecisionIntent.model_validate_json(intent_json) == intent
+        assert ec.ExecutionPlan.model_validate_json(plan_json) == plan
+        ec.validate_plan_currency_alignment(intent, plan)
+        assert ec.create_execution_plan(intent, **plan.model_dump()) == plan
+
+        with pytest.raises(ValidationError):
+            ec.DecisionIntent.model_validate(json.loads(intent_json))
+        with pytest.raises(ValidationError):
+            ec.ExecutionPlan.model_validate(json.loads(plan_json))
+
+    @pytest.mark.parametrize(
+        ("intent_currency", "plan_currency"),
+        [
+            ("KRW", "USD"),
+            ("KRW", "USDT"),
+            ("USD", "KRW"),
+            ("USD", "USDT"),
+            ("USDT", "KRW"),
+            ("USDT", "USD"),
+        ],
+    )
+    def test_currency_mismatch_fails_closed_with_the_signed_error(
+        self, intent_currency, plan_currency
+    ):
+        intent = self._intent(target_notional_currency=intent_currency)
+        plan = self._plan(quote_currency=plan_currency)
+
+        with pytest.raises(ValueError) as excinfo:
+            ec.validate_plan_currency_alignment(intent, plan)
+
+        assert str(excinfo.value) == "currency_conversion_not_authorized"
+
+        with pytest.raises(ValueError) as creation_excinfo:
+            ec.create_execution_plan(intent, **plan.model_dump())
+
+        assert str(creation_excinfo.value) == "currency_conversion_not_authorized"
 
     def test_decision_time_and_price_invariants_fail_closed(self):
         with pytest.raises(ValidationError, match="market_data_cutoff"):
