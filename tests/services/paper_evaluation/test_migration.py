@@ -178,11 +178,16 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
                 await connection.execute(
                     text(f"ALTER TABLE review.order_proposals DROP COLUMN {column}")
                 )
-            # The external-cash declaration ledger is later than this
-            # reconstructed boundary. Drop its current-head metadata table so the
-            # additive migration is exercised by the upgrade chain instead of
-            # colliding with create_all.
-            for table in ("external_cash_declarations",):
+            # Funding advisory is later than this reconstructed boundary. Drop
+            # its current-head metadata tables so the additive migrations are
+            # exercised by the upgrade chain instead of colliding with create_all.
+            for table in (
+                "funding_advisory_proposal_links",
+                "funding_advisory_deliveries",
+                "funding_advisory_revisions",
+                "funding_advisories",
+                "external_cash_declarations",
+            ):
                 await connection.execute(text(f"DROP TABLE review.{table}"))
 
         env = {**os.environ, "DATABASE_URL": target_url_text}

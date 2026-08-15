@@ -1001,6 +1001,40 @@ class OrderProposalsService:
         rungs = await self._repo.list_rungs(group.id)
         return group, rungs
 
+    async def link_funding_advisory_provenance(
+        self,
+        *,
+        proposal_id: uuid.UUID,
+        source_funding_advisory_id: uuid.UUID,
+        now: datetime,
+    ) -> None:
+        """Persist provenance without changing classification or order inputs.
+
+        This link is deliberately absent from group ``source_asof`` and the
+        proposal payload hash. Dispatch classification, sizing, eligibility,
+        loss guards, and revalidation therefore receive the same proposal as
+        they would without funding advisory provenance.
+        """
+
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        if not await self._repo.funding_advisory_exists(source_funding_advisory_id):
+            raise OrderProposalError("source funding advisory not found")
+        existing = await self._repo.get_funding_advisory_link(proposal_id)
+        if existing is not None:
+            if existing.advisory_id != source_funding_advisory_id:
+                raise OrderProposalError(
+                    "proposal already has different funding advisory provenance"
+                )
+            return
+        await self._repo.insert_funding_advisory_link(
+            advisory_id=source_funding_advisory_id,
+            proposal_id=proposal_id,
+            linked_at=now,
+        )
+
     async def resolve_proposal_id_prefix(
         self, proposal_prefix: str
     ) -> uuid.UUID | None:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from app.core.invest_deep_links import (
+    build_funding_advisory_url,
+    build_funding_declaration_url,
     build_loss_cut_approval_url,
     build_order_detail_url,
     build_watches_url,
@@ -81,3 +83,18 @@ def test_build_order_detail_url_missing_market_returns_none():
 @pytest.mark.unit
 def test_build_order_detail_url_missing_ledger_id_returns_none():
     assert build_order_detail_url(broker="kis", market="kr", ledger_id=None) is None
+
+
+@pytest.mark.unit
+def test_build_funding_urls_land_on_read_only_detail_and_exact_form_anchor():
+    detail = build_funding_advisory_url("advisory id")
+    assert detail is not None
+    assert detail.endswith("/invest/funding/advisory%20id")
+    assert build_funding_declaration_url().endswith(
+        "/invest/funding#external-cash-declaration"
+    )
+
+
+@pytest.mark.unit
+def test_build_funding_detail_url_rejects_empty_id():
+    assert build_funding_advisory_url("") is None

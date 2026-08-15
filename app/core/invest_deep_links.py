@@ -79,3 +79,24 @@ def build_order_detail_url(
         f"{settings.public_base_url.rstrip('/')}/invest/orders/"
         f"{broker_key}/{market_key}/{ledger_id}"
     )
+
+
+def build_funding_advisory_url(advisory_id: str) -> str | None:
+    """Build a read-only funding detail URL with no approval authority."""
+
+    normalized = str(advisory_id or "").strip()
+    if not normalized:
+        return None
+    return (
+        f"{settings.public_base_url.rstrip('/')}/invest/funding/"
+        f"{quote(normalized, safe='')}"
+    )
+
+
+def build_funding_declaration_url() -> str:
+    """Build the admin declaration form URL; opening it never writes cash."""
+
+    return (
+        f"{settings.public_base_url.rstrip('/')}/invest/funding"
+        "#external-cash-declaration"
+    )

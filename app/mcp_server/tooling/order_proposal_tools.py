@@ -25,6 +25,9 @@ from app.mcp_server.caller_identity import get_caller_agent_id
 from app.mcp_server.tooling.support_reserve_net_consumer_tool import (
     support_reserve_net_consume,
 )
+from app.services.funding_advisory.contracts import FundingCandidateEvent
+from app.services.funding_advisory.service import FundingAdvisoryService
+from app.services.funding_advisory.telegram import deliver_claimed_advisory
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.alerts import send_approval_dispatch_alert
 from app.services.order_proposals.approval_window import ApprovalWindowDecision
@@ -483,6 +486,105 @@ async def _edit_superseded_approval_message(
     )
 
 
+async def _evaluate_funding_candidate_fail_open(
+    payload: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Keep advisory evaluation strictly non-blocking for proposal creation."""
+
+    if payload is None:
+        return None
+    try:
+        event = FundingCandidateEvent.model_validate(payload)
+        evaluated_at = now_kst()
+        async with AsyncSessionLocal() as session:
+            service = FundingAdvisoryService(session)
+            result = await service.evaluate_candidate_event(
+                event,
+                now=evaluated_at,
+            )
+        if result.get("status") == "triggered":
+            result["telegram_delivery"] = await deliver_claimed_advisory(
+                result,
+                now=evaluated_at,
+            )
+        return result
+    except Exception as exc:  # noqa: BLE001 - advisory can never gate create
+        logger.error(
+            "order_proposal_create.funding_advisory_evaluation_failed",
+            extra={
+                "failure_code": "funding_advisory_evaluation_failed",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        return {
+            "status": "unavailable",
+            "failure_code": "funding_advisory_evaluation_failed",
+        }
+
+
+def _funding_provenance_id(
+    *,
+    explicit_id: str | None,
+    evaluation: dict[str, Any] | None,
+) -> tuple[uuid.UUID | None, dict[str, Any] | None]:
+    automatic_id = (
+        evaluation.get("advisory_id")
+        if evaluation and evaluation.get("status") == "triggered"
+        else None
+    )
+    if explicit_id and automatic_id and explicit_id != automatic_id:
+        return None, {
+            "status": "unavailable",
+            "failure_code": "funding_provenance_id_mismatch",
+        }
+    raw = explicit_id or automatic_id
+    if not raw:
+        return None, None
+    try:
+        return uuid.UUID(raw), None
+    except (TypeError, ValueError):
+        return None, {
+            "status": "unavailable",
+            "failure_code": "invalid_source_funding_advisory_id",
+        }
+
+
+async def _link_funding_provenance_fail_open(
+    *, proposal_id: uuid.UUID, advisory_id: uuid.UUID | None
+) -> dict[str, Any] | None:
+    """Link after proposal commit; link loss cannot alter create success."""
+
+    if advisory_id is None:
+        return None
+    try:
+        async with AsyncSessionLocal() as session:
+            service = OrderProposalsService(session)
+            await service.link_funding_advisory_provenance(
+                proposal_id=proposal_id,
+                source_funding_advisory_id=advisory_id,
+                now=now_kst(),
+            )
+            await session.commit()
+        return {
+            "status": "linked",
+            "source_funding_advisory_id": str(advisory_id),
+            "provenance_only": True,
+        }
+    except Exception as exc:  # noqa: BLE001 - proposal is already committed
+        logger.error(
+            "order_proposal_create.funding_provenance_link_failed",
+            extra={
+                "proposal_id": str(proposal_id),
+                "failure_code": "funding_provenance_link_failed",
+                "exception_type": type(exc).__name__,
+            },
+        )
+        return {
+            "status": "unavailable",
+            "failure_code": "funding_provenance_link_failed",
+        }
+
+
 async def order_proposal_create(
     symbol: str,
     market: str,
@@ -504,6 +606,8 @@ async def order_proposal_create(
     approval_issue_id: str | None = None,
     action: str = "place",
     target_broker_order_id: str | None = None,
+    funding_candidate_event: dict | None = None,
+    source_funding_advisory_id: str | None = None,
 ) -> dict[str, Any]:
     """Create a place, replace, or cancel proposal without broker mutation.
 
@@ -531,6 +635,11 @@ async def order_proposal_create(
                 structured supported_matrix (per action) instead of a bare
                 error string.
         target_broker_order_id: required broker order ID for replace/cancel.
+        funding_candidate_event: optional typed proof that non-funding gates passed
+                plus a fresh broker-authoritative funding snapshot. Evaluation is
+                advisory-only and fail-open; errors never block proposal create.
+        source_funding_advisory_id: optional provenance-only reference. It is not
+                a classification, sizing, eligibility, or approval input.
     """
     try:
         market = _normalize_order_proposal_market(market)
@@ -561,6 +670,13 @@ async def order_proposal_create(
                 account_mode=account_mode,
                 now=now_kst(),
             )
+        funding_evaluation = await _evaluate_funding_candidate_fail_open(
+            funding_candidate_event
+        )
+        funding_link_id, funding_link_status = _funding_provenance_id(
+            explicit_id=source_funding_advisory_id,
+            evaluation=funding_evaluation,
+        )
         superseded_message: tuple[Any, Any] | None = None
         async with AsyncSessionLocal() as session:
             svc = OrderProposalsService(session)
@@ -625,7 +741,11 @@ async def order_proposal_create(
         # Telegram dispatch and every secondary ledger path live behind a
         # separate never-raise boundary. The proposal transaction above is
         # already closed and its immutable success snapshot is authoritative.
-        return await _complete_committed_proposal_create(
+        linked = await _link_funding_provenance_fail_open(
+            proposal_id=proposal_id,
+            advisory_id=funding_link_id,
+        )
+        completed = await _complete_committed_proposal_create(
             committed_result,
             proposal_id=proposal_id,
             superseded_message=superseded_message,
@@ -635,6 +755,13 @@ async def order_proposal_create(
             broker_account_id=broker_account_id,
             market=market,
         )
+        if funding_evaluation is not None:
+            completed["funding_advisory"] = funding_evaluation
+        if funding_link_status is not None:
+            completed["funding_provenance"] = funding_link_status
+        elif linked is not None:
+            completed["funding_provenance"] = linked
+        return completed
     except OrderProposalUnsupportedTargetAction as exc:
         return {
             "success": False,

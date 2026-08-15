@@ -30,6 +30,8 @@
 //                             §57차 item ②. `market` is required alongside
 //                             `broker` (verify-r1 BLOCKER-1) — broker alone
 //                             is ambiguous between two ledger tables.
+// /invest/funding           — Read-only funding advisory list/allocation view.
+// /invest/funding/:advisoryId — One advisory revision and route comparison.
 // ─────────────────────────────────────────────────────────────────────────────
 import { createBrowserRouter, Navigate, useLocation, useParams } from "react-router-dom";
 import { DiscoverIssueDetailPage } from "./pages/DiscoverIssueDetailPage";
@@ -56,6 +58,7 @@ import {
   LossCutApprovalRoute,
   LossCutEvidenceRoute,
 } from "./pages/LossCutApprovalRoute";
+import { FundingRoute } from "./pages/FundingRoute";
 
 // Static legacy /app/* redirect that preserves any ?search and #hash
 // from the source URL so market-scoped or anchor-scoped bookmarks
@@ -116,6 +119,8 @@ export const router = createBrowserRouter(
       path: "/approvals/loss-cut/:proposalId",
       element: <LossCutApprovalRoute />,
     },
+    { path: "/funding", element: <FundingRoute /> },
+    { path: "/funding/:advisoryId", element: <FundingRoute /> },
 
     // Legacy /invest/app/* URLs redirect to their canonical /invest/*
     // siblings. The retired legacy components were removed after the
