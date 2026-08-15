@@ -1,6 +1,5 @@
-"""ROB-831: deploy-native.sh must restart AND re-verify the fixed-profile MCP
-services (mcp-analysis-readonly / mcp-account-read / mcp-tradingcodex-execution)
-after the API blue/green cutover succeeds.
+"""ROB-831/ROB-1258: deploy-native.sh must restart AND re-verify every
+fixed-profile MCP service after the API blue/green cutover succeeds.
 
 Incident (2026-07-11): after a normal deploy, PR-3a's order_proposal_void tool
 was missing from :8770 (mcp-tradingcodex-execution) — the process was still
@@ -34,6 +33,7 @@ EXPECTED_PROFILE_PORTS = {
     "com.robinco.auto-trader.mcp-analysis-readonly": "8768",
     "com.robinco.auto-trader.mcp-account-read": "8769",
     "com.robinco.auto-trader.mcp-tradingcodex-execution": "8770",
+    "com.robinco.auto-trader.mcp-paper_001": "8771",
 }
 
 
@@ -42,7 +42,7 @@ EXPECTED_PROFILE_PORTS = {
 # ---------------------------------------------------------------------------
 
 
-def test_mcp_profile_ports_declared_for_all_three_fixed_profile_services() -> None:
+def test_mcp_profile_ports_declared_for_all_fixed_profile_services() -> None:
     body = DEPLOY.read_text()
     for label, port in EXPECTED_PROFILE_PORTS.items():
         assert f'"{label}:{port}"' in body, (
@@ -195,7 +195,7 @@ def _run_verify(
     )
 
 
-def test_verify_passes_when_all_three_profiles_report_expected_cwd(
+def test_verify_passes_when_all_profiles_report_expected_cwd(
     tmp_path: Path,
 ) -> None:
     new_release = tmp_path / "releases" / "sha-new"
@@ -208,6 +208,7 @@ def test_verify_passes_when_all_three_profiles_report_expected_cwd(
             f"8768 111 {canonical}",
             f"8769 222 {canonical}",
             f"8770 333 {canonical}",
+            f"8771 444 {canonical}",
         ],
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -228,6 +229,7 @@ def test_verify_fails_when_no_process_listens_on_a_profile_port(
             f"8768 111 {canonical}",
             f"8769 222 {canonical}",
             # 8770 (mcp-tradingcodex-execution) has no listener at all.
+            f"8771 444 {canonical}",
         ],
     )
     assert proc.returncode != 0
@@ -253,6 +255,7 @@ def test_verify_fails_when_process_still_serving_stale_release_cwd(
             f"8768 111 {canonical_new}",
             f"8769 222 {canonical_new}",
             f"8770 333 {canonical_old}",
+            f"8771 444 {canonical_new}",
         ],
     )
     assert proc.returncode != 0
@@ -277,8 +280,8 @@ def test_verify_retries_before_giving_up(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     attempt_counter = tmp_path / "lsof_attempts_8770"
-    # lsof stub: 8768/8769 always resolve correctly; 8770 only resolves to the
-    # NEW release cwd from the 3rd call onward (simulating restart lag).
+    # lsof stub: 8768/8769/8771 always resolve correctly; 8770 only resolves to
+    # the NEW release cwd from the 3rd call onward (simulating restart lag).
     stub = bin_dir / "lsof"
     stub.write_text(
         "#!/usr/bin/env bash\n"
@@ -289,6 +292,7 @@ def test_verify_retries_before_giving_up(tmp_path: Path) -> None:
         "    8768) echo 111; exit 0 ;;\n"
         "    8769) echo 222; exit 0 ;;\n"
         "    8770) echo 333; exit 0 ;;\n"
+        "    8771) echo 444; exit 0 ;;\n"
         "  esac\n"
         "  exit 1\n"
         'elif [[ "$1" == "-a" ]]; then\n'
@@ -296,6 +300,7 @@ def test_verify_retries_before_giving_up(tmp_path: Path) -> None:
         '  case "$pid" in\n'
         f'    111) printf "p111\\nfcwd\\nn{canonical}\\n"; exit 0 ;;\n'
         f'    222) printf "p222\\nfcwd\\nn{canonical}\\n"; exit 0 ;;\n'
+        f'    444) printf "p444\\nfcwd\\nn{canonical}\\n"; exit 0 ;;\n'
         "    333)\n"
         '      n=$(( $(cat "$counter" 2>/dev/null || echo 0) + 1 ))\n'
         '      echo "$n" > "$counter"\n'

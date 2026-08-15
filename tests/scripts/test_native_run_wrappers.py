@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_API = REPO_ROOT / "ops" / "native" / "scripts" / "run-api.sh"
 RUN_MCP = REPO_ROOT / "ops" / "native" / "scripts" / "run-mcp.sh"
 RUN_MCP_PROFILE = REPO_ROOT / "ops" / "native" / "scripts" / "run-mcp-profile.sh"
+RUN_MCP_PAPER = REPO_ROOT / "ops" / "native" / "scripts" / "run-mcp-paper_001.sh"
 
 
 def _build_base(tmp_path: Path, color: str) -> Path:
@@ -248,3 +249,63 @@ def test_run_mcp_profile_exports_tradingcodex_execution_profile(tmp_path: Path) 
     assert "MCP_PROFILE=tradingcodex_execution" in proc.stdout
     assert "MCP_PORT=8770" in proc.stdout
     assert "MCP_AUTH_TOKEN=execution-token" in proc.stdout
+
+
+# ----- run-mcp-paper_001 -----------------------------------------------------
+
+
+def test_run_mcp_paper_001_defaults_preserve_installed_plist_compatibility(
+    tmp_path: Path,
+) -> None:
+    proc = _run_profile(RUN_MCP_PAPER, {}, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert "MCP_PROFILE=hermes-paper-kis" in proc.stdout
+    assert "MCP_PORT=8771" in proc.stdout
+    assert "MCP_HOST=127.0.0.1" in proc.stdout
+    assert "current" in proc.stdout
+
+
+def test_run_mcp_paper_001_rejects_profile_or_port_override(tmp_path: Path) -> None:
+    proc = _run_profile(
+        RUN_MCP_PAPER,
+        {
+            "AUTO_TRADER_MCP_PROFILE": "default",
+            "AUTO_TRADER_MCP_PORT": "9999",
+        },
+        tmp_path,
+    )
+    assert proc.returncode == 78
+    assert "must remain hermes-paper-kis:8771" in proc.stderr
+
+
+def test_run_mcp_paper_001_exports_only_mcp_and_kis_mock_env(
+    tmp_path: Path,
+) -> None:
+    base = _build_base(tmp_path, "blue")
+    (base / "current").mkdir(exist_ok=True)
+    (base / "shared" / ".env.prod.native").write_text(
+        "MCP_AUTH_TOKEN=fake-paper-token\n"
+        "KIS_MOCK_ENABLED=true\n"
+        "KIS_MOCK_APP_KEY=fake-mock-key\n"
+        "KIS_APP_KEY=must-not-export\n"
+        "OTHER_VAR=must-not-export\n"
+    )
+    bin_dir = _uv_stub_dir(tmp_path)
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "AUTO_TRADER_BASE": str(base),
+    }
+    proc = subprocess.run(
+        ["bash", str(RUN_MCP_PAPER)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "MCP_AUTH_TOKEN=fake-paper-token" in proc.stdout
+    assert "KIS_MOCK_ENABLED=true" in proc.stdout
+    assert "KIS_MOCK_APP_KEY=fake-mock-key" in proc.stdout
+    assert "KIS_APP_KEY" not in proc.stdout
+    assert "OTHER_VAR" not in proc.stdout
