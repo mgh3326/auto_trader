@@ -16,6 +16,7 @@ from app.services.brokers.alpaca.schemas import OrderRequest
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
 from app.services.brokers.alpaca.transport import HTTPTransport
 from app.services.brokers.client_order_ids import (
+    ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH,
     BROKER_CLIENT_ID_CONSTRAINT_VIOLATION,
     BrokerClientOrderIdConstraintViolation,
 )
@@ -227,7 +228,28 @@ async def test_submit_order_marshals_request():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("client_order_id", ["x" * 129, "unsafe.id"])
+async def test_submit_order_allows_exact_alpaca_client_id_limit_to_transport():
+    assert ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH == 48
+    transport = _mock_transport(ORDER_DATA)
+    svc = _make_service(transport)
+    request = OrderRequest(
+        symbol="AAPL",
+        qty=Decimal("10"),
+        side="buy",
+        type="limit",
+        time_in_force="day",
+        limit_price=Decimal("150.00"),
+        client_order_id="x" * 48,
+    )
+
+    await svc.submit_order(request)
+
+    transport.request.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_order_id", ["x" * 49, "unsafe.id"])
 async def test_submit_order_rejects_invalid_client_id_before_transport(
     client_order_id: str,
 ):
@@ -257,7 +279,7 @@ async def test_get_by_client_order_id_rejects_invalid_id_before_transport():
     svc = _make_service(transport)
 
     with pytest.raises(BrokerClientOrderIdConstraintViolation) as error:
-        await svc.get_order_by_client_order_id("x" * 129)
+        await svc.get_order_by_client_order_id("x" * 49)
 
     assert error.value.reason_code == BROKER_CLIENT_ID_CONSTRAINT_VIOLATION
     transport.request.assert_not_called()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
@@ -30,6 +31,7 @@ from app.services.mock_integration.lineage import (
     MockLineageFactory,
     OrderAttemptDraft,
     canonical_bytes,
+    normalize_datetime,
     require_lineage_persistence_port,
 )
 
@@ -165,6 +167,56 @@ def test_canonical_json_is_sorted_utf8_and_round_trips() -> None:
     assert "한국어".encode() in canonical
     assert json.loads(canonical)["decision_intent_id"] == intent.decision_intent_id
     assert DecisionIntent.model_validate_json(canonical) == intent
+
+
+def test_datetime_golden_values_produce_the_same_intent_hash_for_one_instant() -> None:
+    factory = MockLineageFactory()
+    kst = ZoneInfo("Asia/Seoul")
+    eastern_time = ZoneInfo("America/New_York")
+    representations = (
+        (
+            datetime(2026, 8, 15, 9, 0, tzinfo=UTC),
+            datetime(2026, 8, 15, 8, 59, tzinfo=UTC),
+        ),
+        (
+            datetime(2026, 8, 15, 18, 0, tzinfo=kst),
+            datetime(2026, 8, 15, 17, 59, tzinfo=kst),
+        ),
+        (
+            datetime(2026, 8, 15, 5, 0, tzinfo=eastern_time),
+            datetime(2026, 8, 15, 4, 59, tzinfo=eastern_time),
+        ),
+    )
+
+    intent_ids = [
+        factory.create_decision_intent(
+            _intent_draft(
+                decision_timestamp=decision_timestamp,
+                market_data_cutoff=market_data_cutoff,
+            )
+        ).decision_intent_id
+        for decision_timestamp, market_data_cutoff in representations
+    ]
+    different_instant_id = factory.create_decision_intent(
+        _intent_draft(
+            decision_timestamp=datetime(2026, 8, 15, 9, 1, tzinfo=UTC),
+            market_data_cutoff=datetime(2026, 8, 15, 9, 0, tzinfo=UTC),
+        )
+    ).decision_intent_id
+
+    assert intent_ids[0] == intent_ids[1] == intent_ids[2]
+    assert different_instant_id != intent_ids[0]
+
+
+def test_naive_datetime_is_rejected_before_hashing() -> None:
+    naive = datetime(2026, 8, 15, 9, 0)
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        normalize_datetime(naive)
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        MockLineageFactory().create_decision_intent(
+            _intent_draft(decision_timestamp=naive)
+        )
 
 
 @pytest.mark.parametrize("value", [Decimal("1"), Decimal("1.0"), Decimal("1.000")])

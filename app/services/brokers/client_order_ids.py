@@ -33,20 +33,18 @@ class BrokerClientOrderIdConstraint:
     allowed_pattern: re.Pattern[str]
 
 
-# Toss's existing submit boundary already pins 36 and this alphabet.  The
-# lineage factory emits the same portable subset for every supported target.
+# This intentionally conservative portable subset is derived from the Toss
+# boundary; it is not an assertion of Alpaca or Binance character constraints.
+# The lineage factory emits the same subset for every supported target.
 _PORTABLE_CLIENT_ORDER_ID_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"[A-Za-z0-9_-]+"
 )
 TOSS_CLIENT_ORDER_ID_MAX_LENGTH: Final[int] = 36
 
-# The existing Spot Demo adapter and its submit tests retain the 36-character
-# boundary.  Explicitly centralizing it makes the pre-send assertion auditable.
 BINANCE_SPOT_DEMO_CLIENT_ORDER_ID_MAX_LENGTH: Final[int] = 36
 
-# Alpaca Paper's current POST /v2/orders contract permits client_order_id
-# values up to 128 characters.  We send the portable ASCII subset above.
-ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH: Final[int] = 128
+# Shared by the preview validator and the pre-send transport boundary.
+ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH: Final[int] = 48
 
 BROKER_CLIENT_ORDER_ID_CONSTRAINTS: Final[
     dict[BrokerClientIdTarget, BrokerClientOrderIdConstraint]

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Final, Literal, Protocol, runtime_checkable
@@ -260,9 +260,17 @@ def normalize_decimal(value: Decimal) -> str:
     return format(value.normalize(), "f")
 
 
+def normalize_datetime(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("datetime must be timezone-aware")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
 def _normalize_decimal_values(value: Any) -> Any:
     if isinstance(value, Decimal):
         return normalize_decimal(value)
+    if isinstance(value, datetime):
+        return normalize_datetime(value)
     if isinstance(value, dict):
         return {key: _normalize_decimal_values(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -536,5 +544,6 @@ __all__ = [
     "derive_intent_v1_id",
     "derive_plan_v1_id",
     "normalize_decimal",
+    "normalize_datetime",
     "require_lineage_persistence_port",
 ]
