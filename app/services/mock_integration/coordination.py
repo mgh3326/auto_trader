@@ -48,7 +48,7 @@ import asyncio
 import hashlib
 import secrets
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
@@ -413,23 +413,27 @@ def supports_backend_session_termination(connection: object) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class UnreleasedAuthorityHold:
-    """An advisory lease this process could **not** prove it released.
+    """A **capability-free** record of an authority that is not proven released.
 
-    Its existence is the audit trail: the physical-account writer authority is
-    still held (or may be), so no successor may safely mutate that account.  It
-    is reachable through :func:`unreleased_authority_holds` and through the
-    owning lease — never left to a garbage collector or a pooled ``close()``
-    side effect to resolve, and never expired by a clock.
+    Deliberately carries no live connection, no grant, no backend PID, no owner
+    token, and nothing callable.  Seeing that an account is stuck is a different
+    right from being able to unstick it, and only the second one is dangerous:
+    a PID plus an owner token is enough to terminate the very backend whose lock
+    is the safety property.  The real connection lives in the module-private
+    ownership map below, reachable only by the coordination-owned release path.
     """
 
     hold_id: str
-    keys: tuple[int, ...]
-    backend_pid: int
-    database_oid: int
-    connection_token: str
+    key_count: int
     reason_code: CoordinationReasonCode
     termination_proven: bool
     durable_evidence_written: bool
+    # Whether a retry is *actually reachable*, recomputed on every read — not a
+    # guess from the owner's type. A rollback hold has no owning lease, and a
+    # coordination-sealed lease is never unsealed after a failed release, so both
+    # are permanent until the process dies. Claiming otherwise would be the same
+    # kind of false report B30 forbade in the other direction.
+    recoverable_in_process: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,13 +445,15 @@ class _RetainedAuthority:
     keeps the real dedicated connection, together with the exact grant identity,
     reachable for as long as the hold stands.
 
-    It is a lifetime guard only: no TTL, no janitor, no retry, no takeover, no
-    scheduler, and no reason code of its own.
+    Module-private on purpose: this is the capability, and it is never returned
+    from a public function.  It is a lifetime guard only — no TTL, no janitor,
+    no retry, no takeover, no scheduler, no reason code of its own.
     """
 
     hold_id: str
     connection: LockAuthorityConnection
     grant: AdvisoryLeaseGrant
+    owner: object
 
 
 # History is immutable evidence: every hold ever recorded, resolved or not.
@@ -456,6 +462,29 @@ class _RetainedAuthority:
 _AUTHORITY_HOLD_HISTORY: list[UnreleasedAuthorityHold] = []
 _ACTIVE_AUTHORITY_HOLDS: dict[str, UnreleasedAuthorityHold] = {}
 _RETAINED_AUTHORITIES: dict[str, _RetainedAuthority] = {}
+
+_HOLD_ID_ALLOCATION_ATTEMPTS: Final[int] = 8
+
+
+def _hold_view(hold: UnreleasedAuthorityHold) -> UnreleasedAuthorityHold:
+    """Recompute the reachability flag against the world as it is now.
+
+    A retry is reachable only through an owning lease that is still releasable.
+    A rollback hold has no lease at all, and a coordination-sealed lease stays
+    sealed forever once its release failed, so neither can be retried in this
+    process — and there is deliberately no recovery API to add one.
+    """
+
+    retained = _RETAINED_AUTHORITIES.get(hold.hold_id)
+    owner = retained.owner if retained is not None else None
+    recoverable = (
+        isinstance(owner, PostgresAdvisoryKeysetLease)
+        and not owner.coordination_sealed
+        and not owner.released
+    )
+    if recoverable == hold.recoverable_in_process:
+        return hold
+    return replace(hold, recoverable_in_process=recoverable)
 
 
 def authority_hold_history() -> tuple[UnreleasedAuthorityHold, ...]:
@@ -467,28 +496,109 @@ def authority_hold_history() -> tuple[UnreleasedAuthorityHold, ...]:
 def unreleased_authority_holds() -> tuple[UnreleasedAuthorityHold, ...]:
     """The authorities that are unresolved **right now**, in recording order."""
 
-    return tuple(_ACTIVE_AUTHORITY_HOLDS.values())
+    return tuple(_hold_view(hold) for hold in _ACTIVE_AUTHORITY_HOLDS.values())
 
 
-def retained_authority_connections() -> Mapping[str, _RetainedAuthority]:
-    """The still-reachable connections behind every *active* unproven hold."""
+def _retained_authorities() -> Mapping[str, _RetainedAuthority]:
+    """Module-private: the live connections behind every active hold."""
 
     return MappingProxyType(dict(_RETAINED_AUTHORITIES))
 
 
-def _resolve_authority_hold(hold: UnreleasedAuthorityHold | None) -> None:
-    """Drop exactly this hold's active entries, both of them, in one step.
+def _authority_lockout(
+    connection: LockAuthorityConnection, *, owner: object | None = None
+) -> str | None:
+    """The hold id making this *authority* unreleasable, regardless of wrapper.
+
+    Non-releasability belongs to the authority, not to whichever
+    :class:`PostgresAdvisoryKeysetLease` object happens to wrap it. Otherwise a
+    fresh wrapper around the same connection and grant would carry a blank
+    ``_hold`` straight past the durable-evidence gate.
+    """
+
+    for hold_id, retained in _RETAINED_AUTHORITIES.items():
+        if retained.connection is not connection:
+            continue
+        hold = _ACTIVE_AUTHORITY_HOLDS.get(hold_id)
+        if hold is not None and not hold.durable_evidence_written:
+            # Sticky: nobody may release this, the owning lease included. This
+            # clause and the coordination seal are **not** substitutes — the seal
+            # stops the public path, and this stops every path, owner or not.
+            return hold_id
+        if retained.owner is not owner:
+            # Whatever the evidence flag says, a foreign wrapper never releases
+            # somebody else's retained authority.
+            return hold_id
+    for hold_id, held in _HELD_COORDINATION.items():
+        if held.lease.owns_connection(connection) and held.lease is not owner:
+            return hold_id
+    return None
+
+
+def _unregister_owned_coordination(owner: object) -> None:
+    """Drop the held-coordination entry owned by this lease, if any.
+
+    Reached from every proven-release path, including the ones that go on to
+    re-raise: an authority that is provably released must never keep being
+    reported as held just because the triggering call failed afterwards.
+    """
+
+    for hold_id, held in list(_HELD_COORDINATION.items()):
+        if held.lease is owner:
+            _COORDINATION_RELEASE_CAPABILITIES.pop(hold_id, None)
+            del _HELD_COORDINATION[hold_id]
+
+
+def _hold_id_in_use(hold_id: str) -> bool:
+    return (
+        hold_id in _ACTIVE_AUTHORITY_HOLDS
+        or hold_id in _RETAINED_AUTHORITIES
+        or hold_id in _HELD_COORDINATION
+        or hold_id in _COORDINATION_RELEASE_CAPABILITIES
+    )
+
+
+def _allocate_hold_id() -> str:
+    """Allocate an id unused across **every** active map, or fail closed.
+
+    One namespace, one owner. Overwriting a colliding id would let a later hold
+    silently adopt an earlier one's entry — and then delete it during its own
+    recovery, taking a foreign authority with it.
+    """
+
+    for _ in range(_HOLD_ID_ALLOCATION_ATTEMPTS):
+        candidate = f"hold:{secrets.token_hex(8)}"
+        if not _hold_id_in_use(candidate):
+            return candidate
+    raise CoordinationError(CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE)
+
+
+def _resolve_authority_hold(
+    hold: UnreleasedAuthorityHold | None,
+    *,
+    owner: object,
+    connection: LockAuthorityConnection,
+) -> None:
+    """Compare-and-delete exactly this owner's entries, both of them, in one step.
 
     Only ever called after a proven full unlock or a positive termination
-    receipt.  A foreign or stale hold id matches nothing and therefore clears
-    nothing, and an ambiguous or failed recovery never reaches here at all.
-    History is untouched.
+    receipt.  The stored owner identity must match, so a stale or foreign hold
+    id clears nothing, and one lease's recovery can never delete another's
+    entry.  History is untouched.
     """
 
     if hold is None:
         return
-    _ACTIVE_AUTHORITY_HOLDS.pop(hold.hold_id, None)
-    _RETAINED_AUTHORITIES.pop(hold.hold_id, None)
+    retained = _RETAINED_AUTHORITIES.get(hold.hold_id)
+    if retained is not None and (
+        retained.owner is not owner or retained.connection is not connection
+    ):
+        return
+    if _ACTIVE_AUTHORITY_HOLDS.get(hold.hold_id) is hold:
+        del _ACTIVE_AUTHORITY_HOLDS[hold.hold_id]
+    if retained is not None:
+        _RETAINED_AUTHORITIES.pop(hold.hold_id, None)
+    _unregister_owned_coordination(owner)
 
 
 def split_advisory_key(key: int) -> tuple[int, int]:
@@ -532,6 +642,24 @@ def row_proves_ownership(
         and row.objsubid == _BIGINT_ADVISORY_OBJSUBID
         and row.classid == classid
         and row.objid == objid
+    )
+
+
+def _rows_hold_any_key(
+    rows: Sequence[AdvisoryLockRow],
+    *,
+    keys: Sequence[int],
+    backend_pid: int,
+    database_oid: int,
+) -> bool:
+    """True if this backend already holds *any* of these keys."""
+
+    return any(
+        row_proves_ownership(
+            row, key=key, backend_pid=backend_pid, database_oid=database_oid
+        )
+        for key in keys
+        for row in rows
     )
 
 
@@ -656,7 +784,9 @@ async def _terminate_authority(
         receipt = await connection.terminate_backend_session(
             expected_pid=grant.backend_pid, owner_token=grant.connection_token
         )
-    except Exception:
+    except BaseException:
+        # A cancellation here is not "no lock was taken" — it is "the outcome is
+        # unknown", which is the same fail-closed answer as any other failure.
         return None
     if (
         not isinstance(receipt, BackendTerminationReceipt)
@@ -671,27 +801,45 @@ async def _terminate_authority(
 def _record_unreleased_authority(
     grant: AdvisoryLeaseGrant,
     *,
+    owner: object,
     reason_code: CoordinationReasonCode,
     termination_proven: bool,
     durable_evidence_written: bool,
     connection: LockAuthorityConnection | None = None,
     hold_id: str | None = None,
 ) -> UnreleasedAuthorityHold:
+    """Record a hold, never overwriting one that belongs to somebody else."""
+
+    if hold_id is None:
+        hold_id = _allocate_hold_id()
+    else:
+        retained = _RETAINED_AUTHORITIES.get(hold_id)
+        held = _HELD_COORDINATION.get(hold_id)
+        foreign = (
+            (retained is not None and retained.owner is not owner)
+            or (held is not None and held.lease is not owner)
+            or (retained is None and hold_id in _ACTIVE_AUTHORITY_HOLDS)
+        )
+        if foreign:
+            # A supplied id that belongs to another owner is refused outright;
+            # adopting it would let this hold delete that one during recovery.
+            raise CoordinationError(
+                CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE, hold_id=hold_id
+            )
     hold = UnreleasedAuthorityHold(
-        hold_id=hold_id or f"hold:{secrets.token_hex(8)}",
-        keys=grant.keys,
-        backend_pid=grant.backend_pid,
-        database_oid=grant.database_oid,
-        connection_token=grant.connection_token,
+        hold_id=hold_id,
+        key_count=len(grant.keys),
         reason_code=reason_code,
         termination_proven=termination_proven,
         durable_evidence_written=durable_evidence_written,
+        # Recorded conservatively; :func:`_hold_view` recomputes it on read.
+        recoverable_in_process=False,
     )
     _AUTHORITY_HOLD_HISTORY.append(hold)
     _ACTIVE_AUTHORITY_HOLDS[hold.hold_id] = hold
     if connection is not None:
         _RETAINED_AUTHORITIES[hold.hold_id] = _RetainedAuthority(
-            hold_id=hold.hold_id, connection=connection, grant=grant
+            hold_id=hold.hold_id, connection=connection, grant=grant, owner=owner
         )
     return hold
 
@@ -724,8 +872,10 @@ class PostgresAdvisoryKeysetLease:
 
     __slots__ = (
         "_connection",
+        "_coordination_hold_id",
         "_grant",
         "_hold",
+        "_release_capability",
         "_release_task",
         "_released",
         "_termination_receipt",
@@ -745,6 +895,20 @@ class PostgresAdvisoryKeysetLease:
         self._release_task: asyncio.Task[None] | None = None
         self._hold: UnreleasedAuthorityHold | None = None
         self._termination_receipt: BackendTerminationReceipt | None = None
+        # While sealed, only the coordination flow that sealed it may release.
+        self._release_capability: object | None = None
+        self._coordination_hold_id: str | None = None
+        lockout = _authority_lockout(connection)
+        if lockout is not None:
+            # A second wrapper around an authority that is already held would
+            # arrive with a blank _hold and sail past the durable-evidence gate.
+            raise CoordinationError(
+                CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE,
+                hold_id=lockout,
+            )
+
+    def owns_connection(self, connection: LockAuthorityConnection) -> bool:
+        return self._connection is connection
 
     @property
     def grant(self) -> AdvisoryLeaseGrant:
@@ -764,7 +928,7 @@ class PostgresAdvisoryKeysetLease:
     def unreleased_authority_hold(self) -> UnreleasedAuthorityHold | None:
         """Set when this lease could not be proven released."""
 
-        return self._hold
+        return None if self._hold is None else _hold_view(self._hold)
 
     @property
     def termination_receipt(self) -> BackendTerminationReceipt | None:
@@ -810,12 +974,13 @@ class PostgresAdvisoryKeysetLease:
         if not attested:
             raise CoordinationError(CoordinationReasonCode.LEASE_LOST)
 
-    def retain_authority(
+    def _retain_authority(
         self,
         *,
         reason_code: CoordinationReasonCode,
         durable_evidence_written: bool,
         hold_id: str | None = None,
+        capability: object | None = None,
     ) -> UnreleasedAuthorityHold:
         """Deliberately keep the writer authority and record why.
 
@@ -825,8 +990,25 @@ class PostgresAdvisoryKeysetLease:
         resolved by a timer.
         """
 
+        if self._release_capability is not None and (
+            capability is None or capability is not self._release_capability
+        ):
+            # Only the coordination flow that sealed this lease may say anything
+            # about its evidence state.
+            raise CoordinationError(
+                CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE,
+                hold_id=self._coordination_hold_id,
+            )
+        existing = self._hold
+        if existing is not None and not existing.durable_evidence_written:
+            # Sticky and monotonic: a missing durable receipt cannot be talked
+            # away in-process, and there is no signed recovery API to grant one.
+            # Only process termination ends this, and the durable claim outlives
+            # that anyway.
+            return existing
         hold = _record_unreleased_authority(
             self._grant,
+            owner=self,
             reason_code=reason_code,
             termination_proven=False,
             durable_evidence_written=durable_evidence_written,
@@ -836,30 +1018,72 @@ class PostgresAdvisoryKeysetLease:
         self._hold = hold
         return hold
 
+    @property
+    def coordination_sealed(self) -> bool:
+        """True while a coordination flow owns this lease's release rights."""
+
+        return self._release_capability is not None
+
+    def _seal_for_coordination(self, *, hold_id: str, capability: object) -> None:
+        self._release_capability = capability
+        self._coordination_hold_id = hold_id
+
     async def release(self, expected_grant: AdvisoryLeaseGrant) -> None:
-        """Re-attest, then unlock each key in reverse order, proving every one.
+        """The generic, public release. Refused whenever coordination owns this.
 
         A normal release is *attested unlock, then close*.  If ownership cannot
         be re-attested, or PostgreSQL reports ``false`` for any unlock, the lock
         state is unknown — so this ends the backend session instead of quietly
         closing a pooled connection and calling that a release, and if even that
         cannot be proven it records an :class:`UnreleasedAuthorityHold`.
+
+        A lease that a coordination flow has sealed is off limits here for its
+        **entire** active lifetime — while the callback runs, while either
+        durable write is in flight, during a cancellation-retained wait, and
+        while an acknowledgement anomaly is being recorded.  Holding the exact
+        grant from public introspection does not change that: seeing a lease is
+        not owning it, and the window in which a release would be most damaging
+        is precisely the window in which nothing is yet known.
         """
 
         self._require_grant(expected_grant)
-        hold = self._hold
-        if hold is not None and not hold.durable_evidence_written:
-            # The post-send AND gate never closed, so nobody knows whether an
-            # order went out. Surrendering the advisory lock here would let an
-            # old or non-claim-aware writer mutate the account concurrently, and
-            # holding the exact grant does not make that safe. Public
-            # introspection may still *see* this lease; it may not release it.
-            # There is deliberately no recovery API in this epoch: process
-            # termination ends the ephemeral session, while the durable binary
-            # claim survives and keeps blocking a successor's repost.
+        if self._release_capability is not None:
             raise CoordinationError(
                 CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE,
-                hold_id=hold.hold_id,
+                hold_id=self._coordination_hold_id,
+            )
+        await self._release_guarded(expected_grant)
+
+    async def _release_with_capability(
+        self, expected_grant: AdvisoryLeaseGrant, capability: object
+    ) -> None:
+        """The coordination-owned release; reached only after the AND gate."""
+
+        self._require_grant(expected_grant)
+        if capability is None or capability is not self._release_capability:
+            raise CoordinationError(
+                CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE,
+                hold_id=self._coordination_hold_id,
+            )
+        await self._release_guarded(expected_grant)
+        # Unsealed only once a proven outcome was reached.
+        self._release_capability = None
+
+    async def _release_guarded(self, expected_grant: AdvisoryLeaseGrant) -> None:
+        # The post-send AND gate never closing means nobody knows whether an
+        # order went out. Surrendering the advisory lock then would let an old or
+        # non-claim-aware writer mutate the account concurrently, and holding the
+        # exact grant does not make that safe — so the check lives on the
+        # *authority*, not on this wrapper. Public introspection may still see a
+        # stuck lease; no wrapper of it may release it. There is deliberately no
+        # recovery API in this epoch: process termination ends the ephemeral
+        # session, while the durable binary claim survives and keeps blocking a
+        # successor's repost.
+        lockout = _authority_lockout(self._connection, owner=self)
+        if lockout is not None:
+            raise CoordinationError(
+                CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE,
+                hold_id=lockout,
             )
         if self._released:
             return
@@ -878,6 +1102,14 @@ class PostgresAdvisoryKeysetLease:
             raise cancellation
 
     async def _release_impl(self) -> None:
+        """Attest, reverse-unlock with proof, then prove the rows are gone.
+
+        Every failure mode here — including a ``CancelledError`` arriving inside
+        an attestation, an unlock, or a termination — means the authority's fate
+        is *unknown*, never that it was released. Partial unlock progress is kept
+        so the remaining authority is described honestly.
+        """
+
         try:
             attested = await _attest_full_ownership(
                 self._connection,
@@ -885,8 +1117,10 @@ class PostgresAdvisoryKeysetLease:
                 backend_pid=self._grant.backend_pid,
                 database_oid=self._grant.database_oid,
             )
-        except Exception as exc:
+        except BaseException as exc:
             await self._terminate_or_hold(CoordinationReasonCode.LEASE_LOST)
+            if isinstance(exc, CoordinationError):
+                raise
             raise CoordinationError(
                 CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE
             ) from exc
@@ -900,11 +1134,16 @@ class PostgresAdvisoryKeysetLease:
                 if not await _unlock_proven(self._connection, key):
                     raise CoordinationError(CoordinationReasonCode.LEASE_LOST)
                 confirmed.append(key)
+            # A session advisory lock is re-entrant, so one true unlock does not
+            # prove the row is gone. Ask the same backend.
+            remaining = await _read_owned_advisory_rows(
+                self._connection, self._grant.backend_pid
+            )
         except CoordinationError:
             self._unlocked_keys = tuple(confirmed)
             await self._terminate_or_hold(CoordinationReasonCode.LEASE_LOST)
             raise
-        except Exception as exc:
+        except BaseException as exc:
             self._unlocked_keys = tuple(confirmed)
             await self._terminate_or_hold(
                 CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE
@@ -914,13 +1153,29 @@ class PostgresAdvisoryKeysetLease:
             ) from exc
 
         self._unlocked_keys = tuple(confirmed)
-        await self._connection.close()
-        # Proven full reverse unlock: any hold this lease left behind on an
-        # earlier attempt is now genuinely resolved.
+        if _rows_hold_any_key(
+            remaining,
+            keys=self._grant.keys,
+            backend_pid=self._grant.backend_pid,
+            database_oid=self._grant.database_oid,
+        ):
+            # A row survived the unlock: this backend held the key more than
+            # once, so the account is still locked.
+            await self._terminate_or_hold(CoordinationReasonCode.LEASE_LOST)
+            raise CoordinationError(CoordinationReasonCode.LEASE_LOST)
+
+        # Proven released at this instant. Resolving before the fallible close
+        # keeps introspection honest: a pool-return error must not leave a
+        # released authority reported as still held.
+        self._released = True
         self._resolve_own_hold()
+        _unregister_owned_coordination(self)
+        # The close failure is still surfaced — it just cannot un-prove the
+        # unlock that already happened.
+        await self._connection.close()
 
     def _resolve_own_hold(self) -> None:
-        _resolve_authority_hold(self._hold)
+        _resolve_authority_hold(self._hold, owner=self, connection=self._connection)
         self._hold = None
 
     async def _terminate_or_hold(self, reason_code: CoordinationReasonCode) -> None:
@@ -931,8 +1186,8 @@ class PostgresAdvisoryKeysetLease:
             # caller still sees the failure that forced it.
             self._termination_receipt = receipt
             self._released = True
-            # A positive receipt resolves any hold from an earlier attempt.
             self._resolve_own_hold()
+            _unregister_owned_coordination(self)
             return
         if self._hold is not None:
             # One lease is one authority: a repeat failure is the *same*
@@ -940,6 +1195,7 @@ class PostgresAdvisoryKeysetLease:
             return
         self._hold = _record_unreleased_authority(
             self._grant,
+            owner=self,
             reason_code=reason_code,
             termination_proven=False,
             durable_evidence_written=True,
@@ -987,6 +1243,27 @@ async def acquire_physical_account_lease(
             CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE
         ) from exc
 
+    # PostgreSQL session advisory locks are re-entrant per backend: a pooled
+    # connection that already holds one of these keys would answer
+    # pg_try_advisory_lock with true, and one later unlock would leave the row
+    # standing. Refuse to start from a non-zero baseline rather than mistake a
+    # stacked lock for an exclusive one.
+    try:
+        preexisting = await _read_owned_advisory_rows(connection, backend_pid)
+    except Exception as exc:
+        await _close_quietly(connection)
+        raise CoordinationError(
+            CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE
+        ) from exc
+    if _rows_hold_any_key(
+        preexisting,
+        keys=ordered_keys,
+        backend_pid=backend_pid,
+        database_oid=database_oid,
+    ):
+        await _close_quietly(connection)
+        raise CoordinationError(CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE)
+
     grant = AdvisoryLeaseGrant(
         keys=ordered_keys,
         backend_pid=backend_pid,
@@ -1004,9 +1281,16 @@ async def acquire_physical_account_lease(
     try:
         await _acquire_attested_keyset(connection, grant, acquired, in_flight)
     except BaseException:
-        await _rollback_partial_acquisition(
-            connection, acquired, grant, in_flight=tuple(in_flight)
+        # The rollback runs as a retained task: a cancellation arriving *during*
+        # it must not abandon a connection that may still hold a key. The
+        # original failure is re-raised only after the rollback reached a safe
+        # outcome — confirmed unlock, positive termination, or strong retention.
+        rollback: asyncio.Task[None] = asyncio.ensure_future(
+            _rollback_partial_acquisition(
+                connection, acquired, grant, in_flight=tuple(in_flight)
+            )
         )
+        await _await_retained_task(rollback)
         raise
 
     return PostgresAdvisoryKeysetLease(connection=connection, grant=grant)
@@ -1101,6 +1385,7 @@ async def _rollback_partial_acquisition(
             return
         _record_unreleased_authority(
             grant,
+            owner=connection,
             reason_code=CoordinationReasonCode.LEASE_LOST,
             termination_proven=False,
             durable_evidence_written=True,
@@ -1114,16 +1399,19 @@ async def _rollback_partial_acquisition(
             if not await _unlock_proven(connection, key):
                 proven = False
                 break
-    except Exception:
+    except BaseException:
+        # Including a cancellation: an interrupted unlock proves nothing, so the
+        # remainder is unknown rather than absent.
         proven = False
     if proven:
-        await connection.close()
+        await _close_quietly(connection)
         return
     if await _terminate_authority(connection, grant) is None:
         # Metadata alone would let a GC pass or a pool return drop the very
         # authority it claims is still held, so the real connection is retained.
         _record_unreleased_authority(
             grant,
+            owner=connection,
             reason_code=CoordinationReasonCode.LEASE_LOST,
             termination_proven=False,
             durable_evidence_written=True,
@@ -1475,7 +1763,23 @@ def require_dispatch_evidence_port(
 
 
 @dataclass(frozen=True, slots=True)
-class HeldCoordination:
+class HeldCoordinationSnapshot:
+    """A capability-free view of one held coordination.
+
+    Enough to see *that* an account is stuck and why; nothing with which to
+    unstick it. There is no lease, no grant, no connection, no PID, no owner
+    token, and nothing callable — the release capability lives only in the
+    module-private ownership maps.
+    """
+
+    hold_id: str
+    claim_account_scope: str
+    durable_evidence_written: bool
+    released: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _HeldCoordination:
     """A strong handle on coordination authority that is currently in use.
 
     Created the instant the durable binary reservation is committed and *before*
@@ -1498,17 +1802,45 @@ class HeldCoordination:
 
 
 # Strong references, keyed by the opaque hold id and nothing else.
-_HELD_COORDINATION: dict[str, HeldCoordination] = {}
+_HELD_COORDINATION: dict[str, _HeldCoordination] = {}
+
+# The release rights for each held lease. Deliberately module-private with no
+# accessor: ``HeldCoordination`` publishes the lease and the grant so operators
+# and later lanes can *see* what is stuck, and neither of those is enough to
+# release it. Capability identity cannot be reconstructed from the public
+# handle, so a generic caller cannot forge one.
+_COORDINATION_RELEASE_CAPABILITIES: dict[str, object] = {}
 
 
-def held_coordinations() -> Mapping[str, HeldCoordination]:
-    """Every coordination authority this process is still holding."""
+def _snapshot_held(held: _HeldCoordination) -> HeldCoordinationSnapshot:
+    hold = held.lease.unreleased_authority_hold
+    return HeldCoordinationSnapshot(
+        hold_id=held.hold_id,
+        claim_account_scope=held.claim.claim_account_scope,
+        durable_evidence_written=(
+            hold.durable_evidence_written if hold is not None else False
+        ),
+        released=held.lease.released,
+    )
 
-    return MappingProxyType(dict(_HELD_COORDINATION))
+
+def held_coordinations() -> Mapping[str, HeldCoordinationSnapshot]:
+    """Every coordination authority this process is still holding, redacted."""
+
+    return MappingProxyType(
+        {hold_id: _snapshot_held(held) for hold_id, held in _HELD_COORDINATION.items()}
+    )
 
 
-def held_coordination(hold_id: str) -> HeldCoordination | None:
-    """Look one held authority up by its opaque id."""
+def held_coordination(hold_id: str) -> HeldCoordinationSnapshot | None:
+    """Look one held authority up by its opaque id, capability-free."""
+
+    held = _HELD_COORDINATION.get(hold_id)
+    return None if held is None else _snapshot_held(held)
+
+
+def _held_coordination(hold_id: str) -> _HeldCoordination | None:
+    """Module-private: the real handle, for the coordination-owned path only."""
 
     return _HELD_COORDINATION.get(hold_id)
 
@@ -1519,26 +1851,42 @@ def _register_held_coordination(
     grant: AdvisoryLeaseGrant,
     claim: DurableClaim,
     envelope: LineageEnvelope,
-) -> HeldCoordination:
-    held = HeldCoordination(
-        hold_id=f"hold:{secrets.token_hex(8)}",
+) -> _HeldCoordination:
+    held = _HeldCoordination(
+        hold_id=_allocate_hold_id(),
         lease=lease,
         grant=grant,
         claim=claim,
         envelope=envelope,
     )
+    capability = object()
+    _COORDINATION_RELEASE_CAPABILITIES[held.hold_id] = capability
+    # Sealed at registration — before the callback task exists — so there is no
+    # instant in which the handle is public and the lease is generically
+    # releasable.
+    lease._seal_for_coordination(hold_id=held.hold_id, capability=capability)
     _HELD_COORDINATION[held.hold_id] = held
     return held
 
 
-async def _release_and_unregister(held: HeldCoordination) -> None:
-    """Drop the handle only after an allowed release outcome is proven."""
+async def _release_and_unregister(held: _HeldCoordination) -> None:
+    """Drop the handle only after an allowed release outcome is proven.
 
-    await held.lease.release(held.grant)
-    _HELD_COORDINATION.pop(held.hold_id, None)
+    This is the single coordination-owned release path. It runs only once both
+    post-send durable writes have landed (or, on the early-failure path, before
+    the callback ever started), and it is the only caller that holds the
+    capability the lease was sealed with.
+    """
+
+    capability = _COORDINATION_RELEASE_CAPABILITIES.get(held.hold_id)
+    await held.lease._release_with_capability(held.grant, capability)
+    # Compare-and-delete: only this exact handle's entries, never a namesake's.
+    if _HELD_COORDINATION.get(held.hold_id) is held:
+        _COORDINATION_RELEASE_CAPABILITIES.pop(held.hold_id, None)
+        del _HELD_COORDINATION[held.hold_id]
 
 
-async def _release_and_unregister_quietly(held: HeldCoordination) -> None:
+async def _release_and_unregister_quietly(held: _HeldCoordination) -> None:
     """Release on an already-failing path; keep the handle if unproven."""
 
     try:
@@ -1556,7 +1904,9 @@ class CoordinatedMutationResult:
     claim: DurableClaim
     certainty: MutationCertainty
     evidence: DispatchEvidence
-    lease_grant: AdvisoryLeaseGrant
+    # Opaque derived keys only — never the grant, which pairs a backend PID with
+    # an owner token and is therefore a termination capability.
+    lease_keys: tuple[int, ...]
 
 
 async def _await_retained_task(
@@ -1709,7 +2059,7 @@ async def coordinate_mock_order_mutation(
     )
     grant = lease.grant
     claim: DurableClaim | None = None
-    held: HeldCoordination | None = None
+    held: _HeldCoordination | None = None
     try:
         if await claims.account_has_unresolved_claim(scope):
             raise CoordinationError(
@@ -1814,10 +2164,15 @@ async def coordinate_mock_order_mutation(
         # exact handle and grant; J3A schedules nothing.
         # One stuck authority, one opaque id: the coordination handle and the
         # authority hold share it so an operator follows a single thread.
-        lease.retain_authority(
+        lease._retain_authority(
             reason_code=CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE,
             durable_evidence_written=False,
             hold_id=held.hold_id if held is not None else None,
+            capability=(
+                _COORDINATION_RELEASE_CAPABILITIES.get(held.hold_id)
+                if held is not None
+                else None
+            ),
         )
         raise CoordinationError(
             CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE,
@@ -1849,7 +2204,7 @@ async def coordinate_mock_order_mutation(
         claim=claim,
         certainty=result.certainty,
         evidence=evidence,
-        lease_grant=grant,
+        lease_keys=grant.keys,
     )
 
 
@@ -1869,6 +2224,13 @@ async def _release_lease_quietly(
         pass
 
 
+# Public here means the right to *see*. `AdvisoryLeaseGrant` pairs a backend PID
+# with an owner token and is therefore a termination capability;
+# `PostgresAdvisoryKeysetLease` holds the connection and the release methods; and
+# `acquire_physical_account_lease` is the one sanctioned way to hand both to a
+# caller. None of the three is exported. A broker lane supplies its extra keys
+# through `coordinate_mock_order_mutation(additional_advisory_keys=...)` and never
+# touches a lease.
 __all__ = [
     "AUTOMATIC_CLAIM_RELEASE_AVAILABLE",
     "CLAIM_FOLLOWUP_OPERATIONS",
@@ -1877,7 +2239,6 @@ __all__ = [
     "LANE_FENCING_MATRIX",
     "LEASE_TTL_SECONDS",
     "NOT_BROKER_ENFORCED_FENCING_STATEMENT",
-    "AdvisoryLeaseGrant",
     "AdvisoryLockRow",
     "BackendSessionTerminationUnproven",
     "BackendTerminationReceipt",
@@ -1891,18 +2252,16 @@ __all__ = [
     "DispatchEvidencePort",
     "DurableClaim",
     "DurableSendClaimAdapter",
-    "HeldCoordination",
+    "HeldCoordinationSnapshot",
     "LockAuthorityConnection",
     "MockMutationCallback",
     "MutationCallbackResult",
     "MutationCertainty",
     "OrderSendIntentReservationPort",
     "PhysicalAccountScope",
-    "PostgresAdvisoryKeysetLease",
     "SqlAlchemyLockAuthority",
     "TerminalClaimEvidence",
     "UnreleasedAuthorityHold",
-    "acquire_physical_account_lease",
     "coordinate_mock_order_mutation",
     "describe_claim_followup",
     "held_coordination",
@@ -1914,6 +2273,5 @@ __all__ = [
     "split_advisory_key",
     "supports_backend_session_termination",
     "authority_hold_history",
-    "retained_authority_connections",
     "unreleased_authority_holds",
 ]

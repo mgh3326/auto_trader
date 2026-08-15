@@ -113,10 +113,24 @@ Release is exactly two things:
 is not a receipt. When neither can be proven, the lease is not marked released
 and an auditable `UnreleasedAuthorityHold` is recorded.
 
+A single `pg_advisory_unlock` returning true is **not** proof either. Session
+advisory locks stack per backend, so acquisition first proves this backend holds
+none of the target keys, and release re-reads the same backend afterwards to prove
+every row is gone. Only that pair survives re-entrancy.
+
 Release is cancellation-safe: it delegates to one retained inner task, captures
-outer cancellation, and re-raises only after a safe definite outcome. A failed or
-interrupted release stays recoverable **by the exact grant**; stale or foreign
-grants keep being rejected.
+outer cancellation, and re-raises only after a safe definite outcome. Every
+failure inside the critical section — a `CancelledError` included — means the
+outcome is *unknown*, never that the lock was released.
+
+Whether a failed release can be retried at all depends on who owns it. A lease a
+caller still holds and that is not coordination-sealed can retry with its exact
+grant; stale or foreign grants keep being rejected. A coordination-sealed lease is
+never unsealed after a failed release, and a partial-acquisition rollback has no
+owning lease, so **neither can be retried in this process**.
+`UnreleasedAuthorityHold.recoverable_in_process` is recomputed on every read to
+say exactly that, because a hold reported as recoverable when nothing can reach it
+is the same kind of false report as one reported as held after it was released.
 
 ---
 
@@ -183,14 +197,29 @@ hold share one opaque id, so an operator follows a single thread.
 ### Resolving a hold
 
 The opposite failure matters too: reporting a resolved hold as unresolved is as
-much a defect as releasing early. So a hold recorded because the *release itself*
+much a defect as releasing early. A hold recorded because the *release itself*
 failed (`durable_evidence_written=True`) is cleared — atomically, and only its own
-active entries — as soon as a later exact-grant retry proves a full reverse unlock
-or a positive backend-termination receipt. A foreign or stale grant clears
-nothing, an ambiguous or failed retry clears nothing, and one lease's hold never
-touches another's. `unreleased_authority_holds()` and
-`retained_authority_connections()` answer "what is unresolved right now";
-`authority_hold_history()` keeps the immutable record of everything ever held.
+entries — the instant a retry proves a full reverse unlock plus row absence, or a
+positive backend-termination receipt. Cleanup happens **before** the fallible
+`close()`, so a pool-return error cannot strand an authority that is provably
+released. A foreign or stale grant clears nothing, an ambiguous or failed retry
+clears nothing, and one lease's hold never touches another's: every delete
+compares the stored owner and connection, not just the id.
+
+`unreleased_authority_holds()` and `held_coordinations()` answer "what is
+unresolved right now"; `authority_hold_history()` keeps the immutable record.
+All three are **capability-free**: they carry no connection, no lease, no grant,
+no backend PID, no owner token, and nothing callable. Public here means the right
+to *see*; the right to *release* is module-private without exception, because a
+PID paired with an owner token is by itself enough to terminate the backend whose
+lock is the safety property.
+
+### Strength of this guarantee
+
+Like the repository's Kiwoom read-only lane, this is **accident prevention plus
+static detection — not structural impossibility**. One line reaching into a
+private attribute still reaches the capability. The boundary is drawn so that such
+a line has to be written deliberately, and so that a reviewer can see it.
 
 ---
 
