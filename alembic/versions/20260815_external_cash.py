@@ -19,7 +19,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "20260815_external_cash"
-down_revision: str | Sequence[str] | None = "20260805_toss_merge"
+down_revision: str | Sequence[str] | None = "20260814_lcapprove_b1"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
