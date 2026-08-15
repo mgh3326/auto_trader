@@ -56,6 +56,23 @@ ownership. Errors identify lanes but render the account as `[MASKED]`. Both
 guarded helpers run this full canonical/global validation; a caller-supplied
 mapping cannot replace or weaken the signed identity facts.
 
+### Scheduler-owner absence is not binding authority
+
+J5, J6, and J8 consumers must treat both `scheduler_owner=None` and
+`scheduler_owner=DISABLED` as mutation-ineligible in the current registry.
+`None` means that the owner is absent; it does not authorize a downstream stage
+to choose or bind a new owner. A row with `None` retains
+`MissingBinding.OWNER`, remains blocked, and cannot enter the broker-mutation
+path. `DISABLED` is likewise not an eligible scheduler owner.
+
+The three Binance rows (`crypto.binance.spot_demo.canonical`,
+`crypto.binance.spot_demo.b0x_sidecar`, and
+`crypto.binance.futures_demo`) use `DISABLED` because the repository contains no
+Binance demo scheduler registration. That value is an evidence-backed absence,
+not an arbitrary owner assignment or permission for a later stage to invent
+one. Downstream consumers must preserve the row's blocked or disabled state
+until separately approved, exact owner evidence exists.
+
 `PolicyBinding(policy_version, policy_version_hash)` is frozen, nonblank, and
 in-memory only. No model, database column, or migration is added. A real J2B
 `LineageEnvelope` is compared exactly before any opaque callback or factory:
