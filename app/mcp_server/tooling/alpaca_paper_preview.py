@@ -27,6 +27,9 @@ from app.services.brokers.alpaca.exceptions import (
     AlpacaPaperRequestError,
 )
 from app.services.brokers.alpaca.service import AlpacaPaperBrokerService
+from app.services.brokers.client_order_ids import (
+    ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -192,8 +195,11 @@ class PreviewOrderInput(BaseModel):
         stripped = v.strip()
         if not stripped:
             raise ValueError("client_order_id must not be blank")
-        if len(stripped) > 48:
-            raise ValueError("client_order_id must be <= 48 characters")
+        if len(stripped) > ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH:
+            raise ValueError(
+                "client_order_id must be <= "
+                f"{ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH} characters"
+            )
         return stripped
 
     @field_validator("asset_class")

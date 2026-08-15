@@ -138,6 +138,14 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         "app/services/alpaca_paper_order_application.py",
         "app/services/brokers/alpaca/paper_adapter.py",
         "app/services/brokers/capabilities.py",
+        # ROB-1261 — shared broker-client-ID constraint vocabulary. It records
+        # bounded identifier rules consumed by existing adapters, but contains
+        # no Binance HTTP/WS, signing, credential, or endpoint behavior.
+        "app/services/brokers/client_order_ids.py",
+        # ROB-1261 — lane registry performs string-level host/URL endpoint and
+        # credential-namespace safety validation before I/O. It has no HTTP/WS
+        # client, signing, secret-load, or broker-I/O surface.
+        "app/services/mock_lane_registry.py",
         # ROB-1196 — declarative execution-outcome mapping table. Binance
         # appears only in broker/status/source-locator strings; this file has
         # no HTTP/WS, signing, credential, client, endpoint, or mutation code.

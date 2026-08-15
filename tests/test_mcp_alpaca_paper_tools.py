@@ -35,6 +35,9 @@ from app.services.brokers.alpaca.schemas import (
     Order,
     Position,
 )
+from app.services.brokers.client_order_ids import (
+    ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH,
+)
 from tests._mcp_tooling_support import DummyMCP
 
 
@@ -569,6 +572,25 @@ async def test_preview_rejects_blank_symbol(
             symbol="   ", side="buy", type="market", qty=Decimal("1")
         )
     assert fake_preview_service.calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_accepts_exact_shared_client_order_id_limit(
+    fake_preview_service: FakeAlpacaPaperService,
+) -> None:
+    assert ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH == 48
+
+    payload = await alpaca_paper_preview_order(
+        symbol="AAPL",
+        side="buy",
+        type="market",
+        qty=Decimal("1"),
+        client_order_id="x" * 48,
+    )
+
+    assert payload["order_request"]["client_order_id"] == "x" * 48
+    assert fake_preview_service.calls
 
 
 @pytest.mark.unit
