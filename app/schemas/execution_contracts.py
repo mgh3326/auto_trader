@@ -23,9 +23,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Literal
+from enum import StrEnum
+from typing import Annotated, Any, Literal, NewType
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 CONTRACT_VERSION = "v1"
 
@@ -200,6 +208,185 @@ class OrderLifecycleEvent(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+# ROB-1259 J1 — frozen vocabulary only. These definitions deliberately live in
+# the existing shared execution-contract leaf rather than creating a second
+# generic execution schema module. They do not select a broker, a profile, a
+# scheduler, or an order path.
+J1NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+J1JsonObject = dict[str, Any]
+TimingOwner = NewType("TimingOwner", str)
+
+
+class LaneStatus(StrEnum):
+    """The complete ROB-1259 J1 lane-status allowlist."""
+
+    AUTO_ENABLED = "AUTO_ENABLED"
+    AUTO_READY = "AUTO_READY"
+    AUTO_READY_BLOCKED_BY_POLICY = "AUTO_READY_BLOCKED_BY_POLICY"
+    AUTO_READY_BLOCKED_BY_LIFECYCLE = "AUTO_READY_BLOCKED_BY_LIFECYCLE"
+    AUTO_READY_BLOCKED_BY_ACCOUNT_STATE = "AUTO_READY_BLOCKED_BY_ACCOUNT_STATE"
+    AUTO_READY_BLOCKED_BY_SCHEDULER = "AUTO_READY_BLOCKED_BY_SCHEDULER"
+    OBSERVATION_TEMPORARY = "OBSERVATION_TEMPORARY"
+    SHADOW_ONLY = "SHADOW_ONLY"
+    DISABLED_NO_STRATEGY = "DISABLED_NO_STRATEGY"
+    NOT_READY = "NOT_READY"
+    UNKNOWN = "UNKNOWN"
+
+
+LaneState = LaneStatus
+LANE_STATUSES: frozenset[str] = frozenset(status.value for status in LaneStatus)
+LANE_STATES = LANE_STATUSES
+
+
+class ActivationStatus(StrEnum):
+    """Signed activation state kept distinct from a lane status."""
+
+    READY_FOR_MOCK_DEPLOYMENT = "READY_FOR_MOCK_DEPLOYMENT"
+
+
+ACTIVATION_STATUSES: frozenset[str] = frozenset(
+    status.value for status in ActivationStatus
+)
+
+
+class LaneRole(StrEnum):
+    """A registry role is one signed value, never a composite value."""
+
+    PRIMARY_AUTO = "PRIMARY_AUTO"
+    AUTO_MIRROR = "AUTO_MIRROR"
+    BROKER_REGRESSION = "BROKER_REGRESSION"
+    EXECUTION_AUTO = "EXECUTION_AUTO"
+
+
+LANE_ROLES: frozenset[str] = frozenset(role.value for role in LaneRole)
+
+
+class SchedulerOwner(StrEnum):
+    """The exact scheduler-owner vocabulary from the integration contract."""
+
+    TASKIQ = "taskiq"
+    PREFECT = "prefect"
+    ORCH = "orch"
+    MANUAL = "manual"
+    DISABLED = "disabled"
+
+
+SCHEDULER_OWNERS: frozenset[str] = frozenset(owner.value for owner in SchedulerOwner)
+
+CurrencyAlignmentError = Literal[
+    "currency_conversion_not_authorized", "lane_quote_currency_mismatch"
+]
+CURRENCY_ALIGNMENT_ERROR_CODES: frozenset[CurrencyAlignmentError] = frozenset(
+    {"currency_conversion_not_authorized", "lane_quote_currency_mismatch"}
+)
+
+
+class EvidenceTier(StrEnum):
+    """J0 audit claim tier: directly observed, reasoned, or not verified."""
+
+    FACT = "FACT"
+    INFERENCE = "INFERENCE"
+    UNVERIFIED = "UNVERIFIED"
+
+
+EVIDENCE_TIERS: frozenset[str] = frozenset(tier.value for tier in EvidenceTier)
+
+
+class _J1FrozenContract(BaseModel):
+    """Strict, side-effect-free base for the three ROB-1259 J1 records."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+
+class DecisionIntent(_J1FrozenContract):
+    """One stable policy/strategy decision before account-specific planning."""
+
+    decision_intent_id: J1NonBlank
+    policy_version: J1NonBlank
+    policy_version_hash: J1NonBlank
+    decision_timestamp: datetime
+    market_data_cutoff: datetime
+    symbol: J1NonBlank
+    side: Literal["buy", "sell"]
+    target_notional: Decimal = Field(gt=0, allow_inf_nan=False)
+    target_notional_currency: Literal["KRW", "USD", "USDT"]
+    limit_policy: J1JsonObject
+    expiry_policy: J1JsonObject
+    rationale: J1NonBlank
+
+    @field_validator("decision_timestamp", "market_data_cutoff")
+    @classmethod
+    def _timestamps_must_be_timezone_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            raise ValueError("timestamps must be timezone-aware")
+        return value
+
+    @model_validator(mode="after")
+    def _market_data_must_not_follow_the_decision(self) -> DecisionIntent:
+        if self.market_data_cutoff > self.decision_timestamp:
+            raise ValueError("market_data_cutoff must not be after decision_timestamp")
+        return self
+
+
+class ExecutionPlan(_J1FrozenContract):
+    """One account-specific plan derived from a DecisionIntent."""
+
+    execution_plan_id: J1NonBlank
+    decision_intent_id: J1NonBlank
+    lane_id: J1NonBlank
+    broker: J1NonBlank
+    account_profile: J1NonBlank
+    account_mode: J1NonBlank
+    normalized_symbol: J1NonBlank
+    quantity: Decimal = Field(gt=0, allow_inf_nan=False)
+    limit_price: Decimal | None
+    quote_currency: Literal["KRW", "USD", "USDT"]
+    tick_rounding: J1JsonObject
+    session: J1NonBlank | None
+    time_in_force: J1NonBlank | None
+    min_order_validation: J1JsonObject
+    risk_caps: J1JsonObject
+
+    @field_validator("limit_price")
+    @classmethod
+    def _limit_price_must_be_positive_when_present(
+        cls, value: Decimal | None
+    ) -> Decimal | None:
+        if value is not None and (not value.is_finite() or value <= 0):
+            raise ValueError("limit_price must be finite and positive when present")
+        return value
+
+
+def validate_plan_currency_alignment(
+    decision_intent: DecisionIntent, execution_plan: ExecutionPlan
+) -> None:
+    """Reject a decision/plan currency mismatch without conversion or I/O."""
+
+    if decision_intent.target_notional_currency != execution_plan.quote_currency:
+        raise ValueError("currency_conversion_not_authorized")
+
+
+def create_execution_plan(
+    decision_intent: DecisionIntent, /, **plan_values: Any
+) -> ExecutionPlan:
+    """Create a plan only when its supplied currency exactly matches the intent."""
+
+    if plan_values.get("quote_currency") != decision_intent.target_notional_currency:
+        raise ValueError("currency_conversion_not_authorized")
+    return ExecutionPlan(**plan_values)
+
+
+class OrderAttempt(_J1FrozenContract):
+    """One attempt identity; broker identifiers may be absent before acknowledgement."""
+
+    order_attempt_id: J1NonBlank
+    execution_plan_id: J1NonBlank
+    cycle_id: J1NonBlank
+    idempotency_key: J1NonBlank
+    broker_client_order_id: J1NonBlank | None
+    broker_order_id: J1NonBlank | None
+
+
 __all__ = [
     "CONTRACT_VERSION",
     "AccountMode",
@@ -217,4 +404,24 @@ __all__ = [
     "OrderPreviewLine",
     "OrderBasketPreview",
     "OrderLifecycleEvent",
+    "TimingOwner",
+    "LaneStatus",
+    "LaneState",
+    "LANE_STATUSES",
+    "LANE_STATES",
+    "ActivationStatus",
+    "ACTIVATION_STATUSES",
+    "LaneRole",
+    "LANE_ROLES",
+    "SchedulerOwner",
+    "SCHEDULER_OWNERS",
+    "CurrencyAlignmentError",
+    "CURRENCY_ALIGNMENT_ERROR_CODES",
+    "EvidenceTier",
+    "EVIDENCE_TIERS",
+    "DecisionIntent",
+    "ExecutionPlan",
+    "validate_plan_currency_alignment",
+    "create_execution_plan",
+    "OrderAttempt",
 ]

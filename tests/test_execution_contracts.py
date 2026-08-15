@@ -1,7 +1,9 @@
 """Tests for shared execution contracts (ROB-100)."""
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
@@ -463,3 +465,363 @@ def test_cancelled_is_registered_terminal_state():
     assert "canceled" in ORDER_LIFECYCLE_STATES
     assert "canceled" in TERMINAL_LIFECYCLE_STATES
     assert is_terminal_state("canceled") is True
+
+
+class TestRob1259FrozenContracts:
+    """J1 vocabulary must remain definition-only and exact."""
+
+    @staticmethod
+    def _intent(**overrides):
+        payload = {
+            "decision_intent_id": "decision-1",
+            "policy_version": "policy-v1",
+            "policy_version_hash": "a" * 12,
+            "decision_timestamp": datetime(2026, 8, 15, 9, 0, tzinfo=UTC),
+            "market_data_cutoff": datetime(2026, 8, 15, 8, 59, tzinfo=UTC),
+            "symbol": "BRK.B",
+            "side": "buy",
+            "target_notional": Decimal("100"),
+            "target_notional_currency": "USD",
+            "limit_policy": {"order_type": "limit"},
+            "expiry_policy": {"kind": "day"},
+            "rationale": "frozen contract example",
+        }
+        payload.update(overrides)
+        return ec.DecisionIntent(**payload)
+
+    @staticmethod
+    def _plan(**overrides):
+        payload = {
+            "execution_plan_id": "plan-1",
+            "decision_intent_id": "decision-1",
+            "lane_id": "us-alpaca-paper-default",
+            "broker": "alpaca",
+            "account_profile": "default-paper",
+            "account_mode": "alpaca_paper",
+            "normalized_symbol": "BRK.B",
+            "quantity": Decimal("1"),
+            "limit_price": Decimal("100"),
+            "quote_currency": "USD",
+            "tick_rounding": {"increment": "0.01"},
+            "session": "regular",
+            "time_in_force": "day",
+            "min_order_validation": {"quote_required": True},
+            "risk_caps": {"max_notional": "100"},
+        }
+        payload.update(overrides)
+        return ec.ExecutionPlan(**payload)
+
+    @staticmethod
+    def _attempt(**overrides):
+        payload = {
+            "order_attempt_id": "attempt-1",
+            "execution_plan_id": "plan-1",
+            "cycle_id": "cycle-1",
+            "idempotency_key": "idempotency-1",
+            "broker_client_order_id": None,
+            "broker_order_id": None,
+        }
+        payload.update(overrides)
+        return ec.OrderAttempt(**payload)
+
+    def test_lane_states_exactly_match_the_j1_allowlist(self):
+        assert ec.LANE_STATES == frozenset(
+            {
+                "AUTO_ENABLED",
+                "AUTO_READY",
+                "AUTO_READY_BLOCKED_BY_POLICY",
+                "AUTO_READY_BLOCKED_BY_LIFECYCLE",
+                "AUTO_READY_BLOCKED_BY_ACCOUNT_STATE",
+                "AUTO_READY_BLOCKED_BY_SCHEDULER",
+                "OBSERVATION_TEMPORARY",
+                "SHADOW_ONLY",
+                "DISABLED_NO_STRATEGY",
+                "NOT_READY",
+                "UNKNOWN",
+            }
+        )
+
+    def test_common_control_vocabularies_remain_separate(self):
+        assert ec.LaneStatus is ec.LaneState
+        assert ec.LaneStatus is not ec.ActivationStatus
+        assert ec.LANE_STATUSES == ec.LANE_STATES
+        assert ec.ACTIVATION_STATUSES == frozenset({"READY_FOR_MOCK_DEPLOYMENT"})
+        assert ec.LANE_ROLES == frozenset(
+            {
+                "PRIMARY_AUTO",
+                "AUTO_MIRROR",
+                "BROKER_REGRESSION",
+                "EXECUTION_AUTO",
+            }
+        )
+        assert ec.SCHEDULER_OWNERS == frozenset(
+            {"taskiq", "prefect", "orch", "manual", "disabled"}
+        )
+        assert ec.TimingOwner is not ec.SchedulerOwner
+        assert ec.CURRENCY_ALIGNMENT_ERROR_CODES == frozenset(
+            {
+                "currency_conversion_not_authorized",
+                "lane_quote_currency_mismatch",
+            }
+        )
+
+    def test_j0_lane_matrix_fits_the_frozen_allowlist_with_no_enabled_lane(self):
+        j0_lane_states = {
+            "KR/KIS mock": "OBSERVATION_TEMPORARY",
+            "KR/Kiwoom mock": "NOT_READY",
+            "US/KIS mock": "NOT_READY",
+            "US/Kiwoom mock": "NOT_READY",
+            "US/Alpaca paper default": "AUTO_READY_BLOCKED_BY_POLICY",
+            "US/Alpaca paper lab": "AUTO_READY_BLOCKED_BY_LIFECYCLE",
+            "Crypto/Binance Spot Demo canonical paper cohort": "NOT_READY",
+            "Crypto/Binance Spot Demo B0-X sidecar": "OBSERVATION_TEMPORARY",
+            "Crypto/Alpaca paper canonical cohort/default account": "NOT_READY",
+            "Crypto/Alpaca paper clean account": "NOT_READY",
+            "Crypto/Upbit synthetic shadow": "SHADOW_ONLY",
+            "Crypto/Binance Futures Demo": "DISABLED_NO_STRATEGY",
+        }
+
+        assert set(j0_lane_states.values()) <= ec.LANE_STATES
+        assert (
+            sum(
+                state == ec.LaneState.AUTO_ENABLED.value
+                for state in j0_lane_states.values()
+            )
+            == 0
+        )
+
+    def test_evidence_tiers_match_j0_claim_categories(self):
+        assert ec.EVIDENCE_TIERS == frozenset({"FACT", "INFERENCE", "UNVERIFIED"})
+        assert ec.EvidenceTier.INFERENCE.value == "INFERENCE"
+
+    def test_three_tier_models_have_exact_minimum_fields(self):
+        assert set(ec.DecisionIntent.model_fields) == {
+            "decision_intent_id",
+            "policy_version",
+            "policy_version_hash",
+            "decision_timestamp",
+            "market_data_cutoff",
+            "symbol",
+            "side",
+            "target_notional",
+            "target_notional_currency",
+            "limit_policy",
+            "expiry_policy",
+            "rationale",
+        }
+        assert set(ec.ExecutionPlan.model_fields) == {
+            "execution_plan_id",
+            "decision_intent_id",
+            "lane_id",
+            "broker",
+            "account_profile",
+            "account_mode",
+            "normalized_symbol",
+            "quantity",
+            "limit_price",
+            "quote_currency",
+            "tick_rounding",
+            "session",
+            "time_in_force",
+            "min_order_validation",
+            "risk_caps",
+        }
+        assert set(ec.OrderAttempt.model_fields) == {
+            "order_attempt_id",
+            "execution_plan_id",
+            "cycle_id",
+            "idempotency_key",
+            "broker_client_order_id",
+            "broker_order_id",
+        }
+
+    def test_currency_fields_use_the_signed_literals(self):
+        assert (
+            ec.DecisionIntent.model_fields["target_notional_currency"].annotation
+            == (Literal["KRW", "USD", "USDT"])
+        )
+        assert (
+            ec.ExecutionPlan.model_fields["quote_currency"].annotation
+            == (Literal["KRW", "USD", "USDT"])
+        )
+
+    def test_records_are_strict_frozen_definitions(self):
+        intent = self._intent()
+        plan = self._plan()
+        attempt = self._attempt()
+
+        with pytest.raises(ValidationError):
+            intent.symbol = "other"
+        with pytest.raises(ValidationError):
+            plan.broker = "other"
+        with pytest.raises(ValidationError):
+            attempt.cycle_id = "other"
+
+        with pytest.raises(ValidationError):
+            self._attempt(unexpected="field")
+
+    @pytest.mark.parametrize(
+        ("factory_name", "field_name"),
+        [
+            ("_intent", "decision_intent_id"),
+            ("_intent", "policy_version"),
+            ("_intent", "policy_version_hash"),
+            ("_intent", "symbol"),
+            ("_intent", "rationale"),
+            ("_plan", "execution_plan_id"),
+            ("_plan", "decision_intent_id"),
+            ("_plan", "lane_id"),
+            ("_plan", "broker"),
+            ("_plan", "account_profile"),
+            ("_plan", "account_mode"),
+            ("_plan", "normalized_symbol"),
+            ("_plan", "session"),
+            ("_plan", "time_in_force"),
+            ("_attempt", "order_attempt_id"),
+            ("_attempt", "execution_plan_id"),
+            ("_attempt", "cycle_id"),
+            ("_attempt", "idempotency_key"),
+            ("_attempt", "broker_client_order_id"),
+            ("_attempt", "broker_order_id"),
+        ],
+    )
+    def test_j1_nonblank_values_reject_whitespace(self, factory_name, field_name):
+        factory = getattr(self, factory_name)
+
+        with pytest.raises(ValidationError):
+            factory(**{field_name: "   "})
+
+    @pytest.mark.parametrize("value", [Decimal("0"), Decimal("-0.01")])
+    def test_target_notional_must_be_strictly_positive(self, value):
+        with pytest.raises(ValidationError):
+            self._intent(target_notional=value)
+
+    @pytest.mark.parametrize("value", [Decimal("0"), Decimal("-1")])
+    def test_execution_plan_quantity_must_be_strictly_positive(self, value):
+        with pytest.raises(ValidationError):
+            self._plan(quantity=value)
+
+    @pytest.mark.parametrize(
+        ("factory_name", "field_name", "implicit_value"),
+        [
+            ("_intent", "target_notional", 100.0),
+            ("_plan", "quantity", 1.0),
+        ],
+    )
+    def test_contract_rejects_implicit_scalar_coercion(
+        self, factory_name, field_name, implicit_value
+    ):
+        factory = getattr(self, factory_name)
+
+        with pytest.raises(ValidationError):
+            factory(**{field_name: implicit_value})
+
+    def test_idempotency_key_is_required_for_every_attempt(self):
+        payload = self._attempt().model_dump()
+        del payload["idempotency_key"]
+
+        with pytest.raises(ValidationError, match="idempotency_key"):
+            ec.OrderAttempt(**payload)
+
+    def test_decision_side_is_limited_to_buy_or_sell(self):
+        with pytest.raises(ValidationError):
+            self._intent(side="hold")
+
+    @pytest.mark.parametrize(
+        ("factory_name", "field_name"),
+        [
+            ("_intent", "target_notional_currency"),
+            ("_plan", "quote_currency"),
+        ],
+    )
+    @pytest.mark.parametrize("invalid_currency", [None, "", " ", " KRW", "krw", "EUR"])
+    def test_currency_fields_reject_invalid_values(
+        self, factory_name, field_name, invalid_currency
+    ):
+        factory = getattr(self, factory_name)
+
+        with pytest.raises(ValidationError, match=field_name):
+            factory(**{field_name: invalid_currency})
+
+    @pytest.mark.parametrize(
+        ("model_type", "factory_name", "field_name"),
+        [
+            (ec.DecisionIntent, "_intent", "target_notional_currency"),
+            (ec.ExecutionPlan, "_plan", "quote_currency"),
+        ],
+    )
+    def test_currency_fields_are_required(self, model_type, factory_name, field_name):
+        payload = getattr(self, factory_name)().model_dump()
+        del payload[field_name]
+
+        with pytest.raises(ValidationError, match=field_name):
+            model_type(**payload)
+
+    @pytest.mark.parametrize("currency", ["KRW", "USD", "USDT"])
+    def test_matching_currency_records_support_strict_json_round_trip(self, currency):
+        intent = self._intent(target_notional_currency=currency)
+        plan = self._plan(quote_currency=currency)
+        intent_json = intent.model_dump_json()
+        plan_json = plan.model_dump_json()
+
+        assert ec.DecisionIntent.model_validate_json(intent_json) == intent
+        assert ec.ExecutionPlan.model_validate_json(plan_json) == plan
+        ec.validate_plan_currency_alignment(intent, plan)
+        assert ec.create_execution_plan(intent, **plan.model_dump()) == plan
+
+        with pytest.raises(ValidationError):
+            ec.DecisionIntent.model_validate(json.loads(intent_json))
+        with pytest.raises(ValidationError):
+            ec.ExecutionPlan.model_validate(json.loads(plan_json))
+
+    @pytest.mark.parametrize(
+        ("intent_currency", "plan_currency"),
+        [
+            ("KRW", "USD"),
+            ("KRW", "USDT"),
+            ("USD", "KRW"),
+            ("USD", "USDT"),
+            ("USDT", "KRW"),
+            ("USDT", "USD"),
+        ],
+    )
+    def test_currency_mismatch_fails_closed_with_the_signed_error(
+        self, intent_currency, plan_currency
+    ):
+        intent = self._intent(target_notional_currency=intent_currency)
+        plan = self._plan(quote_currency=plan_currency)
+
+        with pytest.raises(ValueError) as excinfo:
+            ec.validate_plan_currency_alignment(intent, plan)
+
+        assert str(excinfo.value) == "currency_conversion_not_authorized"
+
+        with pytest.raises(ValueError) as creation_excinfo:
+            ec.create_execution_plan(intent, **plan.model_dump())
+
+        assert str(creation_excinfo.value) == "currency_conversion_not_authorized"
+
+    def test_decision_time_and_price_invariants_fail_closed(self):
+        with pytest.raises(ValidationError, match="market_data_cutoff"):
+            self._intent(
+                market_data_cutoff=datetime(2026, 8, 15, 9, 1, tzinfo=UTC),
+            )
+        with pytest.raises(ValidationError, match="timezone-aware"):
+            self._intent(decision_timestamp=datetime(2026, 8, 15, 9, 0))
+        with pytest.raises(ValidationError, match="limit_price"):
+            self._plan(limit_price=Decimal("0"))
+
+    def test_attempt_preserves_existing_correlation_and_approval_surfaces(self):
+        attempt = self._attempt(
+            broker_client_order_id="client-1",
+            broker_order_id="broker-1",
+        )
+        assert attempt.cycle_id == "cycle-1"
+        assert attempt.idempotency_key == "idempotency-1"
+        all_fields = (
+            set(ec.DecisionIntent.model_fields)
+            | set(ec.ExecutionPlan.model_fields)
+            | set(ec.OrderAttempt.model_fields)
+        )
+        assert "correlation_id" not in all_fields
+        assert "approval_hash" not in all_fields
