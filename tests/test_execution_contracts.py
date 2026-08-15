@@ -463,3 +463,184 @@ def test_cancelled_is_registered_terminal_state():
     assert "canceled" in ORDER_LIFECYCLE_STATES
     assert "canceled" in TERMINAL_LIFECYCLE_STATES
     assert is_terminal_state("canceled") is True
+
+
+class TestRob1259FrozenContracts:
+    """J1 vocabulary must remain definition-only and exact."""
+
+    @staticmethod
+    def _intent(**overrides):
+        payload = {
+            "decision_intent_id": "decision-1",
+            "policy_version": "policy-v1",
+            "policy_version_hash": "a" * 12,
+            "decision_timestamp": datetime(2026, 8, 15, 9, 0, tzinfo=UTC),
+            "market_data_cutoff": datetime(2026, 8, 15, 8, 59, tzinfo=UTC),
+            "symbol": "BRK.B",
+            "side": "buy",
+            "target_notional": Decimal("100"),
+            "limit_policy": {"order_type": "limit"},
+            "expiry_policy": {"kind": "day"},
+            "rationale": "frozen contract example",
+        }
+        payload.update(overrides)
+        return ec.DecisionIntent(**payload)
+
+    @staticmethod
+    def _plan(**overrides):
+        payload = {
+            "execution_plan_id": "plan-1",
+            "decision_intent_id": "decision-1",
+            "lane_id": "us-alpaca-paper-default",
+            "broker": "alpaca",
+            "account_profile": "default-paper",
+            "account_mode": "alpaca_paper",
+            "normalized_symbol": "BRK.B",
+            "quantity": Decimal("1"),
+            "limit_price": Decimal("100"),
+            "tick_rounding": {"increment": "0.01"},
+            "session": "regular",
+            "time_in_force": "day",
+            "min_order_validation": {"quote_required": True},
+            "risk_caps": {"max_notional": "100"},
+        }
+        payload.update(overrides)
+        return ec.ExecutionPlan(**payload)
+
+    @staticmethod
+    def _attempt(**overrides):
+        payload = {
+            "order_attempt_id": "attempt-1",
+            "execution_plan_id": "plan-1",
+            "cycle_id": "cycle-1",
+            "idempotency_key": "idempotency-1",
+            "broker_client_order_id": None,
+            "broker_order_id": None,
+        }
+        payload.update(overrides)
+        return ec.OrderAttempt(**payload)
+
+    def test_lane_states_exactly_match_the_j1_allowlist(self):
+        assert ec.LANE_STATES == frozenset(
+            {
+                "AUTO_ENABLED",
+                "AUTO_READY",
+                "AUTO_READY_BLOCKED_BY_POLICY",
+                "AUTO_READY_BLOCKED_BY_LIFECYCLE",
+                "AUTO_READY_BLOCKED_BY_ACCOUNT_STATE",
+                "AUTO_READY_BLOCKED_BY_SCHEDULER",
+                "OBSERVATION_TEMPORARY",
+                "SHADOW_ONLY",
+                "DISABLED_NO_STRATEGY",
+                "NOT_READY",
+                "UNKNOWN",
+            }
+        )
+
+    def test_j0_lane_matrix_fits_the_frozen_allowlist_with_no_enabled_lane(self):
+        j0_lane_states = {
+            "KR/KIS mock": "OBSERVATION_TEMPORARY",
+            "KR/Kiwoom mock": "NOT_READY",
+            "US/KIS mock": "NOT_READY",
+            "US/Kiwoom mock": "NOT_READY",
+            "US/Alpaca paper default": "AUTO_READY_BLOCKED_BY_POLICY",
+            "US/Alpaca paper lab": "AUTO_READY_BLOCKED_BY_LIFECYCLE",
+            "Crypto/Binance Spot Demo canonical paper cohort": "NOT_READY",
+            "Crypto/Binance Spot Demo B0-X sidecar": "OBSERVATION_TEMPORARY",
+            "Crypto/Alpaca paper canonical cohort/default account": "NOT_READY",
+            "Crypto/Alpaca paper clean account": "NOT_READY",
+            "Crypto/Upbit synthetic shadow": "SHADOW_ONLY",
+            "Crypto/Binance Futures Demo": "DISABLED_NO_STRATEGY",
+        }
+
+        assert set(j0_lane_states.values()) <= ec.LANE_STATES
+        assert (
+            sum(
+                state == ec.LaneState.AUTO_ENABLED.value
+                for state in j0_lane_states.values()
+            )
+            == 0
+        )
+
+    def test_evidence_tiers_match_j0_claim_categories(self):
+        assert ec.EVIDENCE_TIERS == frozenset({"FACT", "INFERENCE", "UNVERIFIED"})
+        assert ec.EvidenceTier.INFERENCE.value == "INFERENCE"
+
+    def test_three_tier_models_have_exact_minimum_fields(self):
+        assert set(ec.DecisionIntent.model_fields) == {
+            "decision_intent_id",
+            "policy_version",
+            "policy_version_hash",
+            "decision_timestamp",
+            "market_data_cutoff",
+            "symbol",
+            "side",
+            "target_notional",
+            "limit_policy",
+            "expiry_policy",
+            "rationale",
+        }
+        assert set(ec.ExecutionPlan.model_fields) == {
+            "execution_plan_id",
+            "decision_intent_id",
+            "lane_id",
+            "broker",
+            "account_profile",
+            "account_mode",
+            "normalized_symbol",
+            "quantity",
+            "limit_price",
+            "tick_rounding",
+            "session",
+            "time_in_force",
+            "min_order_validation",
+            "risk_caps",
+        }
+        assert set(ec.OrderAttempt.model_fields) == {
+            "order_attempt_id",
+            "execution_plan_id",
+            "cycle_id",
+            "idempotency_key",
+            "broker_client_order_id",
+            "broker_order_id",
+        }
+
+    def test_records_are_strict_frozen_definitions(self):
+        intent = self._intent()
+        plan = self._plan()
+        attempt = self._attempt()
+
+        with pytest.raises(ValidationError):
+            intent.symbol = "other"
+        with pytest.raises(ValidationError):
+            plan.broker = "other"
+        with pytest.raises(ValidationError):
+            attempt.cycle_id = "other"
+
+        with pytest.raises(ValidationError):
+            self._attempt(unexpected="field")
+
+    def test_decision_time_and_price_invariants_fail_closed(self):
+        with pytest.raises(ValidationError, match="market_data_cutoff"):
+            self._intent(
+                market_data_cutoff=datetime(2026, 8, 15, 9, 1, tzinfo=UTC),
+            )
+        with pytest.raises(ValidationError, match="timezone-aware"):
+            self._intent(decision_timestamp=datetime(2026, 8, 15, 9, 0))
+        with pytest.raises(ValidationError, match="limit_price"):
+            self._plan(limit_price=Decimal("0"))
+
+    def test_attempt_preserves_existing_correlation_and_approval_surfaces(self):
+        attempt = self._attempt(
+            broker_client_order_id="client-1",
+            broker_order_id="broker-1",
+        )
+        assert attempt.cycle_id == "cycle-1"
+        assert attempt.idempotency_key == "idempotency-1"
+        all_fields = (
+            set(ec.DecisionIntent.model_fields)
+            | set(ec.ExecutionPlan.model_fields)
+            | set(ec.OrderAttempt.model_fields)
+        )
+        assert "correlation_id" not in all_fields
+        assert "approval_hash" not in all_fields

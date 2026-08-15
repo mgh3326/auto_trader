@@ -23,9 +23,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Literal
+from enum import StrEnum
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 CONTRACT_VERSION = "v1"
 
@@ -200,6 +208,118 @@ class OrderLifecycleEvent(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+# ROB-1259 J1 — frozen vocabulary only. These definitions deliberately live in
+# the existing shared execution-contract leaf rather than creating a second
+# generic execution schema module. They do not select a broker, a profile, a
+# scheduler, or an order path.
+J1NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+J1JsonObject = dict[str, Any]
+
+
+class LaneState(StrEnum):
+    """The complete ROB-1259 J1 lane-state allowlist."""
+
+    AUTO_ENABLED = "AUTO_ENABLED"
+    AUTO_READY = "AUTO_READY"
+    AUTO_READY_BLOCKED_BY_POLICY = "AUTO_READY_BLOCKED_BY_POLICY"
+    AUTO_READY_BLOCKED_BY_LIFECYCLE = "AUTO_READY_BLOCKED_BY_LIFECYCLE"
+    AUTO_READY_BLOCKED_BY_ACCOUNT_STATE = "AUTO_READY_BLOCKED_BY_ACCOUNT_STATE"
+    AUTO_READY_BLOCKED_BY_SCHEDULER = "AUTO_READY_BLOCKED_BY_SCHEDULER"
+    OBSERVATION_TEMPORARY = "OBSERVATION_TEMPORARY"
+    SHADOW_ONLY = "SHADOW_ONLY"
+    DISABLED_NO_STRATEGY = "DISABLED_NO_STRATEGY"
+    NOT_READY = "NOT_READY"
+    UNKNOWN = "UNKNOWN"
+
+
+LANE_STATES: frozenset[str] = frozenset(state.value for state in LaneState)
+
+
+class EvidenceTier(StrEnum):
+    """J0 audit claim tier: directly observed, reasoned, or not verified."""
+
+    FACT = "FACT"
+    INFERENCE = "INFERENCE"
+    UNVERIFIED = "UNVERIFIED"
+
+
+EVIDENCE_TIERS: frozenset[str] = frozenset(tier.value for tier in EvidenceTier)
+
+
+class _J1FrozenContract(BaseModel):
+    """Strict, side-effect-free base for the three ROB-1259 J1 records."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+
+class DecisionIntent(_J1FrozenContract):
+    """One stable policy/strategy decision before account-specific planning."""
+
+    decision_intent_id: J1NonBlank
+    policy_version: J1NonBlank
+    policy_version_hash: J1NonBlank
+    decision_timestamp: datetime
+    market_data_cutoff: datetime
+    symbol: J1NonBlank
+    side: Literal["buy", "sell"]
+    target_notional: Decimal = Field(gt=0, allow_inf_nan=False)
+    limit_policy: J1JsonObject
+    expiry_policy: J1JsonObject
+    rationale: J1NonBlank
+
+    @field_validator("decision_timestamp", "market_data_cutoff")
+    @classmethod
+    def _timestamps_must_be_timezone_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            raise ValueError("timestamps must be timezone-aware")
+        return value
+
+    @model_validator(mode="after")
+    def _market_data_must_not_follow_the_decision(self) -> DecisionIntent:
+        if self.market_data_cutoff > self.decision_timestamp:
+            raise ValueError("market_data_cutoff must not be after decision_timestamp")
+        return self
+
+
+class ExecutionPlan(_J1FrozenContract):
+    """One account-specific plan derived from a DecisionIntent."""
+
+    execution_plan_id: J1NonBlank
+    decision_intent_id: J1NonBlank
+    lane_id: J1NonBlank
+    broker: J1NonBlank
+    account_profile: J1NonBlank
+    account_mode: J1NonBlank
+    normalized_symbol: J1NonBlank
+    quantity: Decimal = Field(gt=0, allow_inf_nan=False)
+    limit_price: Decimal | None
+    tick_rounding: J1JsonObject
+    session: J1NonBlank | None
+    time_in_force: J1NonBlank | None
+    min_order_validation: J1JsonObject
+    risk_caps: J1JsonObject
+
+    @field_validator("limit_price")
+    @classmethod
+    def _limit_price_must_be_positive_when_present(
+        cls, value: Decimal | None
+    ) -> Decimal | None:
+        if value is not None and (not value.is_finite() or value <= 0):
+            raise ValueError("limit_price must be finite and positive when present")
+        return value
+
+
+class OrderAttempt(_J1FrozenContract):
+    """One attempt identity; broker identifiers may be absent before acknowledgement."""
+
+    order_attempt_id: J1NonBlank
+    execution_plan_id: J1NonBlank
+    cycle_id: J1NonBlank
+    idempotency_key: J1NonBlank
+    broker_client_order_id: J1NonBlank | None
+    broker_order_id: J1NonBlank | None
+
+
 __all__ = [
     "CONTRACT_VERSION",
     "AccountMode",
@@ -217,4 +337,11 @@ __all__ = [
     "OrderPreviewLine",
     "OrderBasketPreview",
     "OrderLifecycleEvent",
+    "LaneState",
+    "LANE_STATES",
+    "EvidenceTier",
+    "EVIDENCE_TIERS",
+    "DecisionIntent",
+    "ExecutionPlan",
+    "OrderAttempt",
 ]
