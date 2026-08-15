@@ -1,7 +1,8 @@
-"""Evidence-gated KIS live gateway-throttle retry tests."""
+"""KIS live gateway-throttle failure-surfacing tests."""
 
 from __future__ import annotations
 
+from inspect import getsource
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,6 +11,7 @@ from sqlalchemy import delete, select
 
 import app.mcp_server.tooling.order_execution as oe
 from app.models.review import OrderSendIntent
+from app.services.brokers.kis.base import BaseKISClient
 from app.services.brokers.kis.order_throttle import KISGatewayThrottleRejection
 
 
@@ -56,48 +58,37 @@ def _throttle() -> KISGatewayThrottleRejection:
     )
 
 
-def _patch_accepted_ledger(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
-    accepted_ledger = AsyncMock(return_value={"success": True, "ledger_id": 1})
-    monkeypatch.setattr(
-        "app.mcp_server.tooling.kis_live_ledger._record_kis_live_order",
-        accepted_ledger,
-    )
-    monkeypatch.setattr(oe, "_record_order_history", AsyncMock(return_value=None))
-    return accepted_ledger
-
-
 @pytest.mark.asyncio
-async def test_proven_not_delivered_retries_once_with_same_reserved_intent(
+async def test_proven_not_delivered_surfaces_after_exactly_one_post(
     monkeypatch: pytest.MonkeyPatch,
     db_session,
 ):
-    _patch_accepted_ledger(monkeypatch)
     lookup = AsyncMock(return_value=False)
     monkeypatch.setattr(oe, "_kis_live_order_ledger_entry_exists", lookup)
-    slept = AsyncMock()
-    monkeypatch.setattr(oe.asyncio, "sleep", slept)
+    executed = AsyncMock(side_effect=_throttle())
+    monkeypatch.setattr(oe, "_execute_order", executed)
 
-    calls: list[dict] = []
+    with pytest.raises(oe.KISGatewayThrottleSubmissionFailure) as raised:
+        await oe._execute_and_record(**_execute_kwargs())
 
-    async def _execute(**kwargs):
-        calls.append(kwargs)
-        if len(calls) == 1:
-            raise _throttle()
-        return {"rt_cd": "0", "odno": "KIS-1250", "msg": "ok"}
-
-    monkeypatch.setattr(oe, "_execute_order", _execute)
-
-    result = await oe._execute_and_record(**_execute_kwargs())
-
-    assert result["success"] is True
-    assert len(calls) == 2
-    assert calls[0]["send_outcome"] is calls[1]["send_outcome"]
-    assert calls[0]["send_outcome"] is not None
+    failure = raised.value
+    assert executed.await_count == 1
+    assert failure.not_delivered is True
+    assert failure.error_code == "kis_gateway_throttle_not_delivered"
+    assert failure.submit_failure_detail()["post_attempts"] == 1
+    surfaced = oe._augment_error_for_unknown_outcome(
+        {"success": False, "error": "base"},
+        failure,
+        market_type="equity_kr",
+        is_mock=False,
+    )
+    assert surfaced["error_code"] == "kis_gateway_throttle_not_delivered"
+    assert surfaced["submit_failure"]["post_attempts"] == 1
+    assert surfaced.get("outcome_unknown") is not True
     lookup.assert_awaited_once_with(
         idempotency_key="rob1250-guard",
         market_type="equity_kr",
     )
-    slept.assert_awaited_once_with(0.25)
     intent = await db_session.scalar(
         select(OrderSendIntent).where(
             OrderSendIntent.account_scope == "kis_live",
@@ -108,54 +99,20 @@ async def test_proven_not_delivered_retries_once_with_same_reserved_intent(
 
 
 @pytest.mark.asyncio
-async def test_second_throttle_stops_after_exactly_one_retry(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _patch_accepted_ledger(monkeypatch)
-    monkeypatch.setattr(
-        oe,
-        "_kis_live_order_ledger_entry_exists",
-        AsyncMock(return_value=False),
-    )
-    monkeypatch.setattr(oe.asyncio, "sleep", AsyncMock())
-    calls = 0
-
-    async def _execute(**_kwargs):
-        nonlocal calls
-        calls += 1
-        raise _throttle()
-
-    monkeypatch.setattr(oe, "_execute_order", _execute)
-
-    with pytest.raises(oe.KISGatewayThrottleSubmissionFailure) as raised:
-        await oe._execute_and_record(**_execute_kwargs())
-
-    failure = raised.value
-    assert calls == 2
-    assert failure.not_delivered is True
-    assert failure.retry_count == 1
-    assert failure.error_code == "kis_gateway_throttle_not_delivered"
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("ledger_entry_present", [True, None])
-async def test_ambiguous_ledger_evidence_never_retries(
+async def test_ambiguous_ledger_evidence_surfaces_without_another_post(
     monkeypatch: pytest.MonkeyPatch,
     ledger_entry_present: bool | None,
 ):
-    _patch_accepted_ledger(monkeypatch)
     lookup = AsyncMock(return_value=ledger_entry_present)
     monkeypatch.setattr(oe, "_kis_live_order_ledger_entry_exists", lookup)
     executed = AsyncMock(side_effect=_throttle())
     monkeypatch.setattr(oe, "_execute_order", executed)
-    sleep = AsyncMock()
-    monkeypatch.setattr(oe.asyncio, "sleep", sleep)
 
     with pytest.raises(oe.KISGatewayThrottleSubmissionFailure) as raised:
         await oe._execute_and_record(**_execute_kwargs())
 
     assert executed.await_count == 1
-    sleep.assert_not_awaited()
     assert raised.value.not_delivered is False
     assert raised.value.error_code == "kis_gateway_throttle_delivery_ambiguous"
     surfaced = oe._augment_error_for_unknown_outcome(
@@ -167,13 +124,13 @@ async def test_ambiguous_ledger_evidence_never_retries(
     assert surfaced["error_code"] == "kis_gateway_throttle_delivery_ambiguous"
     assert surfaced["outcome_unknown"] is True
     assert surfaced["submit_failure"]["ledger_entry_present"] is ledger_entry_present
+    assert surfaced["submit_failure"]["post_attempts"] == 1
 
 
 @pytest.mark.asyncio
-async def test_missing_idempotency_key_never_retries(
+async def test_missing_idempotency_key_surfaces_as_ambiguous_after_one_post(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    _patch_accepted_ledger(monkeypatch)
     lookup = AsyncMock(return_value=False)
     monkeypatch.setattr(oe, "_kis_live_order_ledger_entry_exists", lookup)
     executed = AsyncMock(side_effect=_throttle())
@@ -188,19 +145,21 @@ async def test_missing_idempotency_key_never_retries(
 
 
 @pytest.mark.asyncio
-async def test_us_executor_threads_outcome_tracker_to_concrete_kis_facade(
+async def test_us_executor_threads_outcome_to_capable_facade_without_account_marker(
     monkeypatch: pytest.MonkeyPatch,
 ):
     seen: dict = {}
 
-    class _ConcreteLikeKIS:
-        _is_mock_client = False
-
+    class _FacadeWithoutAccountMarker:
         async def buy_overseas_stock(self, **kwargs):
             seen.update(kwargs)
             return {"rt_cd": "0", "odno": "US-1250"}
 
-    monkeypatch.setattr(oe, "_create_kis_client", lambda **_kwargs: _ConcreteLikeKIS())
+    monkeypatch.setattr(
+        oe,
+        "_create_kis_client",
+        lambda **_kwargs: _FacadeWithoutAccountMarker(),
+    )
     monkeypatch.setattr(oe, "get_us_exchange_by_symbol", AsyncMock(return_value="NASD"))
     tracker = oe.OrderSendOutcomeTracker()
 
@@ -214,3 +173,46 @@ async def test_us_executor_threads_outcome_tracker_to_concrete_kis_facade(
 
     assert result["odno"] == "US-1250"
     assert seen["send_outcome"] is tracker
+
+
+@pytest.mark.asyncio
+async def test_kr_executor_keeps_legacy_facade_signature_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    seen: dict = {}
+
+    class _LegacyFacade:
+        async def order_korea_stock(self, stock_code, order_type, quantity, price):
+            seen.update(
+                stock_code=stock_code,
+                order_type=order_type,
+                quantity=quantity,
+                price=price,
+            )
+            return {"rt_cd": "0", "odno": "KR-1250"}
+
+    monkeypatch.setattr(oe, "_create_kis_client", lambda **_kwargs: _LegacyFacade())
+
+    result = await oe._execute_kr_order(
+        "005930",
+        "sell",
+        "limit",
+        1,
+        70000.0,
+        send_outcome=oe.OrderSendOutcomeTracker(),
+    )
+
+    assert result["odno"] == "KR-1250"
+    assert seen == {
+        "stock_code": "005930",
+        "order_type": "sell",
+        "quantity": 1,
+        "price": 70000,
+    }
+
+
+def test_live_order_dispatch_contains_no_order_pacer():
+    """Guard the §77 scope split at the common live dispatch boundary."""
+    source = getsource(BaseKISClient._dispatch_rate_limited_with_headers)
+    assert "live_order_pacer" not in source
+    assert "live_order_scope" not in source

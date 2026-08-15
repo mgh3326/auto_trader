@@ -2097,7 +2097,8 @@ def _validated_kis_gateway_throttle_failure(
         or not isinstance(detail.get("http_status"), int)
         or not 200 <= int(detail["http_status"]) < 300
         or detail.get("broker_order_id") is not None
-        or detail.get("retry_count") not in {0, 1}
+        # This surface is terminal: exactly one POST produced the response.
+        or detail.get("post_attempts") != 1
         or not isinstance(detail.get("idempotency_key_present"), bool)
         or not isinstance(detail.get("intent_reserved"), bool)
         or detail.get("ledger_entry_present") not in {True, False, None}

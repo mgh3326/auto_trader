@@ -27,7 +27,6 @@ from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
 from app.services.brokers.kis.vts_distributed_gate import (
     DistributedGateUnavailable,
     VTSDistributedGate,
-    get_kis_live_order_pacer,
     get_vts_distributed_gate,
 )
 from app.services.redis_token_manager import redis_token_manager
@@ -37,20 +36,6 @@ from app.services.redis_token_manager import redis_token_manager
 # to gate a live request (live is openapi.koreainvestment.com:9443).
 _KIS_MOCK_REST_HOSTS: frozenset[str] = frozenset(
     {"openapivts.koreainvestment.com:29443"}
-)
-
-# Only these exact real KIS order submit contracts share the live pacing
-# profile.  Read APIs, cancellation/modify paths, VTS, and other brokers do
-# not reach it.  Matching both HTTP path and TR id avoids accidentally pacing
-# an unrelated POST that happens to use the same client infrastructure.
-_KIS_LIVE_ORDER_SUBMIT_PATHS: frozenset[str] = frozenset(
-    {
-        "/uapi/domestic-stock/v1/trading/order-cash",
-        "/uapi/overseas-stock/v1/trading/order",
-    }
-)
-_KIS_LIVE_ORDER_SUBMIT_TR_IDS: frozenset[str] = frozenset(
-    {"TTTC0012U", "TTTC0011U", "TTTT1002U", "TTTT1006U"}
 )
 
 
@@ -133,12 +118,8 @@ class BaseKISClient:
             type(self)._shared_client_lock = asyncio.Lock()
         # ROB-892: injected distributed admit gate for KIS mock (VTS) calls.
         # ``None`` means "use the process-wide singleton"; tests override this
-        # to point at a disposable Redis. Only mock dispatch reaches this gate.
+        # to point at a disposable Redis. Live dispatch never reaches acquire().
         self._vts_gate: VTSDistributedGate | None = None
-        # ROB-1250: injected shared pacer for the real KIS order-submit
-        # boundary. ``None`` uses the lazy process singleton; tests inject a
-        # fake so no test requires a live Redis or broker connection.
-        self._live_order_pacer: VTSDistributedGate | None = None
 
     @property
     def _http_client(self) -> httpx.AsyncClient | None:
@@ -270,83 +251,6 @@ class BaseKISClient:
             gate = await get_vts_distributed_gate()
         await gate.acquire(
             scope_key, freshness_hook=freshness_hook, call_class=call_class
-        )
-
-    def _live_order_pacer_scope(
-        self,
-        method: str,
-        url: str,
-        headers: dict[str, str],
-        tr_id: str | None,
-    ) -> str | None:
-        """Return the distributed pace scope for an exact real KIS order POST.
-
-        This is intentionally stricter than host matching: only an explicitly
-        live ``KISClient`` (``_is_mock_client is False``), the two documented
-        order paths, and the four live order TR ids are admitted.  A malformed
-        live order URL or missing app key cannot be safely scoped and therefore
-        fails closed before HTTP; all out-of-scope calls remain no-ops.
-        """
-        if getattr(self, "_is_mock_client", None) is not False:
-            return None
-        if not isinstance(method, str) or method.upper() != "POST":
-            return None
-        if tr_id not in _KIS_LIVE_ORDER_SUBMIT_TR_IDS:
-            return None
-
-        from urllib.parse import urlsplit
-
-        try:
-            parsed = urlsplit(url)
-            request_path = parsed.path
-            request_netloc = parsed.netloc.lower()
-        except (TypeError, ValueError):
-            request_path = ""
-            request_netloc = ""
-        if request_path not in _KIS_LIVE_ORDER_SUBMIT_PATHS:
-            return None
-        if not request_netloc:
-            raise DistributedGateUnavailable(
-                "KIS live order dispatch URL has no host (or is malformed); "
-                "cannot scope the shared pacer (HTTP=0 fail-closed)"
-            )
-        app_key = str(headers.get("appkey") or "") if isinstance(headers, dict) else ""
-        if not app_key:
-            raise DistributedGateUnavailable(
-                "KIS live order dispatch has no appkey credential fingerprint; "
-                "cannot scope the shared pacer (HTTP=0 fail-closed)"
-            )
-
-        from app.services.brokers.kis.vts_distributed_gate import (
-            build_kis_live_order_gate_scope_key,
-        )
-
-        return build_kis_live_order_gate_scope_key(
-            host=request_netloc,
-            app_key=app_key,
-        )
-
-    async def _await_live_order_pacer(
-        self,
-        scope_key: str,
-        *,
-        freshness_hook: PreSendHook | None,
-        call_class: str,
-    ) -> None:
-        """Admit one real KIS order submit through shared bounded pacing.
-
-        The pacer is acquired at the actual HTTP boundary, after local limiting
-        but before ``mark_dispatched``.  Its freshness hook reruns after every
-        contention wait, so a proposal cannot post after its pre-send window
-        became stale while queued.
-        """
-        pacer = self._live_order_pacer
-        if pacer is None:
-            pacer = await get_kis_live_order_pacer()
-        await pacer.acquire(
-            scope_key,
-            freshness_hook=freshness_hook,
-            call_class=call_class,
         )
 
     async def _get_limiter(self, api_key: str, *, rate: int, period: float) -> Any:
@@ -802,7 +706,6 @@ class BaseKISClient:
         # ValueError that the outer breaker would mistake for KIS reachability.
         # Reused across the retry loop.
         vts_scope = self._vts_gate_scope(url, headers)
-        live_order_scope = self._live_order_pacer_scope(method, url, headers, tr_id)
         try:
             api_path = urlparse(url).path or "/unknown"
         except (ValueError, TypeError):
@@ -842,17 +745,6 @@ class BaseKISClient:
                 if vts_scope is not None:
                     await self._await_vts_gate(
                         vts_scope,
-                        freshness_hook=pre_send_hook,
-                        call_class=api_name,
-                    )
-                # ROB-1250: real KIS order submits use an app-key scoped Redis
-                # pace claim at the common HTTP boundary.  It is deliberately
-                # below Telegram/approval handling and above ``mark_dispatched``:
-                # callback acknowledgement is already sent, while an expired
-                # pre-send window still blocks before any mutation HTTP.
-                elif live_order_scope is not None:
-                    await self._await_live_order_pacer(
-                        live_order_scope,
                         freshness_hook=pre_send_hook,
                         call_class=api_name,
                     )

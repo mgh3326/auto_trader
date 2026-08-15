@@ -270,11 +270,11 @@ class OverseasOrderClient:
                     _token_retry_depth=_token_retry_depth + 1,
                 )
 
-            # A raw provider response never authorizes a second POST by itself.
-            # The typed candidate is handled by ``order_execution`` only after
-            # it proves the reserved idempotency key has no KIS order-ledger
-            # row. Direct callers retain the terminal RuntimeError
-            # contract because this subtype stringifies to the provider code.
+            # The typed candidate is handled by ``order_execution`` only for
+            # failure recording and display after it checks the reserved
+            # idempotency key and KIS order-ledger evidence. Direct callers
+            # retain the terminal RuntimeError contract because this subtype
+            # stringifies to the provider code.
             throttle_rejection = gateway_throttle_rejection_from_response(
                 js,
                 http_status=outcome.last_http_status,

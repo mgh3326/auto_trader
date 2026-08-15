@@ -43,10 +43,10 @@ def _safe_bool_or_none(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def _safe_retry_count(value: Any) -> int | None:
+def _safe_post_attempts(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
-    return value if value in {0, 1} else None
+    return value if value == 1 else None
 
 
 def _safe_failure(
@@ -65,14 +65,14 @@ def _safe_failure(
     reason_code = value.get("reason_code")
     broker_message_code = value.get("broker_message_code")
     http_status = value.get("http_status")
-    retry_count = _safe_retry_count(value.get("retry_count"))
+    post_attempts = _safe_post_attempts(value.get("post_attempts"))
     if (
         safe_rung_index is None
         or reason_code not in _KNOWN_REASON_CODES
         or broker_message_code not in _KNOWN_BROKER_CODES
         or not isinstance(http_status, int)
         or not 200 <= http_status < 300
-        or retry_count is None
+        or post_attempts is None
     ):
         return None
     if value.get("broker_order_id") is not None:
@@ -92,7 +92,7 @@ def _safe_failure(
         "ledger_entry_present": _safe_bool_or_none(value.get("ledger_entry_present")),
         "idempotency_key_present": value.get("idempotency_key_present") is True,
         "intent_reserved": value.get("intent_reserved") is True,
-        "retry_count": retry_count,
+        "post_attempts": post_attempts,
     }
 
 

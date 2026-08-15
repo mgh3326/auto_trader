@@ -449,10 +449,9 @@ class DomesticOrderClient:
                     _token_retry_depth=_token_retry_depth + 1,
                 )
 
-            # The common execution boundary, rather than this low-level
-            # transport method, decides whether a single re-POST is safe.  It
-            # must combine this response candidate with the reserved
-            # idempotency key and a KIS order-ledger lookup.
+            # The common execution boundary combines this response candidate
+            # with the reserved idempotency key and a KIS order-ledger lookup
+            # solely to persist and display confirmed non-delivery.
             throttle_rejection = gateway_throttle_rejection_from_response(
                 js,
                 http_status=outcome.last_http_status,

@@ -2213,7 +2213,7 @@ async def test_five_kis_gateway_not_delivered_failures_persist_and_update_cards(
                     "ledger_entry_present": False,
                     "idempotency_key_present": True,
                     "intent_reserved": True,
-                    "retry_count": 1,
+                    "post_attempts": 1,
                 },
             },
             corr=f"corr-{group.symbol}",
@@ -2260,7 +2260,7 @@ async def test_five_kis_gateway_not_delivered_failures_persist_and_update_cards(
                 "ledger_entry_present": False,
                 "idempotency_key_present": True,
                 "intent_reserved": True,
-                "retry_count": 1,
+                "post_attempts": 1,
             }
         ]
     assert len(notifier.edited) == 5
