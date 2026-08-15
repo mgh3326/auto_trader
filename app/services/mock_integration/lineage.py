@@ -30,6 +30,7 @@ from app.schemas.execution_contracts import (
 )
 from app.services.brokers.client_order_ids import (
     BROKER_CLIENT_ID_CONSTRAINT_VIOLATION,
+    BROKER_CLIENT_ID_TARGET_PLAN_BROKERS,
     BrokerClientIdTarget,
     assert_broker_client_order_id,
 )
@@ -38,6 +39,12 @@ _INTENT_V1_DOMAIN: Final[str] = "mock-intent-v1:"
 _PLAN_V1_DOMAIN: Final[str] = "mock-plan-v1:"
 _ATTEMPT_V1_DOMAIN: Final[str] = "mock-attempt-v1:"
 _IDEMPOTENCY_V1_DOMAIN: Final[str] = "mock-idempotency-v1:"
+BROKER_CLIENT_ID_TARGET_MISMATCH: Final[str] = "broker_client_id_target_mismatch"
+BROKER_ORDER_ID_CONFLICT: Final[str] = "broker_order_id_conflict"
+# This is derived from the confirmed target map, not a broker-registry allowlist.
+_BROKERS_REQUIRING_NATIVE_CLIENT_ID: Final[frozenset[str]] = frozenset(
+    BROKER_CLIENT_ID_TARGET_PLAN_BROKERS.values()
+)
 
 # These tuples are a compatibility boundary, not a convenience list.  Add a
 # new domain version rather than changing either v1 input set.
@@ -79,6 +86,8 @@ class LineageReasonCode(StrEnum):
     CURRENCY_CONVERSION_NOT_AUTHORIZED = "currency_conversion_not_authorized"
     LANE_QUOTE_CURRENCY_MISMATCH = "lane_quote_currency_mismatch"
     BROKER_CLIENT_ID_CONSTRAINT_VIOLATION = BROKER_CLIENT_ID_CONSTRAINT_VIOLATION
+    BROKER_CLIENT_ID_TARGET_MISMATCH = BROKER_CLIENT_ID_TARGET_MISMATCH
+    BROKER_ORDER_ID_CONFLICT = BROKER_ORDER_ID_CONFLICT
 
 
 LINEAGE_REASON_CODES: Final[frozenset[str]] = frozenset(
@@ -88,6 +97,24 @@ LINEAGE_REASON_CODES: Final[frozenset[str]] = frozenset(
 
 class CallerOwnedIdRejected(ValueError):
     """A caller attempted to bypass the server-generated ID boundary."""
+
+
+class BrokerClientIdTargetMismatch(ValueError):
+    """A client-ID target does not belong to the execution-plan broker."""
+
+    reason_code: Final[str] = BROKER_CLIENT_ID_TARGET_MISMATCH
+
+    def __init__(self) -> None:
+        super().__init__(self.reason_code)
+
+
+class BrokerOrderIdConflict(ValueError):
+    """A later acknowledgement conflicts with the immutable broker ID."""
+
+    reason_code: Final[str] = BROKER_ORDER_ID_CONFLICT
+
+    def __init__(self) -> None:
+        super().__init__(self.reason_code)
 
 
 class HashVersionUpgradeRequired(ValueError):
@@ -146,8 +173,16 @@ class ExecutionPlanDraft(_LineageDraft):
 class OrderAttemptDraft(_LineageDraft):
     cycle_id: LineageNonBlank
     attempt_seq: int = Field(ge=1)
-    lane_prefix: LineageNonBlank
-    broker_client_id_target: BrokerClientIdTarget
+    lane_prefix: LineageNonBlank | None
+    broker_client_id_target: BrokerClientIdTarget | None
+
+    @model_validator(mode="after")
+    def _require_broker_client_id_pair(self) -> OrderAttemptDraft:
+        if (self.lane_prefix is None) != (self.broker_client_id_target is None):
+            raise ValueError(
+                "lane_prefix and broker_client_id_target must be both set or both None"
+            )
+        return self
 
 
 class LineageEnvelope(_LineageDraft):
@@ -181,14 +216,18 @@ class LineageEnvelope(_LineageDraft):
         if self.order_attempt is not None:
             if self.execution_plan is None:
                 raise ValueError("order attempt requires an execution plan")
-            if (
-                self.attempt_seq is None
-                or self.lane_prefix is None
-                or self.broker_client_id_target is None
-            ):
+            if self.attempt_seq is None:
                 raise CallerOwnedIdRejected(
                     "order attempt correlation metadata must be factory-generated"
                 )
+            if (self.lane_prefix is None) != (self.broker_client_id_target is None):
+                raise CallerOwnedIdRejected(
+                    "broker client ID metadata must be both set or both None"
+                )
+            _require_broker_client_id_target_matches_plan(
+                self.execution_plan,
+                self.broker_client_id_target,
+            )
             if (
                 self.order_attempt.execution_plan_id
                 != self.execution_plan.execution_plan_id
@@ -207,19 +246,34 @@ class LineageEnvelope(_LineageDraft):
             )
             if self.order_attempt.idempotency_key != expected_idempotency_key:
                 raise CallerOwnedIdRejected("idempotency_key must be server-generated")
-            expected_broker_client_order_id = derive_broker_client_order_id(
-                execution_plan_id=self.execution_plan.execution_plan_id,
-                cycle_id=self.order_attempt.cycle_id,
-                lane_prefix=self.lane_prefix,
-                target=self.broker_client_id_target,
-            )
-            if (
-                self.order_attempt.broker_client_order_id
-                != expected_broker_client_order_id
-            ):
-                raise CallerOwnedIdRejected(
-                    "broker_client_order_id must be server-generated"
+            if self.order_attempt.broker_order_id is not None:
+                normalized_broker_order_id = _normalize_broker_order_id(
+                    self.order_attempt.broker_order_id
                 )
+                if self.order_attempt.broker_order_id != normalized_broker_order_id:
+                    raise CallerOwnedIdRejected(
+                        "broker_order_id must be strip-normalized"
+                    )
+            if self.lane_prefix is None:
+                if self.order_attempt.broker_client_order_id is not None:
+                    raise CallerOwnedIdRejected(
+                        "broker_client_order_id must be absent without a native client ID"
+                    )
+            else:
+                assert self.broker_client_id_target is not None
+                expected_broker_client_order_id = derive_broker_client_order_id(
+                    execution_plan_id=self.execution_plan.execution_plan_id,
+                    cycle_id=self.order_attempt.cycle_id,
+                    lane_prefix=self.lane_prefix,
+                    target=self.broker_client_id_target,
+                )
+                if (
+                    self.order_attempt.broker_client_order_id
+                    != expected_broker_client_order_id
+                ):
+                    raise CallerOwnedIdRejected(
+                        "broker_client_order_id must be server-generated"
+                    )
         elif any(
             value is not None
             for value in (
@@ -411,6 +465,40 @@ def derive_broker_client_order_id(
     return broker_client_id
 
 
+def _require_broker_client_id_target_matches_plan(
+    plan: ExecutionPlan,
+    target: BrokerClientIdTarget | None,
+) -> None:
+    if target is None:
+        if plan.broker in _BROKERS_REQUIRING_NATIVE_CLIENT_ID:
+            raise BrokerClientIdTargetMismatch()
+        return
+    if BROKER_CLIENT_ID_TARGET_PLAN_BROKERS[target] != plan.broker:
+        raise BrokerClientIdTargetMismatch()
+
+
+def _normalize_broker_order_id(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("broker_order_id must be a non-empty string")
+    normalized_broker_order_id = value.strip()
+    if not normalized_broker_order_id:
+        raise ValueError("broker_order_id must be a non-empty string")
+    return normalized_broker_order_id
+
+
+def _revalidate_lineage_envelope(envelope: LineageEnvelope) -> LineageEnvelope:
+    """Reconstruct an envelope so containment validators run on every ACK."""
+
+    return LineageEnvelope(
+        decision_intent=envelope.decision_intent,
+        execution_plan=envelope.execution_plan,
+        order_attempt=envelope.order_attempt,
+        attempt_seq=envelope.attempt_seq,
+        lane_prefix=envelope.lane_prefix,
+        broker_client_id_target=envelope.broker_client_id_target,
+    )
+
+
 def _require_exact_draft(value: object, expected_type: type[_LineageDraft]) -> None:
     if type(value) is not expected_type:
         raise CallerOwnedIdRejected("factory accepts only its ID-free draft type")
@@ -457,10 +545,23 @@ class MockLineageFactory:
             raise ValueError("order attempt requires a plan envelope")
         execution_plan = envelope.execution_plan
         self._require_server_plan(execution_plan)
+        _require_broker_client_id_target_matches_plan(
+            execution_plan,
+            draft.broker_client_id_target,
+        )
         idempotency_key = derive_idempotency_key(
             execution_plan_id=execution_plan.execution_plan_id,
             cycle_id=draft.cycle_id,
         )
+        broker_client_order_id: str | None = None
+        if draft.lane_prefix is not None:
+            assert draft.broker_client_id_target is not None
+            broker_client_order_id = derive_broker_client_order_id(
+                execution_plan_id=execution_plan.execution_plan_id,
+                cycle_id=draft.cycle_id,
+                lane_prefix=draft.lane_prefix,
+                target=draft.broker_client_id_target,
+            )
         return OrderAttempt(
             order_attempt_id=derive_attempt_v1_id(
                 execution_plan_id=execution_plan.execution_plan_id,
@@ -470,13 +571,49 @@ class MockLineageFactory:
             execution_plan_id=execution_plan.execution_plan_id,
             cycle_id=draft.cycle_id,
             idempotency_key=idempotency_key,
-            broker_client_order_id=derive_broker_client_order_id(
-                execution_plan_id=execution_plan.execution_plan_id,
-                cycle_id=draft.cycle_id,
-                lane_prefix=draft.lane_prefix,
-                target=draft.broker_client_id_target,
-            ),
+            broker_client_order_id=broker_client_order_id,
             broker_order_id=None,
+        )
+
+    def acknowledge_order_attempt(
+        self, envelope: LineageEnvelope, broker_order_id: str
+    ) -> LineageEnvelope:
+        """Attach one broker-supplied order ID without parsing native responses."""
+
+        if type(envelope) is not LineageEnvelope:
+            raise CallerOwnedIdRejected(
+                "factory accepts only an immutable lineage envelope"
+            )
+        validated_envelope = _revalidate_lineage_envelope(envelope)
+        if (
+            validated_envelope.order_attempt is None
+            or validated_envelope.execution_plan is None
+        ):
+            raise ValueError("acknowledgement requires an order attempt envelope")
+        _require_broker_client_id_target_matches_plan(
+            validated_envelope.execution_plan,
+            validated_envelope.broker_client_id_target,
+        )
+        normalized_broker_order_id = _normalize_broker_order_id(broker_order_id)
+        existing_broker_order_id = validated_envelope.order_attempt.broker_order_id
+        if existing_broker_order_id is not None:
+            if existing_broker_order_id != _normalize_broker_order_id(
+                existing_broker_order_id
+            ):
+                raise CallerOwnedIdRejected("broker_order_id must be strip-normalized")
+            if existing_broker_order_id == normalized_broker_order_id:
+                return envelope
+            raise BrokerOrderIdConflict()
+        acknowledged_attempt = validated_envelope.order_attempt.model_copy(
+            update={"broker_order_id": normalized_broker_order_id}
+        )
+        return LineageEnvelope(
+            decision_intent=validated_envelope.decision_intent,
+            execution_plan=validated_envelope.execution_plan,
+            order_attempt=acknowledged_attempt,
+            attempt_seq=validated_envelope.attempt_seq,
+            lane_prefix=validated_envelope.lane_prefix,
+            broker_client_id_target=validated_envelope.broker_client_id_target,
         )
 
     def create_intent_envelope(self, draft: DecisionIntentDraft, /) -> LineageEnvelope:
@@ -522,6 +659,10 @@ class MockLineageFactory:
 
 
 __all__ = [
+    "BROKER_CLIENT_ID_TARGET_MISMATCH",
+    "BROKER_ORDER_ID_CONFLICT",
+    "BrokerClientIdTargetMismatch",
+    "BrokerOrderIdConflict",
     "CallerOwnedIdRejected",
     "DecisionIntentDraft",
     "ExecutionPlanDraft",

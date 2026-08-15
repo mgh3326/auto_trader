@@ -8,8 +8,10 @@ transport boundary; it performs no network or persistence work.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Final
 
 BROKER_CLIENT_ID_CONSTRAINT_VIOLATION: Final[str] = (
@@ -23,6 +25,20 @@ class BrokerClientIdTarget(StrEnum):
     TOSS = "toss"
     BINANCE_SPOT_DEMO = "binance_spot_demo"
     ALPACA_PAPER = "alpaca_paper"
+
+
+# These exact pairs are signed J2B contract inputs, not a dependency on the
+# later lane registry. The read-only map prevents runtime reconfiguration of
+# the factory's confirmed target boundary.
+BROKER_CLIENT_ID_TARGET_PLAN_BROKERS: Final[Mapping[BrokerClientIdTarget, str]] = (
+    MappingProxyType(
+        {
+            BrokerClientIdTarget.ALPACA_PAPER: "alpaca",
+            BrokerClientIdTarget.BINANCE_SPOT_DEMO: "binance",
+            BrokerClientIdTarget.TOSS: "toss",
+        }
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -92,6 +108,7 @@ __all__ = [
     "BINANCE_SPOT_DEMO_CLIENT_ORDER_ID_MAX_LENGTH",
     "BROKER_CLIENT_ID_CONSTRAINT_VIOLATION",
     "BROKER_CLIENT_ORDER_ID_CONSTRAINTS",
+    "BROKER_CLIENT_ID_TARGET_PLAN_BROKERS",
     "BrokerClientIdTarget",
     "BrokerClientOrderIdConstraint",
     "BrokerClientOrderIdConstraintViolation",

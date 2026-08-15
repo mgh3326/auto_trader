@@ -5,16 +5,18 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.execution_contracts import DecisionIntent, ExecutionPlan
+from app.schemas.execution_contracts import DecisionIntent, ExecutionPlan, OrderAttempt
 from app.services.brokers.client_order_ids import (
     ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH,
     BINANCE_SPOT_DEMO_CLIENT_ORDER_ID_MAX_LENGTH,
     BROKER_CLIENT_ID_CONSTRAINT_VIOLATION,
+    BROKER_CLIENT_ID_TARGET_PLAN_BROKERS,
     TOSS_CLIENT_ORDER_ID_MAX_LENGTH,
     BrokerClientIdTarget,
     BrokerClientOrderIdConstraintViolation,
@@ -22,6 +24,10 @@ from app.services.brokers.client_order_ids import (
 )
 from app.services.mock_integration import lineage
 from app.services.mock_integration.lineage import (
+    BROKER_CLIENT_ID_TARGET_MISMATCH,
+    BROKER_ORDER_ID_CONFLICT,
+    BrokerClientIdTargetMismatch,
+    BrokerOrderIdConflict,
     CallerOwnedIdRejected,
     DecisionIntentDraft,
     ExecutionPlanDraft,
@@ -360,8 +366,469 @@ def test_factory_attempt_envelope_carries_only_derived_correlation() -> None:
     assert envelope.broker_client_id_target == draft.broker_client_id_target
 
 
-def test_broker_client_id_is_shorter_than_the_internal_digest() -> None:
+def test_order_attempt_draft_requires_a_complete_broker_client_id_pair() -> None:
+    required_values = _attempt_draft().model_dump(mode="python")
+    del required_values["lane_prefix"]
+    del required_values["broker_client_id_target"]
+
+    with pytest.raises(ValidationError, match="lane_prefix"):
+        OrderAttemptDraft(**required_values)
+    with pytest.raises(ValidationError, match="both set or both None"):
+        _attempt_draft(lane_prefix="kis", broker_client_id_target=None)
+    with pytest.raises(ValidationError, match="both set or both None"):
+        _attempt_draft(
+            lane_prefix=None,
+            broker_client_id_target=BrokerClientIdTarget.TOSS,
+        )
+
+    assert (
+        _attempt_draft(
+            lane_prefix=None,
+            broker_client_id_target=None,
+        ).lane_prefix
+        is None
+    )
+    assert _attempt_draft().broker_client_id_target is BrokerClientIdTarget.ALPACA_PAPER
+
+
+def test_broker_client_id_target_remains_the_three_confirmed_targets() -> None:
+    assert tuple(BrokerClientIdTarget) == (
+        BrokerClientIdTarget.TOSS,
+        BrokerClientIdTarget.BINANCE_SPOT_DEMO,
+        BrokerClientIdTarget.ALPACA_PAPER,
+    )
+
+
+def test_broker_client_id_target_plan_broker_map_is_read_only() -> None:
+    with pytest.raises(TypeError):
+        BROKER_CLIENT_ID_TARGET_PLAN_BROKERS[BrokerClientIdTarget.TOSS] = "mutated"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("plan_broker", "target", "matches"),
+    [
+        pytest.param("toss", BrokerClientIdTarget.TOSS, True, id="toss-matches"),
+        pytest.param(
+            "binance",
+            BrokerClientIdTarget.BINANCE_SPOT_DEMO,
+            True,
+            id="binance-spot-demo-matches-binance",
+        ),
+        pytest.param(
+            "alpaca",
+            BrokerClientIdTarget.ALPACA_PAPER,
+            True,
+            id="alpaca-matches",
+        ),
+        pytest.param("toss", BrokerClientIdTarget.BINANCE_SPOT_DEMO, False),
+        pytest.param("toss", BrokerClientIdTarget.ALPACA_PAPER, False),
+        pytest.param("binance", BrokerClientIdTarget.TOSS, False),
+        pytest.param("binance", BrokerClientIdTarget.ALPACA_PAPER, False),
+        pytest.param("alpaca", BrokerClientIdTarget.TOSS, False),
+        pytest.param("alpaca", BrokerClientIdTarget.BINANCE_SPOT_DEMO, False),
+    ],
+)
+def test_factory_enforces_broker_client_id_target_plan_broker_matrix(
+    plan_broker: str,
+    target: BrokerClientIdTarget,
+    matches: bool,
+) -> None:
+    factory, intent, plan = _issued_intent_and_plan(
+        plan_overrides={"broker": plan_broker}
+    )
+    plan_envelope = lineage.LineageEnvelope(
+        decision_intent=intent,
+        execution_plan=plan,
+    )
+
+    if matches:
+        attempt = factory.create_order_attempt(
+            plan_envelope,
+            _attempt_draft(lane_prefix="lane", broker_client_id_target=target),
+        )
+        assert attempt.broker_client_order_id is not None
+    else:
+        with pytest.raises(BrokerClientIdTargetMismatch) as error:
+            factory.create_order_attempt(
+                plan_envelope,
+                _attempt_draft(lane_prefix="lane", broker_client_id_target=target),
+            )
+        assert error.value.reason_code == BROKER_CLIENT_ID_TARGET_MISMATCH
+        assert str(error.value) == "broker_client_id_target_mismatch"
+
+
+def test_factory_rejects_kis_plan_with_alpaca_target() -> None:
+    factory, intent, plan = _issued_intent_and_plan(plan_overrides={"broker": "kis"})
+    plan_envelope = lineage.LineageEnvelope(
+        decision_intent=intent,
+        execution_plan=plan,
+    )
+
+    with pytest.raises(BrokerClientIdTargetMismatch) as error:
+        factory.create_order_attempt(
+            plan_envelope,
+            _attempt_draft(
+                lane_prefix="lane",
+                broker_client_id_target=BrokerClientIdTarget.ALPACA_PAPER,
+            ),
+        )
+
+    assert error.value.reason_code == "broker_client_id_target_mismatch"
+
+
+@pytest.mark.parametrize("broker", ("toss", "alpaca", "binance"))
+def test_factory_rejects_a_none_pair_for_each_confirmed_broker(broker: str) -> None:
+    factory, intent, plan = _issued_intent_and_plan(plan_overrides={"broker": broker})
+    plan_envelope = lineage.LineageEnvelope(
+        decision_intent=intent,
+        execution_plan=plan,
+    )
+
+    with pytest.raises(BrokerClientIdTargetMismatch) as error:
+        factory.create_order_attempt(
+            plan_envelope,
+            _attempt_draft(lane_prefix=None, broker_client_id_target=None),
+        )
+
+    assert error.value.reason_code == BROKER_CLIENT_ID_TARGET_MISMATCH
+
+
+def test_factory_allows_a_none_pair_for_an_unconfirmed_broker() -> None:
+    factory, intent, plan = _issued_intent_and_plan(
+        plan_overrides={"broker": "unknown-broker"}
+    )
+    envelope = factory.create_attempt_envelope(
+        lineage.LineageEnvelope(
+            decision_intent=intent,
+            execution_plan=plan,
+        ),
+        _attempt_draft(lane_prefix=None, broker_client_id_target=None),
+    )
+
+    assert envelope.order_attempt is not None
+    assert envelope.order_attempt.broker_client_order_id is None
+
+
+@pytest.mark.parametrize("broker", ("kis", "kiwoom"))
+@pytest.mark.parametrize("target", tuple(BrokerClientIdTarget))
+def test_factory_rejects_a_confirmed_target_for_kr_brokers(
+    broker: str,
+    target: BrokerClientIdTarget,
+) -> None:
+    factory, intent, plan = _issued_intent_and_plan(plan_overrides={"broker": broker})
+    plan_envelope = lineage.LineageEnvelope(
+        decision_intent=intent,
+        execution_plan=plan,
+    )
+
+    with pytest.raises(BrokerClientIdTargetMismatch) as error:
+        factory.create_order_attempt(
+            plan_envelope,
+            _attempt_draft(lane_prefix="lane", broker_client_id_target=target),
+        )
+
+    assert error.value.reason_code == BROKER_CLIENT_ID_TARGET_MISMATCH
+
+
+def test_target_mismatch_is_rejected_before_broker_client_id_derivation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, intent, plan = _issued_intent_and_plan(plan_overrides={"broker": "kis"})
+    plan_envelope = lineage.LineageEnvelope(
+        decision_intent=intent,
+        execution_plan=plan,
+    )
+
+    def broker_id_derivation_must_not_run(**_: object) -> str:
+        raise AssertionError("broker client ID derivation ran after a target mismatch")
+
+    monkeypatch.setattr(
+        lineage,
+        "derive_broker_client_order_id",
+        broker_id_derivation_must_not_run,
+    )
+
+    with pytest.raises(BrokerClientIdTargetMismatch) as error:
+        factory.create_order_attempt(
+            plan_envelope,
+            _attempt_draft(
+                lane_prefix="lane",
+                broker_client_id_target=BrokerClientIdTarget.ALPACA_PAPER,
+            ),
+        )
+
+    assert error.value.reason_code == "broker_client_id_target_mismatch"
+
+
+def _none_pair_envelope(
+    *, broker: str = "kis"
+) -> tuple[MockLineageFactory, lineage.LineageEnvelope]:
+    factory, intent, plan = _issued_intent_and_plan(plan_overrides={"broker": broker})
+    return factory, factory.create_attempt_envelope(
+        lineage.LineageEnvelope(
+            decision_intent=intent,
+            execution_plan=plan,
+        ),
+        _attempt_draft(lane_prefix=None, broker_client_id_target=None),
+    )
+
+
+def _self_consistent_attempt(
+    plan: ExecutionPlan,
+    *,
+    lane_prefix: str | None,
+    target: BrokerClientIdTarget | None,
+) -> OrderAttempt:
+    cycle_id = "forged-cycle-1"
+    attempt_seq = 1
+    broker_client_order_id: str | None = None
+    if lane_prefix is not None:
+        assert target is not None
+        broker_client_order_id = lineage.derive_broker_client_order_id(
+            execution_plan_id=plan.execution_plan_id,
+            cycle_id=cycle_id,
+            lane_prefix=lane_prefix,
+            target=target,
+        )
+    return OrderAttempt(
+        order_attempt_id=lineage.derive_attempt_v1_id(
+            execution_plan_id=plan.execution_plan_id,
+            cycle_id=cycle_id,
+            attempt_seq=attempt_seq,
+        ),
+        execution_plan_id=plan.execution_plan_id,
+        cycle_id=cycle_id,
+        idempotency_key=lineage.derive_idempotency_key(
+            execution_plan_id=plan.execution_plan_id,
+            cycle_id=cycle_id,
+        ),
+        broker_client_order_id=broker_client_order_id,
+        broker_order_id=None,
+    )
+
+
+@pytest.mark.parametrize("broker", ("kis", "kiwoom"))
+def test_none_pair_preserves_internal_correlation_and_round_trips(broker: str) -> None:
+    _, envelope = _none_pair_envelope(broker=broker)
+    assert envelope.execution_plan is not None
+    assert envelope.execution_plan.broker == broker
+    assert envelope.order_attempt is not None
+    attempt = envelope.order_attempt
+
+    assert attempt.order_attempt_id.startswith("mock-attempt-v1:")
+    assert attempt.idempotency_key.startswith("mock-idempotency-v1:")
+    assert attempt.broker_client_order_id is None
+    assert attempt.broker_order_id is None
+    canonical = canonical_bytes(attempt)
+    round_tripped = OrderAttempt.model_validate_json(canonical)
+    assert round_tripped == attempt
+    assert canonical_bytes(round_tripped) == canonical
+
+
+@pytest.mark.parametrize("broker", ("kis", "kiwoom"))
+def test_acknowledge_order_attempt_sets_a_broker_order_id_once(broker: str) -> None:
+    factory, envelope = _none_pair_envelope(broker=broker)
+
+    acknowledged = factory.acknowledge_order_attempt(envelope, "  id-1  ")
+
+    assert acknowledged is not envelope
+    assert acknowledged.order_attempt is not None
+    assert acknowledged.order_attempt.broker_order_id == "id-1"
+    assert acknowledged.order_attempt.broker_client_order_id is None
+
+
+def test_acknowledge_order_attempt_replays_the_same_broker_order_id_as_a_no_op() -> (
+    None
+):
+    factory, envelope = _none_pair_envelope()
+    acknowledged = factory.acknowledge_order_attempt(envelope, "  id-1  ")
+
+    replayed = factory.acknowledge_order_attempt(acknowledged, "id-1")
+
+    assert replayed is acknowledged
+
+
+def test_acknowledge_order_attempt_revalidates_same_id_replay_before_returning() -> (
+    None
+):
+    factory, envelope = _none_pair_envelope()
+    acknowledged = factory.acknowledge_order_attempt(envelope, "id-1")
+    assert acknowledged.execution_plan is not None
+    assert acknowledged.order_attempt is not None
+
+    forged_attempt_seq = acknowledged.model_copy(update={"attempt_seq": 2})
+    forged_idempotency_key = acknowledged.model_copy(
+        update={
+            "order_attempt": acknowledged.order_attempt.model_copy(
+                update={"idempotency_key": "caller-owned"}
+            )
+        }
+    )
+    forged_plan_correlation = acknowledged.model_copy(
+        update={
+            "execution_plan": acknowledged.execution_plan.model_copy(
+                update={"decision_intent_id": "caller-owned"}
+            )
+        }
+    )
+
+    for forged_envelope in (
+        forged_attempt_seq,
+        forged_idempotency_key,
+        forged_plan_correlation,
+    ):
+        with pytest.raises(ValidationError):
+            factory.acknowledge_order_attempt(forged_envelope, "id-1")
+
+
+def test_acknowledge_order_attempt_rejects_a_conflicting_broker_order_id() -> None:
+    factory, envelope = _none_pair_envelope()
+    acknowledged = factory.acknowledge_order_attempt(envelope, "  id-1  ")
+
+    with pytest.raises(BrokerOrderIdConflict) as error:
+        factory.acknowledge_order_attempt(acknowledged, "  id-2  ")
+
+    assert error.value.reason_code == BROKER_ORDER_ID_CONFLICT
+    assert str(error.value) == "broker_order_id_conflict"
+
+
+@pytest.mark.parametrize("broker_order_id", ("", "   "))
+def test_acknowledge_order_attempt_rejects_an_empty_normalized_broker_order_id(
+    broker_order_id: str,
+) -> None:
+    factory, envelope = _none_pair_envelope()
+
+    with pytest.raises(ValueError, match="non-empty"):
+        factory.acknowledge_order_attempt(envelope, broker_order_id)
+
+
+def test_acknowledge_order_attempt_accepts_a_confirmed_client_id_pair() -> None:
     factory, intent, plan = _issued_intent_and_plan()
+    envelope = factory.create_attempt_envelope(
+        lineage.LineageEnvelope(decision_intent=intent, execution_plan=plan),
+        _attempt_draft(),
+    )
+
+    acknowledged = factory.acknowledge_order_attempt(envelope, "broker-ack-1")
+
+    assert acknowledged.order_attempt is not None
+    assert acknowledged.order_attempt.broker_order_id == "broker-ack-1"
+
+
+def test_common_lineage_source_has_no_native_ack_field_parser() -> None:
+    source = Path(lineage.__file__).read_text(encoding="utf-8")
+
+    assert "od" + "no" not in source
+    assert "order_" + "no" not in source
+
+
+def test_acknowledge_order_attempt_rejects_a_model_copy_normalization_bypass() -> None:
+    factory, envelope = _none_pair_envelope()
+    assert envelope.order_attempt is not None
+    forged_attempt = envelope.order_attempt.model_copy(
+        update={"broker_order_id": "  id-1  "}
+    )
+
+    with pytest.raises(ValidationError, match="strip-normalized"):
+        lineage.LineageEnvelope(
+            decision_intent=envelope.decision_intent,
+            execution_plan=envelope.execution_plan,
+            order_attempt=forged_attempt,
+            attempt_seq=envelope.attempt_seq,
+            lane_prefix=envelope.lane_prefix,
+            broker_client_id_target=envelope.broker_client_id_target,
+        )
+
+    unvalidated_envelope = lineage.LineageEnvelope.model_construct(
+        decision_intent=envelope.decision_intent,
+        execution_plan=envelope.execution_plan,
+        order_attempt=forged_attempt,
+        attempt_seq=envelope.attempt_seq,
+        lane_prefix=envelope.lane_prefix,
+        broker_client_id_target=envelope.broker_client_id_target,
+    )
+    with pytest.raises(ValidationError, match="strip-normalized"):
+        factory.acknowledge_order_attempt(unvalidated_envelope, "id-1")
+
+
+@pytest.mark.parametrize("broker", ("toss", "alpaca", "binance"))
+def test_envelope_rejects_a_self_consistent_none_pair_for_confirmed_brokers(
+    broker: str,
+) -> None:
+    _, intent, plan = _issued_intent_and_plan(plan_overrides={"broker": broker})
+
+    with pytest.raises(ValidationError, match=BROKER_CLIENT_ID_TARGET_MISMATCH):
+        lineage.LineageEnvelope(
+            decision_intent=intent,
+            execution_plan=plan,
+            order_attempt=_self_consistent_attempt(
+                plan,
+                lane_prefix=None,
+                target=None,
+            ),
+            attempt_seq=1,
+            lane_prefix=None,
+            broker_client_id_target=None,
+        )
+
+
+def test_envelope_rejects_a_self_consistent_mismatched_broker_target() -> None:
+    _, intent, plan = _issued_intent_and_plan(plan_overrides={"broker": "kis"})
+
+    with pytest.raises(ValidationError, match=BROKER_CLIENT_ID_TARGET_MISMATCH):
+        lineage.LineageEnvelope(
+            decision_intent=intent,
+            execution_plan=plan,
+            order_attempt=_self_consistent_attempt(
+                plan,
+                lane_prefix="lane",
+                target=BrokerClientIdTarget.ALPACA_PAPER,
+            ),
+            attempt_seq=1,
+            lane_prefix="lane",
+            broker_client_id_target=BrokerClientIdTarget.ALPACA_PAPER,
+        )
+
+
+def test_acknowledge_order_attempt_rejects_an_unvalidated_confirmed_none_pair() -> None:
+    factory, intent, plan = _issued_intent_and_plan(plan_overrides={"broker": "alpaca"})
+    unvalidated_envelope = lineage.LineageEnvelope.model_construct(
+        decision_intent=intent,
+        execution_plan=plan,
+        order_attempt=_self_consistent_attempt(
+            plan,
+            lane_prefix=None,
+            target=None,
+        ),
+        attempt_seq=1,
+        lane_prefix=None,
+        broker_client_id_target=None,
+    )
+
+    with pytest.raises(ValidationError, match=BROKER_CLIENT_ID_TARGET_MISMATCH):
+        factory.acknowledge_order_attempt(unvalidated_envelope, "broker-ack-1")
+
+
+def test_none_pair_rejects_a_broker_client_order_id_value() -> None:
+    _, envelope = _none_pair_envelope()
+    assert envelope.order_attempt is not None
+    forged = envelope.order_attempt.model_copy(
+        update={"broker_client_order_id": "must-not-be-present"}
+    )
+
+    with pytest.raises(ValidationError, match="broker_client_order_id"):
+        lineage.LineageEnvelope(
+            decision_intent=envelope.decision_intent,
+            execution_plan=envelope.execution_plan,
+            order_attempt=forged,
+            attempt_seq=envelope.attempt_seq,
+            lane_prefix=None,
+            broker_client_id_target=None,
+        )
+
+
+def test_broker_client_id_is_shorter_than_the_internal_digest() -> None:
+    factory, intent, plan = _issued_intent_and_plan(plan_overrides={"broker": "toss"})
     envelope = lineage.LineageEnvelope(
         decision_intent=intent,
         execution_plan=plan,
@@ -386,7 +853,9 @@ def test_broker_client_id_is_shorter_than_the_internal_digest() -> None:
 
 
 def test_generated_broker_client_id_fails_closed_when_it_exceeds_target_limit() -> None:
-    factory, intent, plan = _issued_intent_and_plan()
+    factory, intent, plan = _issued_intent_and_plan(
+        plan_overrides={"broker": "binance"}
+    )
     envelope = lineage.LineageEnvelope(
         decision_intent=intent,
         execution_plan=plan,
@@ -437,11 +906,14 @@ def test_reason_code_dictionary_contains_persistence_broker_and_d5_codes() -> No
         "currency_conversion_not_authorized",
         "lane_quote_currency_mismatch",
         "broker_client_id_constraint_violation",
+        "broker_client_id_target_mismatch",
+        "broker_order_id_conflict",
     }
     assert (
         LineageReasonCode.BROKER_CLIENT_ID_CONSTRAINT_VIOLATION.value
         == BROKER_CLIENT_ID_CONSTRAINT_VIOLATION
     )
+    assert LineageReasonCode.BROKER_ORDER_ID_CONFLICT.value == BROKER_ORDER_ID_CONFLICT
 
 
 def test_persistence_requires_a_future_owned_port_without_implementing_storage() -> (
