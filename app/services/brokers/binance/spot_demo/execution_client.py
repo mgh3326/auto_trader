@@ -64,6 +64,10 @@ from app.services.brokers.binance.spot_demo.signing import (
     _sign_request_params,
 )
 from app.services.brokers.binance.spot_demo.transport import build_spot_demo_client
+from app.services.brokers.client_order_ids import (
+    BrokerClientIdTarget,
+    assert_broker_client_order_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -334,6 +338,10 @@ class BinanceSpotDemoExecutionClient:
                 qty=qty,
                 client_order_id=cid,
             )
+        assert_broker_client_order_id(
+            target=BrokerClientIdTarget.BINANCE_SPOT_DEMO,
+            client_order_id=cid,
+        )
         params = self._build_order_params(
             symbol=symbol,
             side=side,
@@ -383,6 +391,10 @@ class BinanceSpotDemoExecutionClient:
                 qty=Decimal("0"),
                 client_order_id=client_order_id,
             )
+        assert_broker_client_order_id(
+            target=BrokerClientIdTarget.BINANCE_SPOT_DEMO,
+            client_order_id=client_order_id,
+        )
         params = {
             "symbol": symbol,
             "origClientOrderId": client_order_id,
@@ -515,6 +527,10 @@ class BinanceSpotDemoExecutionClient:
         with order type (LIMIT vs STOP_*) and the ledger layer needs the
         full raw shape for state-machine decisions.
         """
+        assert_broker_client_order_id(
+            target=BrokerClientIdTarget.BINANCE_SPOT_DEMO,
+            client_order_id=client_order_id,
+        )
         params = {
             "symbol": symbol,
             "origClientOrderId": client_order_id,

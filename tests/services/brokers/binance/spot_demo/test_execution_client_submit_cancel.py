@@ -25,6 +25,10 @@ from app.services.brokers.binance.spot_demo.execution_client import (
     BinanceSpotDemoExecutionClient,
     SpotDemoDryRunResult,
 )
+from app.services.brokers.client_order_ids import (
+    BROKER_CLIENT_ID_CONSTRAINT_VIOLATION,
+    BrokerClientOrderIdConstraintViolation,
+)
 
 _SPOT_DEMO_BASE = "https://demo-api.binance.com"
 
@@ -62,6 +66,26 @@ async def test_submit_order_default_returns_dry_run(
     assert result.order_type == "MARKET"
     assert result.client_order_id == "test-cid-default"
     # No HTTP dispatched.
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_order_id", ["x" * 37, "unsafe.id"])
+async def test_submit_rejects_invalid_client_order_id_before_http(
+    client: BinanceSpotDemoExecutionClient, httpx_mock, client_order_id: str
+) -> None:
+    """The client ID is checked immediately before the signed POST boundary."""
+    with pytest.raises(BrokerClientOrderIdConstraintViolation) as error:
+        await client.submit_order(
+            symbol="BTCUSDT",
+            side="BUY",
+            order_type="MARKET",
+            qty=Decimal("0.0001"),
+            client_order_id=client_order_id,
+            confirm=True,
+        )
+
+    assert error.value.reason_code == BROKER_CLIENT_ID_CONSTRAINT_VIOLATION
     assert httpx_mock.get_requests() == []
 
 
