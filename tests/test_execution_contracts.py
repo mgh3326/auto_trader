@@ -620,6 +620,73 @@ class TestRob1259FrozenContracts:
         with pytest.raises(ValidationError):
             self._attempt(unexpected="field")
 
+    @pytest.mark.parametrize(
+        ("factory_name", "field_name"),
+        [
+            ("_intent", "decision_intent_id"),
+            ("_intent", "policy_version"),
+            ("_intent", "policy_version_hash"),
+            ("_intent", "symbol"),
+            ("_intent", "rationale"),
+            ("_plan", "execution_plan_id"),
+            ("_plan", "decision_intent_id"),
+            ("_plan", "lane_id"),
+            ("_plan", "broker"),
+            ("_plan", "account_profile"),
+            ("_plan", "account_mode"),
+            ("_plan", "normalized_symbol"),
+            ("_plan", "session"),
+            ("_plan", "time_in_force"),
+            ("_attempt", "order_attempt_id"),
+            ("_attempt", "execution_plan_id"),
+            ("_attempt", "cycle_id"),
+            ("_attempt", "idempotency_key"),
+            ("_attempt", "broker_client_order_id"),
+            ("_attempt", "broker_order_id"),
+        ],
+    )
+    def test_j1_nonblank_values_reject_whitespace(self, factory_name, field_name):
+        factory = getattr(self, factory_name)
+
+        with pytest.raises(ValidationError):
+            factory(**{field_name: "   "})
+
+    @pytest.mark.parametrize("value", [Decimal("0"), Decimal("-0.01")])
+    def test_target_notional_must_be_strictly_positive(self, value):
+        with pytest.raises(ValidationError):
+            self._intent(target_notional=value)
+
+    @pytest.mark.parametrize("value", [Decimal("0"), Decimal("-1")])
+    def test_execution_plan_quantity_must_be_strictly_positive(self, value):
+        with pytest.raises(ValidationError):
+            self._plan(quantity=value)
+
+    @pytest.mark.parametrize(
+        ("factory_name", "field_name", "implicit_value"),
+        [
+            ("_intent", "target_notional", 100.0),
+            ("_plan", "quantity", 1.0),
+        ],
+    )
+    def test_contract_rejects_implicit_scalar_coercion(
+        self, factory_name, field_name, implicit_value
+    ):
+        factory = getattr(self, factory_name)
+
+        with pytest.raises(ValidationError):
+            factory(**{field_name: implicit_value})
+
+    def test_idempotency_key_is_required_for_every_attempt(self):
+        payload = self._attempt().model_dump()
+        del payload["idempotency_key"]
+
+        with pytest.raises(ValidationError, match="idempotency_key"):
+            ec.OrderAttempt(**payload)
+
+    def test_decision_side_is_limited_to_buy_or_sell(self):
+        with pytest.raises(ValidationError):
+            self._intent(side="hold")
+
     def test_decision_time_and_price_invariants_fail_closed(self):
         with pytest.raises(ValidationError, match="market_data_cutoff"):
             self._intent(
