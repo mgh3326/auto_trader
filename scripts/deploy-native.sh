@@ -58,6 +58,8 @@ SINGLE_ACTIVE_LABELS=(
   "com.robinco.auto-trader.mcp-account-read"
   # ROB-762: TradingCodex execution MCP service outside the blue/green pair.
   "com.robinco.auto-trader.mcp-tradingcodex-execution"
+  # ROB-1258: resident hermes-paper-kis MCP service outside the blue/green pair.
+  "com.robinco.auto-trader.mcp-paper_001"
   # ROB-469 PR3: single non-color-specific watchdog that restarts a wedged MCP color.
   "com.robinco.auto-trader.mcp-watchdog"
 )
@@ -76,6 +78,7 @@ MCP_PROFILE_PORTS=(
   "com.robinco.auto-trader.mcp-analysis-readonly:8768"
   "com.robinco.auto-trader.mcp-account-read:8769"
   "com.robinco.auto-trader.mcp-tradingcodex-execution:8770"
+  "com.robinco.auto-trader.mcp-paper_001:8771"
 )
 
 NEW_RELEASE="$RELEASES/$SHA"
@@ -113,6 +116,24 @@ sync_release_ops_to_base() {
   mkdir -p "$BASE/scripts/haproxy"
   rsync -a "$NEW_RELEASE/ops/native/haproxy/" "$BASE/scripts/haproxy/"
   chmod +x "$BASE/scripts/"*.sh 2>/dev/null || true
+}
+
+verify_mcp_profile_registry() {
+  local -a args
+  local label entry
+
+  args=(
+    --source-plist-dir "$NEW_RELEASE/ops/native/plists"
+    --installed-plist-dir "$HOME/Library/LaunchAgents"
+  )
+  for label in "${SINGLE_ACTIVE_LABELS[@]}"; do
+    args+=(--single-active-label "$label")
+  done
+  for entry in "${MCP_PROFILE_PORTS[@]}"; do
+    args+=(--profile-port "$entry")
+  done
+
+  python3 "$NEW_RELEASE/scripts/check_native_mcp_profile_registry.py" "${args[@]}"
 }
 
 build_frontend_workspace() {
@@ -419,6 +440,9 @@ fi
 git cat-file -e "$SHA^{commit}"
 git checkout --detach "$SHA"
 git clean -fdx -e .venv
+
+log "Preflight: verifying fixed-profile MCP registry completeness"
+verify_mcp_profile_registry
 
 log "Installing dependencies with uv"
 uv sync --frozen
