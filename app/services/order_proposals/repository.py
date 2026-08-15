@@ -18,6 +18,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.order_proposals import (
     OrderProposal,
+    OrderProposalApprovalAuditEvent,
     OrderProposalApprovalBatch,
     OrderProposalApprovalBatchMember,
     OrderProposalApprovalDispatchAttempt,
@@ -56,6 +57,45 @@ class OrderProposalRepository:
         await self._session.flush()
         await self._session.refresh(row)
         return row
+
+    async def insert_approval_audit_event(
+        self, **cols: Any
+    ) -> OrderProposalApprovalAuditEvent:
+        row = OrderProposalApprovalAuditEvent(**cols)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def list_approval_audit_events_by_root(
+        self, root_proposal_id: uuid.UUID
+    ) -> list[OrderProposalApprovalAuditEvent]:
+        stmt = (
+            select(OrderProposalApprovalAuditEvent)
+            .where(OrderProposalApprovalAuditEvent.root_proposal_id == root_proposal_id)
+            .order_by(
+                OrderProposalApprovalAuditEvent.occurred_at,
+                OrderProposalApprovalAuditEvent.id,
+            )
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def list_approval_dispatch_attempts_by_root(
+        self, root_proposal_id: uuid.UUID
+    ) -> list[OrderProposalApprovalDispatchAttempt]:
+        stmt = (
+            select(OrderProposalApprovalDispatchAttempt)
+            .join(
+                OrderProposal,
+                OrderProposalApprovalDispatchAttempt.proposal_pk == OrderProposal.id,
+            )
+            .where(OrderProposal.root_proposal_id == root_proposal_id)
+            .order_by(
+                OrderProposalApprovalDispatchAttempt.attempted_at,
+                OrderProposalApprovalDispatchAttempt.id,
+            )
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
 
     async def insert_approval_event(self, **cols: Any) -> OrderProposalApprovalEvent:
         row = OrderProposalApprovalEvent(**cols)

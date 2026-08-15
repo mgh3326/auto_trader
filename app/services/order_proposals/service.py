@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.timezone import KST
 from app.models.order_proposals import (
     OrderProposal,
+    OrderProposalApprovalAuditEvent,
     OrderProposalApprovalBatch,
     OrderProposalApprovalBatchMember,
     OrderProposalApprovalDispatchAttempt,
@@ -32,6 +33,13 @@ from app.models.order_proposals import (
 )
 from app.models.review import TossLiveOrderLedger
 from app.services.order_proposals import state_machine as sm
+from app.services.order_proposals.approval_record import (
+    APPROVAL_RECORD_ACTOR_KINDS,
+    APPROVAL_RECORD_CHANNELS,
+    ApprovalRecordEventType,
+    ApprovalRecordTimingSource,
+    approval_nonce_digest,
+)
 from app.services.order_proposals.approval_window_contract import valid_until_block
 from app.services.order_proposals.auto_approve_audit import (
     append_auto_approve_rejection_attempt,
@@ -911,6 +919,32 @@ class OrderProposalsService:
                 superseded_by_proposal_id=proposal_id,
                 approval_nonce_used_at=now,
             )
+            await self.append_approval_audit_event_best_effort(
+                group=superseded_group,
+                rung_indices=[rung.rung_index for rung in superseded_rungs],
+                event_type=ApprovalRecordEventType.SUPERSEDED,
+                event_result="preserved_not_inherited",
+                occurred_at=now,
+                observed_at=now,
+                timing_source=ApprovalRecordTimingSource.SUPERSEDE_TRANSACTION,
+                actor_kind="system",
+                actor_id=None,
+                channel="system",
+                nonce=superseded_group.approval_nonce,
+                nonce_consumed=False,
+                nonce_invalidated=superseded_group.approval_nonce is not None,
+                dispatch_attempt_id=superseded_group.approval_dispatch_attempt_id,
+                card_chat_id=str(
+                    (superseded_group.source_asof or {}).get("approval_chat_id") or ""
+                )
+                or None,
+                card_message_id=(superseded_group.source_asof or {}).get(
+                    "approval_message_id"
+                ),
+                card_kind=superseded_group.approval_dispatch_card_kind,
+                successor_proposal_id=proposal_id,
+                reason_code="proposal_superseded",
+            )
         return group
 
     async def _validate_exit_binding(
@@ -1098,6 +1132,36 @@ class OrderProposalsService:
             return "approved"
         return "proposed"
 
+    async def _append_proposal_expiry_audit(
+        self,
+        *,
+        group: OrderProposal,
+        rungs: list[OrderProposalRung],
+        nonce: str | None,
+        observed_at: datetime,
+    ) -> None:
+        source_asof = group.source_asof or {}
+        await self.append_approval_audit_event_best_effort(
+            group=group,
+            rung_indices=[rung.rung_index for rung in rungs],
+            event_type=ApprovalRecordEventType.EXPIRED,
+            event_result="expired",
+            occurred_at=group.valid_until or observed_at,
+            observed_at=observed_at,
+            timing_source=ApprovalRecordTimingSource.PROPOSAL_DEADLINE,
+            actor_kind="system",
+            actor_id=None,
+            channel="system",
+            nonce=nonce,
+            nonce_consumed=False,
+            nonce_invalidated=nonce is not None,
+            dispatch_attempt_id=group.approval_dispatch_attempt_id,
+            card_chat_id=str(source_asof.get("approval_chat_id") or "") or None,
+            card_message_id=source_asof.get("approval_message_id"),
+            card_kind=group.approval_dispatch_card_kind,
+            reason_code="proposal_valid_until_expired",
+        )
+
     async def expire_if_needed(self, proposal_id: uuid.UUID, *, now: datetime) -> bool:
         self._require_timezone_aware(now)
         group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
@@ -1116,6 +1180,7 @@ class OrderProposalsService:
                 f"in state {invalid_rung.state!r}"
             )
 
+        expired_nonce = group.approval_nonce
         expired_rungs = []
         for rung in rungs:
             sm.assert_rung_transition(rung.state, "expired")
@@ -1126,6 +1191,12 @@ class OrderProposalsService:
             group,
             lifecycle_state=self._recompute_group_state(expired_rungs),
             approval_nonce=None,
+        )
+        await self._append_proposal_expiry_audit(
+            group=group,
+            rungs=expired_rungs,
+            nonce=expired_nonce,
+            observed_at=now,
         )
         return True
 
@@ -1155,6 +1226,7 @@ class OrderProposalsService:
                 f"cannot expire proposal rung {rung_index} in state {rung.state!r}"
             )
         sm.assert_rung_transition(rung.state, "expired")
+        expired_nonce = group.approval_nonce
         expired = await self._repo.update_rung(
             rung,
             state="expired",
@@ -1179,6 +1251,12 @@ class OrderProposalsService:
             group,
             lifecycle_state=self._recompute_group_state(materialized),
             **({"approval_nonce": None} if all_local_terminal else {}),
+        )
+        await self._append_proposal_expiry_audit(
+            group=group,
+            rungs=[expired],
+            nonce=expired_nonce,
+            observed_at=now,
         )
         return True
 
@@ -2346,6 +2424,112 @@ class OrderProposalsService:
         if not nonce:
             raise OrderProposalError("approval_nonce_missing")
         return self._current_callback_envelope(group, action=action, nonce=nonce)
+
+    async def append_approval_audit_event_best_effort(
+        self,
+        *,
+        group: OrderProposal,
+        rung_indices: list[int],
+        event_type: ApprovalRecordEventType | str,
+        event_result: str | None,
+        occurred_at: datetime,
+        observed_at: datetime | None,
+        timing_source: ApprovalRecordTimingSource | str,
+        actor_kind: str,
+        actor_id: str | None,
+        channel: str,
+        nonce: str | None,
+        nonce_consumed: bool,
+        nonce_invalidated: bool = False,
+        dispatch_attempt_id: uuid.UUID | None = None,
+        card_chat_id: str | None = None,
+        card_message_id: int | None = None,
+        card_kind: str | None = None,
+        predecessor_proposal_id: uuid.UUID | None = None,
+        successor_proposal_id: uuid.UUID | None = None,
+        reason_code: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> OrderProposalApprovalAuditEvent | None:
+        """Append a forensic fact inside a savepoint and never block approval.
+
+        The event has no decision role. A failed INSERT rolls back only its
+        savepoint, logs identifiers (never a raw nonce), and returns ``None``;
+        the caller's approval/nonce transaction remains usable.
+        """
+        event_type_value = "unavailable"
+        try:
+            event_type_value = str(event_type)
+            timing_source_value = str(timing_source)
+            observed = observed_at or datetime.now(UTC)
+            self._require_timezone_aware(occurred_at)
+            self._require_timezone_aware(observed)
+            if actor_kind not in APPROVAL_RECORD_ACTOR_KINDS:
+                raise ValueError("invalid approval audit actor_kind")
+            if channel not in APPROVAL_RECORD_CHANNELS:
+                raise ValueError("invalid approval audit channel")
+            normalized_actor_id = (actor_id or "").strip() or None
+            if actor_kind != "system" and normalized_actor_id is None:
+                raise ValueError("approval audit user actor_id is required")
+            normalized_rungs = sorted({int(index) for index in rung_indices})
+            async with self._session.begin_nested():
+                return await self._repo.insert_approval_audit_event(
+                    event_id=uuid.uuid4(),
+                    proposal_pk=group.id,
+                    proposal_id=group.proposal_id,
+                    root_proposal_id=group.root_proposal_id,
+                    rung_indices=normalized_rungs,
+                    event_type=event_type_value,
+                    event_result=event_result,
+                    occurred_at=occurred_at,
+                    observed_at=observed,
+                    timing_source=timing_source_value,
+                    actor_kind=actor_kind,
+                    actor_id=normalized_actor_id,
+                    channel=channel,
+                    nonce_digest=approval_nonce_digest(nonce),
+                    nonce_consumed=bool(nonce_consumed),
+                    nonce_invalidated=bool(nonce_invalidated),
+                    dispatch_attempt_id=dispatch_attempt_id,
+                    card_chat_id=card_chat_id,
+                    card_message_id=card_message_id,
+                    card_kind=card_kind,
+                    predecessor_proposal_id=predecessor_proposal_id,
+                    successor_proposal_id=successor_proposal_id,
+                    reason_code=reason_code,
+                    details=details,
+                )
+        except Exception as exc:  # noqa: BLE001 - audit must remain fail-open
+            logger.error(
+                "order_proposals.approval_audit_record_failed",
+                extra={
+                    "proposal_id": str(group.proposal_id),
+                    "approval_event_type": event_type_value,
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            return None
+
+    async def list_approval_audit_events(
+        self, proposal_id: uuid.UUID
+    ) -> list[OrderProposalApprovalAuditEvent]:
+        """Return ordered facts for the proposal's full supersession lineage."""
+        group = await self._repo.get_group_by_proposal_id(proposal_id)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        return await self._repo.list_approval_audit_events_by_root(
+            group.root_proposal_id
+        )
+
+    async def list_approval_dispatch_history(
+        self, proposal_id: uuid.UUID
+    ) -> list[OrderProposalApprovalDispatchAttempt]:
+        """Return ordered dispatch attempts without replacing legacy latest fields."""
+        group = await self._repo.get_group_by_proposal_id(proposal_id)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        return await self._repo.list_approval_dispatch_attempts_by_root(
+            group.root_proposal_id
+        )
 
     async def append_approval_event(self, **cols: Any) -> OrderProposalApprovalEvent:
         return await self._repo.insert_approval_event(**cols)
@@ -3584,6 +3768,7 @@ class OrderProposalsService:
                 )
                 continue
 
+            expired_nonce = group.approval_nonce
             expired_rungs = []
             for rung in rungs:
                 sm.assert_rung_transition(rung.state, "expired")
@@ -3594,6 +3779,12 @@ class OrderProposalsService:
                 group,
                 lifecycle_state=self._recompute_group_state(expired_rungs),
                 approval_nonce=None,
+            )
+            await self._append_proposal_expiry_audit(
+                group=group,
+                rungs=expired_rungs,
+                nonce=expired_nonce,
+                observed_at=now,
             )
             source_asof = group.source_asof or {}
             results.append(

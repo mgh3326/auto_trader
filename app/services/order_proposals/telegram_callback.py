@@ -47,7 +47,7 @@ import logging
 import secrets
 import uuid
 from collections.abc import Callable, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,6 +63,10 @@ from app.services.order_proposals.approval_message import (
     build_buying_power_shortfall_text,
     build_loss_cut_confirmation_message,
     parse_callback_data,
+)
+from app.services.order_proposals.approval_record import (
+    ApprovalRecordEventType,
+    ApprovalRecordTimingSource,
 )
 from app.services.order_proposals.approval_window import (
     ApprovalWindowCode,
@@ -323,6 +327,34 @@ async def _safe_edit_message(
             failure_code="telegram_transport_error",
             error_classification=TelegramErrorClassification.TRANSPORT_ERROR,
         )
+
+
+async def _append_approval_audit_best_effort(service: Any, **event: Any) -> Any | None:
+    """Keep audit failures outside every approval decision/result branch."""
+    try:
+        return await service.append_approval_audit_event_best_effort(**event)
+    except Exception as exc:  # noqa: BLE001 - caller behavior must be unchanged
+        logger.error(
+            "order_proposals.approval_audit_boundary_failed",
+            extra={
+                "proposal_id": str(event["group"].proposal_id),
+                "approval_event_type": str(event["event_type"]),
+                "exception_type": type(exc).__name__,
+            },
+        )
+        return None
+
+
+def _loss_cut_confirmation_expiry(group: Any, *, fallback: datetime) -> datetime:
+    """Read the bound deadline for audit timing without changing validation."""
+    envelope = (group.source_asof or {}).get("loss_cut_confirmation")
+    if not isinstance(envelope, dict):
+        return fallback
+    try:
+        expires_at = datetime.fromisoformat(str(envelope["expires_at"]))
+    except (KeyError, TypeError, ValueError):
+        return fallback
+    return expires_at if expires_at.tzinfo is not None else fallback
 
 
 async def _alert_non_sent_callback_dispatch(
@@ -690,7 +722,7 @@ async def _handle_approve(
     # Lock the broker target before taking any proposal row lock. Independently
     # created proposals may point at the same manual/session order, so the
     # proposal-scoped commit lease alone cannot prevent a double mutation.
-    target_group, _ = await service.get_proposal(proposal_id)
+    target_group, target_rungs = await service.get_proposal(proposal_id)
     await service.acquire_target_mutation_lock(target_group)
 
     window = await _evaluate_bound_window(
@@ -745,10 +777,58 @@ async def _handle_approve(
                 now=approval_now,
             )
     except OrderProposalError as exc:
+        if loss_cut_confirmation and str(exc) == "loss_cut_confirmation_expired":
+            await _append_approval_audit_best_effort(
+                service,
+                group=target_group,
+                rung_indices=[rung.rung_index for rung in target_rungs],
+                event_type=ApprovalRecordEventType.EXPIRED,
+                event_result="expired",
+                occurred_at=_loss_cut_confirmation_expiry(
+                    target_group, fallback=approval_now
+                ),
+                observed_at=approval_now,
+                timing_source=ApprovalRecordTimingSource.APPROVAL_DEADLINE,
+                actor_kind="system",
+                actor_id=None,
+                channel="telegram",
+                nonce=callback.nonce,
+                nonce_consumed=False,
+                nonce_invalidated=True,
+                dispatch_attempt_id=callback.attempt_id,
+                card_chat_id=str(chat_id) if chat_id is not None else None,
+                card_message_id=message_id,
+                card_kind=target_group.approval_dispatch_card_kind,
+                reason_code="loss_cut_confirmation_expired",
+                details={"observed_by_actor_id": telegram_user_id},
+            )
         # See `_handle_deny`'s matching comment: no mutation happened above,
         # but commit anyway to release the row lock.
         await session.commit()
         return {"handled": False, "reason": str(exc), "proposal_id": str(proposal_id)}
+
+    if loss_cut_confirmation:
+        # Telegram supplies no trusted device-click time. ``now`` is handler
+        # receipt; ``approval_now`` is the sample accepted at nonce consumption.
+        await _append_approval_audit_best_effort(
+            service,
+            group=target_group,
+            rung_indices=[rung.rung_index for rung in target_rungs],
+            event_type=ApprovalRecordEventType.SECOND_STAGE_CLICKED,
+            event_result="nonce_consumed",
+            occurred_at=now,
+            observed_at=approval_now,
+            timing_source=ApprovalRecordTimingSource.TELEGRAM_CALLBACK_RECEIVED,
+            actor_kind="telegram_user",
+            actor_id=telegram_user_id,
+            channel="telegram",
+            nonce=callback.nonce,
+            nonce_consumed=True,
+            dispatch_attempt_id=callback.attempt_id,
+            card_chat_id=str(chat_id) if chat_id is not None else None,
+            card_message_id=message_id,
+            card_kind=target_group.approval_dispatch_card_kind,
+        )
 
     acquired = await service.acquire_commit_lease(proposal_id, now=approval_now)
     if not acquired:
@@ -1539,6 +1619,27 @@ async def _handle_loss_cut_first_click(
         now=post_preview_now,
     )
     group, rungs = await service.get_proposal(proposal_id)
+    # Append only after successful nonce consumption. The supplied timestamps
+    # mean handler receipt and the accepted nonce-boundary sample, respectively.
+    await _append_approval_audit_best_effort(
+        service,
+        group=group,
+        rung_indices=[rung.rung_index for rung in rungs],
+        event_type=ApprovalRecordEventType.FIRST_STAGE_APPROVED,
+        event_result="accepted",
+        occurred_at=now,
+        observed_at=post_preview_now,
+        timing_source=ApprovalRecordTimingSource.TELEGRAM_CALLBACK_RECEIVED,
+        actor_kind="telegram_user",
+        actor_id=telegram_user_id,
+        channel="telegram",
+        nonce=callback.nonce,
+        nonce_consumed=True,
+        dispatch_attempt_id=callback.attempt_id,
+        card_chat_id=str(chat_id) if chat_id is not None else None,
+        card_message_id=message_id,
+        card_kind=ApprovalCardKind.MANUAL.value,
+    )
     dispatch_attempt_id = uuid.uuid4()
     binding = build_proposal_dispatch_binding(
         proposal_id=group.proposal_id,
@@ -1630,6 +1731,29 @@ async def _handle_loss_cut_first_click(
         chat_id=str(chat_id),
         now=publish_window.observed_at,
         approval_window_policy_stamp=publish_window.policy_stamp,
+    )
+    # The pre-publication approval-window sample identifies dispatch start;
+    # this fresh sample records when the publication result became observable.
+    dispatch_completed_at = datetime.now(UTC)
+    await _append_approval_audit_best_effort(
+        service,
+        group=group,
+        rung_indices=[rung.rung_index for rung in rungs],
+        event_type=ApprovalRecordEventType.SECOND_STAGE_DISPATCHED,
+        event_result=dispatch_result.state.value,
+        occurred_at=publish_window.observed_at,
+        observed_at=dispatch_completed_at,
+        timing_source=ApprovalRecordTimingSource.TELEGRAM_DISPATCH_STARTED,
+        actor_kind="system",
+        actor_id=None,
+        channel="telegram",
+        nonce=confirmation_nonce,
+        nonce_consumed=False,
+        dispatch_attempt_id=dispatch_attempt_id,
+        card_chat_id=str(chat_id) if chat_id is not None else None,
+        card_message_id=dispatch_result.message_id or message_id,
+        card_kind=ApprovalCardKind.LOSS_CUT_CONFIRMATION.value,
+        reason_code=dispatch_result.failure_code,
     )
     await session.commit()
     operator_alert = None

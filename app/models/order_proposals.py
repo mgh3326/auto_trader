@@ -29,12 +29,30 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
 from app.models.base import Base
+from app.services.order_proposals.approval_record import (
+    APPROVAL_RECORD_ACTOR_KINDS,
+    APPROVAL_RECORD_CHANNELS,
+    APPROVAL_RECORD_EVENT_TYPES,
+    APPROVAL_RECORD_TIMING_SOURCES,
+)
 from app.services.order_proposals.state_machine import GROUP_STATES, RUNG_STATES
 
 _MARKETS = "'equity_kr','equity_us','crypto','forex','index'"
 _ACCOUNT_MODES = "'kis_live','kis_mock','toss_live','upbit','db_simulated'"
 _GROUP_STATES_SQL = ",".join(f"'{s}'" for s in sorted(GROUP_STATES))
 _RUNG_STATES_SQL = ",".join(f"'{s}'" for s in sorted(RUNG_STATES))
+_APPROVAL_RECORD_EVENT_TYPES_SQL = ",".join(
+    f"'{value}'" for value in sorted(APPROVAL_RECORD_EVENT_TYPES)
+)
+_APPROVAL_RECORD_TIMING_SOURCES_SQL = ",".join(
+    f"'{value}'" for value in sorted(APPROVAL_RECORD_TIMING_SOURCES)
+)
+_APPROVAL_RECORD_ACTOR_KINDS_SQL = ",".join(
+    f"'{value}'" for value in sorted(APPROVAL_RECORD_ACTOR_KINDS)
+)
+_APPROVAL_RECORD_CHANNELS_SQL = ",".join(
+    f"'{value}'" for value in sorted(APPROVAL_RECORD_CHANNELS)
+)
 
 
 class OrderProposal(Base):
@@ -410,6 +428,101 @@ class OrderProposalApprovalEvent(Base):
     observed_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False
     )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class OrderProposalApprovalAuditEvent(Base):
+    """Append-only forensic facts; never consulted by approval decisions."""
+
+    __tablename__ = "order_proposal_approval_audit_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "event_id", name="uq_order_proposal_approval_audit_events_event_id"
+        ),
+        CheckConstraint(
+            f"event_type IN ({_APPROVAL_RECORD_EVENT_TYPES_SQL})",
+            name="order_proposal_approval_audit_events_type",
+        ),
+        CheckConstraint(
+            f"timing_source IN ({_APPROVAL_RECORD_TIMING_SOURCES_SQL})",
+            name="order_proposal_approval_audit_events_timing_source",
+        ),
+        CheckConstraint(
+            f"actor_kind IN ({_APPROVAL_RECORD_ACTOR_KINDS_SQL})",
+            name="order_proposal_approval_audit_events_actor_kind",
+        ),
+        CheckConstraint(
+            f"channel IN ({_APPROVAL_RECORD_CHANNELS_SQL})",
+            name="order_proposal_approval_audit_events_channel",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(rung_indices) = 'array'",
+            name="order_proposal_approval_audit_events_rung_indices",
+        ),
+        Index(
+            "ix_order_proposal_approval_audit_events_proposal",
+            "proposal_pk",
+            "occurred_at",
+        ),
+        Index(
+            "ix_order_proposal_approval_audit_events_root",
+            "root_proposal_id",
+            "occurred_at",
+        ),
+        {"schema": "review"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False, default=uuid.uuid4
+    )
+    proposal_pk: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("review.order_proposals.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    proposal_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False
+    )
+    root_proposal_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False
+    )
+    rung_indices: Mapped[list[int]] = mapped_column(
+        JSONB, nullable=False, server_default="[]"
+    )
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    event_result: Mapped[str | None] = mapped_column(Text)
+    occurred_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    observed_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=False
+    )
+    timing_source: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_id: Mapped[str | None] = mapped_column(Text)
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    nonce_digest: Mapped[str | None] = mapped_column(Text)
+    nonce_consumed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    nonce_invalidated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    dispatch_attempt_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    card_chat_id: Mapped[str | None] = mapped_column(Text)
+    card_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    card_kind: Mapped[str | None] = mapped_column(Text)
+    predecessor_proposal_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True)
+    )
+    successor_proposal_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True)
+    )
+    reason_code: Mapped[str | None] = mapped_column(Text)
+    details: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMP(timezone=True), nullable=False, server_default=func.now()
     )

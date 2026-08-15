@@ -30,6 +30,7 @@ from app.services.order_proposals.dispatch_contract import (
     DispatchBinding,
     build_proposal_dispatch_binding,
 )
+from app.services.order_proposals.repository import OrderProposalRepository
 from app.services.order_proposals.revalidation import RungOutcome, revalidate_and_submit
 from app.services.order_proposals.service import RungInput
 from app.services.order_proposals.target_order import TargetOrderSnapshot
@@ -1830,6 +1831,71 @@ async def test_loss_cut_requires_second_click_before_submit(monkeypatch, db_sess
     assert audit["second_click"]["telegram_user_id"] == str(USER_ID)
     assert audit["second_click"]["nonce"] == second_nonce
 
+    events = await service.list_approval_audit_events(group.proposal_id)
+    assert [event.event_type for event in events] == [
+        "first_stage_approved",
+        "second_stage_dispatched",
+        "second_stage_clicked",
+    ]
+    assert [event.nonce_consumed for event in events] == [True, False, True]
+    assert events[0].actor_id == events[2].actor_id == str(USER_ID)
+    assert events[0].occurred_at == issued
+    assert events[1].occurred_at == issued
+    assert events[1].event_result == "sent_current"
+    assert events[2].occurred_at == issued + timedelta(seconds=30)
+    assert events[2].event_result == "nonce_consumed"
+    assert events[0].card_message_id == events[1].card_message_id == 555
+
+
+@pytest.mark.asyncio
+async def test_loss_cut_audit_failure_does_not_block_either_click(
+    monkeypatch, db_session
+):
+    _allow_chat(monkeypatch)
+    group = await _seed_loss_cut_proposal(db_session, monkeypatch)
+    notifier = _FakeNotifier()
+    submit_calls = []
+
+    async def fail_insert(self, **_cols):
+        raise RuntimeError("injected audit write failure")
+
+    async def fake_revalidate(**kwargs):
+        submit_calls.append(kwargs)
+        return [RungOutcome(0, "submitted_resting", {})]
+
+    monkeypatch.setattr(
+        OrderProposalRepository, "insert_approval_audit_event", fail_insert
+    )
+    issued = datetime(2026, 7, 13, 11, 0, tzinfo=UTC)
+    first = await handle_callback_update(
+        _make_update(
+            data=_proposal_callback_data(group, action="op", nonce="loss-cut-first")
+        ),
+        now=issued,
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+    callback_data = notifier.edited[-1][3]["inline_keyboard"][0][0]["callback_data"]
+    second = await handle_callback_update(
+        _make_update(data=callback_data, callback_id="cbq-audit-failure-second"),
+        now=issued + timedelta(seconds=30),
+        service_factory=_session_factory(db_session),
+        notifier=notifier,
+        revalidate_fn=fake_revalidate,
+        loss_cut_preview_fn=_fake_loss_cut_preview,
+    )
+
+    assert first["reason"] == "loss_cut_confirmation_required"
+    assert second["reason"] == "approved"
+    assert len(submit_calls) == 1
+    service = OrderProposalsService(db_session)
+    refreshed, _rungs = await service.get_proposal(group.proposal_id)
+    assert refreshed.approved_by_telegram_user_id == str(USER_ID)
+    assert refreshed.approval_nonce_used_at == issued + timedelta(seconds=30)
+    assert await service.list_approval_audit_events(group.proposal_id) == []
+
 
 @pytest.mark.asyncio
 async def test_loss_cut_second_nonce_replay_is_rejected(monkeypatch, db_session):
@@ -1934,6 +2000,18 @@ async def test_loss_cut_second_nonce_expires_after_90_seconds(monkeypatch, db_se
     )
 
     assert expired["reason"] == "loss_cut_confirmation_expired"
+    events = await OrderProposalsService(db_session).list_approval_audit_events(
+        group.proposal_id
+    )
+    assert [event.event_type for event in events] == [
+        "first_stage_approved",
+        "second_stage_dispatched",
+        "expired",
+    ]
+    assert events[-1].occurred_at == issued + timedelta(seconds=90)
+    assert events[-1].observed_at == issued + timedelta(seconds=91)
+    assert events[-1].nonce_consumed is False
+    assert events[-1].nonce_invalidated is True
 
 
 @pytest.mark.asyncio
