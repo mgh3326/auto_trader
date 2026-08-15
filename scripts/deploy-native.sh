@@ -439,10 +439,11 @@ if ! git cat-file -e "$SHA^{commit}" 2>/dev/null; then
 fi
 git cat-file -e "$SHA^{commit}"
 git checkout --detach "$SHA"
-git clean -fdx -e .venv
 
 log "Preflight: verifying fixed-profile MCP registry completeness"
 verify_mcp_profile_registry
+
+git clean -fdx -e .venv
 
 log "Installing dependencies with uv"
 uv sync --frozen

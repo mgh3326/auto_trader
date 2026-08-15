@@ -14,6 +14,7 @@ from scripts.check_native_mcp_profile_registry import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = REPO_ROOT / "scripts" / "deploy-native.sh"
 SOURCE_PLISTS = REPO_ROOT / "ops" / "native" / "plists"
+PAPER_WRAPPER = REPO_ROOT / "ops" / "native" / "scripts" / "run-mcp-paper_001.sh"
 
 
 def _extract_array_values(body: str, name: str) -> list[str]:
@@ -30,6 +31,7 @@ def _write_plist(
     label: str,
     port: int | None,
     wrapper: Path | None = None,
+    filename: str | None = None,
 ) -> None:
     environment: dict[str, str] = {}
     if port is not None:
@@ -40,7 +42,7 @@ def _write_plist(
         "EnvironmentVariables": environment,
     }
     directory.mkdir(parents=True, exist_ok=True)
-    with (directory / f"{label}.plist").open("wb") as handle:
+    with (directory / (filename or f"{label}.plist")).open("wb") as handle:
         plistlib.dump(payload, handle)
 
 
@@ -134,6 +136,94 @@ def test_installed_literal_wrapper_port_is_compared(tmp_path: Path) -> None:
     assert any("installed port mismatch" in error for error in result.errors)
 
 
+def test_interrupted_wrapper_sync_remains_redeployable_with_old_plist(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    installed = tmp_path / "installed"
+    label = "com.robinco.auto-trader.mcp-paper_001"
+    _write_plist(source, label=label, port=8771)
+    _write_plist(installed, label=label, port=None, wrapper=PAPER_WRAPPER)
+
+    result = validate_registry(
+        source_plist_dir=source,
+        installed_plist_dir=installed,
+        single_active_labels=[label],
+        profile_port_entries=[f"{label}:8771"],
+    )
+
+    assert not result.errors, "\n".join(result.errors)
+
+
+def test_single_active_fixed_profile_without_source_fails_closed(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    orphan = "com.robinco.auto-trader.mcp-orphan-typo"
+
+    result = validate_registry(
+        source_plist_dir=source,
+        single_active_labels=[orphan],
+        profile_port_entries=[],
+    )
+
+    assert (
+        f"SINGLE_ACTIVE_LABELS fixed-profile has no source plist: {orphan}"
+        in result.errors
+    )
+
+
+def test_installed_rollback_shadow_does_not_block_canonical_inventory(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    installed = tmp_path / "installed"
+    label = "com.robinco.auto-trader.mcp-paper_001"
+    _write_plist(source, label=label, port=8771)
+    _write_plist(installed, label=label, port=8771)
+    _write_plist(
+        installed,
+        label=label,
+        port=8771,
+        filename=f"{label}-rollback.plist",
+    )
+
+    result = validate_registry(
+        source_plist_dir=source,
+        installed_plist_dir=installed,
+        single_active_labels=[label],
+        profile_port_entries=[f"{label}:8771"],
+    )
+
+    assert not result.errors, "\n".join(result.errors)
+    assert set(result.installed) == {label}
+
+
+def test_lone_misnamed_rollback_plist_still_fails_closed(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    installed = tmp_path / "installed"
+    label = "com.robinco.auto-trader.mcp-paper_001"
+    _write_plist(source, label=label, port=8771)
+    _write_plist(
+        installed,
+        label=label,
+        port=8771,
+        filename=f"{label}-rollback.plist",
+    )
+
+    result = validate_registry(
+        source_plist_dir=source,
+        installed_plist_dir=installed,
+        single_active_labels=[label],
+        profile_port_entries=[f"{label}:8771"],
+    )
+
+    assert any(
+        "filename does not match plist Label" in error for error in result.errors
+    )
+
+
 def test_blue_green_and_watchdog_plists_are_lifecycle_exempt(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -152,7 +242,9 @@ def test_blue_green_and_watchdog_plists_are_lifecycle_exempt(tmp_path: Path) -> 
 
 def test_registry_preflight_runs_before_dependency_install_and_migrations() -> None:
     lines = DEPLOY.read_text().splitlines()
+    checkout_index = lines.index('git checkout --detach "$SHA"')
     call_index = lines.index("verify_mcp_profile_registry")
+    clean_index = lines.index("git clean -fdx -e .venv")
     install_index = next(
         i for i, line in enumerate(lines) if "uv sync --frozen" in line
     )
@@ -161,4 +253,5 @@ def test_registry_preflight_runs_before_dependency_install_and_migrations() -> N
     )
     sync_index = lines.index("sync_release_ops_to_base")
 
-    assert call_index < install_index < migration_index < sync_index
+    assert checkout_index < call_index < clean_index < install_index
+    assert install_index < migration_index < sync_index

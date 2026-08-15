@@ -16,7 +16,9 @@ source "${AUTO_TRADER_BASE:-$HOME/services/auto_trader}/scripts/common.sh"
 _export_selected_env_prefixes MCP_ KIS_MOCK
 
 export MCP_PROFILE="$PROFILE"
-export MCP_PORT="$PORT"
+# Keep this literal: an installed pre-ROB-1258 plist has no port metadata, so
+# deploy preflight reads the resident wrapper during an interrupted upgrade.
+export MCP_PORT="8771"
 export MCP_HOST="127.0.0.1"
 
 exec uv run python -m app.mcp_server.main

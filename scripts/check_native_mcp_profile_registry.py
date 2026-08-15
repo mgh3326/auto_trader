@@ -79,7 +79,9 @@ def _wrapper_port(plist: dict[str, object], *, context: str) -> int | None:
     return _parse_port(match.group(1), context=f"{context} wrapper")
 
 
-def discover_fixed_profile_plists(directory: Path) -> dict[str, ProfileService]:
+def discover_fixed_profile_plists(
+    directory: Path, *, allow_canonical_shadow_copies: bool = False
+) -> dict[str, ProfileService]:
     if not directory.is_dir():
         raise InventoryError(f"plist directory does not exist: {directory}")
 
@@ -94,7 +96,13 @@ def discover_fixed_profile_plists(directory: Path) -> dict[str, ProfileService]:
         label = plist.get("Label")
         if not isinstance(label, str) or not label.startswith(LABEL_PREFIX):
             raise InventoryError(f"{path}: missing fixed-profile MCP Label")
-        if path.name != f"{label}.plist":
+        canonical_path = directory / f"{label}.plist"
+        if path != canonical_path:
+            # A rollback candidate cannot create a second resident job under
+            # the same launchd Label.  Ignore it only while the canonical
+            # installed plist exists; a lone misnamed plist still fails closed.
+            if allow_canonical_shadow_copies and canonical_path.is_file():
+                continue
             raise InventoryError(
                 f"{path}: filename does not match plist Label {label!r}"
             )
@@ -169,7 +177,9 @@ def validate_registry(
 
     if installed_plist_dir is not None:
         try:
-            installed = discover_fixed_profile_plists(installed_plist_dir)
+            installed = discover_fixed_profile_plists(
+                installed_plist_dir, allow_canonical_shadow_copies=True
+            )
         except InventoryError as exc:
             errors.append(f"installed inventory: {exc}")
 
@@ -182,6 +192,15 @@ def validate_registry(
 
     source_labels = set(source)
     mapped_labels = set(mapped_ports)
+    single_active_fixed_labels = {
+        label
+        for label in single_active
+        if label.startswith(LABEL_PREFIX) and label not in LIFECYCLE_EXEMPT_LABELS
+    }
+    for label in sorted(single_active_fixed_labels - source_labels):
+        errors.append(
+            f"SINGLE_ACTIVE_LABELS fixed-profile has no source plist: {label}"
+        )
     for label in sorted(source_labels - mapped_labels):
         errors.append(f"source fixed-profile missing from MCP_PROFILE_PORTS: {label}")
     for label in sorted(mapped_labels - source_labels):
