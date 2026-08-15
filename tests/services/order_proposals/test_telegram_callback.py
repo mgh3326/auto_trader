@@ -2159,6 +2159,115 @@ async def test_approve_answers_before_order_processing_and_final_edit(
 
 
 @pytest.mark.asyncio
+async def test_five_kis_gateway_not_delivered_failures_persist_and_update_cards(
+    monkeypatch, db_session
+):
+    """Each simulated incident symbol gets a durable reason and final card."""
+    _allow_chat(monkeypatch)
+    notifier = _FakeNotifier()
+    symbols = ["QQQM", "HCA", "SPYM", "PLTR", "BAC"]
+    groups = [
+        await _seed_proposal(
+            db_session,
+            nonce=f"throttle-{index}",
+            symbol=symbol,
+        )
+        for index, symbol in enumerate(symbols)
+    ]
+
+    async def never_fetch_submit_evidence(**_kwargs):
+        raise AssertionError("KIS gateway failure must not use another broker lookup")
+
+    async def revalidate_with_gateway_failure(*, service, proposal_id, now):
+        group, rungs = await service.get_proposal(proposal_id)
+        rung = rungs[0]
+        await service.transition_rung(
+            proposal_id,
+            rung.rung_index,
+            new_state="revalidating",
+        )
+        await service.transition_rung(
+            proposal_id,
+            rung.rung_index,
+            new_state="approved",
+        )
+        await service.transition_rung(
+            proposal_id,
+            rung.rung_index,
+            new_state="submitting",
+        )
+        outcome = await revalidation_module._classify_submit(
+            service=service,
+            proposal_id=proposal_id,
+            rung_index=rung.rung_index,
+            preview={"idempotency_key": f"test-{group.symbol}"},
+            submit={
+                "success": False,
+                "error": "KIS gateway order not delivered",
+                "error_code": "kis_gateway_throttle_not_delivered",
+                "submit_failure": {
+                    "reason_code": "kis_gateway_throttle_not_delivered",
+                    "broker_message_code": "EGW00201",
+                    "http_status": 200,
+                    "broker_order_id": None,
+                    "ledger_entry_present": False,
+                    "idempotency_key_present": True,
+                    "intent_reserved": True,
+                    "retry_count": 1,
+                },
+            },
+            corr=f"corr-{group.symbol}",
+            now=now,
+            account_mode=group.account_mode,
+            market=group.market,
+            identifier=None,
+            fetch_submit_evidence_fn=never_fetch_submit_evidence,
+        )
+        return [outcome]
+
+    for index, group in enumerate(groups):
+        result = await handle_callback_update(
+            _make_update(
+                data=_proposal_callback_data(
+                    group,
+                    action="op",
+                    nonce=f"throttle-{index}",
+                ),
+                callback_id=f"throttle-callback-{index}",
+            ),
+            now=datetime.now(UTC),
+            service_factory=_session_factory(db_session),
+            notifier=notifier,
+            revalidate_fn=revalidate_with_gateway_failure,
+        )
+        assert result["results"] == ["not_delivered"]
+
+    service = OrderProposalsService(db_session)
+    for group in groups:
+        refreshed, rungs = await service.get_proposal(group.proposal_id)
+        assert rungs[0].state == "rejected"
+        assert rungs[0].void_reason == "kis_gateway_throttle_not_delivered"
+        failures = (refreshed.source_asof or {}).get("submit_failures")
+        assert failures == [
+            {
+                "occurred_at": failures[0]["occurred_at"],
+                "stage": "submit",
+                "rung_index": 0,
+                "reason_code": "kis_gateway_throttle_not_delivered",
+                "broker_message_code": "EGW00201",
+                "http_status": 200,
+                "broker_order_id": None,
+                "ledger_entry_present": False,
+                "idempotency_key_present": True,
+                "intent_reserved": True,
+                "retry_count": 1,
+            }
+        ]
+    assert len(notifier.edited) == 5
+    assert all("승인됨, 주문 미도달" in edit[2] for edit in notifier.edited)
+
+
+@pytest.mark.asyncio
 async def test_cancelled_approve_commits_before_telegram_edit(monkeypatch, db_session):
     _allow_chat(monkeypatch)
     group = await _seed_proposal(db_session, nonce="nonce-cancelled")

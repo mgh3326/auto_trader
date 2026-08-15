@@ -1,4 +1,4 @@
-"""ROB-892 — distributed Redis gate for KIS mock (VTS) REST dispatch.
+"""Distributed Redis admission gates for KIS REST dispatch.
 
 The official KIS mock (VTS, ``openapivts.koreainvestment.com``) enforces a
 conservative account/app-key-scoped budget of **one admitted request per
@@ -32,8 +32,10 @@ This module implements the distributed replacement. Design invariants
   ``DistributedGateUnavailable``). Mutations prove HTTP=0 and never fall
   back to local or unthrottled HTTP. Reads cannot bypass the gate during a
   Redis outage because they consume the same quota and fail the same way.
-* Live requests never call this gate (the dispatch boundary short-circuits
-  when the request host is not the VTS host).
+* The VTS profile is used only for mock REST calls.  The live-order profile is
+  used only for the four live order-submit TRs at the common dispatch boundary.
+  Both profiles use distinct Redis key prefixes, so their budgets never share
+  a cooldown state.
 
 Dispatch ordering preserved by ``BaseKISClient``:
 
@@ -79,10 +81,20 @@ _DEFAULT_SOCKET_CONNECT_TIMEOUT_SECONDS = 2.0
 # instead of hanging the caller.
 _DEFAULT_ACQUIRE_DEADLINE_SECONDS = 10.0
 
+# Live KIS order submits have a narrower, account/app-key scoped pacing profile.
+# Five approved submissions from an empty queue consume at most 4 * 1.05s of
+# intentional pacing before the fifth dispatch.  A bounded 5s acquisition
+# deadline keeps arbitrary contention from turning into an unbounded handler
+# wait; deadline exhaustion is a pre-dispatch, surfaced failure.
+_LIVE_ORDER_INTERVAL_SECONDS = 1.0
+_LIVE_ORDER_SAFETY_MARGIN_SECONDS = 0.05
+_LIVE_ORDER_ACQUIRE_DEADLINE_SECONDS = 5.0
+
 # Redis key prefix is intentionally distinct from the OAuth token namespace
 # (``kis_mock:{host}:{fp}``) so the gate state never collides with token
 # cache state for the same credential scope.
 _KEY_PREFIX = "kis_mock:gate"
+_LIVE_ORDER_KEY_PREFIX = "kis_live:order-gate"
 
 # Atomic claim. Uses Redis server TIME (never the host clock). Returns a
 # two-element array: ``{admitted(1/0), retry_after_ms}``. ``admitted=1``
@@ -155,17 +167,31 @@ def build_vts_gate_scope_key(*, host: str, app_key: str) -> str:
     return f"{_KEY_PREFIX}:{normalized}:{_app_key_fingerprint(app_key)}"
 
 
+def build_kis_live_order_gate_scope_key(*, host: str, app_key: str) -> str:
+    """Build the live KIS order-pacing scope for one credential and host.
+
+    The raw app key is deliberately never stored in Redis: only the same
+    non-reversible fingerprint used by the VTS profile appears in the key.
+    """
+    normalized = (host or "").lower()
+    if not normalized:
+        raise ValueError("KIS live order gate scope requires a non-empty host")
+    if not app_key:
+        raise ValueError("KIS live order gate scope requires a non-empty app key")
+    return f"{_LIVE_ORDER_KEY_PREFIX}:{normalized}:{_app_key_fingerprint(app_key)}"
+
+
 def netloc_from_url(url: str) -> str:
     """Extract the lower-cased ``netloc`` (host[:port]) from an absolute URL."""
     return urlsplit(url).netloc.lower()
 
 
 class VTSDistributedGate:
-    """Redis-backed distributed admit gate for KIS mock (VTS) REST calls.
+    """Redis-backed distributed admit gate shared by KIS pacing profiles.
 
-    A single process-wide instance is shared by every mock dispatch path
-    (see ``get_vts_distributed_gate``). The instance is cheap to construct
-    and only contacts Redis inside ``acquire``; live requests never call it.
+    A single process-wide instance is shared by each pacing profile (see
+    ``get_vts_distributed_gate`` and ``get_kis_live_order_pacer``). The
+    instance is cheap to construct and only contacts Redis inside ``acquire``.
     """
 
     def __init__(
@@ -179,6 +205,8 @@ class VTSDistributedGate:
         socket_connect_timeout_seconds: float = _DEFAULT_SOCKET_CONNECT_TIMEOUT_SECONDS,
         acquire_deadline_seconds: float = _DEFAULT_ACQUIRE_DEADLINE_SECONDS,
         monotonic: Callable[[], float] = time.monotonic,
+        gate_label: str = "VTS distributed gate",
+        log_key: str = "vts_gate",
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive")
@@ -188,6 +216,10 @@ class VTSDistributedGate:
             raise ValueError("ttl_seconds must be positive")
         if acquire_deadline_seconds <= 0:
             raise ValueError("acquire_deadline_seconds must be positive")
+        if not gate_label.strip():
+            raise ValueError("gate_label must be non-blank")
+        if not log_key.strip():
+            raise ValueError("log_key must be non-blank")
 
         self._redis_url = redis_url
         self._interval_seconds = float(interval_seconds)
@@ -199,6 +231,8 @@ class VTSDistributedGate:
         self._socket_timeout_seconds = float(socket_timeout_seconds)
         self._socket_connect_timeout_seconds = float(socket_connect_timeout_seconds)
         self._acquire_deadline_seconds = float(acquire_deadline_seconds)
+        self._gate_label = gate_label
+        self._log_key = log_key
         # Injectable monotonic clock so deadline arithmetic is deterministic in
         # tests (real Redis is still real-time; ``asyncio.wait_for`` bounds use
         # wall time). Production uses ``time.monotonic``.
@@ -257,12 +291,12 @@ class VTSDistributedGate:
             )
         except Exception as exc:  # noqa: BLE001 — every Redis failure is fail-closed
             raise DistributedGateUnavailable(
-                f"VTS distributed gate Redis claim failed for scope {scope_key!r}: {exc}"
+                f"{self._gate_label} Redis claim failed for scope {scope_key!r}: {exc}"
             ) from exc
 
         if not isinstance(raw, (list, tuple)) or len(raw) != 2:
             raise DistributedGateUnavailable(
-                f"VTS distributed gate returned malformed result for scope "
+                f"{self._gate_label} returned malformed result for scope "
                 f"{scope_key!r}: {raw!r}"
             )
         try:
@@ -270,7 +304,7 @@ class VTSDistributedGate:
             retry_after_ms = int(raw[1])
         except (TypeError, ValueError) as exc:
             raise DistributedGateUnavailable(
-                f"VTS distributed gate returned non-numeric result for scope "
+                f"{self._gate_label} returned non-numeric result for scope "
                 f"{scope_key!r}: {raw!r}"
             ) from exc
         # Reject anything outside the exact claim protocol:
@@ -283,17 +317,17 @@ class VTSDistributedGate:
         # All malformed/corrupt results fail closed instead of coercing/clamping.
         if admitted_value not in (0, 1) or retry_after_ms < 0:
             raise DistributedGateUnavailable(
-                f"VTS distributed gate returned invalid result for scope "
+                f"{self._gate_label} returned invalid result for scope "
                 f"{scope_key!r}: {raw!r}"
             )
         if admitted_value == 1 and retry_after_ms != 0:
             raise DistributedGateUnavailable(
-                f"VTS distributed gate admitted with non-zero retry for scope "
+                f"{self._gate_label} admitted with non-zero retry for scope "
                 f"{scope_key!r}: {raw!r}"
             )
         if admitted_value == 0 and retry_after_ms == 0:
             raise DistributedGateUnavailable(
-                f"VTS distributed gate denied with zero retry for scope "
+                f"{self._gate_label} denied with zero retry for scope "
                 f"{scope_key!r}: {raw!r}"
             )
         return admitted_value == 1, retry_after_ms / 1000.0
@@ -350,7 +384,7 @@ class VTSDistributedGate:
         while True:
             if _remaining() <= 0:
                 raise DistributedGateUnavailable(
-                    f"VTS distributed gate acquire deadline "
+                    f"{self._gate_label} acquire deadline "
                     f"({self._acquire_deadline_seconds:.1f}s) already exceeded "
                     f"for scope {scope_key!r} (class={call_class}, pid={pid})"
                 )
@@ -359,19 +393,19 @@ class VTSDistributedGate:
                     await asyncio.wait_for(freshness_hook(), _remaining())
                 except TimeoutError as exc:
                     raise DistributedGateUnavailable(
-                        f"VTS distributed gate freshness exceeded the acquire "
+                        f"{self._gate_label} freshness exceeded the acquire "
                         f"deadline for scope {scope_key!r} (class={call_class})"
                     ) from exc
                 if _remaining() <= 0:
                     raise DistributedGateUnavailable(
-                        f"VTS distributed gate acquire deadline crossed during "
+                        f"{self._gate_label} acquire deadline crossed during "
                         f"freshness for scope {scope_key!r} (class={call_class})"
                     )
             attempts += 1
             remaining_for_claim = _remaining()
             if remaining_for_claim <= 0:
                 raise DistributedGateUnavailable(
-                    f"VTS distributed gate acquire deadline exceeded for scope "
+                    f"{self._gate_label} acquire deadline exceeded for scope "
                     f"{scope_key!r} (class={call_class}, pid={pid})"
                 )
             try:
@@ -380,7 +414,7 @@ class VTSDistributedGate:
                 )
             except TimeoutError as exc:
                 raise DistributedGateUnavailable(
-                    f"VTS distributed gate claim exceeded the acquire deadline "
+                    f"{self._gate_label} claim exceeded the acquire deadline "
                     f"for scope {scope_key!r} (class={call_class})"
                 ) from exc
             if admitted:
@@ -390,15 +424,16 @@ class VTSDistributedGate:
                 # keep the HTTP=0 contract by failing closed here.
                 if _remaining() <= 0:
                     raise DistributedGateUnavailable(
-                        f"VTS distributed gate admitted after the deadline "
+                        f"{self._gate_label} admitted after the deadline "
                         f"crossed; slot consumed, HTTP=0 for scope {scope_key!r} "
                         f"(class={call_class}, pid={pid})"
                     )
                 waited = self._monotonic() - start
                 if attempts > 1 or waited > 0.01:
                     logger.info(
-                        "vts_gate admitted scope=%s fp=%s pid=%s class=%s "
+                        "%s admitted scope=%s fp=%s pid=%s class=%s "
                         "attempts=%d waited=%.3fs",
+                        self._log_key,
                         scope_key,
                         last_fingerprint,
                         pid,
@@ -416,13 +451,14 @@ class VTSDistributedGate:
             # but never past the bounded deadline.
             if self._monotonic() + retry_after > deadline_monotonic:
                 raise DistributedGateUnavailable(
-                    f"VTS distributed gate acquire deadline "
+                    f"{self._gate_label} acquire deadline "
                     f"({self._acquire_deadline_seconds:.1f}s) exceeded for "
                     f"scope {scope_key!r} (class={call_class}, pid={pid})"
                 )
             logger.info(
-                "vts_gate contention scope=%s fp=%s pid=%s class=%s "
+                "%s contention scope=%s fp=%s pid=%s class=%s "
                 "retry_after=%.3fs attempt=%d",
+                self._log_key,
                 scope_key,
                 last_fingerprint,
                 pid,
@@ -472,3 +508,46 @@ async def reset_vts_distributed_gate() -> None:
         if _gate is not None:
             await _gate.close()
         _gate = None
+
+
+# The live order pacer intentionally has its own singleton and Redis key
+# prefix.  It shares Redis transport configuration with VTS, but neither the
+# permit cadence nor one profile's cooldown can influence the other.
+_live_order_gate: VTSDistributedGate | None = None
+_live_order_gate_lock = asyncio.Lock()
+
+
+async def get_kis_live_order_pacer() -> VTSDistributedGate:
+    """Return the bounded, distributed pacer for real KIS order submits.
+
+    Construction is lazy and makes no Redis request.  The caller only reaches
+    this singleton after ``BaseKISClient`` has classified an exact live order
+    POST/TR pair, so reads, mock dispatch, and other brokers never consume it.
+    """
+    global _live_order_gate
+    if _live_order_gate is None:
+        async with _live_order_gate_lock:
+            if _live_order_gate is None:
+                from app.core.config import settings  # local import avoids cycles
+
+                _live_order_gate = VTSDistributedGate(
+                    redis_url=settings.get_redis_url(),
+                    interval_seconds=_LIVE_ORDER_INTERVAL_SECONDS,
+                    safety_margin_seconds=_LIVE_ORDER_SAFETY_MARGIN_SECONDS,
+                    ttl_seconds=_DEFAULT_TTL_SECONDS,
+                    socket_timeout_seconds=_DEFAULT_SOCKET_TIMEOUT_SECONDS,
+                    socket_connect_timeout_seconds=_DEFAULT_SOCKET_CONNECT_TIMEOUT_SECONDS,
+                    acquire_deadline_seconds=_LIVE_ORDER_ACQUIRE_DEADLINE_SECONDS,
+                    gate_label="KIS live order pacer",
+                    log_key="kis_live_order_pacer",
+                )
+    return _live_order_gate
+
+
+async def reset_kis_live_order_pacer() -> None:
+    """Discard the live order pacer singleton (tests only)."""
+    global _live_order_gate
+    async with _live_order_gate_lock:
+        if _live_order_gate is not None:
+            await _live_order_gate.close()
+        _live_order_gate = None

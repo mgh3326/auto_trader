@@ -65,6 +65,7 @@ from app.services.order_proposals.payload import (
     compute_proposal_payload_hash,
 )
 from app.services.order_proposals.repository import OrderProposalRepository
+from app.services.order_proposals.submit_failure_audit import append_submit_failure
 from app.services.order_proposals.target_order import (
     TargetOrderSnapshot,
     canonical_decimal,
@@ -3488,6 +3489,31 @@ class OrderProposalsService:
             void_reason=reason,
             updated_at=now,
         )
+
+    async def record_submit_failure(
+        self,
+        proposal_id: uuid.UUID,
+        rung_index: int,
+        *,
+        failure: dict[str, Any],
+        now: datetime,
+    ) -> OrderProposal:
+        """Persist a bounded broker-submit failure projection for operators.
+
+        The proposal service remains the only writer for this JSONB provenance;
+        invalid/unbounded input is discarded by ``append_submit_failure``.
+        """
+        self._require_timezone_aware(now)
+        group = await self._repo.get_group_by_proposal_id(proposal_id, for_update=True)
+        if group is None:
+            raise OrderProposalNotFound(str(proposal_id))
+        source_asof = append_submit_failure(
+            group.source_asof,
+            rung_index=rung_index,
+            failure=failure,
+            now=now,
+        )
+        return await self._repo.update_group(group, source_asof=source_asof)
 
     async def sweep_local_stale(
         self,

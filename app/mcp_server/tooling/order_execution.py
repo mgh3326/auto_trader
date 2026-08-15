@@ -6,6 +6,7 @@ Business logic lives in order_validation and order_journal.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import uuid
 from collections.abc import Awaitable, Callable
@@ -15,6 +16,7 @@ from typing import Any, Literal
 from typing import cast as typing_cast
 
 import httpx
+from sqlalchemy import select
 
 import app.services.brokers.upbit.client as upbit_service
 from app.core.config import settings
@@ -55,7 +57,14 @@ from app.mcp_server.tooling.shared import (
 from app.mcp_server.tooling.shared import (
     to_float as _to_float,
 )
+from app.models.review import KISLiveOrderLedger, LiveOrderLedger
 from app.services.brokers.kis import KISClient
+from app.services.brokers.kis.order_throttle import (
+    MAX_THROTTLE_RESUBMITS,
+    KISGatewayThrottleRejection,
+    is_proven_not_delivered_for_repost,
+    throttle_backoff_seconds,
+)
 from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.brokers.kis.send_outcome import (
     OrderSendDisposition,
@@ -137,6 +146,92 @@ def _normalize_market_type_to_external(market_type: str) -> str:
     return mapping.get(market_type, market_type)
 
 
+async def _kis_live_order_ledger_entry_exists(
+    *,
+    idempotency_key: str,
+    market_type: str,
+) -> bool | None:
+    """Return KIS order-ledger presence for an idempotency key.
+
+    ``False`` is a completed read proving no local KIS order row.
+    ``None`` is deliberately different: a lookup failure is ambiguous and can
+    never authorize another POST.  This is read-only evidence gathering; live
+    order ledger writes remain owned by their existing service-layer paths.
+    """
+    if market_type not in {"equity_kr", "equity_us"}:
+        return None
+    ledger_model = KISLiveOrderLedger if market_type == "equity_kr" else LiveOrderLedger
+    try:
+        async with _order_session_factory()() as db:
+            stmt = select(ledger_model.id).where(
+                ledger_model.idempotency_key == idempotency_key
+            )
+            if market_type == "equity_us":
+                stmt = stmt.where(
+                    LiveOrderLedger.broker == "kis",
+                    LiveOrderLedger.account_scope == "kis_live",
+                )
+            return (await db.scalar(stmt.limit(1))) is not None
+    except Exception as exc:  # noqa: BLE001 - ambiguous evidence fails closed
+        logger.warning(
+            "KIS order ledger evidence lookup failed; retry disallowed: "
+            "market_type=%s error=%s",
+            market_type,
+            describe_exception(exc),
+        )
+        return None
+
+
+class KISGatewayThrottleSubmissionFailure(Exception):
+    """Structured terminal outcome after the one permitted throttle retry.
+
+    The response candidate has no broker order number, and this class only
+    labels it ``not_delivered`` after the reserved idempotency key and a
+    completed negative ledger lookup prove the rest of the evidence.
+    Any missing key/reservation or an inconclusive lookup stays ambiguous.
+    """
+
+    def __init__(
+        self,
+        rejection: KISGatewayThrottleRejection,
+        *,
+        retry_count: int,
+        idempotency_key: str | None,
+        intent_reserved: bool,
+        ledger_entry_present: bool | None,
+    ) -> None:
+        self.rejection = rejection
+        self.retry_count = retry_count
+        self.idempotency_key_present = bool(idempotency_key and idempotency_key.strip())
+        self.intent_reserved = intent_reserved
+        self.ledger_entry_present = ledger_entry_present
+        self.not_delivered = is_proven_not_delivered_for_repost(
+            rejection,
+            idempotency_key=idempotency_key,
+            intent_reserved=intent_reserved,
+            ledger_entry_present=ledger_entry_present,
+        )
+        self.error_code = (
+            "kis_gateway_throttle_not_delivered"
+            if self.not_delivered
+            else "kis_gateway_throttle_delivery_ambiguous"
+        )
+        super().__init__(f"{self.error_code}:{rejection.message_code}")
+
+    def submit_failure_detail(self) -> dict[str, Any]:
+        """Bounded, non-secret facts for proposal persistence and card output."""
+        return {
+            "reason_code": self.error_code,
+            "broker_message_code": self.rejection.message_code,
+            "http_status": self.rejection.http_status,
+            "broker_order_id": self.rejection.broker_order_id,
+            "ledger_entry_present": self.ledger_entry_present,
+            "idempotency_key_present": self.idempotency_key_present,
+            "intent_reserved": self.intent_reserved,
+            "retry_count": self.retry_count,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Order execution (broker dispatch)
 # ---------------------------------------------------------------------------
@@ -178,7 +273,13 @@ async def _execute_order(
             send_outcome=send_outcome,
         )
     return await _execute_us_order(
-        symbol, side, quantity, price, is_mock=is_mock, pre_send_hook=pre_send_hook
+        symbol,
+        side,
+        quantity,
+        price,
+        is_mock=is_mock,
+        pre_send_hook=pre_send_hook,
+        send_outcome=send_outcome,
     )
 
 
@@ -276,7 +377,13 @@ async def _execute_kr_order(
     # ROB-843 P1: only thread the hook when present (mock scalping). The live /
     # normal path passes no callback at all → byte-for-byte identical behavior.
     hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
-    if send_outcome is not None:
+    # ``send_outcome`` is an additive KIS-facade transport seam. Lightweight
+    # compatibility clients used by existing integrations expose only the
+    # historical order signature, so do not pass a new keyword unless this is
+    # the concrete facade (identified by its boolean account-mode marker).
+    if send_outcome is not None and isinstance(
+        getattr(kis, "_is_mock_client", None), bool
+    ):
         hook_kw["send_outcome"] = send_outcome
     if side == "buy":
         result = await _call_kis(
@@ -313,12 +420,17 @@ async def _execute_us_order(
     price: float | None,
     is_mock: bool = False,
     pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    send_outcome: OrderSendOutcomeTracker | None = None,
 ) -> dict[str, Any]:
     kis = _create_kis_client(is_mock=is_mock)
     exchange_code = await get_us_exchange_by_symbol(symbol)
 
     # ROB-843 P1: pass the hook only when present (live/normal path unchanged).
     hook_kw = {"pre_send_hook": pre_send_hook} if pre_send_hook is not None else {}
+    if send_outcome is not None and isinstance(
+        getattr(kis, "_is_mock_client", None), bool
+    ):
+        hook_kw["send_outcome"] = send_outcome
     if side == "buy":
         return await _call_kis(
             kis.buy_overseas_stock,
@@ -972,23 +1084,89 @@ async def _execute_and_record(
             return True
         return False
 
+    # KIS does not expose a broker-side idempotency header.  For real equity
+    # submissions we therefore retain the already-reserved ROB-653 local key
+    # across both attempts and create one outcome tracker even when the caller
+    # did not ask to observe it.  The tracker supplies the normal-HTTP status
+    # needed to distinguish a gateway refusal from a timeout/5xx ambiguity.
+    is_live_kis_equity = not is_mock and market_type in ("equity_kr", "equity_us")
+    effective_send_outcome = send_outcome
+    if effective_send_outcome is None and is_live_kis_equity:
+        effective_send_outcome = OrderSendOutcomeTracker()
+
+    async def _build_throttle_failure(
+        rejection: KISGatewayThrottleRejection,
+        *,
+        retry_count: int,
+    ) -> KISGatewayThrottleSubmissionFailure:
+        # A read failure is explicitly represented by None and remains
+        # ambiguous.  No missing/failed evidence is coerced into False.
+        ledger_entry_present: bool | None = None
+        if intent_key is not None:
+            ledger_entry_present = await _kis_live_order_ledger_entry_exists(
+                idempotency_key=intent_key,
+                market_type=market_type,
+            )
+        return KISGatewayThrottleSubmissionFailure(
+            rejection,
+            retry_count=retry_count,
+            idempotency_key=intent_key,
+            intent_reserved=intent_reserved,
+            ledger_entry_present=ledger_entry_present,
+        )
+
+    async def _execute_kis_order_with_throttle_guard() -> dict[str, Any]:
+        """Dispatch once, with at most one evidence-authorized re-POST.
+
+        This narrow loop is the sole rate-throttle re-POST location.  It is
+        bounded by the constant (one), keeps the same pre-send reservation,
+        and exits immediately for every response without complete evidence.
+        """
+        retry_count = 0
+        while True:
+            try:
+                return await _execute_order(
+                    symbol=normalized_symbol,
+                    side=side,
+                    order_type=order_type,
+                    quantity=order_quantity,
+                    price=price,
+                    market_type=market_type,
+                    is_mock=is_mock,
+                    identifier=idempotency_key if market_type == "crypto" else None,
+                    pre_send_hook=pre_send_hook,
+                    send_outcome=effective_send_outcome,
+                )
+            except KISGatewayThrottleRejection as throttle_exc:
+                if not is_live_kis_equity:
+                    raise
+                failure = await _build_throttle_failure(
+                    throttle_exc,
+                    retry_count=retry_count,
+                )
+                if not failure.not_delivered or retry_count >= MAX_THROTTLE_RESUBMITS:
+                    raise failure from throttle_exc
+
+                # The shared pacer enforces the minimum inter-submit interval;
+                # this bounded backoff additionally avoids rejoining a gateway
+                # window at the exact same phase.  The local intent remains
+                # reserved, so both attempts have one idempotency identity.
+                logger.warning(
+                    "KIS gateway throttle proven not delivered; retrying once: "
+                    "market_type=%s symbol=%s attempt=%d/%d",
+                    market_type,
+                    normalized_symbol,
+                    retry_count + 1,
+                    MAX_THROTTLE_RESUBMITS,
+                )
+                await asyncio.sleep(throttle_backoff_seconds(retry_count))
+                retry_count += 1
+
     try:
         # The optional pre_send_hook is threaded to the broker transport and
-        # fired immediately before each real mutation HTTP attempt (including
-        # eligible token/rate-limit re-sends). Callers without a hook retain
-        # the existing execution behavior.
-        execution_result = await _execute_order(
-            symbol=normalized_symbol,
-            side=side,
-            order_type=order_type,
-            quantity=order_quantity,
-            price=price,
-            market_type=market_type,
-            is_mock=is_mock,
-            identifier=idempotency_key if market_type == "crypto" else None,
-            pre_send_hook=pre_send_hook,
-            send_outcome=send_outcome,
-        )
+        # fired immediately before each real mutation HTTP attempt. Callers
+        # without a hook retain the existing execution behavior.
+        execution_result = await _execute_kis_order_with_throttle_guard()
         if send_outcome is not None:
             # A transport response crossed the send boundary. Until the mock
             # result normalizer proves accepted/rejected, the outcome is unknown.
@@ -1400,6 +1578,22 @@ def _augment_error_for_unknown_outcome(
     outcome-unknown failure (a definitive rejection, or a pre-send read timeout)
     is left unchanged: no order was created.
     """
+    if isinstance(exc, KISGatewayThrottleSubmissionFailure):
+        enriched = dict(base_error)
+        enriched["error_code"] = exc.error_code
+        enriched["submit_failure"] = exc.submit_failure_detail()
+        if exc.not_delivered:
+            enriched["error"] = (
+                "KIS gateway rate limit rejected the order before delivery; "
+                "the one safe retry was exhausted."
+            )
+        else:
+            enriched["outcome_unknown"] = True
+            enriched["error"] = (
+                "KIS gateway rate limit response could not prove non-delivery; "
+                "do not retry and reconcile the order state."
+            )
+        return enriched
     if isinstance(exc, OrderSendNotCreated):
         enriched = dict(base_error)
         enriched["retry_allowed"] = True

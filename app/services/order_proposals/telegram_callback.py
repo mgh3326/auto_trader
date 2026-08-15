@@ -128,6 +128,7 @@ _RESULT_LABELS: dict[str, str] = {
     "submitted_acked": "체결 대기(접수)",
     "submitted_resting": "주문 유지(대기)",
     "guard_blocked": "가드에 의해 차단됨",
+    "not_delivered": "승인됨, 주문 미도달",
     "unverified": "확인 불가(수동 확인 필요)",
     "error": "오류",
     "needs_reconfirm": "재확인 필요",
@@ -420,6 +421,7 @@ def _build_result_summary(outcomes: list[RungOutcome]) -> str:
             and outcome.result
             in {
                 "guard_blocked",
+                "not_delivered",
                 "error",
                 *_WINDOW_BLOCK_RESULTS,
             }
