@@ -24,6 +24,10 @@ from app.services.brokers.alpaca.schemas import (
     Position,
 )
 from app.services.brokers.alpaca.transport import HTTPTransport, HttpxTransport
+from app.services.brokers.client_order_ids import (
+    BrokerClientIdTarget,
+    assert_broker_client_order_id,
+)
 
 
 class AlpacaPaperBrokerService:
@@ -198,6 +202,11 @@ class AlpacaPaperBrokerService:
 
     async def submit_order(self, request: OrderRequest) -> Order:
         body = request.model_dump(mode="json", exclude_none=True)
+        if request.client_order_id is not None:
+            assert_broker_client_order_id(
+                target=BrokerClientIdTarget.ALPACA_PAPER,
+                client_order_id=request.client_order_id,
+            )
         data = await self._request("POST", "/v2/orders", json=body)
         return Order.model_validate(data)
 
@@ -230,6 +239,10 @@ class AlpacaPaperBrokerService:
         Returns None when no order exists for the id (HTTP 404). Used only for
         crash-after-success reconciliation — this never mutates and never POSTs.
         """
+        assert_broker_client_order_id(
+            target=BrokerClientIdTarget.ALPACA_PAPER,
+            client_order_id=client_order_id,
+        )
         try:
             data = await self._request(
                 "GET",
