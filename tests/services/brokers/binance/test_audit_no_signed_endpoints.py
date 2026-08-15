@@ -142,9 +142,11 @@ ALLOWED_LEGACY_FILES: frozenset[str] = frozenset(
         # bounded identifier rules consumed by existing adapters, but contains
         # no Binance HTTP/WS, signing, credential, or endpoint behavior.
         "app/services/brokers/client_order_ids.py",
-        # ROB-1261 — lane registry performs string-level host/URL endpoint and
-        # credential-namespace safety validation before I/O. It has no HTTP/WS
-        # client, signing, secret-load, or broker-I/O surface.
+        # ROB-1261/ROB-1260 — the lane registry performs static validation of
+        # caller-declared host/URL and symbolic credential-namespace strings, then may
+        # invoke opaque caller-owned callbacks. It defines no Binance HTTP/WS transport,
+        # signing, credential-value load, or direct endpoint call; actual transport
+        # host/profile revalidation remains broker-owned.
         "app/services/mock_lane_registry.py",
         # ROB-1196 — declarative execution-outcome mapping table. Binance
         # appears only in broker/status/source-locator strings; this file has
