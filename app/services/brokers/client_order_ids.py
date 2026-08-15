@@ -63,21 +63,23 @@ BINANCE_SPOT_DEMO_CLIENT_ORDER_ID_MAX_LENGTH: Final[int] = 36
 ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH: Final[int] = 48
 
 BROKER_CLIENT_ORDER_ID_CONSTRAINTS: Final[
-    dict[BrokerClientIdTarget, BrokerClientOrderIdConstraint]
-] = {
-    BrokerClientIdTarget.TOSS: BrokerClientOrderIdConstraint(
-        max_length=TOSS_CLIENT_ORDER_ID_MAX_LENGTH,
-        allowed_pattern=_PORTABLE_CLIENT_ORDER_ID_PATTERN,
-    ),
-    BrokerClientIdTarget.BINANCE_SPOT_DEMO: BrokerClientOrderIdConstraint(
-        max_length=BINANCE_SPOT_DEMO_CLIENT_ORDER_ID_MAX_LENGTH,
-        allowed_pattern=_PORTABLE_CLIENT_ORDER_ID_PATTERN,
-    ),
-    BrokerClientIdTarget.ALPACA_PAPER: BrokerClientOrderIdConstraint(
-        max_length=ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH,
-        allowed_pattern=_PORTABLE_CLIENT_ORDER_ID_PATTERN,
-    ),
-}
+    Mapping[BrokerClientIdTarget, BrokerClientOrderIdConstraint]
+] = MappingProxyType(
+    {
+        BrokerClientIdTarget.TOSS: BrokerClientOrderIdConstraint(
+            max_length=TOSS_CLIENT_ORDER_ID_MAX_LENGTH,
+            allowed_pattern=_PORTABLE_CLIENT_ORDER_ID_PATTERN,
+        ),
+        BrokerClientIdTarget.BINANCE_SPOT_DEMO: BrokerClientOrderIdConstraint(
+            max_length=BINANCE_SPOT_DEMO_CLIENT_ORDER_ID_MAX_LENGTH,
+            allowed_pattern=_PORTABLE_CLIENT_ORDER_ID_PATTERN,
+        ),
+        BrokerClientIdTarget.ALPACA_PAPER: BrokerClientOrderIdConstraint(
+            max_length=ALPACA_PAPER_CLIENT_ORDER_ID_MAX_LENGTH,
+            allowed_pattern=_PORTABLE_CLIENT_ORDER_ID_PATTERN,
+        ),
+    }
+)
 
 
 class BrokerClientOrderIdConstraintViolation(ValueError):

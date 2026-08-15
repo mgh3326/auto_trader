@@ -17,6 +17,7 @@ from app.services.brokers.client_order_ids import (
     BINANCE_SPOT_DEMO_CLIENT_ORDER_ID_MAX_LENGTH,
     BROKER_CLIENT_ID_CONSTRAINT_VIOLATION,
     BROKER_CLIENT_ID_TARGET_PLAN_BROKERS,
+    BROKER_CLIENT_ORDER_ID_CONSTRAINTS,
     TOSS_CLIENT_ORDER_ID_MAX_LENGTH,
     BrokerClientIdTarget,
     BrokerClientOrderIdConstraintViolation,
@@ -402,6 +403,18 @@ def test_broker_client_id_target_remains_the_three_confirmed_targets() -> None:
 def test_broker_client_id_target_plan_broker_map_is_read_only() -> None:
     with pytest.raises(TypeError):
         BROKER_CLIENT_ID_TARGET_PLAN_BROKERS[BrokerClientIdTarget.TOSS] = "mutated"  # type: ignore[index]
+
+
+def test_broker_client_order_id_constraints_map_rejects_in_place_mutation() -> None:
+    target = BrokerClientIdTarget.TOSS
+    original_constraint = BROKER_CLIENT_ORDER_ID_CONSTRAINTS[target]
+
+    with pytest.raises(TypeError):
+        BROKER_CLIENT_ORDER_ID_CONSTRAINTS[target] = original_constraint  # type: ignore[index]
+    with pytest.raises(TypeError):
+        del BROKER_CLIENT_ORDER_ID_CONSTRAINTS[target]  # type: ignore[index]
+
+    assert BROKER_CLIENT_ORDER_ID_CONSTRAINTS[target] is original_constraint
 
 
 @pytest.mark.parametrize(
