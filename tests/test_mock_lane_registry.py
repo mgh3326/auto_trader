@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import replace
-from types import SimpleNamespace
+from datetime import UTC, datetime
+from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
 from app.schemas.execution_contracts import LaneStatus, SchedulerOwner
 from app.services import mock_lane_registry as registry
+from app.services.mock_integration import lineage
+from app.services.mock_integration.lineage import (
+    DecisionIntentDraft,
+    ExecutionPlanDraft,
+    LineageEnvelope,
+    MockLineageFactory,
+    OrderAttemptDraft,
+)
 
 
 def _by_id() -> dict[str, registry.LaneRegistryEntry]:
@@ -15,6 +26,197 @@ def _by_id() -> dict[str, registry.LaneRegistryEntry]:
 
 def _issue_codes(exc: registry.RegistryStartupError) -> set[str]:
     return {issue.code for issue in exc.issues}
+
+
+def test_registry_stays_free_of_transport_signing_and_secret_value_loading() -> None:
+    source_path = Path(registry.__file__)
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    forbidden_modules = {
+        "aiohttp",
+        "dotenv",
+        "hashlib",
+        "hmac",
+        "http.client",
+        "httpx",
+        "os",
+        "pydantic_settings",
+        "requests",
+        "socket",
+        "urllib.request",
+        "websockets",
+    }
+    imported_modules: set[str] = set()
+    called_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            imported_modules.add(node.module)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            called_names.add(node.func.id)
+
+    assert imported_modules.isdisjoint(forbidden_modules)
+    assert called_names.isdisjoint({"open"})
+
+
+def _lineage_envelope(
+    lane_id: str,
+    *,
+    intent_overrides: dict[str, object] | None = None,
+    plan_overrides: dict[str, object] | None = None,
+) -> tuple[MockLineageFactory, LineageEnvelope]:
+    entry = _by_id()[lane_id]
+    intent_values: dict[str, object] = {
+        "policy_version": "test-policy-v1",
+        "policy_version_hash": "test-policy-hash-v1",
+        "decision_timestamp": datetime(2026, 8, 16, 0, 0, tzinfo=UTC),
+        "market_data_cutoff": datetime(2026, 8, 15, 23, 59, tzinfo=UTC),
+        "symbol": "BRK.B",
+        "side": "buy",
+        "target_notional": Decimal("1"),
+        "target_notional_currency": entry.quote_currency,
+        "limit_policy": {"order_type": "limit"},
+        "expiry_policy": {"kind": "day"},
+        "rationale": "test-only registry binding",
+    }
+    intent_values.update(intent_overrides or {})
+    plan_values: dict[str, object] = {
+        "lane_id": lane_id,
+        "broker": entry.broker,
+        "account_profile": entry.account_profile,
+        "account_mode": entry.account_mode.value,
+        "normalized_symbol": "BRK.B",
+        "quantity": Decimal("1"),
+        "limit_price": Decimal("1"),
+        "quote_currency": entry.quote_currency,
+        "tick_rounding": {"increment": "0.01"},
+        "session": "regular",
+        "time_in_force": "day",
+        "min_order_validation": {"quote_required": True},
+        "risk_caps": {"max_notional": "1"},
+    }
+    plan_values.update(plan_overrides or {})
+    factory = MockLineageFactory()
+    intent = factory.create_decision_intent(DecisionIntentDraft(**intent_values))
+    return factory, factory.create_plan_envelope(
+        intent,
+        ExecutionPlanDraft(**plan_values),
+    )
+
+
+def _registry_replacing(
+    replacement: registry.LaneRegistryEntry,
+) -> tuple[registry.LaneRegistryEntry, ...]:
+    return tuple(
+        replacement if entry.lane_id == replacement.lane_id else entry
+        for entry in registry.CANONICAL_LANE_REGISTRY
+    )
+
+
+def _policy_bound_entry(
+    envelope: LineageEnvelope,
+    lane_id: str,
+) -> registry.LaneRegistryEntry:
+    return replace(
+        _by_id()[lane_id],
+        policy_binding=registry.PolicyBinding(
+            envelope.decision_intent.policy_version,
+            envelope.decision_intent.policy_version_hash,
+        ),
+        missing_bindings=tuple(
+            binding
+            for binding in _by_id()[lane_id].missing_bindings
+            if binding is not registry.MissingBinding.POLICY
+        ),
+    )
+
+
+def _fully_bound_entry(
+    envelope: LineageEnvelope,
+    lane_id: str,
+    **overrides: object,
+) -> registry.LaneRegistryEntry:
+    values: dict[str, object] = {
+        "lane_status": LaneStatus.AUTO_ENABLED,
+        "activation_status": registry.ActivationStatus.ENABLED,
+        "activation_reason": "test-only fully bound fixture",
+        "policy_binding": registry.PolicyBinding(
+            envelope.decision_intent.policy_version,
+            envelope.decision_intent.policy_version_hash,
+        ),
+        "execution_mode": "test-only-bounded",
+        "scheduler_owner": SchedulerOwner.MANUAL,
+        "timing_owner": "test-only-timing",
+        "writer": True,
+        "auto_order_enabled": True,
+        "max_order_notional": Decimal("1"),
+        "max_orders_per_session": 1,
+        "max_open_orders": 1,
+        "allowed_order_types": ("limit",),
+        "allowed_time_in_force": ("day",),
+        "reconcile_required": True,
+        "physical_account_id": f"opaque-test-{lane_id}",
+        "identity_status": "KNOWN",
+        "fingerprint_evidence_ref": "test-only-fingerprint",
+        "canary_binding": "test-only-bounded-canary",
+        "missing_bindings": (),
+    }
+    values.update(overrides)
+    return replace(_by_id()[lane_id], **values)
+
+
+async def _assert_both_boundaries_reject(
+    envelope: LineageEnvelope,
+    snapshot: tuple[registry.LaneRegistryEntry, ...],
+    *,
+    reason: str,
+    endpoint_url: str,
+    credential_namespace: str,
+    recurring_requested: bool = False,
+    bounded_canary: bool = False,
+) -> None:
+    broker_calls = 0
+    factory_calls = 0
+
+    async def broker_io() -> None:
+        nonlocal broker_calls
+        broker_calls += 1
+
+    def factory() -> object:
+        nonlocal factory_calls
+        factory_calls += 1
+        return object()
+
+    with pytest.raises((registry.LaneGuardError, registry.RegistryStartupError)) as io:
+        await registry.guarded_broker_io(
+            envelope,
+            endpoint_url=endpoint_url,
+            credential_namespace=credential_namespace,
+            broker_io=broker_io,
+            registry=snapshot,
+            recurring_requested=recurring_requested,
+            bounded_canary=bounded_canary,
+        )
+    with pytest.raises(
+        (registry.LaneGuardError, registry.RegistryStartupError)
+    ) as client:
+        registry.guarded_client_factory(
+            envelope,
+            endpoint_url=endpoint_url,
+            credential_namespace=credential_namespace,
+            factory=factory,
+            registry=snapshot,
+            recurring_requested=recurring_requested,
+            bounded_canary=bounded_canary,
+        )
+
+    for error in (io.value, client.value):
+        if isinstance(error, registry.LaneGuardError):
+            assert error.code == reason
+        else:
+            assert reason in _issue_codes(error)
+    assert broker_calls == 0
+    assert factory_calls == 0
 
 
 def test_canonical_lane_ids_and_quote_currencies_are_exact() -> None:
@@ -122,6 +324,28 @@ def test_amendment_rule_and_guard_literals_are_verbatim() -> None:
     )
 
 
+def test_r2_reject_code_allowlist_is_exact_and_consumes_j2b_literal() -> None:
+    assert registry.R2_REJECT_CODES == {
+        "lane_signed_restriction_violation",
+        "lane_recurring_not_authorized",
+        "canonical_lane_identity_mismatch",
+        "invalid_scheduler_owner",
+        "invalid_timing_owner",
+        "physical_account_writer_conflict",
+        "canonical_lane_ids_mismatch",
+        "canonical_credential_namespace_mismatch",
+        "canonical_host_allowlist_mismatch",
+        "lane_broker_mismatch",
+        "lane_account_profile_mismatch",
+        "lane_account_mode_mismatch",
+        "lane_policy_binding_mismatch",
+        "lane_binding_incomplete",
+        lineage.BROKER_CLIENT_ID_TARGET_MISMATCH,
+        "lane_quote_currency_mismatch",
+    }
+    assert "unknown_lane" not in registry.R2_REJECT_CODES
+
+
 def test_g1_rejects_new_recurring_schedule_and_missing_cadence_proof() -> None:
     lane_id = "kr.kiwoom.mock"
     with pytest.raises(registry.ActivationTransitionBlocked) as new_schedule:
@@ -160,7 +384,7 @@ def test_g1_rejects_new_recurring_schedule_and_missing_cadence_proof() -> None:
 
 
 def test_g2_stops_at_ready_for_mock_deployment() -> None:
-    lane_id = "us.alpaca.paper.default"
+    lane_id = "kr.kiwoom.mock"
     release_evidence = registry.ActivationEvidence(
         shared_production_release_required=True
     )
@@ -195,7 +419,7 @@ def test_g2_stops_at_ready_for_mock_deployment() -> None:
 
 
 def test_g3_canary_moves_pending_to_ready_only() -> None:
-    lane_id = "crypto.binance.spot_demo.canonical"
+    lane_id = "kr.kiwoom.mock"
     canary_evidence = registry.ActivationEvidence(j8_canary_succeeded=True)
 
     assert (
@@ -226,6 +450,100 @@ def test_g3_canary_moves_pending_to_ready_only() -> None:
         )
     assert missing.value.guard_id == "G3"
     assert missing.value.code == "j8_canary_evidence_required"
+
+
+@pytest.mark.parametrize(
+    "lane_id",
+    (
+        "us.alpaca.paper.default",
+        "us.alpaca.paper.lab",
+        "us.kis.mock",
+        "us.kiwoom.mock",
+        "crypto.binance.spot_demo.canonical",
+        "crypto.binance.spot_demo.b0x_sidecar",
+        "crypto.alpaca.paper.default",
+        "crypto.alpaca.paper.clean",
+        "crypto.upbit.shadow",
+        "crypto.binance.futures_demo",
+    ),
+)
+def test_fully_bound_signed_lane_promotion_is_immutable(lane_id: str) -> None:
+    _, envelope = _lineage_envelope(lane_id)
+    mutant = _fully_bound_entry(envelope, lane_id)
+
+    with pytest.raises(registry.RegistryStartupError) as exc_info:
+        registry.assert_registry_startup(
+            _registry_replacing(mutant), require_canonical=True
+        )
+
+    assert "lane_signed_restriction_violation" in _issue_codes(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "lane_id",
+    (
+        "us.alpaca.paper.default",
+        "us.alpaca.paper.lab",
+        "us.kiwoom.mock",
+        "crypto.binance.spot_demo.canonical",
+        "crypto.binance.spot_demo.b0x_sidecar",
+        "crypto.alpaca.paper.default",
+        "crypto.alpaca.paper.clean",
+        "crypto.upbit.shadow",
+        "crypto.binance.futures_demo",
+    ),
+)
+def test_signed_lane_cannot_transition_to_enabled(lane_id: str) -> None:
+    with pytest.raises(registry.ActivationTransitionBlocked) as exc_info:
+        registry.transition_activation(
+            lane_id,
+            registry.ActivationStatus.READY,
+            registry.ActivationStatus.ENABLED,
+            evidence=registry.ActivationEvidence(
+                directly_proven_cadence_preserved=True
+            ),
+        )
+
+    assert exc_info.value.code == "lane_signed_restriction_violation"
+    assert exc_info.value.guard_id == "B2"
+
+
+def test_recurring_requires_lane_and_activation_enabled_together() -> None:
+    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+    both_enabled = _fully_bound_entry(envelope, "kr.kiwoom.mock")
+    lane_only = replace(
+        both_enabled,
+        activation_status=registry.ActivationStatus.READY,
+    )
+    activation_only = replace(both_enabled, lane_status=LaneStatus.NOT_READY)
+
+    for one_sided in (lane_only, activation_only):
+        with pytest.raises(registry.LaneGuardError) as exc_info:
+            registry.assert_recurring_authorized(
+                one_sided,
+                recurring_requested=True,
+            )
+        assert exc_info.value.code == "lane_recurring_not_authorized"
+
+    registry.assert_recurring_authorized(both_enabled, recurring_requested=True)
+
+
+def test_bounded_canary_does_not_authorize_recurring() -> None:
+    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+    entry = _fully_bound_entry(envelope, "kr.kiwoom.mock")
+
+    registry.assert_recurring_authorized(
+        entry,
+        recurring_requested=False,
+        bounded_canary=True,
+    )
+    with pytest.raises(registry.LaneGuardError) as exc_info:
+        registry.assert_recurring_authorized(
+            entry,
+            recurring_requested=True,
+            bounded_canary=True,
+        )
+    assert exc_info.value.code == "lane_recurring_not_authorized"
 
 
 def test_unknown_fingerprint_rows_are_safe_and_preserved() -> None:
@@ -320,6 +638,44 @@ def test_canonical_registry_passes_startup_assertion() -> None:
     )
 
 
+def test_startup_default_and_explicit_false_accept_full_canonical_registry() -> None:
+    assert (
+        registry.assert_registry_startup(
+            registry.CANONICAL_LANE_REGISTRY, require_canonical=False
+        )
+        is None
+    )
+    assert registry.assert_registry_startup(registry.CANONICAL_LANE_REGISTRY) is None
+
+
+def test_startup_default_and_explicit_false_skip_canonical_only_checks() -> None:
+    custom = replace(
+        registry.CANONICAL_LANE_REGISTRY[0],
+        lane_id="kr.custom.mock",
+        broker="custom",
+        credential_namespace="CUSTOM_MOCK_*",
+        allowed_hosts=("mock.custom.invalid",),
+    )
+    identity_mismatch = replace(
+        registry.CANONICAL_LANE_REGISTRY[1],
+        role=registry.RegistryRole.AUTO_MIRROR,
+    )
+    assert registry.assert_registry_startup((custom,), require_canonical=False) is None
+    assert registry.assert_registry_startup((custom,)) is None
+
+    with pytest.raises(registry.RegistryStartupError) as strict:
+        registry.assert_registry_startup(
+            (custom, identity_mismatch), require_canonical=True
+        )
+    assert {
+        "canonical_lane_ids_mismatch",
+        "canonical_lane_identity_mismatch",
+        "lane_quote_currency_mismatch",
+        "canonical_credential_namespace_mismatch",
+        "canonical_host_allowlist_mismatch",
+    } <= _issue_codes(strict.value)
+
+
 def test_same_physical_account_two_writers_fail_without_identifier_leak() -> None:
     raw_identifier = "opaque-account-id-that-must-not-appear"
     first = replace(
@@ -354,7 +710,35 @@ def test_scheduler_owner_and_timing_owner_cannot_collapse() -> None:
     with pytest.raises(registry.RegistryStartupError) as exc_info:
         registry.assert_registry_startup((mutant,))
 
-    assert "scheduler_timing_owner_collapsed" in _issue_codes(exc_info.value)
+    assert "invalid_timing_owner" in _issue_codes(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "reason"),
+    (
+        ("scheduler_owner", "manual", "invalid_scheduler_owner"),
+        ("timing_owner", "   ", "invalid_timing_owner"),
+        ("timing_owner", 17, "invalid_timing_owner"),
+    ),
+)
+def test_owner_types_are_strict(field_name: str, value: object, reason: str) -> None:
+    mutant = replace(
+        registry.CANONICAL_LANE_REGISTRY[0],
+        **{field_name: value},
+    )
+
+    with pytest.raises(registry.RegistryStartupError) as exc_info:
+        registry.assert_registry_startup((mutant,))
+
+    assert reason in _issue_codes(exc_info.value)
+
+
+@pytest.mark.parametrize(("version", "version_hash"), (("", "hash"), ("v1", " ")))
+def test_policy_binding_fields_must_be_nonblank(
+    version: str, version_hash: str
+) -> None:
+    with pytest.raises(ValueError, match="^lane_binding_incomplete$"):
+        registry.PolicyBinding(version, version_hash)
 
 
 def test_credential_namespaces_and_host_allowlists_are_exact() -> None:
@@ -388,138 +772,463 @@ def test_credential_namespaces_and_host_allowlists_are_exact() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("field_name", "value", "reason"),
+    (
+        (
+            "credential_namespace",
+            "CHANGED_*",
+            "canonical_credential_namespace_mismatch",
+        ),
+        (
+            "allowed_hosts",
+            ("changed.invalid",),
+            "canonical_host_allowlist_mismatch",
+        ),
+    ),
+)
+def test_retained_canonical_binding_reasons_remain_exact(
+    field_name: str,
+    value: object,
+    reason: str,
+) -> None:
+    mutant = replace(_by_id()["kr.kiwoom.mock"], **{field_name: value})
+
+    with pytest.raises(registry.RegistryStartupError) as exc_info:
+        registry.assert_registry_startup(
+            _registry_replacing(mutant), require_canonical=True
+        )
+
+    assert reason in _issue_codes(exc_info.value)
+
+
 @pytest.mark.asyncio
 async def test_currency_mismatch_blocks_before_broker_io() -> None:
-    called = False
+    _, envelope = _lineage_envelope(
+        "kr.kiwoom.mock",
+        intent_overrides={"target_notional_currency": "USD"},
+        plan_overrides={"quote_currency": "USD"},
+    )
+    await _assert_both_boundaries_reject(
+        envelope,
+        registry.CANONICAL_LANE_REGISTRY,
+        reason="lane_quote_currency_mismatch",
+        endpoint_url="https://mockapi.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_*",
+    )
 
-    async def broker_io() -> None:
-        nonlocal called
-        called = True
 
-    plan = SimpleNamespace(lane_id="kr.kiwoom.mock", quote_currency="USD")
-    with pytest.raises(registry.LaneGuardError) as exc_info:
-        await registry.guarded_broker_io(
-            plan,
-            endpoint_url="https://mockapi.kiwoom.com",
-            credential_namespace="KIWOOM_MOCK_*",
-            broker_io=broker_io,
-        )
+def test_factory_derived_alpaca_paper_binding_uses_exact_canonical_values() -> None:
+    _, envelope = _lineage_envelope("us.alpaca.paper.default")
+    assert envelope.execution_plan is not None
+    entry = _policy_bound_entry(envelope, "us.alpaca.paper.default")
 
-    assert exc_info.value.code == "lane_quote_currency_mismatch"
-    assert called is False
+    resolved = registry.assert_lineage_registry_binding(
+        envelope,
+        _registry_replacing(entry),
+    )
+
+    assert envelope.decision_intent.decision_intent_id.startswith("mock-intent-v1:")
+    assert envelope.execution_plan.execution_plan_id.startswith("mock-plan-v1:")
+    assert envelope.execution_plan.account_profile == "paper"
+    assert envelope.execution_plan.account_mode == "paper"
+    assert resolved is entry
 
 
 @pytest.mark.asyncio
-async def test_live_endpoint_and_namespace_mismatch_block_before_broker_io() -> None:
-    called = False
+@pytest.mark.parametrize(
+    ("field_name", "value", "reason"),
+    (
+        ("broker", "other-broker", "lane_broker_mismatch"),
+        ("account_profile", "other-profile", "lane_account_profile_mismatch"),
+        ("account_mode", "alpaca_paper", "lane_account_mode_mismatch"),
+    ),
+)
+async def test_lineage_plan_identity_mismatch_rejects_both_boundaries(
+    field_name: str,
+    value: str,
+    reason: str,
+) -> None:
+    _, envelope = _lineage_envelope(
+        "kr.kiwoom.mock",
+        plan_overrides={field_name: value},
+    )
+    entry = _policy_bound_entry(envelope, "kr.kiwoom.mock")
 
-    async def broker_io() -> None:
-        nonlocal called
-        called = True
+    await _assert_both_boundaries_reject(
+        envelope,
+        _registry_replacing(entry),
+        reason=reason,
+        endpoint_url="https://mockapi.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_*",
+    )
 
-    plan = SimpleNamespace(lane_id="kr.kiwoom.mock", quote_currency="KRW")
-    with pytest.raises(registry.LaneGuardError) as live:
-        await registry.guarded_broker_io(
-            plan,
-            endpoint_url="https://api.kiwoom.com",
-            credential_namespace="KIWOOM_MOCK_*",
-            broker_io=broker_io,
-        )
-    assert live.value.code == "live_endpoint_forbidden"
 
-    with pytest.raises(registry.LaneGuardError) as namespace:
-        await registry.guarded_broker_io(
-            plan,
-            endpoint_url="https://mockapi.kiwoom.com",
-            credential_namespace="KIWOOM_MOCK_US_*",
-            broker_io=broker_io,
-        )
-    assert namespace.value.code == "credential_namespace_mismatch"
-    assert called is False
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("intent_overrides", "policy_binding"),
+    (
+        (
+            {"policy_version": "changed-policy"},
+            registry.PolicyBinding("expected-policy", "test-policy-hash-v1"),
+        ),
+        (
+            {"policy_version_hash": "changed-hash"},
+            registry.PolicyBinding("test-policy-v1", "expected-hash"),
+        ),
+    ),
+)
+async def test_lineage_policy_mismatch_rejects_both_boundaries(
+    intent_overrides: dict[str, object],
+    policy_binding: registry.PolicyBinding,
+) -> None:
+    _, envelope = _lineage_envelope(
+        "kr.kiwoom.mock",
+        intent_overrides=intent_overrides,
+    )
+    entry = replace(
+        _policy_bound_entry(envelope, "kr.kiwoom.mock"),
+        policy_binding=policy_binding,
+    )
+
+    await _assert_both_boundaries_reject(
+        envelope,
+        _registry_replacing(entry),
+        reason="lane_policy_binding_mismatch",
+        endpoint_url="https://mockapi.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_*",
+    )
+
+
+@pytest.mark.asyncio
+async def test_absent_policy_binding_keeps_existing_incomplete_reason() -> None:
+    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+
+    await _assert_both_boundaries_reject(
+        envelope,
+        registry.CANONICAL_LANE_REGISTRY,
+        reason="lane_binding_incomplete",
+        endpoint_url="https://mockapi.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_*",
+    )
+
+
+@pytest.mark.asyncio
+async def test_declared_endpoint_and_namespace_reject_before_opaque_callbacks() -> None:
+    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+    entry = _policy_bound_entry(envelope, "kr.kiwoom.mock")
+    snapshot = _registry_replacing(entry)
+
+    await _assert_both_boundaries_reject(
+        envelope,
+        snapshot,
+        reason="live_endpoint_forbidden",
+        endpoint_url="https://api.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_*",
+    )
+    await _assert_both_boundaries_reject(
+        envelope,
+        snapshot,
+        reason="credential_namespace_mismatch",
+        endpoint_url="https://mockapi.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_US_*",
+    )
 
 
 @pytest.mark.asyncio
 async def test_current_blocked_row_never_reaches_broker_io() -> None:
-    called = False
+    called = 0
 
     async def broker_io() -> None:
         nonlocal called
-        called = True
+        called += 1
 
-    plan = SimpleNamespace(lane_id="kr.kiwoom.mock", quote_currency="KRW")
+    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+    entry = _policy_bound_entry(envelope, "kr.kiwoom.mock")
     with pytest.raises(registry.LaneGuardError) as exc_info:
         await registry.guarded_broker_io(
-            plan,
+            envelope,
             endpoint_url="https://mockapi.kiwoom.com",
             credential_namespace="KIWOOM_MOCK_*",
             broker_io=broker_io,
+            registry=_registry_replacing(entry),
         )
 
     assert exc_info.value.code == "lane_activation_not_enabled"
-    assert called is False
+    assert called == 0
 
 
 @pytest.mark.asyncio
 async def test_broker_boundary_rechecks_single_writer_registry() -> None:
-    called = False
     physical_account_id = "opaque-test-account"
-
-    async def broker_io() -> None:
-        nonlocal called
-        called = True
-
-    first = replace(
-        registry.CANONICAL_LANE_REGISTRY[0],
+    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+    first = _fully_bound_entry(
+        envelope,
+        "kr.kis.mock",
         physical_account_id=physical_account_id,
-        writer=True,
     )
-    second = replace(
-        registry.CANONICAL_LANE_REGISTRY[1],
+    second = _fully_bound_entry(
+        envelope,
+        "kr.kiwoom.mock",
         physical_account_id=physical_account_id,
-        writer=True,
     )
-    plan = SimpleNamespace(lane_id=first.lane_id, quote_currency="KRW")
+    replacements = {first.lane_id: first, second.lane_id: second}
+    snapshot = tuple(
+        replacements.get(entry.lane_id, entry)
+        for entry in registry.CANONICAL_LANE_REGISTRY
+    )
 
-    with pytest.raises(registry.RegistryStartupError) as exc_info:
+    await _assert_both_boundaries_reject(
+        envelope,
+        snapshot,
+        reason="physical_account_writer_conflict",
+        endpoint_url="https://mockapi.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_*",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("market", "changed"),
+        ("broker", "changed"),
+        ("account_profile", "changed"),
+        ("profile_variant", "changed"),
+        ("account_mode", registry.AccountMode.PAPER),
+        ("lane_type", registry.AccountMode.PAPER),
+        ("quote_currency", "USD"),
+        ("role", registry.RegistryRole.AUTO_MIRROR),
+        ("role_pending_reason", "changed"),
+        ("role_on_policy_approval", registry.RegistryRole.AUTO_CHALLENGER),
+        ("endpoint_class", registry.EndpointClass.PAPER),
+        ("credential_namespace", "CHANGED_*"),
+        ("allowed_hosts", ("changed.invalid",)),
+    ),
+)
+async def test_all_13_canonical_identity_fields_are_immutable_at_both_boundaries(
+    field_name: str,
+    value: object,
+) -> None:
+    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+    mutant = replace(_by_id()["kr.kiwoom.mock"], **{field_name: value})
+
+    await _assert_both_boundaries_reject(
+        envelope,
+        _registry_replacing(mutant),
+        reason="canonical_lane_identity_mismatch",
+        endpoint_url="https://mockapi.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_*",
+    )
+
+
+@pytest.mark.asyncio
+async def test_custom_registry_cannot_bypass_canonical_lane_set() -> None:
+    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+    custom = replace(
+        _by_id()["kr.kis.mock"],
+        lane_id="kr.custom.mock",
+        broker="custom",
+    )
+    snapshot = (custom, *registry.CANONICAL_LANE_REGISTRY[1:])
+
+    await _assert_both_boundaries_reject(
+        envelope,
+        snapshot,
+        reason="canonical_lane_ids_mismatch",
+        endpoint_url="https://mockapi.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_*",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field_name", "value", "reason"),
+    (
+        ("scheduler_owner", "manual", "invalid_scheduler_owner"),
+        ("timing_owner", " ", "invalid_timing_owner"),
+    ),
+)
+async def test_invalid_owner_types_reject_both_boundaries_without_calls(
+    field_name: str,
+    value: object,
+    reason: str,
+) -> None:
+    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+    mutant = replace(_by_id()["kr.kiwoom.mock"], **{field_name: value})
+
+    await _assert_both_boundaries_reject(
+        envelope,
+        _registry_replacing(mutant),
+        reason=reason,
+        endpoint_url="https://mockapi.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_*",
+    )
+
+
+@pytest.mark.asyncio
+async def test_fully_bound_signed_restriction_rejects_both_boundaries() -> None:
+    _, envelope = _lineage_envelope("crypto.alpaca.paper.default")
+    mutant = _fully_bound_entry(envelope, "crypto.alpaca.paper.default")
+
+    await _assert_both_boundaries_reject(
+        envelope,
+        _registry_replacing(mutant),
+        reason="lane_signed_restriction_violation",
+        endpoint_url="https://paper-api.alpaca.markets",
+        credential_namespace="ALPACA_PAPER_*",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lane_status", "activation_status"),
+    (
+        (LaneStatus.AUTO_ENABLED, registry.ActivationStatus.READY),
+        (LaneStatus.NOT_READY, registry.ActivationStatus.ENABLED),
+    ),
+)
+async def test_one_sided_recurring_state_rejects_both_boundaries(
+    lane_status: LaneStatus,
+    activation_status: registry.ActivationStatus,
+) -> None:
+    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+    mutant = _fully_bound_entry(
+        envelope,
+        "kr.kiwoom.mock",
+        lane_status=lane_status,
+        activation_status=activation_status,
+    )
+
+    await _assert_both_boundaries_reject(
+        envelope,
+        _registry_replacing(mutant),
+        reason="lane_recurring_not_authorized",
+        endpoint_url="https://mockapi.kiwoom.com",
+        credential_namespace="KIWOOM_MOCK_*",
+        recurring_requested=True,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lane_id", "endpoint_url", "credential_namespace"),
+    (
+        (
+            "kr.kis.mock",
+            "https://openapivts.koreainvestment.com:29443",
+            "KIS_MOCK_*",
+        ),
+        ("kr.kiwoom.mock", "https://mockapi.kiwoom.com", "KIWOOM_MOCK_*"),
+    ),
+)
+async def test_kis_and_kiwoom_none_client_id_pair_pass_exact_registered_binding(
+    lane_id: str,
+    endpoint_url: str,
+    credential_namespace: str,
+) -> None:
+    factory, plan_envelope = _lineage_envelope(lane_id)
+    envelope = factory.create_attempt_envelope(
+        plan_envelope,
+        OrderAttemptDraft(
+            cycle_id=f"test-cycle-{lane_id}",
+            attempt_seq=1,
+            lane_prefix=None,
+            broker_client_id_target=None,
+        ),
+    )
+    entry = _fully_bound_entry(envelope, lane_id)
+    snapshot = _registry_replacing(entry)
+    broker_calls = 0
+    factory_calls = 0
+
+    async def broker_io() -> str:
+        nonlocal broker_calls
+        broker_calls += 1
+        return "broker-ok"
+
+    def client_factory() -> str:
+        nonlocal factory_calls
+        factory_calls += 1
+        return "factory-ok"
+
+    assert envelope.order_attempt is not None
+    assert envelope.order_attempt.broker_client_order_id is None
+    assert (
         await registry.guarded_broker_io(
-            plan,
-            endpoint_url="https://openapivts.koreainvestment.com:29443",
-            credential_namespace="KIS_MOCK_*",
+            envelope,
+            endpoint_url=endpoint_url,
+            credential_namespace=credential_namespace,
             broker_io=broker_io,
-            registry={first.lane_id: first, second.lane_id: second},
+            registry=snapshot,
         )
+        == "broker-ok"
+    )
+    assert (
+        registry.guarded_client_factory(
+            envelope,
+            endpoint_url=endpoint_url,
+            credential_namespace=credential_namespace,
+            factory=client_factory,
+            registry=snapshot,
+        )
+        == "factory-ok"
+    )
+    assert broker_calls == 1
+    assert factory_calls == 1
 
-    assert "physical_account_writer_conflict" in _issue_codes(exc_info.value)
-    assert called is False
+
+@pytest.mark.asyncio
+async def test_unknown_broker_none_client_id_pair_stops_at_existing_unknown_lane() -> (
+    None
+):
+    factory, plan_envelope = _lineage_envelope(
+        "kr.kis.mock",
+        plan_overrides={
+            "lane_id": "kr.unregistered.mock",
+            "broker": "unregistered",
+        },
+    )
+    envelope = factory.create_attempt_envelope(
+        plan_envelope,
+        OrderAttemptDraft(
+            cycle_id="test-cycle-unregistered",
+            attempt_seq=1,
+            lane_prefix=None,
+            broker_client_id_target=None,
+        ),
+    )
+    registered_entry = _fully_bound_entry(envelope, "kr.kis.mock")
+
+    await _assert_both_boundaries_reject(
+        envelope,
+        _registry_replacing(registered_entry),
+        reason="unknown_lane",
+        endpoint_url="https://openapivts.koreainvestment.com:29443",
+        credential_namespace="KIS_MOCK_*",
+    )
 
 
-def test_live_client_factory_and_near_miss_host_are_never_invoked() -> None:
-    entry = registry.get_lane_registry_entry("kr.kiwoom.mock")
-    called = False
+def test_declared_near_miss_host_rejects_before_opaque_factory() -> None:
+    _, envelope = _lineage_envelope("kr.kiwoom.mock")
+    entry = _policy_bound_entry(envelope, "kr.kiwoom.mock")
+    called = 0
 
     def factory() -> object:
         nonlocal called
-        called = True
+        called += 1
         return object()
-
-    with pytest.raises(registry.LaneGuardError) as live:
-        registry.guarded_client_factory(
-            entry,
-            endpoint_url="https://api.kiwoom.com",
-            credential_namespace="KIWOOM_MOCK_*",
-            factory=factory,
-        )
-    assert live.value.code == "live_endpoint_forbidden"
 
     with pytest.raises(registry.LaneGuardError) as near_miss:
         registry.guarded_client_factory(
-            entry,
+            envelope,
             endpoint_url="https://mockapi.kiwoom.com.evil.test",
             credential_namespace="KIWOOM_MOCK_*",
             factory=factory,
+            registry=_registry_replacing(entry),
         )
     assert near_miss.value.code == "lane_endpoint_host_mismatch"
-    assert called is False
+    assert called == 0
 
 
 def test_shadow_lane_structurally_rejects_broker_io() -> None:

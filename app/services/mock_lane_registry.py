@@ -1,9 +1,10 @@
 """Fail-closed mock/paper/demo account identity registry (ROB-1260).
 
-This module is deliberately inert.  It performs no broker, database, scheduler,
-or credential I/O.  Canonical rows describe the evidence available at the J2A
-boundary; unavailable bindings stay present and blocked instead of being
-guessed or filtered out.
+This module defines no broker transport, database, scheduler, signing, or
+credential-value I/O. Canonical rows describe the evidence available at the
+J2A boundary; unavailable bindings stay present and blocked instead of being
+guessed or filtered out. Guarded helpers validate caller declarations before
+invoking opaque callbacks, but do not bind those declarations to a transport.
 """
 
 from __future__ import annotations
@@ -18,6 +19,10 @@ from typing import Final, Literal, Protocol
 from urllib.parse import urlsplit
 
 from app.schemas.execution_contracts import LaneStatus, SchedulerOwner
+from app.services.mock_integration.lineage import (
+    BROKER_CLIENT_ID_TARGET_MISMATCH,
+    LineageEnvelope,
+)
 
 QuoteCurrency = Literal["KRW", "USD", "USDT"]
 
@@ -72,6 +77,21 @@ class MissingBinding(StrEnum):
     CANARY = "canary"
 
 
+@dataclass(frozen=True, slots=True)
+class PolicyBinding:
+    """In-memory exact policy identity; neither field may be blank."""
+
+    policy_version: str
+    policy_version_hash: str
+
+    def __post_init__(self) -> None:
+        if not all(
+            isinstance(value, str) and bool(value.strip())
+            for value in (self.policy_version, self.policy_version_hash)
+        ):
+            raise ValueError("lane_binding_incomplete")
+
+
 ACTIVATION_TRANSITION_GUARDS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "G1": (
@@ -98,6 +118,27 @@ UNKNOWN_IDENTITY_RULE: Final[str] = (
 MISSING_BINDING_RULE: Final[str] = (
     "policy/cap/owner/canary 부재 시 행을 보존하고\n"
     "  blocked|disabled + 사유. worker 는 값을 발명하지 않는다."
+)
+
+R2_REJECT_CODES: Final[frozenset[str]] = frozenset(
+    {
+        "lane_signed_restriction_violation",
+        "lane_recurring_not_authorized",
+        "canonical_lane_identity_mismatch",
+        "invalid_scheduler_owner",
+        "invalid_timing_owner",
+        "physical_account_writer_conflict",
+        "canonical_lane_ids_mismatch",
+        "canonical_credential_namespace_mismatch",
+        "canonical_host_allowlist_mismatch",
+        "lane_broker_mismatch",
+        "lane_account_profile_mismatch",
+        "lane_account_mode_mismatch",
+        "lane_policy_binding_mismatch",
+        "lane_binding_incomplete",
+        BROKER_CLIENT_ID_TARGET_MISMATCH,
+        "lane_quote_currency_mismatch",
+    }
 )
 
 CANONICAL_LANE_IDS: Final[tuple[str, ...]] = (
@@ -188,6 +229,46 @@ _MISSING_REQUIRED_BINDINGS: Final[tuple[MissingBinding, ...]] = (
     MissingBinding.CANARY,
 )
 
+_SIGNED_WRITER_FALSE_LANES: Final[frozenset[str]] = frozenset(
+    {
+        "crypto.alpaca.paper.default",
+        "crypto.alpaca.paper.clean",
+        "crypto.binance.spot_demo.b0x_sidecar",
+        "crypto.binance.futures_demo",
+    }
+)
+_NON_AUTONOMOUS_ROLES: Final[frozenset[RegistryRole | None]] = frozenset(
+    {None, RegistryRole.BROKER_REGRESSION, RegistryRole.SHADOW_ONLY}
+)
+_SIGNED_LANE_STATUS_ALLOWLISTS: Final[Mapping[str, frozenset[LaneStatus]]] = (
+    MappingProxyType(
+        {
+            "us.alpaca.paper.default": frozenset(
+                {LaneStatus.AUTO_READY_BLOCKED_BY_POLICY}
+            ),
+            "us.alpaca.paper.lab": frozenset(
+                {LaneStatus.AUTO_READY_BLOCKED_BY_LIFECYCLE}
+            ),
+            "us.kis.mock": frozenset({LaneStatus.NOT_READY}),
+            "us.kiwoom.mock": frozenset({LaneStatus.NOT_READY}),
+            "crypto.binance.spot_demo.canonical": frozenset(
+                {
+                    LaneStatus.NOT_READY,
+                    LaneStatus.AUTO_READY_BLOCKED_BY_POLICY,
+                    LaneStatus.AUTO_READY_BLOCKED_BY_SCHEDULER,
+                }
+            ),
+            "crypto.binance.spot_demo.b0x_sidecar": frozenset(
+                {LaneStatus.OBSERVATION_TEMPORARY}
+            ),
+            "crypto.alpaca.paper.default": frozenset({LaneStatus.NOT_READY}),
+            "crypto.alpaca.paper.clean": frozenset({LaneStatus.NOT_READY}),
+            "crypto.upbit.shadow": frozenset({LaneStatus.SHADOW_ONLY}),
+            "crypto.binance.futures_demo": frozenset({LaneStatus.DISABLED_NO_STRATEGY}),
+        }
+    )
+)
+
 
 @dataclass(frozen=True, slots=True)
 class LaneRegistryEntry:
@@ -207,7 +288,7 @@ class LaneRegistryEntry:
     lane_status: LaneStatus
     activation_status: ActivationStatus
     activation_reason: str
-    policy_binding: str | None
+    policy_binding: PolicyBinding | None
     execution_mode: str | None
     scheduler_owner: SchedulerOwner | None
     timing_owner: str | None
@@ -432,6 +513,22 @@ _CANONICAL_BY_ID: Final[Mapping[str, LaneRegistryEntry]] = MappingProxyType(
     {entry.lane_id: entry for entry in CANONICAL_LANE_REGISTRY}
 )
 
+_IMMUTABLE_IDENTITY_FIELDS: Final[tuple[str, ...]] = (
+    "market",
+    "broker",
+    "account_profile",
+    "profile_variant",
+    "account_mode",
+    "lane_type",
+    "quote_currency",
+    "role",
+    "role_pending_reason",
+    "role_on_policy_approval",
+    "endpoint_class",
+    "credential_namespace",
+    "allowed_hosts",
+)
+
 
 @dataclass(frozen=True, slots=True, order=True)
 class RegistryIssue:
@@ -455,10 +552,11 @@ class RegistryStartupError(RuntimeError):
 class LaneGuardError(RuntimeError):
     """Fail-closed pre-I/O rejection with a stable machine code."""
 
-    def __init__(self, code: str, *, lane_id: str) -> None:
+    def __init__(self, code: str, *, lane_id: str | None = None) -> None:
         self.code = code
         self.lane_id = lane_id
-        super().__init__(f"{code}: lane={lane_id}")
+        lane_suffix = "" if lane_id is None else f": lane={lane_id}"
+        super().__init__(f"{code}{lane_suffix}")
 
 
 class ActivationTransitionBlocked(LaneGuardError):
@@ -482,6 +580,25 @@ def get_lane_registry_entry(lane_id: str) -> LaneRegistryEntry:
         return _CANONICAL_BY_ID[lane_id]
     except KeyError as exc:
         raise LaneGuardError("unknown_lane", lane_id=lane_id) from exc
+
+
+def _violates_signed_lane_restriction(entry: LaneRegistryEntry) -> bool:
+    enabled_or_autonomous = (
+        entry.writer
+        or entry.auto
+        or entry.activation_status is ActivationStatus.ENABLED
+    )
+    if entry.lane_id in _SIGNED_WRITER_FALSE_LANES and enabled_or_autonomous:
+        return True
+    if entry.role in _NON_AUTONOMOUS_ROLES and enabled_or_autonomous:
+        return True
+    allowed_statuses = _SIGNED_LANE_STATUS_ALLOWLISTS.get(entry.lane_id)
+    if allowed_statuses is None:
+        return False
+    return (
+        entry.lane_status not in allowed_statuses
+        or entry.activation_status is ActivationStatus.ENABLED
+    )
 
 
 def _entry_issues(entry: LaneRegistryEntry) -> list[RegistryIssue]:
@@ -586,15 +703,52 @@ def _entry_issues(entry: LaneRegistryEntry) -> list[RegistryIssue]:
                     "lane type and account mode must agree",
                 )
             )
-    if entry.scheduler_owner is not None and entry.timing_owner is not None:
-        if entry.scheduler_owner.value == entry.timing_owner:
-            issues.append(
-                RegistryIssue(
-                    "scheduler_timing_owner_collapsed",
-                    lane_ids,
-                    "scheduler_owner and timing_owner are distinct bindings",
-                )
+    valid_scheduler_owner = isinstance(
+        entry.scheduler_owner, SchedulerOwner | type(None)
+    )
+    if not valid_scheduler_owner:
+        issues.append(
+            RegistryIssue(
+                "invalid_scheduler_owner",
+                lane_ids,
+                "scheduler_owner must be SchedulerOwner or null",
             )
+        )
+    valid_timing_owner = entry.timing_owner is None or (
+        isinstance(entry.timing_owner, str) and bool(entry.timing_owner.strip())
+    )
+    if not valid_timing_owner:
+        issues.append(
+            RegistryIssue(
+                "invalid_timing_owner",
+                lane_ids,
+                "timing_owner must be a nonblank string or null",
+            )
+        )
+    if (
+        valid_scheduler_owner
+        and valid_timing_owner
+        and entry.scheduler_owner is not None
+        and entry.timing_owner is not None
+        and entry.scheduler_owner.value == entry.timing_owner
+    ):
+        issues.append(
+            RegistryIssue(
+                "invalid_timing_owner",
+                lane_ids,
+                "scheduler_owner and timing_owner are distinct bindings",
+            )
+        )
+    if entry.policy_binding is not None and not isinstance(
+        entry.policy_binding, PolicyBinding
+    ):
+        issues.append(
+            RegistryIssue(
+                "lane_binding_incomplete",
+                lane_ids,
+                "policy_binding must be a complete PolicyBinding",
+            )
+        )
     if entry.allowed_hosts != tuple(dict.fromkeys(entry.allowed_hosts)):
         issues.append(
             RegistryIssue(
@@ -687,7 +841,6 @@ def _entry_issues(entry: LaneRegistryEntry) -> list[RegistryIssue]:
     if entry.auto:
         required = (
             entry.writer,
-            entry.activation_status is ActivationStatus.ENABLED,
             not identity_unknown,
             not entry.missing_bindings,
             entry.policy_binding is not None,
@@ -710,6 +863,14 @@ def _entry_issues(entry: LaneRegistryEntry) -> list[RegistryIssue]:
                     "auto cannot be enabled without every signed binding",
                 )
             )
+    if _violates_signed_lane_restriction(entry):
+        issues.append(
+            RegistryIssue(
+                "lane_signed_restriction_violation",
+                lane_ids,
+                "signed lane writer, role, status, and activation facts are immutable",
+            )
+        )
     return issues
 
 
@@ -791,6 +952,18 @@ def assert_registry_startup(
                         "host allowlist differs from repository evidence",
                     )
                 )
+            canonical_entry = _CANONICAL_BY_ID.get(entry.lane_id)
+            if canonical_entry is not None and any(
+                getattr(entry, field_name) != getattr(canonical_entry, field_name)
+                for field_name in _IMMUTABLE_IDENTITY_FIELDS
+            ):
+                issues.append(
+                    RegistryIssue(
+                        "canonical_lane_identity_mismatch",
+                        (entry.lane_id,),
+                        "one or more of the 13 immutable identity fields differ",
+                    )
+                )
     issues.extend(_single_writer_issues(materialized))
     if issues:
         raise RegistryStartupError(issues)
@@ -815,6 +988,22 @@ def transition_activation(
     evidence: ActivationEvidence = ActivationEvidence(),
 ) -> ActivationStatus:
     """Apply G1-G3 without selecting cadence, canary, or release behavior."""
+
+    canonical_entry = _CANONICAL_BY_ID.get(lane_id)
+    if (
+        target is ActivationStatus.ENABLED
+        and canonical_entry is not None
+        and (
+            lane_id in _SIGNED_WRITER_FALSE_LANES
+            or lane_id in _SIGNED_LANE_STATUS_ALLOWLISTS
+            or canonical_entry.role in _NON_AUTONOMOUS_ROLES
+        )
+    ):
+        raise ActivationTransitionBlocked(
+            "lane_signed_restriction_violation",
+            lane_id=lane_id,
+            guard_id="B2",
+        )
 
     if current is ActivationStatus.READY_FOR_MOCK_DEPLOYMENT:
         if target is not current:
@@ -877,6 +1066,22 @@ class LaneCurrencyPlan(Protocol):
     quote_currency: str
 
 
+type RegistrySource = Mapping[str, LaneRegistryEntry] | Iterable[LaneRegistryEntry]
+
+
+def _validated_registry(
+    registry: RegistrySource | None = None,
+) -> Mapping[str, LaneRegistryEntry]:
+    if registry is None:
+        entries = CANONICAL_LANE_REGISTRY
+    elif isinstance(registry, Mapping):
+        entries = tuple(registry.values())
+    else:
+        entries = tuple(registry)
+    assert_registry_startup(entries, require_canonical=True)
+    return MappingProxyType({entry.lane_id: entry for entry in entries})
+
+
 def assert_lane_quote_currency(
     plan: LaneCurrencyPlan,
     registry: Mapping[str, LaneRegistryEntry] = _CANONICAL_BY_ID,
@@ -892,8 +1097,40 @@ def assert_lane_quote_currency(
     return entry
 
 
+def assert_lineage_registry_binding(
+    envelope: LineageEnvelope,
+    registry: RegistrySource | None = None,
+) -> LaneRegistryEntry:
+    """Compare one exact J2B factory lineage to the canonical in-memory registry."""
+
+    validated_registry = _validated_registry(registry)
+    if type(envelope) is not LineageEnvelope or envelope.execution_plan is None:
+        raise LaneGuardError("lane_binding_incomplete")
+    plan = envelope.execution_plan
+    entry = assert_lane_quote_currency(plan, validated_registry)
+    if plan.broker != entry.broker:
+        raise LaneGuardError("lane_broker_mismatch", lane_id=plan.lane_id)
+    if plan.account_profile != entry.account_profile:
+        raise LaneGuardError("lane_account_profile_mismatch", lane_id=plan.lane_id)
+    if plan.account_mode != entry.account_mode.value:
+        raise LaneGuardError("lane_account_mode_mismatch", lane_id=plan.lane_id)
+    policy_binding = entry.policy_binding
+    if (
+        not isinstance(policy_binding, PolicyBinding)
+        or MissingBinding.POLICY in entry.missing_bindings
+    ):
+        raise LaneGuardError("lane_binding_incomplete", lane_id=plan.lane_id)
+    intent_policy_binding = PolicyBinding(
+        envelope.decision_intent.policy_version,
+        envelope.decision_intent.policy_version_hash,
+    )
+    if intent_policy_binding != policy_binding:
+        raise LaneGuardError("lane_policy_binding_mismatch", lane_id=plan.lane_id)
+    return entry
+
+
 def assert_mock_only_endpoint(entry: LaneRegistryEntry, endpoint_url: str) -> str:
-    """Return an exact allowlisted host or reject before client/network I/O."""
+    """Validate one caller-declared HTTPS endpoint string against its lane."""
 
     if not isinstance(entry.account_mode, AccountMode) or not isinstance(
         entry.endpoint_class, EndpointClass
@@ -927,7 +1164,7 @@ def assert_mock_only_endpoint(entry: LaneRegistryEntry, endpoint_url: str) -> st
 def assert_credential_namespace(
     entry: LaneRegistryEntry, credential_namespace: str
 ) -> None:
-    """Reject fallback or cross-profile credential namespaces."""
+    """Validate one caller-declared symbolic credential namespace."""
 
     if entry.credential_namespace is None:
         raise LaneGuardError("credential_namespace_unbound", lane_id=entry.lane_id)
@@ -938,6 +1175,8 @@ def assert_credential_namespace(
 def assert_entry_execution_ready(entry: LaneRegistryEntry) -> None:
     """Require every signed binding; registry roles never imply activation."""
 
+    if _violates_signed_lane_restriction(entry):
+        raise LaneGuardError("lane_signed_restriction_violation", lane_id=entry.lane_id)
     if entry.activation_status is not ActivationStatus.ENABLED:
         raise LaneGuardError("lane_activation_not_enabled", lane_id=entry.lane_id)
     if not entry.writer or not entry.auto:
@@ -957,9 +1196,10 @@ def assert_entry_execution_ready(entry: LaneRegistryEntry) -> None:
     if entry.missing_bindings:
         raise LaneGuardError("lane_binding_incomplete", lane_id=entry.lane_id)
     required_bindings = (
-        bool(entry.policy_binding and entry.policy_binding.strip()),
+        isinstance(entry.policy_binding, PolicyBinding),
         bool(entry.execution_mode and entry.execution_mode.strip()),
-        entry.scheduler_owner not in {None, SchedulerOwner.DISABLED},
+        isinstance(entry.scheduler_owner, SchedulerOwner)
+        and entry.scheduler_owner is not SchedulerOwner.DISABLED,
         entry.max_order_notional is not None and entry.max_order_notional > 0,
         entry.max_orders_per_session is not None and entry.max_orders_per_session > 0,
         entry.max_open_orders is not None and entry.max_open_orders > 0,
@@ -974,18 +1214,44 @@ def assert_entry_execution_ready(entry: LaneRegistryEntry) -> None:
         raise LaneGuardError("lane_binding_incomplete", lane_id=entry.lane_id)
 
 
+def assert_recurring_authorized(
+    entry: LaneRegistryEntry,
+    *,
+    recurring_requested: bool,
+    bounded_canary: bool = False,
+) -> None:
+    """Require both signed states; bounded canary evidence grants no recurrence."""
+
+    if recurring_requested and (
+        bounded_canary
+        or entry.lane_status is not LaneStatus.AUTO_ENABLED
+        or entry.activation_status is not ActivationStatus.ENABLED
+    ):
+        raise LaneGuardError("lane_recurring_not_authorized", lane_id=entry.lane_id)
+
+
 async def guarded_broker_io[BrokerResult](
-    plan: LaneCurrencyPlan,
+    envelope: LineageEnvelope,
     *,
     endpoint_url: str,
     credential_namespace: str,
     broker_io: Callable[[], Awaitable[BrokerResult]],
-    registry: Mapping[str, LaneRegistryEntry] = _CANONICAL_BY_ID,
+    registry: RegistrySource | None = None,
+    recurring_requested: bool = False,
+    bounded_canary: bool = False,
 ) -> BrokerResult:
-    """Execute a supplied broker operation only after every J2A guard passes."""
+    """Validate declared strings, then invoke an opaque caller-owned callback.
 
-    entry = assert_lane_quote_currency(plan, registry)
-    assert_registry_startup(registry.values())
+    This inert helper does not bind the declarations to the callback's actual
+    transport. Each broker transport must revalidate its real host and profile.
+    """
+
+    entry = assert_lineage_registry_binding(envelope, registry)
+    assert_recurring_authorized(
+        entry,
+        recurring_requested=recurring_requested,
+        bounded_canary=bounded_canary,
+    )
     assert_mock_only_endpoint(entry, endpoint_url)
     assert_credential_namespace(entry, credential_namespace)
     assert_entry_execution_ready(entry)
@@ -993,14 +1259,27 @@ async def guarded_broker_io[BrokerResult](
 
 
 def guarded_client_factory[Client](
-    entry: LaneRegistryEntry,
+    envelope: LineageEnvelope,
     *,
     endpoint_url: str,
     credential_namespace: str,
     factory: Callable[[], Client],
+    registry: RegistrySource | None = None,
+    recurring_requested: bool = False,
+    bounded_canary: bool = False,
 ) -> Client:
-    """Reject live/mismatched construction before invoking a client factory."""
+    """Validate declared strings, then invoke an opaque caller-owned factory.
 
+    This inert helper cannot prove which transport the returned client uses.
+    Transport-level host and profile validation remains broker-owned.
+    """
+
+    entry = assert_lineage_registry_binding(envelope, registry)
+    assert_recurring_authorized(
+        entry,
+        recurring_requested=recurring_requested,
+        bounded_canary=bounded_canary,
+    )
     assert_mock_only_endpoint(entry, endpoint_url)
     assert_credential_namespace(entry, credential_namespace)
     assert_entry_execution_ready(entry)
@@ -1041,6 +1320,7 @@ assert_registry_startup(CANONICAL_LANE_REGISTRY, require_canonical=True)
 __all__ = [
     "ACTIVATION_TRANSITION_GUARDS",
     "MISSING_BINDING_RULE",
+    "R2_REJECT_CODES",
     "UNKNOWN_IDENTITY_RULE",
     "AccountMode",
     "ActivationEvidence",
@@ -1056,13 +1336,16 @@ __all__ = [
     "LaneGuardError",
     "LaneRegistryEntry",
     "MissingBinding",
+    "PolicyBinding",
     "RegistryIssue",
     "RegistryRole",
     "RegistryStartupError",
     "assert_credential_namespace",
     "assert_entry_execution_ready",
     "assert_lane_quote_currency",
+    "assert_lineage_registry_binding",
     "assert_mock_only_endpoint",
+    "assert_recurring_authorized",
     "assert_registry_startup",
     "assert_single_writer",
     "get_lane_registry_entry",
