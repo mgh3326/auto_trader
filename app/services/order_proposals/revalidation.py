@@ -27,7 +27,7 @@ import inspect
 import logging
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -78,6 +78,7 @@ RungOutcomeResult = Literal[
     "submitted_resting",
     "needs_reconfirm",
     "guard_blocked",
+    "not_delivered",
     "unverified",
     "error",
     "cancelled",
@@ -126,6 +127,13 @@ _GUARD_ERROR_MARKERS = (
 _TOSS_CLIENT_ORDER_ID_MAX_LENGTH = 36
 _TOSS_CLIENT_ORDER_ID_PATTERN = re.compile(r"[a-zA-Z0-9\-_]+")
 _SUBMIT_DIAGNOSTIC_MAX_LENGTH = 240
+_KIS_GATEWAY_THROTTLE_FAILURE_CODES = frozenset(
+    {
+        "kis_gateway_throttle_not_delivered",
+        "kis_gateway_throttle_delivery_ambiguous",
+    }
+)
+_KIS_GATEWAY_THROTTLE_BROKER_CODES = frozenset({"EGW00201", "EGW00215"})
 
 
 async def _converge_window_block(
@@ -1392,7 +1400,7 @@ async def _revalidate_place_rung(
         identifier=proposal_client_order_id,
         fetch_submit_evidence_fn=fetch_submit_evidence_fn,
     )
-    if outcome.result == "error":
+    if outcome.result in {"error", "not_delivered"}:
         await _release_after_rejection(
             buying_power_releaser=buying_power_releaser,
             group=group,
@@ -2066,6 +2074,47 @@ async def _revalidate_cancel_rung(
     return RungOutcome(rung_index, "cancelled", {})
 
 
+def _validated_kis_gateway_throttle_failure(
+    submit: Mapping[str, Any],
+    *,
+    account_mode: str,
+) -> dict[str, Any] | None:
+    """Accept only the bounded KIS throttle failure result contract.
+
+    The generic submit-error path stays unchanged for every other provider and
+    shape. This prevents free-form broker error text from becoming a terminal
+    no-delivery assertion.
+    """
+    if account_mode != "kis_live":
+        return None
+    reason_code = submit.get("error_code")
+    detail = submit.get("submit_failure")
+    if (
+        reason_code not in _KIS_GATEWAY_THROTTLE_FAILURE_CODES
+        or not isinstance(detail, Mapping)
+        or detail.get("reason_code") != reason_code
+        or detail.get("broker_message_code") not in _KIS_GATEWAY_THROTTLE_BROKER_CODES
+        or not isinstance(detail.get("http_status"), int)
+        or not 200 <= int(detail["http_status"]) < 300
+        or detail.get("broker_order_id") is not None
+        # This surface is terminal: exactly one POST produced the response.
+        or detail.get("post_attempts") != 1
+        or not isinstance(detail.get("idempotency_key_present"), bool)
+        or not isinstance(detail.get("intent_reserved"), bool)
+        or detail.get("ledger_entry_present") not in {True, False, None}
+    ):
+        return None
+    # A no-delivery label needs the complete evidence bundle, not merely an
+    # HTTP 200 error code. Ambiguous labels deliberately permit no looser form.
+    if reason_code == "kis_gateway_throttle_not_delivered" and not (
+        detail["idempotency_key_present"] is True
+        and detail["intent_reserved"] is True
+        and detail["ledger_entry_present"] is False
+    ):
+        return None
+    return dict(detail)
+
+
 async def _classify_submit(
     *,
     service: OrderProposalsService,
@@ -2084,6 +2133,48 @@ async def _classify_submit(
 
     if success is False:
         original_error = str(submit.get("error") or "submit_rejected")
+        throttle_failure = _validated_kis_gateway_throttle_failure(
+            submit,
+            account_mode=account_mode,
+        )
+        if throttle_failure is not None:
+            reason_code = str(throttle_failure["reason_code"])
+            await service.record_submit_failure(
+                proposal_id,
+                rung_index,
+                failure=throttle_failure,
+                now=now,
+            )
+            idempotency_key = (
+                identifier
+                or submit.get("idempotency_key")
+                or preview.get("idempotency_key")
+            )
+            if reason_code == "kis_gateway_throttle_not_delivered":
+                await service.record_rejected(
+                    proposal_id,
+                    rung_index,
+                    reason=reason_code,
+                    now=now,
+                )
+                return RungOutcome(
+                    rung_index,
+                    "not_delivered",
+                    {"error": reason_code, "submit_failure": throttle_failure},
+                )
+            await service.record_unverified(
+                proposal_id,
+                rung_index,
+                reason=reason_code,
+                now=now,
+                correlation_id=corr,
+                idempotency_key=idempotency_key,
+            )
+            return RungOutcome(
+                rung_index,
+                "unverified",
+                {"error": reason_code, "submit_failure": throttle_failure},
+            )
         if account_mode == "upbit" and identifier is not None:
             evidence = await _maybe_await(
                 fetch_submit_evidence_fn(

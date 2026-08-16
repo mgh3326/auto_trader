@@ -1,15 +1,10 @@
-"""ROB-BAC: gateway per-second throttle rejections on order POSTs are retried.
+"""KIS gateway-throttle classification at the order transport layer.
 
-Live evidence (2026-07-22 us-live session): two KIS overseas sells (BAC, IVV)
-were answered ``EGW00201 초당 거래건수를 초과하였습니다`` and terminalized as
-``rejected`` while five sibling sells on the same account succeeded. The
-rejection is issued at the gateway, before the order engine — no order exists —
-so a bounded re-POST is safe and is the difference between a filled trim and a
-session-long dead proposal.
-
-These tests pin both halves of that contract: the throttle family re-POSTs
-within a hard cap, and every *ambiguous* outcome still fails closed exactly as
-ROB-645 requires.
+The low-level order clients surface only a narrow response candidate to the
+live execution boundary. The boundary combines it with local idempotency and
+ledger evidence for persistent failure reporting and Telegram display; neither
+layer makes another order POST from this candidate. Ambiguous outcomes remain
+fail-closed.
 """
 
 from __future__ import annotations
@@ -20,9 +15,9 @@ import httpx
 import pytest
 
 from app.services.brokers.kis.order_throttle import (
-    MAX_THROTTLE_RESUBMITS,
+    KISGatewayThrottleRejection,
+    gateway_throttle_rejection_from_response,
     is_provider_throttle_reject,
-    throttle_backoff_seconds,
 )
 from app.services.brokers.kis.send_outcome import OrderSendOutcomeTracker
 
@@ -52,21 +47,12 @@ def _make_parent(responses):
     return parent
 
 
-@pytest.fixture(autouse=True)
-def _no_sleep(monkeypatch):
-    """Keep the backoff contract but not its wall-clock cost."""
-    slept: list[float] = []
-
-    async def _fake_sleep(seconds):
-        slept.append(seconds)
-
-    monkeypatch.setattr(
-        "app.services.brokers.kis.overseas_orders.asyncio.sleep", _fake_sleep
-    )
-    monkeypatch.setattr(
-        "app.services.brokers.kis.domestic_orders.asyncio.sleep", _fake_sleep
-    )
-    return slept
+async def _normal_gateway_throttle(*_args, **kwargs):
+    """Simulate the real normal-HTTP KIS gateway rejection shape."""
+    tracker = kwargs["send_outcome"]
+    tracker.mark_dispatched()
+    tracker.mark_http_response(200)
+    return _THROTTLE_BODY
 
 
 @pytest.fixture(autouse=True)
@@ -106,7 +92,7 @@ class TestThrottleClassifier:
         )
 
     def test_business_rejections_are_not_throttles(self):
-        # The one that must never be re-POSTed: a real order-engine rejection.
+        # A real order-engine rejection must stay outside this surface.
         assert not is_provider_throttle_reject(
             "APBK0656", "주문가능금액을 초과하였습니다."
         )
@@ -115,53 +101,70 @@ class TestThrottleClassifier:
         )
         assert not is_provider_throttle_reject(None, None)
 
-    def test_backoff_grows_and_is_bounded(self):
-        delays = [throttle_backoff_seconds(d) for d in range(MAX_THROTTLE_RESUBMITS)]
-        assert delays == sorted(delays)
-        assert all(0 < d <= 2.0 for d in delays)
+    def test_provider_order_number_makes_gateway_response_ineligible(self):
+        assert (
+            gateway_throttle_rejection_from_response(
+                {
+                    **_THROTTLE_BODY,
+                    "output": {"ORD_NO": "already-created"},
+                },
+                http_status=200,
+                send_disposition="not_created",
+            )
+            is None
+        )
 
 
 @pytest.mark.unit
-class TestOverseasThrottleRepost:
-    """The BAC/IVV path."""
+class TestOverseasThrottleCandidate:
+    """The low-level BAC/IVV path only returns terminal evidence."""
 
     @pytest.mark.asyncio
-    async def test_throttled_sell_reposts_and_succeeds(self, _no_sleep):
-        instance, parent = _overseas([_THROTTLE_BODY, _ACCEPTED_BODY])
-
-        result = await instance.order_overseas_stock(
-            "BAC", "NYSE", "sell", 1, 62.15, is_mock=False
+    async def test_normal_gateway_throttle_is_typed_and_sent_once(self):
+        instance, parent = _overseas([])
+        parent._request_with_rate_limit = AsyncMock(
+            side_effect=_normal_gateway_throttle
         )
 
-        assert result["odno"] == "0030808418"
-        assert parent._request_with_rate_limit.await_count == 2
-        assert _no_sleep == [throttle_backoff_seconds(0)]
+        with pytest.raises(KISGatewayThrottleRejection, match="EGW00201"):
+            await instance.order_overseas_stock(
+                "BAC", "NYSE", "sell", 1, 62.15, is_mock=False
+            )
+
+        assert parent._request_with_rate_limit.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_repost_is_capped_then_fails_closed(self, _no_sleep):
-        instance, parent = _overseas([_THROTTLE_BODY] * (MAX_THROTTLE_RESUBMITS + 1))
+    async def test_throttle_without_normal_http_evidence_is_terminal_once(
+        self,
+    ):
+        instance, parent = _overseas([_THROTTLE_BODY])
 
         with pytest.raises(RuntimeError, match="EGW00201"):
             await instance.order_overseas_stock(
                 "BAC", "NYSE", "sell", 1, 62.15, is_mock=False
             )
 
-        assert parent._request_with_rate_limit.await_count == MAX_THROTTLE_RESUBMITS + 1
+        assert parent._request_with_rate_limit.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_repost_preserves_order_parameters(self):
-        instance, parent = _overseas([_THROTTLE_BODY, _ACCEPTED_BODY])
-
-        await instance.order_overseas_stock(
-            "BAC", "NYSE", "sell", 1, 62.15, is_mock=False
+    async def test_candidate_keeps_original_order_parameters_on_the_one_send(self):
+        instance, parent = _overseas([])
+        parent._request_with_rate_limit = AsyncMock(
+            side_effect=_normal_gateway_throttle
         )
 
-        first, second = parent._request_with_rate_limit.await_args_list
-        assert first.kwargs["json_body"] == second.kwargs["json_body"]
-        assert first.kwargs["tr_id"] == second.kwargs["tr_id"]
+        with pytest.raises(KISGatewayThrottleRejection):
+            await instance.order_overseas_stock(
+                "BAC", "NYSE", "sell", 1, 62.15, is_mock=False
+            )
+
+        call = parent._request_with_rate_limit.await_args
+        assert call.kwargs["json_body"]["PDNO"] == "BAC"
+        assert call.kwargs["json_body"]["ORD_QTY"] == "1"
+        assert call.kwargs["tr_id"] == "TTTT1006U"
 
     @pytest.mark.asyncio
-    async def test_business_rejection_is_not_reposted(self):
+    async def test_business_rejection_does_not_submit_twice(self):
         instance, parent = _overseas(
             [
                 {
@@ -193,7 +196,7 @@ class TestOverseasThrottleRepost:
 
     @pytest.mark.asyncio
     async def test_throttle_body_carried_by_5xx_fails_closed(self):
-        """A 5xx never proves the order was not created — no re-POST."""
+        """A 5xx never proves non-delivery and stays terminal."""
         instance, parent = _overseas([])
 
         async def _respond(*args, **kwargs):
@@ -212,49 +215,50 @@ class TestOverseasThrottleRepost:
         assert parent._request_with_rate_limit.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_caller_tracker_is_threaded_through_the_repost(self):
-        """The re-POST re-uses the caller's tracker, not a detached copy.
-
-        Each dispatch re-marks it (``mark_dispatched`` clears the previous
-        attempt), so the caller ends up observing the *final* attempt rather
-        than the intermediate throttle rejection.
-        """
-        instance, parent = _overseas([_THROTTLE_BODY, _ACCEPTED_BODY])
+    async def test_caller_tracker_is_threaded_to_the_typed_candidate(self):
+        instance, parent = _overseas([])
+        parent._request_with_rate_limit = AsyncMock(
+            side_effect=_normal_gateway_throttle
+        )
         tracker = OrderSendOutcomeTracker()
 
-        await instance.order_overseas_stock(
-            "BAC", "NYSE", "sell", 1, 62.15, is_mock=False, send_outcome=tracker
-        )
+        with pytest.raises(KISGatewayThrottleRejection):
+            await instance.order_overseas_stock(
+                "BAC", "NYSE", "sell", 1, 62.15, is_mock=False, send_outcome=tracker
+            )
 
         seen = [
             call.kwargs["send_outcome"]
             for call in parent._request_with_rate_limit.await_args_list
         ]
-        assert seen == [tracker, tracker]
+        assert seen == [tracker]
 
 
 @pytest.mark.unit
-class TestDomesticThrottleRepost:
+class TestDomesticThrottleCandidate:
     @pytest.mark.asyncio
-    async def test_throttled_order_reposts_and_succeeds(self):
-        instance, parent = _domestic([_THROTTLE_BODY, _ACCEPTED_BODY])
+    async def test_normal_gateway_throttle_is_typed_and_sent_once(self):
+        instance, parent = _domestic([])
+        parent._request_with_rate_limit = AsyncMock(
+            side_effect=_normal_gateway_throttle
+        )
 
-        result = await instance.order_korea_stock("005930", "sell", 1, 70000)
+        with pytest.raises(KISGatewayThrottleRejection, match="EGW00201"):
+            await instance.order_korea_stock("005930", "sell", 1, 70000)
 
-        assert result["odno"] == "0030808418"
-        assert parent._request_with_rate_limit.await_count == 2
+        assert parent._request_with_rate_limit.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_repost_is_capped_then_fails_closed(self):
-        instance, parent = _domestic([_THROTTLE_BODY] * (MAX_THROTTLE_RESUBMITS + 1))
+    async def test_throttle_without_normal_http_evidence_is_terminal_once(self):
+        instance, parent = _domestic([_THROTTLE_BODY])
 
         with pytest.raises(RuntimeError, match="EGW00201"):
             await instance.order_korea_stock("005930", "sell", 1, 70000)
 
-        assert parent._request_with_rate_limit.await_count == MAX_THROTTLE_RESUBMITS + 1
+        assert parent._request_with_rate_limit.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_business_rejection_is_not_reposted(self):
+    async def test_business_rejection_does_not_submit_twice(self):
         instance, parent = _domestic(
             [
                 {

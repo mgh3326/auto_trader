@@ -494,6 +494,7 @@ class KISClient(BaseKISClient):
         is_mock: bool = False,
         *,
         pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> dict[str, Any]:
         return await self._overseas_orders.order_overseas_stock(
             symbol,
@@ -503,6 +504,7 @@ class KISClient(BaseKISClient):
             price,
             is_mock,
             pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
 
     async def buy_overseas_stock(
@@ -514,9 +516,16 @@ class KISClient(BaseKISClient):
         is_mock: bool = False,
         *,
         pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> dict[str, Any]:
         return await self._overseas_orders.buy_overseas_stock(
-            symbol, exchange_code, quantity, price, is_mock, pre_send_hook=pre_send_hook
+            symbol,
+            exchange_code,
+            quantity,
+            price,
+            is_mock,
+            pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
 
     async def sell_overseas_stock(
@@ -528,9 +537,16 @@ class KISClient(BaseKISClient):
         is_mock: bool = False,
         *,
         pre_send_hook: PreSendHook | None = None,
+        send_outcome: OrderSendOutcomeTracker | None = None,
     ) -> dict[str, Any]:
         return await self._overseas_orders.sell_overseas_stock(
-            symbol, exchange_code, quantity, price, is_mock, pre_send_hook=pre_send_hook
+            symbol,
+            exchange_code,
+            quantity,
+            price,
+            is_mock,
+            pre_send_hook=pre_send_hook,
+            send_outcome=send_outcome,
         )
 
     async def inquire_overseas_orders(
