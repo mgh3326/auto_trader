@@ -7856,6 +7856,15 @@ def test_scope_no_account_wide_claim_prose_survives():
     carrying the retired meaning is caught, and that the docstring never claims
     more than the code does.
 
+    The line between in-scope and out-of-scope is **whether the sentence was
+    crafted to evade**, not whether this docstring happens to enumerate its
+    shape. A gap reachable by prose a contributor would plausibly write is a
+    defect in this guard even when the rules below do not name that shape;
+    deciding otherwise would let any guard become correct merely by describing
+    itself narrowly. Zero-width characters, Unicode homoglyphs, nested
+    parenthetical splicing and similar constructions are crafted, and are out
+    of scope.
+
     The enumerated rules, so a reader can see the boundary rather than infer it:
 
     * **subjects** — ``claim``, ``reservation``, ``binary row``, ``durable row``;
@@ -7863,7 +7872,11 @@ def test_scope_no_account_wide_claim_prose_survives():
       unrelated / every new order" family listed below;
     * **negation** — a negation token exempts a match only when it sits in the
       sub-clause *immediately preceding* the predicate, after splitting the
-      span on conjunction boundaries (``, but``/``, and``/``, yet``/...).
+      span on conjunction boundaries (``but``/``and``/``yet``/``though``/
+      ``however``/``whereas``/``while``, **with or without a preceding
+      comma** — English normally drops the comma when the subject is not
+      repeated, so "does not expire but blocks the account" is the more
+      ordinary of the two forms, not the rarer one).
       A negation that denies some *other* verb does not exempt the predicate;
     * **approved exemption** — a sentence is exempt only if, once normalized,
       it is **equal in full** to an approved sentence. Splicing the approved
@@ -7921,7 +7934,7 @@ def test_scope_no_account_wide_claim_prose_survives():
         "and immutable ack",
     )
     # A negation only denies the verb of its own sub-clause.
-    conjunction = re.compile(r",\s*(?:but|and|yet|though|however|whereas|while)\s")
+    conjunction = re.compile(r",?\s*(?:but|and|yet|though|however|whereas|while)\s")
 
     for label, text in scanned.items():
         flat = " ".join(text.split()).lower()
