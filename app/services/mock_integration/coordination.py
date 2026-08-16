@@ -488,12 +488,19 @@ def _hold_view(hold: UnreleasedAuthorityHold) -> UnreleasedAuthorityHold:
     process — and there is deliberately no recovery API to add one.
     """
 
-    # Cross-generation aliasing is prevented at the source, in
-    # :func:`_allocate_hold_id`, which never reissues an id. An identity check
-    # here was tried and removed: ``lease.unreleased_authority_hold`` already
-    # returns a *view*, so comparing object identity made this function answer
-    # differently for the same hold depending on whether it was re-viewed. One
-    # load-bearing guard beats two that disagree.
+    # Live truth is projected onto a record only when that record *is* the exact
+    # object the active map currently holds under that id. Looking the id up as a
+    # string would let a retired generation's history row borrow a later owner's
+    # recoverability. Every production caller views a *raw* record — the history
+    # list, the active map, and ``unreleased_authority_hold`` via ``self._hold``
+    # — so identity is the right comparison, and re-viewing a projection is not
+    # a supported call.
+    if _ACTIVE_AUTHORITY_HOLDS.get(hold.hold_id) is not hold:
+        return (
+            hold
+            if hold.recoverable_in_process is False
+            else replace(hold, recoverable_in_process=False)
+        )
     retained = _RETAINED_AUTHORITIES.get(hold.hold_id)
     owner = retained.owner if retained is not None else None
     # The two reasons a release is refused are a permanent coordination seal
@@ -618,6 +625,21 @@ def _allocate_hold_id() -> str:
         if not _hold_id_in_use(candidate):
             _ISSUED_HOLD_IDS.add(candidate)
             return candidate
+
+
+def _authority_already_retained(*, owner: object, grant: AdvisoryLeaseGrant) -> bool:
+    """Is this exact connection+grant already held in the retained map?
+
+    The rollback helper may retain an authority and then fail on its way out.
+    The caller's fallback must notice that, or one stuck account is recorded
+    twice and every count that follows -- holds, successors, operator triage --
+    is wrong.
+    """
+
+    return any(
+        entry.owner is owner and entry.grant is grant
+        for entry in _RETAINED_AUTHORITIES.values()
+    )
 
 
 def _resolve_authority_hold(
@@ -854,6 +876,7 @@ def _record_unreleased_authority(
     durable_evidence_written: bool,
     connection: LockAuthorityConnection | None = None,
     hold_id: str | None = None,
+    capability: object | None = None,
 ) -> UnreleasedAuthorityHold:
     """Record a hold, never overwriting one that belongs to somebody else."""
 
@@ -870,6 +893,33 @@ def _record_unreleased_authority(
         if foreign:
             # A supplied id that belongs to another owner is refused outright;
             # adopting it would let this hold delete that one during recovery.
+            raise CoordinationError(
+                CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE, hold_id=hold_id
+            )
+        # A non-``None`` id is **not** a caller-selected id. It is a
+        # same-generation handoff: the coordination handle that already owns this
+        # id telling the authority record to share it, so one stuck account keeps
+        # one opaque thread for an operator. Everything else is refused *here*,
+        # before the history append and the map assignment below — a rejection
+        # that happens after recording is not a rejection.
+        handoff = (
+            # (1) issued exactly once by the allocator, and never retired from
+            #     the process-lifetime set — successful coordinations included.
+            hold_id in _ISSUED_HOLD_IDS
+            # (2) an exact still-live preallocated coordination handle.
+            and held is not None
+            # (3) owned by this very lease, and sealed with this very capability.
+            and held.lease is owner
+            and (
+                capability is None
+                or _COORDINATION_RELEASE_CAPABILITIES.get(hold_id) is capability
+            )
+            # (4) the first authority transition for that id, ever.
+            and retained is None
+            and hold_id not in _ACTIVE_AUTHORITY_HOLDS
+            and not any(row.hold_id == hold_id for row in _AUTHORITY_HOLD_HISTORY)
+        )
+        if not handoff:
             raise CoordinationError(
                 CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE, hold_id=hold_id
             )
@@ -1065,6 +1115,7 @@ class PostgresAdvisoryKeysetLease:
             durable_evidence_written=durable_evidence_written,
             connection=self._connection,
             hold_id=hold_id,
+            capability=capability,
         )
         self._hold = hold
         return hold
@@ -1351,10 +1402,15 @@ async def acquire_physical_account_lease(
         rollback_cancellation = await _await_retained_task(rollback)
         rollback_error = _task_error(rollback)
         rollback_interruption = rollback.result() if rollback_error is None else None
-        if rollback_error is not None:
+        if rollback_error is not None and not _authority_already_retained(
+            owner=connection, grant=grant
+        ):
             # The rollback itself failed, so nothing proved this connection is
             # safe and nothing may have retained it. Retain it here rather than
-            # letting it fall out of scope with a key possibly still held.
+            # letting it fall out of scope with a key possibly still held --
+            # unless the helper already retained this exact authority before
+            # raising, in which case a second record would double-count one
+            # stuck account.
             _record_unreleased_authority(
                 grant,
                 owner=connection,
@@ -2352,9 +2408,12 @@ async def coordinate_mock_order_mutation(
     except BaseException as exc:
         invocation_error = exc
 
+    # Established before outcome access so that a failure *during* that access
+    # cannot decide the value: whether the caller cancelled us is an orthogonal
+    # fact, and once observed it is never unobserved.
+    outer_cancellation: asyncio.CancelledError | None = None
     try:
         if task is None:
-            outer_cancellation = None
             result, callback_error = None, invocation_error
         else:
             try:
@@ -2362,8 +2421,11 @@ async def coordinate_mock_order_mutation(
                 result, callback_error = _callback_outcome(task)
             except BaseException as exc:
                 # Reading the outcome happens after a possible send, so a failure
-                # there is uncertainty, not an escape.
-                outer_cancellation, result, callback_error = None, None, exc
+                # there is uncertainty, not an escape. It replaces the *result*
+                # only — clearing the cancellation fact here would write
+                # ``outer_cancellation_requested=False`` into durable evidence
+                # for a send the caller demonstrably asked to stop.
+                result, callback_error = None, exc
     finally:
         # In a ``finally`` so no path — including an outcome-access failure —
         # leaves a live scope behind for a captured reference to keep using.

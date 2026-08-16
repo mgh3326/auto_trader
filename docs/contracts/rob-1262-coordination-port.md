@@ -269,6 +269,51 @@ a line has to be written deliberately, and so that a reviewer can see it.
 
 ---
 
+### The opaque hold id is issued once, for the life of the process
+
+An id comes from the allocator exactly once and stays in the process-lifetime
+issued set forever — including the id of a coordination that **succeeded**. A
+non-`None` supplied `hold_id` is therefore not a caller-selected id; it is a
+*same-generation handoff*, and it is accepted only when all four hold:
+
+1. the id is in the issued set;
+2. an exact, still-live preallocated coordination handle exists for it;
+3. that handle is owned by this very lease, sealed with this very capability;
+4. the id has no authority history, active record, or retained record — ever.
+
+A retired id, a foreign id, a completed-success coordination id, and a
+same-owner historical id are all refused **before** any history row is appended
+or any map slot is written. A rejection that has to be undone afterwards is not
+a rejection.
+
+Reachability is projected onto a record only when that record *is* the exact
+object the active map holds under its id. Looking the id up as a string would
+let a retired generation's history row report a later owner's recoverability.
+
+### Error precedence when several things fail at once
+
+Outer cancellation and an outcome-access failure are independent facts, and
+neither erases the other. Whether the caller cancelled is established *before*
+the outcome is read and is never cleared by containing a failure of that read —
+durable evidence must not record `outer_cancellation_requested=False` for a send
+the caller demonstrably asked to stop.
+
+Once the callback has definitely ended, both durable writes and the safe
+release/retention outcome complete first. Only then is one exception surfaced,
+in this exact order:
+
+```
+lineage_persistence_unavailable  >  ack error  >  callback/outcome error  >  outer cancellation
+```
+
+So a captured `CancelledError` never covers an outcome-access exception; it is
+re-delivered only when nothing above it applies.
+
+The callback scope expires in a `finally` that wraps the task wait *and* the
+outcome read, so it is dead before validation, acknowledgement, the durable
+writes, retention/release, and exception delivery — on every branch, including
+the one where the callback cancelled itself.
+
 ## 6. Dispatch evidence
 
 `DispatchEvidence` is a typed immutable record carrying intent / plan / attempt /
