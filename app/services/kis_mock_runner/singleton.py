@@ -70,6 +70,8 @@ MUTATION_WRITER_SURFACES = frozenset(
         "b0x_adapter",
     }
 )
+
+
 @dataclass(frozen=True, slots=True)
 class _WriterAuthority:
     """Typed replacement for the ROB-853 boolean re-entrancy flag.
@@ -416,7 +418,9 @@ KIS_MOCK_ACCOUNT_FINGERPRINT_MISMATCH: Final[str] = (
     "kis_mock_account_fingerprint_mismatch"
 )
 KIS_MOCK_LANE_PROFILE_MISMATCH: Final[str] = "kis_mock_lane_profile_mismatch"
-KIS_MOCK_LIFECYCLE_PORTS_UNAVAILABLE: Final[str] = "kis_mock_lifecycle_ports_unavailable"
+KIS_MOCK_LIFECYCLE_PORTS_UNAVAILABLE: Final[str] = (
+    "kis_mock_lifecycle_ports_unavailable"
+)
 KIS_MOCK_KEYSET_NOT_PROVEN: Final[str] = "kis_mock_keyset_not_proven"
 
 KIS_MOCK_REASON_CODES: Final[frozenset[str]] = frozenset(
@@ -836,7 +840,6 @@ async def coordinate_kis_mock_mutation(
     """
 
     from app.services.mock_integration.coordination import (
-        CoordinationScope,
         coordinate_mock_order_mutation,
         physical_account_scope_for_entry,
     )

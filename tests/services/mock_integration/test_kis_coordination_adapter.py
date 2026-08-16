@@ -65,9 +65,7 @@ ADAPTER_SOURCE = REPO_ROOT / "app" / "services" / "kis_mock_runner" / "singleton
 DOMESTIC_ORDERS_SOURCE = (
     REPO_ROOT / "app" / "services" / "brokers" / "kis" / "domestic_orders.py"
 )
-CONTRACT_DOC = (
-    REPO_ROOT / "docs" / "contracts" / "rob-1263-kis-coordination-adapter.md"
-)
+CONTRACT_DOC = REPO_ROOT / "docs" / "contracts" / "rob-1263-kis-coordination-adapter.md"
 
 # The exact J3B write fence (brief B-7).
 J3B_WRITE_FENCE: frozenset[str] = frozenset(
@@ -201,7 +199,9 @@ async def _coordinate(
         claims=DurableSendClaimAdapter(stack["intents"]),
         connection_factory=stack["factory"],
         mutation=mutation,
-        registry=lane_registry if lane_registry is not None else _kis_registry(envelope),
+        registry=lane_registry
+        if lane_registry is not None
+        else _kis_registry(envelope),
     )
 
 
@@ -381,7 +381,10 @@ def test_a_released_lease_no_longer_reads_as_an_active_authority():
 
 def test_reentrancy_requires_the_exact_account_mode_and_every_required_key():
     authority = singleton._WriterAuthority(
-        account_mode="kis_mock", advisory_keys=(11, 22), lease=None, grant=object()  # type: ignore[arg-type]
+        account_mode="kis_mock",
+        advisory_keys=(11, 22),
+        lease=None,
+        grant=object(),  # type: ignore[arg-type]
     )
     assert authority.covers(account_mode="kis_mock", required_keys=(11,)) is True
     assert authority.covers(account_mode="kis_mock", required_keys=(11, 22)) is True
@@ -761,9 +764,7 @@ async def test_mock_host_reached_from_a_live_settings_namespace_is_rejected():
         await singleton.assert_kis_mock_send_boundary(
             client=client, url=client._kis_url(ORDER_PATH), entry=entry, grant=grant
         )
-    assert (
-        excinfo.value.reason_code == singleton.KIS_MOCK_CREDENTIAL_NAMESPACE_MISMATCH
-    )
+    assert excinfo.value.reason_code == singleton.KIS_MOCK_CREDENTIAL_NAMESPACE_MISMATCH
     assert client.transport_calls == 0
 
 
@@ -993,7 +994,9 @@ async def test_soft_cancel_class_evidence_can_never_release_a_claim(evidence):
     )
     with pytest.raises(CoordinationError) as excinfo:
         await claims.release_with_terminal_evidence(claim, evidence)
-    assert excinfo.value.reason_code is CoordinationReasonCode.TERMINAL_EVIDENCE_REQUIRED
+    assert (
+        excinfo.value.reason_code is CoordinationReasonCode.TERMINAL_EVIDENCE_REQUIRED
+    )
     assert intents.release_if_matches_calls == []
     assert intents.rows  # still reserved
 
@@ -1352,7 +1355,10 @@ def test_the_adapter_does_not_reimplement_the_j3a_primitive():
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            assert node.name not in {"release_if_matches", "release_with_terminal_evidence"}
+            assert node.name not in {
+                "release_if_matches",
+                "release_with_terminal_evidence",
+            }
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             assert node.func.attr not in {
                 "release_if_matches",

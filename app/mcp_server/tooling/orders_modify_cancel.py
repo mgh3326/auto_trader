@@ -532,13 +532,12 @@ async def _cancel_kis_mock_domestic(
     symbol: str | None,
 ) -> dict[str, Any]:
     """Cancel a KIS *mock* domestic order via the ledger (no TTTC8036R)."""
+    from decimal import Decimal as _Decimal
+
     from app.mcp_server.tooling.kis_mock_ledger import (
         mark_kis_mock_order_cancelled,
         resolve_mock_order_for_cancel,
     )
-
-    from decimal import Decimal as _Decimal
-
     from app.services.kis_mock_runner.singleton import (
         authorize_kis_mock_claim_followup,
     )
