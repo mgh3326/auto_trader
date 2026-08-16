@@ -3695,6 +3695,35 @@ def test_scope_no_stale_public_capability_prose_survives():
         assert owner_state in doc, owner_state
 
 
+def test_scope_contract_documents_the_every_send_callback_interface():
+    """B45: J3B/J3C integrate from the contract, not from the source.
+
+    A contract that still describes ``assert_owned(grant)`` tells a downstream
+    lane to reach for a capability that is deliberately not public, and says
+    nothing about the per-send timing that is the whole point of the view.
+    """
+
+    doc = CONTRACT_DOC.read_text(encoding="utf-8")
+    flat = " ".join(doc.split())
+
+    # The exact interface, by name.
+    assert "CoordinationScope" in doc
+    assert "await scope.assert_owned()" in doc
+    assert "MockMutationCallback" in doc
+    assert "one argument" in flat or "one-argument" in flat
+
+    # The timing obligation, not just the existence of the call.
+    assert "immediately before **every** POST" in flat
+    assert "cancel or reduce" in flat
+    assert "captured scope" in flat
+
+    # And the capability-free shape.
+    for absent in ("lease", "grant", "connection", "owner token"):
+        assert absent in flat, absent
+    # The stale grant-bearing instruction is gone.
+    assert "`assert_owned(grant)` repeats" not in doc
+
+
 def test_scope_capability_bearing_symbols_are_not_public():
     """r17: a lane supplies extra keys through the coordinator, never a lease."""
 
@@ -4357,8 +4386,11 @@ def test_scope_view_exposes_exactly_one_operation_and_no_capability():
 
     public_names = {name for name in dir(CoordinationScope) if not name.startswith("_")}
     assert public_names == {"assert_owned"}
-    # The one private slot holds a closure, not the lease: no attribute walk
-    # from the view reaches a connection, a grant, or a release.
+    # The one private slot holds a closure, not the lease. On the supported and
+    # direct surface there is nothing to reach; under Python reflection
+    # ``_assert.__closure__`` can of course be traversed, exactly as any exported
+    # function's ``__globals__`` can. The signed grade is accident prevention plus
+    # static detection, not structural impossibility.
     private_names = {
         name
         for name in dir(CoordinationScope)
@@ -4697,6 +4729,400 @@ async def test_lock_c1_truth_table_all_five_rows():
 
 def _active_hold(hold_id: str) -> Any:
     return next(h for h in unreleased_authority_holds() if h.hold_id == hold_id)
+
+
+# ===========================================================================
+# §r21 — U1-U9
+# ===========================================================================
+
+
+class _RaisingBrokerId(str):
+    """A hostile ``str`` subclass: validation must not dispatch into it."""
+
+    def strip(self, *args: Any, **kwargs: Any) -> str:
+        raise RuntimeError("strip exploded")
+
+
+@pytest.mark.asyncio
+async def test_claim_hostile_broker_id_validation_still_reaches_both_writes():
+    """U1/B43: validation runs after a possible send, so it cannot escape.
+
+    An exact ``MutationCallbackResult`` can carry a ``str`` subclass whose
+    ``strip()`` raises. That happens after the callback may have POSTed and
+    before either durable write — the one window the AND gate exists to cover.
+    """
+
+    _, envelope = _attempt_envelope()
+    stack = _default_stack()
+    posts: list[str] = []
+
+    async def hostile(scope: Any) -> MutationCallbackResult:
+        posts.append("POST")
+        return MutationCallbackResult(
+            certainty=MutationCertainty.DEFINITIVE,
+            broker_order_id=_RaisingBrokerId("ODNO"),
+        )
+
+    stack["callback"] = hostile
+    with pytest.raises(TypeError):
+        await _run(envelope, stack)
+
+    assert posts == ["POST"]
+    assert stack["persistence"].calls == 2
+    assert stack["evidence"].calls == 1
+    evidence = stack["evidence"].only
+    assert evidence.kind is DispatchEvidenceKind.CALLBACK_FAILED
+    assert evidence.certainty is MutationCertainty.UNCERTAIN
+    assert evidence.broker_order_id is None
+    assert len(stack["intents"].rows) == 1
+
+
+class _CancellingAckFactory(MockLineageFactory):
+    """A J2B factory whose acknowledgement step is cancelled."""
+
+    def acknowledge_order_attempt(
+        self, envelope: LineageEnvelope, broker_order_id: str
+    ) -> LineageEnvelope:
+        raise asyncio.CancelledError()
+
+
+@pytest.mark.asyncio
+async def test_claim_cancelled_ack_attachment_still_reaches_both_writes():
+    """U2/B44: a cancellation inside the ACK helper is uncertainty, not an exit."""
+
+    _, envelope = _attempt_envelope()
+    stack = _default_stack()
+    posts: list[str] = []
+
+    async def sender(scope: Any) -> MutationCallbackResult:
+        posts.append("POST")
+        return MutationCallbackResult(
+            certainty=MutationCertainty.DEFINITIVE, broker_order_id="ODNO"
+        )
+
+    stack["callback"] = sender
+    with pytest.raises(asyncio.CancelledError):
+        await coordinate_mock_order_mutation(
+            **_coordination_kwargs(
+                envelope,
+                lane_registry=_bound_registry(envelope),
+                persistence=stack["persistence"],
+                evidence=stack["evidence"],
+                intents=stack["intents"],
+                factory=stack["factory"],
+                callback=stack["callback"],
+            ),
+            lineage_factory=_CancellingAckFactory(),
+        )
+
+    assert posts == ["POST"]
+    assert stack["evidence"].calls == 1
+    evidence = stack["evidence"].only
+    assert evidence.kind is DispatchEvidenceKind.ACK_ATTACHMENT_FAILED
+    assert evidence.certainty is MutationCertainty.UNCERTAIN
+    assert evidence.broker_order_id is None
+    assert stack["persistence"].calls == 2
+    # Cleanup happened only after the gate closed, and the claim is retained.
+    assert stack["connection"].closed is True
+    assert len(stack["intents"].rows) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", ["observer", "owner"])
+async def test_lock_close_cancellation_after_absence_keeps_the_receipt(which: str):
+    """U4/B37: once absence is proven, cleanup cannot un-prove it."""
+
+    owner = _dedicated_connection_double([])
+    observer = _dedicated_connection_double(
+        [_FakeResult([{"terminated": True}]), _FakeResult([{"alive": 0}])]
+    )
+    if which == "observer":
+        observer.close = AsyncMock(side_effect=asyncio.CancelledError())
+    else:
+        owner.close = AsyncMock(side_effect=asyncio.CancelledError())
+
+    async def observer_factory() -> Any:
+        return observer
+
+    authority = SqlAlchemyLockAuthority(owner, observer_factory=observer_factory)
+    holds_before = len(unreleased_authority_holds())
+
+    receipt = await authority.terminate_backend_session(
+        expected_pid=4242, owner_token="lockconn:abc"
+    )
+
+    # The proof stands, bound to the exact PID and owner token.
+    assert receipt == BackendTerminationReceipt(
+        backend_pid=4242, owner_token="lockconn:abc", terminated=True
+    )
+    # And no false active authority was manufactured by the failed cleanup.
+    assert len(unreleased_authority_holds()) == holds_before
+
+
+@pytest.mark.asyncio
+async def test_lock_rollback_cancelled_after_a_confirmed_unlock_prefix():
+    """U5/B39: cancel *after* rollback has already confirmed one unlock."""
+
+    space = FakeLockSpace()
+    blocker = FakeLockConnection(space, pid=11001)
+    await acquire_physical_account_lease(
+        keys=[1103], connection_factory=ConnectionFactory(blocker)
+    )
+    # Reverse rollback order is 1102, then 1101 — so injecting on 1101 leaves a
+    # confirmed prefix of exactly [1102].
+    connection = FakeLockConnection(
+        space,
+        pid=11002,
+        unlock_raises_on_key=1101,
+        unlock_raises_error=asyncio.CancelledError(),
+        termination_raises=RuntimeError("cannot terminate"),
+    )
+    retained_before = set(_retained_authorities())
+
+    with pytest.raises(CoordinationError) as excinfo:
+        await acquire_physical_account_lease(
+            keys=[1101, 1102, 1103], connection_factory=ConnectionFactory(connection)
+        )
+    assert excinfo.value.reason_code is CoordinationReasonCode.LEASE_CONTENDED
+
+    # A confirmed unlock happened first, then the cancellation.
+    assert connection.unlock_calls == [1102, 1101]
+    assert connection.closed is False
+    new_holds = set(_retained_authorities()) - retained_before
+    assert len(new_holds) == 1
+    assert _retained_authorities()[new_holds.pop()].connection is connection
+
+    successor = FakeLockConnection(space, pid=11003)
+    with pytest.raises(CoordinationError) as contended:
+        await acquire_physical_account_lease(
+            keys=[1101], connection_factory=ConnectionFactory(successor)
+        )
+    assert contended.value.reason_code is CoordinationReasonCode.LEASE_CONTENDED
+
+
+@pytest.mark.asyncio
+async def test_lock_collision_exhaustion_during_confirmed_partial_rollback(
+    monkeypatch,
+):
+    """U6/B40: the collision storm must also cover the confirmed-partial branch."""
+
+    import gc
+
+    space = FakeLockSpace()
+    _, victim_connection, victim_hold = await _durable_true_hold(
+        space, pid=11101, key=1111
+    )
+    victim_owner = _retained_authorities()[victim_hold.hold_id].owner
+
+    blocker = FakeLockConnection(space, pid=11102)
+    await acquire_physical_account_lease(
+        keys=[1114], connection_factory=ConnectionFactory(blocker)
+    )
+    colliding = victim_hold.hold_id.removeprefix("hold:")
+    monkeypatch.setattr(coordination.secrets, "token_hex", lambda _n: colliding)
+
+    # 1112/1113 acquire, 1114 contends -> confirmed-partial rollback, and the
+    # unprovable unlock forces retention while every random id collides.
+    intruder = FakeLockConnection(
+        space,
+        pid=11103,
+        unlock_returns=False,
+        termination_raises=RuntimeError("cannot terminate"),
+    )
+    retained_before = set(_retained_authorities())
+
+    with pytest.raises(CoordinationError):
+        await acquire_physical_account_lease(
+            keys=[1112, 1113, 1114], connection_factory=ConnectionFactory(intruder)
+        )
+
+    new_holds = set(_retained_authorities()) - retained_before
+    assert len(new_holds) == 1
+    quarantined = new_holds.pop()
+    assert quarantined.startswith("hold:quarantine:")
+    assert _retained_authorities()[quarantined].connection is intruder
+    gc.collect()
+    assert _retained_authorities()[quarantined].connection is intruder
+    assert intruder.closed is False
+    # The victim is untouched by the storm.
+    assert _retained_authorities()[victim_hold.hold_id].connection is victim_connection
+    assert _retained_authorities()[victim_hold.hold_id].owner is victim_owner
+
+
+@pytest.mark.asyncio
+async def test_lock_rollback_task_error_still_retains_the_authority(monkeypatch):
+    """U6/B40: if the rollback task itself fails, nothing may fall out of scope."""
+
+    space = FakeLockSpace()
+    blocker = FakeLockConnection(space, pid=11201)
+    await acquire_physical_account_lease(
+        keys=[1122], connection_factory=ConnectionFactory(blocker)
+    )
+    connection = FakeLockConnection(space, pid=11202)
+
+    async def exploding_rollback(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("rollback itself failed")
+
+    monkeypatch.setattr(
+        coordination, "_rollback_partial_acquisition", exploding_rollback
+    )
+    retained_before = set(_retained_authorities())
+
+    with pytest.raises(CoordinationError):
+        await acquire_physical_account_lease(
+            keys=[1121, 1122], connection_factory=ConnectionFactory(connection)
+        )
+
+    new_holds = set(_retained_authorities()) - retained_before
+    assert len(new_holds) == 1
+    retained = _retained_authorities()[new_holds.pop()]
+    assert retained.connection is connection
+    assert retained.grant.backend_pid == 11202
+    assert connection.closed is False
+
+
+@pytest.mark.asyncio
+async def test_claim_scope_local_pinned_entry_check_is_independently_load_bearing():
+    """U7/B41: exercise the check *inside* the scope, not the one before it.
+
+    The earlier regression swaps the registry during reserve, so it fails at the
+    post-reserve check and would stay green if the scope-local recheck were
+    deleted. This one keeps A until the callback is running.
+    """
+
+    _, envelope = _attempt_envelope()
+    bound = _bound_registry(envelope)
+    swapped = _bound_registry(envelope, physical_account_id="OTHER-PHYSICAL-ACCOUNT")
+    state = {"switched": False}
+
+    class LateSwitchingRegistry:
+        def __iter__(self) -> Any:
+            return iter(swapped if state["switched"] else bound)
+
+    stack = _default_stack()
+    posts: list[str] = []
+
+    async def lane(scope: Any) -> MutationCallbackResult:
+        state["switched"] = True  # the registry changes mid-callback
+        await scope.assert_owned()  # must catch it, before the POST
+        posts.append("POST")  # unreachable
+        return MutationCallbackResult(
+            certainty=MutationCertainty.DEFINITIVE, broker_order_id="ODNO"
+        )
+
+    stack["callback"] = lane
+    with pytest.raises(registry.LaneGuardError) as excinfo:
+        await coordinate_mock_order_mutation(
+            **{
+                **_coordination_kwargs(
+                    envelope,
+                    lane_registry=bound,
+                    persistence=stack["persistence"],
+                    evidence=stack["evidence"],
+                    intents=stack["intents"],
+                    factory=stack["factory"],
+                    callback=stack["callback"],
+                ),
+                "registry": LateSwitchingRegistry(),
+            }
+        )
+
+    assert excinfo.value.code == "canonical_lane_identity_mismatch"
+    assert posts == []
+    # The unknown is durable and the claim for account A is retained.
+    assert stack["evidence"].calls == 1
+    assert stack["evidence"].only.kind is DispatchEvidenceKind.CALLBACK_FAILED
+    assert len(stack["intents"].rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_claim_callback_scheduling_failure_takes_the_evidence_path(monkeypatch):
+    """U8/B42: even ``ensure_future`` itself failing is post-send uncertainty."""
+
+    _, envelope = _attempt_envelope()
+    stack = _default_stack()
+    posts: list[str] = []
+    real_ensure_future = asyncio.ensure_future
+    armed = {"value": False}
+
+    def one_shot_failure(coro_or_future: Any, **kwargs: Any) -> Any:
+        if armed["value"]:
+            armed["value"] = False
+            if asyncio.iscoroutine(coro_or_future):
+                coro_or_future.close()
+            raise RuntimeError("event loop refused to schedule")
+        return real_ensure_future(coro_or_future, **kwargs)
+
+    monkeypatch.setattr(coordination.asyncio, "ensure_future", one_shot_failure)
+
+    async def sender(scope: Any) -> MutationCallbackResult:  # pragma: no cover
+        return MutationCallbackResult(certainty=MutationCertainty.UNCERTAIN)
+
+    def arming_callback(scope: Any) -> Any:
+        posts.append("POST")  # a synchronous send already happened
+        armed["value"] = True  # the scheduling of the rest now fails
+        return sender(scope)
+
+    stack["callback"] = arming_callback
+    with pytest.raises(RuntimeError, match="refused to schedule"):
+        await _run(envelope, stack)
+
+    assert posts == ["POST"]
+    assert stack["evidence"].calls == 1
+    assert stack["evidence"].only.kind is DispatchEvidenceKind.CALLBACK_FAILED
+    assert stack["persistence"].calls == 2
+    assert len(stack["intents"].rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_claim_synchronous_cancellation_takes_the_evidence_path():
+    """U8/B42: a synchronous ``CancelledError`` is uncertainty, not a clean abort."""
+
+    _, envelope = _attempt_envelope()
+    stack = _default_stack()
+    posts: list[str] = []
+
+    def sync_cancel(scope: Any) -> Any:
+        posts.append("POST")
+        raise asyncio.CancelledError()
+
+    stack["callback"] = sync_cancel
+    with pytest.raises(asyncio.CancelledError):
+        await _run(envelope, stack)
+
+    assert posts == ["POST"]
+    assert stack["evidence"].calls == 1
+    assert stack["evidence"].only.kind is DispatchEvidenceKind.CALLBACK_FAILED
+    assert stack["evidence"].only.certainty is MutationCertainty.UNCERTAIN
+    assert stack["persistence"].calls == 2
+    assert len(stack["intents"].rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_lock_hold_history_and_active_view_never_disagree():
+    """U9/B46: one hold id must not report True and False at the same instant."""
+
+    space = FakeLockSpace()
+    lease, connection, hold = await _durable_true_hold(space, pid=11301, key=1131)
+
+    def flags(hold_id: str) -> tuple[Any, Any]:
+        active = [h for h in unreleased_authority_holds() if h.hold_id == hold_id]
+        history = [h for h in authority_hold_history() if h.hold_id == hold_id]
+        assert active and history
+        return active[-1].recoverable_in_process, history[-1].recoverable_in_process
+
+    # While active and genuinely retryable, both views say the same thing.
+    active_flag, history_flag = flags(hold.hold_id)
+    assert active_flag is True
+    assert history_flag == active_flag
+
+    # After a proven release the hold leaves the active view; history keeps the
+    # record and reports it as not retryable, which is now true.
+    await lease.release(lease.grant)
+    assert hold.hold_id not in {h.hold_id for h in unreleased_authority_holds()}
+    resolved = [h for h in authority_hold_history() if h.hold_id == hold.hold_id]
+    assert resolved and resolved[-1].recoverable_in_process is False
+    assert connection.closed is True
 
 
 # ===========================================================================

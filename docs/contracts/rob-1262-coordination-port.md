@@ -94,8 +94,10 @@ A row proves ownership only when *all* hold: `locktype='advisory'`,
 the **reconstructed signed high/low 32-bit halves**. `objid` is never compared to
 the signed key directly — for a negative key it never matches.
 
-`assert_owned(grant)` repeats PID + exact-row proof immediately before every
-mutation (there is no heartbeat, so an idle lease is never assumed).
+Ownership is re-proven — PID plus exact-row — immediately before every mutation;
+there is no heartbeat, so an idle lease is never assumed. The lane does not hold a
+grant to do that with: it calls `await scope.assert_owned()` on the
+`CoordinationScope` it is handed (see §6).
 
 Multi-key: partial-acquire rolls back every acquired key in reverse order;
 release unlocks in reverse order and counts only keys PostgreSQL confirmed.
@@ -169,12 +171,46 @@ to make that possible.
 5. check account-wide unresolved reservations
 6. reserve and COMMIT the binary claim
 7. re-assert lease ownership and re-run the lane guards
-8. register the strong `HeldCoordination` handle, then start the callback task
+8. register the strong held-coordination handle and seal the lease, then invoke
+   the callback with its `CoordinationScope` (no `await` between those two)
 9. persist the ACK/uncertainty envelope **and** the typed dispatch evidence —
    both retained against cancellation, forming a single AND gate
 10. release the lease and drop the handle **only if** step 9 closed
 
 The durable claim is never released here.
+
+### 5.1 The callback interface — what J3B/J3C must do
+
+```python
+type MockMutationCallback = Callable[
+    [CoordinationScope], Awaitable[MutationCallbackResult]
+]
+```
+
+The callback takes **one argument**. `CoordinationScope` exposes exactly one
+coroutine and nothing else:
+
+```python
+await scope.assert_owned()
+```
+
+It carries no lease, grant, connection, backend PID, owner token, advisory key,
+hold id, release, or termination — the right to see, never the right to act. Each
+call re-proves ownership of the exact lease **and** re-checks the pinned canonical
+registry entry, so a registry mutated mid-flight fails here too.
+
+**The obligation is per send, not per callback.** A lane must
+`await scope.assert_owned()` immediately before **every** POST in a same-cycle
+batch, and before **every** supported cancel or reduce — in particular after any
+intervening `await` (account truth, token refresh, rate limiting). The
+coordinator's single assertion before the callback is deliberately *not*
+sufficient: ownership can be lost in that interval, and a failure discovered at
+release is discovered after the orders are already out.
+
+The scope stops working when its coordinated section ends, so a captured scope
+raises rather than asserting against a finished lease. A lane must also not move
+the send into a detached task: a compliant callback awaits `assert_owned()` inside
+the callback task the coordinator retains.
 
 ### Cancellation
 

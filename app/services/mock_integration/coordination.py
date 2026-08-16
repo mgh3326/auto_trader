@@ -503,9 +503,17 @@ def _hold_view(hold: UnreleasedAuthorityHold) -> UnreleasedAuthorityHold:
 
 
 def authority_hold_history() -> tuple[UnreleasedAuthorityHold, ...]:
-    """Immutable evidence: every hold ever recorded, in order, including resolved."""
+    """Every hold ever recorded, in order, including resolved ones.
 
-    return tuple(_AUTHORITY_HOLD_HISTORY)
+    Projected through the same :func:`_hold_view` the active view uses, because
+    the contract says reachability is recomputed on every read. Returning the
+    raw stored record here would let one ``hold_id`` report ``True`` from
+    :func:`unreleased_authority_holds` and ``False`` from this function at the
+    same instant — a contradiction an operator has no way to adjudicate.
+    A resolved hold has no retained owner, so it projects to not-recoverable.
+    """
+
+    return tuple(_hold_view(hold) for hold in _AUTHORITY_HOLD_HISTORY)
 
 
 def unreleased_authority_holds() -> tuple[UnreleasedAuthorityHold, ...]:
@@ -2118,8 +2126,11 @@ def _validated_callback_result(
             "mock mutation callback returned a non-MutationCertainty certainty"
         )
     broker_order_id = result.broker_order_id
+    # ``type(...) is str`` on purpose: a ``str`` subclass can override ``strip``
+    # and raise from inside validation — after a possible send and before either
+    # durable write. Exact type first means no dispatch to caller code at all.
     if broker_order_id is not None and (
-        not isinstance(broker_order_id, str) or not broker_order_id.strip()
+        type(broker_order_id) is not str or not broker_order_id.strip()
     ):
         return None, TypeError(
             "mock mutation callback returned a non-string broker order id"
@@ -2310,7 +2321,13 @@ async def coordinate_mock_order_mutation(
     # The coordinated section is over: a captured scope must stop working.
     gate.active = False
     if callback_error is None:
-        result, callback_error = _validated_callback_result(result)
+        try:
+            result, callback_error = _validated_callback_result(result)
+        except BaseException as exc:
+            # Belt and braces: validation is contained as well as non-dispatching.
+            # Anything raised here happens after the callback may have sent, so
+            # it is uncertainty that must reach the durable writes, not an escape.
+            result, callback_error = None, exc
 
     factory = lineage_factory if lineage_factory is not None else MockLineageFactory()
     evidence_envelope = envelope
@@ -2324,9 +2341,11 @@ async def coordinate_mock_order_mutation(
             evidence_envelope = factory.acknowledge_order_attempt(
                 envelope, result.broker_order_id
             )
-        except Exception as exc:
-            # A malformed or conflicting broker order id is transport
+        except BaseException as exc:
+            # A malformed or conflicting broker order id — or a cancellation
+            # landing inside the acknowledgement helper — is transport
             # uncertainty, not a reason to escape before recording the unknown.
+            # The original exception is re-delivered after the AND gate closes.
             ack_error = exc
             evidence_envelope = envelope
 
