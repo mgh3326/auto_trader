@@ -32,7 +32,6 @@ from app.services.order_proposals.dispatch import (
 )
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
-    ApprovalDispatchState,
     build_proposal_dispatch_binding,
 )
 from app.services.order_proposals.revalidation import RungOutcome, revalidate_and_submit
@@ -159,7 +158,7 @@ class _CommittedBatchNotifier(_FakeNotifier):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_publish_4444_thesis_requires_every_context_before_button() -> None:
+async def test_publish_long_thesis_sends_only_one_compact_button_card() -> None:
     group = OrderProposal(
         proposal_id=uuid.uuid4(),
         approval_nonce="unit-nonce1",
@@ -187,21 +186,6 @@ async def test_publish_4444_thesis_requires_every_context_before_button() -> Non
     messages = build_approval_dispatch_messages(
         group=group, rungs=[rung], binding=binding
     )
-    assert len(messages.context_messages) == 2
-
-    failed_notifier = _FailAtNotifier(fail_at=2)
-    failed = await publish_approval_messages(
-        notifier=failed_notifier,
-        messages=messages,
-        chat_id=CHAT_ID,
-    )
-
-    assert failed.card_published is False
-    assert failed.partial is True
-    assert failed.failure_code == "approval_context_dispatch_failed"
-    assert len(failed_notifier.sent_messages) == 2
-    assert all(keyboard is None for _, keyboard, _ in failed_notifier.sent_messages)
-
     successful_notifier = _FakeNotifier(message_id=9200)
     sent = await publish_approval_messages(
         notifier=successful_notifier,
@@ -210,12 +194,9 @@ async def test_publish_4444_thesis_requires_every_context_before_button() -> Non
     )
 
     assert sent.card_published is True
-    assert sent.message_id == 9202
-    assert len(successful_notifier.sent_messages) == 3
-    assert all(
-        keyboard is None for _, keyboard, _ in successful_notifier.sent_messages[:-1]
-    )
-    assert successful_notifier.sent_messages[-1][1]["inline_keyboard"]
+    assert sent.message_id == 9200
+    assert len(successful_notifier.sent_messages) == 1
+    assert successful_notifier.sent_messages[0][1]["inline_keyboard"]
 
 
 def _session_factory(db_session):
@@ -637,72 +618,38 @@ async def test_send_proposal_for_approval_send_failure_is_durable_and_invalidate
 
 
 @pytest.mark.asyncio
-async def test_4444_thesis_context_failure_withholds_button_and_retry_mints_new_nonce(
+async def test_long_thesis_dispatches_one_card_and_preserves_db_text(
     monkeypatch, db_session
 ):
     from app.core.config import settings
-    from app.services.order_proposals import dispatch as dispatch_module
 
     chat_id = f"long-thesis-{uuid.uuid4().hex}"
     monkeypatch.setattr(
         settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat_id
     )
-    nonces = iter(("firstnonce1", "secondnonce"))
-    monkeypatch.setattr(dispatch_module, "_generate_nonce", lambda: next(nonces))
+    thesis = "가" * 4444
     group = await _seed_proposal(
         db_session,
-        thesis="가" * 4444,
+        thesis=thesis,
         strategy="분할 매도",
     )
-    now = datetime(2026, 7, 23, 2, 17, 50, tzinfo=UTC)
-
-    failed_notifier = _FailAtNotifier(fail_at=2)
-    failed = await send_proposal_for_approval(
-        group.proposal_id,
-        notifier=failed_notifier,
-        now=now,
-        service_factory=_session_factory(db_session),
-    )
-
-    assert failed.ok is False
-    assert failed.failure_code == "approval_context_dispatch_failed"
-    assert failed.payload_chars > 4096
-    assert len(failed_notifier.sent_messages) == 2
-    assert all(keyboard is None for _, keyboard, _ in failed_notifier.sent_messages)
-    assert failed_notifier.parse_modes == [None, None]
-
-    service = OrderProposalsService(db_session)
-    after_failure, _ = await service.get_proposal(group.proposal_id)
-    failed_attempt_id = after_failure.approval_dispatch_attempt_id
-    assert (
-        after_failure.approval_dispatch_state
-        == ApprovalDispatchState.PARTIAL_FAILED.value
-    )
-    assert after_failure.approval_nonce is None
-
-    successful_notifier = _FakeNotifier(message_id=9100)
+    notifier = _FakeNotifier(message_id=9100)
     sent = await send_proposal_for_approval(
         group.proposal_id,
-        notifier=successful_notifier,
-        now=now.replace(second=51),
+        notifier=notifier,
+        now=datetime(2026, 7, 23, 2, 17, 50, tzinfo=UTC),
         service_factory=_session_factory(db_session),
     )
 
     assert sent.ok is True
-    assert sent.message_id == 9102
-    assert len(successful_notifier.sent_messages) == 3
-    assert all(
-        keyboard is None for _, keyboard, _ in successful_notifier.sent_messages[:-1]
+    assert sent.payload_chars < 4096
+    assert len(notifier.sent_messages) == 1
+    assert notifier.sent_messages[0][1]["inline_keyboard"]
+    assert thesis not in notifier.sent_messages[0][0]
+    refreshed, _ = await OrderProposalsService(db_session).get_proposal(
+        group.proposal_id
     )
-    assert successful_notifier.sent_messages[-1][1]["inline_keyboard"]
-    assert successful_notifier.parse_modes == [None, None, "Markdown"]
-    after_retry, _ = await service.get_proposal(group.proposal_id)
-    assert (
-        after_retry.approval_dispatch_state == ApprovalDispatchState.SENT_CURRENT.value
-    )
-    assert after_retry.approval_dispatch_attempt_id != failed_attempt_id
-    assert after_retry.approval_nonce == "secondnonce"
-    assert after_retry.source_asof["approval_message_id"] == 9102
+    assert refreshed.thesis == thesis
 
 
 @pytest.mark.asyncio

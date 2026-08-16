@@ -285,32 +285,46 @@ def test_loss_cut_approval_message_shows_reason_retrospective_and_invest_link():
 
 
 @pytest.mark.unit
-def test_4444_character_thesis_is_split_losslessly_before_short_button_card():
+def test_long_thesis_is_bounded_in_card_and_not_mutated_or_sent_as_context():
     thesis = "가" * 4444
     strategy = "분할 매도"
     group = _group(thesis=thesis, strategy=strategy)
-    proposal_short = str(group.proposal_id)[:8]
-
     messages = build_approval_dispatch_messages(
         group=group,
         rungs=[_rung()],
     )
 
-    assert messages.payload_chars > TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
-    assert len(messages.context_messages) == 2
+    assert messages.payload_chars < TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
+    assert messages.context_messages == ()
     assert all(
         telegram_text_length(text) <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
         for text in (*messages.context_messages, messages.approval_text)
     )
-    reconstructed = "".join(
-        message.split("\n\n", 1)[1] for message in messages.context_messages
-    )
-    assert reconstructed == f"투자 논지:\n{thesis}\n\n전략:\n{strategy}"
+    assert f"투자 논지: {'가' * 119}…" in messages.approval_text
     assert thesis not in messages.approval_text
-    assert "투자 논지 4444자" in messages.approval_text
-    assert all(proposal_short in message for message in messages.context_messages)
-    assert proposal_short in messages.approval_text
+    assert group.thesis == thesis
     assert messages.inline_keyboard["inline_keyboard"]
+
+
+@pytest.mark.unit
+def test_compact_approval_card_has_required_contract_fields_individually():
+    group = _group(
+        symbol="JUP",
+        side="sell",
+        thesis="익절 조건과 지지선 이탈 위험을 함께 반영한 사유",
+        valid_until=datetime(2026, 7, 14, 1, 30, tzinfo=UTC),
+    )
+    text, _keyboard = build_approval_message(
+        group=group,
+        rungs=[_rung(quantity=Decimal("3"), limit_price=Decimal("99"))],
+    )
+
+    assert "종목: `JUP`" in text
+    assert "#1: 3주" in text
+    assert "× ₩99" in text
+    assert "투자 논지: 익절 조건과 지지선 이탈 위험을 함께 반영한 사유" in text
+    assert "핵심 수치: 총수량 3주 / 주문금액 ₩297" in text
+    assert "유효기간: ~10:30 KST (2026-07-14)" in text
 
 
 @pytest.mark.unit
@@ -395,6 +409,11 @@ def test_loss_cut_confirmation_callback_and_summary():
         retrospective_id=42,
         approval_issue_id="operator note: desk A",
         approval_nonce="secondnonce",
+        source_asof={
+            "loss_cut_confirmation": {
+                "expires_at": "2026-07-14T01:30:00+00:00",
+            }
+        },
     )
     text, keyboard = build_loss_cut_confirmation_message(
         group=group,
@@ -419,6 +438,7 @@ def test_loss_cut_confirmation_callback_and_summary():
     assert "99" in text
     assert "100" in text
     assert "-50.00%" in text
+    assert "2차 창(유효시간): 10:30 KST (2026-07-14)" in text
     assert "#42" in text
     assert "손절 기준을 늦추지 않는다" in text
     assert "승인 감사 메모" in text
@@ -756,7 +776,8 @@ def test_message_formats_optional_market_order_fields_stably():
     assert "#1: 0.01 × 시장가" in text
     assert "투자 논지: 미기재" in text
     assert "전략: 미기재" in text
-    assert "*시간*" not in text
+    assert "*시간*" in text
+    assert "유효기간: 미기재" in text
     assert "*현금 스트레스*" not in text
     assert "*재확인 변경사항*" not in text
 

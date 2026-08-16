@@ -617,7 +617,7 @@ async def publish_approval_messages(
     messages: ApprovalDispatchMessages,
     chat_id: str,
 ) -> ApprovalPublication:
-    """Send every context successfully before publishing the button card."""
+    """Publish the compact button card after payload validation."""
     all_messages = (*messages.context_messages, messages.approval_text)
     if any(
         telegram_text_length(text) > TELEGRAM_SEND_MESSAGE_TEXT_LIMIT

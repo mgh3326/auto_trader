@@ -18,11 +18,7 @@ from app.services.order_proposals.dispatch_contract import (
     CallbackEnvelope,
     DispatchBinding,
 )
-from app.telegram_contract import (
-    TELEGRAM_SEND_MESSAGE_TEXT_LIMIT,
-    split_telegram_text,
-    telegram_text_length,
-)
+from app.telegram_contract import telegram_text_length
 
 _ALLOWED_ACTIONS = frozenset({"op", "dn", "lc", "vc", "ba"})
 _CALLBACK_PATTERN = re.compile(
@@ -47,7 +43,6 @@ _BATCH_RUNG_RESULT_LABELS = {
     "needs_reconfirm": "재확인 필요",
     "cancelled": "취소 확인",
 }
-_CONTEXT_HEADER_RESERVED_UNITS = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,9 +446,16 @@ def build_approval_message(
     else:
         lines.append("- 없음")
 
+    lines.append(
+        f"- 핵심 수치: {_build_order_core_metrics(group=group, rungs=sorted_rungs)}"
+    )
+
     if evidence_reference is None:
-        thesis = getattr(group, "thesis", None) or "미기재"
-        strategy = getattr(group, "strategy", None) or "미기재"
+        # §78차 ③-a: Telegram keeps only a bounded summary. The full thesis
+        # remains in the DB for the future approval-hub deep link; this job
+        # deliberately does not invent that URL or a hub route.
+        thesis = _compact_summary(getattr(group, "thesis", None))
+        strategy = _compact_summary(getattr(group, "strategy", None))
         evidence_lines = [
             f"- 투자 논지: {_escape_markdown(thesis)}",
             f"- 전략: {_escape_markdown(strategy)}",
@@ -550,58 +552,21 @@ def build_approval_dispatch_messages(
     suffix_blocks: Sequence[str] = (),
     binding: DispatchBinding,
 ) -> ApprovalDispatchMessages:
-    """Keep short cards intact; split oversized evidence before the button card."""
-    full_text, keyboard = build_approval_message(
-        group=group,
-        rungs=rungs,
-        cash_stress=cash_stress,
-        diff=diff,
-        binding=binding,
-    )
-    if suffix_blocks:
-        full_text = f"{full_text}\n\n" + "\n\n".join(suffix_blocks)
-    payload_chars = telegram_text_length(full_text)
-    if payload_chars <= TELEGRAM_SEND_MESSAGE_TEXT_LIMIT:
-        return ApprovalDispatchMessages((), full_text, keyboard, payload_chars)
-
-    thesis = str(getattr(group, "thesis", None) or "미기재")
-    strategy = str(getattr(group, "strategy", None) or "미기재")
-    evidence_body = f"투자 논지:\n{thesis}\n\n전략:\n{strategy}"
-    body_chunks = split_telegram_text(
-        evidence_body,
-        max_units=(TELEGRAM_SEND_MESSAGE_TEXT_LIMIT - _CONTEXT_HEADER_RESERVED_UNITS),
-    )
-    total = len(body_chunks)
-    proposal_short = str(getattr(group, "proposal_id", ""))[:8] or "unknown"
-    context_messages = tuple(
-        f"주문 제안 {proposal_short} 근거 원문 ({index}/{total})\n\n{chunk}"
-        for index, chunk in enumerate(body_chunks, start=1)
-    )
-    if any(
-        telegram_text_length(message) > TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
-        for message in context_messages
-    ):
-        raise ValueError("approval context header exceeded reserved Telegram space")
-
-    evidence_reference = (
-        f"제안 {proposal_short}의 위 근거 메시지 {total}건 · "
-        f"투자 논지 {len(thesis)}자 / 전략 {len(strategy)}자"
-    )
+    """Render one compact card; detailed evidence belongs to the future hub."""
     approval_text, keyboard = build_approval_message(
         group=group,
         rungs=rungs,
         cash_stress=cash_stress,
         diff=diff,
-        evidence_reference=evidence_reference,
         binding=binding,
     )
     if suffix_blocks:
         approval_text = f"{approval_text}\n\n" + "\n\n".join(suffix_blocks)
     return ApprovalDispatchMessages(
-        context_messages,
+        (),
         approval_text,
         keyboard,
-        payload_chars,
+        telegram_text_length(approval_text),
     )
 
 
@@ -669,6 +634,16 @@ def build_loss_cut_confirmation_message(
             f"- 교훈: {_escape_markdown(lesson)}",
         ]
     )
+    source_asof = getattr(group, "source_asof", None)
+    second_step_window = (
+        source_asof.get("loss_cut_confirmation", {}).get("expires_at")
+        if isinstance(source_asof, Mapping)
+        and isinstance(source_asof.get("loss_cut_confirmation"), Mapping)
+        else None
+    )
+    lines.append(
+        f"- 2차 창(유효시간): {_format_datetime(second_step_window, approximate=False)}"
+    )
     approval_note = str(getattr(group, "approval_issue_id", None) or "").strip()
     if approval_note:
         lines.append(f"- 승인 감사 메모: {_escape_markdown(approval_note)}")
@@ -706,6 +681,46 @@ def build_loss_cut_confirmation_message(
     return text, keyboard
 
 
+def _build_order_core_metrics(*, group: Any, rungs: Sequence[Any]) -> str:
+    market = str(getattr(group, "market", "") or "")
+    symbol = str(getattr(group, "symbol", "") or "")
+    currency = _currency_for_market(market=market, symbol=symbol)
+    quantity_unit = "주" if market in {"equity_kr", "equity_us"} else ""
+    total_quantity = Decimal("0")
+    quantity_known = bool(rungs)
+    total_notional = Decimal("0")
+    notional_known = bool(rungs)
+    for rung in rungs:
+        quantity = _safe_decimal(getattr(rung, "quantity", None))
+        price = _safe_decimal(getattr(rung, "limit_price", None))
+        if quantity is None:
+            quantity_known = False
+        else:
+            total_quantity += quantity
+        if quantity is None or price is None:
+            notional_known = False
+        else:
+            total_notional += quantity * price
+    quantity_text = (
+        f"총수량 {_format_decimal(total_quantity)}{quantity_unit}"
+        if quantity_known
+        else "총수량 미기재"
+    )
+    price_text = (
+        f"주문금액 {_format_money(total_notional, currency=currency)}"
+        if notional_known
+        else "주문금액 시장가/미기재"
+    )
+    return f"{quantity_text} / {price_text}"
+
+
+def _compact_summary(value: object, *, limit: int = 120) -> str:
+    normalized = " ".join(str(value or "").split())
+    if not normalized:
+        return "미기재"
+    return normalized[: limit - 1] + "…" if len(normalized) > limit else normalized
+
+
 def _build_time_lines(group: Any) -> list[str]:
     source_asof = getattr(group, "source_asof", None)
     resting_deadline = (
@@ -719,11 +734,14 @@ def _build_time_lines(group: Any) -> list[str]:
         ("제출 임대", getattr(group, "commit_lease_until", None), True),
         ("주문 유지기한", resting_deadline, True),
     )
-    return [
+    lines = [
         f"- {label}: {_format_datetime(value, approximate=approximate)}"
         for label, value, approximate in fields
         if _coerce_datetime(value) is not None
     ]
+    if _coerce_datetime(getattr(group, "valid_until", None)) is None:
+        lines.insert(0, "- 유효기간: 미기재")
+    return lines
 
 
 def _build_cash_lines(cash_stress: Mapping, *, currency: str | None) -> list[str]:

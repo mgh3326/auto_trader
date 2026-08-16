@@ -13,6 +13,7 @@ import pytest
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals.auto_approve import (
     AutoApproveLimits,
+    auto_veto_thesis_summary,
     build_auto_approved_message,
     evaluate_auto_approve_eligibility,
     find_approval_required_tag_matches,
@@ -831,6 +832,7 @@ def test_auto_veto_card_has_symbol_quantity_price_and_thesis_fields():
         symbol="005930",
         side="buy",
         thesis="valuation dislocation",
+        valid_until=datetime(2026, 7, 14, 1, 30, tzinfo=UTC),
     )
     binding = build_proposal_dispatch_binding(
         proposal_id=group.proposal_id,
@@ -851,7 +853,25 @@ def test_auto_veto_card_has_symbol_quantity_price_and_thesis_fields():
     assert "종목: `005930`" in text
     assert "수량: #1 2" in text
     assert "가격: #1 97000" in text
+    assert "핵심 수치: 총수량 2주 / 주문금액 ₩194,000" in text
     assert "근거: valuation dislocation" in text
+    assert "유효기간: 10:30 KST (2026-07-14)" in text
+
+
+def test_auto_veto_missing_thesis_stays_none_and_routes_to_human():
+    group = _group(thesis=" ", strategy="mean_reversion")
+
+    assert auto_veto_thesis_summary(group) is None
+    decision = _evaluate(
+        group_overrides={"thesis": " ", "strategy": "mean_reversion"},
+        limit_price=Decimal("99500"),
+        quantity=Decimal("1"),
+        preview={"success": True, "current_price": "100000"},
+    )
+    assert (decision.eligible, decision.reason) == (
+        False,
+        "thesis_required_for_veto_card",
+    )
 
 
 def test_auto_veto_card_raises_when_thesis_is_missing():
