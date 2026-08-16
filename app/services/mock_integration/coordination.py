@@ -472,6 +472,11 @@ _RETAINED_AUTHORITIES: dict[str, _RetainedAuthority] = {}
 
 _HOLD_ID_ALLOCATION_ATTEMPTS: Final[int] = 8
 _QUARANTINE_SEQUENCE = 0
+# Every opaque id ever issued, resolved ones included. The active maps forget a
+# resolved hold but history does not, so re-issuing its id would let an old
+# immutable record project a *later* owner's reachability, and would make a
+# stale id name an unrelated coordination.
+_ISSUED_HOLD_IDS: set[str] = set()
 
 
 def _hold_view(hold: UnreleasedAuthorityHold) -> UnreleasedAuthorityHold:
@@ -483,6 +488,12 @@ def _hold_view(hold: UnreleasedAuthorityHold) -> UnreleasedAuthorityHold:
     process — and there is deliberately no recovery API to add one.
     """
 
+    # Cross-generation aliasing is prevented at the source, in
+    # :func:`_allocate_hold_id`, which never reissues an id. An identity check
+    # here was tried and removed: ``lease.unreleased_authority_hold`` already
+    # returns a *view*, so comparing object identity made this function answer
+    # differently for the same hold depending on whether it was re-viewed. One
+    # load-bearing guard beats two that disagree.
     retained = _RETAINED_AUTHORITIES.get(hold.hold_id)
     owner = retained.owner if retained is not None else None
     # The two reasons a release is refused are a permanent coordination seal
@@ -574,7 +585,8 @@ def _unregister_owned_coordination(owner: object) -> None:
 
 def _hold_id_in_use(hold_id: str) -> bool:
     return (
-        hold_id in _ACTIVE_AUTHORITY_HOLDS
+        hold_id in _ISSUED_HOLD_IDS
+        or hold_id in _ACTIVE_AUTHORITY_HOLDS
         or hold_id in _RETAINED_AUTHORITIES
         or hold_id in _HELD_COORDINATION
         or hold_id in _COORDINATION_RELEASE_CAPABILITIES
@@ -592,6 +604,7 @@ def _allocate_hold_id() -> str:
     for _ in range(_HOLD_ID_ALLOCATION_ATTEMPTS):
         candidate = f"hold:{secrets.token_hex(8)}"
         if not _hold_id_in_use(candidate):
+            _ISSUED_HOLD_IDS.add(candidate)
             return candidate
     # Exhaustion must never leave a newly unsafe authority unreachable, so fall
     # back to a quarantine id derived from a monotonic counter rather than
@@ -603,6 +616,7 @@ def _allocate_hold_id() -> str:
         _QUARANTINE_SEQUENCE += 1
         candidate = f"hold:quarantine:{_QUARANTINE_SEQUENCE:012d}"
         if not _hold_id_in_use(candidate):
+            _ISSUED_HOLD_IDS.add(candidate)
             return candidate
 
 
@@ -1329,13 +1343,15 @@ async def acquire_physical_account_lease(
         # it must not abandon a connection that may still hold a key. The
         # original failure is re-raised only after the rollback reached a safe
         # outcome — confirmed unlock, positive termination, or strong retention.
-        rollback: asyncio.Task[None] = asyncio.ensure_future(
+        rollback: asyncio.Task[BaseException | None] = asyncio.ensure_future(
             _rollback_partial_acquisition(
                 connection, acquired, grant, in_flight=tuple(in_flight)
             )
         )
         rollback_cancellation = await _await_retained_task(rollback)
-        if _task_error(rollback) is not None:
+        rollback_error = _task_error(rollback)
+        rollback_interruption = rollback.result() if rollback_error is None else None
+        if rollback_error is not None:
             # The rollback itself failed, so nothing proved this connection is
             # safe and nothing may have retained it. Retain it here rather than
             # letting it fall out of scope with a key possibly still held.
@@ -1351,6 +1367,11 @@ async def acquire_physical_account_lease(
             # A cancellation that arrived while the rollback was still running is
             # re-delivered now that a safe outcome exists — never before it.
             raise rollback_cancellation
+        if rollback_interruption is not None:
+            # Same rule for a cancellation that landed *inside* the rollback: the
+            # authority is already terminated or strongly retained, so the caller
+            # now gets the exception it actually raised.
+            raise rollback_interruption
         raise
 
     return PostgresAdvisoryKeysetLease(connection=connection, grant=grant)
@@ -1426,7 +1447,7 @@ async def _rollback_partial_acquisition(
     grant: AdvisoryLeaseGrant,
     *,
     in_flight: Sequence[int] = (),
-) -> None:
+) -> BaseException | None:
     """Unlock every already-acquired key in reverse order, proving each one.
 
     If any unlock cannot be proven, the session is terminated rather than
@@ -1442,7 +1463,7 @@ async def _rollback_partial_acquisition(
 
     if in_flight:
         if await _terminate_authority(connection, grant) is not None:
-            return
+            return None
         _record_unreleased_authority(
             grant,
             owner=connection,
@@ -1451,21 +1472,26 @@ async def _rollback_partial_acquisition(
             durable_evidence_written=True,
             connection=connection,
         )
-        return
+        return None
 
     proven = True
+    interruption: BaseException | None = None
     try:
         for key in reversed(tuple(acquired)):
             if not await _unlock_proven(connection, key):
                 proven = False
                 break
-    except BaseException:
+    except BaseException as exc:
         # Including a cancellation: an interrupted unlock proves nothing, so the
-        # remainder is unknown rather than absent.
+        # remainder is unknown rather than absent. The interruption is carried
+        # back so the caller can re-deliver it *after* the safe outcome below.
+        # Swallowing it reports the earlier acquisition failure to someone who
+        # actually asked to be cancelled.
+        interruption = exc
         proven = False
     if proven:
         await _close_quietly(connection)
-        return
+        return interruption
     if await _terminate_authority(connection, grant) is None:
         # Metadata alone would let a GC pass or a pool return drop the very
         # authority it claims is still held, so the real connection is retained.
@@ -1477,6 +1503,7 @@ async def _rollback_partial_acquisition(
             durable_evidence_written=True,
             connection=connection,
         )
+    return interruption
 
 
 # --------------------------------------------------------------------------
@@ -2065,6 +2092,11 @@ async def _await_retained_task(
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError as exc:
+            if task.cancelled():
+                # The *inner* task ended cancelled and shield is relaying that.
+                # Nobody cancelled this coordinator, so recording an outer
+                # cancellation here would put a false fact in durable evidence.
+                break
             outer_cancellation = outer_cancellation or exc
             if task.done():
                 break
@@ -2299,7 +2331,15 @@ async def coordinate_mock_order_mutation(
         await lease.assert_owned(grant)
         _require_pinned_entry(envelope, registry, entry)
 
-    task: asyncio.Task[MutationCallbackResult] | None = None
+    async def _drive_callback(awaited: Awaitable[Any]) -> Any:
+        # The public contract accepts any ``Awaitable``. ``ensure_future`` would
+        # hand back a caller-supplied Future unchanged, and then every later
+        # ``.done()`` / ``.exception()`` / ``.result()`` would be caller code
+        # running after a possible send. Awaiting it inside a module-owned
+        # coroutine makes the retained task ours, so outcome access is ours too.
+        return await awaited
+
+    task: asyncio.Task[Any] | None = None
     invocation_error: BaseException | None = None
     try:
         started = mutation(CoordinationScope(_assert_scope_owned))
@@ -2308,18 +2348,26 @@ async def coordinate_mock_order_mutation(
                 "mock mutation callback did not return an awaitable; the send "
                 "may already have happened synchronously"
             )
-        task = asyncio.ensure_future(started)
+        task = asyncio.ensure_future(_drive_callback(started))
     except BaseException as exc:
         invocation_error = exc
 
-    if task is None:
-        outer_cancellation = None
-        result, callback_error = None, invocation_error
-    else:
-        outer_cancellation = await _await_retained_task(task)
-        result, callback_error = _callback_outcome(task)
-    # The coordinated section is over: a captured scope must stop working.
-    gate.active = False
+    try:
+        if task is None:
+            outer_cancellation = None
+            result, callback_error = None, invocation_error
+        else:
+            try:
+                outer_cancellation = await _await_retained_task(task)
+                result, callback_error = _callback_outcome(task)
+            except BaseException as exc:
+                # Reading the outcome happens after a possible send, so a failure
+                # there is uncertainty, not an escape.
+                outer_cancellation, result, callback_error = None, None, exc
+    finally:
+        # In a ``finally`` so no path — including an outcome-access failure —
+        # leaves a live scope behind for a captured reference to keep using.
+        gate.active = False
     if callback_error is None:
         try:
             result, callback_error = _validated_callback_result(result)

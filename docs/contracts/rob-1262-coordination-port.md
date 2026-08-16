@@ -97,7 +97,7 @@ the signed key directly — for a negative key it never matches.
 Ownership is re-proven — PID plus exact-row — immediately before every mutation;
 there is no heartbeat, so an idle lease is never assumed. The lane does not hold a
 grant to do that with: it calls `await scope.assert_owned()` on the
-`CoordinationScope` it is handed (see §6).
+`CoordinationScope` it is handed (see §5.1).
 
 Multi-key: partial-acquire rolls back every acquired key in reverse order;
 release unlocks in reverse order and counts only keys PostgreSQL confirmed.
