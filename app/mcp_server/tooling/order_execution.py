@@ -929,17 +929,18 @@ async def _execute_and_record(
         *,
         proven_not_sent: bool = False,
     ) -> bool:
-        if (
-            not intent_reserved
-            or intent_key is None
-            or (
-                not proven_not_sent
-                and (
-                    intent_account_scope != "kis_mock"
-                    or mirror_cohort != "mock_counterfactual"
-                )
-            )
-        ):
+        # ROB-1263 B-5: proven absence is the *only* pre-terminal release.
+        #
+        # The previous rule released a kis_mock mirror reservation on any
+        # transport error and advertised a retry, on the theory that mock money
+        # carries no risk.  That is the wrong axis: the risk is a duplicate
+        # order at the broker and a lineage that can no longer say which send
+        # produced it.  An error raised after the send boundary is
+        # `unknown_pending_reconcile` — the claim is retained, the physical
+        # account stays blocked from a same/conflicting submit, and no retry is
+        # offered.  A missing outcome tracker proves even less than an ambiguous
+        # one, so it also holds.
+        if not intent_reserved or intent_key is None or not proven_not_sent:
             return False
 
         try:
@@ -1016,11 +1017,14 @@ async def _execute_and_record(
         # Preserve the transport boundary's explicit state: token/client setup
         # can raise before dispatch (NOT_CREATED), while an actual send marks
         # UNKNOWN immediately before crossing the HTTP boundary.
-        retry_allowed = await _release_reserved_intent_after_send_failure(send_exc)
-        if (
+        proven_not_sent = (
             send_outcome is not None
             and send_outcome.disposition is OrderSendDisposition.NOT_CREATED
-        ):
+        )
+        await _release_reserved_intent_after_send_failure(
+            send_exc, proven_not_sent=proven_not_sent
+        )
+        if proven_not_sent:
             logger.error(
                 "execute_order failed before dispatch: market_type=%s, "
                 "symbol=%s, side=%s, error=%s",
@@ -1031,8 +1035,9 @@ async def _execute_and_record(
             )
             raise OrderSendNotCreated(send_exc) from send_exc
         # ROB-645: the order POST itself timed out / failed with no broker response.
-        # Outcome is UNKNOWN for live orders (may have been accepted) — never re-send live; reconcile.
-        # ROB-750: mock mirror has no live broker risk, so its scoped intent is released for retry.
+        # Outcome is UNKNOWN (the order may have been accepted) — never re-send;
+        # reconcile. ROB-1263 B-5 removed the kis_mock mirror exception: an
+        # unproven send holds its claim and advertises no retry on any lane.
         logger.error(
             "execute_order 실패(outcome unknown): stage=execute_order, "
             "market_type=%s, symbol=%s, side=%s, error=%s",
@@ -1041,17 +1046,10 @@ async def _execute_and_record(
             side,
             describe_exception(send_exc),
         )
-        raise OrderSendOutcomeUnknown(
-            send_exc,
-            retry_allowed=retry_allowed,
-            retry_hint=(
-                "KIS mock mirror pre-send intent를 해제했습니다. "
-                "동일 미러 아이템은 재시도할 수 있습니다."
-            )
-            if retry_allowed
-            else None,
-        ) from send_exc
+        raise OrderSendOutcomeUnknown(send_exc) from send_exc
     except Exception as exec_exc:
+        # Not proven unsent: an arbitrary failure after the send boundary is
+        # uncertainty, so the reservation is deliberately retained.
         await _release_reserved_intent_after_send_failure(exec_exc)
         logger.error(
             "execute_order 실패: stage=execute_order, market_type=%s, "
