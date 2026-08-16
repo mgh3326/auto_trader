@@ -638,6 +638,50 @@ class RecordingDispatchEvidence:
         return self.records[0]
 
 
+class FakeUncertaintyGate:
+    """Stand-in for the lane's account-uncertainty authority.
+
+    It knows nothing about reservations. Correction 1 exists because "has this
+    exact send already gone out" and "is any prior outcome on this account still
+    unknown" are different questions; wiring this fake to the reservation rows
+    would rebuild the very defect under test.
+    """
+
+    def __init__(
+        self,
+        *,
+        unresolved: object = False,
+        error: BaseException | None = None,
+        cancel: bool = False,
+        gate: asyncio.Event | None = None,
+        started: asyncio.Event | None = None,
+        events: list[str] | None = None,
+    ) -> None:
+        self.calls: list[str] = []
+        self._unresolved = unresolved
+        self._error = error
+        self._cancel = cancel
+        self._gate = gate
+        self._started = started
+        self._events = events
+
+    async def has_unresolved_account_uncertainty(
+        self, *, claim_account_scope: str
+    ) -> bool:
+        self.calls.append(claim_account_scope)
+        if self._events is not None:
+            self._events.append("uncertainty_query")
+        if self._started is not None:
+            self._started.set()
+        if self._gate is not None:
+            await self._gate.wait()
+        if self._cancel:
+            raise asyncio.CancelledError()
+        if self._error is not None:
+            raise self._error
+        return self._unresolved  # type: ignore[return-value]
+
+
 class FakeIntents:
     """Structural stand-in for ``OrderSendIntentService`` (binary claims only)."""
 
@@ -775,12 +819,14 @@ def _coordination_kwargs(
     intents: FakeIntents,
     factory: ConnectionFactory,
     callback: RecordingCallback,
+    uncertainty_gate: Any = None,
 ) -> dict[str, Any]:
     return {
         "envelope": envelope,
         "registry": lane_registry,
         "persistence": persistence,
         "dispatch_evidence": evidence,
+        "uncertainty_gate": uncertainty_gate,
         "claims": DurableSendClaimAdapter(intents),
         "connection_factory": factory,
         "mutation": callback,
@@ -798,6 +844,7 @@ def _default_stack(events: list[str] | None = None) -> dict[str, Any]:
         "evidence": RecordingDispatchEvidence(events=events),
         "intents": FakeIntents(events=events),
         "callback": RecordingCallback(events=events),
+        "uncertainty_gate": FakeUncertaintyGate(events=events),
     }
 
 
@@ -816,6 +863,7 @@ async def _run(
             intents=stack["intents"],
             factory=stack["factory"],
             callback=stack["callback"],
+            uncertainty_gate=stack.get("uncertainty_gate"),
         )
     )
 
@@ -2199,6 +2247,10 @@ async def test_claim_persist_precedes_reserve_precedes_callback_precedes_release
 
     assert events == [
         "persist_pre",
+        # Correction 1: the account-uncertainty authority is asked after the
+        # lease is held and before the claim is reserved, so the answer cannot
+        # go stale between the check and its use.
+        "uncertainty_query",
         "reserve",
         "callback_start",
         "callback_end",
@@ -2275,41 +2327,110 @@ async def test_claim_duplicate_binary_claim_maps_to_durable_claim_conflict():
 
 
 @pytest.mark.asyncio
-async def test_claim_account_wide_unresolved_reservation_blocks_a_different_order():
+async def test_claim_ack_correlated_open_claim_does_not_block_an_unrelated_plan():
+    """Correction 1 / AC1: a known open order is a position, not an unknown.
+
+    The lease serializes broker-mutation critical sections; it is not an
+    account-lifecycle mutex. A durable claim is keyed to one immutable send
+    lineage and prevents replay of *that* send. Neither of them says an account
+    is unsafe, so a durably ACK-correlated open order must not, by itself, stop
+    an unrelated execution plan.
+    """
+
     _, first_envelope = _attempt_envelope()
     _, second_envelope = _attempt_envelope(
-        attempt_overrides={"cycle_id": "cycle-j3a-2"}
-    )
-    assert (
-        first_envelope.order_attempt.idempotency_key
-        != second_envelope.order_attempt.idempotency_key
+        attempt_overrides={"cycle_id": "cycle-j3a-8"}
     )
     space = FakeLockSpace()
     intents = FakeIntents()
+
     first_stack = _default_stack()
     first_stack["space"] = space
     first_stack["connection"] = FakeLockConnection(space, pid=1)
     first_stack["factory"] = ConnectionFactory(first_stack["connection"])
     first_stack["intents"] = intents
-
-    await _run(first_envelope, first_stack)
+    first_stack["callback"] = RecordingCallback(
+        result=MutationCallbackResult(
+            certainty=MutationCertainty.DEFINITIVE, broker_order_id="ODNO-0000042"
+        )
+    )
+    first = await _run(first_envelope, first_stack)
+    # Durably attributed native id and an immutable ACK: the outcome is known.
+    assert first.evidence.kind is DispatchEvidenceKind.ACKNOWLEDGED
+    assert first.evidence.broker_order_id == "ODNO-0000042"
     assert len(intents.rows) == 1
 
     second_stack = _default_stack()
     second_stack["connection"] = FakeLockConnection(space, pid=2)
     second_stack["factory"] = ConnectionFactory(second_stack["connection"])
     second_stack["intents"] = intents
+    # The authority reports the account settled — the open claim is not evidence
+    # of uncertainty and is deliberately not consulted for this question.
+    second_stack["uncertainty_gate"] = FakeUncertaintyGate(unresolved=False)
 
+    second = await _run(second_envelope, second_stack)
+
+    assert second_stack["callback"].calls == 1
+    assert second.claim.idempotency_key != first.claim.idempotency_key
+    # A second exact claim exists, and the first is untouched.
+    assert len(intents.rows) == 2
+    assert first.claim.row_id in intents.rows
+    assert intents.release_if_matches_calls == []
+    # The authority was asked about this exact physical account.
+    assert second_stack["uncertainty_gate"].calls == [second.scope.claim_account_scope]
+
+
+@pytest.mark.asyncio
+async def test_claim_same_exact_lineage_is_still_blocked_by_the_binary_claim():
+    """Correction 1 / AC2: replay protection is unchanged and is the claim's job."""
+
+    _, envelope = _attempt_envelope()
+    space = FakeLockSpace()
+    intents = FakeIntents()
+
+    first_stack = _default_stack()
+    first_stack["space"] = space
+    first_stack["connection"] = FakeLockConnection(space, pid=1)
+    first_stack["factory"] = ConnectionFactory(first_stack["connection"])
+    first_stack["intents"] = intents
+    await _run(envelope, first_stack)
+    assert len(intents.rows) == 1
+
+    replay = _default_stack()
+    replay["connection"] = FakeLockConnection(space, pid=2)
+    replay["factory"] = ConnectionFactory(replay["connection"])
+    replay["intents"] = intents
+    replay["uncertainty_gate"] = FakeUncertaintyGate(unresolved=False)
+
+    # Same exact idempotency/lineage, and the account is settled: the block comes
+    # from the reservation's unique conflict, not from an account-wide gate.
     with pytest.raises(CoordinationError) as excinfo:
-        await _run(second_envelope, second_stack)
-
+        await _run(envelope, replay)
     assert excinfo.value.reason_code is CoordinationReasonCode.DURABLE_CLAIM_CONFLICT
-    assert second_stack["callback"].calls == 0
+    assert replay["callback"].calls == 0
     assert len(intents.rows) == 1
 
 
 @pytest.mark.asyncio
-async def test_claim_survives_a_crash_and_blocks_the_next_lease_owner():
+async def test_claim_unresolved_account_uncertainty_blocks_even_a_different_plan():
+    """Correction 1 / AC3: an *unknown* prior outcome does block the account."""
+
+    _, envelope = _attempt_envelope(attempt_overrides={"cycle_id": "cycle-j3a-7"})
+    stack = _default_stack()
+    stack["uncertainty_gate"] = FakeUncertaintyGate(unresolved=True)
+
+    with pytest.raises(CoordinationError) as excinfo:
+        await _run(envelope, stack)
+
+    assert excinfo.value.reason_code is CoordinationReasonCode.DURABLE_CLAIM_CONFLICT
+    # Nothing was reserved and nothing was sent.
+    assert stack["intents"].reserve_calls == []
+    assert stack["intents"].rows == {}
+    assert stack["callback"].calls == 0
+
+
+@pytest.mark.asyncio
+async def test_claim_survives_a_crash_and_uncertainty_blocks_the_next_owner():
     _, envelope = _attempt_envelope()
     _, next_envelope = _attempt_envelope(attempt_overrides={"cycle_id": "cycle-j3a-9"})
     space = FakeLockSpace()
@@ -2334,13 +2455,35 @@ async def test_claim_survives_a_crash_and_blocks_the_next_lease_owner():
     successor["connection"] = FakeLockConnection(space, pid=2)
     successor["factory"] = ConnectionFactory(successor["connection"])
     successor["intents"] = intents
+    # A callback that died mid-send leaves the outcome uncorrelated, which is
+    # what the lane's authority reports. Correction 1: the successor is stopped
+    # by *that*, not by the surviving claim row — the row only proves this exact
+    # send was already attempted.
+    successor["uncertainty_gate"] = FakeUncertaintyGate(unresolved=True)
+    reserves_before = len(intents.reserve_calls)
 
     with pytest.raises(CoordinationError) as excinfo:
         await _run(next_envelope, successor)
 
     assert excinfo.value.reason_code is CoordinationReasonCode.DURABLE_CLAIM_CONFLICT
     assert successor["callback"].calls == 0
+    # No new reservation was even attempted: the gate is asked before reserve.
+    assert len(intents.reserve_calls) == reserves_before
     assert len(intents.rows) == 1
+
+    # And once the lane can correlate that outcome, an unrelated plan proceeds
+    # even though the crashed send's claim is still on the account.
+    settled = _default_stack()
+    settled["connection"] = FakeLockConnection(space, pid=3)
+    settled["factory"] = ConnectionFactory(settled["connection"])
+    settled["intents"] = intents
+    settled["uncertainty_gate"] = FakeUncertaintyGate(unresolved=False)
+    _, third_envelope = _attempt_envelope(
+        attempt_overrides={"cycle_id": "cycle-j3a-10"}
+    )
+    await _run(third_envelope, settled)
+    assert settled["callback"].calls == 1
+    assert len(intents.rows) == 2
 
 
 @pytest.mark.asyncio
@@ -2394,7 +2537,7 @@ async def test_claim_terminal_evidence_plus_reconcile_permits_exact_release():
         "claimed_absence_without_reconcile",
     ],
 )
-async def test_claim_insufficient_evidence_retains_the_claim_and_the_account_block(
+async def test_claim_insufficient_evidence_retains_the_exact_claim(
     evidence: coordination.TerminalClaimEvidence,
 ):
     _, envelope = _attempt_envelope()
@@ -2411,7 +2554,10 @@ async def test_claim_insufficient_evidence_retains_the_claim_and_the_account_blo
     # The evidence-less delete never reached the database at all.
     assert stack["intents"].release_if_matches_calls == []
     assert len(stack["intents"].rows) == 1
-    assert await adapter.account_has_unresolved_claim(result.scope) is True
+    # Correction 1 / AC8: the retained row proves this exact send was made. It is
+    # deliberately NOT asserted to block unrelated plans — that question belongs
+    # to the account-uncertainty authority, and the adapter no longer answers it.
+    assert not hasattr(adapter, "account_has_unresolved_claim")
 
 
 @pytest.mark.asyncio
@@ -3244,6 +3390,7 @@ async def test_claim_evidence_ack_attachment_failure_is_durable_before_release()
                 intents=stack["intents"],
                 factory=stack["factory"],
                 callback=stack["callback"],
+                uncertainty_gate=stack.get("uncertainty_gate"),
             ),
             lineage_factory=_FailingAckFactory(),
         )
@@ -3282,6 +3429,7 @@ async def test_claim_evidence_ack_failure_with_broken_durability_keeps_the_hold(
                 intents=stack["intents"],
                 factory=stack["factory"],
                 callback=stack["callback"],
+                uncertainty_gate=stack.get("uncertainty_gate"),
             ),
             lineage_factory=_FailingAckFactory(),
         )
@@ -4517,6 +4665,7 @@ async def test_claim_registry_swapped_during_reserve_never_reaches_the_callback(
                     intents=stack["intents"],
                     factory=stack["factory"],
                     callback=stack["callback"],
+                    uncertainty_gate=stack.get("uncertainty_gate"),
                 ),
                 "registry": MutatingRegistry(),
             }
@@ -4885,6 +5034,7 @@ async def test_claim_cancelled_ack_attachment_still_reaches_both_writes():
                 intents=stack["intents"],
                 factory=stack["factory"],
                 callback=stack["callback"],
+                uncertainty_gate=stack.get("uncertainty_gate"),
             ),
             lineage_factory=_CancellingAckFactory(),
         )
@@ -5334,6 +5484,7 @@ async def test_claim_scope_local_pinned_entry_check_is_independently_load_bearin
                     intents=stack["intents"],
                     factory=stack["factory"],
                     callback=stack["callback"],
+                    uncertainty_gate=stack.get("uncertainty_gate"),
                 ),
                 "registry": LateSwitchingRegistry(),
             }
@@ -5679,6 +5830,7 @@ async def test_scope_authorized_future_consumer_may_import_and_use_the_port():
             intents=stack["intents"],
             factory=stack["factory"],
             callback=stack["callback"],
+            uncertainty_gate=stack.get("uncertainty_gate"),
         ),
         # A broker lane supplies its own extra keys; J3A never chooses them.
         additional_advisory_keys=(4242,),
@@ -5842,37 +5994,53 @@ async def test_lock_real_postgres_multi_key_rollback_leaves_nothing_held(db_sess
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_claim_real_order_send_intent_service_round_trip(db_session):
+async def test_claim_real_order_send_intent_service_exact_lineage_round_trip(
+    db_session,
+):
+    """AC9: against the real service, the claim is an exact-lineage record only.
+
+    Correction 1: this test deliberately proves nothing about account lifecycle
+    or uncertainty. `has_reservations()` is not consulted, because "some row
+    exists on this account" is not an answer to "is a prior outcome unknown" —
+    that question belongs to the injected `AccountUncertaintyGatePort`.
+    """
+
     _, envelope = _attempt_envelope(attempt_overrides={"cycle_id": "pg-claim"})
+    _, other = _attempt_envelope(attempt_overrides={"cycle_id": "pg-claim-other"})
     scope = physical_account_scope_for_entry(
         _fully_bound_entry(
             envelope, "kr.kis.mock", physical_account_id="rob-1262-pg-claim"
         )
     )
     adapter = DurableSendClaimAdapter(OrderSendIntentService(db_session))
-    idempotency_key = envelope.order_attempt.idempotency_key
+    key = envelope.order_attempt.idempotency_key
+    other_key = other.order_attempt.idempotency_key
+    assert key != other_key
 
-    assert await adapter.account_has_unresolved_claim(scope) is False
     claim = await adapter.reserve(
-        scope=scope, idempotency_key=idempotency_key, symbol="005930", side="buy"
+        scope=scope, idempotency_key=key, symbol="005930", side="buy"
     )
+    second: Any = None
     try:
-        assert await adapter.account_has_unresolved_claim(scope) is True
+        # The same exact lineage is refused by the unique constraint.
         with pytest.raises(CoordinationError) as excinfo:
             await adapter.reserve(
-                scope=scope,
-                idempotency_key=idempotency_key,
-                symbol="005930",
-                side="buy",
+                scope=scope, idempotency_key=key, symbol="005930", side="buy"
             )
         assert excinfo.value.reason_code is (
             CoordinationReasonCode.DURABLE_CLAIM_CONFLICT
         )
+        # A *different* exact lineage on the same account is accepted: the row
+        # is not an account-wide block.
+        second = await adapter.reserve(
+            scope=scope, idempotency_key=other_key, symbol="005930", side="buy"
+        )
+        assert second.idempotency_key == other_key
+        # Evidence-less release still removes nothing.
         with pytest.raises(CoordinationError):
             await adapter.release_with_terminal_evidence(
                 claim, coordination.TerminalClaimEvidence()
             )
-        assert await adapter.account_has_unresolved_claim(scope) is True
     finally:
         deleted = await adapter.release_with_terminal_evidence(
             claim,
@@ -5882,8 +6050,21 @@ async def test_claim_real_order_send_intent_service_round_trip(db_session):
                 remainder_known=True,
             ),
         )
-    assert deleted == 1
-    assert await adapter.account_has_unresolved_claim(scope) is False
+        assert deleted == 1
+        if second is not None:
+            # Exact release removed only the matching row; the sibling survived
+            # until its own evidence arrived.
+            assert (
+                await adapter.release_with_terminal_evidence(
+                    second,
+                    coordination.TerminalClaimEvidence(
+                        lane_native_terminal_evidence=True,
+                        account_position_reconciled=True,
+                        remainder_known=True,
+                    ),
+                )
+                == 1
+            )
 
 
 # ===========================================================================
@@ -7461,3 +7642,200 @@ async def test_lock_rollback_that_retains_then_raises_makes_only_one_hold(monkey
     assert connection.closed is False
     # And exactly one history row for it, not two.
     assert len([h for h in authority_hold_history() if h.hold_id == hold_id]) == 1
+
+
+# ===========================================================================
+# §Correction 1 — the account-uncertainty authority is separate and fail-closed
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_claim_definitive_without_attributed_id_is_judged_by_the_authority():
+    """AC4: J3A never infers 'settled' from the presence of a binary row.
+
+    A definitive callback that produced no attributed native order id is exactly
+    the state a lane may still consider uncorrelated. J3A does not decide that
+    from its own tables — it asks, and it obeys the answer.
+    """
+
+    _, first = _attempt_envelope()
+    space = FakeLockSpace()
+    intents = FakeIntents()
+    stack = _default_stack()
+    stack["space"] = space
+    stack["connection"] = FakeLockConnection(space, pid=1)
+    stack["factory"] = ConnectionFactory(stack["connection"])
+    stack["intents"] = intents
+    stack["callback"] = RecordingCallback(
+        result=MutationCallbackResult(certainty=MutationCertainty.DEFINITIVE)
+    )
+    result = await _run(first, stack)
+    # Definitive, but with no attributed native id and therefore no ACK.
+    assert result.evidence.kind is DispatchEvidenceKind.DEFINITIVE_WITHOUT_BROKER_ID
+    assert result.evidence.broker_order_id is None
+    assert len(intents.rows) == 1
+
+    _, second = _attempt_envelope(attempt_overrides={"cycle_id": "cycle-j3a-11"})
+    successor = _default_stack()
+    successor["connection"] = FakeLockConnection(space, pid=2)
+    successor["factory"] = ConnectionFactory(successor["connection"])
+    successor["intents"] = intents
+    successor["uncertainty_gate"] = FakeUncertaintyGate(unresolved=True)
+
+    with pytest.raises(CoordinationError) as excinfo:
+        await _run(second, successor)
+    assert excinfo.value.reason_code is CoordinationReasonCode.DURABLE_CLAIM_CONFLICT
+    assert successor["callback"].calls == 0
+
+
+@pytest.mark.parametrize(
+    "flavour",
+    [
+        "missing",
+        "raises",
+        "returns_truthy_string",
+        "returns_falsy_zero",
+        "returns_none",
+    ],
+)
+@pytest.mark.asyncio
+async def test_claim_uncertainty_authority_failures_are_fail_closed(flavour):
+    """AC5: missing, failing, or mistyped authority answers block the send.
+
+    ``"0"`` is truthy and ``0`` is falsy; neither is an answer to "is this
+    account settled". Deciding a broker-safety question on an accidental
+    truthiness is the failure mode this rejects, so only an exact ``bool`` is
+    accepted and everything else is unavailability.
+    """
+
+    _, envelope = _attempt_envelope()
+    stack = _default_stack()
+    if flavour == "missing":
+        stack["uncertainty_gate"] = None
+    elif flavour == "raises":
+        stack["uncertainty_gate"] = FakeUncertaintyGate(
+            error=RuntimeError("lane evidence store unreachable")
+        )
+    elif flavour == "returns_truthy_string":
+        stack["uncertainty_gate"] = FakeUncertaintyGate(unresolved="false")
+    elif flavour == "returns_falsy_zero":
+        stack["uncertainty_gate"] = FakeUncertaintyGate(unresolved=0)
+    else:
+        stack["uncertainty_gate"] = FakeUncertaintyGate(unresolved=None)
+
+    with pytest.raises(CoordinationError) as excinfo:
+        await _run(envelope, stack)
+
+    assert excinfo.value.reason_code is (
+        CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE
+    ), flavour
+    assert stack["intents"].reserve_calls == [], flavour
+    assert stack["intents"].rows == {}, flavour
+    assert stack["callback"].calls == 0, flavour
+    if flavour == "missing":
+        # Fail-closed before the lease is ever taken.
+        assert stack["factory"].calls == 0
+        assert stack["connection"].lock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_claim_cancellation_during_the_uncertainty_query_is_redelivered():
+    """AC6: a pre-send cancellation stops cleanly and is re-delivered."""
+
+    _, envelope = _attempt_envelope()
+    gate, started = asyncio.Event(), asyncio.Event()
+    stack = _default_stack()
+    stack["uncertainty_gate"] = FakeUncertaintyGate(gate=gate, started=started)
+    holds_before = {h.hold_id for h in unreleased_authority_holds()}
+
+    task = asyncio.ensure_future(_run(envelope, stack))
+    await started.wait()
+    task.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Nothing was reserved and nothing was sent, and the lease was surrendered.
+    assert stack["intents"].reserve_calls == []
+    assert stack["callback"].calls == 0
+    assert stack["connection"].closed is True
+    # The lease was proven released, so this cancellation left no new stuck
+    # authority behind.
+    assert {h.hold_id for h in unreleased_authority_holds()} == holds_before
+
+
+@pytest.mark.parametrize("outcome", ["attributed_ack", "durable_uncertainty"])
+@pytest.mark.asyncio
+async def test_claim_lease_releases_while_the_claim_remains(outcome):
+    """AC7: distinct lifetimes — the lease goes, the claim stays.
+
+    Both durable writes land, so the ephemeral advisory lease may be released.
+    The claim outlives it and is removed only by terminal evidence plus
+    reconcile, never by lease release, backend termination, GC or time.
+    """
+
+    _, envelope = _attempt_envelope()
+    stack = _default_stack()
+    if outcome == "attributed_ack":
+        stack["callback"] = RecordingCallback(
+            result=MutationCallbackResult(
+                certainty=MutationCertainty.DEFINITIVE, broker_order_id="ODNO-0000077"
+            )
+        )
+    else:
+        stack["callback"] = RecordingCallback(
+            result=MutationCallbackResult(certainty=MutationCertainty.UNCERTAIN)
+        )
+
+    result = await _run(envelope, stack)
+
+    assert stack["persistence"].calls == 2
+    assert stack["evidence"].calls == 1
+    # Lease surrendered...
+    assert stack["connection"].closed is True
+    assert stack["space"].held == {}
+    # ...claim retained, and never released by anything but exact evidence.
+    assert len(stack["intents"].rows) == 1
+    assert stack["intents"].release_if_matches_calls == []
+    assert stack["intents"].unrestricted_release_calls == 0
+    assert result.claim.row_id in stack["intents"].rows
+
+
+def test_scope_no_account_wide_claim_prose_survives():
+    """AC10: the retired 'claim == account block' framing must not come back.
+
+    Word-presence checks are false green here — the correction is about what the
+    sentences *say*. These are exact propositions, plus the verbatim block the
+    contract is required to carry.
+    """
+
+    source = pathlib.Path(coordination.__file__).read_text()
+    contract = (REPO_ROOT / "docs/contracts/rob-1262-coordination-port.md").read_text()
+
+    for text, label in ((source, "source"), (contract, "contract")):
+        flat = " ".join(text.split()).lower()
+        for retired in (
+            "the durable claim is the entire account block",
+            "mere existence is the account-wide block",
+            "any unresolved reservation blocks every new order",
+            "any reservation blocks the account",
+        ):
+            assert retired not in flat, f"{label}: stale phrase {retired!r}"
+
+    # The coordinator must not reach the generic reservation predicates.
+    assert "has_reservations" not in source
+    assert "account_has_unresolved_claim" not in source
+
+    # The verbatim correction is carried in the contract, not paraphrased.
+    for sentence in (
+        "it is not an account-lifecycle mutex",
+        "a durable send claim is keyed to the exact immutable send lineage",
+        "a durably ack-correlated open order continues through lane-native "
+        "lifecycle tracking and does not, by itself, block unrelated execution plans",
+        "that restriction must be declared as an activation policy",
+        "the advisory lease and the durable claim have distinct lifetimes",
+        "backend termination proves only cessation of lease authority",
+    ):
+        assert sentence in " ".join(contract.split()).lower(), sentence

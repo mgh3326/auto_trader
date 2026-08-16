@@ -23,9 +23,13 @@ Three distinctions this module refuses to blur:
   requires a real ``terminate_backend_session`` that raises unless severance is
   positively demonstrated, and an authority without one is rejected before any
   lock is taken.
-* **A lease release is not a claim release.**  The lease is ephemeral process
-  coordination; the durable claim is the account block.  Only
-  :meth:`DurableSendClaimAdapter.release_with_terminal_evidence` removes a claim.
+* **A lease release is not a claim release.**  They have distinct lifetimes: the
+  lease is ephemeral process coordination over a broker-mutation critical
+  section, while the claim is durable proof that one exact send lineage was
+  attempted.  Once both post-send writes have committed, the lease may be
+  released while the claim remains.  Only
+  :meth:`DurableSendClaimAdapter.release_with_terminal_evidence` removes a claim,
+  and backend termination is never evidence for it.
 * **Cleanup is not permitted while the outcome is unknown.**  If the durable
   evidence of what happened to a dispatch cannot be written, this process keeps
   the writer authority and records an auditable
@@ -364,9 +368,19 @@ class SqlAlchemyLockAuthority:
                 raise BackendSessionTerminationUnproven(
                     "the backend is still present in pg_stat_activity"
                 )
-            # Absence is proven *here*. The receipt is built before any cleanup
-            # so that a cancellation during a close cannot erase a proof we
-            # already hold and manufacture a false active hold.
+            # Absence is proven *here*, and the receipt is built here — before
+            # either close — so the proof never depends on cleanup succeeding.
+            #
+            # Be precise about what carries that guarantee today: it is
+            # ``_close_quietly`` being total, not this ordering. It swallows
+            # BaseException around its only await, so a cancellation during a
+            # close cannot propagate and could not erase a receipt built after
+            # it either. Building first is therefore defence in depth — it keeps
+            # the proof correct if cleanup ever stops being total — and it reads
+            # in causal order. A mutant that moves this construction after both
+            # closes is provably indistinguishable on the current shape; the
+            # load-bearing property is the one below it, that no receipt exists
+            # until absence has been proven.
             receipt = BackendTerminationReceipt(
                 backend_pid=expected_pid, owner_token=owner_token, terminated=True
             )
@@ -1614,6 +1628,48 @@ async def _rollback_partial_acquisition(
 
 
 @runtime_checkable
+class AccountUncertaintyGatePort(Protocol):
+    """Whether any prior mutation outcome on this physical account is unresolved.
+
+    This is a *different question* from "has this exact send been made before",
+    and conflating the two is the defect this port exists to remove. A durable
+    binary claim answers only the second: it is keyed to one immutable send
+    lineage and prevents replay of that logical send. It is not an
+    account-lifecycle mutex, and its mere existence says nothing about whether an
+    earlier order's outcome is known.
+
+    An account-wide block is warranted only while a prior outcome remains
+    *uncorrelated or uncertain* — including the absence of a durably attributed
+    native broker order id and immutable ACK. A durably ACK-correlated open order
+    is a tracked position, not an unknown, and it does not by itself stop an
+    unrelated execution plan.
+
+    J3A does not implement this. Read-only and broker-neutral by construction:
+    the aggregation of lane-native evidence into a physical-account answer
+    belongs to the lane that owns that evidence. Nothing here reads back from a
+    broker, retries, queues, or keeps state.
+    """
+
+    async def has_unresolved_account_uncertainty(
+        self, *, claim_account_scope: str
+    ) -> bool: ...
+
+
+def require_account_uncertainty_gate(
+    gate: AccountUncertaintyGatePort | None, /
+) -> AccountUncertaintyGatePort:
+    """Fail closed when a lane has not supplied its uncertainty authority.
+
+    Checked before the lease is taken: a coordinator that cannot ask whether the
+    account is settled must not acquire authority, reserve, or send.
+    """
+
+    if gate is None or not isinstance(gate, AccountUncertaintyGatePort):
+        raise CoordinationError(CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE)
+    return gate
+
+
+@runtime_checkable
 class OrderSendIntentReservationPort(Protocol):
     """The exact binary-reservation surface J3A consumes.
 
@@ -1621,8 +1677,6 @@ class OrderSendIntentReservationPort(Protocol):
     of this port, so no coordination path can reach it; only the evidence-gated
     ``release_if_matches`` below may remove a claim.
     """
-
-    async def has_reservations(self, *, account_scope: str) -> bool: ...
 
     async def reserve(
         self,
@@ -1651,8 +1705,11 @@ class DurableClaim:
     """One binary reservation row observed before external I/O.
 
     This is a claim, not a lifecycle record: there is no state, no hold field,
-    no retry counter, and no broker order id.  Its mere existence is the
-    account-wide block.
+    no retry counter, and no broker order id.  It is keyed to the exact immutable
+    send lineage and prevents replay of *that* logical send — nothing more.  Its
+    existence says nothing about whether some earlier order's outcome is known,
+    so it is not an account-wide block; that question belongs to
+    :class:`AccountUncertaintyGatePort`.
     """
 
     row_id: int
@@ -1682,8 +1739,8 @@ class TerminalClaimEvidence:
         """Every field is a real ``bool``, not merely something truthy.
 
         The string ``"false"`` is truthy. So is ``"0"``. Accepting either here
-        would let a mistyped field authorize the deletion of the durable claim
-        that is the entire account block.
+        would let a mistyped field authorize the deletion of the durable proof
+        that this exact send lineage was attempted.
         """
 
         return all(
@@ -1731,15 +1788,6 @@ class DurableSendClaimAdapter:
 
     def __init__(self, intents: OrderSendIntentReservationPort) -> None:
         self._intents = intents
-
-    async def account_has_unresolved_claim(self, scope: PhysicalAccountScope) -> bool:
-        """Any unresolved reservation blocks every new order on the account."""
-
-        return bool(
-            await self._intents.has_reservations(
-                account_scope=scope.claim_account_scope
-            )
-        )
 
     async def reserve(
         self,
@@ -1966,8 +2014,8 @@ class DispatchEvidence:
     later reconciler can tie the unknown back to its exact intent, plan, and
     attempt without reading this process's memory.  There is no free-form broker
     state and no reason code here — native lifecycle detail belongs to the lane's
-    own service, and the durable claim referenced here remains the account block
-    until evidence-gated release.
+    own service, and the durable claim referenced here remains recorded against
+    that exact lineage until evidence-gated release.
     """
 
     envelope: LineageEnvelope
@@ -2313,11 +2361,51 @@ def _validated_entry(
     return entry
 
 
+async def _account_uncertainty(
+    gate: AccountUncertaintyGatePort, scope: PhysicalAccountScope
+) -> tuple[bool, BaseException | None, asyncio.CancelledError | None]:
+    """Ask the authority, and accept only an exact ``bool``.
+
+    A truthy string, a stray integer, or ``None`` are not answers to "is this
+    account settled"; treating them as one would decide a broker-safety question
+    by accident. Anything other than ``True``/``False`` — and any raised
+    exception — fails closed as unavailability, before any reservation or send.
+
+    The call is retained the same way the durable writes are, so a cancellation
+    arriving mid-question cannot leave the question half-asked.
+    """
+
+    answered: list[object] = []
+
+    async def ask() -> None:
+        answered.append(
+            await gate.has_unresolved_account_uncertainty(
+                claim_account_scope=scope.claim_account_scope
+            )
+        )
+
+    error, cancellation = await _run_retained(ask)
+    if error is not None or cancellation is not None:
+        return False, error, cancellation
+    answer = answered[0] if answered else None
+    if answer is not True and answer is not False:
+        return (
+            False,
+            TypeError(
+                "account uncertainty gate returned "
+                f"{type(answer).__name__}, expected exactly bool"
+            ),
+            None,
+        )
+    return answer, None, None
+
+
 async def coordinate_mock_order_mutation(
     *,
     envelope: LineageEnvelope,
     persistence: LineagePersistencePort | None,
     dispatch_evidence: DispatchEvidencePort | None,
+    uncertainty_gate: AccountUncertaintyGatePort | None,
     claims: DurableSendClaimAdapter,
     connection_factory: LockAuthorityConnectionFactory,
     mutation: MockMutationCallback,
@@ -2334,7 +2422,8 @@ async def coordinate_mock_order_mutation(
         3. persist the immutable envelope — and abort here if the caller was
            cancelled, rather than proceeding to a lease, a claim, and a send
         4. acquire the authoritative physical-account lease
-        5. check account-wide unresolved reservations
+        5. ask the injected authority whether a prior outcome is still
+           uncorrelated or uncertain — never inferred from the binary claim
         6. reserve and COMMIT the binary claim
         7. re-assert lease ownership and re-run the lane guards
         8. invoke the injected callback, retained against cancellation
@@ -2364,6 +2453,7 @@ async def coordinate_mock_order_mutation(
     scope = physical_account_scope_for_entry(entry)
     port = _required_persistence(persistence)
     evidence_port = require_dispatch_evidence_port(dispatch_evidence)
+    gate = require_account_uncertainty_gate(uncertainty_gate)
 
     persist_error, persist_cancellation = await _run_retained(
         lambda: port.persist(envelope)
@@ -2386,7 +2476,22 @@ async def coordinate_mock_order_mutation(
     claim: DurableClaim | None = None
     held: _HeldCoordination | None = None
     try:
-        if await claims.account_has_unresolved_claim(scope):
+        # Asked *after* the lease is held and *before* the claim is reserved:
+        # any earlier vantage point would be a check whose answer could change
+        # before it is used.
+        unresolved, gate_error, gate_cancellation = await _account_uncertainty(
+            gate, scope
+        )
+        if gate_error is not None:
+            raise CoordinationError(
+                CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE,
+                lane_id=entry.lane_id,
+            ) from gate_error
+        if gate_cancellation is not None:
+            raise gate_cancellation
+        if unresolved:
+            # An unknown prior outcome blocks the whole account, including
+            # unrelated plans. A *known* open order does not reach here.
             raise CoordinationError(
                 CoordinationReasonCode.DURABLE_CLAIM_CONFLICT, lane_id=entry.lane_id
             )
@@ -2629,6 +2734,7 @@ __all__ = [
     "LANE_FENCING_MATRIX",
     "LEASE_TTL_SECONDS",
     "NOT_BROKER_ENFORCED_FENCING_STATEMENT",
+    "AccountUncertaintyGatePort",
     "AdvisoryLockRow",
     "BackendSessionTerminationUnproven",
     "BackendTerminationReceipt",
@@ -2659,6 +2765,7 @@ __all__ = [
     "held_coordinations",
     "ordered_advisory_keyset",
     "physical_account_scope_for_entry",
+    "require_account_uncertainty_gate",
     "require_dispatch_evidence_port",
     "row_proves_ownership",
     "split_advisory_key",

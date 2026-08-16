@@ -152,9 +152,10 @@ store, not a hold store, not a broker-order-id store, not a retry queue. J3A
 adapts the existing `OrderSendIntentService` and never edits it into a state
 machine. The unrestricted `release` is not part of the consumed port.
 
-An existing reservation on the physical account is the account block. It is
-removed only by an evidence-gated `release_if_matches` after lane-native terminal
-evidence **plus** account/position reconciliation. Unknown, anomaly, rejection
+A reservation records that **one exact send lineage** was attempted; it prevents
+replay of that logical send and is not an account-wide block. It is removed only
+by an evidence-gated `release_if_matches` after lane-native terminal evidence
+**plus** account/position reconciliation. Unknown, anomaly, rejection
 without proven absence, and partial fills with an unknown remainder all retain
 it. Nothing releases a claim automatically, and there is no clock in this module
 to make that possible.
@@ -168,7 +169,10 @@ to make that possible.
 3. persist the immutable envelope — a cancellation observed here aborts before
    any lease, reservation, or send
 4. acquire the physical-account lease
-5. check account-wide unresolved reservations
+5. ask the injected `AccountUncertaintyGatePort` whether a prior outcome on this
+   physical account is still uncorrelated or uncertain — asked here, after the
+   lease and before the reservation, so the answer cannot go stale between the
+   check and its use, and never inferred from the binary claim
 6. reserve and COMMIT the binary claim
 7. re-assert lease ownership and re-run the lane guards
 8. register the strong held-coordination handle and seal the lease, then invoke
@@ -296,6 +300,60 @@ a rejection.
 Reachability is projected onto a record only when that record *is* the exact
 object the active map holds under its id. Looking the id up as a string would
 let a retired generation's history row report a later owner's recoverability.
+
+### What the lease is, what the claim is, and what neither is
+
+The physical-account advisory lease serializes broker-mutation critical
+sections; it is not an account-lifecycle mutex.
+
+A durable send claim is keyed to the exact immutable send lineage. The
+exact-lineage claim continues to prevent replay of that logical send.
+
+An account-wide unresolved-claim gate blocks unrelated new sends only while
+a prior mutation outcome remains uncorrelated or uncertain, including the
+absence of a durably attributed native broker order ID and immutable ACK.
+
+A durably ACK-correlated open order continues through lane-native lifecycle
+tracking and does not, by itself, block unrelated execution plans, subject
+to the lane's max_open_orders, exposure caps, and policy vetoes.
+
+If an epoch intentionally requires one-order-at-a-time terminal canaries,
+that restriction must be declared as an activation policy, not inferred
+from the generic durable-claim invariant.
+
+The advisory lease and the durable claim have distinct lifetimes.
+
+After the mutation callback has reached either a definitive attributed
+result or a durably recorded uncertainty, and the required lineage and
+dispatch evidence has committed, the advisory lease may be explicitly
+released.
+
+The durable claim may remain after lease release until its evidence-gated
+release condition is satisfied.
+
+Backend termination proves only cessation of lease authority. It is never
+broker-outcome evidence and never, by itself, authorizes durable-claim
+release.
+
+### Who answers "is this account settled"
+
+`AccountUncertaintyGatePort` is a required, injected, read-only authority. The
+coordinator asks it **after** the lease is held and **before** the claim is
+reserved, so the answer cannot go stale between the check and its use.
+
+Only an exact `True` or `False` is an answer. A missing port, a raised
+exception, or any non-`bool` return fails closed as
+`lineage_persistence_unavailable`, with no reservation and no send; a missing
+port fails before the lease is even taken. No new reason code is introduced.
+
+J3A does not implement this port and never infers its answer from its own
+tables. Aggregating lane-native evidence into a physical-account verdict belongs
+to the lane that owns that evidence. Nothing here reads back from a broker,
+retries, queues, or holds state.
+
+A one-order-at-a-time canary is a lane **activation policy**, declared by the
+lane. The generic coordinator does not infer it from the durable-claim
+invariant.
 
 ### Duplicate retention is decided by exact record identity
 
