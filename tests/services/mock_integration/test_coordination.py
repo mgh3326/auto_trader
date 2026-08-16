@@ -7839,8 +7839,8 @@ async def test_claim_proven_backend_termination_does_not_release_the_claim():
 
 
 def test_scope_no_account_wide_claim_prose_survives():
-    """AC10 / r85: the retired framing must not return, and this guard must
-    actually be able to see it.
+    """AC10: the retired framing must not return in prose a contributor would
+    plausibly write.
 
     Forbidden is a sentence whose **subject is the claim or the reservation**
     asserting that it blocks the account. The opposite subject is correct and
@@ -7848,24 +7848,31 @@ def test_scope_no_account_wide_claim_prose_survives():
     post-correction contract, because the authority blocks an account, not the
     claim.
 
-    Three earlier versions were each too weak, and each weakness is closed here
-    with a mutant that proves it:
+    Guarantee grade, stated in the same form as the public surface's:
+    **detection of the enumerated shapes on the direct/supported prose surface,
+    not an oracle for sentences crafted to evade it.** A static prose matcher
+    can always be defeated by a sufficiently adversarial sentence, and chasing
+    that is not a reachable goal. What this guard owes is that ordinary prose
+    carrying the retired meaning is caught, and that the docstring never claims
+    more than the code does.
 
-    * it scanned only the *prefix* of this file up to this function, so anything
-      added below became silently unscanned. It now scans the whole file and
-      subtracts exactly this function's own source span, located with
-      ``inspect.getsource`` rather than by a comment claiming this is the last
-      function. A rule that cannot be enforced is not a rule;
-    * it exempted a match if any negation token appeared anywhere in a fixed
-      90-character window, so ``the claim blocks the account; it does not
-      authorize a broker mutation`` passed. Negation is now scoped to the clause
-      between that subject and that predicate;
-    * it exempted any occurrence of the substring ``gate`` just after the
-      subject, so ``claim gateway`` and ``claim, gated as settled`` passed. Only
-      the exact approved sentence from the verbatim correction is exempt;
-    * it used a fixed character window that crossed sentence boundaries in both
-      directions, attributing one sentence's predicate to another sentence's
-      subject. Matching is now per sentence.
+    The enumerated rules, so a reader can see the boundary rather than infer it:
+
+    * **subjects** — ``claim``, ``reservation``, ``binary row``, ``durable row``;
+    * **predicates** — the "blocks/keeps blocked the account / a successor /
+      unrelated / every new order" family listed below;
+    * **negation** — a negation token exempts a match only when it sits in the
+      sub-clause *immediately preceding* the predicate, after splitting the
+      span on conjunction boundaries (``, but``/``, and``/``, yet``/...).
+      A negation that denies some *other* verb does not exempt the predicate;
+    * **approved exemption** — a sentence is exempt only if, once normalized,
+      it is **equal in full** to an approved sentence. Splicing the approved
+      wording onto a forbidden tail is not an approved sentence;
+    * **scan span** — source, contract, and this whole test file minus exactly
+      this function's own source, located via ``inspect.getsource``;
+    * **sentence** — matching never crosses a sentence boundary, in either
+      direction, so one sentence's predicate is never attributed to another
+      sentence's subject.
 
     Scope, stated deliberately: the mutant **definitions** JSON is not scanned.
     `C1_stale_account_block_prose_restored` must contain the forbidden meaning as
@@ -7903,24 +7910,36 @@ def test_scope_no_account_wide_claim_prose_survives():
         "blocks every new order",
     )
     negations = ("does not", "never", "not ", "cannot", "no longer", "rather than")
-    # The one approved sentence whose subject is the authority, from the verbatim
-    # correction. Matched exactly — "gateway" and "gated" are not this.
-    approved = "unresolved-claim gate blocks unrelated new sends only while"
+    # Approved sentences from the verbatim correction, normalized and compared in
+    # FULL. Substring matching was the defect: it exempted any longer sentence
+    # that merely contained this wording, so an approved opening spliced onto a
+    # forbidden tail passed untouched.
+    approved_sentences = (
+        "an account-wide unresolved-claim gate blocks unrelated new sends only "
+        "while a prior mutation outcome remains uncorrelated or uncertain, "
+        "including the absence of a durably attributed native broker order id "
+        "and immutable ack",
+    )
+    # A negation only denies the verb of its own sub-clause.
+    conjunction = re.compile(r",\s*(?:but|and|yet|though|however|whereas|while)\s")
 
     for label, text in scanned.items():
         flat = " ".join(text.split()).lower()
         # Per sentence, so no predicate is ever attributed across a boundary.
         for sentence in re.split(r"[.;:!?]|\s-\s", flat):
-            if approved in sentence:
+            if sentence.strip() in approved_sentences:
                 continue
             for subject, predicate in itertools.product(subjects, predicates):
                 for sm in re.finditer(re.escape(subject), sentence):
                     pm = sentence.find(predicate, sm.end())
                     if pm == -1:
                         continue
-                    clause = sentence[sm.end() : pm]
-                    if any(n in clause for n in negations):
-                        continue  # this clause denies the assertion
+                    # Only the sub-clause immediately before the predicate can
+                    # deny it. "does not expire, but blocks the account" denies
+                    # `expire`, not `blocks the account`.
+                    governing = conjunction.split(sentence[sm.end() : pm])[-1]
+                    if any(n in governing for n in negations):
+                        continue
                     raise AssertionError(
                         f"{label}: '{subject}' asserts '{predicate}': "
                         f"...{sentence[max(0, sm.start() - 20) : pm + 40].strip()}..."
@@ -7932,12 +7951,17 @@ def test_scope_no_account_wide_claim_prose_survives():
         in " ".join(scanned["tests"].split()).lower()
     ), "the correct opposite-subject sentence was lost"
 
+    # Every approved sentence must still exist verbatim; otherwise the exemption
+    # above is silently dead and the guard's shape no longer matches the bytes.
+    contract_flat = " ".join(scanned["contract"].split()).lower()
+    for approved in approved_sentences:
+        assert approved in contract_flat, f"approved sentence missing: {approved}"
+
     # The coordinator must not reach the generic reservation predicates.
     assert "has_reservations" not in scanned["source"]
     assert "account_has_unresolved_claim" not in scanned["source"]
 
     # The verbatim correction is carried in the contract, not paraphrased.
-    contract_flat = " ".join(scanned["contract"].split()).lower()
     for sentence in (
         "it is not an account-lifecycle mutex",
         "a durable send claim is keyed to the exact immutable send lineage",
