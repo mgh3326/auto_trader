@@ -33,6 +33,7 @@ import json
 import pathlib
 import shutil
 import subprocess
+import traceback
 import weakref
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -3475,6 +3476,25 @@ async def test_cancel_bare_shield_finally_release_mutant_is_red():
 # ===========================================================================
 
 
+def _drop_exception_roots(error: BaseException) -> None:
+    """Clear frames along an exception chain before a GC lifetime assertion.
+
+    r35 U1: a raised exception keeps its traceback, and those frames keep their
+    locals — including the connection a rollback helper was handed. That is a
+    *non-module* strong root, so a `weakref() is not None` assertion downstream
+    would pass for the wrong reason and could not detect the module dropping its
+    own root. Clearing the chain first makes the assertion mean what it says.
+    """
+
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if current.__traceback__ is not None:
+            traceback.clear_frames(current.__traceback__)
+        current = current.__cause__ or current.__context__
+
+
 def _active_holds() -> dict[str, Any]:
     """Module-private active-hold map, read-only, for exact-record assertions."""
 
@@ -5184,6 +5204,11 @@ async def test_lock_rollback_task_error_still_retains_the_authority(monkeypatch)
         # Witness the exact originals before anything can retain them.
         captured["connection"] = weakref.ref(conn)
         captured["grant"] = weakref.ref(grant)
+        # r35 U1: this frame is retained by the rollback task's exception
+        # traceback, so its locals would keep the connection alive and the GC
+        # assertion below would be satisfied by *this test* rather than by the
+        # module. Drop them before raising, or the proof proves nothing.
+        del conn, acquired, grant, in_flight
         raise RuntimeError("rollback itself failed")
 
     monkeypatch.setattr(
@@ -5192,10 +5217,20 @@ async def test_lock_rollback_task_error_still_retains_the_authority(monkeypatch)
     retained_before = set(_retained_authorities())
     active_before = set(_active_holds())
 
-    with pytest.raises(CoordinationError):
-        await acquire_physical_account_lease(
-            keys=[1121, 1122], connection_factory=ConnectionFactory(connection)
-        )
+    # Run the acquisition inside a helper so that frame — and every temporary it
+    # holds, including the connection factory — is destroyed on return. Left in
+    # the test's own frame, those temporaries are a *non-module* strong root and
+    # the GC assertion below would pass for the wrong reason.
+    async def attempt(factory: Any) -> None:
+        with pytest.raises(CoordinationError) as excinfo:
+            await acquire_physical_account_lease(
+                keys=[1121, 1122], connection_factory=factory
+            )
+        # The exploding helper's traceback frames hold the connection in their
+        # locals; clear them so they cannot root it either.
+        _drop_exception_roots(excinfo.value)
+
+    await attempt(ConnectionFactory(connection))
 
     new_holds = set(_retained_authorities()) - retained_before
     assert len(new_holds) == 1
