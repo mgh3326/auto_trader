@@ -704,6 +704,51 @@ async def test_mock_labelled_registry_with_an_actual_live_url_is_rejected():
 
 
 @pytest.mark.asyncio
+async def test_a_widened_lane_host_allowlist_is_still_pinned_to_the_vts_host():
+    """Isolates the lane's own netloc pin from the J2A guard in front of it.
+
+    ``assert_mock_only_endpoint`` only checks membership in the entry's
+    ``allowed_hosts``, so an entry whose allowlist grew by one host passes it.
+    Without this vector the lane's pin is untested defence-in-depth: deleting it
+    leaves the suite green.
+    """
+
+    _, envelope = _attempt_envelope()
+    widened = _bound_kis_entry(
+        envelope, allowed_hosts=(MOCK_NETLOC, "extra-mock-host.example")
+    )
+    grant = await _grant_for(envelope, _bound_kis_entry(envelope))
+    client = FakeKISClient(url_override="https://extra-mock-host.example" + ORDER_PATH)
+
+    with pytest.raises(singleton.KISMockSendBoundaryRejected) as excinfo:
+        await singleton.assert_kis_mock_send_boundary(
+            client=client,
+            url=client._kis_url(ORDER_PATH),
+            entry=widened,
+            grant=grant,
+        )
+    assert excinfo.value.reason_code == singleton.KIS_MOCK_TRANSPORT_HOST_MISMATCH
+    assert client.transport_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_grant_that_does_not_carry_the_host_cannot_authorize_the_send():
+    """The grant's own allowlist is a second, independent lock on the netloc."""
+
+    _, envelope = _attempt_envelope()
+    entry = _bound_kis_entry(envelope)
+    grant = replace(await _grant_for(envelope, entry), allowed_netlocs=())
+    client = FakeKISClient()
+
+    with pytest.raises(singleton.KISMockSendBoundaryRejected) as excinfo:
+        await singleton.assert_kis_mock_send_boundary(
+            client=client, url=client._kis_url(ORDER_PATH), entry=entry, grant=grant
+        )
+    assert excinfo.value.reason_code == singleton.KIS_MOCK_TRANSPORT_HOST_MISMATCH
+    assert client.transport_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_mock_host_reached_from_a_live_settings_namespace_is_rejected():
     """The URL was rewritten to the mock host; the credentials were not."""
 
@@ -1073,7 +1118,12 @@ async def test_unknown_remainder_is_never_replaced_with_quantity_one(monkeypatch
     async def _mark(**kwargs: Any) -> None:
         calls.append({"mark": kwargs})
 
+    broker_clients: list[dict[str, Any]] = []
+
     def _client(**kwargs: Any):
+        # Counted rather than raised: the caller wraps broker errors in a
+        # `success: False` dict, so an exception here would look like a pass.
+        broker_clients.append(kwargs)
         raise AssertionError("an unauthorized follow-up must make zero broker calls")
 
     import app.mcp_server.tooling.kis_mock_ledger as ledger
@@ -1084,9 +1134,10 @@ async def test_unknown_remainder_is_never_replaced_with_quantity_one(monkeypatch
 
     result = await omc._cancel_kis_mock_domestic("0000117058", "005930")
 
+    assert broker_clients == []  # zero transport, not merely a swallowed error
     assert result["success"] is False
-    assert result["reason_code"] == "claim_followup_not_authorized"
-    assert result["claim_released"] is False
+    assert result.get("reason_code") == "claim_followup_not_authorized"
+    assert result.get("claim_released") is False
     assert calls == []  # the ledger was not marked cancelled either
 
 
