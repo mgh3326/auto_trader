@@ -5081,9 +5081,12 @@ async def test_lock_collision_exhaustion_during_confirmed_partial_rollback(
     _capture_rollback_identities(monkeypatch, captured)
     retained_before = set(_retained_authorities())
     active_before = set(_active_holds())
-    # Snapshot the foreign world BEFORE the failure, excluding anything new.
+    # X3: snapshot the foreign world BEFORE the failure, by object identity and
+    # order — history included. A count cannot see a foreign row replaced by an
+    # equal-but-different object.
     foreign_before = dict(_retained_authorities())
     foreign_active_before = dict(_active_holds())
+    foreign_history_before = list(coordination._AUTHORITY_HOLD_HISTORY)
 
     with pytest.raises(CoordinationError):
         await acquire_physical_account_lease(
@@ -5126,11 +5129,19 @@ async def test_lock_collision_exhaustion_during_confirmed_partial_rollback(
         )
     assert contended.value.reason_code is CoordinationReasonCode.LEASE_CONTENDED
 
-    # Every foreign entry is identical, by object, to the pre-failure snapshot.
+    # Every foreign entry is identical, by object, to the pre-failure snapshot —
+    # retained, active, and the full history prefix in order.
     for other, entry in foreign_before.items():
         assert _retained_authorities()[other] is entry
     for other, row in foreign_active_before.items():
         assert _active_holds()[other] is row
+    history_now = list(coordination._AUTHORITY_HOLD_HISTORY)
+    assert [id(h) for h in history_now[: len(foreign_history_before)]] == [
+        id(h) for h in foreign_history_before
+    ]
+    # Exactly one row was appended, and it is this branch's authority.
+    assert len(history_now) == len(foreign_history_before) + 1
+    assert history_now[-1] is _retained_authorities()[quarantined].raw_hold
     assert _retained_authorities()[victim_hold.hold_id].connection is victim_connection
     assert _retained_authorities()[victim_hold.hold_id].owner is victim_owner
     assert victim_connection.closed is False
@@ -5158,7 +5169,7 @@ async def test_lock_rollback_task_error_still_retains_the_authority(monkeypatch)
     victim_owner = _retained_authorities()[victim_hold.hold_id].owner
     foreign_before = dict(_retained_authorities())
     foreign_active_before = dict(_active_holds())
-    foreign_history_before = len(authority_hold_history())
+    foreign_history_before = list(coordination._AUTHORITY_HOLD_HISTORY)
 
     blocker = FakeLockConnection(space, pid=11201)
     await acquire_physical_account_lease(
@@ -5194,6 +5205,16 @@ async def test_lock_rollback_task_error_still_retains_the_authority(monkeypatch)
     assert _retained_authorities()[hold_id].connection is connection
     assert connection.closed is False
 
+    # X3: measured here, before the successor runs — the exploding helper is
+    # still installed, so a later contended acquisition legitimately records its
+    # own hold and would otherwise be miscounted as foreign corruption.
+    history_after_failure = list(coordination._AUTHORITY_HOLD_HISTORY)
+    assert [id(h) for h in history_after_failure[: len(foreign_history_before)]] == [
+        id(h) for h in foreign_history_before
+    ]
+    assert len(history_after_failure) == len(foreign_history_before) + 1
+    assert history_after_failure[-1] is _retained_authorities()[hold_id].raw_hold
+
     weak_connection = captured["connection"]
     weak_grant = captured["grant"]
     assert weak_connection() is connection
@@ -5224,10 +5245,17 @@ async def test_lock_rollback_task_error_still_retains_the_authority(monkeypatch)
     assert _retained_authorities()[victim_hold.hold_id].connection is victim_connection
     assert _retained_authorities()[victim_hold.hold_id].owner is victim_owner
     assert victim_connection.closed is False
-    # Exactly one history row exists for this authority — the fallback recorded
-    # it once, not twice.
-    assert len([h for h in authority_hold_history() if h.hold_id == hold_id]) == 1
-    assert len(authority_hold_history()) >= foreign_history_before + 1
+    for other, row in foreign_active_before.items():
+        assert _active_holds()[other] is row
+    # The foreign prefix is still object-identical and in order after everything.
+    history_now = list(coordination._AUTHORITY_HOLD_HISTORY)
+    assert [id(h) for h in history_now[: len(foreign_history_before)]] == [
+        id(h) for h in foreign_history_before
+    ]
+    # This branch's authority was recorded exactly once, and the retained entry
+    # still points at that exact raw row.
+    assert len([h for h in history_now if h.hold_id == hold_id]) == 1
+    assert recovered.raw_hold is history_after_failure[-1]
 
 
 @pytest.mark.asyncio
@@ -6924,6 +6952,33 @@ async def _live_preallocated_handle(space: FakeLockSpace, *, pid: int, key: int)
     return lease, connection, held, capability
 
 
+def _exact_state() -> dict[str, Any]:
+    """Every map and the history list, captured by object identity and order.
+
+    r32 X1/X3: counts cannot detect replacement of a row by an equal-but-
+    different object, so nothing here is a length.
+    """
+
+    return {
+        "history": list(coordination._AUTHORITY_HOLD_HISTORY),
+        "active": dict(_active_holds()),
+        "retained": dict(_retained_authorities()),
+        "held": dict(coordination._HELD_COORDINATION),
+        "capabilities": dict(coordination._COORDINATION_RELEASE_CAPABILITIES),
+    }
+
+
+def _assert_exact_state(before: dict[str, Any], label: str) -> None:
+    after = _exact_state()
+    assert [id(h) for h in after["history"]] == [id(h) for h in before["history"]], (
+        f"{label}: history rows changed by object or order"
+    )
+    for key in ("active", "retained", "held", "capabilities"):
+        assert set(after[key]) == set(before[key]), f"{label}: {key} keys changed"
+        for k in before[key]:
+            assert after[key][k] is before[key][k], f"{label}: {key}[{k}] not identical"
+
+
 def _record_state() -> tuple[int, dict[str, Any], dict[str, Any]]:
     return (
         len(authority_hold_history()),
@@ -6934,11 +6989,13 @@ def _record_state() -> tuple[int, dict[str, Any], dict[str, Any]]:
 
 @pytest.mark.asyncio
 async def test_lock_supplied_id_requires_every_exact_identity():
-    """W2: an id is not a right. Lease, grant, connection and capability all bind.
+    """X1: an id is not a right — lease, grant, connection and capability all bind.
 
-    Each rejection below is a *first* transition on a genuinely live, genuinely
-    issued coordination id — the one shape that would otherwise be accepted — so
-    each one isolates exactly one identity condition.
+    Each cell below is a *first* transition on a genuinely live, genuinely issued
+    coordination id, so each isolates exactly one identity condition. Every
+    rejection is asserted against an exact object-level snapshot of history,
+    active, retained, held and capability state, because a count cannot see a row
+    being replaced by an equal-but-different object.
     """
 
     space = FakeLockSpace()
@@ -6952,14 +7009,27 @@ async def test_lock_supplied_id_requires_every_exact_identity():
     foreign_capability = object()
 
     cases = {
-        "wrong_grant": {
-            "grant": other_lease.grant,
-            "connection": connection,
+        # r32 X1: a missing connection is a rejection, not shorthand. It would
+        # otherwise append history and create an active row while writing no
+        # retained root — an authority nobody is holding.
+        "missing_connection": {
+            "grant": held.grant,
+            "connection": None,
             "capability": capability,
         },
         "wrong_connection": {
             "grant": held.grant,
             "connection": other_conn,
+            "capability": capability,
+        },
+        "wrong_grant": {
+            "grant": other_lease.grant,
+            "connection": connection,
+            "capability": capability,
+        },
+        "equal_copy_grant": {
+            "grant": replace(held.grant),
+            "connection": connection,
             "capability": capability,
         },
         "missing_capability": {
@@ -6974,7 +7044,7 @@ async def test_lock_supplied_id_requires_every_exact_identity():
         },
     }
     for name, kwargs in cases.items():
-        history_before, retained_before, active_before = _record_state()
+        before = _exact_state()
         with pytest.raises(CoordinationError) as excinfo:
             coordination._record_unreleased_authority(
                 kwargs["grant"],
@@ -6989,13 +7059,10 @@ async def test_lock_supplied_id_requires_every_exact_identity():
         assert excinfo.value.reason_code is (
             CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE
         ), name
-        # Refused before any record was written, on every one of them.
-        assert len(authority_hold_history()) == history_before, name
-        assert dict(_retained_authorities()) == retained_before, name
-        assert dict(_active_holds()) == active_before, name
+        _assert_exact_state(before, name)
 
-    # And the legitimate exact handoff is still accepted, once.
-    history_before, _, _ = _record_state()
+    # The legitimate exact handoff is still accepted, once.
+    before = _exact_state()
     hold = coordination._record_unreleased_authority(
         held.grant,
         owner=lease,
@@ -7007,11 +7074,11 @@ async def test_lock_supplied_id_requires_every_exact_identity():
         capability=capability,
     )
     assert hold.hold_id == held.hold_id
-    assert len(authority_hold_history()) == history_before + 1
+    assert len(coordination._AUTHORITY_HOLD_HISTORY) == len(before["history"]) + 1
     assert _retained_authorities()[held.hold_id].connection is connection
 
     # A second transition on the same id is refused: it is no longer the first.
-    history_before, retained_before, active_before = _record_state()
+    before = _exact_state()
     with pytest.raises(CoordinationError):
         coordination._record_unreleased_authority(
             held.grant,
@@ -7023,9 +7090,64 @@ async def test_lock_supplied_id_requires_every_exact_identity():
             hold_id=held.hold_id,
             capability=capability,
         )
-    assert len(authority_hold_history()) == history_before
-    assert dict(_retained_authorities()) == retained_before
-    assert dict(_active_holds()) == active_before
+    _assert_exact_state(before, "second_transition")
+
+
+@pytest.mark.asyncio
+async def test_lock_same_owner_retired_id_cannot_be_reused_for_a_second_handoff():
+    """X1 cell 6: resolving the first record does not re-open the id.
+
+    The live preallocated handle is deliberately kept, so the only thing that
+    changed is that this id already carried an authority record once. That alone
+    must close it forever — otherwise the same owner could recycle its own id and
+    the retired generation's history row would start describing a new authority.
+    """
+
+    space = FakeLockSpace()
+    lease, connection, held, capability = await _live_preallocated_handle(
+        space, pid=7311, key=7311
+    )
+    first = coordination._record_unreleased_authority(
+        held.grant,
+        owner=lease,
+        reason_code=CoordinationReasonCode.LEASE_LOST,
+        termination_proven=False,
+        durable_evidence_written=True,
+        connection=connection,
+        hold_id=held.hold_id,
+        capability=capability,
+    )
+    # Retire only the *authority* record. `_resolve_authority_hold` also
+    # unregisters the coordination handle, which would turn this into a
+    # missing-handle rejection instead of the historical-reuse rejection under
+    # test. So the two authority maps are cleared directly and the live
+    # preallocated handle is deliberately left in place — exactly the state r32
+    # describes, and the only thing that has changed about this id is that it
+    # once carried an authority record.
+    del coordination._ACTIVE_AUTHORITY_HOLDS[first.hold_id]
+    del coordination._RETAINED_AUTHORITIES[first.hold_id]
+    assert held.hold_id not in _active_holds()
+    assert held.hold_id not in _retained_authorities()
+    assert coordination._HELD_COORDINATION[held.hold_id] is held
+    assert held.hold_id in coordination._COORDINATION_RELEASE_CAPABILITIES
+    assert any(h.hold_id == held.hold_id for h in coordination._AUTHORITY_HOLD_HISTORY)
+
+    before = _exact_state()
+    with pytest.raises(CoordinationError) as excinfo:
+        coordination._record_unreleased_authority(
+            held.grant,
+            owner=lease,
+            reason_code=CoordinationReasonCode.LEASE_LOST,
+            termination_proven=False,
+            durable_evidence_written=True,
+            connection=connection,
+            hold_id=held.hold_id,
+            capability=capability,
+        )
+    assert excinfo.value.reason_code is (
+        CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE
+    )
+    _assert_exact_state(before, "same_owner_retired_reuse")
 
 
 @pytest.mark.asyncio
@@ -7123,9 +7245,32 @@ async def test_lock_duplicate_guard_discriminates_connection_grant_and_record():
         is False
     )
 
+    # X2: an *impostor* active row — equal by value, not the exact object the
+    # entry was written with, and not any history object. Presence, equality, or
+    # a matching id string would all accept it and suppress the fallback that
+    # roots the real authority.
+    genuine = _active_holds()[hold.hold_id]
+    impostor = replace(genuine)
+    assert impostor == genuine and impostor is not genuine
+    assert not any(h is impostor for h in coordination._AUTHORITY_HOLD_HISTORY)
+    coordination._ACTIVE_AUTHORITY_HOLDS[hold.hold_id] = impostor
+    assert (
+        coordination._authority_already_retained(
+            owner=connection, grant=lease.grant, connection=connection
+        )
+        is False
+    )
+    # Restoring the exact record makes it true again, so the difference is the
+    # identity of the row and nothing else.
+    coordination._ACTIVE_AUTHORITY_HOLDS[hold.hold_id] = genuine
+    assert (
+        coordination._authority_already_retained(
+            owner=connection, grant=lease.grant, connection=connection
+        )
+        is True
+    )
+
     # A retained row whose active record is gone is not a recorded authority.
-    # Deliberately white-box: the writers always create both, so this pins the
-    # clause against a future change that could leave one behind.
     del coordination._ACTIVE_AUTHORITY_HOLDS[hold.hold_id]
     assert (
         coordination._authority_already_retained(

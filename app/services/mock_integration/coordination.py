@@ -461,6 +461,11 @@ class _RetainedAuthority:
     connection: LockAuthorityConnection
     grant: AdvisoryLeaseGrant
     owner: object
+    # The exact ``UnreleasedAuthorityHold`` object recorded with this entry.
+    # Suppressing the safe fallback on "some object exists under this id" would
+    # accept a stale, equal-but-nonidentical, or impostor row and leave the real
+    # authority unrooted, so the correspondence is held by identity, not by id.
+    raw_hold: UnreleasedAuthorityHold
 
 
 # History is immutable evidence: every hold ever recorded, resolved or not.
@@ -651,7 +656,11 @@ def _authority_already_retained(
         entry.owner is owner
         and entry.grant is grant
         and entry.connection is connection
-        and _ACTIVE_AUTHORITY_HOLDS.get(hold_id) is not None
+        and entry.hold_id == hold_id
+        # The corresponding active row must be the *exact* record this entry was
+        # written with. Presence, equality, or a matching id string would all
+        # accept an impostor and suppress the fallback that roots the authority.
+        and _ACTIVE_AUTHORITY_HOLDS.get(hold_id) is entry.raw_hold
         for hold_id, entry in _RETAINED_AUTHORITIES.items()
     )
 
@@ -893,11 +902,18 @@ def _record_unreleased_authority(
     reason_code: CoordinationReasonCode,
     termination_proven: bool,
     durable_evidence_written: bool,
-    connection: LockAuthorityConnection | None = None,
+    connection: LockAuthorityConnection,
     hold_id: str | None = None,
     capability: object | None = None,
 ) -> UnreleasedAuthorityHold:
-    """Record a hold, never overwriting one that belongs to somebody else."""
+    """Record a hold, never overwriting one that belongs to somebody else.
+
+    ``connection`` is required. A hold without the real connection is metadata
+    claiming an authority nobody is holding: it would append history and create
+    an active row while writing no retained root, so a GC pass or a pool return
+    could drop the session the row says is still live. Every production caller
+    already has the connection, so there is nothing to shorten.
+    """
 
     if hold_id is None:
         hold_id = _allocate_hold_id()
@@ -934,7 +950,7 @@ def _record_unreleased_authority(
             #     not that handle's authority record, and an id is not a right.
             and held.lease is owner
             and held.grant is grant
-            and (connection is None or connection is held.lease._connection)
+            and connection is held.lease._connection
             and capability is not None
             and _COORDINATION_RELEASE_CAPABILITIES.get(hold_id) is capability
             # (4) the first authority transition for that id, ever.
@@ -957,10 +973,13 @@ def _record_unreleased_authority(
     )
     _AUTHORITY_HOLD_HISTORY.append(hold)
     _ACTIVE_AUTHORITY_HOLDS[hold.hold_id] = hold
-    if connection is not None:
-        _RETAINED_AUTHORITIES[hold.hold_id] = _RetainedAuthority(
-            hold_id=hold.hold_id, connection=connection, grant=grant, owner=owner
-        )
+    _RETAINED_AUTHORITIES[hold.hold_id] = _RetainedAuthority(
+        hold_id=hold.hold_id,
+        connection=connection,
+        grant=grant,
+        owner=owner,
+        raw_hold=hold,
+    )
     return hold
 
 

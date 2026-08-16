@@ -280,8 +280,12 @@ non-`None` supplied `hold_id` is therefore not a caller-selected id; it is a
 2. an exact, still-live preallocated coordination handle exists for it;
 3. **all four identities match that handle** — the lease recording it, the grant
    it was acquired under, the connection that actually holds the keys, and the
-   private release capability it was sealed with. A capability is *required*, not
-   optional: an id is a thread an operator follows, never a right to act on;
+   private release capability it was sealed with. Both the connection and the
+   capability are *required*, never optional: an id is a thread an operator
+   follows, never a right to act on. A record without the real connection would
+   append history and create an active row while writing no retained root — an
+   authority nobody is holding, which a garbage collection or a pool return could
+   silently drop;
 4. the id has no authority history, active record, or retained record — ever.
 
 A retired id, a foreign id, a completed-success coordination id, and a
@@ -292,6 +296,15 @@ a rejection.
 Reachability is projected onto a record only when that record *is* the exact
 object the active map holds under its id. Looking the id up as a string would
 let a retired generation's history row report a later owner's recoverability.
+
+### Duplicate retention is decided by exact record identity
+
+The rollback fallback may skip recording only when the retained entry it finds is
+*this exact authority*: same owner, same grant, same connection, and an active row
+that **is the very record that entry was written with**. Presence under the id, an
+equal-but-different row, or a matching id string are all insufficient — accepting
+any of them would suppress the fallback and leave the real connection unrooted
+while the maps claim the account is covered.
 
 ### Release order: unlock, then remove, then close
 
