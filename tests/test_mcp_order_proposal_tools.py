@@ -693,7 +693,7 @@ async def test_create_dispatches_telegram_when_enabled_and_allowlisted(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_create_4444_thesis_returns_visible_split_dispatch_result(monkeypatch):
+async def test_create_4444_thesis_returns_compact_dispatch_result(monkeypatch):
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_ENABLED", True)
     chat = _unique_chat()
     monkeypatch.setattr(settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat)
@@ -710,10 +710,9 @@ async def test_create_4444_thesis_returns_visible_split_dispatch_result(monkeypa
     assert created["success"] is True
     assert created["approval_dispatch"]["ok"] is True
     assert created["approval_dispatch"]["state"] == "sent"
-    assert created["approval_dispatch"]["payload_chars"] > 4096
-    assert len(fake_notifier.calls) == 3
-    assert all(keyboard is None for _, keyboard, _ in fake_notifier.calls[:-1])
-    assert fake_notifier.calls[-1][1]["inline_keyboard"]
+    assert created["approval_dispatch"]["payload_chars"] < 4096
+    assert len(fake_notifier.calls) == 1
+    assert fake_notifier.calls[0][1]["inline_keyboard"]
 
 
 @pytest.mark.asyncio

@@ -44,8 +44,10 @@ from typing import Any
 
 from app.core.config import settings
 from app.services.order_proposals.approval_message import (
+    _build_order_core_metrics,
     _escape_inline_code,
     _escape_markdown,
+    _format_datetime,
     build_callback_data,
 )
 from app.services.order_proposals.auto_approve_audit import (
@@ -740,7 +742,9 @@ def build_auto_approved_message(
         [
             f"- 수량: {quantities}",
             f"- 가격: {prices}",
+            f"- 핵심 수치: {_build_order_core_metrics(group=group, rungs=ordered_rungs)}",
             f"- 근거: {_escape_markdown(rationale)}",
+            f"- 유효기간: {_format_datetime(getattr(group, 'valid_until', None), approximate=False)}",
             f"- `auto:policy@{policy_version}`",
         ]
     )
