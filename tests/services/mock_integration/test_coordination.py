@@ -5995,6 +5995,151 @@ async def test_lock_real_postgres_multi_key_rollback_leaves_nothing_held(db_sess
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_lock_real_postgres_pg05_session_loss_keeps_the_durable_row(db_session):
+    """PG05: closing the owner backend frees the session lock and nothing else.
+
+    The advisory lease is ephemeral state in one PostgreSQL backend; the durable
+    send record lives in a committed table. Killing the backend must therefore
+    end the lease and leave the record untouched, so a successor can take the
+    lease but still cannot re-send that exact lineage. Proven against a real
+    backend because the whole point is what PostgreSQL does when a session dies,
+    which a fake cannot demonstrate.
+    """
+
+    from sqlalchemy import text as sql_text
+
+    from app.core import db
+
+    _, envelope = _attempt_envelope(attempt_overrides={"cycle_id": "pg05"})
+    scope = physical_account_scope_for_entry(
+        _fully_bound_entry(envelope, "kr.kis.mock", physical_account_id="rob-1262-pg05")
+    )
+    adapter = DurableSendClaimAdapter(OrderSendIntentService(db_session))
+    key = envelope.order_attempt.idempotency_key
+
+    lease = await acquire_physical_account_lease(
+        keys=[scope.advisory_key], connection_factory=_open_run_owned_authority
+    )
+    grant = lease.grant
+    reserved = await adapter.reserve(
+        scope=scope, idempotency_key=key, symbol="005930", side="buy"
+    )
+    try:
+        receipt = await lease._connection.terminate_backend_session(
+            expected_pid=grant.backend_pid, owner_token=grant.connection_token
+        )
+        assert receipt.terminated is True
+
+        # The backend, and therefore the session lock, is gone.
+        observer = await db.engine.connect()
+        try:
+            alive = await observer.execute(
+                sql_text("SELECT count(*) FROM pg_stat_activity WHERE pid = :pid"),
+                {"pid": grant.backend_pid},
+            )
+            assert int(alive.scalar_one()) == 0
+        finally:
+            await observer.close()
+
+        # A successor takes the lease, which proves the lock really was freed.
+        successor = await acquire_physical_account_lease(
+            keys=[scope.advisory_key], connection_factory=_open_run_owned_authority
+        )
+        callbacks: list[str] = []
+        try:
+            # ...and still cannot re-send this exact lineage, because the
+            # committed row outlived the session that created it.
+            with pytest.raises(CoordinationError) as excinfo:
+                await adapter.reserve(
+                    scope=scope, idempotency_key=key, symbol="005930", side="buy"
+                )
+                callbacks.append("sent")
+            assert excinfo.value.reason_code is (
+                CoordinationReasonCode.DURABLE_CLAIM_CONFLICT
+            )
+            assert callbacks == []
+        finally:
+            await successor.release(successor.grant)
+    finally:
+        # The backend is gone but the connection object is still checked out;
+        # hand it back explicitly rather than leaving it to the collector.
+        await coordination._close_quietly(lease._connection)
+        assert (
+            await adapter.release_with_terminal_evidence(
+                reserved,
+                coordination.TerminalClaimEvidence(
+                    lane_native_terminal_evidence=True,
+                    account_position_reconciled=True,
+                    remainder_known=True,
+                ),
+            )
+            == 1
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_lock_real_postgres_pg06_stale_grant_cannot_touch_the_new_lock(
+    db_session,
+):
+    """PG06: a grant from a dead session has no authority over the next owner.
+
+    After the first backend dies and a second owner acquires the same key, the
+    old grant must neither pass `assert_owned` nor unlock anything. If it could
+    unlock, one process could free another process's lease by replaying a token
+    it no longer backs — the exact failure the PID/connection identity in the
+    grant exists to prevent.
+    """
+
+    key = -778899001122
+    first = await acquire_physical_account_lease(
+        keys=[key], connection_factory=_open_run_owned_authority
+    )
+    stale_grant = first.grant
+    receipt = await first._connection.terminate_backend_session(
+        expected_pid=stale_grant.backend_pid,
+        owner_token=stale_grant.connection_token,
+    )
+    assert receipt.terminated is True
+
+    second = await acquire_physical_account_lease(
+        keys=[key], connection_factory=_open_run_owned_authority
+    )
+    try:
+        assert second.grant.backend_pid != stale_grant.backend_pid
+
+        # The stale grant cannot assert ownership of anything.
+        with pytest.raises(CoordinationError) as excinfo:
+            await first.assert_owned(stale_grant)
+        assert excinfo.value.reason_code in (
+            CoordinationReasonCode.LEASE_LOST,
+            CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE,
+        )
+
+        # Nor can it be replayed against the new owner's lease.
+        with pytest.raises(CoordinationError):
+            await second.release(stale_grant)
+
+        # The new owner still holds the key: a third contender is refused.
+        with pytest.raises(CoordinationError) as contended:
+            await acquire_physical_account_lease(
+                keys=[key], connection_factory=_open_run_owned_authority
+            )
+        assert contended.value.reason_code is CoordinationReasonCode.LEASE_CONTENDED
+        assert second.released is False
+    finally:
+        await second.release(second.grant)
+        await coordination._close_quietly(first._connection)
+
+    # Only after the real owner released is the key free again.
+    third = await acquire_physical_account_lease(
+        keys=[key], connection_factory=_open_run_owned_authority
+    )
+    await third.release(third.grant)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_claim_real_order_send_intent_service_exact_lineage_round_trip(
     db_session,
 ):

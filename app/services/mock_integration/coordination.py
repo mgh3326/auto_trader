@@ -146,15 +146,15 @@ class BackendSessionTerminationUnproven(RuntimeError):
 
 
 # --------------------------------------------------------------------------
-# Not-broker-enforced fencing (statement 2 of 3 lives on the lease class)
+# This is NOT broker-enforced fencing (statement 2 of 3 lives on the lease class)
 # --------------------------------------------------------------------------
 
 FENCING_NOT_BROKER_ENFORCED: Final[str] = "not_broker_enforced"
 
 NOT_BROKER_ENFORCED_FENCING_STATEMENT: Final[str] = (
-    "The J3A physical-account lease is process coordination only. It is NOT "
-    "broker-enforced fencing: no lane broker rejects a request because another "
-    "process holds this lease."
+    "The J3A physical-account lease is process coordination only. It is "
+    "NOT broker-enforced fencing: no lane broker rejects a request because "
+    "another process holds this lease."
 )
 
 # One row per canonical J2A lane. There is intentionally no per-lane exception:

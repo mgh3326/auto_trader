@@ -33,7 +33,11 @@ expensive available misreading of this module.
 Every canonical J2A lane, with no exception. A lane that later gains real
 broker-side fencing must add its own evidence rather than reinterpreting a row.
 
-| Lane | Fencing |
+Every row below is NOT broker-enforced fencing. The `not_broker_enforced`
+token is the machine-readable form of that same statement, mirroring
+`coordination.FENCING_NOT_BROKER_ENFORCED`.
+
+| Lane | Fencing (every row: NOT broker-enforced fencing) |
 |---|---|
 | `kr.kis.mock` | `not_broker_enforced` |
 | `kr.kiwoom.mock` | `not_broker_enforced` |
