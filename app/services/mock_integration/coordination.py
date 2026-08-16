@@ -364,16 +364,21 @@ class SqlAlchemyLockAuthority:
                 raise BackendSessionTerminationUnproven(
                     "the backend is still present in pg_stat_activity"
                 )
+            # Absence is proven *here*. The receipt is built before any cleanup
+            # so that a cancellation during a close cannot erase a proof we
+            # already hold and manufacture a false active hold.
+            receipt = BackendTerminationReceipt(
+                backend_pid=expected_pid, owner_token=owner_token, terminated=True
+            )
         finally:
             # Only the *observer* is disposable on every path. Closing the owner
             # connection here would return a still-locked backend to the pool on
             # exactly the paths where termination was NOT proven.
             await _close_quietly(observer)
-        # Proven gone: only now may the owner connection be released.
+        # Proven gone: only now may the owner connection be released, and a
+        # failure doing so is reported without invalidating the receipt.
         await _close_quietly(self._connection)
-        return BackendTerminationReceipt(
-            backend_pid=expected_pid, owner_token=owner_token, terminated=True
-        )
+        return receipt
 
     def can_prove_backend_session_termination(self) -> bool:
         """Without an independent observer, termination can never be proven."""
@@ -386,7 +391,9 @@ async def _close_quietly(closeable: Any) -> None:
 
     try:
         await closeable.close()
-    except Exception:
+    except BaseException:
+        # Including a cancellation: a cleanup failure is never allowed to
+        # invalidate a proof that was already established.
         pass
 
 
@@ -464,6 +471,7 @@ _ACTIVE_AUTHORITY_HOLDS: dict[str, UnreleasedAuthorityHold] = {}
 _RETAINED_AUTHORITIES: dict[str, _RetainedAuthority] = {}
 
 _HOLD_ID_ALLOCATION_ATTEMPTS: Final[int] = 8
+_QUARANTINE_SEQUENCE = 0
 
 
 def _hold_view(hold: UnreleasedAuthorityHold) -> UnreleasedAuthorityHold:
@@ -477,10 +485,17 @@ def _hold_view(hold: UnreleasedAuthorityHold) -> UnreleasedAuthorityHold:
 
     retained = _RETAINED_AUTHORITIES.get(hold.hold_id)
     owner = retained.owner if retained is not None else None
+    # The two reasons a release is refused are a permanent coordination seal
+    # (public paths) and missing durable evidence (every path, owner included).
+    # The flag must be the negation of both, or it reports a retry that cannot
+    # happen. Deliberately *not* consulted: whether private machinery still
+    # exists — a sealed lease has no supported retry, and saying otherwise would
+    # imply a recovery API that this epoch does not have.
     recoverable = (
         isinstance(owner, PostgresAdvisoryKeysetLease)
         and not owner.coordination_sealed
         and not owner.released
+        and hold.durable_evidence_written
     )
     if recoverable == hold.recoverable_in_process:
         return hold
@@ -570,7 +585,17 @@ def _allocate_hold_id() -> str:
         candidate = f"hold:{secrets.token_hex(8)}"
         if not _hold_id_in_use(candidate):
             return candidate
-    raise CoordinationError(CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE)
+    # Exhaustion must never leave a newly unsafe authority unreachable, so fall
+    # back to a quarantine id derived from a monotonic counter rather than
+    # raising. It cannot collide (the random ids never take this shape) and it
+    # never overwrites an existing owner, so the victim of the collision storm
+    # is untouched while the intruder still gets retained.
+    global _QUARANTINE_SEQUENCE
+    while True:
+        _QUARANTINE_SEQUENCE += 1
+        candidate = f"hold:quarantine:{_QUARANTINE_SEQUENCE:012d}"
+        if not _hold_id_in_use(candidate):
+            return candidate
 
 
 def _resolve_authority_hold(
@@ -859,15 +884,19 @@ class PostgresAdvisoryKeysetLease:
     There is no TTL and no takeover, and a pool return is neither of those.
 
     A lease whose post-send durable evidence never landed is not releasable at
-    all: :meth:`retain_authority` marks it, and every subsequent ``release`` —
-    including one driven by the exact grant obtained from public introspection —
-    fails closed with ``lineage_persistence_unavailable``.
+    all: ``_retain_authority`` marks it, and every subsequent ``release`` fails
+    closed with ``lineage_persistence_unavailable``.  Public introspection yields
+    capability-free snapshots only — no lease, no grant, no connection — so there
+    is no public route to a release in the first place.
 
     Release is also cancellation-safe.  The whole re-attest → reverse unlock →
     close sequence runs as a retained task, and the lease is marked released only
-    after that sequence proves an allowed outcome.  A release that is interrupted
-    or fails leaves the lease recoverable by the exact grant, while stale or
-    foreign grants keep being rejected.
+    after that sequence proves an allowed outcome.  Whether an interrupted or
+    failed release can be retried depends on who owns it: an unsealed standalone
+    owner still holding its exact private lease/grant can retry, while a
+    coordination-sealed lease and a partial-acquisition rollback have no
+    in-process recovery API in this epoch.  Stale or foreign grants are always
+    rejected.
     """
 
     __slots__ = (
@@ -1041,9 +1070,10 @@ class PostgresAdvisoryKeysetLease:
         **entire** active lifetime — while the callback runs, while either
         durable write is in flight, during a cancellation-retained wait, and
         while an acknowledgement anomaly is being recorded.  Holding the exact
-        grant from public introspection does not change that: seeing a lease is
-        not owning it, and the window in which a release would be most damaging
-        is precisely the window in which nothing is yet known.
+        grant does not change that: seeing that an account is stuck and being
+        able to unstick it are different rights, and the window in which a
+        release would be most damaging is precisely the window in which nothing
+        is yet known.
         """
 
         self._require_grant(expected_grant)
@@ -1094,7 +1124,8 @@ class PostgresAdvisoryKeysetLease:
         cancellation = await _await_retained_task(task)
         error = _task_error(task)
         if error is not None:
-            # Recoverable by the exact grant; stale/foreign grants still fail.
+            # An unsealed owner may retry with this exact grant; a sealed one
+            # cannot, and stale or foreign grants never can.
             self._release_task = None
             raise error
         self._released = True
@@ -1200,6 +1231,11 @@ class PostgresAdvisoryKeysetLease:
             termination_proven=False,
             durable_evidence_written=True,
             connection=self._connection,
+            # A sealed lease already has an opaque id an operator is following;
+            # allocating a second one here would split one stuck authority
+            # across two ids with no public way to join them. An unsealed lease
+            # has no such id, so it keeps a fresh allocation.
+            hold_id=self._coordination_hold_id,
         )
 
 
@@ -1290,7 +1326,23 @@ async def acquire_physical_account_lease(
                 connection, acquired, grant, in_flight=tuple(in_flight)
             )
         )
-        await _await_retained_task(rollback)
+        rollback_cancellation = await _await_retained_task(rollback)
+        if _task_error(rollback) is not None:
+            # The rollback itself failed, so nothing proved this connection is
+            # safe and nothing may have retained it. Retain it here rather than
+            # letting it fall out of scope with a key possibly still held.
+            _record_unreleased_authority(
+                grant,
+                owner=connection,
+                reason_code=CoordinationReasonCode.LEASE_LOST,
+                termination_proven=False,
+                durable_evidence_written=True,
+                connection=connection,
+            )
+        if rollback_cancellation is not None:
+            # A cancellation that arrived while the rollback was still running is
+            # re-delivered now that a safe outcome exists — never before it.
+            raise rollback_cancellation
         raise
 
     return PostgresAdvisoryKeysetLease(connection=connection, grant=grant)
@@ -1489,6 +1541,25 @@ class TerminalClaimEvidence:
     authoritative_absence_proven: bool = False
 
     @property
+    def exact_booleans(self) -> bool:
+        """Every field is a real ``bool``, not merely something truthy.
+
+        The string ``"false"`` is truthy. So is ``"0"``. Accepting either here
+        would let a mistyped field authorize the deletion of the durable claim
+        that is the entire account block.
+        """
+
+        return all(
+            value is True or value is False
+            for value in (
+                self.lane_native_terminal_evidence,
+                self.account_position_reconciled,
+                self.remainder_known,
+                self.authoritative_absence_proven,
+            )
+        )
+
+    @property
     def authorizes_release(self) -> bool:
         if self.authoritative_absence_proven:
             return self.account_position_reconciled
@@ -1497,6 +1568,18 @@ class TerminalClaimEvidence:
             and self.account_position_reconciled
             and self.remainder_known
         )
+
+
+def _terminal_evidence_authorizes(evidence: TerminalClaimEvidence) -> bool:
+    """The release predicate, recomputed from exact booleans and not overridable."""
+
+    if evidence.authoritative_absence_proven is True:
+        return evidence.account_position_reconciled is True
+    return (
+        evidence.lane_native_terminal_evidence is True
+        and evidence.account_position_reconciled is True
+        and evidence.remainder_known is True
+    )
 
 
 class DurableSendClaimAdapter:
@@ -1558,7 +1641,14 @@ class DurableSendClaimAdapter:
         an evidence-less release cannot happen even by accident.
         """
 
-        if not evidence.authorizes_release:
+        # Checked here rather than trusting the property alone: a subclass can
+        # override `authorizes_release`, and this adapter is the last thing
+        # between a caller's claim of evidence and a durable delete.
+        if (
+            type(evidence) is not TerminalClaimEvidence
+            or not evidence.exact_booleans
+            or not _terminal_evidence_authorizes(evidence)
+        ):
             raise CoordinationError(CoordinationReasonCode.TERMINAL_EVIDENCE_REQUIRED)
         return int(
             await self._intents.release_if_matches(
@@ -1659,7 +1749,45 @@ class MutationCallbackResult:
     broker_order_id: str | None = None
 
 
-type MockMutationCallback = Callable[[], Awaitable[MutationCallbackResult]]
+class _ScopeGate:
+    """Liveness flag for one coordinated section; not reachable from the view."""
+
+    __slots__ = ("active",)
+
+    def __init__(self) -> None:
+        self.active = True
+
+
+class CoordinationScope:
+    """What a lane callback receives: one operation, and no capability at all.
+
+    A broker callback can await account truth, a token refresh, or rate limiting
+    after it is entered, and a same-cycle batch can contain several POSTs. The
+    coordinator's single pre-callback attestation is therefore neither temporally
+    nor semantically sufficient — J3B and J3C must re-assert immediately before
+    **every** send.
+
+    So this exposes exactly one coroutine. It carries no lease, grant,
+    connection, backend PID, owner token, key, hold id, release, or termination —
+    reading the state and changing it are different rights, and only the first is
+    handed out. It also stops working once its coordinated section ends, so a
+    captured scope cannot assert against a finished lease.
+    """
+
+    __slots__ = ("_assert",)
+
+    def __init__(self, assert_owned: Callable[[], Awaitable[None]]) -> None:
+        self._assert = assert_owned
+
+    async def assert_owned(self) -> None:
+        """Re-prove ownership *and* the pinned lane binding. Call before each send."""
+
+        await self._assert()
+
+
+type MockMutationCallback = Callable[
+    [CoordinationScope], Awaitable[MutationCallbackResult]
+]
 
 
 class DispatchEvidenceKind(StrEnum):
@@ -1805,10 +1933,11 @@ class _HeldCoordination:
 _HELD_COORDINATION: dict[str, _HeldCoordination] = {}
 
 # The release rights for each held lease. Deliberately module-private with no
-# accessor: ``HeldCoordination`` publishes the lease and the grant so operators
-# and later lanes can *see* what is stuck, and neither of those is enough to
-# release it. Capability identity cannot be reconstructed from the public
-# handle, so a generic caller cannot forge one.
+# accessor. Public introspection returns ``HeldCoordinationSnapshot`` objects,
+# which carry no lease, grant, connection, PID, owner token, or callable — so
+# operators and later lanes can see *what* is stuck without being able to
+# unstick it. Capability identity cannot be reconstructed from anything public,
+# so a generic caller cannot forge one.
 _COORDINATION_RELEASE_CAPABILITIES: dict[str, object] = {}
 
 
@@ -1967,6 +2096,37 @@ def _callback_outcome(
     return task.result(), None
 
 
+def _validated_callback_result(
+    result: object,
+) -> tuple[MutationCallbackResult | None, BaseException | None]:
+    """Accept only the exact supported result shape.
+
+    A type annotation is not a runtime guarantee. A raw-string certainty slips
+    past every ``is MutationCertainty.X`` branch and lands in the durable record
+    misclassified as an acknowledgement; a dict or a stray integer raises on
+    attribute access *after* a possible send but before either mandatory write.
+    Both become typed uncertainty instead.
+    """
+
+    if type(result) is not MutationCallbackResult:
+        return None, TypeError(
+            f"mock mutation callback returned {type(result).__name__}, "
+            "expected MutationCallbackResult"
+        )
+    if not isinstance(result.certainty, MutationCertainty):
+        return None, TypeError(
+            "mock mutation callback returned a non-MutationCertainty certainty"
+        )
+    broker_order_id = result.broker_order_id
+    if broker_order_id is not None and (
+        not isinstance(broker_order_id, str) or not broker_order_id.strip()
+    ):
+        return None, TypeError(
+            "mock mutation callback returned a non-string broker order id"
+        )
+    return result, None
+
+
 def _required_persistence(
     persistence: LineagePersistencePort | None,
 ) -> LineagePersistencePort:
@@ -1976,6 +2136,26 @@ def _required_persistence(
         raise CoordinationError(
             CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE
         ) from exc
+
+
+def _require_pinned_entry(
+    envelope: LineageEnvelope,
+    registry: RegistrySource | None,
+    pinned: LaneRegistryEntry,
+) -> LaneRegistryEntry:
+    """Re-validate, then require the *same* entry that authority was derived from.
+
+    ``RegistrySource`` accepts any mapping or iterable and re-materializes it on
+    every call, so a registry mutated during an awaited reserve could validate a
+    different physical account on the second look while the callback proceeds
+    behind the first account's lease and claim. Full entry equality is the
+    conservative comparison: any authority-relevant drift fails.
+    """
+
+    entry = _validated_entry(envelope, registry)
+    if entry != pinned:
+        raise LaneGuardError("canonical_lane_identity_mismatch", lane_id=pinned.lane_id)
+    return entry
 
 
 def _validated_entry(
@@ -2072,17 +2252,17 @@ async def coordinate_mock_order_mutation(
             side=envelope.decision_intent.side,
         )
         await lease.assert_owned(grant)
-        _validated_entry(envelope, registry)
-        # Strong handle first, callback task second: between these two lines
-        # there is no order in flight, and after them nothing can drop the
-        # authority implicitly.
+        _require_pinned_entry(envelope, registry, entry)
+        # Strong handle first, callback second: between these two lines there is
+        # no order in flight, and after them nothing can drop the authority
+        # implicitly.
         held = _register_held_coordination(
             lease=lease, grant=grant, claim=claim, envelope=envelope
         )
-        task: asyncio.Task[MutationCallbackResult] = asyncio.ensure_future(mutation())
     except BaseException:
-        # Nothing is in flight: the callback never started. The durable claim,
-        # if taken, stays put — absence of send is not proven here.
+        # Genuinely pre-callback: the callable was never invoked, so nothing can
+        # be in flight. The durable claim, if taken, stays put — absence of send
+        # is not proven here.
         if held is None:
             await _release_lease_quietly(lease, grant)
         else:
@@ -2094,8 +2274,43 @@ async def coordinate_mock_order_mutation(
             CoordinationReasonCode.DURABLE_CLAIM_CONFLICT, lane_id=entry.lane_id
         )
 
-    outer_cancellation = await _await_retained_task(task)
-    result, callback_error = _callback_outcome(task)
+    # Everything from here is post-invocation. A supplied callable can run a
+    # synchronous broker SDK prelude and *then* raise, or return a non-awaitable;
+    # neither is "the callback never started", because an order may already have
+    # gone out. Both take the durable-evidence path.
+    gate = _ScopeGate()
+
+    async def _assert_scope_owned() -> None:
+        if not gate.active:
+            raise CoordinationError(
+                CoordinationReasonCode.LEASE_LOST, lane_id=entry.lane_id
+            )
+        await lease.assert_owned(grant)
+        _require_pinned_entry(envelope, registry, entry)
+
+    task: asyncio.Task[MutationCallbackResult] | None = None
+    invocation_error: BaseException | None = None
+    try:
+        started = mutation(CoordinationScope(_assert_scope_owned))
+        if not isinstance(started, Awaitable):
+            raise TypeError(
+                "mock mutation callback did not return an awaitable; the send "
+                "may already have happened synchronously"
+            )
+        task = asyncio.ensure_future(started)
+    except BaseException as exc:
+        invocation_error = exc
+
+    if task is None:
+        outer_cancellation = None
+        result, callback_error = None, invocation_error
+    else:
+        outer_cancellation = await _await_retained_task(task)
+        result, callback_error = _callback_outcome(task)
+    # The coordinated section is over: a captured scope must stop working.
+    gate.active = False
+    if callback_error is None:
+        result, callback_error = _validated_callback_result(result)
 
     factory = lineage_factory if lineage_factory is not None else MockLineageFactory()
     evidence_envelope = envelope
@@ -2246,6 +2461,7 @@ __all__ = [
     "ClaimFollowupRequest",
     "CoordinatedMutationResult",
     "CoordinationError",
+    "CoordinationScope",
     "CoordinationReasonCode",
     "DispatchEvidence",
     "DispatchEvidenceKind",

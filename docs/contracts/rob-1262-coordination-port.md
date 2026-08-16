@@ -123,14 +123,23 @@ outer cancellation, and re-raises only after a safe definite outcome. Every
 failure inside the critical section — a `CancelledError` included — means the
 outcome is *unknown*, never that the lock was released.
 
-Whether a failed release can be retried at all depends on who owns it. A lease a
-caller still holds and that is not coordination-sealed can retry with its exact
-grant; stale or foreign grants keep being rejected. A coordination-sealed lease is
-never unsealed after a failed release, and a partial-acquisition rollback has no
-owning lease, so **neither can be retried in this process**.
+Whether a failed release can be retried at all depends on who owns it, and
 `UnreleasedAuthorityHold.recoverable_in_process` is recomputed on every read to
-say exactly that, because a hold reported as recoverable when nothing can reach it
-is the same kind of false report as one reported as held after it was released.
+report exactly that — a hold called recoverable when nothing can reach it is the
+same kind of false report as one called held after it was released.
+
+| Owner state | Evidence | `recoverable_in_process` | Why |
+|---|---|---|---|
+| unsealed standalone lease | durable-true | `True` | the owner still holds its exact private lease/grant and may retry |
+| unsealed standalone lease | durable-false | `False` | release is refused for every caller, the owner included |
+| coordination-sealed lease | durable-true | `False` | a sealed lease is never unsealed after a failed release |
+| coordination-sealed lease | durable-false | `False` | both blockers apply |
+| partial-acquisition rollback | — | `False` | there is no owning lease at all |
+
+The flag is the negation of the two things that block a release: a permanent
+coordination seal, and missing durable evidence. There is no in-process recovery
+API in this epoch, and the presence of private machinery is not a supported retry
+path. Stale or foreign grants are always rejected.
 
 ---
 
@@ -187,9 +196,10 @@ successor.
 
 When the AND gate does **not** close, the lease is marked with an authority hold
 carrying `durable_evidence_written=False`, and from that moment the lease is
-unreleasable in this process — including through the exact grant reachable from
-`held_coordination(hold_id)`. Introspection may *see* a stuck lease; it may not
-release it. There is deliberately no recovery API: surrendering the advisory lock
+unreleasable in this process by any caller, the owning lease included.
+`held_coordination(hold_id)` returns a capability-free `HeldCoordinationSnapshot`
+— no lease, no grant, no connection, no PID, no owner token, nothing callable —
+so introspection can *see* a stuck lease and has no way to release it. There is deliberately no recovery API: surrendering the advisory lock
 while nobody knows whether an order went out would let an old or non-claim-aware
 writer mutate the account concurrently. The coordination handle and the authority
 hold share one opaque id, so an operator follows a single thread.
