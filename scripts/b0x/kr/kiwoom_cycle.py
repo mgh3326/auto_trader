@@ -232,6 +232,14 @@ DAY_ORDER_RETAINED_NOTE: Final[str] = (
 )
 
 REALIZED_PNL_UNAVAILABLE_REASON: Final[str] = "realized_pnl_unavailable"
+COORDINATION_GRANT_UNAVAILABLE_REASON: Final[str] = "coordination_grant_unavailable"
+_LIFECYCLE_BLOCK_REASONS: Final[frozenset[str]] = frozenset(
+    {
+        REALIZED_PNL_UNAVAILABLE_REASON,
+        COORDINATION_GRANT_UNAVAILABLE_REASON,
+        "unknown_pending_reconcile",
+    }
+)
 
 KR_ATTRIBUTED_NAV_BASIS: Final[str] = (
     "nav = cash + 자기 귀속 평가금액(지분 비례). legacy 평가금액은 제외 — §4 "
@@ -431,6 +439,9 @@ def _finish_zero_order(
     record["planned"] = []
     record["blocked"] = []
     record["submitted"] = []
+    if reason in _LIFECYCLE_BLOCK_REASONS:
+        record["lane_lifecycle_status"] = ordering_support.KIWOOM_LIFECYCLE_STATUS
+        record["realized_pnl_numeric_substitute"] = None
     outcome.zero_order_reason = reason
     return _persist_outcome(
         outcome=outcome, ledger=ledger, record=record, labels=labels
@@ -1234,6 +1245,7 @@ async def _submit_same_cycle_buy_batch(  # noqa: PLR0913
     halted: set[str],
     journal: kiwoom_attr.OwnOrderJournal,
     lease: ordering_support.WriterLease,
+    coordination: ordering_support.KiwoomCoordinationAdapter | None,
     fidelity: ordering_support.OrderingEventJournal,
     record: dict[str, Any],
     day_orders: list[dict[str, Any]],
@@ -1287,6 +1299,13 @@ async def _submit_same_cycle_buy_batch(  # noqa: PLR0913
     if not boundary.clean:
         reason = "mutation_boundary_not_clean"
         detail = boundary.blocking_reason or "unknown_boundary_failure"
+        _mark_buy_batch_failure(
+            batch=batch, record=record, reason=reason, detail=detail
+        )
+        return reason, detail, False
+    if coordination is None:
+        reason = COORDINATION_GRANT_UNAVAILABLE_REASON
+        detail = ordering_support.LOCAL_FLOCK_CANNOT_AUTHORIZE_SEND
         _mark_buy_batch_failure(
             batch=batch, record=record, reason=reason, detail=detail
         )
@@ -1350,11 +1369,13 @@ async def _submit_same_cycle_buy_batch(  # noqa: PLR0913
                 )
                 return reason, detail, False
         try:
-            day_order = await kiwoom_lane.submit_day_order_in_batch(
+            authorization.claim(order)
+            coordinated = await coordination.submit_planned(
                 account,
                 planned=order,
-                authorization=authorization,
                 record_order_no=_journal_writer(journal),
+                policy_version=coordination.policy_binding.policy_version,
+                policy_version_hash=coordination.policy_binding.policy_version_hash,
                 now=dt.datetime.now(dt.UTC),
             )
         except Exception as exc:  # noqa: BLE001 — every batch failure is material
@@ -1366,9 +1387,19 @@ async def _submit_same_cycle_buy_batch(  # noqa: PLR0913
             )
             return reason, detail, True
 
-        assert day_order.order_no is not None
+        order_no = coordinated.evidence.broker_order_id
+        assert order_no is not None
         batch["accepted_order_keys"].append(order.order_key)
-        batch["accepted_order_nos"].append(day_order.order_no)
+        batch["accepted_order_nos"].append(order_no)
+        day_order = kiwoom_lane.DayOrderResult(
+            correlation_id=order.client_order_id,
+            symbol=order.symbol,
+            side=order.side,
+            price=order.price,
+            quantity=order.quantity,
+            submitted=True,
+            order_no=order_no,
+        )
         lifecycle_failure = await _record_day_order_lifecycle(
             account=account,
             order=order,
@@ -1404,6 +1435,7 @@ async def _cancel_own_pending_on_kill(  # noqa: PLR0915 — linear safety sequen
     journal: kiwoom_attr.OwnOrderJournal,
     fidelity: ordering_support.OrderingEventJournal,
     lease: ordering_support.WriterLease,
+    coordination: ordering_support.KiwoomCoordinationAdapter | None,
     now: dt.datetime,
     outcome: KiwoomCycleOutcome,
     ledger: ObservationLedger,
@@ -1430,6 +1462,16 @@ async def _cancel_own_pending_on_kill(  # noqa: PLR0915 — linear safety sequen
             labels=labels,
             reason="kill_cancel_boundary_not_clean",
             detail=initial.blocking_reason or "unknown_boundary_failure",
+        )
+    if coordination is None:
+        outcome.exit_code = 2
+        return _finish_ordering_stopped(
+            outcome=outcome,
+            ledger=ledger,
+            record=record,
+            labels=labels,
+            reason=COORDINATION_GRANT_UNAVAILABLE_REASON,
+            detail=ordering_support.LOCAL_FLOCK_CANNOT_AUTHORIZE_SEND,
         )
     assert isinstance(initial.pending, kiwoom_lane.BrokerPending)
     record["kill_cancellation"] = {
@@ -1491,12 +1533,40 @@ async def _cancel_own_pending_on_kill(  # noqa: PLR0915 — linear safety sequen
             "remaining_quantity": current.remaining_quantity,
             "cancel_attempted": True,
         }
-        try:
-            response = await account.cancel(
-                original_order_no=current.order_id,
-                symbol=current.symbol,
-                cancel_quantity=current.remaining_quantity,
+        if current.remaining_quantity is None:
+            outcome.exit_code = 2
+            return _finish_ordering_stopped(
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                labels=labels,
+                reason="kill_cancel_remainder_unknown",
+                detail=f"order_no={current.order_id}",
             )
+        try:
+            planned = kiwoom_lane.PlannedOrder(
+                cycle_id=str(record.get("cycle_id") or "kill-cancel"),
+                order_key=f"cancel:{current.order_id}",
+                client_order_id=source.correlation_id,
+                symbol=current.symbol,
+                side=source.side,
+                leg="cancel",
+                price=source.price,
+                quantity=int(current.remaining_quantity),
+                notional=Decimal(source.price * int(current.remaining_quantity)),
+            )
+            coordinated = await coordination.cancel_attributed(
+                account,
+                planned=planned,
+                native_order_id=current.order_id,
+                known_remainder=Decimal(int(current.remaining_quantity)),
+                policy_version=coordination.policy_binding.policy_version,
+                policy_version_hash=coordination.policy_binding.policy_version_hash,
+            )
+            response = {
+                "return_code": 0,
+                "ord_no": coordinated.evidence.broker_order_id,
+            }
         except Exception as exc:  # noqa: BLE001 — response failure is not cancellation
             attempt["cancel_response"] = {"error_type": type(exc).__name__}
             record["kill_cancellation"]["attempts"].append(attempt)
@@ -1623,6 +1693,7 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
     account: kiwoom_lane.ReadOnlyKiwoomMockAccount | None,
     journal: kiwoom_attr.OwnOrderJournal,
     lease: ordering_support.WriterLease,
+    coordination: ordering_support.KiwoomCoordinationAdapter | None,
     realized_pnl_reader: Callable[..., kiwoom_attr.RealizedPnlInput],
 ) -> KiwoomCycleOutcome:
     """Independent ORDERING mode; it cannot fall through to acceptance cancel."""
@@ -1777,6 +1848,7 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
             journal=journal,
             fidelity=fidelity,
             lease=lease,
+            coordination=coordination,
             now=now,
             outcome=outcome,
             ledger=ledger,
@@ -1820,6 +1892,7 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
                 halted=halted,
                 journal=journal,
                 lease=lease,
+                coordination=coordination,
                 fidelity=fidelity,
                 record=record,
                 day_orders=day_orders,
@@ -1931,13 +2004,38 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
             position_symbols=sell_scope.cap_position_symbols,
             pending=boundary.pending,
         )
+        if coordination is None:
+            return _finish_ordering_stopped(
+                outcome=outcome,
+                ledger=ledger,
+                record=record,
+                labels=labels,
+                reason=COORDINATION_GRANT_UNAVAILABLE_REASON,
+                detail=ordering_support.LOCAL_FLOCK_CANNOT_AUTHORIZE_SEND,
+            )
         try:
-            day_order = await kiwoom_lane.submit_day_order(
+            kiwoom_lane.assert_resubmit_allowed(
+                current_truth, symbol=order.symbol, lane=LANE
+            )
+            coordinated = await coordination.submit_planned(
                 account,
                 planned=order,
-                broker_truth=current_truth,
                 record_order_no=_journal_writer(journal),
+                policy_version=coordination.policy_binding.policy_version,
+                policy_version_hash=coordination.policy_binding.policy_version_hash,
                 now=dt.datetime.now(dt.UTC),
+            )
+            order_no = coordinated.evidence.broker_order_id
+            if order_no is None:
+                raise RuntimeError("coordinated submit returned no broker_order_id")
+            day_order = kiwoom_lane.DayOrderResult(
+                correlation_id=order.client_order_id,
+                symbol=order.symbol,
+                side=order.side,
+                price=order.price,
+                quantity=order.quantity,
+                submitted=True,
+                order_no=order_no,
             )
         except OwnPendingResubmitBlocked as exc:
             record.setdefault("submission_dedup_blocked", []).append(
@@ -2061,6 +2159,9 @@ async def run_kiwoom_cycle(
     journal: kiwoom_attr.OwnOrderJournal | None = None,
     lease_factory: Callable[[Path, str, str], ordering_support.WriterLease]
     | None = None,
+    coordination_factory: (
+        Callable[[], ordering_support.KiwoomCoordinationAdapter] | None
+    ) = None,
     realized_pnl_reader: Callable[..., kiwoom_attr.RealizedPnlInput] | None = None,
 ) -> KiwoomCycleOutcome:
     """One manual kiwoom_mock B0-X cycle.
@@ -2224,6 +2325,15 @@ async def run_kiwoom_cycle(
                 reason="writer_lease_unavailable",
                 detail=type(exc).__name__,
             )
+        coordination = None if coordination_factory is None else coordination_factory()
+        record["coordination"] = {
+            "present": coordination is not None,
+            "recovery_owner": (
+                None if coordination is None else coordination.recovery_owner
+            ),
+            "authorizes_send": coordination is not None,
+            "local_flock_authorizes_send": False,
+        }
         try:
             return await _run_ordering_cycle(
                 now=now,
@@ -2236,6 +2346,7 @@ async def run_kiwoom_cycle(
                 account=account,
                 journal=lane_journal,
                 lease=lease,
+                coordination=coordination,
                 realized_pnl_reader=(
                     kiwoom_attr.realized_pnl_input_today
                     if realized_pnl_reader is None
