@@ -7839,34 +7839,56 @@ async def test_claim_proven_backend_termination_does_not_release_the_claim():
 
 
 def test_scope_no_account_wide_claim_prose_survives():
-    """AC10 / r84 U-c: the retired framing must not return anywhere.
+    """AC10 / r85: the retired framing must not return, and this guard must
+    actually be able to see it.
 
-    Two earlier versions of this guard were too narrow. It scanned only the source
-    and the contract, so the same claim survived in the *tests*; and it matched
-    four fixed literals, so any rephrasing walked straight past it.
+    Forbidden is a sentence whose **subject is the claim or the reservation**
+    asserting that it blocks the account. The opposite subject is correct and
+    must survive — "uncertainty keeps the account blocked" is the
+    post-correction contract, because the authority blocks an account, not the
+    claim.
 
-    What is forbidden is a sentence whose **subject is the claim or the
-    reservation** asserting that it blocks the account. The opposite subject is
-    correct and must survive: "uncertainty keeps the account blocked" is exactly
-    the post-correction contract, because the authority — not the claim — is what
-    blocks an account.
+    Three earlier versions were each too weak, and each weakness is closed here
+    with a mutant that proves it:
+
+    * it scanned only the *prefix* of this file up to this function, so anything
+      added below became silently unscanned. It now scans the whole file and
+      subtracts exactly this function's own source span, located with
+      ``inspect.getsource`` rather than by a comment claiming this is the last
+      function. A rule that cannot be enforced is not a rule;
+    * it exempted a match if any negation token appeared anywhere in a fixed
+      90-character window, so ``the claim blocks the account; it does not
+      authorize a broker mutation`` passed. Negation is now scoped to the clause
+      between that subject and that predicate;
+    * it exempted any occurrence of the substring ``gate`` just after the
+      subject, so ``claim gateway`` and ``claim, gated as settled`` passed. Only
+      the exact approved sentence from the verbatim correction is exempt;
+    * it used a fixed character window that crossed sentence boundaries in both
+      directions, attributing one sentence's predicate to another sentence's
+      subject. Matching is now per sentence.
+
+    Scope, stated deliberately: the mutant **definitions** JSON is not scanned.
+    `C1_stale_account_block_prose_restored` must contain the forbidden meaning as
+    its payload — that is the point of it — so scanning it would make the guard
+    fight its own test data.
     """
 
+    import inspect
     import itertools
     import re
 
-    own_text = pathlib.Path(__file__).read_text()
-    # This guard names the forbidden phrases in order to hunt them, so scanning
-    # its own body would always match itself. It is the last function in the
-    # file, so everything above it is exactly the suite under audit.
-    marker = "def test_scope_no_account_wide_claim_prose_survives"
+    own_source = inspect.getsource(test_scope_no_account_wide_claim_prose_survives)
+    tests_text = pathlib.Path(__file__).read_text()
+    assert own_source in tests_text, "cannot locate this guard's own source span"
     scanned = {
         "source": pathlib.Path(coordination.__file__).read_text(),
         "contract": (
             REPO_ROOT / "docs/contracts/rob-1262-coordination-port.md"
         ).read_text(),
-        "tests": own_text[: own_text.index(marker)],
+        # Whole file minus exactly this function — not a prefix.
+        "tests": tests_text.replace(own_source, "\n"),
     }
+
     subjects = ("claim", "reservation", "binary row", "durable row")
     predicates = (
         "account block",
@@ -7880,37 +7902,35 @@ def test_scope_no_account_wide_claim_prose_survives():
         "blocks unrelated",
         "blocks every new order",
     )
-    # Sentences that *deny* the retired claim, and sentences whose real subject is
-    # the authority rather than the claim, are the corrected form — not matches.
-    # "unresolved-claim **gate** blocks unrelated new sends **only while** a prior
-    # outcome is uncertain" is the mandated verbatim text and must survive intact.
-    negations = (
-        "does not",
-        "never",
-        "not an account",
-        "cannot",
-        "no longer",
-        "rather than",
-        "only while",
-    )
+    negations = ("does not", "never", "not ", "cannot", "no longer", "rather than")
+    # The one approved sentence whose subject is the authority, from the verbatim
+    # correction. Matched exactly — "gateway" and "gated" are not this.
+    approved = "unresolved-claim gate blocks unrelated new sends only while"
+
     for label, text in scanned.items():
         flat = " ".join(text.split()).lower()
-        for subject, predicate in itertools.product(subjects, predicates):
-            for m in re.finditer(re.escape(subject), flat):
-                window = flat[m.end() : m.end() + 90]
-                if "gate" in flat[m.end() : m.end() + 12]:
-                    continue  # the subject is the authority, not the claim
-                if predicate in window and not any(n in window for n in negations):
+        # Per sentence, so no predicate is ever attributed across a boundary.
+        for sentence in re.split(r"[.;:!?]|\s-\s", flat):
+            if approved in sentence:
+                continue
+            for subject, predicate in itertools.product(subjects, predicates):
+                for sm in re.finditer(re.escape(subject), sentence):
+                    pm = sentence.find(predicate, sm.end())
+                    if pm == -1:
+                        continue
+                    clause = sentence[sm.end() : pm]
+                    if any(n in clause for n in negations):
+                        continue  # this clause denies the assertion
                     raise AssertionError(
-                        f"{label}: '{subject}' still asserts '{predicate}': "
-                        f"...{flat[m.start() : m.end() + 90]}..."
+                        f"{label}: '{subject}' asserts '{predicate}': "
+                        f"...{sentence[max(0, sm.start() - 20) : pm + 40].strip()}..."
                     )
 
     # The correct, opposite-subject sentence must still be present.
     assert (
         "uncertainty keeps the account blocked"
         in " ".join(scanned["tests"].split()).lower()
-    )
+    ), "the correct opposite-subject sentence was lost"
 
     # The coordinator must not reach the generic reservation predicates.
     assert "has_reservations" not in scanned["source"]
