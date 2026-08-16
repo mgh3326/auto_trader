@@ -231,8 +231,10 @@ opaque hold id. It is a lifetime and safety guard: **not** a retry queue, not a
 durable state store, with no TTL, janitor, takeover, automatic retry, claim
 deletion, or scheduler. Entries are removed only when both post-send durable
 writes succeeded *and* release reached a proven outcome. Process death may end
-the ephemeral session, but the durable reservation survives and keeps blocking a
-successor.
+the ephemeral session, but the durable reservation survives and keeps preventing
+replay of that exact send lineage. Whether an unrelated plan may proceed is a
+separate question, answered by the injected `AccountUncertaintyGatePort` and never
+by the presence of that reservation.
 
 When the AND gate does **not** close, the lease is marked with an authority hold
 carrying `durable_evidence_written=False`, and from that moment the lease is

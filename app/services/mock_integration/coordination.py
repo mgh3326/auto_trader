@@ -1725,8 +1725,12 @@ class TerminalClaimEvidence:
     Every field defaults to absent, so a default-constructed instance authorizes
     nothing.  Unknown results, anomalies, a broker rejection without proven
     absence, and a partial fill with an unknown remainder all fail to set these
-    flags — which is exactly why they retain the claim and keep the account
-    blocked until a human resolves them.  Nothing releases a claim automatically.
+    flags — which is exactly why they retain the claim until a human resolves
+    them.  Retention is scoped to this exact send lineage: it prevents that
+    logical send from being replayed, and says nothing on its own about whether
+    unrelated plans may proceed.  Whether the *account* is blocked is answered by
+    :class:`AccountUncertaintyGatePort`, which this dataclass neither receives nor
+    consults.  Nothing releases a claim automatically.
     """
 
     lane_native_terminal_evidence: bool = False
@@ -2104,7 +2108,9 @@ class _HeldCoordination:
     queue, **not** a durable state store, and it has no TTL, janitor, takeover,
     automatic retry, claim deletion, or scheduler.  Process death may end the
     ephemeral DB session, but the durable binary reservation survives and keeps
-    blocking a successor, which is the property that actually matters.
+    preventing a replay of that exact send lineage, which is the property that
+    actually matters.  It does not decide whether a successor may run some
+    *other* plan — that is the uncertainty authority's answer, not this map's.
     """
 
     hold_id: str

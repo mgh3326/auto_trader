@@ -2590,7 +2590,8 @@ async def test_claim_truthy_non_boolean_evidence_cannot_delete_the_claim(
 ):
     """B36: ``"false"`` is truthy, and so is ``"0"``.
 
-    The durable claim is the entire account block. A mistyped field must not be
+    The durable claim is durable proof that this exact lineage was sent. A
+    mistyped field must not be
     able to authorize deleting it, and the adapter must not simply trust an
     overridable authorization property.
     """
@@ -3215,7 +3216,7 @@ async def test_claim_durable_false_hold_cannot_be_released_via_the_public_handle
     assert held.lease.released is False
     assert hold_id in held_coordinations()
     assert hold_id in {h.hold_id for h in unreleased_authority_holds()}
-    # The durable claim — the account block — is untouched throughout.
+    # The durable claim — this exact lineage's record — is untouched throughout.
     assert len(stack["intents"].rows) == 1
     assert stack["intents"].release_if_matches_calls == []
 
@@ -4371,8 +4372,8 @@ async def test_claim_model_premise_claim_commits_before_the_callback():
     """The whole process-death argument rests on this ordering.
 
     If the durable claim were written after the send, a crash mid-callback would
-    leave nothing blocking a successor's blind repost, and "process death is an
-    acceptable terminus" would stop being true.
+    leave nothing preventing a blind repost of that exact send lineage, and
+    "process death is an acceptable terminus" would stop being true.
     """
 
     _, envelope = _attempt_envelope()
@@ -4425,7 +4426,7 @@ async def test_claim_scope_assertion_blocks_a_send_after_delayed_ownership_loss(
 
     assert excinfo.value.reason_code is CoordinationReasonCode.LEASE_LOST
     assert sends == []
-    # The unknown is still durable, and the claim still blocks the account.
+    # The unknown is still durable, and the claim still records this exact send.
     assert stack["evidence"].calls == 1
     assert stack["evidence"].only.kind is DispatchEvidenceKind.CALLBACK_FAILED
     assert len(stack["intents"].rows) == 1
@@ -7803,32 +7804,120 @@ async def test_claim_lease_releases_while_the_claim_remains(outcome):
     assert result.claim.row_id in stack["intents"].rows
 
 
-def test_scope_no_account_wide_claim_prose_survives():
-    """AC10: the retired 'claim == account block' framing must not come back.
+@pytest.mark.asyncio
+async def test_claim_proven_backend_termination_does_not_release_the_claim():
+    """Correction 1: termination ends lease authority, never the claim.
 
-    Word-presence checks are false green here — the correction is about what the
-    sentences *say*. These are exact propositions, plus the verbatim block the
-    contract is required to carry.
+    "Backend termination proves only cessation of lease authority. It is never
+    broker-outcome evidence and never, by itself, authorizes durable-claim
+    release." Here the reverse unlock cannot be proven, so release falls back to a
+    positive termination receipt — and the claim must survive that untouched.
     """
 
-    source = pathlib.Path(coordination.__file__).read_text()
-    contract = (REPO_ROOT / "docs/contracts/rob-1262-coordination-port.md").read_text()
+    _, envelope = _attempt_envelope()
+    stack = _default_stack()
+    stack["callback"] = RecordingCallback(
+        result=MutationCallbackResult(
+            certainty=MutationCertainty.DEFINITIVE, broker_order_id="ODNO-0000099"
+        )
+    )
+    # Unlock cannot be proven, so the release path must terminate the backend.
+    stack["connection"]._unlock_returns = False
 
-    for text, label in ((source, "source"), (contract, "contract")):
+    # The unprovable unlock surfaces as a lost lease *after* the backend has been
+    # terminated. Both durable writes already landed before that point.
+    with pytest.raises(CoordinationError) as excinfo:
+        await _run(envelope, stack)
+    assert excinfo.value.reason_code is CoordinationReasonCode.LEASE_LOST
+
+    assert stack["persistence"].calls == 2
+    assert stack["evidence"].calls == 1
+    # The durable claim is entirely untouched by the termination.
+    assert len(stack["intents"].rows) == 1
+    assert stack["intents"].release_if_matches_calls == []
+    assert stack["intents"].unrestricted_release_calls == 0
+
+
+def test_scope_no_account_wide_claim_prose_survives():
+    """AC10 / r84 U-c: the retired framing must not return anywhere.
+
+    Two earlier versions of this guard were too narrow. It scanned only the source
+    and the contract, so the same claim survived in the *tests*; and it matched
+    four fixed literals, so any rephrasing walked straight past it.
+
+    What is forbidden is a sentence whose **subject is the claim or the
+    reservation** asserting that it blocks the account. The opposite subject is
+    correct and must survive: "uncertainty keeps the account blocked" is exactly
+    the post-correction contract, because the authority — not the claim — is what
+    blocks an account.
+    """
+
+    import itertools
+    import re
+
+    own_text = pathlib.Path(__file__).read_text()
+    # This guard names the forbidden phrases in order to hunt them, so scanning
+    # its own body would always match itself. It is the last function in the
+    # file, so everything above it is exactly the suite under audit.
+    marker = "def test_scope_no_account_wide_claim_prose_survives"
+    scanned = {
+        "source": pathlib.Path(coordination.__file__).read_text(),
+        "contract": (
+            REPO_ROOT / "docs/contracts/rob-1262-coordination-port.md"
+        ).read_text(),
+        "tests": own_text[: own_text.index(marker)],
+    }
+    subjects = ("claim", "reservation", "binary row", "durable row")
+    predicates = (
+        "account block",
+        "account-wide block",
+        "blocks the account",
+        "block the account",
+        "keeps the account blocked",
+        "keep the account blocked",
+        "blocks a successor",
+        "blocking a successor",
+        "blocks unrelated",
+        "blocks every new order",
+    )
+    # Sentences that *deny* the retired claim, and sentences whose real subject is
+    # the authority rather than the claim, are the corrected form — not matches.
+    # "unresolved-claim **gate** blocks unrelated new sends **only while** a prior
+    # outcome is uncertain" is the mandated verbatim text and must survive intact.
+    negations = (
+        "does not",
+        "never",
+        "not an account",
+        "cannot",
+        "no longer",
+        "rather than",
+        "only while",
+    )
+    for label, text in scanned.items():
         flat = " ".join(text.split()).lower()
-        for retired in (
-            "the durable claim is the entire account block",
-            "mere existence is the account-wide block",
-            "any unresolved reservation blocks every new order",
-            "any reservation blocks the account",
-        ):
-            assert retired not in flat, f"{label}: stale phrase {retired!r}"
+        for subject, predicate in itertools.product(subjects, predicates):
+            for m in re.finditer(re.escape(subject), flat):
+                window = flat[m.end() : m.end() + 90]
+                if "gate" in flat[m.end() : m.end() + 12]:
+                    continue  # the subject is the authority, not the claim
+                if predicate in window and not any(n in window for n in negations):
+                    raise AssertionError(
+                        f"{label}: '{subject}' still asserts '{predicate}': "
+                        f"...{flat[m.start() : m.end() + 90]}..."
+                    )
+
+    # The correct, opposite-subject sentence must still be present.
+    assert (
+        "uncertainty keeps the account blocked"
+        in " ".join(scanned["tests"].split()).lower()
+    )
 
     # The coordinator must not reach the generic reservation predicates.
-    assert "has_reservations" not in source
-    assert "account_has_unresolved_claim" not in source
+    assert "has_reservations" not in scanned["source"]
+    assert "account_has_unresolved_claim" not in scanned["source"]
 
     # The verbatim correction is carried in the contract, not paraphrased.
+    contract_flat = " ".join(scanned["contract"].split()).lower()
     for sentence in (
         "it is not an account-lifecycle mutex",
         "a durable send claim is keyed to the exact immutable send lineage",
@@ -7838,4 +7927,4 @@ def test_scope_no_account_wide_claim_prose_survives():
         "the advisory lease and the durable claim have distinct lifetimes",
         "backend termination proves only cessation of lease authority",
     ):
-        assert sentence in " ".join(contract.split()).lower(), sentence
+        assert sentence in contract_flat, sentence
