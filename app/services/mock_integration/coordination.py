@@ -627,18 +627,32 @@ def _allocate_hold_id() -> str:
             return candidate
 
 
-def _authority_already_retained(*, owner: object, grant: AdvisoryLeaseGrant) -> bool:
-    """Is this exact connection+grant already held in the retained map?
+def _authority_already_retained(
+    *,
+    owner: object,
+    grant: AdvisoryLeaseGrant,
+    connection: LockAuthorityConnection,
+) -> bool:
+    """Is *this exact* authority already recorded, with a live active record?
 
     The rollback helper may retain an authority and then fail on its way out.
     The caller's fallback must notice that, or one stuck account is recorded
     twice and every count that follows -- holds, successors, operator triage --
     is wrong.
+
+    Owner and grant alone are not enough. A row carrying the right owner and
+    grant but a *different* connection describes a different physical session,
+    so accepting it would suppress the safe fallback and leave the real
+    connection unrooted. The corresponding active record must exist too: a
+    retained row with no active hold is not a recorded authority.
     """
 
     return any(
-        entry.owner is owner and entry.grant is grant
-        for entry in _RETAINED_AUTHORITIES.values()
+        entry.owner is owner
+        and entry.grant is grant
+        and entry.connection is connection
+        and _ACTIVE_AUTHORITY_HOLDS.get(hold_id) is not None
+        for hold_id, entry in _RETAINED_AUTHORITIES.items()
     )
 
 
@@ -760,7 +774,12 @@ def ordered_advisory_keyset(keys: Sequence[int]) -> tuple[int, ...]:
     return tuple(sorted(set(keys)))
 
 
-@dataclass(frozen=True, slots=True)
+# ``weakref_slot`` only adds ``__weakref__`` to the generated slots: the grant
+# stays frozen, slotted, immutable, and out of ``__all__``. It exists so a test
+# can hold a non-owning witness to the exact original grant and prove the
+# module-private retained map is the only thing keeping it alive. An id() read
+# afterwards cannot prove that — it only re-reads the object the map still holds.
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class AdvisoryLeaseGrant:
     """Immutable proof of one successful ordered-keyset acquisition.
 
@@ -908,12 +927,16 @@ def _record_unreleased_authority(
             hold_id in _ISSUED_HOLD_IDS
             # (2) an exact still-live preallocated coordination handle.
             and held is not None
-            # (3) owned by this very lease, and sealed with this very capability.
+            # (3) the same generation, proved on all four identities: the lease
+            #     recording it, the grant it was acquired under, the connection
+            #     that actually holds the keys, and the private release
+            #     capability it was sealed with. Any one differing means this is
+            #     not that handle's authority record, and an id is not a right.
             and held.lease is owner
-            and (
-                capability is None
-                or _COORDINATION_RELEASE_CAPABILITIES.get(hold_id) is capability
-            )
+            and held.grant is grant
+            and (connection is None or connection is held.lease._connection)
+            and capability is not None
+            and _COORDINATION_RELEASE_CAPABILITIES.get(hold_id) is capability
             # (4) the first authority transition for that id, ever.
             and retained is None
             and hold_id not in _ACTIVE_AUTHORITY_HOLDS
@@ -1309,6 +1332,10 @@ class PostgresAdvisoryKeysetLease:
             # across two ids with no public way to join them. An unsealed lease
             # has no such id, so it keeps a fresh allocation.
             hold_id=self._coordination_hold_id,
+            # ...and the id alone is not the right to use it. The record gate
+            # demands the exact capability this lease was sealed with, so a
+            # supplied id cannot be adopted by anything that lacks it.
+            capability=self._release_capability,
         )
 
 
@@ -1403,7 +1430,7 @@ async def acquire_physical_account_lease(
         rollback_error = _task_error(rollback)
         rollback_interruption = rollback.result() if rollback_error is None else None
         if rollback_error is not None and not _authority_already_retained(
-            owner=connection, grant=grant
+            owner=connection, grant=grant, connection=connection
         ):
             # The rollback itself failed, so nothing proved this connection is
             # safe and nothing may have retained it. Retain it here rather than

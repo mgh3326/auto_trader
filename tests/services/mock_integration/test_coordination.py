@@ -33,6 +33,7 @@ import json
 import pathlib
 import shutil
 import subprocess
+import weakref
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -353,6 +354,7 @@ class FakeLockConnection:
         close_raises: BaseException | None = None,
         fail_sql_error: BaseException | None = None,
         unlock_false_on_key: int | None = None,
+        release_observer: Any = None,
         unlock_gate_on_key: int | None = None,
         unlock_gate: asyncio.Event | None = None,
         unlock_gate_started: asyncio.Event | None = None,
@@ -375,6 +377,7 @@ class FakeLockConnection:
         self._close_raises = close_raises
         self._fail_sql_error = fail_sql_error
         self._unlock_false_on_key = unlock_false_on_key
+        self._release_observer = release_observer
         self._unlock_gate_on_key = unlock_gate_on_key
         self._unlock_gate = unlock_gate
         self._unlock_gate_started = unlock_gate_started
@@ -449,6 +452,8 @@ class FakeLockConnection:
                     await self._unlock_gate.wait()
             if key == self._unlock_raises_on_key:
                 raise self._unlock_raises_error or RuntimeError("unlock interrupted")
+            if self._release_observer is not None:
+                self._release_observer("lease_unlock")
             if self._events is not None:
                 self._events.append("lease_unlock")
             if key == self._unlock_false_on_key:
@@ -482,6 +487,8 @@ class FakeLockConnection:
         if self._close_raises is not None:
             raise self._close_raises
         self.closed = True
+        if self._release_observer is not None:
+            self._release_observer("lease_closed")
         if self._events is not None:
             self._events.append("lease_closed")
 
@@ -3468,6 +3475,33 @@ async def test_cancel_bare_shield_finally_release_mutant_is_red():
 # ===========================================================================
 
 
+def _active_holds() -> dict[str, Any]:
+    """Module-private active-hold map, read-only, for exact-record assertions."""
+
+    return coordination._ACTIVE_AUTHORITY_HOLDS
+
+
+def _capture_rollback_identities(monkeypatch: Any, captured: dict[str, Any]) -> None:
+    """Weakref the exact connection and grant *entering* the rollback.
+
+    r29 W1/W4: a witness taken afterwards from ``_retained_authorities`` only
+    re-reads the object the module already holds, so it cannot show that the
+    module is the *only* root. These references are bound before any retention
+    happens and own nothing.
+    """
+
+    real = coordination._rollback_partial_acquisition
+
+    async def spy(
+        connection: Any, acquired: Any, grant: Any, *, in_flight: Any = ()
+    ) -> Any:
+        captured["connection"] = weakref.ref(connection)
+        captured["grant"] = weakref.ref(grant)
+        return await real(connection, acquired, grant, in_flight=in_flight)
+
+    monkeypatch.setattr(coordination, "_rollback_partial_acquisition", spy)
+
+
 async def _durable_true_hold(space: FakeLockSpace, *, pid: int, key: int) -> Any:
     """A lease whose *release* failed, so B20 recovery semantics apply."""
 
@@ -4882,7 +4916,7 @@ async def test_lock_close_cancellation_after_absence_keeps_the_receipt(which: st
 
 
 @pytest.mark.asyncio
-async def test_lock_inner_cancellation_after_a_confirmed_unlock_prefix():
+async def test_lock_inner_cancellation_after_a_confirmed_unlock_prefix(monkeypatch):
     """B52: the load-bearing conjunction, in one test.
 
     Two half-tests do not cover this. One cancels on the *first* reverse unlock,
@@ -4896,7 +4930,9 @@ async def test_lock_inner_cancellation_after_a_confirmed_unlock_prefix():
     """
 
     import gc
-    import weakref
+
+    captured: dict[str, Any] = {}
+    _capture_rollback_identities(monkeypatch, captured)
 
     space = FakeLockSpace()
     blocker = FakeLockConnection(space, pid=12003)
@@ -4917,7 +4953,6 @@ async def test_lock_inner_cancellation_after_a_confirmed_unlock_prefix():
         unlock_raises_error=asyncio.CancelledError(),
         termination_raises=RuntimeError("cannot terminate"),
     )
-    weak_connection = weakref.ref(connection)
     retained_before = set(_retained_authorities())
     held_before = set(held_coordinations())
 
@@ -4945,11 +4980,18 @@ async def test_lock_inner_cancellation_after_a_confirmed_unlock_prefix():
     assert connection.closed is False
     assert set(held_coordinations()) == held_before
 
-    # The authority outlives every caller-side reference to it.
+    # The authority outlives every caller-side reference to it — and the retained
+    # entry holds the exact ORIGINAL connection *and* the exact original grant,
+    # both witnessed before any retention could have happened.
+    weak_connection = captured["connection"]
+    weak_grant = captured["grant"]
     del connection, task
     gc.collect()
     assert weak_connection() is not None
-    assert _retained_authorities()[hold_id].connection is weak_connection()
+    assert weak_grant() is not None
+    retained = _retained_authorities()[hold_id]
+    assert retained.connection is weak_connection()
+    assert retained.grant is weak_grant()
 
     successor = FakeLockConnection(space, pid=12004)
     with pytest.raises(CoordinationError) as contended:
@@ -5010,10 +5052,9 @@ async def test_lock_outer_cancellation_during_a_gated_rollback_unlock_is_retaine
 async def test_lock_collision_exhaustion_during_confirmed_partial_rollback(
     monkeypatch,
 ):
-    """U6/B40: the collision storm must also cover the confirmed-partial branch."""
+    """U6/B40 + r29 W4: the collision branch proves its own unique root."""
 
     import gc
-    import weakref
 
     space = FakeLockSpace()
     _, victim_connection, victim_hold = await _durable_true_hold(
@@ -5036,7 +5077,13 @@ async def test_lock_collision_exhaustion_during_confirmed_partial_rollback(
         unlock_returns=False,
         termination_raises=RuntimeError("cannot terminate"),
     )
+    captured: dict[str, Any] = {}
+    _capture_rollback_identities(monkeypatch, captured)
     retained_before = set(_retained_authorities())
+    active_before = set(_active_holds())
+    # Snapshot the foreign world BEFORE the failure, excluding anything new.
+    foreign_before = dict(_retained_authorities())
+    foreign_active_before = dict(_active_holds())
 
     with pytest.raises(CoordinationError):
         await acquire_physical_account_lease(
@@ -5051,25 +5098,25 @@ async def test_lock_collision_exhaustion_during_confirmed_partial_rollback(
     assert intruder.closed is False
     assert intruder.unlock_calls == [1113]
 
-    # B55: prove the *module* is what keeps this authority alive. Collecting
-    # while the caller still holds `intruder` proves nothing, so bind weak
-    # references to the exact original objects, drop every caller-side strong
-    # reference, and force a collection.
-    weak_connection = weakref.ref(intruder)
-    # ``AdvisoryLeaseGrant`` is a frozen slots dataclass and cannot be weakly
-    # referenced. Its id is still a sound identity witness here: the retained
-    # entry holds it strongly for the whole test, so it is never freed and its
-    # id can never be recycled onto a different object.
-    grant_id = id(_retained_authorities()[quarantined].grant)
+    # W4: prove the module-private map is the ONLY root. Both witnesses were
+    # bound before retention, and the foreign snapshot deliberately excludes the
+    # entry under test — including it would keep the object alive and turn this
+    # into a false green.
+    weak_connection = captured["connection"]
+    weak_grant = captured["grant"]
+    assert weak_connection() is intruder
     del intruder
     gc.collect()
     assert weak_connection() is not None
+    assert weak_grant() is not None
     retained = _retained_authorities()[quarantined]
-    # Exact identity, recovered only through the module-private seam.
     assert retained.connection is weak_connection()
-    assert id(retained.grant) == grant_id
+    assert retained.grant is weak_grant()
     assert retained.connection.closed is False
     assert retained.connection.unlock_calls == [1113]
+    # Exactly one new active hold, and its active record exists.
+    assert len(set(_active_holds()) - active_before) == 1
+    assert quarantined in _active_holds()
 
     # And the physical key is genuinely still held.
     successor = FakeLockConnection(space, pid=11104)
@@ -5079,7 +5126,11 @@ async def test_lock_collision_exhaustion_during_confirmed_partial_rollback(
         )
     assert contended.value.reason_code is CoordinationReasonCode.LEASE_CONTENDED
 
-    # The victim is untouched by the storm.
+    # Every foreign entry is identical, by object, to the pre-failure snapshot.
+    for other, entry in foreign_before.items():
+        assert _retained_authorities()[other] is entry
+    for other, row in foreign_active_before.items():
+        assert _active_holds()[other] is row
     assert _retained_authorities()[victim_hold.hold_id].connection is victim_connection
     assert _retained_authorities()[victim_hold.hold_id].owner is victim_owner
     assert victim_connection.closed is False
@@ -5087,25 +5138,48 @@ async def test_lock_collision_exhaustion_during_confirmed_partial_rollback(
 
 @pytest.mark.asyncio
 async def test_lock_rollback_task_error_still_retains_the_authority(monkeypatch):
-    """U6/B40: if the rollback task itself fails, nothing may fall out of scope."""
+    """U6/B40 + r29 W4: the task-error branch proves its own unique root.
+
+    The previous shape had a false root: it snapshotted *all* retained entries —
+    including the one under test — into a local, and that local `_RetainedAuthority`
+    itself strongly owns the connection and grant. Deleting the caller's variables
+    therefore proved nothing. Here the foreign snapshot is taken before the
+    failure, a real foreign victim exists, and the entry under test is never
+    placed in a local that outlives the collection.
+    """
 
     import gc
-    import weakref
 
     space = FakeLockSpace()
+    # A real foreign victim, constructed BEFORE the failure under test.
+    _, victim_connection, victim_hold = await _durable_true_hold(
+        space, pid=11210, key=1120
+    )
+    victim_owner = _retained_authorities()[victim_hold.hold_id].owner
+    foreign_before = dict(_retained_authorities())
+    foreign_active_before = dict(_active_holds())
+    foreign_history_before = len(authority_hold_history())
+
     blocker = FakeLockConnection(space, pid=11201)
     await acquire_physical_account_lease(
         keys=[1122], connection_factory=ConnectionFactory(blocker)
     )
     connection = FakeLockConnection(space, pid=11202)
+    captured: dict[str, Any] = {}
 
-    async def exploding_rollback(*args: Any, **kwargs: Any) -> None:
+    async def exploding_rollback(
+        conn: Any, acquired: Any, grant: Any, *, in_flight: Any = ()
+    ) -> None:
+        # Witness the exact originals before anything can retain them.
+        captured["connection"] = weakref.ref(conn)
+        captured["grant"] = weakref.ref(grant)
         raise RuntimeError("rollback itself failed")
 
     monkeypatch.setattr(
         coordination, "_rollback_partial_acquisition", exploding_rollback
     )
     retained_before = set(_retained_authorities())
+    active_before = set(_active_holds())
 
     with pytest.raises(CoordinationError):
         await acquire_physical_account_lease(
@@ -5115,22 +5189,23 @@ async def test_lock_rollback_task_error_still_retains_the_authority(monkeypatch)
     new_holds = set(_retained_authorities()) - retained_before
     assert len(new_holds) == 1
     hold_id = new_holds.pop()
-    retained = _retained_authorities()[hold_id]
-    assert retained.connection is connection
-    assert retained.grant.backend_pid == 11202
+    # Exactly one new active record, matching that hold.
+    assert set(_active_holds()) - active_before == {hold_id}
+    assert _retained_authorities()[hold_id].connection is connection
     assert connection.closed is False
 
-    # B55: same obligation on this branch — exact identity must survive losing
-    # every caller reference, and the physical key must really still be held.
-    weak_connection = weakref.ref(connection)
-    grant_id = id(retained.grant)  # see the note on the collision branch
-    victim_before = dict(_retained_authorities())
-    del connection, retained
+    weak_connection = captured["connection"]
+    weak_grant = captured["grant"]
+    assert weak_connection() is connection
+    # Drop every caller-side strong reference. Nothing that owns the connection
+    # or grant may survive this point except the module-private map.
+    del connection
     gc.collect()
     assert weak_connection() is not None
+    assert weak_grant() is not None
     recovered = _retained_authorities()[hold_id]
     assert recovered.connection is weak_connection()
-    assert id(recovered.grant) == grant_id
+    assert recovered.grant is weak_grant()
     assert recovered.connection.closed is False
     assert recovered.connection.unlock_calls == []
 
@@ -5141,11 +5216,18 @@ async def test_lock_rollback_task_error_still_retains_the_authority(monkeypatch)
         )
     assert contended.value.reason_code is CoordinationReasonCode.LEASE_CONTENDED
 
-    # Every foreign entry is byte-for-byte what it was.
-    for other, entry in victim_before.items():
-        if other == hold_id:
-            continue
+    # The foreign world is identical, by object, to the pre-failure snapshot.
+    for other, entry in foreign_before.items():
         assert _retained_authorities()[other] is entry
+    for other, row in foreign_active_before.items():
+        assert _active_holds()[other] is row
+    assert _retained_authorities()[victim_hold.hold_id].connection is victim_connection
+    assert _retained_authorities()[victim_hold.hold_id].owner is victim_owner
+    assert victim_connection.closed is False
+    # Exactly one history row exists for this authority — the fallback recorded
+    # it once, not twice.
+    assert len([h for h in authority_hold_history() if h.hold_id == hold_id]) == 1
+    assert len(authority_hold_history()) >= foreign_history_before + 1
 
 
 @pytest.mark.asyncio
@@ -6501,25 +6583,34 @@ async def test_claim_outcome_access_failure_durable_write_precedence(
 
 
 @pytest.mark.asyncio
-async def test_claim_self_cancelled_callback_scope_dies_even_when_the_lease_is_kept():
-    """B54: the gate must be what kills the scope, not the lease release.
+@pytest.mark.parametrize("failing", ["lineage", "evidence"])
+@pytest.mark.asyncio
+async def test_claim_self_cancelled_callback_retained_across_both_write_failures(
+    failing,
+):
+    """W3/B54: the self-cancel case crossed with *each* durable-write failure.
 
-    On every path that releases the lease, a captured scope fails anyway because
-    the lease itself refuses — so asserting "dead scope" there proves nothing
-    about the gate. Here the durable write fails, so the authority is deliberately
-    retained and the lease is *not* released: if the gate stayed live for the
-    self-cancel branch, the captured scope would still work.
+    Hard-coding one failure kind leaves the other half of this exact case
+    unproven. And on every path that releases the lease, a captured scope fails
+    anyway because the lease itself refuses — so asserting a dead scope only
+    proves something about the gate here, where the authority is deliberately
+    retained and the lease is *not* released.
     """
 
     _, envelope = _attempt_envelope()
     stack = _default_stack()
-    stack["evidence"] = RecordingDispatchEvidence(fail=True)
+    if failing == "lineage":
+        stack["persistence"] = RecordingPersistence(fail_from_call=1)
+    else:
+        stack["evidence"] = RecordingDispatchEvidence(fail=True)
     captured: dict[str, Any] = {}
+    posts: list[str] = []
     held_before = set(held_coordinations())
 
     async def self_cancelling(scope: Any) -> Any:
         captured["scope"] = scope
         await scope.assert_owned()
+        posts.append("POST")
         current = asyncio.current_task()
         assert current is not None
         current.cancel()
@@ -6529,80 +6620,55 @@ async def test_claim_self_cancelled_callback_scope_dies_even_when_the_lease_is_k
     stack["callback"] = self_cancelling
     with pytest.raises(CoordinationError) as excinfo:
         await _run(envelope, stack)
+
+    assert posts == ["POST"]
+    # Precedence: the durable failure outranks the callback self-cancellation.
     assert excinfo.value.reason_code is (
         CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE
     )
+    # Both post-send writes were attempted; one failing never skips the other.
+    assert stack["persistence"].calls == 2
+    assert stack["evidence"].calls == 1
 
-    # The lease is retained, not released — so it would still attest ownership.
     stuck = set(held_coordinations()) - held_before
     assert len(stuck) == 1
-    held = _held_coordination(stuck.pop())
+    hold_id = stuck.pop()
+    assert excinfo.value.hold_id == hold_id
+    held = _held_coordination(hold_id)
+    authority_hold = held.lease.unreleased_authority_hold
+    assert authority_hold is not None
+    # One opaque id on both records, durable-false, claim kept, zero cleanup.
+    assert authority_hold.hold_id == hold_id
+    assert authority_hold.durable_evidence_written is False
+    assert len(stack["intents"].rows) == 1
+    assert stack["intents"].release_if_matches_calls == []
+    assert stack["connection"].unlock_calls == []
+    assert stack["connection"].closed is False
+
+    # The lease is retained, so it would still attest — the scope is dead only
+    # because the gate closed it.
     assert held.lease.released is False
     await held.lease.assert_owned(held.grant)
-
-    # The scope is nevertheless dead, and only the gate can have done that.
     with pytest.raises(CoordinationError) as expired:
         await captured["scope"].assert_owned()
     assert expired.value.reason_code is CoordinationReasonCode.LEASE_LOST
 
-
-@pytest.mark.asyncio
-async def test_lock_rollback_that_retains_then_raises_makes_only_one_hold(monkeypatch):
-    """B55: the outer fallback must not double-count one stuck account.
-
-    The helper can retain the exact authority and *then* fail on its way out. If
-    the caller's fallback records unconditionally, one stuck account appears
-    twice, and every count that follows it — holds, successors, operator triage —
-    is wrong. The existing exploding helper raises before retaining, so it cannot
-    see this.
-    """
-
-    space = FakeLockSpace()
-    blocker = FakeLockConnection(space, pid=11301)
-    await acquire_physical_account_lease(
-        keys=[1132], connection_factory=ConnectionFactory(blocker)
-    )
-    connection = FakeLockConnection(
-        space, pid=11302, termination_raises=RuntimeError("cannot terminate")
-    )
-
-    async def retain_then_explode(
-        conn: Any, acquired: Any, grant: Any, *, in_flight: Any = ()
-    ) -> None:
-        coordination._record_unreleased_authority(
-            grant,
-            owner=conn,
-            reason_code=CoordinationReasonCode.LEASE_LOST,
-            termination_proven=False,
-            durable_evidence_written=True,
-            connection=conn,
-        )
-        raise RuntimeError("rollback failed after retaining")
-
-    monkeypatch.setattr(
-        coordination, "_rollback_partial_acquisition", retain_then_explode
-    )
-    retained_before = set(_retained_authorities())
-
-    with pytest.raises(CoordinationError):
-        await acquire_physical_account_lease(
-            keys=[1131, 1132], connection_factory=ConnectionFactory(connection)
-        )
-
-    new_holds = set(_retained_authorities()) - retained_before
-    # Exactly one — the helper's record, adopted rather than duplicated.
-    assert len(new_holds) == 1
-    retained = _retained_authorities()[new_holds.pop()]
-    assert retained.connection is connection
-    assert connection.closed is False
-    # And exactly one history row for this authority, not two.
-    rows = [
-        h
-        for h in authority_hold_history()
-        if h.hold_id
-        in set(_retained_authorities()) - retained_before | {retained.hold_id}
-    ]
-    assert len([h for h in rows if h.hold_id == retained.hold_id]) == 1
+    # Both the public handle and the exact private capability refuse release.
+    for attempt in ("public", "private"):
+        with pytest.raises(CoordinationError) as refused:
+            if attempt == "public":
+                await held.lease.release(held.grant)
+            else:
+                await held.lease._release_with_capability(
+                    held.grant,
+                    coordination._COORDINATION_RELEASE_CAPABILITIES[hold_id],
+                )
+        assert refused.value.reason_code is (
+            CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE
+        ), attempt
+    assert stack["connection"].unlock_calls == []
+    assert stack["connection"].closed is False
+    assert held_coordination(hold_id) is not None
 
 
 # ===========================================================================
@@ -6680,6 +6746,31 @@ async def test_claim_stimulus_success_orders_both_writes_before_any_cleanup(
     events: list[str] = []
     stack = _default_stack(events)
     posts: list[str] = []
+    captured: dict[str, Any] = {}
+    registered_at: dict[str, bool] = {}
+    held_before = set(held_coordinations())
+
+    # W5: "remove" only fires if the handle genuinely left the map, and the
+    # observer records whether it was still registered at each physical release
+    # boundary. Without that, a defect that deletes the entry *before* releasing
+    # still produces the same event sequence.
+    def observe(step: str) -> None:
+        hold_id = captured.get("hold_id")
+        if hold_id is not None:
+            registered_at[step] = (
+                hold_id in coordination._HELD_COORDINATION,
+                hold_id in coordination._COORDINATION_RELEASE_CAPABILITIES,
+            )
+
+    stack["connection"]._release_observer = observe
+    real_release = coordination._release_and_unregister
+
+    async def removing(held: Any) -> None:
+        captured["hold_id"] = held.hold_id
+        await real_release(held)
+        assert held.hold_id not in coordination._HELD_COORDINATION
+
+    monkeypatch.setattr(coordination, "_release_and_unregister", removing)
     expected = _B56_STIMULI[stimulus](stack, monkeypatch, posts)
 
     with pytest.raises(expected):
@@ -6691,7 +6782,8 @@ async def test_claim_stimulus_success_orders_both_writes_before_any_cleanup(
     assert stack["evidence"].only.kind is DispatchEvidenceKind.CALLBACK_FAILED
     assert stack["evidence"].only.certainty is MutationCertainty.UNCERTAIN
 
-    # The exact post-send order, anchored on the *second* lineage write.
+    # The exact post-send order, anchored on the *second* lineage write, and
+    # carried all the way through removal.
     order = [
         events.index("persist_post"),
         events.index("evidence"),
@@ -6700,6 +6792,27 @@ async def test_claim_stimulus_success_orders_both_writes_before_any_cleanup(
     ]
     assert order == sorted(order)
     assert events.index("persist_pre") < events.index("persist_post")
+
+    # r30: the order is persist_post < evidence < unlock < remove < close.
+    # Removal happens on a PROVEN reverse unlock and *before* the fallible
+    # close — a close failure must never turn an already-proven unlock back into
+    # a false active hold (B23). Both maps are observed at both boundaries:
+    #   at unlock  -> the exact handle and its capability are still present, so
+    #                 removal cannot precede the proof;
+    #   at close   -> both are already gone, so removal is neither skipped,
+    #                 deferred behind a fallible step, nor half-done.
+    assert registered_at == {
+        "lease_unlock": (True, True),
+        "lease_closed": (False, False),
+    }
+
+    # The handle and its private release capability are both gone.
+    hold_id = captured["hold_id"]
+    assert held_coordination(hold_id) is None
+    assert hold_id not in coordination._HELD_COORDINATION
+    assert hold_id not in coordination._COORDINATION_RELEASE_CAPABILITIES
+    assert set(held_coordinations()) == held_before
+
     # The durable claim is never released by coordination.
     assert len(stack["intents"].rows) == 1
     assert stack["intents"].release_if_matches_calls == []
@@ -6756,11 +6869,415 @@ async def test_claim_stimulus_durable_write_failure_locks_the_account(
     assert stack["intents"].release_if_matches_calls == []
     assert held_coordination(hold_id) is not None
 
-    # Neither the public handle nor the owning lease can release it.
-    with pytest.raises(CoordinationError) as public_refusal:
-        await held.lease.release(held.grant)
-    assert public_refusal.value.reason_code is (
-        CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE
+    # W5: refusal must hold for the *exact private capability* as well, not only
+    # for the generic public handle — that private path is the one an owning
+    # coordination would actually use.
+    before_refusals = (
+        dict(_retained_authorities()),
+        dict(_active_holds()),
+        dict(stack["intents"].rows),
     )
+    capability = coordination._COORDINATION_RELEASE_CAPABILITIES[hold_id]
+    for attempt in ("public", "private"):
+        with pytest.raises(CoordinationError) as refusal:
+            if attempt == "public":
+                await held.lease.release(held.grant)
+            else:
+                await held.lease._release_with_capability(held.grant, capability)
+        assert refusal.value.reason_code is (
+            CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE
+        ), attempt
+    # Nothing moved across either refusal.
+    assert dict(_retained_authorities()) == before_refusals[0]
+    assert dict(_active_holds()) == before_refusals[1]
+    assert dict(stack["intents"].rows) == before_refusals[2]
     assert stack["connection"].unlock_calls == []
     assert stack["connection"].closed is False
+    assert held_coordination(hold_id) is not None
+
+
+# ===========================================================================
+# §W2 — the supplied-ID handoff binds lease, grant, connection, and capability
+# ===========================================================================
+
+
+async def _live_preallocated_handle(space: FakeLockSpace, *, pid: int, key: int) -> Any:
+    """A registered coordination handle whose id has no authority record yet."""
+
+    connection = FakeLockConnection(
+        space, pid=pid, termination_raises=RuntimeError("cannot terminate")
+    )
+    lease = await acquire_physical_account_lease(
+        keys=[key], connection_factory=ConnectionFactory(connection)
+    )
+    _, envelope = _attempt_envelope()
+    claim = coordination.DurableClaim(
+        row_id=1,
+        claim_account_scope="mockpa:v1:w2",
+        idempotency_key="w2-key",
+        side="buy",
+    )
+    held = coordination._register_held_coordination(
+        lease=lease, grant=lease.grant, claim=claim, envelope=envelope
+    )
+    capability = coordination._COORDINATION_RELEASE_CAPABILITIES[held.hold_id]
+    return lease, connection, held, capability
+
+
+def _record_state() -> tuple[int, dict[str, Any], dict[str, Any]]:
+    return (
+        len(authority_hold_history()),
+        dict(_retained_authorities()),
+        dict(_active_holds()),
+    )
+
+
+@pytest.mark.asyncio
+async def test_lock_supplied_id_requires_every_exact_identity():
+    """W2: an id is not a right. Lease, grant, connection and capability all bind.
+
+    Each rejection below is a *first* transition on a genuinely live, genuinely
+    issued coordination id — the one shape that would otherwise be accepted — so
+    each one isolates exactly one identity condition.
+    """
+
+    space = FakeLockSpace()
+    lease, connection, held, capability = await _live_preallocated_handle(
+        space, pid=7301, key=7301
+    )
+    other_conn = FakeLockConnection(space, pid=7302)
+    other_lease = await acquire_physical_account_lease(
+        keys=[7302], connection_factory=ConnectionFactory(other_conn)
+    )
+    foreign_capability = object()
+
+    cases = {
+        "wrong_grant": {
+            "grant": other_lease.grant,
+            "connection": connection,
+            "capability": capability,
+        },
+        "wrong_connection": {
+            "grant": held.grant,
+            "connection": other_conn,
+            "capability": capability,
+        },
+        "missing_capability": {
+            "grant": held.grant,
+            "connection": connection,
+            "capability": None,
+        },
+        "foreign_capability": {
+            "grant": held.grant,
+            "connection": connection,
+            "capability": foreign_capability,
+        },
+    }
+    for name, kwargs in cases.items():
+        history_before, retained_before, active_before = _record_state()
+        with pytest.raises(CoordinationError) as excinfo:
+            coordination._record_unreleased_authority(
+                kwargs["grant"],
+                owner=lease,
+                reason_code=CoordinationReasonCode.LEASE_LOST,
+                termination_proven=False,
+                durable_evidence_written=True,
+                connection=kwargs["connection"],
+                hold_id=held.hold_id,
+                capability=kwargs["capability"],
+            )
+        assert excinfo.value.reason_code is (
+            CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE
+        ), name
+        # Refused before any record was written, on every one of them.
+        assert len(authority_hold_history()) == history_before, name
+        assert dict(_retained_authorities()) == retained_before, name
+        assert dict(_active_holds()) == active_before, name
+
+    # And the legitimate exact handoff is still accepted, once.
+    history_before, _, _ = _record_state()
+    hold = coordination._record_unreleased_authority(
+        held.grant,
+        owner=lease,
+        reason_code=CoordinationReasonCode.LEASE_LOST,
+        termination_proven=False,
+        durable_evidence_written=True,
+        connection=connection,
+        hold_id=held.hold_id,
+        capability=capability,
+    )
+    assert hold.hold_id == held.hold_id
+    assert len(authority_hold_history()) == history_before + 1
+    assert _retained_authorities()[held.hold_id].connection is connection
+
+    # A second transition on the same id is refused: it is no longer the first.
+    history_before, retained_before, active_before = _record_state()
+    with pytest.raises(CoordinationError):
+        coordination._record_unreleased_authority(
+            held.grant,
+            owner=lease,
+            reason_code=CoordinationReasonCode.LEASE_LOST,
+            termination_proven=False,
+            durable_evidence_written=True,
+            connection=connection,
+            hold_id=held.hold_id,
+            capability=capability,
+        )
+    assert len(authority_hold_history()) == history_before
+    assert dict(_retained_authorities()) == retained_before
+    assert dict(_active_holds()) == active_before
+
+
+@pytest.mark.asyncio
+async def test_lock_sealed_release_failure_supplies_its_real_capability():
+    """W2: the sealed path must satisfy the record gate, not bypass it.
+
+    `_terminate_or_hold` shares the coordination id so one stuck account keeps
+    one thread. If it did not also supply the capability it was sealed with, the
+    record gate would have to accept `capability=None` — and then any caller
+    holding only the id could take the handoff.
+    """
+
+    _, envelope = _attempt_envelope()
+    stack = _default_stack()
+    stack["evidence"] = RecordingDispatchEvidence(fail=True)
+    held_before = set(held_coordinations())
+
+    with pytest.raises(CoordinationError) as excinfo:
+        await _run(envelope, stack)
+
+    # If the sealed path stopped supplying its capability, the record gate would
+    # refuse the handoff and this would surface as lock_authority_unavailable
+    # instead — so the reason code is the load-bearing assertion here.
+    assert excinfo.value.reason_code is (
+        CoordinationReasonCode.LINEAGE_PERSISTENCE_UNAVAILABLE
+    )
+    stuck = set(held_coordinations()) - held_before
+    assert len(stuck) == 1
+    hold_id = stuck.pop()
+    assert excinfo.value.hold_id == hold_id
+    held = _held_coordination(hold_id)
+    authority_hold = held.lease.unreleased_authority_hold
+    assert authority_hold is not None
+    # The id was shared, which is only possible if the capability matched.
+    assert authority_hold.hold_id == hold_id
+    assert authority_hold.durable_evidence_written is False
+    assert _retained_authorities()[hold_id].connection is stack["connection"]
+
+
+@pytest.mark.asyncio
+async def test_lock_duplicate_guard_discriminates_connection_grant_and_record():
+    """W4: owner+grant is not an authority. The connection and the active record count.
+
+    `_authority_already_retained` decides whether the outer fallback may skip
+    recording. If it says "already retained" for a row describing a *different
+    physical session*, the real connection is left unrooted while the maps claim
+    the account is covered — the exact failure the fallback exists to prevent.
+    """
+
+    space = FakeLockSpace()
+    connection = FakeLockConnection(space, pid=7401)
+    lease = await acquire_physical_account_lease(
+        keys=[7401], connection_factory=ConnectionFactory(connection)
+    )
+    other = FakeLockConnection(space, pid=7402)
+
+    # A row with the right owner and grant but the WRONG connection.
+    coordination._record_unreleased_authority(
+        lease.grant,
+        owner=connection,
+        reason_code=CoordinationReasonCode.LEASE_LOST,
+        termination_proven=False,
+        durable_evidence_written=True,
+        connection=other,
+    )
+    assert (
+        coordination._authority_already_retained(
+            owner=connection, grant=lease.grant, connection=connection
+        )
+        is False
+    )
+    # ...and it does answer True for the row that really is this authority.
+    hold = coordination._record_unreleased_authority(
+        lease.grant,
+        owner=connection,
+        reason_code=CoordinationReasonCode.LEASE_LOST,
+        termination_proven=False,
+        durable_evidence_written=True,
+        connection=connection,
+    )
+    assert (
+        coordination._authority_already_retained(
+            owner=connection, grant=lease.grant, connection=connection
+        )
+        is True
+    )
+
+    # An equal-but-not-identical grant is a different acquisition.
+    equal_copy = replace(lease.grant)
+    assert equal_copy == lease.grant and equal_copy is not lease.grant
+    assert (
+        coordination._authority_already_retained(
+            owner=connection, grant=equal_copy, connection=connection
+        )
+        is False
+    )
+
+    # A retained row whose active record is gone is not a recorded authority.
+    # Deliberately white-box: the writers always create both, so this pins the
+    # clause against a future change that could leave one behind.
+    del coordination._ACTIVE_AUTHORITY_HOLDS[hold.hold_id]
+    assert (
+        coordination._authority_already_retained(
+            owner=connection, grant=lease.grant, connection=connection
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_lock_rollback_retaining_a_wrong_connection_does_not_suppress_fallback(
+    monkeypatch,
+):
+    """W4: a helper that retains the wrong session must not disarm the fallback."""
+
+    space = FakeLockSpace()
+    blocker = FakeLockConnection(space, pid=11401)
+    await acquire_physical_account_lease(
+        keys=[1142], connection_factory=ConnectionFactory(blocker)
+    )
+    connection = FakeLockConnection(
+        space, pid=11402, termination_raises=RuntimeError("cannot terminate")
+    )
+    impostor = FakeLockConnection(space, pid=11403)
+
+    async def retain_wrong_then_explode(
+        conn: Any, acquired: Any, grant: Any, *, in_flight: Any = ()
+    ) -> None:
+        coordination._record_unreleased_authority(
+            grant,
+            owner=conn,
+            reason_code=CoordinationReasonCode.LEASE_LOST,
+            termination_proven=False,
+            durable_evidence_written=True,
+            connection=impostor,  # a DIFFERENT physical session
+        )
+        raise RuntimeError("rollback failed after retaining the wrong session")
+
+    monkeypatch.setattr(
+        coordination, "_rollback_partial_acquisition", retain_wrong_then_explode
+    )
+    retained_before = set(_retained_authorities())
+
+    with pytest.raises(CoordinationError):
+        await acquire_physical_account_lease(
+            keys=[1141, 1142], connection_factory=ConnectionFactory(connection)
+        )
+
+    new_holds = set(_retained_authorities()) - retained_before
+    # Two records: the impostor row the helper wrote, and the fallback's own row
+    # for the connection that actually holds the key.
+    assert len(new_holds) == 2
+    rooted = [
+        _retained_authorities()[h]
+        for h in new_holds
+        if _retained_authorities()[h].connection is connection
+    ]
+    assert len(rooted) == 1
+    assert connection.closed is False
+
+
+@pytest.mark.asyncio
+async def test_claim_sealed_release_failure_records_under_the_coordination_id():
+    """W2: `_terminate_or_hold` must satisfy the record gate, not bypass it.
+
+    This is the *release-failure* path, not the durable-write-failure path: the
+    two post-send writes land, the coordination-owned release then cannot prove
+    a full reverse unlock, and the lease records its hold under the coordination
+    id so one stuck account keeps one thread. That handoff is only permitted if
+    the exact sealed capability is supplied with it.
+    """
+
+    _, envelope = _attempt_envelope()
+    stack = _default_stack()
+    stack["connection"]._unlock_returns = False
+    stack["connection"]._termination_raises = RuntimeError("cannot terminate")
+    seen: dict[str, str] = {}
+    before = set(held_coordinations())
+
+    async def capture(scope: Any) -> Any:
+        seen["hold_id"] = (set(held_coordinations()) - before).pop()
+        return MutationCallbackResult(
+            certainty=MutationCertainty.DEFINITIVE, broker_order_id="ODNO-0000021"
+        )
+
+    stack["callback"] = capture
+    with pytest.raises(CoordinationError) as excinfo:
+        await _run(envelope, stack)
+
+    coordination_id = seen["hold_id"]
+    # Both durable writes landed; the failure is the release itself.
+    assert stack["persistence"].calls == 2
+    assert stack["evidence"].calls == 1
+    assert excinfo.value.reason_code is CoordinationReasonCode.LEASE_LOST
+
+    # The authority hold shares the coordination id — only possible if the
+    # exact sealed capability was handed to the record gate.
+    rows = [h for h in authority_hold_history() if h.hold_id == coordination_id]
+    assert len(rows) == 1
+    assert coordination_id in _retained_authorities()
+    assert _retained_authorities()[coordination_id].connection is stack["connection"]
+    assert stack["connection"].closed is False
+
+
+@pytest.mark.asyncio
+async def test_lock_rollback_that_retains_then_raises_makes_only_one_hold(monkeypatch):
+    """B55/W4: the outer fallback must not double-count one stuck account.
+
+    The helper can retain the exact authority and *then* fail on its way out. If
+    the caller's fallback records unconditionally, one stuck account appears
+    twice, and every count that follows it — holds, successors, operator triage —
+    is wrong.
+    """
+
+    space = FakeLockSpace()
+    blocker = FakeLockConnection(space, pid=11301)
+    await acquire_physical_account_lease(
+        keys=[1132], connection_factory=ConnectionFactory(blocker)
+    )
+    connection = FakeLockConnection(
+        space, pid=11302, termination_raises=RuntimeError("cannot terminate")
+    )
+
+    async def retain_then_explode(
+        conn: Any, acquired: Any, grant: Any, *, in_flight: Any = ()
+    ) -> None:
+        coordination._record_unreleased_authority(
+            grant,
+            owner=conn,
+            reason_code=CoordinationReasonCode.LEASE_LOST,
+            termination_proven=False,
+            durable_evidence_written=True,
+            connection=conn,
+        )
+        raise RuntimeError("rollback failed after retaining")
+
+    monkeypatch.setattr(
+        coordination, "_rollback_partial_acquisition", retain_then_explode
+    )
+    retained_before = set(_retained_authorities())
+
+    with pytest.raises(CoordinationError):
+        await acquire_physical_account_lease(
+            keys=[1131, 1132], connection_factory=ConnectionFactory(connection)
+        )
+
+    new_holds = set(_retained_authorities()) - retained_before
+    # Exactly one — the helper's record, adopted rather than duplicated.
+    assert len(new_holds) == 1
+    hold_id = new_holds.pop()
+    retained = _retained_authorities()[hold_id]
+    assert retained.connection is connection
+    assert connection.closed is False
+    # And exactly one history row for it, not two.
+    assert len([h for h in authority_hold_history() if h.hold_id == hold_id]) == 1

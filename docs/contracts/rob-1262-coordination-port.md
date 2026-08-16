@@ -278,7 +278,10 @@ non-`None` supplied `hold_id` is therefore not a caller-selected id; it is a
 
 1. the id is in the issued set;
 2. an exact, still-live preallocated coordination handle exists for it;
-3. that handle is owned by this very lease, sealed with this very capability;
+3. **all four identities match that handle** — the lease recording it, the grant
+   it was acquired under, the connection that actually holds the keys, and the
+   private release capability it was sealed with. A capability is *required*, not
+   optional: an id is a thread an operator follows, never a right to act on;
 4. the id has no authority history, active record, or retained record — ever.
 
 A retired id, a foreign id, a completed-success coordination id, and a
@@ -289,6 +292,20 @@ a rejection.
 Reachability is projected onto a record only when that record *is* the exact
 object the active map holds under its id. Looking the id up as a string would
 let a retired generation's history row report a later owner's recoverability.
+
+### Release order: unlock, then remove, then close
+
+On a proven full reverse unlock the active hold and the coordination handle are
+compare-and-deleted **immediately**, and only then is the connection closed:
+
+```
+second lineage write  <  dispatch evidence  <  unlock  <  remove  <  close
+```
+
+The close is deliberately last because it is fallible. A close failure must never
+turn an already-proven unlock back into a false active hold — the proof of
+release is what the removal is conditioned on, not the disposal of the socket.
+For the same reason removal never runs *before* the unlock proof.
 
 ### Error precedence when several things fail at once
 
