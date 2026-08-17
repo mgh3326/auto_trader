@@ -1147,32 +1147,20 @@ def test_no_j3a_sql_or_reason_enum_copied() -> None:
     assert "class CoordinationReasonCode" not in source
 
 
+# SHA-256 of app/services/brokers/kiwoom/client.py at the J3C dispatch
+# base (origin/main 03beecc5f). Git history is not consulted: CI checkouts
+# are shallow and merge-base/origin/main are not guaranteed to exist.
+_KIWOOM_CLIENT_PY_SHA256: str = (
+    "b9bb2ce3c9cb09cb6ba3013f11a370807d05115ce4c4e0f1af824e45e5c75334"
+)
+
+
 def test_client_py_unchanged_in_this_job() -> None:
     import hashlib
-    import subprocess
 
-    client = "app/services/brokers/kiwoom/client.py"
-    base = subprocess.check_output(
-        ["git", "merge-base", "HEAD", "origin/main"],
-        cwd=REPO_ROOT,
-        text=True,
-    ).strip()
-    named = subprocess.check_output(
-        ["git", "diff", "--name-only", f"{base}...HEAD"],
-        cwd=REPO_ROOT,
-        text=True,
-    )
-    assert client not in named.splitlines()
-    base_bytes = subprocess.check_output(
-        ["git", "show", f"{base}:{client}"], cwd=REPO_ROOT
-    )
-    head_bytes = subprocess.check_output(
-        ["git", "show", f"HEAD:{client}"], cwd=REPO_ROOT
-    )
-    worktree_bytes = (REPO_ROOT / client).read_bytes()
-    assert (
-        hashlib.sha256(worktree_bytes).digest() == hashlib.sha256(base_bytes).digest()
-    )
-    assert (
-        hashlib.sha256(worktree_bytes).digest() == hashlib.sha256(head_bytes).digest()
-    )
+    digest = hashlib.sha256(
+        (
+            REPO_ROOT / "app" / "services" / "brokers" / "kiwoom" / "client.py"
+        ).read_bytes()
+    ).hexdigest()
+    assert digest == _KIWOOM_CLIENT_PY_SHA256
