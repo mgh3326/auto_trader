@@ -59,18 +59,20 @@ only.
 
 ### C3-4 Lane-native evidence (seven kinds)
 
-| Kind | Written by |
-|---|---|
-| ACK | J2B `acknowledge_order_attempt` then `DispatchEvidenceKind.ACKNOWLEDGED`; JSONL follows |
-| unknown | `DispatchEvidenceKind.LANE_REPORTED_UNCERTAIN` / `CALLBACK_FAILED` / `ACK_ATTACHMENT_FAILED` |
-| reject | lane evidence `reject` after a broker-authoritative reject row on `kt00007` |
-| expiry | lane evidence `expiry` only when `kt00007` names expiry; local clock is not expiry |
-| partial fill | `kt00007` remaining/filled on the exact native id; reservation held |
-| cancel | coordinated cancel callback + lane evidence `cancel` |
-| terminal reconciliation | `DurableSendClaimAdapter.release_with_terminal_evidence` after the flags below |
-
-Missing any of the seven keeps the lane
+Exact `record_lane_evidence("<kind>", ...)` call sites in
+`KiwoomCoordinationAdapter` (`scripts/b0x/kr/kiwoom_ordering.py`).
+`LANE_EVIDENCE_KINDS` is the closed set. A missing kind keeps the lane
 `AUTO_READY_BLOCKED_BY_LIFECYCLE`.
+
+| Kind | Lane-native write |
+|---|---|
+| ACK | `submit_planned` callback after a non-blank `ord_no` |
+| unknown | blank `ord_no` in `submit_planned`; `apply_restart_disposition` when the claim is uncorrelated; `record_native_broker_truth` for `kt00007` state `unknown` |
+| reject | `record_native_broker_truth` when `kt00007` normalizes to `rejected` |
+| expiry | `record_native_broker_truth` when `kt00007` normalizes to `expired` (local clock is not expiry) |
+| partial fill | `record_native_broker_truth` when `kt00007` normalizes to `partial` |
+| cancel | `cancel_attributed` callback after the cancel POST |
+| terminal reconciliation | `release_if_matches_terminal` after `DurableSendClaimAdapter.release_with_terminal_evidence` |
 
 ### C3-5 Exact `release_if_matches` condition
 

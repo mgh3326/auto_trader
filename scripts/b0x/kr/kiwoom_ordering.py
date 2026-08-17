@@ -235,6 +235,17 @@ PROXIMITY_ATTRIBUTION_REJECTED: Final[str] = "proximity_attribution_rejected"
 KT00009_CANNOT_REPLACE_KT00007: Final[str] = "kt00009_cannot_replace_kt00007"
 JSONL_ABSENCE_NOT_EMPTY_OWNERSHIP: Final[str] = "jsonl_absence_not_empty_ownership"
 TRANSPORT_GATE_REJECTED: Final[str] = "transport_gate_rejected"
+LANE_EVIDENCE_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        "ack",
+        "unknown",
+        "reject",
+        "expiry",
+        "partial_fill",
+        "cancel",
+        "terminal_reconciliation",
+    }
+)
 
 KIWOOM_RECOVERY_OWNER: Final[str] = (
     "scripts.b0x.kr.kiwoom_ordering.KiwoomCoordinationAdapter"
@@ -676,9 +687,63 @@ class KiwoomCoordinationAdapter:
         return binding
 
     def record_lane_evidence(self, kind: str, **payload: Any) -> dict[str, Any]:
+        if kind not in LANE_EVIDENCE_KINDS:
+            raise ValueError(f"unknown lane evidence kind: {kind}")
         record = {"kind": kind, "at": datetime.now(UTC).isoformat(), **payload}
         self.ordered_events.append(f"lane_evidence:{kind}")
         return record
+
+    def record_native_broker_truth(self, native: NativeBrokerRow) -> dict[str, Any]:
+        """Persist the kt00007-derived lane-native kind for this exact order."""
+
+        if native.normalized_state == "rejected":
+            return self.record_lane_evidence(
+                "reject",
+                broker_order_id=native.broker_order_id,
+                raw_row=dict(native.raw_row),
+            )
+        if native.normalized_state == "expired":
+            return self.record_lane_evidence(
+                "expiry",
+                broker_order_id=native.broker_order_id,
+                raw_row=dict(native.raw_row),
+            )
+        if native.normalized_state == "partial":
+            return self.record_lane_evidence(
+                "partial_fill",
+                broker_order_id=native.broker_order_id,
+                filled_quantity=native.filled_quantity,
+                remaining_quantity=native.remaining_quantity,
+                raw_row=dict(native.raw_row),
+            )
+        if native.normalized_state == "unknown":
+            return self.record_lane_evidence(
+                "unknown",
+                broker_order_id=native.broker_order_id,
+                raw_row=dict(native.raw_row),
+            )
+        return {}
+
+    def apply_restart_disposition(self, **kwargs: Any) -> RestartDisposition:
+        disposition = restart_disposition(**kwargs)
+        if disposition.native is not None:
+            self.record_native_broker_truth(disposition.native)
+        elif disposition.status == UNKNOWN_PENDING_RECONCILE:
+            self.record_lane_evidence("unknown", reason=disposition.reason)
+        return disposition
+
+    async def release_if_matches_terminal(
+        self, claim: Any, evidence: TerminalClaimEvidence
+    ) -> int:
+        released = await self.ports.claims.release_with_terminal_evidence(
+            claim, evidence
+        )
+        self.record_lane_evidence(
+            "terminal_reconciliation",
+            released=released,
+            claim_row_id=getattr(claim, "row_id", None),
+        )
+        return released
 
     async def reassert_before_mutation(
         self, scope: CoordinationScope, *, action: str
@@ -734,6 +799,7 @@ class KiwoomCoordinationAdapter:
             )
             order_no = str(payload.get("ord_no") or payload.get("order_no") or "")
             if not order_no.strip():
+                self.record_lane_evidence("unknown", reason="blank_ord_no")
                 return MutationCallbackResult(certainty=MutationCertainty.UNCERTAIN)
             self.record_lane_evidence("ack", broker_order_id=order_no)
             return MutationCallbackResult(
@@ -760,9 +826,6 @@ class KiwoomCoordinationAdapter:
                 {"order_no": broker_order_id, "order_key": planned.order_key}
             )
             self.ordered_events.append("jsonl_appended")
-            self.record_lane_evidence(
-                "fidelity_journal", broker_order_id=broker_order_id
-            )
         return result
 
     async def cancel_attributed(
@@ -890,6 +953,7 @@ __all__ = [
     "JSONL_ABSENCE_NOT_EMPTY_OWNERSHIP",
     "KIWOOM_CANONICAL_LANE_ID",
     "KIWOOM_LIFECYCLE_STATUS",
+    "LANE_EVIDENCE_KINDS",
     "KIWOOM_READBACK_OPERATION",
     "KIWOOM_RECOVERY_OWNER",
     "KIWOOM_RELEASE_IF_MATCHES",

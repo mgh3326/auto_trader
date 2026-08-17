@@ -23,6 +23,7 @@ from app.services.brokers.kiwoom.client import KiwoomMockClient
 from app.services.mock_integration.coordination import (
     CoordinationError,
     CoordinationReasonCode,
+    CoordinationScope,
     DurableSendClaimAdapter,
     TerminalClaimEvidence,
     physical_account_scope_for_entry,
@@ -46,6 +47,7 @@ from scripts.b0x.kr.kiwoom_ordering import (
     KIWOOM_RELEASE_IF_MATCHES,
     KIWOOM_RESTART_TRIGGER,
     KT00009_CANNOT_REPLACE_KT00007,
+    LANE_EVIDENCE_KINDS,
     LOCAL_FLOCK_CANNOT_AUTHORIZE_SEND,
     PROXIMITY_ATTRIBUTION_REJECTED,
     ROOT_PATH_IDENTITY_REJECTED,
@@ -168,11 +170,19 @@ class FakeLockSpace:
 
 
 class FakeLockConnection:
-    def __init__(self, space: FakeLockSpace, *, pid: int = 4242) -> None:
+    def __init__(
+        self,
+        space: FakeLockSpace,
+        *,
+        pid: int = 4242,
+        drop_after_pg_locks: int | None = None,
+    ) -> None:
         self._space = space
         self._pid = pid
         self._database_oid = 99001
         self.committed = False
+        self._drop_after_pg_locks = drop_after_pg_locks
+        self.pg_locks_seen = 0
 
     def can_prove_backend_session_termination(self) -> bool:
         return True
@@ -193,6 +203,12 @@ class FakeLockConnection:
                 [{"released": self._space.unlock(int(params["key"]), self._pid)}]
             )
         if "pg_locks" in sql:
+            self.pg_locks_seen += 1
+            if (
+                self._drop_after_pg_locks is not None
+                and self.pg_locks_seen > self._drop_after_pg_locks
+            ):
+                self._space.terminate(self._pid)
             return _FakeResult(self._space.rows(int(params["pid"]), self._database_oid))
         raise AssertionError(sql)
 
@@ -215,14 +231,25 @@ class FakeLockConnection:
 
 
 class ConnectionFactory:
-    def __init__(self, space: FakeLockSpace, *, pid: int = 4242) -> None:
+    def __init__(
+        self,
+        space: FakeLockSpace,
+        *,
+        pid: int = 4242,
+        drop_after_pg_locks: int | None = None,
+    ) -> None:
         self.space = space
         self.pid = pid
+        self.drop_after_pg_locks = drop_after_pg_locks
         self.calls = 0
+        self.last: FakeLockConnection | None = None
 
     async def __call__(self) -> FakeLockConnection:
         self.calls += 1
-        return FakeLockConnection(self.space, pid=self.pid)
+        self.last = FakeLockConnection(
+            self.space, pid=self.pid, drop_after_pg_locks=self.drop_after_pg_locks
+        )
+        return self.last
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +381,7 @@ def build_offline_adapter(
     pid: int = 4242,
     entry: LaneRegistryEntry | None = None,
     unresolved: bool = False,
+    drop_after_pg_locks: int | None = None,
 ) -> KiwoomCoordinationAdapter:
     bound = entry or bound_kiwoom_entry()
     lock_space = space or FakeLockSpace()
@@ -370,13 +398,29 @@ def build_offline_adapter(
         dispatch_evidence=dispatch,
         uncertainty_gate=gate,
         claims=DurableSendClaimAdapter(InMemoryReservationPort()),
-        connection_factory=ConnectionFactory(lock_space, pid=pid),
+        connection_factory=ConnectionFactory(
+            lock_space, pid=pid, drop_after_pg_locks=drop_after_pg_locks
+        ),
         registry=bound_registry(bound),
         lineage_factory=MockLineageFactory(),
         entry=bound,
         diagnostic_fingerprint=FINGERPRINT_REF,
     )
     return KiwoomCoordinationAdapter(ports)
+
+
+def _scope_assert_owned_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Count real CoordinationScope.assert_owned invocations, not a self-list."""
+
+    observed: list[str] = []
+    original = CoordinationScope.assert_owned
+
+    async def _spy(self: CoordinationScope) -> None:
+        observed.append("assert_owned")
+        await original(self)
+
+    monkeypatch.setattr(CoordinationScope, "assert_owned", _spy)
+    return observed
 
 
 def offline_coordination_factory() -> KiwoomCoordinationAdapter:
@@ -474,7 +518,7 @@ async def test_two_fake_hosts_one_physical_account_one_writer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_contention_loss_stale_fence_event_loop_mismatch_zero_transport() -> None:
+async def test_durable_claim_conflict_makes_zero_transport() -> None:
     account = FakeKiwoomAccount()
     adapter = build_offline_adapter(unresolved=True)
     with pytest.raises(CoordinationError) as exc:
@@ -491,7 +535,95 @@ async def test_contention_loss_stale_fence_event_loop_mismatch_zero_transport() 
 
 
 @pytest.mark.asyncio
-async def test_batch_and_cancel_reassert_fence_before_every_mutation() -> None:
+async def test_lease_loss_before_callback_makes_zero_transport() -> None:
+    """J3A pre-callback assert sees an empty lock table → no callback POST."""
+
+    account = FakeKiwoomAccount()
+    adapter = build_offline_adapter(drop_after_pg_locks=1)
+    with pytest.raises(CoordinationError) as exc:
+        await adapter.submit_planned(
+            account,
+            planned=Planned(),
+            policy_version=POLICY_VERSION,
+            policy_version_hash=POLICY_VERSION_HASH,
+            now=datetime.now(UTC),
+        )
+    assert exc.value.reason_code in {
+        CoordinationReasonCode.LEASE_LOST,
+        CoordinationReasonCode.LOCK_AUTHORITY_UNAVAILABLE,
+    }
+    assert adapter.transport_calls == []
+    assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stale_fence_between_preassert_and_send_makes_zero_transport() -> None:
+    """Lock disappears after J3A's pre-callback attest; lane reassert must catch it.
+
+    Removing ``scope.assert_owned()`` from the adapter lets the POST through
+    and this test fails.
+    """
+
+    account = FakeKiwoomAccount()
+    adapter = build_offline_adapter(drop_after_pg_locks=3)
+    with pytest.raises(CoordinationError) as exc:
+        await adapter.submit_planned(
+            account,
+            planned=Planned(),
+            policy_version=POLICY_VERSION,
+            policy_version_hash=POLICY_VERSION_HASH,
+            now=datetime.now(UTC),
+        )
+    assert exc.value.reason_code is CoordinationReasonCode.LEASE_LOST
+    assert adapter.transport_calls == []
+    assert account.buy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_event_loop_mismatch_on_lane_reassert_makes_zero_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lane reassert runs J3A's event-loop check; a foreign loop is zero I/O."""
+
+    account = FakeKiwoomAccount()
+    adapter = build_offline_adapter()
+    original = CoordinationScope.assert_owned
+    foreign_loop = asyncio.new_event_loop()
+
+    async def _foreign_loop_assert(self: CoordinationScope) -> None:
+        real_get = asyncio.get_running_loop
+
+        def _lie() -> asyncio.AbstractEventLoop:
+            return foreign_loop
+
+        monkeypatch.setattr(asyncio, "get_running_loop", _lie)
+        try:
+            await original(self)
+        finally:
+            monkeypatch.setattr(asyncio, "get_running_loop", real_get)
+
+    monkeypatch.setattr(CoordinationScope, "assert_owned", _foreign_loop_assert)
+    try:
+        with pytest.raises(CoordinationError) as exc:
+            await adapter.submit_planned(
+                account,
+                planned=Planned(),
+                policy_version=POLICY_VERSION,
+                policy_version_hash=POLICY_VERSION_HASH,
+                now=datetime.now(UTC),
+            )
+        assert exc.value.reason_code is CoordinationReasonCode.LEASE_EVENT_LOOP_MISMATCH
+        assert adapter.transport_calls == []
+        assert account.buy_calls == []
+    finally:
+        foreign_loop.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_and_cancel_call_assert_owned_before_every_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed = _scope_assert_owned_calls(monkeypatch)
     adapter = build_offline_adapter()
     account = FakeKiwoomAccount()
     first = await adapter.submit_planned(
@@ -501,7 +633,7 @@ async def test_batch_and_cancel_reassert_fence_before_every_mutation() -> None:
         policy_version_hash=POLICY_VERSION_HASH,
         now=datetime.now(UTC),
     )
-    second = await adapter.submit_planned(
+    await adapter.submit_planned(
         account,
         planned=Planned(order_key="l2", cycle_id="batch-2"),
         policy_version=POLICY_VERSION,
@@ -516,14 +648,9 @@ async def test_batch_and_cancel_reassert_fence_before_every_mutation() -> None:
         policy_version=POLICY_VERSION,
         policy_version_hash=POLICY_VERSION_HASH,
     )
-    assert adapter.fence_rechecks == [
-        "post:l1",
-        "post:l2",
-        f"cancel:{first.evidence.broker_order_id}",
-    ]
+    assert observed == ["assert_owned", "assert_owned", "assert_owned"]
     assert len(account.buy_calls) == 2
     assert len(account.cancel_calls) == 1
-    del second
 
 
 # ---------------------------------------------------------------------------
@@ -802,7 +929,47 @@ def test_wrong_physical_profile_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_exact_mock_client_reaches_transport_only_after_j3a_assert() -> None:
+async def test_submit_planned_wires_transport_gate_before_post() -> None:
+    """Removing assert_kiwoom_transport_ready from submit_planned's callback fails this."""
+
+    adapter = build_offline_adapter()
+    account = FakeKiwoomAccount(client=object())
+    with pytest.raises(KiwoomTransportGateRejected):
+        await adapter.submit_planned(
+            account,
+            planned=Planned(),
+            policy_version=POLICY_VERSION,
+            policy_version_hash=POLICY_VERSION_HASH,
+            now=datetime.now(UTC),
+        )
+    assert account.buy_calls == []
+    assert adapter.transport_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_attributed_wires_transport_gate_before_cancel() -> None:
+    """Removing assert_kiwoom_transport_ready from cancel_attributed's callback fails this."""
+
+    adapter = build_offline_adapter()
+    account = FakeKiwoomAccount(client=object())
+    with pytest.raises(KiwoomTransportGateRejected):
+        await adapter.cancel_attributed(
+            account,
+            planned=Planned(order_key="cancel-l1", cycle_id="batch-1"),
+            native_order_id="0000000001",
+            known_remainder=Decimal("1"),
+            policy_version=POLICY_VERSION,
+            policy_version_hash=POLICY_VERSION_HASH,
+        )
+    assert account.cancel_calls == []
+    assert adapter.transport_calls == []
+
+
+@pytest.mark.asyncio
+async def test_exact_mock_client_reaches_transport_only_after_j3a_assert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed = _scope_assert_owned_calls(monkeypatch)
     adapter = build_offline_adapter()
     account = FakeKiwoomAccount()
     await adapter.submit_planned(
@@ -812,7 +979,7 @@ async def test_exact_mock_client_reaches_transport_only_after_j3a_assert() -> No
         policy_version_hash=POLICY_VERSION_HASH,
         now=datetime.now(UTC),
     )
-    assert adapter.fence_rechecks == ["post:buy:005930:l1"]
+    assert observed == ["assert_owned"]
     assert len(account.buy_calls) == 1
 
 
@@ -834,29 +1001,122 @@ def test_pnl_unreadable_is_explicit_block_not_numeric_zero() -> None:
     assert blocked.canonical()["value"] is None
 
 
+def _record_lane_evidence_literal_kinds(path: Path) -> set[str]:
+    """Kinds passed as string literals to record_lane_evidence(...)."""
+
+    kinds: set[str] = set()
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (
+            isinstance(func, ast.Attribute) and func.attr == "record_lane_evidence"
+        ):
+            continue
+        if (
+            node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            kinds.add(node.args[0].value)
+    return kinds
+
+
 def test_recovery_contract_six_items_and_lifecycle_status() -> None:
     assert KIWOOM_RECOVERY_OWNER == (
         "scripts.b0x.kr.kiwoom_ordering.KiwoomCoordinationAdapter"
     )
     assert KIWOOM_RESTART_TRIGGER
     assert KIWOOM_READBACK_OPERATION == "kt00007"
+    assert KIWOOM_RELEASE_IF_MATCHES
+    assert KIWOOM_LIFECYCLE_STATUS == "AUTO_READY_BLOCKED_BY_LIFECYCLE"
     contract = (
         REPO_ROOT / "docs" / "contracts" / "rob-1264-kiwoom-coordination-adapter.md"
     ).read_text(encoding="utf-8")
-    for kind in (
-        "ACK",
-        "unknown",
-        "reject",
-        "expiry",
-        "partial fill",
-        "cancel",
-        "terminal reconciliation",
-    ):
-        assert kind in contract
-    assert KIWOOM_RELEASE_IF_MATCHES
-    assert KIWOOM_LIFECYCLE_STATUS == "AUTO_READY_BLOCKED_BY_LIFECYCLE"
-    assert "C5 remains" in contract or "C5 remains UNKNOWN" in contract
-    assert "UNKNOWN" in contract
+    assert "C5 remains" in contract
+    source = REPO_ROOT / "scripts" / "b0x" / "kr" / "kiwoom_ordering.py"
+    assert _record_lane_evidence_literal_kinds(source) == set(LANE_EVIDENCE_KINDS)
+
+
+@pytest.mark.asyncio
+async def test_all_seven_lane_evidence_kinds_are_written_by_code() -> None:
+    adapter = build_offline_adapter()
+    account = FakeKiwoomAccount()
+    await adapter.submit_planned(
+        account,
+        planned=Planned(),
+        policy_version=POLICY_VERSION,
+        policy_version_hash=POLICY_VERSION_HASH,
+        now=datetime.now(UTC),
+    )
+    rejected = native_row_from_kt00007(
+        [
+            {
+                "order_id": "R1",
+                "status": "rejected",
+                "filled_quantity": 0,
+                "remaining_quantity": 0,
+            }
+        ],
+        broker_order_id="R1",
+    )
+    expired = native_row_from_kt00007(
+        [
+            {
+                "order_id": "E1",
+                "status": "expired",
+                "filled_quantity": 0,
+                "remaining_quantity": 0,
+            }
+        ],
+        broker_order_id="E1",
+    )
+    partial = native_row_from_kt00007(
+        [
+            {
+                "order_id": "P1",
+                "status": "partial",
+                "filled_quantity": 1,
+                "remaining_quantity": 1,
+            }
+        ],
+        broker_order_id="P1",
+    )
+    assert rejected is not None and expired is not None and partial is not None
+    adapter.record_native_broker_truth(rejected)
+    adapter.record_native_broker_truth(expired)
+    adapter.record_native_broker_truth(partial)
+    adapter.apply_restart_disposition(
+        durable_broker_order_id=None,
+        kt00007_readable=False,
+    )
+    await adapter.cancel_attributed(
+        account,
+        planned=Planned(order_key="c1", cycle_id="c1"),
+        native_order_id="0000000001",
+        known_remainder=Decimal("1"),
+        policy_version=POLICY_VERSION,
+        policy_version_hash=POLICY_VERSION_HASH,
+    )
+    scope = physical_account_scope_for_entry(bound_kiwoom_entry())
+    claim = await adapter.ports.claims.reserve(
+        scope=scope, idempotency_key="mock-idempotency-v1:term", side="buy"
+    )
+    await adapter.release_if_matches_terminal(
+        claim,
+        TerminalClaimEvidence(
+            lane_native_terminal_evidence=True,
+            account_position_reconciled=True,
+            remainder_known=True,
+        ),
+    )
+    written = {
+        event.removeprefix("lane_evidence:")
+        for event in adapter.ordered_events
+        if event.startswith("lane_evidence:")
+    }
+    assert written == set(LANE_EVIDENCE_KINDS)
 
 
 def test_c5_remains_unknown_and_is_not_erased() -> None:
@@ -888,11 +1148,31 @@ def test_no_j3a_sql_or_reason_enum_copied() -> None:
 
 
 def test_client_py_unchanged_in_this_job() -> None:
+    import hashlib
     import subprocess
 
-    diff = subprocess.check_output(
-        ["git", "diff", "--name-only", "HEAD"],
+    client = "app/services/brokers/kiwoom/client.py"
+    base = subprocess.check_output(
+        ["git", "merge-base", "HEAD", "origin/main"],
+        cwd=REPO_ROOT,
+        text=True,
+    ).strip()
+    named = subprocess.check_output(
+        ["git", "diff", "--name-only", f"{base}...HEAD"],
         cwd=REPO_ROOT,
         text=True,
     )
-    assert "app/services/brokers/kiwoom/client.py" not in diff.splitlines()
+    assert client not in named.splitlines()
+    base_bytes = subprocess.check_output(
+        ["git", "show", f"{base}:{client}"], cwd=REPO_ROOT
+    )
+    head_bytes = subprocess.check_output(
+        ["git", "show", f"HEAD:{client}"], cwd=REPO_ROOT
+    )
+    worktree_bytes = (REPO_ROOT / client).read_bytes()
+    assert (
+        hashlib.sha256(worktree_bytes).digest() == hashlib.sha256(base_bytes).digest()
+    )
+    assert (
+        hashlib.sha256(worktree_bytes).digest() == hashlib.sha256(head_bytes).digest()
+    )
