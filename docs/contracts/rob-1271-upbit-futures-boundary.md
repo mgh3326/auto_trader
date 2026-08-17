@@ -106,8 +106,17 @@ whose name includes `upbit`.
   `LEG_NOTIONAL_CAP_MAX_USDT == Decimal("10")` are asserted as literals written
   in the test rather than read back out of the module, so shrinking the
   constants cannot shrink the assertion with them.
-* **Kill switch.** `assert_kill_switch_limits_locked` accepts `LOCKED_LIMITS`
-  and rejects a widened `max_concurrent_positions`.
+* **Kill switch.** `LOCKED_LIMITS.max_concurrent_positions == 1` and
+  `LOCKED_LIMITS.max_consecutive_stop_losses_per_utc_day == 2` are asserted as
+  literals written in the test, and the guard is exercised against
+  literal-built pairs — never against `LOCKED_LIMITS` alone.
+  `assert_kill_switch_limits_locked` compares its argument to `LOCKED_LIMITS`,
+  so a guard-only assertion would have zero discriminating power over the cap
+  values: widening the constant would move the expectation with it. The
+  round-1 revision of this contract made exactly that claim about a
+  self-referential test, and it was wrong; the field set of
+  `StrategyLoopKillSwitchLimits` is now pinned as a literal too, so a third
+  field with a permissive default cannot slip past the two value pins.
 
 Neither lane can be activated: `transition_activation(..., ENABLED)` raises
 `lane_signed_restriction_violation` (guard B2) for both.
@@ -153,23 +162,57 @@ app.services.brokers.binance.spot_demo.execution_client`, and
 `BinanceSpotDemoPaperAdapter.submit` calls the executor with `confirm=True`
 (`app/services/brokers/binance/paper_adapter.py:186-192`).
 
-Bounding this honestly:
+Bounding this honestly. Static import reach is not the same as a runtime order,
+and three separate gates sit between the schedule and a submit:
 
-* The schedule list is empty unless `settings.PAPER_COHORT_ENABLED` is set, and
-  the adapter's symbol allowlist is `{BTCUSDT, ETHUSDT}`. Static import reach is
-  not the same as a runtime order.
+* The schedule list is empty unless `settings.PAPER_COHORT_ENABLED` is set
+  (`app/core/config.py:356`, default `False`), and the adapter's symbol
+  allowlist is `{BTCUSDT, ETHUSDT}`.
+* A `SHADOW`-mode invocation returns from `PaperCohortRunner` **before**
+  `application.submit` is reached (`app/services/paper_cohort/runner.py:828-846`),
+  so a shadow soak submits nothing even with the schedule on.
+* Reaching the submit path at all additionally requires
+  `settings.PAPER_EXECUTION_ENABLED` (`runner.py:142`, default `False`), and an
+  unmapped caller id fails closed with `actor_identity_unavailable`
+  (`app/jobs/paper_cohort.py:40-45`, `PAPER_VALIDATION_ACTOR_ROLES` default
+  empty).
 * This is **pre-existing** (ROB-845/849) and was not introduced by ROB-1271.
-* It concerns **Spot**, not Futures. The identical sentence in
-  `docs/runbooks/binance-futures-demo-smoke.md:50-53` is only narrowly
-  inaccurate: a TaskIQ module does reach the futures client, but it is
-  scheduleless and calls no order-producing method, so that runbook's operative
-  promise still holds.
+
+### 4.1 The same "only path" claim is false for Futures too — for a different reason
+
+The identical sentence in `docs/runbooks/binance-futures-demo-smoke.md:50-53`
+has to be split in half, because only one half survives:
+
+| clause | verdict | why |
+| --- | --- | --- |
+| "No scheduler / TaskIQ / … wiring touches the Futures Demo execution client" | **narrowly inaccurate** | One TaskIQ module reaches the client, but it is scheduleless and calls no order-producing method. |
+| "The smoke CLI is the **only** path that produces real Demo futures orders" | **false** | A second operator CLI produces them. |
+
+The second producer is `scripts/binance_demo_strategy_loop.py:288-303`, which
+passes `confirm=args.confirm` and `signal_override=` straight into
+`run_tick`; `run_tick` short-circuits to a `dry_run` outcome only while
+`confirm` is false (`demo_strategy_loop/orchestrator.py:326-332`). ROB-993's
+`--paper-signal` mode is the end-to-end Demo round trip. So
+`scripts/binance_futures_demo_smoke.py` is not the only producer.
+
+This is **not** a scheduler reach — both producers are operator-invoked
+foreground processes — which is exactly why the first clause survives and the
+second does not. Bounding it: the strategy loop is default-disabled by
+`BINANCE_DEMO_STRATEGY_LOOP_ENABLED`, and its shipped plugin is `NullStrategy`,
+so `--once` / `--loop` emit no signal at all; only an explicitly injected
+`--paper-signal` reaches the submit path.
+
+An earlier revision of this contract translated the narrow TaskIQ accuracy into
+"that runbook's operative promise still holds". That sentence was false and no
+test enforced it. Both halves are now pinned separately
+(`test_the_futures_runbook_scheduler_clause_matches_repo_fact`,
+`test_futures_runbook_only_path_claim_is_contradicted_by_a_second_cli`).
 
 J6C owns neither `docs/runbooks/**` nor `app/**`, so this divergence is
-recorded and pinned rather than repaired. The regression asserts the runbook
+recorded and pinned rather than repaired. Each regression asserts the runbook
 sentence and the contradicting repo fact together, so resolving the divergence
 in either direction must update the test in the same change.
-`FINDING_F1 = OPEN — orch disposition required.`
+`FINDING_F1 = OPEN (Spot and Futures) — orch disposition required.`
 
 ## 5. Lane-native lifecycle recovery ownership (§83 correction 3)
 
@@ -199,27 +242,32 @@ common coordination layer by this job. The six items are assessed lane-native
 below. **Neither lane is being made `AUTO_ENABLED`; this section records the
 prerequisites, and activation remains outside this job's scope.**
 
+Every row carries its enforcement status. A row marked **record only** is an
+observation at `1e1c75f8` with **no regression behind it** — it can go stale
+without any test noticing, and it must not be read as a guaranteed invariant.
+Full sentence-level mapping is in §8.
+
 ### 5.1 `crypto.upbit.shadow`
 
-| item | status | evidence |
-| --- | --- | --- |
-| C3-1 recovery owner | **ABSENT** | No owner is designated anywhere. `scheduler_owner=None` and `MissingBinding.OWNER` is present on the row. Per the acceptance rule this is an unmet item, reported as such rather than filled in. |
-| C3-2 restart trigger | **ABSENT** | The lane has no durable claim to rediscover: `allowed_hosts=()`, `credential_namespace=None`, no ledger table, no journal root. |
-| C3-3 readback operation | **ABSENT** | No authoritative broker readback is possible; broker I/O is structurally refused with `shadow_broker_io_forbidden`. |
-| C3-4 lane-native evidence (7 kinds) | **ABSENT — 0 of 7** | None of ACK, unknown, reject, expiry, partial fill, cancel, or terminal reconciliation has a lane-native write point. The lane is synthetic and writes no broker lifecycle evidence at all. |
-| C3-5 exact `release_if_matches` condition | **ABSENT** | `mock_integration.coordination.release_if_matches` exists but is not called from this lane's surface. |
-| C3-6 operator-visible blocked state | **PRESENT** | `lane_status=SHADOW_ONLY`, `activation_status=DISABLED`, `identity_status="UNKNOWN"`, and the full `missing_bindings` tuple are all operator-visible on the registry row. |
+| item | status | evidence | regression |
+| --- | --- | --- | --- |
+| C3-1 recovery owner | **ABSENT** | No owner is designated anywhere. `scheduler_owner=None` and `MissingBinding.OWNER` is present on the row. Per the acceptance rule this is an unmet item, reported as such rather than filled in. | `test_upbit_shadow_row_is_frozen_on_all_four_axes` |
+| C3-2 restart trigger | **ABSENT** | The lane has no durable claim to rediscover: `allowed_hosts=()`, `credential_namespace=None`, no ledger table, no journal root. | `test_upbit_shadow_is_synthetic_and_never_labelled_broker_paper_or_native` (pins `allowed_hosts` / `credential_namespace`; "no ledger table, no journal root" is **record only**) |
+| C3-3 readback operation | **ABSENT** | No authoritative broker readback is possible; broker I/O is structurally refused with `shadow_broker_io_forbidden`. | `test_upbit_shadow_rejects_every_endpoint_it_is_offered`, `test_upbit_shadow_chain_reaches_and_dies_at_the_shadow_guard` |
+| C3-4 lane-native evidence (7 kinds) | **ABSENT — 0 of 7** | None of ACK, unknown, reject, expiry, partial fill, cancel, or terminal reconciliation has a lane-native write point. The lane is synthetic and writes no broker lifecycle evidence at all. | **record only** — implied by the C3-2/C3-3 pins, but no test asserts the absence of a lane-native writer by name |
+| C3-5 exact `release_if_matches` condition | **ABSENT** | `mock_integration.coordination.release_if_matches` exists but is not called from this lane's surface. | `test_neither_lane_calls_the_j3a_release_if_matches_contract` |
+| C3-6 operator-visible blocked state | **PRESENT** | `lane_status=SHADOW_ONLY`, `activation_status=DISABLED`, `identity_status="UNKNOWN"`, and the full `missing_bindings` tuple are all operator-visible on the registry row. | `test_upbit_shadow_row_is_frozen_on_all_four_axes`, `test_upbit_shadow_is_synthetic_and_never_labelled_broker_paper_or_native` |
 
 ### 5.2 `crypto.binance.futures_demo`
 
-| item | status | evidence |
-| --- | --- | --- |
-| C3-1 recovery owner | **NOT SATISFIED — no single designation** | Two distinct modules own different recovery phases and no contract names one: `app/jobs/binance_demo_root_reservation_reconciliation.py` (pre-acknowledgement roots) and `demo_strategy_loop/execution.py` (in-tick close/reconcile). "Exactly one" is not met, so this is reported as a failure rather than resolved by picking one. |
-| C3-2 restart trigger | **PRESENT** | `_candidate_where_clauses` rediscovers surviving durable roots after restart — `planned`, or `previewed`/`validated` with `broker_order_id IS NULL`, older than `stale_before` (`app/jobs/binance_demo_root_reservation_reconciliation.py:125-154`). |
-| C3-3 readback operation | **PRESENT** | `BinanceFuturesDemoExecutionClient.get_order` (`GET /fapi/v1/order`), dispatched through `_lookup_order` (`:119-122`). |
-| C3-4 lane-native evidence (7 kinds) | **PARTIAL — 4 present, 1 degraded, 2 absent** | Present: `record_submitted` (ACK, carries `broker_order_id`), `record_anomaly` (unknown, carries `anomaly_reason`), `record_cancelled` (cancel), `record_reconciled` (terminal reconciliation). Degraded: partial fill — `record_filled` takes no quantity argument and `binance_demo_order_ledger` has no `executed_qty` / `remaining_qty` column, so a partial fill cannot be distinguished from a full one except through free-form `extra_metadata`. Absent: **reject** and **expiry** have no distinct write point; both collapse into the `cancelled` / `anomaly` branches, which also absorb unrelated causes. |
-| C3-5 exact `release_if_matches` condition | **ABSENT** | The J3A contract is not called from this lane. The lane's own release condition is narrower and differently named: release only on explicit `BinanceDemoOrderNotFound` within an 89-day bound, or a terminal status in `{CANCELED, REJECTED, EXPIRED}` with `executedQty == 0`, and only after venue-host, credential-fingerprint, and broker-identity equality all match. That is a release rule, but it is not the exact `release_if_matches` contract the authority names. |
-| C3-6 operator-visible blocked state | **PRESENT** | `anomaly` lifecycle state, plus per-candidate `kept` outcomes carrying stable reasons (`client_unavailable`, `venue_host_mismatch`, `credential_fingerprint_mismatch`, `broker_lookup_failed`, `malformed_broker_truth`, `broker_identity_mismatch`, `broker_exposure_not_disproven`, `broker_lookup_retention_exceeded`). |
+| item | status | evidence | regression |
+| --- | --- | --- | --- |
+| C3-1 recovery owner | **NOT SATISFIED — no single designation** | Two distinct modules own different recovery phases and no contract names one: `app/jobs/binance_demo_root_reservation_reconciliation.py` (pre-acknowledgement roots) and `demo_strategy_loop/execution.py` (in-tick close/reconcile). "Exactly one" is not met, so this is reported as a failure rather than resolved by picking one. | `test_c3_1_futures_recovery_ownership_is_split_across_two_modules` |
+| C3-2 restart trigger | **PRESENT** | `_candidate_where_clauses` rediscovers surviving durable roots after restart — `planned`, or `previewed`/`validated` with `broker_order_id IS NULL`, older than `stale_before` (`app/jobs/binance_demo_root_reservation_reconciliation.py:125-154`). | `test_c3_2_futures_restart_trigger_rediscovers_only_pre_ack_roots` |
+| C3-3 readback operation | **PRESENT** | `BinanceFuturesDemoExecutionClient.get_order` (`GET /fapi/v1/order`), dispatched through `_lookup_order` (`:119-122`). | `test_c3_3_futures_authoritative_readback_is_get_order` |
+| C3-4 lane-native evidence (7 kinds) | **PARTIAL — 4 present, 1 degraded, 2 absent** | Present: `record_submitted` (ACK, carries `broker_order_id`), `record_anomaly` (unknown, carries `anomaly_reason`), `record_cancelled` (cancel), `record_reconciled` (terminal reconciliation). Degraded: partial fill — `record_filled` takes no quantity argument and `binance_demo_order_ledger` has no `executed_qty` / `remaining_qty` column, so a partial fill cannot be distinguished from a full one except through free-form `extra_metadata`. Absent: **reject** and **expiry** have no distinct write point; both collapse into the `cancelled` / `anomaly` branches, which also absorb unrelated causes. | `test_c3_4_futures_lane_evidence_has_no_reject_expiry_or_partial_fill_writer` |
+| C3-5 exact `release_if_matches` condition | **ABSENT** | The J3A contract is not called from this lane. The lane's own release condition is narrower and differently named: release only on explicit `BinanceDemoOrderNotFound` within an 89-day bound, or a terminal status in `{CANCELED, REJECTED, EXPIRED}` with `executedQty == 0`, and only after venue-host, credential-fingerprint, and broker-identity equality all match. That is a release rule, but it is not the exact `release_if_matches` contract the authority names. | `test_neither_lane_calls_the_j3a_release_if_matches_contract` (call-site absence). The narrower lane-own release rule quoted here is **record only**. |
+| C3-6 operator-visible blocked state | **PRESENT** | `anomaly` lifecycle state (writer `record_anomaly`), plus per-candidate `kept` outcomes carrying **ten** stable reasons: `client_unavailable`, `venue_host_mismatch`, `credential_fingerprint_missing`, `client_credential_fingerprint_unavailable`, `credential_fingerprint_mismatch`, `broker_lookup_failed`, `malformed_broker_truth`, `broker_identity_mismatch`, `broker_exposure_not_disproven`, `broker_lookup_retention_exceeded`. The round-1 revision of this row enumerated eight and silently dropped the two fingerprint-availability reasons; the closed-set regression added in round 2 is what measured the real count. | `test_c3_6_futures_blocked_state_reasons_are_pinned_as_a_closed_set` |
 
 ### 5.3 C3-7 — lifecycle status disposition, and a flagged conflict
 
@@ -273,5 +321,52 @@ writer, cadence, cap, canary, or FX value is selected by this document.
 - Spot cancel (confirm gate): `app/services/brokers/binance/spot_demo/execution_client.py:372-393`.
 - Default plugin: `app/services/brokers/binance/demo_strategy_loop/strategy.py:67-84`; CLI wiring at `scripts/binance_demo_strategy_loop.py:289`.
 - Reservation reconcile chain: `app/tasks/binance_demo_root_reservation_reconcile_tasks.py:27`, `app/jobs/binance_demo_root_reservation_reconciliation.py:119-154`.
-- Paper-cohort reach (finding F-1): `app/tasks/paper_cohort_tasks.py:17-22`, `app/services/brokers/binance/paper_adapter.py:186-192`.
+- Paper-cohort reach (finding F-1, Spot): `app/tasks/paper_cohort_tasks.py:17-22`, `app/services/brokers/binance/paper_adapter.py:186-192`; gates at `app/core/config.py:353`, `:356`, `app/services/paper_cohort/runner.py:142`, `:828-846`, `app/jobs/paper_cohort.py:40-45`.
+- Second futures producer (finding F-1, Futures): `scripts/binance_demo_strategy_loop.py:288-303`, `app/services/brokers/binance/demo_strategy_loop/orchestrator.py:326-332`.
+- Kill-switch caps: `app/services/brokers/binance/demo_strategy_loop/kill_switch.py:37-49`, `:56-69`.
+- Lifecycle evidence writers: `app/services/brokers/binance/demo/ledger/service.py:238-500`; ledger columns `app/models/binance_demo_order_ledger.py:132-208`.
+- Blocked-state reasons: `app/jobs/binance_demo_root_reservation_reconciliation.py:231-379`.
 - Regressions: `tests/services/test_upbit_futures_boundary.py`.
+
+## 8. Assertion ↔ regression map
+
+Failure mode this section exists to prevent: a contract sentence that reads like
+a guaranteed invariant while nothing enforces it, so the runbook or ledger moves
+and only the contract rots. Every safety assertion in this document appears
+below with the test that enforces it, or is labelled **record only**.
+
+**Record only** means: observed at `1e1c75f8`, no regression behind it, may go
+stale silently. It is not a weaker guarantee — it is *not a guarantee*.
+
+| § | assertion | enforcing regression |
+| --- | --- | --- |
+| rows | both lane rows frozen on 4 axes + `writer`/`auto_order_enabled` false + quote currency | `test_upbit_shadow_row_is_frozen_on_all_four_axes`, `test_futures_demo_row_is_frozen_on_all_four_axes` |
+| rows | `None` is not a spelling of `DISABLED` | `test_absent_and_disabled_scheduler_owners_stay_distinct_values` |
+| 1 | shadow lane is synthetic: no host, no credential namespace, never labelled broker paper/native | `test_upbit_shadow_is_synthetic_and_never_labelled_broker_paper_or_native` |
+| 1 | broker I/O refused by lane class, not host string | `test_upbit_shadow_rejects_every_endpoint_it_is_offered` (5 hosts) |
+| 1 | the guard is on the live chain, and the canonical registry dies earlier | `test_upbit_shadow_chain_reaches_and_dies_at_the_shadow_guard`, `test_upbit_shadow_chain_under_the_canonical_registry_dies_even_earlier` |
+| 1 | Upbit private credential module unreachable from the lane surface | `test_upbit_shadow_surface_never_reaches_upbit_private_credential_modules`, `test_registry_module_imports_no_broker_transport_or_credential_module` |
+| 2 | default plugin is `NullStrategy`, and the CLI passes only that | `test_default_strategy_plugin_is_null_strategy_and_never_emits_a_signal`, `test_the_strategy_loop_cli_wires_run_tick_to_null_strategy` |
+| 2 | no scheduler entry point reaches the strategy loop | `test_no_scheduler_entrypoint_reaches_the_demo_strategy_loop` |
+| 2 | exactly one scheduleless scheduler reach into the futures client | `test_only_the_scheduleless_reconcile_task_reaches_the_futures_demo_client` |
+| 2 | that reach calls no order-producing method | `test_the_reconcile_chain_calls_no_order_producing_client_method` |
+| 2 | leverage 1x refused pre-HTTP | `test_futures_leverage_is_pinned_to_1x_before_any_http` (6 values) |
+| 2 | one-way only: no `position_side` parameter; hedge blocked | `test_futures_one_way_mode_is_structural_and_hedge_mode_is_blocked` (source pin for the hedge raise; the runtime hedge path is **record only**) |
+| 2 | `reduce_only` / `confirm` default false, unconfirmed submit is a dry run | `test_futures_reduce_only_defaults_off_and_submit_defaults_to_dry_run` |
+| 2 | close leg always `reduce_only=True` | `test_the_strategy_loop_close_leg_always_sets_reduce_only_true` (source pin) |
+| 2 | leg cap `[6, 10]` USDT literals | `test_leg_notional_cap_constants_are_locked_literals` |
+| 2 | kill-switch caps are 1 and 2, field set closed, guard rejects each widening | `test_kill_switch_locked_limits_are_pinned_to_literal_1_and_2`, `test_kill_switch_guard_accepts_exactly_the_literal_locked_pair`, `test_kill_switch_guard_rejects_each_widened_cap_individually` (4 rows) |
+| 2 | futures host allowlist is a single demo host | `test_futures_demo_host_allowlist_stays_a_single_demo_host` |
+| 2 | neither lane can be activated | `test_upbit_shadow_lane_cannot_be_activated`, `test_futures_demo_lane_cannot_be_activated` |
+| 3 | cancel-confirm asymmetry in both directions, declared intent, submit gated on both | `test_spot_cancel_has_a_per_call_confirm_gate`, `test_futures_cancel_has_no_confirm_gate`, `test_the_cancel_confirm_asymmetry_is_declared_intent_not_an_oversight`, `test_both_submit_paths_keep_the_confirm_gate_they_do_share` |
+| 4 | Spot: two scheduler reaches, one schedule-bearing | `test_the_spot_demo_client_is_reached_by_exactly_two_scheduler_entrypoints`, `test_the_paper_cohort_task_carries_a_schedule_unlike_the_reconcile_task` |
+| 4 | Spot runbook sentence + contradicting repo fact together | `test_spot_demo_runbook_no_scheduler_claim_is_contradicted_by_repo_fact` |
+| 4 | Spot bounding gates (`PAPER_COHORT_ENABLED`, SHADOW early return, `PAPER_EXECUTION_ENABLED`, actor id, `{BTCUSDT, ETHUSDT}` allowlist) | **record only** — cited with file:line, no regression. These are `app/**` facts J6C does not own; a J6C test pinning them would assert someone else's invariant. |
+| 4.1 | futures runbook scheduler clause is accurate | `test_the_futures_runbook_scheduler_clause_matches_repo_fact` |
+| 4.1 | futures runbook "only path" clause is false — second CLI produces orders | `test_futures_runbook_only_path_claim_is_contradicted_by_a_second_cli` |
+| 5.1 | Upbit C3-1 … C3-6 | per-row column in §5.1 (C3-4 and part of C3-2 are **record only**) |
+| 5.2 | Futures C3-1 … C3-6 | per-row column in §5.2 (the lane-own release rule text in C3-5 is **record only**) |
+| 5.3 | `AUTO_READY_BLOCKED_BY_LIFECYCLE` is unreachable for both lanes | `test_auto_ready_blocked_by_lifecycle_is_unreachable_for_both_lanes` (2 lanes) |
+| 5.3 | the three reasons for not relabelling | **record only** — reason 2 is enforced by the test above; reasons 1 and 3 are readings of the signed registry and the status ladder |
+| 6 | negative guarantees | not test-shaped — enforced by the file fence and `git diff` (two added files, zero `app/**` change) |
+| 8 | this map itself: every cited test exists, and every test is cited | `test_the_contract_assertion_map_matches_this_modules_tests_exactly` (asserts set **equality** between the citations above and the module's test functions, so the map cannot drift in either direction) |

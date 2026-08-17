@@ -13,9 +13,11 @@ Negative-only regression suite for the two crypto lanes this job owns:
 Plus the two cross-lane facts ROB-1271 pins so nobody "tidies" them away:
 
   * the Spot/Futures ``cancel_order`` per-call ``confirm`` **asymmetry**, and
-  * the TaskIQ reach chain into the Spot/Futures Demo execution clients, which
-    is narrower than the futures runbook claims and wider than the spot runbook
-    claims (finding F-1, see ``docs/contracts/rob-1271-upbit-futures-boundary.md``).
+  * finding F-1 — both Demo runbooks claim their smoke CLI is the *only* path
+    producing real Demo orders, and neither claim holds: Spot is reached by a
+    schedule-bearing TaskIQ task, and Futures has a second operator CLI. The
+    scheduler half of the futures sentence *is* accurate, and the tests keep the
+    two halves apart (see ``docs/contracts/rob-1271-upbit-futures-boundary.md``).
 
 Every assertion here is offline: expectations are written as literals in this
 file (never read back out of the constant under test), no test opens a socket,
@@ -28,7 +30,8 @@ from __future__ import annotations
 import ast
 import functools
 import inspect
-from dataclasses import replace
+import re
+from dataclasses import fields, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -75,6 +78,13 @@ _SPOT_EXECUTION_CLIENT = "app.services.brokers.binance.spot_demo.execution_clien
 _FUTURES_EXECUTION_CLIENT = "app.services.brokers.binance.futures_demo.execution_client"
 _STRATEGY_LOOP_PACKAGE = "app.services.brokers.binance.demo_strategy_loop"
 _UPBIT_PRIVATE_WEBSOCKET = "app.services.upbit_websocket"
+
+# Lifecycle-recovery surfaces named by contract §5.2 (C3-1 … C3-6).
+_RECONCILE_JOB = "app.jobs.binance_demo_root_reservation_reconciliation"
+_RECONCILE_TASK = "app.tasks.binance_demo_root_reservation_reconcile_tasks"
+_STRATEGY_LOOP_EXECUTION = f"{_STRATEGY_LOOP_PACKAGE}.execution"
+_DEMO_LEDGER_SERVICE = "app.services.brokers.binance.demo.ledger.service"
+_DEMO_LEDGER_MODEL = "app.models.binance_demo_order_ledger"
 
 # Scheduler entry points: TaskIQ task modules, Prefect flow modules, and the
 # job modules they delegate to. A recurring registration can only originate
@@ -158,9 +168,13 @@ def _reachable_modules(root: str) -> frozenset[str]:
 
 
 def _scheduler_entrypoint_modules() -> tuple[str, ...]:
+    # ``rglob`` rather than ``glob``: both directories are flat today, so this
+    # changes no current reach set, but a task added under a future
+    # ``app/tasks/<subpackage>/`` would otherwise be invisible to every
+    # reachability assertion in this file.
     modules: list[str] = []
     for directory in _SCHEDULER_ENTRYPOINT_DIRS:
-        for path in sorted((REPO_ROOT / directory).glob("*.py")):
+        for path in sorted((REPO_ROOT / directory).rglob("*.py")):
             if path.name == "__init__.py":
                 continue
             modules.append(_module_name(path))
@@ -206,6 +220,113 @@ def _called_attribute_names(modules: tuple[str, ...]) -> frozenset[str]:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 names.add(node.func.attr)
     return frozenset(names)
+
+
+def _function_node(
+    module: str, function_name: str
+) -> ast.AsyncFunctionDef | ast.FunctionDef:
+    path = _module_file(module)
+    assert path is not None, f"{module} has no source file"
+    for node in ast.walk(_parse(path)):
+        if (
+            isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
+            and node.name == function_name
+        ):
+            return node
+    raise AssertionError(f"{module} defines no {function_name}")
+
+
+def _function_body_source(module: str, function_name: str) -> str:
+    """Function body rendered back to source, **docstring dropped**.
+
+    Prose must never be able to satisfy a source pin, so the leading string
+    expression is stripped before the body is unparsed.
+    """
+    body = _function_node(module, function_name).body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    return "\n".join(ast.unparse(statement) for statement in body)
+
+
+def _class_node(module: str, class_name: str) -> ast.ClassDef:
+    path = _module_file(module)
+    assert path is not None, f"{module} has no source file"
+    for node in ast.walk(_parse(path)):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return node
+    raise AssertionError(f"{module} defines no class {class_name}")
+
+
+def _method_names(module: str, class_name: str, prefix: str) -> frozenset[str]:
+    return frozenset(
+        statement.name
+        for statement in _class_node(module, class_name).body
+        if isinstance(statement, ast.AsyncFunctionDef | ast.FunctionDef)
+        and statement.name.startswith(prefix)
+    )
+
+
+def _method_parameter_names(
+    module: str, class_name: str, method_name: str
+) -> frozenset[str]:
+    for statement in _class_node(module, class_name).body:
+        if (
+            isinstance(statement, ast.AsyncFunctionDef | ast.FunctionDef)
+            and statement.name == method_name
+        ):
+            args = statement.args
+            collected = {
+                argument.arg
+                for argument in (*args.posonlyargs, *args.args, *args.kwonlyargs)
+            }
+            if args.vararg is not None:
+                collected.add(args.vararg.arg)
+            if args.kwarg is not None:
+                collected.add(args.kwarg.arg)
+            return frozenset(collected)
+    raise AssertionError(f"{module}:{class_name} defines no {method_name}")
+
+
+def _mapped_column_names(module: str, class_name: str) -> frozenset[str]:
+    """Annotated ``mapped_column`` attribute names declared on ``class_name``."""
+    names: set[str] = set()
+    for statement in _class_node(module, class_name).body:
+        if not isinstance(statement, ast.AnnAssign):
+            continue
+        if not isinstance(statement.target, ast.Name):
+            continue
+        value = statement.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "mapped_column"
+        ):
+            names.add(statement.target.id)
+    return frozenset(names)
+
+
+def _literal_reason_values(module: str) -> frozenset[str]:
+    """String values of every literal ``"reason": "..."`` dict entry in ``module``."""
+    path = _module_file(module)
+    assert path is not None, f"{module} has no source file"
+    values: set[str] = set()
+    for node in ast.walk(_parse(path)):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values, strict=True):
+            if (
+                isinstance(key, ast.Constant)
+                and key.value == "reason"
+                and isinstance(value, ast.Constant)
+                and isinstance(value.value, str)
+            ):
+                values.add(value.value)
+    return frozenset(values)
 
 
 # ---------------------------------------------------------------------------
@@ -634,18 +755,69 @@ def test_leg_notional_cap_constants_are_locked_literals() -> None:
     assert LEG_NOTIONAL_CAP_MAX_USDT == Decimal("10")
 
 
-def test_kill_switch_limits_cannot_be_widened() -> None:
-    """Mutant 4 — the concurrent-position / consecutive-SL caps stay locked."""
-    assert_kill_switch_limits_locked(LOCKED_LIMITS)
+def test_kill_switch_locked_limits_are_pinned_to_literal_1_and_2() -> None:
+    """Mutant 4 — every kill-switch cap is pinned to a literal written here.
 
-    widened = replace(
-        LOCKED_LIMITS,
-        max_concurrent_positions=LOCKED_LIMITS.max_concurrent_positions + 1,
+    ``assert_kill_switch_limits_locked`` compares its argument against
+    ``LOCKED_LIMITS`` itself, so exercising only the guard has **zero**
+    discriminating power over the cap values: widening
+    ``LOCKED_LIMITS.max_concurrent_positions`` to 5 moves the expectation with
+    the constant and the guard keeps passing. That self-reference is the trap
+    the J6B round-1 review named, and it is why the expectations below are
+    literals rather than reads of the module under test.
+    """
+    assert LOCKED_LIMITS.max_concurrent_positions == 1
+    assert LOCKED_LIMITS.max_consecutive_stop_losses_per_utc_day == 2
+
+    # Full literal reconstruction: any field drifting in either direction fails
+    # here, not just the two named above.
+    assert LOCKED_LIMITS == StrategyLoopKillSwitchLimits(
+        max_concurrent_positions=1,
+        max_consecutive_stop_losses_per_utc_day=2,
     )
+    # A *third* field carrying a permissive default would satisfy every
+    # assertion above (it would default on both sides of the comparison), so
+    # the field set is pinned as a literal too.
+    assert {field.name for field in fields(StrategyLoopKillSwitchLimits)} == {
+        "max_concurrent_positions",
+        "max_consecutive_stop_losses_per_utc_day",
+    }
+
+
+def test_kill_switch_guard_accepts_exactly_the_literal_locked_pair() -> None:
+    """The guard must accept ``(1, 2)`` spelled out, not merely accept itself."""
+    assert_kill_switch_limits_locked(
+        StrategyLoopKillSwitchLimits(
+            max_concurrent_positions=1,
+            max_consecutive_stop_losses_per_utc_day=2,
+        )
+    )
+    assert isinstance(LOCKED_LIMITS, StrategyLoopKillSwitchLimits)
+
+
+@pytest.mark.parametrize(
+    ("max_concurrent_positions", "max_consecutive_stop_losses_per_utc_day"),
+    [
+        # Each row widens exactly one cap, with both values written as literals
+        # so the deviation cannot be derived from the constant under test.
+        (2, 2),
+        (5, 2),
+        (1, 3),
+        (1, 9),
+    ],
+)
+def test_kill_switch_guard_rejects_each_widened_cap_individually(
+    max_concurrent_positions: int,
+    max_consecutive_stop_losses_per_utc_day: int,
+) -> None:
+    """Mutant 4 — widening either cap alone is refused, field by field."""
+    widened = StrategyLoopKillSwitchLimits(
+        max_concurrent_positions=max_concurrent_positions,
+        max_consecutive_stop_losses_per_utc_day=max_consecutive_stop_losses_per_utc_day,
+    )
+
     with pytest.raises(KillSwitchLimitsNotLocked):
         assert_kill_switch_limits_locked(widened)
-
-    assert isinstance(LOCKED_LIMITS, StrategyLoopKillSwitchLimits)
 
 
 def test_futures_demo_host_allowlist_stays_a_single_demo_host() -> None:
@@ -720,6 +892,122 @@ def test_neither_lane_calls_the_j3a_release_if_matches_contract() -> None:
         REPO_ROOT / "app/services/mock_integration/coordination.py"
     ).read_text(encoding="utf-8")
     assert "async def release_if_matches(" in coordination_source
+
+
+def test_c3_1_futures_recovery_ownership_is_split_across_two_modules() -> None:
+    """C3-1 — "exactly one recovery owner" is UNMET, and the failure is pinned.
+
+    Two modules own different recovery phases and no contract names one: the
+    reconciliation job owns pre-acknowledgement roots, the strategy loop owns
+    the in-tick close. §5.2 reports that as a failed prerequisite instead of
+    picking a winner — so the *failure* needs a regression too. If a later
+    change consolidates ownership into a single module, this goes red and the
+    contract row must be revisited rather than silently rotting.
+    """
+    assert (
+        _function_node(_RECONCILE_JOB, "reconcile_binance_demo_root_reservations").name
+        == "reconcile_binance_demo_root_reservations"
+    )
+    assert (
+        _function_node(_STRATEGY_LOOP_EXECUTION, "_close_with_reduce_only").name
+        == "_close_with_reduce_only"
+    )
+
+    # Neither phase owner delegates to the other, which is precisely why a
+    # single owner cannot be named.
+    assert _STRATEGY_LOOP_EXECUTION not in _reachable_modules(_RECONCILE_JOB)
+    assert _RECONCILE_JOB not in _reachable_modules(_STRATEGY_LOOP_EXECUTION)
+
+
+def test_c3_2_futures_restart_trigger_rediscovers_only_pre_ack_roots() -> None:
+    """C3-2 — the durable-claim rediscovery predicate, pinned to its literals."""
+    predicate = _function_body_source(_RECONCILE_JOB, "_candidate_where_clauses")
+
+    assert "planned_at <= stale_before" in predicate
+    assert "lifecycle_state == 'planned'" in predicate
+    assert "'previewed', 'validated'" in predicate
+    assert "broker_order_id.is_(None)" in predicate
+    # Acknowledged roots carry broker evidence and are deliberately out of the
+    # restart sweep's scope; widening it to them would need a contract change.
+    assert "'submitted'" not in predicate
+    assert "'filled'" not in predicate
+    assert "'anomaly'" not in predicate
+
+
+def test_c3_3_futures_authoritative_readback_is_get_order() -> None:
+    """C3-3 — the readback operation is named, not merely implied by a call set."""
+    lookup = _function_body_source(_RECONCILE_JOB, "_lookup_order")
+
+    assert "product == 'spot'" in lookup
+    assert "client.get_order(symbol=symbol, client_order_id=cid)" in lookup
+    assert "client.get_order_status(symbol=symbol, client_order_id=cid)" in lookup
+    # The operation the futures branch dispatches actually exists on the client.
+    assert hasattr(BinanceFuturesDemoExecutionClient, "get_order")
+
+
+def test_c3_4_futures_lane_evidence_has_no_reject_expiry_or_partial_fill_writer() -> (
+    None
+):
+    """C3-4 — 4 of 7 kinds present, partial fill degraded, reject/expiry absent."""
+    record_methods = _method_names(
+        _DEMO_LEDGER_SERVICE, "BinanceDemoLedgerService", "record_"
+    )
+
+    assert record_methods == frozenset(
+        {
+            "record_planned",
+            "record_previewed",
+            "record_validated",
+            "record_submitted",
+            "record_filled",
+            "record_closed",
+            "record_cancelled",
+            "record_reconciled",
+            "record_anomaly",
+        }
+    )
+    # reject and expiry have no dedicated write point; both collapse into the
+    # cancelled / anomaly branches, which also absorb unrelated causes.
+    assert "record_rejected" not in record_methods
+    assert "record_expired" not in record_methods
+
+    # Partial fill is degraded rather than recorded: the fill writer takes no
+    # quantity argument, and the ledger has no column to hold one.
+    assert _method_parameter_names(
+        _DEMO_LEDGER_SERVICE, "BinanceDemoLedgerService", "record_filled"
+    ) == frozenset({"self", "client_order_id", "now", "extra_metadata_merge"})
+    columns = _mapped_column_names(_DEMO_LEDGER_MODEL, "BinanceDemoOrderLedger")
+    assert "executed_qty" not in columns
+    assert "remaining_qty" not in columns
+    assert "qty" in columns  # planned quantity, set at insert and never split
+
+
+def test_c3_6_futures_blocked_state_reasons_are_pinned_as_a_closed_set() -> None:
+    """C3-6 — the operator-visible ``kept`` reasons are a closed literal set.
+
+    Pinned as an equality rather than a membership sweep so that adding an
+    eleventh reason fails here, instead of leaving the contract's enumeration
+    stale. That is not hypothetical: the round-1 contract enumerated eight, and
+    this assertion is what measured the real count at ten.
+    """
+    assert _literal_reason_values(_RECONCILE_JOB) == frozenset(
+        {
+            "client_unavailable",
+            "venue_host_mismatch",
+            "credential_fingerprint_missing",
+            "client_credential_fingerprint_unavailable",
+            "credential_fingerprint_mismatch",
+            "broker_lookup_failed",
+            "malformed_broker_truth",
+            "broker_identity_mismatch",
+            "broker_exposure_not_disproven",
+            "broker_lookup_retention_exceeded",
+        }
+    )
+    # The lifecycle-state half of the blocked surface: anomaly has a writer.
+    assert "record_anomaly" in _method_names(
+        _DEMO_LEDGER_SERVICE, "BinanceDemoLedgerService", "record_"
+    )
 
 
 # ===========================================================================
@@ -838,12 +1126,13 @@ def test_spot_demo_runbook_no_scheduler_claim_is_contradicted_by_repo_fact() -> 
     assert "confirm=True" in adapter_source
 
 
-def test_the_futures_runbook_no_scheduler_claim_matches_repo_fact() -> None:
-    """The same sentence in the futures runbook is only narrowly inaccurate.
+def test_the_futures_runbook_scheduler_clause_matches_repo_fact() -> None:
+    """The futures runbook's *first* clause is accurate on the TaskIQ facts.
 
     A TaskIQ module does reach the futures client, but it is scheduleless and
-    calls no order-producing method, so the runbook's operative promise — the
-    smoke CLI is the only producer of real Demo futures orders — still holds.
+    calls no order-producing method. That is the half of the sentence the repo
+    supports; the "smoke CLI is the only path" half is handled by the test
+    below, which contradicts it.
     """
     runbook = (REPO_ROOT / "docs/runbooks/binance-futures-demo-smoke.md").read_text(
         encoding="utf-8"
@@ -853,13 +1142,94 @@ def test_the_futures_runbook_no_scheduler_claim_matches_repo_fact() -> None:
     )
 
     reaching = _entrypoints_reaching(_FUTURES_EXECUTION_CLIENT)
-    assert reaching == frozenset(
-        {"app.tasks.binance_demo_root_reservation_reconcile_tasks"}
-    )
-    called = _called_attribute_names(
-        (
-            "app.tasks.binance_demo_root_reservation_reconcile_tasks",
-            "app.jobs.binance_demo_root_reservation_reconciliation",
-        )
-    )
+    assert reaching == frozenset({_RECONCILE_TASK})
+    called = _called_attribute_names((_RECONCILE_TASK, _RECONCILE_JOB))
     assert called.isdisjoint({"submit_order", "cancel_order", "order_test"})
+
+
+def test_futures_runbook_only_path_claim_is_contradicted_by_a_second_cli() -> None:
+    """ROB-1271 finding F-1, futures half — pinned, not fixed.
+
+    The futures runbook claims the smoke CLI is the **only** path producing real
+    Demo futures orders. A second operator CLI also produces them:
+    ``scripts/binance_demo_strategy_loop.py`` passes ``confirm=`` and
+    ``signal_override=`` straight into ``run_tick`` (ROB-993 ``--paper-signal``
+    is the end-to-end Demo round trip), and ``run_tick`` only short-circuits to
+    a dry run when ``confirm`` is false.
+
+    Unlike the scheduler clause this is *not* a scheduler reach — both paths are
+    operator-invoked foreground processes — which is why the first clause of the
+    sentence survives and this one does not. J6C owns neither
+    ``docs/runbooks/**`` nor ``app/**``, so the divergence is recorded and
+    pinned; resolving it in either direction must update this test in the same
+    change.
+    """
+    runbook = (REPO_ROOT / "docs/runbooks/binance-futures-demo-smoke.md").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "Futures Demo execution client. The smoke CLI is the **only** path" in runbook
+    )
+
+    strategy_loop_cli = REPO_ROOT / "scripts/binance_demo_strategy_loop.py"
+    smoke_cli = REPO_ROOT / "scripts/binance_futures_demo_smoke.py"
+    assert strategy_loop_cli != smoke_cli
+    assert smoke_cli.is_file()  # the CLI the runbook sentence is about
+
+    run_tick_keywords: set[str] = set()
+    for node in ast.walk(_parse(strategy_loop_cli)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "run_tick"
+        ):
+            run_tick_keywords.update(
+                keyword.arg for keyword in node.keywords if keyword.arg is not None
+            )
+    assert {"confirm", "signal_override"} <= run_tick_keywords
+
+    # ``confirm`` is the real gate on the other side of that call, so the reach
+    # above is an order-producing path rather than a permanently inert one.
+    orchestrator_source = (
+        REPO_ROOT / "app/services/brokers/binance/demo_strategy_loop/orchestrator.py"
+    ).read_text(encoding="utf-8")
+    assert "if not confirm:" in orchestrator_source
+    assert 'blocked_reason="dry_run"' in orchestrator_source
+
+    # Bounding the finding: the second producer is default-disabled by env and
+    # its shipped plugin never emits a signal, so only an explicitly injected
+    # ``--paper-signal`` reaches the submit path.
+    cli_source = strategy_loop_cli.read_text(encoding="utf-8")
+    assert "BINANCE_DEMO_STRATEGY_LOOP_ENABLED" in cli_source
+    assert "--paper-signal" in cli_source
+
+
+# ===========================================================================
+# M — the contract's own assertion↔regression map cannot rot
+# ===========================================================================
+def test_the_contract_assertion_map_matches_this_modules_tests_exactly() -> None:
+    """§8 of the contract maps every safety assertion to its regression.
+
+    A map is only worth having if it cannot drift. Two ways it could: cite a
+    test that was renamed or deleted (the map claims enforcement that no longer
+    exists), or omit a test that was added (the contract understates what is
+    enforced, and the next reader cannot tell record-only prose from a pinned
+    invariant). Both are failures of the same kind the map exists to prevent, so
+    the citation set and the test set are asserted **equal**, not merely
+    overlapping.
+    """
+    contract = (
+        REPO_ROOT / "docs/contracts/rob-1271-upbit-futures-boundary.md"
+    ).read_text(encoding="utf-8")
+    cited = set(re.findall(r"`(test_[a-z0-9_]+)`", contract))
+
+    defined = {
+        node.name
+        for node in ast.parse(Path(__file__).read_text(encoding="utf-8")).body
+        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef)
+        and node.name.startswith("test_")
+    }
+
+    assert cited == defined
+    # Non-vacuity: an empty regex match on both sides would satisfy equality.
+    assert len(defined) >= 40
