@@ -1636,6 +1636,7 @@ async def test_toss_api_home_reader_maps_read_only_holdings_and_cash(monkeypatch
     monkeypatch.setattr(
         readers, "fetch_toss_portfolio_snapshot", fake_fetch_toss_snapshot
     )
+    monkeypatch.setattr(readers, "get_usd_krw_rate", AsyncMock(return_value=1_350.0))
     # ROB-549: mutations disabled (default) -> reference-only.
     from app.core.config import settings as _cfg
 

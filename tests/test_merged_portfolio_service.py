@@ -494,9 +494,17 @@ class TestBuildMergedPortfolio:
 
     @pytest.mark.asyncio
     async def test_toss_only_stock_gets_current_price(
-        self, merged_portfolio_service, mock_kis_client
+        self, merged_portfolio_service, mock_kis_client, monkeypatch
     ):
         """TOSS만 있는 종목이 현재가를 정상 조회하는지 확인"""
+        # _build_merged_portfolio always fetches USD/KRW (even for KR-market
+        # holdings) — fake it so the test never reaches the real exchange
+        # rate provider.
+        monkeypatch.setattr(
+            "app.services.merged_portfolio_service.get_usd_krw_rate",
+            AsyncMock(return_value=1300.0),
+        )
+
         # KIS 보유 종목 없음
         mock_kis_client.fetch_my_stocks = AsyncMock(return_value=[])
 
@@ -538,9 +546,17 @@ class TestBuildMergedPortfolio:
 
     @pytest.mark.asyncio
     async def test_mixed_kis_and_toss_holdings(
-        self, merged_portfolio_service, mock_kis_client
+        self, merged_portfolio_service, mock_kis_client, monkeypatch
     ):
         """KIS와 TOSS 혼합 보유 종목"""
+        # _build_merged_portfolio always fetches USD/KRW (even for KR-market
+        # holdings) — fake it so the test never reaches the real exchange
+        # rate provider.
+        monkeypatch.setattr(
+            "app.services.merged_portfolio_service.get_usd_krw_rate",
+            AsyncMock(return_value=1300.0),
+        )
+
         # KIS 보유 종목 (삼성전자만)
         kis_stocks = [
             {
