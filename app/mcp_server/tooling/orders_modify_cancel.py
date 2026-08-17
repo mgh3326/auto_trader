@@ -527,6 +527,22 @@ def _is_kis_mock_unsupported(message: str) -> bool:
     return any(marker in lowered for marker in _KIS_MOCK_UNSUPPORTED_MARKERS)
 
 
+def _kis_mock_claim_identity(resolved: dict[str, Any]) -> tuple[str | None, str | None]:
+    """The durable claim a follow-up would be amending, if the row names one.
+
+    Read from the ledger row rather than assumed: a row written before the
+    coordinated lane existed carries no J2B lineage, and inventing one here
+    would manufacture exactly the ownership the follow-up gate is checking for.
+    """
+
+    scope = resolved.get("claim_account_scope")
+    key = resolved.get("claim_idempotency_key")
+    return (
+        scope if isinstance(scope, str) and scope.strip() else None,
+        key if isinstance(key, str) and key.strip() else None,
+    )
+
+
 async def _cancel_kis_mock_domestic(
     order_id: str,
     symbol: str | None,
@@ -567,14 +583,18 @@ async def _cancel_kis_mock_domestic(
 
     # J3A describes the capability; it never authorizes the mutation and never
     # releases the durable claim. A missing forwarding org number, an unknown
-    # remainder, or a missing native order id each independently stops the
-    # follow-up before any transport call is made.
-    decision = authorize_kis_mock_claim_followup(
+    # remainder, a missing native order id, and — since ROB-1263 r2 — the
+    # absence of a live grant that owns *this exact* durable claim each
+    # independently stop the follow-up before any transport call is made.
+    claim_scope, claim_key = _kis_mock_claim_identity(resolved)
+    decision = await authorize_kis_mock_claim_followup(
         operation="cancel",
         native_order_id=order_id,
         known_remainder=known_remainder,
         lane_capability_supports_operation=bool(orgno),
         fresh_guards_passed=bool(resolved_symbol),
+        claim_account_scope=claim_scope,
+        claim_idempotency_key=claim_key,
     )
     if not decision.authorized:
         return {
@@ -586,7 +606,8 @@ async def _cancel_kis_mock_domestic(
             "claim_released": False,
             "error": (
                 "kis_mock cancel not authorized: the lane lacks broker-confirmed "
-                "capability, an attributed order number, or a known remainder. "
+                "capability, an attributed order number, a known remainder, or a "
+                "live grant owning this exact durable claim. "
                 "The durable claim is retained."
             ),
             "market": market,

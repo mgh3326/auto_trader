@@ -543,13 +543,36 @@ class KISMockCoordinationGrant:
     credential_namespace: str
     allowed_netlocs: tuple[str, ...]
     physical_account_id: str
-    _scope: CoordinationScope = field(repr=False)
+    entry: LaneRegistryEntry = field(repr=False)
+    claim_idempotency_key: str = field(repr=False, default="")
+    claim_row_id: int | None = field(repr=False, default=None)
+    _scope: CoordinationScope | None = field(repr=False, default=None)
 
     def proves_keys(self, keys: Sequence[int]) -> bool:
         """Whether every supplied key is in the acquired set."""
 
         held = set(self.advisory_keys)
         return bool(keys) and all(key in held for key in keys)
+
+    @property
+    def claim_identity(self) -> tuple[str, str, int | None]:
+        """The exact durable claim this grant was issued against."""
+
+        return (self.claim_account_scope, self.claim_idempotency_key, self.claim_row_id)
+
+    def owns_claim(self, *, account_scope: str, idempotency_key: str) -> bool:
+        """Whether this grant owns *that exact* durable send claim.
+
+        A follow-up that cannot name the claim it is amending is not amending a
+        known order; it is issuing a new broker instruction under someone else's
+        authority.
+        """
+
+        return bool(
+            self.claim_idempotency_key
+            and account_scope == self.claim_account_scope
+            and idempotency_key == self.claim_idempotency_key
+        )
 
     async def assert_owned(self) -> None:
         """Re-prove the exact lease *and* the pinned registry entry.
@@ -560,6 +583,11 @@ class KISMockCoordinationGrant:
         account truth, a token refresh, or a rate limiter.
         """
 
+        if self._scope is None:
+            raise KISMockCoordinationBlocked(
+                KIS_MOCK_KEYSET_NOT_PROVEN,
+                detail="grant carries no coordinated scope to re-prove",
+            )
         await self._scope.assert_owned()
 
 
@@ -860,6 +888,13 @@ async def coordinate_kis_mock_mutation(
     physical_scope = physical_account_scope_for_entry(entry)
     legacy_key = kis_mock_legacy_advisory_key()
     expected_keys = kis_mock_advisory_keyset(entry)
+    order_attempt = envelope.order_attempt
+    if order_attempt is None:
+        raise KISMockCoordinationBlocked(
+            KIS_MOCK_LANE_PROFILE_MISMATCH,
+            detail="a coordinated send requires a J2B order attempt",
+        )
+    claim_idempotency_key = order_attempt.idempotency_key
 
     async def _callback(scope: CoordinationScope) -> MutationCallbackResult:
         grant = KISMockCoordinationGrant(
@@ -871,6 +906,8 @@ async def coordinate_kis_mock_mutation(
             credential_namespace=KIS_MOCK_CREDENTIAL_NAMESPACE,
             allowed_netlocs=(KIS_MOCK_VTS_NETLOC,),
             physical_account_id=str(entry.physical_account_id),
+            entry=entry,
+            claim_idempotency_key=claim_idempotency_key,
             _scope=scope,
         )
         token = _ACTIVE_WRITER_LEASE.set(
@@ -908,6 +945,243 @@ async def coordinate_kis_mock_mutation(
 
 
 # --------------------------------------------------------------------------
+# The production wire boundary — every KIS mock mutation passes through here
+# --------------------------------------------------------------------------
+
+
+class KISMockUncoordinatedMutation(KISMockCoordinationBlocked):
+    """A KIS mock mutation tried to reach the wire holding no authority at all."""
+
+
+@dataclass(frozen=True, slots=True)
+class KISMockMutationAuthority:
+    """What the wire boundary actually holds for one mock mutation.
+
+    Either a full J3A dual-key grant (coordinated) or the legacy single-key
+    account-mode lease.  There is no third state: reaching the wire with neither
+    is the exact B-2 defect, and :func:`kis_mock_mutation_authority` cannot
+    yield such a value.
+    """
+
+    grant: KISMockCoordinationGrant | None
+    pre_send_hook: Callable[[], Awaitable[None]] | None
+
+    @property
+    def coordinated(self) -> bool:
+        return self.grant is not None
+
+    @property
+    def auto_evidence_eligible(self) -> bool:
+        """Only a coordinated send may ever be cited as AUTO evidence."""
+
+        return self.coordinated
+
+
+def _chain_pre_send_hooks(
+    first: Callable[[], Awaitable[None]] | None,
+    second: Callable[[], Awaitable[None]] | None,
+) -> Callable[[], Awaitable[None]] | None:
+    if first is None:
+        return second
+    if second is None:
+        return first
+
+    async def _both() -> None:
+        await first()
+        await second()
+
+    return _both
+
+
+@asynccontextmanager
+async def kis_mock_mutation_authority(
+    *,
+    client: Any,
+    path: str,
+    caller_pre_send_hook: Callable[[], Awaitable[None]] | None = None,
+    lease_factory: Callable[[], KISMockWriterLease] = KISMockWriterLease,
+) -> AsyncIterator[KISMockMutationAuthority]:
+    """Hold authority for the whole of one KIS mock mutation, or refuse it.
+
+    ROB-1263 B-2: an ``is_mock=True`` place/cancel/modify may no longer reach the
+    wire *merely because an env gate is false*.  The account-mode lease is now
+    acquired for every mock mutation regardless of ``KIS_MOCK_RUNNER_ENABLED``;
+    that variable still arms the runner and changes nothing else, but it can no
+    longer switch this guard off.
+
+    When a coordinated dual-key grant is already held, it is reused and the B-4
+    per-POST boundary gate is composed into the transport's ``pre_send_hook`` so
+    it re-proves before every attempt, re-sends included.
+    """
+
+    authority = active_writer_authority()
+    grant = authority.grant if authority is not None else None
+    if grant is not None:
+        hook = _chain_pre_send_hooks(
+            build_kis_mock_send_boundary_hook(
+                client=client, path=path, entry=grant.entry, grant=grant
+            ),
+            caller_pre_send_hook,
+        )
+        yield KISMockMutationAuthority(grant=grant, pre_send_hook=hook)
+        return
+
+    # No coordination grant. The lane is not AUTO-eligible for this send, but it
+    # still may not touch the wire unowned: take the legacy account-mode lease
+    # unconditionally.
+    async with enforce_kis_mock_mutation_writer(
+        enabled=True, lease_factory=lease_factory
+    ):
+        if active_writer_authority() is None:  # pragma: no cover - defensive
+            raise KISMockUncoordinatedMutation(
+                KIS_MOCK_KEYSET_NOT_PROVEN,
+                detail="no writer authority is held at the KIS mock wire boundary",
+            )
+        yield KISMockMutationAuthority(grant=None, pre_send_hook=caller_pre_send_hook)
+
+
+# --------------------------------------------------------------------------
+# The coordinated production route
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class KISMockCoordinationRoute:
+    """Everything :func:`coordinate_kis_mock_mutation` needs for one real send.
+
+    A lane that cannot assemble this — because no durable dispatch-evidence store
+    exists and the canonical registry row has no bound identity — reports
+    ``AUTO_READY_BLOCKED_BY_LIFECYCLE`` instead of inventing one.
+    """
+
+    envelope: LineageEnvelope
+    ports: KISMockLanePorts
+    claims: DurableSendClaimAdapter
+    connection_factory: Callable[[], Awaitable[Any]]
+    registry: Any = None
+    lineage_factory: MockLineageFactory | None = None
+
+
+# The lane's route provider. It is ``None`` in production: see
+# ``docs/contracts/rob-1263-kis-coordination-adapter.md`` §6 for the two
+# independent blockers that keep it unset. Operations installs one only after
+# both are resolved, which is a separate, approval-gated decision.
+_KIS_MOCK_COORDINATION_ROUTE_PROVIDER: (
+    Callable[..., KISMockCoordinationRoute | None] | None
+) = None
+
+
+def set_kis_mock_coordination_route_provider(
+    provider: Callable[..., KISMockCoordinationRoute | None] | None,
+) -> None:
+    """Install (or clear) the lane's coordinated-route provider."""
+
+    global _KIS_MOCK_COORDINATION_ROUTE_PROVIDER
+    _KIS_MOCK_COORDINATION_ROUTE_PROVIDER = provider
+
+
+def resolve_kis_mock_coordination_route(
+    **context: Any,
+) -> KISMockCoordinationRoute | None:
+    """The route for this send, or ``None`` when the lane is lifecycle-blocked."""
+
+    provider = _KIS_MOCK_COORDINATION_ROUTE_PROVIDER
+    if provider is None:
+        return None
+    return provider(**context)
+
+
+@dataclass(frozen=True, slots=True)
+class KISMockSendOutcome:
+    """One mock send's result plus how much authority actually carried it."""
+
+    result: Any
+    coordinated: bool
+    status: str
+
+    @property
+    def auto_evidence_eligible(self) -> bool:
+        return self.coordinated
+
+
+async def run_kis_mock_send(
+    *,
+    send: Callable[[], Awaitable[Any]],
+    **context: Any,
+) -> KISMockSendOutcome:
+    """Route one KIS mock send through the J3A coordinator when it can run.
+
+    This is the production entry point.  When the lane has a coordinated route,
+    the *entire* send — transport included — runs inside
+    :func:`coordinate_kis_mock_mutation`, so it inherits J3A's ordering: lineage
+    persistence, lease, uncertainty gate, binary claim, re-assertion, retained
+    durable writes, and conditional release.
+
+    When no route exists the lane is ``AUTO_READY_BLOCKED_BY_LIFECYCLE``: the
+    send still happens on the legacy path, still holds the wire-boundary
+    authority above, and is explicitly not AUTO evidence.
+    """
+
+    route = resolve_kis_mock_coordination_route(**context)
+    if route is None:
+        return KISMockSendOutcome(
+            result=await send(),
+            coordinated=False,
+            status=AUTO_READY_BLOCKED_BY_LIFECYCLE,
+        )
+
+    captured: list[Any] = []
+
+    async def _mutation(grant: KISMockCoordinationGrant) -> MutationCallbackResult:
+        from app.services.mock_integration.coordination import (
+            MutationCallbackResult as _Result,
+        )
+        from app.services.mock_integration.coordination import (
+            MutationCertainty as _Certainty,
+        )
+
+        result = await send()
+        captured.append(result)
+        broker_order_id = _extract_kis_odno(result)
+        return _Result(
+            certainty=_Certainty.DEFINITIVE
+            if broker_order_id
+            else _Certainty.UNCERTAIN,
+            broker_order_id=broker_order_id,
+        )
+
+    await coordinate_kis_mock_mutation(
+        envelope=route.envelope,
+        ports=route.ports,
+        claims=route.claims,
+        connection_factory=route.connection_factory,
+        mutation=_mutation,
+        registry=route.registry,
+        lineage_factory=route.lineage_factory,
+    )
+    return KISMockSendOutcome(
+        result=captured[0] if captured else None,
+        coordinated=True,
+        status="COORDINATED",
+    )
+
+
+def _extract_kis_odno(result: Any) -> str | None:
+    """Read the KIS order number the lane already parsed; never a payload parse.
+
+    A blank ODNO is not an acknowledgement, so it is reported as ``None`` and
+    J3A records a definitive-without-broker-id / uncertain dispatch evidence.
+    """
+
+    if not isinstance(result, dict):
+        return None
+    raw = result.get("odno") or result.get("ODNO")
+    if not isinstance(raw, str):
+        return None
+    return raw.strip() or None
+
+
+# --------------------------------------------------------------------------
 # B-6 — follow-up authorization (capability, never a claim release)
 # --------------------------------------------------------------------------
 
@@ -922,14 +1196,15 @@ class KISMockFollowupDecision:
     releases_durable_claim: bool = field(default=False, init=False)
 
 
-def authorize_kis_mock_claim_followup(
+async def authorize_kis_mock_claim_followup(
     *,
     operation: str,
     native_order_id: str | None,
     known_remainder: Decimal | None,
     lane_capability_supports_operation: bool,
     fresh_guards_passed: bool,
-    require_coordination_grant: bool = False,
+    claim_account_scope: str | None = None,
+    claim_idempotency_key: str | None = None,
 ) -> KISMockFollowupDecision:
     """Consume J3A's capability description; never widen it.
 
@@ -937,6 +1212,12 @@ def authorize_kis_mock_claim_followup(
     local ledger status are each incapable of authorizing a follow-up — and none
     of them releases a durable claim, which stays with the exact send lineage
     until evidence-gated release.
+
+    ROB-1263 r2 / B-6: ``lease_ownership_verified`` is no longer derivable from a
+    default argument.  It requires a **live** coordination grant that is
+    *re-asserted here* and that owns *this exact* durable claim.  The previous
+    signature let the only production caller take the default and hand J3A a
+    ``True`` it had not earned.
     """
 
     from app.services.mock_integration.coordination import (
@@ -945,7 +1226,26 @@ def authorize_kis_mock_claim_followup(
     )
 
     authority = active_writer_authority()
-    grant_held = authority is not None and authority.grant is not None
+    grant = authority.grant if authority is not None else None
+    ownership_verified = False
+    if (
+        grant is not None
+        and isinstance(claim_account_scope, str)
+        and isinstance(claim_idempotency_key, str)
+        and grant.owns_claim(
+            account_scope=claim_account_scope,
+            idempotency_key=claim_idempotency_key,
+        )
+    ):
+        try:
+            # Fresh, not remembered: ownership can have been lost since the
+            # ledger read that produced the arguments above.
+            await grant.assert_owned()
+        except BaseException:
+            ownership_verified = False
+        else:
+            ownership_verified = True
+
     capability = describe_claim_followup(
         ClaimFollowupRequest(
             operation=operation,
@@ -953,7 +1253,7 @@ def authorize_kis_mock_claim_followup(
             attributed_native_order_id=native_order_id,
             known_remainder=known_remainder,
             fresh_guards_passed=fresh_guards_passed,
-            lease_ownership_verified=grant_held or not require_coordination_grant,
+            lease_ownership_verified=ownership_verified,
         )
     )
     return KISMockFollowupDecision(

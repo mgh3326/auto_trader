@@ -4,12 +4,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-import os
 from functools import wraps
 from typing import TYPE_CHECKING, Any, cast
 
-from app.services.kis_mock_runner.gates import is_truthy
-from app.services.kis_mock_runner.singleton import enforce_kis_mock_mutation_writer
 from app.services.kr_symbol_universe_service import is_nxt_eligible
 
 from . import constants
@@ -46,26 +43,59 @@ async def _domestic_exchange_route(stock_code: str, *, is_mock: bool) -> str:
     return "SOR" if nxt else "KRX"
 
 
-def _guard_kis_mock_writer(method):
-    """Use the B0 account-mode singleton for every armed mock KRX mutation.
+def _guard_kis_mock_writer(mutation_path: str):
+    """Route every ``is_mock=True`` KRX mutation through the J3B wire boundary.
 
     ``DomesticOrderClient`` is the common KRX wire boundary for runner, watch
-    auto-execute, smoke, and manual MCP place/cancel/modify.  The wrapper keeps
-    the original route/preflight method intact and is deliberately active only
-    once the default-disabled KIS mock runner master gate has been armed.
+    auto-execute, smoke, and manual MCP place/cancel/modify.
+
+    ROB-1263 r2 — two things changed, and exactly one branch is affected:
+
+    * **live (``is_mock=False``) returns before any J3B code runs.** It is not
+      merely unchanged in effect; there is no path by which lane code observes
+      or alters it. The previous wrapper still entered a context manager for
+      live calls (a no-op ``yield``); returning first makes that structural.
+    * **mock no longer depends on ``KIS_MOCK_RUNNER_ENABLED`` for its
+      authority.** That gate being false used to make this guard a no-op, so an
+      ``is_mock=True`` place/cancel/modify reached the transport holding nothing
+      — the exact prohibition in B-2. The env variable still arms the runner and
+      is otherwise untouched; it can no longer switch the guard off.
+
+    When a coordinated J3A dual-key grant is held, ``kis_mock_mutation_authority``
+    composes the B-4 per-POST boundary gate into the transport's
+    ``pre_send_hook``, so it re-proves the actual client/host/profile before
+    every attempt, re-sends included.
     """
-    signature = inspect.signature(method)
 
-    @wraps(method)
-    async def guarded(self, *args, **kwargs):
-        bound = signature.bind(self, *args, **kwargs)
-        bound.apply_defaults()
-        is_mock = bool(bound.arguments.get("is_mock", False))
-        enabled = is_truthy(os.getenv("KIS_MOCK_RUNNER_ENABLED"))
-        async with enforce_kis_mock_mutation_writer(enabled=is_mock and enabled):
-            return await method(self, *args, **kwargs)
+    def decorate(method):
+        signature = inspect.signature(method)
+        accepts_hook = "pre_send_hook" in signature.parameters
 
-    return guarded
+        @wraps(method)
+        async def guarded(self, *args, **kwargs):
+            bound = signature.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            if not bool(bound.arguments.get("is_mock", False)):
+                return await method(self, *args, **kwargs)
+
+            from app.services.kis_mock_runner.singleton import (
+                kis_mock_mutation_authority,
+            )
+
+            caller_hook = bound.arguments.get("pre_send_hook") if accepts_hook else None
+            async with kis_mock_mutation_authority(
+                client=self._parent,
+                path=mutation_path,
+                caller_pre_send_hook=caller_hook,
+            ) as authority:
+                if accepts_hook and authority.pre_send_hook is not None:
+                    kwargs = dict(kwargs)
+                    kwargs["pre_send_hook"] = authority.pre_send_hook
+                return await method(self, *args, **kwargs)
+
+        return guarded
+
+    return decorate
 
 
 def _domestic_order_key(order: dict[str, Any]) -> str | None:
@@ -287,7 +317,7 @@ class DomesticOrderClient:
 
         return all_orders
 
-    @_guard_kis_mock_writer
+    @_guard_kis_mock_writer(constants.DOMESTIC_ORDER_URL)
     async def order_korea_stock(
         self,
         stock_code: str,
@@ -547,7 +577,7 @@ class DomesticOrderClient:
             stock_code, "sell", quantity, price, is_mock
         )
 
-    @_guard_kis_mock_writer
+    @_guard_kis_mock_writer(constants.DOMESTIC_ORDER_CANCEL_URL)
     async def cancel_korea_order(
         self,
         order_number: str,
@@ -930,7 +960,7 @@ class DomesticOrderClient:
         logging.info(f"국내주식 체결조회 완료: 총 {len(all_orders)}건")
         return all_orders
 
-    @_guard_kis_mock_writer
+    @_guard_kis_mock_writer(constants.DOMESTIC_ORDER_CANCEL_URL)
     async def modify_korea_order(
         self,
         order_number: str,
@@ -940,6 +970,7 @@ class DomesticOrderClient:
         is_mock: bool = False,
         krx_fwdg_ord_orgno: str | None = None,
         *,
+        pre_send_hook: PreSendHook | None = None,
         _token_retry_depth: int = 0,
     ) -> dict:
         """
@@ -1030,6 +1061,10 @@ class DomesticOrderClient:
             # order, so it must not be re-POSTed either.
             retry_request_errors=False,
             max_retries_override=0,
+            # ROB-1263 r2: the per-POST seam the other two mutations already had.
+            # Live callers pass nothing, so this stays ``None`` and the live
+            # request is byte-identical to before.
+            pre_send_hook=pre_send_hook,
         )
 
         if js.get("rt_cd") != "0":
@@ -1058,6 +1093,9 @@ class DomesticOrderClient:
                 )
                 await self._parent._token_manager.clear_token()
                 await self._parent._ensure_token()
+                # ROB-1263 r2: re-thread the hook so the token-refresh re-send
+                # re-proves the boundary before its own HTTP mutation, exactly
+                # as place/cancel already do.
                 return await self.modify_korea_order(
                     order_number,
                     stock_code,
@@ -1065,6 +1103,7 @@ class DomesticOrderClient:
                     new_price,
                     is_mock,
                     resolved_kis_orgno,
+                    pre_send_hook=pre_send_hook,
                     _token_retry_depth=_token_retry_depth + 1,
                 )
 

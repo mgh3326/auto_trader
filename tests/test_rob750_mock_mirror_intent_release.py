@@ -70,10 +70,19 @@ def _stub_kis_mock_baseline(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mock_mirror_intent_released_after_send_request_error(
+async def test_mock_mirror_intent_is_retained_when_the_send_is_not_proven_unsent(
     monkeypatch,
     db_session,
 ):
+    """ROB-1263 B-5 supersedes ROB-750's mirror-retry exemption.
+
+    ROB-750 released the mirror reservation on any transport error and told the
+    caller to retry, reasoning that mock money carries no risk. The risk is not
+    the money: it is a duplicate order at the broker and a lineage that can no
+    longer say which send produced it. Without a transport tracker proving
+    NOT_CREATED, the outcome is unknown, so the claim is retained and no retry
+    is advertised.
+    """
     _stub_kis_mock_baseline(monkeypatch)
     key = "mirror:rob750-request-error"
 
@@ -85,14 +94,12 @@ async def test_mock_mirror_intent_released_after_send_request_error(
     with pytest.raises(oe.OrderSendOutcomeUnknown) as excinfo:
         await oe._execute_and_record(**_execute_kwargs(key=key, is_mock=True))
 
-    assert excinfo.value.retry_allowed is True
-    # A retry must be able to reserve the same mirror key again; before ROB-750
-    # this raised DuplicateOrderIntent because the first reservation was permanent.
-    rid = await OrderSendIntentService(db_session).reserve(
-        account_scope="kis_mock",
-        idempotency_key=key,
-    )
-    assert isinstance(rid, int)
+    assert getattr(excinfo.value, "retry_allowed", False) is False
+    with pytest.raises(DuplicateOrderIntent):
+        await OrderSendIntentService(db_session).reserve(
+            account_scope="kis_mock",
+            idempotency_key=key,
+        )
 
 
 @pytest.mark.asyncio
@@ -147,7 +154,10 @@ async def test_mock_mirror_duplicate_message_does_not_claim_next_day_retry(
 
 
 @pytest.mark.asyncio
-async def test_mock_mirror_unknown_outcome_message_allows_retry(monkeypatch):
+async def test_mock_mirror_unknown_outcome_message_never_advertises_a_retry(
+    monkeypatch,
+):
+    """The operator-facing message must not invite a re-send of an unknown POST."""
     _stub_kis_mock_baseline(monkeypatch)
     key = "mirror:rob750-retry-message"
 
@@ -173,6 +183,4 @@ async def test_mock_mirror_unknown_outcome_message_allows_retry(monkeypatch):
     )
 
     assert result["outcome_unknown"] is True
-    assert result["retry_allowed"] is True
-    assert "재시도" in result["error"]
-    assert "재전송하지 말고" not in result["error"]
+    assert result.get("retry_allowed", False) is False

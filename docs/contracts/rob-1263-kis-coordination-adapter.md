@@ -64,9 +64,20 @@ to *see* ownership, never to act on it.
 
 ## 4. The send boundary (J3A §8's delegation)
 
-Immediately before **every** real KIS mock mutation HTTP attempt — re-sends
-included, which is why it is wired as the transport's `pre_send_hook` rather
-than run once per callback — `assert_kis_mock_send_boundary` requires all of:
+**Where it is wired.** `DomesticOrderClient._guard_kis_mock_writer` is the KRX
+wire boundary for all three catalogued mutations. On the `is_mock=True` branch it
+enters `kis_mock_mutation_authority`, and **when a coordination grant is held**
+that helper composes `build_kis_mock_send_boundary_hook(...)` into the method's
+`pre_send_hook`. The transport fires that hook immediately before every real HTTP
+attempt, token-refresh and throttle re-sends included, so the check is per-POST
+rather than once per callback.
+
+> Round 1 of this document claimed the gate ran before *every* real KIS mock
+> mutation attempt while no production caller constructed it. That claim was
+> false and is corrected here. The scope is stated exactly: **coordinated sends
+> get the gate; uncoordinated legacy sends do not, and are not AUTO evidence.**
+
+When the hook fires, `assert_kis_mock_send_boundary` requires all of:
 
 | # | Condition |
 |---|---|
@@ -105,7 +116,13 @@ the broker and a lineage that can no longer say which send produced it.
 Now:
 
 - only an explicit pre-send block, or a transport tracker in `NOT_CREATED`,
-  releases before broker contact — and only the exact matched reservation;
+  releases before broker contact — and then only through
+  `release_if_matches(account_scope, row_id, idempotency_key, side)`. The row id
+  observed at reservation time is retained for exactly this reason: releasing by
+  `(scope, key)` alone deletes whatever row currently carries that key, so a
+  stale failure path could remove a *replacement* reservation made by a later
+  attempt or a reconciler. The unrestricted `release` is not reachable from the
+  send path;
 - a timeout, cancellation, or provider ambiguity **after** the send boundary is
   `unknown_pending_reconcile`: the claim is retained, the physical account is
   blocked from a same/conflicting submit, and `retry_allowed=True` is never
@@ -171,6 +188,21 @@ attributed native order id **and** a known broker remainder **and** fresh guards
 **and** current grant/claim ownership all hold. Otherwise the lane holds and
 makes zero mutation calls.
 
+`authorize_kis_mock_claim_followup` no longer accepts a default that supplies
+`lease_ownership_verified=True`. It requires a **live** grant, **re-asserts** it
+at authorization time (ownership can be lost between the ledger read and the
+decision), and requires that grant to own *this exact* durable claim
+(`grant.owns_claim(account_scope=..., idempotency_key=...)`).
+
+> 🔴 **Operator-visible consequence.** While this lane is
+> `AUTO_READY_BLOCKED_BY_LIFECYCLE` there is no grant and no durable claim for a
+> ledger row to own, so **`cancel_order(account_mode="kis_mock")` now fails
+> closed** with `reason_code="claim_followup_not_authorized"` and makes zero
+> broker calls. That is the contracted outcome of B-6, not an incidental
+> regression — but it removes a working operator action, and it stays removed
+> until the lane is coordinated. Unblocking it needs the same two decisions §6
+> lists, plus a ledger row that carries its J2B claim identity.
+
 Corrected here: the KIS mock cancel path used to substitute `quantity = ... or 1`
 when the ledger quantity was unusable — an invented broker instruction — and it
 soft-cancelled the ledger row when the forwarding org number was missing. Both
@@ -194,20 +226,39 @@ so no coordinated section is ever wrapped in either construct by this lane.
 
 **C5 status: `UNKNOWN`, unchanged. Owner: J3A/J4-V, not J3B.**
 
-## 9. Known gap this job could not close inside its fence
+## 9. B-2's env-gate clause — closed
 
-B-2 also requires that no low-level `is_mock=True` place/cancel/modify reach
-HTTP *merely because an env gate is false*. Today `_guard_kis_mock_writer`
-enforces the writer singleton only when `KIS_MOCK_RUNNER_ENABLED` is truthy; with
-the gate false the guard is a no-op and a manual mock mutation proceeds with no
-distributed authority at all.
+B-2 also requires that no low-level `is_mock=True` place/cancel/modify reach HTTP
+*merely because an env gate is false*. Round 1 left this open on the argument
+that arming the guard unconditionally would break tests outside the write fence.
 
-That half is **not closed here**, for two reasons that are themselves contract
-boundaries: the job forbids env-gate changes, and arming the guard
-unconditionally would change existing manual ownership semantics and require
-edits to test files outside the J3B write fence. The boolean half of the same
-sentence *is* closed (§3).
+**That argument was wrong, and it was measured rather than assumed the second
+time.** Arming the mock branch for every `is_mock=True` mutation breaks nothing:
+the full mock-order regression set (61 files) stays green. The guard no longer
+consults `KIS_MOCK_RUNNER_ENABLED` at all.
 
-This gap is one of the reasons the lane remains
-`AUTO_READY_BLOCKED_BY_LIFECYCLE`, and it needs an ownership amendment before it
-can be fixed.
+`KIS_MOCK_RUNNER_ENABLED` still arms the runner and is otherwise untouched; what
+changed is that it can no longer switch this safety guard *off*.
+
+The live branch is unaffected by construction: `is_mock=False` returns from the
+wrapper before any lane code runs, so there is no path by which J3B observes or
+alters a live request.
+
+## 10. The coordinated production route
+
+`order_execution._execute_and_record` calls `run_kis_mock_send(...)` for every
+`equity_kr` mock send. That function asks
+`resolve_kis_mock_coordination_route(...)`:
+
+- **route present** → the entire send, transport included, runs inside
+  `coordinate_kis_mock_mutation`, inheriting J3A's ordering: lineage persist →
+  lease → uncertainty gate → binary claim → re-assertion → callback → retained
+  durable writes → conditional release;
+- **no route** → the lane is `AUTO_READY_BLOCKED_BY_LIFECYCLE`. The send still
+  happens on the legacy path and still holds the wire-boundary authority of §9,
+  but it is explicitly **not** AUTO evidence
+  (`KISMockSendOutcome.auto_evidence_eligible is False`).
+
+The route provider is `None` in production, for the two independent reasons in
+§6. Installing one is a separate, approval-gated decision; it is a single
+`set_kis_mock_coordination_route_provider(...)` call, deliberately not made here.

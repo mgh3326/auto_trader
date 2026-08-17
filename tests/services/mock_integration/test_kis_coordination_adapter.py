@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import pathlib
 import shutil
 import subprocess
@@ -79,6 +80,12 @@ J3B_WRITE_FENCE: frozenset[str] = frozenset(
         "tests/test_mcp_place_order.py",
         "tests/services/mock_integration/test_kis_coordination_adapter.py",
         "docs/contracts/rob-1263-kis-coordination-adapter.md",
+        # Round-2 fence amendment, granted explicitly by the orch instruction
+        # "stale red 테스트를 고치거나 소유하라": these two files asserted the
+        # behaviour B-5/B-6 order corrected, so they are re-owned here rather
+        # than left red while the branch claims green.
+        "tests/test_rob750_mock_mirror_intent_release.py",
+        "tests/test_kis_mock_cancel_modify.py",
     }
 )
 FENCE_EXEMPT_PREFIXES: tuple[str, ...] = (".smoke-out/",)
@@ -130,6 +137,23 @@ class FakeKISClient:
 
     async def send(self) -> None:
         self.transport_calls += 1
+
+
+@contextlib.contextmanager
+def _held_grant(grant: singleton.KISMockCoordinationGrant):
+    """Install `grant` as this task's live writer authority, as production does."""
+
+    token = singleton._ACTIVE_WRITER_LEASE.set(
+        singleton._WriterAuthority(
+            account_mode=singleton.ACCOUNT_MODE,
+            advisory_keys=grant.advisory_keys,
+            grant=grant,
+        )
+    )
+    try:
+        yield grant
+    finally:
+        singleton._ACTIVE_WRITER_LEASE.reset(token)
 
 
 def _bound_kis_entry(envelope: Any, **overrides: Any) -> Any:
@@ -558,10 +582,11 @@ async def test_ordered_trace_proves_signal_commit_precedes_reserve_and_http(
 def _decorator_names(node: ast.AST) -> set[str]:
     names: set[str] = set()
     for decorator in getattr(node, "decorator_list", []):
-        if isinstance(decorator, ast.Name):
-            names.add(decorator.id)
-        elif isinstance(decorator, ast.Attribute):
-            names.add(decorator.attr)
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if isinstance(target, ast.Name):
+            names.add(target.id)
+        elif isinstance(target, ast.Attribute):
+            names.add(target.attr)
     return names
 
 
@@ -650,7 +675,12 @@ def test_broker_client_id_target_enum_snapshot_is_unchanged():
 # ===========================================================================
 
 
-async def _grant_for(envelope: Any, entry: Any) -> singleton.KISMockCoordinationGrant:
+async def _grant_for(
+    envelope: Any,
+    entry: Any,
+    *,
+    claim_idempotency_key: str = "mock-idempotency-v1:acceptance",
+) -> singleton.KISMockCoordinationGrant:
     """A grant whose ownership assertion is a fake, so no lease is required."""
 
     scope = physical_account_scope_for_entry(entry)
@@ -671,6 +701,8 @@ async def _grant_for(envelope: Any, entry: Any) -> singleton.KISMockCoordination
         credential_namespace=singleton.KIS_MOCK_CREDENTIAL_NAMESPACE,
         allowed_netlocs=(MOCK_NETLOC,),
         physical_account_id=str(entry.physical_account_id),
+        entry=entry,
+        claim_idempotency_key=claim_idempotency_key,
         _scope=_Scope(),
     )
 
@@ -1068,31 +1100,53 @@ async def test_cancellation_during_the_inner_write_retains_grant_and_claim():
         ({"known_remainder": None}, "unknown remainder"),
         ({"fresh_guards_passed": False}, "stale guards"),
         ({"operation": "increase"}, "not a describable follow-up operation"),
+        ({"claim_idempotency_key": None}, "no durable claim identity"),
+        (
+            {"claim_idempotency_key": "mock-idempotency-v1:someone-elses-order"},
+            "a claim this grant does not own",
+        ),
+        (
+            {"claim_account_scope": "mockpa:v1:another-account"},
+            "a foreign account scope",
+        ),
     ],
 )
-def test_each_missing_followup_element_independently_blocks(kwargs, why):
+@pytest.mark.asyncio
+async def test_each_missing_followup_element_independently_blocks(kwargs, why):
+    _, envelope = _attempt_envelope()
+    entry = _bound_kis_entry(envelope)
+    grant = await _grant_for(envelope, entry)
     base: dict[str, Any] = {
         "operation": "cancel",
         "native_order_id": "0000117058",
         "known_remainder": Decimal("2"),
         "lane_capability_supports_operation": True,
         "fresh_guards_passed": True,
+        "claim_account_scope": grant.claim_account_scope,
+        "claim_idempotency_key": grant.claim_idempotency_key,
     }
     base.update(kwargs)
-    decision = singleton.authorize_kis_mock_claim_followup(**base)
+    with _held_grant(grant):
+        decision = await singleton.authorize_kis_mock_claim_followup(**base)
     assert decision.authorized is False, why
     assert decision.reason_code == "claim_followup_not_authorized"
     assert decision.releases_durable_claim is False
 
 
-def test_a_complete_followup_is_a_capability_and_still_never_releases_a_claim():
-    decision = singleton.authorize_kis_mock_claim_followup(
-        operation="cancel",
-        native_order_id="0000117058",
-        known_remainder=Decimal("2"),
-        lane_capability_supports_operation=True,
-        fresh_guards_passed=True,
-    )
+@pytest.mark.asyncio
+async def test_a_complete_followup_is_a_capability_and_still_never_releases_a_claim():
+    _, envelope = _attempt_envelope()
+    grant = await _grant_for(envelope, _bound_kis_entry(envelope))
+    with _held_grant(grant):
+        decision = await singleton.authorize_kis_mock_claim_followup(
+            operation="cancel",
+            native_order_id="0000117058",
+            known_remainder=Decimal("2"),
+            lane_capability_supports_operation=True,
+            fresh_guards_passed=True,
+            claim_account_scope=grant.claim_account_scope,
+            claim_idempotency_key=grant.claim_idempotency_key,
+        )
     assert decision.authorized is True
     assert decision.reason_code is None
     assert decision.releases_durable_claim is False
@@ -1463,11 +1517,12 @@ def test_the_actual_job_diff_stays_inside_the_j3b_write_fence():
 
     base = _git("merge-base", "origin/main", "HEAD")
     status = _git("status", "--porcelain=v1", "-z", "--untracked-files=all")
-    if base is None or status is None:
-        pytest.skip("git or origin/main is unavailable; the fence is in the report")
+    # Fail closed, never skip. A proof that evaporates when a tool is missing is
+    # not a proof — a green run must mean the fence was actually checked.
+    assert base is not None, "git or origin/main unavailable; the B-7 fence is unproven"
+    assert status is not None, "git status unavailable; the B-7 fence is unproven"
     diff = _git("diff", "--name-only", "-z", f"{base.strip()}..HEAD")
-    if diff is None:
-        pytest.skip("git diff unavailable; the fence is verified in the report")
+    assert diff is not None, "git diff unavailable; the B-7 fence is unproven"
 
     changed = {field for field in diff.split("\0") if field}
     changed |= _parse_porcelain_z(status)
@@ -1475,3 +1530,293 @@ def test_the_actual_job_diff_stays_inside_the_j3b_write_fence():
         path for path in changed if not path.startswith(FENCE_EXEMPT_PREFIXES)
     }
     assert considered <= set(J3B_WRITE_FENCE), sorted(considered - J3B_WRITE_FENCE)
+
+
+# ===========================================================================
+# r2 §B1 — the coordinator and the per-POST hook have production call sites
+# ===========================================================================
+
+
+class _FakeKISParent:
+    """The minimum of ``KISClient`` that ``DomesticOrderClient`` touches."""
+
+    def __init__(self, *, is_mock_client: bool = True) -> None:
+        self._is_mock_client = is_mock_client
+        self._settings_view = FakeSettingsView(
+            is_mock=is_mock_client, base_url=MOCK_BASE_URL
+        )
+        self._settings_view.kis_access_token = "token"
+        self._hdr_base = {"content-type": "application/json"}
+        self.requests: list[dict[str, Any]] = []
+        self.authority_at_wire: list[Any] = []
+
+    @property
+    def _settings(self) -> Any:
+        return self._settings_view
+
+    async def _ensure_token(self) -> None:
+        return None
+
+    def _kis_url(self, path: str) -> str:
+        return f"{self._settings_view.kis_base_url.rstrip('/')}{path}"
+
+    async def _request_with_rate_limit(self, method, url, **kwargs):
+        # Recorded *at the wire*: this is the seam B-2 is about.
+        self.authority_at_wire.append(singleton.active_writer_authority())
+        self.requests.append({"method": method, "url": url, **kwargs})
+        return {"rt_cd": "0", "odno": "0000117058", "ord_tmd": "0901"}
+
+
+def _domestic_client(*, is_mock_client: bool = True):
+    from app.services.brokers.kis.domestic_orders import DomesticOrderClient
+
+    parent = _FakeKISParent(is_mock_client=is_mock_client)
+    return DomesticOrderClient(parent), parent  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_env_gate_false_no_longer_lets_a_mock_mutation_reach_the_wire_unowned(
+    monkeypatch,
+):
+    """The exact B-2 defect the round-1 branch left open.
+
+    With `KIS_MOCK_RUNNER_ENABLED` unset, the old wrapper became a no-op and an
+    `is_mock=True` place reached the transport holding no authority at all.
+    """
+
+    monkeypatch.delenv("KIS_MOCK_RUNNER_ENABLED", raising=False)
+    client, parent = _domestic_client()
+
+    await client.order_korea_stock("005930", "buy", 1, 70000, True)
+
+    assert len(parent.authority_at_wire) == 1
+    authority = parent.authority_at_wire[0]
+    assert authority is not None, "a mock mutation reached the wire holding nothing"
+    assert authority.account_mode == singleton.ACCOUNT_MODE
+    assert singleton.kis_mock_legacy_advisory_key() in authority.advisory_keys
+    # And the authority is dropped again once the mutation returns.
+    assert singleton.active_writer_authority() is None
+
+
+@pytest.mark.asyncio
+async def test_the_live_branch_never_enters_lane_code(monkeypatch):
+    """`is_mock=False` must be untouched: no authority, no lane hook, no gate."""
+
+    monkeypatch.delenv("KIS_MOCK_RUNNER_ENABLED", raising=False)
+    import app.services.brokers.kis.domestic_orders as domestic_orders
+
+    async def _never(*args: Any, **kwargs: Any):  # pragma: no cover
+        raise AssertionError("the live branch must not reach lane authority code")
+
+    monkeypatch.setattr(singleton, "kis_mock_mutation_authority", _never, raising=True)
+    monkeypatch.setattr(domestic_orders, "is_nxt_eligible", _always_false)
+
+    client, parent = _domestic_client(is_mock_client=False)
+    await client.order_korea_stock("005930", "buy", 1, 70000, False)
+
+    assert len(parent.authority_at_wire) == 1
+    assert parent.authority_at_wire[0] is None
+    assert parent.requests[0].get("pre_send_hook") is None
+
+
+async def _always_false(*args: Any, **kwargs: Any) -> bool:
+    return False
+
+
+@pytest.mark.asyncio
+async def test_a_held_grant_composes_the_per_post_boundary_gate_into_the_transport():
+    """`build_kis_mock_send_boundary_hook` has a real production caller.
+
+    The decorator composes it into the transport's `pre_send_hook`, so firing
+    that hook re-proves ownership — which is what per-POST means.
+    """
+
+    _, envelope = _attempt_envelope()
+    entry = _bound_kis_entry(envelope)
+    grant = await _grant_for(envelope, entry)
+    client, parent = _domestic_client()
+
+    with _held_grant(grant):
+        await client.order_korea_stock("005930", "buy", 1, 70000, True)
+
+    hook = parent.requests[0].get("pre_send_hook")
+    assert hook is not None, "the coordinated wire path installed no boundary hook"
+    before = grant._scope.calls  # type: ignore[attr-defined]
+    await hook()
+    assert grant._scope.calls == before + 1  # type: ignore[attr-defined]
+
+    # And the composed hook really is the B-4 gate: drift the client to a live
+    # host and the next attempt is refused before any transport work.
+    parent._settings_view.kis_base_url = LIVE_BASE_URL
+    with pytest.raises(singleton.KISMockSendBoundaryRejected):
+        await hook()
+
+
+@pytest.mark.asyncio
+async def test_the_cancel_and_modify_wire_paths_also_receive_the_boundary_gate():
+    _, envelope = _attempt_envelope()
+    entry = _bound_kis_entry(envelope)
+    grant = await _grant_for(envelope, entry)
+
+    for call in ("cancel", "modify"):
+        client, parent = _domestic_client()
+        with _held_grant(grant):
+            if call == "cancel":
+                await client.cancel_korea_order(
+                    "0000117058", "005930", 1, 70000, "buy", True, "00950"
+                )
+            else:
+                await client.modify_korea_order(
+                    "0000117058", "005930", 1, 70000, True, "00950"
+                )
+        assert parent.requests[0].get("pre_send_hook") is not None, call
+
+
+@pytest.mark.asyncio
+async def test_execute_and_record_routes_a_mock_send_through_the_coordinator(
+    monkeypatch, _clean_intents
+):
+    """The production route: `_execute_and_record` → `coordinate_kis_mock_mutation`.
+
+    This exercises the real `order_execution` entry point, not a hand-built
+    callback. Deleting the `run_kis_mock_send(...)` call site makes it fail.
+    """
+
+    _, envelope = _attempt_envelope()
+    events: list[str] = []
+    stack = _stack(events)
+
+    route = singleton.KISMockCoordinationRoute(
+        envelope=envelope,
+        ports=_ready_ports(
+            persistence=stack["persistence"],
+            dispatch_evidence=stack["evidence"],
+            uncertainty_gate=stack["gate"],
+        ),
+        claims=DurableSendClaimAdapter(stack["intents"]),
+        connection_factory=stack["factory"],
+        registry=_kis_registry(envelope),
+    )
+    singleton.set_kis_mock_coordination_route_provider(lambda **_ctx: route)
+
+    sends = {"n": 0}
+
+    async def _send(**kwargs: Any) -> dict[str, Any]:
+        sends["n"] += 1
+        events.append("http_send")
+        # Ownership must be provable from inside the coordinated section.
+        authority = singleton.active_writer_authority()
+        assert authority is not None and authority.grant is not None
+        return {"odno": "0000117058", "rt_cd": "0", "msg1": "ok"}
+
+    async def _baseline(**kwargs: Any) -> None:
+        return None
+
+    import app.mcp_server.tooling.kis_mock_ledger as ledger
+
+    monkeypatch.setattr(oe, "_execute_order", _send)
+    monkeypatch.setattr(ledger, "_fetch_kis_mock_baseline_qty", _baseline)
+
+    try:
+        await oe._execute_and_record(**_execute_kwargs())
+    finally:
+        singleton.set_kis_mock_coordination_route_provider(None)
+
+    assert sends["n"] == 1
+    # J3A's ordering carried the real send: lineage persisted and the binary
+    # claim was committed before the POST, and the typed dispatch evidence
+    # landed after it.
+    assert (
+        events.index("persist_pre")
+        < events.index("reserve")
+        < events.index("http_send")
+    )
+    assert events.index("http_send") < events.index("evidence")
+    assert stack["connection"].lock_calls, "no advisory lease was taken"
+    assert stack["evidence"].only.broker_order_id == "0000117058"
+
+
+@pytest.mark.asyncio
+async def test_without_a_route_the_lane_reports_blocked_and_is_not_auto_evidence():
+    sends = {"n": 0}
+
+    async def _send() -> dict[str, Any]:
+        sends["n"] += 1
+        return {"odno": "0000117058"}
+
+    singleton.set_kis_mock_coordination_route_provider(None)
+    outcome = await singleton.run_kis_mock_send(send=_send)
+
+    assert sends["n"] == 1
+    assert outcome.coordinated is False
+    assert outcome.auto_evidence_eligible is False
+    assert outcome.status == "AUTO_READY_BLOCKED_BY_LIFECYCLE"
+
+
+def test_the_coordinator_call_site_exists_in_the_production_order_path():
+    """A route can only be honoured if `order_execution` actually calls it."""
+
+    source = (
+        REPO_ROOT / "app" / "mcp_server" / "tooling" / "order_execution.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    called = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "run_kis_mock_send" in called
+
+    adapter = _adapter_source()
+    adapter_tree = ast.parse(adapter)
+    inner_calls = {
+        node.func.id
+        for node in ast.walk(adapter_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "coordinate_mock_order_mutation" in inner_calls
+    assert "build_kis_mock_send_boundary_hook" in inner_calls
+
+
+# ===========================================================================
+# r2 §B3 — pre-send release is exact-row matched
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_a_stale_pre_send_release_cannot_delete_a_replacement_reservation(
+    _traced, _clean_intents, db_session
+):
+    """Releasing by (scope, key) alone would delete someone else's row.
+
+    The reservation is taken, then deleted and *re-made* out of band — the shape
+    a reconciler or a later attempt produces. The stale failure path must miss.
+    """
+
+    key = "kis-mock:rob1263:acceptance"
+    service = OrderSendIntentService(db_session)
+    tracker = OrderSendOutcomeTracker()  # NOT_CREATED
+
+    captured: dict[str, Any] = {}
+
+    async def _fail(**kwargs: Any):
+        # Simulate the interleaving *after* our row exists and before release.
+        await service.release(account_scope="kis_mock", idempotency_key=key)
+        captured["replacement_id"] = await service.reserve(
+            account_scope="kis_mock", idempotency_key=key, side="buy"
+        )
+        raise httpx.ConnectError("token setup failed before dispatch")
+
+    monkeypatchless = oe._execute_order
+    oe._execute_order = _fail  # type: ignore[assignment]
+    try:
+        with pytest.raises(oe.OrderSendNotCreated):
+            await oe._execute_and_record(**_execute_kwargs(send_outcome=tracker))
+    finally:
+        oe._execute_order = monkeypatchless  # type: ignore[assignment]
+
+    remaining = await service.list_reservations(account_scope="kis_mock")
+    remaining_ids = {row.row_id for row in remaining}
+    assert captured["replacement_id"] in remaining_ids, (
+        "the stale release deleted a replacement reservation"
+    )

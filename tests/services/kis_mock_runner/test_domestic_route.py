@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.brokers.kis import constants
+
 _NXT_ELIGIBLE_PATH = "app.services.brokers.kis.domestic_orders.is_nxt_eligible"
 
 
@@ -113,19 +115,27 @@ def test_all_domestic_mutation_entry_points_use_writer_guard_when_armed() -> Non
 async def test_armed_mock_mutations_enter_the_shared_writer_scope(
     monkeypatch, operation: str
 ) -> None:
-    import app.services.brokers.kis.domestic_orders as domestic_orders
+    """ROB-1263 r2: the seam is now the lane authority, and the env gate is gone.
+
+    The guard used to consult ``KIS_MOCK_RUNNER_ENABLED`` and pass
+    ``enabled=is_mock and <env>`` to ``enforce_kis_mock_mutation_writer``. It now
+    enters ``kis_mock_mutation_authority`` for every mock mutation, so the
+    recorded fact is *that authority was entered*, not what an env gate said. The
+    env var is deliberately left **false** here to prove exactly that.
+    """
+    import app.services.kis_mock_runner.singleton as singleton
 
     client, parent = _make_client()
     parent._request_with_rate_limit = AsyncMock(return_value=_success_response())
-    entered: list[bool] = []
+    entered: list[str] = []
 
     @asynccontextmanager
-    async def fake_scope(*, enabled: bool):
-        entered.append(enabled)
-        yield
+    async def fake_authority(*, client, path, caller_pre_send_hook=None, **kwargs):
+        entered.append(path)
+        yield singleton.KISMockMutationAuthority(grant=None, pre_send_hook=None)
 
-    monkeypatch.setenv("KIS_MOCK_RUNNER_ENABLED", "true")
-    monkeypatch.setattr(domestic_orders, "enforce_kis_mock_mutation_writer", fake_scope)
+    monkeypatch.delenv("KIS_MOCK_RUNNER_ENABLED", raising=False)
+    monkeypatch.setattr(singleton, "kis_mock_mutation_authority", fake_authority)
     if operation == "place":
         await client.order_korea_stock("005930", "buy", 10, 70000, is_mock=True)
     elif operation == "cancel":
@@ -147,4 +157,9 @@ async def test_armed_mock_mutations_enter_the_shared_writer_scope(
             is_mock=True,
             krx_fwdg_ord_orgno="00091",
         )
-    assert entered == [True]
+    expected_path = (
+        constants.DOMESTIC_ORDER_URL
+        if operation == "place"
+        else constants.DOMESTIC_ORDER_CANCEL_URL
+    )
+    assert entered == [expected_path]
