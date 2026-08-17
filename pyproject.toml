@@ -72,10 +72,13 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
+    "-p",
+    "tests._socket_guard_plugin",
     "--strict-markers",
     "--strict-config",
 ]

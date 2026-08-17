@@ -189,8 +189,9 @@ jobs:
       # Coverage gating lives in Codecov (uploads from all shards are merged
       # per commit).
       run: |
+        mkdir -p .artifacts/socket-guard
         set +e
-        uv run pytest tests/ -m "not live" --splits 4 --group ${{ matrix.group }} --durations-path .test_durations -n 4 --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml 2>&1 | tee pytest-output.log
+        uv run pytest tests/ -m "not live" --splits 4 --group ${{ matrix.group }} --durations-path .test_durations -n 4 --dist=loadfile -ra --durations=25 --durations-min=1.0 -o faulthandler_timeout=120 --cov=app --cov-report=xml --socket-guard-report ".artifacts/socket-guard/summary-shard${{ matrix.group }}.json" 2>&1 | tee pytest-output.log
         status=${PIPESTATUS[0]}
         if [ "$status" -ne 0 ]; then
           {
@@ -203,6 +204,14 @@ jobs:
           echo "::error title=pytest shard failed::$message"
         fi
         exit "$status"
+
+    - name: Upload socket guard evidence
+      if: always()
+      uses: actions/upload-artifact@v6
+      with:
+        name: socket-guard-evidence-${{ matrix.python-version }}-shard${{ matrix.group }}
+        path: .artifacts/socket-guard/summary-shard${{ matrix.group }}.json
+        if-no-files-found: error
 
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v6
