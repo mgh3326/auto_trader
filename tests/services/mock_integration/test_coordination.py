@@ -17,7 +17,11 @@ enforces that statically over this very file.
 Two things this file deliberately does **not** do:
 
 * it does not forbid future authorized consumers from importing this module —
-  the write fence is proved from the job's own pinned merge-commit diff, and
+  the write fence over an exact-head change set is proved by the standalone,
+  fail-closed ``scripts/ci/write_fence_check.py`` (wired as the
+  ``write-fence-guard`` CI job, not a persistent unit test here — a unit test
+  cannot learn a PR's real base/head without either rotting as ``main``
+  advances or leaking working-tree state), and
   ``scope_authorized_future_consumer_may_import_and_use_the_port`` pins that an
   approved J3B/J3C integration stays green;
 * it does not accept "the broker order id is absent" or "the same envelope was
@@ -31,8 +35,6 @@ import ast
 import asyncio
 import json
 import pathlib
-import shutil
-import subprocess
 import traceback
 import weakref
 from dataclasses import replace
@@ -121,28 +123,6 @@ J3A_WRITE_FENCE: frozenset[str] = frozenset(
     }
 )
 
-# J3A landed as a single squash-merge commit. Its parent is *not* the commit
-# the branch was originally cut from (main advanced underneath the open PR),
-# so the fence must be proved against the merge commit's own tree-to-tree
-# diff, not against "some old base .. current HEAD" — that range grows by one
-# unrelated commit every time anything else merges to main and reds forever.
-# Both SHAs are immutable history that already exists on `main`; they never
-# move, so this check never rots as the branch advances past them.
-J3A_MERGE_COMMIT_SHA = "03beecc5f53e636c352ddf0527aa3d98ddc7bd61"
-J3A_MERGE_PARENT_SHA = "dd8db23be5acd67e88cc0ecea7b1cc5152c3209e"
-# Pinned once, by hand, from `git diff --name-only <parent>..<merge commit>`
-# against the two SHAs above — see test_scope_pinned_j3a_diff_matches_the_
-# recorded_commit_range below, which reproduces it live whenever the objects
-# are reachable. This is the fact under test, not a live recomputation, so a
-# shallow CI checkout (which cannot reach two-year-old commit objects) still
-# gets a real pass/fail instead of a silent skip.
-J3A_PINNED_MERGE_DIFF: frozenset[str] = frozenset(
-    {
-        "app/services/mock_integration/coordination.py",
-        "docs/contracts/rob-1262-coordination-port.md",
-        "tests/services/mock_integration/test_coordination.py",
-    }
-)
 # Operator/test scratch artifacts are explicitly allowed to change and are
 # equally explicitly never committed (brief §불변).
 FENCE_EXEMPT_PREFIXES: tuple[str, ...] = (".smoke-out/",)
@@ -5751,34 +5731,6 @@ def parse_porcelain_z(payload: str) -> set[str]:
     return paths
 
 
-def _git(*args: str) -> str | None:
-    git = shutil.which("git")
-    if git is None:
-        return None
-    proc = subprocess.run(
-        [git, "-C", str(REPO_ROOT), *args], capture_output=True, text=True, check=False
-    )
-    return None if proc.returncode != 0 else proc.stdout
-
-
-def _j3a_merge_commit_diff() -> set[str] | None:
-    """The J3A merge commit's own tree-to-tree diff, if the objects are local.
-
-    Deliberately does **not** consult ``git status`` — the working tree's
-    untracked/modified files (operator scratch notes, another job's
-    in-progress edits) have nothing to do with what the immutable J3A commit
-    touched, and folding them in is how unrelated dirty state used to turn
-    this test red.
-    """
-
-    diff = _git(
-        "diff", "--name-only", "-z", f"{J3A_MERGE_PARENT_SHA}..{J3A_MERGE_COMMIT_SHA}"
-    )
-    if diff is None:
-        return None
-    return {field for field in diff.split("\0") if field}
-
-
 def test_scope_porcelain_parser_normalizes_owned_untracked_paths():
     payload = "".join(
         f"{entry}\0"
@@ -5829,34 +5781,15 @@ def test_scope_write_fence_predicate_reds_on_an_out_of_fence_path():
         assert paths_within_write_fence({out_of_fence}) is False, out_of_fence
 
 
-def test_scope_actual_job_diff_stays_inside_the_write_fence():
-    """The fence holds on the pinned historical fact, unconditionally.
-
-    This never skips: the assertion below runs against ``J3A_PINNED_MERGE_
-    DIFF`` regardless of environment, so there is always a real pass/fail.
-    """
-
-    assert paths_within_write_fence(J3A_PINNED_MERGE_DIFF), sorted(
-        path for path in J3A_PINNED_MERGE_DIFF if not paths_within_write_fence({path})
-    )
-
-
-def test_scope_pinned_j3a_diff_matches_the_recorded_commit_range():
-    """Opportunistic cross-check: live git must agree with the pinned set.
-
-    Skipped only when the two-year-old commit objects genuinely are not
-    reachable (e.g. a shallow CI checkout) — that absence never weakens the
-    guard above, which does not depend on git at all.
-    """
-
-    live = _j3a_merge_commit_diff()
-    if live is None:
-        pytest.skip(
-            "J3A merge commit objects are not reachable (shallow checkout); "
-            "the fence itself is still enforced by "
-            "test_scope_actual_job_diff_stays_inside_the_write_fence"
-        )
-    assert live == set(J3A_PINNED_MERGE_DIFF)
+# A persistent pytest unit test cannot evaluate "the exact change set under
+# review" — it has no reliable way to learn a PR's base/head from inside the
+# test process, and any git-history-derived substitute (a fixed historical
+# base, or `git status`) either rots as `main` advances or leaks working-tree
+# noise in. That exact-head, fail-closed check now lives in
+# `scripts/ci/write_fence_check.py`, run as its own CI job wired from the
+# GitHub PR event's base/head SHAs (never a static ref), with the computed
+# base/head/changed-paths left as a CI artifact. See that script's own
+# docstring and `.github/workflows/test.yml`'s `write-fence-guard` job.
 
 
 @pytest.mark.asyncio
