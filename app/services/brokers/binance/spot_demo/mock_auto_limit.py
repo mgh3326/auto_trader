@@ -36,6 +36,18 @@ Currency is single-valued per D5/§83: this lane is ``USDT`` and ``USD`` is a
 different currency.  No parity, FX lookup, or implicit conversion exists on this
 path, and the USD/USDT sibling-binding key remains ``PENDING`` exactly as the
 merged ROB-1269 contract left it.
+
+Every broker mutation — submit *and* cancel — runs under one contract: fresh
+transport/endpoint/writer-domain guards, lineage attribution, a re-proved lease,
+and a durable unknown when the outcome cannot be established.  A cancel is not a
+lighter operation than a submit; it is a DELETE against a real venue.
+
+The §83 correction-3 recovery contract is *computed* here, not declared:
+:func:`spot_demo_recovery_contract_gaps` checks each of the six items against
+live objects, and :func:`spot_demo_lifecycle_lane_status` resolves any unmet item
+to ``AUTO_READY_BLOCKED_BY_LIFECYCLE``.  Today the lane has real gaps — no
+production caller constructs this composition, and the physical-account identity
+is ``UNKNOWN`` — so the computed verdict is lifecycle-blocked.
 """
 
 from __future__ import annotations
@@ -62,9 +74,13 @@ from app.services.brokers.binance.spot_demo.host_allowlist import (
     SPOT_DEMO_HOSTS,
     assert_spot_demo_host,
 )
-from app.services.brokers.client_order_ids import BrokerClientIdTarget
+from app.services.brokers.client_order_ids import (
+    BrokerClientIdTarget,
+    assert_broker_client_order_id,
+)
 from app.services.mock_integration.coordination import (
     AccountUncertaintyGatePort,
+    ClaimFollowupRequest,
     CoordinatedMutationResult,
     CoordinationScope,
     DispatchEvidencePort,
@@ -72,8 +88,11 @@ from app.services.mock_integration.coordination import (
     DurableSendClaimAdapter,
     MutationCallbackResult,
     MutationCertainty,
+    OrderSendIntentReservationPort,
     TerminalClaimEvidence,
     coordinate_mock_order_mutation,
+    describe_claim_followup,
+    physical_account_scope_for_entry,
 )
 from app.services.mock_integration.lineage import (
     ExecutionPlanDraft,
@@ -82,7 +101,9 @@ from app.services.mock_integration.lineage import (
     MockLineageFactory,
 )
 from app.services.mock_lane_registry import (
+    CANONICAL_LANE_REGISTRY,
     ActivationStatus,
+    LaneGuardError,
     LaneRegistryEntry,
     RegistrySource,
     assert_entry_execution_ready,
@@ -126,7 +147,21 @@ SPOT_DEMO_CLIENT_ID_TARGET: Final[BrokerClientIdTarget] = (
 SPOT_DEMO_PRIMARY_TERMINAL_LANE_STATUS: Final[LaneStatus] = (
     LaneStatus.AUTO_READY_BLOCKED_BY_POLICY
 )
+
+#: An *explicitly disabled* recurring owner (``SchedulerOwner.DISABLED``).  This
+#: is the canonical Binance row's value and rests on in-repo evidence: Binance
+#: Demo has no scheduler registration anywhere.
 SPOT_DEMO_SECONDARY_ACTIVATION_BLOCKER: Final[str] = "scheduler_owner_disabled"
+
+#: An *absent* recurring owner (``scheduler_owner is None``).  Absence is not a
+#: spelling of ``DISABLED``: ``None`` means no bind authority was ever assigned,
+#: which is why those rows carry ``MissingBinding.OWNER``.  Folding the two into
+#: one blocker would let a downstream reader believe an owner decision had been
+#: made when none was.  The canonical Binance row happens to be ``DISABLED``, so
+#: today both spellings would print the same string — that coincidence is
+#: exactly why the distinction has to live in the code rather than in prose.
+SPOT_DEMO_ABSENT_SCHEDULER_OWNER_BLOCKER: Final[str] = "scheduler_owner_absent"
+
 SPOT_DEMO_FORBIDDEN_PRIMARY_LANE_STATUS: Final[LaneStatus] = (
     LaneStatus.AUTO_READY_BLOCKED_BY_SCHEDULER
 )
@@ -154,9 +189,16 @@ SPOT_DEMO_RECOVERY_OWNER: Final[str] = (
     "BinanceSpotDemoLimitComposition"
 )
 
-#: C3-2 — what rediscovers surviving durable claims after a restart.
+#: C3-2 — what rediscovers surviving durable claims after a restart.  The name
+#: is only the label; the executable trigger is
+#: :meth:`BinanceSpotDemoLimitComposition.rediscover_restart_claims`, which
+#: enumerates surviving reservations through the J3A reservation port and hands
+#: each one to :meth:`~BinanceSpotDemoLimitComposition.resolve_restart_claim`.
 SPOT_DEMO_RESTART_TRIGGER: Final[str] = (
     "process_restart_rediscovers_durable_j2b_claims_for_physical_account"
+)
+SPOT_DEMO_RESTART_TRIGGER_ENTRYPOINT: Final[str] = (
+    "BinanceSpotDemoLimitComposition.rediscover_restart_claims"
 )
 
 #: C3-3 — the authoritative broker readback.  Open-order listings, account
@@ -193,6 +235,29 @@ LANE_EVIDENCE_KINDS: Final[frozenset[str]] = frozenset(
 )
 
 
+class SpotDemoRecoveryContractItem(StrEnum):
+    """The six §83 correction-3 items, as things that are *computed*, not said.
+
+    Naming an item in a document is not owning it.  Each member below is checked
+    against the live objects — the registry entry, the transport class, the J3A
+    adapter, and the composition instance actually holding the lane's ports — so
+    "this lane satisfies its recovery contract" is a derived answer.  Any unmet
+    item puts the lane at ``AUTO_READY_BLOCKED_BY_LIFECYCLE``.
+    """
+
+    RECOVERY_OWNER = "recovery_owner"
+    RESTART_TRIGGER = "restart_trigger"
+    AUTHORITATIVE_READBACK = "authoritative_readback"
+    LANE_NATIVE_EVIDENCE = "lane_native_evidence"
+    RELEASE_IF_MATCHES_CONDITION = "release_if_matches_condition"
+    OPERATOR_BLOCKED_STATE = "operator_blocked_state"
+
+
+SPOT_DEMO_RECOVERY_CONTRACT_ITEMS: Final[tuple[str, ...]] = tuple(
+    item.value for item in SpotDemoRecoveryContractItem
+)
+
+
 # --------------------------------------------------------------------------
 # Reason codes — J6B-owned, disjoint from J3A coordination reason codes.
 # --------------------------------------------------------------------------
@@ -221,6 +286,9 @@ class SpotDemoLimitReason(StrEnum):
     RECURRING_REGISTRATION_FORBIDDEN = "recurring_registration_forbidden"
     BLIND_REPOST_FORBIDDEN = "blind_repost_forbidden"
     LANE_EVIDENCE_PORT_UNAVAILABLE = "lane_evidence_port_unavailable"
+    CANCEL_NOT_ATTRIBUTED = "cancel_not_attributed"
+    CANCEL_FOLLOWUP_CAPABILITY_ABSENT = "cancel_followup_capability_absent"
+    RESTART_CLAIM_SOURCE_UNAVAILABLE = "restart_claim_source_unavailable"
 
 
 SPOT_DEMO_LIMIT_REASON_CODES: Final[frozenset[str]] = frozenset(
@@ -682,6 +750,129 @@ def assert_alpaca_crypto_unwired(registry: Sequence[LaneRegistryEntry]) -> None:
             )
 
 
+def registry_entries(
+    registry: RegistrySource | None = None,
+) -> tuple[LaneRegistryEntry, ...]:
+    """Normalize the caller's registry view into rows the domain guards can read.
+
+    ``None`` means the signed canonical registry, which is what every real caller
+    passes.  A mapping or an iterable is accepted because that is exactly what
+    J2A's own ``RegistrySource`` alias admits, and the domain guards must see the
+    same rows the rest of the dispatch chain will.
+    """
+
+    if registry is None:
+        return tuple(CANONICAL_LANE_REGISTRY)
+    if isinstance(registry, Mapping):
+        return tuple(registry.values())
+    return tuple(registry)
+
+
+def assert_binance_domain_invariants(
+    registry: RegistrySource | None = None,
+) -> tuple[LaneRegistryEntry, ...]:
+    """Run the three registry-wide invariants that guard the writer domain.
+
+    These are *chain* guards, not documentation.  Every dispatch and every
+    lane-native follow-up runs them before the J2A binding check, so a registry
+    that grew a second Binance writer, promoted the B0-X sidecar, or wired Alpaca
+    crypto is refused on the way to the broker rather than only when someone
+    calls the guard directly in a test.
+    """
+
+    entries = registry_entries(registry)
+    assert_binance_single_writer_domain(entries)
+    assert_sidecar_observation_only(entries)
+    assert_alpaca_crypto_unwired(entries)
+    return entries
+
+
+# --------------------------------------------------------------------------
+# Attribution — a follow-up may only touch an order this lane's lineage made.
+# --------------------------------------------------------------------------
+
+#: The J2B idempotency-key domain, consumed rather than minted.  J2B derives the
+#: durable claim key and the native client order id from the *same* digest of
+#: ``{execution_plan_id, cycle_id}``, so a surviving claim determines exactly one
+#: client order id for this lane.  ``test_attributed_client_order_id_round_trips_
+#: the_j2b_factory`` pins this against real factory output instead of trusting
+#: the literal.
+IDEMPOTENCY_KEY_DOMAIN_PREFIX: Final[str] = "mock-idempotency-v1:"
+
+#: How many digest characters J2B keeps in a native client order id.
+BROKER_CLIENT_ID_DIGEST_LENGTH: Final[int] = 24
+
+
+def derive_attributed_client_order_id(idempotency_key: str) -> str:
+    """Recompute this lane's client order id from one durable claim key.
+
+    This is the attribution anchor for every follow-up: an order id that cannot
+    be reproduced from a claim this lane holds is, by definition, not this lane's
+    order.  Nothing is hashed here — the digest already lives in the key.
+    """
+
+    if not isinstance(idempotency_key, str) or not idempotency_key.startswith(
+        IDEMPOTENCY_KEY_DOMAIN_PREFIX
+    ):
+        raise SpotDemoLimitError(
+            SpotDemoLimitReason.CANCEL_NOT_ATTRIBUTED,
+            "idempotency key is not a J2B-derived key for this lane",
+        )
+    digest = idempotency_key[len(IDEMPOTENCY_KEY_DOMAIN_PREFIX) :]
+    if len(digest) < BROKER_CLIENT_ID_DIGEST_LENGTH:
+        raise SpotDemoLimitError(
+            SpotDemoLimitReason.CANCEL_NOT_ATTRIBUTED,
+            "idempotency key digest is too short to carry a client order id",
+        )
+    candidate = f"{SPOT_DEMO_LANE_PREFIX}-{digest[:BROKER_CLIENT_ID_DIGEST_LENGTH]}"
+    try:
+        assert_broker_client_order_id(
+            target=SPOT_DEMO_CLIENT_ID_TARGET, client_order_id=candidate
+        )
+    except Exception as exc:
+        raise SpotDemoLimitError(
+            SpotDemoLimitReason.CANCEL_NOT_ATTRIBUTED,
+            "derived client order id violates the Binance Spot Demo constraint",
+        ) from exc
+    return candidate
+
+
+def assert_client_order_id_attributed(claim: DurableClaim, client_order_id: str) -> str:
+    """Refuse any order id this lane's own lineage cannot reproduce.
+
+    ``confirm`` gates whether a mutation is *sent*; it says nothing about whether
+    the thing being mutated is ours.  Without this, a caller could cancel an
+    arbitrary — or someone else's — order through a lane that holds an unrelated
+    claim, and the lane would then durably record it as its own cancel.
+    """
+
+    expected = derive_attributed_client_order_id(claim.idempotency_key)
+    if not isinstance(client_order_id, str) or client_order_id != expected:
+        raise SpotDemoLimitError(
+            SpotDemoLimitReason.CANCEL_NOT_ATTRIBUTED,
+            "client order id is not the one this claim's lineage produced",
+        )
+    return expected
+
+
+def assert_claim_belongs_to_lane(claim: DurableClaim, entry: LaneRegistryEntry) -> str:
+    """Require the claim to sit in this lane's own physical-account scope.
+
+    The scope is derived from J2A identity, never accepted from a caller.  While
+    ``identity_status`` is ``UNKNOWN`` this raises ``LaneGuardError`` from J2A —
+    a lane that cannot name its physical account cannot prove a claim is its own,
+    and so cannot mutate one.
+    """
+
+    scope = physical_account_scope_for_entry(entry)
+    if claim.claim_account_scope != scope.claim_account_scope:
+        raise SpotDemoLimitError(
+            SpotDemoLimitReason.CANCEL_NOT_ATTRIBUTED,
+            "claim belongs to a different physical account scope",
+        )
+    return scope.claim_account_scope
+
+
 def assert_spot_demo_transport(client: object) -> str:
     """Prove the *actual* transport is Spot Demo before it is used.
 
@@ -961,6 +1152,71 @@ def classify_submit_outcome(result: object) -> SubmitOutcome:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class SpotDemoCancelDisposition:
+    """What one attributed cancel attempt did — including doing nothing.
+
+    ``dispatched`` is the honest answer to "did a DELETE leave this process".  A
+    dry run reports ``False`` and writes no lane evidence at all, because a
+    durable ``CANCEL`` fact for an order the broker never cancelled is a lie that
+    later reconciliation would have to unpick.
+    """
+
+    dispatched: bool
+    evidence_kind: SpotDemoLaneEvidenceKind | None
+    client_order_id: str
+    native_status: str | None
+    detail: str
+    result: Any = None
+
+
+#: The DELETE left this process and no answer came back.  The order may well be
+#: cancelled at the venue, so this is an uncertainty, never a failed cancel.
+CANCEL_RAISED_OUTCOME: Final[SubmitOutcome] = SubmitOutcome(
+    evidence_kind=SpotDemoLaneEvidenceKind.UNKNOWN,
+    certainty=MutationCertainty.UNCERTAIN,
+    broker_order_id=None,
+    detail="cancel raised after send; broker outcome unknown",
+)
+
+
+def classify_cancel_outcome(result: object) -> SubmitOutcome:
+    """Attribute a cancel response, or refuse to call it a cancellation.
+
+    A response with no native ``status`` proves nothing about the order, so it
+    lands in the same uncertain branch as a raised send.  Only a response that
+    normalizes to a real terminal cancel is recorded as ``CANCEL``.
+    """
+
+    status = getattr(result, "status", None)
+    if not isinstance(status, str) or not status.strip():
+        return SubmitOutcome(
+            evidence_kind=SpotDemoLaneEvidenceKind.UNKNOWN,
+            certainty=MutationCertainty.UNCERTAIN,
+            broker_order_id=None,
+            detail="no native status in the cancel response",
+        )
+    outcome = classify_native_status(status)
+    if outcome is not SpotDemoReadbackOutcome.CANCELED:
+        return SubmitOutcome(
+            evidence_kind=SpotDemoLaneEvidenceKind.UNKNOWN,
+            certainty=MutationCertainty.UNCERTAIN,
+            broker_order_id=None,
+            detail=f"cancel response status {status!r} is not a proven cancellation",
+        )
+    broker_order_id = getattr(result, "broker_order_id", None)
+    return SubmitOutcome(
+        evidence_kind=SpotDemoLaneEvidenceKind.CANCEL,
+        certainty=MutationCertainty.DEFINITIVE,
+        broker_order_id=(
+            str(broker_order_id).strip()
+            if broker_order_id is not None and str(broker_order_id).strip()
+            else None
+        ),
+        detail="broker-confirmed cancellation",
+    )
+
+
 def terminal_evidence_for(disposition: RestartDisposition) -> TerminalClaimEvidence:
     """Translate a disposition into J3A's release evidence.
 
@@ -1000,6 +1256,7 @@ class BinanceSpotDemoLimitComposition:
         "_client",
         "_factory",
         "_claims",
+        "_reservations",
         "_persistence",
         "_dispatch_evidence",
         "_uncertainty_gate",
@@ -1017,6 +1274,7 @@ class BinanceSpotDemoLimitComposition:
         dispatch_evidence: DispatchEvidencePort | None,
         uncertainty_gate: AccountUncertaintyGatePort | None,
         lane_evidence: SpotDemoLaneEvidencePort | None,
+        reservations: OrderSendIntentReservationPort | None = None,
         factory: MockLineageFactory | None = None,
     ) -> None:
         # Checked at construction: a composition that cannot write its own
@@ -1024,11 +1282,29 @@ class BinanceSpotDemoLimitComposition:
         self._lane_evidence = require_lane_evidence_port(lane_evidence)
         self._client = client
         self._claims = claims
+        # C3-2.  ``DurableSendClaimAdapter`` deliberately exposes no listing
+        # surface — enumerating survivors is lane work, not coordination work —
+        # so the restart trigger needs its own read-side port.  It is optional
+        # only because an unbound one is a *computed* recovery gap that keeps
+        # the lane lifecycle-blocked; it is never silently substituted.
+        self._reservations = reservations
         self._connection_factory = connection_factory
         self._persistence = persistence
         self._dispatch_evidence = dispatch_evidence
         self._uncertainty_gate = uncertainty_gate
         self._factory = factory or MockLineageFactory()
+
+    @property
+    def has_restart_claim_source(self) -> bool:
+        """Whether the restart trigger can actually enumerate surviving claims."""
+
+        return self._reservations is not None
+
+    @property
+    def has_lane_evidence_store(self) -> bool:
+        """Whether lane-native evidence has somewhere durable to go."""
+
+        return self._lane_evidence is not None
 
     # -- pre-I/O validation -------------------------------------------------
 
@@ -1042,7 +1318,10 @@ class BinanceSpotDemoLimitComposition:
         """Run every J6B guard, then every J2A guard.  No I/O happens here.
 
         Order matters: the LIMIT/currency/provenance/transport checks run first
-        so a malformed plan is refused on its own terms, and the registry's
+        so a malformed plan is refused on its own terms; the registry-wide
+        writer-domain invariants run next, *before* J2A's binding check, so a
+        registry that violates them dies on that violation rather than falling
+        through to a later, unrelated binding error; and the registry's
         execution-ready guard runs last so its verdict is the final word.
         """
 
@@ -1061,6 +1340,7 @@ class BinanceSpotDemoLimitComposition:
         assert_usdt_single_currency(envelope.decision_intent, plan, entry)
         assert_spot_demo_transport(self._client)
         assert_mock_only_endpoint(entry, SPOT_DEMO_ENDPOINT_URL)
+        assert_binance_domain_invariants(registry)
 
         # J2A has the last word: lane/broker/profile/mode/policy binding, then
         # the execution-ready check that the signed registry cannot satisfy.
@@ -1250,41 +1530,363 @@ class BinanceSpotDemoLimitComposition:
             )
         return disposition
 
-    async def cancel_limit_order(
-        self, *, symbol: str, client_order_id: str, confirm: bool = False
-    ) -> Any:
-        """Cancel one attributed order and record the lane-native cancel fact."""
+    async def rediscover_restart_claims(
+        self,
+        *,
+        entry: LaneRegistryEntry,
+        symbols: Mapping[str, str],
+        registry: RegistrySource | None = None,
+        account_position_reconciled: bool = False,
+        remainder_known: bool = False,
+    ) -> tuple[RestartDisposition, ...]:
+        """C3-2 — the restart trigger, as executable code rather than a name.
 
-        assert_spot_demo_transport(self._client)
-        result = await self._client.cancel_order(
-            symbol=symbol, client_order_id=client_order_id, confirm=confirm
-        )
+        Enumerates the durable claims that survived the restart in this lane's
+        own physical-account scope and resolves each one through the
+        authoritative readback.  Nothing is reposted, and nothing is released
+        without the C3-5 evidence.
+
+        A claim whose key this lane's lineage cannot reproduce is **not ours**
+        and is left strictly alone: it gets an ``unknown`` evidence row and no
+        broker call at all.  A claim that is ours but whose symbol cannot be
+        recovered is likewise held in ``unknown_pending_reconcile`` — the
+        readback needs a symbol, and guessing one would aim an authoritative
+        query at the wrong market.
+        """
+
+        if self._reservations is None:
+            raise SpotDemoLimitError(
+                SpotDemoLimitReason.RESTART_CLAIM_SOURCE_UNAVAILABLE,
+                "the restart trigger has no reservation port to enumerate; the "
+                "lane stays lifecycle-blocked",
+            )
+        if entry.lane_id != SPOT_DEMO_CANONICAL_LANE_ID:
+            raise SpotDemoLimitError(
+                SpotDemoLimitReason.LANE_NOT_CANONICAL_WRITER,
+                f"lane {entry.lane_id!r} does not own this recovery path",
+            )
+        assert_binance_domain_invariants(registry)
+        # J2A-derived, never caller-supplied.  Raises while identity is UNKNOWN,
+        # which is the honest answer: a lane that cannot name its physical
+        # account cannot enumerate that account's surviving claims.
+        account_scope = physical_account_scope_for_entry(entry).claim_account_scope
+
+        rows = await self._reservations.list_reservations(account_scope=account_scope)
+        dispositions: list[RestartDisposition] = []
+        for row in rows:
+            row_id = getattr(row, "row_id", None)
+            idempotency_key = getattr(row, "idempotency_key", None)
+            side = getattr(row, "side", None)
+            if not isinstance(row_id, int) or not isinstance(idempotency_key, str):
+                await self._record_unrecoverable_claim(
+                    account_scope=account_scope,
+                    idempotency_key=str(idempotency_key),
+                    detail="reservation row is not readable as a durable claim",
+                )
+                continue
+            try:
+                client_order_id = derive_attributed_client_order_id(idempotency_key)
+            except SpotDemoLimitError:
+                await self._record_unrecoverable_claim(
+                    account_scope=account_scope,
+                    idempotency_key=idempotency_key,
+                    detail="claim is not attributable to this lane's lineage",
+                )
+                continue
+            symbol = symbols.get(idempotency_key)
+            if not isinstance(symbol, str) or not symbol.strip():
+                await self._record_unrecoverable_claim(
+                    account_scope=account_scope,
+                    idempotency_key=idempotency_key,
+                    detail="no symbol is known for this claim; readback is not "
+                    "attempted rather than guessed",
+                )
+                continue
+            dispositions.append(
+                await self.resolve_restart_claim(
+                    DurableClaim(
+                        row_id=row_id,
+                        claim_account_scope=account_scope,
+                        idempotency_key=idempotency_key,
+                        side=side,
+                    ),
+                    symbol=symbol,
+                    client_order_id=client_order_id,
+                    account_position_reconciled=account_position_reconciled,
+                    remainder_known=remainder_known,
+                )
+            )
+        return tuple(dispositions)
+
+    async def _record_unrecoverable_claim(
+        self, *, account_scope: str, idempotency_key: str, detail: str
+    ) -> None:
+        """Leave an unresolvable survivor visibly blocked instead of silently skipped."""
+
         await self._lane_evidence.record_lane_evidence(
-            SpotDemoLaneEvidenceKind.CANCEL,
+            SpotDemoLaneEvidenceKind.UNKNOWN,
             {
-                "symbol": symbol,
-                "client_order_id": client_order_id,
-                "confirm": confirm,
-                "native_status": getattr(result, "status", None),
+                "trigger": SPOT_DEMO_RESTART_TRIGGER,
+                "claim_account_scope": account_scope,
+                "idempotency_key": idempotency_key,
+                "operator_visible_state": SPOT_DEMO_UNRECOVERABLE_STATE,
+                "repost": False,
+                "detail": detail,
             },
         )
-        return result
+
+    async def cancel_limit_order(
+        self,
+        scope: CoordinationScope,
+        claim: DurableClaim,
+        *,
+        entry: LaneRegistryEntry,
+        symbol: str,
+        client_order_id: str,
+        attributed_native_order_id: str,
+        known_remainder: Decimal,
+        registry: RegistrySource | None = None,
+        confirm: bool = False,
+    ) -> SpotDemoCancelDisposition:
+        """Cancel one order this lane's own lineage produced.
+
+        A cancel is a broker mutation, so it runs under the same contract as a
+        submit rather than a lighter one:
+
+        1. the same fresh guards — exact transport type, Spot Demo host, the
+           lane's declared endpoint, and the registry writer-domain invariants;
+        2. **attribution** — the client order id must be reproducible from this
+           claim's J2B key, and the claim must sit in this lane's J2A-derived
+           physical-account scope.  An arbitrary or third-party order id is
+           refused here, before any coordination work;
+        3. **coordination** — ``CoordinationScope.assert_owned()`` proves the
+           physical-account lease is still held, and J3A's own
+           ``describe_claim_followup`` predicate must report the follow-up
+           capability present.  That predicate needs an attributed native order
+           id and a known remainder, so a cancel aimed at an order whose identity
+           or remainder is unknown cannot be described, let alone sent;
+        4. ownership is re-asserted **again** immediately before the DELETE,
+           because anything awaited in between can outlive the lease;
+        5. **uncertainty** — a raised send records ``unknown`` with the
+           operator-visible blocked state and re-raises.  A response that does
+           not prove a cancellation is also ``unknown``, never ``cancel``.
+
+        Without ``confirm=True`` nothing is sent and **no lane evidence is
+        written at all**: a durable ``CANCEL`` fact means the broker cancelled
+        the order, and on a dry run it did not.
+        """
+
+        assert_spot_demo_transport(self._client)
+        if entry.lane_id != SPOT_DEMO_CANONICAL_LANE_ID:
+            raise SpotDemoLimitError(
+                SpotDemoLimitReason.LANE_NOT_CANONICAL_WRITER,
+                f"lane {entry.lane_id!r} does not own this cancel path",
+            )
+        assert_mock_only_endpoint(entry, SPOT_DEMO_ENDPOINT_URL)
+        assert_binance_domain_invariants(registry)
+
+        attributed_id = assert_client_order_id_attributed(claim, client_order_id)
+        assert_claim_belongs_to_lane(claim, entry)
+
+        await scope.assert_owned()
+        capability = describe_claim_followup(
+            ClaimFollowupRequest(
+                operation="cancel",
+                lane_capability_supports_operation=True,
+                attributed_native_order_id=attributed_native_order_id,
+                known_remainder=known_remainder,
+                # Computed, not declared: the guards above just ran, and the
+                # lease was just re-proved.
+                fresh_guards_passed=True,
+                lease_ownership_verified=True,
+            )
+        )
+        if not capability.capability_present:
+            raise SpotDemoLimitError(
+                SpotDemoLimitReason.CANCEL_FOLLOWUP_CAPABILITY_ABSENT,
+                f"J3A reports {capability.reason_code} for this cancel follow-up",
+            )
+
+        if not confirm:
+            return SpotDemoCancelDisposition(
+                dispatched=False,
+                evidence_kind=None,
+                client_order_id=attributed_id,
+                native_status=None,
+                detail=(
+                    "dry run: no DELETE was sent, so no durable cancel fact is recorded"
+                ),
+            )
+
+        await scope.assert_owned()
+        try:
+            result = await self._client.cancel_order(
+                symbol=symbol, client_order_id=attributed_id, confirm=True
+            )
+        except Exception:
+            await self._record_cancel_outcome(
+                CANCEL_RAISED_OUTCOME,
+                claim=claim,
+                symbol=symbol,
+                client_order_id=attributed_id,
+                native_status=None,
+            )
+            raise
+        outcome = classify_cancel_outcome(result)
+        native_status = getattr(result, "status", None)
+        await self._record_cancel_outcome(
+            outcome,
+            claim=claim,
+            symbol=symbol,
+            client_order_id=attributed_id,
+            native_status=native_status if isinstance(native_status, str) else None,
+        )
+        return SpotDemoCancelDisposition(
+            dispatched=True,
+            evidence_kind=outcome.evidence_kind,
+            client_order_id=attributed_id,
+            native_status=native_status if isinstance(native_status, str) else None,
+            detail=outcome.detail,
+            result=result,
+        )
+
+    async def _record_cancel_outcome(
+        self,
+        outcome: SubmitOutcome,
+        *,
+        claim: DurableClaim,
+        symbol: str,
+        client_order_id: str,
+        native_status: str | None,
+    ) -> None:
+        """Write one cancel-path lane evidence row, uncertain branches included."""
+
+        payload: dict[str, Any] = {
+            "operation": "cancel",
+            "idempotency_key": claim.idempotency_key,
+            "claim_row_id": claim.row_id,
+            "symbol": symbol,
+            "client_order_id": client_order_id,
+            "native_status": native_status,
+            "detail": outcome.detail,
+        }
+        if outcome.certainty is MutationCertainty.UNCERTAIN:
+            payload["operator_visible_state"] = SPOT_DEMO_UNRECOVERABLE_STATE
+        else:
+            payload["broker_order_id"] = outcome.broker_order_id
+        await self._lane_evidence.record_lane_evidence(outcome.evidence_kind, payload)
 
 
-def spot_demo_activation_blockers(entry: LaneRegistryEntry) -> tuple[str, ...]:
+def spot_demo_recovery_contract_gaps(
+    entry: LaneRegistryEntry,
+    *,
+    composition: BinanceSpotDemoLimitComposition | None = None,
+) -> tuple[str, ...]:
+    """C3-7 — compute which §83 correction-3 items this lane does *not* satisfy.
+
+    Every check reads a live object rather than a claim about one.  Pass the
+    composition that actually holds the lane's ports to ask "is this owner
+    complete"; pass ``None`` — the registry-level view, and the honest one while
+    no production caller constructs this composition — to ask "does the lane have
+    a recovery owner at all".
+
+    Returning an empty tuple is a real possibility, not a formality: a fully
+    wired composition against an identity-known entry has no gaps.  That is what
+    makes a non-empty result evidence rather than decoration.
+    """
+
+    gaps: list[str] = []
+
+    # C3-1 — the named owner must resolve to this module's composition class.
+    if SPOT_DEMO_RECOVERY_OWNER != (
+        f"{__name__}.{BinanceSpotDemoLimitComposition.__qualname__}"
+    ):
+        gaps.append(SpotDemoRecoveryContractItem.RECOVERY_OWNER.value)
+
+    # C3-2 — a trigger that cannot enumerate survivors is a name, not a trigger.
+    # Two independent ways to fail: no read-side port bound, or an identity the
+    # lane cannot resolve into a physical-account scope to enumerate *within*.
+    restart_ready = composition is not None and composition.has_restart_claim_source
+    if restart_ready:
+        try:
+            physical_account_scope_for_entry(entry)
+        except LaneGuardError:
+            restart_ready = False
+    if not restart_ready:
+        gaps.append(SpotDemoRecoveryContractItem.RESTART_TRIGGER.value)
+
+    # C3-3 — the authoritative readback must exist on the real transport class.
+    if not callable(getattr(BinanceSpotDemoExecutionClient, "get_order_status", None)):
+        gaps.append(SpotDemoRecoveryContractItem.AUTHORITATIVE_READBACK.value)
+
+    # C3-4 — all seven kinds, and somewhere durable to write them.
+    if (
+        LANE_EVIDENCE_KINDS
+        != frozenset(kind.value for kind in SpotDemoLaneEvidenceKind)
+        or len(LANE_EVIDENCE_KINDS) != 7
+    ):
+        gaps.append(SpotDemoRecoveryContractItem.LANE_NATIVE_EVIDENCE.value)
+    elif composition is None or not composition.has_lane_evidence_store:
+        gaps.append(SpotDemoRecoveryContractItem.LANE_NATIVE_EVIDENCE.value)
+
+    # C3-5 — release must be reachable only through the J3A evidence gate.
+    if not callable(
+        getattr(DurableSendClaimAdapter, "release_with_terminal_evidence", None)
+    ):
+        gaps.append(SpotDemoRecoveryContractItem.RELEASE_IF_MATCHES_CONDITION.value)
+
+    # C3-6 — a concrete operator-visible state.
+    if not SPOT_DEMO_UNRECOVERABLE_STATE.strip():
+        gaps.append(SpotDemoRecoveryContractItem.OPERATOR_BLOCKED_STATE.value)
+
+    return tuple(gaps)
+
+
+def spot_demo_lifecycle_lane_status(
+    entry: LaneRegistryEntry,
+    *,
+    composition: BinanceSpotDemoLimitComposition | None = None,
+) -> LaneStatus | None:
+    """The §83 verdict: any unmet recovery item leaves the lane lifecycle-blocked.
+
+    ``None`` means every item is satisfied.  This is the computed counterpart of
+    ``SPOT_DEMO_LIFECYCLE_BLOCKED_LANE_STATUS``, which is only the constant the
+    verdict resolves to.
+    """
+
+    if spot_demo_recovery_contract_gaps(entry, composition=composition):
+        return SPOT_DEMO_LIFECYCLE_BLOCKED_LANE_STATUS
+    return None
+
+
+def spot_demo_activation_blockers(
+    entry: LaneRegistryEntry,
+    *,
+    composition: BinanceSpotDemoLimitComposition | None = None,
+) -> tuple[str, ...]:
     """Report why this lane cannot activate, primary blocker first.
 
-    §D: the primary terminal lane status is the *policy* blocker.  The absent
-    scheduler owner is real, but it is a secondary activation blocker and is
-    never promoted to the primary status.
+    §D: the primary terminal lane status is the *policy* blocker.  The recovery
+    lifecycle verdict and the scheduler owner are reported after it and are never
+    promoted to the primary status.
     """
 
     blockers: list[str] = [SPOT_DEMO_PRIMARY_TERMINAL_LANE_STATUS.value]
-    if (
-        entry.scheduler_owner is None
-        or entry.scheduler_owner is SchedulerOwner.DISABLED
-    ):
+
+    # §83 correction 3, computed rather than asserted.
+    gaps = spot_demo_recovery_contract_gaps(entry, composition=composition)
+    if gaps:
+        blockers.append(SPOT_DEMO_LIFECYCLE_BLOCKED_LANE_STATUS.value)
+        blockers.extend(f"recovery_gap={gap}" for gap in gaps)
+
+    # Absence and explicit disablement are different facts about ownership, and
+    # the signed table records them as different values.  Collapsing them here
+    # would report an owner decision that was never made.
+    if entry.scheduler_owner is None:
+        blockers.append(SPOT_DEMO_ABSENT_SCHEDULER_OWNER_BLOCKER)
+    elif entry.scheduler_owner is SchedulerOwner.DISABLED:
         blockers.append(SPOT_DEMO_SECONDARY_ACTIVATION_BLOCKER)
+
     if entry.activation_status is not ActivationStatus.ENABLED:
         blockers.append(f"activation_status={entry.activation_status.value}")
     if entry.missing_bindings:
@@ -1295,10 +1897,14 @@ def spot_demo_activation_blockers(entry: LaneRegistryEntry) -> tuple[str, ...]:
 
 
 __all__ = [
+    "BROKER_CLIENT_ID_DIGEST_LENGTH",
+    "CANCEL_RAISED_OUTCOME",
+    "IDEMPOTENCY_KEY_DOMAIN_PREFIX",
     "LANE_EVIDENCE_KINDS",
     "SIBLING_BINDING_FOR_EXECUTION",
     "SUBMIT_RAISED_OUTCOME",
     "SIZING_PROVENANCE_KEYS",
+    "SPOT_DEMO_ABSENT_SCHEDULER_OWNER_BLOCKER",
     "SPOT_DEMO_ACCOUNT_MODE",
     "SPOT_DEMO_ACCOUNT_PROFILE",
     "SPOT_DEMO_AUTHORITATIVE_READBACK",
@@ -1314,8 +1920,10 @@ __all__ = [
     "SPOT_DEMO_ORDER_TYPE",
     "SPOT_DEMO_PRIMARY_TERMINAL_LANE_STATUS",
     "SPOT_DEMO_QUOTE_CURRENCY",
+    "SPOT_DEMO_RECOVERY_CONTRACT_ITEMS",
     "SPOT_DEMO_RECOVERY_OWNER",
     "SPOT_DEMO_RESTART_TRIGGER",
+    "SPOT_DEMO_RESTART_TRIGGER_ENTRYPOINT",
     "SPOT_DEMO_SECONDARY_ACTIVATION_BLOCKER",
     "SPOT_DEMO_SIDECAR_LANE_ID",
     "SPOT_DEMO_TIME_IN_FORCE",
@@ -1325,17 +1933,23 @@ __all__ = [
     "LimitSizing",
     "LimitSizingBlocked",
     "RestartDisposition",
+    "SpotDemoCancelDisposition",
     "SpotDemoLaneEvidenceKind",
     "SpotDemoLaneEvidencePort",
     "SpotDemoLimitError",
     "SpotDemoLimitReason",
     "SpotDemoReadbackOutcome",
+    "SpotDemoRecoveryContractItem",
     "SpotStepSpec",
     "SubmitOutcome",
+    "classify_cancel_outcome",
     "classify_submit_outcome",
     "assert_alpaca_crypto_unwired",
+    "assert_binance_domain_invariants",
     "assert_binance_single_writer_domain",
     "assert_canonical_writer_lane",
+    "assert_claim_belongs_to_lane",
+    "assert_client_order_id_attributed",
     "assert_limit_only_plan",
     "assert_no_recurring_request",
     "assert_sidecar_observation_only",
@@ -1346,7 +1960,11 @@ __all__ = [
     "classify_restart_disposition",
     "compose_limit_plan_draft",
     "compose_limit_sizing",
+    "derive_attributed_client_order_id",
+    "registry_entries",
     "require_lane_evidence_port",
     "spot_demo_activation_blockers",
+    "spot_demo_lifecycle_lane_status",
+    "spot_demo_recovery_contract_gaps",
     "terminal_evidence_for",
 ]

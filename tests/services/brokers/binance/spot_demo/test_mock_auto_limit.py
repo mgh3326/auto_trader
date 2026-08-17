@@ -123,6 +123,7 @@ def _composition(
     client: BinanceSpotDemoExecutionClient,
     *,
     lane_evidence: Any = None,
+    reservations: Any = None,
 ) -> mal.BinanceSpotDemoLimitComposition:
     return mal.BinanceSpotDemoLimitComposition(
         client=client,
@@ -132,6 +133,82 @@ def _composition(
         dispatch_evidence=None,
         uncertainty_gate=None,
         lane_evidence=lane_evidence or _RecordingLaneEvidence(),
+        reservations=reservations,
+    )
+
+
+class _Reservation:
+    """The row shape ``OrderSendIntentService.list_reservations`` returns."""
+
+    def __init__(self, *, row_id: int, idempotency_key: str, side: str | None) -> None:
+        self.row_id = row_id
+        self.idempotency_key = idempotency_key
+        self.side = side
+
+
+class _RecordedReservations:
+    """A reservation read-side port that records the scope it was asked about."""
+
+    def __init__(self, rows: list[Any]) -> None:
+        self._rows = rows
+        self.scopes: list[str] = []
+
+    async def reserve(self, **kwargs: Any) -> int:  # pragma: no cover - unused here
+        raise AssertionError("the restart trigger never reserves")
+
+    async def list_reservations(self, *, account_scope: str) -> list[Any]:
+        self.scopes.append(account_scope)
+        return list(self._rows)
+
+    async def release_if_matches(self, **kwargs: Any) -> int:  # pragma: no cover
+        raise AssertionError("the restart trigger never releases directly")
+
+
+def _scope(calls: list[str] | None = None) -> Any:
+    """A live J3A coordination scope whose ownership assertion is observable."""
+
+    from app.services.mock_integration.coordination import CoordinationScope
+
+    async def _assert_owned() -> None:
+        if calls is not None:
+            calls.append("assert_owned")
+
+    return CoordinationScope(_assert_owned)
+
+
+def _identity_known_entry() -> Any:
+    """The canonical row with a physical identity, so a scope can be derived.
+
+    The signed row's identity is ``UNKNOWN``, which is a real recovery gap (see
+    the C3-7 tests).  Tests that need to exercise the *rest* of a path replace
+    only that field, and never in the registry itself.
+    """
+
+    return dataclasses.replace(
+        get_lane_registry_entry(mal.SPOT_DEMO_CANONICAL_LANE_ID),
+        physical_account_id="binance-spot-demo-physical-1",
+        identity_status="KNOWN",
+    )
+
+
+def _lane_scope(entry: Any) -> str:
+    from app.services.mock_integration.coordination import (
+        physical_account_scope_for_entry,
+    )
+
+    return physical_account_scope_for_entry(entry).claim_account_scope
+
+
+def _attributed_claim(entry: Any, *, row_id: int = 1) -> DurableClaim:
+    """A durable claim whose key really came from the J2B factory."""
+
+    attempt = _envelope().order_attempt
+    assert attempt is not None
+    return DurableClaim(
+        row_id=row_id,
+        claim_account_scope=_lane_scope(entry),
+        idempotency_key=attempt.idempotency_key,
+        side="buy",
     )
 
 
@@ -636,6 +713,41 @@ def test_c2_5_alpaca_crypto_auto_mirror_is_policy_mirror_only() -> None:
 # ==========================================================================
 
 
+def _pre_dispatch_error(
+    client: BinanceSpotDemoExecutionClient, registry: Any
+) -> BaseException | None:
+    """Run the real pre-dispatch chain and hand back whatever it raised.
+
+    Deliberately does **not** pre-judge the exception type. A guard that has been
+    removed from the chain does not stop the chain — it lets a *later*, unrelated
+    J2A check fail instead, and a bare ``pytest.raises(SpotDemoLimitError)``
+    would then produce a red test whose traceback points at that other check.
+    Returning the exception lets each test assert, on its own line, that the
+    chain died at the guard under test and name what it got instead.
+    """
+
+    try:
+        _composition(client).validate_pre_dispatch(_envelope(), registry=registry)
+    except BaseException as exc:  # noqa: BLE001 - the assertion is the caller's
+        return exc
+    return None
+
+
+def _binance_domain_guard_reached(
+    client: BinanceSpotDemoExecutionClient,
+    registry: Any,
+    expected: mal.SpotDemoLimitReason,
+) -> None:
+    """Assert the pre-dispatch chain refuses *at* the writer-domain guard."""
+
+    raised = _pre_dispatch_error(client, registry)
+    assert isinstance(raised, mal.SpotDemoLimitError), (
+        "the writer-domain invariant must be enforced by the pre-dispatch chain "
+        f"itself, not only by a direct guard call; chain raised {raised!r}"
+    )
+    assert raised.reason is expected
+
+
 def test_mutant_01_two_binance_writers_in_one_domain_fail() -> None:
     """§F-1 — identity is UNKNOWN, so every Binance demo lane is one domain."""
 
@@ -679,6 +791,89 @@ def test_mutant_01b_conservative_domain_ignores_unknown_physical_ids() -> None:
     # Not silent:
     with pytest.raises(mal.SpotDemoLimitError):
         mal.assert_binance_single_writer_domain(mutated)
+
+
+def test_mutant_01c_the_writer_domain_guard_runs_in_the_dispatch_chain(
+    client: BinanceSpotDemoExecutionClient, httpx_mock: Any
+) -> None:
+    """§F-1 — the conservative guard is wired, not merely defined and exported.
+
+    A guard that only fires when a test calls it by name protects nothing: the
+    invariant has to be enforced on the path an order actually takes. This drives
+    the real ``validate_pre_dispatch`` chain and asserts the refusal comes from
+    the writer-domain guard rather than from a later registry check.
+
+    The two writers are canonical + Futures Demo, deliberately **not** the B0-X
+    sidecar: promoting the sidecar would also trip the sidecar guard, and a
+    mutation that two guards can catch proves neither of them individually.
+    """
+
+    mutated = tuple(
+        dataclasses.replace(entry, writer=True)
+        if entry.lane_id
+        in (mal.SPOT_DEMO_CANONICAL_LANE_ID, mal.SPOT_DEMO_FUTURES_LANE_ID)
+        else entry
+        for entry in CANONICAL_LANE_REGISTRY
+    )
+    _binance_domain_guard_reached(
+        client, mutated, mal.SpotDemoLimitReason.BINANCE_WRITER_CONFLICT
+    )
+    # Discrimination: the signed registry gets *past* this guard and dies later,
+    # on J2A's binding check — so the guard is not simply refusing everything.
+    assert isinstance(
+        _pre_dispatch_error(client, CANONICAL_LANE_REGISTRY), LaneGuardError
+    )
+    assert httpx_mock.get_requests() == []
+
+
+def test_mutant_02c_the_sidecar_guard_runs_in_the_dispatch_chain(
+    client: BinanceSpotDemoExecutionClient, httpx_mock: Any
+) -> None:
+    """§F-2 — a promoted sidecar is refused on the dispatch path, not only in a test."""
+
+    mutated = tuple(
+        dataclasses.replace(entry, scheduler_owner=SchedulerOwner.TASKIQ)
+        if entry.lane_id == mal.SPOT_DEMO_SIDECAR_LANE_ID
+        else entry
+        for entry in CANONICAL_LANE_REGISTRY
+    )
+    _binance_domain_guard_reached(
+        client, mutated, mal.SpotDemoLimitReason.SIDECAR_OBSERVATION_ONLY
+    )
+    assert httpx_mock.get_requests() == []
+
+
+def test_mutant_03c_the_alpaca_crypto_guard_runs_in_the_dispatch_chain(
+    client: BinanceSpotDemoExecutionClient, httpx_mock: Any
+) -> None:
+    """§F-3 — D1 is enforced on the dispatch path, not only by a direct call."""
+
+    mutated = tuple(
+        dataclasses.replace(entry, writer=True)
+        if entry.lane_id == "crypto.alpaca.paper.default"
+        else entry
+        for entry in CANONICAL_LANE_REGISTRY
+    )
+    _binance_domain_guard_reached(
+        client, mutated, mal.SpotDemoLimitReason.ALPACA_CRYPTO_MUTATION_UNASSIGNED
+    )
+    assert httpx_mock.get_requests() == []
+
+
+def test_the_domain_invariants_are_reached_before_the_j2a_binding_check() -> None:
+    """Ordering is the whole point: the guard must run *before* J2A's verdict.
+
+    Placed after ``assert_lineage_registry_binding`` it would be dead code for
+    this lane, because the signed registry always dies on the binding check
+    first. This pins the order at the chain's own source rather than assuming it.
+    """
+
+    source = inspect.getsource(
+        mal.BinanceSpotDemoLimitComposition.validate_pre_dispatch
+    )
+    domain_at = source.index("assert_binance_domain_invariants(")
+    binding_at = source.index("assert_lineage_registry_binding(")
+    assert domain_at < binding_at
 
 
 @pytest.mark.parametrize("mutation", ["writer", "auto", "scheduler"])
@@ -1114,6 +1309,52 @@ def test_primary_terminal_status_is_the_policy_blocker() -> None:
     assert LaneStatus.AUTO_READY_BLOCKED_BY_SCHEDULER.value not in blockers[0]
 
 
+def test_an_absent_scheduler_owner_is_not_a_spelling_of_disabled() -> None:
+    """§B — ``None`` and ``DISABLED`` are different facts and stay different.
+
+    ``DISABLED`` is an explicit decision backed by in-repo evidence: Binance Demo
+    has no scheduler registration. ``None`` is the *absence* of any bind
+    authority, which is why those rows also carry ``MissingBinding.OWNER``.
+    Reporting absence as disablement tells a downstream reader that an ownership
+    decision was made when none was.
+
+    The canonical Binance row happens to be ``DISABLED``, so testing only that
+    row cannot see the difference — the ``None`` input has to be exercised
+    directly, which is exactly what the signed table's Alpaca crypto rows are.
+    """
+
+    disabled = get_lane_registry_entry(mal.SPOT_DEMO_CANONICAL_LANE_ID)
+    assert disabled.scheduler_owner is SchedulerOwner.DISABLED
+    disabled_blockers = mal.spot_demo_activation_blockers(disabled)
+    assert mal.SPOT_DEMO_SECONDARY_ACTIVATION_BLOCKER in disabled_blockers
+    assert mal.SPOT_DEMO_ABSENT_SCHEDULER_OWNER_BLOCKER not in disabled_blockers
+
+    absent = dataclasses.replace(disabled, scheduler_owner=None)
+    assert absent.scheduler_owner is None
+    absent_blockers = mal.spot_demo_activation_blockers(absent)
+    assert mal.SPOT_DEMO_ABSENT_SCHEDULER_OWNER_BLOCKER in absent_blockers
+    assert mal.SPOT_DEMO_SECONDARY_ACTIVATION_BLOCKER not in absent_blockers
+
+    # The two blockers are distinct strings, not aliases of one another.
+    assert (
+        mal.SPOT_DEMO_ABSENT_SCHEDULER_OWNER_BLOCKER
+        != mal.SPOT_DEMO_SECONDARY_ACTIVATION_BLOCKER
+    )
+
+
+def test_signed_rows_with_an_absent_owner_report_absence(
+    client: BinanceSpotDemoExecutionClient,
+) -> None:
+    """The real ``scheduler_owner=None`` rows in the signed table, unmodified."""
+
+    for lane_id in ("crypto.alpaca.paper.default", "crypto.alpaca.paper.clean"):
+        entry = get_lane_registry_entry(lane_id)
+        assert entry.scheduler_owner is None
+        blockers = mal.spot_demo_activation_blockers(entry)
+        assert mal.SPOT_DEMO_ABSENT_SCHEDULER_OWNER_BLOCKER in blockers
+        assert mal.SPOT_DEMO_SECONDARY_ACTIVATION_BLOCKER not in blockers
+
+
 def test_j6b_does_not_modify_the_signed_registry() -> None:
     """Mechanically narrowing the signed allowlist is J2A-owned work."""
 
@@ -1155,6 +1396,157 @@ def test_c3_2_restart_trigger_is_named_and_implemented() -> None:
         "process_restart_rediscovers_durable_j2b_claims_for_physical_account"
     )
     assert callable(mal.BinanceSpotDemoLimitComposition.resolve_restart_claim)
+    # The name has an executable entry point behind it, not just a resolver
+    # waiting for someone else to find the claims.
+    assert mal.SPOT_DEMO_RESTART_TRIGGER_ENTRYPOINT == (
+        "BinanceSpotDemoLimitComposition.rediscover_restart_claims"
+    )
+    assert callable(mal.BinanceSpotDemoLimitComposition.rediscover_restart_claims)
+
+
+@pytest.mark.asyncio
+async def test_c3_2_restart_trigger_enumerates_surviving_claims_and_resolves_them(
+    client: BinanceSpotDemoExecutionClient,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: Any,
+) -> None:
+    """C3-2 — rediscovery really reads the reservation port and resolves each row.
+
+    Naming a trigger is not owning one. This drives the production path end to
+    end: enumerate within this lane's derived physical-account scope, derive each
+    claim's client order id from its J2B key, read it back authoritatively, and
+    dispose of it without ever reposting.
+    """
+
+    entry = _identity_known_entry()
+    attempt = _envelope().order_attempt
+    assert attempt is not None
+    reservations = _RecordedReservations(
+        [_Reservation(row_id=11, idempotency_key=attempt.idempotency_key, side="buy")]
+    )
+    evidence = _RecordingLaneEvidence()
+    composition = _composition(
+        client, lane_evidence=evidence, reservations=reservations
+    )
+    readbacks = _pin_readback(monkeypatch, client, "NEW")
+
+    dispositions = await composition.rediscover_restart_claims(
+        entry=entry, symbols={attempt.idempotency_key: "BTCUSDT"}
+    )
+
+    assert reservations.scopes == [_lane_scope(entry)]
+    assert readbacks == [
+        {"symbol": "BTCUSDT", "client_order_id": attempt.broker_client_order_id}
+    ]
+    assert len(dispositions) == 1
+    assert dispositions[0].outcome is mal.SpotDemoReadbackOutcome.OPEN
+    assert dispositions[0].repost is False
+    assert dispositions[0].may_release_claim is False
+    assert evidence.kinds == ["unknown"]
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_restart_trigger_leaves_unattributable_survivors_strictly_alone(
+    client: BinanceSpotDemoExecutionClient,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: Any,
+) -> None:
+    """A claim this lane's lineage cannot reproduce is not touched, only recorded.
+
+    The physical account is shared, so a survivor may belong to another writer.
+    Reading it back would be harmless; acting on it would not — and a silent skip
+    would hide it from the operator entirely.
+    """
+
+    entry = _identity_known_entry()
+    reservations = _RecordedReservations(
+        [
+            _Reservation(row_id=1, idempotency_key="not-a-j2b-key", side="buy"),
+            _Reservation(
+                row_id=2, idempotency_key="mock-idempotency-v1:short", side=None
+            ),
+        ]
+    )
+    evidence = _RecordingLaneEvidence()
+    composition = _composition(
+        client, lane_evidence=evidence, reservations=reservations
+    )
+    readbacks = _pin_readback(monkeypatch, client, "FILLED")
+
+    dispositions = await composition.rediscover_restart_claims(entry=entry, symbols={})
+
+    assert dispositions == ()
+    assert readbacks == []
+    assert evidence.kinds == ["unknown", "unknown"]
+    for _, payload in evidence.records:
+        assert payload["operator_visible_state"] == mal.SPOT_DEMO_UNRECOVERABLE_STATE
+        assert payload["repost"] is False
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_restart_trigger_holds_a_survivor_whose_symbol_is_unknown(
+    client: BinanceSpotDemoExecutionClient,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: Any,
+) -> None:
+    """An attributable claim with no known symbol is held, never guessed at."""
+
+    entry = _identity_known_entry()
+    attempt = _envelope().order_attempt
+    assert attempt is not None
+    reservations = _RecordedReservations(
+        [_Reservation(row_id=3, idempotency_key=attempt.idempotency_key, side="buy")]
+    )
+    evidence = _RecordingLaneEvidence()
+    composition = _composition(
+        client, lane_evidence=evidence, reservations=reservations
+    )
+    readbacks = _pin_readback(monkeypatch, client, "FILLED")
+
+    assert await composition.rediscover_restart_claims(entry=entry, symbols={}) == ()
+    assert readbacks == []
+    assert evidence.kinds == ["unknown"]
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_restart_trigger_without_a_claim_source_fails_closed(
+    client: BinanceSpotDemoExecutionClient, httpx_mock: Any
+) -> None:
+    """No read-side port means no trigger — and it says so instead of pretending."""
+
+    with pytest.raises(mal.SpotDemoLimitError) as error:
+        await _composition(client).rediscover_restart_claims(
+            entry=_identity_known_entry(), symbols={}
+        )
+    assert (
+        error.value.reason is mal.SpotDemoLimitReason.RESTART_CLAIM_SOURCE_UNAVAILABLE
+    )
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_restart_trigger_cannot_enumerate_while_identity_is_unknown(
+    client: BinanceSpotDemoExecutionClient, httpx_mock: Any
+) -> None:
+    """The signed row has no physical identity, so no scope can be enumerated.
+
+    This is the honest state of the lane today and the reason C3-2 counts as a
+    computed gap: the scope is derived from J2A identity and is never accepted
+    from a caller.
+    """
+
+    reservations = _RecordedReservations([])
+    composition = _composition(client, reservations=reservations)
+    with pytest.raises(LaneGuardError) as error:
+        await composition.rediscover_restart_claims(
+            entry=get_lane_registry_entry(mal.SPOT_DEMO_CANONICAL_LANE_ID), symbols={}
+        )
+    assert "physical_account_identity_unknown" in str(error.value)
+    assert reservations.scopes == []
+    assert httpx_mock.get_requests() == []
 
 
 def test_c3_3_authoritative_readback_is_the_order_endpoint() -> None:
@@ -1287,20 +1679,320 @@ async def test_c3_4c_terminal_reconciliation_releases_only_with_full_evidence(
     assert httpx_mock.get_requests() == []
 
 
+# ==========================================================================
+# Cancel — the same attribution / coordination / uncertainty contract as submit
+# ==========================================================================
+
+
+class _CancelSeam:
+    """Records every DELETE the composition attempts, and can fail after send."""
+
+    def __init__(self, *, result: Any = None, raises: BaseException | None = None):
+        self.calls: list[tuple[str, str, bool]] = []
+        self._result = result
+        self._raises = raises
+
+    async def __call__(
+        self, *, symbol: str, client_order_id: str, confirm: bool = False
+    ) -> Any:
+        self.calls.append((symbol, client_order_id, confirm))
+        if self._raises is not None:
+            raise self._raises
+        return self._result
+
+
+class _NativeCancel:
+    def __init__(self, status: str | None, broker_order_id: str = "9001") -> None:
+        self.status = status
+        self.broker_order_id = broker_order_id
+
+
+async def _cancel(
+    client: BinanceSpotDemoExecutionClient,
+    seam: _CancelSeam | None,
+    evidence: _RecordingLaneEvidence,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    client_order_id: str | None = None,
+    claim: DurableClaim | None = None,
+    attributed_native_order_id: str = "9001",
+    known_remainder: Decimal | None = Decimal("0.1"),
+    confirm: bool = False,
+    scope_calls: list[str] | None = None,
+) -> Any:
+    entry = _identity_known_entry()
+    if seam is not None:
+        monkeypatch.setattr(client, "cancel_order", seam)
+    attempt = _envelope().order_attempt
+    assert attempt is not None
+    return await _composition(client, lane_evidence=evidence).cancel_limit_order(
+        _scope(scope_calls),
+        claim if claim is not None else _attributed_claim(entry),
+        entry=entry,
+        symbol="BTCUSDT",
+        client_order_id=(
+            client_order_id
+            if client_order_id is not None
+            else str(attempt.broker_client_order_id)
+        ),
+        attributed_native_order_id=attributed_native_order_id,
+        known_remainder=known_remainder,  # type: ignore[arg-type]
+        confirm=confirm,
+    )
+
+
+def test_attributed_client_order_id_round_trips_the_j2b_factory() -> None:
+    """Attribution is a real derivation, not a naming convention.
+
+    J2B builds the durable claim key and the native client order id from the same
+    digest, so one determines the other. Pinned against actual factory output —
+    if J2B ever changes either derivation, this fails rather than silently
+    letting an unrelated order id look attributed.
+    """
+
+    attempt = _envelope().order_attempt
+    assert attempt is not None
+    derived = mal.derive_attributed_client_order_id(attempt.idempotency_key)
+    assert derived == attempt.broker_client_order_id
+    assert derived.startswith(f"{mal.SPOT_DEMO_LANE_PREFIX}-")
+
+
 @pytest.mark.asyncio
-async def test_c3_4d_cancel_writes_the_cancel_kind(
-    client: BinanceSpotDemoExecutionClient, httpx_mock: Any
+async def test_cancel_refuses_a_client_order_id_this_lane_did_not_produce(
+    client: BinanceSpotDemoExecutionClient,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: Any,
 ) -> None:
-    """C3-4 — the cancel kind is written by the cancel path."""
+    """An arbitrary or third-party order id is not cancellable through this lane.
+
+    ``confirm`` decides whether a mutation is *sent*; it says nothing about
+    whether the thing being mutated is ours. Without this guard a caller holding
+    any claim could DELETE someone else's order and have the lane record it as
+    its own cancel.
+    """
 
     evidence = _RecordingLaneEvidence()
-    composition = _composition(client, lane_evidence=evidence)
-    result = await composition.cancel_limit_order(
-        symbol="BTCUSDT", client_order_id="bnsd-abc", confirm=False
+    seam = _CancelSeam(result=_NativeCancel("CANCELED"))
+    for foreign in ("someone-elses-order", "bnsd-arbitrary"):
+        with pytest.raises(mal.SpotDemoLimitError) as error:
+            await _cancel(
+                client,
+                seam,
+                evidence,
+                monkeypatch,
+                client_order_id=foreign,
+                confirm=True,
+            )
+        assert error.value.reason is mal.SpotDemoLimitReason.CANCEL_NOT_ATTRIBUTED
+    # Nothing was sent and nothing was recorded.
+    assert seam.calls == []
+    assert evidence.records == []
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_refuses_a_claim_from_another_physical_account_scope(
+    client: BinanceSpotDemoExecutionClient,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: Any,
+) -> None:
+    """A claim outside this lane's derived scope is not this lane's to follow up."""
+
+    evidence = _RecordingLaneEvidence()
+    seam = _CancelSeam(result=_NativeCancel("CANCELED"))
+    attempt = _envelope().order_attempt
+    assert attempt is not None
+    foreign_claim = DurableClaim(
+        row_id=1,
+        claim_account_scope="scope-belonging-to-another-account",
+        idempotency_key=attempt.idempotency_key,
+        side="buy",
     )
+    with pytest.raises(mal.SpotDemoLimitError) as error:
+        await _cancel(
+            client, seam, evidence, monkeypatch, claim=foreign_claim, confirm=True
+        )
+    assert error.value.reason is mal.SpotDemoLimitReason.CANCEL_NOT_ATTRIBUTED
+    assert seam.calls == []
+    assert evidence.records == []
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_dry_run_writes_no_durable_cancel_fact(
+    client: BinanceSpotDemoExecutionClient,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: Any,
+) -> None:
+    """A dry run cancels nothing, so it records nothing.
+
+    A durable ``CANCEL`` row asserts the broker cancelled the order. On a dry run
+    it did not, and a later reconciliation reading that row would conclude the
+    order is gone when it is still live at the venue.
+    """
+
+    evidence = _RecordingLaneEvidence()
+    seam = _CancelSeam(result=_NativeCancel("CANCELED"))
+    disposition = await _cancel(client, seam, evidence, monkeypatch, confirm=False)
+
+    assert disposition.dispatched is False
+    assert disposition.evidence_kind is None
+    assert evidence.records == []
+    assert seam.calls == []
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_confirmed_records_the_cancel_kind(
+    client: BinanceSpotDemoExecutionClient,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: Any,
+) -> None:
+    """C3-4 — a broker-proven cancellation is the only thing recorded as ``cancel``."""
+
+    evidence = _RecordingLaneEvidence()
+    seam = _CancelSeam(result=_NativeCancel("CANCELED"))
+    scope_calls: list[str] = []
+    attempt = _envelope().order_attempt
+    assert attempt is not None
+
+    disposition = await _cancel(
+        client, seam, evidence, monkeypatch, confirm=True, scope_calls=scope_calls
+    )
+
+    assert disposition.dispatched is True
     assert evidence.kinds == ["cancel"]
-    # confirm=False is the ROB-298 operator gate: a dry run, zero HTTP.
-    assert type(result).__name__ == "SpotDemoDryRunResult"
+    assert evidence.records[0][1]["operation"] == "cancel"
+    assert evidence.records[0][1]["broker_order_id"] == "9001"
+    # The DELETE used the *derived* id, and lease ownership was re-proved both
+    # before the follow-up description and again immediately before the send.
+    assert seam.calls == [("BTCUSDT", str(attempt.broker_client_order_id), True)]
+    assert scope_calls == ["assert_owned", "assert_owned"]
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [None, "", "NEW", "PARTIALLY_FILLED"])
+async def test_cancel_response_without_proof_is_unknown_not_cancel(
+    client: BinanceSpotDemoExecutionClient,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: Any,
+    status: str | None,
+) -> None:
+    """A response that does not prove a cancellation is an unknown, not a cancel."""
+
+    evidence = _RecordingLaneEvidence()
+    seam = _CancelSeam(result=_NativeCancel(status))
+    disposition = await _cancel(client, seam, evidence, monkeypatch, confirm=True)
+
+    assert disposition.evidence_kind is mal.SpotDemoLaneEvidenceKind.UNKNOWN
+    assert evidence.kinds == ["unknown"]
+    assert (
+        evidence.records[0][1]["operator_visible_state"]
+        == mal.SPOT_DEMO_UNRECOVERABLE_STATE
+    )
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_post_send_uncertainty_leaves_durable_unknown_evidence(
+    client: BinanceSpotDemoExecutionClient,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: Any,
+) -> None:
+    """The DELETE may have reached the broker, so silence is not an option.
+
+    ROB-298 §4 / ROB-395 semantics: an unproven outcome is recorded as an
+    unknown carrying the operator-visible blocked state, and the exception is
+    re-raised. Swallowing it, or recording nothing, would leave a possibly
+    cancelled order looking untouched.
+    """
+
+    evidence = _RecordingLaneEvidence()
+    seam = _CancelSeam(raises=RuntimeError("simulated post-send uncertainty"))
+    attempt = _envelope().order_attempt
+    assert attempt is not None
+
+    with pytest.raises(RuntimeError):
+        await _cancel(client, seam, evidence, monkeypatch, confirm=True)
+
+    assert seam.calls == [("BTCUSDT", str(attempt.broker_client_order_id), True)]
+    assert evidence.kinds == ["unknown"], (
+        "a cancel whose outcome is unknown must leave durable evidence saying so"
+    )
+    payload = evidence.records[0][1]
+    assert payload["operation"] == "cancel"
+    assert payload["operator_visible_state"] == mal.SPOT_DEMO_UNRECOVERABLE_STATE
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("native_order_id", "remainder"),
+    [("", Decimal("0.1")), ("   ", Decimal("0.1")), ("9001", None)],
+)
+async def test_cancel_requires_the_j3a_followup_capability(
+    client: BinanceSpotDemoExecutionClient,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: Any,
+    native_order_id: str,
+    remainder: Decimal | None,
+) -> None:
+    """J3A's own follow-up predicate gates the cancel, unattributed id included."""
+
+    evidence = _RecordingLaneEvidence()
+    seam = _CancelSeam(result=_NativeCancel("CANCELED"))
+    with pytest.raises(mal.SpotDemoLimitError) as error:
+        await _cancel(
+            client,
+            seam,
+            evidence,
+            monkeypatch,
+            attributed_native_order_id=native_order_id,
+            known_remainder=remainder,
+            confirm=True,
+        )
+    assert (
+        error.value.reason is mal.SpotDemoLimitReason.CANCEL_FOLLOWUP_CAPABILITY_ABSENT
+    )
+    assert seam.calls == []
+    assert evidence.records == []
+    assert httpx_mock.get_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_runs_the_writer_domain_invariants(
+    client: BinanceSpotDemoExecutionClient,
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: Any,
+) -> None:
+    """The cancel path is not a side door around the registry invariants."""
+
+    evidence = _RecordingLaneEvidence()
+    seam = _CancelSeam(result=_NativeCancel("CANCELED"))
+    monkeypatch.setattr(client, "cancel_order", seam)
+    entry = _identity_known_entry()
+    mutated = tuple(
+        dataclasses.replace(item, writer=True)
+        if item.lane_id
+        in (mal.SPOT_DEMO_CANONICAL_LANE_ID, mal.SPOT_DEMO_FUTURES_LANE_ID)
+        else item
+        for item in CANONICAL_LANE_REGISTRY
+    )
+    with pytest.raises(mal.SpotDemoLimitError) as error:
+        await _composition(client, lane_evidence=evidence).cancel_limit_order(
+            _scope(),
+            _attributed_claim(entry),
+            entry=entry,
+            symbol="BTCUSDT",
+            client_order_id=str(_envelope().order_attempt.broker_client_order_id),
+            attributed_native_order_id="9001",
+            known_remainder=Decimal("0.1"),
+            registry=mutated,
+            confirm=True,
+        )
+    assert error.value.reason is mal.SpotDemoLimitReason.BINANCE_WRITER_CONFLICT
+    assert seam.calls == []
     assert httpx_mock.get_requests() == []
 
 
@@ -1381,8 +2073,15 @@ def test_c3_6_operator_visible_blocked_state_is_named() -> None:
     assert disposition.operator_visible_state == mal.SPOT_DEMO_UNRECOVERABLE_STATE
 
 
-def test_c3_7_lane_stays_lifecycle_blocked_until_activation_is_approved() -> None:
-    """C3-7 — this job does not activate anything."""
+def test_c3_7_lifecycle_status_is_computed_from_the_recovery_items() -> None:
+    """C3-7 — the lane is lifecycle-blocked because it is *computed* to be.
+
+    A constant naming ``AUTO_READY_BLOCKED_BY_LIFECYCLE`` that nothing evaluates
+    is a claim, not a state. The verdict here is derived from live objects, and
+    today it is blocked for two concrete reasons: no production caller
+    constructs this composition (so there is no bound lane-evidence store), and
+    the restart trigger has no enumerable physical-account scope.
+    """
 
     assert (
         mal.SPOT_DEMO_LIFECYCLE_BLOCKED_LANE_STATUS
@@ -1390,6 +2089,71 @@ def test_c3_7_lane_stays_lifecycle_blocked_until_activation_is_approved() -> Non
     )
     entry = get_lane_registry_entry(mal.SPOT_DEMO_CANONICAL_LANE_ID)
     assert entry.activation_status is not ActivationStatus.ENABLED
+
+    gaps = mal.spot_demo_recovery_contract_gaps(entry)
+    assert set(gaps) == {"restart_trigger", "lane_native_evidence"}
+    assert set(gaps) <= set(mal.SPOT_DEMO_RECOVERY_CONTRACT_ITEMS)
+    assert (
+        mal.spot_demo_lifecycle_lane_status(entry)
+        is LaneStatus.AUTO_READY_BLOCKED_BY_LIFECYCLE
+    )
+
+    blockers = mal.spot_demo_activation_blockers(entry)
+    assert LaneStatus.AUTO_READY_BLOCKED_BY_LIFECYCLE.value in blockers
+    for gap in gaps:
+        assert f"recovery_gap={gap}" in blockers
+
+
+def test_c3_7_a_fully_wired_owner_has_no_recovery_gaps(
+    client: BinanceSpotDemoExecutionClient,
+) -> None:
+    """The verdict discriminates: it is not a constant dressed as a computation.
+
+    Given an owner holding both ports and an identity-known row, every item is
+    satisfied and the lifecycle verdict clears. Without this, ``blocked`` would
+    be indistinguishable from ``always returns blocked``.
+    """
+
+    composition = _composition(client, reservations=_RecordedReservations([]))
+    entry = _identity_known_entry()
+
+    assert mal.spot_demo_recovery_contract_gaps(entry, composition=composition) == ()
+    assert mal.spot_demo_lifecycle_lane_status(entry, composition=composition) is None
+    blockers = mal.spot_demo_activation_blockers(entry, composition=composition)
+    assert LaneStatus.AUTO_READY_BLOCKED_BY_LIFECYCLE.value not in blockers
+    # §D is untouched: policy is still the primary terminal status.
+    assert blockers[0] == LaneStatus.AUTO_READY_BLOCKED_BY_POLICY.value
+
+
+def test_c3_7_each_missing_recovery_item_is_reported_on_its_own(
+    client: BinanceSpotDemoExecutionClient,
+) -> None:
+    """Every gap has an independent cause, so one cannot mask another."""
+
+    wired = _composition(client, reservations=_RecordedReservations([]))
+    unwired = _composition(client)
+
+    # Identity unknown alone blocks the restart trigger, even fully wired.
+    signed = get_lane_registry_entry(mal.SPOT_DEMO_CANONICAL_LANE_ID)
+    assert mal.spot_demo_recovery_contract_gaps(signed, composition=wired) == (
+        "restart_trigger",
+    )
+    # An unbound reservation port alone blocks it too, even with a known identity.
+    assert mal.spot_demo_recovery_contract_gaps(
+        _identity_known_entry(), composition=unwired
+    ) == ("restart_trigger",)
+
+
+def test_c3_7_the_runbook_states_the_computed_status_not_a_wish() -> None:
+    """The contract document must agree with what the code computes."""
+
+    runbook = (
+        _REPO_ROOT / "docs/runbooks/binance-spot-demo-mock-auto-limit.md"
+    ).read_text(encoding="utf-8")
+    entry = get_lane_registry_entry(mal.SPOT_DEMO_CANONICAL_LANE_ID)
+    for gap in mal.spot_demo_recovery_contract_gaps(entry):
+        assert f"`{gap}`" in runbook, f"unmet recovery item {gap} is undocumented"
+    assert "spot_demo_recovery_contract_gaps" in runbook
 
 
 def test_lane_evidence_port_is_required_at_construction(

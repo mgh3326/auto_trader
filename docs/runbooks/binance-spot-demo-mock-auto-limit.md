@@ -11,7 +11,9 @@ and single-currency requirements below; there is no second contract file.
 
 **No activation.** Activation to `AUTO_ENABLED` is out of scope for this job and
 requires separate approval. Missing any recovery item below leaves this lane at
-`AUTO_READY_BLOCKED_BY_LIFECYCLE`.
+`AUTO_READY_BLOCKED_BY_LIFECYCLE` — and that verdict is **computed** by
+`spot_demo_recovery_contract_gaps()`, not asserted in this document. See §6.7 for
+what is unmet today.
 
 **No scheduler, no canary, no send.** This job registers no TaskIQ / Prefect /
 cron / launchd / systemd entry and dispatches nothing. A real order is J8's
@@ -47,6 +49,24 @@ bounded canary and nothing else.
 
 `role` is a registry **purpose** value, not execution authority.
 
+### `scheduler_owner`: absent ≠ disabled
+
+The signed table carries two different facts in this column and they stay two
+facts here:
+
+| value | meaning | blocker string emitted |
+|---|---|---|
+| `SchedulerOwner.DISABLED` | an explicit decision, backed by in-repo evidence that Binance Demo has no scheduler registration | `scheduler_owner_disabled` |
+| `None` | **owner absent** — no bind authority was ever assigned, which is why those rows also carry `MissingBinding.OWNER` | `scheduler_owner_absent` |
+
+`spot_demo_activation_blockers()` branches on the two separately. Reporting
+absence as disablement would tell a downstream reader that an ownership decision
+had been made when none was. The canonical Binance row is `DISABLED`, so a test
+that only exercises that row cannot see the difference; the `None` branch is
+exercised directly against the signed Alpaca crypto rows
+(`test_an_absent_scheduler_owner_is_not_a_spelling_of_disabled`,
+`test_signed_rows_with_an_absent_owner_report_absence`).
+
 ### Terminal lane status
 
 When the LIMIT lifecycle is complete, the **primary** terminal lane status for
@@ -66,6 +86,18 @@ The merged registry's signed allowlist for this lane still admits three values
 — a conservative superset the J2A verifier dispositioned as *not a violation*.
 J6B binds the narrower choice by contract and by `SPOT_DEMO_PRIMARY_TERMINAL_
 LANE_STATUS`, without touching the registry.
+
+**Three different statuses are in play; do not conflate them.**
+
+| status | who owns it | value today |
+|---|---|---|
+| the registry's `lane_status` field | J2A (signed, unmodified here) | `NOT_READY` |
+| the §D primary *terminal* status this composition binds | J6B contract | `AUTO_READY_BLOCKED_BY_POLICY` |
+| the §83 correction-3 lifecycle verdict, computed | `spot_demo_lifecycle_lane_status()` | `AUTO_READY_BLOCKED_BY_LIFECYCLE` (see §6.7) |
+
+Reading `spot_demo_activation_blockers()` shows all three: the policy blocker at
+index 0, the lifecycle verdict and its named gaps next, then the scheduler,
+activation, and missing-binding blockers.
 
 ---
 
@@ -182,8 +214,34 @@ retry_or_readback_queue`).
 
 `process_restart_rediscovers_durable_j2b_claims_for_physical_account`
 
-Machine constant: `SPOT_DEMO_RESTART_TRIGGER`. Each rediscovered claim is
-resolved by `BinanceSpotDemoLimitComposition.resolve_restart_claim`.
+Machine constant: `SPOT_DEMO_RESTART_TRIGGER`. The **executable** entry point is
+`BinanceSpotDemoLimitComposition.rediscover_restart_claims`
+(`SPOT_DEMO_RESTART_TRIGGER_ENTRYPOINT`), and each rediscovered claim is resolved
+by `resolve_restart_claim`. Naming a trigger is not owning one, so the method
+does the enumeration itself:
+
+1. derive this lane's physical-account scope from the J2A entry — never from a
+   caller-supplied string;
+2. `list_reservations(account_scope=...)` on the lane's own reservation
+   read-side port;
+3. for each survivor, recompute the client order id from the claim's J2B
+   idempotency key (`derive_attributed_client_order_id`);
+4. authoritative readback → disposition → lane-native evidence.
+
+`DurableSendClaimAdapter` deliberately exposes no listing surface — enumerating
+survivors is lane work, not coordination work — so the trigger takes its own
+`reservations` port. An **unbound** port is not silently substituted: it raises
+`restart_claim_source_unavailable` and is reported as a computed recovery gap
+(§6.7).
+
+Two kinds of survivor are deliberately *not* acted on, and both leave an
+`unknown` evidence row carrying `unknown_pending_reconcile` rather than being
+silently skipped:
+
+- a claim whose key this lane's lineage cannot reproduce — the physical account
+  is shared, so the claim may belong to another writer; it is not even read back;
+- an attributable claim whose symbol cannot be recovered — the readback needs a
+  symbol, and guessing one would aim an authoritative query at the wrong market.
 
 ### C3-3 Authoritative broker readback
 
@@ -208,11 +266,13 @@ to be exactly these seven.
 | reject | `resolve_restart_claim` when the readback normalizes to `REJECTED` |
 | expiry | `resolve_restart_claim` when the readback normalizes to `EXPIRED` (the local clock is never expiry) |
 | partial fill | `resolve_restart_claim` when the readback normalizes to `PARTIALLY_FILLED` |
-| cancel | `cancel_limit_order` after the cancel call; `resolve_restart_claim` for `CANCELED` |
+| cancel | `cancel_limit_order` **only** on a broker-proven cancellation (`confirm=True` + a native status normalizing to `CANCELED`); `resolve_restart_claim` for `CANCELED` |
 | terminal reconciliation | `resolve_restart_claim` for `FILLED` / `NOT_CREATED`, and again after `release_with_terminal_evidence` succeeds |
 
 The evidence port is required **at construction**: a composition that cannot
 write its own evidence cannot be built, let alone dispatch.
+
+A dry-run cancel writes **nothing at all** — see §6a.
 
 ### C3-5 Exact `release_if_matches` condition
 
@@ -240,15 +300,64 @@ may not release; no flag is ever fabricated. The unrestricted
 `RestartDisposition.operator_visible_state` and written into the lane evidence
 payload. It is a state, not a log line.
 
-### C3-7 Lifecycle status
+### C3-7 Lifecycle status — computed, and currently blocked
 
-This lane remains at `AUTO_READY_BLOCKED_BY_LIFECYCLE` for activation purposes.
-This job activates nothing.
+`spot_demo_recovery_contract_gaps(entry, composition=...)` checks each of the six
+items above against live objects — the registry entry, the transport class, the
+J3A adapter, and the composition instance that actually holds the lane's ports —
+and `spot_demo_lifecycle_lane_status()` resolves any unmet item to
+`AUTO_READY_BLOCKED_BY_LIFECYCLE`. The enum member
+`SPOT_DEMO_LIFECYCLE_BLOCKED_LANE_STATUS` is what that verdict *resolves to*, not
+the verdict itself.
+
+**Unmet today** (`spot_demo_recovery_contract_gaps(signed_entry)`):
+
+| gap | why it is unmet | what would close it |
+|---|---|---|
+| `restart_trigger` | two independent causes: no production caller constructs this composition, so no `reservations` port is bound; **and** the signed row's `identity_status` is `UNKNOWN`, so `physical_account_scope_for_entry` raises and there is no scope to enumerate within | masked-fingerprint identity evidence for the Binance Demo account (J2A-owned) **and** a production wiring site |
+| `lane_native_evidence` | the seven kinds exist and are written, but no production construction site binds a durable `SpotDemoLaneEvidencePort` — today only tests construct the composition | a production wiring site with a durable evidence store |
+
+Both gaps have the same root: **this composition has no production caller.**
+Building one is out of scope for J6B, which is why the honest state is a computed
+`AUTO_READY_BLOCKED_BY_LIFECYCLE` rather than a claim of readiness. Status of the
+remaining work: `pending` — owner J8 / a later activation job, not this one.
+
+The verdict discriminates rather than always returning "blocked": given an owner
+holding both ports and an identity-known entry, the gaps are empty and the
+lifecycle status clears (`test_c3_7_a_fully_wired_owner_has_no_recovery_gaps`),
+and each gap is reproducible on its own cause
+(`test_c3_7_each_missing_recovery_item_is_reported_on_its_own`).
 
 **Never reposted.** `RestartDisposition.repost` is a structural `False` with
 `init=False`: no code path can construct a disposition that authorizes
 re-sending an order whose outcome is unknown. This is proven exhaustively over
 every readback outcome.
+
+---
+
+## 6a. Cancel — the same contract as a submit
+
+A cancel is a `DELETE` against a real venue, not a lighter operation. It runs
+under the same attribution, coordination, and uncertainty contract as a submit:
+
+| step | what runs | why |
+|---|---|---|
+| fresh guards | `assert_spot_demo_transport`, lane check, `assert_mock_only_endpoint`, `assert_binance_domain_invariants` | the cancel path is not a side door around the registry invariants |
+| **attribution** | `assert_client_order_id_attributed` (the id must be reproducible from this claim's J2B key) and `assert_claim_belongs_to_lane` (J2A-derived scope) | `confirm` decides whether a mutation is *sent*; it says nothing about whether the thing being mutated is ours |
+| **coordination** | `CoordinationScope.assert_owned()`, then J3A's own `describe_claim_followup` predicate | that predicate requires an attributed native order id **and** a known remainder, so a cancel aimed at an order whose identity or remainder is unknown cannot even be described |
+| pre-send re-assert | `CoordinationScope.assert_owned()` again, immediately before the `DELETE` | anything awaited in between can outlive the lease |
+| **uncertainty** | a raised send records `unknown` + `unknown_pending_reconcile` and re-raises; a response that does not normalize to `CANCELED` is also `unknown` | ROB-298 §4 / ROB-395 evidence-first: the write may well have reached the broker, so silence is not an option |
+
+**Dry run writes nothing.** Without `confirm=True` no `DELETE` is sent and **no
+lane evidence row is created**, durable or otherwise;
+`SpotDemoCancelDisposition.dispatched` is `False`. A durable `CANCEL` row asserts
+that the broker cancelled the order — on a dry run it did not, and a later
+reconciliation reading that row would conclude the order is gone while it is
+still live at the venue.
+
+Refusal reason codes: `cancel_not_attributed`,
+`cancel_followup_capability_absent`. Both are disjoint from J3A's
+`CoordinationReasonCode` vocabulary.
 
 ---
 
@@ -261,7 +370,10 @@ every readback outcome.
 3. the registry's declared endpoint passes `assert_mock_only_endpoint`;
 4. `CoordinationScope.assert_owned()` immediately before the send — the
    coordinator's single pre-callback attestation is not sufficient on its own;
-5. `assert_spot_demo_transport` runs **again** inside the callback.
+5. `assert_spot_demo_transport` runs **again** inside the callback;
+6. the registry writer-domain invariants (`assert_binance_domain_invariants`).
+
+The cancel path runs the same list — see §6a.
 
 Live (`api.binance.com`), retired testnet (`testnet.binance.vision`), live
 futures (`fapi.binance.com`), Futures Demo (`demo-fapi.binance.com`), and suffix
@@ -291,13 +403,35 @@ either way the assertion is zero HTTP.
 Every zero-I/O claim is asserted as `httpx_mock.get_requests() == []` — an
 observed transport call count, not an inference.
 
-Fifteen injections were run against these twelve claims (items 4, 5, and 6 each
-got two, to separate byte identity from behaviour, the notional-only branch from
-the time-in-force branch, and the rounding direction from the delta guard). All
-fifteen went red; none survived. Guard tests assert **at the guard function
-first** and then through the pre-dispatch chain, so a neutered guard fails at
-its own call site rather than falling through to a later registry check and
-producing a red test whose traceback points somewhere else.
+### Direct call vs. dispatch chain
+
+A guard that only fires when a test calls it by name protects nothing. For each
+of items 1, 2, 3, 5, 6, and 8 there are **two** kinds of coverage and they are
+labelled separately:
+
+- a **direct** assertion at the guard function, so a neutered guard dies at its
+  own call site rather than at some later, unrelated check; and
+- a **chain** assertion that drives the real `validate_pre_dispatch`, asserting
+  on its own line that the refusal came from *this* guard and naming what it got
+  instead if it did not (`test_mutant_01c_*`, `test_mutant_02c_*`,
+  `test_mutant_03c_*`).
+
+The writer-domain invariants (items 1–3) run **before** `assert_lineage_registry_
+binding`, pinned by `test_the_domain_invariants_are_reached_before_the_j2a_
+binding_check`. Placed after it they would be dead code for this lane, because
+the signed registry always dies on the binding check first — which is exactly the
+gap the r1 round left open: the three guards were defined, exported, and
+documented, but nothing on the dispatch path called them.
+
+Cancel-path coverage (attribution, dry-run silence, post-send uncertainty) is in
+§6a and is likewise driven through the real method, not through a helper.
+
+Zero-HTTP claims are scoped honestly. `submit_limit_order(..., confirm=True)`
+reaching no transport is the result of a **structural** refusal at
+`assert_lineage_registry_binding`, not evidence that the code ran up to the send
+and stopped there; the dispatch closure is unreachable under the signed registry,
+which is why its ACK/unknown branches are proven at the `classify_submit_outcome`
+seam instead.
 
 ---
 
