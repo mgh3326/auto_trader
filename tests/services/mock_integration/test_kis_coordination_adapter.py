@@ -84,6 +84,16 @@ J3B_WRITE_FENCE: frozenset[str] = frozenset(
         # ("orch 가 r5 에서 명시 승인(회귀 귀속 확인 후)")
         "tests/test_services_kis_logging.py",
         "tests/test_rob750_mock_mirror_intent_release.py",
+        # r6: orch approved the remaining six after the CI-driven inventory
+        # confirmed every one of them passes on origin/main and fails here —
+        # i.e. they are this branch's own regressions.
+        # ("orch 가 r6 에서 명시 승인(회귀 귀속 CI 대조 확인 후)")
+        "tests/test_kis_mock_order_ledger.py",
+        "tests/brokers/kis/mock_scalping_exec/test_reservation.py",
+        "tests/brokers/kis/mock_scalping_exec/test_pre_send_transport.py",
+        "tests/test_kis_mock_cancel_modify.py",
+        "tests/services/test_kis_mock_attribution_chain.py",
+        "tests/test_kis_mock_lifecycle_reconciliation_acceptance.py",
     }
 )
 # ROB-1263 r3: the r2 branch had widened this set itself so its own out-of-fence
@@ -238,6 +248,120 @@ def _ok(_grant: Any) -> Any:
         )
 
     return _run()
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers for the other KIS mock suites
+#
+# ROB-1263 changed what a caller must hold before a mock mutation reaches the
+# wire. Suites whose subject is something else (ledger writes, reservations, TR
+# routing, attribution) still have to do the caller's part, and they should not
+# each grow their own copy of it. These are the one implementation.
+# ---------------------------------------------------------------------------
+
+
+@contextlib.asynccontextmanager
+async def installed_kis_mock_route():
+    """Install a coordinated route so a KIS mock send is authorized at all.
+
+    The route-less refusal itself is untouched and is covered by
+    `test_without_a_route_the_lane_sends_nothing_at_all`.
+    """
+
+    physical = singleton.kis_mock_account_fingerprint(
+        app_key=APP_KEY, account_no=ACCOUNT_NO
+    )
+    _, envelope = _attempt_envelope()
+    space = FakeLockSpace()
+    route = singleton.KISMockCoordinationRoute(
+        envelope=envelope,
+        ports=singleton.KISMockLanePorts(
+            persistence=RecordingPersistence(),
+            dispatch_evidence=RecordingDispatchEvidence(),
+            uncertainty_gate=FakeUncertaintyGate(),
+            evidence_kinds=singleton.KIS_MOCK_LANE_EVIDENCE_KINDS,
+        ),
+        claims=DurableSendClaimAdapter(FakeIntents()),
+        connection_factory=ConnectionFactory(FakeLockConnection(space)),
+        registry=_bound_registry(envelope, "kr.kis.mock", physical_account_id=physical),
+    )
+    singleton.set_kis_mock_coordination_route_provider(lambda **_ctx: route)
+    try:
+        yield route
+    finally:
+        singleton.set_kis_mock_coordination_route_provider(None)
+
+
+def stub_kis_mock_wire_lease(monkeypatch):
+    """Keep the authority record, stand in for the PostgreSQL lease behind it.
+
+    The guard's requirement is unchanged — an authority is still installed and
+    still required. Only the database session it would otherwise open is stood
+    in for, so suites that run without the run-owned test database keep their
+    own subject.
+    """
+
+    @contextlib.asynccontextmanager
+    async def _lease(**kwargs: Any):
+        token = singleton._ACTIVE_WRITER_LEASE.set(
+            singleton._WriterAuthority(
+                account_mode=singleton.ACCOUNT_MODE,
+                advisory_keys=(singleton.kis_mock_legacy_advisory_key(),),
+                lease=object(),
+            )
+        )
+        try:
+            yield
+        finally:
+            singleton._ACTIVE_WRITER_LEASE.reset(token)
+
+    monkeypatch.setattr(singleton, "enforce_kis_mock_mutation_writer", _lease)
+
+
+def issued_followup_receipt(
+    operation_name: str,
+    *,
+    order_id: str,
+    is_mock: bool = True,
+    claim_scope: str = "mockpa:v1:shared",
+    claim_key: str = "mock-idempotency-v1:shared",
+    remainder: str = "10",
+):
+    """A live FOLLOWUP receipt; a no-op for live orders.
+
+    This is the caller doing what r3 requires of it, not the guard being
+    relaxed: the receipt is really issued inside a short critical section and
+    really expires with it.
+    """
+
+    from app.services.order_send_intent_service import OrderSendIntentReservation
+
+    if not is_mock:
+        return contextlib.nullcontext()
+
+    async def _reservations(account_scope: str):
+        return [
+            OrderSendIntentReservation(row_id=1, idempotency_key=claim_key, side="buy")
+        ]
+
+    class _Lease:
+        acquired = True
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            return None
+
+    return singleton.issue_kis_mock_followup_capability(
+        operation=singleton.KISMockOperation(operation_name),
+        claim_account_scope=claim_scope,
+        claim_idempotency_key=claim_key,
+        attributed_broker_order_id=order_id,
+        known_remainder=Decimal(remainder),
+        reservations=_reservations,
+        lease_factory=_Lease,
+    )
 
 
 # ===========================================================================
@@ -1552,6 +1676,12 @@ def test_the_write_fence_allow_list_is_exactly_the_briefed_set():
             "docs/contracts/rob-1263-kis-coordination-adapter.md",
             "tests/test_services_kis_logging.py",
             "tests/test_rob750_mock_mirror_intent_release.py",
+            "tests/test_kis_mock_order_ledger.py",
+            "tests/brokers/kis/mock_scalping_exec/test_reservation.py",
+            "tests/brokers/kis/mock_scalping_exec/test_pre_send_transport.py",
+            "tests/test_kis_mock_cancel_modify.py",
+            "tests/services/test_kis_mock_attribution_chain.py",
+            "tests/test_kis_mock_lifecycle_reconciliation_acceptance.py",
         }
     )
 
@@ -1563,10 +1693,6 @@ def test_the_write_fence_predicate_reds_on_an_out_of_fence_path():
         # The files this job reverted rather than widened the fence to reach.
         "app/services/brokers/kis/overseas_orders.py",
         "tests/services/mock_integration/test_coordination.py",
-        "tests/test_kis_mock_order_ledger.py",
-        "tests/brokers/kis/mock_scalping_exec/test_reservation.py",
-        "tests/brokers/kis/mock_scalping_exec/test_pre_send_transport.py",
-        "tests/test_kis_mock_cancel_modify.py",
         # And the upstream surfaces that are read/import only.
         "app/services/mock_integration/coordination.py",
         "app/services/mock_lane_registry.py",
