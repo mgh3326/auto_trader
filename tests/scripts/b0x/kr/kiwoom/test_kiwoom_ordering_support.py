@@ -31,6 +31,7 @@ def test_account_writer_lease_is_account_keyed_and_nonblocking(tmp_path) -> None
             same_account.acquire()
         other_account.acquire()
         other_account.assert_held()
+        assert first.canonical()["authorizes_send"] is False
     finally:
         other_account.release()
         first.release()

@@ -345,19 +345,29 @@ async def read_own_attribution(
     *,
     journal: OwnOrderJournal,
     read_order_detail: OrderDetailReader,
+    durable_broker_order_ids: frozenset[str] | None = None,
 ) -> OwnFillAttribution | AttributionUnreadable:
     """자기 귀속 — 저널(소유) × kt00007(체결 진실). 어떤 실패든 tri-state.
 
     🔴 Never touches ``review.kis_mock_order_ledger``. The evidence chain is
     the local journal plus the kiwoom broker, and nothing else.
+    🔴 A missing/corrupt JSONL cannot convert an unresolved durable claim into
+    "this lane never traded".
     """
 
+    durable_ids = durable_broker_order_ids or frozenset()
     try:
         records = journal.read_all()
     except Exception as exc:  # noqa: BLE001 — unreadable, not empty
-        return attribution_unreadable(type(exc).__name__)
+        return attribution_unreadable(
+            "journal_unreadable_with_durable_claims"
+            if durable_ids
+            else type(exc).__name__
+        )
 
     if not records:
+        if durable_ids:
+            return attribution_unreadable("jsonl_absence_with_durable_claims")
         # 🔴 A readable, genuinely empty journal. Distinct from unreadable: it
         # means this lane has authored nothing, so *every* holding is legacy —
         # which is exactly right on a coexisting KR-B1 account.

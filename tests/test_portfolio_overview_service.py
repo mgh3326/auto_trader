@@ -988,6 +988,11 @@ async def test_get_overview_excludes_non_tradable_manual_crypto_everywhere(
         "get_active_upbit_markets",
         AsyncMock(return_value=["KRW-BTC"]),
     )
+    monkeypatch.setattr(
+        portfolio_overview_module,
+        "get_usd_krw_rate",
+        AsyncMock(return_value=1350.0),
+    )
 
     overview = await service.get_overview(user_id=7)
 
