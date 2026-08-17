@@ -262,3 +262,20 @@ alters a live request.
 The route provider is `None` in production, for the two independent reasons in
 §6. Installing one is a separate, approval-gated decision; it is a single
 `set_kis_mock_coordination_route_provider(...)` call, deliberately not made here.
+
+## 11. Known unguarded surface — the US (`us.kis.mock`) lane
+
+`app/services/brokers/kis/overseas_orders.py` exposes three POST sites —
+`order_overseas_stock`, `cancel_overseas_order`, `modify_overseas_order` — that
+accept `is_mock=True` and reach the transport with **no coordination authority
+at all**. `us.kis.mock` is a canonical J2A lane on the same
+`openapivts.koreainvestment.com:29443` host, so by the §86 boundary statement
+this is an open KIS mock mutation boundary.
+
+It is **not closed here**. J3B's scope is the KIS mock **KR** lane, and that
+module is outside this job's write fence; closing it is a separate job
+(operator §87 ④). The KR enumeration test discovers POST sites structurally, so
+a new KR bypass fails the build; the US sites are enumerated only so that a new
+one cannot appear unnoticed, and their guard state is deliberately not asserted
+— a test that pinned "unguarded" would defend the defect.
+

@@ -28,8 +28,8 @@ import app.mcp_server.tooling.orders_modify_cancel as omc
 import app.services.kis_mock_runner.singleton as singleton
 from app.models.review import OrderSendIntent
 from app.services.brokers.client_order_ids import BrokerClientIdTarget
+from app.services.brokers.kis.pre_send import PreSendFreshnessError
 from app.services.brokers.kis.send_outcome import (
-    OrderSendDisposition,
     OrderSendOutcomeTracker,
 )
 from app.services.kis_mock_attribution import InvalidStrategy, MissingAttribution
@@ -476,6 +476,36 @@ async def _clean_intents(db_session):
 
 
 @pytest.fixture
+def _mock_route():
+    """Install a coordinated route so a mock KR send is authorized at all.
+
+    r4 §3: without a route the adapter refuses to send, so any test whose
+    subject is something *other* than that refusal has to supply one.
+    """
+
+    events: list[str] = []
+    stack = _stack(events)
+    _, envelope = _attempt_envelope()
+    route = singleton.KISMockCoordinationRoute(
+        envelope=envelope,
+        ports=_ready_ports(
+            persistence=stack["persistence"],
+            dispatch_evidence=stack["evidence"],
+            uncertainty_gate=stack["gate"],
+        ),
+        claims=DurableSendClaimAdapter(stack["intents"]),
+        connection_factory=stack["factory"],
+        registry=_kis_registry(envelope),
+    )
+    singleton.set_kis_mock_coordination_route_provider(lambda **_ctx: route)
+    stack["events"] = events
+    try:
+        yield stack
+    finally:
+        singleton.set_kis_mock_coordination_route_provider(None)
+
+
+@pytest.fixture
 def _traced(monkeypatch):
     """Trace the pre-send order and count every downstream call."""
 
@@ -568,7 +598,7 @@ async def test_signal_commit_failure_blocks_with_signal_record_unavailable(
 
 @pytest.mark.asyncio
 async def test_ordered_trace_proves_signal_commit_precedes_reserve_and_http(
-    _traced, _clean_intents
+    _traced, _clean_intents, _mock_route
 ):
     await oe._execute_and_record(**_execute_kwargs())
 
@@ -909,20 +939,23 @@ async def test_the_send_boundary_gate_runs_inside_a_real_coordinated_section():
 
 
 @pytest.mark.asyncio
-async def test_proven_not_created_releases_only_the_exact_matched_reservation(
-    _traced, _clean_intents, db_session
+async def test_an_explicit_pre_send_block_releases_only_the_exact_matched_row(
+    monkeypatch, _clean_intents, _mock_route, db_session
 ):
-    tracker = OrderSendOutcomeTracker()  # defaults to NOT_CREATED
+    async def _blocked(**kwargs: Any):
+        raise PreSendFreshnessError(("approval_window:EXPIRED",))
 
-    async def _fail(**kwargs: Any):
-        raise httpx.ConnectError("token setup failed before dispatch")
+    async def _baseline(**kwargs: Any) -> None:
+        return None
 
-    oe._execute_order = _fail  # type: ignore[assignment]
-    with pytest.raises(oe.OrderSendNotCreated):
-        await oe._execute_and_record(**_execute_kwargs(send_outcome=tracker))
+    import app.mcp_server.tooling.kis_mock_ledger as ledger
 
-    assert tracker.disposition is OrderSendDisposition.NOT_CREATED
-    # The exact key is releasable again; nothing else was touched.
+    monkeypatch.setattr(oe, "_execute_order", _blocked)
+    monkeypatch.setattr(ledger, "_fetch_kis_mock_baseline_qty", _baseline)
+
+    result = await oe._execute_and_record(**_execute_kwargs())
+    assert result["pre_send_blocked"] is True
+
     row_id = await OrderSendIntentService(db_session).reserve(
         account_scope="kis_mock", idempotency_key="kis-mock:rob1263:acceptance"
     )
@@ -931,7 +964,7 @@ async def test_proven_not_created_releases_only_the_exact_matched_reservation(
 
 @pytest.mark.asyncio
 async def test_timeout_after_the_send_boundary_holds_the_claim_and_offers_no_retry(
-    _traced, _clean_intents, db_session
+    _traced, _clean_intents, _mock_route, db_session
 ):
     tracker = OrderSendOutcomeTracker()
     tracker.mark_dispatched()  # the POST crossed the boundary
@@ -962,7 +995,7 @@ async def test_timeout_after_the_send_boundary_holds_the_claim_and_offers_no_ret
 
 @pytest.mark.asyncio
 async def test_a_missing_outcome_tracker_also_holds_the_claim(
-    _traced, _clean_intents, db_session
+    _traced, _clean_intents, _mock_route, db_session
 ):
     """No tracker proves less than an ambiguous one, so it cannot release."""
 
@@ -983,7 +1016,7 @@ async def test_a_missing_outcome_tracker_also_holds_the_claim(
 
 @pytest.mark.asyncio
 async def test_a_restart_that_sees_an_unresolved_claim_makes_zero_repost(
-    _traced, _clean_intents, db_session
+    _traced, _clean_intents, _mock_route, db_session
 ):
     """A survivor claim blocks the identical send instead of re-issuing it."""
 
@@ -1793,20 +1826,27 @@ async def test_execute_and_record_routes_a_mock_send_through_the_coordinator(
 
 
 @pytest.mark.asyncio
-async def test_without_a_route_the_lane_reports_blocked_and_is_not_auto_evidence():
+async def test_without_a_route_the_lane_sends_nothing_at_all():
+    """r4 §3 — the adapter is the final enforcement point.
+
+    This previously sent anyway and merely withheld the AUTO label, which takes
+    the label off a bypass instead of closing it. A send with no coordination
+    authority does not happen.
+    """
+
     sends = {"n": 0}
 
     async def _send() -> dict[str, Any]:
-        sends["n"] += 1
+        sends["n"] += 1  # pragma: no cover - must never run
         return {"odno": "0000117058"}
 
     singleton.set_kis_mock_coordination_route_provider(None)
-    outcome = await singleton.run_kis_mock_send(send=_send)
+    with pytest.raises(singleton.KISMockCoordinationBlocked) as excinfo:
+        await singleton.run_kis_mock_send(send=_send)
 
-    assert sends["n"] == 1
-    assert outcome.coordinated is False
-    assert outcome.auto_evidence_eligible is False
-    assert outcome.status == "AUTO_READY_BLOCKED_BY_LIFECYCLE"
+    assert sends["n"] == 0
+    assert excinfo.value.reason_code == singleton.KIS_MOCK_LIFECYCLE_PORTS_UNAVAILABLE
+    assert "AUTO_READY_BLOCKED_BY_LIFECYCLE" in str(excinfo.value)
 
 
 def test_the_coordinator_call_site_exists_in_the_production_order_path():
@@ -1841,39 +1881,33 @@ def test_the_coordinator_call_site_exists_in_the_production_order_path():
 
 @pytest.mark.asyncio
 async def test_a_stale_pre_send_release_cannot_delete_a_replacement_reservation(
-    _traced, _clean_intents, db_session
+    monkeypatch, _clean_intents, _mock_route, db_session
 ):
-    """Releasing by (scope, key) alone would delete someone else's row.
-
-    The reservation is taken, then deleted and *re-made* out of band — the shape
-    a reconciler or a later attempt produces. The stale failure path must miss.
-    """
+    """Releasing by (scope, key) alone would delete someone else's row."""
 
     key = "kis-mock:rob1263:acceptance"
     service = OrderSendIntentService(db_session)
-    tracker = OrderSendOutcomeTracker()  # NOT_CREATED
-
     captured: dict[str, Any] = {}
 
-    async def _fail(**kwargs: Any):
-        # Simulate the interleaving *after* our row exists and before release.
+    async def _blocked(**kwargs: Any):
         await service.release(account_scope="kis_mock", idempotency_key=key)
         captured["replacement_id"] = await service.reserve(
             account_scope="kis_mock", idempotency_key=key, side="buy"
         )
-        raise httpx.ConnectError("token setup failed before dispatch")
+        raise PreSendFreshnessError(("approval_window:EXPIRED",))
 
-    monkeypatchless = oe._execute_order
-    oe._execute_order = _fail  # type: ignore[assignment]
-    try:
-        with pytest.raises(oe.OrderSendNotCreated):
-            await oe._execute_and_record(**_execute_kwargs(send_outcome=tracker))
-    finally:
-        oe._execute_order = monkeypatchless  # type: ignore[assignment]
+    async def _baseline(**kwargs: Any) -> None:
+        return None
+
+    import app.mcp_server.tooling.kis_mock_ledger as ledger
+
+    monkeypatch.setattr(oe, "_execute_order", _blocked)
+    monkeypatch.setattr(ledger, "_fetch_kis_mock_baseline_qty", _baseline)
+
+    await oe._execute_and_record(**_execute_kwargs())
 
     remaining = await service.list_reservations(account_scope="kis_mock")
-    remaining_ids = {row.row_id for row in remaining}
-    assert captured["replacement_id"] in remaining_ids, (
+    assert captured["replacement_id"] in {row.row_id for row in remaining}, (
         "the stale release deleted a replacement reservation"
     )
 
@@ -1914,10 +1948,13 @@ def _posting_methods(path: pathlib.Path) -> dict[str, set[str]]:
     return posting
 
 
-# The US KIS mock lane's POST sites live in a module outside the B-7 write
-# fence. They are enumerated, reported, and left untouched pending an orch
-# decision — widening the fence to reach them is not this job's call.
-UNGUARDED_PENDING_ORCH_DECISION: frozenset[str] = frozenset(
+# The US (`us.kis.mock`) POST sites live in a module outside the B-7 write
+# fence and are handled as a separate job (operator §87 ④). They are enumerated
+# here so a *new* one cannot appear unnoticed — but their guard state is
+# deliberately NOT asserted: pinning "unguarded" would make a known defect into
+# a normal condition the suite defends. The exposure is recorded in
+# `docs/contracts/rob-1263-kis-coordination-adapter.md`.
+US_POST_SITES: frozenset[str] = frozenset(
     {
         # `sell_overseas_stock` delegates to `order_overseas_stock` and issues no
         # POST of its own, so it is not a transport boundary.
@@ -1945,23 +1982,13 @@ def test_every_kr_kis_posting_mutation_method_is_guarded():
         assert "_guard_kis_mock_writer" in decorators, name
 
 
-def test_the_us_kis_mock_post_sites_are_enumerated_and_still_unguarded():
-    """An inventory, not an endorsement.
-
-    `us.kis.mock` is a canonical J2A lane on the same VTS host, and every one of
-    its POST sites reaches the transport with no coordination authority. Closing
-    that needs `overseas_orders.py`, which is outside the B-7 write fence, so it
-    is reported rather than silently taken. This test exists so the exposure
-    cannot quietly change shape: if someone guards these, or adds a new one, it
-    fails and the report has to be updated with it.
-    """
+def test_the_us_post_sites_are_enumerated_without_pinning_their_guard_state():
+    """Inventory only. Guarding them must not require touching this test."""
 
     overseas = _posting_methods(OVERSEAS_ORDERS_SOURCE)
-    assert set(overseas) == UNGUARDED_PENDING_ORCH_DECISION, overseas
-    for name, decorators in overseas.items():
-        assert "_guard_kis_mock_writer" not in decorators, (
-            f"{name} is now guarded — update the r3 report and this inventory"
-        )
+    assert set(overseas) == US_POST_SITES, (
+        "the US POST surface changed; update the separate US job and the contract"
+    )
     assert "us.kis.mock" in _lane_ids_in_registry()
 
 
@@ -1969,27 +1996,6 @@ def _lane_ids_in_registry() -> tuple[str, ...]:
     from app.services.mock_lane_registry import CANONICAL_LANE_IDS
 
     return CANONICAL_LANE_IDS
-
-
-def test_measured_the_us_mock_post_sites_carry_no_guard_at_all():
-    """The exposure, proven without I/O: the US methods are simply undecorated.
-
-    `DomesticOrderClient`'s guarded methods carry `__wrapped__` because the
-    decorator wraps them. The US ones do not, so nothing stands between an
-    `is_mock=True` US call and the transport.
-    """
-
-    from app.services.brokers.kis.domestic_orders import DomesticOrderClient
-    from app.services.brokers.kis.overseas_orders import OverseasOrderClient
-
-    for guarded in ("order_korea_stock", "cancel_korea_order", "modify_korea_order"):
-        assert hasattr(getattr(DomesticOrderClient, guarded), "__wrapped__"), guarded
-
-    for unguarded in sorted(UNGUARDED_PENDING_ORCH_DECISION):
-        method = getattr(OverseasOrderClient, unguarded)
-        assert not hasattr(method, "__wrapped__"), (
-            f"{unguarded} is now wrapped — update the r3 report and this inventory"
-        )
 
 
 # ===========================================================================
@@ -2184,6 +2190,7 @@ def test_a_capability_for_a_different_operation_or_lane_is_refused():
         claim_idempotency_key=CLAIM_KEY,
         attributed_broker_order_id="0000117058",
         known_remainder=Decimal("2"),
+        claim_row_id=1,
         _live=live,
     )
     with pytest.raises(singleton.KISMockFollowupNotAuthorized):
@@ -2311,15 +2318,17 @@ def test_j3b_verifies_capabilities_and_never_issues_or_decides_one():
 
 
 @pytest.mark.asyncio
-async def test_live_intent_release_still_uses_the_unrestricted_release(
+async def test_live_intent_release_is_unreachable_on_the_transport_error_path(
     monkeypatch, _clean_intents, db_session
 ):
-    """The r2 regression, pinned: `kis_live` must not take the exact-row path.
+    """operator §87 ① — the live call condition, restored and measured.
 
-    r2 replaced `release(scope, key)` with `release_if_matches(...)` for every
-    scope, `kis_live` included. That was an unapproved live behaviour change.
-    This records which method the live branch actually calls, so the claim is
-    evidence rather than assertion.
+    The vector is the one the verifier used: `is_mock=False` (`kis_live`) with a
+    NOT_CREATED tracker and an `httpx.ConnectError`. On `origin/main` the branch
+    passes no `proven_not_sent`, so the guard returns before touching the
+    reservation and **no release method is called at all**. r2/r3 passed it and
+    recorded `['release']`; recording a method name proved only that the new
+    behaviour existed. This asserts reachability instead.
     """
 
     called: list[str] = []
@@ -2353,18 +2362,26 @@ async def test_live_intent_release_still_uses_the_unrestricted_release(
                 correlation_id=None,
                 mirror_cohort=None,
                 mirror_source_bucket=None,
-                idempotency_key="rob1263-r3-live-key",
+                idempotency_key="rob1263-r4-live-key",
                 send_outcome=tracker,
             )
         )
 
-    assert called == ["release"], called
+    assert called == [], called
+    # And the live reservation is still there: nothing released it.
+    with pytest.raises(Exception) as dup:
+        await OrderSendIntentService(db_session).reserve(
+            account_scope="kis_live", idempotency_key="rob1263-r4-live-key"
+        )
+    assert type(dup.value).__name__ == "DuplicateOrderIntent"
 
 
 @pytest.mark.asyncio
-async def test_the_mock_intent_release_is_the_only_exact_row_caller(
-    monkeypatch, _clean_intents, db_session
+async def test_only_the_mock_scope_uses_the_exact_row_release(
+    monkeypatch, _clean_intents, _mock_route, db_session
 ):
+    """The exact-row delete is mock-scoped, and reachable only pre-send."""
+
     called: list[str] = []
     real_release = OrderSendIntentService.release
     real_exact = OrderSendIntentService.release_if_matches
@@ -2382,21 +2399,20 @@ async def test_the_mock_intent_release_is_the_only_exact_row_caller(
         OrderSendIntentService, "release_if_matches", _release_if_matches
     )
 
-    async def _fail(**kwargs: Any):
-        raise httpx.ConnectError("token setup failed before dispatch")
+    async def _blocked(**kwargs: Any):
+        raise PreSendFreshnessError(("approval_window:EXPIRED",))
 
     async def _baseline(**kwargs: Any) -> None:
         return None
 
     import app.mcp_server.tooling.kis_mock_ledger as ledger
 
-    monkeypatch.setattr(oe, "_execute_order", _fail)
+    monkeypatch.setattr(oe, "_execute_order", _blocked)
     monkeypatch.setattr(ledger, "_fetch_kis_mock_baseline_qty", _baseline)
 
-    tracker = OrderSendOutcomeTracker()
-    with pytest.raises(oe.OrderSendNotCreated):
-        await oe._execute_and_record(**_execute_kwargs(send_outcome=tracker))
+    result = await oe._execute_and_record(**_execute_kwargs())
 
+    assert result["pre_send_blocked"] is True
     assert called == ["release_if_matches"], called
 
 

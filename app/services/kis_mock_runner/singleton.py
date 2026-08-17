@@ -1060,8 +1060,21 @@ class KISMockOperationCapability:
     claim_idempotency_key: str
     attributed_broker_order_id: str
     known_remainder: Decimal
+    # r4 §2: the receipt names the exact reservation row and side it was issued
+    # against, so a follow-up is traceable to one row rather than to a key that
+    # several rows could carry over time.
+    claim_row_id: int | None = None
+    claim_side: str | None = None
     physical_account_id: str | None = None
     _live: _ScopeLiveness | None = field(repr=False, default=None)
+
+    def authorizes_order(self, broker_order_id: str | None) -> bool:
+        """Whether this receipt is authority for *that* native order and no other."""
+
+        return (
+            isinstance(broker_order_id, str)
+            and broker_order_id.strip() == self.attributed_broker_order_id.strip()
+        )
 
     @property
     def alive(self) -> bool:
@@ -1133,6 +1146,8 @@ def verify_kis_mock_followup_capability(
         or capability.known_remainder <= 0
     ):
         raise KISMockFollowupNotAuthorized("broker remainder is unknown")
+    if not isinstance(capability.claim_row_id, int):
+        raise KISMockFollowupNotAuthorized("no exact durable claim row identity")
     return capability
 
 
@@ -1164,15 +1179,22 @@ async def issue_kis_mock_followup_capability(
     ):
         # Inside the short critical section: the durable claim must still exist.
         rows = await reservations(claim_account_scope)
-        keys = {
-            getattr(row, "idempotency_key", None)
+        matched = [
+            row
             for row in rows
-            if getattr(row, "idempotency_key", None)
-        }
-        if claim_idempotency_key not in keys:
+            if getattr(row, "idempotency_key", None) == claim_idempotency_key
+        ]
+        if not matched:
             raise KISMockFollowupNotAuthorized(
                 "no durable claim matches this follow-up in the account scope"
             )
+        if len(matched) > 1:
+            # Two rows under one key means the receipt could not name *which*
+            # one it amends, which is precisely the traceability r4 §2 requires.
+            raise KISMockFollowupNotAuthorized(
+                "the durable claim identity is ambiguous in this account scope"
+            )
+        claim_row = matched[0]
         liveness = _ScopeLiveness()
         grant = None
         authority = active_writer_authority()
@@ -1185,6 +1207,8 @@ async def issue_kis_mock_followup_capability(
             claim_idempotency_key=claim_idempotency_key,
             attributed_broker_order_id=attributed_broker_order_id,
             known_remainder=known_remainder,
+            claim_row_id=getattr(claim_row, "row_id", None),
+            claim_side=getattr(claim_row, "side", None),
             physical_account_id=(
                 grant.physical_account_id if grant is not None else None
             ),
@@ -1377,10 +1401,16 @@ async def run_kis_mock_send(
 
     route = resolve_kis_mock_coordination_route(**context)
     if route is None:
-        return KISMockSendOutcome(
-            result=await send(),
-            coordinated=False,
-            status=AUTO_READY_BLOCKED_BY_LIFECYCLE,
+        # r4 §3 — the adapter is the final enforcement point. Previously this
+        # sent anyway and merely declined to call the result AUTO evidence,
+        # which removes the label without closing the bypass. A send with no
+        # coordination authority does not happen.
+        raise KISMockCoordinationBlocked(
+            KIS_MOCK_LIFECYCLE_PORTS_UNAVAILABLE,
+            detail=(
+                f"{AUTO_READY_BLOCKED_BY_LIFECYCLE}: no coordinated route is "
+                "installed for this lane, so no send is authorized"
+            ),
         )
 
     captured: list[Any] = []

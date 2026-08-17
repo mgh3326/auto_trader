@@ -1071,14 +1071,18 @@ async def _execute_and_record(
         # Preserve the transport boundary's explicit state: token/client setup
         # can raise before dispatch (NOT_CREATED), while an actual send marks
         # UNKNOWN immediately before crossing the HTTP boundary.
-        proven_not_sent = (
+        # ROB-1263 r4 / operator §87 — LIVE CALL CONDITION RESTORED.
+        #
+        # r2/r3 passed `proven_not_sent` here, which let the `kis_live` scope
+        # reach the release. origin/main passes nothing, so live returns from the
+        # guard without touching the reservation, and that is what ships. The
+        # "release on proven not-sent" idea is a live-side change owned by
+        # ROB-1279 and is deliberately absent here.
+        await _release_reserved_intent_after_send_failure(send_exc)
+        if (
             send_outcome is not None
             and send_outcome.disposition is OrderSendDisposition.NOT_CREATED
-        )
-        await _release_reserved_intent_after_send_failure(
-            send_exc, proven_not_sent=proven_not_sent
-        )
-        if proven_not_sent:
+        ):
             logger.error(
                 "execute_order failed before dispatch: market_type=%s, "
                 "symbol=%s, side=%s, error=%s",
