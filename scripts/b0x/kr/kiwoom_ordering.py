@@ -751,7 +751,7 @@ class KiwoomCoordinationAdapter:
         await scope.assert_owned()
         self.fence_rechecks.append(action)
 
-    async def submit_planned(
+    async def submit_coordinated(
         self,
         account: Any,
         *,

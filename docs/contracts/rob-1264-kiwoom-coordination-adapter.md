@@ -66,8 +66,8 @@ Exact `record_lane_evidence("<kind>", ...)` call sites in
 
 | Kind | Lane-native write |
 |---|---|
-| ACK | `submit_planned` callback after a non-blank `ord_no` |
-| unknown | blank `ord_no` in `submit_planned`; `apply_restart_disposition` when the claim is uncorrelated; `record_native_broker_truth` for `kt00007` state `unknown` |
+| ACK | `submit_coordinated` callback after a non-blank `ord_no` |
+| unknown | blank `ord_no` in `submit_coordinated`; `apply_restart_disposition` when the claim is uncorrelated; `record_native_broker_truth` for `kt00007` state `unknown` |
 | reject | `record_native_broker_truth` when `kt00007` normalizes to `rejected` |
 | expiry | `record_native_broker_truth` when `kt00007` normalizes to `expired` (local clock is not expiry) |
 | partial fill | `record_native_broker_truth` when `kt00007` normalizes to `partial` |

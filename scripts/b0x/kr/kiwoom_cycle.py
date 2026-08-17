@@ -1370,7 +1370,7 @@ async def _submit_same_cycle_buy_batch(  # noqa: PLR0913
                 return reason, detail, False
         try:
             authorization.claim(order)
-            coordinated = await coordination.submit_planned(
+            coordinated = await coordination.submit_coordinated(
                 account,
                 planned=order,
                 record_order_no=_journal_writer(journal),
@@ -2017,7 +2017,7 @@ async def _run_ordering_cycle(  # noqa: PLR0915 — explicit safety sequence
             kiwoom_lane.assert_resubmit_allowed(
                 current_truth, symbol=order.symbol, lane=LANE
             )
-            coordinated = await coordination.submit_planned(
+            coordinated = await coordination.submit_coordinated(
                 account,
                 planned=order,
                 record_order_no=_journal_writer(journal),

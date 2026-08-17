@@ -492,7 +492,7 @@ async def test_two_fake_hosts_one_physical_account_one_writer() -> None:
         return payload
 
     task = asyncio.create_task(
-        first.submit_planned(
+        first.submit_coordinated(
             account_a,
             planned=Planned(cycle_id="host-a"),
             policy_version=POLICY_VERSION,
@@ -503,7 +503,7 @@ async def test_two_fake_hosts_one_physical_account_one_writer() -> None:
     )
     await entered.wait()
     with pytest.raises(CoordinationError) as exc:
-        await second.submit_planned(
+        await second.submit_coordinated(
             account_b,
             planned=Planned(cycle_id="host-b"),
             policy_version=POLICY_VERSION,
@@ -522,7 +522,7 @@ async def test_durable_claim_conflict_makes_zero_transport() -> None:
     account = FakeKiwoomAccount()
     adapter = build_offline_adapter(unresolved=True)
     with pytest.raises(CoordinationError) as exc:
-        await adapter.submit_planned(
+        await adapter.submit_coordinated(
             account,
             planned=Planned(),
             policy_version=POLICY_VERSION,
@@ -541,7 +541,7 @@ async def test_lease_loss_before_callback_makes_zero_transport() -> None:
     account = FakeKiwoomAccount()
     adapter = build_offline_adapter(drop_after_pg_locks=1)
     with pytest.raises(CoordinationError) as exc:
-        await adapter.submit_planned(
+        await adapter.submit_coordinated(
             account,
             planned=Planned(),
             policy_version=POLICY_VERSION,
@@ -567,7 +567,7 @@ async def test_stale_fence_between_preassert_and_send_makes_zero_transport() -> 
     account = FakeKiwoomAccount()
     adapter = build_offline_adapter(drop_after_pg_locks=3)
     with pytest.raises(CoordinationError) as exc:
-        await adapter.submit_planned(
+        await adapter.submit_coordinated(
             account,
             planned=Planned(),
             policy_version=POLICY_VERSION,
@@ -605,7 +605,7 @@ async def test_event_loop_mismatch_on_lane_reassert_makes_zero_transport(
     monkeypatch.setattr(CoordinationScope, "assert_owned", _foreign_loop_assert)
     try:
         with pytest.raises(CoordinationError) as exc:
-            await adapter.submit_planned(
+            await adapter.submit_coordinated(
                 account,
                 planned=Planned(),
                 policy_version=POLICY_VERSION,
@@ -626,14 +626,14 @@ async def test_batch_and_cancel_call_assert_owned_before_every_mutation(
     observed = _scope_assert_owned_calls(monkeypatch)
     adapter = build_offline_adapter()
     account = FakeKiwoomAccount()
-    first = await adapter.submit_planned(
+    first = await adapter.submit_coordinated(
         account,
         planned=Planned(order_key="l1", cycle_id="batch-1"),
         policy_version=POLICY_VERSION,
         policy_version_hash=POLICY_VERSION_HASH,
         now=datetime.now(UTC),
     )
-    await adapter.submit_planned(
+    await adapter.submit_coordinated(
         account,
         planned=Planned(order_key="l2", cycle_id="batch-2"),
         policy_version=POLICY_VERSION,
@@ -669,7 +669,7 @@ async def test_kiwoom_attempt_cid_none_and_ack_precedes_jsonl() -> None:
         adapter.ports.persistence.events.append("jsonl_callback")
         jsonl.append(order_no)
 
-    result = await adapter.submit_planned(
+    result = await adapter.submit_coordinated(
         account,
         planned=Planned(),
         record_order_no=record_order_no,
@@ -929,13 +929,13 @@ def test_wrong_physical_profile_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_planned_wires_transport_gate_before_post() -> None:
-    """Removing assert_kiwoom_transport_ready from submit_planned's callback fails this."""
+async def test_submit_coordinated_wires_transport_gate_before_post() -> None:
+    """Removing assert_kiwoom_transport_ready from submit_coordinated's callback fails this."""
 
     adapter = build_offline_adapter()
     account = FakeKiwoomAccount(client=object())
     with pytest.raises(KiwoomTransportGateRejected):
-        await adapter.submit_planned(
+        await adapter.submit_coordinated(
             account,
             planned=Planned(),
             policy_version=POLICY_VERSION,
@@ -972,7 +972,7 @@ async def test_exact_mock_client_reaches_transport_only_after_j3a_assert(
     observed = _scope_assert_owned_calls(monkeypatch)
     adapter = build_offline_adapter()
     account = FakeKiwoomAccount()
-    await adapter.submit_planned(
+    await adapter.submit_coordinated(
         account,
         planned=Planned(),
         policy_version=POLICY_VERSION,
@@ -1043,7 +1043,7 @@ def test_recovery_contract_six_items_and_lifecycle_status() -> None:
 async def test_all_seven_lane_evidence_kinds_are_written_by_code() -> None:
     adapter = build_offline_adapter()
     account = FakeKiwoomAccount()
-    await adapter.submit_planned(
+    await adapter.submit_coordinated(
         account,
         planned=Planned(),
         policy_version=POLICY_VERSION,
