@@ -16,6 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.services.brokers.kiwoom import constants as kiwoom_constants
+from app.services.brokers.kiwoom.client import KiwoomMockClient
 from scripts.b0x.kr import attribution as kr_attribution
 from scripts.b0x.kr import kiwoom as kiwoom_lane
 from scripts.b0x.kr import kiwoom_attribution as kiwoom_attr
@@ -24,6 +26,9 @@ from scripts.b0x.kr import kiwoom_ordering as ordering_support
 from scripts.policy_table.core.schema import compute_policy_table_hash
 from tests.scripts.b0x._table_fixtures import make_payload, make_row, write_table
 from tests.scripts.b0x.kr.kiwoom.conftest import FakeAccount, position, resting
+from tests.services.mock_integration.test_kiwoom_coordination_adapter import (
+    offline_coordination_factory,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -123,6 +128,16 @@ def armed(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _attach_test_mock_client(account) -> None:  # noqa: ANN001
+    if getattr(account, "_client", None) is None:
+        account._client = KiwoomMockClient(
+            base_url=kiwoom_constants.MOCK_BASE_URL,
+            app_key="unit-test",
+            app_secret="unit-test",
+            account_no="unit-test",
+        )
+
+
 async def _run(
     *,
     account,
@@ -133,6 +148,11 @@ async def _run(
     now=IN_SESSION,  # noqa: ANN001
     **kwargs,
 ):  # noqa: ANN202
+    if ordering and "coordination_factory" not in kwargs:
+        kwargs["coordination_factory"] = offline_coordination_factory
+        _attach_test_mock_client(account)
+    elif kwargs.get("coordination_factory") is not None:
+        _attach_test_mock_client(account)
     return await kiwoom_cycle.run_kiwoom_cycle(
         now=now,
         table_dir=table_dir,
@@ -1140,6 +1160,32 @@ async def test_ordering_rechecks_foreign_trace_at_the_submit_boundary(
     )
     assert account.buy_calls == []
     assert account.sell_calls == []
+
+
+@pytest.mark.asyncio
+async def test_ordering_flock_without_j3a_grant_makes_zero_transport(
+    table_dir, out_dir, armed, frozen_cycle_clock
+) -> None:  # noqa: ANN001, ARG001
+    account = _DynamicOrderingAccount()
+    outcome = await _run(
+        account=account,
+        out_dir=out_dir,
+        table_dir=table_dir,
+        confirm=True,
+        ordering=True,
+        now=frozen_cycle_clock,
+        lease_factory=lambda *_: _TestOrderingLease(),
+        coordination_factory=None,
+    )
+
+    assert account.buy_calls == []
+    assert account.sell_calls == []
+    assert account.cancel_calls == []
+    assert outcome.record["coordination"]["authorizes_send"] is False
+    assert outcome.record["coordination"]["local_flock_authorizes_send"] is False
+    assert outcome.record.get("lane_lifecycle_status") == (
+        ordering_support.KIWOOM_LIFECYCLE_STATUS
+    )
 
 
 @pytest.mark.asyncio
