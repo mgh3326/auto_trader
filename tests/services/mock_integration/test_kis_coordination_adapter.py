@@ -80,13 +80,18 @@ J3B_WRITE_FENCE: frozenset[str] = frozenset(
         "tests/test_mcp_place_order.py",
         "tests/services/mock_integration/test_kis_coordination_adapter.py",
         "docs/contracts/rob-1263-kis-coordination-adapter.md",
+        # r5: orch granted an explicit fence extension for exactly these two
+        # files, after measuring that their failures pass on origin/main and are
+        # therefore this branch's regressions rather than pre-existing defects.
+        # ("orch 가 r5 에서 명시 승인(회귀 귀속 확인 후)")
+        "tests/test_services_kis_logging.py",
+        "tests/test_rob750_mock_mirror_intent_release.py",
     }
 )
-# ROB-1263 r3: the r2 branch added three paths to the set above so that its own
-# out-of-fence edits would pass this check. A guard widened until it admits its
-# own violation is not a guard. The additions and the edits they covered are
-# reverted; those files' failures are reported as not-owned, with their cause,
-# instead of being absorbed here. Widening this set is an orch decision.
+# ROB-1263 r3: the r2 branch had widened this set itself so its own out-of-fence
+# edits would pass the check. A guard widened until it admits its own violation
+# is not a guard. Widening it is an orch decision, and the two entries above are
+# the only ones granted; anything else is asked for, not taken.
 FENCE_EXEMPT_PREFIXES: tuple[str, ...] = (".smoke-out/",)
 
 MOCK_NETLOC = "openapivts.koreainvestment.com:29443"

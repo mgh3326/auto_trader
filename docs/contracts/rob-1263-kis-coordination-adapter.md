@@ -254,10 +254,11 @@ alters a live request.
   `coordinate_kis_mock_mutation`, inheriting J3A's ordering: lineage persist →
   lease → uncertainty gate → binary claim → re-assertion → callback → retained
   durable writes → conditional release;
-- **no route** → the lane is `AUTO_READY_BLOCKED_BY_LIFECYCLE`. The send still
-  happens on the legacy path and still holds the wire-boundary authority of §9,
-  but it is explicitly **not** AUTO evidence
-  (`KISMockSendOutcome.auto_evidence_eligible is False`).
+- **no route** → the lane is `AUTO_READY_BLOCKED_BY_LIFECYCLE` and **nothing is
+  sent**: `run_kis_mock_send` raises. An earlier revision sent anyway and only
+  withheld the AUTO label, which takes the label off a bypass rather than
+  closing it; the adapter is the final enforcement point, so the send does not
+  happen.
 
 The route provider is `None` in production, for the two independent reasons in
 §6. Installing one is a separate, approval-gated decision; it is a single

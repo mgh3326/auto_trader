@@ -1108,8 +1108,16 @@ def verify_kis_mock_followup_capability(
     *,
     operation: KISMockOperation,
     lane_id: str = KIS_MOCK_LANE_ID,
+    expected_broker_order_id: str | None = None,
+    expected_claim: tuple[str, str, int | None, str | None] | None = None,
 ) -> KISMockOperationCapability:
-    """The adapter-side check J3B owns. Anything missing means zero transport."""
+    """The adapter-side check J3B owns. Anything missing means zero transport.
+
+    ``expected_broker_order_id`` and ``expected_claim`` are the *target* the
+    caller is about to act on. r4 bound the receipt to a claim 4-tuple but never
+    compared it to the target, so a receipt could name one row while the call
+    named another. Both are compared here when supplied.
+    """
 
     if operation not in FOLLOWUP_OPERATIONS:
         raise KISMockFollowupNotAuthorized(f"{operation} is not a follow-up operation")
@@ -1148,6 +1156,21 @@ def verify_kis_mock_followup_capability(
         raise KISMockFollowupNotAuthorized("broker remainder is unknown")
     if not isinstance(capability.claim_row_id, int):
         raise KISMockFollowupNotAuthorized("no exact durable claim row identity")
+    if expected_broker_order_id is not None and not capability.authorizes_order(
+        expected_broker_order_id
+    ):
+        raise KISMockFollowupNotAuthorized(
+            "capability was issued for a different native broker order id"
+        )
+    if expected_claim is not None and expected_claim != (
+        capability.claim_account_scope,
+        capability.claim_idempotency_key,
+        capability.claim_row_id,
+        capability.claim_side,
+    ):
+        raise KISMockFollowupNotAuthorized(
+            "capability was issued against a different durable claim"
+        )
     return capability
 
 
@@ -1394,9 +1417,9 @@ async def run_kis_mock_send(
     persistence, lease, uncertainty gate, binary claim, re-assertion, retained
     durable writes, and conditional release.
 
-    When no route exists the lane is ``AUTO_READY_BLOCKED_BY_LIFECYCLE``: the
-    send still happens on the legacy path, still holds the wire-boundary
-    authority above, and is explicitly not AUTO evidence.
+    When no route exists the lane is ``AUTO_READY_BLOCKED_BY_LIFECYCLE`` and
+    **no send happens at all**: this raises. Sending anyway and merely withholding
+    the AUTO label would remove the label from a bypass instead of closing it.
     """
 
     route = resolve_kis_mock_coordination_route(**context)

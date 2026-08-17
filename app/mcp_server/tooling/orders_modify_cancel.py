@@ -527,6 +527,28 @@ def _is_kis_mock_unsupported(message: str) -> bool:
     return any(marker in lowered for marker in _KIS_MOCK_UNSUPPORTED_MARKERS)
 
 
+def _kis_mock_expected_claim(
+    resolved: dict[str, Any],
+) -> tuple[str, str, int | None, str | None] | None:
+    """The claim 4-tuple this ledger row belongs to, when the row names one.
+
+    Returns ``None`` when the row carries no J2B lineage — rows written before
+    the coordinated lane existed do not, and inventing one here would
+    manufacture the very ownership the follow-up gate is checking for.
+    """
+
+    scope, key = _kis_mock_claim_identity(resolved)
+    if scope is None or key is None:
+        return None
+    row_id = resolved.get("claim_row_id")
+    return (
+        scope,
+        key,
+        row_id if isinstance(row_id, int) else None,
+        resolved.get("side"),
+    )
+
+
 def _kis_mock_claim_identity(resolved: dict[str, Any]) -> tuple[str | None, str | None]:
     """The durable claim a follow-up would be amending, if the row names one.
 
@@ -590,16 +612,15 @@ async def _cancel_kis_mock_domestic(
     # ``issue_kis_mock_followup_capability`` and calls in holding the receipt.
     # No receipt means no authority, which means zero broker calls.
     try:
-        capability = verify_kis_mock_followup_capability(
+        # r5 §2: the receipt is compared against the *target* — the native order
+        # id this call names, and the exact durable claim it belongs to — not
+        # merely checked for internal completeness.
+        verify_kis_mock_followup_capability(
             active_followup_capability(),
             operation=KISMockOperation.FOLLOWUP_CANCEL,
+            expected_broker_order_id=order_id,
+            expected_claim=_kis_mock_expected_claim(resolved),
         )
-        # r4 §2: the receipt is authority for one native order, not for whichever
-        # order this call happens to name.
-        if not capability.authorizes_order(order_id):
-            raise KISMockFollowupNotAuthorized(
-                "capability was issued for a different native broker order id"
-            )
     except KISMockFollowupNotAuthorized as exc:
         return {
             "success": False,
