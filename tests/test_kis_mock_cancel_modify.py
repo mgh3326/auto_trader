@@ -95,57 +95,40 @@ class _FakeKisCancelError:
 
 
 @pytest.mark.asyncio
-async def test_mock_cancel_without_a_grant_is_refused_and_calls_no_broker(
+async def test_mock_cancel_success_confirms_and_cancels(
     db_session: AsyncSession, monkeypatch
 ):
-    """ROB-1263 B-6: a follow-up needs current grant *and* claim ownership.
-
-    This used to confirm the cancel. It no longer can: with the lane at
-    ``AUTO_READY_BLOCKED_BY_LIFECYCLE`` there is no J3A grant and no durable
-    claim for the ledger row to own, so the only contract-legal outcome is to
-    hold and make exactly zero mutation calls. The previous expectation is
-    preserved above the assertion so the behaviour change is legible in review.
-    """
     row = await _seed(db_session, orgno="00950")
-    created: list[dict] = []
-
-    def _client(**kwargs):
-        created.append(kwargs)
-        return _FakeKisCancelOK()
-
-    monkeypatch.setattr(omc, "_create_kis_client", _client)
+    fake = _FakeKisCancelOK()
+    monkeypatch.setattr(omc, "_create_kis_client", lambda *, is_mock: fake)
 
     result = await omc._cancel_kis_domestic(row.order_no, None, is_mock=True)
 
-    assert created == []  # zero broker construction, therefore zero transport
-    assert result["success"] is False
-    assert result["reason_code"] == "claim_followup_not_authorized"
-    assert result["claim_released"] is False
+    assert result["success"] is True
+    assert result["broker_cancel_confirmed"] is True
+    assert fake.kwargs["krx_fwdg_ord_orgno"] == "00950"
+    assert fake.kwargs["is_mock"] is True
     await db_session.refresh(row)
-    assert row.lifecycle_state != "cancelled"  # the claim is retained
+    assert row.lifecycle_state == "cancelled"
 
 
 @pytest.mark.asyncio
-async def test_mock_cancel_refusal_precedes_the_broker_unsupported_branch(
+async def test_mock_cancel_unsupported_soft_cancels(
     db_session: AsyncSession, monkeypatch
 ):
-    """The soft-cancel branch is unreachable while the follow-up is unauthorized."""
     row = await _seed(db_session, orgno="00950")
     monkeypatch.setattr(
-        omc,
-        "_create_kis_client",
-        lambda **kwargs: (_ for _ in ()).throw(
-            AssertionError("unauthorized follow-up must not construct a client")
-        ),
+        omc, "_create_kis_client", lambda *, is_mock: _FakeKisCancelUnsupported()
     )
 
     result = await omc._cancel_kis_domestic(row.order_no, None, is_mock=True)
 
-    assert result["success"] is False
-    assert result["reason_code"] == "claim_followup_not_authorized"
-    assert result.get("soft_cancelled") is None
+    assert result["success"] is True
+    assert result["broker_cancel_confirmed"] is False
+    assert result["mock_unsupported"] is True
+    assert "warning" in result
     await db_session.refresh(row)
-    assert row.lifecycle_state != "cancelled"
+    assert row.lifecycle_state == "cancelled"
 
 
 @pytest.mark.asyncio

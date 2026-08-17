@@ -34,6 +34,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from decimal import Decimal
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol
 from urllib.parse import urlsplit
@@ -117,6 +118,21 @@ class _WriterAuthority:
 _ACTIVE_WRITER_LEASE: ContextVar[_WriterAuthority | None] = ContextVar(
     "kis_mock_runner_active_writer_lease", default=None
 )
+
+# The operation-scoped receipt issued for the *current* short critical section.
+# Scoped exactly like the lease it belongs to, so it cannot outlive it.
+_ACTIVE_FOLLOWUP_CAPABILITY: ContextVar[KISMockOperationCapability | None] = ContextVar(
+    "kis_mock_active_followup_capability", default=None
+)
+
+
+def active_followup_capability() -> KISMockOperationCapability | None:
+    """The follow-up receipt this task holds, or ``None``. Liveness is rechecked."""
+
+    capability = _ACTIVE_FOLLOWUP_CAPABILITY.get()
+    if capability is None or not capability.alive:
+        return None
+    return capability
 
 
 class WriterSingletonContended(RuntimeError):
@@ -977,6 +993,215 @@ class KISMockMutationAuthority:
         return self.coordinated
 
 
+# --------------------------------------------------------------------------
+# r3 §7 — operation-scoped follow-up capability
+# --------------------------------------------------------------------------
+#
+# The place-time lease is **not** held for the order's lifetime. It has no TTL,
+# so holding it across an order's life would block the physical account
+# indefinitely and contradicts the J3A release contract. A follow-up instead
+# takes its own short critical section:
+#
+#   lifecycle decides a cancel is needed
+#     -> acquire a NEW short critical-section lease
+#     -> confirm the exact durable claim and the attributed native order id
+#     -> issue a FOLLOWUP_CANCEL capability
+#     -> the adapter verifies that capability          <- J3B owns only this
+#     -> transport cancel
+#     -> record ACK / readback / evidence
+#     -> explicit lease release
+#
+# J3B implements issuance mechanics and verification. It never decides that a
+# follow-up should happen: `_cancel_kis_mock_domestic` requires a capability to
+# be handed to it and refuses when one is absent.
+
+
+class KISMockOperation(StrEnum):
+    """Which broker operation an authority or capability is scoped to."""
+
+    PLACE = "place"
+    FOLLOWUP_CANCEL = "followup_cancel"
+    FOLLOWUP_MODIFY = "followup_modify"
+    FOLLOWUP_REDUCE = "followup_reduce"
+
+
+FOLLOWUP_OPERATIONS: Final[frozenset[KISMockOperation]] = frozenset(
+    {
+        KISMockOperation.FOLLOWUP_CANCEL,
+        KISMockOperation.FOLLOWUP_MODIFY,
+        KISMockOperation.FOLLOWUP_REDUCE,
+    }
+)
+
+KIS_MOCK_FOLLOWUP_NOT_AUTHORIZED: Final[str] = "claim_followup_not_authorized"
+
+
+class KISMockFollowupNotAuthorized(KISMockCoordinationBlocked):
+    """A follow-up reached the wire boundary without a valid capability."""
+
+    def __init__(self, detail: str = "") -> None:
+        super().__init__(KIS_MOCK_FOLLOWUP_NOT_AUTHORIZED, detail=detail)
+
+
+@dataclass(frozen=True, slots=True)
+class KISMockOperationCapability:
+    """Proof that a short critical section was held and the facts were checked.
+
+    It is deliberately **not** a lease and carries no release: it is a receipt an
+    adapter can verify, exactly as `CoordinationScope` is the right to see rather
+    than the right to act. `_live` is the liveness flag of the critical section
+    that issued it, so a capability captured and replayed after that section ends
+    verifies as dead.
+    """
+
+    operation: KISMockOperation
+    lane_id: str
+    claim_account_scope: str
+    claim_idempotency_key: str
+    attributed_broker_order_id: str
+    known_remainder: Decimal
+    physical_account_id: str | None = None
+    _live: _ScopeLiveness | None = field(repr=False, default=None)
+
+    @property
+    def alive(self) -> bool:
+        return self._live is not None and self._live.active
+
+    def matches_grant(self, grant: KISMockCoordinationGrant) -> bool:
+        return (
+            grant.lane_id == self.lane_id
+            and grant.owns_claim(
+                account_scope=self.claim_account_scope,
+                idempotency_key=self.claim_idempotency_key,
+            )
+            and (
+                self.physical_account_id is None
+                or grant.physical_account_id == self.physical_account_id
+            )
+        )
+
+
+class _ScopeLiveness:
+    """Liveness of one issued critical section; not reachable from the receipt."""
+
+    __slots__ = ("active",)
+
+    def __init__(self) -> None:
+        self.active = True
+
+
+def verify_kis_mock_followup_capability(
+    capability: KISMockOperationCapability | None,
+    *,
+    operation: KISMockOperation,
+    lane_id: str = KIS_MOCK_LANE_ID,
+) -> KISMockOperationCapability:
+    """The adapter-side check J3B owns. Anything missing means zero transport."""
+
+    if operation not in FOLLOWUP_OPERATIONS:
+        raise KISMockFollowupNotAuthorized(f"{operation} is not a follow-up operation")
+    if capability is None:
+        raise KISMockFollowupNotAuthorized("no operation capability was supplied")
+    if type(capability) is not KISMockOperationCapability:
+        raise KISMockFollowupNotAuthorized("capability is not the exact receipt type")
+    if capability.operation is not operation:
+        raise KISMockFollowupNotAuthorized(
+            f"capability is scoped to {capability.operation}, not {operation}"
+        )
+    if capability.lane_id != lane_id:
+        raise KISMockFollowupNotAuthorized(
+            f"capability is for lane {capability.lane_id!r}, not {lane_id!r}"
+        )
+    if not capability.alive:
+        # The short critical section ended. A receipt outliving its lease is the
+        # same defect class as the boolean contextvar this module already killed.
+        raise KISMockFollowupNotAuthorized("capability's critical section has ended")
+    if not (
+        isinstance(capability.attributed_broker_order_id, str)
+        and capability.attributed_broker_order_id.strip()
+    ):
+        raise KISMockFollowupNotAuthorized("no attributed native broker order id")
+    if not (
+        isinstance(capability.claim_idempotency_key, str)
+        and capability.claim_idempotency_key.strip()
+        and isinstance(capability.claim_account_scope, str)
+        and capability.claim_account_scope.strip()
+    ):
+        raise KISMockFollowupNotAuthorized("no exact durable claim identity")
+    if (
+        not isinstance(capability.known_remainder, Decimal)
+        or capability.known_remainder <= 0
+    ):
+        raise KISMockFollowupNotAuthorized("broker remainder is unknown")
+    return capability
+
+
+@asynccontextmanager
+async def issue_kis_mock_followup_capability(
+    *,
+    operation: KISMockOperation,
+    claim_account_scope: str,
+    claim_idempotency_key: str,
+    attributed_broker_order_id: str,
+    known_remainder: Decimal,
+    reservations: Callable[[str], Awaitable[Sequence[Any]]],
+    lane_id: str = KIS_MOCK_LANE_ID,
+    lease_factory: Callable[[], KISMockWriterLease] = KISMockWriterLease,
+) -> AsyncIterator[KISMockOperationCapability]:
+    """Take a **new short** critical-section lease and issue one receipt.
+
+    The caller is the lane lifecycle owner (J5 in the target split), not this
+    module: J3B provides the mechanism and the verification, and takes no part in
+    deciding that a follow-up is warranted. The lease is released when the
+    context exits, and the receipt dies with it.
+    """
+
+    if operation not in FOLLOWUP_OPERATIONS:
+        raise KISMockFollowupNotAuthorized(f"{operation} is not a follow-up operation")
+
+    async with enforce_kis_mock_mutation_writer(
+        enabled=True, lease_factory=lease_factory
+    ):
+        # Inside the short critical section: the durable claim must still exist.
+        rows = await reservations(claim_account_scope)
+        keys = {
+            getattr(row, "idempotency_key", None)
+            for row in rows
+            if getattr(row, "idempotency_key", None)
+        }
+        if claim_idempotency_key not in keys:
+            raise KISMockFollowupNotAuthorized(
+                "no durable claim matches this follow-up in the account scope"
+            )
+        liveness = _ScopeLiveness()
+        grant = None
+        authority = active_writer_authority()
+        if authority is not None:
+            grant = authority.grant
+        capability = KISMockOperationCapability(
+            operation=operation,
+            lane_id=lane_id,
+            claim_account_scope=claim_account_scope,
+            claim_idempotency_key=claim_idempotency_key,
+            attributed_broker_order_id=attributed_broker_order_id,
+            known_remainder=known_remainder,
+            physical_account_id=(
+                grant.physical_account_id if grant is not None else None
+            ),
+            _live=liveness,
+        )
+        verified = verify_kis_mock_followup_capability(
+            capability, operation=operation, lane_id=lane_id
+        )
+        token = _ACTIVE_FOLLOWUP_CAPABILITY.set(verified)
+        try:
+            yield verified
+        finally:
+            # Explicit expiry: the receipt cannot outlive its lease.
+            liveness.active = False
+            _ACTIVE_FOLLOWUP_CAPABILITY.reset(token)
+
+
 def _chain_pre_send_hooks(
     first: Callable[[], Awaitable[None]] | None,
     second: Callable[[], Awaitable[None]] | None,
@@ -998,6 +1223,9 @@ async def kis_mock_mutation_authority(
     *,
     client: Any,
     path: str,
+    operation: KISMockOperation = KISMockOperation.PLACE,
+    lane_id: str = KIS_MOCK_LANE_ID,
+    capability: KISMockOperationCapability | None = None,
     caller_pre_send_hook: Callable[[], Awaitable[None]] | None = None,
     lease_factory: Callable[[], KISMockWriterLease] = KISMockWriterLease,
 ) -> AsyncIterator[KISMockMutationAuthority]:
@@ -1009,14 +1237,39 @@ async def kis_mock_mutation_authority(
     that variable still arms the runner and changes nothing else, but it can no
     longer switch this guard off.
 
-    When a coordinated dual-key grant is already held, it is reused and the B-4
-    per-POST boundary gate is composed into the transport's ``pre_send_hook`` so
-    it re-proves before every attempt, re-sends included.
+    ROB-1263 r3: a *follow-up* (cancel / modify / reduce) additionally requires an
+    operation-scoped capability. This function **verifies** one; it never issues
+    one and never decides that a follow-up should happen — that decision belongs
+    to J5 or the lane-native lifecycle owner.
     """
+
+    if operation is not KISMockOperation.PLACE:
+        # Fail closed before the lease: an unauthorized follow-up must not even
+        # contend for authority, let alone reach the transport.
+        capability = capability or active_followup_capability()
+        verify_kis_mock_followup_capability(
+            capability, operation=operation, lane_id=lane_id
+        )
 
     authority = active_writer_authority()
     grant = authority.grant if authority is not None else None
     if grant is not None:
+        # r3 §6: a grant is authority for *its own* lane and physical account.
+        # Reusing a KR grant for a US send, or one account's grant for another's,
+        # is exactly the confusion an "authority is held" check must not permit.
+        if grant.lane_id != lane_id:
+            raise KISMockSendBoundaryRejected(
+                KIS_MOCK_LANE_PROFILE_MISMATCH,
+                detail=(
+                    f"grant is for lane {grant.lane_id!r}, "
+                    f"this transport is lane {lane_id!r}"
+                ),
+            )
+        if capability is not None and not capability.matches_grant(grant):
+            raise KISMockSendBoundaryRejected(
+                KIS_MOCK_LANE_PROFILE_MISMATCH,
+                detail="capability was issued against a different authority",
+            )
         hook = _chain_pre_send_hooks(
             build_kis_mock_send_boundary_hook(
                 client=client, path=path, entry=grant.entry, grant=grant

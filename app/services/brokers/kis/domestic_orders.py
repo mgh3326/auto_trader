@@ -43,7 +43,12 @@ async def _domestic_exchange_route(stock_code: str, *, is_mock: bool) -> str:
     return "SOR" if nxt else "KRX"
 
 
-def _guard_kis_mock_writer(mutation_path: str):
+def _guard_kis_mock_writer(
+    mutation_path: str,
+    *,
+    operation: str = "place",
+    lane_id: str = "kr.kis.mock",
+):
     """Route every ``is_mock=True`` KRX mutation through the J3B wire boundary.
 
     ``DomesticOrderClient`` is the common KRX wire boundary for runner, watch
@@ -83,9 +88,13 @@ def _guard_kis_mock_writer(mutation_path: str):
             )
 
             caller_hook = bound.arguments.get("pre_send_hook") if accepts_hook else None
+            from app.services.kis_mock_runner.singleton import KISMockOperation
+
             async with kis_mock_mutation_authority(
                 client=self._parent,
                 path=mutation_path,
+                operation=KISMockOperation(operation),
+                lane_id=lane_id,
                 caller_pre_send_hook=caller_hook,
             ) as authority:
                 if accepts_hook and authority.pre_send_hook is not None:
@@ -577,7 +586,9 @@ class DomesticOrderClient:
             stock_code, "sell", quantity, price, is_mock
         )
 
-    @_guard_kis_mock_writer(constants.DOMESTIC_ORDER_CANCEL_URL)
+    @_guard_kis_mock_writer(
+        constants.DOMESTIC_ORDER_CANCEL_URL, operation="followup_cancel"
+    )
     async def cancel_korea_order(
         self,
         order_number: str,
@@ -960,7 +971,9 @@ class DomesticOrderClient:
         logging.info(f"국내주식 체결조회 완료: 총 {len(all_orders)}건")
         return all_orders
 
-    @_guard_kis_mock_writer(constants.DOMESTIC_ORDER_CANCEL_URL)
+    @_guard_kis_mock_writer(
+        constants.DOMESTIC_ORDER_CANCEL_URL, operation="followup_modify"
+    )
     async def modify_korea_order(
         self,
         order_number: str,

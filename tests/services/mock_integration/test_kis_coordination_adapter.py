@@ -80,17 +80,13 @@ J3B_WRITE_FENCE: frozenset[str] = frozenset(
         "tests/test_mcp_place_order.py",
         "tests/services/mock_integration/test_kis_coordination_adapter.py",
         "docs/contracts/rob-1263-kis-coordination-adapter.md",
-        # Round-2 fence amendment, granted explicitly by the orch instruction
-        # "stale red 테스트를 고치거나 소유하라": these two files asserted the
-        # behaviour B-5/B-6 order corrected, so they are re-owned here rather
-        # than left red while the branch claims green.
-        "tests/test_rob750_mock_mirror_intent_release.py",
-        "tests/test_kis_mock_cancel_modify.py",
-        # Same amendment: the J3A fence was pinned to a literal base SHA and had
-        # been red on plain origin/main since ROB-1255 merged inside its range.
-        "tests/services/mock_integration/test_coordination.py",
     }
 )
+# ROB-1263 r3: the r2 branch added three paths to the set above so that its own
+# out-of-fence edits would pass this check. A guard widened until it admits its
+# own violation is not a guard. The additions and the edits they covered are
+# reverted; those files' failures are reported as not-owned, with their cause,
+# instead of being absorbed here. Widening this set is an orch decision.
 FENCE_EXEMPT_PREFIXES: tuple[str, ...] = (".smoke-out/",)
 
 MOCK_NETLOC = "openapivts.koreainvestment.com:29443"
@@ -1657,22 +1653,49 @@ async def test_a_held_grant_composes_the_per_post_boundary_gate_into_the_transpo
 
 @pytest.mark.asyncio
 async def test_the_cancel_and_modify_wire_paths_also_receive_the_boundary_gate():
+    """Follow-ups get the same per-POST gate — and need their own capability."""
+
     _, envelope = _attempt_envelope()
     entry = _bound_kis_entry(envelope)
     grant = await _grant_for(envelope, entry)
 
-    for call in ("cancel", "modify"):
+    for call, operation in (
+        ("cancel", singleton.KISMockOperation.FOLLOWUP_CANCEL),
+        ("modify", singleton.KISMockOperation.FOLLOWUP_MODIFY),
+    ):
         client, parent = _domestic_client()
         with _held_grant(grant):
-            if call == "cancel":
-                await client.cancel_korea_order(
-                    "0000117058", "005930", 1, 70000, "buy", True, "00950"
-                )
-            else:
-                await client.modify_korea_order(
-                    "0000117058", "005930", 1, 70000, True, "00950"
-                )
+            async with await _issue(
+                operation=operation,
+                claim_account_scope=grant.claim_account_scope,
+                claim_idempotency_key=grant.claim_idempotency_key,
+                reservations=_FakeReservations((grant.claim_idempotency_key,)),
+            ):
+                if call == "cancel":
+                    await client.cancel_korea_order(
+                        "0000117058", "005930", 1, 70000, "buy", True, "00950"
+                    )
+                else:
+                    await client.modify_korea_order(
+                        "0000117058", "005930", 1, 70000, True, "00950"
+                    )
         assert parent.requests[0].get("pre_send_hook") is not None, call
+
+
+@pytest.mark.asyncio
+async def test_a_followup_without_a_capability_never_reaches_the_kr_wire():
+    """The enforcement point: the transport boundary itself refuses."""
+
+    client, parent = _domestic_client()
+    with pytest.raises(singleton.KISMockFollowupNotAuthorized):
+        await client.cancel_korea_order(
+            "0000117058", "005930", 1, 70000, "buy", True, "00950"
+        )
+    assert parent.requests == []
+
+    with pytest.raises(singleton.KISMockFollowupNotAuthorized):
+        await client.modify_korea_order("0000117058", "005930", 1, 70000, True, "00950")
+    assert parent.requests == []
 
 
 @pytest.mark.asyncio
@@ -1823,3 +1846,552 @@ async def test_a_stale_pre_send_release_cannot_delete_a_replacement_reservation(
     assert captured["replacement_id"] in remaining_ids, (
         "the stale release deleted a replacement reservation"
     )
+
+
+# ===========================================================================
+# r3 §1/§2/§4 — no unguarded KIS mock mutation transport boundary exists
+# ===========================================================================
+
+OVERSEAS_ORDERS_SOURCE = (
+    REPO_ROOT / "app" / "services" / "brokers" / "kis" / "overseas_orders.py"
+)
+
+
+def _posting_methods(path: pathlib.Path) -> dict[str, set[str]]:
+    """Every async method in `path` that issues a POST, and its decorators.
+
+    Discovery, not a hardcoded list: a *new* mutation method added tomorrow
+    appears here automatically, so "we forgot to guard it" is a test failure
+    rather than a silent bypass.
+    """
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    posting: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            name = func.attr if isinstance(func, ast.Attribute) else None
+            if name is None or not name.startswith("_request_with_rate_limit"):
+                continue
+            first = call.args[0] if call.args else None
+            if isinstance(first, ast.Constant) and first.value == "POST":
+                posting[node.name] = _decorator_names(node)
+                break
+    return posting
+
+
+# The US KIS mock lane's POST sites live in a module outside the B-7 write
+# fence. They are enumerated, reported, and left untouched pending an orch
+# decision — widening the fence to reach them is not this job's call.
+UNGUARDED_PENDING_ORCH_DECISION: frozenset[str] = frozenset(
+    {
+        # `sell_overseas_stock` delegates to `order_overseas_stock` and issues no
+        # POST of its own, so it is not a transport boundary.
+        "order_overseas_stock",
+        "cancel_overseas_order",
+        "modify_overseas_order",
+    }
+)
+
+
+def test_every_kr_kis_posting_mutation_method_is_guarded():
+    """The exhaustive bypass check over the fenced module.
+
+    Discovery, not a list: a new POST site added to `domestic_orders.py`
+    tomorrow shows up here and fails until it is guarded.
+    """
+
+    domestic = _posting_methods(DOMESTIC_ORDERS_SOURCE)
+    assert set(domestic) == {
+        "order_korea_stock",
+        "cancel_korea_order",
+        "modify_korea_order",
+    }, domestic
+    for name, decorators in domestic.items():
+        assert "_guard_kis_mock_writer" in decorators, name
+
+
+def test_the_us_kis_mock_post_sites_are_enumerated_and_still_unguarded():
+    """An inventory, not an endorsement.
+
+    `us.kis.mock` is a canonical J2A lane on the same VTS host, and every one of
+    its POST sites reaches the transport with no coordination authority. Closing
+    that needs `overseas_orders.py`, which is outside the B-7 write fence, so it
+    is reported rather than silently taken. This test exists so the exposure
+    cannot quietly change shape: if someone guards these, or adds a new one, it
+    fails and the report has to be updated with it.
+    """
+
+    overseas = _posting_methods(OVERSEAS_ORDERS_SOURCE)
+    assert set(overseas) == UNGUARDED_PENDING_ORCH_DECISION, overseas
+    for name, decorators in overseas.items():
+        assert "_guard_kis_mock_writer" not in decorators, (
+            f"{name} is now guarded — update the r3 report and this inventory"
+        )
+    assert "us.kis.mock" in _lane_ids_in_registry()
+
+
+def _lane_ids_in_registry() -> tuple[str, ...]:
+    from app.services.mock_lane_registry import CANONICAL_LANE_IDS
+
+    return CANONICAL_LANE_IDS
+
+
+def test_measured_the_us_mock_post_sites_carry_no_guard_at_all():
+    """The exposure, proven without I/O: the US methods are simply undecorated.
+
+    `DomesticOrderClient`'s guarded methods carry `__wrapped__` because the
+    decorator wraps them. The US ones do not, so nothing stands between an
+    `is_mock=True` US call and the transport.
+    """
+
+    from app.services.brokers.kis.domestic_orders import DomesticOrderClient
+    from app.services.brokers.kis.overseas_orders import OverseasOrderClient
+
+    for guarded in ("order_korea_stock", "cancel_korea_order", "modify_korea_order"):
+        assert hasattr(getattr(DomesticOrderClient, guarded), "__wrapped__"), guarded
+
+    for unguarded in sorted(UNGUARDED_PENDING_ORCH_DECISION):
+        method = getattr(OverseasOrderClient, unguarded)
+        assert not hasattr(method, "__wrapped__"), (
+            f"{unguarded} is now wrapped — update the r3 report and this inventory"
+        )
+
+
+# ===========================================================================
+# r3 §6 — stale / foreign-lane / foreign-account grants are refused
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_a_grant_for_another_lane_cannot_authorize_this_transport():
+    """A KR grant is not authority for a US send, and vice versa."""
+
+    _, envelope = _attempt_envelope()
+    grant = await _grant_for(envelope, _bound_kis_entry(envelope))
+    client, parent = _domestic_client()
+
+    with _held_grant(grant):
+        with pytest.raises(singleton.KISMockSendBoundaryRejected) as excinfo:
+            async with singleton.kis_mock_mutation_authority(
+                client=client._parent, path=ORDER_PATH, lane_id="us.kis.mock"
+            ):
+                pass  # pragma: no cover - the gate raises first
+
+    assert excinfo.value.reason_code == singleton.KIS_MOCK_LANE_PROFILE_MISMATCH
+    assert parent.requests == []
+
+
+@pytest.mark.asyncio
+async def test_a_grant_for_another_physical_account_is_refused_at_the_boundary():
+    _, envelope = _attempt_envelope()
+    ours = _bound_kis_entry(envelope)
+    theirs = _bound_kis_entry(
+        envelope, physical_account_id="kismock:v1:a-different-account"
+    )
+    grant = await _grant_for(envelope, theirs)
+    client = FakeKISClient()
+
+    with pytest.raises(singleton.KISMockSendBoundaryRejected) as excinfo:
+        await singleton.assert_kis_mock_send_boundary(
+            client=client, url=client._kis_url(ORDER_PATH), entry=ours, grant=grant
+        )
+    assert excinfo.value.reason_code == singleton.KIS_MOCK_ACCOUNT_FINGERPRINT_MISMATCH
+    assert client.transport_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_stale_grant_whose_section_ended_cannot_authorize_a_send():
+    """A captured grant must stop working once its coordinated section closes."""
+
+    _, envelope = _attempt_envelope()
+    stack = _stack()
+    captured: list[Any] = []
+
+    async def _mutation(grant: singleton.KISMockCoordinationGrant):
+        captured.append(grant)
+        return MutationCallbackResult(
+            certainty=MutationCertainty.DEFINITIVE, broker_order_id="0000117058"
+        )
+
+    await _coordinate(envelope, stack, _mutation)
+
+    stale = captured[0]
+    entry = _bound_kis_entry(envelope)
+    client = FakeKISClient()
+    with pytest.raises(CoordinationError) as excinfo:
+        await singleton.assert_kis_mock_send_boundary(
+            client=client, url=client._kis_url(ORDER_PATH), entry=entry, grant=stale
+        )
+    assert excinfo.value.reason_code is CoordinationReasonCode.LEASE_LOST
+    assert client.transport_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_grant_with_no_coordinated_scope_cannot_be_asserted():
+    _, envelope = _attempt_envelope()
+    entry = _bound_kis_entry(envelope)
+    scope = physical_account_scope_for_entry(entry)
+    scopeless = singleton.KISMockCoordinationGrant(
+        lane_id=entry.lane_id,
+        claim_account_scope=scope.claim_account_scope,
+        advisory_keys=singleton.kis_mock_advisory_keyset(entry),
+        physical_advisory_key=scope.advisory_key,
+        legacy_advisory_key=singleton.kis_mock_legacy_advisory_key(),
+        credential_namespace=singleton.KIS_MOCK_CREDENTIAL_NAMESPACE,
+        allowed_netlocs=(MOCK_NETLOC,),
+        physical_account_id=str(entry.physical_account_id),
+        entry=entry,
+    )
+    with pytest.raises(singleton.KISMockCoordinationBlocked):
+        await scopeless.assert_owned()
+
+
+# ===========================================================================
+# r3 §7 — follow-up capability: short lease, J3B verifies, J5 decides
+# ===========================================================================
+
+
+class _FakeReservations:
+    def __init__(self, keys: tuple[str, ...]) -> None:
+        self._keys = keys
+        self.calls: list[str] = []
+
+    async def __call__(self, account_scope: str) -> list[Any]:
+        self.calls.append(account_scope)
+        from app.services.order_send_intent_service import OrderSendIntentReservation
+
+        return [
+            OrderSendIntentReservation(row_id=i + 1, idempotency_key=key, side="buy")
+            for i, key in enumerate(self._keys)
+        ]
+
+
+CLAIM_SCOPE = "mockpa:v1:acceptance"
+CLAIM_KEY = "mock-idempotency-v1:acceptance"
+
+
+class _NoopLease:
+    acquired = True
+
+    async def __aenter__(self) -> _NoopLease:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+
+async def _issue(**overrides: Any):
+    values: dict[str, Any] = {
+        "operation": singleton.KISMockOperation.FOLLOWUP_CANCEL,
+        "claim_account_scope": CLAIM_SCOPE,
+        "claim_idempotency_key": CLAIM_KEY,
+        "attributed_broker_order_id": "0000117058",
+        "known_remainder": Decimal("2"),
+        "reservations": _FakeReservations((CLAIM_KEY,)),
+        "lease_factory": _NoopLease,
+    }
+    values.update(overrides)
+    return singleton.issue_kis_mock_followup_capability(**values)
+
+
+@pytest.mark.asyncio
+async def test_a_followup_capability_needs_a_matching_durable_claim():
+    async with await _issue() as capability:
+        assert capability.operation is singleton.KISMockOperation.FOLLOWUP_CANCEL
+        assert capability.alive is True
+
+    with pytest.raises(singleton.KISMockFollowupNotAuthorized) as excinfo:
+        async with await _issue(reservations=_FakeReservations(("someone-else",))):
+            pass  # pragma: no cover
+    assert "no durable claim matches" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_the_capability_dies_with_its_short_critical_section():
+    """The receipt must not outlive the lease — the boolean defect, again."""
+
+    async with await _issue() as capability:
+        assert singleton.active_followup_capability() is capability
+    assert capability.alive is False
+    assert singleton.active_followup_capability() is None
+    with pytest.raises(singleton.KISMockFollowupNotAuthorized):
+        singleton.verify_kis_mock_followup_capability(
+            capability, operation=singleton.KISMockOperation.FOLLOWUP_CANCEL
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "why"),
+    [
+        ({"attributed_broker_order_id": "  "}, "no attributed native order id"),
+        ({"known_remainder": Decimal("0")}, "remainder is unknown"),
+        ({"claim_idempotency_key": ""}, "no durable claim identity"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_each_missing_capability_precondition_refuses_issuance(overrides, why):
+    with pytest.raises(singleton.KISMockFollowupNotAuthorized):
+        async with await _issue(
+            reservations=_FakeReservations(
+                (overrides.get("claim_idempotency_key", CLAIM_KEY) or CLAIM_KEY,)
+            ),
+            **overrides,
+        ):
+            pass  # pragma: no cover
+
+
+def test_a_capability_for_a_different_operation_or_lane_is_refused():
+    live = singleton._ScopeLiveness()
+    capability = singleton.KISMockOperationCapability(
+        operation=singleton.KISMockOperation.FOLLOWUP_MODIFY,
+        lane_id="kr.kis.mock",
+        claim_account_scope=CLAIM_SCOPE,
+        claim_idempotency_key=CLAIM_KEY,
+        attributed_broker_order_id="0000117058",
+        known_remainder=Decimal("2"),
+        _live=live,
+    )
+    with pytest.raises(singleton.KISMockFollowupNotAuthorized):
+        singleton.verify_kis_mock_followup_capability(
+            capability, operation=singleton.KISMockOperation.FOLLOWUP_CANCEL
+        )
+    with pytest.raises(singleton.KISMockFollowupNotAuthorized):
+        singleton.verify_kis_mock_followup_capability(
+            capability,
+            operation=singleton.KISMockOperation.FOLLOWUP_MODIFY,
+            lane_id="us.kis.mock",
+        )
+    # The exact operation and lane pass.
+    assert (
+        singleton.verify_kis_mock_followup_capability(
+            capability, operation=singleton.KISMockOperation.FOLLOWUP_MODIFY
+        )
+        is capability
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_without_a_capability_makes_zero_broker_calls(monkeypatch):
+    created: list[dict[str, Any]] = []
+
+    async def _resolve(order_no: str):
+        return {
+            "ledger_id": 1,
+            "symbol": "005930",
+            "side": "buy",
+            "quantity": 2.0,
+            "price": 70000.0,
+            "krx_fwdg_ord_orgno": "00950",
+            "instrument_type": "equity_kr",
+            "lifecycle_state": "accepted",
+        }
+
+    import app.mcp_server.tooling.kis_mock_ledger as ledger
+
+    monkeypatch.setattr(ledger, "resolve_mock_order_for_cancel", _resolve)
+    monkeypatch.setattr(
+        omc, "_create_kis_client", lambda **kw: created.append(kw) or object()
+    )
+
+    assert singleton.active_followup_capability() is None
+    result = await omc._cancel_kis_mock_domestic("0000117058", "005930")
+
+    assert created == []
+    assert result["success"] is False
+    assert result["reason_code"] == "claim_followup_not_authorized"
+    assert result["claim_released"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_holding_a_valid_capability_reaches_the_broker(monkeypatch):
+    """The positive control: verification permits, it does not merely block."""
+
+    async def _resolve(order_no: str):
+        return {
+            "ledger_id": 1,
+            "symbol": "005930",
+            "side": "buy",
+            "quantity": 2.0,
+            "price": 70000.0,
+            "krx_fwdg_ord_orgno": "00950",
+            "instrument_type": "equity_kr",
+            "lifecycle_state": "accepted",
+        }
+
+    marked: list[dict[str, Any]] = []
+
+    async def _mark(**kwargs: Any) -> None:
+        marked.append(kwargs)
+
+    class _FakeKis:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def cancel_korea_order(self, **kwargs: Any) -> dict[str, Any]:
+            self.calls.append(kwargs)
+            return {"odno": "REV-1", "ord_tmd": "0901"}
+
+    fake = _FakeKis()
+    import app.mcp_server.tooling.kis_mock_ledger as ledger
+
+    monkeypatch.setattr(ledger, "resolve_mock_order_for_cancel", _resolve)
+    monkeypatch.setattr(ledger, "mark_kis_mock_order_cancelled", _mark)
+    monkeypatch.setattr(omc, "_create_kis_client", lambda **kw: fake)
+
+    async with await _issue():
+        result = await omc._cancel_kis_mock_domestic("0000117058", "005930")
+
+    assert fake.calls, "a valid capability must permit the transport cancel"
+    assert result["success"] is True
+    assert result["broker_cancel_confirmed"] is True
+    assert marked and marked[0]["broker_confirmed"] is True
+
+
+def test_j3b_verifies_capabilities_and_never_issues_or_decides_one():
+    """The decision belongs to J5 / the lane lifecycle owner, not the adapter."""
+
+    for path in (
+        REPO_ROOT / "app" / "mcp_server" / "tooling" / "orders_modify_cancel.py",
+        REPO_ROOT / "app" / "mcp_server" / "tooling" / "order_execution.py",
+        DOMESTIC_ORDERS_SOURCE,
+        OVERSEAS_ORDERS_SOURCE,
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = (
+                    func.id
+                    if isinstance(func, ast.Name)
+                    else func.attr
+                    if isinstance(func, ast.Attribute)
+                    else None
+                )
+                assert name != "issue_kis_mock_followup_capability", path.name
+
+
+# ===========================================================================
+# r3 §① — live is untouched, measured rather than claimed
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_live_intent_release_still_uses_the_unrestricted_release(
+    monkeypatch, _clean_intents, db_session
+):
+    """The r2 regression, pinned: `kis_live` must not take the exact-row path.
+
+    r2 replaced `release(scope, key)` with `release_if_matches(...)` for every
+    scope, `kis_live` included. That was an unapproved live behaviour change.
+    This records which method the live branch actually calls, so the claim is
+    evidence rather than assertion.
+    """
+
+    called: list[str] = []
+    real_release = OrderSendIntentService.release
+    real_exact = OrderSendIntentService.release_if_matches
+
+    async def _release(self, **kwargs: Any):
+        called.append("release")
+        return await real_release(self, **kwargs)
+
+    async def _release_if_matches(self, **kwargs: Any):
+        called.append("release_if_matches")
+        return await real_exact(self, **kwargs)
+
+    monkeypatch.setattr(OrderSendIntentService, "release", _release)
+    monkeypatch.setattr(
+        OrderSendIntentService, "release_if_matches", _release_if_matches
+    )
+
+    async def _fail(**kwargs: Any):
+        raise httpx.ConnectError("token setup failed before dispatch")
+
+    monkeypatch.setattr(oe, "_execute_order", _fail)
+
+    tracker = OrderSendOutcomeTracker()  # NOT_CREATED
+    with pytest.raises(oe.OrderSendNotCreated):
+        await oe._execute_and_record(
+            **_execute_kwargs(
+                is_mock=False,
+                strategy=None,
+                correlation_id=None,
+                mirror_cohort=None,
+                mirror_source_bucket=None,
+                idempotency_key="rob1263-r3-live-key",
+                send_outcome=tracker,
+            )
+        )
+
+    assert called == ["release"], called
+
+
+@pytest.mark.asyncio
+async def test_the_mock_intent_release_is_the_only_exact_row_caller(
+    monkeypatch, _clean_intents, db_session
+):
+    called: list[str] = []
+    real_release = OrderSendIntentService.release
+    real_exact = OrderSendIntentService.release_if_matches
+
+    async def _release(self, **kwargs: Any):
+        called.append("release")
+        return await real_release(self, **kwargs)
+
+    async def _release_if_matches(self, **kwargs: Any):
+        called.append("release_if_matches")
+        return await real_exact(self, **kwargs)
+
+    monkeypatch.setattr(OrderSendIntentService, "release", _release)
+    monkeypatch.setattr(
+        OrderSendIntentService, "release_if_matches", _release_if_matches
+    )
+
+    async def _fail(**kwargs: Any):
+        raise httpx.ConnectError("token setup failed before dispatch")
+
+    async def _baseline(**kwargs: Any) -> None:
+        return None
+
+    import app.mcp_server.tooling.kis_mock_ledger as ledger
+
+    monkeypatch.setattr(oe, "_execute_order", _fail)
+    monkeypatch.setattr(ledger, "_fetch_kis_mock_baseline_qty", _baseline)
+
+    tracker = OrderSendOutcomeTracker()
+    with pytest.raises(oe.OrderSendNotCreated):
+        await oe._execute_and_record(**_execute_kwargs(send_outcome=tracker))
+
+    assert called == ["release_if_matches"], called
+
+
+def test_no_lane_code_is_reachable_from_the_live_branch_of_the_guard():
+    """Structural: the live branch returns before any lane import or call."""
+
+    tree = ast.parse(DOMESTIC_ORDERS_SOURCE.read_text(encoding="utf-8"))
+    guarded = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "guarded"
+    )
+    # The first statement after binding is the is_mock test, and its body is a
+    # bare `return await method(...)` — nothing lane-owned runs on that path.
+    live_branch = next(
+        node
+        for node in ast.walk(guarded)
+        if isinstance(node, ast.If)
+        and any(isinstance(stmt, ast.Return) for stmt in node.body)
+    )
+    assert len(live_branch.body) == 1
+    returned = live_branch.body[0]
+    assert isinstance(returned, ast.Return)
+    assert isinstance(returned.value, ast.Await)
+    for child in ast.walk(live_branch):
+        assert not isinstance(child, (ast.Import, ast.ImportFrom))
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+            assert "kis_mock" not in child.func.id

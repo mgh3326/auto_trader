@@ -555,7 +555,10 @@ async def _cancel_kis_mock_domestic(
         resolve_mock_order_for_cancel,
     )
     from app.services.kis_mock_runner.singleton import (
-        authorize_kis_mock_claim_followup,
+        KISMockFollowupNotAuthorized,
+        KISMockOperation,
+        active_followup_capability,
+        verify_kis_mock_followup_capability,
     )
 
     market = _normalize_market_type_to_external("equity_kr")
@@ -581,34 +584,49 @@ async def _cancel_kis_mock_domestic(
     if isinstance(raw_quantity, (int, float)) and int(raw_quantity) > 0:
         known_remainder = _Decimal(str(int(raw_quantity)))
 
-    # J3A describes the capability; it never authorizes the mutation and never
-    # releases the durable claim. A missing forwarding org number, an unknown
-    # remainder, a missing native order id, and — since ROB-1263 r2 — the
-    # absence of a live grant that owns *this exact* durable claim each
-    # independently stop the follow-up before any transport call is made.
-    claim_scope, claim_key = _kis_mock_claim_identity(resolved)
-    decision = await authorize_kis_mock_claim_followup(
-        operation="cancel",
-        native_order_id=order_id,
-        known_remainder=known_remainder,
-        lane_capability_supports_operation=bool(orgno),
-        fresh_guards_passed=bool(resolved_symbol),
-        claim_account_scope=claim_scope,
-        claim_idempotency_key=claim_key,
-    )
-    if not decision.authorized:
+    # ROB-1263 r3: J3B *verifies* an operation-scoped capability; it never issues
+    # one and never decides that a cancel is warranted. The lane lifecycle owner
+    # (J5 in the target split) takes a new short critical-section lease via
+    # ``issue_kis_mock_followup_capability`` and calls in holding the receipt.
+    # No receipt means no authority, which means zero broker calls.
+    try:
+        verify_kis_mock_followup_capability(
+            active_followup_capability(),
+            operation=KISMockOperation.FOLLOWUP_CANCEL,
+        )
+    except KISMockFollowupNotAuthorized as exc:
         return {
             "success": False,
             "order_id": order_id,
             "symbol": resolved_symbol,
             "broker_cancel_confirmed": False,
-            "reason_code": decision.reason_code,
+            "reason_code": exc.reason_code,
+            "claim_released": False,
+            "detail": str(exc),
+            "error": (
+                "kis_mock cancel not authorized: no live FOLLOWUP_CANCEL "
+                "capability. A follow-up needs its own short critical-section "
+                "lease, the exact durable claim, and an attributed native order "
+                "id. The durable claim is retained."
+            ),
+            "market": market,
+        }
+
+    # Local ledger facts still have to line up with the receipt: a capability is
+    # authority to act on *one* order, not a licence for whatever the ledger row
+    # happens to say.
+    claim_scope, claim_key = _kis_mock_claim_identity(resolved)
+    if not orgno or known_remainder is None:
+        return {
+            "success": False,
+            "order_id": order_id,
+            "symbol": resolved_symbol,
+            "broker_cancel_confirmed": False,
+            "reason_code": "claim_followup_not_authorized",
             "claim_released": False,
             "error": (
-                "kis_mock cancel not authorized: the lane lacks broker-confirmed "
-                "capability, an attributed order number, a known remainder, or a "
-                "live grant owning this exact durable claim. "
-                "The durable claim is retained."
+                "kis_mock cancel not authorized: missing forwarding org number "
+                "or unknown broker remainder. The durable claim is retained."
             ),
             "market": market,
         }

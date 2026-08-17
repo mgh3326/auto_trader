@@ -946,24 +946,38 @@ async def _execute_and_record(
         # account stays blocked from a same/conflicting submit, and no retry is
         # offered.  A missing outcome tracker proves even less than an ambiguous
         # one, so it also holds.
-        if (
-            not intent_reserved
-            or intent_key is None
-            or intent_row_id is None
-            or not proven_not_sent
-        ):
+        if not intent_reserved or intent_key is None or not proven_not_sent:
+            return False
+
+        # ROB-1263 r3 — LIVE SCOPE RESTORED.
+        #
+        # r2 replaced this delete with `release_if_matches` for *every* scope,
+        # including `kis_live`. That was an unapproved change to live order
+        # behaviour: the J3B boundary is the mock branch, and "equivalent in
+        # effect" was never mine to decide. The exact-row release is therefore
+        # predicated on the mock scope, and `kis_live` takes the identical
+        # `release(account_scope, idempotency_key)` it took before ROB-1263.
+        release_is_mock_scope = intent_account_scope == "kis_mock"
+        if release_is_mock_scope and intent_row_id is None:
             return False
 
         try:
             async with _order_session_factory()() as release_db:
-                # Exact-row match: scope + row id + key + side. The unrestricted
-                # `release(scope, key)` is deliberately not reachable from here.
-                deleted = await OrderSendIntentService(release_db).release_if_matches(
-                    account_scope=intent_account_scope,
-                    row_id=intent_row_id,
-                    idempotency_key=intent_key,
-                    side=side,
-                )
+                service = OrderSendIntentService(release_db)
+                if release_is_mock_scope:
+                    # Mock only: exact-row match (scope + row id + key + side), so
+                    # a stale failure path cannot delete a replacement row.
+                    deleted = await service.release_if_matches(
+                        account_scope=intent_account_scope,
+                        row_id=intent_row_id,
+                        idempotency_key=intent_key,
+                        side=side,
+                    )
+                else:
+                    deleted = await service.release(
+                        account_scope=intent_account_scope,
+                        idempotency_key=intent_key,
+                    )
         except Exception as release_exc:  # noqa: BLE001
             logger.warning(
                 "KIS mock mirror intent release failed after send failure: "
