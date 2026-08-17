@@ -69,6 +69,16 @@ async def test_mark_cancelled_sets_state_and_flag(db_session: AsyncSession):
     assert row.last_reconcile_detail["broker_cancel_confirmed"] is False
 
 
+def _cancel_receipt(order_id: str):
+    """The FOLLOWUP receipt ROB-1263 requires of any kis_mock cancel caller."""
+
+    from tests.services.mock_integration.test_kis_coordination_adapter import (
+        issued_followup_receipt,
+    )
+
+    return issued_followup_receipt("followup_cancel", order_id=str(order_id))
+
+
 class _FakeKisCancelOK:
     async def cancel_korea_order(self, **kwargs):
         self.kwargs = kwargs
@@ -98,11 +108,20 @@ class _FakeKisCancelError:
 async def test_mock_cancel_success_confirms_and_cancels(
     db_session: AsyncSession, monkeypatch
 ):
+    """ROB-1263 r3/r5: a cancel caller now supplies a FOLLOWUP receipt.
+
+    The receipt names the exact native order and the durable claim it belongs
+    to. Everything this test asserted before — broker confirmation, the
+    forwarding org number reaching the client, the ledger transition — is
+    unchanged; only the caller's own precondition is now met explicitly.
+    (orch approved this file's fence entry in r6.)
+    """
     row = await _seed(db_session, orgno="00950")
     fake = _FakeKisCancelOK()
     monkeypatch.setattr(omc, "_create_kis_client", lambda *, is_mock: fake)
 
-    result = await omc._cancel_kis_domestic(row.order_no, None, is_mock=True)
+    async with _cancel_receipt(row.order_no):
+        result = await omc._cancel_kis_domestic(row.order_no, None, is_mock=True)
 
     assert result["success"] is True
     assert result["broker_cancel_confirmed"] is True
@@ -121,7 +140,8 @@ async def test_mock_cancel_unsupported_soft_cancels(
         omc, "_create_kis_client", lambda *, is_mock: _FakeKisCancelUnsupported()
     )
 
-    result = await omc._cancel_kis_domestic(row.order_no, None, is_mock=True)
+    async with _cancel_receipt(row.order_no):
+        result = await omc._cancel_kis_domestic(row.order_no, None, is_mock=True)
 
     assert result["success"] is True
     assert result["broker_cancel_confirmed"] is False

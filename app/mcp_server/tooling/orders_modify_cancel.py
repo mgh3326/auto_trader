@@ -527,14 +527,60 @@ def _is_kis_mock_unsupported(message: str) -> bool:
     return any(marker in lowered for marker in _KIS_MOCK_UNSUPPORTED_MARKERS)
 
 
+def _kis_mock_expected_claim(
+    resolved: dict[str, Any],
+) -> tuple[str, str, int | None, str | None] | None:
+    """The claim 4-tuple this ledger row belongs to, when the row names one.
+
+    Returns ``None`` when the row carries no J2B lineage — rows written before
+    the coordinated lane existed do not, and inventing one here would
+    manufacture the very ownership the follow-up gate is checking for.
+    """
+
+    scope, key = _kis_mock_claim_identity(resolved)
+    if scope is None or key is None:
+        return None
+    row_id = resolved.get("claim_row_id")
+    return (
+        scope,
+        key,
+        row_id if isinstance(row_id, int) else None,
+        resolved.get("side"),
+    )
+
+
+def _kis_mock_claim_identity(resolved: dict[str, Any]) -> tuple[str | None, str | None]:
+    """The durable claim a follow-up would be amending, if the row names one.
+
+    Read from the ledger row rather than assumed: a row written before the
+    coordinated lane existed carries no J2B lineage, and inventing one here
+    would manufacture exactly the ownership the follow-up gate is checking for.
+    """
+
+    scope = resolved.get("claim_account_scope")
+    key = resolved.get("claim_idempotency_key")
+    return (
+        scope if isinstance(scope, str) and scope.strip() else None,
+        key if isinstance(key, str) and key.strip() else None,
+    )
+
+
 async def _cancel_kis_mock_domestic(
     order_id: str,
     symbol: str | None,
 ) -> dict[str, Any]:
     """Cancel a KIS *mock* domestic order via the ledger (no TTTC8036R)."""
+    from decimal import Decimal as _Decimal
+
     from app.mcp_server.tooling.kis_mock_ledger import (
         mark_kis_mock_order_cancelled,
         resolve_mock_order_for_cancel,
+    )
+    from app.services.kis_mock_runner.singleton import (
+        KISMockFollowupNotAuthorized,
+        KISMockOperation,
+        active_followup_capability,
+        verify_kis_mock_followup_capability,
     )
 
     market = _normalize_market_type_to_external("equity_kr")
@@ -550,8 +596,69 @@ async def _cancel_kis_mock_domestic(
     resolved_symbol = symbol or resolved["symbol"]
     orgno = resolved["krx_fwdg_ord_orgno"]
     side = resolved["side"]
-    quantity = int(resolved["quantity"]) or 1
     price = int(resolved["price"])
+
+    # ROB-1263 B-6: an unknown remainder is never replaced with a guess. The
+    # previous `int(...) or 1` turned "we do not know how much is resting" into
+    # a one-share cancel request, which is an invented broker instruction.
+    raw_quantity = resolved["quantity"]
+    known_remainder: _Decimal | None = None
+    if isinstance(raw_quantity, (int, float)) and int(raw_quantity) > 0:
+        known_remainder = _Decimal(str(int(raw_quantity)))
+
+    # ROB-1263 r3: J3B *verifies* an operation-scoped capability; it never issues
+    # one and never decides that a cancel is warranted. The lane lifecycle owner
+    # (J5 in the target split) takes a new short critical-section lease via
+    # ``issue_kis_mock_followup_capability`` and calls in holding the receipt.
+    # No receipt means no authority, which means zero broker calls.
+    try:
+        # r5 §2: the receipt is compared against the *target* — the native order
+        # id this call names, and the exact durable claim it belongs to — not
+        # merely checked for internal completeness.
+        verify_kis_mock_followup_capability(
+            active_followup_capability(),
+            operation=KISMockOperation.FOLLOWUP_CANCEL,
+            expected_broker_order_id=order_id,
+            expected_claim=_kis_mock_expected_claim(resolved),
+        )
+    except KISMockFollowupNotAuthorized as exc:
+        return {
+            "success": False,
+            "order_id": order_id,
+            "symbol": resolved_symbol,
+            "broker_cancel_confirmed": False,
+            "reason_code": exc.reason_code,
+            "claim_released": False,
+            "detail": str(exc),
+            "error": (
+                "kis_mock cancel not authorized: no live FOLLOWUP_CANCEL "
+                "capability. A follow-up needs its own short critical-section "
+                "lease, the exact durable claim, and an attributed native order "
+                "id. The durable claim is retained."
+            ),
+            "market": market,
+        }
+
+    # Local ledger facts still have to line up with the receipt: a capability is
+    # authority to act on *one* order, not a licence for whatever the ledger row
+    # happens to say.
+    claim_scope, claim_key = _kis_mock_claim_identity(resolved)
+    if not orgno or known_remainder is None:
+        return {
+            "success": False,
+            "order_id": order_id,
+            "symbol": resolved_symbol,
+            "broker_cancel_confirmed": False,
+            "reason_code": "claim_followup_not_authorized",
+            "claim_released": False,
+            "error": (
+                "kis_mock cancel not authorized: missing forwarding org number "
+                "or unknown broker remainder. The durable claim is retained."
+            ),
+            "market": market,
+        }
+
+    quantity = int(raw_quantity)
 
     async def _soft_cancel(reason: str) -> dict[str, Any]:
         await mark_kis_mock_order_cancelled(
@@ -566,15 +673,16 @@ async def _cancel_kis_mock_domestic(
             "broker_cancel_confirmed": False,
             "mock_unsupported": True,
             "soft_cancelled": True,
+            # ROB-1263 B-6: a soft cancel is not terminal evidence, so it cannot
+            # release the durable send claim for this lineage.
+            "terminal_evidence": False,
+            "claim_released": False,
             "warning": (
                 "kis_mock soft-cancel: ledger marked cancelled but the broker "
                 "resting order may still be live; a later fill is reconciled."
             ),
             "market": market,
         }
-
-    if not orgno:
-        return await _soft_cancel("missing_krx_fwdg_ord_orgno")
 
     try:
         kis = _create_kis_client(is_mock=True)

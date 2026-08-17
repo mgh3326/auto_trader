@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 
 from app.jobs.kis_mock_reconciliation_job import run_kis_mock_reconciliation
 from app.mcp_server.tooling import kis_mock_ledger, order_execution
@@ -41,6 +42,26 @@ from app.services.kis_mock_attribution_chain import (
     GAP_SIGNAL_MISSING,
     load_attribution_chain,
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _kis_mock_coordinated_route():
+    """ROB-1263 r4 §3: a KIS mock send needs a coordinated route to be authorized.
+
+    These tests are about the pre-submit attribution chain, not about coordination, so they install the
+    route the adapter now requires. The route-less refusal itself is unchanged
+    and is covered by `test_without_a_route_the_lane_sends_nothing_at_all`.
+    (orch approved this file's fence entry in r6 after CI confirmed the failures
+    are this branch's regressions.)
+    """
+
+    from tests.services.mock_integration.test_kis_coordination_adapter import (
+        installed_kis_mock_route,
+    )
+
+    async with installed_kis_mock_route():
+        yield
+
 
 pytestmark = pytest.mark.asyncio
 

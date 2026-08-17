@@ -69,6 +69,7 @@ from app.services.kis_mock_attribution import (
     record_signal,
     resolve_attribution,
 )
+from app.services.kis_mock_runner.singleton import run_kis_mock_send
 from app.services.order_send_intent_service import (
     DuplicateOrderIntent,
     OrderSendIntentService,
@@ -902,10 +903,15 @@ async def _execute_and_record(
         intent_account_scope = "kis_mock"
         intent_key = correlation_id
 
+    intent_row_id: int | None = None
     if intent_account_scope is not None and intent_key is not None:
         async with _order_session_factory()() as intent_db:
             try:
-                await OrderSendIntentService(intent_db).reserve(
+                # ROB-1263 r2 / B-5: keep the row id. Releasing by
+                # (scope, key) alone deletes *whatever* row currently carries
+                # that key, so a stale failure path can remove a replacement
+                # reservation made by a later attempt or a reconciler.
+                intent_row_id = await OrderSendIntentService(intent_db).reserve(
                     account_scope=intent_account_scope,
                     idempotency_key=intent_key,
                     symbol=normalized_symbol,
@@ -929,25 +935,49 @@ async def _execute_and_record(
         *,
         proven_not_sent: bool = False,
     ) -> bool:
-        if (
-            not intent_reserved
-            or intent_key is None
-            or (
-                not proven_not_sent
-                and (
-                    intent_account_scope != "kis_mock"
-                    or mirror_cohort != "mock_counterfactual"
-                )
-            )
-        ):
+        # ROB-1263 B-5: proven absence is the *only* pre-terminal release.
+        #
+        # The previous rule released a kis_mock mirror reservation on any
+        # transport error and advertised a retry, on the theory that mock money
+        # carries no risk.  That is the wrong axis: the risk is a duplicate
+        # order at the broker and a lineage that can no longer say which send
+        # produced it.  An error raised after the send boundary is
+        # `unknown_pending_reconcile` — the claim is retained, the physical
+        # account stays blocked from a same/conflicting submit, and no retry is
+        # offered.  A missing outcome tracker proves even less than an ambiguous
+        # one, so it also holds.
+        if not intent_reserved or intent_key is None or not proven_not_sent:
+            return False
+
+        # ROB-1263 r3 — LIVE SCOPE RESTORED.
+        #
+        # r2 replaced this delete with `release_if_matches` for *every* scope,
+        # including `kis_live`. That was an unapproved change to live order
+        # behaviour: the J3B boundary is the mock branch, and "equivalent in
+        # effect" was never mine to decide. The exact-row release is therefore
+        # predicated on the mock scope, and `kis_live` takes the identical
+        # `release(account_scope, idempotency_key)` it took before ROB-1263.
+        release_is_mock_scope = intent_account_scope == "kis_mock"
+        if release_is_mock_scope and intent_row_id is None:
             return False
 
         try:
             async with _order_session_factory()() as release_db:
-                deleted = await OrderSendIntentService(release_db).release(
-                    account_scope=intent_account_scope,
-                    idempotency_key=intent_key,
-                )
+                service = OrderSendIntentService(release_db)
+                if release_is_mock_scope:
+                    # Mock only: exact-row match (scope + row id + key + side), so
+                    # a stale failure path cannot delete a replacement row.
+                    deleted = await service.release_if_matches(
+                        account_scope=intent_account_scope,
+                        row_id=intent_row_id,
+                        idempotency_key=intent_key,
+                        side=side,
+                    )
+                else:
+                    deleted = await service.release(
+                        account_scope=intent_account_scope,
+                        idempotency_key=intent_key,
+                    )
         except Exception as release_exc:  # noqa: BLE001
             logger.warning(
                 "KIS mock mirror intent release failed after send failure: "
@@ -972,12 +1002,12 @@ async def _execute_and_record(
             return True
         return False
 
-    try:
+    async def _send_to_broker() -> Any:
         # The optional pre_send_hook is threaded to the broker transport and
         # fired immediately before each real mutation HTTP attempt (including
         # eligible token/rate-limit re-sends). Callers without a hook retain
         # the existing execution behavior.
-        execution_result = await _execute_order(
+        return await _execute_order(
             symbol=normalized_symbol,
             side=side,
             order_type=order_type,
@@ -989,6 +1019,31 @@ async def _execute_and_record(
             pre_send_hook=pre_send_hook,
             send_outcome=send_outcome,
         )
+
+    try:
+        if is_mock and market_type == "equity_kr":
+            # ROB-1263 r2 / B-1..B-4: the KIS mock lane's single production
+            # route into the merged J3A coordinator. When the lane has a
+            # coordinated route the *whole* send runs inside it, so it inherits
+            # J3A's ordering (lineage persist → lease → uncertainty gate →
+            # binary claim → re-assertion → callback → retained durable writes
+            # → conditional release). When it has none the lane is
+            # AUTO_READY_BLOCKED_BY_LIFECYCLE and the send is explicitly not
+            # AUTO evidence — but it still holds the wire-boundary authority
+            # taken in `_guard_kis_mock_writer`.
+            kis_mock_outcome = await run_kis_mock_send(
+                send=_send_to_broker,
+                symbol=normalized_symbol,
+                side=side,
+                order_type=order_type,
+                quantity=order_quantity,
+                price=price,
+                correlation_id=correlation_id,
+                strategy=strategy,
+            )
+            execution_result = kis_mock_outcome.result
+        else:
+            execution_result = await _send_to_broker()
         if send_outcome is not None:
             # A transport response crossed the send boundary. Until the mock
             # result normalizer proves accepted/rejected, the outcome is unknown.
@@ -1016,7 +1071,14 @@ async def _execute_and_record(
         # Preserve the transport boundary's explicit state: token/client setup
         # can raise before dispatch (NOT_CREATED), while an actual send marks
         # UNKNOWN immediately before crossing the HTTP boundary.
-        retry_allowed = await _release_reserved_intent_after_send_failure(send_exc)
+        # ROB-1263 r4 / operator §87 — LIVE CALL CONDITION RESTORED.
+        #
+        # r2/r3 passed `proven_not_sent` here, which let the `kis_live` scope
+        # reach the release. origin/main passes nothing, so live returns from the
+        # guard without touching the reservation, and that is what ships. The
+        # "release on proven not-sent" idea is a live-side change owned by
+        # ROB-1279 and is deliberately absent here.
+        await _release_reserved_intent_after_send_failure(send_exc)
         if (
             send_outcome is not None
             and send_outcome.disposition is OrderSendDisposition.NOT_CREATED
@@ -1031,8 +1093,9 @@ async def _execute_and_record(
             )
             raise OrderSendNotCreated(send_exc) from send_exc
         # ROB-645: the order POST itself timed out / failed with no broker response.
-        # Outcome is UNKNOWN for live orders (may have been accepted) — never re-send live; reconcile.
-        # ROB-750: mock mirror has no live broker risk, so its scoped intent is released for retry.
+        # Outcome is UNKNOWN (the order may have been accepted) — never re-send;
+        # reconcile. ROB-1263 B-5 removed the kis_mock mirror exception: an
+        # unproven send holds its claim and advertises no retry on any lane.
         logger.error(
             "execute_order 실패(outcome unknown): stage=execute_order, "
             "market_type=%s, symbol=%s, side=%s, error=%s",
@@ -1041,17 +1104,10 @@ async def _execute_and_record(
             side,
             describe_exception(send_exc),
         )
-        raise OrderSendOutcomeUnknown(
-            send_exc,
-            retry_allowed=retry_allowed,
-            retry_hint=(
-                "KIS mock mirror pre-send intent를 해제했습니다. "
-                "동일 미러 아이템은 재시도할 수 있습니다."
-            )
-            if retry_allowed
-            else None,
-        ) from send_exc
+        raise OrderSendOutcomeUnknown(send_exc) from send_exc
     except Exception as exec_exc:
+        # Not proven unsent: an arbitrary failure after the send boundary is
+        # uncertainty, so the reservation is deliberately retained.
         await _release_reserved_intent_after_send_failure(exec_exc)
         logger.error(
             "execute_order 실패: stage=execute_order, market_type=%s, "

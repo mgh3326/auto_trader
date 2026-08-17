@@ -21,6 +21,54 @@ async def _clean_order_send_intents(db_session):
     await db_session.commit()
 
 
+@pytest.fixture
+def _coordinated_route():
+    """ROB-1263 r4 §3: a KIS mock send needs a coordinated route to be authorized.
+
+    These tests are about what happens to the *reservation* around a send, so the
+    send has to be allowed to occur. Installing a route is the caller doing what
+    the adapter now requires; the route-less refusal itself is unaffected and is
+    covered by `test_without_a_route_the_lane_sends_nothing_at_all`.
+    """
+    import app.services.kis_mock_runner.singleton as singleton
+    from app.services.mock_integration.coordination import DurableSendClaimAdapter
+    from tests.services.mock_integration.test_coordination import (
+        ConnectionFactory,
+        FakeIntents,
+        FakeLockConnection,
+        FakeLockSpace,
+        FakeUncertaintyGate,
+        RecordingDispatchEvidence,
+        RecordingPersistence,
+        _attempt_envelope,
+        _bound_registry,
+    )
+
+    physical = singleton.kis_mock_account_fingerprint(
+        app_key="rob750-fixture-key", account_no="5088888801"
+    )
+    _, envelope = _attempt_envelope()
+    space = FakeLockSpace()
+    connection = FakeLockConnection(space)
+    route = singleton.KISMockCoordinationRoute(
+        envelope=envelope,
+        ports=singleton.KISMockLanePorts(
+            persistence=RecordingPersistence(),
+            dispatch_evidence=RecordingDispatchEvidence(),
+            uncertainty_gate=FakeUncertaintyGate(),
+            evidence_kinds=singleton.KIS_MOCK_LANE_EVIDENCE_KINDS,
+        ),
+        claims=DurableSendClaimAdapter(FakeIntents()),
+        connection_factory=ConnectionFactory(connection),
+        registry=_bound_registry(envelope, "kr.kis.mock", physical_account_id=physical),
+    )
+    singleton.set_kis_mock_coordination_route_provider(lambda **_ctx: route)
+    try:
+        yield route
+    finally:
+        singleton.set_kis_mock_coordination_route_provider(None)
+
+
 def _execute_kwargs(*, key: str, is_mock: bool) -> dict:
     return {
         "normalized_symbol": "005930",
@@ -70,10 +118,19 @@ def _stub_kis_mock_baseline(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mock_mirror_intent_released_after_send_request_error(
+async def test_mock_mirror_intent_is_retained_when_the_send_is_not_proven_unsent(
     monkeypatch,
     db_session,
+    _coordinated_route,
 ):
+    """ROB-1263 B-5 supersedes ROB-750's mirror-retry exemption.
+
+    ROB-750 released the mirror reservation on any transport error and told the
+    caller to retry, on the theory that mock money carries no risk. The risk is
+    not the money: it is a duplicate order at the broker and a lineage that can
+    no longer say which send produced it. Without proof the send never left, the
+    outcome is unknown, so the claim is retained and no retry is advertised.
+    """
     _stub_kis_mock_baseline(monkeypatch)
     key = "mirror:rob750-request-error"
 
@@ -85,14 +142,12 @@ async def test_mock_mirror_intent_released_after_send_request_error(
     with pytest.raises(oe.OrderSendOutcomeUnknown) as excinfo:
         await oe._execute_and_record(**_execute_kwargs(key=key, is_mock=True))
 
-    assert excinfo.value.retry_allowed is True
-    # A retry must be able to reserve the same mirror key again; before ROB-750
-    # this raised DuplicateOrderIntent because the first reservation was permanent.
-    rid = await OrderSendIntentService(db_session).reserve(
-        account_scope="kis_mock",
-        idempotency_key=key,
-    )
-    assert isinstance(rid, int)
+    assert getattr(excinfo.value, "retry_allowed", False) is False
+    with pytest.raises(DuplicateOrderIntent):
+        await OrderSendIntentService(db_session).reserve(
+            account_scope="kis_mock",
+            idempotency_key=key,
+        )
 
 
 @pytest.mark.asyncio
@@ -122,6 +177,7 @@ async def test_live_intent_is_not_released_after_unknown_send_outcome(
 async def test_mock_mirror_duplicate_message_does_not_claim_next_day_retry(
     monkeypatch,
     db_session,
+    _coordinated_route,
 ):
     _stub_kis_mock_baseline(monkeypatch)
     key = "mirror:rob750-duplicate-message"
@@ -147,7 +203,10 @@ async def test_mock_mirror_duplicate_message_does_not_claim_next_day_retry(
 
 
 @pytest.mark.asyncio
-async def test_mock_mirror_unknown_outcome_message_allows_retry(monkeypatch):
+async def test_mock_mirror_unknown_outcome_message_never_advertises_a_retry(
+    monkeypatch, _coordinated_route
+):
+    """The operator-facing message must not invite a re-send of an unknown POST."""
     _stub_kis_mock_baseline(monkeypatch)
     key = "mirror:rob750-retry-message"
 
@@ -173,6 +232,4 @@ async def test_mock_mirror_unknown_outcome_message_allows_retry(monkeypatch):
     )
 
     assert result["outcome_unknown"] is True
-    assert result["retry_allowed"] is True
-    assert "재시도" in result["error"]
-    assert "재전송하지 말고" not in result["error"]
+    assert result.get("retry_allowed", False) is False

@@ -59,26 +59,68 @@ from app.services.order_send_intent_service import (
     OrderSendIntentService,
 )
 
+
+@pytest_asyncio.fixture(autouse=True)
+async def _kis_mock_coordinated_route():
+    """ROB-1263 r4 §3: a KIS mock send needs a coordinated route to be authorized.
+
+    These tests are about reservation lifecycle around a send, not about coordination, so they install the
+    route the adapter now requires. The route-less refusal itself is unchanged
+    and is covered by `test_without_a_route_the_lane_sends_nothing_at_all`.
+    (orch approved this file's fence entry in r6 after CI confirmed the failures
+    are this branch's regressions.)
+    """
+
+    from tests.services.mock_integration.test_kis_coordination_adapter import (
+        installed_kis_mock_route,
+    )
+
+    async with installed_kis_mock_route():
+        yield
+
+
 _NXT = "app.services.brokers.kis.domestic_orders.is_nxt_eligible"
 _TEST_CID_PREFIX = "resv-test-"
 
 
 class _Settings:
-    kis_app_key = "k"
+    # ROB-1263 r6: this suite exercises the *mock* send path, so its stand-in
+    # settings view now actually looks like the KIS mock namespace. The B-4
+    # boundary gate reads the real client at every POST; a fake that claims to
+    # be mock while carrying live-shaped settings is exactly what that gate is
+    # there to reject, and pretending otherwise here would only hide it.
+    _is_mock = True
+    kis_base_url = "https://openapivts.koreainvestment.com:29443"
+    kis_app_key = "kis-mock-app-key-fixture"
     kis_app_secret = "s"
     kis_access_token = "t"
-    kis_account_no = "1234567890"
+    kis_account_no = "5088888801"
     api_rate_limit_retry_429_max = 0
     api_rate_limit_retry_429_base_delay = 0.0
     kis_rate_limit_rate = 19
     kis_rate_limit_period = 1.0
 
 
+class _PassThroughVTSGate:
+    """Admits immediately, but only after running the pre-send hook."""
+
+    def __init__(self) -> None:
+        self.acquisitions: list[str] = []
+
+    async def acquire(self, scope_key, *, freshness_hook=None, call_class=""):
+        self.acquisitions.append(scope_key)
+        if freshness_hook is not None:
+            await freshness_hook()
+
+
 class _Parent(BaseKISClient):
     def __init__(self, execute, *, token_error: Exception | None = None) -> None:  # type: ignore[override]
         self._unmapped_rate_limit_keys_logged: set = set()
         type(self)._shared_client_lock = None
-        self._hdr_base = {"content-type": "application/json"}
+        self._hdr_base = {
+            "content-type": "application/json",
+            "appkey": "kis-mock-app-key-fixture",
+        }
         token = MagicMock()
         token.clear_token = AsyncMock()
         self._token_manager = token
@@ -88,13 +130,19 @@ class _Parent(BaseKISClient):
         self._ensure_client = AsyncMock(return_value=MagicMock())  # type: ignore[method-assign]
         self._execute_http_request = execute  # type: ignore[method-assign]
         self._token_error = token_error
+        # ROB-1263 r6: a mock-shaped client enters the ROB-892 VTS distributed
+        # gate, which is Redis-backed. `_vts_gate` is that guard's own injection
+        # point for tests; the stand-in still runs the freshness hook before
+        # admitting, so the J3B per-POST boundary check keeps firing here.
+        self._is_mock_client = True
+        self._vts_gate = _PassThroughVTSGate()
 
     @property  # type: ignore[override]
     def _settings(self):  # type: ignore[override]
         return _Settings()
 
     def _kis_url(self, path: str) -> str:
-        return f"https://mockhost{path}"
+        return f"https://openapivts.koreainvestment.com:29443{path}"
 
     async def _ensure_token(self) -> None:
         if self._token_error is not None:

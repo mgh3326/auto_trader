@@ -3,6 +3,79 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _kis_mock_wire_authority(monkeypatch):
+    """ROB-1263: an `is_mock=True` mutation now holds writer authority at the wire.
+
+    These tests are about TR-id and exchange routing, not about coordination, and
+    they run without the run-owned test database. The authority record is still
+    installed — the guard's requirement is unchanged — only the PostgreSQL lease
+    behind it is stood in for, so the routing assertions stay the subject.
+    """
+    import contextlib as _contextlib
+
+    import app.services.kis_mock_runner.singleton as singleton
+
+    @_contextlib.asynccontextmanager
+    async def _lease(**kwargs):
+        token = singleton._ACTIVE_WRITER_LEASE.set(
+            singleton._WriterAuthority(
+                account_mode=singleton.ACCOUNT_MODE,
+                advisory_keys=(singleton.kis_mock_legacy_advisory_key(),),
+                lease=object(),
+            )
+        )
+        try:
+            yield
+        finally:
+            singleton._ACTIVE_WRITER_LEASE.reset(token)
+
+    monkeypatch.setattr(singleton, "enforce_kis_mock_mutation_writer", _lease)
+
+
+def _followup_receipt(operation_name: str, *, is_mock: bool, order_id: str):
+    """A live FOLLOWUP receipt for mock cancel/modify; a no-op for live orders.
+
+    ROB-1263 r3 requires a follow-up to carry an operation-scoped capability, so
+    a caller that legitimately wants to cancel supplies one. This is the caller
+    doing its part, not the guard being relaxed.
+    """
+    import contextlib as _contextlib
+    from decimal import Decimal as _Decimal
+
+    import app.services.kis_mock_runner.singleton as singleton
+    from app.services.order_send_intent_service import OrderSendIntentReservation
+
+    if not is_mock:
+        return _contextlib.nullcontext()
+
+    async def _reservations(account_scope: str):
+        return [
+            OrderSendIntentReservation(
+                row_id=1, idempotency_key="mock-idempotency-v1:kis-logging", side="buy"
+            )
+        ]
+
+    class _Lease:
+        acquired = True
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+    return singleton.issue_kis_mock_followup_capability(
+        operation=singleton.KISMockOperation(operation_name),
+        claim_account_scope="mockpa:v1:kis-logging",
+        claim_idempotency_key="mock-idempotency-v1:kis-logging",
+        attributed_broker_order_id=order_id,
+        known_remainder=_Decimal("10"),
+        reservations=_reservations,
+        lease_factory=_Lease,
+    )
+
+
 class TestKISFailureLogging:
     @pytest.mark.asyncio
     @patch("app.services.brokers.kis.base.httpx.AsyncClient")
@@ -339,15 +412,18 @@ class TestKISFailureLogging:
         client._token_manager = AsyncMock()
         client._token_manager.get_token = AsyncMock(return_value="test_token")
 
-        result = await client.cancel_korea_order(
-            order_number="10001",
-            stock_code="005930",
-            quantity=3,
-            price=81000,
-            order_type="buy",
-            krx_fwdg_ord_orgno="06010",
-            is_mock=is_mock,
-        )
+        async with _followup_receipt(
+            "followup_cancel", is_mock=is_mock, order_id="10001"
+        ):
+            result = await client.cancel_korea_order(
+                order_number="10001",
+                stock_code="005930",
+                quantity=3,
+                price=81000,
+                order_type="buy",
+                krx_fwdg_ord_orgno="06010",
+                is_mock=is_mock,
+            )
 
         assert result["odno"] == "2"
 
@@ -410,13 +486,16 @@ class TestKISFailureLogging:
             ]
         )
 
-        result = await client.modify_korea_order(
-            order_number="10002",
-            stock_code="005930",
-            quantity=4,
-            new_price=81500,
-            is_mock=is_mock,
-        )
+        async with _followup_receipt(
+            "followup_modify", is_mock=is_mock, order_id="10002"
+        ):
+            result = await client.modify_korea_order(
+                order_number="10002",
+                stock_code="005930",
+                quantity=4,
+                new_price=81500,
+                is_mock=is_mock,
+            )
 
         assert result["odno"] == "3"
 

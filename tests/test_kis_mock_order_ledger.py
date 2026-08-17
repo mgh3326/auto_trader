@@ -20,6 +20,25 @@ from sqlalchemy import delete
 from app.models.review import OrderSendIntent
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _kis_mock_coordinated_route():
+    """ROB-1263 r4 §3: a KIS mock send needs a coordinated route to be authorized.
+
+    These tests are about the KIS mock ledger rows a send produces, not about coordination, so they install the
+    route the adapter now requires. The route-less refusal itself is unchanged
+    and is covered by `test_without_a_route_the_lane_sends_nothing_at_all`.
+    (orch approved this file's fence entry in r6 after CI confirmed the failures
+    are this branch's regressions.)
+    """
+
+    from tests.services.mock_integration.test_kis_coordination_adapter import (
+        installed_kis_mock_route,
+    )
+
+    async with installed_kis_mock_route():
+        yield
+
+
 @pytest_asyncio.fixture
 async def clean_kis_live_order_send_intents(db_session):
     """Clear KIS live send reservations around tests that exercise live send.
