@@ -71,6 +71,7 @@ from app.services.order_proposals.dispatch_contract import (
     TelegramDispatchResult,
     build_proposal_dispatch_binding,
 )
+from app.services.order_proposals.errors import OrderProposalError
 from app.services.order_proposals.revalidation import (
     RungOutcome,
     revalidate_and_submit,
@@ -92,6 +93,26 @@ Clock = Callable[[], datetime]
 _SOURCE_ASOF_ABSENT = object()
 _AUDITABLE_REVALIDATION_FALLBACK_REASONS = frozenset(
     {"eligibility_error", "multi_rung_requires_approval"}
+)
+# ROB-1281: prefix for "no card was rendered because the proposal is no longer
+# approvable", kept distinct from card-rendering/transport failure codes.
+APPROVAL_NOT_DISPATCHABLE_PREFIX = "approval_not_dispatchable:"
+# ROB-1281 r2: the *only* ``set_approval_nonce`` refusals that mean "this
+# proposal can never carry an approval card again" -- the two verdicts of
+# ``service.proposal_approval_block_reason``.
+#
+# Deliberately an allowlist, never a denylist.  ``set_approval_nonce`` also
+# raises ``approval_dispatch_already_pending``/``approval_dispatch_already_
+# current`` under ``require_redispatchable``, and those are the opposite kind
+# of answer: they are the guard *protecting a live card* from being replaced.
+# Ledgering one of them would run ``_record_proposal_not_dispatchable``, which
+# supersedes the current attempt, moves group ownership to a new attempt, and
+# clears the nonce on failure -- destroying the very card the guard just
+# refused to disturb.  Anything not listed here therefore re-raises to the
+# caller untouched, which is also the pre-ROB-1281 behaviour.
+_NOT_DISPATCHABLE_REASON_PREFIXES = (
+    "proposal_terminal:",
+    "proposal_superseded_by:",
 )
 
 
@@ -297,6 +318,59 @@ async def _record_approval_window_block(
         chat_id=None,
         now=decision.observed_at,
         approval_window_policy_stamp=decision.policy_stamp,
+    )
+
+
+def approval_not_dispatchable_failure_code(reason: str) -> str:
+    """Return the stable ledger code for a proposal that stopped being approvable."""
+    return f"{APPROVAL_NOT_DISPATCHABLE_PREFIX}{reason}"
+
+
+async def _record_proposal_not_dispatchable(
+    *,
+    service: OrderProposalsService,
+    proposal_id: uuid.UUID,
+    reason: str,
+    attempt_id: uuid.UUID,
+    now: datetime,
+) -> TelegramDispatchResult:
+    """Ledger a typed refusal instead of an opaque dispatch-internal error.
+
+    ROB-1281: a proposal can stop being approvable between creation and the
+    approval card -- most commonly because the auto-approve lane already sent
+    the order, the broker rejected it explicitly, and revalidation
+    terminalized the rung (``record_rejected`` -> group ``rejected``).  The
+    nonce mint then refuses, and before this the refusal escaped as a bare
+    ``OrderProposalError`` that the MCP post-commit boundary flattened into
+    ``approval_dispatch_internal_error`` with ``payload_chars=0`` -- which
+    reads to an operator as "the card renderer produced an empty card".  No
+    card is rendered on this path at all; recording the real reason keeps the
+    two failure modes distinguishable.
+    """
+    group, _rungs = await service.get_proposal(proposal_id)
+    binding = _proposal_binding(
+        group=group,
+        nonce=group.approval_nonce,
+        attempt_id=attempt_id,
+        card_kind=ApprovalCardKind.MANUAL,
+    )
+    await service.start_approval_dispatch(
+        proposal_id,
+        attempt_id=attempt_id,
+        binding=binding,
+        now=now,
+        payload_chars=0,
+        context_message_count=0,
+    )
+    return await service.finish_approval_dispatch(
+        proposal_id,
+        attempt_id=attempt_id,
+        publication=ApprovalPublication.failed(
+            payload_chars=0,
+            failure_code=approval_not_dispatchable_failure_code(reason),
+        ),
+        chat_id=None,
+        now=now,
     )
 
 
@@ -513,14 +587,38 @@ async def send_proposal_for_approval(
             return window
 
         fresh_nonce = _generate_nonce()
-        if redispatch:
-            await service.set_approval_nonce(
-                proposal_id,
-                fresh_nonce,
-                require_redispatchable=True,
+        try:
+            if redispatch:
+                await service.set_approval_nonce(
+                    proposal_id,
+                    fresh_nonce,
+                    require_redispatchable=True,
+                )
+            else:
+                await service.set_approval_nonce(proposal_id, fresh_nonce)
+        except OrderProposalError as exc:
+            # ROB-1281: the row-locked mint is the authoritative approvability
+            # gate, so catching here (rather than pre-checking the unlocked
+            # group above) is race-free.  Ledger the refusal it carries --
+            # ``proposal_terminal:rejected`` after a broker-rejected
+            # auto-submit is the production case -- instead of letting a bare
+            # domain error reach the caller's generic exception containment.
+            reason = str(exc)
+            if not reason.startswith(_NOT_DISPATCHABLE_REASON_PREFIXES):
+                # A redispatch guard (or any future refusal) that is protecting
+                # existing state, not reporting a dead proposal.  Recording it
+                # would supersede the live attempt and burn its nonce, so hand
+                # it back to the caller exactly as before ROB-1281.
+                raise
+            result = await _record_proposal_not_dispatchable(
+                service=service,
+                proposal_id=proposal_id,
+                reason=reason,
+                attempt_id=attempt_id,
+                now=publish_now,
             )
-        else:
-            await service.set_approval_nonce(proposal_id, fresh_nonce)
+            await session.commit()
+            return result
 
         group, rungs = await service.get_proposal(proposal_id)
         binding = _proposal_binding(
@@ -626,6 +724,16 @@ async def publish_approval_messages(
         return ApprovalPublication.failed(
             payload_chars=messages.payload_chars,
             failure_code="approval_payload_too_long",
+        )
+    # ROB-1281 AC2: never hand Telegram a card with no visible body.  A blank
+    # card would either be rejected by the API or -- worse -- delivered as an
+    # unreadable button with no symbol/side/quantity/price, which is exactly
+    # the failure operators must never have to approve blind.  Fail closed
+    # with a code that names the emptiness instead.
+    if any(not text.strip() for text in all_messages):
+        return ApprovalPublication.failed(
+            payload_chars=messages.payload_chars,
+            failure_code="approval_payload_empty",
         )
 
     successful_contexts = 0
@@ -996,6 +1104,8 @@ async def dispatch_proposal(
 
 
 __all__ = [
+    "APPROVAL_NOT_DISPATCHABLE_PREFIX",
+    "approval_not_dispatchable_failure_code",
     "dispatch_proposal",
     "publish_approval_messages",
     "record_approval_dispatch_failure",
