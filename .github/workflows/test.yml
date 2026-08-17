@@ -53,6 +53,49 @@ jobs:
     - name: Run duration merge unit tests
       run: uv run pytest scripts/merge_test_durations_test.py -q
 
+  # Exact-head source-ownership fence for the fencefix PR itself (ROB-1262
+  # follow-up). Evaluates only this PR's actual base/head change set from
+  # the GitHub event — never a fixed historical SHA vs. an advancing branch
+  # — and hard-fails (never skips) on any git resolution/diff failure. See
+  # scripts/ci/write_fence_check.py. Diagnostic/non-required for now, same
+  # as security/research jobs; branch protection policy is unchanged.
+  #
+  # 🔴 The --allow list below is specific to THIS branch's own change set
+  # (test file + this script + this workflow edit). It is intentionally
+  # gated to only that source branch so that, once merged, it goes dormant
+  # instead of becoming a permanent 3-file allow-list blocking every future
+  # PR. A durable, general-purpose write-fence job (per-job/per-lane allow
+  # lists) is a separate, later piece of work — out of scope here.
+  write-fence-guard:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'fix/j3a-write-fence-test'
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        # Full history: the base commit this fence diffs against must always
+        # be locally resolvable without depending on the script's best-effort
+        # runtime fetch fallback.
+        fetch-depth: 0
+
+    - name: Run write-fence check
+      env:
+        FENCE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        FENCE_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        python3 scripts/ci/write_fence_check.py \
+          --allow tests/services/mock_integration/test_coordination.py \
+          --allow scripts/ci/write_fence_check.py \
+          --allow .github/workflows/test.yml \
+          --json-out write-fence-report.json
+
+    - name: Upload write-fence report
+      if: always()
+      uses: actions/upload-artifact@v6
+      with:
+        name: write-fence-report
+        path: write-fence-report.json
+        if-no-files-found: warn
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20

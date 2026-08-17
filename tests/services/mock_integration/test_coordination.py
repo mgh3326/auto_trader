@@ -17,7 +17,11 @@ enforces that statically over this very file.
 Two things this file deliberately does **not** do:
 
 * it does not forbid future authorized consumers from importing this module —
-  the write fence is proved from the job's own ``base..HEAD`` diff, and
+  the write fence over an exact-head change set is proved by the standalone,
+  fail-closed ``scripts/ci/write_fence_check.py`` (wired as the
+  ``write-fence-guard`` CI job, not a persistent unit test here — a unit test
+  cannot learn a PR's real base/head without either rotting as ``main``
+  advances or leaking working-tree state), and
   ``scope_authorized_future_consumer_may_import_and_use_the_port`` pins that an
   approved J3B/J3C integration stays green;
 * it does not accept "the broker order id is absent" or "the same envelope was
@@ -31,8 +35,6 @@ import ast
 import asyncio
 import json
 import pathlib
-import shutil
-import subprocess
 import traceback
 import weakref
 from dataclasses import replace
@@ -120,7 +122,7 @@ J3A_WRITE_FENCE: frozenset[str] = frozenset(
         "docs/contracts/rob-1262-coordination-port.md",
     }
 )
-J3A_FENCE_BASE_SHA = "e057941425d2ea7d35a36ebf6074a6c70eba3013"
+
 # Operator/test scratch artifacts are explicitly allowed to change and are
 # equally explicitly never committed (brief §불변).
 FENCE_EXEMPT_PREFIXES: tuple[str, ...] = (".smoke-out/",)
@@ -5729,26 +5731,6 @@ def parse_porcelain_z(payload: str) -> set[str]:
     return paths
 
 
-def _git(*args: str) -> str | None:
-    git = shutil.which("git")
-    if git is None:
-        return None
-    proc = subprocess.run(
-        [git, "-C", str(REPO_ROOT), *args], capture_output=True, text=True, check=False
-    )
-    return None if proc.returncode != 0 else proc.stdout
-
-
-def _changed_paths_since_base() -> set[str] | None:
-    diff = _git("diff", "--name-only", "-z", f"{J3A_FENCE_BASE_SHA}..HEAD")
-    status = _git("status", "--porcelain=v1", "-z", "--untracked-files=all")
-    if diff is None or status is None:
-        return None
-    changed = {field for field in diff.split("\0") if field}
-    changed |= parse_porcelain_z(status)
-    return changed
-
-
 def test_scope_porcelain_parser_normalizes_owned_untracked_paths():
     payload = "".join(
         f"{entry}\0"
@@ -5799,13 +5781,15 @@ def test_scope_write_fence_predicate_reds_on_an_out_of_fence_path():
         assert paths_within_write_fence({out_of_fence}) is False, out_of_fence
 
 
-def test_scope_actual_job_diff_stays_inside_the_write_fence():
-    changed = _changed_paths_since_base()
-    if changed is None:
-        pytest.skip("git is unavailable; the write fence is verified in the report")
-    assert paths_within_write_fence(changed), sorted(
-        path for path in changed if not paths_within_write_fence({path})
-    )
+# A persistent pytest unit test cannot evaluate "the exact change set under
+# review" — it has no reliable way to learn a PR's base/head from inside the
+# test process, and any git-history-derived substitute (a fixed historical
+# base, or `git status`) either rots as `main` advances or leaks working-tree
+# noise in. That exact-head, fail-closed check now lives in
+# `scripts/ci/write_fence_check.py`, run as its own CI job wired from the
+# GitHub PR event's base/head SHAs (never a static ref), with the computed
+# base/head/changed-paths left as a CI artifact. See that script's own
+# docstring and `.github/workflows/test.yml`'s `write-fence-guard` job.
 
 
 @pytest.mark.asyncio
