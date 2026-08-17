@@ -10,12 +10,16 @@ the hard-coded default of the MCP post-commit exception boundary
 (``order_proposal_tools.py``), *not* a rendered card of zero length -- the card
 builder never ran.
 
-These tests pin both halves:
+These tests pin three things:
 
 * the not-dispatchable refusal is ledgered with its real reason instead of a
-  bare domain error that reads as a renderer failure, and
-* every account mode still renders a non-empty card carrying the ROB-458 /
-  §40 contract fields, so the #1876 abbreviation is proven innocent for
+  bare domain error that reads as a renderer failure;
+* that ledger is reached *only* for a proposal that genuinely died -- the
+  redispatch guards protecting a live card must still reach the caller
+  untouched (r2 blocker: recording one of those burned the card it protected);
+  and
+* every live lane still renders a non-empty card carrying the ROB-458 / §40
+  contract fields, so the #1876 abbreviation is proven innocent for
   ``kis_live`` (KR and US), ``toss_live`` and ``upbit`` alike.
 """
 
@@ -28,12 +32,15 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
+from app.models.order_proposals import OrderProposalApprovalDispatchAttempt
 from app.services.order_proposals import OrderProposalsService
 from app.services.order_proposals import dispatch as dispatch_module
 from app.services.order_proposals.approval_message import (
     ApprovalDispatchMessages,
     build_approval_dispatch_messages,
+    build_batch_approval_message,
     build_loss_cut_confirmation_message,
 )
 from app.services.order_proposals.dispatch import (
@@ -43,8 +50,13 @@ from app.services.order_proposals.dispatch import (
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
     DispatchBinding,
+    build_proposal_dispatch_binding,
 )
-from app.services.order_proposals.service import RungInput
+from app.services.order_proposals.errors import OrderProposalError
+from app.services.order_proposals.service import (
+    RungInput,
+    proposal_approval_block_reason,
+)
 from app.telegram_contract import TelegramMethodResult, telegram_text_length
 from tests.services.order_proposals.window_fakes import allow_known_session
 
@@ -263,6 +275,268 @@ async def test_superseded_proposal_ledgers_typed_not_dispatchable_refusal(
 
 
 # --------------------------------------------------------------------------
+# ROB-1281 r2 -- the refusal ledger must never touch a *live* card.
+#
+# ``set_approval_nonce`` raises for two unrelated reasons.  Only one of them
+# means "this proposal is dead": ``proposal_terminal:*`` /
+# ``proposal_superseded_by:*``.  The other two --
+# ``approval_dispatch_already_pending`` and ``approval_dispatch_already_
+# current`` -- are the redispatch guard *protecting* an existing card, and
+# ledgering them would run ``_record_proposal_not_dispatchable``, which
+# supersedes the current attempt (service.py) and clears the nonce when the
+# attempt finishes failed.  That would burn a card an operator can still press.
+# --------------------------------------------------------------------------
+
+
+async def _seed_and_send_one_card(db_session, monkeypatch, *, now):
+    """Produce the real post-dispatch state: sent_current + unused live nonce."""
+    from app.core.config import settings
+
+    chat_id = f"chat-{uuid.uuid4().hex}"
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat_id
+    )
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="rob1281-r2",
+        thesis="지지선 방어 확인 후 분할 매수",
+        strategy="buy.ladder.support_defense",
+        rungs=[RungInput(0, "buy", Decimal("10"), Decimal("70000"), None)],
+    )
+    await db_session.commit()
+
+    notifier = _FakeNotifier()
+    first = await send_proposal_for_approval(
+        group.proposal_id,
+        notifier=notifier,
+        now=now,
+        service_factory=_session_factory(db_session),
+    )
+    assert first.ok is True, "precondition: the first card must actually publish"
+    live, _rungs = await service.get_proposal(group.proposal_id)
+    assert live.approval_dispatch_state == "sent_current"
+    assert live.approval_nonce is not None
+    assert live.approval_nonce_used_at is None
+    return service, live, notifier
+
+
+async def _capture_redispatch(db_session, proposal_id, *, notifier, now):
+    """Run the redispatch and report *how* it answered, without asserting yet.
+
+    Keeping the outcome instead of wrapping the call in ``pytest.raises`` lets
+    the state-preservation assertions run in both worlds, so a re-widened
+    catch fails on the card it destroyed rather than on the exception type.
+    """
+    try:
+        returned = await send_proposal_for_approval(
+            proposal_id,
+            notifier=notifier,
+            now=now,
+            service_factory=_session_factory(db_session),
+            redispatch=True,
+        )
+    except OrderProposalError as exc:
+        return exc, None
+    return None, returned
+
+
+async def _attempt_state(db_session, attempt_id):
+    row = await db_session.execute(
+        select(OrderProposalApprovalDispatchAttempt).where(
+            OrderProposalApprovalDispatchAttempt.attempt_id == attempt_id
+        )
+    )
+    return row.scalar_one().state
+
+
+@pytest.mark.asyncio
+async def test_redispatch_refusal_preserves_a_live_current_card(
+    monkeypatch, db_session
+):
+    """A ``sent_current`` card survives a redispatch attempt, untouched.
+
+    The r1 fix caught every ``OrderProposalError`` from the nonce mint, so
+    ``approval_dispatch_already_current`` -- the guard whose entire job is to
+    refuse to disturb this card -- was ledgered as "not dispatchable", which
+    flipped the group to ``failed`` and destroyed the live nonce.  That is
+    strictly worse than the bug it was fixing: the original defect only failed
+    to build a card for a dead proposal.
+    """
+    now = datetime(2026, 8, 18, 0, 30, tzinfo=UTC)
+    service, live, notifier = await _seed_and_send_one_card(
+        db_session, monkeypatch, now=now
+    )
+    # Materialise everything now: the rollback below expires the ORM instance,
+    # and a lazy refresh afterwards would read through the very state under test.
+    proposal_id = live.proposal_id
+    before = SimpleNamespace(
+        state=live.approval_dispatch_state,
+        nonce=live.approval_nonce,
+        nonce_used_at=live.approval_nonce_used_at,
+        attempt_id=live.approval_dispatch_attempt_id,
+        published_at=live.approval_dispatch_published_at,
+        failure_code=live.approval_dispatch_failure_code,
+        payload_chars=live.approval_dispatch_payload_chars,
+    )
+    assert await _attempt_state(db_session, before.attempt_id) == "sent_current"
+    sent_before = len(notifier.sent_messages)
+
+    raised, returned = await _capture_redispatch(
+        db_session, proposal_id, notifier=notifier, now=now
+    )
+
+    # Mirror production: the dispatch session is discarded, so everything the
+    # assertions below read is what is actually durable in the database.
+    await db_session.rollback()
+    after, _rungs = await service.get_proposal(proposal_id)
+
+    # The damage assertions come first *on purpose*: re-widening the catch
+    # makes the call return a ledgered result instead of raising, and this
+    # test must then die on the destroyed card -- not merely on "did not
+    # raise", which would prove nothing about state preservation.
+    # (1) the dispatch state is preserved -- not flipped to ``failed``
+    assert after.approval_dispatch_state == "sent_current" == before.state
+    # (2) the nonce is still live -- the operator's button still works
+    assert after.approval_nonce == before.nonce
+    assert after.approval_nonce is not None
+    assert after.approval_nonce_used_at is None is before.nonce_used_at
+    # (3) the current attempt is not replaced or superseded
+    assert after.approval_dispatch_attempt_id == before.attempt_id
+    assert await _attempt_state(db_session, before.attempt_id) == "sent_current"
+    # ...and nothing else about the published card was rewritten
+    assert after.approval_dispatch_published_at == before.published_at
+    assert after.approval_dispatch_failure_code == before.failure_code
+    assert after.approval_dispatch_payload_chars == before.payload_chars
+    assert len(notifier.sent_messages) == sent_before
+
+    # Only then: the guard reached the caller as its own typed refusal, which
+    # is what ``order_proposal_redispatch`` turns into a plain error string.
+    assert returned is None
+    assert isinstance(raised, OrderProposalError)
+    assert str(raised) == "approval_dispatch_already_current"
+
+
+@pytest.mark.asyncio
+async def test_redispatch_refusal_preserves_an_in_flight_pending_card(
+    monkeypatch, db_session
+):
+    """The ``already_pending`` twin gets the same protection.
+
+    The adversarial verification only reproduced the ``current`` half; this
+    pins the ``pending`` half directly rather than by inference.  A pending
+    attempt is a card whose Telegram outcome is not yet known, so overwriting
+    its ownership row is exactly the state loss the guard exists to prevent.
+    """
+    from app.core.config import settings
+
+    chat_id = f"chat-{uuid.uuid4().hex}"
+    monkeypatch.setattr(
+        settings, "ORDER_PROPOSALS_TELEGRAM_CHAT_ALLOWLIST_STR", chat_id
+    )
+    now = datetime(2026, 8, 18, 0, 35, tzinfo=UTC)
+    service = OrderProposalsService(db_session)
+    group = await service.create_proposal(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        order_type="limit",
+        proposer="rob1281-r2",
+        thesis="지지선 방어 확인 후 분할 매수",
+        strategy="buy.ladder.support_defense",
+        rungs=[RungInput(0, "buy", Decimal("10"), Decimal("70000"), None)],
+    )
+    proposal_id = group.proposal_id
+    await service.set_approval_nonce(proposal_id, "pendingnonce")
+    group, _rungs = await service.get_proposal(proposal_id)
+    in_flight_attempt = uuid.uuid4()
+    await service.start_approval_dispatch(
+        proposal_id,
+        attempt_id=in_flight_attempt,
+        binding=build_proposal_dispatch_binding(
+            proposal_id=proposal_id,
+            nonce="pendingnonce",
+            attempt_id=in_flight_attempt,
+            card_kind=ApprovalCardKind.MANUAL,
+            current_membership_revision=group.approval_dispatch_membership_revision,
+        ),
+        now=now,
+        payload_chars=242,
+        context_message_count=0,
+    )
+    await db_session.commit()
+
+    notifier = _FakeNotifier()
+    raised, returned = await _capture_redispatch(
+        db_session, proposal_id, notifier=notifier, now=now
+    )
+
+    await db_session.rollback()
+    after, _rungs = await service.get_proposal(proposal_id)
+
+    # Damage first, refusal shape second -- same ordering rationale as the
+    # ``sent_current`` twin above.
+    assert after.approval_dispatch_state == "pending"
+    assert after.approval_dispatch_attempt_id == in_flight_attempt
+    assert await _attempt_state(db_session, in_flight_attempt) == "pending"
+    assert after.approval_nonce == "pendingnonce"
+    assert after.approval_nonce_used_at is None
+    assert after.approval_dispatch_failure_code is None
+    assert after.approval_dispatch_payload_chars == 242
+    assert notifier.sent_messages == []
+
+    assert returned is None
+    assert isinstance(raised, OrderProposalError)
+    assert str(raised) == "approval_dispatch_already_pending"
+
+
+@pytest.mark.unit
+def test_not_dispatchable_allowlist_matches_the_service_block_reasons():
+    """Pin the string coupling the narrowed catch depends on.
+
+    ``dispatch`` decides what to ledger by matching the reason text that
+    ``service.proposal_approval_block_reason`` produces.  If those reason
+    strings are ever renamed, this goes red *before* the catch silently stops
+    recognising a dead proposal (and, worse, before the redispatch guards
+    start matching).
+    """
+    prefixes = dispatch_module._NOT_DISPATCHABLE_REASON_PREFIXES
+
+    terminal = proposal_approval_block_reason(
+        SimpleNamespace(superseded_by_proposal_id=None, lifecycle_state="rejected")
+    )
+    superseded_by_id = proposal_approval_block_reason(
+        SimpleNamespace(
+            superseded_by_proposal_id=uuid.uuid4(), lifecycle_state="superseded"
+        )
+    )
+    superseded_unknown = proposal_approval_block_reason(
+        SimpleNamespace(superseded_by_proposal_id=None, lifecycle_state="superseded")
+    )
+    approvable = proposal_approval_block_reason(
+        SimpleNamespace(superseded_by_proposal_id=None, lifecycle_state="proposed")
+    )
+
+    assert approvable is None
+    for reason in (terminal, superseded_by_id, superseded_unknown):
+        assert reason is not None
+        assert reason.startswith(prefixes), f"{reason!r} must be ledgerable"
+
+    # The redispatch guards are *not* proposal-death reasons and must never
+    # match, or narrowing the catch would have been pointless.
+    for guard_reason in (
+        "approval_dispatch_already_pending",
+        "approval_dispatch_already_current",
+    ):
+        assert not guard_reason.startswith(prefixes)
+
+
+# --------------------------------------------------------------------------
 # AC2 -- fail-closed: a body-less card is refused, never published.
 # --------------------------------------------------------------------------
 
@@ -289,11 +563,27 @@ async def test_publish_refuses_a_card_with_no_visible_body(blank):
 
 
 # --------------------------------------------------------------------------
-# AC3 -- every account mode still renders a non-empty, contract-complete card.
+# AC3 -- every live lane still renders a non-empty, contract-complete card.
+#
+# 🔴 Naming honesty (ROB-1281 r2).  These four samples were originally called
+# "account mode coverage", which they are not: the manual card builder reads
+# ``market``/``symbol``/``side``/``order_type`` and never branches on
+# ``account_mode``.  Measured -- with ``account_mode`` set to ``kis_live``,
+# ``toss_live``, ``upbit``, ``None`` and a nonsense value, the rendered body is
+# byte-for-byte identical (189 chars for a common fixture).  What they really
+# discriminate is *market formatting*: ``equity_kr`` -> ₩, ``equity_us`` -> $,
+# ``crypto`` -> fractional quantity.  The only card surface that renders
+# ``account_mode`` at all is the batch summary, covered separately below.
+#
+# The four lanes are still worth keeping as distinct rows -- they are the four
+# live proposal sources, and #1876's verification skipped ``kis_live``
+# entirely -- but calling them account-mode coverage would repeat the exact
+# mistake that let ROB-1281 through: a sample matrix that cannot fail for the
+# reason its name claims.
 # --------------------------------------------------------------------------
 
 
-_ACCOUNT_MODE_SAMPLES = {
+_LIVE_LANE_SAMPLES = {
     "kis_live_kr": (
         _group(
             symbol="005930",
@@ -350,14 +640,16 @@ _ACCOUNT_MODE_SAMPLES = {
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("sample_key", sorted(_ACCOUNT_MODE_SAMPLES))
-def test_approval_card_payload_is_non_empty_and_contract_complete(sample_key):
-    """AC3: ``payload_chars > 0`` plus the §40 fields, per account mode.
+@pytest.mark.parametrize("sample_key", sorted(_LIVE_LANE_SAMPLES))
+def test_manual_card_renders_non_empty_contract_complete_body_per_market(sample_key):
+    """AC3: ``payload_chars > 0`` plus the §40 fields, per live lane.
 
-    ``kis_live`` (KR *and* US) is the variant #1876's verification skipped;
-    ``toss_live``/``upbit`` keep the other two live lanes covered.
+    Discriminates *market formatting* (KRW / USD / crypto quantity), not
+    account-mode routing -- see the block comment above ``_LIVE_LANE_SAMPLES``.
+    ``kis_live`` (KR *and* US) is the lane #1876's verification skipped, which
+    is why it is pinned here even though the builder treats it like the rest.
     """
-    group, rungs, expected_fragments = _ACCOUNT_MODE_SAMPLES[sample_key]
+    group, rungs, expected_fragments = _LIVE_LANE_SAMPLES[sample_key]
 
     messages = build_approval_dispatch_messages(
         group=group, rungs=rungs, binding=_binding()
@@ -377,6 +669,77 @@ def test_approval_card_payload_is_non_empty_and_contract_complete(sample_key):
     assert "전략:" in text
     assert "유효기간:" in text
     assert messages.inline_keyboard["inline_keyboard"][0][0]["text"] == "✅ 승인"
+
+
+@pytest.mark.unit
+def test_manual_card_body_does_not_depend_on_account_mode():
+    """Record the measurement the lane samples cannot make on their own.
+
+    This is the fact that makes the honest renaming above necessary, kept as
+    an executable statement rather than a comment: swapping ``account_mode``
+    on an otherwise identical proposal changes nothing in the manual card.  If
+    someone later gives the manual builder an account-mode branch, this fails
+    and forces the lane samples to be re-described (and actually made
+    discriminating) instead of silently inheriting a name they no longer earn.
+    """
+    common = {
+        "symbol": "005930",
+        "market": "equity_kr",
+        "side": "buy",
+        "thesis": "지지선 방어",
+        "strategy": "buy.ladder.support_defense",
+        "valid_until": datetime(2026, 8, 18, 6, 0, tzinfo=UTC),
+    }
+    rendered = {
+        mode: build_approval_dispatch_messages(
+            group=_group(account_mode=mode, **common),
+            rungs=[_rung()],
+            binding=_binding(),
+        ).approval_text
+        for mode in ("kis_live", "toss_live", "upbit", None)
+    }
+
+    assert len(set(rendered.values())) == 1, (
+        "the manual card now branches on account_mode -- rename and re-scope "
+        "_LIVE_LANE_SAMPLES so it actually discriminates the new behaviour"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("account_mode", ["kis_live", "toss_live", "upbit"])
+def test_batch_card_labels_the_account_mode_it_was_built_from(account_mode):
+    """The one card surface that *does* route on account_mode.
+
+    ``_batch_account_label`` puts the account mode on every batch summary
+    line, so an operator approving a mixed batch can see which account each
+    order lands in.  This is the genuinely account-mode-discriminating
+    assertion the r1 sample matrix claimed to be and was not: the card body
+    changes with the account mode and nothing else here does.
+    """
+    batch = SimpleNamespace(batch_id=uuid.uuid4(), approval_nonce="btch123def45")
+    members = [
+        (_group(symbol="005930", account_mode=account_mode), [_rung()]),
+        (
+            _group(symbol="042660", account_mode=account_mode),
+            [_rung(quantity=Decimal("4"), limit_price=Decimal("88000"))],
+        ),
+    ]
+
+    text, _keyboard = build_batch_approval_message(
+        batch=batch,
+        proposals=members,
+        binding=_binding(ApprovalCardKind.BATCH),
+    )
+
+    # Markdown-escaped in the rendered line (``kis\_live``), so compare on the
+    # escaped form rather than asserting a substring that cannot appear.
+    escaped_mode = account_mode.replace("_", r"\_")
+    lines = [line for line in text.splitlines() if line.startswith("- `")]
+    assert len(lines) == 2
+    for line in lines:
+        assert f"· {escaped_mode} ·" in line, f"missing account label in {line!r}"
+    for other in {"kis_live", "toss_live", "upbit"} - {account_mode}:
+        assert other.replace("_", r"\_") not in text
 
 
 @pytest.mark.unit

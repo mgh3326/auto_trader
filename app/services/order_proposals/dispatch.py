@@ -97,6 +97,23 @@ _AUDITABLE_REVALIDATION_FALLBACK_REASONS = frozenset(
 # ROB-1281: prefix for "no card was rendered because the proposal is no longer
 # approvable", kept distinct from card-rendering/transport failure codes.
 APPROVAL_NOT_DISPATCHABLE_PREFIX = "approval_not_dispatchable:"
+# ROB-1281 r2: the *only* ``set_approval_nonce`` refusals that mean "this
+# proposal can never carry an approval card again" -- the two verdicts of
+# ``service.proposal_approval_block_reason``.
+#
+# Deliberately an allowlist, never a denylist.  ``set_approval_nonce`` also
+# raises ``approval_dispatch_already_pending``/``approval_dispatch_already_
+# current`` under ``require_redispatchable``, and those are the opposite kind
+# of answer: they are the guard *protecting a live card* from being replaced.
+# Ledgering one of them would run ``_record_proposal_not_dispatchable``, which
+# supersedes the current attempt, moves group ownership to a new attempt, and
+# clears the nonce on failure -- destroying the very card the guard just
+# refused to disturb.  Anything not listed here therefore re-raises to the
+# caller untouched, which is also the pre-ROB-1281 behaviour.
+_NOT_DISPATCHABLE_REASON_PREFIXES = (
+    "proposal_terminal:",
+    "proposal_superseded_by:",
+)
 
 
 def _auto_approve_rejection_card_block_for_group(group: Any) -> str | None:
@@ -586,10 +603,17 @@ async def send_proposal_for_approval(
             # ``proposal_terminal:rejected`` after a broker-rejected
             # auto-submit is the production case -- instead of letting a bare
             # domain error reach the caller's generic exception containment.
+            reason = str(exc)
+            if not reason.startswith(_NOT_DISPATCHABLE_REASON_PREFIXES):
+                # A redispatch guard (or any future refusal) that is protecting
+                # existing state, not reporting a dead proposal.  Recording it
+                # would supersede the live attempt and burn its nonce, so hand
+                # it back to the caller exactly as before ROB-1281.
+                raise
             result = await _record_proposal_not_dispatchable(
                 service=service,
                 proposal_id=proposal_id,
-                reason=str(exc),
+                reason=reason,
                 attempt_id=attempt_id,
                 now=publish_now,
             )
