@@ -1683,8 +1683,30 @@ async def test_the_cancel_and_modify_wire_paths_also_receive_the_boundary_gate()
 
 
 @pytest.mark.asyncio
-async def test_a_followup_without_a_capability_never_reaches_the_kr_wire():
-    """The enforcement point: the transport boundary itself refuses."""
+async def test_a_followup_without_a_capability_never_reaches_the_kr_wire(monkeypatch):
+    """The enforcement point: the transport boundary itself refuses.
+
+    The legacy lease is stubbed to a no-op so that *removing the capability
+    check* lets the call run all the way to the wire. Without this the mutant
+    dies on an unrelated database error before reaching the assertion, which
+    would score a red that proves nothing.
+    """
+
+    @contextlib.asynccontextmanager
+    async def _no_db_lease(**kwargs: Any):
+        token = singleton._ACTIVE_WRITER_LEASE.set(
+            singleton._WriterAuthority(
+                account_mode=singleton.ACCOUNT_MODE,
+                advisory_keys=(singleton.kis_mock_legacy_advisory_key(),),
+                lease=object(),
+            )
+        )
+        try:
+            yield
+        finally:
+            singleton._ACTIVE_WRITER_LEASE.reset(token)
+
+    monkeypatch.setattr(singleton, "enforce_kis_mock_mutation_writer", _no_db_lease)
 
     client, parent = _domestic_client()
     with pytest.raises(singleton.KISMockFollowupNotAuthorized):
@@ -1696,6 +1718,14 @@ async def test_a_followup_without_a_capability_never_reaches_the_kr_wire():
     with pytest.raises(singleton.KISMockFollowupNotAuthorized):
         await client.modify_korea_order("0000117058", "005930", 1, 70000, True, "00950")
     assert parent.requests == []
+
+    # Positive control: the same stubbed lease with a valid receipt *does* reach
+    # the wire, so the assertion above is about the capability and nothing else.
+    async with await _issue():
+        await client.cancel_korea_order(
+            "0000117058", "005930", 1, 70000, "buy", True, "00950"
+        )
+    assert len(parent.requests) == 1
 
 
 @pytest.mark.asyncio
