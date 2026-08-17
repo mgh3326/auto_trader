@@ -50,6 +50,7 @@ from app.routers import (
     investment_snapshots,
     investment_stage_runs,
     kospi200,
+    market_calendar,
     market_events,
     news_analysis,
     news_issues,
@@ -222,6 +223,7 @@ def create_app() -> FastAPI:
     app.include_router(news_radar.router)
     app.include_router(news_issues.router)
     app.include_router(alpaca_paper_ledger.router)
+    app.include_router(market_calendar.router)
     app.include_router(market_events.router)
     app.include_router(research_reports.router)
     app.include_router(strategy_events.router)
