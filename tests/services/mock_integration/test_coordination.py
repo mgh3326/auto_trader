@@ -5739,7 +5739,39 @@ def _git(*args: str) -> str | None:
     return None if proc.returncode != 0 else proc.stdout
 
 
+# The commit that merged J3A. Recorded so the fence below stays checkable after
+# the branch that produced it is gone.
+J3A_MERGE_SHA = "03beecc5f53e636c352ddf0527aa3d98ddc7bd61"
+
+
 def _changed_paths_since_base() -> set[str] | None:
+    """The paths the J3A *job* actually wrote.
+
+    ROB-1263 r2 amendment (authorised by the round-2 instruction to fix or own
+    stale reds). The allowlist, the parser, and what counts as inside the fence
+    are all unchanged; only *which diff is measured* moved.
+
+    It used to be ``J3A_FENCE_BASE_SHA..HEAD`` plus the working tree, which is
+    the right question exactly once — while J3A is the branch being reviewed.
+    Two things then broke it permanently. ROB-1255 (#1876) merged between that
+    literal base and J3A's own merge commit, so the range already reported
+    another job's ``app/services/order_proposals/*`` files. And on any successor
+    branch — J3B, J3C — ``HEAD`` carries that successor's files, which are
+    legitimately outside J3A's fence and can never be brought inside it.
+
+    Measuring J3A's merge commit instead asks the question the fence was always
+    for: *did this job write only its allowlisted files?* That is true today,
+    stays true forever, and is strictly more durable than a branch-scoped check.
+    While J3A itself is unmerged the recorded SHA is absent and the pre-merge
+    range is used, so the branch under review is still fenced.
+    """
+
+    if _git("cat-file", "-e", f"{J3A_MERGE_SHA}^{{commit}}") is not None:
+        merged = _git("diff", "--name-only", "-z", f"{J3A_MERGE_SHA}^..{J3A_MERGE_SHA}")
+        if merged is None:
+            return None
+        return {field for field in merged.split("\0") if field}
+
     diff = _git("diff", "--name-only", "-z", f"{J3A_FENCE_BASE_SHA}..HEAD")
     status = _git("status", "--porcelain=v1", "-z", "--untracked-files=all")
     if diff is None or status is None:

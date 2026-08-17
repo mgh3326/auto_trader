@@ -86,6 +86,9 @@ J3B_WRITE_FENCE: frozenset[str] = frozenset(
         # than left red while the branch claims green.
         "tests/test_rob750_mock_mirror_intent_release.py",
         "tests/test_kis_mock_cancel_modify.py",
+        # Same amendment: the J3A fence was pinned to a literal base SHA and had
+        # been red on plain origin/main since ROB-1255 merged inside its range.
+        "tests/services/mock_integration/test_coordination.py",
     }
 )
 FENCE_EXEMPT_PREFIXES: tuple[str, ...] = (".smoke-out/",)
