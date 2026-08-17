@@ -12,8 +12,6 @@ import ast
 import asyncio
 import contextlib
 import pathlib
-import shutil
-import subprocess
 from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal
 from typing import Any
@@ -1512,61 +1510,71 @@ def test_the_contract_document_exists_and_carries_the_lifecycle_status():
         assert required in text, required
 
 
-# --- write fence: what this job wrote ---------------------------------------
+# --- write fence: predicate + allow-list, checked without invoking git --------
+#
+# ROB-1263 r5: this used to shell out to `git merge-base origin/main HEAD` and
+# assert over the real diff. It was correctly fail-closed — and therefore red in
+# CI, where the checkout is shallow and `origin/main` is not a local ref, so the
+# fence was *unprovable* rather than violated.
+#
+# The repository already settled this question. The merged fencefix (#1881)
+# removed exactly this class of test from pytest and moved enforcement to
+# `scripts/ci/write_fence_check.py`, run by the `write-fence-guard` job with
+# `fetch-depth: 0` so the base commit is always resolvable. What stays in pytest
+# is what pytest can actually prove: the allow-list itself and the predicate
+# over it. The real diff for this branch is recorded in the round report.
 
 
-def _git(*args: str) -> str | None:
-    git = shutil.which("git")
-    if git is None:
-        return None
-    proc = subprocess.run(
-        [git, "-C", str(REPO_ROOT), *args], capture_output=True, text=True, check=False
-    )
-    return None if proc.returncode != 0 else proc.stdout
+def paths_within_write_fence(paths: object) -> bool:
+    """The J3B write fence, as a pure predicate over changed paths."""
 
-
-def _parse_porcelain_z(payload: str) -> set[str]:
-    paths: set[str] = set()
-    fields = [field for field in payload.split("\0") if field]
-    index = 0
-    while index < len(fields):
-        record = fields[index]
-        index += 1
-        if len(record) < 4:
-            continue
-        status, path = record[:2], record[3:]
-        paths.add(path)
-        if status[0] in {"R", "C"} and index < len(fields):
-            paths.add(fields[index])
-            index += 1
-    return paths
-
-
-def test_the_actual_job_diff_stays_inside_the_j3b_write_fence():
-    """Scoped to *this branch*, not to a frozen SHA.
-
-    A fence pinned to a literal base SHA turns every later unrelated merge into
-    a false red — which is exactly what happened to the J3A fence after ROB-1255
-    landed between its base and its own merge.  The merge base is recomputed, so
-    once this branch is merged the assertion degrades to "nothing to check"
-    rather than to a failure about someone else's files.
-    """
-
-    base = _git("merge-base", "origin/main", "HEAD")
-    status = _git("status", "--porcelain=v1", "-z", "--untracked-files=all")
-    # Fail closed, never skip. A proof that evaporates when a tool is missing is
-    # not a proof — a green run must mean the fence was actually checked.
-    assert base is not None, "git or origin/main unavailable; the B-7 fence is unproven"
-    assert status is not None, "git status unavailable; the B-7 fence is unproven"
-    diff = _git("diff", "--name-only", "-z", f"{base.strip()}..HEAD")
-    assert diff is not None, "git diff unavailable; the B-7 fence is unproven"
-
-    changed = {field for field in diff.split("\0") if field}
-    changed |= _parse_porcelain_z(status)
     considered = {
-        path for path in changed if not path.startswith(FENCE_EXEMPT_PREFIXES)
+        path
+        for path in paths  # type: ignore[union-attr]
+        if not str(path).startswith(FENCE_EXEMPT_PREFIXES)
     }
-    assert considered <= set(J3B_WRITE_FENCE), sorted(considered - J3B_WRITE_FENCE)
+    return considered <= set(J3B_WRITE_FENCE)
+
+
+def test_the_write_fence_allow_list_is_exactly_the_briefed_set():
+    """The allow-list is the B-7 set plus the two files orch approved in r5."""
+
+    assert J3B_WRITE_FENCE == frozenset(
+        {
+            "app/services/kis_mock_runner/singleton.py",
+            "app/services/brokers/kis/domestic_orders.py",
+            "app/mcp_server/tooling/order_execution.py",
+            "app/mcp_server/tooling/orders_modify_cancel.py",
+            "tests/services/kis_mock_runner/test_singleton.py",
+            "tests/services/kis_mock_runner/test_domestic_route.py",
+            "tests/test_mcp_place_order.py",
+            "tests/services/mock_integration/test_kis_coordination_adapter.py",
+            "docs/contracts/rob-1263-kis-coordination-adapter.md",
+            "tests/test_services_kis_logging.py",
+            "tests/test_rob750_mock_mirror_intent_release.py",
+        }
+    )
+
+
+def test_the_write_fence_predicate_reds_on_an_out_of_fence_path():
+    assert paths_within_write_fence(set(J3B_WRITE_FENCE)) is True
+    assert paths_within_write_fence({".smoke-out/rob179-feed-research-evidence.json"})
+    for out_of_fence in (
+        # The files this job reverted rather than widened the fence to reach.
+        "app/services/brokers/kis/overseas_orders.py",
+        "tests/services/mock_integration/test_coordination.py",
+        "tests/test_kis_mock_order_ledger.py",
+        "tests/brokers/kis/mock_scalping_exec/test_reservation.py",
+        "tests/brokers/kis/mock_scalping_exec/test_pre_send_transport.py",
+        "tests/test_kis_mock_cancel_modify.py",
+        # And the upstream surfaces that are read/import only.
+        "app/services/mock_integration/coordination.py",
+        "app/services/mock_lane_registry.py",
+        "app/services/brokers/client_order_ids.py",
+        "alembic/versions/deadbeef_add_kis_mock.py",
+        ".github/workflows/test.yml",
+    ):
+        assert paths_within_write_fence({out_of_fence}) is False, out_of_fence
 
 
 # ===========================================================================
