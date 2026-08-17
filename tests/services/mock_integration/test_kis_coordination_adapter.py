@@ -2441,3 +2441,82 @@ def test_no_lane_code_is_reachable_from_the_live_branch_of_the_guard():
         assert not isinstance(child, (ast.Import, ast.ImportFrom))
         if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
             assert "kis_mock" not in child.func.id
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_for_one_order_cannot_cancel_a_different_order(monkeypatch):
+    """r4 §2 — a receipt is authority for its own ODNO, not for whatever is asked.
+
+    Without this vector the ODNO binding is unreachable by the suite: every other
+    cancel test happens to pass the same order id the receipt was issued for.
+    """
+
+    created: list[dict[str, Any]] = []
+
+    async def _resolve(order_no: str):
+        return {
+            "ledger_id": 1,
+            "symbol": "005930",
+            "side": "buy",
+            "quantity": 2.0,
+            "price": 70000.0,
+            "krx_fwdg_ord_orgno": "00950",
+            "instrument_type": "equity_kr",
+            "lifecycle_state": "accepted",
+        }
+
+    import app.mcp_server.tooling.kis_mock_ledger as ledger
+
+    monkeypatch.setattr(ledger, "resolve_mock_order_for_cancel", _resolve)
+    monkeypatch.setattr(
+        omc, "_create_kis_client", lambda **kw: created.append(kw) or object()
+    )
+
+    # The receipt names 0000117058; the cancel asks for a different order.
+    async with await _issue():
+        result = await omc._cancel_kis_mock_domestic("9999999999", "005930")
+
+    assert created == [], "a foreign-order receipt reached the broker"
+    assert result["success"] is False
+    assert result["reason_code"] == "claim_followup_not_authorized"
+    assert "different native broker order id" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_the_entry_and_the_grant_are_each_checked_against_the_real_account():
+    """Q3-4 — both halves of the fingerprint check are load-bearing.
+
+    The account the client actually holds must equal the pinned *entry*'s
+    physical account **and** the *grant*'s. Without a vector for each half, one
+    can be deleted while the other keeps the suite green.
+    """
+
+    _, envelope = _attempt_envelope()
+    real = _bound_kis_entry(envelope)  # physical id == the fake client's account
+    other = "kismock:v1:a-different-account"
+    client = FakeKISClient()
+
+    # (a) grant agrees with the client, the pinned entry does not.
+    grant_ok = await _grant_for(envelope, real)
+    entry_wrong = replace(real, physical_account_id=other)
+    with pytest.raises(singleton.KISMockSendBoundaryRejected) as first:
+        await singleton.assert_kis_mock_send_boundary(
+            client=client,
+            url=client._kis_url(ORDER_PATH),
+            entry=entry_wrong,
+            grant=grant_ok,
+        )
+    assert first.value.reason_code == singleton.KIS_MOCK_ACCOUNT_FINGERPRINT_MISMATCH
+
+    # (b) the pinned entry agrees with the client, the grant does not.
+    grant_wrong = replace(grant_ok, physical_account_id=other)
+    with pytest.raises(singleton.KISMockSendBoundaryRejected) as second:
+        await singleton.assert_kis_mock_send_boundary(
+            client=client,
+            url=client._kis_url(ORDER_PATH),
+            entry=real,
+            grant=grant_wrong,
+        )
+    assert second.value.reason_code == singleton.KIS_MOCK_ACCOUNT_FINGERPRINT_MISMATCH
+
+    assert client.transport_calls == 0
