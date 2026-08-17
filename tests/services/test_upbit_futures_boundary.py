@@ -16,13 +16,28 @@ Plus the two cross-lane facts ROB-1271 pins so nobody "tidies" them away:
   * finding F-1 — both Demo runbooks claim their smoke CLI is the *only* path
     producing real Demo orders, and neither claim holds: Spot is reached by a
     schedule-bearing TaskIQ task, and Futures has a second operator CLI. The
-    scheduler half of the futures sentence *is* accurate, and the tests keep the
-    two halves apart (see ``docs/contracts/rob-1271-upbit-futures-boundary.md``).
+    futures sentence's scheduler half is **also** inaccurate as written — a
+    TaskIQ module does reach the client — and what survives is only the narrower
+    fact that the reach is scheduleless and calls no order-producing method. The
+    tests keep the two halves apart at that strength and no stronger (see
+    ``docs/contracts/rob-1271-upbit-futures-boundary.md`` §4.1).
 
 Every assertion here is offline: expectations are written as literals in this
 file (never read back out of the constant under test), no test opens a socket,
 touches a database, or constructs a scheduler. Source-reachability facts are
 established by parsing files with :mod:`ast`, not by importing them.
+
+Round-3 note on what "pinned" has to mean here. An independent verifier showed
+that seven of these claims survived mutants that made them false, because the
+assertions checked *shape* instead of *meaning*: a substring anywhere in a file
+instead of the argument at the call site, a keyword's name instead of its value,
+a function's name instead of whether its body still reaches its broker call, a
+list of forbidden strings instead of a closed equality, a parameter list instead
+of where the parameter's value lands, and a bag of literals instead of the
+key/value pairing that gives them their meaning. The helpers below exist to make
+those the *default* shape of an assertion in this module — see
+``_keyword_values`` (values, not names), ``_reaches_call`` (behaviour, not
+existence), and ``_kept_outcome_reasons`` (pairing, not co-presence).
 """
 
 from __future__ import annotations
@@ -83,13 +98,43 @@ _UPBIT_PRIVATE_WEBSOCKET = "app.services.upbit_websocket"
 _RECONCILE_JOB = "app.jobs.binance_demo_root_reservation_reconciliation"
 _RECONCILE_TASK = "app.tasks.binance_demo_root_reservation_reconcile_tasks"
 _STRATEGY_LOOP_EXECUTION = f"{_STRATEGY_LOOP_PACKAGE}.execution"
+_STRATEGY_LOOP_CLI = "scripts.binance_demo_strategy_loop"
+_FUTURES_SMOKE_CLI = "scripts.binance_futures_demo_smoke"
 _DEMO_LEDGER_SERVICE = "app.services.brokers.binance.demo.ledger.service"
+_DEMO_LEDGER_REPOSITORY = "app.services.brokers.binance.demo.ledger.repository"
 _DEMO_LEDGER_MODEL = "app.models.binance_demo_order_ledger"
 
 # Scheduler entry points: TaskIQ task modules, Prefect flow modules, and the
 # job modules they delegate to. A recurring registration can only originate
 # from one of these directories in this repository.
 _SCHEDULER_ENTRYPOINT_DIRS = ("app/tasks", "app/flows")
+
+# Every first-party source root, so a claim of the form "X is the only Y" can be
+# checked against the whole repository instead of against the one file the claim
+# happens to name. ``tests/`` is deliberately excluded: a test exercising the
+# strategy loop is not an operator entry point into it.
+_FIRST_PARTY_SOURCE_DIRS = ("app", "scripts", "research")
+
+# The ledger's complete lifecycle-state universe, written out here rather than
+# imported, and cross-checked against ``_ALLOWED_TRANSITIONS`` below. Any state
+# added to the ledger must appear here, which is what turns the C3-2 predicate
+# assertion from "these three are not named" into a closed equality.
+_LEDGER_LIFECYCLE_STATES = frozenset(
+    {
+        "planned",
+        "previewed",
+        "validated",
+        "submitted",
+        "filled",
+        "closed",
+        "cancelled",
+        "reconciled",
+        "anomaly",
+    }
+)
+
+# The three native terminal non-fill statuses the futures lane distinguishes.
+_TERMINAL_NONFILL_STATUSES = frozenset({"CANCELED", "REJECTED", "EXPIRED"})
 
 
 # ---------------------------------------------------------------------------
@@ -310,23 +355,212 @@ def _mapped_column_names(module: str, class_name: str) -> frozenset[str]:
     return frozenset(names)
 
 
-def _literal_reason_values(module: str) -> frozenset[str]:
-    """String values of every literal ``"reason": "..."`` dict entry in ``module``."""
+def _kept_outcome_reasons(module: str) -> tuple[frozenset[str], frozenset[str]]:
+    """``(reasons paired with a literal ``action="kept"``, all literal actions)``.
+
+    The **pairing** is the assertion's whole content. A helper that harvests
+    every literal ``"reason"`` regardless of its sibling ``"action"`` cannot tell
+    a ``kept`` outcome from a ``would_release`` one, so flipping a single
+    branch's action leaves the harvested set byte-identical while the contract
+    row ("these reasons are ``kept`` outcomes") becomes false.
+
+    Outcome dicts whose ``reason`` is computed rather than literal are skipped:
+    they are not enumerable and the contract does not enumerate them.
+    """
     path = _module_file(module)
     assert path is not None, f"{module} has no source file"
-    values: set[str] = set()
+    kept: set[str] = set()
+    literal_actions: set[str] = set()
     for node in ast.walk(_parse(path)):
         if not isinstance(node, ast.Dict):
             continue
-        for key, value in zip(node.keys, node.values, strict=True):
-            if (
-                isinstance(key, ast.Constant)
-                and key.value == "reason"
-                and isinstance(value, ast.Constant)
-                and isinstance(value.value, str)
-            ):
-                values.add(value.value)
-    return frozenset(values)
+        entries: dict[str, ast.expr] = {
+            key.value: value
+            for key, value in zip(node.keys, node.values, strict=True)
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+        reason = entries.get("reason")
+        action = entries.get("action")
+        if not (isinstance(reason, ast.Constant) and isinstance(reason.value, str)):
+            continue
+        if not (isinstance(action, ast.Constant) and isinstance(action.value, str)):
+            continue
+        literal_actions.add(action.value)
+        if action.value == "kept":
+            kept.add(reason.value)
+    return frozenset(kept), frozenset(literal_actions)
+
+
+# ---------------------------------------------------------------------------
+# Meaning-level AST helpers.
+#
+# Each of these replaces a shape-level check that an independent verifier's
+# round-2 mutants walked straight through. The comment on each one names the
+# escape it closes, because the weaker form is always the more convenient one to
+# write and will otherwise creep back.
+# ---------------------------------------------------------------------------
+def _iter_calls(node: ast.AST, name: str) -> list[ast.Call]:
+    """Every call in ``node`` whose callee spells ``name``.
+
+    Matches ``name(...)`` and ``obj.name(...)`` alike, so a broker call reached
+    through a client handle is not invisible.
+    """
+    found: list[ast.Call] = []
+    for candidate in ast.walk(node):
+        if not isinstance(candidate, ast.Call):
+            continue
+        func = candidate.func
+        if isinstance(func, ast.Name) and func.id == name:
+            found.append(candidate)
+        elif isinstance(func, ast.Attribute) and func.attr == name:
+            found.append(candidate)
+    return found
+
+
+def _keyword_values(call: ast.Call) -> dict[str, str]:
+    """Keyword ``name -> unparsed value`` at one call site.
+
+    Values, not names. A test that collects only keyword *names* stays green
+    when ``confirm=args.confirm`` becomes ``confirm=False`` or
+    ``broker_order_id=broker_order_id`` becomes ``broker_order_id=None`` — the
+    name set is identical and the claim is now false.
+    """
+    return {
+        keyword.arg: ast.unparse(keyword.value)
+        for keyword in call.keywords
+        if keyword.arg is not None
+    }
+
+
+def _reaches_call(node: ast.AsyncFunctionDef | ast.FunctionDef, callee: str) -> bool:
+    """Whether ``callee`` is still reachable inside this function.
+
+    Walks the top-level statement sequence in order. A top-level ``raise`` or
+    ``return`` dominates everything after it, so a body whose first statement is
+    an unconditional ``raise`` reaches nothing — which is exactly how a function
+    keeps its name and its signature while no longer performing its phase.
+
+    Bounded honestly: this kills a body that has been *emptied*. A raise nested
+    inside an always-true ``if`` would still escape it, and no assertion in this
+    module claims otherwise.
+    """
+    for statement in node.body:
+        if _iter_calls(statement, callee):
+            return True
+        if isinstance(statement, ast.Raise | ast.Return):
+            return False
+    return False
+
+
+def _method_node(
+    module: str, class_name: str, method_name: str
+) -> ast.AsyncFunctionDef | ast.FunctionDef:
+    for statement in _class_node(module, class_name).body:
+        if (
+            isinstance(statement, ast.AsyncFunctionDef | ast.FunctionDef)
+            and statement.name == method_name
+        ):
+            return statement
+    raise AssertionError(f"{module}:{class_name} defines no {method_name}")
+
+
+def _transition_writer_states(module: str, class_name: str) -> dict[str, str]:
+    """``record_* -> new_state`` literal, read off each writer's own call.
+
+    This is what makes "kind X has a lane-native writer" checkable: the typed
+    lifecycle state each writer actually stamps, rather than the writer's name.
+    """
+    states: dict[str, str] = {}
+    for statement in _class_node(module, class_name).body:
+        if not isinstance(statement, ast.AsyncFunctionDef | ast.FunctionDef):
+            continue
+        if not statement.name.startswith("record_"):
+            continue
+        for call in _iter_calls(statement, "_transition"):
+            raw = _keyword_values(call).get("new_state")
+            if raw is not None:
+                states[statement.name] = ast.literal_eval(raw)
+    return states
+
+
+def _module_level_dict_keys(module: str, name: str) -> frozenset[str]:
+    """Literal string keys of a module-level dict assignment."""
+    path = _module_file(module)
+    assert path is not None, f"{module} has no source file"
+    for node in ast.walk(_parse(path)):
+        if isinstance(node, ast.AnnAssign):
+            target: ast.expr | None = node.target
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+        else:
+            continue
+        if not (isinstance(target, ast.Name) and target.id == name):
+            continue
+        assert isinstance(node.value, ast.Dict), f"{module}:{name} is not a dict"
+        return frozenset(
+            key.value
+            for key in node.value.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        )
+    raise AssertionError(f"{module} defines no {name}")
+
+
+def _module_level_str_constants(module: str, name: str) -> frozenset[str]:
+    """Literal string members of a module-level ``frozenset({...})``/``{...}``."""
+    path = _module_file(module)
+    assert path is not None, f"{module} has no source file"
+    for node in ast.walk(_parse(path)):
+        if isinstance(node, ast.AnnAssign):
+            target: ast.expr | None = node.target
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+        else:
+            continue
+        if not (isinstance(target, ast.Name) and target.id == name):
+            continue
+        assert node.value is not None
+        return frozenset(
+            child.value
+            for child in ast.walk(node.value)
+            if isinstance(child, ast.Constant) and isinstance(child.value, str)
+        )
+    raise AssertionError(f"{module} defines no {name}")
+
+
+def _body_string_constants(module: str, function_name: str) -> frozenset[str]:
+    """String literals in a function body, **docstring excluded**."""
+    body_tree = ast.parse(_function_body_source(module, function_name))
+    return frozenset(
+        child.value
+        for child in ast.walk(body_tree)
+        if isinstance(child, ast.Constant) and isinstance(child.value, str)
+    )
+
+
+def _first_party_source_files(*, exclude: tuple[str, ...] = ()) -> tuple[Path, ...]:
+    """Every first-party ``*.py`` outside ``tests/``, minus ``exclude`` prefixes."""
+    files: list[Path] = []
+    for directory in _FIRST_PARTY_SOURCE_DIRS:
+        root = REPO_ROOT / directory
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            posix = path.relative_to(REPO_ROOT).as_posix()
+            if any(posix.startswith(prefix) for prefix in exclude):
+                continue
+            files.append(path)
+    return tuple(files)
+
+
+def _imports_package(tree: ast.Module, package: str) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if (node.module or "").startswith(package):
+                return True
+        elif isinstance(node, ast.Import):
+            if any(alias.name.startswith(package) for alias in node.names):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -624,18 +858,37 @@ def test_default_strategy_plugin_is_null_strategy_and_never_emits_a_signal() -> 
     assert plugin.evaluate({"XRPUSDT": ()}, decision_ts=1_755_000_000_000) is None
 
 
-def test_the_strategy_loop_cli_wires_run_tick_to_null_strategy() -> None:
-    """The default is what the only entry point actually passes, not just a doc."""
-    cli_path = REPO_ROOT / "scripts/binance_demo_strategy_loop.py"
-    strategy_arguments: list[str] = []
-    for node in ast.walk(_parse(cli_path)):
-        if not isinstance(node, ast.Call):
-            continue
-        for keyword in node.keywords:
-            if keyword.arg == "strategy":
-                strategy_arguments.append(ast.unparse(keyword.value))
+def test_the_strategy_loop_cli_is_the_only_run_tick_entry_point_and_wires_null_strategy() -> (
+    None
+):
+    """§2's "only entry point" claim, checked against the whole repository.
 
-    assert strategy_arguments == ["NullStrategy()"]
+    The round-2 form of this test parsed the one CLI the claim names and asserted
+    its ``strategy=`` arguments. That cannot detect a *second* entry point: a
+    verifier added ``scripts/<other>.py`` calling
+    ``run_tick(strategy=object(), confirm=True)`` and every test in this module
+    still passed, because nothing here had ever looked outside the named file.
+    So the entry-point set is enumerated over ``app/``, ``scripts/`` and
+    ``research/`` — anything that imports the strategy-loop package or calls
+    ``run_tick`` — and asserted equal to the single file the contract names.
+    """
+    entry_points: dict[str, list[ast.Call]] = {}
+    for path in _first_party_source_files(
+        exclude=("app/services/brokers/binance/demo_strategy_loop/",)
+    ):
+        tree = _parse(path)
+        run_tick_calls = _iter_calls(tree, "run_tick")
+        if run_tick_calls or _imports_package(tree, _STRATEGY_LOOP_PACKAGE):
+            entry_points[path.relative_to(REPO_ROOT).as_posix()] = run_tick_calls
+
+    assert set(entry_points) == {"scripts/binance_demo_strategy_loop.py"}
+
+    # ...and the one entry point wires the always-``None`` plugin. Asserted at
+    # the call site, so a second ``run_tick`` call inside the same file with a
+    # different plugin is caught too.
+    (calls,) = entry_points.values()
+    assert len(calls) == 1
+    assert _keyword_values(calls[0])["strategy"] == "NullStrategy()"
 
 
 def test_no_scheduler_entrypoint_reaches_the_demo_strategy_loop() -> None:
@@ -740,13 +993,42 @@ async def test_futures_reduce_only_defaults_off_and_submit_defaults_to_dry_run()
 
 
 def test_the_strategy_loop_close_leg_always_sets_reduce_only_true() -> None:
-    """Mutant 4 — the close path may never submit without reduceOnly."""
-    execution_source = (
-        REPO_ROOT / "app/services/brokers/binance/demo_strategy_loop/execution.py"
-    ).read_text(encoding="utf-8")
+    """Mutant 4 — the close path may never submit without reduceOnly.
 
-    assert "reduce_only=True" in execution_source
-    assert "_close_with_reduce_only" in execution_source
+    Asserted at the call site, not as a substring. The round-2 form checked that
+    ``"reduce_only=True"`` appeared *somewhere* in the file, which a verifier
+    defeated by flipping the real close ``submit_order`` to ``reduce_only=False``
+    and leaving the other occurrences (the planned-row metadata, the echo
+    expectation) untouched: the substring survived, the invariant did not.
+    """
+    close_leg = _function_node(_STRATEGY_LOOP_EXECUTION, "_close_with_reduce_only")
+
+    submits = _iter_calls(close_leg, "submit_order")
+    assert len(submits) == 1
+    close_submit = _keyword_values(submits[0])
+    assert close_submit["reduce_only"] == "True"
+    assert close_submit["confirm"] == "True"
+
+    # The dry-run validation that precedes it must describe the same order.
+    order_tests = _iter_calls(close_leg, "order_test")
+    assert len(order_tests) == 1
+    assert _keyword_values(order_tests[0])["reduce_only"] == "True"
+
+    # ...and the *echo* the broker sends back is checked against ``True`` too,
+    # so an accepted order that came back without reduceOnly is rejected.
+    echo_checks = [
+        _keyword_values(call) for call in _iter_calls(close_leg, "_assert_order_echo")
+    ]
+    assert echo_checks
+    assert all(check["expected_reduce_only"] == "True" for check in echo_checks)
+
+    # Non-vacuity: the open leg is the counterpart that must NOT carry it, so the
+    # pins above are about the close path specifically rather than about a file
+    # in which ``reduce_only=True`` happens to be the only spelling present.
+    open_leg = _function_node(_STRATEGY_LOOP_EXECUTION, "execute_signal_round_trip")
+    open_submits = _iter_calls(open_leg, "submit_order")
+    assert len(open_submits) == 1
+    assert _keyword_values(open_submits[0])["reduce_only"] == "False"
 
 
 def test_leg_notional_cap_constants_are_locked_literals() -> None:
@@ -894,44 +1176,89 @@ def test_neither_lane_calls_the_j3a_release_if_matches_contract() -> None:
     assert "async def release_if_matches(" in coordination_source
 
 
-def test_c3_1_futures_recovery_ownership_is_split_across_two_modules() -> None:
+def test_c3_1_futures_recovery_ownership_is_split_across_three_surfaces() -> None:
     """C3-1 — "exactly one recovery owner" is UNMET, and the failure is pinned.
 
-    Two modules own different recovery phases and no contract names one: the
-    reconciliation job owns pre-acknowledgement roots, the strategy loop owns
-    the in-tick close. §5.2 reports that as a failed prerequisite instead of
-    picking a winner — so the *failure* needs a regression too. If a later
-    change consolidates ownership into a single module, this goes red and the
-    contract row must be revisited rather than silently rotting.
-    """
-    assert (
-        _function_node(_RECONCILE_JOB, "reconcile_binance_demo_root_reservations").name
-        == "reconcile_binance_demo_root_reservations"
-    )
-    assert (
-        _function_node(_STRATEGY_LOOP_EXECUTION, "_close_with_reduce_only").name
-        == "_close_with_reduce_only"
-    )
+    Three modules own recovery phases and no contract names one. Round 2 listed
+    only two and a verifier showed the enumeration was inconsistent: the smoke
+    CLI implements the *same* ``_close_with_reduce_only`` / ``_reconcile`` pair
+    and calls it on the real confirm round trip, so counting the strategy loop's
+    in-tick phase while omitting the CLI's isomorphic one had no principle behind
+    it. The conclusion is unchanged — "exactly one" is still unmet — but the
+    grounds are now complete.
 
-    # Neither phase owner delegates to the other, which is precisely why a
-    # single owner cannot be named.
-    assert _STRATEGY_LOOP_EXECUTION not in _reachable_modules(_RECONCILE_JOB)
-    assert _RECONCILE_JOB not in _reachable_modules(_STRATEGY_LOOP_EXECUTION)
+    Each surface is checked for **behaviour**, not for its name. Round 2 asserted
+    only that the functions existed, so a verifier put an unconditional
+    ``raise RuntimeError`` on the first line of ``_close_with_reduce_only`` and
+    every test still passed: the phase was gone and its owner still "owned" it.
+    ``_reaches_call`` requires the phase's broker call to still be reachable past
+    the top-level statement sequence.
+    """
+    # (module, phase function, the broker operation that phase exists to perform)
+    owners = (
+        (_RECONCILE_JOB, "reconcile_binance_demo_root_reservations", "_lookup_order"),
+        (_STRATEGY_LOOP_EXECUTION, "_close_with_reduce_only", "submit_order"),
+        (_STRATEGY_LOOP_EXECUTION, "_reconcile", "get_open_orders"),
+        (_FUTURES_SMOKE_CLI, "_close_with_reduce_only", "submit_order"),
+        (_FUTURES_SMOKE_CLI, "_reconcile", "get_open_orders"),
+    )
+    for module, function_name, broker_operation in owners:
+        node = _function_node(module, function_name)
+        assert _reaches_call(node, broker_operation), (
+            f"{module}:{function_name} no longer reaches {broker_operation} — "
+            "its recovery phase has been emptied, so §5.2's C3-1 grounds are stale"
+        )
+
+    assert {module for module, _, _ in owners} == {
+        _RECONCILE_JOB,
+        _STRATEGY_LOOP_EXECUTION,
+        _FUTURES_SMOKE_CLI,
+    }
+
+    # No surface delegates to another, which is precisely why a single owner
+    # cannot be named. Checked pairwise over all three rather than the one pair
+    # round 2 happened to list.
+    for holder in (_RECONCILE_JOB, _STRATEGY_LOOP_EXECUTION, _FUTURES_SMOKE_CLI):
+        reachable = _reachable_modules(holder)
+        for other in (_RECONCILE_JOB, _STRATEGY_LOOP_EXECUTION, _FUTURES_SMOKE_CLI):
+            if other == holder:
+                continue
+            assert other not in reachable, f"{holder} delegates to {other}"
 
 
 def test_c3_2_futures_restart_trigger_rediscovers_only_pre_ack_roots() -> None:
-    """C3-2 — the durable-claim rediscovery predicate, pinned to its literals."""
-    predicate = _function_body_source(_RECONCILE_JOB, "_candidate_where_clauses")
+    """C3-2 — the rediscovery predicate, as a **closed** set of lifecycle states.
 
+    Round 2 forbade three specific strings — ``submitted``, ``filled``,
+    ``anomaly``. That is an open set, and a verifier walked through it by adding
+    the terminal state ``cancelled`` to the candidate tuple: none of the three
+    forbidden strings appeared, so the sweep silently grew to reclaim already
+    released roots and the test stayed green.
+
+    The fix is an equality against the ledger's whole state universe. Any state
+    the predicate names must be one of the three pre-acknowledgement states, and
+    any state added to the ledger in future must be added to
+    ``_LEDGER_LIFECYCLE_STATES`` here — which fails this test until someone has
+    decided, on the record, whether the sweep should claim it.
+    """
+    assert (
+        _module_level_dict_keys(_DEMO_LEDGER_SERVICE, "_ALLOWED_TRANSITIONS")
+        == _LEDGER_LIFECYCLE_STATES
+    )
+
+    predicate = _function_body_source(_RECONCILE_JOB, "_candidate_where_clauses")
     assert "planned_at <= stale_before" in predicate
-    assert "lifecycle_state == 'planned'" in predicate
-    assert "'previewed', 'validated'" in predicate
     assert "broker_order_id.is_(None)" in predicate
-    # Acknowledged roots carry broker evidence and are deliberately out of the
-    # restart sweep's scope; widening it to them would need a contract change.
-    assert "'submitted'" not in predicate
-    assert "'filled'" not in predicate
-    assert "'anomaly'" not in predicate
+
+    named_states = _body_string_constants(_RECONCILE_JOB, "_candidate_where_clauses")
+    assert named_states & _LEDGER_LIFECYCLE_STATES == frozenset(
+        {"planned", "previewed", "validated"}
+    )
+    # Non-vacuity: acknowledged roots carry broker evidence and every one of them
+    # is outside the sweep, asserted as the complement rather than as three names.
+    assert not named_states & (
+        _LEDGER_LIFECYCLE_STATES - frozenset({"planned", "previewed", "validated"})
+    )
 
 
 def test_c3_3_futures_authoritative_readback_is_get_order() -> None:
@@ -945,14 +1272,27 @@ def test_c3_3_futures_authoritative_readback_is_get_order() -> None:
     assert hasattr(BinanceFuturesDemoExecutionClient, "get_order")
 
 
-def test_c3_4_futures_lane_evidence_has_no_reject_expiry_or_partial_fill_writer() -> (
+def test_c3_4_futures_evidence_writers_each_own_one_typed_state_and_ack_carries_broker_id() -> (
     None
 ):
-    """C3-4 — 4 of 7 kinds present, partial fill degraded, reject/expiry absent."""
+    """C3-4 — the writer/state map, and the ACK's broker id reaching the row.
+
+    The map is what makes the §5.2 C3-4 classification checkable: a kind is
+    ``PRESENT`` when a typed lifecycle state is reached by that kind alone, and
+    the map below is the only place that can be read off. ``record_planned`` is
+    the insert writer (it reserves the root and inserts ``planned``), so it does
+    not appear among the transition writers.
+
+    The ACK half is a value-destination assertion, not a parameter list. Round 2
+    asserted only that ``record_submitted`` *had* a ``broker_order_id``
+    parameter, so a verifier changed its body to pass
+    ``_transition(..., broker_order_id=None)``: the parameter set was identical,
+    the ack no longer carried the broker id to the row, and the test stayed
+    green.
+    """
     record_methods = _method_names(
         _DEMO_LEDGER_SERVICE, "BinanceDemoLedgerService", "record_"
     )
-
     assert record_methods == frozenset(
         {
             "record_planned",
@@ -966,10 +1306,46 @@ def test_c3_4_futures_lane_evidence_has_no_reject_expiry_or_partial_fill_writer(
             "record_anomaly",
         }
     )
-    # reject and expiry have no dedicated write point; both collapse into the
-    # cancelled / anomaly branches, which also absorb unrelated causes.
     assert "record_rejected" not in record_methods
     assert "record_expired" not in record_methods
+
+    assert _transition_writer_states(
+        _DEMO_LEDGER_SERVICE, "BinanceDemoLedgerService"
+    ) == {
+        "record_previewed": "previewed",
+        "record_validated": "validated",
+        "record_submitted": "submitted",
+        "record_filled": "filled",
+        "record_closed": "closed",
+        "record_cancelled": "cancelled",
+        "record_reconciled": "reconciled",
+        "record_anomaly": "anomaly",
+    }
+    assert (
+        _iter_calls(
+            _method_node(
+                _DEMO_LEDGER_SERVICE, "BinanceDemoLedgerService", "record_planned"
+            ),
+            "_transition",
+        )
+        == []
+    )
+
+    # The ACK's broker id must reach the row, not merely be accepted.
+    ack_transitions = _iter_calls(
+        _method_node(
+            _DEMO_LEDGER_SERVICE, "BinanceDemoLedgerService", "record_submitted"
+        ),
+        "_transition",
+    )
+    assert len(ack_transitions) == 1
+    ack = _keyword_values(ack_transitions[0])
+    assert ack["new_state"] == "'submitted'"
+    assert ack["broker_order_id"] == "broker_order_id"
+    # ...and the repository actually persists what it is handed.
+    update_state = _function_body_source(_DEMO_LEDGER_REPOSITORY, "update_state")
+    assert "row.broker_order_id = broker_order_id" in update_state
+    assert "if broker_order_id is not None:" in update_state
 
     # Partial fill is degraded rather than recorded: the fill writer takes no
     # quantity argument, and the ledger has no column to hold one.
@@ -982,6 +1358,68 @@ def test_c3_4_futures_lane_evidence_has_no_reject_expiry_or_partial_fill_writer(
     assert "qty" in columns  # planned quantity, set at insert and never split
 
 
+def test_c3_4_reject_and_expiry_leave_free_form_evidence_rather_than_none() -> None:
+    """C3-4 — reject/expiry are ``DEGRADED``, not ``ABSENT``. Round 2 had this wrong.
+
+    Round 2's contract row called reject and expiry ``absent``, having looked for
+    ``record_rejected`` / ``record_expired`` method names. An independent
+    verifier showed the source says the opposite: both native statuses *are*
+    persisted, and distinguishably so. The round-2 table also counted ``unknown``
+    as ``PRESENT`` off nothing more than ``record_anomaly`` plus a reason string,
+    which is the same shape it called ``absent`` here — so the criterion was not
+    one criterion.
+
+    §5.2 now applies a single criterion to all seven kinds and this test pins the
+    evidence it turns on: a typed state reached by the kind alone is
+    ``PRESENT``; evidence that exists only in the free-form ``anomaly_reason``
+    text or ``extra_metadata`` JSON is ``DEGRADED``; nothing persisted is
+    ``ABSENT``. Reject and expiry land in the middle row, and so does unknown.
+    """
+    # Both futures execution surfaces treat the same three native statuses as
+    # terminal non-fills, and both persist the native status verbatim.
+    for module in (_STRATEGY_LOOP_EXECUTION, _FUTURES_SMOKE_CLI):
+        assert (
+            _module_level_str_constants(module, "_TERMINAL_NONFILL_STATUSES")
+            == _TERMINAL_NONFILL_STATUSES
+        )
+
+    for module, function_name in (
+        (_STRATEGY_LOOP_EXECUTION, "execute_signal_round_trip"),
+        (_FUTURES_SMOKE_CLI, "_execute_confirm_lifecycle"),
+    ):
+        node = _function_node(module, function_name)
+
+        acks = [_keyword_values(call) for call in _iter_calls(node, "record_submitted")]
+        assert acks
+        assert all("submit_status" in ack["extra_metadata_merge"] for ack in acks), (
+            f"{module}:{function_name} stopped persisting the native submit status"
+        )
+
+        anomaly_reasons = [
+            _keyword_values(call).get("reason", "")
+            for call in _iter_calls(node, "record_anomaly")
+        ]
+        status_bearing = [
+            reason
+            for reason in anomaly_reasons
+            if "open_did_not_take_effect" in reason and "status=" in reason
+        ]
+        assert len(status_bearing) == 1, (
+            f"{module}:{function_name} no longer records the native status on the "
+            "did-not-take-effect anomaly, which is the only place reject and "
+            "expiry are distinguishable"
+        )
+
+    # ...and it is free-form only: no typed column holds a reject reason, an
+    # expiry reason, or the submit status. That is precisely why the row reads
+    # DEGRADED and not PRESENT.
+    columns = _mapped_column_names(_DEMO_LEDGER_MODEL, "BinanceDemoOrderLedger")
+    assert columns.isdisjoint(
+        {"submit_status", "reject_reason", "expiry_reason", "terminal_status"}
+    )
+    assert {"anomaly_reason", "extra_metadata"} <= columns
+
+
 def test_c3_6_futures_blocked_state_reasons_are_pinned_as_a_closed_set() -> None:
     """C3-6 — the operator-visible ``kept`` reasons are a closed literal set.
 
@@ -989,8 +1427,18 @@ def test_c3_6_futures_blocked_state_reasons_are_pinned_as_a_closed_set() -> None
     eleventh reason fails here, instead of leaving the contract's enumeration
     stale. That is not hypothetical: the round-1 contract enumerated eight, and
     this assertion is what measured the real count at ten.
+
+    The set is now built from the **pairing** of ``action`` and ``reason`` within
+    each outcome dict. Round 2 harvested every literal ``reason`` in the module
+    regardless of its sibling action, so a verifier changed
+    ``client_unavailable``'s action from ``kept`` to ``would_release`` — turning a
+    blocked-state row into a release — and the harvested set was byte-identical.
+    The contract row says these ten reasons are ``kept`` *outcomes*; that is a
+    claim about pairs, so the assertion is about pairs.
     """
-    assert _literal_reason_values(_RECONCILE_JOB) == frozenset(
+    kept_reasons, literal_actions = _kept_outcome_reasons(_RECONCILE_JOB)
+
+    assert kept_reasons == frozenset(
         {
             "client_unavailable",
             "venue_host_mismatch",
@@ -1004,6 +1452,11 @@ def test_c3_6_futures_blocked_state_reasons_are_pinned_as_a_closed_set() -> None
             "broker_lookup_retention_exceeded",
         }
     )
+    # Every enumerable outcome in the job is a ``kept`` outcome — the pairing
+    # claim stated directly. A branch re-pointed at any other action shows up
+    # here even if its reason literal never moves.
+    assert literal_actions == frozenset({"kept"})
+
     # The lifecycle-state half of the blocked surface: anomaly has a writer.
     assert "record_anomaly" in _method_names(
         _DEMO_LEDGER_SERVICE, "BinanceDemoLedgerService", "record_"
@@ -1126,13 +1579,23 @@ def test_spot_demo_runbook_no_scheduler_claim_is_contradicted_by_repo_fact() -> 
     assert "confirm=True" in adapter_source
 
 
-def test_the_futures_runbook_scheduler_clause_matches_repo_fact() -> None:
-    """The futures runbook's *first* clause is accurate on the TaskIQ facts.
+def test_the_futures_runbook_scheduler_clause_is_inaccurate_as_written() -> None:
+    """The literal clause does **not** survive. Only a narrower fact does.
 
-    A TaskIQ module does reach the futures client, but it is scheduleless and
-    calls no order-producing method. That is the half of the sentence the repo
-    supports; the "smoke CLI is the only path" half is handled by the test
-    below, which contradicts it.
+    The runbook says no TaskIQ wiring *touches* the futures execution client. A
+    TaskIQ module does, so the sentence as written is false — narrowly, but
+    false. Round 2 recorded that verdict in the §4.1 table and then wrote "the
+    first clause survives" two paragraphs later and "scheduler clause is
+    accurate" in §8; a verifier flagged the three statements as mutually
+    contradictory, and it was right. The contract now states one sentence in all
+    three places, and it is this one:
+
+        the literal clause is inaccurate as written; what holds is the narrower
+        operational fact that the single reach carries no schedule and calls no
+        order-producing method.
+
+    Both halves are asserted below — the contradiction *and* the narrower fact —
+    so neither can be dropped without this going red.
     """
     runbook = (REPO_ROOT / "docs/runbooks/binance-futures-demo-smoke.md").read_text(
         encoding="utf-8"
@@ -1140,11 +1603,25 @@ def test_the_futures_runbook_scheduler_clause_matches_repo_fact() -> None:
     assert "No scheduler / TaskIQ / Prefect / cron / Hermes wiring touches the" in (
         runbook
     )
+    assert "Futures Demo execution client" in runbook
 
+    # (a) The literal clause is contradicted: a TaskIQ module reaches the client.
     reaching = _entrypoints_reaching(_FUTURES_EXECUTION_CLIENT)
     assert reaching == frozenset({_RECONCILE_TASK})
+    assert reaching, "an empty reach set would make the contradiction vacuous"
+    assert _RECONCILE_TASK.startswith("app.tasks."), (
+        "the contradiction is that the reach is a *TaskIQ* module"
+    )
+
+    # (b) The narrower surviving fact, both of its halves.
+    keywords = _broker_task_keywords(
+        _RECONCILE_TASK, "binance_demo_root_reservation_reconcile"
+    )
+    assert "schedule" not in keywords
     called = _called_attribute_names((_RECONCILE_TASK, _RECONCILE_JOB))
-    assert called.isdisjoint({"submit_order", "cancel_order", "order_test"})
+    assert called.isdisjoint(
+        {"submit_order", "cancel_order", "order_test", "set_leverage"}
+    )
 
 
 def test_futures_runbook_only_path_claim_is_contradicted_by_a_second_cli() -> None:
@@ -1157,9 +1634,11 @@ def test_futures_runbook_only_path_claim_is_contradicted_by_a_second_cli() -> No
     is the end-to-end Demo round trip), and ``run_tick`` only short-circuits to
     a dry run when ``confirm`` is false.
 
-    Unlike the scheduler clause this is *not* a scheduler reach — both paths are
-    operator-invoked foreground processes — which is why the first clause of the
-    sentence survives and this one does not. J6C owns neither
+    Neither clause of that sentence survives as written. The scheduler clause is
+    narrowly inaccurate (a TaskIQ module does reach the client — see the test
+    above); this one is false outright. They fail for different reasons and are
+    pinned separately: the second producer is *not* a scheduler reach at all —
+    both producers are operator-invoked foreground processes. J6C owns neither
     ``docs/runbooks/**`` nor ``app/**``, so the divergence is recorded and
     pinned; resolving it in either direction must update this test in the same
     change.
@@ -1176,17 +1655,27 @@ def test_futures_runbook_only_path_claim_is_contradicted_by_a_second_cli() -> No
     assert strategy_loop_cli != smoke_cli
     assert smoke_cli.is_file()  # the CLI the runbook sentence is about
 
-    run_tick_keywords: set[str] = set()
-    for node in ast.walk(_parse(strategy_loop_cli)):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "run_tick"
-        ):
-            run_tick_keywords.update(
-                keyword.arg for keyword in node.keywords if keyword.arg is not None
-            )
-    assert {"confirm", "signal_override"} <= run_tick_keywords
+    # Values, not keyword names. The round-2 form collected the *names*
+    # ``confirm`` / ``signal_override`` and asserted they were present, which a
+    # verifier defeated by rewriting ``confirm=args.confirm`` to
+    # ``confirm=False``: the name set was unchanged, the second CLI became
+    # permanently inert, and this row's claim ("a second CLI produces real
+    # orders") became false with the test still green.
+    run_tick_calls = _iter_calls(_parse(strategy_loop_cli), "run_tick")
+    assert len(run_tick_calls) == 1
+    keywords = _keyword_values(run_tick_calls[0])
+    assert keywords["confirm"] == "args.confirm"
+    assert keywords["signal_override"] == "signal_override"
+    # Belt: neither is a constant, so no literal can be substituted for the
+    # operator-controlled expressions above.
+    forwarded = {
+        keyword.arg: keyword.value
+        for keyword in run_tick_calls[0].keywords
+        if keyword.arg in {"confirm", "signal_override"}
+    }
+    assert not any(isinstance(value, ast.Constant) for value in forwarded.values()), (
+        "run_tick's confirm/signal_override must stay operator-controlled"
+    )
 
     # ``confirm`` is the real gate on the other side of that call, so the reach
     # above is an order-producing path rather than a permanently inert one.
