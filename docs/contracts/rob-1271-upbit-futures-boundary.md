@@ -83,7 +83,11 @@ whose name includes `upbit`.
   exactly that one CLI. The round-2 revision parsed only the named file, and a
   second CLI calling `run_tick(strategy=object(), confirm=True)` passed the
   whole suite; a repository-wide enumeration is the only shape in which an
-  "only X" claim is checkable at all.
+  "only X" claim is checkable at all. The enumeration is **static**: a file that
+  reaches `run_tick` only through `importlib.import_module` + `getattr` has
+  neither an import of the package nor a call spelling `run_tick`, so it is not
+  counted. §9 records that limitation rather than leaving this bullet reading
+  like an exhaustive one.
 * **No recurring registration.** No module under `app/tasks/**` or
   `app/flows/**` reaches
   `app.services.brokers.binance.demo_strategy_loop` at all. Exactly one
@@ -446,13 +450,24 @@ Round 3 was the last round available. Rather than leave a sentence reading like 
 guarantee where none exists, every remaining gap is listed here. **Nothing below
 is a guaranteed invariant.**
 
+Two of these rows are limitations of the source-pinning method itself rather than
+of this job's effort, and they are recorded as such on the operator's stated
+grounds: *the purpose of a static source pin is regression detection, not defence
+against an adversarial author.* A pin's job is to go red when someone changes a
+fact this contract asserts; a reader who deliberately hides the change behind a
+dynamic import or a body-replacing decorator is outside what any single-file AST
+check can see. The two rows are named concretely below so that "known limitation"
+is a specific statement and not a blanket disclaimer.
+
 | claim | why it is not enforced here | disposition |
 | --- | --- | --- |
 | §4 Spot bounding gates (`PAPER_COHORT_ENABLED`, the `SHADOW` early return, `PAPER_EXECUTION_ENABLED`, the actor-id fail-closed, the `{BTCUSDT, ETHUSDT}` allowlist) | These are `app/**` invariants owned by ROB-845/849. A J6C regression pinning them would assert someone else's contract and would go red on a legitimate change there. | **record only**, cited with file:line. Unchanged from round 2. |
 | §5.1 C3-4 "0 of 7" for the Upbit lane | Absence of a writer *by name* is not assertable without enumerating every possible writer name. The C3-2/C3-3 pins (`allowed_hosts=()`, `credential_namespace=None`, `shadow_broker_io_forbidden` on the live chain) imply it, but no test states it. | **record only**. |
 | §5.2 C3-5 the lane's own narrower release rule (89-day bound, terminal status + `executedQty == 0`, triple identity match) | Only the *absence* of the J3A `release_if_matches` call site is pinned. The positive description of the lane's own rule is prose. | **record only**. |
 | §5.3 reasons 1 and 3 for not relabelling to `AUTO_READY_BLOCKED_BY_LIFECYCLE` | Reason 2 (unreachability) is asserted. Reasons 1 and 3 are readings of the signed registry and of the status ladder's ordering, not computable facts. | **record only**; the relabel conflict stays escalated to orch. |
-| §5.2 C3-1 recovery-phase bodies are only checked for *reachability* | `_reaches_call` kills a phase function that has been emptied by a top-level `raise`/`return`. A raise nested inside an always-true `if`, or a body that reaches its broker call but then discards the result, would still escape it. Actually executing these functions would require faking a ledger service, an `AsyncSession`, and the futures client — coupling this suite to `app/**` internals it does not own. | **bounded**, and the bound is written into the helper's docstring. |
+| §5.2 C3-1 recovery-phase bodies are only checked for *reachability* | `_reaches_call` kills a phase function emptied by a top-level `raise`/`return`, and now also one emptied by a `raise` nested inside a **literal-constant** `if` (`if True:` / `if 1:`) — the shape a verifier used to walk through the round-3 form of this helper. The splice stops at literal constants on purpose: reading an arbitrary condition as a dominator would treat an ordinary leading guard (`if not symbol: raise ValueError(...)`) as emptying the function and would go red on legitimate code. So a `raise` behind a condition that is always true at runtime but not literally constant, or a body that reaches its broker call and then discards the result, still escapes. Actually executing these functions would require faking a ledger service, an `AsyncSession`, and the futures client — coupling this suite to `app/**` internals it does not own. | **bounded**, narrower than in round 3; the bound is written into the helper's docstring. |
+| §2 "the CLI is the only `run_tick` entry point" survives a **dynamically dispatched** second entry | The repo-wide scan counts a file when it statically imports the loop package or names `run_tick` at a call site. A file that instead does `importlib.import_module("...demo_strategy_loop.orchestrator")` followed by `getattr(mod, "run_tick")(strategy=..., confirm=True)` has neither an `Import`/`ImportFrom` node for the package nor a call whose callee spells `run_tick`, so the scan does not count it and §2's uniqueness claim is false for that shape. **Why it cannot be closed inside the two owned files:** the module and attribute exist only as string arguments, so deciding them needs constant propagation across an import/execution graph rather than the AST of one file — and the string-matching fallback would flag every doc, test, and log line that merely names the module. | **known limitation** — regression detection, not adversarial-author defence. |
+| C3-1 phase bodies survive a **decorator that replaces the body** | A decorator that returns a `raise`-only wrapper leaves the original function body — and the `submit_order` call inside it — intact in the AST, so `_reaches_call` reports the phase as still reaching its broker operation while the callable actually bound to that name does nothing. **Why it cannot be closed inside the two owned files:** what runs is the decorator's return value, which is knowable only by resolving the decorator's own definition and, in the general case, by executing it — the same `app/**` fake-harness coupling that the C3-1 row above already declines, and unlike `if True:` it is not decidable from the decorated function's own AST. | **known limitation** — same grounds. |
 | §2 "one-way only" runtime hedge path | The `BinanceFuturesDemoHedgeModeBlocked` raise is a source pin; the runtime behaviour of the hedge branch is not driven. | **record only**, unchanged from round 2. |
 | C5 | No authority in either deliverable closes it. | `C5 = UNKNOWN`, unchanged across all three rounds. |
 | `FINDING_F1` | J6C owns neither `docs/runbooks/**` nor `app/**`. Both halves are pinned against the contradicting repo fact so the divergence cannot be resolved in silence, but the divergence itself remains. | `OPEN (Spot and Futures)` — **orch disposition required**. |

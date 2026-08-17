@@ -432,6 +432,19 @@ def _keyword_values(call: ast.Call) -> dict[str, str]:
     }
 
 
+def _is_constant_true(test: ast.expr) -> bool:
+    """Whether ``test`` is a *literal* constant that is always truthy.
+
+    Deliberately narrow: only an ``ast.Constant`` (``if True:``, ``if 1:``).
+    Widening this to arbitrary conditions — a name, a comparison, a call — would
+    make an ordinary live branch look like a dominator, so a function whose real
+    guard happens to be written first would be judged unreachable and this
+    module's C3-1 row would go red on legitimate code. A literal constant test
+    has no runtime input, so treating it as decided is the one safe case.
+    """
+    return isinstance(test, ast.Constant) and bool(test.value)
+
+
 def _reaches_call(node: ast.AsyncFunctionDef | ast.FunctionDef, callee: str) -> bool:
     """Whether ``callee`` is still reachable inside this function.
 
@@ -440,11 +453,24 @@ def _reaches_call(node: ast.AsyncFunctionDef | ast.FunctionDef, callee: str) -> 
     an unconditional ``raise`` reaches nothing — which is exactly how a function
     keeps its name and its signature while no longer performing its phase.
 
-    Bounded honestly: this kills a body that has been *emptied*. A raise nested
-    inside an always-true ``if`` would still escape it, and no assertion in this
-    module claims otherwise.
+    An ``if`` whose test is a literal truthy constant runs unconditionally and
+    its ``else`` is dead, so its body is spliced into this same statement
+    sequence: ``if True: raise RuntimeError`` empties the function exactly as a
+    bare ``raise`` does, and a verifier's round-3 mutant that used that shape
+    walked through the earlier form of this helper.
+
+    Bounded honestly: the splice covers *literal-constant* tests only
+    (``_is_constant_true``). A raise behind a condition that is always true at
+    runtime but not literally constant — ``if not None:``, ``if _DEAD:`` — still
+    escapes, as does a body that reaches its broker call and discards the
+    result. No assertion in this module claims otherwise.
     """
-    for statement in node.body:
+    pending = list(node.body)
+    while pending:
+        statement = pending.pop(0)
+        if isinstance(statement, ast.If) and _is_constant_true(statement.test):
+            pending[:0] = statement.body
+            continue
         if _iter_calls(statement, callee):
             return True
         if isinstance(statement, ast.Raise | ast.Return):
@@ -1192,7 +1218,11 @@ def test_c3_1_futures_recovery_ownership_is_split_across_three_surfaces() -> Non
     ``raise RuntimeError`` on the first line of ``_close_with_reduce_only`` and
     every test still passed: the phase was gone and its owner still "owned" it.
     ``_reaches_call`` requires the phase's broker call to still be reachable past
-    the top-level statement sequence.
+    the top-level statement sequence. A later round wrapped the same raise in
+    ``if True:`` and walked through it again, so that helper now splices a
+    literal-constant ``if`` into the sequence it walks. Its remaining bound —
+    non-literal always-true conditions and body-replacing decorators — is stated
+    in the helper's docstring and in §9 of the contract.
     """
     # (module, phase function, the broker operation that phase exists to perform)
     owners = (
