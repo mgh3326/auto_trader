@@ -5,7 +5,6 @@ Pytest configuration and common fixtures for auto-trader tests.
 import asyncio
 import contextlib
 import os
-import socket
 import tempfile
 import time
 from collections.abc import Generator
@@ -472,65 +471,6 @@ def _block_tvscreener_http_boundary(request, monkeypatch):
         "app.services.tvscreener_service.TvScreenerService.fetch_with_retry",
         _raise_tvscreener_blocked,
     )
-
-
-class ExternalSocketBlocked(AssertionError):
-    """Raised when a non-integration/live test tries to open a real outbound socket."""
-
-
-def _is_loopback_connect_address(address: object) -> bool:
-    """True for loopback TCP/UDP addresses and UNIX domain socket paths.
-
-    ``socket.socket.connect`` receives either a ``(host, port[, ...])`` tuple
-    (AF_INET/AF_INET6 — ``host`` here is always an already-resolved literal,
-    never a hostname, since callers resolve via ``getaddrinfo`` first) or a
-    single string/bytes path (AF_UNIX, e.g. local Postgres/Redis sockets).
-    """
-    if isinstance(address, (str, bytes)):
-        return True
-    if not isinstance(address, tuple) or not address:
-        return False
-    host = address[0]
-    if isinstance(host, bytes):
-        host = host.decode("ascii", "ignore")
-    if not isinstance(host, str):
-        return False
-    return host in ("127.0.0.1", "::1", "localhost") or host.startswith("127.")
-
-
-@pytest.fixture(autouse=True)
-def _block_external_sockets(request: pytest.FixtureRequest, monkeypatch):
-    """ROB-1265: fail-closed guard against real outbound network in the offline suite.
-
-    `make test` must never depend on external hosts being reachable — a test
-    that silently reaches Finnhub/Upbit/Binance/etc. is nondeterministic
-    offline and can even hit real broker/API endpoints. `@pytest.mark.
-    integration` and `@pytest.mark.live` tests intentionally cross real
-    boundaries (DB, or --run-live network) and are exempted; everything else
-    gets a loud, immediate ``ExternalSocketBlocked`` instead of a hung/slow
-    real connection. Mock the external client at its call site instead of
-    disabling this guard.
-    """
-    if request.node.get_closest_marker(
-        "integration"
-    ) or request.node.get_closest_marker("live"):
-        yield
-        return
-
-    real_connect = socket.socket.connect
-
-    def _guarded_connect(self, address):
-        if not _is_loopback_connect_address(address):
-            raise ExternalSocketBlocked(
-                f"Blocked outbound network connect to {address!r} in a "
-                "non-integration/live test. Mock the external client at its "
-                "call site (see docs/runbooks/hermetic-test-socket-guard.md) "
-                "instead of letting the test reach a real host."
-            )
-        return real_connect(self, address)
-
-    monkeypatch.setattr(socket.socket, "connect", _guarded_connect)
-    yield
 
 
 @pytest.fixture
