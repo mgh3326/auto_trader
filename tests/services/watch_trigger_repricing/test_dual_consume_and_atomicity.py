@@ -26,6 +26,7 @@ from app.services.watch_trigger_repricing.consumption import (
 )
 from app.services.watch_trigger_repricing.orchestrator import run_repricing_tick
 from app.services.watch_trigger_repricing.selection import select_candidates
+from app.services.watch_trigger_repricing.spawn import SpawnNotStarted
 
 from .conftest import INCIDENT_TICK, make_event
 
@@ -89,10 +90,17 @@ def test_a_plan_claim_is_visible_to_b_plan(store: InMemoryClaimStore) -> None:
     event = make_event(event_uuid="evt-1")
     run_repricing_tick([event], store=store, now=INCIDENT_TICK)
 
-    # B안 asks the identical question through the identical helper.
+    # B안 asks the identical question through the identical helper. r2: the
+    # verdict is the terminal CONSUMED, so B안 still stands down half an
+    # hour later -- under r1 the lease had lapsed by then and B안 (and the
+    # next tick) would have re-judged the same fire.
     state = store.state_for("evt-1", now=INCIDENT_TICK)
-    assert state is ConsumptionState.CLAIMED
+    assert state is ConsumptionState.CONSUMED
     assert may_consume(state) is False
+
+    much_later = INCIDENT_TICK + DEFAULT_LEASE + dt.timedelta(hours=1)
+    assert store.state_for("evt-1", now=much_later) is ConsumptionState.CONSUMED
+    assert may_consume(store.state_for("evt-1", now=much_later)) is False
 
 
 def test_neither_consumer_skips_an_untouched_event(store: InMemoryClaimStore) -> None:
@@ -124,11 +132,20 @@ def test_claim_is_taken_before_spawn(store: InMemoryClaimStore) -> None:
     observed: list[ConsumptionState] = []
 
     class ObservingSpawner:
+        is_dry = True
+
         def spawn(self, request):
             observed.append(store.state_for(request.event_uuid, now=INCIDENT_TICK))
-            from app.services.watch_trigger_repricing.spawn import SpawnOutcome
+            from app.services.watch_trigger_repricing.spawn import (
+                SpawnDisposition,
+                SpawnOutcome,
+            )
 
-            return SpawnOutcome(request=request, started=False, detail="dry_run")
+            return SpawnOutcome(
+                request=request,
+                disposition=SpawnDisposition.DRY,
+                detail="dry_run",
+            )
 
     run_repricing_tick(
         [make_event(event_uuid="evt-1")],
@@ -140,23 +157,31 @@ def test_claim_is_taken_before_spawn(store: InMemoryClaimStore) -> None:
     assert observed == [ConsumptionState.CLAIMED]
 
 
-def test_failed_spawn_releases_the_claim(store: InMemoryClaimStore) -> None:
-    """An orderly failure hands the fire straight back, with a reason."""
+def test_proven_failed_spawn_releases_the_claim(store: InMemoryClaimStore) -> None:
+    """An orderly failure hands the fire straight back, with a reason.
 
-    class ExplodingSpawner:
+    r2: the spawner must *prove* it started nothing, by raising
+    ``SpawnNotStarted``. A generic exception is ambiguous and is handled in
+    ``test_atomicity_concurrency.py`` -- treating it as a clean failure was
+    BLOCKER-2's double-spawn direction.
+    """
+
+    class CleanlyFailingSpawner:
+        is_dry = True
+
         def spawn(self, request):
-            raise RuntimeError("spawn backend down")
+            raise SpawnNotStarted("spawn backend refused the request")
 
     result = run_repricing_tick(
         [make_event(event_uuid="evt-1")],
         store=store,
         now=INCIDENT_TICK,
-        spawner=ExplodingSpawner(),
+        spawner=CleanlyFailingSpawner(),
     )
 
     assert result.spawned == ()
-    assert [s.reason for s in result.skipped] == ["spawn_failed"]
-    assert store.released == [("evt-1", "spawn_failed")]
+    assert [s.reason for s in result.skipped] == ["spawn_not_started"]
+    assert store.released == [("evt-1", "spawn_not_started")]
     assert store.state_for("evt-1", now=INCIDENT_TICK) is ConsumptionState.UNCLAIMED
 
 

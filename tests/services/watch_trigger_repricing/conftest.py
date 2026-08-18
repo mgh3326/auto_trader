@@ -48,3 +48,20 @@ def enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         settings, "WATCH_TRIGGER_REPRICING_ENABLED", True, raising=False
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_process_claim_store() -> object:
+    """Reset the process-level claim store around every test.
+
+    ``run_gated_tick`` deliberately reuses one store across flow runs
+    (r2 / BLOCKER-1), which is exactly the state that would otherwise leak
+    between tests and make a dedup assertion pass for the wrong reason.
+    """
+    from app.services.watch_trigger_repricing.orchestrator import (
+        reset_process_claim_store,
+    )
+
+    reset_process_claim_store()
+    yield
+    reset_process_claim_store()

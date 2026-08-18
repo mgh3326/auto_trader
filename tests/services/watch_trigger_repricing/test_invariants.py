@@ -35,6 +35,49 @@ FORBIDDEN_IMPORT_FRAGMENTS = (
     "app.services.trade_journal",
 )
 
+# r2 / BLOCKER-3: the poll had to reach the DB, and the DB read lives on
+# ``InvestmentReportsRepository``. Rather than dropping the repository from
+# the ban (which would let any file in the package call any of its ~40
+# methods, most of which write), the ban is lifted for exactly one file and
+# replaced there by a *method-level* allowlist -- a tighter guarantee than
+# r1 had, not a weaker one.
+REPOSITORY_IMPORT = "app.services.investment_reports.repository"
+REPOSITORY_READER = "event_source.py"
+REPOSITORY_ALLOWED_METHODS = frozenset({"list_events_by_delivery_status"})
+
+# Session/ORM calls that write. None may appear on a DB handle anywhere in
+# the package -- consumption is a claim, never a row mutation.
+FORBIDDEN_WRITE_CALLS = frozenset(
+    {
+        "add",
+        "add_all",
+        "commit",
+        "flush",
+        "delete",
+        "merge",
+        "bulk_save_objects",
+        "execute",
+    }
+)
+
+# Names a DB handle plausibly hides behind. A call on any of these using a
+# name from FORBIDDEN_WRITE_CALLS is a write attempt.
+DB_RECEIVER_NAMES = frozenset(
+    {
+        "session",
+        "_session",
+        "db",
+        "_db",
+        "repository",
+        "_repository",
+        "repo",
+        "_repo",
+        "conn",
+        "connection",
+        "AsyncSessionLocal",
+    }
+)
+
 # The approval machinery's own switches. Naming any of them here -- even
 # to read one -- would mean this package participates in that decision.
 FORBIDDEN_SETTING_NAMES = (
@@ -53,10 +96,13 @@ def _trees() -> list[tuple[pathlib.Path, ast.Module]]:
 def test_package_files_are_present() -> None:
     assert {p.name for p in PACKAGE_FILES} == {
         "__init__.py",
+        "capability.py",
         "claims.py",
         "consumption.py",
+        "event_source.py",
         "gate.py",
         "orchestrator.py",
+        "poller.py",
         "selection.py",
         "spawn.py",
     }
@@ -73,8 +119,75 @@ def test_no_broker_order_or_approval_imports() -> None:
             else:
                 continue
             for name in names:
+                if name.startswith(REPOSITORY_IMPORT) and path.name == (
+                    REPOSITORY_READER
+                ):
+                    continue
                 if any(f in name for f in FORBIDDEN_IMPORT_FRAGMENTS):
                     offenders.append(f"{path.name}:{node.lineno} {name}")
+    assert offenders == []
+
+
+def test_only_the_read_seam_may_import_the_repository() -> None:
+    """The carve-out is one file wide, and it is asserted, not assumed."""
+    importers = [
+        path.name
+        for path, tree in _trees()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and (node.module or "").startswith(REPOSITORY_IMPORT)
+    ]
+    assert importers == [REPOSITORY_READER]
+
+
+def test_the_read_seam_calls_only_the_one_read_method() -> None:
+    """Importing the repository must not mean holding all of its writes."""
+    seam = PACKAGE / REPOSITORY_READER
+    tree = ast.parse(seam.read_text())
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    # Everything called on an object in this file, minus the session-factory
+    # protocol calls, must be the single allowed read.
+    repository_calls = called - {"__aenter__", "__aexit__", "_session_factory"}
+    assert repository_calls == set(REPOSITORY_ALLOWED_METHODS), sorted(repository_calls)
+
+
+def _receiver_name(node: ast.expr) -> str:
+    """Best-effort name of whatever a call is being made on."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Call):
+        return _receiver_name(node.func)
+    return ""
+
+
+def test_no_package_file_writes_through_a_session_or_repository() -> None:
+    """No add/commit/flush/delete/execute on a DB handle, anywhere.
+
+    Scoped to DB-ish receivers on purpose: ``set.add`` is not a write to
+    ``review.investment_watch_events``, and flagging it would make the
+    guard noise that gets disabled. Consumption is a claim, never a row
+    mutation -- that is the property this protects.
+    """
+    offenders: list[str] = []
+    for path, tree in _trees():
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in FORBIDDEN_WRITE_CALLS:
+                continue
+            receiver = _receiver_name(node.func.value)
+            if receiver in DB_RECEIVER_NAMES:
+                offenders.append(
+                    f"{path.name}:{node.lineno} {receiver}.{node.func.attr}()"
+                )
     assert offenders == []
 
 

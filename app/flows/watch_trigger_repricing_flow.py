@@ -2,10 +2,18 @@
 
 Importable only. **No deployment is registered and no schedule is created
 here** -- ROB-1286's recurrence is an operator step, and the issue's
-invariant is that this flow is the single new recurring job. Placing the
-flow in this repo (next to the existing ``app/flows/*_flow.py`` wrappers,
-which follow the same importable-only convention) keeps ROB-1286 to one
-repository; ``robin-prefect-automations`` is untouched by this change.
+invariant is that this flow is the single new recurring job.
+
+🔴 **Owning repository is an open operator decision (r2 / SHOULD-3).** The
+Linear design names ``robin-prefect-automations`` as the flow's home; this
+file sits in auto_trader instead, next to the existing
+``app/flows/*_flow.py`` wrappers that follow the same importable-only
+convention. Note that ``prefect`` is not a project dependency, so this
+module does **not** import in the auto_trader venv -- it is a scaffold
+either way. The decision was deliberately not made here and no other
+repository was touched; see the runbook §5 item 5 for both options. If the
+call goes to ``robin-prefect-automations`` this is a single file move,
+because all behaviour lives in ``run_gated_tick``.
 
 This file is a shell on purpose. ``prefect`` is not a project dependency,
 so all behaviour lives in
@@ -19,10 +27,13 @@ Three gates stand between an import and a spawned session:
 * the spawner argument -- the default is
   :class:`~app.services.watch_trigger_repricing.spawn.DrySessionSpawner`,
   which starts nothing. This PR ships no live spawner.
-* the claim store must be durable across flow runs for dedup to hold
-  between ticks. The only store in the repo today is process-local (see
-  :mod:`app.services.watch_trigger_repricing.claims`), so arming this in
-  production is blocked on the durable store landing.
+* the claim store must be durable across *processes* for dedup to hold
+  between Prefect flow runs. The only store in the repo today is
+  process-local (see :mod:`app.services.watch_trigger_repricing.claims`),
+  and ``run_gated_tick`` now **refuses** to run a non-dry spawner against
+  it -- returning ``status="blocked"`` rather than trusting a comment. So
+  arming this in production is blocked in code on the durable store
+  (a migration) landing.
 """
 
 from __future__ import annotations

@@ -28,13 +28,40 @@ claim into a verdict. Both consumers are defined against it:
     ``investment_watch_events_list_recent``, so the same verdict reaches it
     via :func:`project_claim_state` once that read surface is wired.
 
-Three-valued on purpose
------------------------
-``UNKNOWN`` is not ``UNCLAIMED``. If the claim store cannot answer, we do
-not know whether another consumer is already working the event, and
-guessing "unclaimed" is how one fire becomes two sell proposals. Callers
-fail closed via :func:`may_consume`; the fire is not lost, because B안
-still re-checks it at session end.
+Five-valued on purpose (r2)
+---------------------------
+r1 had three states and that was the root of BLOCKER-1. With only
+``CLAIMED``/``UNCLAIMED``, "a session ran and finished" and "a tick died
+holding the lease" are the *same* state, so the lease expiry that rescues
+the second necessarily resurrects the first: 30 minutes after a successful
+spawn the event read as ``UNCLAIMED`` again and was re-spawned. Success and
+failure must be different states before an expiry rule can tell them apart.
+
+``UNCLAIMED``
+    Nobody owns it. The only state a consumer may take.
+``CLAIMED``
+    An in-progress lease. Expires, because the holder may have crashed --
+    that expiry is what stops a dead tick from burying the fire.
+``CONSUMED``
+    Terminal. A session was *proven* started for this event. Never expires,
+    never reclaimable: the work happened, and repeating it would put a
+    second sell proposal on one fire.
+``QUARANTINED``
+    Terminal, and a fault. The spawn result was ambiguous and could not be
+    reconciled, so we do not know whether a session started. Blocks
+    re-spawn (guessing "it didn't" is how one fire becomes two proposals)
+    and is reported for operator reconciliation rather than left silent --
+    see :mod:`.orchestrator` for the cost this trade accepts.
+``UNKNOWN``
+    The store could not answer. Not the same as ``UNCLAIMED``: an
+    unreachable store cannot prove absence, and guessing is how one fire
+    becomes two sell proposals. Callers fail closed via :func:`may_consume`;
+    the fire is not lost, because B안 still re-checks it at session end.
+
+Note that event-level consumption and per-symbol concurrency are different
+clocks and must stay that way. ``CONSUMED`` is permanent (this *event* is
+done forever) while the symbol it touched is only busy for the lease (a
+*later* fire on the same symbol must not be blocked for all day).
 """
 
 from __future__ import annotations
@@ -43,6 +70,7 @@ from enum import StrEnum
 
 __all__ = [
     "CONSUMABLE_OUTCOMES",
+    "TERMINAL_STATES",
     "ConsumptionState",
     "is_consumable_outcome",
     "may_consume",
@@ -60,7 +88,14 @@ class ConsumptionState(StrEnum):
 
     UNCLAIMED = "unclaimed"
     CLAIMED = "claimed"
+    CONSUMED = "consumed"
+    QUARANTINED = "quarantined"
     UNKNOWN = "unknown"
+
+
+# States a lease expiry must never walk back. Both mean a session may be
+# running or may have run; re-spawning either duplicates a fire.
+TERMINAL_STATES = frozenset({ConsumptionState.CONSUMED, ConsumptionState.QUARANTINED})
 
 
 def is_consumable_outcome(outcome: str | None) -> bool:
@@ -72,15 +107,27 @@ def project_claim_state(
     *,
     claim_found: bool,
     store_available: bool,
+    terminal_state: ConsumptionState | None = None,
 ) -> ConsumptionState:
     """Map raw claim-store output onto the canonical verdict.
 
-    This is the single conversion both consumers share. ``store_available``
-    is checked first: an unreachable store cannot prove absence, and
-    "lookup returned nothing" must never be read as "nobody owns it".
+    This is the single conversion both consumers share.
+
+    ``store_available`` is checked first: an unreachable store cannot prove
+    absence, and "lookup returned nothing" must never be read as "nobody
+    owns it".
+
+    ``terminal_state`` is checked *before* ``claim_found``, because
+    ``claim_found`` carries the lease clock and a terminal record outlives
+    its lease by design. Reading a terminal record through the lease would
+    reintroduce BLOCKER-1 exactly.
     """
     if not store_available:
         return ConsumptionState.UNKNOWN
+    if terminal_state is not None:
+        if terminal_state not in TERMINAL_STATES:
+            raise ValueError(f"not a terminal state: {terminal_state!r}")
+        return terminal_state
     return ConsumptionState.CLAIMED if claim_found else ConsumptionState.UNCLAIMED
 
 

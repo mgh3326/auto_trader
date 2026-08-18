@@ -28,7 +28,10 @@ import datetime as dt
 import pytest
 
 from app.services.watch_trigger_repricing.claims import InMemoryClaimStore
-from app.services.watch_trigger_repricing.consumption import ConsumptionState
+from app.services.watch_trigger_repricing.consumption import (
+    ConsumptionState,
+    may_consume,
+)
 from app.services.watch_trigger_repricing.orchestrator import (
     run_gated_tick,
     run_repricing_tick,
@@ -36,6 +39,7 @@ from app.services.watch_trigger_repricing.orchestrator import (
 from app.services.watch_trigger_repricing.spawn import (
     EXECUTION_BOUNDARY,
     DrySessionSpawner,
+    session_label,
 )
 
 from .conftest import INCIDENT_FIRE, INCIDENT_TICK, make_event
@@ -120,13 +124,16 @@ def test_the_race_that_caused_the_incident_does_not_recur() -> None:
     assert result.spawned == ()
     assert [s.reason for s in result.skipped] == ["already_consumed"]
 
-    # And the reverse ordering: A안 first, B안 sees the claim.
+    # And the reverse ordering: A안 first, B안 sees it is taken. r2: the
+    # tick finalises its own spawn, so what B안 sees is the terminal
+    # CONSUMED rather than a lease that would lapse in 30 minutes.
     fresh = InMemoryClaimStore()
     run_repricing_tick([RUNG_1], store=fresh, now=INCIDENT_TICK)
     assert (
         fresh.state_for(RUNG_1.event_uuid, now=INCIDENT_TICK)
-        is ConsumptionState.CLAIMED
+        is ConsumptionState.CONSUMED
     )
+    assert may_consume(fresh.state_for(RUNG_1.event_uuid, now=INCIDENT_TICK)) is False
 
 
 def test_no_consumer_means_the_fire_is_still_there() -> None:
@@ -169,3 +176,51 @@ def test_flow_entrypoint_reports_the_full_tick_when_enabled() -> None:
         s["eventUuid"] for s in out["skipped"] + out["overflow"]
     }
     assert reported == {RUNG_1.event_uuid, RUNG_2.event_uuid}
+
+
+# ---------------------------------------------------------------------------
+# r2 / SHOULD-1 — the label is KST, whatever zone the tick's clock carries
+# ---------------------------------------------------------------------------
+def test_label_is_kst_even_when_now_is_utc() -> None:
+    """The flow entrypoint defaults to a UTC clock.
+
+    r1 formatted ``now`` in whatever zone it arrived in, so the 09:06 KST
+    fire above would have been labelled ``opa-watch-005930-0006`` in a real
+    run -- the tests only passed because they handed it a KST datetime.
+    """
+    utc_equivalent = INCIDENT_TICK.astimezone(dt.UTC)
+
+    assert utc_equivalent.strftime("%H%M") == "0006"  # the r1 bug, in one line
+    assert session_label("005930", now=utc_equivalent) == "opa-watch-005930-0906"
+
+
+def test_label_is_identical_across_equivalent_clocks() -> None:
+    """Same instant, three zones, one label."""
+    instants = [
+        INCIDENT_TICK,
+        INCIDENT_TICK.astimezone(dt.UTC),
+        INCIDENT_TICK.astimezone(dt.timezone(dt.timedelta(hours=-5))),
+    ]
+
+    labels = {session_label("005930", now=instant) for instant in instants}
+    assert labels == {"opa-watch-005930-0906"}
+
+
+def test_label_refuses_a_naive_clock() -> None:
+    """A naive datetime can only be converted by guessing, and guessing is
+    what produced the bug."""
+    with pytest.raises(ValueError, match="timezone-aware"):
+        session_label("005930", now=dt.datetime(2026, 8, 18, 9, 6))
+
+
+def test_the_tick_report_label_is_kst_from_a_utc_clock() -> None:
+    """End to end: a UTC-clocked tick still emits a KST label."""
+    spawner = DrySessionSpawner()
+    run_repricing_tick(
+        [RUNG_1],
+        store=InMemoryClaimStore(),
+        now=INCIDENT_TICK.astimezone(dt.UTC),
+        spawner=spawner,
+    )
+
+    assert spawner.requests[0].label == "opa-watch-005930-0906"

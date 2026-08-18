@@ -52,6 +52,22 @@ __all__ = [
 # ROB-1286 설계 3항 ("예: 회차당 3종목").
 DEFAULT_ROUND_CAP = 3
 
+# Why an in-flight lease and a terminal consumption share one skip reason:
+# from the *caller's* side both answer the same question -- "somebody else
+# has this fire" -- and the operator-facing distinction is carried in the
+# log line and in ``store.state_for``, which is the surface B안 reads. The
+# two are kept separate in :class:`ConsumptionState`, not here.
+_SKIP_REASONS: dict[ConsumptionState, str] = {
+    ConsumptionState.CLAIMED: "already_consumed",
+    ConsumptionState.CONSUMED: "already_consumed",
+    ConsumptionState.QUARANTINED: "awaiting_spawn_reconcile",
+    ConsumptionState.UNKNOWN: "consumption_state_unknown",
+}
+
+
+def _skip_reason(state: ConsumptionState) -> str:
+    return _SKIP_REASONS.get(state, "consumption_state_unknown")
+
 
 @dataclass(frozen=True)
 class CandidateEvent:
@@ -141,13 +157,7 @@ def select_candidates(
         state = store.state_for(event.event_uuid, now=now)
         if not may_consume(state):
             skipped.append(
-                SkippedEvent(
-                    event.event_uuid,
-                    event.symbol,
-                    "already_consumed"
-                    if state is ConsumptionState.CLAIMED
-                    else "consumption_state_unknown",
-                )
+                SkippedEvent(event.event_uuid, event.symbol, _skip_reason(state))
             )
             continue
 

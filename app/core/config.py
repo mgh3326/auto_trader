@@ -862,8 +862,10 @@ class Settings(BaseSettings):
     # Arming this makes a KR intraday job spawn re-judgement sessions that end
     # at order_proposal_create, so it raises how many proposals reach the
     # approval machinery (including the §40/51차 auto-approve lane). It also
-    # needs a claim store that is durable across flow runs; the repo ships only
-    # a process-local one, so this must stay false until that lands.
+    # needs a claim store that is durable across *processes* (Prefect flow runs
+    # are separate processes); the repo ships only a process-local one, so this
+    # must stay false until that lands. run_gated_tick enforces that in code --
+    # a non-dry spawner against a volatile store returns status="blocked".
     WATCH_TRIGGER_REPRICING_ENABLED: bool = False
     # ROB-816 PR 2 — Telegram approval flow (default off)
     ORDER_PROPOSALS_TELEGRAM_ENABLED: bool = False
