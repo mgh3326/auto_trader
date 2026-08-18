@@ -27,7 +27,10 @@ from app.models.order_proposals import (
 )
 from app.services.order_proposals.defensive_ttl import DEFENSIVE_EXIT_INTENTS
 from app.services.order_proposals.dispatch_contract import ApprovalDispatchState
-from app.services.order_proposals.state_machine import PROPOSAL_TERMINAL_STATES
+from app.services.order_proposals.state_machine import (
+    EVIDENCE_ACCEPTING_RUNG_STATES,
+    PROPOSAL_TERMINAL_STATES,
+)
 
 
 class OrderProposalRepository:
@@ -398,6 +401,29 @@ class OrderProposalRepository:
                 OrderProposalRung.state == "pending_approval",
                 OrderProposalRung.broker_order_id.is_(None),
             )
+            .order_by(OrderProposalRung.id)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return [(row[0], row[1]) for row in rows]
+
+    # ROB-1284: rung-driven, deliberately UNBOUNDED. Every other path that can
+    # surface these rungs pages by proposal recency and therefore undercounts
+    # them (order_proposal_list clamps to 200 proposals; the reconcile candidate
+    # scans clamp to 100 ledger rows). The phantom-resting population is defined
+    # by rung state, not by recency, so neither a limit nor a time window may be
+    # applied here -- a truncated answer to "what is still broker-live?" is the
+    # bug, not a performance tuning knob. Bounded in practice by the index on
+    # order_proposal_rungs.state.
+    async def list_evidence_accepting_rungs(
+        self,
+    ) -> list[tuple[OrderProposal, OrderProposalRung]]:
+        stmt = (
+            select(OrderProposal, OrderProposalRung)
+            .join(
+                OrderProposalRung,
+                OrderProposalRung.proposal_pk == OrderProposal.id,
+            )
+            .where(OrderProposalRung.state.in_(EVIDENCE_ACCEPTING_RUNG_STATES))
             .order_by(OrderProposalRung.id)
         )
         rows = (await self._session.execute(stmt)).all()

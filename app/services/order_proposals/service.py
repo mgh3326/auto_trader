@@ -348,13 +348,9 @@ _UNVERIFIED_VOID_SETTLEMENT_GRACE = timedelta(minutes=5)
 _VOIDABLE_RUNG_STATES = frozenset(
     {"draft", "pending_approval", "revalidating", "needs_reconfirm", "approved"}
 )
-# Rung states that can legally absorb broker fill/cancel evidence. Every state
-# here has ``filled``/``partially_filled``/``cancelled`` reachable in the
-# transition graph (see state_machine._ALLOWED); terminal states are excluded so
-# re-delivered evidence short-circuits instead of raising.
-_EVIDENCE_ACCEPTING_RUNG_STATES = frozenset(
-    {"acked", "resting", "partially_filled", "unverified"}
-)
+# Canonical set now lives in state_machine (ROB-1284: the repository's
+# rung-driven candidate scan needs it too). Aliased here to keep call sites.
+_EVIDENCE_ACCEPTING_RUNG_STATES = sm.EVIDENCE_ACCEPTING_RUNG_STATES
 _LOSS_CUT_CONFIRMATION_KEY = "loss_cut_confirmation"
 _LOSS_CUT_CONFIRMABLE_RUNG_STATES = frozenset({"pending_approval", "needs_reconfirm"})
 _SUPERSEDE_INVALIDATABLE_RUNG_STATES = frozenset(
@@ -1024,6 +1020,17 @@ class OrderProposalsService:
             limit=limit, symbol=symbol, lifecycle_state=lifecycle_state
         )
         return [(g, await self._repo.list_rungs(g.id)) for g in groups]
+
+    async def list_evidence_accepting_rungs(
+        self,
+    ) -> list[tuple[OrderProposal, OrderProposalRung]]:
+        """Every rung still believed to be live at a broker (ROB-1284).
+
+        Read-only and deliberately unbounded -- see the repository method for
+        why a limit or window here would reintroduce the undercount this exists
+        to remove.
+        """
+        return await self._repo.list_evidence_accepting_rungs()
 
     async def transition_rung(
         self,

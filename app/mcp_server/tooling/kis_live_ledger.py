@@ -13,7 +13,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from typing import cast as typing_cast
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -25,6 +25,11 @@ from app.mcp_server.tooling.order_journal import (
     _create_trade_journal_for_buy,
     _link_journal_to_fill,
     _save_order_fill,
+)
+from app.mcp_server.tooling.proposal_rung_convergence import (
+    candidate_scan_coverage,
+    run_resting_rung_sweep,
+    scanned_row_bounds,
 )
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
@@ -620,6 +625,21 @@ async def _list_open_ledger_rows(
         return rows
 
 
+async def _count_open_ledger_rows(*, symbol: str | None, order_no: str | None) -> int:
+    """Total open rows, ignoring the scan limit (ROB-1284 AC3 truncation proof)."""
+    async with _order_session_factory()() as db:
+        stmt = (
+            select(func.count())
+            .select_from(KISLiveOrderLedger)
+            .where(KISLiveOrderLedger.status.in_(("accepted", "pending", "partial")))
+        )
+        if symbol:
+            stmt = stmt.where(KISLiveOrderLedger.symbol == symbol)
+        if order_no:
+            stmt = stmt.where(KISLiveOrderLedger.order_no == order_no)
+        return int((await db.execute(stmt)).scalar_one())
+
+
 async def _converge_kis_proposal_rung(
     row: KISLiveOrderLedger,
     *,
@@ -902,10 +922,16 @@ async def kis_live_reconcile_orders_impl(
         projection_repair = await _repair_terminal_kis_proposal_projections(
             symbol=symbol, order_id=order_id, limit=limit
         )
+    # ROB-1284: the ledger-driven repair above can only reach rungs whose ledger
+    # row is a listed projection candidate. This rung-driven sweep closes the
+    # remainder — untruncated, evidence-first, no broker call.
+    rung_sweep = await run_resting_rung_sweep(dry_run=dry_run)
     try:
+        open_total = await _count_open_ledger_rows(symbol=symbol, order_no=order_id)
         rows = await _list_open_ledger_rows(
             symbol=symbol, order_no=order_id, limit=limit
         )
+        _scanned_oldest, _scanned_newest = scanned_row_bounds(rows)
     except Exception as exc:
         logger.exception("Failed to list open kis_live ledger rows: %s", exc)
         return {
@@ -948,6 +974,15 @@ async def kis_live_reconcile_orders_impl(
         "counts": counts,
         "reconciled": reconciled,
         "proposal_projection_repair": projection_repair,
+        "proposal_rung_sweep": rung_sweep,
+        "candidate_scan": candidate_scan_coverage(
+            scanned=len(rows),
+            open_total=open_total,
+            limit=limit,
+            oldest_scanned_at=_scanned_oldest,
+            newest_scanned_at=_scanned_newest,
+            now=datetime.datetime.now(datetime.UTC),
+        ),
         "message": message,
     }
 
