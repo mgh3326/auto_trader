@@ -256,3 +256,82 @@ def test_evidence_from_a_different_rung_must_not_transition_this_one():
     d = classify_rung(_candidate(), (), observed_at=NOW)
     assert d.verdict is RungVerdict.NO_EVIDENCE
     assert d.reason_code == "no_ledger_row"
+
+
+# ----------------------------------------- ownership conflict is never dropped
+
+
+def test_ownership_conflict_downgrades_an_otherwise_clean_transition():
+    """Partially-attributable evidence is contradictory evidence.
+
+    Terminal evidence that would transition on its own must not transition when
+    the caller also reports that some matched row was refused attribution to
+    this rung. "Most of the rows point one way" is not the standard here.
+    """
+    d = classify_rung(
+        _candidate(),
+        (_evidence("expired"),),
+        observed_at=NOW,
+        ownership_conflict="proposal_evidence_conflict",
+    )
+    assert d.verdict is RungVerdict.CONFLICT
+    assert d.reason_code == "ownership_conflict_with_partial_evidence"
+    assert d.target_state is None
+    assert d.ownership_conflict == "proposal_evidence_conflict"
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected_reason"),
+    [
+        ((), "no_ledger_row"),
+        ((_evidence("accepted"),), "ledger_still_open"),
+    ],
+)
+def test_ownership_conflict_rides_along_on_non_transition_verdicts(
+    evidence, expected_reason
+):
+    """The refusal stays visible even when the verdict was never a write.
+
+    The non-transition reason is the more informative one, so it is kept — but
+    the conflict travels with the row instead of vanishing from the report.
+    """
+    d = classify_rung(
+        _candidate(),
+        evidence,
+        observed_at=NOW,
+        ownership_conflict="evidence_owned_by_other_rung",
+    )
+    assert d.verdict is RungVerdict.NO_EVIDENCE
+    assert d.reason_code == expected_reason
+    assert d.ownership_conflict == "evidence_owned_by_other_rung"
+    assert d.as_row()["ownership_conflict"] == "evidence_owned_by_other_rung"
+
+
+def test_summary_counts_ownership_conflicts_at_the_top_level():
+    """A per-reason breakdown alone would hide conflicts under their verdict."""
+    decisions = [
+        classify_rung(_candidate(), (_evidence("expired"),), observed_at=NOW),
+        classify_rung(
+            _candidate(),
+            (_evidence("expired"),),
+            observed_at=NOW,
+            ownership_conflict="proposal_evidence_conflict",
+        ),
+        classify_rung(
+            _candidate(),
+            (_evidence("accepted"),),
+            observed_at=NOW,
+            ownership_conflict="evidence_owned_by_other_rung",
+        ),
+    ]
+    s = summarize(decisions)
+    assert s["ownership_conflicts"] == 2
+    assert s["by_verdict"]["TRANSITION"] == 1
+
+
+def test_no_ownership_conflict_leaves_the_verdict_untouched():
+    """Default path is unchanged: absence of a conflict must not invent one."""
+    d = classify_rung(_candidate(), (_evidence("expired"),), observed_at=NOW)
+    assert d.verdict is RungVerdict.TRANSITION
+    assert d.ownership_conflict is None
+    assert d.as_row()["ownership_conflict"] is None

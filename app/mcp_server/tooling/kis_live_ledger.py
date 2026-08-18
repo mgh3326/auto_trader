@@ -29,6 +29,7 @@ from app.mcp_server.tooling.order_journal import (
 from app.mcp_server.tooling.proposal_rung_convergence import (
     candidate_scan_coverage,
     run_resting_rung_sweep,
+    scanned_row_bounds,
 )
 from app.mcp_server.tooling.shared import logger
 from app.mcp_server.tooling.shared import to_float as _to_float
@@ -930,6 +931,7 @@ async def kis_live_reconcile_orders_impl(
         rows = await _list_open_ledger_rows(
             symbol=symbol, order_no=order_id, limit=limit
         )
+        _scanned_oldest, _scanned_newest = scanned_row_bounds(rows)
     except Exception as exc:
         logger.exception("Failed to list open kis_live ledger rows: %s", exc)
         return {
@@ -974,7 +976,12 @@ async def kis_live_reconcile_orders_impl(
         "proposal_projection_repair": projection_repair,
         "proposal_rung_sweep": rung_sweep,
         "candidate_scan": candidate_scan_coverage(
-            scanned=len(rows), open_total=open_total, limit=limit
+            scanned=len(rows),
+            open_total=open_total,
+            limit=limit,
+            oldest_scanned_at=_scanned_oldest,
+            newest_scanned_at=_scanned_newest,
+            now=datetime.datetime.now(datetime.UTC),
         ),
         "message": message,
     }

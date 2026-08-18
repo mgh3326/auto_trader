@@ -175,6 +175,10 @@ class RestingRungSweepService:
         resolving key set to intersect on a single rung. Anything it refuses to
         resolve, or resolves to a different rung, is dropped from the evidence
         set and reported as a conflict. It is never treated as evidence here.
+
+        The returned conflict is not advisory: ``plan`` forwards it into the
+        decision, where it blocks a transition and stays in the reported row.
+        A row dropped here must not become a row nobody hears about.
         """
         from app.services.order_proposals.errors import OrderProposalError
         from app.services.order_proposals.service import OrderProposalsService
@@ -241,10 +245,21 @@ class RestingRungSweepService:
                         verdict=RungVerdict.CONFLICT,
                         reason_code=conflict,
                         observed_at=now,
+                        ownership_conflict=conflict,
                     )
                 )
                 continue
-            decisions.append(classify_rung(candidate, evidence, observed_at=now))
+            # `conflict` is forwarded, never dropped: when ownership refused some
+            # rows but not all, the surviving subset must not silently classify
+            # as if the refusal never happened.
+            decisions.append(
+                classify_rung(
+                    candidate,
+                    evidence,
+                    observed_at=now,
+                    ownership_conflict=conflict,
+                )
+            )
         return decisions
 
     async def report(self, *, now: datetime.datetime) -> dict[str, Any]:

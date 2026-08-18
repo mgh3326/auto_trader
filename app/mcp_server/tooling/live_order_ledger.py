@@ -26,6 +26,7 @@ from app.mcp_server.tooling.order_journal import (
 from app.mcp_server.tooling.proposal_rung_convergence import (
     candidate_scan_coverage,
     run_resting_rung_sweep,
+    scanned_row_bounds,
 )
 from app.models.review import LiveOrderLedger
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
@@ -566,6 +567,7 @@ async def live_reconcile_orders_impl(
         rows = await _list_open_live_ledger_rows(
             market=market, broker=broker, symbol=symbol, order_no=order_id, limit=limit
         )
+        scanned_oldest, scanned_newest = scanned_row_bounds(rows)
     except Exception as exc:
         logger.exception("Failed to list open live ledger rows: %s", exc)
         return {"success": False, "error": str(exc) or exc.__class__.__name__}
@@ -594,7 +596,12 @@ async def live_reconcile_orders_impl(
         "reconciled": reconciled,
         "proposal_rung_sweep": rung_sweep,
         "candidate_scan": candidate_scan_coverage(
-            scanned=len(rows), open_total=open_total, limit=limit
+            scanned=len(rows),
+            open_total=open_total,
+            limit=limit,
+            oldest_scanned_at=scanned_oldest,
+            newest_scanned_at=scanned_newest,
+            now=datetime.now(UTC),
         ),
         "message": f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}",
     }

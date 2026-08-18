@@ -141,6 +141,12 @@ class SweepDecision:
     Every field a reviewer needs to audit one row without re-querying:
     broker order id, broker/ledger status, remaining (unfilled) quantity, the
     observation time, and the classification itself.
+
+    ``ownership_conflict`` records that at least one *matched* ledger row was
+    refused attribution to this rung and dropped from ``evidence``.  It is kept
+    on the decision even when the surviving evidence would classify cleanly: a
+    conflict that was observed and then dropped from the response is a conflict
+    the operator never gets to see.
     """
 
     candidate: RungCandidate
@@ -149,6 +155,7 @@ class SweepDecision:
     observed_at: datetime.datetime
     target_state: str | None = None
     evidence: tuple[LedgerEvidence, ...] = ()
+    ownership_conflict: str | None = None
 
     @property
     def remaining_qty(self) -> Decimal | None:
@@ -189,6 +196,7 @@ class SweepDecision:
                 for e in self.evidence
             ],
             "remaining_qty": str(remaining) if remaining is not None else None,
+            "ownership_conflict": self.ownership_conflict,
             "observed_at": self.observed_at.isoformat(),
         }
 
@@ -202,17 +210,37 @@ def classify_rung(
     evidence: tuple[LedgerEvidence, ...],
     *,
     observed_at: datetime.datetime,
+    ownership_conflict: str | None = None,
 ) -> SweepDecision:
     """Decide one rung's fate from its ledger evidence. Pure — no I/O, no clock.
 
     Fail-closed at every branch: the ``TRANSITION`` verdict is returned only
     when exactly one terminal rung state is implied by the evidence *and* the
     state machine permits reaching it from the rung's current state.
+
+    ``ownership_conflict`` is the caller's report that some matched ledger row
+    was refused attribution to this rung and dropped before classification
+    (``RestingRungSweepService.verify_ownership``).  Two things follow, and both
+    matter:
+
+    * it is recorded on **every** verdict, so the fact that a conflict existed
+      never disappears just because the surviving subset classified cleanly;
+    * it **downgrades a would-be TRANSITION to CONFLICT**.  "Some of the rows
+      that matched this rung's keys could not be attributed to it" is
+      contradictory evidence, and this module's whole contract is that
+      contradictory evidence transitions nothing.
     """
 
     def decide(
         verdict: RungVerdict, reason: str, target: str | None = None
     ) -> SweepDecision:
+        if verdict is RungVerdict.TRANSITION and ownership_conflict is not None:
+            # Never write off a partially-attributable evidence set.
+            verdict, reason, target = (
+                RungVerdict.CONFLICT,
+                "ownership_conflict_with_partial_evidence",
+                None,
+            )
         return SweepDecision(
             candidate=candidate,
             verdict=verdict,
@@ -220,6 +248,7 @@ def classify_rung(
             observed_at=observed_at,
             target_state=target,
             evidence=evidence,
+            ownership_conflict=ownership_conflict,
         )
 
     if candidate.state not in sm.RUNG_STATES:
@@ -287,8 +316,11 @@ def summarize(decisions: list[SweepDecision]) -> dict[str, object]:
     by_reason: dict[str, int] = {}
     by_side: dict[str, dict[str, int]] = {}
     by_account: dict[str, dict[str, int]] = {}
+    ownership_conflicts = 0
     for d in decisions:
         by_verdict[str(d.verdict)] += 1
+        if d.ownership_conflict is not None:
+            ownership_conflicts += 1
         by_reason[d.reason_code] = by_reason.get(d.reason_code, 0) + 1
         side_bucket = by_side.setdefault(d.candidate.side, dict.fromkeys(by_verdict, 0))
         side_bucket[str(d.verdict)] += 1
@@ -302,4 +334,8 @@ def summarize(decisions: list[SweepDecision]) -> dict[str, object]:
         "by_reason_code": dict(sorted(by_reason.items())),
         "by_side": by_side,
         "by_account_mode": by_account,
+        # Rungs where at least one matched ledger row was refused attribution
+        # and dropped. Counted at the top level so it cannot be lost in the
+        # per-reason breakdown of whatever the surviving subset classified as.
+        "ownership_conflicts": ownership_conflicts,
     }
