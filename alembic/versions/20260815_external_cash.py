@@ -1,7 +1,7 @@
 """Add the append-only external-cash declaration ledger.
 
 Revision ID: 20260815_external_cash
-Revises: 20260805_toss_merge
+Revises: 20260814_lcapprove_b1
 Create Date: 2026-08-15
 
 This migration is additive DDL only.  In particular, it never inserts the

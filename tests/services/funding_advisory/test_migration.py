@@ -9,7 +9,7 @@ MIGRATION = ROOT / "alembic/versions/20260815_external_cash.py"
 def test_external_cash_migration_is_additive_ddl_without_business_seed() -> None:
     text = MIGRATION.read_text(encoding="utf-8")
     upgrade = text.split("def upgrade()", 1)[1].split("def downgrade()", 1)[0]
-    assert "20260805_toss_merge" in text
+    assert 'down_revision: str | Sequence[str] | None = "20260814_lcapprove_b1"' in text
     assert "external_cash_declarations" in upgrade
     assert "CREATE TRIGGER trg_external_cash_append_only" in upgrade
     assert "CREATE TRIGGER trg_external_cash_truncate_append_only" in upgrade
