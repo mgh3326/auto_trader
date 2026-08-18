@@ -218,8 +218,8 @@ def register_order_tools(mcp: FastMCP) -> None:
             "live send; required=mandatory for LIVE sends (mock/is_mock paths exempt)."
             ' ROB-864 exit_intent="loss_cut" is disabled on this direct tool. Use '
             "order_proposal_create; Telegram performs two-click confirmation with a "
-            "single-use nonce and second-click full revalidation. approval_issue_id "
-            "is only an optional audit note."
+            "single-use nonce and second-click full revalidation; that proposal "
+            "flow requires approval_issue_id."
         ),
     )
     async def place_order(

@@ -39,7 +39,8 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
   - `artifact`: analysis/stage artifact persistence
   - `proposal`: `order_proposal_create`
   - `fill`: reconcile/fill-evidence tools
-  - `retrospective`: `save_trade_retrospective`
+  - `retrospective`: `save_trade_retrospective`,
+    `save_position_intake_retrospective`
   - Other calls use `other`; join stages with caller/session/run/correlation and report/artifact/proposal identifiers rather than raw symbols.
 
 ## Tools
@@ -882,9 +883,9 @@ order mutation.
     best-effort to remove the old buttons. Submitted/resting/terminal rungs
     are left unchanged because broker cancellation/replacement owns them.
   - It accepts nullable `exit_intent`, `exit_reason`, `retrospective_id`, and
-    `approval_issue_id` fields. For `exit_intent="loss_cut"`, `exit_reason`
-    and `retrospective_id` are required. `approval_issue_id` is optional
-    free-text audit metadata.
+    `approval_issue_id` fields for ordinary proposals. For
+    `exit_intent="loss_cut"`, `exit_reason`, `retrospective_id`, and a
+    non-empty `approval_issue_id` are all required.
   - The referenced retrospective is checked at create time for existence,
     matching symbol, an eligible loss-cut trigger type (`stop_loss` or
     `thesis_change`), and freshness within 72 hours.
@@ -1143,6 +1144,24 @@ secrets into the live `.env.prod.native` file. When any of
 
 The error names variables only — never values.
 
+### Position-intake retrospective (ROB-1285)
+
+`save_position_intake_retrospective` is a DEFAULT-profile-only, narrowly scoped
+write surface for a KIS live KR holding acquired outside the execution ledger
+or before that ledger existed. It is hard-pinned to `kis_live/equity_kr` and writes only
+`review.trade_retrospectives` plus its existing action projection. Before the
+write it locks and scans all same-symbol rows in
+`review.kis_live_order_ledger`; any raw status in `filled`, `rejected`,
+`unknown`, `anomaly`, `cancelled`, or `expired` rejects the intake.
+
+The row stores `evidence_snapshot.retrospective_type="intake"`, the observed
+account/quantity/average/current-price snapshot, acquisition provenance, and
+the zero-match terminal-guard receipt. Ordinary `save_trade_retrospective`
+calls cannot supply that reserved type. Intake rows are excluded by the
+retrospective aggregate and setup-tag learning consumers; forecast Brier
+scoring reads the separate `trade_forecasts` ledger and has no intake write or
+resolution path. This tool never creates a proposal or calls a broker.
+
 ### Toss Live Order MCP Tools
 
 The `default` profile registers eight typed `toss_live` MCP tools:
@@ -1164,7 +1183,7 @@ Operator activation and the one-share live smoke are documented in
 - **Account Mode Routing**: All Toss tools require `account_mode="toss_live"` (or `account_type="toss_live"`) and reject any mismatched account parameters.
 - **Mutation Safety (Dry-Run, Confirm, and Activation Gate)**: All mutation tools (`toss_place_order`, `toss_modify_order`, `toss_cancel_order`) default to `dry_run=True`. They perform actual HTTP requests (POSTs) to Toss Securities only when `dry_run=False`, `confirm=True`, and `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true` are explicitly set. Keep `TOSS_LIVE_ORDER_MUTATIONS_ENABLED=false` until the accepted-order ledger and operator live-smoke hold are cleared.
 - **Accepted-only ledger and reconcile**: Real `toss_place_order` writes only an accepted/rejected row to `review.toss_live_order_ledger`. It does not create fills, journals, or realized PnL at send time. `toss_reconcile_orders(dry_run=True)` previews broker evidence from `GET /orders/{orderId}`; `dry_run=False` books only confirmed execution deltas. GET order-detail `403 non-json-response` failures are retried once after token reissue; unresolved failures are persisted as `requires_manual_review=true`. Mutation POSTs are not implicitly retried on that error.
-- **Loss-cut authorization**: Direct `toss_preview_order`/`toss_place_order` loss-cut calls fail closed and point callers to `order_proposal_create`. A loss-cut proposal requires a live limit sell, eligible `exit_reason`, matching <=72h retrospective, allowed submit identity, slip-band compliance, and a valid approval hash. Telegram's first approval click only renders evidence and issues a proposal/rung/revision-bound 90-second `⚠️ 손절 확인` nonce; the second click reruns every guard and may submit. `approval_issue_id` is optional audit text and is never externally queried. Toss ledger rows retain `exit_intent`, `retrospective_id`, and `approval_issue_id` for audit.
+- **Loss-cut authorization**: Direct `toss_preview_order`/`toss_place_order` loss-cut calls fail closed and point callers to `order_proposal_create`. A loss-cut proposal requires a live limit sell, eligible `exit_reason`, matching <=72h retrospective, non-empty `approval_issue_id`, allowed submit identity, slip-band compliance, and a valid approval hash. Telegram's first approval click only renders evidence and issues a proposal/rung/revision-bound 90-second `⚠️ 손절 확인` nonce; the second click reruns every guard and may submit. The issue ID is retained for audit and never externally queried. Toss ledger rows retain `exit_intent`, `retrospective_id`, and `approval_issue_id` for audit.
 - **Loss-cut polling SLA**: Toss has no fill push in this path and both automatic polling paths are default-off. Before enabling Toss loss-cut, either enable and operationally verify `TOSS_FILL_POLL_ENABLED` with an approved `TOSS_FILL_POLL_CRON`, or require a targeted `toss_reconcile_orders(order_id=<broker-order-id>, dry_run=False)` immediately after execution. Non-dry reconcile projects broker evidence to proposal rungs and idempotently repairs terminal-ledger projection misses.
 - **Proposal identity handoff**: Order-proposal flows privately bind a stable client ID derived from `proposal_id + rung` around both `toss_preview_order` and `toss_place_order`, then require preview to return that exact ID. The proposal correlation and rung are carried through the same internal binding into the Toss ledger. These values are not exposed as operator-controlled MCP parameters. Accepted responses expose `approval_hash_digest`, the canonical ledger digest; the raw approval token is used only as the `approval_hash` submit input.
 - **US FX PnL split**: Toss order detail does not provide fill-time FX. For US rows only, `toss_reconcile_orders(dry_run=False)` captures USD/KRW through `exchange_rate_service` at reconcile time. Buy rows persist `buy_fx_rate`; sell rows persist `sell_fx_rate`, FIFO-attributed `fx_pnl_krw`, `security_pnl_usd`, `security_pnl_krw`, and `total_pnl_krw`. Automatic values are labelled `fx_rate_source="reconcile_spot"` and `fx_pnl_accuracy="approximate"`. Legacy lots with no buy FX keep FX PnL fields null until an operator backfills exact values through `modify_journal_entry`.

@@ -467,7 +467,7 @@ def _loss_cut_create_kwargs(*, now: datetime):
         "exit_intent": "loss_cut",
         "exit_reason": "stop_loss",
         "retrospective_id": 42,
-        "approval_issue_id": None,
+        "approval_issue_id": "ROB-1285",
         "now": now,
     }
 
@@ -515,6 +515,7 @@ async def test_loss_cut_requires_all_group_fields_without_paperclip_lookup(
     ("overrides", "message"),
     [
         ({"retrospective_id": None}, "retrospective_id"),
+        ({"approval_issue_id": None}, "approval_issue_id"),
         ({"exit_reason": None}, "exit_reason"),
         ({"exit_intent": "emergency"}, "unknown exit_intent"),
         # ROB-929 code review: every submit path still only recognizes
@@ -574,11 +575,11 @@ async def test_valid_loss_cut_persists_exact_group_binding(db_session, monkeypat
         group.exit_reason,
         group.retrospective_id,
         group.approval_issue_id,
-    ) == ("loss_cut", "stop_loss", 42, None)
+    ) == ("loss_cut", "stop_loss", 42, "ROB-1285")
 
 
 @pytest.mark.asyncio
-async def test_loss_cut_preserves_optional_approval_issue_as_audit_note(
+async def test_loss_cut_preserves_required_approval_issue_as_audit_note(
     db_session, monkeypatch
 ):
     async def fake_lookup(session, retrospective_id):
@@ -3123,6 +3124,7 @@ async def _create_defensive_rung(
             exit_intent="loss_cut",
             exit_reason="stop_loss",
             retrospective_id=42,
+            approval_issue_id="ROB-1285",
             valid_until=datetime(2026, 7, 20, 0, 0, tzinfo=UTC),
             now=_HANDOFF_CREATED,
         )
@@ -3196,6 +3198,7 @@ async def test_expired_defensive_handoff_includes_voided_loss_cut(
         exit_intent="loss_cut",
         exit_reason="stop_loss",
         retrospective_id=42,
+        approval_issue_id="ROB-1285",
         now=_HANDOFF_RECENT,
         creator_agent_id=_TEST_OWNER_AGENT,
     )

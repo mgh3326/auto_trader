@@ -173,7 +173,7 @@ async def test_loss_cut_preconditions_pass_builds_context():
             exit_intent="loss_cut",
             retrospective_id=42,
             exit_reason="stop_loss",
-            approval_issue_id=None,
+            approval_issue_id="ROB-1285",
             side="sell",
             order_type="limit",
             is_mock=False,
@@ -182,7 +182,49 @@ async def test_loss_cut_preconditions_pass_builds_context():
         )
     assert errors == []
     assert ctx is not None and ctx.retrospective_id == 42 and ctx.max_slip > 0
-    assert ctx.approval_issue_id is None
+    assert ctx.approval_issue_id == "ROB-1285"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_loss_cut_preconditions_require_approval_issue():
+    fake_retro = type(
+        "R",
+        (),
+        {
+            "id": 42,
+            "symbol": "KRW-DOT",
+            "trigger_type": "stop_loss",
+            "created_at": __import__("datetime").datetime.now(
+                __import__("datetime").timezone.utc
+            ),
+        },
+    )()
+    with (
+        patch.object(
+            ov,
+            "get_caller_agent_id",
+            return_value="6b2192cc-14fa-4335-b572-2fe1e0cb54a7",
+        ),
+        patch.object(
+            ov,
+            "_get_retrospective_by_id_for_loss_cut",
+            new=AsyncMock(return_value=fake_retro),
+        ),
+    ):
+        ctx, errors = await ov._validate_loss_cut_preconditions(
+            exit_intent="loss_cut",
+            retrospective_id=42,
+            exit_reason="stop_loss",
+            approval_issue_id=None,
+            side="sell",
+            order_type="limit",
+            is_mock=False,
+            symbol="KRW-DOT",
+            proposal_flow=True,
+        )
+    assert ctx is None
+    assert errors == ["loss_cut requires approval_issue_id"]
 
 
 @pytest.mark.unit

@@ -566,6 +566,7 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         "research_session_get",
         "research_session_list_recent",
         "research_summary_get",
+        "save_position_intake_retrospective",
         "save_trade_journal",
         "save_trade_retrospective",
         "screen_stocks",

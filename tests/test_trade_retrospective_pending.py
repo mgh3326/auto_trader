@@ -404,11 +404,14 @@ async def test_kis_expired_restored_by_include_cancelled(db_session: AsyncSessio
 
 
 @pytest.mark.asyncio
-async def test_anomaly_and_rejected_kept_by_default(db_session: AsyncSession):
+async def test_anomaly_rejected_and_unknown_kept_by_default(
+    db_session: AsyncSession,
+):
     db_session.add_all(
         [
             _kis_row(order_no="K-ANOM", status="anomaly"),
             _kis_row(order_no="K-REJ", status="rejected"),
+            _kis_row(order_no="K-UNKNOWN", status="unknown"),
         ]
     )
     await db_session.commit()
@@ -417,7 +420,11 @@ async def test_anomaly_and_rejected_kept_by_default(db_session: AsyncSession):
         db_session, kst_date_from="2000-01-01", kst_date_to="2100-01-01"
     )
     refs = {p["suggested_correlation_id"] for p in result["pending"]}
-    assert refs == {"kis_live:K-ANOM", "kis_live:K-REJ"}
+    assert refs == {
+        "kis_live:K-ANOM",
+        "kis_live:K-REJ",
+        "kis_live:K-UNKNOWN",
+    }
     assert result["excluded_by_filter"] == {"cancelled": 0}
 
 

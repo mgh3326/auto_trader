@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -25,6 +25,9 @@ from app.services.trade_journal.trade_retrospective_service import (
     save_retrospective,
     serialize_retrospective,
 )
+from app.services.trade_journal.trade_retrospective_service import (
+    save_position_intake_retrospective as save_position_intake_retrospective_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,69 @@ def _mcp_argument_was_provided(name: str, value: Any) -> bool:
 
 def _session_factory() -> async_sessionmaker[AsyncSession]:
     return cast(async_sessionmaker[AsyncSession], cast(object, AsyncSessionLocal))
+
+
+async def save_position_intake_retrospective(
+    symbol: str,
+    account_ref: str,
+    quantity: float,
+    average_price: float,
+    current_price: float,
+    observed_at: str,
+    evidence_source: str,
+    acquisition_provenance: str,
+    acquisition_note: str,
+    correlation_id: str,
+    trigger_type: str,
+    next_actions: list,
+    created_by_profile: str,
+    policy_version: str | None = None,
+) -> dict[str, Any]:
+    """Create a guarded KIS-live-KR position-intake retrospective.
+
+    This is only for an externally acquired or pre-ledger position that has no
+    terminal KIS live order event. It writes retrospective evidence only; it
+    cannot create, cancel, modify, approve, or submit an order.
+    """
+    try:
+        observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        async with _session_factory()() as db:
+            action, row = await save_position_intake_retrospective_service(
+                db,
+                symbol=symbol,
+                account_ref=account_ref,
+                quantity=quantity,
+                average_price=average_price,
+                current_price=current_price,
+                observed_at=observed,
+                evidence_source=evidence_source,
+                acquisition_provenance=acquisition_provenance,
+                acquisition_note=acquisition_note,
+                correlation_id=correlation_id,
+                trigger_type=trigger_type,
+                next_actions=next_actions,
+                created_by_profile=created_by_profile,
+                policy_version=policy_version,
+                actor=f"mcp:{resolve_mcp_profile(_env('MCP_PROFILE')).value}",
+            )
+            await db.refresh(row)
+            next_actions_data = await RetrospectiveActionRepository(db).read_actions(
+                row.id
+            )
+            data = serialize_retrospective(
+                row,
+                next_actions_override=next_actions_data,
+            )
+            await db.commit()
+            return {"success": True, "action": action, "data": data}
+    except (RetrospectiveValidationError, ValueError) as exc:
+        return {"success": False, "error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("save_position_intake_retrospective failed")
+        return {
+            "success": False,
+            "error": f"save_position_intake_retrospective failed: {exc}",
+        }
 
 
 async def save_trade_retrospective(

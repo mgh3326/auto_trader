@@ -648,7 +648,9 @@ _FUNNEL_TOOL_STAGES: dict[str, frozenset[str]] = {
             "paper_execution_reconcile",
         }
     ),
-    "retrospective": frozenset({"save_trade_retrospective"}),
+    "retrospective": frozenset(
+        {"save_position_intake_retrospective", "save_trade_retrospective"}
+    ),
 }
 
 

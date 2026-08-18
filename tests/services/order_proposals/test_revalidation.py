@@ -501,6 +501,7 @@ async def test_loss_cut_confirmation_preview_is_read_only_and_builds_evidence(
         exit_intent="loss_cut",
         exit_reason="stop_loss",
         retrospective_id=42,
+        approval_issue_id="ROB-1285",
     )
     calls = []
 
@@ -594,6 +595,7 @@ async def test_loss_cut_confirmation_preview_rejects_quantity_above_sellable(
         exit_intent="loss_cut",
         exit_reason="stop_loss",
         retrospective_id=43,
+        approval_issue_id="ROB-1285",
     )
 
     async def fake_preview(**kwargs):
