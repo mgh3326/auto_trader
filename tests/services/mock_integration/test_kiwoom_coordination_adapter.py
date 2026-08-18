@@ -33,8 +33,10 @@ from app.services.mock_integration.lineage import MockLineageFactory
 from app.services.mock_lane_registry import (
     CANONICAL_LANE_REGISTRY,
     ActivationStatus,
+    LaneGuardError,
     LaneRegistryEntry,
     PolicyBinding,
+    assert_entry_execution_ready,
 )
 from scripts.b0x.kr.kiwoom_ordering import (
     ACCOUNT_SUMMARY_FINGERPRINT_IDENTITY_REJECTED,
@@ -1164,3 +1166,95 @@ def test_client_py_unchanged_in_this_job() -> None:
         ).read_bytes()
     ).hexdigest()
     assert digest == _KIWOOM_CLIENT_PY_SHA256
+
+
+# ---------------------------------------------------------------------------
+# §E-9 The signed lane, exactly as shipped
+#
+# Every other test in this module builds ``bound_kiwoom_entry()``, which
+# replaces twenty fields on the canonical row to make the lane execution
+# ready. That fixture answers "does the adapter behave once kr.kiwoom.mock is
+# activated". It cannot answer "is kr.kiwoom.mock activated", and the B-track
+# runner consumes the *signed* row, not the fixture. These tests pin the
+# signed row's real answer so a future reader does not mistake the fixture's
+# green for a grant the port would actually issue.
+# ---------------------------------------------------------------------------
+
+
+def canonical_kiwoom_entry() -> LaneRegistryEntry:
+    """The signed kr.kiwoom.mock row — no overrides, no replace()."""
+
+    return next(
+        entry
+        for entry in CANONICAL_LANE_REGISTRY
+        if entry.lane_id == KIWOOM_CANONICAL_LANE_ID
+    )
+
+
+def test_signed_kiwoom_lane_is_not_execution_ready() -> None:
+    """The port refuses the signed row, and names activation as the reason."""
+
+    entry = canonical_kiwoom_entry()
+    assert entry.activation_status is ActivationStatus.BLOCKED
+    assert entry.lane_status is LaneStatus.NOT_READY
+    assert entry.writer is False
+    assert entry.auto is False
+    assert entry.scheduler_owner is None
+    assert entry.physical_account_id is None
+    assert entry.identity_status == "UNKNOWN"
+    assert entry.missing_bindings
+
+    with pytest.raises(LaneGuardError) as refusal:
+        assert_entry_execution_ready(entry)
+    assert "lane_activation_not_enabled" in str(refusal.value)
+
+
+def test_signed_kiwoom_lane_fails_every_execution_ready_clause() -> None:
+    """Not one stale flag — four independent bindings are absent.
+
+    Recorded so nobody reads the single ``lane_activation_not_enabled`` string
+    above as "flip one boolean and the grant flows".
+    """
+
+    entry = canonical_kiwoom_entry()
+    assert entry.activation_status is not ActivationStatus.ENABLED
+    assert not (entry.writer and entry.auto)
+    assert entry.physical_account_id is None
+    assert entry.missing_bindings != ()
+
+
+def test_signed_kiwoom_lane_cannot_construct_the_coordination_adapter() -> None:
+    """Construction fails on J2A identity, before any port or socket exists."""
+
+    entry = canonical_kiwoom_entry()
+    account = FakeKiwoomAccount()
+    ports = KiwoomCoordinationPorts(
+        persistence=InMemoryLineagePersistence(),
+        dispatch_evidence=InMemoryDispatchEvidence(),
+        uncertainty_gate=InMemoryUncertaintyGate(),
+        claims=DurableSendClaimAdapter(InMemoryReservationPort()),
+        connection_factory=ConnectionFactory(FakeLockSpace(), pid=4242),
+        registry=CANONICAL_LANE_REGISTRY,
+        lineage_factory=MockLineageFactory(),
+        entry=entry,
+    )
+    with pytest.raises(LaneGuardError) as refusal:
+        KiwoomCoordinationAdapter(ports)
+    assert "physical_account_identity_unknown" in str(refusal.value)
+    assert account.buy_calls == []
+    assert account.sell_calls == []
+
+
+def test_signed_kiwoom_lane_transport_gate_refuses_even_claiming_a_grant() -> None:
+    """``grant_owned=True`` is not a grant. The signed row still fails closed."""
+
+    account = FakeKiwoomAccount()
+    with pytest.raises((KiwoomTransportGateRejected, LaneGuardError)):
+        assert_kiwoom_transport_ready(
+            account=account,
+            entry=canonical_kiwoom_entry(),
+            physical_account_id=RAW_PHYSICAL_ACCOUNT_ID,
+            grant_owned=True,
+        )
+    assert account.buy_calls == []
+    assert account.sell_calls == []
