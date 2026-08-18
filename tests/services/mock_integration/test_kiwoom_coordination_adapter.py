@@ -1202,6 +1202,7 @@ def test_signed_kiwoom_lane_is_not_execution_ready() -> None:
     assert entry.scheduler_owner is None
     assert entry.physical_account_id is None
     assert entry.identity_status == "UNKNOWN"
+    assert entry.fingerprint_evidence_ref is None
     assert entry.missing_bindings
 
     with pytest.raises(LaneGuardError) as refusal:
@@ -1220,6 +1221,7 @@ def test_signed_kiwoom_lane_fails_every_execution_ready_clause() -> None:
     assert entry.activation_status is not ActivationStatus.ENABLED
     assert not (entry.writer and entry.auto)
     assert entry.physical_account_id is None
+    assert entry.fingerprint_evidence_ref is None
     assert entry.missing_bindings != ()
 
 
@@ -1246,15 +1248,98 @@ def test_signed_kiwoom_lane_cannot_construct_the_coordination_adapter() -> None:
 
 
 def test_signed_kiwoom_lane_transport_gate_refuses_even_claiming_a_grant() -> None:
-    """``grant_owned=True`` is not a grant. The signed row still fails closed."""
+    """``grant_owned=True`` is not a grant. The signed row still fails closed.
+
+    The signed row raises ``KiwoomTransportGateRejected`` /
+    ``transport_gate_rejected`` (``physical_account_id is None`` ≠ the
+    caller id). ``LaneGuardError`` is not a path through
+    ``assert_kiwoom_transport_ready`` on this row; that type is raised by
+    ``require_j2a_physical_account_id`` during adapter construction and is
+    pinned by ``test_signed_kiwoom_lane_cannot_construct_the_coordination_adapter``.
+    """
 
     account = FakeKiwoomAccount()
-    with pytest.raises((KiwoomTransportGateRejected, LaneGuardError)):
+    with pytest.raises(KiwoomTransportGateRejected) as refusal:
         assert_kiwoom_transport_ready(
             account=account,
             entry=canonical_kiwoom_entry(),
             physical_account_id=RAW_PHYSICAL_ACCOUNT_ID,
             grant_owned=True,
         )
+    assert refusal.value.reason == "transport_gate_rejected"
     assert account.buy_calls == []
     assert account.sell_calls == []
+
+
+def test_execution_ready_writer_clause_fires_once_activation_passes() -> None:
+    """1182 is independent of 1180: activation ENABLED, writer/auto still off.
+
+    ``kr.kiwoom.mock`` is not on the signed-restriction lists, so 1178
+    stays quiet. Only ``activation_status`` is replaced — this is not
+    ``bound_kiwoom_entry()``.
+    """
+
+    entry = replace(
+        canonical_kiwoom_entry(),
+        activation_status=ActivationStatus.ENABLED,
+    )
+    assert entry.writer is False
+    assert entry.auto is False
+    with pytest.raises(LaneGuardError) as refusal:
+        assert_entry_execution_ready(entry)
+    assert refusal.value.code == "lane_writer_not_enabled"
+
+
+def test_execution_ready_identity_clause_fires_once_prior_clauses_pass() -> None:
+    """1184 is independent of 1180/1182: those two pass, identity stays unknown."""
+
+    entry = replace(
+        canonical_kiwoom_entry(),
+        activation_status=ActivationStatus.ENABLED,
+        writer=True,
+        auto_order_enabled=True,
+    )
+    assert entry.physical_account_id is None
+    assert entry.identity_status == "UNKNOWN"
+    assert entry.fingerprint_evidence_ref is None
+    with pytest.raises(LaneGuardError) as refusal:
+        assert_entry_execution_ready(entry)
+    assert refusal.value.code == "physical_account_identity_unknown"
+
+
+def test_execution_ready_missing_bindings_clause_fires_once_prior_clauses_pass() -> (
+    None
+):
+    """1197 is independent of 1180/1182/1184 *and* of the field-level check.
+
+    Filling policy/caps/canary makes ``required_bindings`` (:1198-1214)
+    pass, so deleting only 1197 cannot hide behind the same
+    ``lane_binding_incomplete`` code. ``missing_bindings`` stays the
+    signed 5-tuple. Still not ``bound_kiwoom_entry()``.
+    """
+
+    signed = canonical_kiwoom_entry()
+    entry = replace(
+        signed,
+        activation_status=ActivationStatus.ENABLED,
+        writer=True,
+        auto_order_enabled=True,
+        physical_account_id=RAW_PHYSICAL_ACCOUNT_ID,
+        identity_status="KNOWN",
+        fingerprint_evidence_ref=FINGERPRINT_REF,
+        policy_binding=PolicyBinding(POLICY_VERSION, POLICY_VERSION_HASH),
+        execution_mode="test-only-clause-independence",
+        scheduler_owner=SchedulerOwner.MANUAL,
+        max_order_notional=Decimal("10000000"),
+        max_orders_per_session=8,
+        max_open_orders=8,
+        allowed_order_types=("limit",),
+        allowed_time_in_force=("day",),
+        reconcile_required=True,
+        canary_binding="test-only-clause-independence",
+    )
+    assert entry.missing_bindings == signed.missing_bindings
+    assert entry.missing_bindings
+    with pytest.raises(LaneGuardError) as refusal:
+        assert_entry_execution_ready(entry)
+    assert refusal.value.code == "lane_binding_incomplete"
