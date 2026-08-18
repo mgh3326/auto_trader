@@ -858,6 +858,13 @@ class Settings(BaseSettings):
     # this false in code means a deployment cannot make Toss auto-submittable
     # merely by enabling the pre-existing master/mode settings.
     ORDER_PROPOSALS_TOSS_LIVE_VETO_ENABLED: bool = False
+    # ROB-1286 (§93차 A안) — watch-fire triggered repricing tick. Default off.
+    # Arming this makes a KR intraday job spawn re-judgement sessions that end
+    # at order_proposal_create, so it raises how many proposals reach the
+    # approval machinery (including the §40/51차 auto-approve lane). It also
+    # needs a claim store that is durable across flow runs; the repo ships only
+    # a process-local one, so this must stay false until that lands.
+    WATCH_TRIGGER_REPRICING_ENABLED: bool = False
     # ROB-816 PR 2 — Telegram approval flow (default off)
     ORDER_PROPOSALS_TELEGRAM_ENABLED: bool = False
     ORDER_PROPOSALS_TELEGRAM_BOT_TOKEN: str = ""
