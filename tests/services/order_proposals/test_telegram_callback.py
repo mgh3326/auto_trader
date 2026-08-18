@@ -337,6 +337,7 @@ async def _seed_loss_cut_proposal(
         exit_intent="loss_cut",
         exit_reason="stop_loss",
         retrospective_id=42,
+        approval_issue_id="ROB-1285",
     )
     dispatched_at = datetime.now(UTC)
     window = await allow_known_session(group, now=dispatched_at)

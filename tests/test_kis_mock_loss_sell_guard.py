@@ -396,7 +396,7 @@ def test_rob_912_sell_marketable_band_guards() -> None:
     loss_ctx = LossCutContext(
         retrospective_id=1,
         exit_reason="loss_cut",
-        approval_issue_id=None,
+        approval_issue_id="ROB-1285",
         requester_agent_id="test",
         max_slip=0.05,
         approval_verified_at=datetime.datetime.now(datetime.UTC),

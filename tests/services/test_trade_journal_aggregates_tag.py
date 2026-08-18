@@ -68,6 +68,41 @@ async def test_untagged_when_no_signal(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_position_intake_is_excluded_from_exact_and_window_setup_tag_reads(
+    db_session: AsyncSession,
+) -> None:
+    sym = _digit_symbol()
+    norm = _normalize_symbol_for_filter(sym, "equity_kr")
+    corr = f"rob1285-intake-{uuid.uuid4()}"
+    db_session.add(
+        TradeRetrospective(
+            symbol=norm,
+            instrument_type="equity_kr",
+            account_mode="kis_live",
+            outcome="unfilled",
+            strategy_key="must_not_seed_learning",
+            correlation_id=corr,
+            evidence_snapshot={"retrospective_type": "intake"},
+            created_at=datetime(2026, 6, 4, tzinfo=UTC),
+        )
+    )
+    await db_session.flush()
+
+    info = await resolve_setup_tag(
+        db_session,
+        _trade(
+            symbol=sym,
+            account="kis",
+            entry_correlation_ids=(corr,),
+        ),
+    )
+
+    assert info.tag == "untagged"
+    assert info.tag_source == "untagged"
+    assert info.link_quality == "symbol_window"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("trade_account", "retro_account_mode"),
     [("kis", "kis_live"), ("toss", "toss_live")],

@@ -785,7 +785,7 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
         exit_intent="loss_cut",
         exit_reason="stop_loss",
         retrospective_id=42,
-        approval_issue_id=None,
+        approval_issue_id="ROB-1285",
         now=now,
     )
     nonce = unique[:11]
@@ -1021,7 +1021,7 @@ async def test_toss_loss_cut_proposal_approval_submit_and_reconcile_e2e(
     assert (row.exit_intent, row.retrospective_id, row.approval_issue_id) == (
         "loss_cut",
         42,
-        None,
+        "ROB-1285",
     )
 
     partial = _toss_evidence(

@@ -98,7 +98,7 @@ async def test_loss_cut_preview_requires_fresh_orderable_quantity(monkeypatch):
     context = LossCutContext(
         retrospective_id=42,
         exit_reason="stop_loss",
-        approval_issue_id=None,
+        approval_issue_id="ROB-1285",
         requester_agent_id="fixture-agent",
         max_slip=0.02,
         approval_verified_at=datetime.now(UTC),

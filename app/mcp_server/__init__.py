@@ -50,6 +50,7 @@ AVAILABLE_TOOL_NAMES = [
     "screen_stocks",
     # ROB-359: recommend_stocks is registry-hidden (parked); not on the tool surface.
     "get_mock_loop_retrospective",
+    "save_position_intake_retrospective",
     "save_trade_retrospective",
     "get_trade_retrospectives",
     "get_retrospective_aggregate",

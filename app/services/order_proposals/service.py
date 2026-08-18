@@ -808,6 +808,8 @@ class OrderProposalsService:
         # support yet) -- so only loss_cut can reach here in practice today.
         if defensive_floor is not None and valid_until < defensive_floor:
             valid_until = defensive_floor
+        if exit_intent == "loss_cut" and isinstance(approval_issue_id, str):
+            approval_issue_id = approval_issue_id.strip()
         await self._validate_exit_binding(
             symbol=symbol,
             market=market,
@@ -953,6 +955,8 @@ class OrderProposalsService:
             )
         if retrospective_id is None:
             errors.append("loss_cut requires retrospective_id")
+        if not isinstance(approval_issue_id, str) or not approval_issue_id.strip():
+            errors.append("loss_cut requires approval_issue_id")
         if (account_mode, market) not in {
             ("kis_live", "equity_kr"),
             ("kis_live", "equity_us"),
