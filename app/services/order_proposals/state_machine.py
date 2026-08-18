@@ -74,6 +74,15 @@ _ALLOWED: dict[str, frozenset[str]] = {
 }
 
 RUNG_STATES: frozenset[str] = frozenset(_ALLOWED.keys())
+
+# Rung states that can legally absorb broker fill/cancel/expiry evidence. Every
+# state here has a terminal successor in the graph above; terminal states are
+# excluded so re-delivered evidence short-circuits instead of raising. Lives
+# here (not in service.py) because the repository's ROB-1284 candidate scan
+# needs it and must not import the service that imports it.
+EVIDENCE_ACCEPTING_RUNG_STATES: frozenset[str] = frozenset(
+    {"acked", "resting", "partially_filled", "unverified"}
+)
 PROPOSAL_TERMINAL_STATES: frozenset[str] = frozenset(
     s for s, nxt in _ALLOWED.items() if not nxt
 )

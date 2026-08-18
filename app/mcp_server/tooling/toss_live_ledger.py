@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 import sentry_sdk
+from sqlalchemy import func, select
 
 from app.core.config import settings
 from app.core.portfolio_links import build_position_detail_url
@@ -19,6 +20,10 @@ from app.mcp_server.tooling.order_journal import (
     _create_trade_journal_for_buy,
     _link_journal_to_fill,
     _save_order_fill,
+)
+from app.mcp_server.tooling.proposal_rung_convergence import (
+    candidate_scan_coverage,
+    run_resting_rung_sweep,
 )
 from app.mcp_server.tooling.toss_live_evidence import (
     TossBatchEvidenceSource,
@@ -774,6 +779,10 @@ async def toss_reconcile_orders_impl(
             market=market,
             limit=limit,
         )
+    # ROB-1284: rung-driven guaranteed-convergence sweep (untruncated,
+    # evidence-first, no broker call) — closes the rungs the ledger-driven
+    # repair above structurally cannot reach.
+    rung_sweep = await run_resting_rung_sweep(dry_run=dry_run)
 
     # Self-healing reopen + list_open run in ONE session block so both the
     # recoverable-anomaly rows and the open rows are live-session ORM objects that
@@ -789,6 +798,26 @@ async def toss_reconcile_orders_impl(
             order_id=order_id,
             market=market,
             limit=limit,
+        )
+        open_total = int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(TossLiveOrderLedger)
+                    .where(
+                        TossLiveOrderLedger.status.in_(
+                            ("accepted", "pending", "partial")
+                        ),
+                        *([TossLiveOrderLedger.symbol == symbol] if symbol else []),
+                        *(
+                            [TossLiveOrderLedger.broker_order_id == order_id]
+                            if order_id
+                            else []
+                        ),
+                        *([TossLiveOrderLedger.market == market] if market else []),
+                    )
+                )
+            ).scalar_one()
         )
         # Work-list = list_open rows + reopened rows, deduped by ledger id
         # (a non-dry-run reopened row is now 'accepted' and may also be in
@@ -870,6 +899,10 @@ async def toss_reconcile_orders_impl(
         "reconciled": reconciled,
         "reopened": reopen_report,  # {dry_run, reopened, candidates}
         "proposal_projection_repair": projection_repair,
+        "proposal_rung_sweep": rung_sweep,
+        "candidate_scan": candidate_scan_coverage(
+            scanned=len(rows), open_total=open_total, limit=limit
+        ),
         "batch_build_error": batch_build_error,
         "message": (
             f"Reconciled {len(reconciled)} Toss live order(s) "
