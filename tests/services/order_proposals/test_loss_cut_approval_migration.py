@@ -91,4 +91,4 @@ def test_loss_cut_approval_migration_is_single_head_and_has_no_row_dml():
     config = Config(str(_REPO / "alembic.ini"))
     config.set_main_option("script_location", str(_REPO / "alembic"))
     scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == ["20260814_lcapprove_b1"]
+    assert scripts.get_heads() == ["20260815_rob1255_audit"]

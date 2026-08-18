@@ -72,7 +72,9 @@ from sqlalchemy import text
 # persistent local test DB to re-bootstrap once.
 # v36: web loss-cut approval events/scopes are new ORM tables. The production
 # migration is deliberately not run by tests; create_all owns the test copy.
-SCHEMA_BOOTSTRAP_VERSION = 36
+# v37 (ROB-1255): append-only approval audit facts are a new ORM table; mirror
+# the update/delete/truncate trigger because create_all cannot create triggers.
+SCHEMA_BOOTSTRAP_VERSION = 37
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1192,6 +1194,26 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "BEFORE TRUNCATE ON review.order_proposal_approval_events "
     "FOR EACH STATEMENT EXECUTE FUNCTION "
     "review.reject_order_proposal_approval_event_mutation()",
+    "CREATE OR REPLACE FUNCTION "
+    "review.reject_order_proposal_approval_audit_event_mutation() "
+    "RETURNS trigger AS $$ BEGIN RAISE EXCEPTION "
+    "'order proposal approval audit events are append-only' "
+    "USING ERRCODE = 'restrict_violation'; END; $$ LANGUAGE plpgsql",
+    "DROP TRIGGER IF EXISTS "
+    "trg_order_proposal_approval_audit_events_append_only "
+    "ON review.order_proposal_approval_audit_events",
+    "CREATE TRIGGER trg_order_proposal_approval_audit_events_append_only "
+    "BEFORE UPDATE OR DELETE ON review.order_proposal_approval_audit_events "
+    "FOR EACH ROW EXECUTE FUNCTION "
+    "review.reject_order_proposal_approval_audit_event_mutation()",
+    "DROP TRIGGER IF EXISTS "
+    "trg_order_proposal_approval_audit_events_truncate_append_only "
+    "ON review.order_proposal_approval_audit_events",
+    "CREATE TRIGGER "
+    "trg_order_proposal_approval_audit_events_truncate_append_only "
+    "BEFORE TRUNCATE ON review.order_proposal_approval_audit_events "
+    "FOR EACH STATEMENT EXECUTE FUNCTION "
+    "review.reject_order_proposal_approval_audit_event_mutation()",
     "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint "
     "WHERE conname = 'order_proposals_approval_dispatch_card_kind' "
     "AND conrelid = 'review.order_proposals'::regclass) THEN "

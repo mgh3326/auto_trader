@@ -163,6 +163,9 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # upgrade exercises the migration instead of colliding with
             # objects materialized by Base.metadata.create_all.
             await connection.execute(
+                text("DROP TABLE review.order_proposal_approval_audit_events")
+            )
+            await connection.execute(
                 text("DROP TABLE review.order_proposal_approval_events")
             )
             await connection.execute(
