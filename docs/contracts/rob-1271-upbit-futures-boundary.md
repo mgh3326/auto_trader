@@ -103,10 +103,24 @@ whose name includes `upbit`.
 * **Leverage 1x.** `set_leverage` rejects any `leverage != 1` at the adapter
   boundary before signing (`futures_demo/execution_client.py:739-744`); the
   regression drives 0, 2, 3, 5, 10, and 125 and dispatches zero HTTP.
-* **One-way only.** There is no `position_side` parameter on `submit_order` to
-  set, and `demo_strategy_loop/execution.py` raises
+* **One-way only.** `submit_order` accepts a `position_side` (added by ROB-1288
+  so a close can state its side explicitly, which D2 contract v2 §4.3 requires
+  and forbids inferring from a quantity sign), but the only value it will sign
+  is the One-way `"BOTH"`: `LONG`/`SHORT` raise
+  `BinanceFuturesDemoHedgeModeBlocked` at the adapter boundary before signing
+  or HTTP, and the parameter defaults to `None` rather than to a side. And
+  `demo_strategy_loop/execution.py` still raises
   `BinanceFuturesDemoHedgeModeBlocked` on `mode_result.is_hedge_mode` before any
   submit.
+
+  > **ROB-1288 amendment (2026-08-18).** The original wording of this bullet —
+  > "There is no `position_side` parameter on `submit_order` to set" — and the
+  > matching assertion pinned one-way-ness by the *absence of a parameter*. That
+  > is the shape the invariant had, not the invariant, and it collided head-on
+  > with D2 contract v2 §4.3. The regression now pins what the parameter may
+  > carry (hedge values refused pre-HTTP, `None` default, `"BOTH"` accepted),
+  > which is strictly stronger than the absence claim it replaces. The test
+  > name is unchanged.
 * **reduceOnly.** `submit_order` defaults `reduce_only=False` and
   `confirm=False`; an unconfirmed submit returns a `FuturesDemoDryRunResult`
   with `reduce_only=False` and dispatches zero HTTP. The close leg goes through
@@ -421,7 +435,7 @@ weaker than the sentence beside it.
 | 2 | exactly one scheduleless scheduler reach into the futures client | `test_only_the_scheduleless_reconcile_task_reaches_the_futures_demo_client` |
 | 2 | that reach calls no order-producing method | `test_the_reconcile_chain_calls_no_order_producing_client_method` |
 | 2 | leverage 1x refused pre-HTTP | `test_futures_leverage_is_pinned_to_1x_before_any_http` (6 values) |
-| 2 | one-way only: no `position_side` parameter; hedge blocked | `test_futures_one_way_mode_is_structural_and_hedge_mode_is_blocked` (source pin for the hedge raise; the runtime hedge path is **record only**) |
+| 2 | one-way only: `position_side` accepts `"BOTH"` alone, hedge values refused pre-HTTP, default `None`; hedge blocked | `test_futures_one_way_mode_is_structural_and_hedge_mode_is_blocked` (source pin for the hedge raise; the runtime hedge path is **record only**) |
 | 2 | `reduce_only` / `confirm` default false, unconfirmed submit is a dry run | `test_futures_reduce_only_defaults_off_and_submit_defaults_to_dry_run` |
 | 2 | close leg always `reduce_only=True` — `order_test`, `submit_order` and echo check pinned **by argument value at each call site**, with the open leg's `False` as the non-vacuity counterpart | `test_the_strategy_loop_close_leg_always_sets_reduce_only_true` |
 | 2 | leg cap `[6, 10]` USDT literals | `test_leg_notional_cap_constants_are_locked_literals` |
