@@ -229,6 +229,9 @@ from app.mcp_server.tooling.us_dual_paper import register_us_dual_paper_tools
 from app.mcp_server.tooling.user_settings_registration import (
     register_user_settings_tools,
 )
+from app.mcp_server.tooling.watch_repricing_registration import (
+    register_watch_repricing_tools,
+)
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -314,6 +317,14 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
         # returns before the normal "Always" block so research, persistence,
         # settings, watch, preview, reconcile, and mutation tools are absent.
         register_account_read_tools(mcp)
+        return
+
+    if profile is McpProfile.WATCH_REPRICING:
+        # ROB-1286 — the spawned re-judgement session's surface. Allowlist-only
+        # and returns before the broad "Always" block, so every broker order
+        # tool, watch mutation, reconcile and preview surface is physically
+        # absent. The session may create a proposal; it may not submit one.
+        register_watch_repricing_tools(mcp)
         return
 
     if profile is McpProfile.TRADINGCODEX_EXECUTION:

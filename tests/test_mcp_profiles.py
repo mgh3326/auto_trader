@@ -483,6 +483,10 @@ _ORDER_SURFACE_MATRIX: dict[McpProfile, set[str]] = {
     # dedicated feature flag is explicitly enabled.
     McpProfile.PAPER_EXECUTION: set(),
     McpProfile.ALPACA_PAPER_CLEAN: set(),
+    # ROB-1286 — the watch-fire repricing session. It may create an order
+    # *proposal*; it holds no order-mutation tool at all, so this row is the
+    # empty set and any future addition here is a visible diff.
+    McpProfile.WATCH_REPRICING: set(),
 }
 _ALL_ORDER_TOOL_NAMES = (
     _LEGACY_ORDER_TOOL_NAMES
@@ -534,6 +538,9 @@ _PROFILES_WITH_RESEARCH_SURFACE = [
         McpProfile.TRADINGCODEX_EXECUTION,
         McpProfile.PAPER_EXECUTION,
         McpProfile.ALPACA_PAPER_CLEAN,
+        # ROB-1286 — allowlist-only and early-returns before the "Always"
+        # research block, like the other closed-world profiles above.
+        McpProfile.WATCH_REPRICING,
     )
 ]
 
