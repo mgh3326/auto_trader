@@ -73,6 +73,46 @@ def build_tools():
 # ---------------------------------------------------------------------------
 
 
+def _patch_us_finnhub_fanout(monkeypatch, symbol: str = "AAPL") -> None:
+    """Mock the Finnhub leaves that ``analyze_stock(market="us")`` fans out to.
+
+    ROB-1296: the socket guard no longer exempts `integration`, so these stop
+    being silent live Finnhub calls and become blocked connections. The profile
+    client and ``fetch_news_finnhub``'s ``AsyncRetrying`` loop then burn their
+    full retry-with-backoff budget on every test — seconds of sleep for values
+    these assertions never read. Patch both leaves deterministically rather than
+    letting a retry loop absorb the block.
+    """
+
+    async def _news(
+        requested_symbol: str, market: str, limit: int
+    ) -> dict[str, object]:
+        _ = requested_symbol, market, limit
+        return {"items": [], "source": "finnhub"}
+
+    async def _profile(requested_symbol: str) -> dict[str, object]:
+        return {
+            "symbol": requested_symbol,
+            "instrument_type": "equity_us",
+            "source": "finnhub",
+            "name": f"{requested_symbol} Test Corp",
+            "ticker": requested_symbol,
+            "country": "US",
+            "currency": "USD",
+            "exchange": "NASDAQ",
+            "ipo_date": "1980-12-12",
+            "market_cap": 1_000_000.0,
+            "shares_outstanding": 1_000.0,
+            "sector": "Technology",
+            "website": "",
+            "logo": "",
+            "phone": "",
+        }
+
+    _patch_runtime_attr(monkeypatch, "_fetch_company_profile_finnhub", _profile)
+    _patch_runtime_attr(monkeypatch, "_fetch_news_finnhub", _news)
+
+
 @pytest.mark.asyncio
 class TestAnalyzeStock:
     """Test analyze_stock tool."""
@@ -566,6 +606,7 @@ class TestAnalyzeStock:
             monkeypatch, "_get_support_resistance_impl", mock_get_support_resistance
         )
         _patch_runtime_attr(monkeypatch, "_get_quote_impl", mock_get_quote)
+        _patch_us_finnhub_fanout(monkeypatch)
 
         result = await tools["analyze_stock"]("AAPL", market="us")
 
@@ -620,6 +661,7 @@ class TestAnalyzeStock:
             monkeypatch, "_get_support_resistance_impl", mock_get_support_resistance
         )
         _patch_runtime_attr(monkeypatch, "_get_quote_impl", mock_get_quote)
+        _patch_us_finnhub_fanout(monkeypatch, symbol)
 
         result = await tools["analyze_stock"](symbol, market="us")
 

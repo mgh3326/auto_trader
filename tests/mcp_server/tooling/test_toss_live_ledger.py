@@ -19,6 +19,36 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 pytestmark.append(pytest.mark.usefixtures("toss_ledger_cleanup_lock"))
 
 
+@pytest.fixture(autouse=True)
+def _offline_reconcile_spot_fx(monkeypatch):
+    """ROB-1296: default the USD/KRW reconcile-spot capture to "unavailable".
+
+    Most tests in this module already patch ``capture_reconcile_spot_fx``; the
+    two that did not reached ``open.er-api.com`` for real, and
+    ``capture_reconcile_spot_fx`` swallowed the failure into
+    ``fx_rate_source="unavailable"`` so nothing surfaced it. This states that
+    same outcome explicitly rather than depending on the network being
+    unreachable. Per-test ``patch.object`` calls apply after this fixture and
+    still win.
+    """
+
+    from app.mcp_server.tooling import toss_live_ledger as _mod
+    from app.mcp_server.tooling.fx_pnl import (
+        FX_PNL_ACCURACY_UNAVAILABLE,
+        FX_RATE_SOURCE_UNAVAILABLE,
+        FxRateCapture,
+    )
+
+    async def _unavailable() -> FxRateCapture:
+        return FxRateCapture(
+            rate=None,
+            fx_rate_source=FX_RATE_SOURCE_UNAVAILABLE,
+            fx_pnl_accuracy=FX_PNL_ACCURACY_UNAVAILABLE,
+        )
+
+    monkeypatch.setattr(_mod, "capture_reconcile_spot_fx", _unavailable)
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _clean(db_session, toss_ledger_cleanup_lock):
     await db_session.execute(delete(TossLiveOrderLedger))

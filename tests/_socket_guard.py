@@ -147,15 +147,28 @@ def is_allowed_local_address(address: object) -> bool:
 def _raise_socket_blocked(operation: str, address: object) -> None:
     _record_block(operation)
     raise ExternalSocketBlocked(
-        f"Blocked outbound socket.{operation} to {address!r} in a "
-        "non-integration/live test. Mock the external client at its call site "
+        f"Blocked outbound socket.{operation} to {address!r}. External "
+        "sockets are reachable only from a test marked `live` under an "
+        "explicit `--run-live`; the `integration` marker does not grant "
+        "network access (ROB-1296). Mock the external client at its call site "
         "(see docs/runbooks/hermetic-test-socket-guard.md) instead of letting "
         "the test reach a real host."
     )
 
 
+def is_socket_address_permitted(address: object) -> bool:
+    """Return the guard's current verdict for *address* without side effects.
+
+    Exposed so policy tests can assert the marker/option truth table without
+    emitting a single packet and without incrementing the blocked-attempt
+    counters that back the CI evidence artifact.
+    """
+
+    return is_current_test_exempt() or is_allowed_local_address(address)
+
+
 def _assert_socket_address_allowed(operation: str, address: object) -> None:
-    if is_current_test_exempt() or is_allowed_local_address(address):
+    if is_socket_address_permitted(address):
         return
     _raise_socket_blocked(operation, address)
 

@@ -135,6 +135,7 @@ make security      # bandit · safety
 ```
 
 - 마커: `unit` / `integration` / `live`(integration의 strict subset, `--run-live` 필요) / `slow`
+- 소켓 가드: 외부 소켓은 `live` 마커 **+** 명시적 `--run-live` 조합에서만 허용된다(ROB-1296). `integration` 마커는 네트워크 접근 권한을 주지 않으며, 로컬 PostgreSQL/Redis는 마커와 무관하게 loopback 주소로 허용된다 — [`docs/runbooks/hermetic-test-socket-guard.md`](docs/runbooks/hermetic-test-socket-guard.md)
 - CI(GitHub Actions): lint → 병렬 fast gate(xdist loadfile) → TaskIQ smoke → 보안 검사 → 커버리지
 
 ## 문서

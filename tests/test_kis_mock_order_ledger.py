@@ -20,6 +20,29 @@ from sqlalchemy import delete
 from app.models.review import OrderSendIntent
 
 
+@pytest.fixture(autouse=True)
+def _offline_kis_mock_baseline(monkeypatch):
+    """ROB-1296: resolve the pre-trade holdings baseline without calling KIS VTS.
+
+    ``_fetch_kis_mock_baseline_qty`` builds its own ``KISClient(is_mock=True)``,
+    which issues an OAuth token against ``openapivts.koreainvestment.com`` before
+    any of the seams these tests patch come into play. It is explicitly
+    best-effort — it swallows every error and returns ``None`` so the reconciler
+    can flag ``baseline_missing`` later — which is exactly the value these tests
+    already observe, just reached via a live network round trip. Returning
+    ``None`` states that unchanged outcome deterministically; it asserts nothing
+    about a holding, so no fabricated position is introduced.
+    """
+
+    from app.mcp_server.tooling import kis_mock_ledger
+
+    monkeypatch.setattr(
+        kis_mock_ledger,
+        "_fetch_kis_mock_baseline_qty",
+        AsyncMock(return_value=None),
+    )
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _kis_mock_coordinated_route():
     """ROB-1263 r4 §3: a KIS mock send needs a coordinated route to be authorized.

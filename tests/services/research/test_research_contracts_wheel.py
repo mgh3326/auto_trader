@@ -34,18 +34,38 @@ def test_built_wheel_ships_small_research_contract_and_clean_imports(
     assert "research_contracts/trial_evidence.py" in names
     assert not any(name.startswith("research/nautilus_scalping/") for name in names)
 
+    # Provenance is asserted explicitly rather than by isolating the child with
+    # ``-I``. An isolated interpreter also drops the hermetic-test socket guard's
+    # ``sitecustomize`` startup hook (ROB-1296), so the guard rejects ``-I``
+    # outright. Checking every import's ``__file__`` is the stronger check
+    # anyway: ``-I`` only kept the source tree off ``sys.path``, whereas this
+    # fails loudly if any module silently resolves outside the wheel.
     script = f"""
 import sys
-sys.path.insert(0, sys.argv[1])
+wheel = sys.argv[1]
+sys.path.insert(0, wheel)
+
+import app.schemas.research_backtest as research_backtest
+import app.services.research_canonical_hash as research_canonical_hash
+import research_contracts.canonical_hash as contracts_canonical_hash
 from app.schemas.research_backtest import StrategyExperimentIdentity
 from app.services import research_offline_gate_service
 from app.services.research_canonical_hash import canonical_sha256
+
+for module in (
+    research_backtest,
+    research_canonical_hash,
+    research_offline_gate_service,
+    contracts_canonical_hash,
+):
+    assert module.__file__.startswith(wheel), (module.__name__, module.__file__)
+
 assert StrategyExperimentIdentity
 assert research_offline_gate_service.finalize_offline_gate
 assert canonical_sha256({{'b': 2, 'a': 1}}) == {PINNED_DIGEST!r}
 """
     subprocess.run(
-        [sys.executable, "-I", "-c", script, str(wheel)],
+        [sys.executable, "-c", script, str(wheel)],
         cwd=tmp_path,
         check=True,
         capture_output=True,

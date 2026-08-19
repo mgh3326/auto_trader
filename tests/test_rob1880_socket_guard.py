@@ -178,12 +178,19 @@ def test_import_phase_and_conftest_unloaded_mutant_are_fail_closed(tmp_path) -> 
 
 
 @pytest.mark.integration
-def test_integration_marker_enables_the_explicit_test_boundary() -> None:
-    assert socket_guard.is_current_test_exempt()
+def test_integration_marker_no_longer_opens_the_network_boundary() -> None:
+    """ROB-1296 replaced the marker exemption with a live-plus-``--run-live`` one.
+
+    Integration items keep loopback PostgreSQL/Redis through the address
+    allowlist, which never depended on a marker. See
+    ``tests/test_rob1296_live_only_socket_guard.py`` for the full truth table.
+    """
+
+    assert not socket_guard.is_current_test_exempt()
 
 
 @pytest.mark.integration
-def test_integration_marker_is_preserved_for_a_direct_python_child() -> None:
+def test_integration_marker_leaves_a_direct_python_child_guarded() -> None:
     result = subprocess.run(
         [
             sys.executable,
@@ -196,4 +203,4 @@ def test_integration_marker_is_preserved_for_a_direct_python_child() -> None:
         check=True,
     )
 
-    assert result.stdout.strip() == "False"
+    assert result.stdout.strip() == "True"

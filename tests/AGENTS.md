@@ -19,6 +19,7 @@
 - Registered markers are `slow`, `integration`, `unit`, and `live`; use only registered markers.
 - `live` marks tests that make external API calls, is always a strict subset of `integration`, and requires `--run-live` to execute.
 - Fast-gate selectors use `-m "not live"`; live execution is opt-in only.
+- The socket guard exempts external sockets **only** for a `live` item under an explicit `--run-live` (ROB-1296). `integration` grants no network access — it never had to, because loopback PostgreSQL/Redis is allowed by address, not by marker. See `docs/runbooks/hermetic-test-socket-guard.md`.
 - Naming follows `test_*.py` or `*_test.py`, test functions `test_*`, classes `Test*`.
 - Default command set comes from `Makefile` (`make test`, `make test-unit`, `make test-integration`, `make test-services-split`, `make test-live`, `make test-cov`, `make test-fast`, `make test-watch`).
 
@@ -26,6 +27,7 @@
 - Do not introduce unregistered markers when strict markers are enabled.
 - Do not assert outdated coverage requirements from stale docs; use current `pyproject.toml` threshold.
 - Do not mix long-running integration behavior into unit-only test runs without marker guards.
+- Do not reach for a marker, an env var, or an allowlist entry to get a test past the socket guard. A blocked connection means the test is under-mocked; mock the external client at its call site.
 - Do not move core fixtures out of `tests/conftest.py` unless fixture scope/ownership is explicit.
 
 ## NOTES

@@ -474,6 +474,47 @@ def _block_tvscreener_http_boundary(request, monkeypatch):
 
 
 @pytest.fixture
+def allow_kis_daily_candle_fetch():
+    """Opt out of the default KIS daily-candle boundary block."""
+
+
+@pytest.fixture(autouse=True)
+def _block_kis_daily_candle_boundary(request, monkeypatch):
+    """ROB-1296: keep the daily-candle cache-miss fallback off the network.
+
+    ``_cache_first_kr`` (and the daily-candle sync service) fall back to
+    ``fetch_kr_daily_unclamped`` -> KIS whenever the DB cache is cold, which it
+    always is in a fresh test database. Callers treat that fetch as best-effort
+    and fall back to whatever rows they already had, so the failure never
+    surfaced — it just cost a real request to openapi.koreainvestment.com from
+    tests that only care about names, freshness flags, or price targets.
+
+    Raising the same class of error the fallback already handles keeps observable
+    behaviour identical while removing the socket. A test that genuinely covers
+    the KIS fetch path requests ``allow_kis_daily_candle_fetch`` (and supplies
+    its own stub).
+    """
+    if "allow_kis_daily_candle_fetch" in request.fixturenames:
+        return
+    if request.node.get_closest_marker("live") and request.config.getoption(
+        "--run-live"
+    ):
+        return
+
+    async def _blocked(*_args, **_kwargs):
+        raise RuntimeError(
+            "KIS daily-candle fetch is disabled during pytest; stub "
+            "fetch_kr_daily_unclamped or request allow_kis_daily_candle_fetch "
+            "for boundary/live tests."
+        )
+
+    monkeypatch.setattr(
+        "app.services.daily_candles.kis_daily_fetcher.fetch_kr_daily_unclamped",
+        _blocked,
+    )
+
+
+@pytest.fixture
 def mock_auth_middleware_db():
     """Mock AsyncSessionLocal in AuthMiddleware to prevent DB connection attempts."""
     with patch("app.middleware.auth.AsyncSessionLocal") as mock:

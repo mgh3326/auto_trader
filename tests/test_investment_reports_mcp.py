@@ -19,6 +19,7 @@ import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.mcp_server.tooling import investment_reports_handlers as _reports_handlers
 from app.mcp_server.tooling.investment_reports_handlers import (
     INVESTMENT_REPORT_TOOL_NAMES,
     investment_report_activate_watch_impl,
@@ -40,6 +41,37 @@ from app.mcp_server.tooling.investment_reports_handlers import (
 )
 from app.services.investment_reports.ingestion import InvestmentReportIngestionService
 from tests._investment_reports_helpers import future_datetime
+
+
+@pytest.fixture
+def allow_pending_orders_collector():
+    """Opt out of the offline default to exercise the real collector wiring."""
+
+
+@pytest.fixture(autouse=True)
+def _offline_pending_orders_snapshot(request, monkeypatch):
+    """ROB-1296: resolve the ROB-274 pending-orders enrichment without a broker.
+
+    ``investment_report_context_get_impl`` enriches every response by collecting
+    a live pending-orders snapshot, so each call reached
+    ``openapi.koreainvestment.com``. The helper is documented as failing open —
+    "any collector trouble surfaces as ``None``" — and ``None`` is exactly what
+    these tests already receive, having paid for a live round trip to get it.
+    This states that outcome deterministically. It fabricates no orders; the one
+    test that asserts a populated snapshot patches the collector registry itself
+    and still wins, because that patch is applied inside the test body.
+    """
+
+    if "allow_pending_orders_collector" in request.fixturenames:
+        return
+
+    async def _no_snapshot(_db, *, market, account_scope=None):
+        _ = market, account_scope
+        return None
+
+    monkeypatch.setattr(
+        _reports_handlers, "_collect_pending_orders_snapshot", _no_snapshot
+    )
 
 
 @pytest_asyncio.fixture(name="session")
@@ -703,6 +735,7 @@ async def test_context_get_n_prior_clamped_to_ten(session: AsyncSession) -> None
 # ROB-274 — pending_orders enrichment in context_get
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allow_pending_orders_collector")
 async def test_context_get_includes_pending_orders_when_collector_succeeds(
     monkeypatch: pytest.MonkeyPatch, session: AsyncSession
 ) -> None:
@@ -826,6 +859,7 @@ async def test_context_get_surfaces_pending_orders_unavailable_as_null(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allow_pending_orders_collector")
 async def test_context_get_pending_orders_shape_unchanged_after_shared_helper(
     monkeypatch: pytest.MonkeyPatch,
     session: AsyncSession,
