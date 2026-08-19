@@ -2,10 +2,7 @@
 # Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
 # (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
 # Repo is public; exposing these values is an accepted decision.
-# §104차 (2026-08-19): crash-day 신규진입은 표준 매수 게이트를 통과한
-# strong 지지 후보에 한해 조건부로만 전면 hold를 해제한다. 즉석 판단이나
-# 게이트 면제·완화·대체가 아니며, preplanned ladder도 advisory로만 남긴다.
-version: "2026-08-19.1"
+version: "2026-08-14.2"
 captured_as_of: "2026-08-12"
 source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits)"
 
@@ -362,20 +359,6 @@ decision_rules:
       daily_regeneration: REQUIRED
     toss_live_approval: HUMAN_APPROVAL_REQUIRED_UNTIL_VETO_WIRING
 
-  # §104차 — 표준 매수 게이트를 전부 통과한 후보만 사전 계획 래더에
-  # 올린다. crash_day에서는 기존 계획을 유지할 뿐이며, 코드 집행은 없다.
-  buy.preplanned_support_ladder:
-    lanes: [buy]
-    semantics: >-
-      Advisory only. A preplanned support ladder is retained only for a
-      candidate that passes every standard buy gate; it does not relax,
-      waive, replace, or bypass any gate.
-    enabled: true
-    eligibility: standard_buy_gates_pass
-    rungs_max: 2
-    per_rung_notional_multiplier: 0.5
-    crash_day_behavior: keep
-
   sell.trim_preplace:
     lanes: [sell]
     semantics: >-
@@ -695,23 +678,6 @@ crash_day:
     # an oversight — see docs/runbooks/crash-day-policy-mock-reps.md.
   actions:
     new_entry_hold: true          # NEW entries only; averaging-down deep rungs are EXEMPT (2026-07-16 midday dip-buys measured effective)
-    # §104차: 전면 hold의 조건부 해제일 뿐, 즉석 판단 허용이 아니다.
-    # 표준 매수 게이트 전부(지지 품질 포함) 통과와 strong 지지 대 진입을
-    # 모두 요구하며 어떤 게이트도 면제·완화·대체하지 않는다.
-    new_entry_hold_exception:
-      enabled: true
-      requires:
-        standard_buy_gates: all_pass_including_support_quality
-        support_quality: required
-        price_zone: strong_support
-        gate_relaxation: none
-      sizing:
-        per_symbol_notional_multiplier: 0.5
-        max_new_symbols: 1
-      semantics: >-
-        조건부 해제는 즉석 판단 허용이 아니라, 표준 매수 게이트를 전부
-        통과한 후보가 crash_day 때문에 전면 hold 되는 것만 해제한다.
-        지지 품질을 포함한 어떤 게이트도 면제·완화·대체하지 않는다.
     deep_rung_reprice_to_band_floor: true    # advisory: reprice deep rungs toward buy.deep_limit_pct_range floor
     profit_trim_marketable_allowed: true     # advisory: profit-side trims may use marketable band (ROB-912 -2%)
     defensive_brief_cross_check: true        # cross-check with ROB-930 preopen gap_risk verdict

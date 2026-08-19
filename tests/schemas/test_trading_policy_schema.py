@@ -8,6 +8,8 @@ from pydantic import ValidationError
 
 import app.schemas.trading_policy as policy_schema
 from app.schemas.trading_policy import (
+    CrashDayNewEntryHoldException,
+    PreplannedSupportLadderPolicy,
     SupportReserveNetDecisionRule,
     TradingPolicyDocument,
 )
@@ -15,6 +17,11 @@ from app.services.order_proposals.auto_approve import _VETO_CAPABLE_ACCOUNT_MARK
 from app.services.trading_policy_service import load_trading_policy
 
 _CONFIG = Path(__file__).resolve().parents[2] / "config" / "trading_policy.yaml"
+_ROB1289_BASELINE = (
+    Path(__file__).resolve().parents[1]
+    / "fixtures"
+    / "trading_policy_rob1289_baseline.yaml"
+)
 _PLAYBOOK = (
     Path(__file__).resolve().parents[2]
     / "docs"
@@ -112,6 +119,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
+    assert doc.version == "2026-08-19.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -825,6 +833,20 @@ def test_crash_day_trigger_and_actions_parse():
     assert crash_day.trigger.index_symbol == "069500"
     assert crash_day.trigger.index_gap_pct_max == -3.0
     assert crash_day.actions.new_entry_hold is True
+    exception = crash_day.actions.new_entry_hold_exception
+    assert isinstance(exception, CrashDayNewEntryHoldException)
+    assert exception.enabled is True
+    assert exception.requires.standard_buy_gates == (
+        "all_pass_including_support_quality"
+    )
+    assert exception.requires.support_quality == "required"
+    assert exception.requires.price_zone == "strong_support"
+    assert exception.requires.gate_relaxation == "none"
+    assert exception.sizing.per_symbol_notional_multiplier == 0.5
+    assert exception.sizing.max_new_symbols == 1
+    assert "즉석 판단 허용이 아니라" in exception.semantics
+    assert "전부" in exception.semantics
+    assert "면제·완화·대체하지 않는다" in exception.semantics
     assert crash_day.actions.deep_rung_reprice_to_band_floor is True
     assert crash_day.actions.profit_trim_marketable_allowed is True
     assert crash_day.actions.defensive_brief_cross_check is True
@@ -842,6 +864,85 @@ def test_crash_day_extra_actions_key_rejected():
     raw["crash_day"]["actions"]["bogus"] = True
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    ("path", "mutant_value"),
+    [
+        (("standard_buy_gates",), "all_pass_except_rsi"),
+        (("support_quality",), "optional"),
+        (("gate_relaxation",), "allow_some_gates"),
+    ],
+)
+def test_crash_day_new_entry_exception_rejects_gate_relaxation(
+    path: tuple[str, ...], mutant_value: str
+):
+    raw = _raw()
+    target = raw["crash_day"]["actions"]["new_entry_hold_exception"]["requires"]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = mutant_value
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_crash_day_new_entry_exception_rejects_typo_key():
+    raw = _raw()
+    raw["crash_day"]["actions"]["new_entry_hold_exception"]["sizing"]["bogus"] = 1
+
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_preplanned_support_ladder_parses_and_rejects_typo_key():
+    raw = _raw()
+    doc = TradingPolicyDocument.model_validate(raw)
+    ladder = doc.decision_rules["buy.preplanned_support_ladder"]
+
+    assert isinstance(ladder, PreplannedSupportLadderPolicy)
+    assert ladder.lanes == ["buy"]
+    assert ladder.enabled is True
+    assert ladder.eligibility == "standard_buy_gates_pass"
+    assert ladder.rungs_max == 2
+    assert ladder.per_rung_notional_multiplier == 0.5
+    assert ladder.crash_day_behavior == "keep"
+
+    raw["decision_rules"]["buy.preplanned_support_ladder"]["bogus"] = True
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(raw)
+
+
+def test_rob_1289_policy_loader_roundtrip_preserves_both_new_blocks():
+    loaded = load_trading_policy()
+    reparsed = TradingPolicyDocument.model_validate(loaded.model_dump())
+
+    assert reparsed.model_dump() == loaded.model_dump()
+    assert "buy.preplanned_support_ladder" in reparsed.decision_rules
+    assert reparsed.crash_day.actions.new_entry_hold_exception.enabled is True
+
+
+def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
+    baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
+    current_raw = _raw()
+    # The pre-change document cannot satisfy the new required fields until
+    # those two additive blocks are copied in; they are removed before compare.
+    baseline["decision_rules"]["buy.preplanned_support_ladder"] = current_raw[
+        "decision_rules"
+    ]["buy.preplanned_support_ladder"]
+    baseline["crash_day"]["actions"]["new_entry_hold_exception"] = current_raw[
+        "crash_day"
+    ]["actions"]["new_entry_hold_exception"]
+    baseline_dump = TradingPolicyDocument.model_validate(baseline).model_dump()
+    current_dump = TradingPolicyDocument.model_validate(current_raw).model_dump()
+
+    current_dump["version"] = baseline_dump["version"]
+    del current_dump["decision_rules"]["buy.preplanned_support_ladder"]
+    del current_dump["crash_day"]["actions"]["new_entry_hold_exception"]
+    del baseline_dump["decision_rules"]["buy.preplanned_support_ladder"]
+    del baseline_dump["crash_day"]["actions"]["new_entry_hold_exception"]
+
+    assert current_dump == baseline_dump
 
 
 def test_crash_day_missing_block_rejected():
