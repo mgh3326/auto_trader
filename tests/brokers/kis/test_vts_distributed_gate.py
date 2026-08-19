@@ -139,40 +139,32 @@ class _RealRedis:
             self.proc = None
 
     def flush(self) -> None:
+        import redis as _redis
+
         target_url = (
             f"redis://127.0.0.1:{self.port}/0"
             if self.spawned and self.port is not None
             else self.url
         )
-
-        async def _flush() -> None:
-            import redis.asyncio as _redis
-
-            client = _redis.from_url(
-                target_url, socket_connect_timeout=5.0, socket_timeout=5.0
-            )
-            try:
-                await client.flushdb()
-            finally:
-                await client.aclose()
-
-        asyncio.new_event_loop().run_until_complete(_flush())
+        client = _redis.from_url(
+            target_url, socket_connect_timeout=5.0, socket_timeout=5.0
+        )
+        try:
+            client.flushdb()
+        finally:
+            client.close()
 
 
 def _redis_ping(url: str) -> bool:
-    import redis.asyncio as _redis
+    import redis as _redis
 
-    async def _p() -> bool:
-        c = _redis.from_url(url, socket_connect_timeout=1.0, socket_timeout=1.0)
-        try:
-            return bool(await c.ping())
-        finally:
-            await c.aclose()
-
+    client = _redis.from_url(url, socket_connect_timeout=1.0, socket_timeout=1.0)
     try:
-        return asyncio.new_event_loop().run_until_complete(_p())
+        return bool(client.ping())
     except Exception:  # noqa: BLE001
         return False
+    finally:
+        client.close()
 
 
 @pytest.fixture(scope="module")
