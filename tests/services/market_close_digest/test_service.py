@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.services.market_close_digest.calendar import (
-    infer_session_date,
-    should_skip_holiday,
-)
 from app.services.market_close_digest.service import run_market_close_digest
 from tests.services.market_close_digest.fakes import (
     AC1_SESSION_DATE,
@@ -95,11 +92,16 @@ async def test_dry_run_does_not_call_notifier() -> None:
     notifier.notify_agent_message.assert_not_called()
 
 
-def test_us_digest_at_0505_kst_uses_et_session_date() -> None:
-    from zoneinfo import ZoneInfo
-
-    kst_now = datetime(2026, 8, 20, 5, 5, tzinfo=ZoneInfo("Asia/Seoul"))
-    assert infer_session_date("us", kst_now) == AC1_SESSION_DATE
-    assert should_skip_holiday("us", AC1_SESSION_DATE) is False
-    assert should_skip_holiday("us", date(2025, 7, 4)) is True
-    assert should_skip_holiday("crypto", date(2025, 7, 4)) is False
+@pytest.mark.asyncio
+async def test_crypto_cron_digest_covers_completed_kst_day() -> None:
+    now = datetime(2026, 8, 20, 9, 5, tzinfo=ZoneInfo("Asia/Seoul"))
+    result = await run_market_close_digest(
+        market="crypto",
+        now=now,
+        sources=FakeDigestSources(),
+        send=False,
+    )
+    assert result.session_date == date(2026, 8, 19)
+    assert result.snapshot is not None
+    assert result.snapshot.window_end is not None
+    assert result.snapshot.window_end <= now.astimezone(UTC)

@@ -2,10 +2,15 @@
 
 This module is the **write** surface. It is not imported by the market-close
 digest aggregator. Dry-run is the default; ``commit`` requires ``confirm``.
+
+Deletion is fill-evidence only. ``TOSS_LEFTOVER_TICKERS`` is the *search
+scope*, not a deletion reason. A scoped row with no toss filled-sell ledger
+row is skipped (the empty-reasons / non-candidate guard is reachable).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 
@@ -20,6 +25,10 @@ from app.services.session_context import SessionContextService
 
 TOSS_LEFTOVER_TICKERS: tuple[str, ...] = ("AMZN", "GOOGL")
 _FILLED_STATUSES = ("filled", "partial")
+FILL_EVIDENCE_REASON = "filled_sell_in_toss_ledger"
+DELETE_EVIDENCE_REASONS = frozenset({FILL_EVIDENCE_REASON})
+
+TargetReporter = Callable[[tuple["LeftoverManualRow", ...]], None]
 
 
 @dataclass(frozen=True)
@@ -45,9 +54,11 @@ class ManualBrokerConflict:
 class LeftoverCleanupResult:
     matched: int
     deleted: int
+    skipped_without_evidence: int
     warnings_written: int
     dry_run: bool
     rows: tuple[LeftoverManualRow, ...]
+    skipped_rows: tuple[LeftoverManualRow, ...]
     conflicts: tuple[ManualBrokerConflict, ...]
 
 
@@ -57,14 +68,18 @@ def leftover_reasons(
     is_mock: bool,
     filled_sell_symbols: set[str],
 ) -> tuple[str, ...]:
+    """Evidence labels only. Scope membership is not a reason."""
     reasons: list[str] = []
-    if ticker in TOSS_LEFTOVER_TICKERS:
-        reasons.append("toss_us_allowlist")
     if ticker in filled_sell_symbols:
-        reasons.append("filled_sell_in_toss_ledger")
+        reasons.append(FILL_EVIDENCE_REASON)
     if is_mock:
         reasons.append("account_mode_mock_mismatch")
     return tuple(reasons)
+
+
+def is_deletion_candidate(reasons: tuple[str, ...]) -> bool:
+    """Hard DELETE requires a filled-sell ledger row. Labels are not enough."""
+    return bool(DELETE_EVIDENCE_REASONS.intersection(reasons))
 
 
 def detect_manual_broker_conflicts(
@@ -73,7 +88,7 @@ def detect_manual_broker_conflicts(
     """Manual toss row vs broker-ledger filled sell = double-count risk."""
     conflicts: list[ManualBrokerConflict] = []
     for row in leftovers:
-        if "filled_sell_in_toss_ledger" not in row.reasons:
+        if FILL_EVIDENCE_REASON not in row.reasons:
             continue
         conflicts.append(
             ManualBrokerConflict(
@@ -86,9 +101,25 @@ def detect_manual_broker_conflicts(
     return tuple(conflicts)
 
 
+def _row_from_holding(
+    holding: ManualHolding, reasons: tuple[str, ...]
+) -> LeftoverManualRow:
+    account = holding.broker_account
+    return LeftoverManualRow(
+        holding_id=holding.id,
+        ticker=holding.ticker,
+        quantity=str(holding.quantity),
+        broker_account_id=account.id,
+        broker_type=account.broker_type,
+        is_mock=bool(account.is_mock),
+        reasons=reasons,
+    )
+
+
 async def list_toss_leftover_manual_rows(
     session: AsyncSession,
-) -> tuple[LeftoverManualRow, ...]:
+) -> tuple[tuple[LeftoverManualRow, ...], tuple[LeftoverManualRow, ...]]:
+    """Return ``(deletable, skipped_without_fill_evidence)``."""
     filled_stmt = select(TossLiveOrderLedger.symbol).where(
         TossLiveOrderLedger.market == "us",
         TossLiveOrderLedger.side == "sell",
@@ -112,7 +143,8 @@ async def list_toss_leftover_manual_rows(
         .order_by(ManualHolding.ticker, ManualHolding.id)
     )
     holdings = list((await session.scalars(stmt)).all())
-    rows: list[LeftoverManualRow] = []
+    deletable: list[LeftoverManualRow] = []
+    skipped: list[LeftoverManualRow] = []
     for holding in holdings:
         account = holding.broker_account
         reasons = leftover_reasons(
@@ -120,20 +152,12 @@ async def list_toss_leftover_manual_rows(
             is_mock=bool(account.is_mock),
             filled_sell_symbols=filled_sell_symbols,
         )
-        if not reasons:
+        row = _row_from_holding(holding, reasons)
+        if not reasons or not is_deletion_candidate(reasons):
+            skipped.append(row)
             continue
-        rows.append(
-            LeftoverManualRow(
-                holding_id=holding.id,
-                ticker=holding.ticker,
-                quantity=str(holding.quantity),
-                broker_account_id=account.id,
-                broker_type=account.broker_type,
-                is_mock=bool(account.is_mock),
-                reasons=reasons,
-            )
-        )
-    return tuple(rows)
+        deletable.append(row)
+    return tuple(deletable), tuple(skipped)
 
 
 async def cleanup_toss_leftover_manual_rows(
@@ -143,16 +167,21 @@ async def cleanup_toss_leftover_manual_rows(
     confirm: bool,
     warn_session: bool = False,
     kst_date: date | None = None,
+    reporter: TargetReporter | None = None,
 ) -> LeftoverCleanupResult:
-    rows = await list_toss_leftover_manual_rows(session)
+    rows, skipped = await list_toss_leftover_manual_rows(session)
+    if reporter is not None:
+        reporter(rows)
     conflicts = detect_manual_broker_conflicts(rows)
     if not commit:
         return LeftoverCleanupResult(
             matched=len(rows),
             deleted=0,
+            skipped_without_evidence=len(skipped),
             warnings_written=0,
             dry_run=True,
             rows=rows,
+            skipped_rows=skipped,
             conflicts=conflicts,
         )
     if not confirm:
@@ -198,8 +227,10 @@ async def cleanup_toss_leftover_manual_rows(
     return LeftoverCleanupResult(
         matched=len(rows),
         deleted=deleted,
+        skipped_without_evidence=len(skipped),
         warnings_written=warnings_written,
         dry_run=False,
         rows=rows,
+        skipped_rows=skipped,
         conflicts=conflicts,
     )

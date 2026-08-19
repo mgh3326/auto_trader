@@ -148,21 +148,7 @@ async def run_market_close_digest(
             snapshot=empty,
         )
 
-    window = session_window(market, day)
-    if window is None:
-        empty = DigestSnapshot(
-            market=market, session_date=day, status="skipped_holiday"
-        )
-        return DigestRunResult(
-            market=market,
-            session_date=day,
-            status="skipped_holiday",
-            message="",
-            sent=False,
-            mutation_count=0,
-            snapshot=empty,
-        )
-    window_start, window_end = window
+    window_start, window_end = session_window(market, day, now=moment)
 
     counter = None
     if session is not None:

@@ -42,7 +42,7 @@ def format_digest_message(snapshot: DigestSnapshot) -> str:
     if buy_line:
         lines.append(buy_line)
     lines.append(
-        f"신규매수 {snapshot.buy_count} · 그물 {_fmt_net(snapshot.net_notional)}"
+        f"신규매수 {snapshot.buy_count} · 순매수 {_fmt_net(snapshot.net_notional)}"
     )
     lines.append(f"자동승인 {snapshot.auto_approve_count} · 카드 {snapshot.card_count}")
     if snapshot.oversell_blocked:

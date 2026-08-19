@@ -289,6 +289,7 @@ class SqlAlchemyDigestSources:
             select(KISLiveOrderLedger)
             .where(
                 KISLiveOrderLedger.status.in_(_FILLED_STATUSES),
+                KISLiveOrderLedger.instrument_type == InstrumentType.equity_kr.value,
                 or_(
                     _in_window(
                         KISLiveOrderLedger.reconciled_at,
