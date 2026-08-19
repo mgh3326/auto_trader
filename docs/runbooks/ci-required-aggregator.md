@@ -45,7 +45,21 @@ something went wrong":
 |---|---|---|
 | `classified` | 0 | every changed path mapped to a known lane, and every change was an add or a modify |
 | `run_all` | 0 | any unknown path, any rename/copy/delete/type-change/unmerged path, any shared CI/config/test-infrastructure file, an empty change set, or an absent base SHA |
-| `error` | **1** | a head SHA that was not supplied, a supplied SHA that stays unresolvable after `git fetch` (shallow/incomplete history), a failing `git` invocation, or a malformed `--name-status` record |
+| `error` | **1** | a head SHA that was not supplied, a supplied SHA that stays unresolvable after `git fetch` (shallow/incomplete history, or an object that is not a commit), a failing `git` invocation, or a malformed `--name-status` record |
+
+**Resolution order matters.** A supplied head is resolved *before* the
+absent-base branch is taken. Otherwise an unresolvable head plus a missing or
+all-zero base returned a conservative green `run_all`, making an invalid head
+indistinguishable from a legitimate first-push one. The two cases must stay
+distinct:
+
+| base | head | outcome |
+|---|---|---|
+| absent / `0*40` | resolvable | `run_all`, exit 0 — a real first push |
+| absent / `0*40` | unresolvable or not a commit | **`error`, exit 1** |
+| present | unresolvable | **`error`, exit 1** |
+
+(`--name-status-file` remains a pure offline path and resolves no SHA at all.)
 
 Lanes and the jobs each one implies:
 

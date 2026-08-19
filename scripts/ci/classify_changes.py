@@ -488,6 +488,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
             head_sha = str(head_sha).strip()
             report["head_sha"] = head_sha
+            repo_root = Path(args.repo_root).resolve()
+            # Resolve the supplied head BEFORE the absent-base short-circuit.
+            # An unresolvable supplied commit is a hard red whether or not a
+            # base was given; letting the missing-base branch return first
+            # reported an invalid head as a conservative green run_all and
+            # made it indistinguishable from a legitimate first-push head.
+            _resolve_commit(repo_root, head_sha)
             if _is_absent_sha(base_sha):
                 if args.on_missing_base == "fail":
                     raise ClassifierError(
@@ -504,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
                 base_sha = str(base_sha).strip()
                 report["base_sha"] = base_sha
                 classification = classify_entries(
-                    collect_entries(Path(args.repo_root).resolve(), base_sha, head_sha)
+                    collect_entries(repo_root, base_sha, head_sha)
                 )
 
         report.update(

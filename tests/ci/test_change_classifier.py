@@ -573,3 +573,128 @@ def test_a_real_trailing_space_filename_from_git_is_classified_literally(
     assert code == 0
     assert report["path_lanes"] == {"docs/only.md ": "docs"}
     assert report["run_all"] is False
+
+
+# --------------------------------------------------------------------------
+# ROB-1294 re-verifier P2 — an absent base must not suppress an invalid head.
+#
+# `main()` used to take the missing-base short-circuit before resolving the
+# supplied head, so an unresolvable head was reported as a conservative green
+# run_all and was indistinguishable from a legitimate first-push head.
+#
+# These repos deliberately have no `origin` remote, so `_resolve_commit`'s
+# fetch fallbacks fail locally: the tests stay network-0.
+# --------------------------------------------------------------------------
+
+UNRESOLVABLE_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+
+def test_repo_fixture_has_no_remote_so_resolution_stays_offline(repo: Path) -> None:
+    """Pins the precondition the two reproducers below rely on."""
+
+    assert (
+        subprocess.run(
+            ["git", "remote"], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+        == ""
+    )
+
+
+def test_an_unresolvable_head_with_no_base_is_red_not_green_run_all(
+    repo: Path, tmp_path: Path
+) -> None:
+    code, report = _run_cli(repo, tmp_path, "--head-sha", UNRESOLVABLE_SHA)
+    assert code == 1
+    assert report["result"] == "error"
+    assert report["run_all"] is True
+    assert report["reason"] == "classifier_error"
+    assert "not reachable" in str(report["error"])
+
+
+def test_an_unresolvable_head_with_an_all_zero_base_is_red(
+    repo: Path, tmp_path: Path
+) -> None:
+    """`github.event.before` is 0*40 on a first push; that is exactly the
+    situation in which the invalid head used to be hidden."""
+
+    code, report = _run_cli(
+        repo, tmp_path, "--base-sha", "0" * 40, "--head-sha", UNRESOLVABLE_SHA
+    )
+    assert code == 1
+    assert report["result"] == "error"
+    assert report["run_all"] is True
+    assert "not reachable" in str(report["error"])
+
+
+def test_a_valid_head_with_no_base_is_still_conservative_green_run_all(
+    repo: Path, tmp_path: Path
+) -> None:
+    """The positive half of the contract must not regress."""
+
+    head = _git(repo, "rev-parse", "HEAD")
+    code, report = _run_cli(repo, tmp_path, "--head-sha", head)
+    assert code == 0
+    assert report["result"] == "run_all"
+    assert report["reason"] == "base_sha_missing"
+    assert report["error"] is None
+
+
+def test_a_valid_head_with_an_all_zero_base_is_still_green_run_all(
+    repo: Path, tmp_path: Path
+) -> None:
+    head = _git(repo, "rev-parse", "HEAD")
+    code, report = _run_cli(repo, tmp_path, "--base-sha", "0" * 40, "--head-sha", head)
+    assert code == 0
+    assert report["result"] == "run_all"
+    assert report["reason"] == "base_sha_missing"
+
+
+def test_a_head_that_resolves_to_a_non_commit_object_is_red(
+    repo: Path, tmp_path: Path
+) -> None:
+    """A blob SHA exists locally but is not a commit; `cat-file -e <sha>^{commit}`
+    must reject it rather than accepting any resolvable object."""
+
+    blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="not a commit\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert _git(repo, "cat-file", "-t", blob) == "blob"
+
+    code, report = _run_cli(repo, tmp_path, "--head-sha", blob)
+    assert code == 1
+    assert report["result"] == "error"
+    assert report["run_all"] is True
+
+
+def test_the_head_is_resolved_before_the_on_missing_base_fail_switch(
+    repo: Path, tmp_path: Path
+) -> None:
+    """Both paths are red; the head diagnosis is the more specific one."""
+
+    code, report = _run_cli(
+        repo,
+        tmp_path,
+        "--head-sha",
+        UNRESOLVABLE_SHA,
+        "--on-missing-base",
+        "fail",
+    )
+    assert code == 1
+    assert "not reachable" in str(report["error"])
+
+
+def test_an_offline_name_status_file_still_needs_no_sha_resolution(
+    tmp_path: Path,
+) -> None:
+    """`--name-status-file` remains a pure offline path."""
+
+    payload = tmp_path / "diff.txt"
+    payload.write_text("A\0docs/a.md\0", encoding="utf-8")
+    out = tmp_path / "report.json"
+    assert main(["--name-status-file", str(payload), "--json-out", str(out)]) == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["lanes"] == ["docs"]
