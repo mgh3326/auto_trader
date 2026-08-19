@@ -77,7 +77,11 @@ class TestDataFlow:
         pass
 
 
+# ROB-1296: these cases drive the real provider clients against a mocked
+# httpx.AsyncClient, so the autouse provider seams would replace the very code
+# under test. Opting out keeps the transport backstop and socket guard active.
 @pytest.mark.integration
+@pytest.mark.usefixtures("allow_external_providers")
 class TestExternalServiceMocking:
     """Test that all external services are properly mocked."""
 

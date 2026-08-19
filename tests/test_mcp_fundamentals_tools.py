@@ -1767,6 +1767,26 @@ class TestGetKimchiPremium:
             mock_upbit,
         )
 
+        # ROB-1296: only the Upbit leg is under test here, but the Binance and
+        # USD/KRW legs of the same fan-out ran for real. The sibling tests drive
+        # both through a mocked httpx client; this one asserts nothing about
+        # them, so stub them directly rather than letting them reach the network.
+        async def mock_binance_prices(symbols):
+            _ = symbols
+            return {"BTCUSDT": 102_000.50}
+
+        async def mock_exchange_rate():
+            return 1450.0
+
+        monkeypatch.setattr(
+            fundamentals_sources_naver, "_fetch_binance_prices", mock_binance_prices
+        )
+        monkeypatch.setattr(
+            fundamentals_sources_naver,
+            "_fetch_exchange_rate_usd_krw",
+            mock_exchange_rate,
+        )
+
         result = await tools["get_kimchi_premium"]("BTC")
 
         assert "error" in result

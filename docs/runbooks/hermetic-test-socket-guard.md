@@ -103,8 +103,36 @@ paired with an opt-out fixture a boundary test can request:
 
 | Boundary | Opt out with |
 | --- | --- |
+| All external HTTP, via httpx's real transports and the `requests` adapter | `allow_external_http` |
 | TradingView scanner HTTP | `allow_tvscreener_http` |
 | KIS daily-candle cache-miss fallback (`fetch_kr_daily_unclamped`) | `allow_kis_daily_candle_fetch` |
+
+The external-HTTP boundary (`tests/_external_http_boundary.py`) is the broad one,
+and it replaced what would otherwise have been seven per-provider stubs (KIS,
+Upbit, KRX, Naver, CoinGecko, Binance, the USD/KRW feed). It patches **only**
+`httpx.AsyncHTTPTransport` / `httpx.HTTPTransport` and
+`requests.adapters.HTTPAdapter` — the transports that actually speak to a
+network. `ASGITransport` (FastAPI `TestClient`), `WSGITransport`,
+`MockTransport`, respx and any custom `AsyncBaseTransport` are untouched, and
+loopback stays reachable. It raises `httpx.ConnectError` /
+`requests.ConnectionError`, the same types a blocked connect already produces,
+so no `except httpx.HTTPError` or retry branch changes behaviour.
+
+Every blocked request is counted by host and printed in the terminal summary:
+
+```
+ROB-1296 external HTTP boundary: 1 blocked requests across 1 hosts -- example.invalid=1
+```
+
+Treat a **rising** count, or a new host, as a newly under-mocked provider —
+that line is the reason a leak cannot reappear silently. Do not assert on the
+counts of real provider hosts in a test: that would make an existing leak a
+required baseline. `tests/test_rob1296_external_http_boundary.py` pins the
+mechanics against a dedicated `.invalid` probe instead.
+
+The boundary is a backstop, not a substitute for mocking. It stops the suite
+from *attempting* an external request; a provider call whose result the test
+actually depends on must still be stubbed at its call site.
 
 Each raises the same class of error the caller already handles, so observable
 behaviour is unchanged — only the socket disappears. Prefer a module-level
