@@ -139,20 +139,24 @@ class _RealRedis:
             self.proc = None
 
     def flush(self) -> None:
-        if self.spawned and self.port is not None:
-            subprocess.run(
-                ["redis-cli", "-h", "127.0.0.1", "-p", str(self.port), "FLUSHDB"],
-                capture_output=True,
-                timeout=5,
-                check=False,
+        target_url = (
+            f"redis://127.0.0.1:{self.port}/0"
+            if self.spawned and self.port is not None
+            else self.url
+        )
+
+        async def _flush() -> None:
+            import redis.asyncio as _redis
+
+            client = _redis.from_url(
+                target_url, socket_connect_timeout=5.0, socket_timeout=5.0
             )
-        else:
-            subprocess.run(
-                ["redis-cli", "-n", "15", "FLUSHDB"],
-                capture_output=True,
-                timeout=5,
-                check=False,
-            )
+            try:
+                await client.flushdb()
+            finally:
+                await client.aclose()
+
+        asyncio.new_event_loop().run_until_complete(_flush())
 
 
 def _redis_ping(url: str) -> bool:

@@ -65,6 +65,17 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
+      redis:
+        # ROB-1293 R1: see .github/workflows/test.yml for rationale — same
+        # GitHub-managed service replacing the host apt install here.
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 127.0.0.1:6379:6379
 
     steps:
     - uses: actions/checkout@v5
@@ -78,13 +89,6 @@ jobs:
 
     - name: Install UV
       run: pip install uv
-
-    - name: Install redis-server (ROB-892 real-Redis acceptance)
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq redis-server redis-tools
-        redis-server --version
-        redis-cli --version
 
     - name: Load cached venv
       uses: actions/cache@v5

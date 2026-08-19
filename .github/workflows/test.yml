@@ -121,6 +121,21 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
+      redis:
+        # ROB-1293 R1: GitHub-managed Redis service replaces the flaky host
+        # apt install. The ROB-892 gate-acceptance fixture still tries a
+        # disposable `redis-server` binary first (absent on ubuntu-latest, so
+        # this service is what it actually resolves to via
+        # ROB892_TEST_REDIS_URL / the localhost:6379/15 default) and fails
+        # loudly, never skips, if neither is reachable.
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 127.0.0.1:6379:6379
 
     steps:
     - uses: actions/checkout@v5
@@ -132,17 +147,6 @@ jobs:
 
     - name: Install UV
       run: pip install uv
-
-    - name: Install redis-server (ROB-892 real-Redis acceptance)
-      # ROB-892: the gate-acceptance suite spawns its own disposable redis-server
-      # on a random port (per-module isolation; never touches production Redis).
-      # The binary must exist in CI; if missing the fixture fails loudly rather
-      # than silently skipping the real-Redis tests.
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq redis-server redis-tools
-        redis-server --version
-        redis-cli --version
 
     - name: Load cached venv
       id: cached-uv-dependencies
