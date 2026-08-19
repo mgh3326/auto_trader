@@ -39,7 +39,13 @@
 .funding-form { display: grid; gap: 12px; }
 .funding-form__notice { padding: 9px 11px; border: 1px solid var(--accent); border-radius: 9px; color: var(--accent); font-size: 12px; font-weight: 800; }
 .funding-form label { display: grid; gap: 5px; color: var(--fg-2); font-size: 11px; font-weight: 700; }
-.funding-form input { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); color: var(--fg); font: inherit; }
+.funding-form input, .funding-form select, .funding-form time { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); color: var(--fg); font: inherit; }
+.funding-form time { display: block; font-weight: 700; }
+.funding-history-wrap { overflow-x: auto; margin-top: 12px; }
+.funding-history-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.funding-history-table th, .funding-history-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--divider); }
+.funding-history-table th { color: var(--fg-3); font-size: 10px; font-weight: 700; }
+.funding-conflict { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--loss); border-radius: 10px; background: var(--loss-soft); color: var(--loss); font-size: 12px; }
 .funding-form [role="status"] { margin: 0; color: var(--gain); font-size: 12px; }
 .funding-form [role="alert"] { margin: 0; color: var(--loss); font-size: 12px; }
 .funding-load-state { padding: 28px; border: 1px solid var(--border); border-radius: 14px; color: var(--fg-2); background: var(--surface); }

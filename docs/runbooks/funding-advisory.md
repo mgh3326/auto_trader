@@ -16,8 +16,17 @@ PR-2가 typed candidate evidence, 조회 API, 페이지와 Telegram delivery cla
 
 ## 최초 640,000원 선언
 
-마이그레이션에는 business row가 없다. 초기값은 `/invest/funding` admin 폼에서 다음
-값으로 한 번 선언한다.
+`/invest/funding` 외부현금 섹션은 운영자 셀프서비스다. 위치 카드(금액·통화·as-of·경과시간),
+현재시각으로 고정된 신규 선언 폼, 이력 테이블을 제공한다. as-of 는 폼 발급 시각이며
+운영자가 미래 값을 넣을 수 없다. UI가 수정처럼 보여도 write 는 항상 새 선언 append 다.
+낙관적 동시성으로 `expected_head_declaration_id` 가 어긋나면 409 와 함께 새 head 를
+표시한다. 비-admin 세션은 읽기만 가능하고 쓰기는 거부한다.
+
+선언은 매수력에 자동 가산되지 않음 — 입금 필요 알림의 근거. 화면에도 같은 문구를 둔다.
+
+마이그레이션에는 business row가 없다. 초기 640,000원 값은 정확한 관측 시각이 필요할 때만
+`build_initial_parking_declaration()` 으로 만들고, 이후 갱신은 `/invest/funding` admin 폼에서
+현재시각 as-of 로 선언한다.
 
 - location: `parking_primary`
 - label: `파킹통장`

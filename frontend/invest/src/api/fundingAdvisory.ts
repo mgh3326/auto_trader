@@ -1,7 +1,8 @@
 import type {
-  ExternalCashCurrentView,
+  ExternalCashDeclarePayload,
   ExternalCashDeclaration,
   ExternalCashForm,
+  ExternalCashHeadsView,
   ExternalCashHistoryView,
   FundingAdvisoryListResponse,
   FundingAdvisoryView,
@@ -31,7 +32,7 @@ export function fetchFundingAllocation(signal?: AbortSignal): Promise<FundingAll
   return getJson(`${BASE}/allocation`, signal);
 }
 
-export function fetchExternalCashCurrent(signal?: AbortSignal): Promise<ExternalCashCurrentView> {
+export function fetchExternalCashCurrent(signal?: AbortSignal): Promise<ExternalCashHeadsView> {
   return getJson(`${BASE}/external-cash/current`, signal);
 }
 
@@ -57,9 +58,24 @@ export function readCsrfCookie(cookie = document.cookie): string | null {
   return token ? decodeURIComponent(token.slice("csrftoken=".length)) : null;
 }
 
+export class ExternalCashDeclareConflict extends Error {
+  readonly error: string;
+  readonly currentHead: ExternalCashDeclaration | null;
+
+  constructor(detail: {
+    error?: string;
+    message?: string;
+    current_head?: ExternalCashDeclaration | null;
+  }) {
+    super(detail.message ?? "expected declaration head does not match current head");
+    this.name = "ExternalCashDeclareConflict";
+    this.error = detail.error ?? "expected_head_conflict";
+    this.currentHead = detail.current_head ?? null;
+  }
+}
+
 export async function declareExternalCash(
-  form: ExternalCashForm,
-  values: { amount: string; asOf: string; sourceNote: string },
+  payload: ExternalCashDeclarePayload,
 ): Promise<ExternalCashDeclaration> {
   const csrfToken = readCsrfCookie();
   if (!csrfToken) throw new Error("CSRF token is unavailable; reload the form before submitting");
@@ -70,18 +86,18 @@ export async function declareExternalCash(
       "Content-Type": "application/json",
       "x-csrftoken": csrfToken,
     },
-    body: JSON.stringify({
-      owner_user_id: form.owner_user_id,
-      location_key: form.location_key,
-      display_label: form.display_label,
-      currency: form.currency,
-      amount: values.amount,
-      as_of: values.asOf,
-      source_note: values.sourceNote,
-      expected_head_declaration_id: form.expected_head_declaration_id,
-      idempotency_key: form.idempotency_key,
-    }),
+    body: JSON.stringify(payload),
   });
+  if (response.status === 409) {
+    const body = (await response.json()) as {
+      detail?: {
+        error?: string;
+        message?: string;
+        current_head?: ExternalCashDeclaration | null;
+      };
+    };
+    throw new ExternalCashDeclareConflict(body.detail ?? {});
+  }
   if (!response.ok) throw new Error(`${BASE}/external-cash/declarations ${response.status}`);
   return response.json();
 }

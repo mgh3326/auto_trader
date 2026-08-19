@@ -41,6 +41,7 @@ class FakeRepository:
     def __init__(self) -> None:
         self.locks: list[str] = []
         self.existing = None
+        self.by_key: dict[tuple[int, str], SimpleNamespace] = {}
         self.heads: list[SimpleNamespace] = []
         self.history_rows: list[SimpleNamespace] = []
         self.inserted: list[dict] = []
@@ -48,8 +49,8 @@ class FakeRepository:
     async def acquire_lock(self, lock_key: str) -> None:
         self.locks.append(lock_key)
 
-    async def get_by_idempotency(self, **_kwargs):
-        return self.existing
+    async def get_by_idempotency(self, **kwargs):
+        return self.by_key.get((kwargs["owner_user_id"], kwargs["idempotency_key"]))
 
     async def list_current_heads(self, **_kwargs):
         return list(self.heads)
@@ -63,13 +64,40 @@ class FakeRepository:
     async def insert(self, **columns):
         self.inserted.append(columns)
         row = SimpleNamespace(
-            id=1,
+            id=len(self.inserted),
             recorded_at=NOW,
             **columns,
         )
         self.existing = row
+        self.by_key[(columns["owner_user_id"], columns["idempotency_key"])] = row
         self.heads = [row]
         return row
+
+
+def stored_row(
+    *,
+    declaration_id=None,
+    amount: Decimal = Decimal("0"),
+    idempotency_key: str = "funding-seed-20260815-1",
+    supersedes_declaration_id=None,
+):
+    row_id = declaration_id or uuid4()
+    return SimpleNamespace(
+        declaration_id=row_id,
+        owner_user_id=11,
+        location_key="parking_primary",
+        display_label="파킹통장",
+        currency="KRW",
+        amount=amount,
+        as_of=NOW - timedelta(minutes=30),
+        fresh_until=NOW + timedelta(hours=23, minutes=30),
+        source_note="운영자 선언",
+        declared_by_user_id=7,
+        origin="invest_ui",
+        supersedes_declaration_id=supersedes_declaration_id,
+        idempotency_key=idempotency_key,
+        recorded_at=NOW,
+    )
 
 
 def actor(*, role: UserRole = UserRole.admin, active: bool = True):
@@ -153,18 +181,24 @@ async def test_idempotency_key_with_different_payload_is_conflict() -> None:
 async def test_stale_expected_head_and_ambiguous_heads_fail_closed() -> None:
     session = FakeSession()
     repository = FakeRepository()
-    repository.heads = [SimpleNamespace(declaration_id=uuid4())]
+    current = stored_row(amount=Decimal("0"))
+    repository.heads = [current]
     service = ExternalCashDeclarationService(
         session,  # type: ignore[arg-type]
         _repository=repository,  # type: ignore[arg-type]
     )
 
-    with pytest.raises(ExternalCashConflictError):
+    with pytest.raises(ExternalCashConflictError) as exc_info:
         await service.declare(request(expected_head=uuid4()), actor(), NOW)
 
+    assert exc_info.value.error == "expected_head_conflict"
+    assert exc_info.value.current_head is not None
+    assert exc_info.value.current_head.declaration_id == current.declaration_id
+    assert exc_info.value.current_head.amount == Decimal("0")
+
     repository.heads = [
-        SimpleNamespace(declaration_id=uuid4()),
-        SimpleNamespace(declaration_id=uuid4()),
+        stored_row(),
+        stored_row(idempotency_key="other"),
     ]
     with pytest.raises(ExternalCashAmbiguousHeadError):
         await service.declare(
@@ -172,6 +206,33 @@ async def test_stale_expected_head_and_ambiguous_heads_fail_closed() -> None:
         )
 
     assert repository.inserted == []
+
+
+@pytest.mark.asyncio
+async def test_zero_head_then_new_declaration_is_append_only_history() -> None:
+    session = FakeSession()
+    repository = FakeRepository()
+    service = ExternalCashDeclarationService(
+        session,  # type: ignore[arg-type]
+        _repository=repository,  # type: ignore[arg-type]
+    )
+
+    zero = await service.declare(request(amount=Decimal("0")), actor(), NOW)
+    next_row = await service.declare(
+        request(
+            idempotency_key="funding-ui:second",
+            expected_head=zero.declaration_id,
+            amount=Decimal("1500000"),
+        ),
+        actor(),
+        NOW,
+    )
+
+    assert zero.amount == Decimal("0")
+    assert next_row.supersedes_declaration_id == zero.declaration_id
+    assert next_row.amount == Decimal("1500000")
+    assert len(repository.inserted) == 2
+    assert session.commits == 2
 
 
 @pytest.mark.asyncio

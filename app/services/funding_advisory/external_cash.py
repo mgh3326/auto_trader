@@ -28,6 +28,7 @@ from app.services.funding_advisory._external_cash_repository import (
 
 FRESHNESS_WINDOW = timedelta(hours=24)
 ORIGIN = "invest_ui"
+NO_AUTO_ADD_NOTICE = "선언은 매수력에 자동 가산되지 않음 — 입금 필요 알림의 근거"
 
 
 class ExternalCashDeclarationError(Exception):
@@ -40,6 +41,17 @@ class ExternalCashAuthorizationError(ExternalCashDeclarationError):
 
 class ExternalCashConflictError(ExternalCashDeclarationError):
     """Expected-head or idempotency compare-and-set failed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        current_head: ExternalCashDeclarationRecord | None = None,
+        error: str = "expected_head_conflict",
+    ) -> None:
+        super().__init__(message)
+        self.current_head = current_head
+        self.error = error
 
 
 class ExternalCashAmbiguousHeadError(ExternalCashDeclarationError):
@@ -177,7 +189,8 @@ class ExternalCashDeclarationService:
             if existing is not None:
                 if not _matches_replay(existing, request, actor_user_id=actor_id):
                     raise ExternalCashConflictError(
-                        "idempotency key already has a different declaration"
+                        "idempotency key already has a different declaration",
+                        error="idempotency_conflict",
                     )
                 await self._session.commit()
                 return _record(existing)
@@ -197,10 +210,18 @@ class ExternalCashDeclarationService:
                     "multiple current declaration heads; refusing to choose"
                 )
 
-            actual_head = heads[0].declaration_id if heads else None
+            actual_head_row = heads[0] if heads else None
+            actual_head = (
+                actual_head_row.declaration_id if actual_head_row is not None else None
+            )
             if actual_head != request.expected_head_declaration_id:
                 raise ExternalCashConflictError(
-                    "expected declaration head does not match current head"
+                    "expected declaration head does not match current head",
+                    current_head=(
+                        _record(actual_head_row)
+                        if actual_head_row is not None
+                        else None
+                    ),
                 )
 
             row = await self._repository.insert(
@@ -254,8 +275,8 @@ class ExternalCashDeclarationService:
         self,
         *,
         owner_user_id: int,
-        location_key: str,
-        currency: str,
+        location_key: str | None = None,
+        currency: str | None = None,
         limit: int = 100,
     ) -> list[ExternalCashDeclarationRecord]:
         if not 1 <= limit <= 200:
@@ -277,4 +298,5 @@ __all__ = [
     "ExternalCashDeclarationService",
     "ExternalCashValidationError",
     "FRESHNESS_WINDOW",
+    "NO_AUTO_ADD_NOTICE",
 ]

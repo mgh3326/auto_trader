@@ -239,6 +239,16 @@ async def test_declared_cash_never_changes_available_required_or_shortfall() -> 
     assert declared["routes"][0]["route_fundable_amount"] == "60000"
     assert declared["routes"][0]["counted_fundable_amount"] == "0"
     assert declared["safety"]["authoritative_for_order_gate"] is False
+    mutant_shortfall = max(
+        Decimal(baseline["need"]["shortfall"]) - Decimal("640000"),
+        Decimal("0"),
+    )
+    assert Decimal(declared["need"]["shortfall"]) != mutant_shortfall
+    assert declared["need"]["required_cash"] == baseline["need"]["required_cash"]
+    assert (
+        declared["need"]["target_buying_power"]
+        == baseline["need"]["target_buying_power"]
+    )
 
 
 @pytest.mark.asyncio
