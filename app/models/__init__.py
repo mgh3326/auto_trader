@@ -10,6 +10,7 @@ from .crypto_instrument_health import CryptoInstrumentHealth
 from .crypto_instruments import CryptoInstrument
 from .execution_ledger import ExecutionLedger, ExecutionLedgerReconcileRun
 from .financial_fundamentals_snapshot import FinancialFundamentalsSnapshot
+from .funding_advisory import ExternalCashDeclaration
 from .invalid_sample_eligibility import (
     InvalidSampleCleanupBinding,
     InvalidSampleCleanupLifecycleEvent,
@@ -252,6 +253,7 @@ __all__ = [
     "MarketValuationSnapshot",
     "NaverResearchDetailCache",
     "FinancialFundamentalsSnapshot",
+    "ExternalCashDeclaration",
     "Trade",
     "TossLiveOrderLedger",
     "TradeSnapshot",
