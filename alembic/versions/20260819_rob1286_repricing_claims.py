@@ -1,7 +1,7 @@
 """ROB-1286 durable watch-event repricing claims (additive)
 
 Revision ID: 20260819_rob1286_claims
-Revises: 20260814_lcapprove_b1
+Revises: 20260815_external_cash
 Create Date: 2026-08-19
 
 Additive: creates one new table in the ``review`` schema. No existing table,
@@ -9,7 +9,7 @@ column, constraint or index is altered, and ``review.investment_watch_events``
 is not touched -- this feature reads it and never writes it.
 
 Provenance: produced by ``alembic revision --autogenerate`` against a
-run-owned scratch database at ``20260814_lcapprove_b1``, then reduced to
+run-owned scratch database, then reduced to
 this table. The raw autogenerate output additionally proposed ~3300 lines of
 unrelated ``create_table`` calls, which is pre-existing drift between the ORM
 metadata and the migration chain (tables other features create elsewhere) and
@@ -27,12 +27,13 @@ fence a stale claimant out of the current row.
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "20260819_rob1286_claims"
-down_revision: str | Sequence[str] | None = "20260814_lcapprove_b1"
+down_revision: str | Sequence[str] | None = "20260815_external_cash"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
