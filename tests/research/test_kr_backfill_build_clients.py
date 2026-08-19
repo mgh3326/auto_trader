@@ -38,6 +38,11 @@ def _minimal_subprocess_env() -> dict[str, str]:
     }
     env.update(
         {
+            # Settings otherwise reads the developer checkout's .env even
+            # though this subprocess deliberately supplies a minimal env.
+            # Point dotenv loading at an empty OS file so "without env" is a
+            # stable test condition on configured workstations too.
+            "ENV_FILE": os.devnull,
             "KIWOOM_MOCK_APP_KEY": "test-kiwoom-key",
             "KIWOOM_MOCK_APP_SECRET": "test-kiwoom-secret",
         }

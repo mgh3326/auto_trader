@@ -1677,3 +1677,125 @@ async def test_list_expired_defensive_filters_by_market(monkeypatch):
 
     assert result["success"] is True
     assert str(proposal_id) not in {p["proposal_id"] for p in result["proposals"]}
+
+
+@pytest.mark.asyncio
+async def test_funding_evaluation_exception_never_blocks_proposal_create(monkeypatch):
+    from app.services.funding_advisory.contracts import (
+        FundingAssessment,
+        FundingCandidateEvent,
+        PassedNonFundingGateEvidence,
+    )
+
+    observed_at = datetime.now(UTC)
+    evidence = PassedNonFundingGateEvidence.issue(
+        owner_user_id=1,
+        source_kind="upbit_live_candidate",
+        source_candidate_id=f"fail-open-{uuid.uuid4()}",
+        gate_name="crypto_non_funding_gate",
+        gate_version="crypto-gate.v1",
+        gate_verdict="passed",
+        gate_evaluated_at=observed_at,
+        valid_until=observed_at + timedelta(hours=1),
+        market="crypto",
+        target_account_mode="upbit",
+        broker_account_id="upbit-primary",
+        currency="KRW",
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="limit",
+        blocking_reasons=[],
+        non_funding_checks=[
+            {
+                "check_id": "candidate_quality",
+                "check_version": "v1",
+                "verdict": "passed",
+                "evaluated_at": observed_at,
+            }
+        ],
+    )
+    candidate_event = FundingCandidateEvent(
+        evidence=evidence,
+        assessment=FundingAssessment(
+            required_cash=Decimal("100000"),
+            target_buying_power=Decimal("40000"),
+            currency="KRW",
+            observed_at=observed_at,
+            valid_until=observed_at + timedelta(minutes=30),
+            source="upbit_accounts_free_krw",
+        ),
+    )
+    evaluate = AsyncMock(side_effect=RuntimeError("injected evaluator failure"))
+    monkeypatch.setattr(
+        opt.FundingAdvisoryService,
+        "evaluate_candidate_event",
+        evaluate,
+    )
+
+    proposal_id = uuid.uuid4()
+    create_calls = []
+
+    class FakeSession:
+        commits = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def commit(self):
+            self.commits += 1
+
+    class FakeOrderService:
+        def __init__(self, _session):
+            pass
+
+        async def create_proposal(self, **kwargs):
+            create_calls.append(kwargs)
+            return SimpleNamespace(
+                proposal_id=proposal_id,
+                lifecycle_state="proposed",
+                action="place",
+                target_broker_order_id=None,
+                valid_until=observed_at + timedelta(hours=1),
+            )
+
+        async def get_proposal(self, _proposal_id):
+            rung = SimpleNamespace(
+                rung_index=0,
+                side="buy",
+                quantity=Decimal("10"),
+                limit_price=Decimal("70000"),
+                notional=None,
+                state="pending_approval",
+                broker_order_id=None,
+                correlation_id=None,
+            )
+            return SimpleNamespace(source_asof=None), [rung]
+
+    monkeypatch.setattr(opt, "AsyncSessionLocal", FakeSession)
+    monkeypatch.setattr(opt, "OrderProposalsService", FakeOrderService)
+
+    async def complete(committed_result, **_kwargs):
+        return dict(committed_result)
+
+    monkeypatch.setattr(opt, "_complete_committed_proposal_create", complete)
+
+    created = await opt.order_proposal_create(
+        **_create_kwargs(
+            symbol="KRW-BTC",
+            market="crypto",
+            account_mode="upbit",
+            funding_candidate_event=candidate_event.model_dump(mode="json"),
+        )
+    )
+
+    assert created["success"] is True
+    assert created["funding_advisory"] == {
+        "status": "unavailable",
+        "failure_code": "funding_advisory_evaluation_failed",
+    }
+    evaluate.assert_awaited_once()
+    assert len(create_calls) == 1
+    assert create_calls[0]["symbol"] == "KRW-BTC"

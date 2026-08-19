@@ -9,6 +9,7 @@ PROTECTED_ORDER_FILES = (
     ROOT / "app/services/order_proposals/revalidation.py",
     ROOT / "app/services/order_proposals/auto_approve.py",
     ROOT / "app/services/support_reserve_net_consumer.py",
+    ROOT / "app/services/order_proposals/dispatch.py",
 )
 
 
@@ -47,7 +48,58 @@ def test_private_repository_is_only_imported_by_external_cash_service() -> None:
     assert offenders == []
 
 
-def test_funding_foundation_has_no_router_or_runtime_consumer() -> None:
+def test_private_advisory_repository_is_only_imported_by_advisory_service() -> None:
+    offenders: list[Path] = []
+    for path in (ROOT / "app").rglob("*.py"):
+        if path.name == "_repository.py":
+            continue
+        if (
+            "app.services.funding_advisory._repository" in imported_modules(path)
+            and path != ROOT / "app/services/funding_advisory/service.py"
+        ):
+            offenders.append(path)
+    assert offenders == []
+
+
+def test_funding_router_is_registered_without_order_or_broker_imports() -> None:
     main_text = (ROOT / "app/main.py").read_text(encoding="utf-8")
-    assert "invest_funding" not in main_text
-    assert not (ROOT / "app/routers/invest_funding.py").exists()
+    router_path = ROOT / "app/routers/invest_funding.py"
+    assert "app.include_router(invest_funding.router)" in main_text
+    assert router_path.exists()
+    imported = imported_modules(router_path)
+    assert not any(
+        module.startswith("app.services.order_proposals")
+        or module.startswith("app.services.brokers")
+        or module.startswith("app.mcp_server.tooling")
+        for module in imported
+    )
+
+
+def test_funding_package_has_no_proposal_create_or_broker_dependency() -> None:
+    offenders: list[tuple[Path, str]] = []
+    for path in (ROOT / "app/services/funding_advisory").rglob("*.py"):
+        for module in imported_modules(path):
+            if (
+                module.startswith("app.services.order_proposals")
+                or module.startswith("app.services.brokers")
+                or module.startswith("app.mcp_server.tooling")
+            ):
+                offenders.append((path, module))
+    assert offenders == []
+
+    for path in (ROOT / "app/services/funding_advisory").rglob("*.py"):
+        assert "create_proposal(" not in path.read_text(encoding="utf-8"), path
+
+
+def test_provenance_identifier_is_absent_from_decision_classifiers() -> None:
+    for path in PROTECTED_ORDER_FILES:
+        assert "source_funding_advisory_id" not in path.read_text(encoding="utf-8")
+
+
+def test_provenance_table_has_no_classification_or_sizing_columns() -> None:
+    model_text = (ROOT / "app/models/funding_advisory.py").read_text(encoding="utf-8")
+    link_model = model_text.split("class FundingAdvisoryProposalLink", 1)[1]
+    assert "rationale" not in link_model
+    assert "quantity" not in link_model
+    assert "notional" not in link_model
+    assert "eligibility" not in link_model

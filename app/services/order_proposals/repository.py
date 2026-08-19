@@ -16,6 +16,10 @@ from sqlalchemy import TIMESTAMP, Text, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.models.funding_advisory import (
+    FundingAdvisory,
+    FundingAdvisoryProposalLink,
+)
 from app.models.order_proposals import (
     OrderProposal,
     OrderProposalApprovalBatch,
@@ -46,6 +50,38 @@ class OrderProposalRepository:
 
     async def insert_rung(self, **cols: Any) -> OrderProposalRung:
         row = OrderProposalRung(**cols)
+        self._session.add(row)
+        await self._session.flush()
+        await self._session.refresh(row)
+        return row
+
+    async def funding_advisory_exists(self, advisory_id: uuid.UUID) -> bool:
+        stmt = select(FundingAdvisory.id).where(
+            FundingAdvisory.advisory_id == advisory_id
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none() is not None
+
+    async def get_funding_advisory_link(
+        self, proposal_id: uuid.UUID
+    ) -> FundingAdvisoryProposalLink | None:
+        stmt = select(FundingAdvisoryProposalLink).where(
+            FundingAdvisoryProposalLink.proposal_id == proposal_id
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def insert_funding_advisory_link(
+        self,
+        *,
+        advisory_id: uuid.UUID,
+        proposal_id: uuid.UUID,
+        linked_at: datetime,
+    ) -> FundingAdvisoryProposalLink:
+        row = FundingAdvisoryProposalLink(
+            advisory_id=advisory_id,
+            proposal_id=proposal_id,
+            source_kind="order_proposal_create",
+            linked_at=linked_at,
+        )
         self._session.add(row)
         await self._session.flush()
         await self._session.refresh(row)

@@ -34,3 +34,9 @@ test("router exposes B0 evidence and B1 loss-cut approval routes", () => {
   expect(paths).toContain("/approvals/loss-cut/evidence/:symbol");
   expect(paths).toContain("/approvals/loss-cut/:proposalId");
 });
+
+test("router exposes funding advisory list and detail entry points", () => {
+  const paths = pathsOf((router as any).routes);
+  expect(paths).toContain("/funding");
+  expect(paths).toContain("/funding/:advisoryId");
+});
