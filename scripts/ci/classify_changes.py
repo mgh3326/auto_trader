@@ -83,7 +83,19 @@ FORCING_LANES: frozenset[str] = frozenset({"ci_shared", "unknown"})
 CLASSIFIABLE_STATUSES: frozenset[str] = frozenset({"A", "M"})
 
 _NULL_SHA_RE = re.compile(r"\A0{7,64}\Z")
-_RENAME_STATUS_RE = re.compile(r"\A[RC]\d*\Z")
+
+# `git diff --raw`/`--name-status` status grammar: a single letter, optionally
+# followed by a similarity/dissimilarity score. Scores appear only for R and C
+# (similarity) and for M (dissimilarity, emitted for rewrites under -B). Any
+# other shape -- ``AA``, ``A1``, ``Z``, ``R1000``, an empty token -- is not
+# something git produces, so it is a hard failure rather than a token we
+# truncate to its first character and hope about.
+_STATUS_RE = re.compile(r"\A(?:[ADTUXB]|[RCM]\d{1,3})\Z|\A[RCM]\Z")
+_RENAME_STATUS_RE = re.compile(r"\A[RC]\d{0,3}\Z")
+#: A scored ``M`` is a *rewrite*, not an ordinary modify: git considers the
+#: file's content substantially replaced. It is graded with the conservative
+#: statuses so it forces ``run_all`` instead of being classified by path.
+_REWRITE_STATUS_RE = re.compile(r"\AM\d{1,3}\Z")
 
 # Ordered rule table. First match wins, so shared infrastructure must precede
 # the broad directory lanes it lives inside (``scripts/ci/`` before
@@ -118,7 +130,13 @@ _PREFIX_RULES: tuple[tuple[str, str], ...] = (
     ("config/", "config"),
 )
 
-_SUFFIX_RULES: tuple[tuple[str, str], ...] = ((".md", "docs"),)
+#: Suffix rules apply to **top-level files only** (no ``/`` in the path).
+#: A bare ``*.md`` rule would otherwise swallow every unmatched nested
+#: markdown path -- a fixture under a directory the prefix table does not know
+#: yet, or a directory whose name merely resembles a known one (git tracks
+#: ``" docs/only.md"``, with a leading space, as a *different* directory).
+#: Those must stay ``unknown`` and force ``run_all``.
+_TOP_LEVEL_SUFFIX_RULES: tuple[tuple[str, str], ...] = ((".md", "docs"),)
 
 
 class ClassifierError(RuntimeError):
@@ -152,20 +170,28 @@ class Classification:
 
 
 def classify_path(path: str) -> str:
-    """Map a repo-relative path to a lane name (``unknown`` when unmatched)."""
+    """Map a repo-relative path to a lane name (``unknown`` when unmatched).
 
-    normalized = path.strip()
-    if not normalized:
+    Matching is against the **literal** path git reported. Nothing is
+    stripped or otherwise normalized first: git happily tracks a file named
+    ``" docs/only.md"`` (leading space) and emits it verbatim under
+    ``--name-status -z``, and a classifier that trimmed it would answer
+    "docs-only, no jobs needed" for a path that is not in ``docs/`` at all.
+    An unmatched literal is ``unknown``, which forces ``run_all``.
+    """
+
+    if not path:
         return "unknown"
     for exact, lane in _EXACT_RULES:
-        if normalized == exact:
+        if path == exact:
             return lane
     for prefix, lane in _PREFIX_RULES:
-        if normalized.startswith(prefix):
+        if path.startswith(prefix):
             return lane
-    for suffix, lane in _SUFFIX_RULES:
-        if normalized.endswith(suffix):
-            return lane
+    if "/" not in path:
+        for suffix, lane in _TOP_LEVEL_SUFFIX_RULES:
+            if path.endswith(suffix):
+                return lane
     return "unknown"
 
 
@@ -227,11 +253,35 @@ def parse_name_status(payload: str) -> list[ChangeEntry]:
     a dropped record is exactly how coverage silently shrinks.
     """
 
-    fields = [item for item in payload.split("\0") if item != ""]
+    if payload == "":
+        return []
+    if not payload.endswith("\0"):
+        raise ClassifierError(
+            "git --name-status -z output is not NUL-terminated; the stream is "
+            "truncated and the missing records cannot be assumed harmless."
+        )
+    # A correctly terminated stream splits into the fields plus exactly one
+    # empty trailing sentinel. Any *other* empty field is an embedded NUL that
+    # would previously have been dropped, silently resynchronising the parser
+    # onto a different status/path pairing.
+    fields = payload.split("\0")[:-1]
+    for position, item in enumerate(fields):
+        if item == "":
+            raise ClassifierError(
+                f"git --name-status -z output has an empty field at position "
+                f"{position}; an embedded NUL means the record boundaries "
+                "cannot be trusted."
+            )
+
     entries: list[ChangeEntry] = []
     index = 0
     while index < len(fields):
         status = fields[index]
+        if not _STATUS_RE.match(status):
+            raise ClassifierError(
+                f"unrecognised git status token {status!r}: expected one of "
+                "A/C/D/M/R/T/U/X/B, optionally scored for R, C and M."
+            )
         if _RENAME_STATUS_RE.match(status):
             if index + 2 >= len(fields):
                 raise ClassifierError(
@@ -249,7 +299,11 @@ def parse_name_status(payload: str) -> list[ChangeEntry]:
             raise ClassifierError(
                 f"malformed record {status!r} in git output: expected a path"
             )
-        entries.append(ChangeEntry(status=status[0], path=fields[index + 1]))
+        # A scored M is a rewrite: keep the whole token so it lands outside
+        # CLASSIFIABLE_STATUSES and forces run_all, and so the report shows
+        # what git actually said rather than a truncated "M".
+        graded = status if _REWRITE_STATUS_RE.match(status) else status[0]
+        entries.append(ChangeEntry(status=graded, path=fields[index + 1]))
         index += 2
     return entries
 

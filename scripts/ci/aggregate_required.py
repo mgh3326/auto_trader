@@ -111,23 +111,61 @@ def _extract_result(name: str, raw: object) -> str | None:
     )
 
 
-def evaluate(
-    results: Mapping[str, object],
-    required: Sequence[str],
-    authorized_skips: Iterable[str] = (),
-    *,
-    allow_undeclared: bool = False,
-) -> AggregateVerdict:
-    """Apply the truth table above. Pure: no IO, no environment."""
+def _validate_names(kind: str, names: Sequence[str]) -> None:
+    """Reject blank and duplicate job names before anything can pass.
 
-    authorized = set(authorized_skips)
-    unknown_authorized = authorized - set(required)
+    argparse happily turns ``--required ''`` into a one-element list, which
+    used to satisfy the "refusing to run a vacuous aggregate" check while
+    naming no real job; and a repeated ``--required lint`` used to be counted
+    twice. Both are configuration errors, not children.
+    """
+
+    seen: set[str] = set()
+    for name in names:
+        if not isinstance(name, str) or not name.strip():
+            raise AggregateError(
+                f"{kind} contains a blank or whitespace-only job name "
+                f"({name!r}); a gate cannot be anchored to an unnamed job."
+            )
+        if name in seen:
+            raise AggregateError(
+                f"{kind} contains the duplicate job name {name!r}; each "
+                "required child must be declared exactly once."
+            )
+        seen.add(name)
+
+
+def validate_configuration(
+    required: Sequence[str], authorized_skips: Sequence[str] = ()
+) -> None:
+    """Fail closed on a malformed required/authorized-skip declaration."""
+
+    if not required:
+        raise AggregateError(
+            "no --required job names given; refusing to run an aggregate "
+            "that vacuously passes."
+        )
+    _validate_names("--required", required)
+    _validate_names("--authorize-skip", authorized_skips)
+    unknown_authorized = set(authorized_skips) - set(required)
     if unknown_authorized:
         raise AggregateError(
             "--authorize-skip names jobs that are not required: "
             f"{sorted(unknown_authorized)}"
         )
 
+
+def evaluate(
+    results: Mapping[str, object],
+    required: Sequence[str],
+    authorized_skips: Sequence[str] = (),
+    *,
+    allow_undeclared: bool = False,
+) -> AggregateVerdict:
+    """Apply the truth table above. Pure: no IO, no environment."""
+
+    validate_configuration(required, authorized_skips)
+    authorized = set(authorized_skips)
     verdict = AggregateVerdict()
     for name in required:
         if name not in results:
@@ -303,11 +341,9 @@ def main(argv: list[str] | None = None) -> int:
     exit_code = 1
 
     try:
-        if not args.required:
-            raise AggregateError(
-                "no --required job names given; refusing to run an aggregate "
-                "that vacuously passes."
-            )
+        # Validated before the payload is even read: a malformed gate
+        # declaration must never reach a verdict.
+        validate_configuration(args.required, args.authorize_skip)
         results = load_results(args)
         verdict = evaluate(
             results,

@@ -17,6 +17,7 @@ from scripts.ci.aggregate_required import (
     AggregateError,
     evaluate,
     main,
+    validate_configuration,
 )
 
 REQUIRED = ["lint", "test", "taskiq-smoke", "change-classifier"]
@@ -267,3 +268,107 @@ def test_cli_report_records_every_child_verdict(tmp_path: Path) -> None:
         "taskiq-smoke": "pass",
         "change-classifier": "pass",
     }
+
+
+# --------------------------------------------------------------------------
+# ROB-1294 verifier P2 — a malformed gate declaration must never reach a
+# verdict. Both CLI cases below exited 0 with result=pass before the fix.
+# --------------------------------------------------------------------------
+
+
+def test_a_blank_required_name_is_a_configuration_error() -> None:
+    with pytest.raises(AggregateError, match="blank or whitespace-only"):
+        evaluate({"": {"result": "success"}}, [""])
+
+
+@pytest.mark.parametrize("name", ["", " ", "\t", "\n"])
+def test_every_blank_shape_of_required_name_is_rejected(name: str) -> None:
+    with pytest.raises(AggregateError, match="blank or whitespace-only"):
+        validate_configuration([name])
+
+
+def test_a_duplicate_required_name_is_a_configuration_error() -> None:
+    with pytest.raises(AggregateError, match="duplicate job name 'lint'"):
+        evaluate(_all_success(), ["lint", "lint", "test"])
+
+
+def test_a_blank_authorize_skip_name_is_a_configuration_error() -> None:
+    with pytest.raises(AggregateError, match="blank or whitespace-only"):
+        evaluate(_all_success(), REQUIRED, authorized_skips=[""])
+
+
+def test_a_duplicate_authorize_skip_name_is_a_configuration_error() -> None:
+    with pytest.raises(AggregateError, match="duplicate job name 'lint'"):
+        evaluate(_all_success(), REQUIRED, authorized_skips=["lint", "lint"])
+
+
+def test_an_empty_required_list_is_a_configuration_error() -> None:
+    with pytest.raises(AggregateError, match="vacuously"):
+        validate_configuration([])
+
+
+def test_validate_configuration_accepts_the_shipped_workflow_declaration() -> None:
+    validate_configuration(REQUIRED)
+
+
+def test_cli_is_red_on_a_blank_required_name(tmp_path: Path) -> None:
+    code, report = _cli(
+        tmp_path, "--results-json", '{"":{"result":"success"}}', "--required", ""
+    )
+    assert code == 1
+    assert report["result"] == "fail"
+    assert "blank or whitespace-only" in str(report["error"])
+
+
+def test_cli_is_red_on_a_duplicated_required_name(tmp_path: Path) -> None:
+    code, report = _cli(
+        tmp_path,
+        "--results-json",
+        json.dumps(_all_success()),
+        "--required",
+        "lint",
+        "--required",
+        "lint",
+        "--required",
+        "test",
+        "--required",
+        "taskiq-smoke",
+        "--required",
+        "change-classifier",
+    )
+    assert code == 1
+    assert report["result"] == "fail"
+    assert "duplicate job name 'lint'" in str(report["error"])
+
+
+def test_cli_is_red_on_a_blank_authorize_skip_name(tmp_path: Path) -> None:
+    code, report = _cli(
+        tmp_path,
+        "--results-json",
+        json.dumps(_all_success()),
+        *_required_flags(),
+        "--authorize-skip",
+        "",
+    )
+    assert code == 1
+    assert "blank or whitespace-only" in str(report["error"])
+
+
+def test_a_malformed_declaration_is_rejected_before_the_payload_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate declaration is validated first, so an unreadable payload
+    cannot mask -- or be masked by -- a bad required list."""
+
+    monkeypatch.delenv("CI_REQUIRED_NEEDS", raising=False)
+    code, report = _cli(
+        tmp_path,
+        "--results-env",
+        "CI_REQUIRED_NEEDS",
+        "--required",
+        "",
+        "--required",
+        "",
+    )
+    assert code == 1
+    assert "blank or whitespace-only" in str(report["error"])

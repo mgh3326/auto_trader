@@ -62,7 +62,7 @@ Lanes and the jobs each one implies:
 | `ci_shared` | `.github/**`, `scripts/ci/**`, `pyproject.toml`, `uv.lock`, `Makefile`, `.test_durations`, `tests/conftest.py`, `tests/_socket_guard*.py`, `env.example`, `scripts/setup-test-env.sh`, `alembic.ini`, `codecov.yml` | **forces `run_all`** |
 | `unknown` | anything unmatched | **forces `run_all`** |
 
-Two design points that look conservative and are meant to be:
+Design points that look over-conservative and are meant to be:
 
 - A rename inside a single lane still forces `run_all`. The pre-image path is
   part of the blast radius and `--name-status` gives no guarantee the two
@@ -70,6 +70,35 @@ Two design points that look conservative and are meant to be:
 - The error path still writes `run_all=true` into `$GITHUB_OUTPUT` before
   exiting 1, so a consumer reading a partially written output file cannot
   infer reduced coverage from a crashed classifier.
+- **Paths are matched literally.** Nothing is stripped or normalized first.
+  Git tracks `" docs/only.md"` (leading space) as a file in a directory named
+  `" docs"`, and it is emitted verbatim under `--name-status -z`; trimming it
+  would answer "docs-only, no jobs needed" for a path that is not under
+  `docs/` at all. Unmatched literals are `unknown` → `run_all`.
+- **The `*.md` suffix rule is top-level only.** It exists for `README.md`,
+  `CLAUDE.md`, `AGENTS.md`. A bare suffix rule would swallow every unmatched
+  *nested* markdown path — including a fixture some test reads — and answer
+  "docs". Nested markdown under a directory the prefix table does not know is
+  `unknown` → `run_all`.
+
+### NUL stream and status grammar
+
+`--name-status -z` output is parsed strictly, because a parser that
+resynchronises quietly is a parser that reports the wrong lane confidently:
+
+- The stream must be NUL-terminated; a truncated one is red.
+- Exactly one trailing empty field (the terminator) is permitted. Any *other*
+  empty field means an embedded NUL, so record boundaries cannot be trusted →
+  red. (Previously such fields were filtered out, silently re-pairing statuses
+  with the wrong paths.)
+- The status token is validated as a whole *before* its first character is
+  used: a single letter from `A C D M R T U X B`, optionally followed by a
+  1–3 digit score for `R`, `C` and `M`. Anything else (`AA`, `Z`, `A1`,
+  `R1000`, `m`) is red rather than truncated into a status git never emitted.
+- A **scored `M`** (`M100`) is git's dissimilarity score for a *rewrite*,
+  emitted under `-B`. It is valid git output, so it is not red — but it is not
+  an ordinary modify either, so the whole token is kept, which places it
+  outside `CLASSIFIABLE_STATUSES` and forces `run_all`.
 
 ## 3. `ci-required` aggregate contract
 
@@ -94,6 +123,17 @@ Malformed input — non-JSON, a non-object payload, an unset env var, a child
 whose value is neither a string nor an object with `result` — is red. The
 workflow passes **no** `--authorize-skip` and **no** `--allow-undeclared`
 today, so `ci-required` is green only when all four children report `success`.
+
+The *declaration itself* is validated before the payload is even read
+(`validate_configuration`), so a malformed gate can never reach a verdict:
+
+- an empty `--required` list is red (an aggregate with no children passes
+  vacuously);
+- a blank or whitespace-only `--required` / `--authorize-skip` name is red —
+  argparse turns `--required ''` into a one-element list that satisfies the
+  non-empty check while naming no real job;
+- a duplicated `--required` / `--authorize-skip` name is red;
+- an `--authorize-skip` name that is not in `--required` is red.
 
 For the matrix `test` job, GitHub collapses all four shards into a single
 `needs.test.result`, which is `failure` if any shard failed. The aggregate

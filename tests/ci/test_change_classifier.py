@@ -433,3 +433,143 @@ def test_cli_is_red_on_a_missing_name_status_file(tmp_path: Path) -> None:
     )
     assert code == 1
     assert json.loads(out.read_text(encoding="utf-8"))["result"] == "error"
+
+
+# --------------------------------------------------------------------------
+# ROB-1294 verifier P1 — laundering a malformed/odd change set into a narrow
+# green classification. Every case below produced `classified, jobs=()` before
+# the fix; each must now be run_all or red.
+# --------------------------------------------------------------------------
+
+
+def test_a_literal_leading_space_path_is_not_normalized_into_the_docs_lane() -> None:
+    """git tracks `" docs/only.md"` as a file in a directory named `" docs"`.
+
+    Stripping it first turned an unrecognised path into a green docs-only
+    classification with zero jobs.
+    """
+
+    assert classify_path(" docs/only.md") == "unknown"
+    result = classify_entries(parse_name_status("M\0 docs/only.md\0"))
+    assert result.run_all is True
+    assert result.forcing_paths == (" docs/only.md",)
+
+
+def test_a_trailing_space_path_inside_docs_stays_in_the_docs_lane() -> None:
+    """The literal path really is under `docs/`, so narrowing is honest."""
+
+    assert classify_path("docs/only.md ") == "docs"
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["snapshots/expected.md", "some_new_dir/notes.md", " docs/only.md"],
+)
+def test_a_nested_markdown_path_in_an_unknown_directory_is_unknown(path: str) -> None:
+    """The `*.md` suffix rule is top-level only.
+
+    A bare suffix rule would swallow any unmatched nested markdown path --
+    including a fixture a test reads -- and answer "docs, no jobs needed".
+    """
+
+    assert classify_path(path) == "unknown"
+
+
+@pytest.mark.parametrize("path", ["README.md", "CLAUDE.md", "AGENTS.md"])
+def test_top_level_markdown_is_still_docs(path: str) -> None:
+    assert classify_path(path) == "docs"
+
+
+def test_a_scored_modify_is_a_rewrite_and_forces_run_all() -> None:
+    """`M100` is git's dissimilarity score for a rewrite (emitted under -B).
+
+    It is valid git output, so it is not red -- but it is not an ordinary
+    modify either, and truncating it to "M" classified it by path.
+    """
+
+    entries = parse_name_status("M100\0docs/only.md\0")
+    assert entries == [ChangeEntry("M100", "docs/only.md")]
+    result = classify_entries(entries)
+    assert result.run_all is True
+    assert result.reason == "forcing_path"
+
+
+def test_an_embedded_extra_nul_is_red_not_silently_dropped() -> None:
+    """A dropped empty field resynchronises the parser onto wrong pairings."""
+
+    with pytest.raises(ClassifierError, match="empty field at position"):
+        parse_name_status("A\0docs/one.md\0\0M\0docs/two.md\0")
+
+
+def test_an_unterminated_stream_is_red() -> None:
+    with pytest.raises(ClassifierError, match="not NUL-terminated"):
+        parse_name_status("A\0docs/one.md")
+
+
+@pytest.mark.parametrize(
+    "token", ["AA", "Z", "A1", "R1000", "M1234", "1", "-", "m", "RR100"]
+)
+def test_a_status_token_outside_gits_grammar_is_red(token: str) -> None:
+    """Truncating an unrecognised token to its first character invented a
+    status git never emitted."""
+
+    with pytest.raises(ClassifierError, match="unrecognised git status token"):
+        parse_name_status(f"{token}\0docs/one.md\0")
+
+
+@pytest.mark.parametrize(
+    "token", ["A", "D", "M", "T", "U", "X", "B", "R", "C", "R100", "C75", "R9"]
+)
+def test_every_token_git_actually_emits_is_accepted(token: str) -> None:
+    payload = (
+        f"{token}\0docs/old.md\0docs/new.md\0"
+        if token[0] in {"R", "C"}
+        else f"{token}\0docs/one.md\0"
+    )
+    assert parse_name_status(payload)
+
+
+def test_a_real_leading_space_filename_from_git_forces_run_all(
+    repo: Path, tmp_path: Path
+) -> None:
+    """End-to-end against real `git diff --name-status -z` output."""
+
+    odd_dir = repo / " docs"
+    odd_dir.mkdir()
+    (odd_dir / "only.md").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "odd dir")
+    base = _git(repo, "rev-parse", "HEAD")
+    (odd_dir / "only.md").write_text("y\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "modify odd dir")
+    head = _git(repo, "rev-parse", "HEAD")
+
+    raw = subprocess.run(
+        ["git", "diff", "--name-status", "-z", f"{base}..{head}"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert raw == "M\0 docs/only.md\0", repr(raw)
+
+    code, report = _run_cli(repo, tmp_path, "--base-sha", base, "--head-sha", head)
+    assert code == 0
+    assert report["run_all"] is True
+    assert report["forcing_paths"] == [" docs/only.md"]
+    assert report["jobs"] == sorted(ALL_JOBS)
+
+
+def test_a_real_trailing_space_filename_from_git_is_classified_literally(
+    repo: Path, tmp_path: Path
+) -> None:
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "docs" / "only.md ").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "trailing space")
+    head = _git(repo, "rev-parse", "HEAD")
+    code, report = _run_cli(repo, tmp_path, "--base-sha", base, "--head-sha", head)
+    assert code == 0
+    assert report["path_lanes"] == {"docs/only.md ": "docs"}
+    assert report["run_all"] is False
