@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # STAGE 1b (optional): frontend-builder - builds the React/Vite SPA
 # Toggle with: --build-arg ENABLE_FRONTEND_BUILD=1
 # ==============================================================================
-FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
+FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend-builder
 
 ARG ENABLE_FRONTEND_BUILD=0
 
