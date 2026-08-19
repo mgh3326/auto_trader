@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -547,14 +547,150 @@ def test_bounded_canary_does_not_authorize_recurring() -> None:
 
 
 def test_unknown_fingerprint_rows_are_safe_and_preserved() -> None:
+    binance_demo_physical_account_id = (
+        "binance_demo:spot_plus_futures:credential_fingerprint="
+        "sha256:e33925948f2cb6e03842cca9967b70f11f9242bc5c8f99c69ce0ca5cbc4d73df:"
+        "one_shared_domain"
+    )
+    binance_demo_fingerprint_evidence_ref = (
+        "d2-phasea-20260817:impl="
+        "sha256:44a9a5b4059c176eb8300d23048cd396daa77d6400faa3be8bbaf7c465d6ee82;"
+        "verify=sha256:03cfae4c8a9193ce0aa8ef4803d7e4ff3190eca1b6de777862b44d410a498e21"
+    )
+    expected_identity_by_lane = {
+        "kr.kis.mock": (None, None, "UNKNOWN"),
+        "kr.kiwoom.mock": (None, None, "UNKNOWN"),
+        "us.kis.mock": (None, None, "UNKNOWN"),
+        "us.kiwoom.mock": (None, None, "UNKNOWN"),
+        "us.alpaca.paper.default": (None, None, "UNKNOWN"),
+        "us.alpaca.paper.lab": (None, None, "UNKNOWN"),
+        "crypto.binance.spot_demo.canonical": (
+            binance_demo_physical_account_id,
+            binance_demo_fingerprint_evidence_ref,
+            "KNOWN",
+        ),
+        "crypto.binance.spot_demo.b0x_sidecar": (
+            binance_demo_physical_account_id,
+            binance_demo_fingerprint_evidence_ref,
+            "KNOWN",
+        ),
+        "crypto.alpaca.paper.default": (None, None, "UNKNOWN"),
+        "crypto.alpaca.paper.clean": (None, None, "UNKNOWN"),
+        "crypto.upbit.shadow": (None, None, "UNKNOWN"),
+        "crypto.binance.futures_demo": (
+            binance_demo_physical_account_id,
+            binance_demo_fingerprint_evidence_ref,
+            "KNOWN",
+        ),
+    }
+
     assert len(registry.CANONICAL_LANE_REGISTRY) == 12
+    assert tuple(expected_identity_by_lane) == registry.CANONICAL_LANE_IDS
     for entry in registry.CANONICAL_LANE_REGISTRY:
-        assert entry.physical_account_id is None
-        assert entry.fingerprint_evidence_ref is None
-        assert entry.identity_status == "UNKNOWN"
+        (
+            expected_physical_account_id,
+            expected_fingerprint_evidence_ref,
+            expected_identity_status,
+        ) = expected_identity_by_lane[entry.lane_id]
+        assert entry.physical_account_id == expected_physical_account_id
+        assert entry.fingerprint_evidence_ref == expected_fingerprint_evidence_ref
+        assert entry.identity_status == expected_identity_status
         assert entry.writer is False
         assert entry.auto is False
         assert registry.get_lane_registry_entry(entry.lane_id) is entry
+
+
+def test_j2a_binance_demo_identity_amendment_is_verbatim_and_additive() -> None:
+    """§3 values are exact; §4 changes no base-row field beyond the binding."""
+
+    lane_ids = (
+        "crypto.binance.spot_demo.canonical",
+        "crypto.binance.spot_demo.b0x_sidecar",
+        "crypto.binance.futures_demo",
+    )
+    physical_account_id = (
+        "binance_demo:spot_plus_futures:credential_fingerprint="
+        "sha256:e33925948f2cb6e03842cca9967b70f11f9242bc5c8f99c69ce0ca5cbc4d73df:"
+        "one_shared_domain"
+    )
+    fingerprint_evidence_ref = (
+        "d2-phasea-20260817:impl="
+        "sha256:44a9a5b4059c176eb8300d23048cd396daa77d6400faa3be8bbaf7c465d6ee82;"
+        "verify=sha256:03cfae4c8a9193ce0aa8ef4803d7e4ff3190eca1b6de777862b44d410a498e21"
+    )
+    base_by_id = {
+        entry.lane_id: entry for entry in registry._BASE_CANONICAL_LANE_REGISTRY
+    }
+    effective_by_id = _by_id()
+    binding_fields = {
+        "physical_account_id",
+        "identity_status",
+        "fingerprint_evidence_ref",
+        "missing_bindings",
+    }
+    expected_activation_statuses = {
+        "crypto.binance.spot_demo.canonical": registry.ActivationStatus.BLOCKED,
+        "crypto.binance.spot_demo.b0x_sidecar": registry.ActivationStatus.DISABLED,
+        "crypto.binance.futures_demo": registry.ActivationStatus.DISABLED,
+    }
+
+    assert len(fields(registry.LaneRegistryEntry)) == 34
+    assert (
+        tuple(lane_id for lane_id in lane_ids if lane_id in effective_by_id) == lane_ids
+    )
+    for lane_id, base in base_by_id.items():
+        effective = effective_by_id[lane_id]
+        changed_fields = {
+            field.name
+            for field in fields(registry.LaneRegistryEntry)
+            if getattr(base, field.name) != getattr(effective, field.name)
+        }
+        if lane_id not in lane_ids:
+            assert changed_fields == set()
+            continue
+
+        assert changed_fields == binding_fields
+        assert effective.physical_account_id == physical_account_id
+        assert effective.identity_status == "KNOWN"
+        assert effective.fingerprint_evidence_ref == fingerprint_evidence_ref
+        assert effective.missing_bindings == (
+            registry.MissingBinding.POLICY,
+            registry.MissingBinding.CAP,
+            registry.MissingBinding.OWNER,
+            registry.MissingBinding.CANARY,
+        )
+        assert effective.activation_status is expected_activation_statuses[lane_id]
+        assert effective.activation_status is base.activation_status
+        assert effective.writer is base.writer is False
+        assert effective.auto_order_enabled is base.auto_order_enabled is False
+
+
+def test_binance_demo_identity_unblocks_only_j3a_scope_not_execution_grant() -> None:
+    """Known identity permits the lease key; activation/writer gates still deny use."""
+
+    from app.services.mock_integration import coordination
+
+    lane_ids = (
+        "crypto.binance.spot_demo.canonical",
+        "crypto.binance.spot_demo.b0x_sidecar",
+        "crypto.binance.futures_demo",
+    )
+    entries = [registry.get_lane_registry_entry(lane_id) for lane_id in lane_ids]
+    scopes = [coordination.physical_account_scope_for_entry(entry) for entry in entries]
+
+    assert scopes[0] == scopes[1] == scopes[2]
+    assert tuple(coordination.physical_account_scope_for_entry.__annotations__) == (
+        "entry",
+        "return",
+    )
+    scope_deriver = coordination.physical_account_scope_for_entry
+    with pytest.raises(TypeError):
+        scope_deriver(entries[0], "caller")  # type: ignore[call-arg]
+
+    for entry in entries:
+        with pytest.raises(registry.LaneGuardError) as refusal:
+            registry.assert_entry_execution_ready(entry)
+        assert refusal.value.code == "lane_activation_not_enabled"
 
 
 @pytest.mark.parametrize(
@@ -588,7 +724,16 @@ def test_missing_bindings_keep_rows_blocked_or_disabled_with_reasons() -> None:
         == registry.CANONICAL_LANE_IDS
     )
     for entry in registry.CANONICAL_LANE_REGISTRY:
-        assert set(entry.missing_bindings) == required_missing
+        expected_missing = required_missing
+        if entry.lane_id in {
+            "crypto.binance.spot_demo.canonical",
+            "crypto.binance.spot_demo.b0x_sidecar",
+            "crypto.binance.futures_demo",
+        }:
+            expected_missing = required_missing - {
+                registry.MissingBinding.PHYSICAL_ACCOUNT_FINGERPRINT
+            }
+        assert set(entry.missing_bindings) == expected_missing
         assert entry.activation_status in {
             registry.ActivationStatus.BLOCKED,
             registry.ActivationStatus.DISABLED,

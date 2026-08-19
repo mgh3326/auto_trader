@@ -765,15 +765,13 @@ def test_mutant_01_two_binance_writers_in_one_domain_fail() -> None:
     mal.assert_binance_single_writer_domain(CANONICAL_LANE_REGISTRY)
 
 
-def test_mutant_01b_conservative_domain_ignores_unknown_physical_ids() -> None:
-    """§F-1 — the registry's own guard cannot fire while identity is UNKNOWN.
+def test_mutant_01b_shared_physical_identity_reaches_registry_writer_guard() -> None:
+    """§F-1 — the bound shared identity makes the generic writer guard fire."""
 
-    This is exactly why J6B carries a stricter conservative guard: proving the
-    weaker one silent is what makes the stronger one necessary rather than
-    decorative.
-    """
-
-    from app.services.mock_lane_registry import assert_single_writer
+    from app.services.mock_lane_registry import (
+        RegistryStartupError,
+        assert_single_writer,
+    )
 
     mutated = tuple(
         dataclasses.replace(entry, writer=True)
@@ -781,14 +779,18 @@ def test_mutant_01b_conservative_domain_ignores_unknown_physical_ids() -> None:
         else entry
         for entry in CANONICAL_LANE_REGISTRY
     )
-    assert all(
-        entry.physical_account_id is None
-        for entry in mutated
-        if entry.broker == "binance"
+    assert (
+        len(
+            {
+                entry.physical_account_id
+                for entry in mutated
+                if entry.broker == "binance"
+            }
+        )
+        == 1
     )
-    # Silent: no known physical account to collide on.
-    assert_single_writer(mutated)
-    # Not silent:
+    with pytest.raises(RegistryStartupError):
+        assert_single_writer(mutated)
     with pytest.raises(mal.SpotDemoLimitError):
         mal.assert_binance_single_writer_domain(mutated)
 
@@ -1284,8 +1286,12 @@ def test_registry_row_is_consumed_unchanged() -> None:
     assert entry.lane_status is LaneStatus.NOT_READY
     assert entry.activation_status is ActivationStatus.BLOCKED
     assert entry.scheduler_owner is SchedulerOwner.DISABLED
-    assert entry.physical_account_id is None
-    assert entry.identity_status == "UNKNOWN"
+    assert entry.physical_account_id == (
+        "binance_demo:spot_plus_futures:credential_fingerprint="
+        "sha256:e33925948f2cb6e03842cca9967b70f11f9242bc5c8f99c69ce0ca5cbc4d73df:"
+        "one_shared_domain"
+    )
+    assert entry.identity_status == "KNOWN"
     assert entry.allowed_hosts == ("demo-api.binance.com",)
 
 
@@ -1528,24 +1534,16 @@ async def test_restart_trigger_without_a_claim_source_fails_closed(
 
 
 @pytest.mark.asyncio
-async def test_restart_trigger_cannot_enumerate_while_identity_is_unknown(
+async def test_restart_trigger_enumerates_with_canonical_identity_binding(
     client: BinanceSpotDemoExecutionClient, httpx_mock: Any
 ) -> None:
-    """The signed row has no physical identity, so no scope can be enumerated.
-
-    This is the honest state of the lane today and the reason C3-2 counts as a
-    computed gap: the scope is derived from J2A identity and is never accepted
-    from a caller.
-    """
+    """The canonical J2A identity, not a caller scope, drives enumeration."""
 
     reservations = _RecordedReservations([])
     composition = _composition(client, reservations=reservations)
-    with pytest.raises(LaneGuardError) as error:
-        await composition.rediscover_restart_claims(
-            entry=get_lane_registry_entry(mal.SPOT_DEMO_CANONICAL_LANE_ID), symbols={}
-        )
-    assert "physical_account_identity_unknown" in str(error.value)
-    assert reservations.scopes == []
+    entry = get_lane_registry_entry(mal.SPOT_DEMO_CANONICAL_LANE_ID)
+    assert await composition.rediscover_restart_claims(entry=entry, symbols={}) == ()
+    assert reservations.scopes == [_lane_scope(entry)]
     assert httpx_mock.get_requests() == []
 
 
@@ -2133,15 +2131,13 @@ def test_c3_7_each_missing_recovery_item_is_reported_on_its_own(
     wired = _composition(client, reservations=_RecordedReservations([]))
     unwired = _composition(client)
 
-    # Identity unknown alone blocks the restart trigger, even fully wired.
+    # The signed identity plus a wired read-side port makes this one item ready.
     signed = get_lane_registry_entry(mal.SPOT_DEMO_CANONICAL_LANE_ID)
-    assert mal.spot_demo_recovery_contract_gaps(signed, composition=wired) == (
+    assert mal.spot_demo_recovery_contract_gaps(signed, composition=wired) == ()
+    # An unbound reservation port alone still blocks the same trigger.
+    assert mal.spot_demo_recovery_contract_gaps(signed, composition=unwired) == (
         "restart_trigger",
     )
-    # An unbound reservation port alone blocks it too, even with a known identity.
-    assert mal.spot_demo_recovery_contract_gaps(
-        _identity_known_entry(), composition=unwired
-    ) == ("restart_trigger",)
 
 
 def test_c3_7_the_runbook_states_the_computed_status_not_a_wish() -> None:

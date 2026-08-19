@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import StrEnum
 from types import MappingProxyType
@@ -369,7 +369,7 @@ def _canonical_entry(
     )
 
 
-CANONICAL_LANE_REGISTRY: Final[tuple[LaneRegistryEntry, ...]] = (
+_BASE_CANONICAL_LANE_REGISTRY: Final[tuple[LaneRegistryEntry, ...]] = (
     _canonical_entry(
         "kr.kis.mock",
         market="kr",
@@ -507,6 +507,68 @@ CANONICAL_LANE_REGISTRY: Final[tuple[LaneRegistryEntry, ...]] = (
         activation_status=ActivationStatus.DISABLED,
         scheduler_owner=SchedulerOwner.DISABLED,
     ),
+)
+
+
+_BINANCE_DEMO_IDENTITY_LANE_IDS: Final[tuple[str, ...]] = (
+    "crypto.binance.spot_demo.canonical",
+    "crypto.binance.spot_demo.b0x_sidecar",
+    "crypto.binance.futures_demo",
+)
+_BINANCE_DEMO_SHARED_PHYSICAL_ACCOUNT_ID: Final[str] = (
+    "binance_demo:spot_plus_futures:credential_fingerprint="
+    "sha256:e33925948f2cb6e03842cca9967b70f11f9242bc5c8f99c69ce0ca5cbc4d73df:"
+    "one_shared_domain"
+)
+_BINANCE_DEMO_FINGERPRINT_EVIDENCE_REF: Final[str] = (
+    "d2-phasea-20260817:impl="
+    "sha256:44a9a5b4059c176eb8300d23048cd396daa77d6400faa3be8bbaf7c465d6ee82;"
+    "verify=sha256:03cfae4c8a9193ce0aa8ef4803d7e4ff3190eca1b6de777862b44d410a498e21"
+)
+
+
+def _apply_binance_demo_identity_amendment(
+    entries: tuple[LaneRegistryEntry, ...],
+) -> tuple[LaneRegistryEntry, ...]:
+    """Apply the signed three-field J2A identity binding to its effective view."""
+
+    if tuple(entry.lane_id for entry in entries) != CANONICAL_LANE_IDS:
+        raise RuntimeError("binance_demo_identity_base_registry_mismatch")
+
+    base_by_id = {entry.lane_id: entry for entry in entries}
+    if set(_BINANCE_DEMO_IDENTITY_LANE_IDS) - set(base_by_id):
+        raise RuntimeError("binance_demo_identity_lane_missing")
+
+    for lane_id in _BINANCE_DEMO_IDENTITY_LANE_IDS:
+        entry = base_by_id[lane_id]
+        if (
+            entry.physical_account_id is not None
+            or entry.identity_status != "UNKNOWN"
+            or entry.fingerprint_evidence_ref is not None
+            or MissingBinding.PHYSICAL_ACCOUNT_FINGERPRINT not in entry.missing_bindings
+        ):
+            raise RuntimeError("binance_demo_identity_base_binding_mismatch")
+
+    return tuple(
+        replace(
+            entry,
+            physical_account_id=_BINANCE_DEMO_SHARED_PHYSICAL_ACCOUNT_ID,
+            identity_status="KNOWN",
+            fingerprint_evidence_ref=_BINANCE_DEMO_FINGERPRINT_EVIDENCE_REF,
+            missing_bindings=tuple(
+                binding
+                for binding in entry.missing_bindings
+                if binding is not MissingBinding.PHYSICAL_ACCOUNT_FINGERPRINT
+            ),
+        )
+        if entry.lane_id in _BINANCE_DEMO_IDENTITY_LANE_IDS
+        else entry
+        for entry in entries
+    )
+
+
+CANONICAL_LANE_REGISTRY: Final[tuple[LaneRegistryEntry, ...]] = (
+    _apply_binance_demo_identity_amendment(_BASE_CANONICAL_LANE_REGISTRY)
 )
 
 _CANONICAL_BY_ID: Final[Mapping[str, LaneRegistryEntry]] = MappingProxyType(
