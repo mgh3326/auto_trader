@@ -1,7 +1,7 @@
 """ROB-1286 durable watch-event repricing claims (additive)
 
 Revision ID: 20260819_rob1286_claims
-Revises: 20260815_external_cash
+Revises: 20260815_funding_advisory
 Create Date: 2026-08-19
 
 Additive: creates one new table in the ``review`` schema. No existing table,
@@ -33,7 +33,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "20260819_rob1286_claims"
-down_revision: str | Sequence[str] | None = "20260815_external_cash"
+down_revision: str | Sequence[str] | None = "20260815_funding_advisory"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
