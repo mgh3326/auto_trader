@@ -96,6 +96,57 @@ jobs:
         path: write-fence-report.json
         if-no-files-found: warn
 
+  # ROB-1294 (R2B) — SHADOW ONLY. Classifies this run's change set into
+  # resource lanes and publishes the verdict as job outputs + an artifact.
+  # Nothing consumes those outputs to skip a job in this PR; the six
+  # branch-protection-required checks (lint, taskiq-smoke, test (3.13, 1..4))
+  # run exactly as before. See docs/runbooks/ci-required-aggregator.md.
+  #
+  # Fail-closed: an unknown path, a rename/copy/delete, any shared CI/config
+  # /test-infrastructure file, an empty change set, or an absent base SHA all
+  # yield run_all=true; an unresolvable supplied SHA, a git failure, or a
+  # malformed diff record turn this job RED instead of narrowing coverage.
+  change-classifier:
+    name: change-classifier
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      result: ${{ steps.classify.outputs.result }}
+      run_all: ${{ steps.classify.outputs.run_all }}
+      reason: ${{ steps.classify.outputs.reason }}
+      lanes: ${{ steps.classify.outputs.lanes }}
+      jobs: ${{ steps.classify.outputs.jobs }}
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        # Full history: the base commit must be locally resolvable. A shallow
+        # checkout that hides it is a hard failure in the classifier, not a
+        # reason to fall back to a narrower run.
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Classify changed paths (shadow)
+      id: classify
+      env:
+        CLASSIFY_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        CLASSIFY_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      # stdlib-only: no uv sync, no dependency install.
+      run: |
+        python3 scripts/ci/classify_changes.py \
+          --github-output \
+          --summary \
+          --json-out change-classification.json
+
+    - name: Upload change classification
+      if: always()
+      uses: actions/upload-artifact@v6
+      with:
+        name: change-classification
+        path: change-classification.json
+        if-no-files-found: warn
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -550,6 +601,56 @@ jobs:
         # H6 is the fail-closed predecessor of H5. This explicit invocation
         # keeps its 16-config/128-cell accounting boundary from disappearing
         # behind the repository's canonical tests/ discovery root.
+
+  # ROB-1294 (R2B) — fixed-name aggregate over the currently required checks.
+  #
+  # 🔴 This PR does NOT make `ci-required` a required check and writes no
+  # branch-protection setting. Branch protection still names lint,
+  # taskiq-smoke and test (3.13, 1..4) directly. The operator-only cutover
+  # procedure lives in docs/runbooks/ci-required-aggregator.md.
+  #
+  # `if: always()` is load-bearing: without it this job is skipped whenever a
+  # child fails, and a required check that vanishes on failure is a green
+  # merge button. Red on child failure, child cancellation, classifier
+  # failure, an absent child result, or any unrecognised result string; only
+  # an explicitly `--authorize-skip`ped child may be skipped and still pass.
+  ci-required:
+    name: ci-required
+    if: always()
+    needs: [lint, test, taskiq-smoke, change-classifier]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        persist-credentials: false
+
+    - name: Evaluate required child results
+      env:
+        # toJSON(needs) -> {"lint": {"result": "success", ...}, ...}. For the
+        # matrix `test` job GitHub collapses all four shards into one result,
+        # which is failure if any shard failed.
+        CI_REQUIRED_NEEDS: ${{ toJSON(needs) }}
+      # stdlib-only: no uv sync, no dependency install.
+      run: |
+        python3 scripts/ci/aggregate_required.py \
+          --results-env CI_REQUIRED_NEEDS \
+          --required lint \
+          --required test \
+          --required taskiq-smoke \
+          --required change-classifier \
+          --summary \
+          --json-out ci-required-report.json
+
+    - name: Upload ci-required report
+      if: always()
+      uses: actions/upload-artifact@v6
+      with:
+        name: ci-required-report
+        path: ci-required-report.json
+        if-no-files-found: warn
 
   notify:
     if: failure()
