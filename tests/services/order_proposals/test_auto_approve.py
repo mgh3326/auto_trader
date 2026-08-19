@@ -899,20 +899,24 @@ def test_auto_veto_card_raises_when_thesis_is_missing():
         )
 
 
-def test_policy_caps_follow_the_declared_upper_bands_and_one_new_entry_limit():
+def test_policy_caps_match_the_operator_declared_limits():
     kr = limits_for_market("equity_kr")
     us = limits_for_market("equity_us")
+    crypto = limits_for_market("crypto")
 
     assert kr is not None
     assert us is not None
-    # policy buy.per_symbol_notional_krw_range=[200000,400000],
-    # buy.per_symbol_notional_usd_range=[150,450], and one concurrent new
-    # entry; see the ownership-minimal derivation comment in the cap block.
-    assert (kr.per_order_cap, kr.daily_cap) == (Decimal("400000"), Decimal("400000"))
-    # §65차/§71차 (2026-08-14): per-order 800 admits single-share exits of
-    # $500-750 ETFs; daily 5000 covers a full observed trim session instead of
-    # being consumed by its first rung. The sizing band above is unchanged.
-    assert (us.per_order_cap, us.daily_cap) == (Decimal("800"), Decimal("5000"))
+    assert crypto is not None
+    # The buy sizing bands remain unchanged; §106차 intentionally lifts the
+    # approval caps independently of those bands.
+    # §106차 (2026-08-19): daily caps no longer constrict the approval lane;
+    # per-order caps remain the maximum-loss boundary for one automation error.
+    assert (kr.per_order_cap, kr.daily_cap) == (Decimal("1000000"), Decimal("5000000"))
+    assert (us.per_order_cap, us.daily_cap) == (Decimal("1500"), Decimal("20000"))
+    assert (crypto.per_order_cap, crypto.daily_cap) == (
+        Decimal("100000"),
+        Decimal("300000"),
+    )
 
 
 def test_policy_cost_rate_cannot_be_edited_below_the_code_floor(monkeypatch):

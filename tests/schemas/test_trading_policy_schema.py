@@ -1,4 +1,5 @@
 import re
+from copy import deepcopy
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
 
@@ -29,9 +30,31 @@ _PLAYBOOK = (
     / "trading-decision-playbook.md"
 )
 
+_ROB1292_ALLOWED_POLICY_DELTAS = (
+    ("order_proposals.auto_approve.per_order_cap.kr", 400000, 1000000),
+    ("order_proposals.auto_approve.per_order_cap.us", 800, 1500),
+    ("order_proposals.auto_approve.daily_cap.kr", 400000, 5000000),
+    ("order_proposals.auto_approve.daily_cap.us", 5000, 20000),
+)
+
 
 def _raw() -> dict:
     return yaml.safe_load(_CONFIG.read_text(encoding="utf-8"))
+
+
+def _policy_path_get(payload: dict, path: str):
+    value = payload
+    for key in path.split("."):
+        value = value[key]
+    return value
+
+
+def _policy_path_set(payload: dict, path: str, value) -> None:
+    keys = path.split(".")
+    target = payload
+    for key in keys[:-1]:
+        target = target[key]
+    target[keys[-1]] = value
 
 
 def _breakeven_reserve_trim_tier():
@@ -119,7 +142,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-19.1"
+    assert doc.version == "2026-08-19.2"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -942,7 +965,16 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     del baseline_dump["decision_rules"]["buy.preplanned_support_ladder"]
     del baseline_dump["crash_day"]["actions"]["new_entry_hold_exception"]
 
-    assert current_dump == baseline_dump
+    normalized_current_dump = deepcopy(current_dump)
+    for path, baseline_value, current_value in _ROB1292_ALLOWED_POLICY_DELTAS:
+        assert _policy_path_get(baseline_dump, path) == baseline_value
+        assert _policy_path_get(current_dump, path) == current_value
+        _policy_path_set(normalized_current_dump, path, baseline_value)
+
+    # Only the four explicitly enumerated §106차 cap deltas are accepted;
+    # every other pre-existing key/value, including both crypto caps, must
+    # still match the ROB-1289 baseline exactly.
+    assert normalized_current_dump == baseline_dump
 
 
 def test_crash_day_missing_block_rejected():
