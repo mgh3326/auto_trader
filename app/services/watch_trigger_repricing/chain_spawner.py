@@ -36,12 +36,40 @@ compared with closed equality **on every spawn**, before the judge is
 asked, so widening the profile stops the flow rather than widening the
 session.
 
-No substitutable boundary (r2 / BLOCKER 1)
-------------------------------------------
-This class takes a judge and a proposer. It does **not** take the tool it
-calls, so there is no wiring in which something other than the shipping
-``order_proposal_create`` runs. See :mod:`.proposal_chain` for why the
-previous ``__name__`` check was worthless.
+What this class guarantees, exactly (r3)
+----------------------------------------
+Stated precisely, because two earlier rounds stated it too strongly and a
+verifier had to measure the difference each time.
+
+**It guarantees**: given a judgement, the only write performed is
+``order_proposal_create``, with arguments bound to the fire that was
+claimed (symbol checked, event id carried), and the terminal recorded
+matches what the tool actually returned. No parameter of this class, or
+of the write seam, accepts a callable -- the ``tool=`` argument r1 had is
+gone, and passing one is a ``TypeError``. Arming additionally accepts
+only the concrete types in :func:`~.arming.live_spawner_types`, by exact
+type, so an external subclass cannot reintroduce that argument in its own
+constructor and arm.
+
+**It does not guarantee** that a judge stays inside those rails. The
+judge runs in this interpreter with this process's full privileges. It
+can rebind the seam's module global, mint a capability grant from the
+module-private sentinel, or ignore this package entirely and import a
+broker order tool -- all measured in r3, none of them closable from
+inside the process. CPython offers no way to revoke import, attribute
+assignment, or subclassing from code already running in it.
+
+So the honest summary is: **accident prevention and static detectability,
+not a security boundary.** Every route above is a deliberate act that
+shows up in review as an import or an assignment somebody had to write.
+
+The boundary this feature actually needs is the **process** boundary the
+``watch_repricing`` MCP profile already describes: a session in a separate
+process, reaching only the tools that profile registers, unable to import
+anything else because it is not in this interpreter. This class runs the
+judge in-process and therefore stands *inside* that boundary rather than
+providing it -- which is why it is a rehearsal harness and why nothing in
+this repo arms it (see ``RUNS_JUDGE_IN_PROCESS``).
 
 Retry safety
 ------------
@@ -118,7 +146,19 @@ def provisioned_repricing_tools() -> frozenset[str]:
 
 
 class ProposalChainSpawner(LiveSessionSpawner):
-    """Judge one fire, create the proposal it earns, record the terminal."""
+    """Judge one fire, create the proposal it earns, record the terminal.
+
+    Read the module docstring for the exact guarantee this carries, and
+    for the one it does not.
+    """
+
+    # r3: declared, not inferred. True means the judgement runs in this
+    # interpreter, so this spawner cannot bound what the judge does and is
+    # a rehearsal harness rather than a production approval boundary. An
+    # out-of-process spawner would set this False and would be the first
+    # thing in this package that could honestly claim otherwise; the
+    # arming tests pin the current value so that flip cannot be silent.
+    RUNS_JUDGE_IN_PROCESS = True
 
     def __init__(
         self,

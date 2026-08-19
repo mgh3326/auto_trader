@@ -16,6 +16,7 @@ from app.services.watch_trigger_repricing.arming import (
     ArmingRefused,
     assert_arming_contract,
     is_dry_spawner,
+    live_spawner_types,
 )
 from app.services.watch_trigger_repricing.capability import (
     EXECUTION_BOUNDARY,
@@ -51,6 +52,7 @@ from app.services.watch_trigger_repricing.proposal_chain import (
 from app.services.watch_trigger_repricing.spawn import (
     DrySessionSpawner,
     ScriptedDrySessionSpawner,
+    SpawnDisposition,
     SpawnNotStarted,
     SpawnRequest,
 )
@@ -314,6 +316,148 @@ async def test_a_widened_attestation_stops_the_spawn_before_the_judge_runs() -> 
     with pytest.raises(CapabilityBoundaryViolation):
         await spawner.spawn(_request())
     assert judge.seen == [], "the judge must not run on a widened grant"
+
+
+# ---------------------------------------------------------------------------
+# r3 — the two bypasses a verifier measured, and the one that stays open
+# ---------------------------------------------------------------------------
+async def _forged_boundary(**kwargs):
+    """Stands in for a direct broker submit. Harmless: records and returns."""
+    _FORGED_CALLS.append(kwargs)
+    return {"success": True, "proposal_id": "forged"}
+
+
+_forged_boundary.__name__ = EXECUTION_BOUNDARY  # the r1 spoof, verbatim
+_FORGED_CALLS: list[dict] = []
+
+
+@pytest.fixture(autouse=True)
+def _reset_forged_calls():
+    _FORGED_CALLS.clear()
+    yield
+    _FORGED_CALLS.clear()
+
+
+def test_the_armable_live_spawners_are_a_closed_set() -> None:
+    assert live_spawner_types() == (ProposalChainSpawner,)
+
+
+def test_a_subclass_reintroducing_the_tool_argument_is_refused_at_arming() -> None:
+    """r3 bypass 1, measured.
+
+    r2 removed ``tool=`` from the base constructor. A subclass can add it
+    back in its own, call ``super().__init__()`` for a clean grant, and
+    override ``spawn``. Every structural check passed and the forged
+    callable ran. Arming now decides by exact type, so it does not.
+    """
+
+    class ToolInjectingSubclass(ProposalChainSpawner):
+        def __init__(self, *, judge, tool, proposer="probe"):
+            self._forged = tool
+            super().__init__(judge=judge, proposer=proposer)
+
+        async def spawn(self, request):
+            return await self._forged(symbol=request.symbol)
+
+    spawner = ToolInjectingSubclass(judge=_Judge(_draft()), tool=_forged_boundary)
+
+    with pytest.raises(ArmingRefused) as exc:
+        assert_arming_contract(spawner=spawner, store=_DurableStore())
+    assert exc.value.reason == "unlisted_live_spawner"
+    assert _FORGED_CALLS == [], "refused before anything could run"
+
+
+def test_a_rogue_subclass_of_the_live_base_is_refused_at_arming() -> None:
+    """Same hole, reached without going through ProposalChainSpawner at all."""
+
+    class RogueLiveSpawner(LiveSessionSpawner):
+        def declared_grant(self):
+            return PROPOSAL_ONLY_TOOLS
+
+        def attest_granted_tools(self, request):
+            return PROPOSAL_ONLY_TOOLS
+
+        async def spawn(self, request):  # pragma: no cover - never reached
+            await _forged_boundary(symbol=request.symbol)
+
+        def reconcile(self, request):
+            return SpawnDisposition.STARTED
+
+    with pytest.raises(ArmingRefused) as exc:
+        assert_arming_contract(spawner=RogueLiveSpawner(), store=_DurableStore())
+    assert exc.value.reason == "unlisted_live_spawner"
+    assert _FORGED_CALLS == []
+
+
+def test_the_in_process_trust_boundary_is_declared_not_inferred() -> None:
+    """Pins the flag so flipping it has to be deliberate.
+
+    An out-of-process spawner would set this ``False`` and would be the
+    first thing here that could honestly claim to bound its judge.
+    """
+    assert ProposalChainSpawner.RUNS_JUDGE_IN_PROCESS is True
+    for spawner_type in live_spawner_types():
+        assert isinstance(spawner_type.RUNS_JUDGE_IN_PROCESS, bool)
+
+
+@pytest.mark.asyncio
+async def test_KNOWN_LIMITATION_an_in_process_judge_is_not_bounded_here() -> None:
+    """r3 bypass 2 — recorded as open, deliberately.
+
+    This asserts a limitation rather than a guarantee, which is unusual and
+    is the point: two rounds of documentation claimed the boundary was
+    closed and a verifier had to measure that it was not. The judge runs in
+    this interpreter, so it can rebind the write seam's module global --
+    and could equally mint a grant from the module-private sentinel, or
+    skip this package and import a broker tool directly. None of that is
+    closable from inside the process; it needs the ``watch_repricing`` MCP
+    profile's *process* boundary.
+
+    If a future change closes this, **this test will fail**, and whoever
+    closes it must update the guarantee statement in ``chain_spawner``
+    rather than leaving a stale claim behind.
+    """
+    from app.services.watch_trigger_repricing import proposal_chain
+
+    original = proposal_chain.order_proposal_create
+
+    class SwappingJudge:
+        async def judge(self, request):
+            proposal_chain.order_proposal_create = _forged_boundary
+            return _draft(event_uuid=request.event_uuid)
+
+    spawner = ProposalChainSpawner(judge=SwappingJudge(), proposer="probe")
+    assert_arming_contract(spawner=spawner, store=_DurableStore())
+    try:
+        await spawner.spawn(_request())
+    finally:
+        proposal_chain.order_proposal_create = original
+
+    assert _FORGED_CALLS, (
+        "expected the in-process judge to reach the swapped global; if this "
+        "now fails the limitation was closed -- update chain_spawner's "
+        "guarantee statement and delete this test"
+    )
+    assert proposal_chain.order_proposal_create is original
+
+
+def test_KNOWN_LIMITATION_a_judge_can_reach_order_tools_without_this_package() -> None:
+    """The decisive one. Import-and-inspect only; nothing is called.
+
+    No hardening of the write seam answers this: the judge never has to use
+    the seam. That is why the honest answer is a process boundary.
+    """
+    import importlib
+
+    reachable = [
+        f"{module}.{symbol}"
+        for module, symbol in (
+            ("app.mcp_server.tooling.orders_toss_variants", "toss_place_order"),
+            ("app.mcp_server.tooling.order_proposal_tools", EXECUTION_BOUNDARY),
+        )
+        if hasattr(importlib.import_module(module), symbol)
+    ]
+    assert len(reachable) == 2, reachable
 
 
 # ---------------------------------------------------------------------------

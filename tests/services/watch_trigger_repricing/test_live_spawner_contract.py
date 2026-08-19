@@ -293,7 +293,21 @@ def test_self_attested_dryness_no_longer_bypasses_the_durability_rule() -> None:
 
 
 def test_a_correct_live_spawner_still_needs_a_durable_store() -> None:
-    spawner = _good_live_spawner()()
+    """Uses the real shipping spawner.
+
+    ROB-1290 r3: arming accepts only the concrete live spawners this
+    package defines, so a locally-defined ``Good(LiveSessionSpawner)`` is
+    refused as unlisted before the durability rule is ever reached. Testing
+    the durability rule therefore has to use the spawner that actually
+    ships, which is a closer test than the stand-in was.
+    """
+    from app.services.watch_trigger_repricing.chain_spawner import ProposalChainSpawner
+
+    class _Judge:
+        async def judge(self, request):  # pragma: no cover - never invoked
+            raise AssertionError("arming must fail before any judging")
+
+    spawner = ProposalChainSpawner(judge=_Judge())
 
     with pytest.raises(ArmingRefused) as exc:
         assert_arming_contract(spawner=spawner, store=InMemoryClaimStore())
@@ -303,6 +317,23 @@ def test_a_correct_live_spawner_still_needs_a_durable_store() -> None:
     assert_arming_contract(
         spawner=spawner, store=DatabaseClaimStore(session_factory=None)
     )
+
+
+def test_a_well_formed_external_subclass_is_refused_as_unlisted() -> None:
+    """r3 / remaining bypass 1: the contract is not the whole gate.
+
+    ``Good`` satisfies every structural check -- it inherits the live base,
+    ran its constructor, declares and attests exactly the proposal-only
+    set, and can reconcile. It is still refused, because a subclass can put
+    anything at all in ``spawn`` and arming has no way to look.
+    """
+    spawner = _good_live_spawner()()
+
+    with pytest.raises(ArmingRefused) as exc:
+        assert_arming_contract(
+            spawner=spawner, store=DatabaseClaimStore(session_factory=None)
+        )
+    assert exc.value.reason == "unlisted_live_spawner"
 
 
 def test_the_dry_spawner_is_dry_by_type() -> None:

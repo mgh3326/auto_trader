@@ -26,21 +26,16 @@ What it refuses
     ``LiveSessionSpawner.__init__`` can mint and only after checking the
     spawner's grant equals :data:`~.capability.PROPOSAL_ONLY_TOOLS`. A
     spawner that skipped the base class has nothing to pass.
-``a substitute callable`` (r2 / BLOCKER 1)
-    There is no substitute to refuse, because there is nowhere to pass
-    one. r1 took the boundary as an optional argument and validated it by
+``a substitute callable passed as an argument`` (r2 / BLOCKER 1)
+    r1 took the boundary as an optional argument and validated it by
     ``__name__``, which is the "이름 매칭 ≠ 의미 강제" mistake in its purest
     form: any callable renamed ``order_proposal_create`` -- including one
     that submits to a broker -- passed the check and then ran. A name is a
     label the untrusted side chooses.
 
     So the argument is gone. This module calls the module-global it
-    imported at the top of the file, and no parameter, attribute or
-    setter anywhere in the package accepts a callable. Wiring a substitute
-    is not a runtime risk to be validated; it is a ``TypeError`` at the
-    constructor. (A test may still ``monkeypatch`` the module global --
-    that is true of every Python module, and it is deliberately *not* a
-    configuration path: nothing a caller can construct reaches it.)
+    imported at the top of the file, and no parameter anywhere in the
+    package accepts a callable.
 ``a different symbol``
     A session spawned for one fire may not propose on another symbol. The
     per-symbol concurrency rule is meaningless if the session can wander.
@@ -61,6 +56,32 @@ boundary and runs every later step behind a never-raise boundary, so:
 
 Reading "unknown" as "no" is the double-proposal direction, which is the
 one failure this whole feature must not create.
+
+What this seam does **not** buy (r3, measured)
+----------------------------------------------
+It would be comfortable to write that the boundary is now unreachable by
+anything but the real tool. That is false, and the false version was in
+this docstring until r3 measured it.
+
+The seam is sound *given that it is used*: with a judgement in hand, only
+``order_proposal_create`` is called, with arguments validated against the
+fire. What the seam cannot do is compel anyone to go through it. The
+judge :mod:`.chain_spawner` runs is ordinary Python in this interpreter,
+and an in-process caller can:
+
+* rebind ``proposal_chain.order_proposal_create`` -- and rebind any
+  module-private capture of it just as easily, so "hide the name" is not
+  a fix (measured: ``H1_PRIVATE_CAPTURE=DEFEATED``);
+* import :data:`~.live_contract._GRANT_ISSUER` and mint a grant
+  (measured: ``H2_GRANT_SENTINEL=MINTED``);
+* skip this module altogether and import a broker order tool directly
+  (measured: ``H3_SEAM_IS_OPTIONAL`` -- ``toss_place_order`` is two lines
+  of ``importlib`` away from any judge).
+
+The third is decisive and no amount of hardening here answers it. **The
+approval boundary this feature needs is a process boundary, not a
+function call.** See :mod:`.chain_spawner` for the guarantee this package
+actually provides today, stated exactly.
 """
 
 from __future__ import annotations
