@@ -223,9 +223,11 @@ class LiveSessionSpawner(ABC):
 def assert_live_spawner_contract(spawner: object) -> None:
     """Gate check for a non-dry spawner.
 
-    Structural *and* nominal: the protocol check catches a duck-typed object
-    that implements the methods, and the base-class check catches one that
-    implements them without ever running the constructor's grant check.
+    Three layers, because each catches something the others miss: the
+    protocol check catches a duck-typed object that implements the methods,
+    the base-class check catches one that implements them without
+    inheriting the constructor's grant check, and the grant check catches a
+    subclass that inherited it and then skipped ``super().__init__()``.
     """
     if not isinstance(spawner, ReconcilingLiveSpawner):
         missing = [
@@ -244,3 +246,17 @@ def assert_live_spawner_contract(spawner: object) -> None:
             "tool grant is checked at construction; implementing the methods "
             "without the base class skips that check"
         )
+    # r2 SHOULD 1: inheriting the base is not the same as having *run* it. A
+    # subclass whose ``__init__`` skips ``super().__init__()`` never had its
+    # grant checked and holds no token, and arming used to accept it -- the
+    # failure only arrived later, when the write seam asked for the grant.
+    # Fail-closed either way, but "rejected at the boundary" is what the
+    # contract claims, so check it at the boundary.
+    grant = getattr(spawner, "_proposal_chain_grant", None)
+    if not isinstance(grant, ProposalChainGrant):
+        raise LiveSpawnerContractViolation(
+            f"{type(spawner).__name__} holds no proposal-chain grant, so "
+            "LiveSessionSpawner.__init__ never ran and its tool grant was "
+            "never checked"
+        )
+    assert_exact_grant(grant.tools, who=f"{type(spawner).__name__} (armed)")

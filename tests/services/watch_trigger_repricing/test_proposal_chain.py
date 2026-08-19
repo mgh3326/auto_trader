@@ -39,6 +39,7 @@ from app.services.watch_trigger_repricing.live_contract import (
     LiveSessionSpawner,
     LiveSpawnerContractViolation,
     ProposalChainGrant,
+    assert_live_spawner_contract,
 )
 from app.services.watch_trigger_repricing.proposal_chain import (
     ProposalChainAmbiguous,
@@ -57,6 +58,10 @@ from app.services.watch_trigger_repricing.spawn import (
 pytestmark = pytest.mark.unit
 
 EVENT = "00001290-0000-4000-8000-000000000000"
+
+
+class _DurableStore:
+    is_durable = True
 
 
 def _request(symbol: str = "005930", event_uuid: str = EVENT) -> SpawnRequest:
@@ -195,6 +200,14 @@ def test_a_spawner_that_skips_the_base_constructor_holds_no_grant() -> None:
     with pytest.raises(LiveSpawnerContractViolation) as exc:
         _ = SkipsInit().proposal_chain_grant
     assert "never ran LiveSessionSpawner.__init__" in str(exc.value)
+
+    # r2 SHOULD 1: and arming refuses it at the boundary, not only later
+    # when the write seam happens to ask for the grant.
+    with pytest.raises(LiveSpawnerContractViolation):
+        assert_live_spawner_contract(SkipsInit())
+    with pytest.raises(ArmingRefused) as refused:
+        assert_arming_contract(spawner=SkipsInit(), store=_DurableStore())
+    assert refused.value.reason == "live_spawner_contract_unmet"
 
 
 def test_a_chain_spawner_with_a_widened_grant_cannot_be_constructed() -> None:
