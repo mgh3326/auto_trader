@@ -16,7 +16,10 @@ async def test_get_trading_policy_returns_thresholds_and_version():
     assert out["version"] == policy_version_stamp()["version"]
     assert out["content_hash"]
     assert out["thresholds"]["portfolio.sector_cluster_cap_pct"]["value"] == 10
-    assert set(out["decision_rules"]) == {"buy.support_reserve_net"}
+    assert set(out["decision_rules"]) == {
+        "buy.support_reserve_net",
+        "buy.preplanned_support_ladder",
+    }
     reserve = out["decision_rules"]["buy.support_reserve_net"]
     assert reserve["eligible_only_when_regular_gate_failure"] == "RSI_ONLY"
     assert reserve["honest_upside_reference"] == "decision_time_current_price"
@@ -166,9 +169,36 @@ async def test_get_trading_policy_returns_crash_day_advisory_with_version_echo()
     assert out["crash_day"]["trigger"]["index_symbol"] == "069500"
     assert out["crash_day"]["trigger"]["index_gap_pct_max"] == -3.0
     assert out["crash_day"]["actions"]["new_entry_hold"] is True
+    exception = out["crash_day"]["actions"]["new_entry_hold_exception"]
+    assert exception["enabled"] is True
+    assert exception["requires"] == {
+        "standard_buy_gates": "all_pass_including_support_quality",
+        "support_quality": "required",
+        "price_zone": "strong_support",
+        "gate_relaxation": "none",
+    }
+    assert exception["sizing"] == {
+        "per_symbol_notional_multiplier": 0.5,
+        "max_new_symbols": 1,
+    }
+    assert "즉석 판단 허용이 아니라" in exception["semantics"]
+    assert "면제·완화·대체하지 않는다" in exception["semantics"]
+    ladder = out["decision_rules"]["buy.preplanned_support_ladder"]
+    assert ladder == {
+        "semantics": (
+            "Advisory only. A preplanned support ladder is retained only for a "
+            "candidate that passes every standard buy gate; it does not relax, "
+            "waive, replace, or bypass any gate."
+        ),
+        "enabled": True,
+        "eligibility": "standard_buy_gates_pass",
+        "rungs_max": 2,
+        "per_rung_notional_multiplier": 0.5,
+        "crash_day_behavior": "keep",
+    }
     # advisory keys are echoed with the same version/content_hash stamp as
     # every other section of the response (ROB-932).
-    assert out["version"]
+    assert out["version"] == "2026-08-19.1"
     assert out["content_hash"]
 
 

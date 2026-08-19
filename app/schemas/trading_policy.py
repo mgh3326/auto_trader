@@ -445,6 +445,20 @@ class PolicyNoChasingRule(BaseModel):
     follow_up: str
 
 
+class PreplannedSupportLadderPolicy(BaseModel):
+    """ROB-1289 — advisory support-ladder planning contract."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lanes: list[Literal["buy"]]
+    semantics: str
+    enabled: bool
+    eligibility: Literal["standard_buy_gates_pass"]
+    rungs_max: Literal[2]
+    per_rung_notional_multiplier: Literal[0.5]
+    crash_day_behavior: Literal["keep"]
+
+
 class CryptoMarketRules(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -570,14 +584,42 @@ class CrashDayTrigger(BaseModel):
     index_gap_pct_max: float
 
 
+class CrashDayNewEntryHoldExceptionRequirements(BaseModel):
+    """ROB-1289 — every regular buy gate remains mandatory."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    standard_buy_gates: Literal["all_pass_including_support_quality"]
+    support_quality: Literal["required"]
+    price_zone: Literal["strong_support"]
+    gate_relaxation: Literal["none"]
+
+
+class CrashDayNewEntryHoldExceptionSizing(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    per_symbol_notional_multiplier: Literal[0.5]
+    max_new_symbols: Literal[1]
+
+
+class CrashDayNewEntryHoldException(BaseModel):
+    """ROB-1289 — advisory conditional release of a crash-day full hold."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    requires: CrashDayNewEntryHoldExceptionRequirements
+    sizing: CrashDayNewEntryHoldExceptionSizing
+    semantics: str
+
+
 class CrashDayActions(BaseModel):
-    """ROB-932 — advisory only, no code enforcement. new_entry_hold applies
-    to NEW entries only; averaging-down deep rungs on existing positions are
-    exempt (2026-07-16 midday dip-buys measured effective)."""
+    """ROB-932/1289 — advisory only, no code enforcement."""
 
     model_config = ConfigDict(extra="forbid")
 
     new_entry_hold: bool
+    new_entry_hold_exception: CrashDayNewEntryHoldException
     deep_rung_reprice_to_band_floor: bool
     profit_trim_marketable_allowed: bool
     defensive_brief_cross_check: bool
@@ -631,7 +673,8 @@ class TradingPolicyDocument(BaseModel):
         str,
         PolicyDecisionRule
         | SingleShareExitDecisionRule
-        | SupportReserveNetDecisionRule,
+        | SupportReserveNetDecisionRule
+        | PreplannedSupportLadderPolicy,
     ] = Field(default_factory=dict)
     market_rules: dict[Literal["crypto"], CryptoMarketRules]
     market_overrides: dict[Market, dict[str, ThresholdValue]]

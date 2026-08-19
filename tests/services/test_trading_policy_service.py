@@ -22,7 +22,10 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
     assert view["thresholds"]["portfolio.max_symbols_per_theme"]["value"] == 2
     assert view["thresholds"]["sell.loss_guard_min_multiple"]["value"] == 1.01
     assert "sell.rsi_place_min" not in view["thresholds"]
-    assert set(view["decision_rules"]) == {"buy.support_reserve_net"}
+    assert set(view["decision_rules"]) == {
+        "buy.support_reserve_net",
+        "buy.preplanned_support_ladder",
+    }
     reserve = view["decision_rules"]["buy.support_reserve_net"]
     assert reserve["discount_below_support_pct_range"] == [5, 10]
     assert reserve["final_limit_distance_from_current_pct_range"] == [-15, -5]
