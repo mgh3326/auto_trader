@@ -83,6 +83,9 @@ class FuturesDemoOpenOrder:
     qty: Decimal
     status: str
     reduce_only: bool
+    # ROB-1289: broker-echoed ``positionSide``, preserved verbatim.  Absence
+    # remains ``None``; callers must not infer it from any other field.
+    position_side: str | None = None
 
 
 @dataclass(frozen=True)
