@@ -493,8 +493,8 @@ def register_kis_live_order_tools(mcp: FastMCP) -> None:
             "any other account_mode value is rejected."
             ' ROB-864 exit_intent="loss_cut" is disabled on this direct tool. Use '
             "order_proposal_create; Telegram performs two-click confirmation with a "
-            "single-use nonce and second-click full revalidation. approval_issue_id "
-            "is only an optional audit note."
+            "single-use nonce and second-click full revalidation; that proposal "
+            "flow requires approval_issue_id."
         ),
     )
     async def kis_live_place_order(  # NOSONAR - public MCP order schema mirrors legacy tool.

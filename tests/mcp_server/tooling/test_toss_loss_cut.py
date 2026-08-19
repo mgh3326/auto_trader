@@ -125,7 +125,7 @@ def _configure_loss_cut_preconditions(
 
 
 @pytest.mark.asyncio
-async def test_toss_proposal_loss_cut_allows_missing_issue_without_paperclip(
+async def test_toss_proposal_loss_cut_requires_approval_issue(
     monkeypatch,
 ):
     _configure_toss(monkeypatch)
@@ -133,8 +133,9 @@ async def test_toss_proposal_loss_cut_allows_missing_issue_without_paperclip(
 
     result = await _preview_loss_cut(approval_issue_id=None)
 
-    assert result["success"] is True
-    assert result["retrospective_id"] == 42
+    assert result["success"] is False
+    assert result["error"] == "loss_cut_preconditions_failed"
+    assert result["violations"] == ["loss_cut requires approval_issue_id"]
 
 
 @pytest.mark.asyncio
@@ -459,13 +460,13 @@ async def test_toss_loss_cut_submit_does_not_query_paperclip(monkeypatch):
             exit_intent="loss_cut",
             exit_reason="stop_loss",
             retrospective_id=42,
-            approval_issue_id=None,
+            approval_issue_id="ROB-858",
         )
 
     assert result["success"] is True
     assert len(client.placed_payloads) == 1
     record_send.assert_awaited_once()
-    assert record_send.await_args.kwargs["approval_issue_id"] is None
+    assert record_send.await_args.kwargs["approval_issue_id"] == "ROB-858"
 
 
 @pytest.mark.asyncio
@@ -512,7 +513,7 @@ async def test_toss_loss_cut_submit_requires_supplied_valid_hash_in_off_mode(
             exit_intent="loss_cut",
             exit_reason="stop_loss",
             retrospective_id=42,
-            approval_issue_id=None,
+            approval_issue_id="ROB-858",
         )
 
     assert result["success"] is False

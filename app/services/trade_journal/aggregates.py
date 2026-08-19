@@ -26,6 +26,7 @@ from app.models.review import (
 from app.models.trading import InstrumentType
 from app.services.market_data import get_ohlcv
 from app.services.trade_journal.forecast_service import _normalize_symbol_for_filter
+from app.services.trade_journal.retrospective_type import sql_is_learning_eligible
 
 _EPS = 1e-9
 _SMOKE_TOKENS = ("smoke",)
@@ -512,6 +513,7 @@ async def resolve_setup_tag(
                     TradeRetrospective.correlation_id.in_(corr_ids),
                     TradeRetrospective.strategy_key.isnot(None),
                     TradeRetrospective.account_mode == account_mode,
+                    sql_is_learning_eligible(),
                 )
                 .order_by(TradeRetrospective.created_at.desc())
                 .limit(1)
@@ -523,6 +525,7 @@ async def resolve_setup_tag(
     retro_filters = [
         TradeRetrospective.symbol == norm,
         TradeRetrospective.strategy_key.isnot(None),
+        sql_is_learning_eligible(),
         TradeRetrospective.created_at <= trade.exit_ts,
         TradeRetrospective.created_at >= window_start,
     ]

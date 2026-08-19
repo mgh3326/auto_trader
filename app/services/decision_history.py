@@ -38,6 +38,7 @@ from app.services.trade_journal.forecast_service import (
     _normalize_symbol_for_filter,
     build_forecast_calibration_aggregate,
 )
+from app.services.trade_journal.retrospective_type import sql_is_learning_eligible
 
 MARKET_TO_INSTRUMENT = {"kr": "equity_kr", "us": "equity_us", "crypto": "crypto"}
 
@@ -277,6 +278,7 @@ async def _retrospectives(
         select(TradeRetrospective)
         .where(TradeRetrospective.symbol == symbol)
         .where(_visibility_predicate(account_mode))
+        .where(sql_is_learning_eligible())
     )
     rows = (
         (await db.execute(stmt.order_by(TradeRetrospective.created_at.desc())))

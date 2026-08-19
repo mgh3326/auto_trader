@@ -8,19 +8,42 @@ from typing import Any
 from app.mcp_server.tooling.trade_retrospective_tools import (
     get_retrospective_aggregate,
     get_trade_retrospectives,
+    save_position_intake_retrospective,
     save_trade_retrospective,
     trade_retrospective_pending,
 )
 
 TRADE_RETROSPECTIVE_TOOL_NAMES: set[str] = {
     "save_trade_retrospective",
+    "save_position_intake_retrospective",
     "get_trade_retrospectives",
     "get_retrospective_aggregate",
     "trade_retrospective_pending",
 }
 
 
-def register_trade_retrospective_tools(mcp: Any) -> None:
+def register_trade_retrospective_tools(
+    mcp: Any,
+    *,
+    include_position_intake: bool = True,
+) -> None:
+    if include_position_intake:
+        _ = mcp.tool(
+            name="save_position_intake_retrospective",
+            description=(
+                "Create a KIS-live-KR position-intake retrospective for an externally "
+                "acquired or pre-ledger holding. This path is fail-closed: it locks "
+                "and scans the complete review.kis_live_order_ledger history for the "
+                "same symbol and rejects when status is any of {filled, rejected, "
+                "unknown, anomaly, cancelled, expired}. The durable evidence is "
+                "typed retrospective_type=intake and excluded from execution "
+                "learning/scoring. Requires a timezone-aware <=24h position snapshot, "
+                "account/quantity/average/current-price evidence, acquisition "
+                "provenance, an idempotent correlation_id, loss-cut-eligible "
+                "trigger_type, and next_actions. Writes only the retrospective/action "
+                "ledgers; never mutates a broker or creates an order proposal."
+            ),
+        )(save_position_intake_retrospective)
     _ = mcp.tool(
         name="save_trade_retrospective",
         description=(

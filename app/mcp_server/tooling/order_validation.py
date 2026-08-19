@@ -82,7 +82,7 @@ class LossCutContext:
 
     retrospective_id: int
     exit_reason: str
-    approval_issue_id: str | None
+    approval_issue_id: str
     requester_agent_id: str
     max_slip: float
     approval_verified_at: datetime.datetime
@@ -537,6 +537,12 @@ async def _validate_loss_cut_preconditions(
                         f"(> {_LOSS_CUT_RETRO_MAX_AGE_HOURS}h old)"
                     )
 
+    resolved_approval_issue_id = (
+        approval_issue_id.strip() if isinstance(approval_issue_id, str) else ""
+    )
+    if not resolved_approval_issue_id:
+        errors.append("loss_cut requires approval_issue_id")
+
     if errors:
         return None, errors
 
@@ -544,7 +550,7 @@ async def _validate_loss_cut_preconditions(
         LossCutContext(
             retrospective_id=retrospective_id,  # type: ignore[arg-type]
             exit_reason=resolved_exit_reason,
-            approval_issue_id=approval_issue_id,
+            approval_issue_id=resolved_approval_issue_id,
             requester_agent_id=caller_agent_id,  # type: ignore[arg-type]
             max_slip=_loss_cut_max_slip_value(),
             approval_verified_at=datetime.datetime.now(datetime.UTC),

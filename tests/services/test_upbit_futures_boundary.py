@@ -973,13 +973,70 @@ async def test_futures_leverage_is_pinned_to_1x_before_any_http(leverage: int) -
         await client.aclose()
 
 
-def test_futures_one_way_mode_is_structural_and_hedge_mode_is_blocked() -> None:
-    """Mutant 4 — one-way only: no positionSide parameter exists to set."""
-    submit_parameters = set(
-        inspect.signature(BinanceFuturesDemoExecutionClient.submit_order).parameters
-    )
-    assert "position_side" not in submit_parameters
+@pytest.mark.asyncio
+async def test_futures_one_way_mode_is_structural_and_hedge_mode_is_blocked() -> None:
+    """Mutant 4 — one-way only: every hedge positionSide is refused pre-HTTP.
+
+    ROB-1288 amended this pin, and the amendment is a strengthening, not a
+    relaxation. The assertion used to be ``"position_side" not in
+    submit_parameters``: one-way-ness was pinned by the *absence of a
+    parameter*, which is the shape the invariant happened to have rather than
+    the invariant itself — the same shape-instead-of-meaning failure this
+    module's round-3 note calls out ("a parameter list instead of where the
+    parameter's value lands").
+
+    D2 contract v2 §4.3 requires a close order to state its ``positionSide``
+    explicitly and forbids inferring it from a quantity sign, so the parameter
+    now exists. What it may carry is pinned here instead, at full strength:
+    the One-way ``"BOTH"`` is the only value this adapter will sign, both
+    hedge values are refused before any signing or HTTP even with the operator
+    gate passed, and an unstated side stays unstated rather than acquiring a
+    default. Unifying position modes — accepting ``LONG``/``SHORT``, or
+    defaulting the parameter to anything but ``None`` — must fail here rather
+    than land silently.
+    """
+    submit_parameters = inspect.signature(
+        BinanceFuturesDemoExecutionClient.submit_order
+    ).parameters
+    # Unchanged from ROB-1271: the camelCase spelling never becomes a
+    # parameter name.
     assert "positionSide" not in submit_parameters
+    # An unstated side stays unstated: no default value stands in for it, so
+    # nothing is submitted on the caller's behalf.
+    assert submit_parameters["position_side"].default is None
+
+    client = BinanceFuturesDemoExecutionClient(
+        api_key="rob1288-test-key",
+        api_secret="rob1288-test-secret",
+    )
+    try:
+        for hedge_value in ("LONG", "SHORT"):
+            # confirm=True on purpose (mirrors the leverage pin above): the
+            # refusal has to happen before any signing or HTTP, so the strong
+            # form of the claim is the one made with the operator gate already
+            # passed. No socket is opened — the raise precedes dispatch.
+            with pytest.raises(BinanceFuturesDemoHedgeModeBlocked):
+                await client.submit_order(
+                    symbol="XRPUSDT",
+                    side="BUY",
+                    order_type="MARKET",
+                    qty=Decimal("10"),
+                    position_side=hedge_value,
+                    confirm=True,
+                )
+        # Non-vacuity: the One-way value is not rejected by the same guard,
+        # so the two raises above are about hedge specifically and not about
+        # the parameter being unusable.
+        preview = client.preview_submit(
+            symbol="XRPUSDT",
+            side="BUY",
+            order_type="MARKET",
+            qty=Decimal("10"),
+            position_side="BOTH",
+        )
+        assert preview.position_side == "BOTH"
+    finally:
+        await client.aclose()
 
     execution_source = (
         REPO_ROOT / "app/services/brokers/binance/demo_strategy_loop/execution.py"

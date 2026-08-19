@@ -1571,6 +1571,7 @@ async def test_list_expired_defensive_returns_expired_loss_cut_proposal(
             exit_intent="loss_cut",
             exit_reason="stop_loss",
             retrospective_id=42,
+            approval_issue_id="ROB-1285",
             rungs=[
                 {
                     "rung_index": 0,
@@ -1648,6 +1649,7 @@ async def test_list_expired_defensive_filters_by_market(monkeypatch):
             exit_intent="loss_cut",
             exit_reason="stop_loss",
             retrospective_id=42,
+            approval_issue_id="ROB-1285",
             rungs=[
                 {
                     "rung_index": 0,

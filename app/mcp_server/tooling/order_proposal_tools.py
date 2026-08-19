@@ -510,8 +510,9 @@ async def order_proposal_create(
     ``loss_cut`` keeps retrospective/price/hash guards and requires a single-use
     two-click confirmation. Telegram remains the submit-capable channel. The
     authenticated /invest B1 channel shares the nonce but stops at durable
-    validation without submitting an order. ``approval_issue_id`` is an optional
-    free-text audit note; no external issue tracker is queried.
+    validation without submitting an order. ``approval_issue_id`` is required
+    for loss-cut proposals as the operator approval record; no external issue
+    tracker is queried.
 
     Args:
         market: Canonical market in {equity_kr, equity_us, crypto}; aliases
@@ -1011,8 +1012,8 @@ def register_order_proposal_tools(mcp: FastMCP) -> None:
             "Replace/cancel read target-order evidence before persistence, but never "
             "mutate a broker. Approval/submission happens via Telegram (PR 2), not "
             "through this tool. loss_cut requires a two-click confirmation with a "
-            "single-use nonce and full second-click revalidation; approval_issue_id "
-            "is an optional audit note and is never externally queried."
+            "single-use nonce and full second-click revalidation; loss_cut also "
+            "requires a non-empty approval_issue_id (never externally queried)."
         ),
     )(order_proposal_create)
     _ = mcp.tool(

@@ -66,3 +66,39 @@ class BinanceFuturesDemoUnsupportedSymbol(BinanceAdapterError):
     BTCUSDT is explicitly excluded due to MIN_NOTIONAL=50 USDT > 10 USDT cap.
     Operator CLI override extends the list but the cap is never bypassed.
     """
+
+
+class BinanceFuturesDemoPositionSideMismatch(BinanceAdapterError):
+    """Raised when the broker's ``positionSide`` echo does not match the request.
+
+    ROB-1288 / D2 contract v2 §4.3. When a caller states an explicit
+    ``position_side`` on a submit, the Binance response MUST echo that exact
+    value back. Two ways this fails, both fatal:
+
+      * the response echoes a *different* ``positionSide`` than requested, or
+      * the response omits ``positionSide`` entirely.
+
+    The omission case is deliberately an error and not a shrug: with no
+    echoed value there is nothing to verify against, and the only remaining
+    way to "know" the side would be to infer it — from the quantity sign, or
+    from a default. Contract v2 §4.3 forbids exactly that ("v2 does not infer
+    the missing value from quantity sign"), so absence fails closed.
+
+    Mirrors the ``BinanceFuturesDemoLeverageMismatch`` echo-verification
+    pattern already used for ``set_leverage``.
+    """
+
+
+class BinanceFuturesDemoPositionSideUnavailable(BinanceAdapterError):
+    """Raised when a readback row carries no ``positionSide`` and one is required.
+
+    ROB-1288. ``/fapi/v2/positionRisk`` rows are surfaced verbatim, so a row
+    without a ``positionSide`` field yields ``position_side=None`` rather than
+    a fabricated value. A caller that needs the side calls
+    ``FuturesDemoPositionResult.require_position_side()``, which raises this
+    instead of deriving the side from the sign of ``positionAmt``.
+
+    🔴 The sign of ``positionAmt`` is NOT a substitute. Contract v2 §4.3
+    forbids inferring the missing value from the quantity sign; this exception
+    is the fail-closed alternative.
+    """

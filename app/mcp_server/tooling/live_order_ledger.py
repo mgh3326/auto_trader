@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.timezone import now_kst
 from app.mcp_server.tooling.fx_pnl import capture_reconcile_spot_fx
@@ -22,6 +22,11 @@ from app.mcp_server.tooling.order_journal import (
     _create_trade_journal_for_buy,
     _link_journal_to_fill,
     _save_order_fill,
+)
+from app.mcp_server.tooling.proposal_rung_convergence import (
+    candidate_scan_coverage,
+    run_resting_rung_sweep,
+    scanned_row_bounds,
 )
 from app.models.review import LiveOrderLedger
 from app.services.brokers.kis.mock_scalping_exec.fill_evidence import (
@@ -148,6 +153,31 @@ def _derive_live_send_status(*, rt_cd: str | None, order_no: str | None) -> str:
     if order_no:
         return "accepted"
     return "rejected" if rt_cd not in (None, "0", "") else "accepted"
+
+
+async def _count_open_live_ledger_rows(
+    *,
+    market: str | None,
+    broker: str | None,
+    symbol: str | None,
+    order_no: str | None,
+) -> int:
+    """Total open rows ignoring the scan limit (ROB-1284 AC3 truncation proof)."""
+    async with _order_session_factory()() as db:
+        stmt = (
+            select(func.count())
+            .select_from(LiveOrderLedger)
+            .where(LiveOrderLedger.status.in_(("accepted", "pending", "partial")))
+        )
+        if market:
+            stmt = stmt.where(LiveOrderLedger.market == market)
+        if broker:
+            stmt = stmt.where(LiveOrderLedger.broker == broker)
+        if symbol:
+            stmt = stmt.where(LiveOrderLedger.symbol == symbol)
+        if order_no:
+            stmt = stmt.where(LiveOrderLedger.order_no == order_no)
+        return int((await db.execute(stmt)).scalar_one())
 
 
 async def _list_open_live_ledger_rows(
@@ -524,10 +554,20 @@ async def live_reconcile_orders_impl(
     dry_run: bool = True,
     limit: int = 100,
 ) -> dict[str, Any]:
+    # ROB-1284: this path had NO proposal-rung repair pre-pass at all (KIS and
+    # Toss each grew one; US/crypto never did), so a rung whose ledger row went
+    # terminal without its projection landing stayed `resting` forever. The
+    # rung-driven sweep is untruncated and evidence-first, and makes no broker
+    # call — see proposal_rung_convergence.
+    rung_sweep = await run_resting_rung_sweep(dry_run=dry_run)
     try:
+        open_total = await _count_open_live_ledger_rows(
+            market=market, broker=broker, symbol=symbol, order_no=order_id
+        )
         rows = await _list_open_live_ledger_rows(
             market=market, broker=broker, symbol=symbol, order_no=order_id, limit=limit
         )
+        scanned_oldest, scanned_newest = scanned_row_bounds(rows)
     except Exception as exc:
         logger.exception("Failed to list open live ledger rows: %s", exc)
         return {"success": False, "error": str(exc) or exc.__class__.__name__}
@@ -554,6 +594,15 @@ async def live_reconcile_orders_impl(
         "dry_run": dry_run,
         "counts": counts,
         "reconciled": reconciled,
+        "proposal_rung_sweep": rung_sweep,
+        "candidate_scan": candidate_scan_coverage(
+            scanned=len(rows),
+            open_total=open_total,
+            limit=limit,
+            oldest_scanned_at=scanned_oldest,
+            newest_scanned_at=scanned_newest,
+            now=datetime.now(UTC),
+        ),
         "message": f"Reconciled {len(reconciled)} live order(s) (dry_run={dry_run}): {counts}",
     }
 

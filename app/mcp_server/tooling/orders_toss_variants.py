@@ -2103,7 +2103,7 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "exit_intent='loss_cut' is disabled for direct MCP calls. Use "
             "order_proposal_create; its Telegram two-click flow revalidates the "
             "<=72h retrospective, current-price slip band, and approval hash before "
-            "submission. approval_issue_id is only an optional audit note."
+            "submission; that proposal flow requires approval_issue_id."
         ),
     )(toss_preview_order)
     mcp.tool(

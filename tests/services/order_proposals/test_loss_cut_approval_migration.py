@@ -91,11 +91,11 @@ def test_loss_cut_approval_migration_is_single_head_and_has_no_row_dml():
     config = Config(str(_REPO / "alembic.ini"))
     config.set_main_option("script_location", str(_REPO / "alembic"))
     scripts = ScriptDirectory.from_config(config)
-    # The invariant is a single, unbranched head -- not that this migration
-    # is forever the newest one. Pinning the id made every later migration
-    # (ROB-1286 added one) look like a branch. What still matters is that
-    # this revision remains on the one chain that leads to that head.
+    # Exactly one head is the property that matters; "this revision IS the head"
+    # stops being true the moment any later migration lands (see
+    # tests/services/invalid_sample_eligibility/test_migration.py for the same
+    # rule). Keep this revision pinned inside the single chain instead.
     heads = scripts.get_heads()
-    assert len(heads) == 1, f"alembic history branched: {heads}"
-    chain = {revision.revision for revision in scripts.walk_revisions()}
-    assert "20260814_lcapprove_b1" in chain
+    assert len(heads) == 1, heads
+    ancestry = {rev.revision for rev in scripts.walk_revisions("base", heads[0])}
+    assert "20260814_lcapprove_b1" in ancestry

@@ -415,7 +415,10 @@ def register_all_tools(mcp: FastMCP, profile: McpProfile = McpProfile.DEFAULT) -
     # ROB-755 — execution ledger fill event read tool; read-only, always registered.
     register_execution_ledger_event_tools(mcp)
     register_mock_loop_retro_tools(mcp)
-    register_trade_retrospective_tools(mcp)
+    register_trade_retrospective_tools(
+        mcp,
+        include_position_intake=profile is McpProfile.DEFAULT,
+    )
     register_forecast_tools(mcp)
     register_trading_scoreboard_tools(mcp)
     # ROB-1173: this is a direct KIS mock broker mutation despite its report

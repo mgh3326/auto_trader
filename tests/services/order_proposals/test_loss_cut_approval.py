@@ -95,6 +95,7 @@ async def _seed_loss_cut_proposal(
         exit_intent="loss_cut",
         exit_reason="stop_loss",
         retrospective_id=retro.id,
+        approval_issue_id="ROB-1285",
         now=now,
         valid_until=now + timedelta(minutes=15),
     )

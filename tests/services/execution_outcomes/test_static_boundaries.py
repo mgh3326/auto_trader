@@ -32,7 +32,16 @@ EXPECTED_SIGNATURES = {
     "app/mcp_server/tooling/alpaca_paper_orders.py::alpaca_paper_cancel_order": "order_id,confirm=False,account_mode=ALPACA_PAPER_ACCOUNT_MODE",
     "app/services/brokers/binance/spot_demo/execution_client.py::submit_order": "self,*symbol,*side,*order_type,*qty,*client_order_id=None,*price=None,*time_in_force=None,*confirm=False",
     "app/services/brokers/binance/spot_demo/execution_client.py::cancel_order": "self,*symbol,*client_order_id,*confirm=False",
-    "app/services/brokers/binance/futures_demo/execution_client.py::submit_order": "self,*symbol,*side,*order_type,*qty,*client_order_id=None,*price=None,*time_in_force=None,*reduce_only=False,*confirm=False",
+    # ROB-1288 — deliberately widened, once. D2 contract v2 §4.3 requires a
+    # Futures close to state its `positionSide` explicitly and forbids
+    # recovering it from the quantity sign, so the submit surface has to carry
+    # it; the approving issue is ROB-1288. The widening is `position_side`
+    # alone, it is keyword-only and defaults to None, and every other frozen
+    # signature below (including Spot's `submit_order` and this file's
+    # `cancel_order`) is byte-identical to what it was. Anything beyond that
+    # single parameter is a separate approval, which is what this exact
+    # comparison exists to force.
+    "app/services/brokers/binance/futures_demo/execution_client.py::submit_order": "self,*symbol,*side,*order_type,*qty,*client_order_id=None,*price=None,*time_in_force=None,*reduce_only=False,*position_side=None,*confirm=False",
     "app/services/brokers/binance/futures_demo/execution_client.py::cancel_order": "self,*symbol,*client_order_id",
 }
 

@@ -29,6 +29,15 @@ Hard invariants enforced here:
   * reduceOnly threading — the ``reduce_only`` flag on ``submit_order``
     is sent to Binance as ``reduceOnly=true`` when set, providing the
     structural guard against accidentally flipping a position.
+  * positionSide (ROB-1288) — ``submit_order``/``order_test`` accept an
+    explicit ``position_side``; when stated it is sent verbatim and the
+    response must echo it exactly, or
+    ``BinanceFuturesDemoPositionSideMismatch`` is raised (an absent echo
+    counts as a mismatch). Hedge-mode values are refused pre-HTTP by
+    ``BinanceFuturesDemoHedgeModeBlocked`` — One-way only stands. The
+    position readbacks preserve each row's ``positionSide``. 🔴 Nowhere is
+    the value defaulted or inferred from a quantity sign; contract v2 §4.3
+    forbids it, so absence fails closed instead.
   * Secret hygiene — the API secret lives on a single private attribute
     (``_api_secret``) and is never read by ``repr``, log messages, or
     error strings.
@@ -70,8 +79,10 @@ from app.services.brokers.binance.futures_demo.dto import (
 )
 from app.services.brokers.binance.futures_demo.errors import (
     BinanceFuturesDemoDisabled,
+    BinanceFuturesDemoHedgeModeBlocked,
     BinanceFuturesDemoLeverageMismatch,
     BinanceFuturesDemoMissingCredentials,
+    BinanceFuturesDemoPositionSideMismatch,
 )
 from app.services.brokers.binance.futures_demo.signing import (
     BINANCE_FUTURES_DEMO_RECV_WINDOW_MS,
@@ -96,11 +107,40 @@ _LEVERAGE_PATH: Final[str] = "/fapi/v1/leverage"
 ALLOWED_SIDES: Final[frozenset[str]] = frozenset({"BUY", "SELL"})
 ALLOWED_ORDER_TYPES: Final[frozenset[str]] = frozenset({"LIMIT", "MARKET"})
 
+# ROB-1288 — Binance's positionSide vocabulary. "BOTH" is the One-way value;
+# "LONG"/"SHORT" only exist under Hedge mode, which this adapter does not
+# support (see BinanceFuturesDemoHedgeModeBlocked). Both sets are spelled out
+# so a caller passing a Hedge value gets the *hedge-blocked* error rather than
+# a vague "unknown value" — the distinction matters when reading a failure.
+ONE_WAY_POSITION_SIDE: Final[str] = "BOTH"
+HEDGE_POSITION_SIDES: Final[frozenset[str]] = frozenset({"LONG", "SHORT"})
+KNOWN_POSITION_SIDES: Final[frozenset[str]] = (
+    frozenset({ONE_WAY_POSITION_SIDE}) | HEDGE_POSITION_SIDES
+)
+
 
 def _truthy(value: str | None) -> bool:
     if not value:
         return False
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _extract_position_side(payload: Any) -> str | None:
+    """Read ``positionSide`` out of a broker payload, or ``None`` if absent.
+
+    🔴 ROB-1288 / contract v2 §4.3 — this function has exactly one job:
+    surface what Binance sent. It never falls back to a default, and it never
+    looks at ``positionAmt``/``origQty``/``side`` to guess. A row with no
+    ``positionSide`` is reported as missing, and the caller decides whether
+    missing is fatal (it is, on any path that needs the value).
+    """
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("positionSide")
+    if not isinstance(raw, str):
+        return None
+    stripped = raw.strip()
+    return stripped or None
 
 
 @dataclass(frozen=True)
@@ -119,6 +159,9 @@ class FuturesDemoDryRunResult:
     qty: Decimal
     client_order_id: str
     reduce_only: bool = False
+    # ROB-1288: the positionSide the operator stated for this prospective
+    # order (``None`` = not stated, and nothing is substituted for it).
+    position_side: str | None = None
     reason: str = "confirm=False — operator gate not passed; no HTTP attempted"
 
 
@@ -227,6 +270,7 @@ class BinanceFuturesDemoExecutionClient:
         qty: Decimal,
         price: Decimal | None,
         time_in_force: str | None,
+        position_side: str | None = None,
     ) -> None:
         """Validate order arguments before any signing/HTTP.
 
@@ -242,6 +286,8 @@ class BinanceFuturesDemoExecutionClient:
           * unknown ``side`` / ``order_type``
           * LIMIT order missing ``price`` or ``time_in_force``
           * MARKET order carrying a stray ``price``
+          * a ``position_side`` this adapter cannot honour (see
+            ``_validate_position_side``)
         """
         if not symbol or not symbol.strip():
             raise ValueError("symbol must be non-empty")
@@ -262,6 +308,45 @@ class BinanceFuturesDemoExecutionClient:
                 raise ValueError("LIMIT order requires time_in_force (e.g. GTC)")
         if order_type == "MARKET" and price is not None:
             raise ValueError("MARKET order must not carry a price")
+        self._validate_position_side(position_side)
+
+    @staticmethod
+    def _validate_position_side(position_side: str | None) -> None:
+        """Reject a ``position_side`` this adapter cannot honour, pre-HTTP.
+
+        ROB-1288. Three outcomes, in increasing severity:
+
+          * ``None`` — the caller stated nothing. Accepted: the param is
+            omitted from the signed payload and no echo check runs. 🔴 Nothing
+            is substituted; the adapter does not pick a side on the caller's
+            behalf, which is the inference contract v2 §4.3 forbids.
+          * ``"BOTH"`` — the One-way value. Accepted, sent, and echo-verified.
+          * ``"LONG"`` / ``"SHORT"`` — Hedge-mode values. Rejected with
+            ``BinanceFuturesDemoHedgeModeBlocked`` *before* any signing or
+            HTTP: this adapter is One-way only (ROB-298 PR 2), and a
+            Hedge-side order is out of scope rather than merely malformed.
+          * anything else (wrong case, unknown token, non-string) — a caller
+            bug, rejected as ``ValueError``. Note the deliberate absence of
+            normalisation: ``"both"`` is not quietly upper-cased, because
+            silently rewriting the one field whose exact value is being
+            echo-verified would defeat the verification.
+        """
+        if position_side is None:
+            return
+        if not isinstance(position_side, str) or position_side not in (
+            KNOWN_POSITION_SIDES
+        ):
+            raise ValueError(
+                f"position_side {position_side!r} not in "
+                f"{sorted(KNOWN_POSITION_SIDES)} (exact case required)"
+            )
+        if position_side in HEDGE_POSITION_SIDES:
+            raise BinanceFuturesDemoHedgeModeBlocked(
+                f"position_side={position_side!r} is a Hedge-mode value. "
+                "ROB-298 PR 2 supports One-way mode only "
+                f"(positionSide={ONE_WAY_POSITION_SIDE!r}); refusing to sign "
+                "or dispatch."
+            )
 
     def _validate_cancel_args(
         self,
@@ -290,6 +375,7 @@ class BinanceFuturesDemoExecutionClient:
         time_in_force: str | None,
         client_order_id: str | None,
         reduce_only: bool,
+        position_side: str | None = None,
     ) -> dict[str, str]:
         """Construct the params dict that will be HMAC-signed."""
         params: dict[str, str] = {
@@ -309,6 +395,11 @@ class BinanceFuturesDemoExecutionClient:
             # Only set when True so default open-side orders never carry
             # ``reduceOnly=true``. Binance accepts the param omitted.
             params["reduceOnly"] = "true"
+        if position_side is not None:
+            # ROB-1288: sent verbatim, exactly as the caller stated it. The
+            # param is absent when the caller stated nothing — absent, not
+            # defaulted (contract v2 §4.3).
+            params["positionSide"] = position_side
         return params
 
     # ------------------------------------------------------------------
@@ -325,12 +416,16 @@ class BinanceFuturesDemoExecutionClient:
         price: Decimal | None = None,
         time_in_force: str | None = None,
         reduce_only: bool = False,
+        position_side: str | None = None,
     ) -> FuturesDemoDryRunResult:
         """Pure dry-run preview. No HTTP, no signing.
 
         Still runs boundary validation so the same rejection contract
         applies whether the operator is previewing or confirming — a
         preview with ``qty=0`` is a caller bug, not a "harmless dry run".
+        The same holds for ``position_side``: a Hedge-mode value is refused
+        here too, so the preview cannot advertise an order the confirm path
+        would reject.
         """
         self._validate_order_args(
             symbol=symbol,
@@ -339,6 +434,7 @@ class BinanceFuturesDemoExecutionClient:
             qty=qty,
             price=price,
             time_in_force=time_in_force,
+            position_side=position_side,
         )
         cid = client_order_id or self._new_client_order_id()
         return FuturesDemoDryRunResult(
@@ -348,6 +444,7 @@ class BinanceFuturesDemoExecutionClient:
             qty=qty,
             client_order_id=cid,
             reduce_only=reduce_only,
+            position_side=position_side,
         )
 
     async def submit_order(
@@ -361,6 +458,7 @@ class BinanceFuturesDemoExecutionClient:
         price: Decimal | None = None,
         time_in_force: str | None = None,
         reduce_only: bool = False,
+        position_side: str | None = None,
         confirm: bool = False,
     ) -> FuturesDemoOrderSubmitResult | FuturesDemoDryRunResult:
         """Operator-gated submit.
@@ -373,6 +471,15 @@ class BinanceFuturesDemoExecutionClient:
         If ``reduce_only=True``, the signed payload includes
         ``reduceOnly=true``; otherwise the param is omitted (Binance
         defaults to ``reduceOnly=false`` on absence).
+
+        ``position_side`` (ROB-1288) is the explicit ``positionSide`` for
+        this order. It is optional and defaults to ``None`` — an unstated
+        side is sent as an absent param, never as a guessed one. When it IS
+        stated, the value is sent verbatim and the response must echo that
+        exact value back; a differing echo, or a response with no
+        ``positionSide`` at all, raises
+        ``BinanceFuturesDemoPositionSideMismatch``. 🔴 A close order's side is
+        never derived from the sign of a quantity (contract v2 §4.3).
         """
         self._validate_order_args(
             symbol=symbol,
@@ -381,6 +488,7 @@ class BinanceFuturesDemoExecutionClient:
             qty=qty,
             price=price,
             time_in_force=time_in_force,
+            position_side=position_side,
         )
         cid = client_order_id or self._new_client_order_id()
         if not confirm:
@@ -391,6 +499,7 @@ class BinanceFuturesDemoExecutionClient:
                 qty=qty,
                 client_order_id=cid,
                 reduce_only=reduce_only,
+                position_side=position_side,
             )
         params = self._build_order_params(
             symbol=symbol,
@@ -401,11 +510,17 @@ class BinanceFuturesDemoExecutionClient:
             time_in_force=time_in_force,
             client_order_id=cid,
             reduce_only=reduce_only,
+            position_side=position_side,
         )
         signed = _sign_request_params(params=params, api_secret=self._api_secret)
         resp = await self._client.post(_ORDER_PATH, params=signed)
         resp.raise_for_status()
         body = resp.json()
+        echoed_position_side = self._verify_position_side_echo(
+            requested=position_side,
+            body=body,
+            context=f"submit_order symbol={symbol!r} client_order_id={cid!r}",
+        )
         return FuturesDemoOrderSubmitResult(
             client_order_id=str(body.get("clientOrderId", cid)),
             broker_order_id=str(body.get("orderId", "")),
@@ -418,7 +533,50 @@ class BinanceFuturesDemoExecutionClient:
             status=str(body.get("status", "UNKNOWN")),
             reduce_only=bool(body.get("reduceOnly", reduce_only)),
             raw_response_redacted=_redact(body),
+            position_side=echoed_position_side,
         )
+
+    @staticmethod
+    def _verify_position_side_echo(
+        *,
+        requested: str | None,
+        body: Any,
+        context: str,
+    ) -> str | None:
+        """Compare the broker's ``positionSide`` echo against the request.
+
+        ROB-1288 / contract v2 §4.3, mirroring the ``set_leverage`` echo
+        check. Returns the value to record on the result DTO:
+
+          * ``requested is None`` — nothing was asked for, so nothing is
+            verified; whatever Binance sent (possibly nothing) is preserved
+            verbatim. This is what keeps the change additive for the callers
+            that predate ROB-1288.
+          * ``requested`` set, echo equal — returns the echoed value.
+          * ``requested`` set, echo different — raises.
+          * ``requested`` set, echo **absent** — raises. 🔴 This is the case
+            worth being explicit about: "the broker didn't say" must not
+            collapse into "the broker agreed". With nothing echoed there is
+            no evidence, and the only way to produce a value would be to
+            infer one, which is precisely what is forbidden.
+        """
+        echoed = _extract_position_side(body)
+        if requested is None:
+            return echoed
+        if echoed is None:
+            raise BinanceFuturesDemoPositionSideMismatch(
+                f"{context}: requested positionSide={requested!r} but the "
+                "Binance response carried no positionSide field. Refusing to "
+                "treat an absent echo as agreement, and refusing to infer the "
+                "side from quantity/side (contract v2 §4.3)."
+            )
+        if echoed != requested:
+            raise BinanceFuturesDemoPositionSideMismatch(
+                f"{context}: positionSide echo mismatch — requested "
+                f"{requested!r}, Binance echoed {echoed!r}. Refusing to "
+                "proceed."
+            )
+        return echoed
 
     async def cancel_order(
         self,
@@ -469,6 +627,7 @@ class BinanceFuturesDemoExecutionClient:
         price: Decimal | None = None,
         time_in_force: str | None = None,
         reduce_only: bool = False,
+        position_side: str | None = None,
     ) -> FuturesDemoOrderTestResult:
         """POST to ``/fapi/v1/order/test`` — validates without placing.
 
@@ -485,6 +644,7 @@ class BinanceFuturesDemoExecutionClient:
             qty=qty,
             price=price,
             time_in_force=time_in_force,
+            position_side=position_side,
         )
         params = self._build_order_params(
             symbol=symbol,
@@ -495,6 +655,7 @@ class BinanceFuturesDemoExecutionClient:
             time_in_force=time_in_force,
             client_order_id=None,  # order/test doesn't need a client id
             reduce_only=reduce_only,
+            position_side=position_side,
         )
         signed = _sign_request_params(params=params, api_secret=self._api_secret)
         resp = await self._client.post(_ORDER_TEST_PATH, params=signed)
@@ -528,6 +689,7 @@ class BinanceFuturesDemoExecutionClient:
                 qty=Decimal(str(entry.get("origQty", "0"))),
                 status=str(entry.get("status", "")),
                 reduce_only=bool(entry.get("reduceOnly", False)),
+                position_side=_extract_position_side(entry),
             )
             for entry in body
         ]
@@ -557,6 +719,7 @@ class BinanceFuturesDemoExecutionClient:
                 qty=Decimal(str(entry.get("origQty", "0"))),
                 status=str(entry.get("status", "")),
                 reduce_only=bool(entry.get("reduceOnly", False)),
+                position_side=_extract_position_side(entry),
             )
             for entry in body
         ]
@@ -614,6 +777,8 @@ class BinanceFuturesDemoExecutionClient:
             avg_price=Decimal(str(body.get("avgPrice", "0"))),
             reduce_only=bool(body.get("reduceOnly", False)),
             raw_response_redacted=_redact(body),
+            # ROB-1288: preserved verbatim; absent stays absent.
+            position_side=_extract_position_side(body),
         )
 
     async def get_position(self, *, symbol: str) -> FuturesDemoPositionResult:
@@ -656,6 +821,9 @@ class BinanceFuturesDemoExecutionClient:
             entry_price=entry_price,
             leverage=leverage,
             is_flat=(position_amt == 0),
+            # ROB-1288: preserved verbatim; 🔴 never derived from the sign of
+            # ``position_amt``.
+            position_side=_extract_position_side(entry),
         )
 
     async def get_all_positions(self) -> list[FuturesDemoPositionResult]:
@@ -694,6 +862,11 @@ class BinanceFuturesDemoExecutionClient:
                     entry_price=entry_price,
                     leverage=leverage,
                     is_flat=(position_amt == 0),
+                    # ROB-1288: the account-wide readback preserves each row's
+                    # positionSide. 🔴 A row without one stays ``None`` — the
+                    # signed ``position_amt`` sitting right there is not a
+                    # licence to infer (contract v2 §4.3).
+                    position_side=_extract_position_side(entry),
                 )
             )
         return results
