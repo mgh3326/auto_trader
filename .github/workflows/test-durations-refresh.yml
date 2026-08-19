@@ -5,6 +5,13 @@ name: Refresh test durations
 # isolated by tests/conftest.py. Shards emit clean JSON maps and identical
 # collection manifests. The merge job drops stale entries and refuses partial,
 # duplicate, or collection-inconsistent results.
+#
+# ROB-1295: the same "Measure shard" step also captures call-phase-only
+# duration telemetry (tests/_call_duration_plugin.py) into a second,
+# additive sidecar artifact (.call_durations.json). This never touches
+# .test_durations or pytest-split's shard-balancing consumer — it is a
+# separate, stricter-validated freshness record (scripts/call_durations.py)
+# built and self-validated in the merge job below.
 
 on:
   schedule:
@@ -127,6 +134,8 @@ jobs:
           --splits 4 --group "${{ matrix.group }}" \
           --durations-path "durations-shard-${{ matrix.group }}.json" \
           --store-durations --clean-durations \
+          -p tests._call_duration_plugin \
+          --call-durations-out "call-durations-shard-${{ matrix.group }}.json" \
           -n 4 --dist=loadfile \
           -o faulthandler_timeout=120
 
@@ -136,6 +145,7 @@ jobs:
         name: durations-shard-${{ matrix.group }}
         path: |
           durations-shard-${{ matrix.group }}.json
+          call-durations-shard-${{ matrix.group }}.json
           collected-shard-${{ matrix.group }}.txt
         if-no-files-found: error
 
@@ -150,6 +160,7 @@ jobs:
       changed: ${{ steps.diff.outputs.changed }}
       before_entries: ${{ steps.diff.outputs.before_entries }}
       after_entries: ${{ steps.diff.outputs.after_entries }}
+      call_durations_changed: ${{ steps.call-durations-diff.outputs.changed }}
     env:
       PYTHON_VERSION: "3.13"
 
@@ -211,10 +222,64 @@ jobs:
         path: refreshed-test-durations.json
         if-no-files-found: error
 
+    - name: Build call-phase duration artifact
+      run: |
+        python scripts/call_durations.py build \
+          --shard duration-artifacts/call-durations-shard-1.json \
+          --shard duration-artifacts/call-durations-shard-2.json \
+          --shard duration-artifacts/call-durations-shard-3.json \
+          --shard duration-artifacts/call-durations-shard-4.json \
+          --collected duration-artifacts/collected-shard-1.txt \
+          --collected duration-artifacts/collected-shard-2.txt \
+          --collected duration-artifacts/collected-shard-3.txt \
+          --collected duration-artifacts/collected-shard-4.txt \
+          --source-commit-sha "${{ github.sha }}" \
+          --output .call_durations.json
+
+    - name: Validate call-phase duration freshness
+      # Self-check: the artifact this job just built must itself pass the
+      # same fail-closed freshness contract a future PR/consumer would run
+      # (ROB-1295). A validate failure here means build_artifact and
+      # validate_freshness disagree — treat that as a bug, not driftable.
+      run: |
+        python scripts/call_durations.py validate \
+          --artifact .call_durations.json \
+          --collected duration-artifacts/collected-shard-1.txt \
+          --collected duration-artifacts/collected-shard-2.txt \
+          --collected duration-artifacts/collected-shard-3.txt \
+          --collected duration-artifacts/collected-shard-4.txt \
+          --expected-source-sha "${{ github.sha }}"
+
+    - name: Detect .call_durations.json changes
+      id: call-durations-diff
+      # git status --porcelain (not git diff --quiet) because this file does
+      # not exist in the repo yet on its first run: git diff never reports
+      # an untracked path as changed, which would silently never open the
+      # seeding PR.
+      run: |
+        if [ -z "$(git status --porcelain -- .call_durations.json)" ]; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          echo "No .call_durations.json changes — nothing to PR."
+        else
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Stage call-phase duration artifact
+      if: steps.call-durations-diff.outputs.changed == 'true'
+      run: cp .call_durations.json refreshed-call-durations.json
+
+    - name: Upload call-phase duration artifact
+      if: steps.call-durations-diff.outputs.changed == 'true'
+      uses: actions/upload-artifact@v6
+      with:
+        name: merged-call-durations
+        path: refreshed-call-durations.json
+        if-no-files-found: error
+
   pull-request:
     name: Open duration refresh PR
     needs: merge
-    if: needs.merge.outputs.changed == 'true'
+    if: needs.merge.outputs.changed == 'true' || needs.merge.outputs.call_durations_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -227,32 +292,54 @@ jobs:
         persist-credentials: false
 
     - name: Download merged duration artifact
+      if: needs.merge.outputs.changed == 'true'
       uses: actions/download-artifact@v6
       with:
         name: merged-test-durations
         path: duration-refresh-output
 
     - name: Install merged duration set
+      if: needs.merge.outputs.changed == 'true'
       run: cp duration-refresh-output/refreshed-test-durations.json .test_durations
+
+    - name: Download call-phase duration artifact
+      if: needs.merge.outputs.call_durations_changed == 'true'
+      uses: actions/download-artifact@v6
+      with:
+        name: merged-call-durations
+        path: call-durations-refresh-output
+
+    - name: Install call-phase duration set
+      if: needs.merge.outputs.call_durations_changed == 'true'
+      run: cp call-durations-refresh-output/refreshed-call-durations.json .call_durations.json
 
     - name: Open auto-PR with refreshed durations
       uses: peter-evans/create-pull-request@v7
       with:
         token: ${{ secrets.DURATIONS_REFRESH_TOKEN }}
-        commit-message: "chore(ci): refresh .test_durations (pytest-split shard balance)"
-        add-paths: .test_durations
+        commit-message: "chore(ci): refresh .test_durations and .call_durations.json"
+        add-paths: |
+          .test_durations
+          .call_durations.json
         branch: ci/test-durations-refresh
         delete-branch: true
         base: main
         title: "chore(ci): refresh .test_durations"
         body: |
-          Automated weekly refresh of `.test_durations` (ROB-963 / ROB-1051).
+          Automated weekly refresh of `.test_durations` (ROB-963 / ROB-1051)
+          and `.call_durations.json` (ROB-1295).
 
           Four CI-equivalent shards measured the full non-live suite using
           independent PostgreSQL services and worker-isolated databases. The
-          merge rejected missing/duplicate measurements, dropped stale entries,
-          and wrote a deterministic node-id-sorted map.
+          `.test_durations` merge rejected missing/duplicate measurements,
+          dropped stale entries, and wrote a deterministic node-id-sorted map
+          — this still drives pytest-split shard balancing, unchanged.
 
-          - recorded duration entries: `${{ needs.merge.outputs.before_entries }}` → `${{ needs.merge.outputs.after_entries }}`
+          `.call_durations.json` is a separate, additive call-phase-only
+          duration record (excludes setup/teardown/fixture cost) with
+          source-commit and collection-hash provenance, built and
+          self-validated by `scripts/call_durations.py`.
+
+          - recorded `.test_durations` entries: `${{ needs.merge.outputs.before_entries }}` → `${{ needs.merge.outputs.after_entries }}`
 
           Generated by `.github/workflows/test-durations-refresh.yml`.
