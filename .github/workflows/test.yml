@@ -53,6 +53,9 @@ jobs:
     - name: Run duration merge unit tests
       run: uv run pytest scripts/merge_test_durations_test.py -q
 
+    - name: Run call-duration freshness unit tests
+      run: uv run pytest scripts/call_durations_test.py -q
+
   # Exact-head source-ownership fence for the fencefix PR itself (ROB-1262
   # follow-up). Evaluates only this PR's actual base/head change set from
   # the GitHub event — never a fixed historical SHA vs. an advancing branch
