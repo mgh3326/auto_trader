@@ -66,6 +66,7 @@ judged nothing and gave no reason has not finished.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -193,7 +194,7 @@ class TickResult:
         }
 
 
-def _resolve_ambiguity(
+async def _resolve_ambiguity(
     *,
     spawner: SessionSpawner,
     request: SpawnRequest,
@@ -210,6 +211,8 @@ def _resolve_ambiguity(
         return SpawnDisposition.AMBIGUOUS, f"{detail}; spawner cannot reconcile"
     try:
         verdict = spawner.reconcile(request)
+        if inspect.isawaitable(verdict):
+            verdict = await verdict
     except Exception as exc:  # noqa: BLE001 - a failed readback stays ambiguous
         logger.exception(
             "watch_trigger_repricing: reconcile failed for spawn_key=%s",
@@ -221,14 +224,23 @@ def _resolve_ambiguity(
     return SpawnDisposition.AMBIGUOUS, f"{detail}; reconcile inconclusive"
 
 
-def _attempt_spawn(
+async def _attempt_spawn(
     *,
     spawner: SessionSpawner,
     request: SpawnRequest,
 ) -> tuple[SpawnDisposition, str]:
-    """Call the spawner and classify what it actually proved."""
+    """Call the spawner and classify what it actually proved.
+
+    ``spawn`` may be sync or async. The dry rehearsal spawners are sync
+    because they do nothing; a spawner that actually reaches
+    ``order_proposal_create`` is necessarily async, and awaiting here is
+    what lets the *same* orchestrator drive both rather than growing a
+    second, less-tested tick for the live path.
+    """
     try:
         outcome = spawner.spawn(request)
+        if inspect.isawaitable(outcome):
+            outcome = await outcome
     except SpawnNotStarted as exc:
         # The only exception that proves a clean failure.
         return SpawnDisposition.NOT_STARTED, f"spawn_not_started: {exc}"
@@ -325,9 +337,9 @@ async def run_repricing_tick(
             label=session_label(event.symbol, now=now),
         )
 
-        disposition, detail = _attempt_spawn(spawner=spawner, request=request)
+        disposition, detail = await _attempt_spawn(spawner=spawner, request=request)
         if disposition is SpawnDisposition.AMBIGUOUS:
-            disposition, detail = _resolve_ambiguity(
+            disposition, detail = await _resolve_ambiguity(
                 spawner=spawner, request=request, detail=detail
             )
 

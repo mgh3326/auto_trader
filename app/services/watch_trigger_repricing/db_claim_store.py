@@ -251,6 +251,47 @@ class DatabaseClaimStore:
                 )
             await session.commit()
 
+    async def release(self, handle: ClaimHandle, *, reason: str) -> None:
+        """Hand a claim back after a *proven* clean failure to start.
+
+        ROB-1290: this method was on the :class:`~.claims.ClaimStore`
+        protocol and implemented only by the in-memory rehearsal store. No
+        shipped spawner could return ``NOT_STARTED`` -- the dry one always
+        answers ``DRY`` -- so the orchestrator's release branch had never
+        run against the durable store, and the first spawner that could
+        prove a clean failure would have hit ``AttributeError`` mid-tick
+        and left the claim held until its lease expired.
+
+        Deletes the row rather than writing a terminal, exactly as the
+        in-memory store does: nothing was judged, so the fire must look
+        untouched to the next tick, and the row must stop occupying the
+        per-symbol partial-unique slot. The release is not silent -- the
+        orchestrator logs it and reports the event with its reason -- and
+        the evidence that matters (that no proposal exists) is the absence
+        of a proposal row, not the absence of this one.
+
+        Fenced like :meth:`finalise`: a rolled-over owner matches no row
+        and raises rather than deleting the current claimant's work, or an
+        already-written ``expired_unprocessed`` terminal.
+        """
+        async with self.session_factory() as session:  # type: ignore[operator]
+            result = await session.execute(
+                sa.delete(_TABLE).where(
+                    _TABLE.event_uuid == uuid.UUID(handle.event_uuid),
+                    _TABLE.generation == handle.generation,
+                    _TABLE.owner_token == uuid.UUID(handle.owner_token),
+                    _TABLE.state == ClaimLifecycle.STARTED.value,
+                )
+            )
+            if result.rowcount == 0:
+                await session.rollback()
+                raise ClaimNotHeld(
+                    f"claim {handle.event_uuid}#{handle.generation} is not held by "
+                    f"this owner (lease rolled over, or already terminal); "
+                    f"refusing to release it (reason={reason!r})"
+                )
+            await session.commit()
+
     async def outcomes_for(self, event_uuids: list[str]) -> dict[str, SessionOutcome]:
         """Read back terminals so the completion mapping is a stored fact."""
         if not event_uuids:

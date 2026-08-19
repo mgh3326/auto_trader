@@ -23,11 +23,16 @@ so. Everything else is live and must satisfy the full contract:
   permanently unjudged fire;
 * the claim store is durable, so dedup survives the flow run.
 
-A stand-in can still *claim* to be a ``DrySessionSpawner`` by subclassing
-it -- and that is fine, because subclassing it means inheriting a ``spawn``
-that starts nothing unless the subclass overrides it, at which point the
-subclass is a live spawner that failed to inherit the live base and is
-refused. There is no shape that both starts sessions and passes.
+Membership is by **exact type**, not ``isinstance`` (ROB-1290)
+-------------------------------------------------------------
+r2's fix said a ``DrySessionSpawner`` subclass was harmless because it
+inherits a ``spawn`` that starts nothing "unless the subclass overrides
+it, at which point the subclass is a live spawner ... and is refused". The
+second half was not true: ``isinstance`` accepted the subclass, so an
+override went straight past the live contract and the durability rule.
+Comparing ``type(spawner)`` against a closed set of classes this package
+defines closes it -- and the closed set is what makes that safe, since the
+package's own dry spawners are enumerated rather than inherited into.
 """
 
 from __future__ import annotations
@@ -37,7 +42,10 @@ from app.services.watch_trigger_repricing.live_contract import (
     LiveSpawnerContractViolation,
     assert_live_spawner_contract,
 )
-from app.services.watch_trigger_repricing.spawn import DrySessionSpawner
+from app.services.watch_trigger_repricing.spawn import (
+    DrySessionSpawner,
+    ScriptedDrySessionSpawner,
+)
 
 __all__ = [
     "DRY_SPAWNER_TYPES",
@@ -46,8 +54,9 @@ __all__ = [
     "is_dry_spawner",
 ]
 
-# Closed set. Membership is decided here, by type, never by the object.
-DRY_SPAWNER_TYPES: tuple[type, ...] = (DrySessionSpawner,)
+# Closed set. Membership is decided here, by exact type, never by the
+# object and never by inheritance.
+DRY_SPAWNER_TYPES: tuple[type, ...] = (DrySessionSpawner, ScriptedDrySessionSpawner)
 
 
 class ArmingRefused(RuntimeError):
@@ -59,8 +68,13 @@ class ArmingRefused(RuntimeError):
 
 
 def is_dry_spawner(spawner: object) -> bool:
-    """Dryness by type. ``is_dry`` self-reporting is deliberately ignored."""
-    return isinstance(spawner, DRY_SPAWNER_TYPES)
+    """Dryness by exact type. Self-reporting and inheritance are both ignored.
+
+    A subclass of a dry spawner is not dry: overriding ``spawn`` is all it
+    takes to start doing real work, and inheriting a name must not buy an
+    exemption from the live contract.
+    """
+    return type(spawner) in DRY_SPAWNER_TYPES
 
 
 def assert_arming_contract(*, spawner: object, store: object) -> None:
