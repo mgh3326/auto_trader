@@ -9,7 +9,7 @@ fails loudly instead of silently dropping a key.
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import (
     BaseModel,
@@ -455,7 +455,7 @@ class PreplannedSupportLadderPolicy(BaseModel):
     enabled: bool
     eligibility: Literal["standard_buy_gates_pass"]
     rungs_max: Literal[2]
-    per_rung_notional_multiplier: Literal[0.5]
+    per_rung_notional_multiplier: Annotated[float, Field(ge=0.5, le=0.5)]
     crash_day_behavior: Literal["keep"]
 
 
@@ -598,7 +598,7 @@ class CrashDayNewEntryHoldExceptionRequirements(BaseModel):
 class CrashDayNewEntryHoldExceptionSizing(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    per_symbol_notional_multiplier: Literal[0.5]
+    per_symbol_notional_multiplier: Annotated[float, Field(ge=0.5, le=0.5)]
     max_new_symbols: Literal[1]
 
 

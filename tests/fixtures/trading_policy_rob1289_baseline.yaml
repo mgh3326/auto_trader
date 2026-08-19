@@ -1,0 +1,699 @@
+# Trading policy — single authoritative source (ROB-646).
+# Seeded verbatim from docs/playbooks/trading-decision-playbook.md policy_keys
+# (captured 2026-07-02). Edited by operator PR ONLY — there is no write tool.
+# Repo is public; exposing these values is an accepted decision.
+version: "2026-08-14.2"
+captured_as_of: "2026-08-12"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits)"
+
+authority:
+  scope: judgment_policy_only
+  governs: "advisory judgment thresholds, decision rules, and the sector-cluster concentration cap"
+  does_not_govern:
+    - "loss_guard code guard (order_validation.py avg*1.01) — stays fail-closed in code"
+    - "ladder near-market guard (ladder_fill_safety.py 0.3%) — code"
+    - "RSI scoring bands (scoring.py) — code"
+    - "symbol_trade_settings — live per-symbol sizing (separate authority)"
+    - "sell_conditions — dormant/test-only (not authoritative)"
+    - "trade_profile — dead since ROB-488 (not revived)"
+
+# ROB-1106 posture-v1 stage 1. This block is deliberately default-off and
+# shadow-only. It is consumed only by the manual posture shadow entrypoint;
+# existing signal/gate, proposal, broker, worker, and scheduler paths do not
+# import or consult it.
+posture:
+  enabled: false
+  mode: shadow
+  states:
+    - RESTING
+    - CONDITIONAL
+    - ARMED_DEFERRED
+    - DISARMED
+    - EXPIRED_REARMABLE
+  policy_stamp_required: true
+
+# ROB-871 — master-gated by ORDER_PROPOSALS_AUTO_APPROVE=false. Caps use the
+# settlement currency for each market (KRW for kr/crypto, USD for us).
+# TOSS-AUTO-FULL (§51): KR per-order uses the upper bound of
+# ``buy.per_symbol_notional_krw_range`` [200000, 400000]; US uses the upper
+# bound of ``buy.per_symbol_notional_usd_range`` [150, 450].  The daily cap is
+# that upper bound × the one-new-entry limit stated at
+# ``user_stances[0].implications[0]`` ("동시 신규 최대 1종목"), hence KRW
+# 400000 and USD 450.  This comment intentionally records the derivation
+# without touching the separately owned buy/sell policy tiers.
+order_proposals:
+  auto_approve:
+    min_distance_pct: 3
+    per_order_cap:
+      kr: 400000
+      # §65차 (2026-08-14): 450 → 800. The US book holds single-share lots of
+      # high-priced ETFs (QQQ/VOO/IVV/BRK.B at $500-750/share), so the band-
+      # derived 450 structurally excluded every single-share profit-take from
+      # auto-approve (25/25 sell proposals carded on 2026-08-13). 800 admits
+      # one-share exits while still capping multi-share notional.
+      us: 800
+      crypto: 100000
+    daily_cap:
+      kr: 400000
+      # §71차 (2026-08-14): 800 -> 5000. The §65차 same-value pairing was wrong
+      # for US session scale: a 25-proposal trim day totals $4.4-4.8k per
+      # account, so the first auto-approved single share (QQQ $741) consumed
+      # 92.7% of the cap and demoted every later rung to a human card
+      # (measured 2026-08-14 22:35, all rejections daily_cap_exceeded).
+      # 5000 covers an observed full trim session (~10% of book/day/account);
+      # the $800 per-order cap and per-rung veto cards remain the guardrails.
+      us: 5000
+      crypto: 300000
+    # AUTO-APPROVE-EXPAND (§40차) — inputs to the profit-take classification,
+    # consumed only when ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded.
+    #
+    # breakeven_band_pct: the ±% band around avg_buy_price inside which a sell
+    # is treated as a break-even boundary case and must go to a human, whatever
+    # the sign of the P&L. §40차 fixes this at 1%.
+    breakeven_band_pct: 1
+    #
+    # round_trip_cost_bps: total both-leg cost (commission + transaction tax +
+    # FX spread where applicable), used to net down expected realized P&L
+    # before the "> 0" test.
+    #
+    # These are NOT measured rates. The veto-capable ledgers
+    # (review.kis_live_order_ledger, review.live_order_ledger) have no
+    # commission/tax columns, so this repo has no realized fee evidence for
+    # kis_live or upbit to derive a rate from — only review.toss_live_order_ledger
+    # records commission/tax, and toss_live is not veto-capable. Until a measured
+    # rate exists these are the CONSERVATIVE MAXIMUM of the rates this repo
+    # already declares, so the profit-take test is narrower than reality:
+    #   kr     47.4 = 14.7bp x 2 legs (account_routing kis_domestic commission_bps)
+    #                 + 18bp sell tax (paper_trading FEE_RATES equity_kr tax_sell)
+    #                 vs the 21bp the paper_trading commission alone implies.
+    #   us     90.0 = (25bp commission + 20bp fx spread) x 2 legs
+    #                 (account_routing kis_overseas) vs 14bp from paper_trading.
+    #   crypto 10.0 = 5bp x 2 legs (paper_trading FEE_RATES crypto).
+    # auto_approve.py enforces the same values as a floor, so lowering a number
+    # here cannot widen auto-approval — only raising one has any effect.
+    round_trip_cost_bps:
+      kr: 47.4
+      us: 90
+      crypto: 10
+
+# Raw-sector -> cluster grouping for the concentration cap. A member matches a
+# symbol's symbol_sectors label (name_kr / name_en / source_key) when the member
+# is a case-insensitive SUBSTRING of the label (one-directional: member ⊂ label),
+# so "반도체" matches "반도체와반도체장비" but "의료" does NOT invent a match against
+# "의료정밀". List members as specific labels, not broad umbrellas. Best-effort;
+# unmapped => fail-open.
+sector_clusters:
+  financials: ["금융", "은행", "증권", "보험", "Financial Services", "Banks", "Insurance"]
+  shipbuilding_defense: ["조선", "방산", "항공우주", "Aerospace & Defense"]
+  bio: ["제약", "바이오", "Biotechnology", "Drug Manufacturers"]
+  semis_memory: ["반도체", "메모리", "Semiconductors", "Semiconductor Equipment & Materials"]
+
+thresholds:
+  recovery_gate.min_conditions_met:
+    lanes: [buy]
+    value: 2
+    unit: count
+    of: 2
+    semantics: min countable recovery-gate conditions to deploy reserve (else support-conditional only)
+  portfolio.sector_cluster_cap_pct:
+    lanes: [buy, sell]
+    value: 10
+    unit: percent
+    semantics: over-concentration cap per sector cluster (~9-10%)
+  portfolio.max_symbols_per_theme:
+    lanes: [buy, discovery]
+    value: 2
+    unit: count
+    semantics: max symbols per theme; theme overlap is a disclosure item, not an auto-reject
+      — strong expected-value candidates may be proposed with overlap stated in thesis
+      (operator risk direction 2026-07-22; concentration backstop = portfolio.sector_cluster_cap_pct)
+  order.day_expiry_kst:
+    lanes: [buy, sell]
+    value: "20:00"
+    unit: kst_time
+    semantics: DAY order expiry; unfilled -> re-place next day
+  buy.deep_limit_pct_range:
+    lanes: [buy]
+    value: [-12, -3]
+    unit: percent
+    semantics: deep limit distance below current price (pull-back catch, no chasing)
+  buy.per_symbol_notional_krw_range:
+    lanes: [buy, discovery]
+    value: [200000, 400000]
+    unit: krw
+    semantics: per-symbol order sizing for new entries (policy threshold, not account balance; KR lane only)
+  # ROB-956 — US-lane sizing decoupled from KRW/FX (KR range in FX terms
+  # priced new US entries out above ~$268/share at FX~1491). USD-denominated;
+  # not derived from the KR range.
+  buy.per_symbol_notional_usd_range:
+    lanes: [buy, discovery]
+    value: [150, 450]  # 신규 진입 1차 트란치 밴드
+    unit: usd
+    one_share_exception:
+      enabled: true
+      absolute_ceiling_usd: 700
+      max_deep_rungs: 1
+    semantics: per-symbol first-tranche sizing for US new entries; advisory (ROB-646 원칙 — 코드 강제 아님)
+  sell.loss_guard_min_multiple:
+    lanes: [buy, sell]
+    value: 1.01
+    unit: multiple_of_avg_cost
+    semantics: minimum sell price as multiple of average cost (loss guard)
+  sell.loss_cut_max_slip:
+    lanes: [sell]
+    value: 0.02
+    unit: fraction
+    semantics: >-
+      ROB-800 — max downward slip below current price a sanctioned loss_cut
+      limit sell may price at (price >= current * (1 - value)). Code-enforced
+      band inside a resolved loss_cut context only; fat-finger deep discounts
+      stay blocked. Not applied to any other sell path.
+  sell.breakeven_near_pct:
+    lanes: [sell]
+    value: 2
+    unit: percent
+    semantics: near-breakeven scan band (+/-)
+  sell.resistance_near_pct:
+    lanes: [sell]
+    value: 6
+    unit: percent
+    semantics: resistance-proximity threshold for PLACE vs WATCH
+  sell.rsi_place_min:
+    lanes: [sell]
+    value: 58
+    unit: rsi
+    semantics: RSI at/above which PLACE is favored
+  sell.upside_place_max_pct:
+    lanes: [sell]
+    value: 45
+    unit: percent
+    semantics: honest upside below which PLACE is favored
+  sell.watch_rsi_max:
+    lanes: [sell]
+    value: 52
+    unit: rsi
+    semantics: RSI below which WATCH (let-it-run) is allowed
+  sell.watch_upside_min_pct:
+    lanes: [sell]
+    value: 50
+    unit: percent
+    semantics: upside at/above which WATCH (let-it-run) is allowed
+  sell.momentum_spike_change_pct_min:
+    lanes: [sell]
+    value: 10
+    unit: percent
+    semantics: >-
+      D2 advisory threshold for a KR/US equity momentum-spike day or premarket
+      session; applicability and evidence requirements are defined by the
+      momentum_spike_profit_ladder tier. TRANSITIONAL PATCH: posture-v1
+      (ROB-1090) §11 retires the RSI hard gate in favor of continuous signal
+      multipliers, so this tier is absorbed after posture shadow completion.
+      Parameter status: 측정으로 확정할 가설; frozen at 10 for this policy
+      version, not adjustable by a runtime session, and changeable only by an
+      operator-reviewed policy PR after measurement
+  sell.single_share_profit_pct_min:
+    lanes: [sell]
+    value: 8
+    unit: percent
+    semantics: >-
+      D5 advisory profit threshold at which a one-share KR/US equity position
+      may be reviewed for a full-position resistance exit; never a partial trim.
+      posture-v1 (ROB-1090) carries this full-position verdict forward.
+      Parameter status: 측정으로 확정할 가설; frozen at 8 for this policy
+      version, not adjustable by a runtime session, and changeable only by an
+      operator-reviewed policy PR after measurement
+  sell.trim_min_expected_net_realized_gain_krw:
+    lanes: [sell]
+    value: 5000
+    unit: krw_equivalent
+    semantics: >-
+      D7 advisory minimum expected net realized gain after estimated fees and
+      taxes for a trim; US gains use the decision snapshot FX rate, and a trim
+      below this threshold becomes WATCH instead of inventing a session-local
+      gate. posture-v1 (ROB-1090) carries this forward as
+      sell.net_realization_floor. Parameter status: 측정으로 확정할 가설;
+      frozen at 5000 KRW equivalent for this policy version, not adjustable by
+      a runtime session, and changeable only by an operator-reviewed policy PR
+      after measurement
+  screen.rsi_max:
+    lanes: [discovery]
+    value: 45
+    unit: rsi
+    semantics: max RSI for a discovery candidate
+  screen.support_within_pct:
+    lanes: [discovery]
+    value: 8
+    unit: percent
+    semantics: strong support must be within this distance
+  screen.upside_min_pct:
+    lanes: [discovery]
+    value: 40
+    unit: percent
+    semantics: minimum honest upside for a candidate
+
+decision_rules:
+  # Operator §45/§46. This is a policy/consumer contract only: it neither
+  # creates a proposal nor calls a broker. The Q1/Q2/Q3/Q4 literals below are
+  # intentionally kept field-for-field, with supporting accounting and
+  # prohibition fields making their non-negotiable semantics explicit.
+  buy.support_reserve_net:
+    lanes: [buy]
+    semantics: >-
+      Advisory reserve-net tier for candidates that pass every regular discovery
+      condition except RSI failure or absence. Existing regular-discovery
+      candidates retain buy.deep_limit_pct_range; no candidate may receive both
+      tiers. No runtime relaxation is permitted when the candidate set is empty.
+    # Q1 — deep-only relaxation gate (literal)
+    regular_discovery_precedence: true
+    eligible_only_when_regular_gate_failure: RSI_ONLY
+    rsi_gate: omitted_for_this_tier_only
+    support_strength_min: moderate
+    independent_support_source_count_min: 2
+    independent_support_source_families: [fib, bb_lower, volume_profile]
+    support_within_current_pct_max: 8
+    honest_upside_pct_min: 40
+    honest_upside_reference: decision_time_current_price
+    discount_below_support_pct_range: [5, 10]
+    final_limit_distance_from_current_pct_range: [-15, -5]
+    order_type: limit
+    tif: DAY
+    # Q1 supporting anchor contract: tick floor is calculated below support;
+    # a final current-price distance outside the inclusive band is excluded,
+    # never clamped into it.
+    anchor_price_formula: "tick_floor(S × (1-d))"
+    final_limit_distance_out_of_range: EXCLUDE
+    # Q2 — budget/concurrency (literal)
+    all_pending_buy_required_cash_hard_cap_pct: 90
+    tier_armed_required_cash_cap_pct: 50
+    max_owned_or_open_symbols_per_market: 2
+    max_active_orders_per_symbol: 1
+    max_symbols_per_sector_cluster: 1
+    unknown_sector: INELIGIBLE
+    auto_submit_notional:
+      krw: 200000
+      usd: 150
+    larger_notional_within_existing_band: HUMAN_APPROVAL_REQUIRED
+    daily_auto_cap_includes_all_buy_tiers: true
+    cash_reservation:
+      net_orderable: fresh_broker_orderable_cash_minus_same_account_currency_pending_required_cash
+      pending_required_cash_scope: not_yet_reached_broker
+      required_cash_primary: preview_estimated_value_plus_fee
+      required_cash_fallback: quantity_times_limit_price
+      broker_orderable_unavailable_or_error: FAIL_CLOSED
+      cancel_proposal_cash_reservation: KEEP_RESERVED_UNTIL_BROKER_TERMINAL_CONFIRMATION
+    # Q3 — confirmed-fill triage (literal). A future consumer may create the
+    # approval-gated proposal; this policy never authorizes automatic cancel.
+    fill_triage:
+      on_first_confirmed_fill: FREEZE_NEW_SUBMITS
+      cancellation_mode: PROPOSAL_REQUIRES_APPROVAL
+      broker_cancel_confirmation_required_before_releasing_cash: true
+      same_session_rearm: false
+      unknown_or_ambiguous_order_state: KEEP_RESERVED_AND_BLOCK
+      burst_key: [broker_account_id, currency, market_session]
+    # Q4 — add-candidate constraints (literal)
+    add_candidate:
+      r931_review_required: PASS
+      r931_review_max_age_days: 7
+      policy_table_max_age_hours: 36
+      k_used: 0.10
+      sizing_price: proposed_limit_price
+      a_limit_lte_zero: NO_ORDER
+      partial_A_limit_fill: FORBIDDEN
+      max_add_symbols_per_market: 1
+      max_reserve_net_add_fills_per_symbol_per_policy_version: 1
+      same_day_rearm_after_fill: false
+      crash_day_averaging_exemption: false
+    # §Q2 lines 82–87 — allocation order for constrained armed cash. This
+    # fixes new-entry precedence before an add can consume the first slot.
+    priority_rules:
+      allocation_order:
+        - dedupe_active_or_resting_same_symbol
+        - first_slot_eligible_new_candidate
+        - add_secondary_pool_only_after_r931_pass_and_full_a_limit_10
+      same_symbol_active_or_resting: DEDUPE_FIRST
+      first_slot: ELIGIBLE_NEW_CANDIDATE_FIRST
+      add_candidate_rank: SECONDARY_CANDIDATE_POOL
+      add_candidate_r931_review_required: PASS
+      add_candidate_a_limit_10: FULLY_SATISFIED
+      max_add_symbols_per_market: 1
+      same_intent_class_sort_order:
+        - support_strength_desc
+        - independent_support_source_count_desc
+        - honest_upside_pct_desc
+        - post_fill_sector_increase_asc
+        - required_cash_asc
+      exact_tie_break: NEW_BEFORE_ADD
+    # §Q4 "must not" items 1–8, made machine-checkable as a contract.
+    prohibitions:
+      no_new_add_or_deep_limit_rung_overlap: true
+      aggregate_active_buy_by_beneficial_owner_across_accounts: true
+      fresh_cost_basis_quantity_and_A_limit_before_next_day_reissue: true
+      partial_A_limit_fill: FORBIDDEN
+      candidate_zero_runtime_gate_relaxation: FORBIDDEN
+      crash_day_averaging_exemption: false
+      cancel_proposal_is_not_broker_cancellation: true
+      unconfirmed_cancel_keeps_required_cash_reserved: true
+      market_order: FORBIDDEN
+      gtc: FORBIDDEN
+      multi_rung: FORBIDDEN
+      daily_regeneration: REQUIRED
+    toss_live_approval: HUMAN_APPROVAL_REQUIRED_UNTIL_VETO_WIRING
+
+  sell.trim_preplace:
+    lanes: [sell]
+    semantics: >-
+      Tiers are evaluated in declared priority order and the first match wins.
+      ADVISORY ONLY. de_minimis_trim_watch prevents session-local benefit gates.
+      A one-share equity position is assessed for a full exit, never a
+      pseudo-partial trim. momentum_spike_profit_ladder exempts only its matched
+      spike candidate from the RSI gate and remains profit-zone-only. When
+      resistance-near favors PLACE but upside-rich would otherwise allow WATCH,
+      resistance proximity can pre-place only a small trim; upside richness
+      limits size, not eligibility. sell.breakeven_reserve_trim is an advisory
+      pre-guard reserve-trim contract: calculate its guard-and-D7 anchor before
+      consumption, and use WATCH only when that anchor cannot be calculated.
+    tiers:
+      - id: de_minimis_trim_watch
+        conditions:
+          markets: [kr, us, crypto]
+          trim_candidate: true
+          expected_net_realized_gain_krw_below_policy_key: sell.trim_min_expected_net_realized_gain_krw
+        action: register_watch_instead_of_trim
+        sizing: no_preplaced_trim
+      # §44차. Parameter status: no new numeric threshold; every value below
+      # references an existing operator-reviewed policy key and is not
+      # session-adjustable. This is advisory judgment metadata only.
+      - id: sell.breakeven_reserve_trim
+        conditions:
+          markets: [kr, us, crypto]
+          lot_pnl_basis: current_price_vs_average_cost
+          lot_pnl_pct_min_inclusive_negated_policy_key: sell.breakeven_near_pct
+          lot_pre_guard_average_cost_multiple_max_exclusive_policy_key: sell.loss_guard_min_multiple
+          anchor_operator: max
+          anchor_operands: [average_cost_times_loss_guard, d7_compliant_lowest_price]
+          anchor_guard_policy_key: sell.loss_guard_min_multiple
+          d7_min_expected_net_realized_gain_krw_policy_key: sell.trim_min_expected_net_realized_gain_krw
+          d7_minimum_price_basis: one_share_expected_net_realized_gain_after_estimated_fees_and_taxes
+          d7_scope_semantics: one_share_net_realized_gain_not_total_trim
+          d7_estimation_limit_semantics: consumer_estimated_fees_and_taxes_required_no_fee_or_tax_model_added_by_this_tier
+          post_max_tick_snap_direction: ceil
+          resting_limit_order: true
+          time_in_force: DAY
+          regeneration: daily_rep
+          day_expiry_policy_key: order.day_expiry_kst
+          submission_contract: section_40_auto_approve_with_veto
+          watch_fallback: anchor_uncomputable_only
+          advisory: true
+        action: preplace_resting_breakeven_reserve_trim
+        sizing: existing_trim_rule
+      - id: single_share_full_exit_review
+        conditions:
+          markets: [kr, us]
+          total_quantity_eq: 1
+          profit_pct_min_policy_key: sell.single_share_profit_pct_min
+          resistance_reference_required: true
+          disposition_policy_key: phase25.10_single_share_exit_choice
+        action: advise_full_quantity_resistance_exit_or_trailing_verdict
+        sizing: full_position
+      - id: momentum_spike_profit_ladder
+        conditions:
+          markets: [kr, us]
+          position_quantity_min: 2
+          session_change_basis: [regular_day, premarket]
+          session_change_pct_min_policy_key: sell.momentum_spike_change_pct_min
+          rsi_gate_exempt: true
+          required_thesis_evidence: [catalyst_basis, flow_basis]
+          resistance_levels_required: [resistance_1, resistance_2]
+          average_cost_multiple_min_exclusive: 1.0
+          ladder_total_position_pct_max: 33.3333
+        action: preplace_resistance_1_2_small_trim_ladder
+        sizing: at_most_one_third_position
+      - id: rsi_confirmed_resistance
+        conditions:
+          rsi_min_policy_key: sell.rsi_place_min
+          resistance_near_pct_max_policy_key: sell.resistance_near_pct
+        action: preplace_small_trim_ladder
+        sizing: small_trim_only
+      - id: ultra_near_resistance
+        conditions:
+          rsi_below_policy_key: sell.rsi_place_min
+          resistance_near_pct_max: 2
+        action: preplace_small_trim_ladder
+        sizing: small_trim_only
+      - id: watch_zone
+        conditions:
+          rsi_below_policy_key: sell.rsi_place_min
+          resistance_near_pct_min_exclusive: 2
+          resistance_near_pct_max_policy_key: sell.resistance_near_pct
+        action: register_watch
+        sizing: no_preplaced_trim
+    tie_breaks:
+      tier_priority: "de_minimis_trim_watch > sell.breakeven_reserve_trim > single_share_full_exit_review > momentum_spike_profit_ladder > rsi_confirmed_resistance > ultra_near_resistance > watch_zone"
+      multiple_tiers_matched: first_matching_tier_wins
+      sell.upside_place_max_pct: size_limit_only
+      momentum_spike_rsi_exception: matched_tier_only
+      momentum_spike_profit_zone: average_cost_multiple_strictly_above_1
+      momentum_spike_integer_rounding: floor_without_exceeding_one_third_or_watch
+      single_share_disposition: full_static_target_or_full_trailing_verdict_never_partial
+      minimum_benefit_boundary: at_or_above_threshold_may_trim_below_threshold_watch
+    exclusions:
+      - no_resistance_reference
+      - composite_gates
+  sell.single_share_exit:
+    lanes: [sell]
+    semantics: >-
+      DEPRECATED AS THE GENERAL SINGLE-SHARE EXCLUSION/FALLBACK. Retained without
+      key deletion or activation change for historical KR KIS+Toss shadow and
+      replay evidence only. The replacement advisory path is
+      sell.trim_preplace.single_share_full_exit_review, with disposition by
+      phase25.10_single_share_exit_choice. This shadow rule cannot narrow that
+      general advisory eligibility and cannot create, approve, or execute a
+      proposal while proposal_enabled is false. A loss state remains ineligible
+      here and belongs exclusively to the existing loss_cut path.
+    activation_state: shadow
+    proposal_enabled: false
+    scope:
+      markets: [kr]
+      brokers: [kis, toss]
+      required_broker_inventory: [kis, toss]
+      order_routable_required: true
+    conditions:
+      symbol_routable_sellable_quantity_eq: 1
+      # Provisional: aligned with sell.single_share_profit_pct_min (D5) so this
+      # fallback closes only the single-share sizing gap.
+      profit_pct_min: 8
+      resistance_reference_required: true
+      resistance_strength_min: strong
+      # Provisional ROB-1037-aligned far lane. The 6% boundary is exclusive;
+      # a resistance exactly at +6% remains outside this path.
+      resistance_distance_pct_min_exclusive: 6
+      resistance_distance_pct_max: 15
+      resistance_source_family_min: 2
+      resistance_source_families:
+        volume_profile_exact: [poc, vah, val, volume_poc, volume_value_area_high, volume_value_area_low]
+        fibonacci_prefixes: [fib]
+        bollinger_prefixes: [bb_, bollinger]
+      # Every evidence class has its own wall-clock age bound, and all endpoints
+      # (including captured_at) must also fit one pairwise-bounded snapshot.
+      quote_max_age_seconds: 300
+      resistance_max_age_seconds: 300
+      holdings_max_age_seconds: 300
+      open_orders_max_age_seconds: 300
+      open_actions_max_age_seconds: 300
+      captured_at_max_age_seconds: 300
+      snapshot_max_skew_seconds: 300
+      required_completed_bar_market: XKRX
+      min_sell_price_multiple_policy_key: sell.loss_guard_min_multiple
+      same_symbol_open_orders_max: 0
+      unresolved_open_actions_max: 0
+      loss_state_uses_existing_path: loss_cut_only
+    proposal:
+      action: full_exit_at_far_resistance
+      sizing: full_account_lot_exit
+      approval: telegram_manual
+      auto_approve: false
+      execution: proposal_only
+    threshold_status: provisional
+    operator_approval_required: true
+    recalibration_note: >-
+      Fable governance advisory Q3-#4 Phase 1 seed; follow-up sell-policy
+      research must recalibrate this initial threshold. Deprecated as a general
+      fallback by D5 on 2026-07-27 and retained only for the existing KR
+      far-resistance shadow/replay cohort. General one-share advisory eligibility
+      is replaced by
+      sell.trim_preplace.single_share_full_exit_review and its 8% threshold
+      sell.single_share_profit_pct_min; phase25.10_single_share_exit_choice owns
+      the full-static-target versus full-trailing verdict. Shadow evidence must
+      still be adversarially validated before proposal_enabled can be considered
+      separately by the operator.
+
+  # GPT Pro trading retrospective Phase 2.5 (received 2026-07-25).
+  # Rules 01-09 and 11-14 were removed 2026-08-08 by operator decision:
+  # unvalidated advisory drift (hypotheses never confirmed by measurement).
+  # Rule 10 is retained because it owns the disposition verdict for the
+  # operator-confirmed D5 single-share tier (disposition_policy_key).
+  phase25.10_single_share_exit_choice:
+    lanes: [sell]
+    semantics: >-
+      ADVISORY ONLY. An equity position of exactly one share cannot use a
+      pseudo-partial exit: choose a full static target or a full trailing
+      verdict. This rule owns disposition after
+      sell.trim_preplace.single_share_full_exit_review includes the position in
+      the funnel. At or above sell.single_share_profit_pct_min, a full-position
+      resistance exit may be preplaced or proposed; this does not force an exit.
+      Crypto is excluded because the recommendation is share-specific. Existing
+      loss-cut and approval guards remain unchanged.
+    tiers:
+      - id: one_share_profitable_resistance_exit
+        conditions:
+          markets: [kr, us]
+          total_quantity_eq: 1
+          profit_pct_min_policy_key: sell.single_share_profit_pct_min
+          resistance_reference_required: true
+        action: advise_full_quantity_resistance_exit_or_proposal
+        sizing: full_position
+      - id: one_share_hard_exit
+        conditions:
+          markets: [kr, us]
+          total_quantity_eq: 1
+          level_role: HARD_EXIT
+        action: advise_full_quantity_resting_sell
+        sizing: full_position
+      - id: one_share_conditional_exit
+        conditions:
+          markets: [kr, us]
+          total_quantity_eq: 1
+          level_role: CONDITIONAL_EXIT
+        action: advise_watch_then_full_exit_verdict
+        sizing: full_position
+      - id: one_share_open_ended_trend
+        conditions:
+          markets: [kr, us]
+          total_quantity_eq: 1
+          trend: open_ended
+        action: advise_full_quantity_trailing_verdict
+        sizing: full_position
+      - id: target_and_floor_collision
+        conditions:
+          markets: [kr, us]
+          total_quantity_eq: 1
+          ordered_steps: [cancel_existing_target_sell, confirm_cancel_terminal, submit_full_exit_proposal]
+        action: prepare_composite_operator_approved_proposal
+        sizing: full_position
+      - id: multi_share_hybrid_reference
+        conditions:
+          markets: [kr, us]
+          total_quantity_min: 2
+          trim_formula: "max(1, floor(total_qty * 0.5))"
+          first_hard_exit_trim_pct_range: [33, 50]
+        action: advise_static_trim_then_trail_remainder
+        sizing: reserved_quantity_without_overlap
+    tie_breaks:
+      profitable_resistance_priority: full_exit_review_before_role_or_trail_choice
+      one_share_choice: hard_target_or_trail_not_both
+      collision_sequence: cancel_terminal_before_replacement_submit
+    exclusions: [crypto_fractional_quantity, loss_state_uses_existing_loss_cut_path]
+
+market_rules:
+  crypto:
+    recovery_gate:
+      lanes: [buy]
+      advisory: true
+      semantics: >-
+        reserve deployment recovery frame; otherwise support-conditional only.
+        advisory_context is qualitative reference only, is not part of the gate
+        count, and receives thresholds in the crypto-gate redesign round.
+      min_conditions_met: 2
+      of: 2
+      missing_or_null_threshold: do_not_infer_or_count_as_met
+      conditions:
+        - id: alt_breadth_24h
+          metric: upbit_alt_breadth_24h
+          sources: [upbit_open_api_ticker_derived]
+          operator: gt
+          threshold: 50
+          unit: percent
+          semantics: share of KRW alts outperforming BTC over 24h
+        - id: btc_long_short_ratio
+          metric: btc_long_short_ratio
+          sources: [binance_global_account, binance_top_trader_position]
+          operator: lte
+          threshold: 1.5
+          unit: ratio
+          semantics: both report inputs should remain at or below the threshold
+      advisory_context:
+        - id: fear_greed
+          metric: crypto_fear_greed_index
+          sources: [alternative_me]
+          operator: null
+          threshold: null
+          unit: index
+          semantics: qualitative reference only; no pass cutoff and excluded from gate count
+        - id: btc_kimchi_premium
+          metric: btc_kimchi_premium
+          sources: [upbit_binance_fx]
+          operator: null
+          threshold: null
+          unit: percent
+          semantics: qualitative reference only; no pass cutoff and excluded from gate count
+    support_resistance:
+      lanes: [buy, sell, discovery]
+      advisory: true
+      semantics: rank fresh levels by independent-source confluence before source priority
+      selection_rule: confluence_first_then_source_priority
+      source_priority: [fibonacci, value_area, bb_lower, bb_upper, bb_middle, volume_poc]
+      confluence_examples:
+        - [fib_0, value_area_low, bb_lower]
+        - [bb_middle, fib_23_6]
+        - [bb_middle, volume_poc]
+    no_chasing:
+      lanes: [buy, discovery]
+      advisory: true
+      semantics: reject pump-like new entries without inventing numeric cutoffs
+      # Reports contain no numeric pump-gain or liquidity cutoff. Null is
+      # intentional: consumers must not infer a model-specific replacement.
+      daily_change_pct_threshold: null
+      min_trade_value_24h_krw: null
+      criteria:
+        - exclude low-liquidity rotation-pump candidates
+        - new alt candidates are ineligible when 24h alt breadth is below 50 percent
+        - exclude sharply rising candidates without support structure or decision history
+      follow_up: reports contain no quantitative cutoff; operator fills values after live-operation evidence in a follow-up PR
+
+market_overrides:
+  kr: {}
+  us: {}
+  crypto: {}
+
+# ROB-932 — crash-day advisory playbook. Trigger = index-open gap only
+# (KODEX200 open vs prev close, judged 09:00-09:05 KST). advisory-only, no
+# code enforcement; defensive_trim execution support is deferred (separate
+# issue). Cross-check against ROB-930 preopen shadow gap_risk verdict.
+crash_day:
+  trigger:
+    index_symbol: "069500"        # KODEX200
+    index_gap_pct_max: -3.0       # open vs prev close, 09:00-09:05 판정
+    # LIMITATION: intraday crashes (e.g. 2026-07-13: gap -0.8% -> intraday
+    # -9.8%) are NOT covered by this gap-only trigger. Documented gap, not
+    # an oversight — see docs/runbooks/crash-day-policy-mock-reps.md.
+  actions:
+    new_entry_hold: true          # NEW entries only; averaging-down deep rungs are EXEMPT (2026-07-16 midday dip-buys measured effective)
+    deep_rung_reprice_to_band_floor: true    # advisory: reprice deep rungs toward buy.deep_limit_pct_range floor
+    profit_trim_marketable_allowed: true     # advisory: profit-side trims may use marketable band (ROB-912 -2%)
+    defensive_brief_cross_check: true        # cross-check with ROB-930 preopen gap_risk verdict
+
+# ROB-948 — user investment-stance advisory. Session judgment cites this for
+# upside/downside weighting; it does not override fail-closed risk guards
+# (loss-cut sizing, ladder guards) in code. Frozen block (2026-07-17) — use
+# verbatim, no paraphrasing.
+user_stances:
+  - id: ai-demand-real-value-selective
+    stance: "AI 수요는 실사용 관점에서 실재. 단, (a)가치 포착은 가격결정력 보유 종목에 편중될 수 있고 (b)고베타 반도체는 테제가 맞아도 중간 낙폭이 크다"
+    implications:
+      - "AI/반도체 급락일: 패닉 동조 매도 금지 (보유분은 기존 리스크 규칙으로만 판단)"
+      - "눌림 신규 진입: 검토 후보 승격 가능하되 — 동시 신규 최대 1종목, 분할 진입, 섹터 클러스터 집중도 체크 엄격 적용"
+      - "테마 내 선택 시 가격결정력 보유 종목 우선. 커머디티형은 공급제약 증거 있을 때만"
+      - "3배 레버리지 ETF(SOXL류)는 눌림 보유 수단에서 기본 제외 (변동성 감쇠)"
+    risk_scenario: "효율 충격 — 저비용 고성능 모델 확산으로 프런티어 capex 지불의사 재평가. 판정 이벤트 = 하이퍼스케일러 capex 가이던스"
+    review_condition: "하이퍼스케일러 AI capex 감소 가이던스, 또는 HBM 공급과잉 실측 시 재검토"
+    review_date: "2026-10-17"

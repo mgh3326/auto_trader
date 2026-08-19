@@ -1,5 +1,4 @@
 import re
-import subprocess
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
 
@@ -18,6 +17,11 @@ from app.services.order_proposals.auto_approve import _VETO_CAPABLE_ACCOUNT_MARK
 from app.services.trading_policy_service import load_trading_policy
 
 _CONFIG = Path(__file__).resolve().parents[2] / "config" / "trading_policy.yaml"
+_ROB1289_BASELINE = (
+    Path(__file__).resolve().parents[1]
+    / "fixtures"
+    / "trading_policy_rob1289_baseline.yaml"
+)
 _PLAYBOOK = (
     Path(__file__).resolve().parents[2]
     / "docs"
@@ -919,10 +923,7 @@ def test_rob_1289_policy_loader_roundtrip_preserves_both_new_blocks():
 
 
 def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
-    baseline_bytes = subprocess.check_output(
-        ["git", "show", "57a48308e:config/trading_policy.yaml"]
-    )
-    baseline = yaml.safe_load(baseline_bytes)
+    baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
     current_raw = _raw()
     # The pre-change document cannot satisfy the new required fields until
     # those two additive blocks are copied in; they are removed before compare.
