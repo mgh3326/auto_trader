@@ -24,6 +24,21 @@ Two operations, deliberately asymmetric:
   duration value. Unlike pytest-split's tolerant shard-balancing hint, this
   artifact is meant to be trustworthy provenance data, so drift is a hard
   failure rather than something to silently drop and continue past.
+
+ROB-1295 R1 — collected-but-never-called nodes: a node whose ``setup`` phase
+itself skips (``@pytest.mark.skip``, ``skipif``, a skip-raising fixture, ...)
+is collected but never reaches the ``call`` phase at all — pytest's own
+runtest protocol only invokes ``call`` after ``setup`` passes. Such nodes
+have no call-phase cost to measure, so ``tests/_call_duration_plugin.py``
+records them separately in ``not_called`` rather than either (a) silently
+omitting them, which this module would otherwise fail closed on as a missing
+measurement, or (b) coercing them to a ``0.0`` duration, which would be
+indistinguishable from a real, very-fast call and would corrupt any later
+statistics over ``durations``. Every currently collected node must land in
+exactly one of ``durations`` or ``not_called`` — never both, never neither.
+A node that skips *inside* its call phase (e.g. ``pytest.skip()`` called
+from the test body) is unaffected: pytest still emits a real ``call`` report
+with a real duration, so it is captured in ``durations`` as usual.
 """
 
 from __future__ import annotations
@@ -35,15 +50,16 @@ import math
 from pathlib import Path
 from typing import Any
 
-from scripts.merge_test_durations import _load_collected_nodes, _load_durations
+from scripts.merge_test_durations import _load_collected_nodes
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _REQUIRED_ARTIFACT_FIELDS = (
     "schema_version",
     "source_commit_sha",
     "collection_hash",
     "durations",
+    "not_called",
 )
 
 
@@ -52,38 +68,99 @@ def compute_collection_hash(collected_nodes: set[str] | frozenset[str]) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
 
 
+def _validate_duration_values(
+    durations: dict[str, Any], *, source: str
+) -> dict[str, float]:
+    validated: dict[str, float] = {}
+    for node_id, duration in durations.items():
+        if (
+            not isinstance(node_id, str)
+            or isinstance(duration, bool)
+            or not isinstance(duration, int | float)
+        ):
+            raise ValueError(f"{source}: invalid duration entry {node_id!r}")
+        value = float(duration)
+        if value < 0 or not math.isfinite(value):
+            raise ValueError(f"{source}: invalid duration for {node_id}: {duration!r}")
+        validated[node_id] = value
+    return validated
+
+
+def _validate_not_called_list(raw: Any, *, source: str) -> set[str]:
+    if not isinstance(raw, list) or not all(
+        isinstance(node_id, str) for node_id in raw
+    ):
+        raise ValueError(f"{source}: 'not_called' must be a JSON array of strings")
+    return set(raw)
+
+
+def _load_call_duration_shard(path: Path) -> tuple[dict[str, float], set[str]]:
+    """Load one shard's ``{"durations": {...}, "not_called": [...]}`` output."""
+    raw: Any = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or "durations" not in raw or "not_called" not in raw:
+        raise ValueError(
+            f"{path}: expected an object with 'durations' and 'not_called' keys"
+        )
+    if not isinstance(raw["durations"], dict):
+        raise ValueError(f"{path}: 'durations' must be a JSON object")
+
+    durations = _validate_duration_values(raw["durations"], source=str(path))
+    not_called = _validate_not_called_list(raw["not_called"], source=str(path))
+
+    overlap = sorted(set(durations) & not_called)
+    if overlap:
+        raise ValueError(
+            f"{path}: node id(s) present in both 'durations' and 'not_called': "
+            f"{overlap[:10]!r}"
+        )
+    return durations, not_called
+
+
 def merge_call_duration_shards(
     *, shard_paths: list[Path], collected_paths: list[Path]
-) -> tuple[dict[str, float], set[str]]:
-    """Merge call-phase shard measurements into one fresh, complete map."""
+) -> tuple[dict[str, float], set[str], set[str]]:
+    """Merge call-phase shard measurements into one fresh, complete record.
+
+    Returns ``(durations, not_called, collected)``. Every id in
+    ``collected`` lands in exactly one of ``durations``/``not_called``;
+    anything else (missing from both, or duplicated across shards in either
+    category) is a fail-closed error.
+    """
     collected = _load_collected_nodes(collected_paths)
     measured: dict[str, float] = {}
+    not_called: set[str] = set()
 
     for shard_path in shard_paths:
-        shard = _load_durations(shard_path)
-        unexpected = sorted(set(shard) - collected)
+        shard_durations, shard_not_called = _load_call_duration_shard(shard_path)
+
+        shard_known = set(shard_durations) | shard_not_called
+        unexpected = sorted(shard_known - collected)
         if unexpected:
             raise ValueError(
                 f"{shard_path}: call durations contain uncollected tests: "
                 f"{unexpected[:10]!r}"
             )
-        duplicates = sorted(set(shard) & set(measured))
+
+        already_known = set(measured) | not_called
+        duplicates = sorted(shard_known & already_known)
         if duplicates:
             raise ValueError(
                 f"{shard_path}: duplicate node id(s) across call-duration "
                 f"shards: {duplicates[:10]!r}"
             )
-        measured.update(shard)
 
-    missing = sorted(collected - set(measured))
+        measured.update(shard_durations)
+        not_called.update(shard_not_called)
+
+    missing = sorted(collected - (set(measured) | not_called))
     if missing:
         raise ValueError(
             "call-duration shards are incomplete; "
-            f"{len(missing)} collected tests have no call-phase measurement: "
-            f"{missing[:20]!r}"
+            f"{len(missing)} collected tests have no call-phase measurement "
+            f"or setup-skip record: {missing[:20]!r}"
         )
 
-    return measured, collected
+    return measured, not_called, collected
 
 
 def build_artifact(
@@ -95,16 +172,18 @@ def build_artifact(
     if not source_commit_sha or not source_commit_sha.strip():
         raise ValueError("source_commit_sha must not be empty")
 
-    measured, collected = merge_call_duration_shards(
+    measured, not_called, collected = merge_call_duration_shards(
         shard_paths=shard_paths, collected_paths=collected_paths
     )
-    durations = {node_id: measured[node_id] for node_id in sorted(collected)}
+    durations = {node_id: measured[node_id] for node_id in sorted(measured)}
+    not_called_sorted = sorted(not_called)
     return {
         "schema_version": SCHEMA_VERSION,
         "source_commit_sha": source_commit_sha,
         "collection_hash": compute_collection_hash(collected),
-        "node_count": len(durations),
+        "node_count": len(durations) + len(not_called_sorted),
         "durations": durations,
+        "not_called": not_called_sorted,
     }
 
 
@@ -139,25 +218,8 @@ def load_artifact(path: Path) -> dict[str, Any]:
             raise ValueError(f"{path}: missing required field {field!r}")
     if not isinstance(raw["durations"], dict):
         raise ValueError(f"{path}: 'durations' must be a JSON object")
+    _validate_not_called_list(raw["not_called"], source=str(path))
     return raw
-
-
-def _validate_duration_values(
-    durations: dict[str, Any], *, source: str
-) -> dict[str, float]:
-    validated: dict[str, float] = {}
-    for node_id, duration in durations.items():
-        if (
-            not isinstance(node_id, str)
-            or isinstance(duration, bool)
-            or not isinstance(duration, int | float)
-        ):
-            raise ValueError(f"{source}: invalid duration entry {node_id!r}")
-        value = float(duration)
-        if value < 0 or not math.isfinite(value):
-            raise ValueError(f"{source}: invalid duration for {node_id}: {duration!r}")
-        validated[node_id] = value
-    return validated
 
 
 def validate_freshness(
@@ -169,6 +231,16 @@ def validate_freshness(
     """Fail closed unless ``artifact`` is trustworthy telemetry for today's tree."""
     source = "call-duration artifact"
     durations = _validate_duration_values(artifact["durations"], source=source)
+    not_called = _validate_not_called_list(
+        artifact.get("not_called", []), source=source
+    )
+
+    overlap = sorted(set(durations) & not_called)
+    if overlap:
+        raise ValueError(
+            f"{source}: node id(s) present in both 'durations' and "
+            f"'not_called': {overlap[:10]!r}"
+        )
 
     if artifact["source_commit_sha"] != expected_source_commit_sha:
         raise ValueError(
@@ -186,15 +258,16 @@ def validate_freshness(
             "— refresh the call-duration artifact"
         )
 
-    missing = sorted(collected_nodes - set(durations))
+    known = set(durations) | not_called
+    missing = sorted(collected_nodes - known)
     if missing:
         raise ValueError(
-            f"{source}: missing measurement(s) for {len(missing)} currently "
-            f"collected test(s): {missing[:20]!r} "
+            f"{source}: missing measurement(s) or setup-skip record(s) for "
+            f"{len(missing)} currently collected test(s): {missing[:20]!r} "
             "— refresh the call-duration artifact"
         )
 
-    stale = sorted(set(durations) - collected_nodes)
+    stale = sorted(known - collected_nodes)
     if stale:
         raise ValueError(
             f"{source}: {len(stale)} stale/removed node id(s) present: "
@@ -237,7 +310,8 @@ def main() -> None:
         )
         args.output.write_text(serialize_artifact(artifact), encoding="utf-8")
         print(
-            f"built call-duration artifact: {artifact['node_count']} entries, "
+            f"built call-duration artifact: {len(artifact['durations'])} measured, "
+            f"{len(artifact['not_called'])} not-called, "
             f"source_commit_sha={artifact['source_commit_sha']}, "
             f"collection_hash={artifact['collection_hash']}"
         )

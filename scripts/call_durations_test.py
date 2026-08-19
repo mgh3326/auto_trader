@@ -18,6 +18,7 @@ pytestmark = pytest.mark.unit
 
 _NODE_A = "tests/test_a.py::test_a"
 _NODE_B = "tests/test_b.py::test_b"
+_NODE_C = "tests/test_c.py::test_c"
 
 
 def _write(path: Path, value: str) -> Path:
@@ -29,13 +30,22 @@ def _write_json(path: Path, value: object) -> Path:
     return _write(path, json.dumps(value))
 
 
+def _shard(
+    path: Path, *, durations: dict[str, float] | None = None, not_called=()
+) -> Path:
+    return _write_json(
+        path,
+        {"durations": durations or {}, "not_called": list(not_called)},
+    )
+
+
 def _write_manifest(path: Path, *node_ids: str) -> Path:
     return _write(path, "\n".join(node_ids) + "\n")
 
 
 def _build_two_node_artifact(tmp_path: Path) -> dict[str, object]:
-    shard1 = _write_json(tmp_path / "shard1.json", {_NODE_A: 0.01})
-    shard2 = _write_json(tmp_path / "shard2.json", {_NODE_B: 0.02})
+    shard1 = _shard(tmp_path / "shard1.json", durations={_NODE_A: 0.01})
+    shard2 = _shard(tmp_path / "shard2.json", durations={_NODE_B: 0.02})
     collected1 = _write_manifest(tmp_path / "collected1.txt", _NODE_A, _NODE_B)
     return build_artifact(
         shard_paths=[shard1, shard2],
@@ -50,10 +60,11 @@ def _build_two_node_artifact(tmp_path: Path) -> dict[str, object]:
 def test_build_artifact_merges_shards_and_stamps_provenance(tmp_path: Path) -> None:
     artifact = _build_two_node_artifact(tmp_path)
 
-    assert artifact["schema_version"] == 1
+    assert artifact["schema_version"] == 2
     assert artifact["source_commit_sha"] == "a" * 40
     assert artifact["node_count"] == 2
     assert artifact["durations"] == {_NODE_A: 0.01, _NODE_B: 0.02}
+    assert artifact["not_called"] == []
     assert artifact["collection_hash"] == compute_collection_hash({_NODE_A, _NODE_B})
 
 
@@ -64,7 +75,7 @@ def test_build_artifact_output_is_deterministic(tmp_path: Path) -> None:
 
 
 def test_build_artifact_rejects_empty_source_sha(tmp_path: Path) -> None:
-    shard = _write_json(tmp_path / "shard.json", {_NODE_A: 0.01})
+    shard = _shard(tmp_path / "shard.json", durations={_NODE_A: 0.01})
     collected = _write_manifest(tmp_path / "collected.txt", _NODE_A)
 
     with pytest.raises(ValueError, match="source_commit_sha must not be empty"):
@@ -73,9 +84,55 @@ def test_build_artifact_rejects_empty_source_sha(tmp_path: Path) -> None:
         )
 
 
+def test_build_artifact_records_setup_skip_as_not_called(tmp_path: Path) -> None:
+    # ROB-1295 R1: a node whose setup phase itself skips (e.g.
+    # @pytest.mark.skip) never gets a "call" report at all — reproduces the
+    # weekly-refresh failure against tests/services/daily_candles/
+    # test_migration_round_trip.py on the current tree.
+    shard = _shard(
+        tmp_path / "shard.json", durations={_NODE_A: 0.01}, not_called=[_NODE_B]
+    )
+    collected = _write_manifest(tmp_path / "collected.txt", _NODE_A, _NODE_B)
+
+    artifact = build_artifact(
+        shard_paths=[shard], collected_paths=[collected], source_commit_sha="a" * 40
+    )
+
+    assert artifact["durations"] == {_NODE_A: 0.01}
+    assert artifact["not_called"] == [_NODE_B]
+    assert artifact["node_count"] == 2
+
+
+def test_load_shard_rejects_overlap_between_durations_and_not_called(
+    tmp_path: Path,
+) -> None:
+    shard = _shard(
+        tmp_path / "shard.json", durations={_NODE_A: 0.01}, not_called=[_NODE_A]
+    )
+    collected = _write_manifest(tmp_path / "collected.txt", _NODE_A)
+
+    with pytest.raises(
+        ValueError, match="present in both 'durations' and 'not_called'"
+    ):
+        merge_call_duration_shards(shard_paths=[shard], collected_paths=[collected])
+
+
 def test_merge_rejects_duplicate_across_shards(tmp_path: Path) -> None:
-    shard1 = _write_json(tmp_path / "shard1.json", {_NODE_A: 0.01})
-    shard2 = _write_json(tmp_path / "shard2.json", {_NODE_A: 0.02})
+    shard1 = _shard(tmp_path / "shard1.json", durations={_NODE_A: 0.01})
+    shard2 = _shard(tmp_path / "shard2.json", durations={_NODE_A: 0.02})
+    collected = _write_manifest(tmp_path / "collected.txt", _NODE_A)
+
+    with pytest.raises(ValueError, match="duplicate node id"):
+        merge_call_duration_shards(
+            shard_paths=[shard1, shard2], collected_paths=[collected]
+        )
+
+
+def test_merge_rejects_contradiction_across_shards(tmp_path: Path) -> None:
+    # Node measured in one shard, reported not-called in another — a real
+    # inconsistency (e.g. flaky infra), not a legitimate setup-skip.
+    shard1 = _shard(tmp_path / "shard1.json", durations={_NODE_A: 0.01})
+    shard2 = _shard(tmp_path / "shard2.json", not_called=[_NODE_A])
     collected = _write_manifest(tmp_path / "collected.txt", _NODE_A)
 
     with pytest.raises(ValueError, match="duplicate node id"):
@@ -85,7 +142,19 @@ def test_merge_rejects_duplicate_across_shards(tmp_path: Path) -> None:
 
 
 def test_merge_rejects_missing_measurement(tmp_path: Path) -> None:
-    shard = _write_json(tmp_path / "shard.json", {_NODE_A: 0.01})
+    shard = _shard(tmp_path / "shard.json", durations={_NODE_A: 0.01})
+    collected = _write_manifest(tmp_path / "collected.txt", _NODE_A, _NODE_B)
+
+    with pytest.raises(ValueError, match="have no call-phase measurement"):
+        merge_call_duration_shards(shard_paths=[shard], collected_paths=[collected])
+
+
+def test_merge_still_fails_closed_when_not_called_present_but_node_wholly_absent(
+    tmp_path: Path,
+) -> None:
+    # A not_called entry for one node must not paper over a genuinely
+    # missing measurement for a different collected node (partial shard).
+    shard = _shard(tmp_path / "shard.json", not_called=[_NODE_A])
     collected = _write_manifest(tmp_path / "collected.txt", _NODE_A, _NODE_B)
 
     with pytest.raises(ValueError, match="have no call-phase measurement"):
@@ -94,7 +163,7 @@ def test_merge_rejects_missing_measurement(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("duration", [-0.01, float("nan")], ids=["negative", "nan"])
 def test_merge_rejects_malformed_duration(tmp_path: Path, duration: float) -> None:
-    shard = _write_json(tmp_path / "shard.json", {_NODE_A: duration})
+    shard = _shard(tmp_path / "shard.json", durations={_NODE_A: duration})
     collected = _write_manifest(tmp_path / "collected.txt", _NODE_A)
 
     with pytest.raises(ValueError, match="invalid duration"):
@@ -107,8 +176,9 @@ def test_merge_rejects_malformed_duration(tmp_path: Path, duration: float) -> No
 def test_load_artifact_rejects_duplicate_key(tmp_path: Path) -> None:
     path = _write(
         tmp_path / "artifact.json",
-        '{"schema_version": 1, "source_commit_sha": "a", '
-        '"collection_hash": "b", "durations": {"x": 1, "x": 2}}',
+        '{"schema_version": 2, "source_commit_sha": "a", '
+        '"collection_hash": "b", "not_called": [], '
+        '"durations": {"x": 1, "x": 2}}',
     )
 
     with pytest.raises(ValueError, match="duplicate key"):
@@ -116,7 +186,7 @@ def test_load_artifact_rejects_duplicate_key(tmp_path: Path) -> None:
 
 
 def test_load_artifact_rejects_missing_field(tmp_path: Path) -> None:
-    path = _write_json(tmp_path / "artifact.json", {"schema_version": 1})
+    path = _write_json(tmp_path / "artifact.json", {"schema_version": 2})
 
     with pytest.raises(ValueError, match="missing required field"):
         load_artifact(path)
@@ -131,6 +201,24 @@ def test_validate_freshness_passes_for_freshly_built_artifact(tmp_path: Path) ->
     validate_freshness(
         artifact,
         collected_nodes={_NODE_A, _NODE_B},
+        expected_source_commit_sha="a" * 40,
+    )
+
+
+def test_validate_freshness_passes_with_not_called_entries(tmp_path: Path) -> None:
+    shard = _shard(
+        tmp_path / "shard.json", durations={_NODE_A: 0.01}, not_called=[_NODE_B]
+    )
+    collected_nodes = {_NODE_A, _NODE_B}
+    artifact = build_artifact(
+        shard_paths=[shard],
+        collected_paths=[_write_manifest(tmp_path / "collected.txt", *collected_nodes)],
+        source_commit_sha="a" * 40,
+    )
+
+    validate_freshness(
+        artifact,
+        collected_nodes=collected_nodes,
         expected_source_commit_sha="a" * 40,
     )
 
@@ -161,11 +249,10 @@ def test_validate_freshness_rejects_collection_hash_mismatch(tmp_path: Path) -> 
 def test_validate_freshness_rejects_missing_current_node(tmp_path: Path) -> None:
     # A hash mismatch alone would already fail closed whenever the collected
     # set changes, so isolate "missing" by keeping collection_hash in sync
-    # with the new collected set while durations still lack the new node —
-    # e.g. a hand-edited or half-written artifact.
+    # with the new collected set while durations/not_called still lack the
+    # new node — e.g. a hand-edited or half-written artifact.
     artifact = _build_two_node_artifact(tmp_path)
-    node_c = "tests/test_c.py::test_c"
-    collected = {_NODE_A, _NODE_B, node_c}
+    collected = {_NODE_A, _NODE_B, _NODE_C}
     artifact["collection_hash"] = compute_collection_hash(collected)
 
     with pytest.raises(ValueError, match="missing measurement"):
@@ -196,6 +283,22 @@ def test_validate_freshness_rejects_malformed_duration(tmp_path: Path) -> None:
     artifact["durations"][_NODE_A] = "not-a-number"
 
     with pytest.raises(ValueError, match="invalid duration entry"):
+        validate_freshness(
+            artifact,
+            collected_nodes={_NODE_A, _NODE_B},
+            expected_source_commit_sha="a" * 40,
+        )
+
+
+def test_validate_freshness_rejects_overlap_between_durations_and_not_called(
+    tmp_path: Path,
+) -> None:
+    artifact = _build_two_node_artifact(tmp_path)
+    artifact["not_called"] = [_NODE_A]
+
+    with pytest.raises(
+        ValueError, match="present in both 'durations' and 'not_called'"
+    ):
         validate_freshness(
             artifact,
             collected_nodes={_NODE_A, _NODE_B},
