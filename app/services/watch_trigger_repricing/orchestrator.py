@@ -48,10 +48,16 @@ implements :class:`~.spawn.ReconcilableSpawner`, the tick asks it whether a
 session with this event's deterministic ``spawn_key`` exists, and a
 definite answer resolves to CONSUMED or released exactly as above. Only an
 undecidable result is quarantined, and quarantine is chosen with its cost
-stated: **one event's latency, in exchange for never double-spawning into
-the approval lane**. It is not silent -- a quarantined event is logged at
-ERROR and returned in ``TickResult.needs_reconcile``, so it surfaces as an
-operator task rather than as an event that quietly stopped existing.
+stated: **this fire is not judged at all until a human looks, in exchange
+for never double-proposing into the approval lane**. It is not silent -- a
+quarantined event is written to the ``awaiting_reconcile`` terminal, logged
+at ERROR, and returned in ``TickResult.needs_reconcile``, so it surfaces as
+an operator task rather than as an event that quietly stopped existing.
+
+r2 / BLOCKER 2 corrected the cost statement above. r1 said "one event's
+latency" while leaving the claim ``STARTED``, which is the state the lease
+expires -- so the fire *was* retried, thirty minutes later, automatically.
+The terminal is what makes the sentence true.
 
 r3 (§101차 ③) closes that last sentence: a live spawner without
 ``reconcile`` is no longer "under pressure" to implement it -- it cannot be
@@ -75,11 +81,13 @@ from typing import Any
 
 from app.services.watch_trigger_repricing.claims import (
     DEFAULT_LEASE,
+    ClaimNotHeld,
     ClaimStore,
     ClaimStoreUnavailable,
     InMemoryClaimStore,
 )
 from app.services.watch_trigger_repricing.gate import GateDecision, evaluate_gate
+from app.services.watch_trigger_repricing.lifecycle import awaiting_reconcile
 from app.services.watch_trigger_repricing.selection import (
     DEFAULT_ROUND_CAP,
     CandidateEvent,
@@ -364,10 +372,32 @@ async def run_repricing_tick(
             )
             continue
 
-        # AMBIGUOUS and undecidable. Hold the claim so it cannot double
-        # spawn, and shout so it cannot silently vanish. The lease still
-        # runs, so if nothing reconciles it the TTL sweep records
-        # EXPIRED_UNPROCESSED -- an unjudged fire, named as such.
+        # AMBIGUOUS and undecidable. r2 / BLOCKER 2: r1 held the claim in
+        # STARTED and said in a log line that it would not be retried --
+        # but STARTED is the state the lease expires, so thirty minutes
+        # later the TTL wrote EXPIRED_UNPROCESSED and the next tick
+        # re-claimed and re-judged the fire. If the first create had
+        # committed and only its acknowledgement was lost, that is two
+        # proposals from one fire. Writing the terminal makes the refusal
+        # a property of the row rather than a promise in a log.
+        try:
+            await store.finalise(handle, awaiting_reconcile())
+        except ClaimNotHeld:
+            # The lease already rolled over to another claimant. Do not
+            # fight it: the current owner's row is authoritative, and the
+            # event is still reported below.
+            logger.exception(
+                "watch_trigger_repricing: could not quarantine event %s; the "
+                "claim is no longer held by this owner",
+                event.event_uuid,
+            )
+        except ClaimStoreUnavailable:
+            logger.exception(
+                "watch_trigger_repricing: could not quarantine event %s; the "
+                "claim store is unavailable, so the lease may still expire and "
+                "the fire may be re-judged",
+                event.event_uuid,
+            )
         logger.error(
             "watch_trigger_repricing: AMBIGUOUS spawn for event %s (symbol=%s, "
             "spawn_key=%s): %s -- claim quarantined, needs operator "

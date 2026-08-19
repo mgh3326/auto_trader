@@ -21,6 +21,7 @@ downstream of the decision is the shipping chain.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import uuid
 
@@ -36,6 +37,8 @@ from app.models.order_proposals import (
 )
 from app.models.watch_event_repricing_claims import WatchEventRepricingClaim
 from app.services.watch_trigger_repricing.chain_spawner import ProposalChainSpawner
+from app.services.watch_trigger_repricing.claims import DEFAULT_LEASE
+from app.services.watch_trigger_repricing.consumption import ConsumptionState
 from app.services.watch_trigger_repricing.db_claim_store import DatabaseClaimStore
 from app.services.watch_trigger_repricing.entrypoint import run_watch_repricing_tick
 from app.services.watch_trigger_repricing.judgement import (
@@ -177,6 +180,31 @@ async def proposal_count(session_factory) -> int:
 
 def spawner_for(answers: dict[str, object]) -> ProposalChainSpawner:
     return ProposalChainSpawner(judge=ScriptedJudge(answers), proposer=PROPOSER)
+
+
+def unsupported_draft(event_uuid: str, symbol: str) -> ProposalDraft:
+    """A draft the real boundary refuses *before* it commits anything.
+
+    ``upbit`` cannot trade ``equity_kr``, and ``order_proposal_create``
+    rejects the combination in its pre-commit validation, returning
+    ``success: False``. No fake tool is involved: this is the real
+    refusal, which is what makes "provably no row" evidence rather than
+    an assumption.
+    """
+    return ProposalDraft(
+        event_uuid=event_uuid,
+        symbol=symbol,
+        market="equity_kr",
+        account_mode="upbit",
+        side="sell",
+        order_type="limit",
+        rungs=(
+            ProposalRung(
+                rung_index=0, side="sell", quantity="10", limit_price="286000"
+            ),
+        ),
+        thesis="deliberately unsupported account_mode/market pair",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -343,20 +371,15 @@ async def test_an_analysis_only_session_leaves_the_fire_unresolved(seeded) -> No
 
 @pytest.mark.asyncio
 async def test_a_refused_create_hands_the_fire_back_for_the_next_tick(seeded) -> None:
-    """Provably-no-row is retryable, and the retry actually resolves it."""
+    """Provably-no-row is retryable, and the retry actually resolves it.
+
+    The refusal comes from the real boundary tool rejecting a real
+    unsupported combination -- nothing is substituted.
+    """
     event_uuid, symbol, _ = FIRES[0]
 
-    async def order_proposal_create(**kwargs):
-        return {"success": False, "error": "unsupported account_mode"}
-
     store = DatabaseClaimStore(session_factory=seeded)
-    refusing = ProposalChainSpawner(
-        judge=ScriptedJudge(
-            {event_uuid: sell_draft(event_uuid, symbol, limit_price="286000")}
-        ),
-        tool=order_proposal_create,
-        proposer=PROPOSER,
-    )
+    refusing = spawner_for({event_uuid: unsupported_draft(event_uuid, symbol)})
     first = await run_watch_repricing_tick(store=store, spawner=refusing, now=TICK)
 
     assert await proposal_count(seeded) == 0
@@ -377,39 +400,165 @@ async def test_a_refused_create_hands_the_fire_back_for_the_next_tick(seeded) ->
     assert second_rows[event_uuid]["proposalId"] in await proposal_ids(seeded)
 
 
+@contextlib.contextmanager
+def lost_acknowledgement():
+    """Make the boundary raise, as a lost acknowledgement would.
+
+    Patches the module global rather than passing a substitute, because
+    there is no parameter to pass one to (r2 / BLOCKER 1). This is a
+    test-runtime patch, not a configuration path.
+
+    Deliberately its own :meth:`pytest.MonkeyPatch.context` rather than the
+    test's ``monkeypatch`` fixture: ``monkeypatch.undo()`` reverts *every*
+    patch made through that fixture, including the ``enabled`` fixture's,
+    which silently turned the tick off and made the assertions afterwards
+    vacuous.
+    """
+    from app.services.watch_trigger_repricing import proposal_chain
+
+    async def boom(**kwargs):
+        raise TimeoutError("acknowledgement lost after commit")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(proposal_chain, "order_proposal_create", boom)
+        yield
+
+
 @pytest.mark.asyncio
 async def test_an_ambiguous_create_is_quarantined_and_never_double_proposes(
     seeded,
 ) -> None:
     event_uuid, symbol, _ = FIRES[0]
-
-    async def order_proposal_create(**kwargs):
-        raise TimeoutError("acknowledgement lost")
+    draft = sell_draft(event_uuid, symbol, limit_price="286000")
 
     store = DatabaseClaimStore(session_factory=seeded)
-    first = await run_watch_repricing_tick(
-        store=store,
-        spawner=ProposalChainSpawner(
-            judge=ScriptedJudge(
-                {event_uuid: sell_draft(event_uuid, symbol, limit_price="286000")}
-            ),
-            tool=order_proposal_create,
-            proposer=PROPOSER,
-        ),
-        now=TICK,
-    )
+    with lost_acknowledgement():
+        first = await run_watch_repricing_tick(
+            store=store, spawner=spawner_for({event_uuid: draft}), now=TICK
+        )
     assert [row["eventUuid"] for row in first["needsReconcile"]] == [event_uuid]
+    assert first["completionQuarantined"] == [event_uuid]
 
-    # A later tick must not re-judge a fire whose create outcome is unknown.
+    rows = {row["eventUuid"]: row for row in first["completion"]}
+    # Reported as terminal-unknown, not as "deferred to a later tick".
+    assert rows[event_uuid]["state"] == ClaimLifecycle.AWAITING_RECONCILE
+    assert not rows[event_uuid]["proposalId"]
+    assert not rows[event_uuid]["rejectionReason"]
+    assert first["completionComplete"] is False
+    assert first["completionAccounted"] is True
+    assert event_uuid not in first["completionDeferred"]
+
+    # The refusal is a row, not a log line.
+    async with seeded() as session:
+        state = await session.scalar(
+            select(WatchEventRepricingClaim.state).where(
+                WatchEventRepricingClaim.event_uuid == uuid.UUID(event_uuid)
+            )
+        )
+    assert state == ClaimLifecycle.AWAITING_RECONCILE
+
+    # A later tick, with the real boundary, must not re-judge it.
     second = await run_watch_repricing_tick(
         store=DatabaseClaimStore(session_factory=seeded),
-        spawner=spawner_for(
-            {event_uuid: sell_draft(event_uuid, symbol, limit_price="286000")}
-        ),
+        spawner=spawner_for({event_uuid: draft}),
         now=TICK + dt.timedelta(minutes=1),
     )
     assert event_uuid not in {row["eventUuid"] for row in second["spawned"]}
     assert await proposal_count(seeded) == 0
+
+
+@pytest.mark.asyncio
+async def test_the_ttl_cannot_walk_a_quarantine_back_into_a_second_proposal(
+    seeded,
+) -> None:
+    """r2 / BLOCKER 2, end to end.
+
+    r1 left an ambiguous fire's claim in ``started`` and said in a log
+    line that it would not be retried. ``started`` is the state the lease
+    expires, so once the 30-minute lease ran out the TTL wrote
+    ``expired_unprocessed``, the next tick re-claimed at generation + 1,
+    and the fire was judged again -- creating a second proposal if the
+    first call had committed and only its acknowledgement was lost.
+
+    This drives the clock well past the lease and asserts the fire is
+    still not re-judged and still produces no proposal.
+    """
+    event_uuid, symbol, _ = FIRES[0]
+    draft = sell_draft(event_uuid, symbol, limit_price="286000")
+
+    with lost_acknowledgement():
+        await run_watch_repricing_tick(
+            store=DatabaseClaimStore(session_factory=seeded),
+            spawner=spawner_for({event_uuid: draft}),
+            now=TICK,
+        )
+
+    store = DatabaseClaimStore(session_factory=seeded)
+    # Past the lease, by a wide margin, and sweep as the TTL path would.
+    long_after = TICK + DEFAULT_LEASE + dt.timedelta(hours=2)
+    assert await store.sweep_expired(now=long_after) == [], (
+        "a terminal claim must not be swept; only 'started' leases expire"
+    )
+
+    # The claim store still refuses to hand it out ...
+    assert await store.state_for(event_uuid, now=long_after) is (
+        ConsumptionState.QUARANTINED
+    )
+    assert (
+        await store.try_claim(
+            event_uuid=event_uuid,
+            symbol=symbol,
+            market="kr",
+            claimed_by="later-tick",
+            now=long_after,
+        )
+        is None
+    )
+
+    # ... and a full tick long after the lease creates no second proposal.
+    later = await run_watch_repricing_tick(
+        store=DatabaseClaimStore(session_factory=seeded),
+        spawner=spawner_for({event_uuid: draft}),
+        now=dt.datetime(2026, 8, 18, 14, 30, tzinfo=KST),
+    )
+    assert event_uuid not in {row["eventUuid"] for row in later["spawned"]}
+    assert await proposal_count(seeded) == 0
+
+    skipped = {row["eventUuid"]: row["reason"] for row in later["skipped"]}
+    assert skipped[event_uuid] == "awaiting_spawn_reconcile"
+
+
+@pytest.mark.asyncio
+async def test_a_quarantine_does_not_block_other_fires_on_the_same_symbol(
+    seeded,
+) -> None:
+    """Quarantine is per-event. The symbol slot is freed, not held forever."""
+    quarantined_uuid, symbol, _ = FIRES[0]
+    with lost_acknowledgement():
+        await run_watch_repricing_tick(
+            store=DatabaseClaimStore(session_factory=seeded),
+            spawner=spawner_for(
+                {
+                    quarantined_uuid: sell_draft(
+                        quarantined_uuid, symbol, limit_price="286000"
+                    )
+                }
+            ),
+            now=TICK,
+        )
+
+    store = DatabaseClaimStore(session_factory=seeded)
+    assert await store.active_symbols(now=TICK + dt.timedelta(minutes=1)) == frozenset()
+
+    other = BY_SYMBOL["000660"]
+    result = await run_watch_repricing_tick(
+        store=store,
+        spawner=spawner_for({other: sell_draft(other, "000660", limit_price="205000")}),
+        now=TICK + dt.timedelta(minutes=1),
+    )
+    rows = {row["eventUuid"]: row for row in result["completion"]}
+    assert rows[other]["state"] == ClaimLifecycle.PROPOSAL_CREATED
+    assert await proposal_count(seeded) == 1
 
 
 # ---------------------------------------------------------------------------

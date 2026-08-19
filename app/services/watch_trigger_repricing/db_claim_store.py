@@ -52,10 +52,14 @@ from app.services.watch_trigger_repricing.consumption import (
     project_claim_state,
 )
 from app.services.watch_trigger_repricing.lifecycle import (
+    NON_RECLAIMABLE_STATES,
     TERMINAL_LIFECYCLE_STATES,
     ClaimLifecycle,
     SessionOutcome,
 )
+
+# Spelled as raw values once, for the SQL-facing comparisons below.
+_NON_RECLAIMABLE_VALUES = tuple(state.value for state in NON_RECLAIMABLE_STATES)
 
 __all__ = ["DatabaseClaimStore"]
 
@@ -88,6 +92,10 @@ class DatabaseClaimStore:
             # the TTL terminal, which explicitly means "nobody judged it".
             if row.state == ClaimLifecycle.EXPIRED_UNPROCESSED:
                 return project_claim_state(claim_found=False, store_available=True)
+            if row.state == ClaimLifecycle.AWAITING_RECONCILE:
+                # Unknown, not done. Blocks every consumer and is reported
+                # for operator reconciliation (r2 / BLOCKER 2).
+                return ConsumptionState.QUARANTINED
             return ConsumptionState.CONSUMED
         return project_claim_state(
             claim_found=row.lease_expires_at > now, store_available=True
@@ -181,12 +189,13 @@ class DatabaseClaimStore:
                         finalised_at=now,
                     )
                 )
-            if latest is not None and latest.state in (
-                ClaimLifecycle.PROPOSAL_CREATED.value,
-                ClaimLifecycle.REJECTED_WITH_REASON.value,
-            ):
-                # Already resolved. Never re-judge a fire that produced an
-                # outcome -- that is the double-proposal direction.
+            if latest is not None and latest.state in _NON_RECLAIMABLE_VALUES:
+                # Already resolved, or terminally ambiguous. Never re-judge
+                # a fire that produced an outcome, or one that *may* have
+                # produced a proposal nobody could confirm -- both are the
+                # double-proposal direction. r2 / BLOCKER 2: this branch is
+                # reached before any lease arithmetic, so TTL expiry cannot
+                # undo it.
                 return None
 
             generation = (latest.generation + 1) if latest is not None else 1

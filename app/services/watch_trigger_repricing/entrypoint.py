@@ -59,6 +59,7 @@ DISABLED_RESULT: dict[str, Any] = {
     "skipped": [],
     "needsReconcile": [],
     "completion": [],
+    "completionQuarantined": [],
 }
 
 
@@ -166,12 +167,21 @@ async def run_watch_repricing_tick(
                 handle.generation,
             )
     # Everything the tick knowingly set aside, with the reason it gave.
+    # Quarantined fires are split out: they are terminal and no later tick
+    # will pick them up, so reporting them as "deferred" would promise a
+    # retry that is deliberately never coming (r2 / BLOCKER 2).
+    quarantined = {
+        skipped.event_uuid: skipped.reason for skipped in result.needs_reconcile
+    }
     deferrals = {
         skipped.event_uuid: skipped.reason
-        for skipped in result.overflow + result.skipped + result.needs_reconcile
+        for skipped in result.overflow + result.skipped
     }
     completion = build_completion_mapping(
-        polled_event_uuids=polled, outcomes=outcomes, deferrals=deferrals
+        polled_event_uuids=polled,
+        outcomes=outcomes,
+        deferrals=deferrals,
+        quarantined=quarantined,
     )
     for row in completion.unaccounted:
         logger.warning(
@@ -189,6 +199,18 @@ async def run_watch_repricing_tick(
     payload["completionComplete"] = completion.is_complete
     payload["completionAccounted"] = completion.is_accounted
     payload["completionDeferred"] = [row.event_uuid for row in completion.deferred]
+    payload["completionQuarantined"] = [
+        row.event_uuid for row in completion.quarantined
+    ]
+    for row in completion.quarantined:
+        logger.error(
+            "watch_trigger_repricing: event %s (symbol=%s) is quarantined (%s) -- "
+            "whether a proposal was created is unknown, it will NOT be re-judged, "
+            "and an operator must reconcile it",
+            row.event_uuid,
+            row.symbol,
+            row.deferral_reason,
+        )
     for row in completion.deferred:
         logger.info(
             "watch_trigger_repricing: event %s (symbol=%s) deferred to a later tick "

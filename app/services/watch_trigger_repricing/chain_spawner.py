@@ -36,6 +36,13 @@ compared with closed equality **on every spawn**, before the judge is
 asked, so widening the profile stops the flow rather than widening the
 session.
 
+No substitutable boundary (r2 / BLOCKER 1)
+------------------------------------------
+This class takes a judge and a proposer. It does **not** take the tool it
+calls, so there is no wiring in which something other than the shipping
+``order_proposal_create`` runs. See :mod:`.proposal_chain` for why the
+previous ``__name__`` check was worthless.
+
 Retry safety
 ------------
 The three failure shapes get the three different answers their evidence
@@ -68,7 +75,6 @@ from app.services.watch_trigger_repricing.live_contract import (
 )
 from app.services.watch_trigger_repricing.proposal_chain import (
     DEFAULT_PROPOSER,
-    BoundaryTool,
     ProposalChainFailure,
     run_judgement_session,
 )
@@ -118,16 +124,20 @@ class ProposalChainSpawner(LiveSessionSpawner):
         self,
         *,
         judge: object,
-        tool: BoundaryTool | None = None,
         proposer: str = DEFAULT_PROPOSER,
     ) -> None:
+        # r2 / BLOCKER 1: there is deliberately no ``tool`` parameter. r1
+        # accepted one and checked its ``__name__``, so a callable renamed
+        # ``order_proposal_create`` -- a broker submit, say -- constructed
+        # cleanly, armed cleanly, and then ran. Passing one is now a
+        # TypeError, which is what §101차 ③ means by enforcing the boundary
+        # at the constructor rather than validating it at use.
         if not hasattr(judge, "judge"):
             raise TypeError(
                 "ProposalChainSpawner requires a RepricingJudge; this package "
                 "ships none, because the judgement is out-of-process work"
             )
         self._judge = judge
-        self._tool = tool
         self._proposer = proposer
         # event_uuid -> terminal, read by the entrypoint's fenced finalise.
         self.session_outcomes: dict[str, SessionOutcome] = {}
@@ -154,7 +164,6 @@ class ProposalChainSpawner(LiveSessionSpawner):
                 request=request,
                 judge=self._judge,
                 grant=self.proposal_chain_grant,
-                tool=self._tool,
                 proposer=self._proposer,
             )
         except JudgementRefused as exc:

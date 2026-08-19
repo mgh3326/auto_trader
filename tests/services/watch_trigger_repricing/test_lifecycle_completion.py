@@ -10,10 +10,14 @@ from __future__ import annotations
 import pytest
 
 from app.services.watch_trigger_repricing.lifecycle import (
+    NON_RECLAIMABLE_STATES,
+    RESOLVED_LIFECYCLE_STATES,
     TERMINAL_LIFECYCLE_STATES,
     ClaimLifecycle,
+    CompletionRow,
     IncompleteOutcome,
     SessionOutcome,
+    awaiting_reconcile,
     build_completion_mapping,
     proposal_created,
     rejected,
@@ -23,14 +27,41 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# The enum has exactly three terminals, and none of them is "analysed"
+# Exactly two states are *outcomes*, and neither of them is "analysed"
 # ---------------------------------------------------------------------------
-def test_terminals_are_exactly_the_three_operator_named_states() -> None:
+def test_only_two_states_satisfy_the_completion_criterion() -> None:
+    """The load-bearing half: what counts as *done*.
+
+    ROB-1290 r2 added a fourth terminal (``awaiting_reconcile``) so an
+    ambiguous spawn survives the TTL instead of being re-judged. That must
+    not become a third way to look finished, so the resolved set is
+    asserted separately from the terminal set, and it is still the same
+    two states the operator named.
+    """
+    assert {str(s) for s in RESOLVED_LIFECYCLE_STATES} == {
+        "proposal_created",
+        "rejected_with_reason",
+    }
+
+
+def test_the_extra_terminals_are_faults_and_are_never_resolved() -> None:
     assert {str(s) for s in TERMINAL_LIFECYCLE_STATES} == {
         "proposal_created",
         "rejected_with_reason",
         "expired_unprocessed",
+        "awaiting_reconcile",
     }
+    faults = TERMINAL_LIFECYCLE_STATES - RESOLVED_LIFECYCLE_STATES
+    assert {str(s) for s in faults} == {"expired_unprocessed", "awaiting_reconcile"}
+    for fault in faults:
+        row = CompletionRow(
+            event_uuid="e",
+            symbol="005930",
+            state=str(fault),
+            proposal_id=None,
+            rejection_reason=None,
+        )
+        assert row.is_resolved is False
 
 
 def test_no_analysis_only_terminal_exists() -> None:
@@ -45,6 +76,7 @@ def test_no_analysis_only_terminal_exists() -> None:
         "proposal_created",
         "rejected_with_reason",
         "expired_unprocessed",
+        "awaiting_reconcile",
     }
     for forbidden in (
         "analysed",
@@ -56,6 +88,33 @@ def test_no_analysis_only_terminal_exists() -> None:
         "acknowledged",
     ):
         assert forbidden not in members
+
+
+def test_the_quarantine_terminal_claims_no_knowledge() -> None:
+    """It means "nobody knows", so it may not carry evidence either way."""
+    assert awaiting_reconcile().state is ClaimLifecycle.AWAITING_RECONCILE
+    assert awaiting_reconcile().proposal_id is None
+    assert awaiting_reconcile().rejection_reason is None
+    with pytest.raises(IncompleteOutcome):
+        SessionOutcome(state=ClaimLifecycle.AWAITING_RECONCILE, proposal_id="prop-1")
+    with pytest.raises(IncompleteOutcome):
+        SessionOutcome(
+            state=ClaimLifecycle.AWAITING_RECONCILE, rejection_reason="unknown"
+        )
+
+
+def test_the_ttl_terminal_is_the_only_reclaimable_one() -> None:
+    """r2 / BLOCKER 2, stated as a set.
+
+    ``expired_unprocessed`` exists so a crashed tick's fire is picked up
+    again. ``awaiting_reconcile`` exists so an ambiguous one is *not*.
+    """
+    assert {str(s) for s in NON_RECLAIMABLE_STATES} == {
+        "proposal_created",
+        "rejected_with_reason",
+        "awaiting_reconcile",
+    }
+    assert ClaimLifecycle.EXPIRED_UNPROCESSED not in NON_RECLAIMABLE_STATES
 
 
 def test_started_is_not_a_terminal() -> None:

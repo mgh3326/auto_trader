@@ -26,10 +26,21 @@ What it refuses
     ``LiveSessionSpawner.__init__`` can mint and only after checking the
     spawner's grant equals :data:`~.capability.PROPOSAL_ONLY_TOOLS`. A
     spawner that skipped the base class has nothing to pass.
-``a different tool``
-    An injected callable is accepted only if it is *named*
-    :data:`~.capability.EXECUTION_BOUNDARY`. Tests may substitute a fake
-    boundary; nobody may substitute a submit path.
+``a substitute callable`` (r2 / BLOCKER 1)
+    There is no substitute to refuse, because there is nowhere to pass
+    one. r1 took the boundary as an optional argument and validated it by
+    ``__name__``, which is the "이름 매칭 ≠ 의미 강제" mistake in its purest
+    form: any callable renamed ``order_proposal_create`` -- including one
+    that submits to a broker -- passed the check and then ran. A name is a
+    label the untrusted side chooses.
+
+    So the argument is gone. This module calls the module-global it
+    imported at the top of the file, and no parameter, attribute or
+    setter anywhere in the package accepts a callable. Wiring a substitute
+    is not a runtime risk to be validated; it is a ``TypeError`` at the
+    constructor. (A test may still ``monkeypatch`` the module global --
+    that is true of every Python module, and it is deliberately *not* a
+    configuration path: nothing a caller can construct reaches it.)
 ``a different symbol``
     A session spawned for one fire may not propose on another symbol. The
     per-symbol concurrency rule is meaningless if the session can wander.
@@ -56,8 +67,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any
 
 from app.mcp_server.caller_identity import caller_agent_id_var
 from app.mcp_server.tooling.order_proposal_tools import order_proposal_create
@@ -89,6 +98,7 @@ __all__ = [
     "ProposalChainAmbiguous",
     "ProposalChainFailure",
     "create_proposal_for_fire",
+    "interpret_create_response",
     "run_judgement_session",
 ]
 
@@ -100,8 +110,6 @@ DEFAULT_PROPOSER = "watch-trigger-repricing"
 # this rather than the free-text ``proposer``.
 _AGENT_PREFIX = "watch-trigger-repricing"
 
-BoundaryTool = Callable[..., Awaitable[dict[str, Any]]]
-
 
 class ProposalChainFailure(RuntimeError):
     """The create provably did not happen. Safe to hand the fire back."""
@@ -111,17 +119,34 @@ class ProposalChainAmbiguous(RuntimeError):
     """Unknown whether a proposal row was committed. Never retry blindly."""
 
 
-def _resolve_boundary_tool(tool: BoundaryTool | None) -> BoundaryTool:
-    """Return the boundary callable, refusing anything that is not it."""
-    if tool is None:
-        return order_proposal_create
-    name = getattr(tool, "__name__", "")
-    if name != EXECUTION_BOUNDARY:
-        raise CapabilityBoundaryViolation(
-            f"the repricing write seam may only invoke {EXECUTION_BOUNDARY!r}; "
-            f"refusing an injected callable named {name!r}"
+def interpret_create_response(response: object, *, event_uuid: str) -> SessionOutcome:
+    """Classify what the boundary said, by evidence.
+
+    Split out as a pure function so the three classifications can be
+    tested without anything resembling a substitutable tool. r1 tested
+    them by injecting fake callables, which is exactly the seam r2 found
+    was a bypass -- the tests were paying for a hole in the design.
+    """
+    if not isinstance(response, dict):
+        raise ProposalChainAmbiguous(
+            f"{EXECUTION_BOUNDARY} returned {type(response).__name__}, not a "
+            "result mapping; the commit state cannot be read from it"
         )
-    return tool
+    if response.get("success") is not True:
+        # Pre-commit refusal. The tool's success snapshot is frozen at the
+        # commit boundary and every later step is never-raise, so this is
+        # positive evidence that no row exists.
+        raise ProposalChainFailure(
+            f"{EXECUTION_BOUNDARY} refused event {event_uuid}: "
+            f"{response.get('error')!r}"
+        )
+    proposal_id = str(response.get("proposal_id") or "").strip()
+    if not proposal_id:
+        raise ProposalChainAmbiguous(
+            f"{EXECUTION_BOUNDARY} reported success without a proposal_id for "
+            f"event {event_uuid}"
+        )
+    return proposal_created(proposal_id)
 
 
 def _check_grant(grant: object, *, request: SpawnRequest) -> ProposalChainGrant:
@@ -142,7 +167,6 @@ async def create_proposal_for_fire(
     request: SpawnRequest,
     draft: ProposalDraft,
     grant: object,
-    tool: BoundaryTool | None = None,
     proposer: str = DEFAULT_PROPOSER,
 ) -> SessionOutcome:
     """Cross the boundary for one fire and return the terminal it earned.
@@ -158,11 +182,10 @@ async def create_proposal_for_fire(
             f"a session spawned for {request.symbol!r} may not propose on "
             f"{draft.symbol!r}"
         )
-    boundary = _resolve_boundary_tool(tool)
 
     identity = caller_agent_id_var.set(f"{_AGENT_PREFIX}:{request.event_uuid}")
     try:
-        response = await boundary(
+        response = await order_proposal_create(
             symbol=draft.symbol,
             market=draft.market,
             account_mode=draft.account_mode,
@@ -195,32 +218,14 @@ async def create_proposal_for_fire(
     finally:
         caller_agent_id_var.reset(identity)
 
-    if not isinstance(response, dict):
-        raise ProposalChainAmbiguous(
-            f"{EXECUTION_BOUNDARY} returned {type(response).__name__}, not a "
-            "result mapping; the commit state cannot be read from it"
-        )
-    if response.get("success") is not True:
-        # Pre-commit refusal. The tool's success snapshot is frozen at the
-        # commit boundary and every later step is never-raise, so this is
-        # positive evidence that no row exists.
-        raise ProposalChainFailure(
-            f"{EXECUTION_BOUNDARY} refused event {request.event_uuid}: "
-            f"{response.get('error')!r}"
-        )
-    proposal_id = str(response.get("proposal_id") or "").strip()
-    if not proposal_id:
-        raise ProposalChainAmbiguous(
-            f"{EXECUTION_BOUNDARY} reported success without a proposal_id for "
-            f"event {request.event_uuid}"
-        )
+    outcome = interpret_create_response(response, event_uuid=request.event_uuid)
     logger.info(
         "watch_trigger_repricing: event %s (symbol=%s) produced proposal %s",
         request.event_uuid,
         request.symbol,
-        proposal_id,
+        outcome.proposal_id,
     )
-    return proposal_created(proposal_id)
+    return outcome
 
 
 async def run_judgement_session(
@@ -228,7 +233,6 @@ async def run_judgement_session(
     request: SpawnRequest,
     judge: object,
     grant: object,
-    tool: BoundaryTool | None = None,
     proposer: str = DEFAULT_PROPOSER,
 ) -> SessionOutcome:
     """Ask the judge, then act on its answer. Exactly one terminal, or raise.
@@ -257,7 +261,6 @@ async def run_judgement_session(
             request=request,
             draft=judgement,
             grant=grant,
-            tool=tool,
             proposer=proposer,
         )
     if isinstance(judgement, Decline):

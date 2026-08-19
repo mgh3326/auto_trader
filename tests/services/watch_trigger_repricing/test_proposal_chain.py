@@ -44,6 +44,7 @@ from app.services.watch_trigger_repricing.proposal_chain import (
     ProposalChainAmbiguous,
     ProposalChainFailure,
     create_proposal_for_fire,
+    interpret_create_response,
     run_judgement_session,
 )
 from app.services.watch_trigger_repricing.spawn import (
@@ -103,8 +104,8 @@ def _grant_for(spawner: LiveSessionSpawner) -> ProposalChainGrant:
     return spawner.proposal_chain_grant
 
 
-def _spawner(answer: object, tool=None) -> ProposalChainSpawner:
-    return ProposalChainSpawner(judge=_Judge(answer), tool=tool, proposer="rob1290")
+def _spawner(answer: object) -> ProposalChainSpawner:
+    return ProposalChainSpawner(judge=_Judge(answer), proposer="rob1290")
 
 
 # ---------------------------------------------------------------------------
@@ -217,20 +218,52 @@ def test_a_chain_spawner_that_drops_the_boundary_cannot_be_constructed() -> None
         Narrowed(judge=_Judge(_draft()))
 
 
-@pytest.mark.asyncio
-async def test_the_seam_refuses_any_callable_that_is_not_the_boundary() -> None:
-    async def toss_submit(**kwargs):  # a stand-in for "something else"
-        raise AssertionError("must never be called")
+def test_no_seam_anywhere_accepts_a_substitute_callable() -> None:
+    """r2 / BLOCKER 1: the injection point is gone, not merely validated.
 
-    spawner = _spawner(_draft(), tool=toss_submit)
-    with pytest.raises(CapabilityBoundaryViolation) as exc:
-        await run_judgement_session(
+    r1 took the boundary as an argument and checked its ``__name__``, so a
+    broker submit renamed ``order_proposal_create`` constructed cleanly,
+    armed cleanly, and ran. A name is a label the untrusted side picks.
+    """
+    import inspect
+
+    from app.services.watch_trigger_repricing import proposal_chain
+
+    assert set(
+        inspect.signature(proposal_chain.create_proposal_for_fire).parameters
+    ) == {"request", "draft", "grant", "proposer"}
+    assert set(inspect.signature(proposal_chain.run_judgement_session).parameters) == {
+        "request",
+        "judge",
+        "grant",
+        "proposer",
+    }
+    assert set(inspect.signature(ProposalChainSpawner.__init__).parameters) == {
+        "self",
+        "judge",
+        "proposer",
+    }
+
+
+def test_a_name_spoofed_callable_cannot_even_be_wired() -> None:
+    """The mutant: fail at the constructor, not after it has run."""
+
+    async def order_proposal_create(**kwargs):  # the spoof, verbatim name
+        raise AssertionError("must never be reachable")
+
+    assert order_proposal_create.__name__ == EXECUTION_BOUNDARY  # r1 passed on this
+
+    with pytest.raises(TypeError):
+        ProposalChainSpawner(  # type: ignore[call-arg]
+            judge=_Judge(_draft()), tool=order_proposal_create
+        )
+    with pytest.raises(TypeError):
+        run_judgement_session(  # type: ignore[call-arg]
             request=_request(),
             judge=_Judge(_draft()),
-            grant=_grant_for(spawner),
-            tool=toss_submit,
+            grant=None,
+            tool=order_proposal_create,
         )
-    assert EXECUTION_BOUNDARY in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -302,24 +335,17 @@ def test_subclassing_a_dry_spawner_no_longer_buys_a_dry_exemption() -> None:
 # ---------------------------------------------------------------------------
 # The three answers a create attempt can produce
 # ---------------------------------------------------------------------------
-@pytest.mark.asyncio
-async def test_a_successful_create_becomes_the_proposal_created_terminal() -> None:
-    calls: list[dict] = []
+def test_a_successful_response_becomes_the_proposal_created_terminal() -> None:
+    outcome = interpret_create_response(
+        {"success": True, "proposal_id": "pid-1"}, event_uuid=EVENT
+    )
+    assert outcome.state is ClaimLifecycle.PROPOSAL_CREATED
+    assert outcome.proposal_id == "pid-1"
 
-    async def order_proposal_create(**kwargs):
-        calls.append(kwargs)
-        return {"success": True, "proposal_id": "pid-1"}
 
-    spawner = _spawner(_draft(), tool=order_proposal_create)
-    outcome = await spawner.spawn(_request())
-
-    assert outcome.disposition.value == "started"
-    recorded = spawner.session_outcomes[EVENT]
-    assert recorded.state is ClaimLifecycle.PROPOSAL_CREATED
-    assert recorded.proposal_id == "pid-1"
-    assert calls[0]["symbol"] == "005930"
-    assert calls[0]["proposer"] == "rob1290"
-    assert calls[0]["rungs"] == [
+def test_the_draft_is_translated_into_the_tool_arguments() -> None:
+    """The rung shape the boundary takes, without calling anything."""
+    assert [r.as_tool_argument() for r in _draft().rungs] == [
         {
             "rung_index": 0,
             "side": "sell",
@@ -328,7 +354,6 @@ async def test_a_successful_create_becomes_the_proposal_created_terminal() -> No
             "notional": None,
         }
     ]
-    assert calls[0]["rationale"]["event_uuid"] == EVENT
 
 
 @pytest.mark.asyncio
@@ -342,41 +367,50 @@ async def test_a_decline_becomes_the_rejected_terminal_with_its_reason() -> None
     assert recorded.proposal_id is None
 
 
+def test_a_pre_commit_refusal_is_retryable_not_ambiguous() -> None:
+    with pytest.raises(ProposalChainFailure):
+        interpret_create_response(
+            {"success": False, "error": "unsupported account_mode"},
+            event_uuid=EVENT,
+        )
+
+
+def test_success_without_a_proposal_id_is_ambiguous_not_success() -> None:
+    for response in ({"success": True, "proposal_id": ""}, {"success": True}):
+        with pytest.raises(ProposalChainAmbiguous):
+            interpret_create_response(response, event_uuid=EVENT)
+
+
+def test_a_non_mapping_response_is_ambiguous() -> None:
+    for response in (None, "ok", 1, ["success"]):
+        with pytest.raises(ProposalChainAmbiguous):
+            interpret_create_response(response, event_uuid=EVENT)
+
+
 @pytest.mark.asyncio
-async def test_a_pre_commit_refusal_is_retryable_not_ambiguous() -> None:
-    async def order_proposal_create(**kwargs):
-        return {"success": False, "error": "unsupported account_mode"}
+async def test_a_raising_boundary_is_ambiguous_and_is_never_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Module-global patch: there is no argument to pass a substitute to.
 
-    spawner = _spawner(_draft(), tool=order_proposal_create)
-    with pytest.raises(SpawnNotStarted) as exc:
-        await spawner.spawn(_request())
-    assert "proposal_create_refused" in str(exc.value)
-    assert EVENT not in spawner.session_outcomes
+    This is a test-runtime patch of a module attribute, which is available
+    for any module in Python. It is emphatically not a wiring path -- see
+    ``test_no_seam_anywhere_accepts_a_substitute_callable``.
+    """
+    from app.services.watch_trigger_repricing import proposal_chain
 
-
-@pytest.mark.asyncio
-async def test_a_raising_create_is_ambiguous_and_is_never_retried() -> None:
-    async def order_proposal_create(**kwargs):
+    async def boom(**kwargs):
         raise TimeoutError("acknowledgement lost")
 
-    spawner = _spawner(_draft(), tool=order_proposal_create)
+    monkeypatch.setattr(proposal_chain, "order_proposal_create", boom)
+    spawner = _spawner(_draft())
     with pytest.raises(ProposalChainAmbiguous):
         await spawner.spawn(_request())
-    # And the spawner refuses to resolve it either way.
+    # The spawner refuses to resolve it either way.
     assert spawner.reconcile(_request()).value == "ambiguous"
 
 
-@pytest.mark.asyncio
-async def test_success_without_a_proposal_id_is_ambiguous_not_success() -> None:
-    async def order_proposal_create(**kwargs):
-        return {"success": True, "proposal_id": ""}
-
-    with pytest.raises(ProposalChainAmbiguous):
-        await _spawner(_draft(), tool=order_proposal_create).spawn(_request())
-
-
-@pytest.mark.asyncio
-async def test_a_failed_create_is_classified_by_evidence_not_by_hope() -> None:
+def test_a_failed_create_is_classified_by_evidence_not_by_hope() -> None:
     """The two failure classes must not collapse into one another."""
     assert not issubclass(ProposalChainFailure, ProposalChainAmbiguous)
     assert not issubclass(ProposalChainAmbiguous, ProposalChainFailure)
@@ -415,7 +449,7 @@ def test_the_default_boundary_is_the_real_tool_object() -> None:
     from app.mcp_server.tooling import order_proposal_tools as opt
     from app.services.watch_trigger_repricing import proposal_chain
 
-    assert proposal_chain._resolve_boundary_tool(None) is opt.order_proposal_create
+    assert proposal_chain.order_proposal_create is opt.order_proposal_create
 
 
 def test_the_package_ships_no_judge_implementation() -> None:

@@ -367,19 +367,82 @@ def test_settings_gate_defaults_off() -> None:
     assert Settings.model_fields["WATCH_TRIGGER_REPRICING_ENABLED"].default is False
 
 
-def test_exactly_one_migration_is_added_and_it_is_additive() -> None:
-    """§101차 ①: the claims table, and nothing else."""
+def test_this_feature_migrates_only_its_own_table() -> None:
+    """§101차 ①: the claims table, and nothing else.
+
+    ROB-1290 r2 adds a second migration (the ``awaiting_reconcile`` state,
+    which is what stops an ambiguous fire being re-judged after the TTL).
+    Counting files was always a proxy for the property that matters, so
+    this asserts the property directly and for *every* migration this
+    feature owns: exactly one table is ever created, no other table is
+    named, and ``review.investment_watch_events`` is never touched.
+    """
     versions = REPO_ROOT / "alembic" / "versions"
-    mine = [
+    mine = sorted(
         p
         for p in versions.glob("*.py")
         if "watch_event_repricing_claims" in p.read_text()
+    )
+    assert [p.name for p in mine] == [
+        "20260819_rob1286_repricing_claims.py",
+        "20260820_rob1290_awaiting_reconcile_state.py",
     ]
-    assert len(mine) == 1, [p.name for p in mine]
 
-    source = mine[0].read_text()
-    # Additive: creates its own table, alters nobody else's.
-    assert source.count("op.create_table(") == 1
-    for destructive in ("op.drop_column", "op.alter_column", "op.drop_constraint"):
-        assert destructive not in source.split("def downgrade")[0]
-    assert "investment_watch_events" not in _code_tokens(mine[0])
+    # Across the whole set, the table is created exactly once.
+    assert sum(p.read_text().count("op.create_table(") for p in mine) == 1
+
+    for path in mine:
+        # The feature never reads or writes the fire table.
+        assert "investment_watch_events" not in _code_tokens(path), path.name
+        # No other table is named anywhere in the migration.
+        tree = ast.parse(path.read_text())
+        table_like = {
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and ("watch_event" in node.value or "review." in node.value)
+        }
+        for literal in table_like:
+            assert "watch_event_repricing_claims" in literal, (
+                f"{path.name} names another table: {literal!r}"
+            )
+
+    # Which statements each migration actually emits is asserted against the
+    # rendered DDL in ``test_migration_render.py`` -- reading the source
+    # cannot catch a name mangled by alembic's naming convention.
+
+
+def test_the_second_migration_alters_nothing_but_one_check_constraint() -> None:
+    """Additive in the sense that matters: it widens, it does not remove."""
+    source = (
+        REPO_ROOT
+        / "alembic"
+        / "versions"
+        / "20260820_rob1290_awaiting_reconcile_state.py"
+    ).read_text()
+    upgrade = source.split("def downgrade")[0]
+
+    for destructive in ("op.drop_column", "op.alter_column", "op.drop_table"):
+        assert destructive not in upgrade
+    # It replaces the state CHECK, and only that one.
+    assert upgrade.count("op.drop_constraint(") == 1
+    assert upgrade.count("op.create_check_constraint(") == 1
+    assert "ck_watch_event_repricing_claims_state" in source
+    # The widened set is a strict superset of the old one.
+    assert "awaiting_reconcile" in source
+    for kept in (
+        "started",
+        "proposal_created",
+        "rejected_with_reason",
+        "expired_unprocessed",
+    ):
+        assert kept in source
+
+
+def test_the_model_check_matches_the_lifecycle_enum() -> None:
+    """The DB's spelling of the states and the code's cannot drift."""
+    from app.models.watch_event_repricing_claims import _LIFECYCLE_STATES
+    from app.services.watch_trigger_repricing.lifecycle import ClaimLifecycle
+
+    assert set(_LIFECYCLE_STATES) == {m.value for m in ClaimLifecycle}

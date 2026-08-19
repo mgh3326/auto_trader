@@ -17,6 +17,30 @@ of three terminals:
     The lease ran out with no terminal. Only the TTL path may write it.
     The flow then re-spawns at ``generation + 1``, and fencing stops the
     stale owner from writing over the new one.
+``AWAITING_RECONCILE``
+    r2 / BLOCKER 2. The spawn was ambiguous and could not be reconciled,
+    so whether ``order_proposal_create`` committed is **unknown**. r1
+    handled this by logging "will NOT be retried automatically" and
+    leaving the claim ``STARTED`` -- but a ``STARTED`` claim is exactly
+    what the lease expires, so thirty minutes later the TTL wrote
+    ``EXPIRED_UNPROCESSED``, the flow re-claimed at ``generation + 1``,
+    and the fire was judged again. If the first call had committed and
+    only its acknowledgement was lost, that is **two proposals from one
+    fire**, in front of the auto-approve lane.
+
+    So "no blind retry" is a state, not a log line. This is a terminal;
+    the TTL sweep only touches ``STARTED`` and therefore cannot walk it
+    back, and both claim stores refuse to re-claim an event that holds it.
+    It goes to an operator instead.
+
+Terminal is not the same as resolved
+------------------------------------
+Four terminals, but only **two** of them are outcomes.
+:data:`RESOLVED_LIFECYCLE_STATES` is the pair that satisfies the
+completion criterion; ``EXPIRED_UNPROCESSED`` and ``AWAITING_RECONCILE``
+are terminal *faults*, and counting either as done would relabel the
+original accident as success. Keeping the two sets separate is what stops
+"we stopped touching it" from drifting into "we finished it".
 
 There is deliberately **no analysis-only terminal**
 ---------------------------------------------------
@@ -38,11 +62,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 __all__ = [
+    "NON_RECLAIMABLE_STATES",
+    "RESOLVED_LIFECYCLE_STATES",
     "TERMINAL_LIFECYCLE_STATES",
     "ClaimLifecycle",
     "CompletionRow",
     "IncompleteOutcome",
     "SessionOutcome",
+    "awaiting_reconcile",
     "build_completion_mapping",
     "rejected",
     "proposal_created",
@@ -56,13 +83,35 @@ class ClaimLifecycle(StrEnum):
     PROPOSAL_CREATED = "proposal_created"
     REJECTED_WITH_REASON = "rejected_with_reason"
     EXPIRED_UNPROCESSED = "expired_unprocessed"
+    AWAITING_RECONCILE = "awaiting_reconcile"
 
 
-TERMINAL_LIFECYCLE_STATES = frozenset(
+# The only two states that answer the completion criterion. Everything
+# else is either in flight or a fault.
+RESOLVED_LIFECYCLE_STATES = frozenset(
     {
         ClaimLifecycle.PROPOSAL_CREATED,
         ClaimLifecycle.REJECTED_WITH_REASON,
+    }
+)
+
+# States a claim may end in. A terminal is never re-claimed except
+# ``EXPIRED_UNPROCESSED``, which exists precisely so a crashed tick's fire
+# is picked up again.
+TERMINAL_LIFECYCLE_STATES = frozenset(
+    {
+        *RESOLVED_LIFECYCLE_STATES,
         ClaimLifecycle.EXPIRED_UNPROCESSED,
+        ClaimLifecycle.AWAITING_RECONCILE,
+    }
+)
+
+# Terminals that must survive the TTL and block a re-claim. r2 / BLOCKER 2:
+# the whole point of ``AWAITING_RECONCILE`` is that no clock walks it back.
+NON_RECLAIMABLE_STATES = frozenset(
+    {
+        *RESOLVED_LIFECYCLE_STATES,
+        ClaimLifecycle.AWAITING_RECONCILE,
     }
 )
 
@@ -113,6 +162,13 @@ class SessionOutcome:
                     "EXPIRED_UNPROCESSED is the TTL terminal and carries neither "
                     "a proposal nor a reason"
                 )
+        elif self.state is ClaimLifecycle.AWAITING_RECONCILE:
+            if self.proposal_id or self.rejection_reason:
+                raise IncompleteOutcome(
+                    "AWAITING_RECONCILE means nobody knows what the session did; "
+                    "carrying a proposal id or a reason would claim knowledge "
+                    "this terminal exists to say we lack"
+                )
         else:
             raise IncompleteOutcome(
                 f"{self.state} is not a terminal outcome; a session may not "
@@ -132,6 +188,15 @@ def rejected(reason: str) -> SessionOutcome:
     )
 
 
+def awaiting_reconcile() -> SessionOutcome:
+    """The terminal for an ambiguous spawn. Carries no claim of knowledge.
+
+    Written by the tick, not by a session -- the session is exactly what we
+    could not get an answer from.
+    """
+    return SessionOutcome(state=ClaimLifecycle.AWAITING_RECONCILE)
+
+
 @dataclass(frozen=True)
 class CompletionRow:
     """One row of the event -> outcome mapping table."""
@@ -142,6 +207,19 @@ class CompletionRow:
     proposal_id: str | None
     rejection_reason: str | None
     deferral_reason: str | None = None
+
+    @property
+    def is_quarantined(self) -> bool:
+        """The tick does not know what happened, and a human must look.
+
+        Kept distinct from :attr:`is_deferred` because the two make
+        opposite promises. A deferred fire will be judged by a later tick.
+        A quarantined one will not be -- it is terminal by design (r2 /
+        BLOCKER 2), because the alternative is re-judging a fire that may
+        already have produced a proposal. Reporting it as "deferred" would
+        say a retry is coming when none is.
+        """
+        return self.state == ClaimLifecycle.AWAITING_RECONCILE
 
     @property
     def is_deferred(self) -> bool:
@@ -156,6 +234,8 @@ class CompletionRow:
         later tick resolves it, which is what
         :attr:`CompletionReport.is_complete` refuses to assume.
         """
+        if self.is_quarantined:
+            return False
         return bool((self.deferral_reason or "").strip()) and not self.is_resolved
 
     @property
@@ -170,6 +250,7 @@ class CompletionRow:
             return bool((self.proposal_id or "").strip())
         if self.state == ClaimLifecycle.REJECTED_WITH_REASON:
             return bool((self.rejection_reason or "").strip())
+        # EXPIRED_UNPROCESSED and AWAITING_RECONCILE are terminal faults.
         return False
 
 
@@ -188,13 +269,20 @@ class CompletionReport:
         return tuple(row for row in self.rows if row.is_deferred)
 
     @property
+    def quarantined(self) -> tuple[CompletionRow, ...]:
+        """Fires whose outcome is unknown and which need an operator."""
+        return tuple(row for row in self.rows if row.is_quarantined)
+
+    @property
     def unaccounted(self) -> tuple[CompletionRow, ...]:
         """Fires with neither an outcome nor even a stated reason for waiting.
 
         These are the ones that vanished, which is the accident.
         """
         return tuple(
-            row for row in self.rows if not row.is_resolved and not row.is_deferred
+            row
+            for row in self.rows
+            if not row.is_resolved and not row.is_deferred and not row.is_quarantined
         )
 
     @property
@@ -232,6 +320,7 @@ def build_completion_mapping(
     polled_event_uuids: list[tuple[str, str]],
     outcomes: dict[str, SessionOutcome],
     deferrals: dict[str, str] | None = None,
+    quarantined: dict[str, str] | None = None,
 ) -> CompletionReport:
     """Map every polled fire to its outcome, or to nothing.
 
@@ -242,9 +331,23 @@ def build_completion_mapping(
     completeness.
     """
     deferrals = deferrals or {}
+    quarantined = quarantined or {}
     rows: list[CompletionRow] = []
     for event_uuid, symbol in polled_event_uuids:
         outcome = outcomes.get(event_uuid)
+        if outcome is None and event_uuid in quarantined:
+            # Terminal, unresolved, and not coming back on a later tick.
+            rows.append(
+                CompletionRow(
+                    event_uuid=event_uuid,
+                    symbol=symbol,
+                    state=str(ClaimLifecycle.AWAITING_RECONCILE),
+                    proposal_id=None,
+                    rejection_reason=None,
+                    deferral_reason=quarantined[event_uuid],
+                )
+            )
+            continue
         if outcome is None:
             deferral = deferrals.get(event_uuid)
             rows.append(
