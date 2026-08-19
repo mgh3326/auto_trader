@@ -8,6 +8,9 @@ import pytest
 from app.services.funding_advisory.telegram import (
     CARD_HEADER,
     HANDOFF_LABEL,
+    JIT_DECLARED_DISCLAIMER,
+    JIT_DEPOSIT_BASIS,
+    JIT_DEPOSIT_HEADER,
     deliver_claimed_advisory,
     render_funding_advisory_card,
 )
@@ -106,3 +109,73 @@ async def test_unclaimed_page_view_never_calls_telegram_notifier() -> None:
     assert result == {"status": "not_sent", "reason": "page_refresh_no_delivery"}
     notifier.send_approval_message.assert_not_called()
     notifier.edit_message.assert_not_called()
+
+
+def deferred_view() -> dict:
+    view = advisory_view()
+    view["jit_funding"] = {
+        "disposition": "deferred_with_condition",
+        "condition": {
+            "kind": "operator_deposit_to_target_account",
+            "deposit_amount": "60000",
+            "deposit_amount_basis": "candidate_shortfall",
+            "currency": "KRW",
+            "operational_gap_amount": "90000",
+            "declared_cover": "sufficient",
+            "declared_total_disclosure_only": "640000",
+            "satisfied_by": "target_broker_buying_power_reobservation",
+        },
+        "next_step": "operator_deposit_then_reevaluate",
+        "rejected_for_insufficient_cash": False,
+        "creates_proposal": False,
+        "executes_money_movement": False,
+        "declared_cash_counted_toward_buying_power": False,
+        "declared_cash_is_display_evidence_only": True,
+    }
+    return view
+
+
+def test_card_asks_for_the_shortfall_not_the_declared_total() -> None:
+    card = render_funding_advisory_card(deferred_view())
+
+    assert "입금 60000 KRW 시 실행 가능" in card.text
+    assert "입금 640000 KRW 시 실행 가능" not in card.text
+    assert JIT_DEPOSIT_HEADER in card.text
+    assert JIT_DEPOSIT_BASIS in card.text
+    assert "pending/reserved 포함 시 90000 KRW" in card.text
+    assert "선언 커버: 선언 여력으로 커버 가능 (선언 총액 640000 KRW)" in card.text
+    assert JIT_DECLARED_DISCLAIMER in card.text
+    assert "조건부 보류(deferred_with_condition)" in card.text
+    assert "입금 확인 뒤 재평가에서 제안 생성 · 기존 승인 경로 그대로" in card.text
+
+
+def test_card_deposit_line_tracks_shortfall_when_declaration_is_smaller() -> None:
+    view = deferred_view()
+    view["jit_funding"]["condition"]["declared_cover"] = "partial"
+    view["jit_funding"]["condition"]["declared_total_disclosure_only"] = "10000"
+
+    card = render_funding_advisory_card(view)
+
+    assert "입금 60000 KRW 시 실행 가능" in card.text
+    assert "선언 커버: 선언 여력 일부만 커버 (선언 총액 10000 KRW)" in card.text
+
+
+def test_card_has_no_jit_block_without_a_deferred_disposition() -> None:
+    plain = render_funding_advisory_card(advisory_view())
+    fundable = advisory_view()
+    fundable["jit_funding"] = {
+        "disposition": "fundable_now",
+        "condition": None,
+        "next_step": "existing_proposal_creation_and_approval_path",
+    }
+
+    assert JIT_DEPOSIT_HEADER not in plain.text
+    assert JIT_DEPOSIT_HEADER not in render_funding_advisory_card(fundable).text
+
+
+def test_jit_block_adds_no_button_or_callback() -> None:
+    card = render_funding_advisory_card(deferred_view())
+
+    rows = card.inline_keyboard["inline_keyboard"]
+    assert all("callback_data" not in button for row in rows for button in row)
+    assert all("url" in button for row in rows for button in row)

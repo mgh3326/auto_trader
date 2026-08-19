@@ -27,6 +27,16 @@ CARD_HEADER = (
     "이 카드는 입금·환전·차입·매도를 실행하지 않습니다"
 )
 HANDOFF_LABEL = "경로 설명 · 이 화면에서 주문 안 만듦"
+# JIT (S107) fixed wording. ``X`` is the candidate shortfall, never the declared
+# external-cash total, and the card never claims the deposit already happened.
+JIT_DEPOSIT_HEADER = "JIT 조달 조건 (사전 입금 금지 · 필요한 만큼만)"
+JIT_DEPOSIT_BASIS = "X = 이 후보 부족분 · 선언 총액 아님"
+JIT_DECLARED_DISCLAIMER = "선언액은 매수력에 가산되지 않습니다 · 이 카드는 알림입니다"
+JIT_COVER_LABELS = {
+    "sufficient": "선언 여력으로 커버 가능",
+    "partial": "선언 여력 일부만 커버",
+    "none": "선언 여력 없음 (급여 등 미선언 자금 필요)",
+}
 
 
 @dataclass(frozen=True)
@@ -38,6 +48,31 @@ class FundingAdvisoryCard:
 def _amount(route: dict[str, Any]) -> str:
     value = route.get("route_fundable_amount")
     return str(value) if value is not None else "금액 미상"
+
+
+def render_jit_condition_lines(view: dict[str, Any]) -> list[str]:
+    """Render the "입금 X원 시 실행 가능" block, or nothing when not deferred."""
+
+    jit = view.get("jit_funding") or {}
+    condition = jit.get("condition")
+    if jit.get("disposition") != "deferred_with_condition" or not condition:
+        return []
+    currency = condition["currency"]
+    cover = JIT_COVER_LABELS.get(
+        condition.get("declared_cover", "none"), JIT_COVER_LABELS["none"]
+    )
+    return [
+        "",
+        JIT_DEPOSIT_HEADER,
+        f"입금 {condition['deposit_amount']} {currency} 시 실행 가능",
+        f"  {JIT_DEPOSIT_BASIS} · pending/reserved 포함 시 "
+        f"{condition['operational_gap_amount']} {currency}",
+        f"  선언 커버: {cover} "
+        f"(선언 총액 {condition['declared_total_disclosure_only']} {currency})",
+        f"  {JIT_DECLARED_DISCLAIMER}",
+        "  후보 상태: 기각 아님 · 조건부 보류(deferred_with_condition)",
+        "  입금 확인 뒤 재평가에서 제안 생성 · 기존 승인 경로 그대로",
+    ]
 
 
 def render_funding_advisory_card(view: dict[str, Any]) -> FundingAdvisoryCard:
@@ -57,6 +92,9 @@ def render_funding_advisory_card(view: dict[str, Any]) -> FundingAdvisoryCard:
         f"별도 reserved: {need['reserved_cash']} {target['currency']}",
         "pending/reserved 포함 운영상 gap: "
         f"{need['operational_gap_including_other_pending']} {target['currency']}",
+    ]
+    lines.extend(render_jit_condition_lines(view))
+    lines += [
         "",
         "조달 경로:",
     ]
@@ -225,7 +263,11 @@ async def deliver_claimed_advisory(
 __all__ = [
     "CARD_HEADER",
     "HANDOFF_LABEL",
+    "JIT_DECLARED_DISCLAIMER",
+    "JIT_DEPOSIT_BASIS",
+    "JIT_DEPOSIT_HEADER",
     "FundingAdvisoryCard",
     "deliver_claimed_advisory",
     "render_funding_advisory_card",
+    "render_jit_condition_lines",
 ]

@@ -1799,3 +1799,203 @@ async def test_funding_evaluation_exception_never_blocks_proposal_create(monkeyp
     evaluate.assert_awaited_once()
     assert len(create_calls) == 1
     assert create_calls[0]["symbol"] == "KRW-BTC"
+
+
+def _jit_candidate_event(observed_at):
+    from app.services.funding_advisory.contracts import (
+        FundingAssessment,
+        FundingCandidateEvent,
+        PassedNonFundingGateEvidence,
+    )
+
+    evidence = PassedNonFundingGateEvidence.issue(
+        owner_user_id=1,
+        source_kind="upbit_live_candidate",
+        source_candidate_id=f"jit-{uuid.uuid4()}",
+        gate_name="crypto_non_funding_gate",
+        gate_version="crypto-gate.v1",
+        gate_verdict="passed",
+        gate_evaluated_at=observed_at,
+        valid_until=observed_at + timedelta(hours=1),
+        market="crypto",
+        target_account_mode="upbit",
+        broker_account_id="upbit-primary",
+        currency="KRW",
+        symbol="KRW-BTC",
+        side="buy",
+        order_type="limit",
+        blocking_reasons=[],
+        non_funding_checks=[
+            {
+                "check_id": "candidate_quality",
+                "check_version": "v1",
+                "verdict": "passed",
+                "evaluated_at": observed_at,
+            }
+        ],
+    )
+    return FundingCandidateEvent(
+        evidence=evidence,
+        assessment=FundingAssessment(
+            required_cash=Decimal("100000"),
+            target_buying_power=Decimal("40000"),
+            currency="KRW",
+            observed_at=observed_at,
+            valid_until=observed_at + timedelta(minutes=30),
+            source="upbit_accounts_free_krw",
+        ),
+    )
+
+
+def _install_jit_create_fakes(monkeypatch, observed_at, create_calls):
+    proposal_id = uuid.uuid4()
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def commit(self):
+            return None
+
+    class FakeOrderService:
+        def __init__(self, _session):
+            pass
+
+        async def create_proposal(self, **kwargs):
+            create_calls.append(kwargs)
+            return SimpleNamespace(
+                proposal_id=proposal_id,
+                lifecycle_state="proposed",
+                action="place",
+                target_broker_order_id=None,
+                valid_until=observed_at + timedelta(hours=1),
+            )
+
+        async def get_proposal(self, _proposal_id):
+            rung = SimpleNamespace(
+                rung_index=0,
+                side="buy",
+                quantity=Decimal("10"),
+                limit_price=Decimal("70000"),
+                notional=None,
+                state="pending_approval",
+                broker_order_id=None,
+                correlation_id=None,
+            )
+            return SimpleNamespace(source_asof=None), [rung]
+
+    monkeypatch.setattr(opt, "AsyncSessionLocal", FakeSession)
+    monkeypatch.setattr(opt, "OrderProposalsService", FakeOrderService)
+
+    async def complete(committed_result, **_kwargs):
+        return dict(committed_result)
+
+    monkeypatch.setattr(opt, "_complete_committed_proposal_create", complete)
+    return proposal_id
+
+
+@pytest.mark.asyncio
+async def test_deferred_with_condition_notifies_without_gating_or_executing(
+    monkeypatch,
+):
+    """A cash-short candidate is announced, not rejected and not auto-executed."""
+
+    observed_at = datetime.now(UTC)
+    deferred_view = {
+        "status": "triggered",
+        "advisory_id": str(uuid.uuid4()),
+        "revision_id": str(uuid.uuid4()),
+        "jit_funding": {
+            "disposition": "deferred_with_condition",
+            "condition": {"deposit_amount": "60000", "currency": "KRW"},
+            "next_step": "operator_deposit_then_reevaluate",
+            "rejected_for_insufficient_cash": False,
+            "creates_proposal": False,
+        },
+    }
+    monkeypatch.setattr(
+        opt.FundingAdvisoryService,
+        "evaluate_candidate_event",
+        AsyncMock(return_value=deferred_view),
+    )
+    deliver = AsyncMock(return_value={"status": "sent"})
+    monkeypatch.setattr(opt, "deliver_claimed_advisory", deliver)
+    monkeypatch.setattr(
+        opt,
+        "_link_funding_provenance_fail_open",
+        AsyncMock(return_value={"status": "linked"}),
+    )
+    create_calls = []
+    _install_jit_create_fakes(monkeypatch, observed_at, create_calls)
+
+    created = await opt.order_proposal_create(
+        **_create_kwargs(
+            symbol="KRW-BTC",
+            market="crypto",
+            account_mode="upbit",
+            funding_candidate_event=_jit_candidate_event(observed_at).model_dump(
+                mode="json"
+            ),
+        )
+    )
+
+    assert created["success"] is True
+    advisory = created["funding_advisory"]
+    assert advisory["jit_funding"]["disposition"] == "deferred_with_condition"
+    assert advisory["jit_funding"]["rejected_for_insufficient_cash"] is False
+    assert advisory["telegram_delivery"] == {"status": "sent"}
+    deliver.assert_awaited_once()
+    # The advisory never submits or approves anything; the rung stays pending.
+    assert len(create_calls) == 1
+    assert created["rungs"][0]["state"] == "pending_approval"
+
+
+@pytest.mark.asyncio
+async def test_reevaluated_fundable_candidate_reaches_the_normal_approval_path(
+    monkeypatch,
+):
+    """After the deposit, re-evaluation hands off to create + existing approval."""
+
+    observed_at = datetime.now(UTC)
+    fundable_view = {
+        "status": "not_triggered",
+        "reason": "no_candidate_shortfall",
+        "shortfall": "0",
+        "jit_funding": {
+            "disposition": "fundable_now",
+            "condition": None,
+            "next_step": "existing_proposal_creation_and_approval_path",
+            "creates_proposal": False,
+            "executes_money_movement": False,
+        },
+    }
+    monkeypatch.setattr(
+        opt.FundingAdvisoryService,
+        "evaluate_candidate_event",
+        AsyncMock(return_value=fundable_view),
+    )
+    deliver = AsyncMock()
+    monkeypatch.setattr(opt, "deliver_claimed_advisory", deliver)
+    create_calls = []
+    _install_jit_create_fakes(monkeypatch, observed_at, create_calls)
+
+    created = await opt.order_proposal_create(
+        **_create_kwargs(
+            symbol="KRW-BTC",
+            market="crypto",
+            account_mode="upbit",
+            funding_candidate_event=_jit_candidate_event(observed_at).model_dump(
+                mode="json"
+            ),
+        )
+    )
+
+    assert created["success"] is True
+    assert created["funding_advisory"]["jit_funding"]["disposition"] == "fundable_now"
+    assert len(create_calls) == 1
+    assert created["rungs"][0]["state"] == "pending_approval"
+    # A resolved funding condition is not a delivery event and not an approval.
+    deliver.assert_not_awaited()

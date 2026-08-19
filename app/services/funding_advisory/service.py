@@ -22,6 +22,7 @@ from app.services.funding_advisory.contracts import (
 from app.services.funding_advisory.external_cash import (
     ExternalCashDeclarationService,
 )
+from app.services.funding_advisory.jit import build_jit_funding
 from app.services.funding_advisory.ranking import (
     build_reference_combination,
     compare_routes,
@@ -68,6 +69,24 @@ def _thread_key(event: FundingCandidateEvent) -> str:
     return f"funding:{_canonical_hash(identity)}"
 
 
+def _fresh_rows(views: list[Any], *, currency: str) -> list[Any]:
+    """Keep only fresh, same-currency declaration heads."""
+
+    return [
+        view.current
+        for view in views
+        if view.status == "fresh"
+        and view.current is not None
+        and view.current.currency == currency
+    ]
+
+
+def _declared_total(rows: list[Any]) -> Decimal:
+    """Sum declared amounts. Display evidence only -- never a buying-power input."""
+
+    return sum((row.amount for row in rows), start=Decimal("0"))
+
+
 def _unknown_route(
     route_id: str,
     label: str,
@@ -111,25 +130,33 @@ class FundingAdvisoryService:
             session
         )
 
-    async def _routes(
-        self,
-        event: FundingCandidateEvent,
-        *,
-        shortfall: Decimal,
-        now: datetime,
-    ) -> list[FundingRoute]:
+    async def _fresh_declared_rows(
+        self, event: FundingCandidateEvent, *, now: datetime
+    ) -> list[Any]:
+        """Fresh, same-currency operator declarations — read once per evaluation."""
+
         external_views = await self._external_cash.list_current(
             owner_user_id=event.evidence.owner_user_id,
             now=now,
         )
-        external_rows = [
-            view.current
-            for view in external_views
-            if view.status == "fresh"
-            and view.current is not None
-            and view.current.currency == event.evidence.currency
-        ]
-        declared_total = sum((row.amount for row in external_rows), start=Decimal("0"))
+        return _fresh_rows(external_views, currency=event.evidence.currency)
+
+    async def _declared_total_for(
+        self, *, owner_user_id: int, currency: str, now: datetime
+    ) -> Decimal:
+        views = await self._external_cash.list_current(
+            owner_user_id=owner_user_id, now=now
+        )
+        return _declared_total(_fresh_rows(views, currency=currency))
+
+    def _routes(
+        self,
+        event: FundingCandidateEvent,
+        *,
+        shortfall: Decimal,
+        external_rows: list[Any],
+    ) -> list[FundingRoute]:
+        declared_total = _declared_total(external_rows)
         if declared_total > 0:
             external = FundingRoute(
                 route_id="EXTERNAL_PARKING_KRW",
@@ -246,9 +273,21 @@ class FundingAdvisoryService:
                     ),
                     "reserved_cash": canonical_decimal(assessment.reserved_cash),
                     "operational_gap": canonical_decimal(operational_gap),
+                    # JIT (S107): the candidate is fundable from broker cash alone.
+                    # The handoff is to the existing create/approval path -- this
+                    # service still creates no proposal and moves no money.
+                    "jit_funding": build_jit_funding(
+                        shortfall=shortfall,
+                        operational_gap=operational_gap,
+                        currency=assessment.currency,
+                        declared_total=Decimal("0"),
+                    ),
                 }
 
-            routes = await self._routes(event, shortfall=shortfall, now=current_now)
+            external_rows = await self._fresh_declared_rows(event, now=current_now)
+            routes = self._routes(
+                event, shortfall=shortfall, external_rows=external_rows
+            )
             combination = build_reference_combination(routes, shortfall=shortfall)
             evidence_payload = {
                 "gate": evidence.model_dump(mode="json"),
@@ -323,7 +362,12 @@ class FundingAdvisoryService:
                     now=current_now,
                 )
             await self._session.commit()
-            return self._projection(advisory, revision, delivery=delivery)
+            return self._projection(
+                advisory,
+                revision,
+                delivery=delivery,
+                declared_total=_declared_total(external_rows),
+            )
         except Exception:
             await self._session.rollback()
             raise
@@ -406,7 +450,12 @@ class FundingAdvisoryService:
             raise
 
     def _projection(
-        self, advisory: Any, revision: Any, *, delivery: dict[str, Any]
+        self,
+        advisory: Any,
+        revision: Any,
+        *,
+        delivery: dict[str, Any],
+        declared_total: Decimal,
     ) -> dict[str, Any]:
         gate = revision.evidence["gate"]
         return {
@@ -454,6 +503,15 @@ class FundingAdvisoryService:
             },
             "routes": revision.routes,
             "combination": revision.combination,
+            # JIT (S107): derived from the persisted revision plus the declared
+            # total. No new advisory state, column, or transition backs it --
+            # ``advisory.state`` stays active/resolved/superseded.
+            "jit_funding": build_jit_funding(
+                shortfall=Decimal(revision.shortfall),
+                operational_gap=Decimal(revision.operational_gap),
+                currency=advisory.currency,
+                declared_total=declared_total,
+            ),
             "safety": {
                 "advisory_only": True,
                 "executes_money_movement": False,
@@ -501,7 +559,16 @@ class FundingAdvisoryService:
             if delivery_row is not None
             else {"action": "none", "state": "not_claimed"}
         )
-        return self._projection(advisory, revision, delivery=delivery)
+        return self._projection(
+            advisory,
+            revision,
+            delivery=delivery,
+            declared_total=await self._declared_total_for(
+                owner_user_id=owner_user_id,
+                currency=advisory.currency,
+                now=datetime.now(UTC),
+            ),
+        )
 
     async def refresh_detail(
         self, *, advisory_id: UUID, owner_user_id: int, now: datetime
@@ -528,6 +595,9 @@ class FundingAdvisoryService:
         advisories = await self._repository.list_advisories(
             owner_user_id=owner_user_id, state=state, limit=limit
         )
+        views = await self._external_cash.list_current(
+            owner_user_id=owner_user_id, now=datetime.now(UTC)
+        )
         rows: list[dict[str, Any]] = []
         for advisory in advisories:
             revision = await self._repository.latest_revision(advisory.advisory_id)
@@ -537,6 +607,9 @@ class FundingAdvisoryService:
                         advisory,
                         revision,
                         delivery={"action": "none", "state": "not_evaluated"},
+                        declared_total=_declared_total(
+                            _fresh_rows(views, currency=advisory.currency)
+                        ),
                     )
                 )
         return rows
