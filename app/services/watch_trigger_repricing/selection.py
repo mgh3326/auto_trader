@@ -101,7 +101,7 @@ class SelectionResult:
         return len(self.overflow)
 
 
-def select_candidates(
+async def select_candidates(
     events: list[CandidateEvent],
     *,
     store: ClaimStore,
@@ -121,7 +121,7 @@ def select_candidates(
     skipped: list[SkippedEvent] = []
 
     try:
-        in_flight = set(store.active_symbols(now=now))
+        in_flight = set(await store.active_symbols(now=now))
         store_up = True
     except ClaimStoreUnavailable:
         # Cannot prove anything is free. Fail closed for every event and say
@@ -154,7 +154,7 @@ def select_candidates(
             )
             continue
 
-        state = store.state_for(event.event_uuid, now=now)
+        state = await store.state_for(event.event_uuid, now=now)
         if not may_consume(state):
             skipped.append(
                 SkippedEvent(event.event_uuid, event.symbol, _skip_reason(state))

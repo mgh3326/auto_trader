@@ -32,6 +32,10 @@ class McpProfile(StrEnum):
     # Canonical physical-account routing surface. The name is a route label;
     # strategy/universe admission is governed by separate contracts.
     ALPACA_PAPER_CLEAN = "alpaca-paper-clean"
+    # ROB-1286 — the surface a watch-fire repricing session is spawned with.
+    # Closed world: exactly the proposal-only allowlist, so the session can
+    # create a proposal and cannot reach any broker order tool.
+    WATCH_REPRICING = "watch_repricing"
 
 
 def resolve_mcp_profile(env: str | None) -> McpProfile:

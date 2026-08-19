@@ -189,12 +189,13 @@ def test_spawn_request_defaults_to_the_proposal_only_profile() -> None:
     assert request.capability_profile.tools & MUTATION_TOOL_NAMES == set()
 
 
-def test_every_request_the_orchestrator_builds_carries_the_profile() -> None:
+@pytest.mark.asyncio
+async def test_every_request_the_orchestrator_builds_carries_the_profile() -> None:
     """The tick has no code path that constructs an unprofiled request."""
     from app.services.watch_trigger_repricing.spawn import DrySessionSpawner
 
     spawner = DrySessionSpawner()
-    run_repricing_tick(
+    await run_repricing_tick(
         [
             make_event(event_uuid="evt-a", symbol="005930"),
             make_event(event_uuid="evt-b", symbol="039200"),
@@ -210,9 +211,10 @@ def test_every_request_the_orchestrator_builds_carries_the_profile() -> None:
         assert request.capability_profile.tools & MUTATION_TOOL_NAMES == set()
 
 
-def test_the_tick_report_names_the_profile() -> None:
+@pytest.mark.asyncio
+async def test_the_tick_report_names_the_profile() -> None:
     """An operator reading the tick output can see which profile was granted."""
-    result = run_repricing_tick(
+    result = await run_repricing_tick(
         [make_event(event_uuid="evt-1")],
         store=InMemoryClaimStore(),
         now=INCIDENT_TICK,

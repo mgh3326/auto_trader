@@ -53,21 +53,25 @@ the approval lane**. It is not silent -- a quarantined event is logged at
 ERROR and returned in ``TickResult.needs_reconcile``, so it surfaces as an
 operator task rather than as an event that quietly stopped existing.
 
-A live spawner without a ``reconcile`` implementation therefore makes every
-ambiguous spawn a manual reconciliation. That is a deliberate pressure
-toward implementing the readback, not an oversight.
+r3 (§101차 ③) closes that last sentence: a live spawner without
+``reconcile`` is no longer "under pressure" to implement it -- it cannot be
+armed at all. See :mod:`.arming`.
+
+r3 also replaces the CONSUMED/QUARANTINED pair with the lifecycle terminals
+(:mod:`.lifecycle`): a started session resolves to ``PROPOSAL_CREATED`` or
+``REJECTED_WITH_REASON``, and the TTL path writes ``EXPIRED_UNPROCESSED``.
+There is no "analysed" terminal, by operator decision -- a session that
+judged nothing and gave no reason has not finished.
 """
 
 from __future__ import annotations
 
-import datetime as dt
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from app.core.config import settings
 from app.services.watch_trigger_repricing.claims import (
     DEFAULT_LEASE,
     ClaimStore,
@@ -98,7 +102,6 @@ __all__ = [
     "TickResult",
     "process_claim_store",
     "reset_process_claim_store",
-    "run_gated_tick",
     "run_repricing_tick",
 ]
 
@@ -143,6 +146,9 @@ class TickResult:
     overflow: tuple[SkippedEvent, ...]
     skipped: tuple[SkippedEvent, ...]
     needs_reconcile: tuple[SkippedEvent, ...] = ()
+    # event_uuid -> ClaimHandle for every session this tick started. The
+    # caller finalises through these so the write is fenced.
+    handles: dict[str, Any] = field(default_factory=dict)
 
     @property
     def spawn_count(self) -> int:
@@ -237,7 +243,7 @@ def _attempt_spawn(
     return outcome.disposition, outcome.detail
 
 
-def run_repricing_tick(
+async def run_repricing_tick(
     events: list[CandidateEvent],
     *,
     store: ClaimStore,
@@ -261,7 +267,7 @@ def run_repricing_tick(
         )
         return TickResult(gate=gate, spawned=(), overflow=(), skipped=())
 
-    selection = select_candidates(
+    selection = await select_candidates(
         events, store=store, now=now, round_cap=round_cap, market=market
     )
 
@@ -284,14 +290,16 @@ def run_repricing_tick(
         )
 
     spawned: list[SpawnOutcome] = []
+    handles: dict[str, Any] = {}
     lost: list[SkippedEvent] = []
     needs_reconcile: list[SkippedEvent] = []
 
     for event in selection.selected:
         try:
-            claim = store.try_claim(
+            handle = await store.try_claim(
                 event_uuid=event.event_uuid,
                 symbol=event.symbol,
+                market=event.market,
                 claimed_by=claimed_by,
                 now=now,
                 lease=lease,
@@ -303,7 +311,7 @@ def run_repricing_tick(
                 )
             )
             continue
-        if claim is None:
+        if handle is None:
             # Lost the race between selection and claim, or the event went
             # terminal underneath us. Either way the other holder owns it.
             lost.append(SkippedEvent(event.event_uuid, event.symbol, "claim_lost_race"))
@@ -324,12 +332,13 @@ def run_repricing_tick(
             )
 
         if disposition in (SpawnDisposition.STARTED, SpawnDisposition.DRY):
-            store.mark_consumed(
-                event.event_uuid,
-                reason="spawn_started"
-                if disposition is SpawnDisposition.STARTED
-                else "dry_rehearsal",
-            )
+            # The claim stays STARTED. It is the *session* that must reach a
+            # terminal, by reporting a proposal id or an attributed reason;
+            # a started spawn is not itself an outcome. r2 flagged the old
+            # behaviour here: marking CONSUMED at spawn time meant a session
+            # that died before proposing left a permanently 0-proposal event
+            # that looked handled.
+            handles[event.event_uuid] = handle
             spawned.append(
                 SpawnOutcome(request=request, disposition=disposition, detail=detail)
             )
@@ -337,15 +346,16 @@ def run_repricing_tick(
 
         if disposition is SpawnDisposition.NOT_STARTED:
             # Proven clean: hand it straight back, retried next tick.
-            store.release(event.event_uuid, reason="spawn_not_started")
+            await store.release(handle, reason="spawn_not_started")
             lost.append(
                 SkippedEvent(event.event_uuid, event.symbol, "spawn_not_started")
             )
             continue
 
         # AMBIGUOUS and undecidable. Hold the claim so it cannot double
-        # spawn, and shout so it cannot silently vanish.
-        store.quarantine(event.event_uuid, reason=detail)
+        # spawn, and shout so it cannot silently vanish. The lease still
+        # runs, so if nothing reconciles it the TTL sweep records
+        # EXPIRED_UNPROCESSED -- an unjudged fire, named as such.
         logger.error(
             "watch_trigger_repricing: AMBIGUOUS spawn for event %s (symbol=%s, "
             "spawn_key=%s): %s -- claim quarantined, needs operator "
@@ -365,68 +375,5 @@ def run_repricing_tick(
         overflow=selection.overflow,
         skipped=selection.skipped + tuple(lost),
         needs_reconcile=tuple(needs_reconcile),
+        handles=handles,
     )
-
-
-def run_gated_tick(
-    *,
-    events: list[CandidateEvent],
-    store: ClaimStore | None = None,
-    spawner: SessionSpawner | None = None,
-    now: dt.datetime | None = None,
-    round_cap: int = DEFAULT_ROUND_CAP,
-) -> dict[str, Any]:
-    """Env-gated tick entrypoint. The Prefect wrapper is a thin shell over it.
-
-    Lives here rather than in ``app/flows`` so the gate is importable and
-    testable without ``prefect``, which is not a project dependency.
-
-    Two gates, in order:
-
-    1. ``WATCH_TRIGGER_REPRICING_ENABLED`` -- default off.
-    2. **durability** -- a spawner that can start real sessions is refused
-       unless the claim store survives across processes. Both attributes
-       are read fail-closed (an object that does not answer ``is_dry`` is
-       treated as live; one that does not answer ``is_durable`` as
-       volatile), so the safe path is the one you get by default and by
-       accident. This is the code that stops the shipped in-memory store
-       from being used to arm a live spawner in production.
-    """
-    if not getattr(settings, "WATCH_TRIGGER_REPRICING_ENABLED", False):
-        return {
-            "status": "disabled",
-            "spawned": [],
-            "overflow": [],
-            "skipped": [],
-            "needsReconcile": [],
-        }
-
-    resolved_store = store if store is not None else process_claim_store()
-    resolved_spawner = spawner if spawner is not None else DrySessionSpawner()
-
-    if not getattr(resolved_spawner, "is_dry", False) and not getattr(
-        resolved_store, "is_durable", False
-    ):
-        logger.error(
-            "watch_trigger_repricing: refusing to run %s against a non-durable "
-            "claim store -- dedup would not survive the flow run, so one fire "
-            "could become two sessions",
-            type(resolved_spawner).__name__,
-        )
-        return {
-            "status": "blocked",
-            "reason": "non_durable_claim_store",
-            "spawned": [],
-            "overflow": [],
-            "skipped": [],
-            "needsReconcile": [],
-        }
-
-    result = run_repricing_tick(
-        events,
-        store=resolved_store,
-        now=now or dt.datetime.now(dt.UTC),
-        spawner=resolved_spawner,
-        round_cap=round_cap,
-    )
-    return {"status": "ok", **result.as_dict()}

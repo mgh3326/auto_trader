@@ -80,19 +80,21 @@ def test_holiday_and_indeterminate_are_distinguishable(
     assert closed.reason != unknown.reason
 
 
-def test_holiday_blocks_spawning_end_to_end(
+@pytest.mark.asyncio
+async def test_holiday_blocks_spawning_end_to_end(
     monkeypatch: pytest.MonkeyPatch, store: InMemoryClaimStore
 ) -> None:
     _force_status(monkeypatch, "closed")
 
-    result = run_repricing_tick(
+    result = await run_repricing_tick(
         [make_event(event_uuid="evt-1")], store=store, now=INCIDENT_TICK
     )
 
     assert result.spawned == ()
     assert result.gate.reason == "market_closed"
-    # A gated-off tick must not consume the fire either.
-    assert store.state_for("evt-1", now=INCIDENT_TICK).value == "unclaimed"
+    # A gated-off tick must not claim the fire either.
+    state = await store.state_for("evt-1", now=INCIDENT_TICK)
+    assert state.value == "unclaimed"
 
 
 # ---------------------------------------------------------------------------

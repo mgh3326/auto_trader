@@ -60,8 +60,10 @@ from app.services.watch_trigger_repricing.capability import (
     assert_proposal_only,
 )
 from app.services.watch_trigger_repricing.gate import KST
+from app.services.watch_trigger_repricing.lifecycle import SessionOutcome
 
 __all__ = [
+    "ScriptedDrySessionSpawner",
     "EXECUTION_BOUNDARY",
     "DrySessionSpawner",
     "ReconcilableSpawner",
@@ -207,3 +209,35 @@ class DrySessionSpawner:
             disposition=SpawnDisposition.DRY,
             detail="dry_run",
         )
+
+
+@dataclass
+class ScriptedDrySessionSpawner(DrySessionSpawner):
+    """A rehearsal spawner that also carries what each session *produced*.
+
+    The plain :class:`DrySessionSpawner` starts nothing and therefore
+    reports no session outcomes, so a run using it fails the completion
+    criterion -- correctly: a rehearsal that judged nothing has not judged
+    anything, and the mapping should say so rather than flatter the run.
+
+    This subclass lets a dry run exercise the rest of the loop by scripting
+    the outcome each event's session would report. It is still dry: it
+    starts no process, holds no credential, and calls no tool. It exists so
+    the terminal write, the fenced finalise, and the event ->
+    ``{proposal_id | rejection_reason}`` mapping are all executed rather
+    than asserted about.
+    """
+
+    scripted: dict[str, SessionOutcome] = field(default_factory=dict)
+    session_outcomes: dict[str, SessionOutcome] = field(default_factory=dict)
+
+    def spawn(self, request: SpawnRequest) -> SpawnOutcome:
+        outcome = super().spawn(request)
+        scripted = self.scripted.get(request.event_uuid)
+        if scripted is not None:
+            self.session_outcomes[request.event_uuid] = scripted
+        return outcome
+
+    def reconcile(self, request: SpawnRequest) -> SpawnDisposition:
+        started = any(r.event_uuid == request.event_uuid for r in self.requests)
+        return SpawnDisposition.STARTED if started else SpawnDisposition.NOT_STARTED

@@ -156,12 +156,14 @@ from .trading_decision import (
 from .upbit_symbol_universe import UpbitSymbolUniverse
 from .us_symbol_universe import USSymbolUniverse
 from .user_settings import UserSetting
+from .watch_event_repricing_claims import WatchEventRepricingClaim
 
 # 필요한 다른 모델도 여기서 import
 # from .alert import AlertRule, AlertEvent
 # from .price import PricesLatest, PricesOHLCV, FxRate
 
 __all__ = [
+    "WatchEventRepricingClaim",
     "Base",
     "AnalysisArtifact",
     "AnalystConsensusSnapshot",

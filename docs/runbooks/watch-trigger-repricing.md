@@ -175,157 +175,149 @@ needs_reconcile` + 응답 `needsReconcile[]` 로 **운영자 과제로 표면화
 
 ---
 
-## 5. 🔴 arm 전 차단 항목
+## 5. 소유 분리 (§101차 ⑥)
 
-### 5.0 r2 에서 닫은 것 / migration 없이는 못 닫는 것 — 구분해서 적는다
+| | 어디 |
+|---|---|
+| **스케줄 flow** | `robin-prefect-automations` — **이 레포 밖** |
+| **poller/spawner 로직** | `app/services/watch_trigger_repricing/` — 이 레포 |
+| **진입점** | `entrypoint.run_watch_repricing_tick()` — 스케줄러가 호출하는 함수 하나 |
 
-| 항목 | migration 없이 닫았나 | 근거 |
+🔴 이 레포에 **스케줄 등록이 없다.** Prefect `@flow` 객체도, cron 도, deployment 도
+없다 (`test_this_repo_registers_no_schedule_or_deployment`). r2 까지 있던
+`app/flows/watch_trigger_repricing_flow.py` 는 §101차 ⑥ 에 따라 **삭제**했다.
+
+`prefect` 는 프로젝트 의존성이 아니므로 로직은 prefect 없이 import·테스트된다
+(`test_prefect_is_not_imported_anywhere_in_the_package`).
+
+---
+
+## 6. 진입점은 스스로 폴링한다 (§101차 ②)
+
+`run_watch_repricing_tick()` 은 `events` 인자를 **받지 않는다.** 기본으로
+`DatabaseWatchEventSource` 를 앱의 실 세션 팩토리 위에 만들어
+`review.investment_watch_events` 를 직접 읽는다.
+
+r2 지적: 이전 진입점은 `events` 를 필수로 받아 아무것도 폴링하지 않았고, "E2E"
+테스트가 fake source 를 손으로 조립해 tick 에 넘겼다. 즉 실제 배포가 틀릴 수 있는
+유일한 지점(어떤 행을 보는가)이 검증 밖이었다.
+지금은 `test_entrypoint_polls_the_database_itself` 가 **source 주입 없이** 호출해
+run-owned DB 에 심은 행을 찾아내는지 본다.
+
+---
+
+## 7. 완료 기준 — 분석-온리는 실패다
+
+운영자 지시(§101차): 「분석이 큰 의미가 없는 것 같아, operator 세션에서 실제
+주문까지 필요하면 하게」
+
+🔴 **발화 이벤트 하나하나가** 다음 중 하나로 끝나야 한다:
+
+| terminal | 의미 | 증거 |
 |---|---|---|
-| 같은 프로세스 내 flow run 간 dedup | ✅ 닫음 | `run_gated_tick` 이 프로세스 싱글턴 store 사용 |
-| 성공 claim 의 만료 재취득 금지 | ✅ 닫음 | 종결 상태(`CONSUMED`/`QUARANTINED`)는 lease 무관 |
-| claim 원자성 (스레드 경합) | ✅ 닫음 | `try_claim` 이 check+write 를 lock 으로 감쌈 |
-| spawn 양방향 누수 | ✅ 닫음 | 3분기 + reconcile readback + quarantine |
-| 실행 경계 강제 | ✅ 닫음 | capability allowlist, 요청 생성 시점 검증 |
-| **프로세스 간(= 실제 Prefect) 내구 dedup** | 🔴 **못 닫음** | 아래 1번 — **migration 필수** |
-| **B안 read surface 소비 projection** | 🔴 **못 닫음** | 아래 2번 — migration + MCP 변경 필수 |
+| `proposal_created` | `order_proposal_create` 로 실제 proposal 행 | `proposal_id` (NOT NULL + 공백거부, DB CHECK) |
+| `rejected_with_reason` | 제안하지 않은 **이벤트 귀속** 사유 | `rejection_reason` (동상) |
+| `expired_unprocessed` | TTL 만료 — **아무도 판정 못 함** | 🔴 완료로 세지 않는다 |
 
-🔴 **못 닫은 두 항목이 arm 을 막는다.** 그리고 그것을 주석이 아니라 **코드**가 막는다:
-`run_gated_tick` 은 `is_dry=False` spawner 를 `is_durable=False` store 와 함께
-받으면 `status="blocked", reason="non_durable_claim_store"` 로 거부한다. 두 속성 모두
-**fail-closed** 로 읽는다 — 답하지 않는 spawner 는 live 로, 답하지 않는 store 는
-휘발성으로 간주한다. 즉 레포에 실린 in-memory store 로는 **누가 live spawner 를
-배선하더라도** 기동할 수 없다.
+🔴 **「분석-온리」 terminal 은 enum 에도 DB CHECK 에도 없다.** `analysed` 를 넣으면
+`ck_watch_event_repricing_claims_state` 가 거부한다(실측). 총평 한 문단은 사유가
+아니다 — 사유는 이벤트에 귀속된 컬럼 값이다.
 
-1. **내구 claim store 부재 — migration 필요, 승인 대기.**
-   레포의 유일한 구현은 프로세스 로컬(`InMemoryClaimStore`)이다. 프로덕션에서는
-   tick 이 별개 Prefect flow run(별 프로세스)이라 **프로세스 간 dedup 이 성립하지
-   않는다.** 제안 DDL (이 PR 에 **미포함**):
+### 1:1 매핑 표
 
-   ```sql
-   CREATE TABLE review.watch_event_repricing_claims (
-       id            BIGSERIAL PRIMARY KEY,
-       event_uuid    UUID        NOT NULL,
-       symbol        TEXT        NOT NULL,
-       claimed_by    TEXT        NOT NULL,
-       claimed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-       expires_at    TIMESTAMPTZ NOT NULL,
-       released_at   TIMESTAMPTZ,
-       release_reason TEXT,
-       -- r2: 종결 상태는 lease 와 별개 컬럼이어야 한다. 단일 expires_at 으로
-       -- 성공까지 재취득하게 두면 BLOCKER-1 이 그대로 남는다.
-       terminal_state  TEXT
-           CHECK (terminal_state IN ('consumed', 'quarantined')),
-       terminal_reason TEXT,
-       terminal_at     TIMESTAMPTZ,
-       -- 결정적 spawn 정체성. ambiguous 결과의 readback 화해 키.
-       spawn_key     TEXT        NOT NULL,
-       CONSTRAINT uq_watch_event_repricing_claims_event
-           UNIQUE (event_uuid)
-   );
-   ```
-   UNIQUE 충돌 자체가 상호배제여야 한다 — read-then-write 로 구현하면 이 테이블이
-   막으려던 경쟁을 그대로 되살린다. lease 만료 재취득은 **`terminal_state IS NULL`
-   AND 만료** 조건부 UPDATE 로. 🔴 `terminal_state` 조건을 빼면 r1 버그가 DB 로
-   이사할 뿐이다.
+`run_watch_repricing_tick()` 응답의 `completion` 이 그 표다. 폴링이 본 이벤트 집합
+N 은 `polled` 로 먼저 확정되어 나오고, 매핑은 N 의 **모든** 원소를 담는다.
 
-2. **B안 쪽 read surface 미배선.**
-   `investment_watch_events_list_recent` 는 현재 **소비 필터가 없다**
-   (`delivery_status='delivered'` + `delivered_at>=since` 뿐). 즉 claim 이 생겨도
-   B안 세션은 그것을 볼 수 없다.
-   🔴 **그래서 이 상태로 A안을 arm 하면 A 가 소비한 발화를 B 가 다시 판정할 수
-   있다** — 같은 종목 매도 제안 2건. 1번과 함께 additive 필드
-   (`repricing_claim: claimed|unclaimed|unknown`) 로 노출해야 한다.
-   ⚠️ 필드를 붙이되 항상 `null` 인 상태로 두는 것은 **더 나쁘다** — 읽는 쪽이
-   "미소비" 로 단정한다. 그래서 이 PR 은 일부러 배선하지 않았다.
-   🔴 operator repo 프롬프트는 **고치지 않는다** (소유권 밖). additive 필드면
-   현행 문언("미소비 `review_required` 가 있으면")이 그대로 작동한다.
+- `completionComplete` — 전부 proposal 또는 사유. **이것이 완료 기준이다.**
+- `completionAccounted` — 최소한 아무것도 말없이 사라지지 않았다.
+- `completionDeferred` — 이번 tick 이 **알고서 미룬** 것(종목 동시성·회차 상한).
 
-3. **live spawner 부재.** 레포에 구현이 없다. `DrySessionSpawner` 만 있다.
-   붙일 때 요구사항: ① `is_dry=False` 선언 ② `ReconcilableSpawner.reconcile`
-   구현(`spawn_key` 로 세션 레지스트리 readback) ③ 세션에 부여하는 MCP 프로필은
-   `capability.PROPOSAL_ONLY_TOOLS` — **`tradingcodex_execution` 재사용 금지**
-   (§7.1 참고).
-
-4. **Prefect 배포·스케줄 미등록.** 상류 착지 검수 담당.
-
-5. 🔴 **flow 소유 repo 미확정 (r2 / SHOULD-3) — 운영자 결정 대기.**
-   Linear 설계는 flow 위치를 `robin-prefect-automations` 로 적었는데 이 PR 은
-   `app/flows/watch_trigger_repricing_flow.py` 를 auto_trader 에 넣었다. 또한
-   `prefect` 는 이 프로젝트 의존성이 아니라 **이 venv 에서 import 되지 않는다**
-   (기존 `app/flows/*_flow.py` 관례와는 일치). 선택지:
-
-   - **(A) auto_trader 유지** — 로직·테스트와 같은 repo, 리뷰 1회. 대신 import 불가
-     scaffold 가 남고 Linear 문언과 어긋난다.
-   - **(B) `robin-prefect-automations` 이관** — Linear 문언과 일치, 실제 배포 위치와
-     동일. 대신 2-repo 변경이 되고 `run_gated_tick` 을 넘는 얇은 shell 만 옮긴다.
-
-   🔴 **이 라운드에서 임의 결정하지 않았고, 다른 repo 를 건드리지 않았다.** 결정이
-   내려오면 파일 1개 이동이면 된다(로직은 전부 `orchestrator.run_gated_tick`).
+🔴 **deferred 는 완료가 아니다.** 같은 종목 2개 발화는 한 tick 이 하나만 판정할 수
+있는데(그게 종목 동시성 규칙의 존재 이유다), 그걸 완료로 쳐주면 "미룸"이 영구
+면죄부가 된다. 그래서 `is_complete` 는 deferred 를 인정하지 않고,
+`test_the_loop_converges_every_fire_resolves_across_ticks` 가 **여러 tick 에 걸쳐
+실제로 전부 해소되는지**로 증명한다.
 
 ---
 
-## 6. 휴장일 게이트 (AC3)
+## 8. 권한 배선 (§101차 급소 B)
 
-`app/services/market_events/session_calendar.trading_session_status` (오프라인
-XKRX) 재사용. 새 휴일 판정을 만들지 않았다.
+운영자가 세션에 제안 생성 권한을 주기로 했다. 그래서 목표가 바뀌었다:
+**(구)** proposal-only 강제 → **(신)** 승인 기계를 우회할 수 없음 강제.
 
-🔴 **ROB-1280 캘린더 endpoint 를 쓰지 않았다.** 그 표면의 `is_open` 은
-`toss_api_disabled` / `toss_calendar_unavailable` / `date_out_of_calendar_window`
-세 가지 **일상적인** 사유로 `null` 이 된다 — 플래그가 꺼져 있거나 벤더가 흔들리면
-평범한 거래일이 "불확정" 으로 보인다. XKRX 는 정적·오프라인이라 `unknown` 이
-드물고, 나오면 그건 설정 상태가 아니라 실제 고장이다.
+| # | 주장 | 코드 |
+|---|---|---|
+| ① | 실 MCP 프로필 | `McpProfile.WATCH_REPRICING` (`app/mcp_server/profiles.py`), registry 분기가 broad 블록 **전에 return** |
+| ② | `order_proposal_create` 실제 보유 | `order_proposal_tools.py:486`(함수)·`:1008`(등록). 프로필이 provision 하는 registry 와 allowlist 가 **`==`** |
+| ③ | 기존 승인 기계 연결 | `order_proposal_create` → `dispatch_proposal` → `evaluate_auto_approve_eligibility` (토스 자동승인 포함) |
 
-**불확정 시 동작 = 미가동** (`closed` 와 동일하게 스킵, 단 사유는 구분).
+🔴 **exact 등가**: `assert_exact_grant` 는 `==` 다. superset 은 r2 가 뚫은 탈출구,
+subset 은 제안 못 하는 세션(=분석-온리 산출)이라 **둘 다 거부**한다.
 
-- 선택 비용: 분류 못 한 날에는 이 flow 가 지연 단축을 못 한다. **발화는 잃지
-  않는다** — 미소비로 남아 B안이 세션 말미에 집는다. 지연이지 소실이 아니다.
-- 반대 선택 비용: 거래일인지 확인 못 한 날에 제안을 만든다. 제안은 무해하지
-  않다 — §1 의 자동승인 레인으로 들어갈 수 있다.
+🔴 **완화 0**: 이 패키지는 `ORDER_PROPOSALS_AUTO_APPROVE*`·cap·`loss_cut` 을
+**문자열로도 언급하지 않는다**(`test_this_package_relaxes_none_of_the_approval_gates`,
+`test_loss_cut_stays_human_approved`). loss_cut 은 여전히 사람 승인이다.
 
-프로그램의 rep 스폰 레인은 같은 상황에서 fail-**open** 인데, 그쪽 저울은
-"세션 낭비 vs 거래일 누락" 이다. **이 flow 는 주문을 만든다.** 그 저울을
-물려받지 않는다.
-
-장중 창은 09:00–15:30 KST (마감 배타), KST 로 평가한다.
+🔴 **정직한 공백**: 이 레포의 유일한 세션 런처 seam
+(`scripts/mock_session_mcp.py`)의 `SAFE_MOCK_PROFILES` 에 `watch_repricing` 이
+**없다.** 즉 이 레포만으로는 live 세션을 띄울 수 없고, 띄우려면 그 allowlist 를
+고치는 별도 리뷰가 필요하다. 테스트로 박제했다
+(`test_no_launcher_in_this_repo_can_start_the_profile`).
 
 ---
 
-## 7. 안전 경계 요약
+## 9. live spawner 는 계약 없이 배선 불가 (§101차 ③)
 
-### 7.1 🔴 실행 경계 = capability, 문자열 선언이 아니다 (r2 / BLOCKER-4)
+r2 는 문서 규칙이었고 뚫렸다:
 
-r1 은 `SpawnRequest.execution_boundary` 라는 **문자열 필드**에
-`"order_proposal_create"` 를 담았다. 아무도 그걸 읽지 않았고, live spawner 가 가장
-자연스럽게 재사용했을 MCP 프로필(`tradingcodex_execution`)에는 브로커 직접 제출·취소
-도구가 등록돼 있다. 즉 요청은 proposal-only 라고 **말하면서** 세션에는 직접 주문
-표면을 쥐여 줬을 것이다. 선언은 사슬을 끊지 못한다.
+```
+B4_IGNORED_PROFILE  status=ok spawned=1 request_has_toss=False actual_has_toss=True
+SELF_ATTESTED_DRY   status=ok spawned=1 calls=1
+```
 
-r2 의 `capability.py` 는 이것을 **allowlist** 로 바꿨다:
+r3 는 타입·생성자 강제다:
 
-- `PROPOSAL_ONLY_TOOLS` 에 없는 도구는 전부 거부 — **아직 존재하지 않는 도구 포함.**
-  deny-list 였다면 다음 분기에 추가된 브로커 도구가 기본 허용됐을 것이다.
-- 강제 지점은 **`SpawnRequest` 생성자**다. 경계를 넘는 프로필을 담은 요청은
-  spawner 가 보기 전에 `CapabilityBoundaryViolation` 으로 죽는다.
-- `order_proposals` 도 통째로 안전하지 않다. `order_proposal_redispatch`(거절된
-  제안을 승인 레인에 재투입) · `order_proposal_void` · `support_reserve_net_consume`
-  는 **제외**했다.
-- 검증은 **실제 레지스트리 상수와 대조**한다(`test_capability_profile.py`):
-  `ORDER_TOOL_NAMES` · `KIS_LIVE/MOCK_ORDER_TOOL_NAMES` ·
-  `TOSS_LIVE_ORDER_TOOL_NAMES` · `KIWOOM_MOCK_EXECUTION_TOOL_NAMES` 와 교집합 0,
-  그리고 그 각 도구를 프로필에 밀어넣는 뮤턴트가 전부 RED.
+- `LiveSessionSpawner.__init__` 가 `declared_grant()` 를 **생성 시점에** 검사한다.
+  틀린 grant 를 가진 live spawner 는 "나중에 실패"가 아니라 **객체가 만들어지지
+  않는다.**
+- `reconcile` / `attest_granted_tools` 는 `@abstractmethod` — 없으면 인스턴스화
+  자체가 `TypeError`.
+- `assert_arming_contract` 는 base class 상속까지 확인한다. 메서드만 duck-type 으로
+  갖춘 객체는 거부된다(생성자 검사를 건너뛰었으므로).
+- 🔴 **dryness 는 타입이다.** `is_dry` 자기신고를 더 이상 읽지 않는다
+  (`DRY_SPAWNER_TYPES` 닫힌 집합).
 
-### 7.2 요약
+---
+
+## 10. 동시성 — 이제 DB 제약이다
+
+| r2 결함 | r3 폐쇄 | 실측 |
+|---|---|---|
+| stale claimant 가 새 claim 을 종결 | `(event_uuid, generation, owner_token)` fencing | 만료 후 gen1 UPDATE → `UPDATE 0` |
+| 같은 symbol 다른 event 둘 다 스폰 | `UNIQUE (symbol) WHERE state='started'` | 2번째 INSERT → unique violation |
+| 프로세스 싱글톤 dedup | 행 + 제약 | 별 세션 두 개로 검증 |
+
+TTL 롤오버는 `expired_unprocessed` 를 **먼저 기록**해야 symbol 슬롯이 풀린다 —
+조용한 재사용이 아니라 감사 행이 남는다.
+
+---
+
+## 11. 🔴 여전히 arm 하면 안 되는 이유
+
+1. **live spawner 부재** — 레포에 구현이 없다. 계약만 있다.
+2. **런처 allowlist 미포함** — §8 의 정직한 공백.
+3. **스케줄 미등록** — §101차 ⑥ 대로 상류 소관.
+4. **마이그레이션 미적용** — run-owned test DB 왕복만 했다. 프로덕션/공유 DB 적용 0.
+5. `WATCH_TRIGGER_REPRICING_ENABLED` 기본 false.
+
+---
+
+## 12. 안전 경계 요약
 
 - 브로커 mutation 0 · 주문 제출 0 · 승인 0 · 워치 alert mutation 0
-- 실행 경계 `order_proposal_create` 까지. 그 너머 토큰(`place_order`,
-  `record_auto_approval`, `revalidate_and_submit` …)은 정적 가드로 금지이고,
-  **capability allowlist 로 구조적으로도 부재**
-- DB 쓰기 0 — 패키지 어느 파일도 session/repository 에 `add`/`commit`/`flush`/
-  `delete`/`execute` 를 호출하지 않는다(`test_no_package_file_writes_through_a_
-  session_or_repository`). 읽기 seam(`event_source.py`)은 repository 의
-  `list_events_by_delivery_status` **한 메서드만** 호출 가능
-- KR 만. US/crypto 는 별건 (`test_market_scope_stays_kr`)
-- 신규 recurring job 은 이 flow 하나 (`test_this_change_adds_exactly_one_flow`)
-- `WATCH_TRIGGER_REPRICING_ENABLED` 기본 false
-- **내구성 게이트**: live spawner + 휘발성 store 조합은 코드가 거부 (§5.0)
-- migration 0 (`test_no_migration_defines_a_consumption_marker`)
+- `review.investment_watch_events` 는 **읽기 전용** — 소비는 claim 테이블에 산다
+  (`test_the_package_never_writes_to_investment_watch_events`)
+- 쓰기는 `db_claim_store.py` 한 파일, 자기 테이블만
+  (`test_only_the_claim_store_writes_and_only_its_own_table`)
+- KR 만. US/crypto 는 별건
+- migration 1건, additive, 자기 테이블 create 만

@@ -158,6 +158,12 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             # Same for the kis_mock pre-submit signal ledger, added after this
             # boundary and already present in Base.metadata.
             await connection.execute(text("DROP TABLE review.kis_mock_signal_ledger"))
+            # ROB-1286's repricing claim table is likewise later than this
+            # boundary and already in Base.metadata, so drop it and let the
+            # migration create it.
+            await connection.execute(
+                text("DROP TABLE review.watch_event_repricing_claims")
+            )
             # B1 loss-cut approval is later than this reconstructed boundary.
             # Remove its current-head tables and additive columns so the head
             # upgrade exercises the migration instead of colliding with

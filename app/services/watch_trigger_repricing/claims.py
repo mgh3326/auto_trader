@@ -1,76 +1,45 @@
-"""ROB-1286 §3④ — the claim store: atomic, leased, claimed-before-spawn.
+"""ROB-1286 — the claim store port, and an in-memory rehearsal implementation.
 
-Ordering
---------
-The claim is taken **before** the spawn, never after. The two orderings
-fail in opposite directions:
+A claim is one attempt, by one owner, to re-judge one watch fire. Holding
+it means "I am responsible for this event"; releasing it without a terminal
+means nobody is, which is the accident this feature exists to remove.
 
-``spawn -> claim``
-    A crash between the two leaves an event that was already spawned but
-    still reads as unclaimed. The next tick spawns it again, and two
-    sessions independently reach ``order_proposal_create`` for the same
-    symbol. That is the T3 failure this issue is trying not to create.
+Ordering: claim, then spawn
+---------------------------
+``spawn -> claim`` loses a crash as a double spawn: the event still reads
+unclaimed, the next tick starts a second session, and two sessions
+independently reach ``order_proposal_create`` for one symbol.
 
-``claim -> spawn`` (chosen)
-    A crash between the two leaves a claimed event that nobody is working.
-    Left alone that would bury the fire -- which is the *original* ROB-1286
-    accident wearing a new hat -- so every **non-terminal** claim carries a
-    lease. An expired lease is reclaimable, so the event resurfaces on a
-    later tick instead of disappearing, and :meth:`ClaimStore.release`
-    returns it immediately on a spawn that proved it started nothing.
+``claim -> spawn`` loses a crash as an *unjudged* event, which the lease
+converts into bounded latency: the TTL sweep writes
+``EXPIRED_UNPROCESSED`` and the flow re-claims at ``generation + 1``.
 
-Two clocks, not one (r2 / BLOCKER-1)
-------------------------------------
-r1 had a single lease and therefore a single clock, so an event whose
-session had genuinely run became reclaimable 30 minutes later and was
-re-spawned. The store now keeps the two apart:
+Fencing (r2 NEW BLOCKER 1)
+--------------------------
+Every terminal write takes a :class:`ClaimHandle` carrying the generation
+and owner token. A claimant whose lease already rolled over matches no row
+and is refused with :class:`ClaimNotHeld`, so it cannot terminate the
+current claimant's work. The handle is a positional requirement of
+:meth:`ClaimStore.finalise`; there is no unfenced call to write.
 
-* **Event lifecycle** -- ``UNCLAIMED -> CLAIMED -> CONSUMED|QUARANTINED``.
-  The two terminal states are permanent. :meth:`try_claim` refuses them
-  regardless of any expiry, and :meth:`release` refuses to walk them back.
-  Only ``CLAIMED`` -- an in-progress lease whose holder may have died --
-  expires.
-* **Symbol occupancy** -- lease-bounded for every state including terminal
-  ones. A session that just started should block a second session on the
-  same symbol, but only for as long as it could plausibly be running.
-  Blocking a symbol permanently because one of its fires was consumed
-  would mute every later fire on that symbol for the rest of the day.
+Async on purpose
+----------------
+The production store is
+:class:`~.db_claim_store.DatabaseClaimStore`, which is async. Making the
+port async means the rehearsal store and the real one have the *same*
+shape, so a test that passes against the in-memory store is exercising the
+call sequence the DB store will see. r2 found the previous split let the
+tested path and the shipped path drift.
 
-So :meth:`state_for` reads the event lifecycle and :meth:`active_symbols`
-reads the lease, and they legitimately disagree about a consumed claim
-whose lease has lapsed: that event is done forever, that symbol is free.
-
-Atomicity
----------
-:meth:`try_claim` is the mutual-exclusion primitive, so its check and its
-write must not be separable. :class:`InMemoryClaimStore` holds a lock
-across both; a read-then-write without one loses the race it exists to
-close (``test_atomicity_concurrency.py`` proves this with real threads and
-a forced interleave, not sequential calls).
-
-Persistence
------------
-:class:`InMemoryClaimStore` is process-local -- ``is_durable`` is ``False``
-and that flag is load-bearing: :func:`.orchestrator.run_gated_tick` refuses
-to run a non-dry spawner against a non-durable store. Within one process it
-now *does* hold across flow runs, because ``run_gated_tick`` resolves a
-process-level singleton instead of constructing a fresh store per call
-(that was the other half of BLOCKER-1). Across processes it holds nothing,
-and Prefect flow runs are separate processes.
-
-**What cannot be closed without a migration**: durable cross-process dedup.
-It needs its own table with a UNIQUE constraint on ``event_uuid`` (an
-insert conflict *is* the mutual exclusion) plus terminal-state and lease
-columns mirroring :class:`ConsumptionState`. That is approval-gated and is
-deliberately not created here; see the ROB-1286 report for the proposed
-DDL. Until it lands, arming this flow in production is blocked by the
-``is_durable`` gate rather than by a comment.
+:class:`InMemoryClaimStore` is a rehearsal fixture and reports
+``is_durable = False``. The arming contract refuses to run a live spawner
+against it, so it cannot be what production ends up using by omission.
 """
 
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Protocol
@@ -79,22 +48,24 @@ from app.services.watch_trigger_repricing.consumption import (
     ConsumptionState,
     project_claim_state,
 )
+from app.services.watch_trigger_repricing.lifecycle import (
+    ClaimLifecycle,
+    SessionOutcome,
+)
 
 __all__ = [
+    "DEFAULT_LEASE",
     "Claim",
+    "ClaimHandle",
     "ClaimNotHeld",
     "ClaimStore",
     "ClaimStoreUnavailable",
-    "DEFAULT_LEASE",
     "InMemoryClaimStore",
-    "TerminalClaimNotReleasable",
 ]
 
-# One lease must comfortably outlive a symbol-scoped re-judgement session
-# (analysis + policy check + order_proposal_create). Too short and a live
-# session's event gets re-spawned underneath it; too long and a crashed tick
-# hides the fire for that long. 30 minutes is well inside the 09:00-15:30
-# window while still leaving several retries in a session.
+# One lease must outlive a symbol-scoped re-judgement session (analysis,
+# policy check, proposal create). Too short re-spawns underneath a live
+# session; too long hides a crashed tick for that long.
 DEFAULT_LEASE = timedelta(minutes=30)
 
 
@@ -103,228 +74,223 @@ class ClaimStoreUnavailable(RuntimeError):
 
 
 class ClaimNotHeld(RuntimeError):
-    """Tried to finalise a claim this caller does not hold."""
-
-
-class TerminalClaimNotReleasable(RuntimeError):
-    """Tried to walk back a CONSUMED/QUARANTINED claim.
-
-    Raised rather than ignored: a caller that thinks it can release a
-    terminal claim has a bug whose symptom is a duplicate sell proposal,
-    and silently no-oping would hide it.
-    """
+    """A finalise arrived from someone who no longer owns the claim."""
 
 
 @dataclass(frozen=True)
-class Claim:
-    """One consumer's lease on one watch event."""
+class ClaimHandle:
+    """Proof that *this* caller holds *this* generation of a claim.
+
+    Carrying ``generation`` and ``owner_token`` puts the fence in the call
+    signature, so an unfenced finalise is not expressible.
+    """
 
     event_uuid: str
     symbol: str
+    generation: int
+    owner_token: str
+
+
+@dataclass
+class Claim:
+    """One claim record."""
+
+    event_uuid: str
+    symbol: str
+    market: str
+    generation: int
+    owner_token: str
     claimed_by: str
-    claimed_at: datetime
-    expires_at: datetime
-    terminal_state: ConsumptionState | None = None
-    terminal_reason: str | None = None
+    state: ClaimLifecycle
+    lease_expires_at: datetime
+    proposal_id: str | None = None
+    rejection_reason: str | None = None
 
-    def is_active(self, *, now: datetime) -> bool:
-        """Is the *lease* still running? Says nothing about terminality."""
-        return now < self.expires_at
-
-    @property
-    def is_terminal(self) -> bool:
-        return self.terminal_state is not None
+    def is_live(self, *, now: datetime) -> bool:
+        return self.state is ClaimLifecycle.STARTED and now < self.lease_expires_at
 
 
 class ClaimStore(Protocol):
-    """Port for the claim store.
-
-    Implementations must make :meth:`try_claim` atomic against concurrent
-    callers -- a durable one by relying on a UNIQUE constraint rather than
-    a read-then-write, which would reintroduce the race it exists to close.
-    """
+    """Port. Implementations must make :meth:`try_claim` atomic."""
 
     @property
-    def is_durable(self) -> bool:
-        """True only if claims survive across processes.
+    def is_durable(self) -> bool: ...
 
-        Gates arming: a live spawner against a non-durable store is
-        refused, because dedup that evaporates with the process is not
-        dedup at all.
-        """
-        ...
+    async def state_for(
+        self, event_uuid: str, *, now: datetime
+    ) -> ConsumptionState: ...
 
-    def state_for(self, event_uuid: str, *, now: datetime) -> ConsumptionState: ...
+    async def active_symbols(self, *, now: datetime) -> frozenset[str]: ...
 
-    def try_claim(
+    async def try_claim(
         self,
         *,
         event_uuid: str,
         symbol: str,
+        market: str,
         claimed_by: str,
         now: datetime,
         lease: timedelta = DEFAULT_LEASE,
-    ) -> Claim | None: ...
+    ) -> ClaimHandle | None: ...
 
-    def mark_consumed(self, event_uuid: str, *, reason: str) -> None: ...
+    async def finalise(self, handle: ClaimHandle, outcome: SessionOutcome) -> None: ...
 
-    def quarantine(self, event_uuid: str, *, reason: str) -> None: ...
-
-    def release(self, event_uuid: str, *, reason: str) -> None: ...
-
-    def active_symbols(self, *, now: datetime) -> frozenset[str]: ...
+    async def release(self, handle: ClaimHandle, *, reason: str) -> None: ...
 
 
 @dataclass
 class InMemoryClaimStore:
-    """Process-local :class:`ClaimStore`. Dry path and tests only."""
+    """Process-local rehearsal store. Not durable; see the module docstring."""
 
-    _claims: dict[str, Claim] = field(default_factory=dict)
+    _claims: dict[tuple[str, int], Claim] = field(default_factory=dict)
     _released: list[tuple[str, str]] = field(default_factory=list)
-    _finalised: list[tuple[str, ConsumptionState, str]] = field(default_factory=list)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
     available: bool = True
-
-    # Re-entrant so a hook (below) may call back in without deadlocking.
-    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
-
-    # Test seam only: invoked inside :meth:`try_claim` between the check and
-    # the write, so a concurrency test can force the interleave that a
-    # read-then-write implementation loses. Production never sets it.
-    _race_hook: Callable[[], None] | None = field(default=None, repr=False)
 
     @property
     def is_durable(self) -> bool:
         return False
 
+    # -- internals -----------------------------------------------------
+    def _latest(self, event_uuid: str) -> Claim | None:
+        matches = [c for (uid, _g), c in self._claims.items() if uid == event_uuid]
+        return max(matches, key=lambda c: c.generation) if matches else None
+
+    def _expire_locked(self, *, now: datetime) -> None:
+        """TTL sweep. Writes the terminal so the symbol slot frees."""
+        for claim in self._claims.values():
+            if claim.state is ClaimLifecycle.STARTED and claim.lease_expires_at <= now:
+                claim.state = ClaimLifecycle.EXPIRED_UNPROCESSED
+
     # -- reads ---------------------------------------------------------
-    def state_for(self, event_uuid: str, *, now: datetime) -> ConsumptionState:
+    async def state_for(self, event_uuid: str, *, now: datetime) -> ConsumptionState:
         if not self.available:
             return project_claim_state(claim_found=False, store_available=False)
         with self._lock:
-            claim = self._claims.get(event_uuid)
-            if claim is None:
+            self._expire_locked(now=now)
+            latest = self._latest(event_uuid)
+            if latest is None:
                 return project_claim_state(claim_found=False, store_available=True)
-            # Terminality is read first and without consulting the lease:
-            # a consumed event stays consumed after its lease lapses.
+            if latest.state in (
+                ClaimLifecycle.PROPOSAL_CREATED,
+                ClaimLifecycle.REJECTED_WITH_REASON,
+            ):
+                return ConsumptionState.CONSUMED
             return project_claim_state(
-                claim_found=claim.is_active(now=now),
-                store_available=True,
-                terminal_state=claim.terminal_state,
+                claim_found=latest.is_live(now=now), store_available=True
             )
 
-    def active_symbols(self, *, now: datetime) -> frozenset[str]:
-        """Symbols with a live lease -- terminal or not.
-
-        Deliberately lease-bounded even for terminal claims: see the module
-        docstring on the two clocks.
-        """
+    async def active_symbols(self, *, now: datetime) -> frozenset[str]:
         if not self.available:
             raise ClaimStoreUnavailable("claim store unavailable")
         with self._lock:
+            self._expire_locked(now=now)
             return frozenset(
-                claim.symbol
-                for claim in self._claims.values()
-                if claim.is_active(now=now)
+                c.symbol for c in self._claims.values() if c.is_live(now=now)
             )
 
-    # -- writes --------------------------------------------------------
-    def try_claim(
+    # -- claim ---------------------------------------------------------
+    async def try_claim(
         self,
         *,
         event_uuid: str,
         symbol: str,
+        market: str = "kr",
         claimed_by: str,
         now: datetime,
         lease: timedelta = DEFAULT_LEASE,
-    ) -> Claim | None:
-        """Take the lease, or return ``None`` if the event is not takeable.
-
-        Not takeable means either an active lease someone else holds, or a
-        terminal record. An expired **non-terminal** lease is reclaimable --
-        that is the self-heal for a tick that died between claiming and
-        spawning, and it is the only case that reclaims.
-        """
+    ) -> ClaimHandle | None:
+        """Atomic check-and-insert. Mirrors the DB store's two unique keys."""
         if not self.available:
             raise ClaimStoreUnavailable("claim store unavailable")
         with self._lock:
-            existing = self._claims.get(event_uuid)
-            if existing is not None:
-                if existing.is_terminal:
-                    # Permanent. No expiry walks this back.
+            self._expire_locked(now=now)
+            latest = self._latest(event_uuid)
+            if latest is not None:
+                if latest.is_live(now=now):
                     return None
-                if existing.is_active(now=now):
+                if latest.state in (
+                    ClaimLifecycle.PROPOSAL_CREATED,
+                    ClaimLifecycle.REJECTED_WITH_REASON,
+                ):
+                    # Already resolved. Re-judging is the double-proposal
+                    # direction.
                     return None
-            if self._race_hook is not None:
-                self._race_hook()
-            claim = Claim(
+            # Stands in for UNIQUE (symbol) WHERE state = 'started'. r2
+            # NEW BLOCKER 2: without this, two ticks holding the same empty
+            # snapshot both spawned on one symbol.
+            if any(
+                c.symbol == symbol and c.is_live(now=now) for c in self._claims.values()
+            ):
+                return None
+            generation = (latest.generation + 1) if latest is not None else 1
+            owner_token = str(uuid.uuid4())
+            self._claims[(event_uuid, generation)] = Claim(
                 event_uuid=event_uuid,
                 symbol=symbol,
+                market=market,
+                generation=generation,
+                owner_token=owner_token,
                 claimed_by=claimed_by,
-                claimed_at=now,
-                expires_at=now + lease,
+                state=ClaimLifecycle.STARTED,
+                lease_expires_at=now + lease,
             )
-            self._claims[event_uuid] = claim
-            return claim
+        return ClaimHandle(
+            event_uuid=event_uuid,
+            symbol=symbol,
+            generation=generation,
+            owner_token=owner_token,
+        )
 
-    def mark_consumed(self, event_uuid: str, *, reason: str) -> None:
-        """Finalise a held claim as CONSUMED. Permanent."""
-        self._finalise(event_uuid, ConsumptionState.CONSUMED, reason)
-
-    def quarantine(self, event_uuid: str, *, reason: str) -> None:
-        """Finalise a held claim as QUARANTINED. Permanent, and a fault."""
-        self._finalise(event_uuid, ConsumptionState.QUARANTINED, reason)
-
-    def _finalise(self, event_uuid: str, state: ConsumptionState, reason: str) -> None:
+    # -- terminal ------------------------------------------------------
+    async def finalise(self, handle: ClaimHandle, outcome: SessionOutcome) -> None:
         if not self.available:
             raise ClaimStoreUnavailable("claim store unavailable")
         with self._lock:
-            existing = self._claims.get(event_uuid)
-            if existing is None:
+            claim = self._claims.get((handle.event_uuid, handle.generation))
+            if (
+                claim is None
+                or claim.owner_token != handle.owner_token
+                or claim.state is not ClaimLifecycle.STARTED
+            ):
                 raise ClaimNotHeld(
-                    f"cannot finalise {event_uuid!r} as {state}: no claim held"
+                    f"claim {handle.event_uuid}#{handle.generation} is not held by "
+                    "this owner (lease rolled over, or already terminal)"
                 )
-            if existing.is_terminal:
-                # Idempotent for the same state; a genuine conflict is a bug.
-                if existing.terminal_state is state:
-                    return
-                raise TerminalClaimNotReleasable(
-                    f"{event_uuid!r} is already {existing.terminal_state}; "
-                    f"refusing to re-finalise as {state}"
-                )
-            self._claims[event_uuid] = Claim(
-                event_uuid=existing.event_uuid,
-                symbol=existing.symbol,
-                claimed_by=existing.claimed_by,
-                claimed_at=existing.claimed_at,
-                expires_at=existing.expires_at,
-                terminal_state=state,
-                terminal_reason=reason,
-            )
-            self._finalised.append((event_uuid, state, reason))
+            claim.state = outcome.state
+            claim.proposal_id = outcome.proposal_id
+            claim.rejection_reason = outcome.rejection_reason
 
-    def release(self, event_uuid: str, *, reason: str) -> None:
-        """Hand an event back after a failure that proved nothing started.
+    async def release(self, handle: ClaimHandle, *, reason: str) -> None:
+        """Hand a claim back after a *proven* clean failure to start.
 
-        Refuses terminal claims: releasing one would re-open an event a
-        session has already acted on.
+        Drops the row entirely rather than writing a terminal: nothing was
+        judged, so the fire must look untouched to the next tick.
         """
         if not self.available:
             raise ClaimStoreUnavailable("claim store unavailable")
         with self._lock:
-            existing = self._claims.get(event_uuid)
-            if existing is not None and existing.is_terminal:
-                raise TerminalClaimNotReleasable(
-                    f"refusing to release {event_uuid!r}: "
-                    f"already {existing.terminal_state}"
+            claim = self._claims.get((handle.event_uuid, handle.generation))
+            if (
+                claim is None
+                or claim.owner_token != handle.owner_token
+                # Must still be live. A rolled-over owner whose row is
+                # already EXPIRED_UNPROCESSED would otherwise delete that
+                # terminal, erasing the evidence that a fire went unjudged.
+                or claim.state is not ClaimLifecycle.STARTED
+            ):
+                raise ClaimNotHeld(
+                    f"claim {handle.event_uuid}#{handle.generation} is not held "
+                    "by this owner (lease rolled over, or already terminal)"
                 )
-            self._claims.pop(event_uuid, None)
-            self._released.append((event_uuid, reason))
+            del self._claims[(handle.event_uuid, handle.generation)]
+            self._released.append((handle.event_uuid, reason))
 
     # -- test/audit introspection --------------------------------------
     @property
     def released(self) -> list[tuple[str, str]]:
         return list(self._released)
 
-    @property
-    def finalised(self) -> list[tuple[str, ConsumptionState, str]]:
-        return list(self._finalised)
+    def snapshot(self) -> list[Claim]:
+        with self._lock:
+            return list(self._claims.values())
