@@ -547,18 +547,54 @@ def test_bounded_canary_does_not_authorize_recurring() -> None:
 
 
 def test_unknown_fingerprint_rows_are_safe_and_preserved() -> None:
-    binance_identity_lane_ids = {
-        "crypto.binance.spot_demo.canonical",
-        "crypto.binance.spot_demo.b0x_sidecar",
-        "crypto.binance.futures_demo",
+    binance_demo_physical_account_id = (
+        "binance_demo:spot_plus_futures:credential_fingerprint="
+        "sha256:e33925948f2cb6e03842cca9967b70f11f9242bc5c8f99c69ce0ca5cbc4d73df:"
+        "one_shared_domain"
+    )
+    binance_demo_fingerprint_evidence_ref = (
+        "d2-phasea-20260817:impl="
+        "sha256:44a9a5b4059c176eb8300d23048cd396daa77d6400faa3be8bbaf7c465d6ee82;"
+        "verify=sha256:03cfae4c8a9193ce0aa8ef4803d7e4ff3190eca1b6de777862b44d410a498e21"
+    )
+    expected_identity_by_lane = {
+        "kr.kis.mock": (None, None, "UNKNOWN"),
+        "kr.kiwoom.mock": (None, None, "UNKNOWN"),
+        "us.kis.mock": (None, None, "UNKNOWN"),
+        "us.kiwoom.mock": (None, None, "UNKNOWN"),
+        "us.alpaca.paper.default": (None, None, "UNKNOWN"),
+        "us.alpaca.paper.lab": (None, None, "UNKNOWN"),
+        "crypto.binance.spot_demo.canonical": (
+            binance_demo_physical_account_id,
+            binance_demo_fingerprint_evidence_ref,
+            "KNOWN",
+        ),
+        "crypto.binance.spot_demo.b0x_sidecar": (
+            binance_demo_physical_account_id,
+            binance_demo_fingerprint_evidence_ref,
+            "KNOWN",
+        ),
+        "crypto.alpaca.paper.default": (None, None, "UNKNOWN"),
+        "crypto.alpaca.paper.clean": (None, None, "UNKNOWN"),
+        "crypto.upbit.shadow": (None, None, "UNKNOWN"),
+        "crypto.binance.futures_demo": (
+            binance_demo_physical_account_id,
+            binance_demo_fingerprint_evidence_ref,
+            "KNOWN",
+        ),
     }
+
     assert len(registry.CANONICAL_LANE_REGISTRY) == 12
+    assert tuple(expected_identity_by_lane) == registry.CANONICAL_LANE_IDS
     for entry in registry.CANONICAL_LANE_REGISTRY:
-        if entry.lane_id in binance_identity_lane_ids:
-            continue
-        assert entry.physical_account_id is None
-        assert entry.fingerprint_evidence_ref is None
-        assert entry.identity_status == "UNKNOWN"
+        (
+            expected_physical_account_id,
+            expected_fingerprint_evidence_ref,
+            expected_identity_status,
+        ) = expected_identity_by_lane[entry.lane_id]
+        assert entry.physical_account_id == expected_physical_account_id
+        assert entry.fingerprint_evidence_ref == expected_fingerprint_evidence_ref
+        assert entry.identity_status == expected_identity_status
         assert entry.writer is False
         assert entry.auto is False
         assert registry.get_lane_registry_entry(entry.lane_id) is entry
