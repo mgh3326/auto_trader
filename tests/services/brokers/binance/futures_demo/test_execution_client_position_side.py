@@ -50,6 +50,9 @@ _ORDER_TEST_URL = re.compile(
 _POSITION_RISK_URL = re.compile(
     r"^https://demo-fapi\.binance\.com/fapi/v2/positionRisk\?.*$"
 )
+_OPEN_ORDERS_URL = re.compile(
+    r"^https://demo-fapi\.binance\.com/fapi/v1/openOrders\?.*$"
+)
 
 
 @pytest.fixture
@@ -216,6 +219,95 @@ async def test_get_order_preserves_position_side(
     )
     result = await client.get_order(symbol="XRPUSDT", client_order_id="rob1288-cid")
     assert result.position_side == "BOTH"
+
+
+@pytest.mark.asyncio
+async def test_get_open_orders_preserves_position_side(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """A symbol-scoped open-order row carries Binance's exact positionSide."""
+    httpx_mock.add_response(
+        method="GET",
+        url=_OPEN_ORDERS_URL,
+        status_code=200,
+        json=[
+            {
+                "symbol": "XRPUSDT",
+                "orderId": 1289,
+                "clientOrderId": "rob1289-open-cid",
+                "side": "SELL",
+                "origQty": "7.4",
+                "status": "NEW",
+                "reduceOnly": True,
+                "positionSide": "BOTH",
+            }
+        ],
+    )
+
+    result = await client.get_open_orders(symbol="XRPUSDT")
+
+    assert result.orders[0].position_side == "BOTH"
+    assert result.orders[0].qty == Decimal("7.4")
+    assert result.orders[0].side == "SELL"
+    assert result.orders[0].reduce_only is True
+
+
+@pytest.mark.asyncio
+async def test_open_order_without_position_side_stays_none(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """Missing positionSide is not inferred from qty, side, or reduceOnly."""
+    httpx_mock.add_response(
+        method="GET",
+        url=_OPEN_ORDERS_URL,
+        status_code=200,
+        json=[
+            {
+                "symbol": "XRPUSDT",
+                "orderId": 1290,
+                "clientOrderId": "rob1290-open-cid",
+                "side": "SELL",
+                "origQty": "7.4",
+                "status": "NEW",
+                "reduceOnly": True,
+            }
+        ],
+    )
+
+    result = await client.get_open_orders(symbol="XRPUSDT")
+
+    assert result.orders[0].position_side is None
+
+
+@pytest.mark.asyncio
+async def test_get_all_open_orders_preserves_position_side_without_symbol(
+    client: BinanceFuturesDemoExecutionClient, httpx_mock
+) -> None:
+    """The account-wide path preserves positionSide and omits symbol scope."""
+    httpx_mock.add_response(
+        method="GET",
+        url=_OPEN_ORDERS_URL,
+        status_code=200,
+        json=[
+            {
+                "symbol": "DOGEUSDT",
+                "orderId": 1291,
+                "clientOrderId": "rob1291-open-cid",
+                "side": "BUY",
+                "origQty": "5",
+                "status": "NEW",
+                "reduceOnly": False,
+                "positionSide": "SHORT",
+            }
+        ],
+    )
+
+    result = await client.get_all_open_orders()
+
+    request = httpx_mock.get_requests()[0]
+    assert "symbol=" not in str(request.url)
+    assert result.orders[0].symbol == "DOGEUSDT"
+    assert result.orders[0].position_side == "SHORT"
 
 
 # ===========================================================================

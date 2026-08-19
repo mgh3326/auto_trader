@@ -689,6 +689,7 @@ class BinanceFuturesDemoExecutionClient:
                 qty=Decimal(str(entry.get("origQty", "0"))),
                 status=str(entry.get("status", "")),
                 reduce_only=bool(entry.get("reduceOnly", False)),
+                position_side=_extract_position_side(entry),
             )
             for entry in body
         ]
@@ -718,6 +719,7 @@ class BinanceFuturesDemoExecutionClient:
                 qty=Decimal(str(entry.get("origQty", "0"))),
                 status=str(entry.get("status", "")),
                 reduce_only=bool(entry.get("reduceOnly", False)),
+                position_side=_extract_position_side(entry),
             )
             for entry in body
         ]
