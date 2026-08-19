@@ -34,6 +34,22 @@ Comparing ``type(spawner)`` against a closed set of classes this package
 defines closes it -- and the closed set is what makes that safe, since the
 package's own dry spawners are enumerated rather than inherited into.
 
+The live side is a closed set too (ROB-1290 r3)
+-----------------------------------------------
+Satisfying the live contract turned out not to be the same as being a
+spawner this package wrote. A subclass of :class:`ProposalChainSpawner`
+can take a callable in *its own* constructor -- the base no longer has a
+``tool=`` argument, but nothing stopped a subclass adding one back -- call
+``super().__init__()`` for a clean grant, override ``spawn``, and arm. A
+direct subclass of :class:`~.live_contract.LiveSessionSpawner` needs even
+less. Both were measured running a name-spoofed callable after passing
+every structural check.
+
+So :func:`live_spawner_types` names the concrete classes arming will run,
+and a subclass of an allowed type is **not** an allowed type. The contract
+check still runs first, so a duck-typed or grant-less object keeps the
+specific diagnostic that names what it is missing.
+
 What arming does not decide (r3)
 --------------------------------
 Everything here is about *which object* runs. None of it constrains what
