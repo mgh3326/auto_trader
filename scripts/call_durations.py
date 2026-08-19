@@ -18,12 +18,23 @@ Two operations, deliberately asymmetric:
   duplicate/missing/malformed input — there is no "stale" concept when
   building fresh from the current shard measurements).
 * ``validate`` checks an already-serialized artifact against the *current*
-  repository state (collected node ids, HEAD commit sha) and fails closed on
-  any drift: duplicate node ids, missing node ids, stale/removed node ids,
-  a source-commit mismatch, a collection-hash mismatch, or a malformed
-  duration value. Unlike pytest-split's tolerant shard-balancing hint, this
-  artifact is meant to be trustworthy provenance data, so drift is a hard
-  failure rather than something to silently drop and continue past.
+  repository state (collected node ids, expected source-commit sha) and
+  fails closed on any drift: duplicate node ids, missing node ids,
+  stale/removed node ids, a source-commit mismatch, a collection-hash
+  mismatch, an unsupported schema version, or a malformed duration value.
+  Unlike pytest-split's tolerant shard-balancing hint, this artifact is
+  meant to be trustworthy provenance data, so drift is a hard failure
+  rather than something to silently drop and continue past.
+
+``source_commit_sha`` is the sha of the commit the four shards *measured*
+(the run's ``github.sha``), not necessarily the commit that ends up
+containing the resulting ``.call_durations.json`` file — the weekly refresh
+workflow's own self-validate step compares against that same measured sha
+(consistent by construction), but ``peter-evans/create-pull-request`` then
+commits the file as a new commit on ``ci/test-durations-refresh``, so
+``HEAD`` moves past ``source_commit_sha`` the moment that auto-PR merges.
+A future consumer must compare against the measured-tree sha it expects,
+not assume it equals the artifact's own containing commit.
 
 ROB-1295 R1 — collected-but-never-called nodes: a node whose ``setup`` phase
 itself skips (``@pytest.mark.skip``, ``skipif``, a skip-raising fixture, ...)
@@ -39,6 +50,14 @@ exactly one of ``durations`` or ``not_called`` — never both, never neither.
 A node that skips *inside* its call phase (e.g. ``pytest.skip()`` called
 from the test body) is unaffected: pytest still emits a real ``call`` report
 with a real duration, so it is captured in ``durations`` as usual.
+
+ROB-1295 R2 (post-verify hardening): shard files and artifact files are both
+parsed with duplicate-JSON-key rejection (a corrupt/hand-edited file cannot
+silently drop data via Python's last-key-wins ``dict`` construction);
+``schema_version`` is checked, not just required-present; duplicate entries
+inside ``not_called`` are rejected instead of silently deduplicated by
+``set()``; and ``node_count`` is cross-checked against the actual
+``durations``/``not_called`` sizes rather than trusted as a free-form label.
 """
 
 from __future__ import annotations
@@ -58,6 +77,7 @@ _REQUIRED_ARTIFACT_FIELDS = (
     "schema_version",
     "source_commit_sha",
     "collection_hash",
+    "node_count",
     "durations",
     "not_called",
 )
@@ -66,6 +86,29 @@ _REQUIRED_ARTIFACT_FIELDS = (
 def compute_collection_hash(collected_nodes: set[str] | frozenset[str]) -> str:
     joined = "\n".join(sorted(collected_nodes))
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
+class DuplicateJsonKeyError(ValueError):
+    """Raised when a JSON object (top-level or nested) has a duplicate key."""
+
+
+def _no_duplicate_pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise DuplicateJsonKeyError(f"duplicate key in JSON object: {key!r}")
+        seen[key] = value
+    return seen
+
+
+def _load_json_no_duplicates(path: Path) -> Any:
+    """Parse JSON, fail-closed on any duplicate key at any nesting level."""
+    try:
+        return json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=_no_duplicate_pairs_hook
+        )
+    except DuplicateJsonKeyError as error:
+        raise ValueError(f"{path}: {error}") from error
 
 
 def _validate_duration_values(
@@ -91,12 +134,25 @@ def _validate_not_called_list(raw: Any, *, source: str) -> set[str]:
         isinstance(node_id, str) for node_id in raw
     ):
         raise ValueError(f"{source}: 'not_called' must be a JSON array of strings")
+    if len(raw) != len(set(raw)):
+        duplicates = sorted({node_id for node_id in raw if raw.count(node_id) > 1})
+        raise ValueError(
+            f"{source}: 'not_called' contains duplicate entries: {duplicates[:10]!r}"
+        )
     return set(raw)
+
+
+def _validate_schema_version(raw: Any, *, source: str) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw != SCHEMA_VERSION:
+        raise ValueError(
+            f"{source}: unsupported schema_version {raw!r}; expected {SCHEMA_VERSION!r}"
+        )
+    return raw
 
 
 def _load_call_duration_shard(path: Path) -> tuple[dict[str, float], set[str]]:
     """Load one shard's ``{"durations": {...}, "not_called": [...]}`` output."""
-    raw: Any = json.loads(path.read_text(encoding="utf-8"))
+    raw: Any = _load_json_no_duplicates(path)
     if not isinstance(raw, dict) or "durations" not in raw or "not_called" not in raw:
         raise ValueError(
             f"{path}: expected an object with 'durations' and 'not_called' keys"
@@ -191,25 +247,8 @@ def serialize_artifact(artifact: dict[str, Any]) -> str:
     return json.dumps(artifact, sort_keys=True, indent=2) + "\n"
 
 
-class DuplicateArtifactKeyError(ValueError):
-    """Raised when the artifact JSON itself contains a duplicate key."""
-
-
-def _no_duplicate_pairs_hook(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    seen: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in seen:
-            raise DuplicateArtifactKeyError(f"duplicate key in artifact JSON: {key!r}")
-        seen[key] = value
-    return seen
-
-
 def load_artifact(path: Path) -> dict[str, Any]:
-    text = path.read_text(encoding="utf-8")
-    try:
-        raw = json.loads(text, object_pairs_hook=_no_duplicate_pairs_hook)
-    except DuplicateArtifactKeyError as error:
-        raise ValueError(f"{path}: {error}") from error
+    raw = _load_json_no_duplicates(path)
 
     if not isinstance(raw, dict):
         raise ValueError(f"{path}: expected a JSON object")
@@ -218,6 +257,7 @@ def load_artifact(path: Path) -> dict[str, Any]:
             raise ValueError(f"{path}: missing required field {field!r}")
     if not isinstance(raw["durations"], dict):
         raise ValueError(f"{path}: 'durations' must be a JSON object")
+    _validate_schema_version(raw["schema_version"], source=str(path))
     _validate_not_called_list(raw["not_called"], source=str(path))
     return raw
 
@@ -230,6 +270,7 @@ def validate_freshness(
 ) -> None:
     """Fail closed unless ``artifact`` is trustworthy telemetry for today's tree."""
     source = "call-duration artifact"
+    _validate_schema_version(artifact.get("schema_version"), source=source)
     durations = _validate_duration_values(artifact["durations"], source=source)
     not_called = _validate_not_called_list(
         artifact.get("not_called", []), source=source
@@ -240,6 +281,14 @@ def validate_freshness(
         raise ValueError(
             f"{source}: node id(s) present in both 'durations' and "
             f"'not_called': {overlap[:10]!r}"
+        )
+
+    expected_node_count = len(durations) + len(not_called)
+    if artifact.get("node_count") != expected_node_count:
+        raise ValueError(
+            f"{source}: node_count mismatch: artifact={artifact.get('node_count')!r} "
+            f"expected={expected_node_count!r} (len(durations) + len(not_called)) "
+            "— refresh the call-duration artifact"
         )
 
     if artifact["source_commit_sha"] != expected_source_commit_sha:

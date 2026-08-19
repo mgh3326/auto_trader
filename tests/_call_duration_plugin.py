@@ -27,8 +27,19 @@ downstream merge/validator would otherwise treat as a genuine missing
 measurement) or coerced to a bogus ``0.0`` duration (indistinguishable from a
 real, very-fast call). A node that skips *inside* its call phase (e.g.
 ``pytest.skip()`` called from the test body) is unaffected: pytest still
-emits a real ``call`` report with a real ``report.duration`` for the time
-spent before the skip, so it is captured in ``durations`` as usual.
+emits a real ``call`` report with a real ``report.duration``, so it is
+captured in ``durations`` as usual.
+
+ROB-1295 R2: every observation of a node id — from this process's own
+``pytest_runtest_logreport`` and from every xdist worker forwarded via
+``pytest_testnodedown`` — is recorded through ``_record_duration``/
+``_record_not_called``, which keep ``durations``/``not_called`` disjoint by
+construction. A *repeated* observation for the same node id is tolerated
+only when it is identical to what is already recorded (same bucket, same
+duration value) — genuinely harmless double-delivery. Any node id reported
+with a different duration, or reported in both buckets, raises
+``ConflictingCallObservationError`` immediately rather than being resolved
+silently (dropping data or preferring one report over another).
 """
 
 from __future__ import annotations
@@ -44,6 +55,34 @@ import pytest
 # worker) gets its own fresh import of this module.
 _call_durations: dict[str, float] = {}
 _not_called: set[str] = set()
+
+
+class ConflictingCallObservationError(RuntimeError):
+    """A node id was observed twice with different data (duration or bucket)."""
+
+
+def _record_duration(nodeid: str, duration: float) -> None:
+    if nodeid in _not_called:
+        raise ConflictingCallObservationError(
+            f"{nodeid!r} was already recorded as not-called (setup-skip), but a "
+            f"call report with duration={duration!r} arrived afterward"
+        )
+    existing = _call_durations.get(nodeid)
+    if existing is not None and existing != duration:
+        raise ConflictingCallObservationError(
+            f"{nodeid!r} reported conflicting call durations: "
+            f"{existing!r} vs {duration!r}"
+        )
+    _call_durations[nodeid] = duration
+
+
+def _record_not_called(nodeid: str) -> None:
+    if nodeid in _call_durations:
+        raise ConflictingCallObservationError(
+            f"{nodeid!r} was already recorded with a measured call duration, but a "
+            "setup-skip report arrived afterward"
+        )
+    _not_called.add(nodeid)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -62,9 +101,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if report.when == "call":
-        _call_durations[report.nodeid] = report.duration
+        _record_duration(report.nodeid, report.duration)
     elif report.when == "setup" and report.skipped:
-        _not_called.add(report.nodeid)
+        _record_not_called(report.nodeid)
 
 
 @pytest.hookimpl(optionalhook=True)
@@ -72,22 +111,23 @@ def pytest_testnodedown(node, error) -> None:  # noqa: ARG001
     """Aggregate xdist worker call durations onto the controller process.
 
     Mirrors the ``auto_trader_schema_metrics`` forwarding pattern in
-    ``tests/conftest.py``.
+    ``tests/conftest.py``, but merges through ``_record_duration``/
+    ``_record_not_called`` instead of ``dict.update``/``set.update`` so a
+    duplicate or contradictory node id across workers fails closed instead
+    of last-write-wins silently overwriting or masking it.
     """
     worker_output = node.workeroutput
-    _call_durations.update(worker_output.get("auto_trader_call_durations", {}))
-    _not_called.update(worker_output.get("auto_trader_not_called", []))
+    for nodeid, duration in worker_output.get("auto_trader_call_durations", {}).items():
+        _record_duration(nodeid, duration)
+    for nodeid in worker_output.get("auto_trader_not_called", []):
+        _record_not_called(nodeid)
 
 
 def _current_output() -> dict[str, object]:
-    # A node id can only end up in both sets if a plugin/rerun oddity
-    # produced a real call report for something we also saw skip at setup
-    # (should not happen under normal pytest semantics — see module
-    # docstring). Resolve deterministically in favor of the measured call
-    # report: its existence proves the test body genuinely ran, which is
-    # strictly stronger evidence than the earlier setup-skip observation.
-    not_called = sorted(_not_called - set(_call_durations))
-    return {"durations": dict(_call_durations), "not_called": not_called}
+    # durations and not_called are disjoint by construction (_record_duration
+    # / _record_not_called raise on any contradiction the instant it is
+    # observed), so no reconciliation is needed here.
+    return {"durations": dict(_call_durations), "not_called": sorted(_not_called)}
 
 
 def pytest_sessionfinish(session: pytest.Session) -> None:

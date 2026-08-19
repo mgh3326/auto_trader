@@ -170,15 +170,63 @@ def test_merge_rejects_malformed_duration(tmp_path: Path, duration: float) -> No
         merge_call_duration_shards(shard_paths=[shard], collected_paths=[collected])
 
 
+def test_merge_rejects_duplicate_key_in_nested_shard_durations(tmp_path: Path) -> None:
+    # ROB-1295 R2 (verifier P2-1): shard files got the same duplicate-key
+    # protection as artifact files -- a hand-tampered/corrupt shard cannot
+    # silently drop a measurement via Python's last-key-wins dict() parsing.
+    shard = _write(
+        tmp_path / "shard.json",
+        '{"durations": {"a": 1.0, "a": 2.0}, "not_called": []}',
+    )
+    collected = _write_manifest(tmp_path / "collected.txt", "a")
+
+    with pytest.raises(ValueError, match="duplicate key"):
+        merge_call_duration_shards(shard_paths=[shard], collected_paths=[collected])
+
+
+def test_merge_rejects_duplicate_key_at_shard_top_level(tmp_path: Path) -> None:
+    shard = _write(
+        tmp_path / "shard.json",
+        '{"durations": {}, "not_called": [], "not_called": ["a"]}',
+    )
+    collected = _write_manifest(tmp_path / "collected.txt", "a")
+
+    with pytest.raises(ValueError, match="duplicate key"):
+        merge_call_duration_shards(shard_paths=[shard], collected_paths=[collected])
+
+
+def test_merge_rejects_duplicate_not_called_entries_in_shard(tmp_path: Path) -> None:
+    # ROB-1295 R2 (verifier P3): duplicate not_called list items are a
+    # structural error, not silently collapsed by set(raw).
+    shard = _shard(tmp_path / "shard.json", not_called=[_NODE_A, _NODE_A])
+    collected = _write_manifest(tmp_path / "collected.txt", _NODE_A)
+
+    with pytest.raises(ValueError, match="duplicate entries"):
+        merge_call_duration_shards(shard_paths=[shard], collected_paths=[collected])
+
+
 # --- load_artifact -----------------------------------------------------
 
 
-def test_load_artifact_rejects_duplicate_key(tmp_path: Path) -> None:
+def test_load_artifact_rejects_duplicate_key_in_nested_durations(
+    tmp_path: Path,
+) -> None:
     path = _write(
         tmp_path / "artifact.json",
         '{"schema_version": 2, "source_commit_sha": "a", '
-        '"collection_hash": "b", "not_called": [], '
+        '"collection_hash": "b", "node_count": 0, "not_called": [], '
         '"durations": {"x": 1, "x": 2}}',
+    )
+
+    with pytest.raises(ValueError, match="duplicate key"):
+        load_artifact(path)
+
+
+def test_load_artifact_rejects_duplicate_key_at_top_level(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path / "artifact.json",
+        '{"schema_version": 2, "schema_version": 3, "source_commit_sha": "a", '
+        '"collection_hash": "b", "node_count": 0, "not_called": [], "durations": {}}',
     )
 
     with pytest.raises(ValueError, match="duplicate key"):
@@ -189,6 +237,28 @@ def test_load_artifact_rejects_missing_field(tmp_path: Path) -> None:
     path = _write_json(tmp_path / "artifact.json", {"schema_version": 2})
 
     with pytest.raises(ValueError, match="missing required field"):
+        load_artifact(path)
+
+
+@pytest.mark.parametrize(
+    "schema_version", [1, 99, "2", True, None], ids=["v1", "v99", "str", "bool", "null"]
+)
+def test_load_artifact_rejects_unsupported_schema_version(
+    tmp_path: Path, schema_version: object
+) -> None:
+    path = _write_json(
+        tmp_path / "artifact.json",
+        {
+            "schema_version": schema_version,
+            "source_commit_sha": "a" * 40,
+            "collection_hash": "b",
+            "node_count": 0,
+            "durations": {},
+            "not_called": [],
+        },
+    )
+
+    with pytest.raises(ValueError, match="unsupported schema_version"):
         load_artifact(path)
 
 
@@ -304,3 +374,77 @@ def test_validate_freshness_rejects_overlap_between_durations_and_not_called(
             collected_nodes={_NODE_A, _NODE_B},
             expected_source_commit_sha="a" * 40,
         )
+
+
+@pytest.mark.parametrize(
+    "schema_version", [1, 99, "2", True, None], ids=["v1", "v99", "str", "bool", "null"]
+)
+def test_validate_freshness_rejects_unsupported_schema_version(
+    tmp_path: Path, schema_version: object
+) -> None:
+    artifact = _build_two_node_artifact(tmp_path)
+    artifact["schema_version"] = schema_version
+
+    with pytest.raises(ValueError, match="unsupported schema_version"):
+        validate_freshness(
+            artifact,
+            collected_nodes={_NODE_A, _NODE_B},
+            expected_source_commit_sha="a" * 40,
+        )
+
+
+def test_validate_freshness_rejects_duplicate_not_called_entries(
+    tmp_path: Path,
+) -> None:
+    # build_artifact can never produce this (it always writes sorted(set(...))
+    # ), so hand-tamper a freshly built artifact to prove validate_freshness
+    # independently rejects a hand-edited duplicate rather than trusting
+    # build-time uniqueness.
+    shard = _shard(
+        tmp_path / "shard.json", durations={_NODE_A: 0.01}, not_called=[_NODE_B]
+    )
+    collected_nodes = {_NODE_A, _NODE_B}
+    artifact = build_artifact(
+        shard_paths=[shard],
+        collected_paths=[_write_manifest(tmp_path / "collected.txt", *collected_nodes)],
+        source_commit_sha="a" * 40,
+    )
+    artifact["not_called"] = [_NODE_B, _NODE_B]
+
+    with pytest.raises(ValueError, match="duplicate entries"):
+        validate_freshness(
+            artifact,
+            collected_nodes=collected_nodes,
+            expected_source_commit_sha="a" * 40,
+        )
+
+
+def test_validate_freshness_rejects_node_count_mismatch(tmp_path: Path) -> None:
+    artifact = _build_two_node_artifact(tmp_path)
+    artifact["node_count"] = 999
+
+    with pytest.raises(ValueError, match="node_count mismatch"):
+        validate_freshness(
+            artifact,
+            collected_nodes={_NODE_A, _NODE_B},
+            expected_source_commit_sha="a" * 40,
+        )
+
+
+def test_build_artifact_node_count_equals_durations_plus_not_called(
+    tmp_path: Path,
+) -> None:
+    shard = _shard(
+        tmp_path / "shard.json", durations={_NODE_A: 0.01}, not_called=[_NODE_B]
+    )
+    collected_nodes = {_NODE_A, _NODE_B}
+    artifact = build_artifact(
+        shard_paths=[shard],
+        collected_paths=[_write_manifest(tmp_path / "collected.txt", *collected_nodes)],
+        source_commit_sha="a" * 40,
+    )
+
+    assert artifact["node_count"] == len(artifact["durations"]) + len(
+        artifact["not_called"]
+    )
+    assert artifact["node_count"] == len(collected_nodes)
