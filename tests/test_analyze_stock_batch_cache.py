@@ -950,7 +950,7 @@ async def test_batch_threads_refresh_to_pipeline(monkeypatch):
     monkeypatch.setattr(handlers.analysis_screening, "_analyze_stock_impl", stub)
 
     await handlers.analyze_stock_batch_impl(
-        ["005930"], market="kr", include_position=False, refresh=True
+        ["005930"], market="kr", quick=False, include_position=False, refresh=True
     )
     assert seen == [True]
 
