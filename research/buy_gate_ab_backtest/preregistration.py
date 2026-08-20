@@ -199,6 +199,15 @@ ADDENDUM: Final[dict[str, Any]] = {
         "winner_declaration": "forbidden",
         "policy_recommendation": "out_of_scope_for_this_job",
     },
+    # 🔴 Post-freeze amendment, disclosed rather than folded in silently.
+    # 2026-08-21: a cluster bootstrap over decision dates
+    # (research/buy_gate_ab_backtest/stats.py) was added after this digest was
+    # pinned. It is left OUT of the pinned dict on purpose — folding it in
+    # would rewrite the digest and erase the evidence that the gate and
+    # sampling rules were fixed first. It puts an interval around aggregates
+    # that already existed; it changes no gate, no sample, and no per-sample
+    # number, and it is applied identically to all three cohorts. The report
+    # labels it as post-freeze.
     "forbidden": list(FORBIDDEN),
     "network_calls": 0,
     "operating_db_reads": 0,
