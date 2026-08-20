@@ -75,11 +75,12 @@ Two consequences are binding on this document:
    (`_HeldCoordination`), and that "there is deliberately no recovery API in
    this epoch" (`_release_guarded`).  This contract adds nothing there.
 2. **`AUTO_READY_BLOCKED_BY_LIFECYCLE` is recorded on a dedicated axis, not on
-   `lane_status`.**  The signed allowlist admits exactly `NOT_READY` for both
-   lanes (`_SIGNED_LANE_STATUS_ALLOWLISTS` in `SIGNED_SOURCE`), so writing the
-   lifecycle verdict into `lane_status` would violate the signed registry.  The
-   verdict is therefore carried by `lifecycle_recovery_owner_status` in §4, and
-   `lane_status` remains exactly as ROB-1266 §8 records it.
+   `lane_status`.**  `_SIGNED_LANE_STATUS_ALLOWLISTS` in `SIGNED_SOURCE` admits
+   a single status for each of these two lanes, so writing the lifecycle verdict
+   into `lane_status` would violate the signed registry.  That admitted status is
+   **not restated here**: it is recorded once, by ROB-1266 §8, and this document
+   neither repeats nor pins it.  The verdict is carried by
+   `lifecycle_recovery_owner_status` in §4, and `lane_status` is left untouched.
 
 ## 3. Record shape
 
@@ -117,7 +118,7 @@ the rule in §2.  A constrained item is not a partial credit.
 # LIFECYCLE
 lane_id = us.kis.mock
 lifecycle_recovery_owner_status = AUTO_READY_BLOCKED_BY_LIFECYCLE
-recovery_owner = ABSENT (registry missing_bindings carries `owner`; see rob-1266 §8)
+recovery_owner = ABSENT (the signed registry records MissingBinding.OWNER for this lane, so no owner exists to name; see rob-1266 §8)
 restart_rediscovery_trigger = ABSENT (query exists as OrderSendIntentReservationPort.list_reservations in COORDINATION_SOURCE; no lane-native caller is merged and J3A states there is deliberately no recovery API in this epoch)
 authoritative_readback_operation = PRESENT_CONSTRAINED (KISOverseasOrders.inquire_daily_order_overseas(is_mock=True) dispatching VTTS3035R; not order-id keyed because the overseas order_number filter is ignored, and open-order truth is separately unavailable per rob-1266 §5.1)
 release_if_matches_condition = PRESENT (DurableSendClaimAdapter.release_with_terminal_evidence gated by _terminal_evidence_authorizes in COORDINATION_SOURCE)
@@ -142,7 +143,7 @@ terminal_reconciliation = ABSENT (no lane-separable table; see §5.1)
 # LIFECYCLE
 lane_id = us.kiwoom.mock
 lifecycle_recovery_owner_status = AUTO_READY_BLOCKED_BY_LIFECYCLE
-recovery_owner = ABSENT (registry missing_bindings carries `owner`; see rob-1266 §8)
+recovery_owner = ABSENT (the signed registry records MissingBinding.OWNER for this lane, so no owner exists to name; see rob-1266 §8)
 restart_rediscovery_trigger = ABSENT (query exists as OrderSendIntentReservationPort.list_reservations in COORDINATION_SOURCE; no lane-native caller is merged and J3A states there is deliberately no recovery API in this epoch)
 authoritative_readback_operation = PRESENT_CONSTRAINED (KiwoomUSAccountClient.get_today_orders api-id ust21510 and get_open_orders api-id ust21050 on path /api/us/acnt; constrained because Market.US_EQUITY is absent from BROKER_CAPABILITIES[Broker.KIWOOM] per rob-1266 §5.3)
 release_if_matches_condition = PRESENT (DurableSendClaimAdapter.release_with_terminal_evidence gated by _terminal_evidence_authorizes in COORDINATION_SOURCE)
@@ -200,17 +201,19 @@ by construction, not by omission of a lookup.
 
 ### 5.3 `us.kis.mock` shares a credential namespace with `kr.kis.mock`
 
-`LANE_CREDENTIAL_NAMESPACES` in `SIGNED_SOURCE` assigns **the identical string
-`KIS_MOCK_*`** to both `kr.kis.mock` and `us.kis.mock`, and
-`LANE_ALLOWED_HOSTS` assigns both the same single host.  By contrast the two
-Kiwoom lanes are declared apart (`KIWOOM_MOCK_*` versus `KIWOOM_MOCK_US_*`).
+In `SIGNED_SOURCE`, `LANE_CREDENTIAL_NAMESPACES` maps `kr.kis.mock` and
+`us.kis.mock` to **the same string**, and `LANE_ALLOWED_HOSTS` maps them to
+**the same host tuple**.  The two Kiwoom lanes are mapped apart on the same
+axis.  The values themselves are registry-owned and are deliberately not copied
+into this document; the recorded fact is the **equality relation** between the
+two KIS rows, which is what the prohibition below rests on.
 
 ROB-1266 §6 establishes that the four *US* lanes are declared under distinct
 namespaces; that statement is scoped to those four rows and does not speak to
 the KR↔US KIS pair.  This document records the pair as a **declared
 collision**: the two lanes are not merely unproven-separate, they are declared
-under one namespace and one host, while both carry `physical_account_id`
-absent and `identity_status = UNKNOWN` (rob-1266 §8).
+under one namespace and one host, while ROB-1266 §8 records both as having no
+physical account and an unproven identity.
 
 This is the direct basis for the concurrent-writer prohibition in §6.4.  It is
 recorded as a fact about declarations; no physical-account measurement exists
@@ -225,24 +228,26 @@ violation is detectable before broker I/O.
 ### 6.1 Open-order truth is required before any KIS submit
 
 If `open_order_count` is absent, `None`, or the inquiry errored, the lane must
-stop before broker I/O.  A missing count is `UNKNOWN` and is never read as
+stop before broker I/O.  A missing count is *unknown* and is never read as
 zero.  For `us.kis.mock` this is presently unsatisfiable at all, because the
 overseas pending-order inquiry raises for the mock lane (rob-1266 §5.1), so the
 only contract-conforming outcome for this lane today is *stop*.
 
 ### 6.2 A writer requires masked physical identity
 
-`writer` may not be set true for either lane while `physical_account_id` is
-absent and `identity_status` is `UNKNOWN` (rob-1266 §8).  Masked physical
+`writer` may not be set true for either lane while ROB-1266 §8 records that
+lane as having no physical account and an unproven identity.  Masked physical
 account fingerprint evidence is the precondition; no such evidence exists
 today, and namespace or profile distinctness is a declaration rather than a
 measurement (rob-1266 §6).
 
-### 6.3 Kiwoom US stays `BROKER_REGRESSION`
+### 6.3 Kiwoom US keeps its recorded role
 
-`us.kiwoom.mock` carries `BROKER_REGRESSION` for this epoch.  Rewriting it to
-`AUTO_MIRROR` — or to any other role — requires a separate approved autonomous
-policy and is not authorized here or by ROB-1266 §5.3.
+`us.kiwoom.mock` keeps for this epoch exactly the role ROB-1266 §8 records for
+it; that value is registry-owned and is not restated here.  Rewriting that role
+— in particular promoting the lane to an automatic mirroring role — requires a
+separate approved autonomous policy and is not authorized here or by
+ROB-1266 §5.3.
 
 ### 6.4 KR and US KIS may not hold concurrent writers
 
@@ -279,13 +284,15 @@ not a defined operation in this contract.
 
 ### 6.8 Currency is exact; no FX or parity
 
-Both lanes are `quote_currency = USD` (rob-1266 §8).  A KRW intent may never be
-rendered as a USD plan, and no FX rate, parity, or conversion may be applied.
+Both lanes carry the single quote currency ROB-1266 §8 records for them; that
+value is registry-owned and is not restated here.  An intent denominated in a
+different currency may never be rendered into a plan denominated in the lane's
+currency, and no FX rate, parity, or conversion may be applied.
 J2B already fails such a request closed with the exact literals
 `currency_conversion_not_authorized` and `lane_quote_currency_mismatch`
 (`LINEAGE_SOURCE`); this contract adds no conversion path and no rounding
-tolerance that would obscure one.  USD is never treated as interchangeable with
-KRW or USDT.
+tolerance that would obscure one.  A lane's own quote currency is never
+treated as interchangeable with any other currency.
 
 ## 7. What this document does not do
 
