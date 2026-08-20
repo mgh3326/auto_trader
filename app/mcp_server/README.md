@@ -245,13 +245,24 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
 - ~~`recommend_stocks(...)`~~ — **DEPRECATED / registry-hidden (ROB-359).** No longer registered on the MCP tool surface. Use `screen_stocks` for candidate discovery. The implementation is retained in `analysis_tool_handlers.recommend_stocks_impl` for a possible future narrow `build_buy_plan` tool; do not call it from active report/operator prompts.
 
 - `analyze_stock_batch(symbols, market=None, include_peers=False, quick=True, decision_history_account_mode=None)`
-  - Legacy/deep-dive batch analysis for up to 10 symbols.
+  - Batch analysis for up to 10 symbols. `quick=True` is the default DB-only fast projection;
+    `quick=False` is the explicit full/deep analysis path.
   - Do not use it as the routine follow-up after `screen_stocks_snapshot`; snapshot
     rows now expose consensus and RSI context directly.
   - Keep using it when support/resistance or full `quick=False` analysis is needed
     for symbols outside the snapshot result path.
-  - Default `quick=True` returns compact summary with: symbol, current_price,
-    rsi_14, consensus, recommendation, supports (top 3), resistances (top 3).
+  - Quick returns only the allowlisted projection: symbol, market_type, source,
+    current_price, latest OHLCV, rsi_14, supports (top 3), resistances (top 3),
+    and the freshness envelope. It also preserves compact `decision_history`
+    and `earnings` meaning through set-based DB read models. It makes zero HTTP
+    requests and reads all requested data in at most 12 DB executions per batch.
+    The quick path does not run news, profile, provider earnings, consensus,
+    recommendation, or holdings work; `include_position` is accepted for
+    compatibility and ignored in quick mode.
+  - Use `quick=False` when consensus, recommendation, news, profile, provider
+    earnings,
+    peers, or the complete full-analysis payload is explicitly required.
+    The full output contract is unchanged.
   - Every full and compact result carries the ROB-1048 freshness/provenance
     envelope: `data_state` (`fresh|stale|degraded|missing`),
     `derived_as_of`, `fetched_at`, `data_age_seconds`, `cache_hit`,
@@ -259,39 +270,9 @@ MCP tools (market data, portfolio, order execution) exposed via `fastmcp`.
     oldest included provider evidence. A swallowed provider exception produces
     `degraded` (or `missing` when no usable evidence remains) with null
     timestamps; response-time `now` is never substituted.
-  - A valid provider-cache hit may remain `fresh` and sets
-    `fallback_source="analyze_fetch_cache"`. Compact rows that also carry
-    quote-session freshness retain that quote classification as
-    `price_data_state` when aggregate evidence `data_state` is applied.
-  - When a non-stale `analysis_artifact` already covers a symbol, that symbol's
-    compact summary also carries a `fresh_artifact_exists` hint
-    (`{artifact_uuid, as_of, kind}`) so you can choose to reuse the persisted
-    artifact via `analysis_artifact_get` instead of re-deriving. This is a soft
-    hint only — the analysis still runs and is returned.
-  - `decision_history_account_mode="kis_mock"` switches only the advisory
-    `decision_history` block to the explicit mock/counterfactual branch. Leave it
-    unset for default live/default lesson context.
-  - The `decision_history` block includes `open_actions` (ROB-884): a bounded
-    list of at most five active retrospective actions (`open`/`in_progress`
-    only; terminal `done`/`obsolete`/`expired` actions are always excluded).
-    Each compact item carries `action_id`, `action`, `status`, `owner`,
-    `issue_id`, `due_kst_date`, and `overdue` — nothing else. Action text is
-    capped at 220 characters, owner at 80, issue ID at 32, and the total
-    `open_actions` JSON is capped at 3 KiB (UTF-8). `open_actions_meta` carries
-    `authority="historical_advisory"`, `executable=false`, the returned `count`,
-    and a `truncated` flag. **This is historical advisory context only — it is
-    not an order instruction, tool execution authorization, or auto-approval.**
-    Action text alone must never trigger tool or order auto-execution.
-    Visibility uses the same retrospective predicate as lessons/outcomes:
-    `kis_mock` is exact-only when that account mode is requested; the default
-    path excludes the mock-counterfactual cohort. Stock-detail's separate
-    decision-history schema is not extended (it already has retrospective cards).
-    `open_actions` is injected only on the `quick=True` compact path; the
-    `quick=False` full-analysis path does not carry compact decision-history
-    injection. Frozen analysis bundles capture the same `open_actions`/meta in
-    their `decision_history` section, and frozen reads return the stored values
-    without re-querying.
-  - Compact US rows carry the same quote provenance fields as `get_quote` when present: `session`, `data_state`, `data_state_reason`, `price_source`, `venue`, `quote_asof`, and `delayed`.
+  - The full path may use its provider fetch cache and its `refresh` behavior;
+    these provider-cache semantics do not apply to quick. Compact quick rows
+    use the DB-only freshness envelope described above.
 
 ### Snapshot-backed report generation
 

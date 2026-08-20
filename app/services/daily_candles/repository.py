@@ -105,6 +105,27 @@ _CRYPTO_RECENT_SQL = """
 """
 
 
+_CRYPTO_RECENT_BATCH_SQL = """
+    SELECT symbol, time, open, high, low, close, adj_close,
+           volume, value, source
+    FROM (
+        SELECT ci.venue_symbol AS symbol, c.time, c.open, c.high, c.low, c.close,
+               NULL::numeric AS adj_close,
+               c.base_volume AS volume, c.quote_volume AS value, c.source,
+               ROW_NUMBER() OVER (
+                   PARTITION BY c.instrument_id ORDER BY c.time DESC
+               ) AS row_number
+        FROM public.crypto_candles_1d AS c
+        JOIN public.crypto_instruments AS ci ON ci.id = c.instrument_id
+        WHERE c.instrument_id IN :instrument_ids
+          AND c.time >= :time_floor
+          AND c.is_closed = TRUE
+    ) AS recent
+    WHERE row_number <= :count
+    ORDER BY symbol, time DESC
+"""
+
+
 class DailyCandlesRepository:
     def __init__(self, *, session: AsyncSession) -> None:
         self._session = session
@@ -638,3 +659,122 @@ class DailyCandlesRepository:
                 )
             )
         return list(reversed(out))  # ascending order for consumers
+
+    async def fetch_recent_batch(
+        self,
+        *,
+        market: MarketKey,
+        symbols: list[str],
+        partition: str | None,
+        count: int,
+    ) -> dict[str, list[DailyCandleRow]]:
+        """Read recent daily candles for many symbols in one bounded query.
+
+        This is a read-only batch primitive for projection paths.  Unlike
+        ``fetch_recent``, it never resolves or fetches one symbol at a time.
+        Crypto needs one bounded identity lookup plus one candle query because
+        its table is keyed by ``instrument_id``; KR/US use one windowed query.
+        """
+        normalized = sorted(
+            {str(symbol).strip().upper() for symbol in symbols if symbol}
+        )
+        if not normalized:
+            return {}
+
+        out: dict[str, list[DailyCandleRow]] = {symbol: [] for symbol in normalized}
+        if market == MarketKey.CRYPTO:
+            instrument_ids = await self.resolve_crypto_instrument_ids(
+                symbols=normalized, partition=partition or "upbit_krw"
+            )
+            if not instrument_ids:
+                return out
+            sql = text(_CRYPTO_RECENT_BATCH_SQL).bindparams(
+                bindparam("instrument_ids", expanding=True)
+            )
+            result = await self._session.execute(
+                sql,
+                {
+                    "instrument_ids": list(instrument_ids.values()),
+                    "count": int(count),
+                    "time_floor": _recent_time_floor(int(count), now=datetime.now(UTC)),
+                },
+            )
+            for row in result.mappings().all():
+                out.setdefault(str(row["symbol"]), []).append(
+                    DailyCandleRow(
+                        time_utc=row["time"],
+                        symbol=str(row["symbol"]),
+                        partition=partition or "upbit_krw",
+                        open=float(row["open"]),
+                        high=float(row["high"]),
+                        low=float(row["low"]),
+                        close=float(row["close"]),
+                        adj_close=None,
+                        volume=float(row["volume"] or 0.0),
+                        value=float(row["value"] or 0.0),
+                        source=row["source"],
+                    )
+                )
+            for rows in out.values():
+                rows.reverse()
+            return out
+
+        cfg = self._config(market)
+        adj_close_select = (
+            "adj_close, " if self._supports_adj_close(market) else "NULL AS adj_close, "
+        )
+        partition_clause = (
+            f"AND {cfg.partition_col} = :partition" if partition is not None else ""
+        )
+        sql = text(
+            f"""
+            SELECT time, symbol, {cfg.partition_col} AS partition,
+                   open, high, low, close, {adj_close_select}volume, value, source
+            FROM (
+                SELECT time, symbol, {cfg.partition_col}, open, high, low, close,
+                       {"adj_close," if self._supports_adj_close(market) else ""}
+                       volume, value, source,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY symbol ORDER BY time DESC
+                       ) AS row_number
+                FROM public.{cfg.table_name}
+                WHERE symbol IN :symbols
+                  {partition_clause}
+                  AND time >= :time_floor
+            ) AS recent
+            WHERE row_number <= :count
+            ORDER BY symbol, time DESC
+            """
+        ).bindparams(bindparam("symbols", expanding=True))
+        params: dict[str, object] = {
+            "symbols": normalized,
+            "count": int(count),
+            "time_floor": _recent_time_floor(int(count), now=datetime.now(UTC)),
+        }
+        if partition is not None:
+            params["partition"] = partition
+        result = await self._session.execute(sql, params)
+        for row in result.mappings().all():
+            symbol = str(row["symbol"])
+            out.setdefault(symbol, []).append(
+                DailyCandleRow(
+                    time_utc=row["time"],
+                    symbol=symbol,
+                    partition=str(row["partition"]),
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    adj_close=(
+                        float(row["adj_close"])
+                        if row["adj_close"] is not None
+                        else None
+                    ),
+                    volume=float(row["volume"] or 0.0),
+                    value=float(row["value"] or 0.0),
+                    source=row["source"],
+                )
+            )
+        for rows in out.values():
+            rows.reverse()
+        return out

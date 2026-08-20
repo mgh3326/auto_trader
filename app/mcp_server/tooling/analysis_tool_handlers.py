@@ -15,7 +15,11 @@ from typing import Any, Literal
 import httpx
 import yfinance as yf
 
-from app.mcp_server.tooling import analysis_screening, foreigners_liquidity
+from app.mcp_server.tooling import (
+    analysis_quick,
+    analysis_screening,
+    foreigners_liquidity,
+)
 from app.mcp_server.tooling.analysis_screen_core import normalize_screen_request
 from app.mcp_server.tooling.earnings_context import (
     _kr_ingestion_freshness,
@@ -767,6 +771,30 @@ async def _run_batch_analysis(
     }
 
 
+async def _load_quick_projection_batch(
+    symbols: list[str | int],
+    *,
+    market: str | None,
+    decision_history_account_mode: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Resolve symbols once and dispatch the DB-only quick projection."""
+    resolved: list[tuple[str, str]] = []
+    for raw_symbol in symbols:
+        normalized = analysis_screening._normalize_symbol_input(raw_symbol, market)
+        market_type, canonical = analysis_screening._resolve_market_type(
+            normalized, market
+        )
+        # _resolve_market_type preserves case for auto-detected US symbols, while
+        # the daily-candle read model is uppercase-keyed. Keep one canonical key
+        # for both the loader and the response map.
+        if market_type == "equity_us":
+            canonical = canonical.upper()
+        resolved.append((canonical, market_type))
+    return await analysis_quick.load_quick_projection_batch(
+        resolved, decision_history_account_mode=decision_history_account_mode
+    )
+
+
 def _position_index_key(symbol: str, instrument_type: str) -> str:
     """Normalized lookup key for the in-memory position index (ROB-541)."""
     from app.mcp_server.tooling.shared import normalize_position_symbol
@@ -1120,21 +1148,64 @@ async def analyze_stock_batch_impl(
     Returns:
         Dict with 'results' (symbol -> summary) and 'summary' keys
     """
-    # Position attach only applies to the compact summary contract. The full
-    # payload (quick=False) is returned verbatim and never carries 'position'.
-    attach_position = include_position and quick
+    if not symbols:
+        raise ValueError("symbols must contain at least one entry")
+    if len(symbols) > 10:
+        raise ValueError("symbols must contain at most 10 entries")
 
     if quick:
-
-        def formatter(
-            _sym: str,
-            result: dict[str, Any],
-            *,
-            position_index: dict[str, list[dict[str, Any]]] | None = None,
-        ) -> dict[str, Any]:
-            return _summarize_analysis_result(
-                _sym, result, position_index=position_index
+        # ROB-1311: quick is a DB-only projection.  ``include_position`` is
+        # accepted for schema compatibility, but holdings/order surfaces are
+        # deliberately outside this fast lane.
+        del include_position
+        # Resolve once up front. The canonical list is the sole source of
+        # truth for both the batch loader and the result map; this prevents
+        # lower-case/``A``-prefixed inputs from becoming lookup misses.
+        # The batch loader is the quick equivalent of `_attach_decision_history`
+        # and `_attach_earnings`; neither per-symbol attach loop is used here.
+        normalized_symbols: list[str] = []
+        for raw_symbol in symbols:
+            normalized = analysis_screening._normalize_symbol_input(raw_symbol, market)
+            market_type, canonical = analysis_screening._resolve_market_type(
+                normalized, market
             )
+            if market_type == "equity_us":
+                canonical = canonical.upper()
+            normalized_symbols.append(canonical)
+        projection_kwargs: dict[str, Any] = {"market": market}
+        if decision_history_account_mode is not None:
+            projection_kwargs["decision_history_account_mode"] = (
+                decision_history_account_mode
+            )
+        projection = await _load_quick_projection_batch(
+            normalized_symbols, **projection_kwargs
+        )
+        results = {
+            symbol: projection.get(
+                symbol,
+                {
+                    "symbol": symbol,
+                    "error": "quick projection unavailable",
+                    "data_state": "missing",
+                },
+            )
+            for symbol in normalized_symbols
+        }
+        successful = sum("error" not in row for row in results.values())
+        errors = [
+            f"{symbol}: {row['error']}"
+            for symbol, row in results.items()
+            if "error" in row
+        ]
+        return {
+            "results": results,
+            "summary": {
+                "total_symbols": len(normalized_symbols),
+                "successful": successful,
+                "failed": len(results) - successful,
+                "errors": errors,
+            },
+        }
     else:
 
         def formatter(
@@ -1150,19 +1221,9 @@ async def analyze_stock_batch_impl(
         market=market,
         include_peers=include_peers,
         formatter=formatter,
-        include_position=attach_position,
+        include_position=False,
         refresh=refresh,
     )
-    # ROB-648: annotate each symbol that already has a fresh persisted artifact
-    # (soft reuse hint, fail-open). Only for the compact contract.
-    if quick:
-        await _attach_fresh_artifact_hints(response.get("results", {}), market=market)
-        await _attach_decision_history(
-            response.get("results", {}),
-            market=market,
-            decision_history_account_mode=decision_history_account_mode,
-        )
-        await _attach_earnings(response.get("results", {}), market=market)
     return response
 
 
