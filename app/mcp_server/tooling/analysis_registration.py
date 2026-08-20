@@ -30,6 +30,9 @@ from app.mcp_server.tooling.research_pipeline_read import (
     stage_analysis_get_impl,
 )
 from app.mcp_server.tooling.screener_snapshot_tool import screen_stocks_snapshot_impl
+from app.mcp_server.tooling.spike_attribution_registration import (
+    register_spike_attribution_tools,
+)
 from app.mcp_server.tooling.theme_events import get_theme_events_impl
 from app.services.krx import probe_krx_session_health
 
@@ -46,6 +49,7 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "screen_stocks_snapshot",
     "discover_buy_candidates_fanout",
     "evaluate_buy_gate_ab_shadow",
+    "get_spike_attribution",
     # ROB-359: "recommend_stocks" is intentionally registry-hidden (parked).
     # screen_stocks is the generic candidate-discovery entrypoint; the
     # recommend_stocks_impl implementation is retained in
@@ -73,6 +77,7 @@ def register_analysis_tools(
 
     register_buy_candidate_fanout_tools(mcp)
     register_buy_gate_ab_shadow_tools(mcp)
+    register_spike_attribution_tools(mcp)
 
     @mcp.tool(
         name="get_krx_session_health",

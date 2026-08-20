@@ -90,6 +90,13 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         # read-only advisory tool, so including it preserves the KIWOOM ↔
         # KIWOOM_KR shared-surface contract without exposing a mutation.
         "evaluate_buy_gate_ab_shadow",
+        # ROB-1303: read-only spike cause attribution. Same reasoning as the
+        # ROB-1301 entry above — it is advisory and cannot mutate anything, and
+        # the KIWOOM <-> KIWOOM_KR shared-surface contract
+        # (test_keeps_kr_order_surface_intact) requires that the only tools
+        # KIWOOM has and KIWOOM_KR lacks are the US mutations and the mirror
+        # counterfactual. Omitting it here would widen that difference.
+        "get_spike_attribution",
         "execution_ledger_fill_events_list_recent",
         "forecast_resolve",
         "forecast_save",

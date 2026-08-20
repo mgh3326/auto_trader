@@ -185,6 +185,11 @@ tests/services/research/test_strategy_learning_event_service.py
 tests/services/research_candles/test_promotion.py
 tests/services/social_sentiment_probe/test_cli.py
 tests/services/social_sentiment_probe/test_sources.py
+tests/services/spike_attribution/test_cache.py
+tests/services/spike_attribution/test_judgment_status.py
+tests/services/spike_attribution/test_materials.py
+tests/services/spike_attribution/test_no_mutation_surface.py
+tests/services/spike_attribution/test_spec_freeze.py
 tests/services/test_alpaca_paper_ledger_provenance.py
 tests/services/test_alpaca_paper_retrospective_pending.py
 tests/services/test_alpaca_paper_roundtrip_report_service.py
