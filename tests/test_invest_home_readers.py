@@ -746,7 +746,9 @@ async def test_manual_account_identity_survives_price_availability_toss_and_non_
     to a different hardcoded canonical id/name.
     """
 
-    broker_toss = SimpleNamespace(id=501, broker_type="toss", account_name="토스 수동계좌")
+    broker_toss = SimpleNamespace(
+        id=501, broker_type="toss", account_name="토스 수동계좌"
+    )
     broker_samsung = SimpleNamespace(
         id=502, broker_type="samsung", account_name="삼성 퇴직연금 DC"
     )

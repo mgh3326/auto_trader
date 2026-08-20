@@ -1512,9 +1512,7 @@ async def test_get_home_summary_excludes_manual_value_removed_by_toss_api_dedup(
     assert [h.symbol for h in home.holdings] == ["BRK.B", "AAPL"]
 
     manual_account_home = next(a for a in home.accounts if a.source == "toss_manual")
-    manual_account_panel = next(
-        a for a in panel.accounts if a.source == "toss_manual"
-    )
+    manual_account_panel = next(a for a in panel.accounts if a.source == "toss_manual")
     # Account totals must equal the sum of the manual holdings actually
     # published (AAPL only == 400.0), not the reader's unfiltered 1000.0.
     assert manual_account_home.valueKrw == pytest.approx(400.0)
