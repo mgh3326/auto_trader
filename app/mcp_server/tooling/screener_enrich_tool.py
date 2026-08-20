@@ -313,10 +313,17 @@ async def screen_stocks_enrich_impl(
     merged rows) — same semantics as the pre-ROB-1309 screen_stocks_snapshot.
 
     Negative caching: a symbol whose sector/consensus fetch just failed is
-    not retried within the TTL window; every skip/failure is reported under
-    `meta.enrichment_excluded` (rows are never silently dropped — only the
-    specific enrichment field is missing for that symbol). See module
-    docstring for the full contract, including the explicit non-mutation of
+    not retried within the retry-block TTL (`NEGATIVE_CACHE_TTL_SECONDS`,
+    30 min); every skip/failure is reported under `meta.enrichment_excluded`.
+    Below the chronic threshold this only costs the specific enrichment
+    field (row stays in `results`). At/above `_CHRONIC_FAILURE_THRESHOLD`
+    (3 consecutive failures, tracked for `NEGATIVE_CACHE_HISTORY_TTL_SECONDS`
+    = 24h) the row IS removed from THIS call's `results` — but always
+    non-silently via `meta.chronic_failure_candidates`/`chronic_excluded_count`,
+    never a DB/permanent mutation, and self-healing: the very next
+    `record_success` (or either TTL lapsing) clears the negative-cache entry
+    and the symbol is included again on the next call. See module docstring
+    for the full contract, including the explicit non-mutation of
     `kr_symbol_universe`/`us_symbol_universe`/`symbol_sectors` beyond the
     pre-existing lazy-fill write path.
     """

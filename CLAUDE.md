@@ -381,7 +381,7 @@ Sentry 실측(p50 38.11s / p95 54.73s, 호출당 ~214 HTTP call, 120s 예산 내
 | `min_analyst_count`/`min_analyst_buy_count` | **거부** — `{"error": ..., "redirectTool": "screen_stocks_enrich"}` fail-closed (무시하거나 네트워크 호출하지 않음) | 지원 — 페이지네이션 전에 컨센서스 COUNT를 해석해 필터링 |
 | 응답의 `analysisContext`/`analystLabel` | 없음 | 있음 (`enrich_snapshot_page` 결과) |
 | write 부작용 | 없음 — `screen_stocks_snapshot`은 KIS-live holdings lookup을 포함해 어떤 external HTTP call도 만들지 않는다(ROB-1309 회귀수정: `isHeld`는 항상 `false`, `exclude_held`는 `screen_stocks_enrich`로 fail-closed redirect) | 섹터 lazy-fill이 기존 `symbol_sectors_service`(ROB-512) 경로로 씀. KIS-live 보유종목 조회 1회(`isHeld`/`exclude_held` 표시용, ROB-1309 이전부터 존재하던 bounded call)도 이제 이 도구에서만 수행됨. `invest_screener_snapshots` 자체에 대한 쓰기는 없음(그 테이블의 유일한 writer는 여전히 `InvestScreenerSnapshotsRepository.upsert`이며, 오프라인 스냅샷 빌더/flow 전용 — 이 두 MCP 도구 어느 쪽도 호출하지 않음) |
-| 음성 캐시 | 해당 없음 | 있음 — `app/services/invest_view_model/enrichment_negative_cache.py` (Redis TTL 30분, 에러 분류, 연속 실패 카운트). 실패/스킵은 `meta.enrichment_excluded`에 항상 명시적으로 보고(조용히 사라지지 않음). **연속 3회 이상 실패한 chronic 후보는 그 호출의 `results`에서는 제외되고 `meta.chronic_failure_candidates`에 별도로 non-silent 보고된다** — "절대 제거 안 됨"이 아니라 "제거는 항상 명시적으로 보고되고, TTL(30분) 경과 또는 성공 시 자동 회복되어 영구 은닉이 불가능"이 정확한 계약이다. **유니버스 mutation은 의도적으로 구현하지 않음** — 아래 "negative cache = universe cleanup 범위" 참고 |
+| 음성 캐시 | 해당 없음 | 있음 — `app/services/invest_view_model/enrichment_negative_cache.py` (재시도 차단 TTL 30분 + 실패 이력/카운트 보존 TTL 24시간 분리, 에러 분류, 연속 실패 카운트). 실패/스킵은 `meta.enrichment_excluded`에 항상 명시적으로 보고(조용히 사라지지 않음). **연속 3회 이상 실패한 chronic 후보는 그 호출의 `results`에서는 제외되고 `meta.chronic_failure_candidates`에 별도로 non-silent 보고된다** — "절대 제거 안 됨"이 아니라 "제거는 항상 명시적으로 보고되고, 두 TTL 중 어느 쪽이든 경과하거나 성공 시 자동 회복되어 영구 은닉이 불가능"이 정확한 계약이다. **유니버스 mutation은 의도적으로 구현하지 않음** — 아래 "negative cache = universe cleanup 범위" 참고 |
 | 공유 로직 | `app/mcp_server/tooling/screener_snapshot_tool.py::_build_snapshot_page` → `build_screener_results(..., snapshot_only=True)` (DB-only 빌드/필터/페이지네이션; 스냅샷이 없거나/stale이거나 스냅샷 분기 자체가 없는 preset/market 조합은 generic `ScreenerService.list_screening`으로 fall-through하지 않고 빈 결과 + 명시적 warning으로 fail-closed) | 동일 `_build_snapshot_page`를 `snapshot_only=False`(기본값)로 재사용 — snapshot이 없는 일부 preset(예: `consecutive_gainers`/`growth_expectation`(US)/`crypto_high_volume` 파티션 미적재)에 한해 live discovery로 fall-through하는 pre-existing 동작을 유지한다. live fallback은 오직 이 explicit 도구를 통해서만 노출된다 |
 
 **구현**: `app/mcp_server/tooling/screener_snapshot_tool.py`(DB-only 도구 + 공유 빌더),
@@ -400,13 +400,20 @@ Redis cache-aside로 캐싱한다 — `_PROVIDER_BY_MARKET = {"kr": PROVIDER_NAV
 행을 실제로 mutate하는 "universe cleanup"을 구현하지 **않았다** — 대신 요구사항 자체가 명시한
 제약("must not permanently hide valid symbols")과 이 레포의 기존 관례(ROB-1236 `halted_suspect`가
 정지 의심 종목을 DB mutation 없이 **탐지+보고**만 하는 것과 동일 패턴)를 따라, "universe cleanup"을
-**TTL 경과 시 자동 회복되는 활성-fetch 대상에서의 일시 제외**로 해석했다: `enrichment_negative_cache`가
-TTL(30분) 동안 재시도를 막고(bounded), 실패를 분류하고(error_class), `meta.enrichment_excluded`로
-항상 보고하며(non-silent), TTL이 지나거나 성공하면 자동으로 해제된다(`record_success`가 엔트리 삭제) —
-영구 은닉이 원천적으로 불가능한 구조. `meta.chronic_failure_candidates`(3회 이상 연속 실패)는 운영자가
-직접 `kr_symbol_universe`/`us_symbol_universe`를 검토할 수 있는 advisory 신호일 뿐, 자동 삭제/비활성화
-트리거는 없다. 실제 DB 테이블 mutation(예: soft-delete 플래그, 별도 정리 스크립트)이 필요하다고 판단되면
-별도 Linear 이슈로 분리해야 한다 — 이 PR 범위에서는 스키마 변경/마이그레이션을 추가하지 않았다.
+**TTL 경과 시 자동 회복되는 활성-fetch 대상에서의 일시 제외**로 해석했다: `enrichment_negative_cache`는
+재시도 차단 TTL(`NEGATIVE_CACHE_TTL_SECONDS`, 30분)과 실패 이력/카운트 보존 TTL
+(`NEGATIVE_CACHE_HISTORY_TTL_SECONDS`, 24시간)을 분리해 둔다(bounded) — 실패를 분류하고
+(error_class), `meta.enrichment_excluded`로 항상 보고하며(non-silent), 성공 시
+`record_success`가 즉시 엔트리를 지워 자동 해제된다. **연속 3회 이상 실패(`_CHRONIC_FAILURE_THRESHOLD`)한
+chronic 후보는 그 호출의 `screen_stocks_enrich` `results`에서는 제외되지만**(DB/영구 mutation은
+아님 — 다음 호출에서 재시도 TTL이 지나 있거나 성공하면 즉시 복귀), **그 제외는 항상
+`meta.chronic_failure_candidates`(및 `meta.enrichment_excluded`)로 non-silent 보고된다** —
+"조용히 사라짐"이 아니라 "제거는 항상 보고되고, 두 TTL 중 어느 쪽이든 지나거나 성공하면 자동
+회복되어 영구 은닉이 불가능"이 정확한 계약이다. `meta.chronic_failure_candidates`는 운영자가
+직접 `kr_symbol_universe`/`us_symbol_universe`를 검토할 수 있는 advisory 신호이기도 하며, 이
+신호 자체가 자동 삭제/비활성화를 트리거하지는 않는다. 실제 DB 테이블 mutation(예: soft-delete
+플래그, 별도 정리 스크립트)이 필요하다고 판단되면 별도 Linear 이슈로 분리해야 한다 — 이 PR
+범위에서는 스키마 변경/마이그레이션을 추가하지 않았다.
 
 **주의**: `halted_suspect`(ROB-1236) 시맨틱은 이 분리와 무관합니다 — `screen_stocks_snapshot`/
 `screen_stocks_enrich` 어느 쪽도 `halt_filter.py`/`analysis_analyze.py`/`buy_candidate_fanout.py`를
