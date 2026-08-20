@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from decimal import Decimal
 
 import fakeredis.aioredis
@@ -162,6 +164,54 @@ async def test_fetch_toss_portfolio_snapshot_default_skips_sellable() -> None:
     # General portfolio reads must not fan out to Toss ORDER_INFO.
     assert client.sellable_calls == []
     assert snapshot.positions[0].sellable_quantity is None
+
+
+@pytest.mark.asyncio
+async def test_corrupt_toss_snapshot_recovery_reenters_shared_singleflight():
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    class _CountingSlowClient(_FakeTossClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.holdings_calls = 0
+
+        async def holdings(self) -> TossHoldings:
+            self.holdings_calls += 1
+            await asyncio.sleep(0.05)
+            return await super().holdings()
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_a = TossPortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+    cache_b = TossPortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+    await redis_client.set(
+        cache_a._cache_key("positions"),
+        json.dumps({"positions": [{"corrupt": True}]}),
+        ex=30,
+    )
+    client_a = _CountingSlowClient()
+    client_b = _CountingSlowClient()
+
+    first, second = await asyncio.gather(
+        fetch_toss_portfolio_snapshot(
+            client=client_a,
+            need_cash=False,
+            snapshot_cache=cache_a,
+            use_shared_snapshot=True,
+        ),
+        fetch_toss_portfolio_snapshot(
+            client=client_b,
+            need_cash=False,
+            snapshot_cache=cache_b,
+            use_shared_snapshot=True,
+        ),
+    )
+
+    assert first.positions == second.positions
+    assert client_a.holdings_calls + client_b.holdings_calls == 1
+    cached = await cache_a.get("positions")
+    assert cached is not None
+    assert isinstance(cached.get("positions"), list)
+    assert cached["positions"][0]["symbol"] == "BRK.B"
 
 
 @pytest.mark.asyncio

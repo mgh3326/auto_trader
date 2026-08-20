@@ -810,6 +810,160 @@ def test_cached_home_projection_preserves_legacy_mcp_contracts() -> None:
     assert manual["account_name"] == "Toss 수동"
 
 
+def _source_contract_home_response():
+    from app.schemas.invest_home import Account, CashAmounts, Holding
+
+    response = _legacy_projection_home_response()
+    response.accounts.extend(
+        [
+            Account(
+                accountId="101",
+                displayName="Broker Alpha",
+                source="toss_manual",
+                accountKind="manual",
+                includedInHome=True,
+                valueKrw=55_000,
+                cashBalances=CashAmounts(),
+                buyingPower=CashAmounts(),
+            ),
+            Account(
+                accountId="102",
+                displayName="Broker Beta",
+                source="toss_manual",
+                accountKind="manual",
+                includedInHome=True,
+                valueKrw=65_000,
+                cashBalances=CashAmounts(),
+                buyingPower=CashAmounts(),
+            ),
+            Account(
+                accountId="toss_api_account",
+                displayName="Toss",
+                source="toss_api",
+                accountKind="live",
+                includedInHome=True,
+                valueKrw=143_000,
+                cashBalances=CashAmounts(),
+                buyingPower=CashAmounts(),
+            ),
+        ]
+    )
+    response.holdings.extend(
+        [
+            Holding(
+                holdingId="kis:us:MSFT",
+                accountId="kis_account",
+                source="kis",
+                accountKind="live",
+                symbol="MSFT",
+                market="US",
+                assetType="equity",
+                assetCategory="us_stock",
+                displayName="Microsoft",
+                quantity=1,
+                averageCost=100,
+                costBasis=100,
+                currency="USD",
+                valueNative=109,
+                valueKrw=141_700,
+                pnlKrw=13_000,
+                pnlRate=0.1,
+            ),
+            Holding(
+                holdingId="toss_api:TSLA",
+                accountId="toss_api_account",
+                source="toss_api",
+                accountKind="live",
+                symbol="TSLA",
+                market="US",
+                assetType="equity",
+                assetCategory="us_stock",
+                displayName="Tesla",
+                quantity=1,
+                averageCost=100,
+                costBasis=100,
+                currency="USD",
+                valueNative=110,
+                valueKrw=143_000,
+                pnlKrw=13_000,
+                # Toss Home preserves the broker's percentage-point unit.
+                pnlRate=7.5,
+            ),
+            Holding(
+                holdingId="manual:101",
+                accountId="101",
+                source="toss_manual",
+                accountKind="manual",
+                symbol="035930",
+                market="KR",
+                assetType="equity",
+                assetCategory="kr_stock",
+                displayName="Manual Alpha",
+                quantity=1,
+                averageCost=50_000,
+                costBasis=50_000,
+                currency="KRW",
+                valueNative=55_000,
+                valueKrw=55_000,
+                pnlKrw=5_000,
+                pnlRate=0.1,
+            ),
+            Holding(
+                holdingId="manual:102",
+                accountId="102",
+                source="toss_manual",
+                accountKind="manual",
+                symbol="000660",
+                market="KR",
+                assetType="equity",
+                assetCategory="kr_stock",
+                displayName="Manual Beta",
+                quantity=1,
+                averageCost=60_000,
+                costBasis=60_000,
+                currency="KRW",
+                valueNative=65_000,
+                valueKrw=65_000,
+                pnlKrw=5_000,
+                pnlRate=0.0833333333,
+            ),
+        ]
+    )
+    return response
+
+
+@pytest.mark.asyncio
+async def test_production_cached_mcp_projection_preserves_source_contracts():
+    from app.mcp_server.tooling import portfolio_holdings
+    from app.services.portfolio_snapshot import serialize_portfolio_snapshot
+    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache = PortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+    scope = portfolio_holdings.portfolio_snapshot_scope(
+        user_id=1, include_paper=False, paper_sources=None
+    )
+    await cache.put(
+        scope, serialize_portfolio_snapshot(_source_contract_home_response())
+    )
+
+    positions, errors = await portfolio_holdings._collect_whole_portfolio_positions(
+        cache=cache,
+        user_id=1,
+    )
+
+    assert errors == []
+    by_symbol = {position["symbol"]: position for position in positions}
+    assert by_symbol["005930"]["account_name"] == "기본 계좌"
+    assert by_symbol["KRW-BTC"]["account_name"] == "기본 계좌"
+    assert by_symbol["MSFT"]["profit_loss"] == pytest.approx(10.0)
+    assert by_symbol["TSLA"]["profit_rate"] == pytest.approx(7.5)
+    assert by_symbol["035930"]["account"] == "broker_alpha"
+    assert by_symbol["035930"]["account_name"] == "Broker Alpha"
+    assert by_symbol["000660"]["account"] == "broker_beta"
+    assert by_symbol["000660"]["account_name"] == "Broker Beta"
+
+
 @pytest.mark.asyncio
 async def test_cached_upbit_projection_uses_canonical_symbol_for_refresh_lookup(
     monkeypatch,
@@ -916,6 +1070,52 @@ async def test_process_shared_snapshot_renews_slow_owner_lease_without_duplicate
 
 
 @pytest.mark.asyncio
+async def test_process_shared_snapshot_reacquires_after_expired_owner_without_duplicate_fetch():
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_b = TossPortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=0.12,
+        wait_timeout_seconds=0.03,
+        poll_interval_seconds=0.01,
+    )
+    cache_c = TossPortfolioSnapshotCache(
+        redis_client=redis_client,
+        ttl_seconds=30,
+        lock_ttl_seconds=0.12,
+        wait_timeout_seconds=0.03,
+        poll_interval_seconds=0.01,
+    )
+    await redis_client.set(
+        cache_b._singleflight_key("crashed-owner"),
+        "dead-owner-token",
+        px=120,
+    )
+    calls: list[str] = []
+
+    async def fetch_b() -> dict[str, object]:
+        calls.append("b")
+        await asyncio.sleep(0.05)
+        return {"owner": "b"}
+
+    async def fetch_c() -> dict[str, object]:
+        calls.append("c")
+        await asyncio.sleep(0.05)
+        return {"owner": "c"}
+
+    result_b, result_c = await asyncio.gather(
+        cache_b.get_or_fetch("crashed-owner", fetch_b),
+        cache_c.get_or_fetch("crashed-owner", fetch_c),
+    )
+
+    assert len(calls) == 1
+    assert result_b == result_c
+    assert await cache_b.get("crashed-owner") == result_b
+
+
+@pytest.mark.asyncio
 async def test_corrupt_whole_snapshot_fallback_is_singleflight_across_facades():
     from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
     from app.services.portfolio_snapshot_cache import (
@@ -959,6 +1159,126 @@ async def test_corrupt_whole_snapshot_fallback_is_singleflight_across_facades():
 
     assert home_a.holdings == home_b.holdings == []
     assert calls == {"kis": 1, "upbit": 1, "manual": 1}
+
+
+@pytest.mark.asyncio
+async def test_home_corrupt_snapshot_recovery_does_not_delete_newer_valid_payload(
+    monkeypatch,
+):
+    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
+    from app.services.portfolio_snapshot_cache import (
+        PortfolioSnapshotCache,
+        portfolio_snapshot_scope,
+    )
+
+    calls = {"kis": 0, "upbit": 0, "manual": 0}
+
+    class _Reader:
+        def __init__(self, source: str):
+            self.source = source
+
+        async def fetch(self, *, user_id):
+            calls[self.source] += 1
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_a = PortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+    cache_b = PortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+    scope = portfolio_snapshot_scope(user_id=1, include_paper=False, paper_sources=None)
+    await cache_a.put(scope, {"schema_version": 999, "response": {}})
+
+    service_a = InvestHomeService(
+        kis_reader=_Reader("kis"),
+        upbit_reader=_Reader("upbit"),
+        manual_reader=_Reader("manual"),
+        snapshot_cache=cache_a,
+    )
+    service_b = InvestHomeService(
+        kis_reader=_Reader("kis"),
+        upbit_reader=_Reader("upbit"),
+        manual_reader=_Reader("manual"),
+        snapshot_cache=cache_b,
+    )
+
+    delete_started = asyncio.Event()
+    allow_delete = asyncio.Event()
+    original_delete = cache_b.delete
+
+    async def delayed_delete(scope, *args, **kwargs):
+        delete_started.set()
+        await allow_delete.wait()
+        return await original_delete(scope, *args, **kwargs)
+
+    monkeypatch.setattr(cache_b, "delete", delayed_delete)
+    task_b = asyncio.create_task(service_b.get_home(user_id=1))
+    await delete_started.wait()
+    task_a = asyncio.create_task(service_a.get_home(user_id=1))
+    await task_a
+
+    assert calls == {"kis": 1, "upbit": 1, "manual": 1}
+    allow_delete.set()
+    await task_b
+    assert calls == {"kis": 1, "upbit": 1, "manual": 1}
+
+
+@pytest.mark.asyncio
+async def test_mcp_corrupt_snapshot_recovery_does_not_delete_newer_valid_payload(
+    monkeypatch,
+):
+    from app.mcp_server.tooling import portfolio_holdings
+    from app.services.portfolio_snapshot import serialize_portfolio_snapshot
+    from app.services.portfolio_snapshot_cache import (
+        PortfolioSnapshotCache,
+        portfolio_snapshot_scope,
+    )
+
+    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    cache_a = PortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+    cache_b = PortfolioSnapshotCache(redis_client=redis_client, ttl_seconds=30)
+    scope = portfolio_snapshot_scope(user_id=1, include_paper=False, paper_sources=None)
+    await cache_a.put(scope, {"schema_version": 999, "response": {}})
+    valid_payload = serialize_portfolio_snapshot(_legacy_projection_home_response())
+    fetch_calls = 0
+
+    async def fetch_payload(**kwargs):
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return valid_payload
+
+    monkeypatch.setattr(
+        portfolio_holdings,
+        "fetch_uncached_portfolio_snapshot_payload",
+        fetch_payload,
+    )
+    delete_started = asyncio.Event()
+    allow_delete = asyncio.Event()
+    original_delete = cache_b.delete
+
+    async def delayed_delete(scope, *args, **kwargs):
+        delete_started.set()
+        await allow_delete.wait()
+        return await original_delete(scope, *args, **kwargs)
+
+    monkeypatch.setattr(cache_b, "delete", delayed_delete)
+    task_b = asyncio.create_task(
+        portfolio_holdings._collect_whole_portfolio_positions(
+            cache=cache_b,
+            user_id=1,
+        )
+    )
+    await delete_started.wait()
+    task_a = asyncio.create_task(
+        portfolio_holdings._collect_whole_portfolio_positions(
+            cache=cache_a,
+            user_id=1,
+        )
+    )
+    await task_a
+
+    assert fetch_calls == 1
+    allow_delete.set()
+    await task_b
+    assert fetch_calls == 1
 
 
 @pytest.mark.asyncio

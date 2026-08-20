@@ -535,6 +535,59 @@ async def test_sell_preflight_ignores_warm_cache_and_rechecks_fresh_broker_sella
 
 
 @pytest.mark.asyncio
+async def test_us_sell_order_amount_without_quantity_fails_before_mutation(
+    monkeypatch,
+):
+    import app.mcp_server.tooling.orders_toss_variants as otv
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(otv, "validate_toss_api_config", lambda: [])
+
+    mock_client = MockTossClient(monkeypatch)
+    mock_client.holdings_list = [
+        {
+            "symbol": "AAPL",
+            "quantity": Decimal("10"),
+            "average_purchase_price": Decimal("100"),
+            "last_price": Decimal("110"),
+            "name": "Apple",
+            "market_country": "US",
+            "currency": "USD",
+            "market_value": {},
+            "profit_loss": {},
+            "daily_profit_loss": {},
+            "cost": {},
+        }
+    ]
+    mock_client.sellable_quantity_value = Decimal("0")
+    monkeypatch.setattr(
+        otv,
+        "record_toss_place_order",
+        AsyncMock(return_value={"ledger_id": 1}),
+    )
+
+    result = await toss_place_order(
+        symbol="AAPL",
+        side="sell",
+        order_type="limit",
+        quantity=None,
+        price="110",
+        order_amount="1",
+        market="us",
+        dry_run=False,
+        confirm=True,
+        account_mode="toss_live",
+    )
+
+    assert result["success"] is False
+    assert result["mutation_sent"] is False
+    assert result["error_code"] == "sell_quantity_required"
+    assert mock_client.sellable_calls == []
+    assert mock_client.placed_payloads == []
+
+
+@pytest.mark.asyncio
 async def test_us_sell_modify_preflight_compares_inherited_original_quantity(
     monkeypatch,
 ):

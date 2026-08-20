@@ -557,6 +557,64 @@ async def test_manual_reader_valuates_with_quote_service(
 
 @pytest.mark.asyncio
 @pytest.mark.unit
+async def test_manual_reader_preserves_distinct_broker_accounts_in_home_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broker_a = SimpleNamespace(id=101, broker_type="toss", account_name="Broker Alpha")
+    broker_b = SimpleNamespace(id=102, broker_type="toss", account_name="Broker Beta")
+    holdings = [
+        SimpleNamespace(
+            id=11,
+            broker_account_id=101,
+            broker_account=broker_a,
+            ticker="035930",
+            market_type=MarketType.KR,
+            display_name="Manual Alpha",
+            quantity=1,
+            avg_price=50_000,
+        ),
+        SimpleNamespace(
+            id=12,
+            broker_account_id=102,
+            broker_account=broker_b,
+            ticker="000660",
+            market_type=MarketType.KR,
+            display_name="Manual Beta",
+            quantity=1,
+            avg_price=60_000,
+        ),
+    ]
+
+    class _FakeManualService:
+        def __init__(self, db: Any) -> None:
+            self.db = db
+
+        async def get_holdings_by_user(self, user_id: int) -> list[Any]:
+            return holdings
+
+    monkeypatch.setattr(readers, "ManualHoldingsService", _FakeManualService)
+    quote_service = MagicMock()
+    quote_service.fetch_kr_prices = AsyncMock(
+        return_value={"035930": 55_000.0, "000660": 65_000.0}
+    )
+    quote_service.fetch_us_prices = AsyncMock(return_value={})
+
+    result = await readers.ManualHomeReader(
+        db=None,
+        quote_service=quote_service,  # type: ignore[arg-type]
+    ).fetch(user_id=1)
+
+    accounts = {account.accountId: account for account in result.accounts}
+    assert set(accounts) == {"101", "102"}
+    assert accounts["101"].displayName == "Broker Alpha"
+    assert accounts["102"].displayName == "Broker Beta"
+    assert accounts["101"].valueKrw == pytest.approx(55_000)
+    assert accounts["102"].valueKrw == pytest.approx(65_000)
+    assert {holding.accountId for holding in result.holdings} == {"101", "102"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
 async def test_manual_reader_does_not_fabricate_value_from_cost_basis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
