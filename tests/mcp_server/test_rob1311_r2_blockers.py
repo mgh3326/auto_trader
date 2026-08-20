@@ -497,3 +497,84 @@ async def test_quick_batch_duplicate_symbols_summary_counts_are_self_consistent(
     summary = result["summary"]
     assert summary["successful"] + summary["failed"] == summary["total_symbols"]
     assert summary["total_symbols"] == len(result["results"])
+
+
+# ---------------------------------------------------------------------------
+# B5 — decision_history recent_fills must branch on account_mode like the
+# canonical decision_history._recent_fills: kis_mock queries ONLY the mock
+# ledger (mirror_cohort=mock_counterfactual, lifecycle_state=fill); non-mock
+# queries the live ledgers. Currently analysis_quick queries the live ledgers
+# unconditionally, regardless of account_mode.
+# ---------------------------------------------------------------------------
+
+
+class _SpySession:
+    """Records which SQL statements executed; empty result for every query."""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    async def execute(self, statement: object, params: object | None = None):
+        self.statements.append(str(statement))
+
+        class _Result:
+            def scalars(self) -> "_Result":
+                return self
+
+            def all(self) -> list[object]:
+                return []
+
+        return _Result()
+
+    def _hit(self, table: str) -> bool:
+        return any(table in sql for sql in self.statements)
+
+    def _hit_mock_fill_query(self) -> bool:
+        # The default-mode retrospective visibility predicate also references
+        # kis_mock_order_ledger (mock-counterfactual EXISTS subquery), so a
+        # bare substring match on the table name is not selective enough.
+        # The actual recent_fills query is the only statement that combines
+        # this table with a lifecycle_state filter.
+        return any(
+            "kis_mock_order_ledger" in sql and "lifecycle_state" in sql
+            for sql in self.statements
+        )
+
+
+@pytest.mark.asyncio
+async def test_quick_decision_history_kis_mock_recent_fills_queries_only_mock_ledger():
+    assert analysis_quick is not None
+    session = _SpySession()
+
+    await analysis_quick._load_decision_history_batch(
+        session, [("005930", "equity_kr")], account_mode="kis_mock"
+    )
+
+    assert session._hit_mock_fill_query(), (
+        "kis_mock account_mode must query the mock ledger for recent_fills"
+    )
+    assert not session._hit("kis_live_order_ledger"), (
+        "kis_mock account_mode must NOT query the live KIS ledger"
+    )
+    assert not session._hit(" live_order_ledger"), (
+        "kis_mock account_mode must NOT query the live order ledger"
+    )
+    assert not session._hit("toss_live_order_ledger"), (
+        "kis_mock account_mode must NOT query the Toss live ledger"
+    )
+
+
+@pytest.mark.asyncio
+async def test_quick_decision_history_non_mock_recent_fills_queries_live_ledgers():
+    assert analysis_quick is not None
+    session = _SpySession()
+
+    await analysis_quick._load_decision_history_batch(
+        session, [("005930", "equity_kr")], account_mode=None
+    )
+
+    assert session._hit("kis_live_order_ledger")
+    assert session._hit("toss_live_order_ledger")
+    assert not session._hit_mock_fill_query(), (
+        "default/live account_mode must NOT query the mock ledger for recent_fills"
+    )
