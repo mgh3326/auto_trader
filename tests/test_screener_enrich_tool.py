@@ -935,6 +935,94 @@ async def test_enrich_analyst_count_filter_failure_is_negative_cached(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_enrich_analyst_count_filter_raising_provider_is_negative_cached(
+    monkeypatch,
+) -> None:
+    """ROB-1309 round-3 fix: the min_analyst_count/min_analyst_buy_count raw
+    count-fetch wrapper (`_raw_opinion_fetcher_with_negative_cache`) calls
+    handle_get_investment_opinions directly — unlike
+    test_enrich_analyst_count_filter_failure_is_negative_cached above (which
+    covers an ERROR-SHAPED dict return), this covers a RAISING provider. A
+    raise there must still be caught at the wrapper boundary, recorded
+    through the same kind="consensus" negative cache, and reported under
+    meta.enrichment_excluded — not silently swallowed by
+    analyst_consensus_cache.resolve_consensus's own outer try/except (which
+    would hide the failure from the wrapper's negcache bookkeeping and cause
+    an unbounded retry on every subsequent call)."""
+    _fake_kis_positions_empty(monkeypatch)
+    _fake_build_single(monkeypatch, {"symbol": "005930", "market": "kr"})
+
+    calls = {"n": 0}
+
+    async def _raises(**kwargs: Any):
+        calls["n"] += 1
+        raise TimeoutError("upstream timed out")
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.fundamentals._valuation.handle_get_investment_opinions",
+        _raises,
+    )
+
+    class _FakeRedis:
+        def __init__(self) -> None:
+            self.store: dict[str, str] = {}
+
+        async def get(self, key: str):
+            return self.store.get(key)
+
+        async def set(self, key: str, value: str, ex=None):  # noqa: ARG002
+            self.store[key] = value
+
+        async def delete(self, key: str):
+            self.store.pop(key, None)
+
+    fake_redis = _FakeRedis()
+
+    async def _return_fake_redis():
+        return fake_redis
+
+    monkeypatch.setattr("app.core.analyze_cache._get_redis_client", _return_fake_redis)
+
+    out1 = await enrich_tool.screen_stocks_enrich_impl(
+        preset="consecutive_gainers", market="kr", min_analyst_count=1
+    )
+
+    # First call: collection succeeds, provider is reached exactly once, the
+    # exception is caught at the wrapper and recorded as a failure.
+    assert calls["n"] == 1
+    excluded1 = out1["meta"]["enrichment_excluded"]
+    assert any(
+        e["symbol"] == "005930"
+        and e["kind"] == "consensus"
+        and e["reason"] == "fetch_failed"
+        for e in excluded1
+    ), excluded1
+
+    from app.services.invest_view_model import enrichment_negative_cache as negcache
+
+    entry = await negcache.get_entry(
+        fake_redis, kind="consensus", market="kr", symbol="005930"
+    )
+    assert entry is not None
+    assert entry.consecutive_failures == 1
+
+    out2 = await enrich_tool.screen_stocks_enrich_impl(
+        preset="consecutive_gainers", market="kr", min_analyst_count=1
+    )
+
+    # Second identical call: negative-cache hit, no provider retry.
+    assert calls["n"] == 1
+    excluded2 = out2["meta"]["enrichment_excluded"]
+    assert any(
+        e["symbol"] == "005930"
+        and e["kind"] == "consensus"
+        and e["reason"] == "negative_cache_hit"
+        for e in excluded2
+    ), excluded2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_enrich_chronic_failures_excluded_from_results_and_reported(
     monkeypatch,
 ) -> None:
