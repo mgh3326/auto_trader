@@ -329,17 +329,46 @@ def validate_artifact_provenance(
     well-formed and self-consistent with its own ``durations``/``not_called``
     content (ROB-1312).
 
-    Deliberately **not** a freshness check against today's tree -- that is
-    ``validate_freshness``'s job, which compares against a caller-supplied
-    ``expected_source_commit_sha``/``collected_nodes`` and is stricter for
-    its own purpose. This function has no "today" to compare against: it
-    only asks whether the artifact is internally coherent, which is exactly
-    the guarantee a caller that explicitly tolerates staleness (the
-    file-shard planner, which must accept an artifact predating a just-added
-    test file and cover it via deterministic fallback weight) still needs --
-    a corrupted/hand-tampered artifact (blank source commit, a
-    ``collection_hash`` that does not actually describe its own recorded
-    nodes) must never silently produce a manifest.
+    This checks **coherence, not correspondence**. Coherence: do the
+    artifact's own fields agree with each other (a non-empty
+    ``source_commit_sha``; a ``collection_hash`` that actually hashes this
+    artifact's own recorded node set)? Correspondence: does
+    ``source_commit_sha`` name the tree that was *actually* measured? This
+    function answers the first question only -- it cannot answer the
+    second, because a tamperer who edits ``durations`` can equally edit
+    ``source_commit_sha`` and recompute ``collection_hash`` to match; no
+    predicate computed purely from the artifact's own content can ever
+    detect that. Establishing correspondence needs an expectation supplied
+    by an authority *outside* the artifact, which is exactly
+    ``validate_freshness``'s ``expected_source_commit_sha``/
+    ``collected_nodes`` parameters (sourced from ``github.sha`` and a fresh
+    collect-only capture in the one caller -- the weekly duration refresh --
+    that legitimately has that expectation). Do not call this function
+    expecting it to catch a wrong-but-plausible sha; it cannot, and a test
+    asserting that it does would be asserting a guarantee this code does not
+    provide.
+
+    Deliberately **not** a freshness check against today's tree either --
+    this function has no "today" to compare against at all, coherence or
+    otherwise. That is intentional: a caller that explicitly tolerates
+    staleness (the file-shard planner, which must accept an artifact
+    predating a just-added test file and cover it via deterministic
+    fallback weight) still needs *this* guarantee -- a corrupted/
+    hand-tampered artifact (blank source commit, a ``collection_hash`` that
+    does not actually describe its own recorded nodes) must never silently
+    produce a manifest, even though a merely-*stale*-but-coherent one must.
+
+    Threat model: accidental corruption and hand-editing of a committed
+    file in a branch-protected repo, not a malicious/adversarial telemetry
+    feed -- there is no signature to verify and none is warranted here.
+
+    Not chained into ``validate_freshness``: ``validate_freshness`` already
+    strictly implies this function's ``collection_hash`` check (it asserts
+    ``collection_hash == hash(collected_nodes)`` *and*
+    ``durations | not_called == collected_nodes``, so
+    ``collection_hash == hash(durations | not_called)`` follows), so calling
+    it there would add nothing while re-ordering error precedence for a
+    consumer with message-specific tests.
     """
     source_commit_sha = artifact.get("source_commit_sha")
     if (

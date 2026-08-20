@@ -106,6 +106,52 @@ the mean-duration fallback weight (§3) until the next weekly refresh
 measures it for real — this is expected and does not require waiting for a
 refresh before merging.
 
+### 4.1 Provenance guard: coherence, not correspondence
+
+Before computing any weight, `generate` calls
+`scripts/call_durations.py::validate_artifact_provenance` on the loaded
+`.call_durations.json`, which requires:
+
+- `source_commit_sha` is a non-empty, non-whitespace string;
+- `collection_hash` is a string equal to
+  `compute_collection_hash(durations.keys() | not_called)` — i.e. it
+  actually hashes *this artifact's own* recorded node set.
+
+This is a **coherence** check (do the artifact's fields agree with each
+other?), not a **correspondence** check (does `source_commit_sha` actually
+name the tree that was measured?). No predicate computed purely from the
+artifact's own content can answer the second question — a tamperer who
+edits `durations` can equally edit `source_commit_sha` and recompute
+`collection_hash` to match. Correspondence requires an expectation from an
+authority *outside* the artifact, which is exactly what
+`validate_freshness`'s `expected_source_commit_sha`/`collected_nodes`
+parameters provide for the one caller that has it (the weekly refresh,
+comparing against the `github.sha` it just measured — see §6). The
+provenance guard is **not** chained into `validate_freshness`, since
+`validate_freshness` already strictly implies it.
+
+Deliberately absent, by design (§6): comparing `source_commit_sha` against
+today's HEAD, comparing `collection_hash` against today's authoritative
+collection, or requiring the artifact's own node set to equal today's
+collection. A stale-but-internally-consistent artifact (correct
+`source_commit_sha` for *some* past tree, `collection_hash` that correctly
+describes its own — outdated — `durations`/`not_called`) is valid `generate`
+input; that staleness is what the mean-duration fallback above exists to
+absorb. What this guard *does* catch: a blank/whitespace/non-string
+`source_commit_sha`, and a `collection_hash` that is empty, non-string, or
+does not actually hash the artifact's own content (e.g. a leftover
+placeholder, a copy-paste from a different artifact, or accidental
+hand-editing) — any of which previously let `generate` silently produce a
+manifest from data with no real provenance behind it.
+
+Threat model: accidental corruption and hand-editing of a *committed file
+in a branch-protected repo* — not an adversarial telemetry feed. There is
+no signature to verify and none is warranted. `check` never reads
+`.call_durations.json` at all, so none of this guards the runtime CI
+execution path (`test.yml`'s `test` matrix jobs just run whatever
+`ci_shards/*.txt` already says) — it guards only the manifest-*generation*
+path.
+
 To only check (no write), e.g. to reproduce a CI failure locally:
 
 ```bash

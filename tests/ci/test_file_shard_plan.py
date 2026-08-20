@@ -671,3 +671,104 @@ def test_cli_generate_tolerates_stale_but_self_consistent_artifact(
     manifest = (tmp_path / "ci_shards" / "shard-1.txt").read_text()
     assert "tests/a.py" in manifest
     assert "tests/b_new.py" in manifest
+
+
+@pytest.mark.parametrize(
+    "malformed_field,malformed_value",
+    [
+        ("source_commit_sha", ""),
+        ("source_commit_sha", "   "),
+        ("source_commit_sha", True),
+        ("collection_hash", ""),
+        ("collection_hash", "not-a-real-hash"),
+    ],
+    ids=["src-empty", "src-ws", "src-bool", "hash-empty", "hash-bogus"],
+)
+def test_cli_generate_writes_nothing_on_provenance_rejection(
+    tmp_path: Path, malformed_field: str, malformed_value: object
+) -> None:
+    # Fail-closed must mean *nothing written*, not "written then errored" --
+    # a partially-written ci_shards/ from a rejected generate would be worse
+    # than no ci_shards/ at all (a stale-looking but half-updated manifest
+    # set could pass a later `check` for the wrong reason).
+    node = "tests/a.py::test_1"
+    artifact = {
+        "schema_version": 2,
+        "source_commit_sha": "a" * 40,
+        "collection_hash": compute_collection_hash({node}),
+        "node_count": 1,
+        "durations": {node: 1.0},
+        "not_called": [],
+    }
+    artifact[malformed_field] = malformed_value
+    manifest_dir = tmp_path / "ci_shards"
+
+    exit_code = _run_generate(tmp_path, call_durations=artifact, collected_nodes=[node])
+
+    assert exit_code != 0
+    assert not manifest_dir.exists() or not list(manifest_dir.iterdir())
+
+
+def test_cli_generate_stale_artifact_fallback_is_measured_mean_and_check_then_passes(
+    tmp_path: Path,
+) -> None:
+    # Strengthens the staleness-tolerance positive control: the fallback
+    # weight assigned to a brand-new node must be the ARTIFACT's own
+    # measured mean (not the UNMEASURED_FALLBACK_DEFAULT_SECONDS bootstrap
+    # constant), the new file must land in exactly one shard, and a
+    # subsequent `check` against the same today's-collection must pass --
+    # proving the regenerated manifests are usable, not just non-crashing.
+    node_a = "tests/a.py::test_1"
+    node_b = "tests/b.py::test_1"
+    new_node = "tests/c_new.py::test_1"
+    artifact = {
+        "schema_version": 2,
+        "source_commit_sha": "old" + "0" * 37,
+        "collection_hash": compute_collection_hash({node_a, node_b}),
+        "node_count": 2,
+        "durations": {node_a: 2.0, node_b: 6.0},  # mean = 4.0
+        "not_called": [],
+    }
+    call_durations_path = tmp_path / "call_durations.json"
+    call_durations_path.write_text(json.dumps(artifact), encoding="utf-8")
+    collected_nodes = [node_a, node_b, new_node]
+    collected_path = _write_nodes(tmp_path / "collected.txt", *collected_nodes)
+    manifest_dir = tmp_path / "ci_shards"
+
+    generate_exit = main(
+        [
+            "generate",
+            "--call-durations",
+            str(call_durations_path),
+            "--collected",
+            str(collected_path),
+            "--manifest-dir",
+            str(manifest_dir),
+            "--shard-count",
+            "2",
+        ]
+    )
+    assert generate_exit == 0
+
+    weights = json.loads((manifest_dir / "weights.json").read_text(encoding="utf-8"))
+    assert weights["fallback"]["unmeasured_node_seconds"] == pytest.approx(4.0)
+    assert weights["authoritative_node_count"] == len(collected_nodes)
+
+    shard_files = load_all_shard_manifests(manifest_dir, shard_count=2)
+    owners = [
+        index for index, files in shard_files.items() if "tests/c_new.py" in files
+    ]
+    assert owners == [owners[0]], "new file must be assigned to exactly one shard"
+
+    check_exit = main(
+        [
+            "check",
+            "--collected",
+            str(collected_path),
+            "--manifest-dir",
+            str(manifest_dir),
+            "--shard-count",
+            "2",
+        ]
+    )
+    assert check_exit == 0
