@@ -9,9 +9,9 @@
 # 저항 기반 매도 티어에 하나도 매칭되지 않아 익절 경로가 소멸한다. 그 공백만
 # 닫는 폴백 티어 sell.trim_preplace.breakeven_extension_ladder 를 신설한다.
 # 저항 티어의 대체가 아니며, exclusions.no_resistance_reference 는 유지된다.
-version: "2026-08-20.2"
+version: "2026-08-21.1"
 captured_as_of: "2026-08-12"
-source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change)"
+source: "ROB-643/751 baseline; ROB-839 crypto-recheck reports 2026-07-11/12; ROB-871 resting auto-approve seed; ROB-932 crash-day advisory keys; ROB-948 user-stance advisory keys; ROB-956 US per-symbol USD sizing key; ROB-999/Fable governance advisory 2026-07-22 Q3 #4/#6; operator theme-cap direction 2026-07-22; KR single-share full-exit far-lane shadow seed 2026-07-23; GPT Pro trading retrospective Phase 2.5 advisory received 2026-07-25; operator D2/D5/D7 momentum-spike, single-share, and minimum-benefit decisions captured 2026-07-27; posture-v1 ROB-1090 transition contract approved 2026-07-27; ROB-1106 posture-v1 shadow stage 1 default-off contract 2026-07-28; operator drift removal 2026-08-08 (Phase 2.5 rules 01-09/11-14 and profit_realization advisory tier removed — unvalidated advisory hypotheses; rule 10 retained as D5 disposition owner); AUTO-APPROVE-EXPAND §40차 profit-take classification inputs 2026-08-12 (breakeven_band_pct, round_trip_cost_bps — consumed only under ORDER_PROPOSALS_AUTO_APPROVE_MODE=expanded, default off); operator §45/§46 buy.support_reserve_net literal policy/consumer contract 2026-08-12 (no proposal-service or broker mutation implementation); verify-r1 S1/S2/S3 completion 2026-08-12 (priority rules, A_limit<=0 NO_ORDER, playbook structure; no execution-surface change) §44차 breakeven reserve trim advisory tier 2026-08-12 (existing loss guard, near-breakeven, and D7 keys reused; no execution guard change) §44차 closeout 2026-08-12 (post-max tick ceil, machine sell-lane tier, and D7 consumer-estimate limits); §115차 breakeven extension ladder fallback tier for zero-fresh-named-resistance holdings 2026-08-20 (ROB-1298; existing loss guard multiple and existing trim sizing reused; no exclusion removal, no gate change); §127차 concurrent-new-entry slots 1→2 and buy.winner_pullback_add pre-registered tier 2026-08-21 (operator decision in claude-mock session; breakout chase remains forbidden)"
 
 authority:
   scope: judgment_policy_only
@@ -384,6 +384,36 @@ decision_rules:
     rungs_max: 2
     per_rung_notional_multiplier: 0.5
     crash_day_behavior: keep
+
+  # §127차 (2026-08-21) — 불타기의 유일한 인가 형태. 돌파 추격이 아니라
+  # "수익 중 보유분이 상승 후 평단 위에 새로 만든 strong 지지로 눌릴 때"의
+  # 지정가 추가매수다. ROB-1031(지지 터치 후 붕괴 60% 병존)이 금지하는 것은
+  # 지지 없는 증액이지, 평단 위 fresh 지지의 눌림 수용이 아니다.
+  buy.winner_pullback_add:
+    lanes: [buy]
+    semantics: >-
+      Advisory pre-registration (§127차). Adding to a winning position is
+      allowed ONLY as a resting LIMIT at a fresh strong support that formed
+      ABOVE the position's average cost after the rise, with the limit price
+      inside buy.deep_limit_pct_range from the current price. Requires an
+      unrealized gain and a re-confirmed thesis at decision time. Never a
+      breakout chase and never a market-order momentum add. Max add notional
+      is 50% of the existing position's current notional; at most one add
+      per symbol per policy-version. Each add records a forecast for
+      scoring. Existing approval boundaries (auto-approve caps, cards) and
+      sector/theme caps are unchanged and not relaxed.
+    tiers:
+      - id: winner_pullback_add
+        conditions:
+          position_unrealized_gain_required: true
+          fresh_strong_support_above_avg_cost: true
+          limit_within_deep_limit_pct_range: true
+          thesis_reconfirmed: true
+        action: resting_limit_add_at_support
+        sizing: "max 50% of existing position notional; one add per symbol per policy-version; forecast_save required"
+    exclusions:
+      - breakout_chase
+      - market_order_momentum_add
 
   sell.trim_preplace:
     lanes: [sell]
@@ -782,7 +812,7 @@ user_stances:
     stance: "AI 수요는 실사용 관점에서 실재. 단, (a)가치 포착은 가격결정력 보유 종목에 편중될 수 있고 (b)고베타 반도체는 테제가 맞아도 중간 낙폭이 크다"
     implications:
       - "AI/반도체 급락일: 패닉 동조 매도 금지 (보유분은 기존 리스크 규칙으로만 판단)"
-      - "눌림 신규 진입: 검토 후보 승격 가능하되 — 동시 신규 최대 1종목, 분할 진입, 섹터 클러스터 집중도 체크 엄격 적용"
+      - "눌림 신규 진입: 검토 후보 승격 가능하되 — 동시 신규 최대 2종목(§127차 2026-08-21 상향, 종전 1), 분할 진입, 섹터 클러스터 집중도 체크 엄격 적용"
       - "테마 내 선택 시 가격결정력 보유 종목 우선. 커머디티형은 공급제약 증거 있을 때만"
       - "3배 레버리지 ETF(SOXL류)는 눌림 보유 수단에서 기본 제외 (변동성 감쇠)"
     risk_scenario: "효율 충격 — 저비용 고성능 모델 확산으로 프런티어 capex 지불의사 재평가. 판정 이벤트 = 하이퍼스케일러 capex 가이던스"

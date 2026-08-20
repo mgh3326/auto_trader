@@ -19,6 +19,7 @@ async def test_get_trading_policy_returns_thresholds_and_version():
     assert set(out["decision_rules"]) == {
         "buy.support_reserve_net",
         "buy.preplanned_support_ladder",
+        "buy.winner_pullback_add",
     }
     reserve = out["decision_rules"]["buy.support_reserve_net"]
     assert reserve["eligible_only_when_regular_gate_failure"] == "RSI_ONLY"
@@ -215,7 +216,7 @@ async def test_get_trading_policy_returns_crash_day_advisory_with_version_echo()
     }
     # advisory keys are echoed with the same version/content_hash stamp as
     # every other section of the response (ROB-932).
-    assert out["version"] == "2026-08-20.2"
+    assert out["version"] == "2026-08-21.1"
     assert out["content_hash"]
 
 

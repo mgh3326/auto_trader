@@ -151,7 +151,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-20.2"
+    assert doc.version == "2026-08-21.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -994,6 +994,25 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     del current_dump["crash_day"]["actions"]["new_entry_hold_exception"]
     del baseline_dump["decision_rules"]["buy.preplanned_support_ladder"]
     del baseline_dump["crash_day"]["actions"]["new_entry_hold_exception"]
+
+    # §127차 (2026-08-21) — exactly two deltas: the additive
+    # buy.winner_pullback_add rule, and the concurrent-new-entry slot count
+    # inside the stance prose moving 1→2. Strip those and nothing else, and
+    # pin both sides' wording so a silent rewrite of either fails here.
+    assert "buy.winner_pullback_add" not in baseline_dump["decision_rules"]
+    assert current_dump["decision_rules"]["buy.winner_pullback_add"]["exclusions"] == [
+        "breakout_chase",
+        "market_order_momentum_add",
+    ]
+    del current_dump["decision_rules"]["buy.winner_pullback_add"]
+    assert "동시 신규 최대 1종목" in baseline_dump["user_stances"][0]["implications"][1]
+    assert (
+        "동시 신규 최대 2종목(§127차 2026-08-21 상향, 종전 1)"
+        in current_dump["user_stances"][0]["implications"][1]
+    )
+    current_dump["user_stances"][0]["implications"][1] = baseline_dump["user_stances"][
+        0
+    ]["implications"][1]
 
     normalized_current_dump = deepcopy(current_dump)
     for path, baseline_value, current_value in _ROB1292_ALLOWED_POLICY_DELTAS:
