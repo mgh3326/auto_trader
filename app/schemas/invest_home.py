@@ -12,6 +12,8 @@ AccountSourceLiteral = Literal[
     "toss_api",
     "pension_manual",
     "isa_manual",
+    "kis_manual",
+    "upbit_manual",
     "kis_mock",
     "kiwoom_mock",
     "alpaca_paper",
@@ -63,6 +65,7 @@ class Holding(BaseModel):
     valueNative: float | None = None
     valueKrw: float | None = None
     pnlKrw: float | None = None
+    pnlNative: float | None = None
     pnlRate: float | None = None
     priceState: PriceStateLiteral = "live"
     sourceOfTruth: bool = True
@@ -80,6 +83,8 @@ class Holding(BaseModel):
             "toss_manual",
             "pension_manual",
             "isa_manual",
+            "kis_manual",
+            "upbit_manual",
         }:
             self.sourceOfTruth = False
             self.isTradeable = False
@@ -104,6 +109,7 @@ class GroupedSourceBreakdown(BaseModel):
     valueNative: float | None = None
     valueKrw: float | None = None
     pnlKrw: float | None = None
+    pnlNative: float | None = None
     pnlRate: float | None = None
     sourceOfTruth: bool = True
     isTradeable: bool = True
@@ -132,6 +138,7 @@ class GroupedHolding(BaseModel):
     valueNative: float | None = None
     valueKrw: float | None = None
     pnlKrw: float | None = None
+    pnlNative: float | None = None
     pnlRate: float | None = None
     priceState: PriceStateLiteral = "live"
     includedSources: list[AccountSourceLiteral]

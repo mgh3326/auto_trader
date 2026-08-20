@@ -36,7 +36,9 @@ HOME_INCLUDED_SOURCES: frozenset[str] = frozenset(
 _PAPER: frozenset[str] = frozenset(
     {"kis_mock", "kiwoom_mock", "alpaca_paper", "db_simulated"}
 )
-_MANUAL: frozenset[str] = frozenset({"toss_manual", "pension_manual", "isa_manual"})
+_MANUAL: frozenset[str] = frozenset(
+    {"toss_manual", "pension_manual", "isa_manual", "kis_manual", "upbit_manual"}
+)
 
 
 class PortfolioSnapshotUnavailableError(RuntimeError):
@@ -76,7 +78,7 @@ def _is_tradeable_holding(h: Holding) -> bool:
 
 
 def _sellable_quantity(h: Holding) -> float | None:
-    if not _is_tradeable_holding(h):
+    if h.accountKind == "manual" or h.manualOnly:
         return 0.0
     if h.sellableQuantity is not None:
         return max(h.sellableQuantity, 0.0)
@@ -197,6 +199,13 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
             elif first.currency == "USD" and fx_rate:
                 pnl_krw = value_krw - cost_basis * fx_rate
 
+        pnl_native_vals = [h.pnlNative for h in items]
+        pnl_native: float | None = (
+            sum(value for value in pnl_native_vals if value is not None)
+            if all(value is not None for value in pnl_native_vals)
+            else None
+        )
+
         pnl_rate: float | None = None
         if cost_basis is not None and cost_basis > 0 and value_native is not None:
             pnl_rate = (value_native - cost_basis) / cost_basis
@@ -228,6 +237,7 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
                 valueNative=value_native,
                 valueKrw=value_krw,
                 pnlKrw=pnl_krw,
+                pnlNative=pnl_native,
                 pnlRate=pnl_rate,
                 priceState=price_state,
                 includedSources=sorted({h.source for h in items}),
@@ -243,6 +253,7 @@ def build_grouped_holdings(holdings: Iterable[Holding]) -> list[GroupedHolding]:
                         valueNative=h.valueNative,
                         valueKrw=h.valueKrw,
                         pnlKrw=h.pnlKrw,
+                        pnlNative=h.pnlNative,
                         pnlRate=h.pnlRate,
                         sourceOfTruth=h.sourceOfTruth,
                         isTradeable=h.isTradeable,
@@ -451,32 +462,19 @@ class InvestHomeService:
                 )
             )
 
-        payload = await self._snapshot_cache.get_or_fetch(scope, fetch_payload)
-        try:
-            return deserialize_portfolio_snapshot(payload)
-        except Exception:
-            # Remove an invalid entry, then re-enter the shared cache-aside
-            # path so concurrent facades share the recovery fetch as well.
-            await self._snapshot_cache.delete(
-                scope,
-                expected_payload=payload,
-            )
+        for _attempt in range(2):
             payload = await self._snapshot_cache.get_or_fetch(scope, fetch_payload)
             try:
                 return deserialize_portfolio_snapshot(payload)
             except Exception:
-                # A repeatedly invalid upstream payload must not become a
-                # synthetic home or sellable value; retain bounded direct
-                # read-only recovery after the shared retry.
+                # CAS invalidation is followed by another shared acquisition;
+                # a late corrupt observer must never delete a newer valid
+                # replacement or perform an uncoupled direct composition.
                 await self._snapshot_cache.delete(
                     scope,
                     expected_payload=payload,
                 )
-                return await self._get_home_uncached(
-                    user_id=user_id,
-                    include_paper=include_paper,
-                    paper_sources=paper_sources,
-                )
+        raise PortfolioSnapshotUnavailableError("snapshot_payload_invalid") from None
 
     async def get_held_pairs(
         self,
@@ -517,11 +515,18 @@ class InvestHomeService:
         manual_reader = self._manual
         manual_pairs: list[tuple[str, str]] = []
         if hasattr(manual_reader, "fetch_held_pairs"):
+            try:
+                raw_pairs = await manual_reader.fetch_held_pairs(user_id=user_id)
+            except Exception as exc:
+                logger.warning(
+                    "Manual held-key projection failed (%s)", type(exc).__name__
+                )
+                raise PortfolioSnapshotUnavailableError(
+                    "held_key_projection_unavailable"
+                ) from None
             manual_pairs = [
                 (str(market).lower(), _normalize_symbol(symbol))
-                for market, symbol in await manual_reader.fetch_held_pairs(
-                    user_id=user_id
-                )
+                for market, symbol in raw_pairs
                 if str(market).lower() in {"kr", "us", "crypto"} and str(symbol).strip()
             ]
 

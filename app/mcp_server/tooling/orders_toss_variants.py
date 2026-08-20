@@ -1463,7 +1463,11 @@ async def _toss_place_order_impl(
     ) is not None:
         return mutation_gate
 
-    if side == "sell" and quantity_dec is None:
+    if side == "sell" and (
+        quantity_dec is None
+        or not quantity_dec.is_finite()
+        or quantity_dec <= Decimal("0")
+    ):
         # Toss's orderAmount-only SELL shape has no broker-authoritative
         # quantity contract. Do not synthesize one from holdings, snapshots,
         # or sellable caches; reject before entering any broker mutation path.
@@ -1509,6 +1513,36 @@ async def _toss_place_order_impl(
             ) is not None:
                 return sell_guard
 
+            # Guard: NXT session preflight. Required mode fail-closes before
+            # POST; warn/optional log but proceed (fail-open on unknown
+            # session). Keep this ahead of the fresh sellable read so that
+            # broker sellability is the last validation before mutation.
+            preflight = await _nxt_preflight_context(symbol, mkt)
+            if preflight is not None:
+                verdict, _ = preflight
+                if verdict.block:
+                    mode = getattr(settings, "toss_nxt_preflight_mode", "warn")
+                    if mode == "required":
+                        return {
+                            "success": False,
+                            **base_response,
+                            "error": (
+                                f"NXT session {verdict.session!r} does not support "
+                                f"{symbol} ({verdict.reason}); order not sent."
+                            ),
+                            "error_code": "nxt_session_not_tradable",
+                            "session": verdict.session,
+                            "alternatives": list(verdict.alternatives),
+                        }
+                    logger.warning(
+                        "NXT preflight advisory (mode=%s): symbol=%s session=%s "
+                        "reason=%s — proceeding with live send",
+                        mode,
+                        symbol,
+                        verdict.session,
+                        verdict.reason,
+                    )
+
             # ROB-1310: never consume the display sellable cache or shared
             # portfolio snapshot for order sizing. Recheck Toss directly after
             # the existing sell guards and before any mutation hook/POST.
@@ -1521,34 +1555,6 @@ async def _toss_place_order_impl(
             if sellable_error is not None:
                 return sellable_error
             sellable_evidence = sellable_evidence or {}
-
-        # Guard: NXT session preflight. Required mode fail-closes before POST;
-        # warn/optional log but proceed (fail-open on unknown session).
-        preflight = await _nxt_preflight_context(symbol, mkt)
-        if preflight is not None:
-            verdict, _ = preflight
-            if verdict.block:
-                mode = getattr(settings, "toss_nxt_preflight_mode", "warn")
-                if mode == "required":
-                    return {
-                        "success": False,
-                        **base_response,
-                        "error": (
-                            f"NXT session {verdict.session!r} does not support "
-                            f"{symbol} ({verdict.reason}); order not sent."
-                        ),
-                        "error_code": "nxt_session_not_tradable",
-                        "session": verdict.session,
-                        "alternatives": list(verdict.alternatives),
-                    }
-                logger.warning(
-                    "NXT preflight advisory (mode=%s): symbol=%s session=%s "
-                    "reason=%s — proceeding with live send",
-                    mode,
-                    symbol,
-                    verdict.session,
-                    verdict.reason,
-                )
 
         pre_send_hook = _toss_pre_send_hook.get()
 
@@ -1780,6 +1786,22 @@ async def toss_modify_order(
                     "error": "Toss US order modify requires new_price.",
                 }
 
+        if side == "sell":
+            effective_quantity = (
+                new_quantity_dec if mkt == "kr" else orig_order.quantity
+            )
+            if (
+                effective_quantity is None
+                or not effective_quantity.is_finite()
+                or effective_quantity <= Decimal("0")
+            ):
+                return {
+                    "success": False,
+                    **base_response,
+                    "error": "SELL order modifications require a positive quantity.",
+                    "error_code": "sell_quantity_required",
+                }
+
         # ROB-561 — a KR limit reprice must snap to the KRX tick grid just like
         # a fresh place, otherwise the modify hits the same tick-size rejection.
         # Snap BEFORE the sell-loss guard so the guard validates the real price.
@@ -1834,6 +1856,34 @@ async def toss_modify_order(
             if mutation_gate is not None:
                 return mutation_gate
             if side == "sell":
+                # Complete calendar/NXT eligibility before the fresh broker
+                # check.  Fresh sellability is deliberately the final
+                # validation before the replacement POST.
+                preflight = await _nxt_preflight_context(symbol, mkt)
+                if preflight is not None:
+                    verdict, _ = preflight
+                    if verdict.block:
+                        mode = getattr(settings, "toss_nxt_preflight_mode", "warn")
+                        if mode == "required":
+                            return {
+                                "success": False,
+                                **base_response,
+                                "error": (
+                                    f"NXT session {verdict.session!r} does not support "
+                                    f"{symbol} ({verdict.reason}); order not sent."
+                                ),
+                                "error_code": "nxt_session_not_tradable",
+                                "session": verdict.session,
+                                "alternatives": list(verdict.alternatives),
+                            }
+                        logger.warning(
+                            "NXT preflight advisory (mode=%s): symbol=%s session=%s "
+                            "reason=%s — proceeding with live send",
+                            mode,
+                            symbol,
+                            verdict.session,
+                            verdict.reason,
+                        )
                 # Toss US modify rejects ``quantity`` and the replacement
                 # inherits the original order quantity.  The official API
                 # contract does not document a reservation-adjusted delta, so

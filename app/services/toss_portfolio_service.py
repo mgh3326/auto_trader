@@ -351,13 +351,32 @@ def _optional_decimal_from_snapshot_cache(raw: Any, *, field: str) -> Decimal | 
     return _decimal_from_snapshot_cache(raw, field=field)
 
 
+def _contains_forbidden_sellable_key(value: Any) -> bool:
+    """Reject every sellability spelling before parsing a cached position."""
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = "".join(char for char in str(key).lower() if char.isalnum())
+            if "sellable" in normalized or normalized in {
+                "pendingsellquantity",
+                "pendingquantity",
+            }:
+                return True
+            if _contains_forbidden_sellable_key(item):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_forbidden_sellable_key(item) for item in value)
+    return False
+
+
 def _position_from_snapshot_cache(raw: Any) -> TossPortfolioPosition:
     if not isinstance(raw, dict):
         raise ValueError("Toss snapshot cache position is not an object")
-    # A sellable value in this store is a contract violation.  Reject it rather
-    # than allowing an old/mis-keyed entry to become a sizing signal.
-    if raw.get("sellable_quantity") is not None:
-        raise ValueError("Toss snapshot cache contains sellable quantity")
+    # Any sellability key, including a null value or a nested legacy spelling,
+    # is a contract violation.  It must not become reconstructible order
+    # authority through a future parser change.
+    if _contains_forbidden_sellable_key(raw):
+        raise ValueError("Toss snapshot cache contains forbidden sellable field")
     try:
         return TossPortfolioPosition(
             account=str(raw["account"]),
@@ -484,59 +503,58 @@ async def fetch_toss_portfolio_snapshot(
                     snapshot_cache.get_or_fetch("cash", fetch_cash_payload)
                 )
 
+            positions: list[TossPortfolioPosition] | None = None
             positions_payload: dict[str, Any] | None = None
-            try:
-                positions_payload = await position_task
-                positions = _positions_from_snapshot_cache(positions_payload)
-            except Exception as exc:  # noqa: BLE001 — corrupt cache fails open
-                logger.warning("Toss portfolio snapshot cache read failed: %s", exc)
-                if isinstance(positions_payload, dict):
-                    await snapshot_cache.delete(
-                        "positions",
-                        expected_payload=positions_payload,
-                    )
-                positions_payload = await snapshot_cache.get_or_fetch(
-                    "positions",
-                    fetch_positions_payload,
-                )
+            for attempt in range(2):
                 try:
+                    positions_payload = (
+                        await position_task
+                        if attempt == 0
+                        else await snapshot_cache.get_or_fetch(
+                            "positions", fetch_positions_payload
+                        )
+                    )
                     positions = _positions_from_snapshot_cache(positions_payload)
-                except Exception:
-                    await snapshot_cache.delete(
-                        "positions",
-                        expected_payload=positions_payload,
+                    break
+                except Exception as exc:  # noqa: BLE001 — corrupt cache fails open
+                    logger.warning(
+                        "Toss portfolio snapshot cache read failed (%s)",
+                        type(exc).__name__,
                     )
-                    positions = _positions_from_snapshot_cache(
-                        await fetch_positions_payload()
-                    )
+                    if isinstance(positions_payload, dict):
+                        await snapshot_cache.delete(
+                            "positions",
+                            expected_payload=positions_payload,
+                        )
+            if positions is None:
+                raise ValueError("Toss portfolio snapshot recovery payload is invalid")
 
             cash_snapshot = TossCashSnapshot()
             if cash_task is not None:
                 cash_payload: dict[str, Any] | None = None
-                try:
-                    cash_payload = await cash_task
-                    cash_snapshot = _cash_from_snapshot_cache(cash_payload)
-                except Exception as exc:  # noqa: BLE001 — corrupt cache fails open
-                    logger.warning("Toss cash snapshot cache read failed: %s", exc)
-                    if isinstance(cash_payload, dict):
-                        await snapshot_cache.delete(
-                            "cash",
-                            expected_payload=cash_payload,
-                        )
-                    cash_payload = await snapshot_cache.get_or_fetch(
-                        "cash",
-                        fetch_cash_payload,
-                    )
+                for attempt in range(2):
                     try:
+                        cash_payload = (
+                            await cash_task
+                            if attempt == 0
+                            else await snapshot_cache.get_or_fetch(
+                                "cash", fetch_cash_payload
+                            )
+                        )
                         cash_snapshot = _cash_from_snapshot_cache(cash_payload)
-                    except Exception:
-                        await snapshot_cache.delete(
-                            "cash",
-                            expected_payload=cash_payload,
+                        break
+                    except Exception as exc:  # noqa: BLE001 — corrupt cache fails open
+                        logger.warning(
+                            "Toss cash snapshot cache read failed (%s)",
+                            type(exc).__name__,
                         )
-                        cash_snapshot = _cash_from_snapshot_cache(
-                            await fetch_cash_payload()
-                        )
+                        if isinstance(cash_payload, dict):
+                            await snapshot_cache.delete(
+                                "cash",
+                                expected_payload=cash_payload,
+                            )
+                else:
+                    raise ValueError("Toss cash snapshot recovery payload is invalid")
 
             return TossPortfolioSnapshot(
                 positions=positions,

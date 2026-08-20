@@ -14,6 +14,7 @@ from typing import Any, Protocol
 import sentry_sdk
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.symbol import to_upbit_symbol
 from app.models.manual_holdings import MarketType
 from app.schemas.invest_home import (
     Account,
@@ -197,6 +198,7 @@ class KISHomeReader:
                         valueNative=value_native,
                         valueKrw=value_krw,
                         pnlKrw=pnl_krw,
+                        pnlNative=pnl_native,
                         pnlRate=float(s.get("evlu_pfls_rt", 0)) / 100.0,
                         sourceOfTruth=True,
                         isTradeable=True,
@@ -736,17 +738,22 @@ class ManualHomeReader:
         self._service = ManualHoldingsService(db)
         self._quote_service = quote_service
 
+    @staticmethod
+    def _source_for_broker(broker_type: str) -> str:
+        return {
+            "toss": "toss_manual",
+            "samsung": "pension_manual",
+            "kis": "kis_manual",
+            "upbit": "upbit_manual",
+        }.get(broker_type, "toss_manual")
+
     async def fetch_held_pairs(self, *, user_id: int) -> list[tuple[str, str]]:
         """Read manual held keys without quote/FX enrichment for calendar."""
 
         raw_holdings = await self._service.get_holdings_by_user(user_id)
         pairs: set[tuple[str, str]] = set()
         for holding in raw_holdings:
-            if (
-                str(getattr(holding.broker_account, "broker_type", "")).lower()
-                != "toss"
-                or float(holding.quantity or 0) <= 0
-            ):
+            if float(holding.quantity or 0) <= 0:
                 continue
             market = str(holding.market_type).lower()
             symbol = str(holding.ticker or "").strip().upper()
@@ -763,17 +770,15 @@ class ManualHomeReader:
                 raw_holdings = await self._service.get_holdings_by_user(user_id)
                 span.set_data("raw_holding_count", len(raw_holdings))
 
-            toss_holdings = [
-                h
-                for h in raw_holdings
-                if str(getattr(h.broker_account, "broker_type", "")).lower() == "toss"
-            ]
+            manual_holdings = list(raw_holdings)
 
             kr_tickers = [
-                h.ticker for h in toss_holdings if h.market_type == MarketType.KR
+                h.ticker
+                for h in manual_holdings
+                if h.market_type in {MarketType.KR, MarketType.CRYPTO}
             ]
             us_tickers = [
-                h.ticker for h in toss_holdings if h.market_type == MarketType.US
+                h.ticker for h in manual_holdings if h.market_type == MarketType.US
             ]
 
             kr_prices: dict[str, float | None] = {}
@@ -826,18 +831,29 @@ class ManualHomeReader:
             holdings = []
             partial_valuation_failure = False
 
-            for h in toss_holdings:
+            for h in manual_holdings:
                 qty = float(h.quantity)
                 avg_price = float(h.avg_price) if h.avg_price else None
                 cost_basis = (qty * avg_price) if avg_price else None
-                market = "KR" if h.market_type == MarketType.KR else "US"
-                currency = "KRW" if market == "KR" else "USD"
+                market = {
+                    MarketType.KR: "KR",
+                    MarketType.US: "US",
+                    MarketType.CRYPTO: "CRYPTO",
+                }.get(h.market_type)
+                if market is None:
+                    continue
+                currency = "USD" if market == "US" else "KRW"
+                quote_symbol = (
+                    to_upbit_symbol(h.ticker) if market == "CRYPTO" else h.ticker
+                )
 
                 price = (
                     kr_prices.get(h.ticker)
-                    if market == "KR"
+                    if market in {"KR", "CRYPTO"}
                     else us_prices.get(h.ticker)
                 )
+                if price is None and market == "CRYPTO":
+                    price = kr_prices.get(quote_symbol)
                 price_state: PriceStateLiteral = (
                     "live" if price is not None else "missing"
                 )
@@ -871,12 +887,22 @@ class ManualHomeReader:
                     Holding(
                         holdingId=f"manual:{h.id}",
                         accountId=str(h.broker_account_id),
-                        source="toss_manual",
+                        source=self._source_for_broker(
+                            str(
+                                getattr(h.broker_account, "broker_type", "toss")
+                            ).lower()
+                        ),
                         accountKind="manual",
                         symbol=h.ticker,
                         market=market,
-                        assetType="equity",
-                        assetCategory="kr_stock" if market == "KR" else "us_stock",
+                        assetType="crypto" if market == "CRYPTO" else "equity",
+                        assetCategory=(
+                            "crypto"
+                            if market == "CRYPTO"
+                            else "kr_stock"
+                            if market == "KR"
+                            else "us_stock"
+                        ),
                         displayName=h.display_name or h.ticker,
                         quantity=qty,
                         averageCost=avg_price,
@@ -901,8 +927,15 @@ class ManualHomeReader:
                 str(h.broker_account_id): str(
                     getattr(h.broker_account, "account_name", None) or "기본 계좌"
                 )
-                for h in toss_holdings
+                for h in manual_holdings
             }
+            account_sources = {
+                str(h.broker_account_id): self._source_for_broker(
+                    str(getattr(h.broker_account, "broker_type", "toss")).lower()
+                )
+                for h in manual_holdings
+            }
+            any_valued_holding = any(h.valueKrw is not None for h in holdings)
             for account_id, account_name in account_names.items():
                 account_holdings = [
                     holding for holding in holdings if holding.accountId == account_id
@@ -912,10 +945,10 @@ class ManualHomeReader:
                     for holding in account_holdings
                     if holding.valueKrw is not None
                 ]
-                if not valued:
-                    # Preserve the existing no-quote behavior: the service
-                    # will synthesize its bounded manual account only when no
-                    # per-account valuation is available.
+                if not any_valued_holding:
+                    # Preserve the existing all-unpriced behavior: the service
+                    # synthesizes its bounded Toss manual account only when no
+                    # per-account valuation is available at all.
                     continue
                 value_krw = sum(
                     holding.valueKrw
@@ -950,7 +983,7 @@ class ManualHomeReader:
                     Account(
                         accountId=account_id,
                         displayName=account_name,
-                        source="toss_manual",
+                        source=account_sources[account_id],
                         accountKind="manual",
                         includedInHome=True,
                         valueKrw=value_krw,
@@ -966,13 +999,13 @@ class ManualHomeReader:
             if partial_valuation_failure:
                 manual_warning = InvestHomeWarning(
                     source="toss_manual",
-                    message="일부 Toss 수동 보유는 현재가 조회에 실패해 평가에서 제외했습니다.",
+                    message="일부 수동 보유는 현재가 조회에 실패해 평가에서 제외했습니다.",
                 )
             elif not (kr_tickers or us_tickers) and holdings:
                 # This case shouldn't happen with the logic above, but for safety
                 manual_warning = InvestHomeWarning(
                     source="toss_manual",
-                    message="Toss 수동 보유는 현재가가 없어 평가금액에서 제외했습니다.",
+                    message="수동 보유는 현재가가 없어 평가금액에서 제외했습니다.",
                 )
 
             return _SourceFetchResult(

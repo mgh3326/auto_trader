@@ -958,17 +958,20 @@ async def _collect_whole_portfolio_positions(
             paper_sources=None,
         )
 
-    payload = await cache.get_or_fetch(scope, fetch_payload)
-    try:
-        response = deserialize_portfolio_snapshot(payload)
-    except Exception:
-        await cache.delete(scope, expected_payload=payload)
+    response = None
+    last_error: Exception | None = None
+    for _attempt in range(2):
         payload = await cache.get_or_fetch(scope, fetch_payload)
         try:
             response = deserialize_portfolio_snapshot(payload)
-        except Exception:
+            break
+        except Exception as exc:
+            last_error = exc
             await cache.delete(scope, expected_payload=payload)
-            response = deserialize_portfolio_snapshot(await fetch_payload())
+    if response is None:
+        raise ValueError(
+            "portfolio snapshot recovery payload is invalid"
+        ) from last_error
 
     positions = portfolio_snapshot_to_mcp_positions(response)
     errors = [

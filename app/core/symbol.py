@@ -29,3 +29,17 @@ def to_db_symbol(symbol: str) -> str:
     예: BRK-B -> BRK.B, BRK/B -> BRK.B
     """
     return symbol.replace("-", ".").replace("/", ".")
+
+
+def to_upbit_symbol(symbol: str) -> str:
+    """Normalize a crypto symbol to the Upbit market-key format.
+
+    Home readers may store a base coin symbol (``BTC``), while the legacy MCP
+    contract and quote maps use the explicit fiat market (``KRW-BTC``).
+    Existing market-prefixed symbols are preserved.
+    """
+
+    normalized = symbol.strip().upper()
+    if not normalized or "-" in normalized:
+        return normalized
+    return f"KRW-{normalized}"

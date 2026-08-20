@@ -11,10 +11,9 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from app.core.symbol import to_db_symbol
+from app.core.symbol import to_db_symbol, to_upbit_symbol
 from app.mcp_server.tooling.shared import (
     canonical_account_id,
-    normalize_position_symbol,
 )
 from app.schemas.invest_home import InvestHomeResponse
 
@@ -53,12 +52,13 @@ def _strip_sellable_fields(value: Any) -> Any:
 
 
 def _held_pairs_from_response(response: InvestHomeResponse) -> list[list[str]]:
+    all_holdings = [*response.holdings, *response.meta.hiddenHoldings]
     return [
         [market, symbol]
         for market, symbol in sorted(
             {
                 (str(holding.market).lower(), holding.symbol.strip().upper())
-                for holding in response.holdings
+                for holding in all_holdings
                 if holding.quantity > 0
                 and str(holding.market).lower() in {"kr", "us", "crypto"}
             }
@@ -121,17 +121,18 @@ def _contains_sellable_key(value: Any) -> bool:
 
 
 def _mcp_symbol(symbol: str, instrument_type: str) -> str:
-    normalized = normalize_position_symbol(symbol, instrument_type)
     if instrument_type == "equity_us":
-        return to_db_symbol(normalized).upper()
-    return normalized
+        return to_db_symbol(symbol.strip()).upper()
+    if instrument_type == "crypto":
+        return to_upbit_symbol(symbol)
+    return symbol.strip().upper()
 
 
 def _mcp_account_details(
     *,
     holding: Any,
     account_by_id: dict[str, Any],
-    account_by_source: dict[str, Any],
+    accounts_by_source: dict[str, list[Any]],
 ) -> tuple[str, str]:
     source_defaults = {
         "kis": ("kis", "기본 계좌"),
@@ -140,6 +141,8 @@ def _mcp_account_details(
         "toss_manual": ("toss", "Toss 수동"),
         "pension_manual": ("samsung_pension", "삼성 연금"),
         "isa_manual": ("isa", "ISA"),
+        "kis_manual": ("kis", "기본 계좌"),
+        "upbit_manual": ("upbit", "기본 계좌"),
     }
     source = str(holding.source)
     default_account, default_name = source_defaults.get(
@@ -148,8 +151,18 @@ def _mcp_account_details(
     if source in {"kis", "upbit", "toss_api"}:
         return default_account, default_name
 
-    account = account_by_id.get(str(holding.accountId)) or account_by_source.get(source)
-    if source in {"toss_manual", "pension_manual", "isa_manual"}:
+    account = account_by_id.get(str(holding.accountId))
+    if account is None:
+        source_accounts = accounts_by_source.get(source, [])
+        if len(source_accounts) == 1:
+            account = source_accounts[0]
+    if source in {
+        "toss_manual",
+        "pension_manual",
+        "isa_manual",
+        "kis_manual",
+        "upbit_manual",
+    }:
         account_name = (
             str(account.displayName).strip()
             if account is not None and str(account.displayName).strip()
@@ -159,13 +172,10 @@ def _mcp_account_details(
             "toss_manual": "toss",
             "pension_manual": "samsung",
             "isa_manual": "toss",
+            "kis_manual": "kis",
+            "upbit_manual": "upbit",
         }.get(source, default_account)
-        # The historic synthetic Toss manual account is the default account;
-        # named manual accounts retain the existing canonical helper contract.
-        canonical_name = (
-            "기본 계좌" if account_name in {"", "Toss 수동"} else account_name
-        )
-        return canonical_account_id(broker, canonical_name), account_name
+        return canonical_account_id(broker, account_name), account_name
     return (
         default_account,
         account.displayName if account is not None else default_name,
@@ -174,9 +184,18 @@ def _mcp_account_details(
 
 def _mcp_profit_loss(holding: Any) -> float | None:
     source = str(holding.source)
-    if source in {"upbit", "toss_manual", "pension_manual", "isa_manual"}:
+    if source in {
+        "upbit",
+        "toss_manual",
+        "pension_manual",
+        "isa_manual",
+        "kis_manual",
+        "upbit_manual",
+    }:
         return None
     if str(holding.market) == "US":
+        if holding.pnlNative is not None:
+            return float(holding.pnlNative)
         if (
             holding.pnlKrw is not None
             and holding.valueKrw is not None
@@ -198,7 +217,14 @@ def _mcp_profit_loss(holding: Any) -> float | None:
 
 def _mcp_profit_rate(holding: Any) -> float | None:
     source = str(holding.source)
-    if source in {"upbit", "toss_manual", "pension_manual", "isa_manual"}:
+    if source in {
+        "upbit",
+        "toss_manual",
+        "pension_manual",
+        "isa_manual",
+        "kis_manual",
+        "upbit_manual",
+    }:
         return None
     if holding.pnlRate is None:
         return None
@@ -216,7 +242,9 @@ def portfolio_snapshot_to_mcp_positions(
     """Project the canonical home holdings into the bounded MCP position shape."""
 
     accounts = {account.accountId: account for account in response.accounts}
-    accounts_by_source = {str(account.source): account for account in response.accounts}
+    accounts_by_source: dict[str, list[Any]] = {}
+    for account in response.accounts:
+        accounts_by_source.setdefault(str(account.source), []).append(account)
     instrument_by_market = {
         "KR": "equity_kr",
         "US": "equity_us",
@@ -227,11 +255,18 @@ def portfolio_snapshot_to_mcp_positions(
         "upbit": ("upbit", "upbit_api"),
         "toss_api": ("toss", "toss_api"),
         "toss_manual": ("toss", "manual"),
-        "pension_manual": ("pension", "manual"),
+        "pension_manual": ("samsung", "manual"),
         "isa_manual": ("isa", "manual"),
+        "kis_manual": ("kis", "manual"),
+        "upbit_manual": ("upbit", "manual"),
     }
     positions: list[dict[str, Any]] = []
-    for holding in response.holdings:
+    projected_holdings = [*response.holdings, *response.meta.hiddenHoldings]
+    seen_holding_ids: set[str] = set()
+    for holding in projected_holdings:
+        if holding.holdingId in seen_holding_ids:
+            continue
+        seen_holding_ids.add(holding.holdingId)
         instrument_type = instrument_by_market.get(str(holding.market), "other")
         if instrument_type == "other" or holding.quantity <= 0:
             continue
@@ -241,7 +276,7 @@ def portfolio_snapshot_to_mcp_positions(
         account_id, account_name = _mcp_account_details(
             holding=holding,
             account_by_id=accounts,
-            account_by_source=accounts_by_source,
+            accounts_by_source=accounts_by_source,
         )
         current_price = None
         if holding.valueNative is not None and holding.quantity > 0:

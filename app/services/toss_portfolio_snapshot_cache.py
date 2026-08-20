@@ -109,6 +109,122 @@ class TossPortfolioSnapshotCache:
             self._mark_degraded()
             logger.warning("Toss portfolio snapshot cache SET failed: %s", exc)
 
+    async def _put_if_owner(
+        self,
+        scope: str,
+        token: str,
+        payload: dict[str, Any],
+    ) -> bool | None:
+        """Fence a snapshot write by the current singleflight owner.
+
+        ``False`` means the lease changed and this caller must discard its
+        payload. ``None`` means Redis was unavailable; callers retain the
+        existing bounded fail-open behavior without claiming ownership.
+        """
+
+        if not self.usable or self._redis is None:
+            return None
+        cache_key = self._cache_key(scope)
+        lock_key = self._singleflight_key(scope)
+        try:
+            encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(lock_key)
+                if await pipe.get(lock_key) != token:
+                    return False
+                pipe.multi()
+                pipe.set(
+                    cache_key,
+                    encoded,
+                    ex=max(1, int(self._ttl_seconds)),
+                )
+                written = await pipe.execute()
+                return bool(written and written[0])
+        except WatchError:
+            return False
+        except Exception as exc:  # noqa: BLE001 — cache write fails open
+            self._mark_degraded()
+            logger.warning(
+                "Toss portfolio snapshot fenced SET failed (%s)",
+                type(exc).__name__,
+            )
+            return None
+
+    def _owner_wait_budget_seconds(self) -> float:
+        """Bound one owner observation without defeating normal slow owners.
+
+        Lease renewal proves ownership, not forward progress.  A hard budget
+        therefore remains necessary for a renewing but hung owner.  The budget
+        is deliberately much larger than the default waiter window, while a
+        short test/degraded lease remains finite and promptly fail-closed.
+        """
+
+        # Normal production leases get a small completion cushion over the
+        # configured waiter window (the cash path can be just over three
+        # seconds).  Very short leases use two lease lengths so crash recovery
+        # remains prompt rather than inheriting a multi-second hang budget.
+        lease_cushion = (
+            2.0 * max(self._lock_ttl_seconds, 0.0)
+            if self._lock_ttl_seconds < 1.0
+            else 1.0
+        )
+        return max(
+            self._wait_timeout_seconds + lease_cushion,
+            self._poll_interval_seconds * 4.0,
+        )
+
+    async def _wait_for_winner_or_recovery(
+        self,
+        scope: str,
+        fetcher: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        """After losing a lease, read the winner or acquire one recovery lease."""
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._owner_wait_budget_seconds()
+        recovery_attempts = 0
+        max_recovery_attempts = 2
+        observed_owner_token = await self._lock_token(scope)
+        while True:
+            cached = await self.get(scope)
+            if cached is not None:
+                return cached
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                lock_remaining = await self._lock_remaining_seconds(scope)
+                if lock_remaining is None:
+                    raise TimeoutError(
+                        "portfolio snapshot winner unavailable during Redis outage"
+                    )
+                if lock_remaining <= 0:
+                    if recovery_attempts >= max_recovery_attempts:
+                        raise TimeoutError(
+                            "portfolio snapshot recovery owner did not complete"
+                        )
+                    recovery_attempts += 1
+                    recovery_token = await self._acquire(scope)
+                    if recovery_token is not None:
+                        return await self._fetch_as_owner(
+                            scope, recovery_token, fetcher
+                        )
+                    if not self.usable:
+                        raise TimeoutError(
+                            "portfolio snapshot recovery lock unavailable"
+                        )
+                    deadline = loop.time() + self._owner_wait_budget_seconds()
+                    observed_owner_token = recovery_token
+                    continue
+                current_owner_token = await self._lock_token(scope)
+                if (
+                    current_owner_token is not None
+                    and current_owner_token != observed_owner_token
+                ):
+                    observed_owner_token = current_owner_token
+                    deadline = loop.time() + self._owner_wait_budget_seconds()
+                    continue
+                raise TimeoutError("portfolio snapshot owner did not complete")
+            await asyncio.sleep(min(self._poll_interval_seconds, remaining))
+
     async def delete(
         self,
         scope: str,
@@ -231,7 +347,12 @@ class TossPortfolioSnapshotCache:
                 return cached
             payload = await fetcher()
             if isinstance(payload, dict):
-                await self.put(scope, payload)
+                write_result = await self._put_if_owner(scope, token, payload)
+                if write_result is True or write_result is None:
+                    return payload
+                # A new owner may already have written a newer value.  Never
+                # return this stale result to the old caller.
+                return await self._wait_for_winner_or_recovery(scope, fetcher)
             return payload
         finally:
             renewal_task.cancel()
@@ -270,6 +391,22 @@ class TossPortfolioSnapshotCache:
             return 0.0
         return max(float(pttl) / 1000.0, 0.0)
 
+    async def _lock_token(self, scope: str) -> str | None:
+        """Read the owner token to distinguish renewal from recovery."""
+
+        if not self.usable or self._redis is None:
+            return None
+        try:
+            token = await self._redis.get(self._singleflight_key(scope))
+        except Exception as exc:  # noqa: BLE001 — lock inspection fails open
+            self._mark_degraded()
+            logger.warning(
+                "Toss portfolio snapshot owner inspection failed (%s)",
+                type(exc).__name__,
+            )
+            return None
+        return str(token) if token is not None else None
+
     async def get_or_fetch(
         self,
         scope: str,
@@ -294,9 +431,10 @@ class TossPortfolioSnapshotCache:
             return await fetcher()
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self._wait_timeout_seconds
+        deadline = loop.time() + self._owner_wait_budget_seconds()
         recovery_attempts = 0
         max_recovery_attempts = 2
+        observed_owner_token = await self._lock_token(scope)
         while True:
             cached = await self.get(scope)
             if cached is not None:
@@ -311,7 +449,9 @@ class TossPortfolioSnapshotCache:
                     # fetch. Re-enter SET NX so exactly one waiter becomes
                     # the bounded crash-recovery owner.
                     if recovery_attempts >= max_recovery_attempts:
-                        return await fetcher()
+                        raise TimeoutError(
+                            "portfolio snapshot recovery owner did not complete"
+                        )
                     recovery_attempts += 1
                     recovery_token = await self._acquire(scope)
                     if recovery_token is not None:
@@ -320,20 +460,22 @@ class TossPortfolioSnapshotCache:
                         )
                     if not self.usable:
                         return await fetcher()
-                    deadline = loop.time() + max(
-                        self._wait_timeout_seconds,
-                        self._poll_interval_seconds,
-                    )
+                    deadline = loop.time() + self._owner_wait_budget_seconds()
+                    observed_owner_token = recovery_token
                     continue
-                # A positive PTTL is proof that some owner still has a live
-                # lease.  Follow that lease rather than using a fixed total
-                # deadline: a renewal moves the next observation forward,
-                # while an owner death or failed renewal lets the lease expire
-                # and bounds the direct-fetch escape.
-                deadline = loop.time() + lock_remaining
-                remaining = deadline - loop.time()
-                if remaining <= 0:
+                # A positive PTTL proves ownership is live, but renewal is not
+                # proof of fetch progress.  If the token changed, a recovery
+                # owner just took over and merits one fresh bounded wait.  An
+                # unchanged token is the original renewing/hung owner.
+                current_owner_token = await self._lock_token(scope)
+                if (
+                    current_owner_token is not None
+                    and current_owner_token != observed_owner_token
+                ):
+                    observed_owner_token = current_owner_token
+                    deadline = loop.time() + self._owner_wait_budget_seconds()
                     continue
+                raise TimeoutError("portfolio snapshot owner did not complete")
             await asyncio.sleep(min(self._poll_interval_seconds, remaining))
             cached = await self.get(scope)
             if cached is not None:
