@@ -13,7 +13,8 @@ and into MCP-side tools and policy.
   pipelines. Hybrid format: human prose (§0–§5) + machine-readable `lanes:` and
   `policy_keys:` blocks. The `lanes:` blocks are the lane-definition source for
   ROB-649 (`route_request`); the `policy_keys:` block is the initial-value
-  capture source for ROB-646 (trading policy YAML).
+  capture source for ROB-646 (trading policy YAML). §3.2 is the ROB-1301
+  buy-gate A/B shadow block (not a lane sequence).
 
 ## Boundary
 

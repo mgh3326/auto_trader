@@ -19,6 +19,9 @@ from app.mcp_server.tooling.analysis_tool_handlers import (
 from app.mcp_server.tooling.buy_candidate_fanout_registration import (
     register_buy_candidate_fanout_tools,
 )
+from app.mcp_server.tooling.buy_gate_ab_shadow_registration import (
+    register_buy_gate_ab_shadow_tools,
+)
 from app.mcp_server.tooling.momentum_candidates import get_momentum_candidates_impl
 from app.mcp_server.tooling.research_pipeline_read import (
     research_session_get_impl,
@@ -42,6 +45,7 @@ ANALYSIS_TOOL_NAMES: set[str] = {
     "screen_stocks",
     "screen_stocks_snapshot",
     "discover_buy_candidates_fanout",
+    "evaluate_buy_gate_ab_shadow",
     # ROB-359: "recommend_stocks" is intentionally registry-hidden (parked).
     # screen_stocks is the generic candidate-discovery entrypoint; the
     # recommend_stocks_impl implementation is retained in
@@ -68,6 +72,7 @@ def register_analysis_tools(
     """Register MCP tools for analysis, screening, and ranking utilities."""
 
     register_buy_candidate_fanout_tools(mcp)
+    register_buy_gate_ab_shadow_tools(mcp)
 
     @mcp.tool(
         name="get_krx_session_health",

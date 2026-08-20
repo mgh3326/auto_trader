@@ -141,3 +141,27 @@ def test_reserve_net_playbook_repeats_machine_policy_priority_contract() -> None
         "`A_limit<=0` (already target met) is\n   **NO_ORDER**",
     ):
         assert requirement in section
+
+
+def test_rob1301_shadow_block_is_not_a_lane_and_carries_the_forbidden_three() -> None:
+    text = _PLAYBOOK_PATH.read_text(encoding="utf-8")
+    section_start = text.index("### 3.2 ROB-1301 buy-gate A/B shadow")
+    section_end = text.index("## 4) Recording / retrospective")
+    section = text[section_start:section_end]
+    for forbidden in (
+        "shadow가 제안·주문·워치로 승격 금지(순수 기록)",
+        "라이브 게이트 문언 무접촉",
+        "채점 전 중간값으로 정책 변경 논거 삼지 않기(사전 등록 원칙)",
+    ):
+        assert forbidden in section
+    assert "evaluate_buy_gate_ab_shadow" in section
+    assert "- tool: order_proposal_create" not in section
+    assert "never order_proposal_create" in section
+    assert "NOT a lane sequence" in section
+
+    lane_names: set[str] = set()
+    for block in _YAML_BLOCK_RE.findall(text):
+        parsed = yaml.safe_load(block)
+        if isinstance(parsed, dict) and isinstance(parsed.get("lanes"), dict):
+            lane_names.update(parsed["lanes"].keys())
+    assert "rob-1301-buy-gate-ab" not in lane_names

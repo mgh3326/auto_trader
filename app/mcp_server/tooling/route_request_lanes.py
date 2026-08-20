@@ -475,6 +475,9 @@ READ_ONLY_ADVISORY_TOOLS: frozenset[str] = frozenset(
         # Bounded observation-only discovery. It cannot create a proposal or
         # order, query broker/account state, or write a database row.
         "discover_buy_candidates_fanout",
+        # ROB-1301: observation-only A/B buy-gate shadow. Never a proposal,
+        # order, or watch; live variant A is unchanged.
+        "evaluate_buy_gate_ab_shadow",
         # ROB-907: read-only Demo ledger status (flag-gated —
         # settings.binance_demo_scalping_enabled). The mutation-path submit
         # tool this once shared a gate comment with was removed (ROB-1147).

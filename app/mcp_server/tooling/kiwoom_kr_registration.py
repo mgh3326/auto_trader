@@ -86,6 +86,10 @@ KIWOOM_KR_BASE_PROFILE_TOOL_NAMES: frozenset[str] = frozenset(
         "analyze_stock",
         "analyze_stock_batch",
         "discover_buy_candidates_fanout",
+        # ROB-1301: KR-priority, observation-only shadow evaluator. This is a
+        # read-only advisory tool, so including it preserves the KIWOOM ↔
+        # KIWOOM_KR shared-surface contract without exposing a mutation.
+        "evaluate_buy_gate_ab_shadow",
         "execution_ledger_fill_events_list_recent",
         "forecast_resolve",
         "forecast_save",
