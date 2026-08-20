@@ -892,6 +892,82 @@ def test_before_send_transaction_scrubs_leading_query_string_secret():
 
 
 @pytest.mark.unit
+def test_before_send_transaction_scrubs_relative_bot_path_regardless_of_method():
+    """ROB-1305 follow-up 04: a relative (no-host) bot credential path must be
+    scrubbed by credential *shape* (digits:token), not by enumerating known
+    Telegram method names — an unlisted method must not defeat redaction."""
+    event: Event = {
+        "transaction": "GET /api/v1/orders",
+        "request": {
+            "url": "/bot123456789:FAKE-REL-PATH-TOKEN-AAA/deleteMessage",
+        },
+        "spans": [],
+    }
+
+    kept = sentry_module._before_send_transaction(event, {})
+
+    assert kept is not None
+    url = kept["request"]["url"]
+    assert "FAKE-REL-PATH-TOKEN-AAA" not in url
+    assert url.startswith("/bot")
+    assert "deleteMessage" in url
+
+
+@pytest.mark.unit
+def test_before_send_transaction_scrubs_leading_authorization_query_param():
+    event: Event = {
+        "transaction": "GET /api/v1/orders",
+        "request": {
+            "query_string": "authorization=FAKE_AUTH_QS_VALUE_1&symbol=AAPL",
+        },
+        "spans": [],
+    }
+
+    kept = sentry_module._before_send_transaction(event, {})
+
+    assert kept is not None
+    query_string = kept["request"]["query_string"]
+    assert "FAKE_AUTH_QS_VALUE_1" not in query_string
+    assert "symbol=AAPL" in query_string
+
+
+@pytest.mark.unit
+def test_before_send_transaction_scrubs_leading_client_secret_query_param():
+    event: Event = {
+        "transaction": "GET /api/v1/orders",
+        "request": {
+            "query_string": "client_secret=FAKE_CLIENT_SECRET_VALUE_2&symbol=AAPL",
+        },
+        "spans": [],
+    }
+
+    kept = sentry_module._before_send_transaction(event, {})
+
+    assert kept is not None
+    query_string = kept["request"]["query_string"]
+    assert "FAKE_CLIENT_SECRET_VALUE_2" not in query_string
+    assert "symbol=AAPL" in query_string
+
+
+@pytest.mark.unit
+def test_before_send_transaction_scrubs_leading_signature_query_param():
+    event: Event = {
+        "transaction": "GET /api/v1/orders",
+        "request": {
+            "query_string": "signature=FAKE_REQUEST_SIGNATURE_VALUE_3&symbol=AAPL",
+        },
+        "spans": [],
+    }
+
+    kept = sentry_module._before_send_transaction(event, {})
+
+    assert kept is not None
+    query_string = kept["request"]["query_string"]
+    assert "FAKE_REQUEST_SIGNATURE_VALUE_3" not in query_string
+    assert "symbol=AAPL" in query_string
+
+
+@pytest.mark.unit
 def test_capture_exception_adds_masked_context(monkeypatch):
     scope_mock = Mock()
     context_manager = Mock()
