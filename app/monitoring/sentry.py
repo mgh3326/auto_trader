@@ -66,6 +66,7 @@ _SENSITIVE_KEYWORDS = (
     "bot_token",
     "webhook",
     "credential",
+    "signature",
 )
 
 # ROB-1305: value-shape scrubbing for secrets embedded inside strings (URLs,
@@ -76,28 +77,39 @@ _TELEGRAM_BOT_URL_RE = re.compile(
     r"(?P<prefix>https?://api\.telegram\.org/bot)[^/\s\"']+",
     flags=re.IGNORECASE,
 )
+# ROB-1305 follow-up: match by credential *shape* (digits:token), not by
+# enumerating known Telegram method names — a relative (no-host) bot path
+# using an unlisted method must not defeat redaction.
 _TELEGRAM_BOT_PATH_RE = re.compile(
-    r"(?P<prefix>/bot)[^/\s\"']+"
-    r"(?P<suffix>/(?:sendMessage|editMessageText|answerCallbackQuery|"
-    r"sendPhoto|sendDocument|getMe))",
+    r"(?P<prefix>/bot)\d+:[A-Za-z0-9_-]+",
     flags=re.IGNORECASE,
 )
 _BEARER_TOKEN_RE = re.compile(r"(?P<prefix>\bBearer\s+)\S+", flags=re.IGNORECASE)
 _URL_BASIC_AUTH_RE = re.compile(
     r"(?P<prefix>https?://)[^\s/@\"']+:[^\s/@\"']+@", flags=re.IGNORECASE
 )
+# ROB-1305 follow-up: both the query-string and JSON-field value-shape
+# matchers below are built from the same _SENSITIVE_KEYWORDS list the
+# dict-key sanitizer (_is_sensitive_key) uses, and match a keyword as a
+# *substring* of the key (not only an exact key), matching that sanitizer's
+# semantics — this closes the earlier drift where e.g. "client_secret" or
+# "signature"-shaped query/JSON keys were only caught for dict keys, not for
+# the same keyword embedded in a serialized query string or JSON blob.
+_SENSITIVE_KEY_SUBSTRING_RE = "|".join(
+    re.escape(keyword) for keyword in _SENSITIVE_KEYWORDS
+)
 _SECRET_QUERY_PARAM_RE = re.compile(
-    r"(?P<prefix>(?:^|[?&])(?:api[_-]?key|app[_-]?key|app[_-]?secret|"
-    r"access[_-]?key|access[_-]?token|secret|token|password|passwd)=)"
-    r"[^&\s\"']+",
+    r"(?P<prefix>(?:^|[?&])[A-Za-z0-9_-]*(?:"
+    + _SENSITIVE_KEY_SUBSTRING_RE
+    + r")[A-Za-z0-9_-]*=)[^&\s\"']+",
     flags=re.IGNORECASE,
 )
-# Matches an exact secret-named field inside a serialized JSON string, e.g.
-# the JSON text captured in an MCP span's `mcp.tool.result.content` data.
+# Matches a secret-named field inside a serialized JSON string, e.g. the JSON
+# text captured in an MCP span's `mcp.tool.result.content` data.
 _JSON_SECRET_FIELD_RE = re.compile(
-    r'(?P<prefix>"(?:authorization|cookie|set-cookie|x-api-key|token|secret|'
-    r"password|passwd|api[_-]?key|app[_-]?key|access[_-]?key|access[_-]?token|"
-    r'client[_-]?secret|bot[_-]?token|webhook|credential)"\s*:\s*")[^"]*(?P<suffix>")',
+    r'(?P<prefix>"[A-Za-z0-9_-]*(?:'
+    + _SENSITIVE_KEY_SUBSTRING_RE
+    + r')[A-Za-z0-9_-]*"\s*:\s*")[^"]*(?P<suffix>")',
     flags=re.IGNORECASE,
 )
 
@@ -105,7 +117,7 @@ _JSON_SECRET_FIELD_RE = re.compile(
 def _scrub_secret_shapes_in_string(value: str) -> str:
     """Redact secret-bearing substrings without deleting the surrounding text."""
     scrubbed = _TELEGRAM_BOT_URL_RE.sub(r"\g<prefix>[REDACTED]", value)
-    scrubbed = _TELEGRAM_BOT_PATH_RE.sub(r"\g<prefix>[REDACTED]\g<suffix>", scrubbed)
+    scrubbed = _TELEGRAM_BOT_PATH_RE.sub(r"\g<prefix>[REDACTED]", scrubbed)
     scrubbed = _BEARER_TOKEN_RE.sub(r"\g<prefix>[REDACTED]", scrubbed)
     scrubbed = _URL_BASIC_AUTH_RE.sub(r"\g<prefix>[REDACTED]@", scrubbed)
     scrubbed = _SECRET_QUERY_PARAM_RE.sub(r"\g<prefix>[REDACTED]", scrubbed)
