@@ -20,7 +20,7 @@ from scripts.b0x.envelope import (
 )
 from scripts.b0x.kill_switch import MissingNavForRatioKill, evaluate
 from scripts.b0x.labels import SHARED_HISTORY_ACCOUNTS, header_labels
-from scripts.b0x.state import LaneAccountState
+from scripts.b0x.state import B0XPosition, LaneAccountState
 from scripts.b0x.table_source import PolicyTable
 from scripts.b0x.us import alpaca
 from scripts.b0x.us.contract import (
@@ -212,6 +212,64 @@ def test_us_table_selected_usd_amount_reaches_generic_derivation() -> None:
     )
     assert len(result.orders) == 1
     assert result.orders[0].notional == Decimal("300")
+
+
+def test_us_table_averaging_levels_reach_generic_derivation() -> None:
+    """US A(k) config is consumed by the shared averaging-down branch."""
+
+    table = PolicyTable(
+        market="us",
+        path=Path("/tmp/latest-us.json"),
+        payload={
+            "config": {
+                "new_entry_notional_usd": "300",
+                "averaging_k_levels": ["0.05", "0.10"],
+                "loss_guard_multiplier": "1",
+            },
+            "sizing": {},
+            "rows": [
+                {
+                    "symbol": "AAPL",
+                    "insufficient_history": False,
+                    "previous_close": "100",
+                    "A_buy_side": {"buy_l1": {"price": "97"}, "buy_l2": None},
+                    "B_sell_side": {"sell_r1": None, "sell_r2": None},
+                }
+            ],
+        },
+        policy_table_hash="sha256:us",
+        artifact_sha256="sha256:artifact",
+        generated_at=NOW,
+        age=dt.timedelta(0),
+    )
+    state = LaneAccountState(
+        lane=alpaca.LANE,
+        quote_currency="USD",
+        cash=Decimal("10000"),
+        positions=(
+            B0XPosition(
+                symbol="AAPL",
+                quantity=Decimal("1"),
+                average_price=Decimal("110"),
+                invested_notional=Decimal("110"),
+                entry_count=1,
+            ),
+        ),
+        broker_truth=BrokerTruth(position_symbols=("AAPL",), own_pending=()),
+        realized_pnl_today=Decimal("0"),
+        nav=Decimal("10000"),
+    )
+    result = derive_orders(
+        table=table,
+        state=state,
+        envelope=US_ALPACA_PAPER_LAB_ENVELOPE,
+        kill_switch=evaluate(state=state, envelope=US_ALPACA_PAPER_LAB_ENVELOPE),
+    )
+
+    averaging_orders = [order for order in result.orders if order.leg == "averaging"]
+    assert len(averaging_orders) == 1
+    assert averaging_orders[0].detail["rule"] == "b0_averaging_down"
+    assert averaging_orders[0].detail["k"] == "0.05"
 
 
 def test_us_headers_have_exact_three_base_labels_plus_us_extra_but_not_shared_history() -> (
