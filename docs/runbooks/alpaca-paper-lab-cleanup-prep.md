@@ -21,7 +21,9 @@ R2 counter: submit=0, cancel=0, modify=0, close_or_liquidate=0, total=0. No code
 
 The filled row matches the bounded broker position on `account_mode=alpaca_paper_lab`, symbol UBER, quantity 1, average entry price 69.65, and broker order ID. Ledger net long is `0 + 1 = 1`, exactly the broker quantity. `derive_client_order_id` in `app/services/alpaca_paper_submit_service.py` emits `dlab-rob73-…` for the lab account. Thus this is **ledger-linked / B0-X-lane-unattributed**, not foreign or generally unattributed.
 
-`scripts/b0x/us/alpaca.py::_b0xu_executions` intentionally filters to `b0xu-` correlations before `_attribute_positions`. It answers B0-X experiment-lane ownership, not account-wide provenance. The former document incorrectly promoted its zero-result for `dlab-` rows to “not ours.” The reader is not changed here: expanding a B0-X ownership boundary is a separate design/code task; this round corrects the account-wide interpretation only.
+The original reader intentionally filtered to `b0xu-` correlations before `_attribute_positions`, which incorrectly promoted a known `dlab-` lab row to “not ours.” The follow-up attribution repair accepts `b0xu-` and `dlab-` execution evidence for **positions** only. Open-order ownership remains `b0xu-` only, preserving the B0-X cancellation boundary; `dlab-` does not become a B0-X pending order.
+
+This correction does **not** make UBER generally tradeable: the canceled row has no fill price, so cumulative deployment remains unreadable and blocks additional buys; its two execution events also fail the single-native-buy requirement for an automated sell source.
 
 The recorded cycle `/Users/mgh3326/work/herdr-artifacts/b0x/alpaca_paper_lab/20260814T224344-us-cycle.json` has the same `foreign_position_symbols=["UBER"]` / no-`b0xu-` evidence and `submission_skipped="contaminated lab account state — foreign/unlinked residue blocks submit"`. The stated skip cause is therefore confirmed for that recorded cycle. It proves an attribution-scope defect in the decision input, not that liquidation is necessary.
 

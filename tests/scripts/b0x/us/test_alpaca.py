@@ -18,6 +18,7 @@ from scripts.b0x.derivation import DerivedOrder
 from scripts.b0x.envelope import US_ALPACA_PAPER_LAB_ENVELOPE
 from scripts.b0x.table_source import PolicyTable
 from scripts.b0x.us import alpaca
+from scripts.b0x.us import cycle as us_cycle
 
 pytestmark = pytest.mark.unit
 
@@ -141,7 +142,7 @@ async def test_fresh_truth_uses_lab_only_and_attributes_by_known_correlation_pre
             {
                 "account_mode": alpaca.LANE,
                 "record_kind": "execution",
-                "lifecycle_correlation_id": "dlab-rob73-aapl",
+                "lifecycle_correlation_id": "b0xu-aapl-buy",
                 "client_order_id": "dlab-rob842a-aapl",
                 "broker_order_id": "b0xu-open",
                 "execution_symbol": "AAPL",
@@ -217,6 +218,223 @@ async def test_unlinked_fake_lab_position_remains_contaminated() -> None:
     assert fresh.position_linkage_failures == (
         "FAKE: no recognized lab execution correlation",
     )
+
+
+@pytest.mark.asyncio
+async def test_dlab_execution_does_not_expand_open_order_ownership() -> None:
+    """Native lab provenance may own a position, never a B0-X resting order."""
+
+    readers, _ = _readers(
+        positions=[
+            {
+                "symbol": "UBER",
+                "qty": "1",
+                "qty_available": "1",
+                "avg_entry_price": "69.65",
+            }
+        ],
+        orders=[{"id": "dlab-resting", "symbol": "UBER"}],
+        ledger=[
+            {
+                "account_mode": alpaca.LANE,
+                "record_kind": "execution",
+                "lifecycle_correlation_id": "dlab-rob73-uber",
+                "client_order_id": "dlab-rob73-uber",
+                "broker_order_id": "dlab-resting",
+                "execution_symbol": "UBER",
+                "side": "buy",
+                "filled_qty": "1",
+                "filled_avg_price": "69.65",
+                "created_at": "2026-08-09T15:00:00+00:00",
+            }
+        ],
+    )
+
+    fresh = await alpaca.read_fresh_truth(now=NOW, readers=readers)
+
+    assert [position.symbol for position in fresh.own_positions] == ["UBER"]
+    assert fresh.foreign_position_symbols == ()
+    assert fresh.own_open_orders == ()
+    assert [order.broker_order_id for order in fresh.foreign_open_orders] == [
+        "dlab-resting"
+    ]
+    assert us_cycle.broker_state(fresh=fresh).contaminated is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ledger", "failure"),
+    [
+        ([], "no recognized lab execution correlation"),
+        (
+            [
+                {
+                    "account_mode": alpaca.LANE,
+                    "record_kind": "execution",
+                    "lifecycle_correlation_id": "dlab-rob73-other",
+                    "execution_symbol": "OTHER",
+                    "side": "buy",
+                    "filled_qty": "1",
+                    "filled_avg_price": "100",
+                }
+            ],
+            "no recognized lab execution correlation",
+        ),
+        (
+            [
+                {
+                    "account_mode": alpaca.LANE,
+                    "record_kind": "execution",
+                    "lifecycle_correlation_id": "dlab-rob73-mismatch",
+                    "execution_symbol": "FAKE",
+                    "side": "buy",
+                    "filled_qty": "2",
+                    "filled_avg_price": "100",
+                }
+            ],
+            "broker quantity does not exactly match lab fills",
+        ),
+        (
+            [
+                {
+                    "account_mode": alpaca.LANE,
+                    "record_kind": "execution",
+                    "lifecycle_correlation_id": "dlab-rob73-no-fill",
+                    "execution_symbol": "FAKE",
+                    "side": "buy",
+                    "filled_qty": None,
+                    "filled_avg_price": "100",
+                }
+            ],
+            "lab fill quantity unavailable",
+        ),
+        (
+            [
+                {
+                    "account_mode": alpaca.LANE,
+                    "record_kind": "execution",
+                    "lifecycle_correlation_id": "dlab-rob73-sell",
+                    "execution_symbol": "FAKE",
+                    "side": "sell",
+                    "filled_qty": "1",
+                    "filled_avg_price": "100",
+                }
+            ],
+            "broker quantity does not exactly match lab fills",
+        ),
+        (
+            [
+                {
+                    "account_mode": alpaca.LANE,
+                    "record_kind": "execution",
+                    "lifecycle_correlation_id": "rob73-main-account",
+                    "execution_symbol": "FAKE",
+                    "side": "buy",
+                    "filled_qty": "1",
+                    "filled_avg_price": "100",
+                }
+            ],
+            "no recognized lab execution correlation",
+        ),
+        (
+            [
+                {
+                    "account_mode": alpaca.LANE,
+                    "record_kind": "execution",
+                    "lifecycle_correlation_id": "dlababc-no-hyphen",
+                    "execution_symbol": "FAKE",
+                    "side": "buy",
+                    "filled_qty": "1",
+                    "filled_avg_price": "100",
+                }
+            ],
+            "no recognized lab execution correlation",
+        ),
+        (
+            [
+                {
+                    "account_mode": alpaca.LANE,
+                    "record_kind": "execution",
+                    "lifecycle_correlation_id": "xx-dlab-suffix",
+                    "execution_symbol": "FAKE",
+                    "side": "buy",
+                    "filled_qty": "1",
+                    "filled_avg_price": "100",
+                }
+            ],
+            "no recognized lab execution correlation",
+        ),
+        (
+            [
+                {
+                    "account_mode": alpaca.LANE,
+                    "record_kind": "preview",
+                    "lifecycle_correlation_id": "dlab-rob73-preview",
+                    "execution_symbol": "FAKE",
+                    "side": "buy",
+                    "filled_qty": "1",
+                    "filled_avg_price": "100",
+                }
+            ],
+            "no recognized lab execution correlation",
+        ),
+    ],
+)
+async def test_position_attribution_rejects_unlinked_mutants(
+    ledger: list[dict[str, Any]], failure: str
+) -> None:
+    readers, _ = _readers(
+        positions=[
+            {
+                "symbol": "FAKE",
+                "qty": "1",
+                "qty_available": "1",
+                "avg_entry_price": "100",
+            }
+        ],
+        ledger=ledger,
+    )
+
+    fresh = await alpaca.read_fresh_truth(now=NOW, readers=readers)
+
+    assert fresh.foreign_position_symbols == ("FAKE",)
+    assert fresh.position_linkage_failures == (f"FAKE: {failure}",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("correlation", ["dlab-rob73-wrong-mode", "b0xu-wrong-mode"])
+async def test_recognized_prefix_requires_lab_account(correlation: str) -> None:
+    readers, _ = _readers(
+        ledger=[
+            {
+                "account_mode": "alpaca_paper",
+                "record_kind": "execution",
+                "lifecycle_correlation_id": correlation,
+                "execution_symbol": "FAKE",
+                "side": "buy",
+                "filled_qty": "1",
+                "filled_avg_price": "100",
+            }
+        ]
+    )
+
+    with pytest.raises(alpaca.LabTruthReadError, match="not bound"):
+        await alpaca.read_fresh_truth(now=NOW, readers=readers)
+
+
+def test_dlab_execution_today_keeps_realized_pnl_fail_closed() -> None:
+    execution = alpaca.LedgerExecution(
+        correlation_id="dlab-rob73-today",
+        client_order_id="dlab-rob73-today",
+        broker_order_id="dlab-order",
+        symbol="UBER",
+        side="buy",
+        filled_qty=Decimal("1"),
+        filled_avg_price=Decimal("69.65"),
+        created_at=NOW,
+    )
+
+    assert alpaca._realized_pnl_today((execution,), now=NOW) is None
 
 
 @pytest.mark.asyncio

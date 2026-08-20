@@ -82,10 +82,11 @@ open-order 또는 bounded ledger 응답이 limit에 닿으면 완전성을 증�
 
 - `lifecycle_correlation_id`가 `b0xu-`로 시작하는 lab execution evidence가 broker
   order id와 정확히 하나로 연결될 때만 open order를 자기 것으로 본다.
-- position은 symbol별 b0xu fill의 순수량이 broker 수량과 정확히 일치할 때만 자기
-  position이다. fill이 없거나 수량 evidence가 불완전하면 foreign/linkage failure다.
-  매수가 fill price만 불완전한 경우에는 소유권을 꾸며 바꾸지 않고 cumulative deployment를
-  unreadable로 표시하여 추가매수를 막는다.
+- position은 symbol별 `b0xu-` 또는 native-lab `dlab-` execution fill의 순수량이 broker
+  수량과 정확히 일치할 때만 자기 position이다. 이 확장은 contamination 오탐만 제거하며,
+  open-order 소유권·취소 사정권을 넓히지 않는다. fill이 없거나 수량 evidence가 불완전하면
+  foreign/linkage failure다. 매수가 fill price만 불완전한 경우에는 소유권을 꾸며 바꾸지
+  않고 cumulative deployment를 unreadable로 표시하여 추가매수를 막는다.
 - 그 밖의 open order/position은 foreign으로 기록하고 `CONTAMINATED`로 분리한다.
   관측은 남기되 submit은 막으며, foreign 주문/포지션을 취소·청산하지 않는다.
 
