@@ -328,6 +328,33 @@ def test_compact_approval_card_has_required_contract_fields_individually():
 
 
 @pytest.mark.unit
+def test_kis_live_card_shows_resolved_name_and_existing_invest_detail_link():
+    """ROB-1299: a real KIS-live-shaped card stays compact but identifiable."""
+    group = _group(
+        symbol="005930",
+        market="equity_kr",
+        account_mode="kis_live",
+        side="buy",
+        thesis="실적 회복과 현금흐름 개선을 확인한 매수 근거",
+        valid_until=datetime(2026, 8, 20, 7, 30, tzinfo=UTC),
+    )
+    text, keyboard = build_approval_message(
+        group=group,
+        rungs=[_rung(quantity=Decimal("2"), limit_price=Decimal("71000"))],
+        display_name="삼성전자",
+    )
+
+    assert "종목: `005930` · 삼성전자" in text
+    assert "시장/방향/유형: `equity_kr / buy / limit`" in text
+    assert "#1: 2주 × ₩71,000" in text
+    assert "투자 논지: 실적 회복과 현금흐름 개선을 확인한 매수 근거" in text
+    assert "유효기간: ~16:30 KST (2026-08-20)" in text
+    assert "/invest/stocks/kr/005930" in text
+    assert telegram_text_length(text) < TELEGRAM_SEND_MESSAGE_TEXT_LIMIT
+    assert keyboard["inline_keyboard"][-1][0]["text"] == "🔎 /invest 상세"
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("detail", "expected"),
     [
@@ -456,6 +483,28 @@ def test_loss_cut_confirmation_callback_and_summary():
     assert approval_url.endswith(f"/invest/approvals/loss-cut/{group.proposal_id}")
     assert approval_url in text
     assert group.approval_nonce not in approval_url
+
+
+@pytest.mark.unit
+def test_loss_cut_second_step_retains_loss_rate_and_second_window_contract():
+    """A deletion-prone compacting regression: both fields are mandatory."""
+    group = _group(
+        exit_intent="loss_cut",
+        source_asof={
+            "loss_cut_confirmation": {"expires_at": "2026-07-14T01:30:00+00:00"}
+        },
+    )
+    text, _keyboard = build_loss_cut_confirmation_message(
+        group=group,
+        rungs=[_rung()],
+        evidence={
+            "rungs": [{"rung_index": 0, "loss_pct": "-12.34"}],
+            "retrospective_id": 42,
+        },
+    )
+
+    assert "손실률 -12.34%" in text
+    assert "2차 창(유효시간): 10:30 KST (2026-07-14)" in text
 
 
 @pytest.mark.unit

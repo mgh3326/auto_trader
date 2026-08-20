@@ -43,11 +43,13 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.core.config import settings
+from app.core.portfolio_links import build_position_detail_url
 from app.services.order_proposals.approval_message import (
     _build_order_core_metrics,
     _escape_inline_code,
     _escape_markdown,
     _format_datetime,
+    _format_symbol_label,
     build_callback_data,
 )
 from app.services.order_proposals.auto_approve_audit import (
@@ -712,6 +714,7 @@ def build_auto_approved_message(
     rungs: list[Any],
     nonce: str,
     policy_version: str,
+    display_name: str | None = None,
     binding: DispatchBinding,
 ) -> tuple[str, dict[str, Any]]:
     """Render a compact post-submit summary with a single-use veto button."""
@@ -725,7 +728,7 @@ def build_auto_approved_message(
     )
     lines = [
         "✅ *자동 접수됨*",
-        f"- 종목: `{_escape_inline_code(group.symbol)}`",
+        f"- 종목: {_format_symbol_label(group.symbol, display_name=display_name)}",
         f"- 방향: `{_escape_inline_code(group.side)}`",
     ]
     ordered_rungs = sorted(rungs, key=lambda item: item.rung_index)
@@ -748,9 +751,15 @@ def build_auto_approved_message(
             f"- `auto:policy@{policy_version}`",
         ]
     )
-    return "\n".join(lines), {
-        "inline_keyboard": [[{"text": "취소", "callback_data": callback}]]
-    }
+    detail_url = build_position_detail_url(group.symbol, group.market)
+    if detail_url is not None:
+        lines.append(f"- /invest 상세: {detail_url}")
+    keyboard = {"inline_keyboard": [[{"text": "취소", "callback_data": callback}]]}
+    if detail_url is not None:
+        keyboard["inline_keyboard"].append(
+            [{"text": "🔎 /invest 상세", "url": detail_url}]
+        )
+    return "\n".join(lines), keyboard
 
 
 __all__ = [

@@ -847,15 +847,17 @@ def test_auto_veto_card_has_symbol_quantity_price_and_thesis_fields():
         rungs=[_rung(quantity=Decimal("2"), limit_price=Decimal("97000"))],
         nonce="fixture-nonce",
         policy_version="fixture-policy",
+        display_name="삼성전자",
         binding=binding,
     )
 
-    assert "종목: `005930`" in text
+    assert "종목: `005930` · 삼성전자" in text
     assert "수량: #1 2" in text
     assert "가격: #1 97000" in text
     assert "핵심 수치: 총수량 2주 / 주문금액 ₩194,000" in text
     assert "근거: valuation dislocation" in text
     assert "유효기간: 10:30 KST (2026-07-14)" in text
+    assert "/invest/stocks/kr/005930" in text
 
 
 def test_auto_veto_missing_thesis_stays_none_and_routes_to_human():

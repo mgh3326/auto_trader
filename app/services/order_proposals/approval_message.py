@@ -12,6 +12,7 @@ from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from typing import Any
 
 from app.core.invest_deep_links import build_loss_cut_approval_url
+from app.core.portfolio_links import build_position_detail_url
 from app.core.timezone import KST
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
@@ -209,6 +210,7 @@ def build_batch_approval_message(
     batch: Any,
     proposals: Sequence[tuple[Any, Sequence[Any]]],
     binding: DispatchBinding,
+    display_names: Mapping[str, str] | None = None,
 ) -> tuple[str, dict]:
     """Render a pending manual-approval batch without exposing raw nonces."""
     if len(proposals) < 2:
@@ -228,6 +230,7 @@ def build_batch_approval_message(
     ]
     for group, rungs in proposals:
         symbol = str(getattr(group, "symbol", None) or "미기재")
+        display_name = (display_names or {}).get(str(getattr(group, "proposal_id", "")))
         side = str(getattr(group, "side", None) or "미기재")
         market = str(getattr(group, "market", None) or "")
         currency = _currency_for_market(market=market, symbol=symbol) or "기타"
@@ -260,7 +263,7 @@ def build_batch_approval_message(
                 f"{_format_money(None if is_market_order else getattr(rung, 'limit_price', None), currency=currency, none_label='시장가')}"
             )
         lines.append(
-            f"- `{_escape_inline_code(symbol)}` "
+            f"- {_format_symbol_label(symbol, display_name=display_name)} "
             f"`{_escape_inline_code(side)}` · "
             f"{_escape_markdown(account_label)} · " + "; ".join(rung_parts)
         )
@@ -366,6 +369,7 @@ def build_approval_message(
     cash_stress: dict | None = None,
     diff: dict | None = None,
     evidence_reference: str | None = None,
+    display_name: str | None = None,
     binding: DispatchBinding,
 ) -> tuple[str, dict]:
     """Render a proposal and its Telegram inline keyboard without raw digests."""
@@ -416,7 +420,7 @@ def build_approval_message(
     title = "*주문 제안 재확인*" if explicit_reconfirm else "*주문 제안 승인*"
     lines = [
         title,
-        f"- 종목: `{_escape_inline_code(symbol)}`",
+        f"- 종목: {_format_symbol_label(symbol, display_name=display_name)}",
         "- 시장/방향/유형: "
         f"`{_escape_inline_code(f'{market} / {side} / {order_type}')}`",
     ]
@@ -477,6 +481,10 @@ def build_approval_message(
                 f"- /invest 증거·확인: {approval_url}",
             ]
         )
+
+    detail_url = build_position_detail_url(symbol, market)
+    if detail_url is not None:
+        lines.append(f"- /invest 상세: {detail_url}")
 
     time_lines = _build_time_lines(group)
     if time_lines:
@@ -540,6 +548,10 @@ def build_approval_message(
                 }
             ]
         )
+    if detail_url is not None:
+        inline_keyboard["inline_keyboard"].append(
+            [{"text": "🔎 /invest 상세", "url": detail_url}]
+        )
     return text, inline_keyboard
 
 
@@ -550,6 +562,7 @@ def build_approval_dispatch_messages(
     cash_stress: dict | None = None,
     diff: dict | None = None,
     suffix_blocks: Sequence[str] = (),
+    display_name: str | None = None,
     binding: DispatchBinding,
 ) -> ApprovalDispatchMessages:
     """Render one compact card; detailed evidence belongs to the future hub."""
@@ -558,6 +571,7 @@ def build_approval_dispatch_messages(
         rungs=rungs,
         cash_stress=cash_stress,
         diff=diff,
+        display_name=display_name,
         binding=binding,
     )
     if suffix_blocks:
@@ -575,6 +589,7 @@ def build_loss_cut_confirmation_message(
     group: Any,
     rungs: Sequence[Any],
     evidence: Mapping[str, Any],
+    display_name: str | None = None,
     binding: DispatchBinding,
 ) -> tuple[str, dict]:
     """Render the explicit second-step loss-cut confirmation prompt."""
@@ -596,7 +611,7 @@ def build_loss_cut_confirmation_message(
 
     lines = [
         "*⚠️ 손절 확인*",
-        f"- 종목: `{_escape_inline_code(symbol)}`",
+        f"- 종목: {_format_symbol_label(symbol, display_name=display_name)}",
         "",
         "*주문 및 손실 요약*",
     ]
@@ -650,6 +665,9 @@ def build_loss_cut_confirmation_message(
     lines.extend(["", "이 손절 주문을 다시 확인해 주세요."])
     approval_url = build_loss_cut_approval_url(proposal_id=proposal_id)
     lines.append(f"/invest 증거·확인: {approval_url}")
+    detail_url = build_position_detail_url(symbol, market)
+    if detail_url is not None:
+        lines.append(f"/invest 상세: {detail_url}")
     text = "\n".join(lines).replace(str(nonce), "[비공개]")
     keyboard = {
         "inline_keyboard": [
@@ -678,7 +696,20 @@ def build_loss_cut_confirmation_message(
     keyboard["inline_keyboard"].append(
         [{"text": "🔎 /invest 증거", "url": approval_url}]
     )
+    if detail_url is not None:
+        keyboard["inline_keyboard"].append(
+            [{"text": "🔎 /invest 상세", "url": detail_url}]
+        )
     return text, keyboard
+
+
+def _format_symbol_label(symbol: str, *, display_name: str | None) -> str:
+    """Keep the durable code visible while optionally adding a resolved name."""
+    code = f"`{_escape_inline_code(symbol)}`"
+    normalized_name = " ".join(str(display_name or "").split())
+    if not normalized_name or normalized_name == symbol:
+        return code
+    return f"{code} · {_escape_markdown(normalized_name)}"
 
 
 def _build_order_core_metrics(*, group: Any, rungs: Sequence[Any]) -> str:

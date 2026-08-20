@@ -6,6 +6,7 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,6 +52,26 @@ def _known_market_session(monkeypatch):
     monkeypatch.setattr(
         revalidation_module, "evaluate_approval_window", allow_known_session
     )
+
+
+@pytest.mark.asyncio
+async def test_card_name_resolution_reuses_notification_source_and_fails_open(
+    monkeypatch,
+):
+    group = SimpleNamespace(symbol="005930", market="equity_kr")
+
+    async def resolved(market: str, symbol: str) -> str:
+        assert (market, symbol) == ("kr", "005930")
+        return "삼성전자"
+
+    monkeypatch.setattr(dispatch_module, "resolve_display_name_db", resolved)
+    assert await dispatch_module._resolve_card_display_name(group) == "삼성전자"
+
+    async def unavailable(_market: str, _symbol: str) -> str:
+        raise RuntimeError("name lookup unavailable")
+
+    monkeypatch.setattr(dispatch_module, "resolve_display_name_db", unavailable)
+    assert await dispatch_module._resolve_card_display_name(group) is None
 
 
 class _FakeNotifier:
