@@ -87,7 +87,7 @@ _URL_BASIC_AUTH_RE = re.compile(
     r"(?P<prefix>https?://)[^\s/@\"']+:[^\s/@\"']+@", flags=re.IGNORECASE
 )
 _SECRET_QUERY_PARAM_RE = re.compile(
-    r"(?P<prefix>[?&](?:api[_-]?key|app[_-]?key|app[_-]?secret|"
+    r"(?P<prefix>(?:^|[?&])(?:api[_-]?key|app[_-]?key|app[_-]?secret|"
     r"access[_-]?key|access[_-]?token|secret|token|password|passwd)=)"
     r"[^&\s\"']+",
     flags=re.IGNORECASE,
@@ -381,28 +381,21 @@ def _before_send_transaction(event: Event, hint: Hint) -> Event | None:
         return event
     is_mcp_transport_transaction = "/mcp" in transaction_name
 
-    request = event.get("request")
-    if isinstance(request, dict):
-        event["request"] = _sanitize_in_place(request)
+    # ROB-1305: one coherent whole-event sanitization boundary, reused by
+    # error events (_before_send), logs (_before_send_log), breadcrumbs
+    # (_before_breadcrumb), and transaction events here. It walks every
+    # nested mapping/sequence on the event — request, contexts, extra, and
+    # every span's description/data alike — filtering by key name and by
+    # secret-value shape (URLs, query strings, JSON-embedded fields).
+    # Structural fields (span/trace ids, timestamps, ops, statuses) are
+    # numeric or hex and never match the secret-shape patterns, so they pass
+    # through unchanged; span descriptions/data for spans of every op (not
+    # just mcp.server) are covered by the same pass.
+    event = _sanitize_in_place(event)
 
     spans = event.get("spans", [])
     if not isinstance(spans, list):
         spans = []
-
-    # ROB-1305: scrub every span's description/data by key-name and by
-    # secret-value shape (e.g. a token embedded in a URL query string or
-    # path) — this covers non-MCP spans (httpx, sqlalchemy, ...) that the
-    # MCP-specific redaction below never touches. Structure (op, status,
-    # timestamps, span_id/trace_id) is left untouched.
-    for span in spans:
-        if not isinstance(span, dict):
-            continue
-        description = span.get("description")
-        if isinstance(description, str):
-            span["description"] = _scrub_secret_shapes_in_string(description)
-        span_data = span.get("data")
-        if isinstance(span_data, dict):
-            span["data"] = _sanitize_in_place(span_data)
 
     found_mcp_span = False
     transaction_renamed = False
