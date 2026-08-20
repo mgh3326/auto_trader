@@ -70,17 +70,52 @@ async def test_set_then_get_round_trips_stable_fields_only():
 @pytest.mark.asyncio
 async def test_set_is_noop_for_degraded_or_uncached_market_or_no_redis():
     redis = _FakeRedis()
-    # total_count 0 → degraded, never cached (KR)
-    await cache.set_cached_consensus(redis, "kr", "000660", {"total_count": 0})
+    # all-None (no counts, no targets) → degraded/quote-only, never cached
+    await cache.set_cached_consensus(
+        redis, "kr", "000660", {"total_count": None, "current_price": 1000.0}
+    )
     assert await cache.get_cached_consensus(redis, "kr", "000660") is None
-    # total_count 0 → degraded, never cached (US)
-    await cache.set_cached_consensus(redis, "us", "MSFT", {"total_count": 0})
+    await cache.set_cached_consensus(
+        redis, "us", "MSFT", {"total_count": None, "current_price": 200.0}
+    )
     assert await cache.get_cached_consensus(redis, "us", "MSFT") is None
     # a market outside _PROVIDER_BY_MARKET (e.g. crypto) is never cached
     await cache.set_cached_consensus(redis, "crypto", "BTC", {"total_count": 5})
     assert await cache.get_cached_consensus(redis, "crypto", "BTC") is None
     # redis None → no-op, no raise
     await cache.set_cached_consensus(None, "kr", "005930", {"total_count": 3})
+
+
+@pytest.mark.asyncio
+async def test_meaningful_consensus_gate_keeps_target_only_rows():
+    """ROB-1309 checkpoint fix: matches the offline snapshot builder's gate
+    (app/services/analyst_consensus_snapshots/builder.py) — a row with
+    target-price fields but no recommendation counts (Yahoo's common
+    target-only shape) is meaningful and MUST be cached/returned, not
+    discarded as 'unavailable'."""
+    redis = _FakeRedis()
+    target_only = {
+        "total_count": None,
+        "buy_count": None,
+        "avg_target_price": 250.0,
+        "current_price": 200.0,
+    }
+    await cache.set_cached_consensus(redis, "us", "TGTONLY", target_only)
+    cached = await cache.get_cached_consensus(redis, "us", "TGTONLY")
+    assert cached is not None
+    assert cached["avg_target_price"] == 250.0
+
+    async def _target_only_fetcher(**kwargs):
+        return {"source": "yfinance", "consensus": dict(target_only)}
+
+    result = await cache.resolve_consensus(
+        symbol="TGTONLY2",
+        market="us",
+        redis_client=_FakeRedis(),
+        opinion_fetcher=_target_only_fetcher,
+    )
+    assert result is not None
+    assert result["avg_target_price"] == 250.0
 
 
 @pytest.mark.asyncio

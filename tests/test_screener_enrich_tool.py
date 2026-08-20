@@ -502,3 +502,561 @@ async def test_negative_cache_hit_skips_provider_retry_within_ttl() -> None:
     assert entry is not None
     assert entry.consecutive_failures == 1
     assert entry.error_class == "not_found"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enrich_holdings_marks_kis_live_held_rows(monkeypatch) -> None:
+    class _HeldResp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {
+                        "rank": 1,
+                        "symbol": "005930",
+                        "market": "kr",
+                        "name": "삼성전자",
+                        "isWatched": False,
+                        "isHeld": True,
+                        "matchedPresets": ["consecutive_gainers"],
+                        "marketCapValue": 478_000_000_000_000.0,
+                    }
+                ],
+                "warnings": [],
+            }
+
+    async def _fake_build(**kwargs: Any) -> _HeldResp:
+        resolver = kwargs["resolver"]
+        assert resolver.relation("kr", "005930") == "held"
+        return _HeldResp()
+
+    async def _fake_collect_kis_positions(
+        market_filter: str | None, *, is_mock: bool = False
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        assert market_filter == "equity_kr"
+        assert is_mock is False
+        return ([{"market": "kr", "symbol": "005930"}], [])
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _fake_collect_kis_positions,
+    )
+
+    out = await enrich_tool.screen_stocks_enrich_impl(
+        preset="consecutive_gainers",
+        market="kr",
+        limit=10,
+    )
+
+    assert out["results"][0]["isHeld"] is True
+    assert "holdings" in out
+    assert out["holdings"]["source"] == "kis_live"
+    assert out["holdings"]["held_count"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enrich_holdings_marks_us_kis_live_held_rows(monkeypatch) -> None:
+    class _HeldResp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "high_yield_value",
+                "results": [
+                    {
+                        "rank": 1,
+                        "symbol": "BRK.B",
+                        "market": "us",
+                        "name": "Berkshire Hathaway",
+                        "isWatched": False,
+                        "isHeld": True,
+                    }
+                ],
+                "warnings": [],
+            }
+
+    async def _fake_build(**kwargs: Any) -> _HeldResp:
+        resolver = kwargs["resolver"]
+        assert resolver.relation("us", "BRK/B") == "held"
+        return _HeldResp()
+
+    async def _fake_collect_kis_positions(
+        market_filter: str | None, *, is_mock: bool = False
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        assert market_filter == "equity_us"
+        assert is_mock is False
+        return ([{"market": "us", "symbol": "BRK.B"}], [])
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _fake_collect_kis_positions,
+    )
+
+    out = await enrich_tool.screen_stocks_enrich_impl(
+        preset="high_yield_value",
+        market="us",
+        limit=10,
+    )
+
+    assert out["results"][0]["isHeld"] is True
+    assert out["holdings"]["held_count"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enrich_holdings_holdings_failure_warns_and_keeps_results(
+    monkeypatch,
+) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [{"rank": 1, "symbol": "005930", "market": "kr"}],
+                "warnings": [],
+            }
+
+    async def _fake_build(**_kwargs: Any) -> _Resp:
+        return _Resp()
+
+    async def _fail_collect_kis_positions(
+        market_filter: str | None, *, is_mock: bool = False
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        del market_filter, is_mock
+        raise RuntimeError("kis unavailable")
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _fail_collect_kis_positions,
+    )
+
+    out = await enrich_tool.screen_stocks_enrich_impl(
+        preset="consecutive_gainers",
+        market="kr",
+    )
+
+    assert out["results"][0]["symbol"] == "005930"
+    assert any("KIS live 보유종목 확인 실패" in w for w in out["warnings"])
+    assert out["holdings"]["source"] == "kis_live"
+    assert out["holdings"]["status"] == "error"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enrich_holdings_holdings_error_tuple_warns_and_keeps_results(
+    monkeypatch,
+) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [{"rank": 1, "symbol": "005930", "market": "kr"}],
+                "warnings": [],
+            }
+
+    async def _fake_build(**_kwargs: Any) -> _Resp:
+        return _Resp()
+
+    async def _collect_with_errors(
+        market_filter: str | None, *, is_mock: bool = False
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        assert market_filter == "equity_kr"
+        assert is_mock is False
+        return (
+            [],
+            [{"source": "kis", "market": "kr", "error": "token expired"}],
+        )
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _collect_with_errors,
+    )
+
+    out = await enrich_tool.screen_stocks_enrich_impl(
+        preset="consecutive_gainers",
+        market="kr",
+        exclude_held=True,
+    )
+
+    assert out["results"][0]["symbol"] == "005930"
+    assert out["holdings"]["status"] == "error"
+    assert out["holdings"]["held_count"] == 0
+    assert out["holdings"]["warning_count"] == 1
+    assert any("KIS live 보유종목 확인 실패" in w for w in out["warnings"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enrich_holdings_holdings_partial_tuple_warns_and_marks_rows(
+    monkeypatch,
+) -> None:
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {"rank": 1, "symbol": "005930", "market": "kr"},
+                    {"rank": 2, "symbol": "000660", "market": "kr"},
+                ],
+                "warnings": [],
+            }
+
+    async def _fake_build(**kwargs: Any) -> _Resp:
+        resolver = kwargs["resolver"]
+        assert resolver.relation("kr", "005930") == "held"
+        assert resolver.relation("kr", "000660") == "none"
+        return _Resp()
+
+    async def _collect_partial(
+        market_filter: str | None, *, is_mock: bool = False
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        assert market_filter == "equity_kr"
+        assert is_mock is False
+        return (
+            [{"symbol": "005930", "market": "kr"}],
+            [{"source": "kis", "market": "us", "error": "temporary failure"}],
+        )
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build,
+    )
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions",
+        _collect_partial,
+    )
+
+    out = await enrich_tool.screen_stocks_enrich_impl(
+        preset="consecutive_gainers",
+        market="kr",
+    )
+
+    assert out["holdings"]["status"] == "partial"
+    assert out["holdings"]["held_count"] == 1
+    assert out["holdings"]["warning_count"] == 1
+    assert any("KIS live 보유종목 확인 실패" in w for w in out["warnings"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enrich_holdings_reports_excluded_held_count(monkeypatch) -> None:
+    """ROB-543 Slice B: the count of rows dropped by exclude_held is surfaced as
+    excluded_held_count (0 when exclude_held is off)."""
+
+    class _Resp:
+        def model_dump(self, mode: str | None = None) -> dict[str, Any]:  # noqa: ARG002
+            return {
+                "presetId": "consecutive_gainers",
+                "results": [
+                    {"symbol": "S1", "isWatched": False, "isHeld": True},
+                    {"symbol": "S2", "isWatched": False, "isHeld": True},
+                    {"symbol": "S3", "isWatched": False, "isHeld": False},
+                ],
+                "warnings": [],
+            }
+
+    monkeypatch.setattr(tool, "_session_factory", lambda: lambda: _FakeCM())
+    monkeypatch.setattr(
+        "app.services.screener_service.ScreenerService", lambda: object()
+    )
+
+    async def _fake_build_async(**kwargs: Any) -> _Resp:
+        return _Resp()
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_service.build_screener_results",
+        _fake_build_async,
+    )
+
+    # exclude_held=True drops the two held rows → count == 2
+    out = await enrich_tool.screen_stocks_enrich_impl(
+        preset="consecutive_gainers", market="kr", exclude_held=True
+    )
+    assert [r["symbol"] for r in out["results"]] == ["S3"]
+    assert out["excluded_held_count"] == 2
+    assert out["discoveryFilters"]["exclude_held"] is True
+
+    # exclude_held=False (default) → no rows dropped → count == 0
+    out2 = await enrich_tool.screen_stocks_enrich_impl(
+        preset="consecutive_gainers", market="kr"
+    )
+    assert out2["excluded_held_count"] == 0
+    assert len(out2["results"]) == 3
+
+
+def _fake_kis_positions_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _empty(market_filter, *, is_mock=False):  # noqa: ARG001
+        return [], []
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.portfolio_holdings._collect_kis_positions", _empty
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enrich_sector_no_data_return_is_recorded_as_negative_not_success(
+    monkeypatch,
+) -> None:
+    """ROB-1309 checkpoint fix (blocker 2): _fetch_kr_sector/_fetch_us_sector
+    return (None, None) — not an exception — when a symbol has no sector
+    data (the exact delisted/unrecognized-symbol case this cache exists
+    for). That must be recorded as a failure (and reported), not treated as
+    a successful fetch that clears the negative cache."""
+    _fake_kis_positions_empty(monkeypatch)
+    _fake_build_single(monkeypatch, {"symbol": "DELISTED", "market": "kr"})
+
+    calls = {"n": 0}
+
+    async def _no_data_sector(code: str):  # noqa: ARG001
+        calls["n"] += 1
+        return None, None
+
+    async def _no_redis():
+        return None
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_analysis_enrichment._fetch_kr_sector",
+        _no_data_sector,
+    )
+    monkeypatch.setattr("app.core.analyze_cache._get_redis_client", _no_redis)
+
+    async def _fake_enrich_page(
+        *,
+        rows,
+        market,
+        session_factory,
+        opinion_provider,
+        fetch_kr_sector,
+        fetch_us_sector,
+    ):
+        del session_factory, opinion_provider, fetch_us_sector
+        for row in rows:
+            await fetch_kr_sector(row["symbol"])
+        return {
+            "results": rows,
+            "summary": {
+                "attempted": len(rows),
+                "consensusSucceeded": 0,
+                "rsiSucceeded": 0,
+                "sectorResolved": 0,
+                "warnings": [],
+            },
+        }
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_analysis_enrichment.enrich_snapshot_page",
+        _fake_enrich_page,
+    )
+
+    out = await enrich_tool.screen_stocks_enrich_impl(
+        preset="consecutive_gainers", market="kr"
+    )
+
+    excluded = out["meta"]["enrichment_excluded"]
+    no_data_entries = [e for e in excluded if e["reason"] == "no_data"]
+    assert len(no_data_entries) == 1
+    assert no_data_entries[0]["symbol"] == "DELISTED"
+    assert calls["n"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enrich_analyst_count_filter_failure_is_negative_cached(
+    monkeypatch,
+) -> None:
+    """ROB-1309 checkpoint fix (addendum 1): the min_analyst_count/
+    min_analyst_buy_count path calls resolve_consensus_counts directly —
+    a provider failure there must ALSO go through the negative cache (same
+    kind="consensus" bucket the per-page enrichment uses), not bypass it
+    and retry unconditionally on every call."""
+    _fake_kis_positions_empty(monkeypatch)
+    _fake_build_single(monkeypatch, {"symbol": "005930", "market": "kr"})
+
+    calls = {"n": 0}
+
+    async def _always_unavailable(**kwargs: Any):
+        calls["n"] += 1
+        return {"error": "analyst_consensus_unavailable"}
+
+    async def _no_redis():
+        return None
+
+    monkeypatch.setattr(
+        "app.mcp_server.tooling.fundamentals._valuation.handle_get_investment_opinions",
+        _always_unavailable,
+    )
+    monkeypatch.setattr("app.core.analyze_cache._get_redis_client", _no_redis)
+
+    out = await enrich_tool.screen_stocks_enrich_impl(
+        preset="consecutive_gainers", market="kr", min_analyst_count=1
+    )
+
+    # provider called once for the failed fetch; recorded as a failure.
+    assert calls["n"] == 1
+    excluded = out["meta"]["enrichment_excluded"]
+    assert any(e["symbol"] == "005930" and e["kind"] == "consensus" for e in excluded)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_enrich_chronic_failures_excluded_from_results_and_reported(
+    monkeypatch,
+) -> None:
+    """ROB-1309 checkpoint fix (blocker 3): a symbol with >=3 consecutive
+    sector-fetch failures is removed from `results` on THIS call (the
+    per-call cleanup pattern named in the ticket, mirroring
+    meta.halted_suspect_excluded) and reported under
+    meta.chronic_failure_candidates — never silently dropped."""
+    _fake_kis_positions_empty(monkeypatch)
+    _fake_build_single(monkeypatch, {"symbol": "CHRONIC", "market": "kr"})
+
+    async def _no_redis():
+        return None
+
+    monkeypatch.setattr("app.core.analyze_cache._get_redis_client", _no_redis)
+
+    async def _always_fails(code: str):  # noqa: ARG001
+        raise RuntimeError("404 not found")
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_analysis_enrichment._fetch_kr_sector",
+        _always_fails,
+    )
+
+    # Pre-seed the negative cache with 2 prior consecutive failures via a
+    # fake redis client shared across the whole call (analyze_cache is
+    # stubbed to return None above, so this test exercises the in-process
+    # fail-open path instead — verify via direct negcache calls that a
+    # THIRD failure, recorded through the same module used by the tool,
+    # reaches chronic status and is reflected in a subsequent enrich call).
+    from app.services.invest_view_model import enrichment_negative_cache as negcache
+
+    class _FakeRedis:
+        def __init__(self) -> None:
+            self.store: dict[str, str] = {}
+
+        async def get(self, key: str):
+            return self.store.get(key)
+
+        async def set(self, key: str, value: str, ex=None):  # noqa: ARG002
+            self.store[key] = value
+
+        async def delete(self, key: str):
+            self.store.pop(key, None)
+
+    fake_redis = _FakeRedis()
+
+    async def _return_fake_redis():
+        return fake_redis
+
+    monkeypatch.setattr("app.core.analyze_cache._get_redis_client", _return_fake_redis)
+
+    for _ in range(2):
+        existing = await negcache.get_entry(
+            fake_redis, kind="kr_sector", market="kr", symbol="CHRONIC"
+        )
+        if existing is not None:
+            import json
+            import time
+            from dataclasses import asdict
+
+            existing.blocked_until_epoch = time.time() - 1
+            await fake_redis.set(
+                negcache._key("kr_sector", "kr", "CHRONIC"),
+                json.dumps(asdict(existing)),
+            )
+        await negcache.record_failure(
+            fake_redis,
+            kind="kr_sector",
+            market="kr",
+            symbol="CHRONIC",
+            exc=RuntimeError("404 not found"),
+        )
+    # Backdate once more so the tool's own (3rd) failure isn't blocked.
+    existing = await negcache.get_entry(
+        fake_redis, kind="kr_sector", market="kr", symbol="CHRONIC"
+    )
+    import json
+    import time
+    from dataclasses import asdict
+
+    existing.blocked_until_epoch = time.time() - 1
+    await fake_redis.set(
+        negcache._key("kr_sector", "kr", "CHRONIC"), json.dumps(asdict(existing))
+    )
+
+    async def _fake_enrich_page(
+        *,
+        rows,
+        market,
+        session_factory,
+        opinion_provider,
+        fetch_kr_sector,
+        fetch_us_sector,
+    ):
+        del session_factory, opinion_provider, fetch_us_sector
+        for row in rows:
+            try:
+                await fetch_kr_sector(row["symbol"])
+            except Exception:  # noqa: BLE001 — fail-open, same as production
+                pass
+        return {
+            "results": rows,
+            "summary": {
+                "attempted": len(rows),
+                "consensusSucceeded": 0,
+                "rsiSucceeded": 0,
+                "sectorResolved": 0,
+                "warnings": [],
+            },
+        }
+
+    monkeypatch.setattr(
+        "app.services.invest_view_model.screener_analysis_enrichment.enrich_snapshot_page",
+        _fake_enrich_page,
+    )
+
+    out = await enrich_tool.screen_stocks_enrich_impl(
+        preset="consecutive_gainers", market="kr"
+    )
+
+    assert out["results"] == []
+    assert out["meta"]["chronic_excluded_count"] == 1
+    chronic = out["meta"]["chronic_failure_candidates"]
+    assert any(e["symbol"] == "CHRONIC" for e in chronic)
