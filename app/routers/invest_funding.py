@@ -14,16 +14,17 @@ from app.auth.admin_router import require_admin
 from app.core.db import get_db
 from app.models.trading import User
 from app.routers.dependencies import get_authenticated_user
-from app.schemas.funding_advisory import ExternalCashDeclarationRequest
+from app.schemas.funding_advisory import (
+    ExternalCashDeclarationRequest,
+    canonical_decimal,
+)
 from app.services.funding_advisory.external_cash import (
+    NO_AUTO_ADD_NOTICE,
     ExternalCashAmbiguousHeadError,
     ExternalCashAuthorizationError,
     ExternalCashConflictError,
     ExternalCashDeclarationService,
     ExternalCashValidationError,
-)
-from app.services.funding_advisory.initial_declaration import (
-    INITIAL_PARKING_AMOUNT,
 )
 from app.services.funding_advisory.service import (
     FundingAdvisoryNotFound,
@@ -96,29 +97,66 @@ async def get_advisory(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from exc
 
 
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="as_of must include a timezone",
+        )
+    return value.astimezone(UTC)
+
+
+def _head_summary(view: Any) -> dict[str, Any] | None:
+    record = view.current
+    if record is None:
+        return None
+    return {
+        "location_key": record.location_key,
+        "display_label": record.display_label,
+        "currency": record.currency,
+        "amount": canonical_decimal(record.amount),
+        "as_of": record.as_of,
+        "status": view.status,
+        "expected_head_declaration_id": str(record.declaration_id),
+    }
+
+
 @router.get("/external-cash/current")
 async def get_external_cash_current(
     user: Annotated[User, Depends(get_authenticated_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    location_key: Annotated[str, Query(alias="locationKey")] = "parking_primary",
-    currency: Annotated[str, Query(pattern=r"^[A-Z]{3}$")] = "KRW",
+    location_key: Annotated[str | None, Query(alias="locationKey")] = None,
+    currency: Annotated[str | None, Query(pattern=r"^[A-Z]{3}$")] = None,
 ) -> dict[str, Any]:
     service = ExternalCashDeclarationService(db)
-    view = await service.current(
-        owner_user_id=user.id,
-        location_key=location_key,
-        currency=currency,
-        now=_now(),
-    )
-    return view.model_dump(mode="json")
+    views = await service.list_current(owner_user_id=user.id, now=_now())
+    if location_key is not None:
+        views = [
+            view
+            for view in views
+            if view.current is not None
+            and view.current.location_key == location_key
+            and (currency is None or view.current.currency == currency)
+        ]
+    elif currency is not None:
+        views = [
+            view
+            for view in views
+            if view.current is not None and view.current.currency == currency
+        ]
+    return {
+        "heads": [view.model_dump(mode="json") for view in views],
+        "count": len(views),
+        "notice": NO_AUTO_ADD_NOTICE,
+    }
 
 
 @router.get("/external-cash/history")
 async def get_external_cash_history(
     user: Annotated[User, Depends(get_authenticated_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
-    location_key: Annotated[str, Query(alias="locationKey")] = "parking_primary",
-    currency: Annotated[str, Query(pattern=r"^[A-Z]{3}$")] = "KRW",
+    location_key: Annotated[str | None, Query(alias="locationKey")] = None,
+    currency: Annotated[str | None, Query(pattern=r"^[A-Z]{3}$")] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
 ) -> dict[str, Any]:
     service = ExternalCashDeclarationService(db)
@@ -131,6 +169,7 @@ async def get_external_cash_history(
     return {
         "declarations": [row.model_dump(mode="json") for row in rows],
         "count": len(rows),
+        "notice": NO_AUTO_ADD_NOTICE,
     }
 
 
@@ -141,28 +180,41 @@ async def get_external_cash_form(
     owner_user_id: Annotated[int | None, Query(alias="ownerUserId", gt=0)] = None,
 ) -> dict[str, Any]:
     owner_id = owner_user_id or admin.id
+    now = _now()
     service = ExternalCashDeclarationService(db)
-    current = await service.current(
-        owner_user_id=owner_id,
-        location_key="parking_primary",
-        currency="KRW",
-        now=_now(),
+    views = await service.list_current(owner_user_id=owner_id, now=now)
+    parking = next(
+        (
+            view
+            for view in views
+            if view.current is not None
+            and view.current.location_key == "parking_primary"
+            and view.current.currency == "KRW"
+        ),
+        None,
     )
-    head = current.current
+    head = parking.current if parking is not None else None
     return {
         "owner_user_id": owner_id,
-        "location_key": "parking_primary",
-        "display_label": head.display_label if head else "파킹통장",
-        "currency": "KRW",
-        "amount": str(head.amount if head else INITIAL_PARKING_AMOUNT),
-        "as_of": None,
-        "source_note": head.source_note if head else "토스증권 → 파킹통장 이동",
+        "as_of": now,
+        "as_of_fixed": True,
+        "creates_money_movement": False,
+        "idempotency_key": f"funding-ui:{uuid.uuid4()}",
+        "notice": NO_AUTO_ADD_NOTICE,
+        "currencies": ["KRW", "USD"],
+        "default_location_key": "parking_primary",
+        "default_display_label": head.display_label if head else "파킹통장",
+        "default_currency": "KRW",
+        "default_amount": canonical_decimal(head.amount) if head else "0",
+        "default_source_note": head.source_note if head else "운영자 선언",
         "expected_head_declaration_id": (
             str(head.declaration_id) if head is not None else None
         ),
-        "idempotency_key": f"funding-ui:{uuid.uuid4()}",
-        "requires_exact_operator_confirmed_time": True,
-        "creates_money_movement": False,
+        "heads": [
+            summary
+            for summary in (_head_summary(view) for view in views)
+            if summary is not None
+        ],
     }
 
 
@@ -172,14 +224,41 @@ async def declare_external_cash(
     admin: Annotated[User, Depends(require_admin)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
+    now = _now()
+    if _aware_utc(request.as_of) > now:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="as_of cannot be in the future",
+        )
     service = ExternalCashDeclarationService(db)
     try:
-        row = await service.declare(request, admin, _now())
-        return row.model_dump(mode="json")
-    except (ExternalCashConflictError, ExternalCashAmbiguousHeadError) as exc:
+        row = await service.declare(request, admin, now)
+        payload = row.model_dump(mode="json")
+        payload["notice"] = NO_AUTO_ADD_NOTICE
+        return payload
+    except ExternalCashConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=str(exc),
+            detail={
+                "error": exc.error,
+                "message": str(exc),
+                "notice": NO_AUTO_ADD_NOTICE,
+                "current_head": (
+                    None
+                    if exc.current_head is None
+                    else exc.current_head.model_dump(mode="json")
+                ),
+            },
+        ) from exc
+    except ExternalCashAmbiguousHeadError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "ambiguous_head",
+                "message": str(exc),
+                "notice": NO_AUTO_ADD_NOTICE,
+                "current_head": None,
+            },
         ) from exc
     except ExternalCashAuthorizationError as exc:
         raise HTTPException(

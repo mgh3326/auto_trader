@@ -1,19 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { declareExternalCash, readCsrfCookie } from "../api/fundingAdvisory";
-import type { ExternalCashForm } from "../types/fundingAdvisory";
+import {
+  declareExternalCash,
+  ExternalCashDeclareConflict,
+  readCsrfCookie,
+} from "../api/fundingAdvisory";
+import type { ExternalCashDeclarePayload } from "../types/fundingAdvisory";
 
-const FORM: ExternalCashForm = {
+const PAYLOAD: ExternalCashDeclarePayload = {
   owner_user_id: 7,
   location_key: "parking_primary",
   display_label: "파킹통장",
   currency: "KRW",
-  amount: "640000",
-  as_of: null,
-  source_note: "토스증권 → 파킹통장 이동",
+  amount: "0",
+  as_of: "2026-08-20T07:30:00+00:00",
+  source_note: "운영자 선언",
   expected_head_declaration_id: null,
   idempotency_key: "funding-ui:test-key",
-  requires_exact_operator_confirmed_time: true,
-  creates_money_movement: false,
 };
 
 afterEach(() => {
@@ -35,11 +37,7 @@ describe("funding advisory declaration API", () => {
       }),
     );
 
-    await declareExternalCash(FORM, {
-      amount: "640000",
-      asOf: "2026-08-15T08:20:00+09:00",
-      sourceNote: "토스증권 → 파킹통장 이동",
-    });
+    await declareExternalCash(PAYLOAD);
 
     const [, init] = fetchMock.mock.calls[0] ?? [];
     expect(init).toMatchObject({
@@ -51,10 +49,39 @@ describe("funding advisory declaration API", () => {
       },
     });
     expect(JSON.parse(String(init?.body))).toMatchObject({
-      amount: "640000",
-      as_of: "2026-08-15T08:20:00+09:00",
+      amount: "0",
+      as_of: "2026-08-20T07:30:00+00:00",
       expected_head_declaration_id: null,
       idempotency_key: "funding-ui:test-key",
     });
+  });
+
+  it("surfaces a 409 current head without treating it as a generic error", async () => {
+    document.cookie = "csrftoken=signed-token; path=/";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: {
+            error: "expected_head_conflict",
+            message: "expected declaration head does not match current head",
+            current_head: {
+              declaration_id: "head-2",
+              display_label: "파킹통장",
+              amount: "1500000",
+              currency: "KRW",
+              as_of: "2026-08-20T07:31:00+00:00",
+            },
+          },
+        }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await expect(declareExternalCash(PAYLOAD)).rejects.toMatchObject({
+      name: "ExternalCashDeclareConflict",
+      error: "expected_head_conflict",
+      currentHead: expect.objectContaining({ declaration_id: "head-2" }),
+    });
+    expect(ExternalCashDeclareConflict).toBeDefined();
   });
 });

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from
 import { Link, useParams } from "react-router-dom";
 import {
   declareExternalCash,
+  ExternalCashDeclareConflict,
   fetchExternalCashCurrent,
   fetchExternalCashForm,
   fetchExternalCashHistory,
@@ -11,17 +12,21 @@ import {
 } from "../api/fundingAdvisory";
 import { PageSafetyNote } from "../components/PageSafetyNote";
 import { DesktopShell } from "../desktop/DesktopShell";
+import { formatRelativeTime } from "../format/relativeTime";
 import { Button, Card, Pill } from "../ds";
 import { useViewport } from "../hooks/useViewport";
 import { MobileShell } from "../mobile/MobileShell";
 import type {
   ExternalCashCurrentView,
+  ExternalCashDeclaration,
   ExternalCashForm,
+  ExternalCashHeadsView,
   ExternalCashHistoryView,
   FundingAdvisoryView,
   FundingAllocationView,
   FundingRouteView,
 } from "../types/fundingAdvisory";
+import { EXTERNAL_CASH_NO_AUTO_ADD_NOTICE } from "../types/fundingAdvisory";
 import "../styles/funding.css";
 
 const NON_CTA_LABEL = "경로 설명 · 이 화면에서 주문 안 만듦";
@@ -31,7 +36,7 @@ interface FundingPageData {
   advisories: FundingAdvisoryView[];
   detail: FundingAdvisoryView | null;
   allocation: FundingAllocationView;
-  external: ExternalCashCurrentView;
+  external: ExternalCashHeadsView;
   history: ExternalCashHistoryView;
   declarationForm: ExternalCashForm | null;
 }
@@ -256,38 +261,98 @@ function AllocationView({ allocation }: { allocation: FundingAllocationView }) {
   );
 }
 
-function ExternalCashPanel({
+const NEW_LOCATION = "__new__";
+
+function locationCards(heads: ExternalCashCurrentView[]): ExternalCashCurrentView[] {
+  const hasParking = heads.some((view) => view.current?.location_key === "parking_primary");
+  if (hasParking) return heads;
+  return [
+    {
+      status: "missing",
+      amount_status: "unknown",
+      current: null,
+      route_fundable_amount: null,
+      verification_badge: "운영자 선언 · 시스템 검증 불가",
+      warning_code: "external_cash_missing",
+    },
+    ...heads,
+  ];
+}
+
+function locationKeyFromLabel(label: string): string {
+  const ascii = label.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return ascii || "parking_primary";
+}
+
+export function ExternalCashPanel({
   current,
   history,
   form,
   onSaved,
 }: {
-  current: ExternalCashCurrentView;
+  current: ExternalCashHeadsView;
   history: ExternalCashHistoryView;
   form: ExternalCashForm | null;
   onSaved: () => Promise<void>;
 }) {
-  const [amount, setAmount] = useState(form?.amount ?? "640000");
-  const [asOf, setAsOf] = useState("");
-  const [sourceNote, setSourceNote] = useState(form?.source_note ?? "토스증권 → 파킹통장 이동");
-  const [submitState, setSubmitState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const cards = locationCards(current.heads);
+  const [locationChoice, setLocationChoice] = useState(form?.default_location_key ?? "parking_primary");
+  const [newLocationKey, setNewLocationKey] = useState("");
+  const [displayLabel, setDisplayLabel] = useState(form?.default_display_label ?? "파킹통장");
+  const [currency, setCurrency] = useState<"KRW" | "USD">(form?.default_currency ?? "KRW");
+  const [amount, setAmount] = useState(form?.default_amount ?? "0");
+  const [sourceNote, setSourceNote] = useState(form?.default_source_note ?? "운영자 선언");
+  const [submitState, setSubmitState] = useState<"idle" | "saving" | "saved" | "error" | "conflict">("idle");
+  const [conflictHead, setConflictHead] = useState<ExternalCashDeclaration | null>(null);
 
   useEffect(() => {
     if (!form) return;
-    setAmount(form.amount);
-    setSourceNote(form.source_note);
-    setAsOf("");
+    setLocationChoice(form.default_location_key);
+    setDisplayLabel(form.default_display_label);
+    setCurrency(form.default_currency);
+    setAmount(form.default_amount);
+    setSourceNote(form.default_source_note);
+    setNewLocationKey("");
+    setSubmitState("idle");
+    setConflictHead(null);
   }, [form]);
+
+  const selectedHead = form?.heads.find(
+    (head) =>
+      head.location_key === locationChoice
+      && head.currency === currency,
+  );
+  const isNewLocation = locationChoice === NEW_LOCATION;
+  const locationKey = isNewLocation
+    ? (newLocationKey || locationKeyFromLabel(displayLabel))
+    : locationChoice;
+  const expectedHead = isNewLocation ? null : (selectedHead?.expected_head_declaration_id ?? null);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!form || !asOf) return;
+    if (!form) return;
     setSubmitState("saving");
+    setConflictHead(null);
     try {
-      await declareExternalCash(form, { amount, asOf, sourceNote });
+      await declareExternalCash({
+        owner_user_id: form.owner_user_id,
+        location_key: locationKey,
+        display_label: displayLabel,
+        currency,
+        amount,
+        as_of: form.as_of,
+        source_note: sourceNote,
+        expected_head_declaration_id: expectedHead,
+        idempotency_key: form.idempotency_key,
+      });
       setSubmitState("saved");
       await onSaved();
-    } catch {
+    } catch (caught) {
+      if (caught instanceof ExternalCashDeclareConflict) {
+        setConflictHead(caught.currentHead);
+        setSubmitState("conflict");
+        return;
+      }
       setSubmitState("error");
     }
   }
@@ -295,43 +360,162 @@ function ExternalCashPanel({
   return (
     <section className="funding-section" id="external-cash-declaration">
       <div className="funding-section-head">
-        <div><h2>외부 현금 선언</h2><p>append-only 운영자 snapshot이며 실제 이체 또는 broker 잔고 확인이 아닙니다.</p></div>
-        <Pill tone={current.status === "fresh" ? "gain" : "warn"}>{current.status}</Pill>
+        <div>
+          <h2>외부 현금 선언</h2>
+          <p>append-only 운영자 snapshot이며 실제 이체 또는 broker 잔고 확인이 아닙니다. UI의 수정은 새 선언입니다.</p>
+        </div>
       </div>
+      <p className="funding-disclosure" data-testid="external-cash-notice">
+        {EXTERNAL_CASH_NO_AUTO_ADD_NOTICE}
+      </p>
       <div className="funding-external-grid">
-        <Card>
-          {current.current ? (
-            <dl className="funding-metrics funding-metrics--compact">
-              <Metric label="위치" value={current.current.display_label} />
-              <Metric label="선언액" value={formatAmount(current.current.amount, current.current.currency)} />
-              <Metric label="관측 시각" value={formatTime(current.current.as_of)} />
-              <Metric label="fresh until" value={formatTime(current.current.fresh_until)} />
-            </dl>
-          ) : <p className="funding-muted">현재 선언이 없습니다.</p>}
-          <p className="funding-verification">{current.verification_badge}</p>
-          {history.declarations.length ? (
-            <details className="funding-history">
-              <summary>변경 이력 {history.count}건</summary>
-              <ol>{history.declarations.map((row) => <li key={row.declaration_id}>{formatTime(row.as_of)} · {formatAmount(row.amount, row.currency)}</li>)}</ol>
-            </details>
-          ) : null}
-        </Card>
-
-        {form ? (
-          <Card>
-            <form className="funding-form" onSubmit={submit}>
-              <div className="funding-form__notice">관리자 선언 저장 · 돈 이동 아님</div>
-              <label>금액 ({form.currency})<input value={amount} inputMode="numeric" onChange={(event) => setAmount(event.target.value)} required /></label>
-              <label>정확한 관측 시각 + timezone<input value={asOf} onChange={(event) => setAsOf(event.target.value)} placeholder="2026-08-15T08:20:00+09:00" required /></label>
-              <label>출처 메모<input value={sourceNote} onChange={(event) => setSourceNote(event.target.value)} required /></label>
-              <p className="funding-disclosure">시각은 자동 채우지 않습니다. 실제 관측 시각과 timezone을 확인한 뒤 저장하세요.</p>
-              <Button type="submit" disabled={submitState === "saving"}>{submitState === "saving" ? "저장 중…" : "선언 저장 · 돈 이동 아님"}</Button>
-              {submitState === "saved" ? <p role="status">새 선언을 append했습니다. 실제 이체는 발생하지 않았습니다.</p> : null}
-              {submitState === "error" ? <p role="alert">저장하지 못했습니다. head·시각·권한을 다시 확인하세요.</p> : null}
-            </form>
-          </Card>
-        ) : <Card soft><p className="funding-muted">관리자만 새 선언을 append할 수 있습니다.</p></Card>}
+        {cards.map((view) => {
+          const record = view.current;
+          const key = record ? `${record.location_key}:${record.currency}` : "parking_primary:KRW";
+          return (
+            <Card key={key} data-testid={`external-cash-card-${record?.location_key ?? "parking_primary"}`}>
+              <dl className="funding-metrics funding-metrics--compact">
+                <Metric label="위치" value={record?.display_label ?? "파킹통장"} />
+                <Metric label="선언액" value={record ? formatAmount(record.amount, record.currency) : "선언 없음"} />
+                <Metric label="통화" value={record?.currency ?? "KRW"} />
+                <Metric label="as-of" value={record ? formatTime(record.as_of) : "—"} />
+                <Metric label="경과시간" value={record ? (formatRelativeTime(record.as_of) ?? "—") : "—"} />
+                <Metric label="상태" value={view.status} />
+              </dl>
+              <p className="funding-verification">{view.verification_badge}</p>
+            </Card>
+          );
+        })}
       </div>
+
+      <Card>
+        <div className="funding-section-head">
+          <div>
+            <h2>선언 이력</h2>
+            <p>원장은 append-only입니다. 수정처럼 보여도 새 행이 추가됩니다.</p>
+          </div>
+          <Pill tone="paper">{history.count}건</Pill>
+        </div>
+        {history.declarations.length ? (
+          <div className="funding-history-wrap">
+            <table className="funding-history-table" data-testid="external-cash-history-table">
+              <thead>
+                <tr>
+                  <th>as-of</th>
+                  <th>위치</th>
+                  <th>통화</th>
+                  <th>금액</th>
+                  <th>메모</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.declarations.map((row) => (
+                  <tr key={row.declaration_id}>
+                    <td>{formatTime(row.as_of)}</td>
+                    <td>{row.display_label}</td>
+                    <td>{row.currency}</td>
+                    <td>{formatAmount(row.amount, row.currency)}</td>
+                    <td>{row.source_note}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : <p className="funding-muted">이력이 없습니다.</p>}
+      </Card>
+
+      {form ? (
+        <Card>
+          <form className="funding-form" onSubmit={submit} data-testid="external-cash-form">
+            <div className="funding-form__notice">{EXTERNAL_CASH_NO_AUTO_ADD_NOTICE}</div>
+            <label>
+              위치
+              <select
+                value={locationChoice}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  setLocationChoice(next);
+                  if (next === NEW_LOCATION) {
+                    setDisplayLabel("");
+                    setNewLocationKey("");
+                    return;
+                  }
+                  const match = form.heads.find((head) => head.location_key === next && head.currency === currency)
+                    ?? form.heads.find((head) => head.location_key === next);
+                  if (match) {
+                    setDisplayLabel(match.display_label);
+                    setAmount(match.amount);
+                    setCurrency(match.currency === "USD" ? "USD" : "KRW");
+                  }
+                }}
+              >
+                <option value="parking_primary">파킹통장</option>
+                {form.heads
+                  .filter((head) => head.location_key !== "parking_primary")
+                  .map((head) => (
+                    <option key={`${head.location_key}:${head.currency}`} value={head.location_key}>
+                      {head.display_label}
+                    </option>
+                  ))}
+                <option value={NEW_LOCATION}>신규 위치</option>
+              </select>
+            </label>
+            {isNewLocation ? (
+              <label>
+                위치 키
+                <input
+                  value={newLocationKey}
+                  onChange={(event) => setNewLocationKey(event.target.value)}
+                  placeholder="parking_secondary"
+                  required
+                />
+              </label>
+            ) : null}
+            <label>
+              표시 이름
+              <input value={displayLabel} onChange={(event) => setDisplayLabel(event.target.value)} required />
+            </label>
+            <label>
+              통화
+              <select
+                value={currency}
+                onChange={(event) => setCurrency(event.target.value === "USD" ? "USD" : "KRW")}
+              >
+                <option value="KRW">KRW</option>
+                <option value="USD">USD</option>
+              </select>
+            </label>
+            <label>
+              금액 ({currency})
+              <input value={amount} inputMode="decimal" onChange={(event) => setAmount(event.target.value)} required />
+            </label>
+            <label>
+              as-of (현재시각 고정)
+              <time data-testid="external-cash-as-of" dateTime={form.as_of}>{formatTime(form.as_of)}</time>
+            </label>
+            <label>
+              메모
+              <input value={sourceNote} onChange={(event) => setSourceNote(event.target.value)} required />
+            </label>
+            <p className="funding-disclosure">as-of는 서버 현재시각이며 미래 값을 넣을 수 없습니다. 저장은 새 선언 append입니다.</p>
+            <Button type="submit" disabled={submitState === "saving"}>
+              {submitState === "saving" ? "저장 중…" : "선언 저장 · 돈 이동 아님"}
+            </Button>
+            {submitState === "saved" ? <p role="status">새 선언을 append했습니다. 실제 이체는 발생하지 않았습니다.</p> : null}
+            {submitState === "error" ? <p role="alert">저장하지 못했습니다. head·시각·권한을 다시 확인하세요.</p> : null}
+            {submitState === "conflict" ? (
+              <div className="funding-conflict" role="alert" data-testid="external-cash-conflict">
+                <strong>다른 곳에서 선언이 갱신되었습니다. 새 head를 확인하세요.</strong>
+                {conflictHead ? (
+                  <p data-testid="external-cash-conflict-head">
+                    {conflictHead.display_label} · {formatAmount(conflictHead.amount, conflictHead.currency)} · {formatTime(conflictHead.as_of)}
+                  </p>
+                ) : <p>현재 head를 다시 불러오세요.</p>}
+              </div>
+            ) : null}
+          </form>
+        </Card>
+      ) : <Card soft><p className="funding-muted">관리자만 새 선언을 append할 수 있습니다.</p></Card>}
     </section>
   );
 }

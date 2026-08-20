@@ -92,23 +92,21 @@ class ExternalCashDeclarationRepository:
         self,
         *,
         owner_user_id: int,
-        location_key: str,
-        currency: str,
+        location_key: str | None = None,
+        currency: str | None = None,
         limit: int,
     ) -> list[ExternalCashDeclaration]:
-        stmt = (
-            select(ExternalCashDeclaration)
-            .where(
-                ExternalCashDeclaration.owner_user_id == owner_user_id,
-                ExternalCashDeclaration.location_key == location_key,
-                ExternalCashDeclaration.currency == currency,
-            )
-            .order_by(
-                ExternalCashDeclaration.as_of.desc(),
-                ExternalCashDeclaration.recorded_at.desc(),
-            )
-            .limit(limit)
+        stmt = select(ExternalCashDeclaration).where(
+            ExternalCashDeclaration.owner_user_id == owner_user_id,
         )
+        if location_key is not None:
+            stmt = stmt.where(ExternalCashDeclaration.location_key == location_key)
+        if currency is not None:
+            stmt = stmt.where(ExternalCashDeclaration.currency == currency)
+        stmt = stmt.order_by(
+            ExternalCashDeclaration.as_of.desc(),
+            ExternalCashDeclaration.recorded_at.desc(),
+        ).limit(limit)
         return list((await self._session.execute(stmt)).scalars().all())
 
     async def insert(self, **columns: Any) -> ExternalCashDeclaration:

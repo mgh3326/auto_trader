@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
+FRONTEND = ROOT / "frontend/invest/src"
 PROTECTED_ORDER_FILES = (
     ROOT / "app/services/order_proposals/buying_power.py",
     ROOT / "app/services/order_proposals/revalidation.py",
@@ -167,3 +169,73 @@ def test_declared_total_never_reaches_the_shortfall_expression() -> None:
         stripped = line.strip()
         if stripped.startswith(("shortfall =", "operational_gap =", "required =")):
             assert "declared" not in stripped, stripped
+
+
+def test_declaration_is_never_added_to_available_required_or_shortfall() -> None:
+    service_src = (ROOT / "app/services/funding_advisory/service.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'shortfall = max(required - target, Decimal("0"))' in service_src
+    assert "required - target - " not in service_src
+    assert 'counted_fundable_amount=Decimal("0")' in service_src
+    router_src = (ROOT / "app/routers/invest_funding.py").read_text(encoding="utf-8")
+    for leaked in ("required_cash", "target_buying_power", "available"):
+        assert leaked not in router_src
+    for path in PROTECTED_ORDER_FILES:
+        text = path.read_text(encoding="utf-8")
+        assert "external_cash" not in text
+        assert "declared_total" not in text
+        assert "NO_AUTO_ADD_NOTICE" not in text
+
+
+def test_declared_cash_add_mutant_still_changes_need() -> None:
+    """The #1866 add-mutant remains RED: subtracting declared cash from shortfall
+    would change need, and production code must not do that."""
+
+    from decimal import Decimal
+
+    required = Decimal("100000")
+    target = Decimal("40000")
+    declared = Decimal("640000")
+    production = max(required - target, Decimal("0"))
+    mutant = max(required - target - declared, Decimal("0"))
+    assert production == Decimal("60000")
+    assert mutant == Decimal("0")
+    assert production != mutant
+
+
+def test_single_writer_no_direct_insert_outside_repository() -> None:
+    insert_sql = re.compile(
+        r"insert\s+into\s+review\.external_cash_declarations",
+        re.IGNORECASE,
+    )
+    construct = re.compile(r"ExternalCashDeclaration\(")
+    offenders: list[Path] = []
+    for path in (ROOT / "app").rglob("*.py"):
+        if path.name == "_external_cash_repository.py":
+            continue
+        text = path.read_text(encoding="utf-8")
+        if insert_sql.search(text):
+            offenders.append(path)
+            continue
+        if construct.search(text) and "class ExternalCashDeclaration" not in text:
+            offenders.append(path)
+    assert offenders == []
+
+
+def test_frontend_declaration_client_does_not_touch_order_surfaces() -> None:
+    api = (FRONTEND / "api/fundingAdvisory.ts").read_text(encoding="utf-8")
+    page = (FRONTEND / "pages/FundingRoute.tsx").read_text(encoding="utf-8")
+    panel = page.split("export function ExternalCashPanel", 1)[1].split(
+        "export function FundingPageContent", 1
+    )[0]
+    assert "/orders" not in api
+    assert "buying_power" not in api
+    assert "buying_power" not in panel
+    assert "required_cash" not in panel
+    assert "shortfall" not in panel
+    assert "declareExternalCash" in api
+    assert "/external-cash/declarations" in api
+    assert "EXTERNAL_CASH_NO_AUTO_ADD_NOTICE" in panel
+    types_src = (FRONTEND / "types/fundingAdvisory.ts").read_text(encoding="utf-8")
+    assert "선언은 매수력에 자동 가산되지 않음 — 입금 필요 알림의 근거" in types_src

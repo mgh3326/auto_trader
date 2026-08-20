@@ -143,6 +143,9 @@ export interface ExternalCashDeclaration {
   recorded_at: string;
 }
 
+export const EXTERNAL_CASH_NO_AUTO_ADD_NOTICE =
+  "선언은 매수력에 자동 가산되지 않음 — 입금 필요 알림의 근거";
+
 export interface ExternalCashCurrentView {
   status: "missing" | "fresh" | "stale" | "future" | "ambiguous";
   amount_status: "known" | "unknown";
@@ -152,21 +155,53 @@ export interface ExternalCashCurrentView {
   warning_code: string | null;
 }
 
+export interface ExternalCashHeadsView {
+  heads: ExternalCashCurrentView[];
+  count: number;
+  notice: string;
+}
+
 export interface ExternalCashHistoryView {
   declarations: ExternalCashDeclaration[];
   count: number;
+  notice?: string;
+}
+
+export interface ExternalCashFormHead {
+  location_key: string;
+  display_label: string;
+  currency: string;
+  amount: string;
+  as_of: string;
+  status: string;
+  expected_head_declaration_id: string;
 }
 
 export interface ExternalCashForm {
   owner_user_id: number;
+  as_of: string;
+  as_of_fixed: true;
+  creates_money_movement: false;
+  idempotency_key: string;
+  notice: string;
+  currencies: Array<"KRW" | "USD">;
+  default_location_key: string;
+  default_display_label: string;
+  default_currency: "KRW" | "USD";
+  default_amount: string;
+  default_source_note: string;
+  expected_head_declaration_id: string | null;
+  heads: ExternalCashFormHead[];
+}
+
+export interface ExternalCashDeclarePayload {
+  owner_user_id: number;
   location_key: string;
   display_label: string;
-  currency: "KRW";
+  currency: "KRW" | "USD";
   amount: string;
-  as_of: null;
+  as_of: string;
   source_note: string;
   expected_head_declaration_id: string | null;
   idempotency_key: string;
-  requires_exact_operator_confirmed_time: true;
-  creates_money_movement: false;
 }

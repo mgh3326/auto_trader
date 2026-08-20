@@ -72,7 +72,9 @@ from sqlalchemy import text
 # persistent local test DB to re-bootstrap once.
 # v36: web loss-cut approval events/scopes are new ORM tables. The production
 # migration is deliberately not run by tests; create_all owns the test copy.
-SCHEMA_BOOTSTRAP_VERSION = 36
+# v37 (ROB-1292): review.external_cash_declarations append-only + correction
+# scope triggers (non-ORM DDL; table itself comes from create_all).
+SCHEMA_BOOTSTRAP_VERSION = 37
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"
@@ -1680,6 +1682,65 @@ _DDL_STATEMENTS: tuple[str, ...] = (
     "INSERT INTO review.trade_retrospective_action_control (id, mode) "
     "VALUES (1, 'shadow') "
     "ON CONFLICT (id) DO NOTHING",
+    # ---- ROB-1292: external cash declaration append-only + correction scope.
+    # The ORM table is created by create_all; these trigger functions are
+    # non-ORM DDL mirroring alembic/versions/20260815_external_cash.py.
+    """
+    CREATE OR REPLACE FUNCTION review.validate_external_cash_correction()
+    RETURNS trigger AS $$
+    DECLARE
+        previous review.external_cash_declarations%ROWTYPE;
+    BEGIN
+        IF NEW.supersedes_declaration_id IS NULL THEN
+            RETURN NEW;
+        END IF;
+        IF NEW.supersedes_declaration_id = NEW.declaration_id THEN
+            RAISE EXCEPTION 'external cash declaration cannot supersede itself'
+                USING ERRCODE = 'check_violation';
+        END IF;
+        SELECT * INTO previous
+          FROM review.external_cash_declarations
+         WHERE declaration_id = NEW.supersedes_declaration_id
+         FOR SHARE;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'superseded external cash declaration is missing'
+                USING ERRCODE = 'foreign_key_violation';
+        END IF;
+        IF previous.owner_user_id IS DISTINCT FROM NEW.owner_user_id
+           OR previous.location_key IS DISTINCT FROM NEW.location_key
+           OR previous.currency IS DISTINCT FROM NEW.currency THEN
+            RAISE EXCEPTION 'external cash correction scope mismatch'
+                USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    """
+    CREATE OR REPLACE FUNCTION review.reject_external_cash_mutation()
+    RETURNS trigger AS $$
+    BEGIN
+        RAISE EXCEPTION
+            'review.external_cash_declarations is append-only; % rejected',
+            TG_OP USING ERRCODE = 'restrict_violation';
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_external_cash_correction_scope "
+    "ON review.external_cash_declarations",
+    "CREATE TRIGGER trg_external_cash_correction_scope "
+    "BEFORE INSERT ON review.external_cash_declarations "
+    "FOR EACH ROW EXECUTE FUNCTION review.validate_external_cash_correction()",
+    "DROP TRIGGER IF EXISTS trg_external_cash_append_only "
+    "ON review.external_cash_declarations",
+    "CREATE TRIGGER trg_external_cash_append_only "
+    "BEFORE UPDATE OR DELETE ON review.external_cash_declarations "
+    "FOR EACH ROW EXECUTE FUNCTION review.reject_external_cash_mutation()",
+    "DROP TRIGGER IF EXISTS trg_external_cash_truncate_append_only "
+    "ON review.external_cash_declarations",
+    "CREATE TRIGGER trg_external_cash_truncate_append_only "
+    "BEFORE TRUNCATE ON review.external_cash_declarations "
+    "FOR EACH STATEMENT EXECUTE FUNCTION review.reject_external_cash_mutation()",
 )
 
 
