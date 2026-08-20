@@ -1513,36 +1513,37 @@ async def _toss_place_order_impl(
             ) is not None:
                 return sell_guard
 
-            # Guard: NXT session preflight. Required mode fail-closes before
-            # POST; warn/optional log but proceed (fail-open on unknown
-            # session). Keep this ahead of the fresh sellable read so that
-            # broker sellability is the last validation before mutation.
-            preflight = await _nxt_preflight_context(symbol, mkt)
-            if preflight is not None:
-                verdict, _ = preflight
-                if verdict.block:
-                    mode = getattr(settings, "toss_nxt_preflight_mode", "warn")
-                    if mode == "required":
-                        return {
-                            "success": False,
-                            **base_response,
-                            "error": (
-                                f"NXT session {verdict.session!r} does not support "
-                                f"{symbol} ({verdict.reason}); order not sent."
-                            ),
-                            "error_code": "nxt_session_not_tradable",
-                            "session": verdict.session,
-                            "alternatives": list(verdict.alternatives),
-                        }
-                    logger.warning(
-                        "NXT preflight advisory (mode=%s): symbol=%s session=%s "
-                        "reason=%s — proceeding with live send",
-                        mode,
-                        symbol,
-                        verdict.session,
-                        verdict.reason,
-                    )
+        # Guard: NXT session preflight. Required mode fail-closes before POST;
+        # warn/optional log but proceed (fail-open on unknown session). For a
+        # SELL, keep this ahead of the fresh sellable read so broker
+        # sellability remains the last validation before mutation.
+        preflight = await _nxt_preflight_context(symbol, mkt)
+        if preflight is not None:
+            verdict, _ = preflight
+            if verdict.block:
+                mode = getattr(settings, "toss_nxt_preflight_mode", "warn")
+                if mode == "required":
+                    return {
+                        "success": False,
+                        **base_response,
+                        "error": (
+                            f"NXT session {verdict.session!r} does not support "
+                            f"{symbol} ({verdict.reason}); order not sent."
+                        ),
+                        "error_code": "nxt_session_not_tradable",
+                        "session": verdict.session,
+                        "alternatives": list(verdict.alternatives),
+                    }
+                logger.warning(
+                    "NXT preflight advisory (mode=%s): symbol=%s session=%s "
+                    "reason=%s — proceeding with live send",
+                    mode,
+                    symbol,
+                    verdict.session,
+                    verdict.reason,
+                )
 
+        if side == "sell":
             # ROB-1310: never consume the display sellable cache or shared
             # portfolio snapshot for order sizing. Recheck Toss directly after
             # the existing sell guards and before any mutation hook/POST.
