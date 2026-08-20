@@ -128,6 +128,7 @@ def test_compare_cohorts_uses_one_as_of_and_refuses_to_name_a_winner() -> None:
                 symbol="005930",
                 decision_date=_DECISION,
                 entry=Decimal("100"),
+                entry_basis="frozen_decision_price",
                 bars=bars,
                 actual_fill_price=Decimal("99"),
             ),
@@ -136,6 +137,7 @@ def test_compare_cohorts_uses_one_as_of_and_refuses_to_name_a_winner() -> None:
                 symbol="000660",
                 decision_date=_DECISION,
                 entry=Decimal("100"),
+                entry_basis="frozen_decision_price",
                 bars=bars,
             ),
         ],
@@ -163,6 +165,7 @@ def test_incomplete_collection_is_flagged_not_for_policy() -> None:
                 symbol="005930",
                 decision_date=_DECISION,
                 entry=Decimal("100"),
+                entry_basis="frozen_decision_price",
                 bars=_bars(20),
             )
         ],
@@ -184,4 +187,16 @@ def test_unregistered_window_is_rejected() -> None:
             decision_date=_DECISION,
             scoring_as_of=_SCORING_AS_OF,
             window_trading_days=10,
+        )
+
+
+def test_non_frozen_entry_basis_is_rejected() -> None:
+    with pytest.raises(ScoringError, match="entry_basis"):
+        CohortSample(
+            variant="A",
+            symbol="005930",
+            decision_date=_DECISION,
+            entry=Decimal("99"),
+            entry_basis="actual_fill_price",  # type: ignore[arg-type]
+            bars=_bars(20),
         )

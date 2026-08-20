@@ -44,6 +44,9 @@ from app.services.invalid_sample_eligibility.contract import (
     EligibilityContractError,
     EligibilitySubject,
     EligibilitySubjectKind,
+    ForecastOutcomeObservability,
+    OperationalReliabilityEligibility,
+    TradePerformanceEligibility,
 )
 from app.services.invalid_sample_eligibility.service import (
     InvalidSampleEligibilityService,
@@ -124,10 +127,101 @@ _REGULAR_SESSION_CLOSE_SOURCE_BASIS = {
 _GROUP_BY_FIELDS = {"created_by", "session_label", "model_label", "day"}
 _NO_RESOLVABLE_FORECAST_KIND = "no_resolvable_forecast"
 _CLOSED_NO_CLAIM_STATUS = "closed_no_claim"
+_ROB1301_EXPERIMENT_ID = "rob-1301-buy-gate-ab-shadow"
+_ROB1301_SHADOW_COHORT = "shadow_buy"
 
 
 class ForecastValidationError(ValueError):
     """Raised when a forecast payload violates a typed constraint."""
+
+
+def _is_rob1301_shadow_target(forecast_target: dict[str, Any]) -> bool:
+    """Whether the target is a ROB-1301 B-only row requiring real exclusion."""
+
+    return (
+        forecast_target.get("experiment_id") == _ROB1301_EXPERIMENT_ID
+        and forecast_target.get("cohort") == _ROB1301_SHADOW_COHORT
+        and forecast_target.get("shadow_buy") is True
+    )
+
+
+def _validate_rob1301_shadow_target(forecast_target: dict[str, Any]) -> None:
+    """Fail closed when a purported shadow row lacks the exclusion contract."""
+
+    if not _is_rob1301_shadow_target(forecast_target):
+        return
+    if forecast_target.get("promote") is not False:
+        raise ForecastValidationError("ROB-1301 shadow forecast must set promote=false")
+    if (
+        forecast_target.get("calibration_eligibility")
+        != CalibrationEligibility.EXCLUDE.value
+    ):
+        raise ForecastValidationError(
+            "ROB-1301 shadow forecast must set "
+            "calibration_eligibility=calibration_exclude"
+        )
+    if (
+        forecast_target.get("trade_performance_eligibility")
+        != "trade_performance_exclude"
+    ):
+        raise ForecastValidationError(
+            "ROB-1301 shadow forecast must set "
+            "trade_performance_eligibility=trade_performance_exclude"
+        )
+    for key in ("spec_sha256", "evaluation_as_of", "input_snapshot_sha256"):
+        if not isinstance(forecast_target.get(key), str) or not forecast_target[key]:
+            raise ForecastValidationError(f"ROB-1301 shadow forecast requires {key}")
+
+
+async def _record_rob1301_shadow_eligibility(
+    db: AsyncSession,
+    *,
+    row: TradeForecast,
+    forecast_target: dict[str, Any],
+) -> None:
+    """Append the actual calibration exclusion for a stored ROB-1301 row.
+
+    A JSON tag alone is not a calibration boundary: the aggregate reads only
+    ``review.sample_eligibility_decisions``. This runs only after the caller
+    chose ``forecast_save``; the shadow evaluator itself remains read-only.
+    """
+
+    if not _is_rob1301_shadow_target(forecast_target):
+        return
+    subject = EligibilitySubject(
+        kind=EligibilitySubjectKind.FORECAST, ref=str(row.forecast_id)
+    )
+    service = InvalidSampleEligibilityService(db)
+    existing = await service.get_decision(subject)
+    if (
+        existing.calibration_eligibility is CalibrationEligibility.EXCLUDE
+        and existing.trade_performance_eligibility
+        is TradePerformanceEligibility.EXCLUDE
+    ):
+        return
+    await service.record_decision(
+        subject=subject,
+        forecast_outcome_observability=ForecastOutcomeObservability.OBSERVABLE,
+        calibration_eligibility=CalibrationEligibility.EXCLUDE,
+        trade_performance_eligibility=TradePerformanceEligibility.EXCLUDE,
+        operational_reliability_eligibility=(
+            OperationalReliabilityEligibility.UNIDENTIFIABLE
+        ),
+        decision_reason=(
+            "ROB-1301 shadow_buy: exclude non-executed counterfactual from "
+            "live calibration and trade-performance cohorts"
+        ),
+        decided_by=row.created_by,
+        evidence={
+            "experiment_id": _ROB1301_EXPERIMENT_ID,
+            "cohort": _ROB1301_SHADOW_COHORT,
+            "variant": forecast_target.get("variant"),
+            "spec_sha256": forecast_target["spec_sha256"],
+            "evaluation_as_of": forecast_target["evaluation_as_of"],
+            "input_snapshot_sha256": forecast_target["input_snapshot_sha256"],
+            "forecast_id": str(row.forecast_id),
+        },
+    )
 
 
 class TerminalCloseDataError(ForecastValidationError):
@@ -547,6 +641,7 @@ async def save_forecast(
         forecast_target,
         instrument_type=instrument_type,
     )
+    _validate_rob1301_shadow_target(forecast_target)
     start = (
         _parse_date(forecast_start_date, "forecast_start_date")
         if forecast_start_date is not None
@@ -580,7 +675,11 @@ async def save_forecast(
         "correlation_id": correlation_id,
         "status": "open",
     }
-    return await ForecastRepository(db).upsert(payload)
+    action, row = await ForecastRepository(db).upsert(payload)
+    await _record_rob1301_shadow_eligibility(
+        db, row=row, forecast_target=forecast_target
+    )
+    return action, row
 
 
 async def get_forecast(

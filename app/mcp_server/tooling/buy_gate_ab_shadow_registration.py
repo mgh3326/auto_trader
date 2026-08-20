@@ -21,7 +21,8 @@ _TOOL_DESCRIPTION = (
     "Observation-only: it never creates a proposal, order, or watch, never "
     "writes a database row, and never changes the live gate. B-only survivors "
     "return forecast_save kwargs tagged shadow_buy / promote=false / "
-    "calibration_exclude. Do not call forecast_save unless you intend a pure "
+    "calibration_exclude. forecast_save appends the corresponding eligibility "
+    "decision; do not call it unless you intend a pure "
     "record. Do not use this output for PnL scoring, threshold tuning, or "
     "policy change before the pre-registered 4-week collection completes."
 )

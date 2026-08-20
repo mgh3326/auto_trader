@@ -130,8 +130,11 @@ class TestRegistrarRegistersOnlyKrTools:
 
 
 class TestWholeProfileClosedWorld:
-    def test_base_inventory_is_exactly_119_tools(self) -> None:
-        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 119
+    def test_base_inventory_includes_shadow_evaluator_and_is_exactly_120_tools(
+        self,
+    ) -> None:
+        assert "evaluate_buy_gate_ab_shadow" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
+        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 120
 
     def test_current_profile_matches_active_exact_set(self) -> None:
         mcp = DummyMCP()

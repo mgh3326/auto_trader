@@ -190,8 +190,13 @@ class CohortSample:
     symbol: str
     decision_date: date
     entry: Decimal
+    entry_basis: Literal["frozen_decision_price"]
     bars: tuple[DailyBar, ...]
     actual_fill_price: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        if self.entry_basis != "frozen_decision_price":
+            raise ScoringError("entry_basis must be frozen_decision_price")
 
 
 def _mean(values: Sequence[Decimal]) -> Decimal | None:

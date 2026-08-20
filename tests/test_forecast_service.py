@@ -10,12 +10,22 @@ import pytest_asyncio
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.invalid_sample_eligibility import SampleEligibilityDecision
 from app.models.review import TradeForecast
+from app.services.buy_gate_ab_shadow.evaluate import (
+    CandidateEvidence,
+    evaluate_candidate,
+)
+from app.services.buy_gate_ab_shadow.forecast_tag import build_shadow_buy_forecasts
 from app.services.daily_candles.repository import DailyCandleRow
 from app.services.invalid_sample_eligibility.cohort import (
     COMPATIBILITY_CALIBRATION_COHORT,
 )
-from app.services.invalid_sample_eligibility.contract import CONTRACT_VERSION
+from app.services.invalid_sample_eligibility.contract import (
+    CONTRACT_VERSION,
+    CalibrationEligibility,
+    EligibilitySubjectKind,
+)
 from app.services.trade_journal import forecast_service as svc
 
 pytestmark = [
@@ -276,6 +286,99 @@ async def test_save_idempotent_by_forecast_id_while_open(db_session: AsyncSessio
     rows = (await db_session.execute(select(TradeForecast))).scalars().all()
     assert len(rows) == 1
     assert rows[0].contrary_evidence == "v2"
+
+
+@pytest.mark.asyncio
+async def test_rob1301_shadow_save_records_actual_calibration_exclusion(
+    db_session: AsyncSession,
+):
+    """A shadow JSON tag alone is insufficient; save must append the decision."""
+
+    evaluation = evaluate_candidate(
+        CandidateEvidence.from_mapping(
+            {
+                "symbol": "005930",
+                "market": "kr",
+                "current_price": "70000",
+                "support_strength": "moderate",
+                "support_distance_pct": "4",
+                "rsi": "40",
+                "honest_upside_pct": "45",
+                "other_gate_bits": {
+                    "liquid_midcap": True,
+                    "concentration": True,
+                    "overhang": True,
+                },
+            }
+        ),
+        evaluation_as_of=datetime(2026, 8, 20, 6, 30, tzinfo=UTC),
+    )
+    payload = build_shadow_buy_forecasts(evaluation, created_by="shadow-test")[0]
+    action, row = await svc.save_forecast(db_session, **payload)
+    await db_session.commit()
+
+    assert action == "created"
+    decisions = (
+        (
+            await db_session.execute(
+                select(SampleEligibilityDecision).where(
+                    SampleEligibilityDecision.subject_kind
+                    == EligibilitySubjectKind.FORECAST.value,
+                    SampleEligibilityDecision.subject_ref == str(row.forecast_id),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(decisions) == 1
+    assert decisions[0].calibration_eligibility == CalibrationEligibility.EXCLUDE.value
+    assert decisions[0].evidence["experiment_id"] == "rob-1301-buy-gate-ab-shadow"
+
+    _, repeated = await svc.save_forecast(
+        db_session, forecast_id=str(row.forecast_id), **payload
+    )
+    await db_session.commit()
+    assert repeated.forecast_id == row.forecast_id
+    decisions = (
+        (
+            await db_session.execute(
+                select(SampleEligibilityDecision).where(
+                    SampleEligibilityDecision.subject_kind
+                    == EligibilitySubjectKind.FORECAST.value,
+                    SampleEligibilityDecision.subject_ref == str(row.forecast_id),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(decisions) == 1, "re-saving must not append duplicate exclusions"
+
+    _, control = await svc.save_forecast(
+        db_session,
+        created_by="shadow-test",
+        symbol="000660",
+        instrument_type="equity_kr",
+        forecast_target=_price_target(),
+        probability=0.5,
+        review_date="2026-08-27",
+    )
+    await db_session.commit()
+    for forecast in (row, control):
+        result = await svc.resolve_forecast(
+            db_session,
+            forecast_id=str(forecast.forecast_id),
+            persist=True,
+            manual_outcome=True,
+            manual_evidence=["test outcome"],
+        )
+        assert result["status"] == "resolved"
+    await db_session.commit()
+    calibration_rows = await svc.list_scored_forecasts_for_calibration(
+        db_session, created_by="shadow-test"
+    )
+    assert [item.forecast_id for item in calibration_rows] == [control.forecast_id]
 
 
 # --------------------------------------------------------------------------- #

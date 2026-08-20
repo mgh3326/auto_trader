@@ -11,6 +11,9 @@ MCP_FILES = (
     REPO_ROOT / "app" / "mcp_server" / "tooling" / "buy_gate_ab_shadow.py",
     REPO_ROOT / "app" / "mcp_server" / "tooling" / "buy_gate_ab_shadow_registration.py",
 )
+SHADOW_IMPORT_ALLOWED_FILES = MCP_FILES + (
+    REPO_ROOT / "app" / "mcp_server" / "tooling" / "analysis_registration.py",
+)
 LIVE_PATH_FILES = (
     REPO_ROOT / "app" / "mcp_server" / "tooling" / "order_proposal_tools.py",
     REPO_ROOT / "app" / "mcp_server" / "tooling" / "order_execution.py",
@@ -24,15 +27,21 @@ LIVE_PATH_FILES = (
     REPO_ROOT / "app" / "services" / "support_reserve_net_consumer.py",
 )
 FORBIDDEN_IMPORT_PREFIXES = (
+    "app.core.database",
+    "app.models",
     "app.services.brokers",
+    "app.services.downside_watch",
+    "app.services.investment_",
     "app.mcp_server.tooling.orders_",
     "app.mcp_server.tooling.order_proposal",
     "app.mcp_server.tooling.order_execution",
+    "app.mcp_server.tooling.investment_",
     "app.services.support_reserve_net_consumer",
     "app.services.trading_policy_service",
     "app.core.taskiq_broker",
     "app.tasks",
     "app.flows",
+    "sqlalchemy",
 )
 FORBIDDEN_NAME_SUBSTRINGS = (
     "place_order",
@@ -72,7 +81,9 @@ def test_shadow_package_has_no_broker_proposal_policy_or_scheduler_imports() -> 
 
 
 def test_live_order_and_gate_modules_do_not_import_the_shadow_package() -> None:
-    for path in LIVE_PATH_FILES:
+    for path in REPO_ROOT.joinpath("app").rglob("*.py"):
+        if path in SHADOW_IMPORT_ALLOWED_FILES or path.is_relative_to(SHADOW_DIR):
+            continue
         assert path.is_file(), path
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         modules = _imported_module_names(tree)

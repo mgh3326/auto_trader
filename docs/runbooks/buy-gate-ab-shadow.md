@@ -82,6 +82,12 @@ Every shadow row must carry:
 `forecast_resolve` Brier is **not** the experiment score. The 4-week
 report uses `app.services.buy_gate_ab_shadow.scoring`.
 
+`forecast_save` is the persistence boundary: when it receives this exact
+ROB-1301 B-only target, it appends a `review.sample_eligibility_decisions`
+forecast decision with `calibration_eligibility=calibration_exclude`. The
+calibration aggregate reads that decision table, not this JSON tag alone. A
+malformed purported shadow target is rejected before it is saved.
+
 ## 4-week scoring report spec
 
 Run once `scoring_as_of.date() >= collection_start + 27 days` and every
