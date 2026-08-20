@@ -1016,6 +1016,34 @@ def test_blocked_resolution_is_counted_under_its_own_operation() -> None:
     assert after == before + 1
 
 
+def test_blocked_resolution_is_an_oserror_so_clients_map_it() -> None:
+    """A refusal must look like a resolution failure, not a crash.
+
+    Every HTTP client maps ``socket.gaierror``/``OSError`` into its own transport
+    error. A bare ``AssertionError`` escapes that mapping and propagates as a
+    hard failure -- which is how an MCP child process died mid-request in CI
+    instead of seeing the ordinary "cannot resolve" it already handles.
+    """
+
+    with pytest.raises(socket_guard.ExternalResolutionBlocked) as excinfo:
+        socket.getaddrinfo(EXTERNAL_HOSTNAME, 443)
+
+    assert isinstance(excinfo.value, socket.gaierror)
+    assert isinstance(excinfo.value, OSError)
+    # ...and still matches the assertions the rest of the guard suite uses.
+    assert isinstance(excinfo.value, socket_guard.ExternalSocketBlocked)
+
+
+def test_a_blocked_name_surfaces_as_a_connect_error_through_httpx() -> None:
+    """End to end: the client maps it, the caller's ``except`` clause still works."""
+
+    import httpx
+
+    with httpx.Client() as client:
+        with pytest.raises(httpx.ConnectError):
+            client.get(f"https://{EXTERNAL_HOSTNAME}/probe")
+
+
 def test_resolution_is_permitted_for_an_armed_live_item() -> None:
     """The exemption reaches resolution too, or an armed live test cannot connect."""
 

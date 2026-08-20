@@ -106,6 +106,19 @@ class ExternalSubprocessBlocked(AssertionError):
     """Raised before a known network-capable subprocess can be started."""
 
 
+class ExternalResolutionBlocked(ExternalSocketBlocked, socket.gaierror):
+    """Raised instead of resolving a non-loopback name.
+
+    Deliberately *also* a ``socket.gaierror`` -- and therefore an ``OSError`` --
+    because resolution failures are mapped by every HTTP client
+    (``httpx.ConnectError``, ``requests.ConnectionError``, …). A bare
+    ``AssertionError`` escapes that mapping and propagates as a hard crash, which
+    is how a child process died mid-request instead of seeing the ordinary
+    "cannot resolve" it already handles. Still an ``ExternalSocketBlocked`` so
+    existing guard assertions keep matching.
+    """
+
+
 _INSTALL_LOCK = threading.RLock()
 _STATE_LOCK = threading.Lock()
 _INSTALLED = False
@@ -219,7 +232,7 @@ def _assert_socket_address_allowed(operation: str, address: object) -> None:
 
 def _raise_resolution_blocked(host: object) -> None:
     _record_block("getaddrinfo")
-    raise ExternalSocketBlocked(
+    raise ExternalResolutionBlocked(
         f"Blocked DNS resolution of {host!r}. Name resolution happens *before* "
         "connect, so letting it through would emit a real query even though the "
         "connection itself is refused. External resolution is reachable only "
