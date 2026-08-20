@@ -26,6 +26,7 @@ from sqlalchemy.orm import defer
 
 from app.core.symbol import to_db_symbol
 from app.core.timezone import now_kst
+from app.models.decision_vocabulary import DECISION_BUCKETS
 from app.models.invalid_sample_eligibility import SampleEligibilityDecision
 from app.models.review import TradeForecast
 from app.models.trading import InstrumentType
@@ -314,6 +315,48 @@ def _parse_date(value: str | date, field: str) -> date:
         raise ForecastValidationError(f"{field} must be YYYY-MM-DD: {value!r}") from exc
 
 
+def _validate_decision_bucket(value: str | None) -> str | None:
+    """ROB-1283 — normalise/validate the negative-class label.
+
+    Fail-closed on an unknown label: a typo'd bucket would silently vanish from
+    the rejected cohort at scoring time, which is exactly the failure this
+    issue exists to end. None stays None ("not classified").
+    """
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if not cleaned:
+        return None
+    if cleaned not in DECISION_BUCKETS:
+        raise ForecastValidationError(
+            f"invalid decision_bucket: {value!r} (expected one of "
+            f"{', '.join(DECISION_BUCKETS)})"
+        )
+    return cleaned
+
+
+def normalize_report_link(value: str | None, field: str) -> str | None:
+    """ROB-1283 — a link that cannot join is worse than no link.
+
+    ``report_uuid`` / ``report_item_uuid`` are Text columns joined against
+    ``investment_report*.*_uuid``. Storing a non-UUID string there produces a
+    row that looks linked and never joins, so reject it at write time instead
+    of discovering it at scoring time. The canonical (lowercase, hyphenated)
+    form is stored so string equality joins hold.
+    """
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if not cleaned:
+        return None
+    try:
+        return str(uuid.UUID(cleaned))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ForecastValidationError(
+            f"{field} must be a UUID string, got {value!r}"
+        ) from exc
+
+
 def _validate_forecast_target(
     target: Any,
     *,
@@ -398,6 +441,7 @@ def serialize_forecast(r: TradeForecast) -> dict[str, Any]:
         "report_uuid": r.report_uuid,
         "report_item_uuid": r.report_item_uuid,
         "correlation_id": r.correlation_id,
+        "decision_bucket": r.decision_bucket,
         "created_by": r.created_by,
         "session_label": r.session_label,
         "model_label": r.model_label,
@@ -511,6 +555,7 @@ async def save_forecast(
     report_uuid: str | None = None,
     report_item_uuid: str | None = None,
     correlation_id: str | None = None,
+    decision_bucket: str | None = None,
 ) -> tuple[str, TradeForecast]:
     if not (created_by or "").strip():
         raise ForecastValidationError("created_by is required")
@@ -554,6 +599,7 @@ async def save_forecast(
     )
     if start is not None and start > review:
         raise ForecastValidationError("forecast_start_date must be <= review_date")
+    bucket = _validate_decision_bucket(decision_bucket)
 
     payload: dict[str, Any] = {
         "forecast_id": _coerce_forecast_id(forecast_id),
@@ -575,9 +621,12 @@ async def save_forecast(
         "policy_version": policy_version or _default_policy_version(),
         "artifact_uuid": artifact_uuid,
         "journal_id": journal_id,
-        "report_uuid": report_uuid,
-        "report_item_uuid": report_item_uuid,
+        "report_uuid": normalize_report_link(report_uuid, "report_uuid"),
+        "report_item_uuid": normalize_report_link(report_item_uuid, "report_item_uuid"),
         "correlation_id": correlation_id,
+        # ROB-1283 — validated above; an unknown label raises rather than
+        # writing a row that would drop out of the rejected cohort silently.
+        "decision_bucket": bucket,
         "status": "open",
     }
     return await ForecastRepository(db).upsert(payload)
@@ -702,6 +751,29 @@ async def list_due_quarantined_forecasts(
     return list((await db.execute(stmt)).scalars().all())
 
 
+def _forecast_listing_payload(rows: Sequence[TradeForecast]) -> dict[str, Any]:
+    """Shared listing shape for the forecast list endpoints.
+
+    ROB-1283 adds ``by_decision_bucket``. ``unclassified`` is counted as its own
+    bucket on purpose: it is the size of the blind spot, and collapsing it into
+    zero would say "nothing was rejected" when the truth is "nobody said".
+    """
+    by_status: dict[str, int] = {}
+    by_bucket: dict[str, int] = {}
+    for r in rows:
+        by_status[r.status] = by_status.get(r.status, 0) + 1
+        key = r.decision_bucket or "unclassified"
+        by_bucket[key] = by_bucket.get(key, 0) + 1
+    return {
+        "entries": [serialize_forecast(r) for r in rows],
+        "summary": {
+            "count": len(rows),
+            "by_status": by_status,
+            "by_decision_bucket": by_bucket,
+        },
+    }
+
+
 async def list_forecasts(
     db: AsyncSession,
     *,
@@ -710,6 +782,7 @@ async def list_forecasts(
     created_by: str | None = None,
     correlation_id: str | None = None,
     limit: int = 50,
+    decision_bucket: str | None = None,
 ) -> dict[str, Any]:
     filters = []
     if status is not None:
@@ -720,6 +793,13 @@ async def list_forecasts(
         filters.append(TradeForecast.created_by == created_by)
     if correlation_id is not None:
         filters.append(TradeForecast.correlation_id == correlation_id)
+    if decision_bucket is not None:
+        # ROB-1283 — the query path the rejected-candidate cohort is pulled
+        # through. Validated, so a typo raises instead of returning an empty
+        # cohort that would read as "nothing was rejected".
+        filters.append(
+            TradeForecast.decision_bucket == _validate_decision_bucket(decision_bucket)
+        )
     stmt = (
         select(TradeForecast)
         .where(*filters)
@@ -727,13 +807,7 @@ async def list_forecasts(
         .limit(limit)
     )
     rows = (await db.execute(stmt)).scalars().all()
-    by_status: dict[str, int] = {}
-    for r in rows:
-        by_status[r.status] = by_status.get(r.status, 0) + 1
-    return {
-        "entries": [serialize_forecast(r) for r in rows],
-        "summary": {"count": len(rows), "by_status": by_status},
-    }
+    return _forecast_listing_payload(rows)
 
 
 def _forecast_scope_filters(
@@ -763,13 +837,7 @@ async def _run_forecast_listing(
 ) -> dict[str, Any]:
     stmt = select(TradeForecast).where(*filters).order_by(order_by).limit(limit)
     rows = (await db.execute(stmt)).scalars().all()
-    by_status: dict[str, int] = {}
-    for r in rows:
-        by_status[r.status] = by_status.get(r.status, 0) + 1
-    return {
-        "entries": [serialize_forecast(r) for r in rows],
-        "summary": {"count": len(rows), "by_status": by_status},
-    }
+    return _forecast_listing_payload(rows)
 
 
 async def list_open_forecasts(

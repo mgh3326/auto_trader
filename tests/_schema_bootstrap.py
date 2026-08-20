@@ -74,7 +74,10 @@ from sqlalchemy import text
 # migration is deliberately not run by tests; create_all owns the test copy.
 # v37 (ROB-1292): review.external_cash_declarations append-only + correction
 # scope triggers (non-ORM DDL; table itself comes from create_all).
-SCHEMA_BOOTSTRAP_VERSION = 37
+# v38 (ROB-1283): review.trade_forecasts.decision_bucket (nullable Text + CHECK
+# + index). create_all builds it on a fresh DB; this bump forces a persistent
+# local test DB to re-bootstrap once so the column exists there too.
+SCHEMA_BOOTSTRAP_VERSION = 38
 
 # ---- constraints + enums (moved verbatim from conftest.py) ----
 MARKET_VALUATION_SOURCE_CHECK_NAME = "ck_market_valuation_snapshots_source"

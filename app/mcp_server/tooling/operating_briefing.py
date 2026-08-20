@@ -27,6 +27,9 @@ from app.services.investment_reports.query_service import (
 )
 from app.services.investment_reports.repository import InvestmentReportsRepository
 from app.services.session_context import SessionContextService
+from app.services.trade_journal.negative_class import (
+    load_negative_class_health,
+)
 from app.services.trading_policy_service import policy_version_stamp
 
 
@@ -347,6 +350,22 @@ async def get_operating_briefing_impl(
                 "unavailable_reason": reason,
             }
 
+        # ROB-1283 — negative-class recording health. Fail-open: the briefing is
+        # the run-start surface and must still return if this probe errors, but
+        # a failure is reported as such rather than as a clean "ok".
+        try:
+            negative_class_recording = (
+                await load_negative_class_health(db, market=market, now=as_of)
+            ).to_dict()
+        except Exception as exc:  # noqa: BLE001
+            negative_class_recording = {
+                "status": "unavailable",
+                "market": market,
+                "unavailable_reason": _section_unavailable_reason(
+                    "negative_class_recording", exc
+                ),
+            }
+
         try:
             from app.services.trade_journal.aggregates import (
                 build_counterfactual_delta_scoreboard,
@@ -455,6 +474,7 @@ async def get_operating_briefing_impl(
         "analysis_artifacts": analysis_artifacts,
         "policy_version": policy_version,
         "trading_scoreboards": trading_scoreboards,
+        "negative_class_recording": negative_class_recording,
     }
     return OperatingBriefingResponse.model_validate(response).model_dump(mode="json")
 

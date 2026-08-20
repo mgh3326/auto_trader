@@ -164,6 +164,12 @@ async def test_real_postgresql_upgrade_downgrade_upgrade_single_head() -> None:
             await connection.execute(
                 text("DROP TABLE review.watch_event_repricing_claims")
             )
+            # ROB-1283's decision_bucket column is later than this boundary and
+            # is already materialized by create_all, so drop it (its CHECK and
+            # index go with it) and let the migration add it back.
+            await connection.execute(
+                text("ALTER TABLE review.trade_forecasts DROP COLUMN decision_bucket")
+            )
             # B1 loss-cut approval is later than this reconstructed boundary.
             # Remove its current-head tables and additive columns so the head
             # upgrade exercises the migration instead of colliding with

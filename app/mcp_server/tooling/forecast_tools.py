@@ -23,6 +23,7 @@ from app.services.trade_journal.forecast_service import (
     save_forecast,
     serialize_forecast,
 )
+from app.services.trade_journal.negative_class import negative_class_warnings
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ async def forecast_save(
     report_uuid: str | None = None,
     report_item_uuid: str | None = None,
     correlation_id: str | None = None,
+    decision_bucket: str | None = None,
 ) -> dict[str, Any]:
     symbol = (symbol or "").strip()
     if not symbol:
@@ -84,13 +86,16 @@ async def forecast_save(
                 report_uuid=report_uuid,
                 report_item_uuid=report_item_uuid,
                 correlation_id=correlation_id,
+                decision_bucket=decision_bucket,
             )
             await db.commit()
             await db.refresh(row)
+            data = serialize_forecast(row)
             return {
                 "success": True,
                 "action": action,
-                "data": serialize_forecast(row),
+                "data": data,
+                "warnings": negative_class_warnings(data),
             }
     except ForecastValidationError as exc:
         return {"success": False, "error": str(exc)}
@@ -185,6 +190,7 @@ async def get_forecasts(
     created_by: str | None = None,
     correlation_id: str | None = None,
     limit: int = 50,
+    decision_bucket: str | None = None,
 ) -> dict[str, Any]:
     try:
         async with _session_factory()() as db:
@@ -195,8 +201,11 @@ async def get_forecasts(
                 created_by=created_by,
                 correlation_id=correlation_id,
                 limit=limit,
+                decision_bucket=decision_bucket,
             )
         return {"success": True, **result}
+    except ForecastValidationError as exc:
+        return {"success": False, "error": str(exc)}
     except Exception as exc:  # noqa: BLE001
         logger.exception("get_forecasts failed")
         return {"success": False, "error": f"get_forecasts failed: {exc}"}

@@ -41,7 +41,19 @@ def register_forecast_tools(mcp: Any) -> None:
             "links, and session_label/model_label/policy_version for calibration. "
             "Idempotent per forecast_id (omit to create; supply to update while "
             "open — a closed/resolved forecast is immutable). Composition is the "
-            "caller's judgment; storage/scoring is deterministic."
+            "caller's judgment; storage/scoring is deterministic. "
+            "NEGATIVE CLASS (ROB-1283): when this forecast records a candidate "
+            "you evaluated and did NOT act on, pass "
+            "decision_bucket='deferred_no_action' — that is what makes the "
+            "rejected cohort queryable instead of reconstructable only by "
+            "regex over prose. decision_bucket accepts the shared vocabulary "
+            "{new_buy_candidate, open_action, completed_or_existing, "
+            "deferred_no_action, risk_watch}; an unknown value is rejected. "
+            "A bucketed forecast is self-sufficient for scoring, so recording "
+            "one is worthwhile even when no report item exists; if you did "
+            "create a report item, also pass its item_uuid as report_item_uuid "
+            "so both halves join. The response carries a 'warnings' list when "
+            "the bucket or the link is missing."
         ),
     )(forecast_save)
     _ = mcp.tool(
@@ -81,7 +93,11 @@ def register_forecast_tools(mcp: Any) -> None:
         name="get_forecasts",
         description=(
             "List forecasts with filters (status open/closed/closed_no_claim, symbol, "
-            "created_by, correlation_id). Read-only."
+            "created_by, correlation_id, decision_bucket). Read-only. "
+            "decision_bucket='deferred_no_action' returns the rejected-candidate "
+            "(negative class) cohort; an unknown bucket is an error, not an empty "
+            "result. summary.by_decision_bucket counts 'unclassified' separately — "
+            "that count is the blind spot, not a zero (ROB-1283)."
         ),
     )(get_forecasts)
     _ = mcp.tool(

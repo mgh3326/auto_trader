@@ -430,6 +430,34 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
   `FINNHUB_NEWS_TIMEOUT_S`×`FINNHUB_NEWS_MAX_ATTEMPTS` 재시도, 전 실패 시
   degraded + DB stale 폴백.
 
+### Negative-class(기각 코호트) 기록 — `decision_bucket` (ROB-1283)
+
+"매수 후보가 정말 없었나"에 정본 데이터로 답하기 위한 기각 기록 경로. 🔴 **관측 전용**
+(주문·승인 경로 영향 0).
+
+- **어휘 정본**: `app/models/decision_vocabulary.DECISION_BUCKETS` — 리포트 아이템 CHECK ·
+  Pydantic 스키마 · `review.trade_forecasts` CHECK 가 **같은 튜플**에서 생성됨(3층 드리프트 불가)
+- **기록**: `forecast_save(decision_bucket="deferred_no_action", ...)` — 세션이 실제로 부르는
+  표면. bucket + resolvable target + review_date + outcome/brier 가 한 행이라 리포트 아이템이
+  없어도 **채점 가능**(고아 아님)
+- **조회**: `get_forecasts(decision_bucket=...)`; `summary.by_decision_bucket` 의
+  `unclassified` 는 **사각지대 크기**이지 0 이 아님
+- **가드**: `get_operating_briefing` → `negative_class_recording` 섹션. route-stamp
+  (`operator-compliance/v1`)가 브리핑 응답을 통째로 박제하므로 **운영자 레포 변경 0으로**
+  세션 준수 스탬프에 도달
+- **진단**: `scripts/diagnose_negative_class_recording.py` (SELECT only, exit 1 = stalled)
+- **런북**: `docs/runbooks/negative-class-recording.md`
+
+**주의**:
+- 🔴 2026-06-15~ 결손 구간은 **메우지 않는다**. `gap.backfilled=false` 로 명시 보고 —
+  가짜 연속성 금지. 이 구간을 가로지르는 코호트는 정확히 그만큼 불완전
+- 🔴 원인은 핸들러 파손이 아니라 **호출 지점 부재**(라이브 프롬프트 5종이 `deferred_no_action`
+  어휘만 쓰고 그걸 기록하는 도구 이름을 대지 않음). 기록 재개는 **운영자 레포 프롬프트 수정**이
+  선행돼야 함 — 이 레포 변경만으로는 완결되지 않는다
+- 🔴 bucket 없는 일반 forecast 는 카운트 안 됨. 실제 정지가 숨은 방식이 정확히 이것
+  (`trade_forecasts` 는 66일 내내 바빴다)
+- `decision_bucket=NULL` = "미분류"이지 "기각 아님"이 아니다. 오타는 fail-closed(거부)
+
 ### 정지 종목 오염 차단 — `halted_suspect` (ROB-1236)
 
 일봉이 **3거래일 연속 죽어 있으면**(`volume=0` **또는** `high==low==close` 이면서
