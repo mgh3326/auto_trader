@@ -55,6 +55,13 @@ from app.services import market_data as market_data_service
 from app.services import naver_finance
 from app.services.analyst_normalizer import build_consensus
 from app.services.exchange_rate_service import UsdKrwExchangeRateQuote
+from app.services.symbol_analysis.contract import (
+    ConsensusData,
+    FieldBlock,
+    PriceData,
+    TechnicalData,
+)
+from app.services.symbol_analysis.derived import derive_recommendation
 from tests._mcp_tooling_support import (
     _patch_httpx_async_client,
     _patch_runtime_attr,
@@ -450,6 +457,62 @@ class TestAnalyzeStock:
         assert recommendation["confidence"] == "low"
         assert "stale-window inputs" in recommendation["reasoning"]
         assert "Analyst consensus moderate" not in recommendation["reasoning"]
+
+    async def test_nonstale_downside_moderate_consensus_preserves_hold(self):
+        """ROB-1300 S-E: stale handling must not create a new sell recommendation."""
+
+        current_price = 100_000
+        consensus = build_consensus(
+            [
+                {
+                    "rating": "Buy" if index < 4 else "Hold",
+                    "target_price": 85_000,
+                    "date": "2026-08-10",
+                }
+                for index in range(8)
+            ],
+            current_price,
+            now=datetime(2026, 8, 20, tzinfo=UTC),
+        )
+        assert consensus["upside_pct"] == -15.0
+        assert consensus["rows_excluded_stale"] == 0
+
+        analysis = {
+            "quote": {"price": current_price},
+            "indicators": {"indicators": {"rsi": {"14": 75.0}}},
+            "support_resistance": {"supports": [], "resistances": []},
+            "opinions": {"consensus": consensus},
+        }
+        analysis_analyze._apply_recommendation(
+            analysis,
+            "equity_kr",
+        )
+        recommendation = analysis["recommendation"]
+
+        assert recommendation["action"] == "hold"
+        assert recommendation["confidence"] == "low"
+        assert "Analyst consensus moderate" in recommendation["reasoning"]
+
+        derived = derive_recommendation(
+            price=FieldBlock(PriceData(float(current_price)), "fixture", None, False),
+            technicals=FieldBlock(TechnicalData(rsi14=75.0), "fixture", None, False),
+            consensus=FieldBlock(
+                ConsensusData(
+                    buy=4,
+                    hold=4,
+                    sell=0,
+                    strong_buy=0,
+                    total=8,
+                    upside_pct=-15.0,
+                    stale_opinion_count=0,
+                ),
+                "fixture",
+                None,
+                False,
+            ),
+        )
+        assert derived.action == "hold"
+        assert derived.confidence == "low"
 
     async def test_below_market_target_excluded_from_sell_targets_without_demotion(
         self,

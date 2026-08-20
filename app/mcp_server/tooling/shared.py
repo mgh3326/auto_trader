@@ -650,7 +650,9 @@ def build_recommendation_for_equity(
                             f"Analyst consensus bullish ({buy_count} buy vs {sell_count} sell)"
                         )
             elif buy_ratio > 0.4:
-                if consensus_target_exceeded:
+                # ROB-1300 only: retain ROB-486's non-stale downside +1 behavior.
+                # A stale-window mix alone must not promote a buy through this bucket.
+                if consensus_has_stale_window_inputs(consensus):
                     if consensus_demotion_reason is not None:
                         reasoning_parts.append(consensus_demotion_reason)
                 else:

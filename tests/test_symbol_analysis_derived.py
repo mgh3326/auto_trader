@@ -160,6 +160,28 @@ def test_stale_window_consensus_blocks_count_buy_after_upside_suppression():
 
 
 @pytest.mark.unit
+def test_stale_window_moderate_consensus_blocks_count_buy():
+    """ROB-1300 S-B′: the derived moderate bucket matches shared.py's gate."""
+    stale_consensus = ConsensusData(
+        buy=4,
+        hold=4,
+        sell=0,
+        strong_buy=0,
+        total=8,
+        upside_pct=None,
+        stale_opinion_count=2,
+    )
+    d = derive_recommendation(
+        price=_block(PriceData(100_000.0)),
+        technicals=_block(TechnicalData(rsi14=75.0)),
+        consensus=_block(stale_consensus),
+    )
+    assert d.action == "sell"
+    assert d.confidence == "medium"
+    assert d.insufficient_inputs == ()
+
+
+@pytest.mark.unit
 def test_mildly_negative_upside_keeps_count_buy():
     cons = ConsensusData(buy=8, hold=0, sell=0, strong_buy=0, total=8, upside_pct=-5.0)
     d = derive_recommendation(

@@ -28,13 +28,19 @@ RULE_VERSION = "symbol_analysis.derived.v3"
 CONSENSUS_NEGATIVE_UPSIDE_DEMOTION_PCT = -10.0
 
 
+def _consensus_has_stale_window_inputs(consensus: ConsensusData | None) -> bool:
+    if consensus is None:
+        return False
+    return consensus_has_stale_window_inputs(
+        {"stale_opinion_count": consensus.stale_opinion_count}
+    )
+
+
 def _consensus_target_exceeded(consensus: ConsensusData | None) -> bool:
     """Downside target or stale-window inputs block bullish consensus scoring."""
     if consensus is None:
         return False
-    if consensus_has_stale_window_inputs(
-        {"stale_opinion_count": consensus.stale_opinion_count}
-    ):
+    if _consensus_has_stale_window_inputs(consensus):
         return True
     if consensus.upside_pct is None:
         return False
@@ -46,8 +52,8 @@ def _score_action(
 ) -> tuple[int, int]:
     """(score, max_score). shared.build_recommendation_for_equity 와 동일 임계값.
 
-    ROB-486/1300: bullish count 가산은 컨센서스 목표가 downside 또는 stale-window
-    입력이면 차단한다.
+    ROB-486/1300: strong bullish count 가산은 컨센서스 목표가 downside 또는
+    stale-window 입력이면 차단한다. Moderate 가산은 stale-window 입력에만 차단한다.
     """
 
     score = 0
@@ -74,7 +80,7 @@ def _score_action(
             if not _consensus_target_exceeded(consensus):
                 score += 2
         elif buy_ratio > 0.4:
-            if not _consensus_target_exceeded(consensus):
+            if not _consensus_has_stale_window_inputs(consensus):
                 score += 1
         elif sell_ratio > 0.6:
             score -= 2
