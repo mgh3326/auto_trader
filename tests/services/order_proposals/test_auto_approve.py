@@ -914,8 +914,8 @@ def test_policy_caps_match_the_operator_declared_limits():
     assert (kr.per_order_cap, kr.daily_cap) == (Decimal("1000000"), Decimal("5000000"))
     assert (us.per_order_cap, us.daily_cap) == (Decimal("1500"), Decimal("20000"))
     assert (crypto.per_order_cap, crypto.daily_cap) == (
-        Decimal("100000"),
-        Decimal("300000"),
+        Decimal("1000000"),
+        Decimal("5000000"),
     )
 
 

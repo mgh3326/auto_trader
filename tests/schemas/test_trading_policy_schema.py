@@ -40,8 +40,10 @@ _ROB1298_ADDITIVE_TIE_BREAK_KEYS = (
 _ROB1292_ALLOWED_POLICY_DELTAS = (
     ("order_proposals.auto_approve.per_order_cap.kr", 400000, 1000000),
     ("order_proposals.auto_approve.per_order_cap.us", 800, 1500),
+    ("order_proposals.auto_approve.per_order_cap.crypto", 100000, 1000000),
     ("order_proposals.auto_approve.daily_cap.kr", 400000, 5000000),
     ("order_proposals.auto_approve.daily_cap.us", 5000, 20000),
+    ("order_proposals.auto_approve.daily_cap.crypto", 300000, 5000000),
 )
 
 
@@ -149,7 +151,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-20.1"
+    assert doc.version == "2026-08-20.2"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -1023,9 +1025,9 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
             "tie_breaks"
         ][key]
 
-    # Only the four explicitly enumerated §106차 cap deltas and the enumerated
+    # Only the six explicitly enumerated cap deltas and the enumerated
     # §115차 additions are accepted; every other pre-existing key/value,
-    # including both crypto caps and the retained exclusions list, must still
+    # including the retained exclusions list, must still
     # match the ROB-1289 baseline exactly.
     assert normalized_current_dump == baseline_dump
 
@@ -1520,7 +1522,7 @@ def test_rob_1298_leaves_loss_guard_d7_and_auto_approve_gates_untouched():
     ):
         assert current["thresholds"][key] == baseline["thresholds"][key]
 
-    # Auto-approve gate: only the four §106차 cap deltas already enumerated by
+    # Auto-approve gate: only the enumerated cap deltas already enumerated by
     # ROB-1292 differ; every other auto-approve key is unchanged by ROB-1298.
     current_auto = deepcopy(current["order_proposals"]["auto_approve"])
     baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
