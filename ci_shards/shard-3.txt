@@ -207,6 +207,7 @@ tests/services/test_research_run_service_safety.py
 tests/services/test_trade_journal_aggregates_scoreboard.py
 tests/services/test_trading_policy_service.py
 tests/services/test_tradingview_helpers.py
+tests/services/test_us_kis_kiwoom_readiness.py
 tests/services/test_us_regular_session_raw_capture.py
 tests/services/test_us_symbol_universe_names.py
 tests/services/us_dual_paper/test_schemas.py
