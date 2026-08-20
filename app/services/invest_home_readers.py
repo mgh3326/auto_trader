@@ -38,7 +38,6 @@ from app.services.invest_home_service import _SourceFetchResult
 from app.services.invest_quote_service import InvestQuoteService
 from app.services.manual_holdings_service import ManualHoldingsService
 from app.services.toss_portfolio_service import fetch_toss_portfolio_snapshot
-from app.services.toss_sellable_cache import get_shared_sellable_cache
 from app.services.upbit_symbol_universe_service import (
     get_active_upbit_markets,
     get_upbit_warning_markets,
@@ -515,24 +514,20 @@ class UpbitHomeReader:
             )
 
 
-def _toss_sellable_quantity(position: Any, mutations_enabled: bool) -> float:
-    """ROB-549: 0.0 while reference-only; the API-provided sellable quantity
-    (falling back to full quantity) once Toss live mutations are armed."""
-    if not mutations_enabled:
-        return 0.0
-    sellable = getattr(position, "sellable_quantity", None)
-    if sellable is None:
-        return float(position.quantity)
-    return float(sellable)
+def _toss_sellable_quantity(position: Any, mutations_enabled: bool) -> float | None:
+    """Keep sellable quantity unknown on the general home read path.
+
+    ROB-1310 keeps general home reads off the Toss sellable endpoint. Unknown
+    sellability is therefore ``None``; even an accidental lower-layer value is
+    not promoted into this display projection.
+    """
+    del position, mutations_enabled
+    return None
 
 
 def _toss_pending_sell_quantity(position: Any, mutations_enabled: bool) -> float:
-    if not mutations_enabled:
-        return 0.0
-    return max(
-        float(position.quantity) - _toss_sellable_quantity(position, mutations_enabled),
-        0.0,
-    )
+    del position, mutations_enabled
+    return 0.0
 
 
 class TossApiHomeReader:
@@ -541,9 +536,9 @@ class TossApiHomeReader:
     async def fetch(self, *, user_id: int) -> _SourceFetchResult:
         del user_id
         try:
-            # ROB-549: gate tradeability/sellable on the live-mutation flag so
-            # toss_api holdings stop contradicting the registered toss_live order
-            # tools once the operator arms TOSS_LIVE_ORDER_MUTATIONS_ENABLED.
+            # ROB-549: keep tradeability gated on the live-mutation flag. ROB-1310
+            # makes sellable quantity broker-adjacent; this general home reader
+            # never fans out to Toss ORDER_INFO.
             from app.core.config import settings as _settings
 
             mutations_enabled = bool(
@@ -554,10 +549,7 @@ class TossApiHomeReader:
                 name="invest.home.toss_api.snapshot",
             ) as span:
                 snapshot = await fetch_toss_portfolio_snapshot(
-                    need_sellable=mutations_enabled,
-                    sellable_cache=(
-                        get_shared_sellable_cache() if mutations_enabled else None
-                    ),
+                    need_sellable=False,
                 )
                 span.set_data("position_count", len(snapshot.positions))
                 span.set_data("error_count", len(snapshot.errors))

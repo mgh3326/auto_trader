@@ -304,6 +304,13 @@ class Settings(BaseSettings):
     toss_sellable_cache_enabled: bool = True
     toss_sellable_cache_ttl_seconds: float = 600.0
 
+    # ROB-1310: process-shared holdings read model.  This cache never contains
+    # sellable quantities; order paths always perform a fresh broker preflight.
+    toss_portfolio_snapshot_cache_enabled: bool = True
+    toss_portfolio_snapshot_cache_ttl_seconds: float = 5.0
+    toss_portfolio_snapshot_cache_lock_ttl_seconds: float = 10.0
+    toss_portfolio_snapshot_cache_wait_seconds: float = 3.0
+
     # ROB-710: per-market layer-order flip for /invest batch current-price reads.
     # False (default) => today's KIS → Toss → snapshot order, byte-identical.
     # True => TOSS batch → KIS per-symbol → snapshot (reserve KIS app-key TPS for

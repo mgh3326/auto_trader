@@ -1975,7 +1975,9 @@ async def test_toss_portfolio_snapshot_emits_phase_spans(
 
     monkeypatch.setattr(toss_service.sentry_sdk, "start_span", _start_span)
 
-    snapshot = await toss_service.fetch_toss_portfolio_snapshot(client=_Client())
+    snapshot = await toss_service.fetch_toss_portfolio_snapshot(
+        client=_Client(), need_sellable=True
+    )
 
     assert snapshot.positions[0].symbol == "005930"
     assert "invest.home.toss_api.holdings" in started

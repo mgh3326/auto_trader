@@ -1033,6 +1033,54 @@ class _Reader:
 
 
 @pytest.mark.asyncio
+async def test_get_held_pairs_reads_keys_without_building_home_projection():
+    from app.services.invest_home_service import InvestHomeService
+
+    service = InvestHomeService(
+        kis_reader=_Reader(holdings=[_h(symbol="005930", market="KR")]),
+        upbit_reader=_Reader(
+            holdings=[
+                _h(
+                    source="upbit",
+                    symbol="KRW-BTC",
+                    market="CRYPTO",
+                    assetType="crypto",
+                    assetCategory="crypto",
+                    currency="KRW",
+                )
+            ]
+        ),
+        manual_reader=_Reader(
+            holdings=[
+                _h(
+                    source="toss_manual",
+                    accountKind="manual",
+                    symbol="BRK.B",
+                    market="US",
+                    assetCategory="us_stock",
+                )
+            ]
+        ),
+        toss_api_reader=_Reader(
+            holdings=[
+                _h(
+                    source="toss_api",
+                    symbol="BRK.B",
+                    market="US",
+                    assetCategory="us_stock",
+                )
+            ]
+        ),
+    )
+
+    assert await service.get_held_pairs(user_id=1) == [
+        ("crypto", "KRW-BTC"),
+        ("kr", "005930"),
+        ("us", "BRK.B"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_get_home_uses_toss_api_instead_of_manual_when_toss_api_has_holdings():
     from app.services.invest_home_service import InvestHomeService
 

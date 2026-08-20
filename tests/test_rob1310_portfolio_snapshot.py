@@ -108,6 +108,38 @@ async def test_process_shared_snapshot_singleflight_deduplicates_concurrent_fetc
 
 
 @pytest.mark.asyncio
+async def test_snapshot_cache_error_falls_back_to_direct_read_without_sellable() -> (
+    None
+):
+    from app.services.toss_portfolio_snapshot_cache import TossPortfolioSnapshotCache
+
+    class _BrokenRedis:
+        async def get(self, _key):
+            raise RuntimeError("redis unavailable")
+
+        async def set(self, *_args, **_kwargs):
+            raise RuntimeError("redis unavailable")
+
+    client = _CountingTossClient()
+    cache = TossPortfolioSnapshotCache(
+        redis_client=_BrokenRedis(),
+        ttl_seconds=30,
+        wait_timeout_seconds=0,
+    )
+
+    snapshot = await fetch_toss_portfolio_snapshot(
+        client=client,
+        need_cash=False,
+        snapshot_cache=cache,
+        use_shared_snapshot=True,
+    )
+
+    assert client.holdings_calls == 1
+    assert client.sellable_calls == 0
+    assert snapshot.positions[0].sellable_quantity is None
+
+
+@pytest.mark.asyncio
 async def test_briefing_uses_bounded_summary_instead_of_full_holdings(monkeypatch):
     from app.mcp_server.tooling import operating_briefing as briefing
 
@@ -148,7 +180,9 @@ async def test_briefing_uses_bounded_summary_instead_of_full_holdings(monkeypatc
         freshness_status = "fresh"
         unavailable_reason = None
 
-    monkeypatch.setattr(briefing, "_get_holdings_impl", fail_full_holdings)
+    monkeypatch.setattr(
+        briefing, "_get_holdings_impl", fail_full_holdings, raising=False
+    )
     monkeypatch.setattr(briefing, "_get_portfolio_summary_impl", summary, raising=False)
     monkeypatch.setattr(briefing, "AsyncSessionLocal", lambda: _DbContext())
     monkeypatch.setattr(

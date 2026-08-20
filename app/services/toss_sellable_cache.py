@@ -5,13 +5,13 @@ rate-limit group (6 TPS / 3 TPS peak), so fanning it out per holding serializes
 to ~N/6 s. Redis shares warm values across API, worker, and MCP processes;
 batched reads avoid replacing the broker N+1 with a Redis N+1.
 
-Opt-in callers (ROB-701 + ROB-810): the invest_home reader (/invest home &
-account-panel) AND the MCP ``get_holdings`` path (default; bypass with
-``fresh_sellable=True``). Display/advisory surfaces only — real sell sizing is
-safe because order tools re-validate sellable at broker submit
-(``orders_toss_variants``), and KIS/Upbit sell validation reads its own broker
-live. Confirmed fills and successful sell place/cancel/modify calls invalidate
-the affected symbol. Redis failures are fail-open. enabled=False => always miss.
+General holdings/home/briefing reads no longer consume this per-symbol cache
+(ROB-1310). It remains an invalidation/read primitive for explicitly
+broker-adjacent callers and post-mutation correction. Display/advisory data is
+never a sell-sizing authority: Toss order tools re-validate sellable at broker
+submit (``orders_toss_variants``), and KIS/Upbit sell validation reads its own
+broker live. Confirmed fills and successful sell place/cancel/modify calls
+invalidate the affected symbol. Redis failures are fail-open.
 """
 
 from __future__ import annotations

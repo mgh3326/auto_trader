@@ -1,0 +1,249 @@
+"""Process-shared Redis cache and singleflight for Toss portfolio snapshots.
+
+The cache contains only the holdings/buying-power read model.  It deliberately
+does not provide a sellable quantity: order paths must query the broker at the
+time of the order and must never use this read cache for sizing or approval.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import redis.asyncio as redis
+
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+_KEY_PREFIX = "toss:portfolio:snapshot:v1"
+_LOCK_PREFIX = "toss:portfolio:snapshot:singleflight:v1"
+_RELEASE_LOCK_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+else
+    return 0
+end
+"""
+
+
+def _key(scope: str) -> str:
+    return f"{_KEY_PREFIX}:{scope}"
+
+
+def _lock_key(scope: str) -> str:
+    return f"{_LOCK_PREFIX}:{scope}"
+
+
+class TossPortfolioSnapshotCache:
+    """Redis-backed cache-aside store with a bounded distributed singleflight."""
+
+    def __init__(
+        self,
+        *,
+        redis_client: Any,
+        ttl_seconds: float,
+        lock_ttl_seconds: float = 10.0,
+        wait_timeout_seconds: float = 3.0,
+        poll_interval_seconds: float = 0.05,
+        enabled: bool = True,
+    ) -> None:
+        self._redis = redis_client
+        self._ttl_seconds = float(ttl_seconds)
+        self._lock_ttl_seconds = float(lock_ttl_seconds)
+        self._wait_timeout_seconds = max(float(wait_timeout_seconds), 0.0)
+        self._poll_interval_seconds = max(float(poll_interval_seconds), 0.01)
+        self._enabled = bool(enabled)
+        self._degraded_until = 0.0
+
+    def _mark_degraded(self) -> None:
+        self._degraded_until = time.monotonic() + 5.0
+
+    @property
+    def usable(self) -> bool:
+        return (
+            self._enabled
+            and self._ttl_seconds > 0
+            and self._redis is not None
+            and time.monotonic() >= self._degraded_until
+        )
+
+    async def get(self, scope: str) -> dict[str, Any] | None:
+        if not self.usable:
+            return None
+        try:
+            raw = await self._redis.get(_key(scope))
+        except Exception as exc:  # noqa: BLE001 — read cache fails open
+            self._mark_degraded()
+            logger.warning("Toss portfolio snapshot cache GET failed: %s", exc)
+            return None
+        if raw is None:
+            return None
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            logger.warning("Toss portfolio snapshot cache entry is invalid")
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    async def put(self, scope: str, payload: dict[str, Any]) -> None:
+        if not self.usable:
+            return
+        try:
+            encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            await self._redis.set(
+                _key(scope),
+                encoded,
+                ex=max(1, int(self._ttl_seconds)),
+            )
+        except Exception as exc:  # noqa: BLE001 — write cache fails open
+            self._mark_degraded()
+            logger.warning("Toss portfolio snapshot cache SET failed: %s", exc)
+
+    async def delete(self, scope: str) -> None:
+        if self._redis is None:
+            return
+        try:
+            await self._redis.delete(_key(scope))
+        except Exception as exc:  # noqa: BLE001 — invalidation is best effort
+            logger.warning("Toss portfolio snapshot cache DEL failed: %s", exc)
+
+    async def _acquire(self, scope: str) -> str | None:
+        if not self.usable:
+            return None
+        token = str(uuid.uuid4())
+        try:
+            acquired = await self._redis.set(
+                _lock_key(scope),
+                token,
+                nx=True,
+                ex=max(1, int(self._lock_ttl_seconds)),
+            )
+        except Exception as exc:  # noqa: BLE001 — singleflight fails open
+            self._mark_degraded()
+            logger.warning("Toss portfolio snapshot lock failed: %s", exc)
+            return None
+        return token if acquired else None
+
+    async def _release(self, scope: str, token: str) -> None:
+        if self._redis is None:
+            return
+        try:
+            await self._redis.eval(
+                _RELEASE_LOCK_SCRIPT,
+                1,
+                _lock_key(scope),
+                token,
+            )
+        except Exception:  # noqa: BLE001 — lock expiry is the fallback
+            return
+
+    async def get_or_fetch(
+        self,
+        scope: str,
+        fetcher: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        """Return a cached payload, sharing one upstream fetch across processes.
+
+        Redis outages and lock wait exhaustion fall back to the supplied fetcher;
+        no synthetic payload is created when the cache is unavailable.
+        """
+        cached = await self.get(scope)
+        if cached is not None:
+            return cached
+        if not self.usable:
+            return await fetcher()
+
+        token = await self._acquire(scope)
+        if token is not None:
+            try:
+                # Another writer may have completed between the initial GET and
+                # lock acquisition.
+                cached = await self.get(scope)
+                if cached is not None:
+                    return cached
+                payload = await fetcher()
+                if isinstance(payload, dict):
+                    await self.put(scope, payload)
+                return payload
+            finally:
+                await self._release(scope, token)
+
+        if not self.usable:
+            return await fetcher()
+
+        deadline = asyncio.get_running_loop().time() + self._wait_timeout_seconds
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(self._poll_interval_seconds, remaining))
+            cached = await self.get(scope)
+            if cached is not None:
+                return cached
+
+        # The owner may have failed or Redis may be unhealthy.  Returning a
+        # direct upstream result is safer than inventing a stale sellable value.
+        return await fetcher()
+
+
+_shared_portfolio_snapshot_cache: TossPortfolioSnapshotCache | None = None
+
+
+def get_shared_portfolio_snapshot_cache() -> TossPortfolioSnapshotCache:
+    """Return a process-local Redis client facade over the shared snapshot store."""
+    global _shared_portfolio_snapshot_cache
+    if _shared_portfolio_snapshot_cache is None:
+        redis_client = None
+        try:
+            redis_client = redis.from_url(
+                settings.get_redis_url(),
+                max_connections=settings.redis_max_connections,
+                socket_timeout=settings.redis_socket_timeout,
+                socket_connect_timeout=settings.redis_socket_connect_timeout,
+                decode_responses=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — cache fails open
+            logger.warning("Toss portfolio snapshot Redis client init failed: %s", exc)
+        _shared_portfolio_snapshot_cache = TossPortfolioSnapshotCache(
+            redis_client=redis_client,
+            ttl_seconds=float(
+                getattr(settings, "toss_portfolio_snapshot_cache_ttl_seconds", 5.0)
+            ),
+            lock_ttl_seconds=float(
+                getattr(
+                    settings,
+                    "toss_portfolio_snapshot_cache_lock_ttl_seconds",
+                    10.0,
+                )
+            ),
+            wait_timeout_seconds=float(
+                getattr(
+                    settings,
+                    "toss_portfolio_snapshot_cache_wait_seconds",
+                    3.0,
+                )
+            ),
+            enabled=bool(
+                getattr(settings, "toss_portfolio_snapshot_cache_enabled", True)
+            ),
+        )
+    return _shared_portfolio_snapshot_cache
+
+
+def reset_shared_portfolio_snapshot_cache() -> None:
+    """Test hook for dropping the process-local Redis facade."""
+    global _shared_portfolio_snapshot_cache
+    _shared_portfolio_snapshot_cache = None
+
+
+__all__ = [
+    "TossPortfolioSnapshotCache",
+    "get_shared_portfolio_snapshot_cache",
+    "reset_shared_portfolio_snapshot_cache",
+]

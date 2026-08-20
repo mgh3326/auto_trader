@@ -99,7 +99,7 @@ async def test_collect_toss_api_positions_defaults_need_sellable_false(monkeypat
     assert seen == [False, False, True]
 
 
-async def test_collect_toss_api_positions_uses_shared_cache_and_skips_cash(monkeypatch):
+async def test_collect_toss_api_positions_skips_sellable_cache_and_cash(monkeypatch):
     seen: dict[str, Any] = {}
     sentinel_cache = object()
 

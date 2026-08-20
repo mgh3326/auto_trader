@@ -64,7 +64,10 @@ def _sellable_quantity(h: Holding) -> float:
         return 0.0
     if h.sellableQuantity is not None:
         return max(h.sellableQuantity, 0.0)
-    return max(h.quantity - h.pendingSellQuantity, 0.0)
+    # Unknown sellability must not be promoted to the full position.  General
+    # home reads intentionally omit Toss sellable data (ROB-1310); order tools
+    # perform their own fresh broker preflight.
+    return 0.0
 
 
 def _reference_quantity(h: Holding) -> float:
@@ -390,6 +393,97 @@ class InvestHomeService:
         self._manual = manual_reader
         self._toss_api = toss_api_reader
         self._paper_readers: Sequence[object] = paper_readers or []
+
+    async def get_held_pairs(
+        self,
+        *,
+        user_id: int,
+        include_paper: bool = False,
+        paper_sources: frozenset[str] | None = None,
+    ) -> list[tuple[str, str]]:
+        """Read only held-symbol keys for calendar/signal relation ranking.
+
+        This deliberately avoids constructing the full home projection. The
+        Toss reader uses the shared holdings snapshot and never requests
+        sellable quantity; manual holdings remain a DB read. Paper readers are
+        included only when explicitly requested.
+        """
+        live_sources = ["kis", "upbit"]
+        live_fetchers: list[Awaitable[_SourceFetchResult]] = [
+            _fetch_reader_result(
+                self._kis.fetch,
+                span_name="invest.home.held_pairs.kis",
+                source="kis",
+                user_id=user_id,
+                include_paper=include_paper,
+                paper_sources=paper_sources,
+            ),
+            _fetch_reader_result(
+                self._upbit.fetch,
+                span_name="invest.home.held_pairs.upbit",
+                source="upbit",
+                user_id=user_id,
+                include_paper=include_paper,
+                paper_sources=paper_sources,
+            ),
+        ]
+        if self._toss_api is not None:
+            live_sources.append("toss_api")
+            live_fetchers.append(
+                _fetch_reader_result(
+                    self._toss_api.fetch,
+                    span_name="invest.home.held_pairs.toss_api",
+                    source="toss_api",
+                    user_id=user_id,
+                    include_paper=include_paper,
+                    paper_sources=paper_sources,
+                )
+            )
+
+        results = await asyncio.gather(*live_fetchers)
+        holdings: list[Holding] = []
+        for source, result in zip(live_sources, results, strict=True):
+            if source != "toss_api" or result.holdings or result.accounts:
+                holdings.extend(result.holdings)
+
+        manual_result = await _fetch_reader_result(
+            self._manual.fetch,
+            span_name="invest.home.held_pairs.manual",
+            source="toss_manual",
+            user_id=user_id,
+            include_paper=include_paper,
+            paper_sources=paper_sources,
+        )
+        holdings.extend(
+            _filter_manual_holdings_for_toss_api(
+                manual_result.holdings,
+                [holding for holding in holdings if holding.source == "toss_api"],
+            )
+        )
+
+        if include_paper:
+            for reader in self._paper_readers:
+                reader_source: str = getattr(reader, "source", None) or "kis_mock"
+                if paper_sources is not None and reader_source not in paper_sources:
+                    continue
+                result = await _fetch_reader_result(
+                    reader.fetch,  # type: ignore[union-attr]
+                    span_name=f"invest.home.held_pairs.{reader_source}",
+                    source=reader_source,
+                    user_id=user_id,
+                    include_paper=True,
+                    paper_sources=paper_sources,
+                )
+                holdings.extend(result.holdings)
+
+        return sorted(
+            {
+                (str(holding.market).lower(), _normalize_symbol(holding.symbol))
+                for holding in holdings
+                if holding.quantity > 0
+                and str(holding.market).lower() in {"kr", "us", "crypto"}
+            }
+        )
 
     async def get_home(
         self,

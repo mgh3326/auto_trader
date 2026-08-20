@@ -719,6 +719,54 @@ async def _loss_cut_position_scope(
     }, None
 
 
+async def _fresh_sellable_preflight(
+    client: TossReadClient,
+    *,
+    symbol: str,
+    requested_quantity: Decimal | None,
+    base: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Revalidate sellability directly at the broker immediately before send."""
+    try:
+        result = await client.sellable_quantity(symbol=symbol)
+        sellable = Decimal(str(result.sellable_quantity))
+    except Exception as exc:  # noqa: BLE001 — sell sizing fails closed
+        return None, {
+            "success": False,
+            **base,
+            "error": (
+                f"Failed to retrieve fresh broker sellable quantity for {symbol} "
+                f"(fail closed): {exc}"
+            ),
+            "error_code": "fresh_sellable_unavailable",
+        }
+
+    if not sellable.is_finite() or sellable < Decimal("0"):
+        return None, {
+            "success": False,
+            **base,
+            "error": (
+                f"Invalid fresh broker sellable quantity for {symbol}: {sellable} "
+                "(fail closed)."
+            ),
+            "error_code": "fresh_sellable_invalid",
+        }
+    if requested_quantity is not None and requested_quantity > sellable:
+        return None, {
+            "success": False,
+            **base,
+            "error": (
+                f"Requested sell quantity {requested_quantity} exceeds fresh "
+                f"broker sellable quantity {sellable} (fail closed)."
+            ),
+            "error_code": "fresh_sellable_insufficient",
+        }
+    return {
+        "fresh_sellable_quantity": _stringify_decimal(sellable),
+        "sellable_quantity_source": "toss_broker_preflight",
+    }, None
+
+
 async def _opposite_pending_error(
     client: TossReadClient,
     symbol: str,
@@ -1416,6 +1464,7 @@ async def _toss_place_order_impl(
         return mutation_gate
 
     async def execute_order(client: TossReadClient):
+        sellable_evidence: dict[str, Any] = {}
         # Guard: Warnings check
         guard_res = await check_warnings_guard(client, symbol, market=mkt, side=side)
         guard_warnings = _warning_payload(guard_res.warnings)
@@ -1448,6 +1497,19 @@ async def _toss_place_order_impl(
                 )
             ) is not None:
                 return sell_guard
+
+            # ROB-1310: never consume the display sellable cache or shared
+            # portfolio snapshot for order sizing. Recheck Toss directly after
+            # the existing sell guards and before any mutation hook/POST.
+            sellable_evidence, sellable_error = await _fresh_sellable_preflight(
+                client,
+                symbol=symbol,
+                requested_quantity=quantity_dec,
+                base=base_response,
+            )
+            if sellable_error is not None:
+                return sellable_error
+            sellable_evidence = sellable_evidence or {}
 
         # Guard: NXT session preflight. Required mode fail-closes before POST;
         # warn/optional log but proceed (fail-open on unknown session).
@@ -1546,6 +1608,7 @@ async def _toss_place_order_impl(
                 "approval_hash_digest": ledger_approval_hash,
                 "warnings": guard_warnings,
                 "warnings_check_message": guard_res.error_message,
+                **sellable_evidence,
                 "message": (
                     "Toss live order accepted and recorded accepted-only; "
                     "run toss_reconcile_orders to book confirmed fills."
@@ -1739,6 +1802,8 @@ async def toss_modify_order(
             ) is not None:
                 return sell_guard
 
+        sellable_evidence: dict[str, Any] = {}
+
         if (
             high_value_guard := _high_value_error(
                 mkt,
@@ -1757,6 +1822,16 @@ async def toss_modify_order(
             )
             if mutation_gate is not None:
                 return mutation_gate
+            if side == "sell":
+                sellable_evidence, sellable_error = await _fresh_sellable_preflight(
+                    client,
+                    symbol=symbol,
+                    requested_quantity=new_quantity_dec,
+                    base=base_response,
+                )
+                if sellable_error is not None:
+                    return sellable_error
+                sellable_evidence = sellable_evidence or {}
 
         if dry_run:
             return {
@@ -1800,6 +1875,7 @@ async def toss_modify_order(
                 "original_order_id": order_id,
                 "replacement_order_id": res.order_id,
                 "operation_semantics": "Toss modify returns a newly issued orderId; it is not the original order id.",
+                **sellable_evidence,
                 **ledger,
             }
         except Exception as exc:
@@ -2129,7 +2205,8 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "preview/submit identity and correlation are bound internally and "
             "cannot be supplied by MCP callers. Direct loss_cut is disabled; use "
             "order_proposal_create for Telegram two-click confirmation and a full "
-            "second-click preview/retrospective/slip/hash revalidation."
+            "second-click preview/retrospective/slip/hash revalidation. Live sells "
+            "also require a fresh Toss broker sellable-quantity preflight before POST."
         ),
     )(toss_place_order)
     mcp.tool(
@@ -2141,7 +2218,8 @@ def register_toss_live_order_tools(mcp: FastMCP) -> None:
             "TOSS_LIVE_ORDER_MUTATIONS_ENABLED=true. KR modify requires both "
             "new_price and new_quantity. US modify requires new_price and "
             "rejects new_quantity. Sell reprices are blocked below "
-            "avg_purchase_price*1.01. Toss returns a newly issued replacement "
+            "avg_purchase_price*1.01 and live sells recheck broker sellable quantity. "
+            "Toss returns a newly issued replacement "
             "orderId for successful modify."
         ),
     )(toss_modify_order)

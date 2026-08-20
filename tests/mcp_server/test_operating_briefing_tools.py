@@ -115,7 +115,7 @@ async def test_get_operating_briefing_composes_all_sections(
 
     async def fake_holdings(**kwargs):
         assert kwargs["market"] == "kr"
-        assert kwargs["include_current_price"] is True
+        assert kwargs["include_current_price"] is False
         return {
             "total_positions": 2,
             "summary": {"total_value": 1234567},

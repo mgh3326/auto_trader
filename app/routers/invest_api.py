@@ -627,14 +627,15 @@ async def get_calendar(
     include_paper: Annotated[bool, Query(alias="includePaper")] = False,
     paper_sources: Annotated[str | None, Query(alias="paperSources")] = None,
 ) -> CalendarResponse:
-    home = await service.get_home(
+    # ROB-1310: calendar only needs held-symbol keys. Avoid building the full
+    # home projection; Toss uses the shared portfolio snapshot and the manual
+    # source remains a read-only DB lookup. includePaper remains explicit.
+    held_pairs = await service.get_held_pairs(
         user_id=user.id,
         include_paper=include_paper,
         paper_sources=_parse_paper_sources(paper_sources),
     )
-    resolver = await build_relation_resolver(
-        db, user_id=user.id, held_pairs=_held_pairs_from_home(home)
-    )
+    resolver = await build_relation_resolver(db, user_id=user.id, held_pairs=held_pairs)
     return await build_calendar(
         db=db,
         resolver=resolver,
