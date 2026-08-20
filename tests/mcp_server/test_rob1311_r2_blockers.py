@@ -518,7 +518,7 @@ class _SpySession:
         self.statements.append(str(statement))
 
         class _Result:
-            def scalars(self) -> "_Result":
+            def scalars(self) -> _Result:
                 return self
 
             def all(self) -> list[object]:

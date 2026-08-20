@@ -29,6 +29,7 @@ from app.models.investment_reports import InvestmentReportItem
 from app.models.market_events import MarketEvent
 from app.models.review import (
     KISLiveOrderLedger,
+    KISMockOrderLedger,
     LiveOrderLedger,
     TossLiveOrderLedger,
     TradeForecast,
@@ -264,6 +265,32 @@ def _quick_fill(source: str, row: Any) -> dict[str, Any]:
     }
 
 
+def _quick_mock_fill(row: Any, filled_qty: float, status: str) -> dict[str, Any]:
+    return {
+        "date": _date_iso(getattr(row, "trade_date", None)),
+        "side": getattr(row, "side", None),
+        "status": status,
+        "qty": float(row.quantity)
+        if getattr(row, "quantity", None) is not None
+        else None,
+        "filled_qty": filled_qty,
+        "avg_fill_price": (
+            float(row.price) if getattr(row, "price", None) is not None else None
+        ),
+        "target_price": (
+            float(row.target_price)
+            if getattr(row, "target_price", None) is not None
+            else None
+        ),
+        "stop_loss": (
+            float(row.stop_loss)
+            if getattr(row, "stop_loss", None) is not None
+            else None
+        ),
+        "source": "kis_mock",
+    }
+
+
 async def _load_decision_history_batch(
     session: Any,
     symbols: list[tuple[str, str]],
@@ -350,24 +377,54 @@ async def _load_decision_history_batch(
         .all()
     )
 
+    # Account-mode visibility (ROB-1311 R2 supplemental / 1계좌=1전략): the
+    # kis_mock lane must only ever surface its own shadow-fill evidence, never
+    # live-broker fills, matching canonical `decision_history._recent_fills`.
+    # One query either way — never both — so this stays within the DB budget.
     fill_rows: list[tuple[str, Any]] = []
-    for source, model in (
-        ("kis", KISLiveOrderLedger),
-        ("live", LiveOrderLedger),
-        ("toss", TossLiveOrderLedger),
-    ):
-        rows = (
+    if account_mode == "kis_mock":
+        from app.mcp_server.tooling.kis_mock_ledger import _derive_shadow_fill
+
+        mock_rows = (
             (
                 await session.execute(
-                    select(model)
-                    .where(model.symbol.in_(db_symbols))
-                    .order_by(model.trade_date.desc())
+                    select(KISMockOrderLedger)
+                    .where(KISMockOrderLedger.symbol.in_(db_symbols))
+                    .where(
+                        KISMockOrderLedger.mirror_cohort == "mock_counterfactual",
+                        KISMockOrderLedger.lifecycle_state == "fill",
+                    )
+                    .order_by(KISMockOrderLedger.trade_date.desc())
                 )
             )
             .scalars()
             .all()
         )
-        fill_rows.extend((source, row) for row in rows)
+        for row in mock_rows:
+            filled_qty, _remaining, status = _derive_shadow_fill(
+                row, float(row.quantity)
+            )
+            if status not in {"filled", "partial"} or filled_qty <= 0:
+                continue
+            fill_rows.append(("kis_mock", row, filled_qty, status))
+    else:
+        for source, model in (
+            ("kis", KISLiveOrderLedger),
+            ("live", LiveOrderLedger),
+            ("toss", TossLiveOrderLedger),
+        ):
+            rows = (
+                (
+                    await session.execute(
+                        select(model)
+                        .where(model.symbol.in_(db_symbols))
+                        .order_by(model.trade_date.desc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            fill_rows.extend((source, row, None, None) for row in rows)
 
     def key_for(symbol: Any) -> str:
         return str(symbol or "").strip().upper()
@@ -541,9 +598,13 @@ async def _load_decision_history_batch(
         )
         target["open_claims"] = target["open_claims"][:5]
 
-    for source, row in fill_rows:
+    for source, row, filled_qty, status in fill_rows:
         target = per_symbol.get(key_for(getattr(row, "symbol", None)))
-        if target is not None and len(target["recent_fills"]) < 6:
+        if target is None or len(target["recent_fills"]) >= 6:
+            continue
+        if source == "kis_mock":
+            target["recent_fills"].append(_quick_mock_fill(row, filled_qty, status))
+        else:
             target["recent_fills"].append(_quick_fill(source, row))
 
     for symbol, context in per_symbol.items():
