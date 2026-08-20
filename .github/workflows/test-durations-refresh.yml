@@ -2,16 +2,28 @@ name: Refresh test durations
 
 # Weekly deterministic refresh of .test_durations (ROB-963 / ROB-1051).
 # Each matrix shard owns a PostgreSQL service; xdist workers are further
-# isolated by tests/conftest.py. Shards emit clean JSON maps and identical
-# collection manifests. The merge job drops stale entries and refuses partial,
-# duplicate, or collection-inconsistent results.
+# isolated by tests/conftest.py. Shards emit clean JSON maps and refuse
+# partial, duplicate, wrong-shard, or gap/stale measurements.
 #
 # ROB-1295: the same "Measure shard" step also captures call-phase-only
 # duration telemetry (tests/_call_duration_plugin.py) into a second,
 # additive sidecar artifact (.call_durations.json). This never touches
-# .test_durations or pytest-split's shard-balancing consumer — it is a
+# .test_durations or pytest-split's own duration-storage machinery — it is a
 # separate, stricter-validated freshness record (scripts/call_durations.py)
 # built and self-validated in the merge job below.
+#
+# ROB-1312: shards run the four disjoint, committed
+# ci_shards/shard-{1..4}.txt file manifests instead of a runtime
+# pytest-split `--splits/--group` selection (`--store-durations`/
+# `--durations-path` are unchanged -- .test_durations telemetry is still
+# collected, just no longer used to pick which subset a shard runs). Each
+# shard's own collected-node capture (`collected-shard-N.txt`) is now scoped
+# to only the files that shard ran, so it is a strict subset of the full
+# suite, not an identical copy across all four. `collect-authoritative`
+# captures the independent, separately-run full-suite reference the merge
+# job checks the four (disjoint) shard collections against -- deriving
+# "authoritative" from the shards' own union would make a shard that quietly
+# under-collects invisible.
 
 on:
   schedule:
@@ -43,6 +55,68 @@ jobs:
           exit 1
         fi
         echo "DURATIONS_REFRESH_TOKEN is configured."
+
+  collect-authoritative:
+    name: Collect authoritative test manifest
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PYTHON_VERSION: "3.13"
+
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        persist-credentials: false
+
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    - name: Install UV
+      run: pip install uv
+
+    - name: Load cached venv
+      uses: actions/cache@v5
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/uv.lock') }}
+
+    - name: Install dependencies
+      run: uv sync --group test
+
+    - name: Set test environment
+      run: bash scripts/setup-test-env.sh
+
+    # Independent full-suite ground truth, run once, in parallel with the
+    # four `measure` shards (not derived from them). Collect-only does not
+    # touch Postgres/Redis, so this job carries no service containers.
+    # Output is NOT deduplicated (`sort`, not `sort -u`): a genuine
+    # duplicate collection must reach the parser, not be silently erased.
+    - name: Record authoritative collection manifest
+      run: |
+        set -euo pipefail
+        uv run pytest tests/ --collect-only -q --no-cov -m "not live" \
+          2>/dev/null | grep '^tests/.*::' | LC_ALL=C sort \
+          > authoritative-collected-nodes.txt
+        test -s authoritative-collected-nodes.txt
+
+    - name: Validate file-shard manifests (exact-cover)
+      run: |
+        python3 -m scripts.ci.file_shard_plan check \
+          --collected authoritative-collected-nodes.txt \
+          --manifest-dir ci_shards \
+          --shard-count 4
+
+    - name: Upload authoritative manifest
+      uses: actions/upload-artifact@v6
+      with:
+        name: authoritative-collected-nodes
+        path: authoritative-collected-nodes.txt
+        if-no-files-found: error
 
   measure:
     name: Measure shard ${{ matrix.group }}/4
@@ -119,19 +193,25 @@ jobs:
     - name: Set test environment
       run: bash scripts/setup-test-env.sh
 
-    - name: Record authoritative collection manifest
+    # ROB-1312: scoped to this shard's own committed manifest, not the whole
+    # suite -- the four shards' collections are now disjoint subsets, cross-
+    # validated against collect-authoritative's independent full-suite
+    # capture in the merge job below. Not deduplicated (`sort`, not
+    # `sort -u`): a genuine duplicate must reach the parser, not be erased.
+    - name: Record shard collection manifest
       run: |
         set -euo pipefail
-        uv run pytest tests/ --collect-only -q --no-cov -m "not live" \
-          2>/dev/null | grep '^tests/.*::' | LC_ALL=C sort -u \
+        mapfile -t SHARD_FILES < "ci_shards/shard-${{ matrix.group }}.txt"
+        uv run pytest "${SHARD_FILES[@]}" --collect-only -q --no-cov -m "not live" \
+          2>/dev/null | grep '^tests/.*::' | LC_ALL=C sort \
           > "collected-shard-${{ matrix.group }}.txt"
         test -s "collected-shard-${{ matrix.group }}.txt"
 
     - name: Measure shard
       run: |
         cp .test_durations "durations-shard-${{ matrix.group }}.json"
-        uv run pytest tests/ -q -ra -m "not live" \
-          --splits 4 --group "${{ matrix.group }}" \
+        mapfile -t SHARD_FILES < "ci_shards/shard-${{ matrix.group }}.txt"
+        uv run pytest "${SHARD_FILES[@]}" -q -ra -m "not live" \
           --durations-path "durations-shard-${{ matrix.group }}.json" \
           --store-durations --clean-durations \
           -p tests._call_duration_plugin \
@@ -151,7 +231,7 @@ jobs:
 
   merge:
     name: Merge duration shards
-    needs: measure
+    needs: [measure, collect-authoritative]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -161,6 +241,7 @@ jobs:
       before_entries: ${{ steps.diff.outputs.before_entries }}
       after_entries: ${{ steps.diff.outputs.after_entries }}
       call_durations_changed: ${{ steps.call-durations-diff.outputs.changed }}
+      ci_shards_changed: ${{ steps.ci-shards-diff.outputs.changed }}
     env:
       PYTHON_VERSION: "3.13"
 
@@ -181,6 +262,12 @@ jobs:
         path: duration-artifacts
         merge-multiple: true
 
+    - name: Download authoritative collection manifest
+      uses: actions/download-artifact@v6
+      with:
+        name: authoritative-collected-nodes
+        path: duration-artifacts
+
     - name: Merge complete current duration set
       run: |
         python scripts/merge_test_durations.py \
@@ -193,6 +280,7 @@ jobs:
           --collected duration-artifacts/collected-shard-2.txt \
           --collected duration-artifacts/collected-shard-3.txt \
           --collected duration-artifacts/collected-shard-4.txt \
+          --authoritative duration-artifacts/authoritative-collected-nodes.txt \
           --output .test_durations
 
     - name: Detect .test_durations changes
@@ -233,6 +321,7 @@ jobs:
           --collected duration-artifacts/collected-shard-2.txt \
           --collected duration-artifacts/collected-shard-3.txt \
           --collected duration-artifacts/collected-shard-4.txt \
+          --authoritative duration-artifacts/authoritative-collected-nodes.txt \
           --source-commit-sha "${{ github.sha }}" \
           --output .call_durations.json
 
@@ -241,13 +330,12 @@ jobs:
       # same fail-closed freshness contract a future PR/consumer would run
       # (ROB-1295). A validate failure here means build_artifact and
       # validate_freshness disagree — treat that as a bug, not driftable.
+      # `validate` checks against the single authoritative collection only
+      # (ROB-1312) -- unrelated to how the artifact was sharded when built.
       run: |
         python -m scripts.call_durations validate \
           --artifact .call_durations.json \
-          --collected duration-artifacts/collected-shard-1.txt \
-          --collected duration-artifacts/collected-shard-2.txt \
-          --collected duration-artifacts/collected-shard-3.txt \
-          --collected duration-artifacts/collected-shard-4.txt \
+          --authoritative duration-artifacts/authoritative-collected-nodes.txt \
           --expected-source-sha "${{ github.sha }}"
 
     - name: Detect .call_durations.json changes
@@ -276,10 +364,67 @@ jobs:
         path: refreshed-call-durations.json
         if-no-files-found: error
 
+    # ROB-1312: ci_shards/*.txt is a deterministic function of
+    # .call_durations.json (weight source) + the current authoritative
+    # collection -- if the weekly refresh rebuilt .call_durations.json but
+    # never regenerated the manifests from it, LPT balance would silently
+    # drift out of sync with reality every week between manual regenerations
+    # (exact-cover would still hold, since file membership is unaffected by
+    # weight drift, but the "keep predicted shard weight spread low" intent
+    # this planner exists for would quietly rot). Regenerate here, from the
+    # same freshly-built artifact and the same authoritative capture this
+    # job already validated .call_durations.json against, so both land in
+    # the same refresh PR in lockstep.
+    - name: Regenerate file-shard manifests
+      run: |
+        python3 -m scripts.ci.file_shard_plan generate \
+          --call-durations .call_durations.json \
+          --collected duration-artifacts/authoritative-collected-nodes.txt \
+          --manifest-dir ci_shards \
+          --shard-count 4
+
+    - name: Validate regenerated file-shard manifests (exact-cover)
+      # Self-check, same rationale as "Validate call-phase duration
+      # freshness" above: what this job just wrote must itself pass the
+      # same fail-closed check a PR/consumer would run.
+      run: |
+        python3 -m scripts.ci.file_shard_plan check \
+          --collected duration-artifacts/authoritative-collected-nodes.txt \
+          --manifest-dir ci_shards \
+          --shard-count 4
+
+    - name: Detect ci_shards changes
+      id: ci-shards-diff
+      # git status --porcelain, matching the .call_durations.json check above
+      # -- ci_shards/ is already tracked from ROB-1312's initial landing, but
+      # this stays robust even if that were ever not true.
+      run: |
+        if [ -z "$(git status --porcelain -- ci_shards/)" ]; then
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          echo "No ci_shards/ changes — nothing to PR."
+        else
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Stage file-shard manifests
+      if: steps.ci-shards-diff.outputs.changed == 'true'
+      run: |
+        mkdir -p ci-shards-refresh-output
+        cp ci_shards/shard-1.txt ci_shards/shard-2.txt ci_shards/shard-3.txt \
+          ci_shards/shard-4.txt ci_shards/weights.json ci-shards-refresh-output/
+
+    - name: Upload file-shard manifests
+      if: steps.ci-shards-diff.outputs.changed == 'true'
+      uses: actions/upload-artifact@v6
+      with:
+        name: refreshed-ci-shards
+        path: ci-shards-refresh-output/
+        if-no-files-found: error
+
   pull-request:
     name: Open duration refresh PR
     needs: merge
-    if: needs.merge.outputs.changed == 'true' || needs.merge.outputs.call_durations_changed == 'true'
+    if: needs.merge.outputs.changed == 'true' || needs.merge.outputs.call_durations_changed == 'true' || needs.merge.outputs.ci_shards_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -313,32 +458,68 @@ jobs:
       if: needs.merge.outputs.call_durations_changed == 'true'
       run: cp call-durations-refresh-output/refreshed-call-durations.json .call_durations.json
 
+    - name: Download file-shard manifests
+      if: needs.merge.outputs.ci_shards_changed == 'true'
+      uses: actions/download-artifact@v6
+      with:
+        name: refreshed-ci-shards
+        path: ci-shards-refresh-output
+
+    - name: Install file-shard manifests
+      if: needs.merge.outputs.ci_shards_changed == 'true'
+      run: |
+        mkdir -p ci_shards
+        cp ci-shards-refresh-output/shard-1.txt ci-shards-refresh-output/shard-2.txt \
+          ci-shards-refresh-output/shard-3.txt ci-shards-refresh-output/shard-4.txt \
+          ci-shards-refresh-output/weights.json ci_shards/
+
     - name: Open auto-PR with refreshed durations
       uses: peter-evans/create-pull-request@v7
       with:
         token: ${{ secrets.DURATIONS_REFRESH_TOKEN }}
-        commit-message: "chore(ci): refresh .test_durations and .call_durations.json"
+        commit-message: "chore(ci): refresh .test_durations, .call_durations.json, and ci_shards manifests"
         add-paths: |
           .test_durations
           .call_durations.json
+          ci_shards/shard-1.txt
+          ci_shards/shard-2.txt
+          ci_shards/shard-3.txt
+          ci_shards/shard-4.txt
+          ci_shards/weights.json
         branch: ci/test-durations-refresh
         delete-branch: true
         base: main
         title: "chore(ci): refresh .test_durations"
         body: |
-          Automated weekly refresh of `.test_durations` (ROB-963 / ROB-1051)
-          and `.call_durations.json` (ROB-1295).
+          Automated weekly refresh of `.test_durations` (ROB-963 / ROB-1051),
+          `.call_durations.json` (ROB-1295), and the `ci_shards/*.txt`
+          file-shard manifests (ROB-1312).
 
-          Four CI-equivalent shards measured the full non-live suite using
-          independent PostgreSQL services and worker-isolated databases. The
-          `.test_durations` merge rejected missing/duplicate measurements,
-          dropped stale entries, and wrote a deterministic node-id-sorted map
-          — this still drives pytest-split shard balancing, unchanged.
+          Four shards each measured their own disjoint, committed
+          `ci_shards/shard-{1..4}.txt` file manifest using independent
+          PostgreSQL services and worker-isolated databases. A fifth job
+          (`collect-authoritative`) independently captured the full non-live
+          suite as ground truth. The merge rejected
+          missing/duplicate/wrong-shard measurements and any shard
+          collection not pairwise-disjoint or not an exact union of the
+          authoritative collection, dropped stale baseline entries, and
+          wrote a deterministic node-id-sorted map. `.test_durations` no
+          longer drives runtime shard selection in `test.yml` (that is now
+          the committed `ci_shards/*.txt` manifests) — it remains a plain
+          telemetry record.
 
           `.call_durations.json` is a separate, additive call-phase-only
           duration record (excludes setup/teardown/fixture cost) with
           source-commit and collection-hash provenance, built and
-          self-validated by `scripts/call_durations.py`.
+          self-validated by `scripts/call_durations.py`. It is also the
+          weight source this run's `python3 -m scripts.ci.file_shard_plan
+          generate` summed per file to rebuild `ci_shards/shard-{1..4}.txt` +
+          `ci_shards/weights.json` from the same fresh measurement and the
+          same authoritative capture, self-checked with `... check`
+          immediately after — so shard balance never drifts out of sync with
+          reality between manual regenerations (exact-cover is unaffected
+          either way; this keeps the *balance*, not just correctness,
+          current).
 
           - recorded `.test_durations` entries: `${{ needs.merge.outputs.before_entries }}` → `${{ needs.merge.outputs.after_entries }}`
 

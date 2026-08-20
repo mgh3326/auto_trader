@@ -1,0 +1,152 @@
+"""ROB-1312 — module-safe entrypoint contract for `scripts/ci/file_shard_plan.py`.
+
+`scripts/ci/file_shard_plan.py` does ``from scripts.call_durations import
+...`` at import time. That only resolves when ``scripts`` is importable as a
+package, which requires the invoking process to have the repo root on
+``sys.path`` (e.g. ``python3 -m scripts.ci.file_shard_plan``). Direct-script
+invocation (``python3 scripts/ci/file_shard_plan.py ...``) puts the script's
+own directory on ``sys.path[0]`` instead, so the import raises
+``ModuleNotFoundError: No module named 'scripts'`` -- reproduced locally:
+
+    $ python3 scripts/ci/file_shard_plan.py --help
+    ModuleNotFoundError: No module named 'scripts'
+    $ python3 -m scripts.ci.file_shard_plan --help
+    (works)
+
+This is the same class of regression ROB-1308 fixed for
+``scripts/call_durations.py`` (see
+``tests/ci/test_call_durations_workflow_entrypoint.py``). This is a static
+contract on the raw ``run:`` shell blocks that invoke the planner's `check`
+step in both workflows that consume it: direct-script invocation must never
+reappear.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+DIRECT_SCRIPT_INVOCATION = "python3 scripts/ci/file_shard_plan.py"
+MODULE_SAFE_INVOCATION = "python3 -m scripts.ci.file_shard_plan"
+
+_DURATIONS_REFRESH_PATH = REPO_ROOT / ".github/workflows/test-durations-refresh.yml"
+
+_TARGETS = [
+    (
+        REPO_ROOT / ".github/workflows/test.yml",
+        "taskiq-smoke",
+        "Validate file-shard manifests (exact-cover)",
+    ),
+    (
+        _DURATIONS_REFRESH_PATH,
+        "collect-authoritative",
+        "Validate file-shard manifests (exact-cover)",
+    ),
+    (
+        _DURATIONS_REFRESH_PATH,
+        "merge",
+        "Regenerate file-shard manifests",
+    ),
+    (
+        _DURATIONS_REFRESH_PATH,
+        "merge",
+        "Validate regenerated file-shard manifests (exact-cover)",
+    ),
+]
+
+
+def _step(workflow: dict[str, Any], job_id: str, step_name: str) -> dict[str, Any]:
+    job = workflow["jobs"][job_id]
+    for step in job["steps"]:
+        if step.get("name") == step_name:
+            return step
+    raise AssertionError(f"step {step_name!r} not found in job {job_id!r}")
+
+
+@pytest.mark.parametrize(
+    "workflow_path,job_id,step_name",
+    _TARGETS,
+    ids=[f"{path.name}::{job}::{step}" for path, job, step in _TARGETS],
+)
+def test_file_shard_plan_check_step_uses_module_safe_invocation(
+    workflow_path: Path, job_id: str, step_name: str
+) -> None:
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    run = _step(workflow, job_id, step_name)["run"]
+    assert DIRECT_SCRIPT_INVOCATION not in run, (
+        f"{workflow_path.name}::{job_id}::{step_name!r} regressed to "
+        f"direct-script invocation ({DIRECT_SCRIPT_INVOCATION!r}), which "
+        "raises ModuleNotFoundError: No module named 'scripts' (same class "
+        "of regression as ROB-1308)."
+    )
+    assert MODULE_SAFE_INVOCATION in run, (
+        f"{workflow_path.name}::{job_id}::{step_name!r} must invoke "
+        f"{MODULE_SAFE_INVOCATION!r} so `from scripts.call_durations "
+        "import ...` resolves without relying on an editable install."
+    )
+
+
+@pytest.mark.parametrize(
+    "workflow_path",
+    sorted({path for path, _, _ in _TARGETS}, key=str),
+    ids=lambda p: p.name,
+)
+def test_no_direct_script_invocation_anywhere_in_workflow(workflow_path: Path) -> None:
+    text = workflow_path.read_text(encoding="utf-8")
+    assert DIRECT_SCRIPT_INVOCATION not in text
+
+
+_STALE_CLAIM = "drives pytest-split shard balancing"
+
+
+def test_duration_refresh_pr_body_does_not_claim_stale_pytest_split_balancing() -> None:
+    # ROB-1312: test.yml's core shards no longer select via runtime
+    # pytest-split --splits/--group -- they run the committed
+    # ci_shards/*.txt manifests. The auto-PR body must not keep asserting
+    # the pre-ROB-1312 claim that .test_durations "still drives pytest-split
+    # shard balancing, unchanged".
+    workflow = yaml.safe_load(_DURATIONS_REFRESH_PATH.read_text(encoding="utf-8"))
+    body = workflow["jobs"]["pull-request"]["steps"][-1]["with"]["body"]
+    assert _STALE_CLAIM not in body, (
+        "auto-PR body regressed to the stale pre-ROB-1312 claim that "
+        f"{_STALE_CLAIM!r} -- test.yml's core shards run committed "
+        "ci_shards/*.txt manifests now, not a runtime pytest-split "
+        "selection."
+    )
+    assert "ci_shards" in body
+
+
+def test_duration_refresh_regenerates_ci_shards_in_the_same_pr() -> None:
+    # ROB-1312: without this, .call_durations.json (the weight source) would
+    # refresh weekly but ci_shards/*.txt would only ever change when a human
+    # manually reruns `generate` -- LPT balance would silently drift out of
+    # sync with reality (exact-cover is unaffected, since file membership
+    # doesn't depend on weight; only the "keep predicted spread low" intent
+    # would rot). The merge job must regenerate+self-check the manifests
+    # from the same fresh artifact, and the pull-request job must stage,
+    # install, and add-path them into the same auto-PR as .test_durations
+    # and .call_durations.json -- not a separate, easy-to-forget follow-up.
+    workflow = yaml.safe_load(_DURATIONS_REFRESH_PATH.read_text(encoding="utf-8"))
+
+    merge_outputs = workflow["jobs"]["merge"]["outputs"]
+    assert "ci_shards_changed" in merge_outputs
+
+    pr_job = workflow["jobs"]["pull-request"]
+    assert "needs.merge.outputs.ci_shards_changed" in pr_job["if"]
+
+    add_paths = _step(
+        {"jobs": {"x": pr_job}}, "x", "Open auto-PR with refreshed durations"
+    )["with"]["add-paths"]
+    for expected in (
+        "ci_shards/shard-1.txt",
+        "ci_shards/shard-2.txt",
+        "ci_shards/shard-3.txt",
+        "ci_shards/shard-4.txt",
+        "ci_shards/weights.json",
+    ):
+        assert expected in add_paths

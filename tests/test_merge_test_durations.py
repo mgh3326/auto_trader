@@ -31,15 +31,20 @@ def test_merge_replaces_measurements_and_drops_stale_entries(tmp_path: Path) -> 
         _write_json(tmp_path / "shard-1.json", {first: 1.25}),
         _write_json(tmp_path / "shard-2.json", {second: 2.5}),
     ]
+    # ROB-1312: shard collections are disjoint (each shard's own manifest,
+    # not an identical copy across shards); union checked against a
+    # separately-captured authoritative manifest.
     manifests = [
-        _write_manifest(tmp_path / "collected-1.txt", first, second),
-        _write_manifest(tmp_path / "collected-2.txt", second, first),
+        _write_manifest(tmp_path / "collected-1.txt", first),
+        _write_manifest(tmp_path / "collected-2.txt", second),
     ]
+    authoritative = _write_manifest(tmp_path / "authoritative.txt", first, second)
 
     merged, stale_count = merge_duration_shards(
         baseline_path=baseline,
         shard_paths=shards,
         collected_paths=manifests,
+        authoritative_path=authoritative,
     )
 
     assert merged == {first: 1.25, second: 2.5}
@@ -52,41 +57,53 @@ def test_merge_fails_when_collected_test_has_no_measurement(tmp_path: Path) -> N
     baseline = _write_json(tmp_path / "baseline.json", {first: 1.0, second: 2.0})
     manifest = _write_manifest(tmp_path / "collected.txt", first, second)
 
-    with pytest.raises(ValueError, match="1 collected tests have no measurement"):
+    with pytest.raises(ValueError, match="have no measurement"):
         merge_duration_shards(
             baseline_path=baseline,
             shard_paths=[_write_json(tmp_path / "shard.json", {first: 1.5})],
             collected_paths=[manifest],
+            authoritative_path=manifest,
         )
 
 
 def test_merge_rejects_duplicate_shard_entries(tmp_path: Path) -> None:
+    # ROB-1312: two shards both claiming to have collected the same node id
+    # -- collections are no longer required/allowed to overlap.
     node_id = "tests/test_a.py::test_a"
     baseline = _write_json(tmp_path / "baseline.json", {node_id: 1.0})
-    manifest = _write_manifest(tmp_path / "collected.txt", node_id)
+    authoritative = _write_manifest(tmp_path / "authoritative.txt", node_id)
 
-    with pytest.raises(ValueError, match="duplicate tests across shards"):
+    with pytest.raises(ValueError, match="not disjoint"):
         merge_duration_shards(
             baseline_path=baseline,
             shard_paths=[
                 _write_json(tmp_path / "shard-1.json", {node_id: 1.5}),
                 _write_json(tmp_path / "shard-2.json", {node_id: 1.6}),
             ],
-            collected_paths=[manifest],
+            collected_paths=[
+                _write_manifest(tmp_path / "collected-1.txt", node_id),
+                _write_manifest(tmp_path / "collected-2.txt", node_id),
+            ],
+            authoritative_path=authoritative,
         )
 
 
 def test_merge_rejects_different_collection_manifests(tmp_path: Path) -> None:
+    # ROB-1312: a shard's own collected manifest containing a node id the
+    # independent authoritative capture never saw -- stale/renamed, not
+    # something the union can silently absorb.
     first = "tests/test_a.py::test_a"
     second = "tests/test_b.py::test_b"
     baseline = _write_json(tmp_path / "baseline.json", {first: 1.0})
 
-    with pytest.raises(ValueError, match="collection differs"):
+    with pytest.raises(ValueError, match="absent from the authoritative collection"):
         merge_duration_shards(
             baseline_path=baseline,
-            shard_paths=[_write_json(tmp_path / "shard.json", {first: 1.5})],
-            collected_paths=[
-                _write_manifest(tmp_path / "collected-1.txt", first),
-                _write_manifest(tmp_path / "collected-2.txt", first, second),
+            shard_paths=[
+                _write_json(tmp_path / "shard.json", {first: 1.5, second: 2.5})
             ],
+            collected_paths=[
+                _write_manifest(tmp_path / "collected.txt", first, second),
+            ],
+            authoritative_path=_write_manifest(tmp_path / "authoritative.txt", first),
         )

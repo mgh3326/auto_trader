@@ -1,0 +1,33 @@
+{
+  "authoritative_file_count": 1668,
+  "authoritative_node_count": 21487,
+  "fallback": {
+    "not_called_seconds": 0.0,
+    "unmeasured_node_seconds": 0.072359
+  },
+  "max_min_spread_pct": 0.0001,
+  "schema_version": 1,
+  "shard_count": 4,
+  "shards": [
+    {
+      "file_count": 415,
+      "shard": 1,
+      "total_weight_seconds": 388.346347
+    },
+    {
+      "file_count": 416,
+      "shard": 2,
+      "total_weight_seconds": 388.346345
+    },
+    {
+      "file_count": 418,
+      "shard": 3,
+      "total_weight_seconds": 388.346593
+    },
+    {
+      "file_count": 419,
+      "shard": 4,
+      "total_weight_seconds": 388.346345
+    }
+  ]
+}

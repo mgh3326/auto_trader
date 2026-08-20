@@ -2,10 +2,17 @@
 
 ROB-1295. This is strictly additive to ``.test_durations``:
 
-* ``.test_durations`` keeps being produced exactly as before by pytest-split's
-  own ``--store-durations``/``--durations-path`` mechanism, and keeps driving
-  shard balancing exactly as before (``scripts/merge_test_durations.py`` is
-  unchanged). No consumer of that file requires any change.
+* ``.test_durations`` keeps being produced by pytest-split's own
+  ``--store-durations``/``--durations-path`` mechanism in the weekly
+  duration-refresh workflow, unchanged. As of ROB-1312 it no longer drives
+  *runtime* shard selection in ``test.yml`` -- the four core shards now run
+  fixed, committed ``ci_shards/shard-{1..4}.txt`` file manifests
+  (``scripts/ci/file_shard_plan.py``) instead of a ``pytest-split
+  --splits/--group`` selection -- so it remains a plain telemetry record,
+  not a shard-balancing input. ``scripts/merge_test_durations.py`` itself
+  changed too: it now enforces a disjoint-per-shard-collection contract
+  instead of "all shard manifests are identical" (see that module's
+  docstring for the full contract this module reuses).
 * This module instead builds a new sidecar artifact (conventionally
   ``.call_durations.json``) from call-phase-only measurements captured by
   ``tests/_call_duration_plugin.py``, and validates that a candidate/
@@ -58,6 +65,15 @@ silently drop data via Python's last-key-wins ``dict`` construction);
 inside ``not_called`` are rejected instead of silently deduplicated by
 ``set()``; and ``node_count`` is cross-checked against the actual
 ``durations``/``not_called`` sizes rather than trusted as a free-form label.
+
+ROB-1312: the four shards measuring these call-phase durations now run
+*disjoint* committed file manifests instead of each independently
+collecting/selecting from the whole suite (see
+``scripts/merge_test_durations.py`` module docstring for the full disjoint
+contract this reuses -- ``build`` requires each shard's
+``durations ∪ not_called`` to equal that shard's own collected-node manifest
+exactly, the four shard collections to be pairwise disjoint, and their union
+to equal a separately captured, independent authoritative collection).
 """
 
 from __future__ import annotations
@@ -69,7 +85,11 @@ import math
 from pathlib import Path
 from typing import Any
 
-from scripts.merge_test_durations import _load_collected_nodes
+from scripts.merge_test_durations import (
+    _check_shard_measured_matches_collected,
+    load_node_manifest,
+    validate_disjoint_shard_collections,
+)
 
 SCHEMA_VERSION = 2
 
@@ -173,63 +193,65 @@ def _load_call_duration_shard(path: Path) -> tuple[dict[str, float], set[str]]:
 
 
 def merge_call_duration_shards(
-    *, shard_paths: list[Path], collected_paths: list[Path]
+    *,
+    shard_paths: list[Path],
+    collected_paths: list[Path],
+    authoritative_path: Path,
 ) -> tuple[dict[str, float], set[str], set[str]]:
     """Merge call-phase shard measurements into one fresh, complete record.
 
-    Returns ``(durations, not_called, collected)``. Every id in
-    ``collected`` lands in exactly one of ``durations``/``not_called``;
-    anything else (missing from both, or duplicated across shards in either
-    category) is a fail-closed error.
+    ``shard_paths[i]`` and ``collected_paths[i]`` must describe the same
+    shard, in the same order. Returns ``(durations, not_called,
+    authoritative)``. Every id in ``authoritative`` lands in exactly one of
+    ``durations``/``not_called``, attributed to the one shard that actually
+    collected it; a measurement for a node a shard did not collect (even if
+    another shard did), a gap no shard collected, or a shard collection not
+    disjoint from another is a fail-closed error.
     """
-    collected = _load_collected_nodes(collected_paths)
+    if len(shard_paths) != len(collected_paths):
+        raise ValueError(
+            "shard_paths and collected_paths must have matching length/order"
+        )
+
+    per_shard_collected = [set(load_node_manifest(p)) for p in collected_paths]
+    authoritative = set(load_node_manifest(authoritative_path))
+
+    validate_disjoint_shard_collections(
+        per_shard_paths=collected_paths,
+        per_shard_collected=per_shard_collected,
+        authoritative_path=authoritative_path,
+        authoritative=authoritative,
+    )
+
     measured: dict[str, float] = {}
     not_called: set[str] = set()
 
-    for shard_path in shard_paths:
+    for shard_path, collected in zip(shard_paths, per_shard_collected, strict=True):
         shard_durations, shard_not_called = _load_call_duration_shard(shard_path)
-
         shard_known = set(shard_durations) | shard_not_called
-        unexpected = sorted(shard_known - collected)
-        if unexpected:
-            raise ValueError(
-                f"{shard_path}: call durations contain uncollected tests: "
-                f"{unexpected[:10]!r}"
-            )
-
-        already_known = set(measured) | not_called
-        duplicates = sorted(shard_known & already_known)
-        if duplicates:
-            raise ValueError(
-                f"{shard_path}: duplicate node id(s) across call-duration "
-                f"shards: {duplicates[:10]!r}"
-            )
-
+        _check_shard_measured_matches_collected(
+            shard_path=shard_path, measured_known=shard_known, collected=collected
+        )
         measured.update(shard_durations)
         not_called.update(shard_not_called)
 
-    missing = sorted(collected - (set(measured) | not_called))
-    if missing:
-        raise ValueError(
-            "call-duration shards are incomplete; "
-            f"{len(missing)} collected tests have no call-phase measurement "
-            f"or setup-skip record: {missing[:20]!r}"
-        )
-
-    return measured, not_called, collected
+    return measured, not_called, authoritative
 
 
 def build_artifact(
     *,
     shard_paths: list[Path],
     collected_paths: list[Path],
+    authoritative_path: Path,
     source_commit_sha: str,
 ) -> dict[str, Any]:
     if not source_commit_sha or not source_commit_sha.strip():
         raise ValueError("source_commit_sha must not be empty")
 
     measured, not_called, collected = merge_call_duration_shards(
-        shard_paths=shard_paths, collected_paths=collected_paths
+        shard_paths=shard_paths,
+        collected_paths=collected_paths,
+        authoritative_path=authoritative_path,
     )
     durations = {node_id: measured[node_id] for node_id in sorted(measured)}
     not_called_sorted = sorted(not_called)
@@ -262,14 +284,16 @@ def load_artifact(path: Path) -> dict[str, Any]:
     return raw
 
 
-def validate_freshness(
-    artifact: dict[str, Any],
-    *,
-    collected_nodes: set[str],
-    expected_source_commit_sha: str,
-) -> None:
-    """Fail closed unless ``artifact`` is trustworthy telemetry for today's tree."""
-    source = "call-duration artifact"
+def validate_artifact_structure(
+    artifact: dict[str, Any], *, source: str = "call-duration artifact"
+) -> tuple[dict[str, float], set[str]]:
+    """Structural validation shared by ``validate_freshness`` and consumers
+    (e.g. the file-shard planner, ROB-1312) that only need trustworthy
+    ``durations``/``not_called`` values -- not a freshness check against
+    today's collection. Independent of ``load_artifact``: also re-validates
+    duration value types/finiteness and the durations/not_called overlap,
+    neither of which ``load_artifact`` alone checks.
+    """
     _validate_schema_version(artifact.get("schema_version"), source=source)
     durations = _validate_duration_values(artifact["durations"], source=source)
     not_called = _validate_not_called_list(
@@ -290,6 +314,106 @@ def validate_freshness(
             f"expected={expected_node_count!r} (len(durations) + len(not_called)) "
             "— refresh the call-duration artifact"
         )
+
+    return durations, not_called
+
+
+def validate_artifact_provenance(
+    artifact: dict[str, Any],
+    *,
+    durations: dict[str, float],
+    not_called: set[str],
+    source: str = "call-duration artifact",
+) -> None:
+    """Fail closed unless the artifact's own provenance fields are
+    well-formed and self-consistent with its own ``durations``/``not_called``
+    content (ROB-1312).
+
+    This checks **coherence, not correspondence**. Coherence: do the
+    artifact's own fields agree with each other (a non-empty
+    ``source_commit_sha``; a ``collection_hash`` that actually hashes this
+    artifact's own recorded node set)? Correspondence: does
+    ``source_commit_sha`` name the tree that was *actually* measured? This
+    function answers the first question only -- it cannot answer the
+    second, because a tamperer who edits ``durations`` can equally edit
+    ``source_commit_sha`` and recompute ``collection_hash`` to match; no
+    predicate computed purely from the artifact's own content can ever
+    detect that. Establishing correspondence needs an expectation supplied
+    by an authority *outside* the artifact, which is exactly
+    ``validate_freshness``'s ``expected_source_commit_sha``/
+    ``collected_nodes`` parameters (sourced from ``github.sha`` and a fresh
+    collect-only capture in the one caller -- the weekly duration refresh --
+    that legitimately has that expectation). Do not call this function
+    expecting it to catch a wrong-but-plausible sha; it cannot, and a test
+    asserting that it does would be asserting a guarantee this code does not
+    provide.
+
+    Deliberately **not** a freshness check against today's tree either --
+    this function has no "today" to compare against at all, coherence or
+    otherwise. That is intentional: a caller that explicitly tolerates
+    staleness (the file-shard planner, which must accept an artifact
+    predating a just-added test file and cover it via deterministic
+    fallback weight) still needs *this* guarantee -- a corrupted/
+    hand-tampered artifact (blank source commit, a ``collection_hash`` that
+    does not actually describe its own recorded nodes) must never silently
+    produce a manifest, even though a merely-*stale*-but-coherent one must.
+
+    Threat model: accidental corruption and hand-editing of a committed
+    file in a branch-protected repo, not a malicious/adversarial telemetry
+    feed -- there is no signature to verify and none is warranted here.
+
+    Not chained into ``validate_freshness``: ``validate_freshness`` already
+    strictly implies this function's ``collection_hash`` check (it asserts
+    ``collection_hash == hash(collected_nodes)`` *and*
+    ``durations | not_called == collected_nodes``, so
+    ``collection_hash == hash(durations | not_called)`` follows), so calling
+    it there would add nothing while re-ordering error precedence for a
+    consumer with message-specific tests.
+    """
+    source_commit_sha = artifact.get("source_commit_sha")
+    if (
+        isinstance(source_commit_sha, bool)
+        or not isinstance(source_commit_sha, str)
+        or not source_commit_sha.strip()
+    ):
+        raise ValueError(
+            f"{source}: 'source_commit_sha' must be a non-empty, non-whitespace "
+            f"string, got {source_commit_sha!r}"
+        )
+
+    collection_hash = artifact.get("collection_hash")
+    if (
+        isinstance(collection_hash, bool)
+        or not isinstance(collection_hash, str)
+        or not collection_hash.strip()
+    ):
+        raise ValueError(
+            f"{source}: 'collection_hash' must be a non-empty, non-whitespace "
+            f"string, got {collection_hash!r}"
+        )
+
+    own_nodes = set(durations) | not_called
+    expected_own_hash = compute_collection_hash(own_nodes)
+    if collection_hash != expected_own_hash:
+        raise ValueError(
+            f"{source}: 'collection_hash' does not match this artifact's own "
+            f"recorded 'durations'/'not_called' node set: "
+            f"artifact={collection_hash!r} expected={expected_own_hash!r} "
+            "(self-consistency check, not a freshness check against today's "
+            "tree -- the artifact's own recorded content does not hash to "
+            "its own declared collection_hash)"
+        )
+
+
+def validate_freshness(
+    artifact: dict[str, Any],
+    *,
+    collected_nodes: set[str],
+    expected_source_commit_sha: str,
+) -> None:
+    """Fail closed unless ``artifact`` is trustworthy telemetry for today's tree."""
+    source = "call-duration artifact"
+    durations, not_called = validate_artifact_structure(artifact, source=source)
 
     if artifact["source_commit_sha"] != expected_source_commit_sha:
         raise ValueError(
@@ -332,7 +456,19 @@ def _parse_args() -> argparse.Namespace:
         "build", help="merge shard measurements into a fresh call-duration artifact"
     )
     build_parser.add_argument("--shard", type=Path, action="append", required=True)
-    build_parser.add_argument("--collected", type=Path, action="append", required=True)
+    build_parser.add_argument(
+        "--collected",
+        type=Path,
+        action="append",
+        required=True,
+        help="per-shard collected-node manifest, same order as --shard",
+    )
+    build_parser.add_argument(
+        "--authoritative",
+        type=Path,
+        required=True,
+        help="independent full-suite `pytest --collect-only` node-id capture",
+    )
     build_parser.add_argument("--source-commit-sha", type=str, required=True)
     build_parser.add_argument("--output", type=Path, required=True)
 
@@ -341,7 +477,14 @@ def _parse_args() -> argparse.Namespace:
     )
     validate_parser.add_argument("--artifact", type=Path, required=True)
     validate_parser.add_argument(
-        "--collected", type=Path, action="append", required=True
+        "--authoritative",
+        type=Path,
+        required=True,
+        help=(
+            "independent full-suite `pytest --collect-only` node-id capture "
+            "-- the single authoritative reference this artifact is checked "
+            "against, unrelated to how it was sharded when built"
+        ),
     )
     validate_parser.add_argument("--expected-source-sha", type=str, required=True)
 
@@ -355,6 +498,7 @@ def main() -> None:
         artifact = build_artifact(
             shard_paths=args.shard,
             collected_paths=args.collected,
+            authoritative_path=args.authoritative,
             source_commit_sha=args.source_commit_sha,
         )
         args.output.write_text(serialize_artifact(artifact), encoding="utf-8")
@@ -368,7 +512,7 @@ def main() -> None:
 
     if args.command == "validate":
         artifact = load_artifact(args.artifact)
-        collected = _load_collected_nodes(args.collected)
+        collected = set(load_node_manifest(args.authoritative))
         validate_freshness(
             artifact,
             collected_nodes=collected,
