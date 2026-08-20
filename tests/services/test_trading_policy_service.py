@@ -25,6 +25,7 @@ def test_get_policy_for_buy_kr_includes_cap_and_version():
     assert set(view["decision_rules"]) == {
         "buy.support_reserve_net",
         "buy.preplanned_support_ladder",
+        "buy.winner_pullback_add",
     }
     reserve = view["decision_rules"]["buy.support_reserve_net"]
     assert reserve["discount_below_support_pct_range"] == [5, 10]
