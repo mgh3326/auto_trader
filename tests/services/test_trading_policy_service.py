@@ -92,6 +92,7 @@ def test_trim_preplace_exposes_d2_d5_d7_advisory_contracts():
         "rsi_confirmed_resistance",
         "ultra_near_resistance",
         "watch_zone",
+        "breakeven_extension_ladder",
     ]
     assert tiers["de_minimis_trim_watch"]["conditions"] == {
         "markets": ["kr", "us", "crypto"],

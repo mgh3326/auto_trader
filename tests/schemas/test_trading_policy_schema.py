@@ -8,6 +8,7 @@ import yaml
 from pydantic import ValidationError
 
 import app.schemas.trading_policy as policy_schema
+from app.mcp_server.tick_size import get_tick_size_kr
 from app.schemas.trading_policy import (
     CrashDayNewEntryHoldException,
     PreplannedSupportLadderPolicy,
@@ -28,6 +29,12 @@ _PLAYBOOK = (
     / "docs"
     / "playbooks"
     / "trading-decision-playbook.md"
+)
+
+_ROB1298_ADDITIVE_TIE_BREAK_KEYS = (
+    "breakeven_extension_fallback_order",
+    "breakeven_extension_exclusion_retained",
+    "breakeven_extension_minimum_benefit",
 )
 
 _ROB1292_ALLOWED_POLICY_DELTAS = (
@@ -142,7 +149,7 @@ def _breakeven_reserve_trim_triggered(
 def test_shipped_config_validates():
     doc = TradingPolicyDocument.model_validate(_raw())
     assert doc.version == load_trading_policy().version
-    assert doc.version == "2026-08-19.2"
+    assert doc.version == "2026-08-20.1"
     # verbatim seed values from the playbook policy_keys
     assert doc.thresholds["portfolio.sector_cluster_cap_pct"].value == 10
     assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
@@ -187,6 +194,7 @@ def test_shipped_config_validates():
         "rsi_confirmed_resistance",
         "ultra_near_resistance",
         "watch_zone",
+        "breakeven_extension_ladder",
     ]
     assert trim_rule.tiers[0].action == "register_watch_instead_of_trim"
     assert trim_rule.tiers[1].sizing == "existing_trim_rule"
@@ -476,6 +484,7 @@ def test_breakeven_reserve_trim_policy_contract_is_machine_readable():
         "rsi_confirmed_resistance",
         "ultra_near_resistance",
         "watch_zone",
+        "breakeven_extension_ladder",
     ]
     assert tier.conditions == {
         "markets": ["kr", "us", "crypto"],
@@ -514,7 +523,8 @@ def test_breakeven_reserve_trim_policy_contract_is_machine_readable():
     assert rule.tie_breaks["tier_priority"] == (
         "de_minimis_trim_watch > sell.breakeven_reserve_trim > "
         "single_share_full_exit_review > momentum_spike_profit_ladder > "
-        "rsi_confirmed_resistance > ultra_near_resistance > watch_zone"
+        "rsi_confirmed_resistance > ultra_near_resistance > watch_zone > "
+        "breakeven_extension_ladder"
     )
     assert _threshold_decimal(doc, "sell.loss_guard_min_multiple") == Decimal("1.01")
     assert _threshold_decimal(doc, "sell.breakeven_near_pct") == Decimal("2")
@@ -956,10 +966,28 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
     baseline["crash_day"]["actions"]["new_entry_hold_exception"] = current_raw[
         "crash_day"
     ]["actions"]["new_entry_hold_exception"]
+    # ROB-1298 KEY_DIFF — the §115차 tier is appended to the current document
+    # only. The schema now requires tie_breaks.tier_priority to match the
+    # declared tier order, so the baseline copy is given the same appended tier
+    # and priority string before parsing; both are then stripped so the
+    # remaining comparison is a closed equivalence over every other key.
+    baseline_trim = baseline["decision_rules"]["sell.trim_preplace"]
+    current_trim = current_raw["decision_rules"]["sell.trim_preplace"]
+    baseline_trim["semantics"] = current_trim["semantics"]
+    baseline_trim["tiers"] = baseline_trim["tiers"] + [current_trim["tiers"][-1]]
+    baseline_trim["tie_breaks"]["tier_priority"] = current_trim["tie_breaks"][
+        "tier_priority"
+    ]
     baseline_dump = TradingPolicyDocument.model_validate(baseline).model_dump()
     current_dump = TradingPolicyDocument.model_validate(current_raw).model_dump()
 
     current_dump["version"] = baseline_dump["version"]
+    # `source` is provenance prose (the machine-readable analogue of a comment).
+    # It may only be *extended*, never rewritten, so the baseline text has to
+    # remain a prefix of it before it is normalized away.
+    assert current_dump["source"].startswith(baseline_dump["source"])
+    assert "ROB-1298" in current_dump["source"]
+    current_dump["source"] = baseline_dump["source"]
     del current_dump["decision_rules"]["buy.preplanned_support_ladder"]
     del current_dump["crash_day"]["actions"]["new_entry_hold_exception"]
     del baseline_dump["decision_rules"]["buy.preplanned_support_ladder"]
@@ -971,9 +999,34 @@ def test_rob_1289_preserves_all_preexisting_policy_keys_and_values():
         assert _policy_path_get(current_dump, path) == current_value
         _policy_path_set(normalized_current_dump, path, baseline_value)
 
-    # Only the four explicitly enumerated §106차 cap deltas are accepted;
-    # every other pre-existing key/value, including both crypto caps, must
-    # still match the ROB-1289 baseline exactly.
+    # ROB-1298 — the appended tier, the three additive tie_break notes, the
+    # tier_priority string, and the rule semantics prose are the only
+    # sell.trim_preplace deltas; strip exactly those and nothing else.
+    for dump in (normalized_current_dump, baseline_dump):
+        trim = dump["decision_rules"]["sell.trim_preplace"]
+        assert trim["tiers"][-1]["id"] == "breakeven_extension_ladder"
+        del trim["tiers"][-1]
+        assert (
+            trim["tie_breaks"]
+            .pop("tier_priority")
+            .endswith("> watch_zone > breakeven_extension_ladder")
+        )
+        del trim["semantics"]
+    for key in _ROB1298_ADDITIVE_TIE_BREAK_KEYS:
+        assert (
+            key
+            in normalized_current_dump["decision_rules"]["sell.trim_preplace"][
+                "tie_breaks"
+            ]
+        )
+        del normalized_current_dump["decision_rules"]["sell.trim_preplace"][
+            "tie_breaks"
+        ][key]
+
+    # Only the four explicitly enumerated §106차 cap deltas and the enumerated
+    # §115차 additions are accepted; every other pre-existing key/value,
+    # including both crypto caps and the retained exclusions list, must still
+    # match the ROB-1289 baseline exactly.
     assert normalized_current_dump == baseline_dump
 
 
@@ -1071,3 +1124,413 @@ def test_us_notional_usd_range_one_share_exception_missing_required_field_reject
     ]
     with pytest.raises(ValidationError):
         TradingPolicyDocument.model_validate(raw)
+
+
+# ---------------------------------------------------------------------------
+# ROB-1298 §115차 — breakeven extension ladder (zero named resistance fallback)
+# ---------------------------------------------------------------------------
+
+_LADDER_TIER_ID = "breakeven_extension_ladder"
+
+# Exact transcription of the Upbit KRW price-unit table documented on
+# ``app.services.brokers.upbit.orders.adjust_price_to_upbit_unit``. Pinned to
+# that production helper by
+# ``test_crypto_krw_tick_transcription_matches_the_production_upbit_grid``.
+_UPBIT_KRW_TICK_BANDS: tuple[tuple[Decimal, Decimal], ...] = (
+    (Decimal("2000000"), Decimal("1000")),
+    (Decimal("1000000"), Decimal("500")),
+    (Decimal("500000"), Decimal("100")),
+    (Decimal("100000"), Decimal("50")),
+    (Decimal("10000"), Decimal("10")),
+    (Decimal("1000"), Decimal("5")),
+    (Decimal("100"), Decimal("1")),
+)
+
+
+def _crypto_krw_tick(price: Decimal) -> Decimal:
+    for lower, tick in _UPBIT_KRW_TICK_BANDS:
+        if price >= lower:
+            return tick
+    raise AssertionError(f"sub-100 KRW crypto price out of scope: {price}")
+
+
+def _market_tick(market: str, price: Decimal) -> Decimal:
+    """Market-native sell-side tick grid the tier's ``tick_grid`` names."""
+
+    if market == "crypto":
+        return _crypto_krw_tick(price)
+    if market == "kr":
+        return Decimal(get_tick_size_kr(float(price)))
+    if market == "us":
+        return Decimal("0.01")
+    raise AssertionError(f"unsupported market: {market!r}")
+
+
+def _breakeven_extension_ladder_tier():
+    rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
+        "sell.trim_preplace"
+    ]
+    return next(tier for tier in rule.tiers if tier.id == _LADDER_TIER_ID)
+
+
+def _breakeven_extension_rungs(
+    tier,
+    *,
+    market: str,
+    average_cost: Decimal,
+) -> list[Decimal]:
+    """Test-only interpreter for the declarative rung contract.
+
+    Nothing here invents policy: the anchor basis, the multiples, the rung
+    count, and the snap direction are all read out of the YAML tier.
+    """
+
+    conditions = tier.conditions
+    assert conditions["anchor_basis"] == "average_cost"
+    rounding = {"ceil": ROUND_CEILING, "floor": ROUND_FLOOR}[
+        str(conditions["tick_snap_direction"])
+    ]
+    multiples = conditions["anchor_average_cost_multiples"]
+    assert len(multiples) == conditions["rungs_max"]
+
+    rungs: list[Decimal] = []
+    for multiple in multiples:
+        raw = average_cost * Decimal(str(multiple))
+        tick = _market_tick(market, raw)
+        rungs.append((raw / tick).to_integral_value(rounding=rounding) * tick)
+    return rungs
+
+
+def _ladder_matches(tier, *, market: str, fresh_named_resistance_count: int) -> bool:
+    """Test-only interpreter for the declarative eligibility contract."""
+
+    conditions = tier.conditions
+    return (
+        market in conditions["markets"]
+        and fresh_named_resistance_count
+        == conditions["fresh_named_resistance_count_eq"]
+    )
+
+
+def test_crypto_krw_tick_transcription_matches_the_production_upbit_grid():
+    from app.services.brokers.upbit.orders import adjust_price_to_upbit_unit
+
+    for probe in (
+        Decimal("3168337"),
+        Decimal("3485170.7"),
+        Decimal("1234567"),
+        Decimal("777777"),
+        Decimal("123456"),
+        Decimal("54321"),
+        Decimal("4321"),
+        Decimal("321"),
+    ):
+        tick = _crypto_krw_tick(probe)
+        snapped = Decimal(str(adjust_price_to_upbit_unit(float(probe))))
+        assert snapped % tick == 0, (probe, tick, snapped)
+        assert abs(snapped - probe) <= tick
+
+
+def test_breakeven_extension_ladder_reproduces_eth_rungs():
+    """AC1 — ETH 실데이터 평단 3,168,337 (crypto/Upbit KRW, tick 1,000).
+
+    🔴 Rung 3 does NOT reproduce the value stated in the issue AC. Under the
+    tier's own declared ``tick_snap_direction: ceil`` the third rung is
+    3,486,000, not 3,485,000. 3,485,000 is the *floor* of 3,168,337 × 1.10 =
+    3,485,170.7, and no tick size on the Upbit KRW grid makes a ceil land on
+    it. Rungs 1 and 2 match the AC exactly and are ceil results, so the AC is
+    internally inconsistent on rung 3 rather than the snap direction being
+    wrong. This test pins the computed values and the delta instead of bending
+    the policy to fit the stated number.
+    """
+
+    tier = _breakeven_extension_ladder_tier()
+    rungs = _breakeven_extension_rungs(
+        tier, market="crypto", average_cost=Decimal("3168337")
+    )
+
+    assert rungs == [
+        Decimal("3201000"),
+        Decimal("3327000"),
+        Decimal("3486000"),
+    ]
+    # AC1 rungs 1-2 reproduce verbatim.
+    assert rungs[:2] == [Decimal("3201000"), Decimal("3327000")]
+    # AC1 rung 3 delta, stated rather than hidden.
+    ac1_stated_third_rung = Decimal("3485000")
+    raw_third_rung = Decimal("3168337") * Decimal("1.10")
+    assert raw_third_rung == Decimal("3485170.70")
+    assert rungs[2] - ac1_stated_third_rung == Decimal("1000")
+    assert ac1_stated_third_rung < raw_third_rung  # i.e. it is a floor, not a ceil
+    # Every rung must clear its own raw anchor after snapping (ceil, never below).
+    for rung, multiple in zip(
+        rungs, tier.conditions["anchor_average_cost_multiples"], strict=True
+    ):
+        assert rung >= Decimal("3168337") * Decimal(str(multiple))
+
+
+def test_breakeven_extension_ladder_lowest_rung_reuses_the_loss_guard_formula():
+    doc = TradingPolicyDocument.model_validate(_raw())
+    tier = _breakeven_extension_ladder_tier()
+    conditions = tier.conditions
+
+    guard_key = str(conditions["anchor_lowest_rung_policy_key"])
+    assert guard_key == "sell.loss_guard_min_multiple"
+    guard = _threshold_decimal(doc, guard_key)
+    multiples = conditions["anchor_average_cost_multiples"]
+
+    # 평단×1.01 = loss_guard 하한과 동일 산식 — the literal is the threshold.
+    assert Decimal(str(multiples[0])) == guard
+    assert [Decimal(str(value)) for value in multiples] == [
+        Decimal("1.01"),
+        Decimal("1.05"),
+        Decimal("1.10"),
+    ]
+    # The guard threshold itself is untouched by this change.
+    assert doc.thresholds["sell.loss_guard_min_multiple"].value == 1.01
+
+
+def test_breakeven_extension_ladder_applies_to_kr_us_and_crypto():
+    tier = _breakeven_extension_ladder_tier()
+    assert tier.conditions["markets"] == ["kr", "us", "crypto"]
+
+    # KR uses the production KRX sell-side grid; US uses the cent grid.
+    kr_rungs = _breakeven_extension_rungs(
+        tier, market="kr", average_cost=Decimal("71300")
+    )
+    assert kr_rungs == [Decimal("72100"), Decimal("74900"), Decimal("78500")]
+    for rung in kr_rungs:
+        assert rung % Decimal(get_tick_size_kr(float(rung))) == 0
+
+    us_rungs = _breakeven_extension_rungs(
+        tier, market="us", average_cost=Decimal("187.42")
+    )
+    assert us_rungs == [Decimal("189.30"), Decimal("196.80"), Decimal("206.17")]
+
+
+def test_breakeven_extension_ladder_never_matches_a_holding_with_named_resistance():
+    """AC2 — BTC-style holding (fresh named resistance present) stays excluded."""
+
+    tier = _breakeven_extension_ladder_tier()
+
+    for market in ("kr", "us", "crypto"):
+        # ETH/LINK case — zero fresh named resistance, the tier is reachable.
+        assert _ladder_matches(tier, market=market, fresh_named_resistance_count=0)
+        # BTC case — any named resistance at all keeps the tier out.
+        for count in (1, 2, 5):
+            assert not _ladder_matches(
+                tier, market=market, fresh_named_resistance_count=count
+            )
+
+    # The tier carries no resistance-proximity condition, so it cannot express
+    # an opinion about a holding that still has a resistance frame.
+    assert not [key for key in tier.conditions if "resistance_near_pct" in key]
+
+
+def test_breakeven_extension_ladder_is_last_so_resistance_tiers_keep_priority():
+    """AC6 — FALLBACK_ORDER pinned in both the tier order and tie_breaks."""
+
+    rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
+        "sell.trim_preplace"
+    ]
+    tier_ids = [tier.id for tier in rule.tiers]
+
+    assert tier_ids[-1] == _LADDER_TIER_ID
+    resistance_tiers = [
+        "single_share_full_exit_review",
+        "momentum_spike_profit_ladder",
+        "rsi_confirmed_resistance",
+        "ultra_near_resistance",
+        "watch_zone",
+    ]
+    for name in resistance_tiers:
+        assert tier_ids.index(name) < tier_ids.index(_LADDER_TIER_ID)
+
+    assert rule.tie_breaks["multiple_tiers_matched"] == "first_matching_tier_wins"
+    assert [part.strip() for part in rule.tie_breaks["tier_priority"].split(">")] == (
+        tier_ids
+    )
+    assert rule.tie_breaks["breakeven_extension_fallback_order"] == (
+        "named_resistance_tiers_first_extension_ladder_only_when_zero_fresh"
+        "_named_resistance"
+    )
+    assert rule.tie_breaks["breakeven_extension_minimum_benefit"] == (
+        "de_minimis_trim_watch_still_preempts"
+    )
+    # D7 minimum-benefit watch still preempts the new tier.
+    assert tier_ids[0] == "de_minimis_trim_watch"
+
+
+def test_breakeven_extension_ladder_keeps_the_no_resistance_reference_exclusion():
+    """AC4 / NO_EXCLUSION_REMOVAL — the exclusion is retained, not deleted."""
+
+    rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
+        "sell.trim_preplace"
+    ]
+    assert rule.exclusions == ["no_resistance_reference", "composite_gates"]
+    assert rule.tie_breaks["breakeven_extension_exclusion_retained"] == (
+        "no_resistance_reference_stays_in_exclusions_dedicated_tier_not"
+        "_exclusion_removal"
+    )
+    assert (
+        _breakeven_extension_ladder_tier().conditions["matched_exclusion_case"]
+        == "no_resistance_reference"
+    )
+
+
+def test_breakeven_extension_ladder_reuses_existing_trim_sizing():
+    """AC7 / SIZING_REUSE — no new quantity rule is introduced."""
+
+    tier = _breakeven_extension_ladder_tier()
+    assert tier.sizing == "existing_trim_rule"
+    assert tier.action == "preplace_resting_breakeven_extension_ladder"
+
+    rule = TradingPolicyDocument.model_validate(_raw()).decision_rules[
+        "sell.trim_preplace"
+    ]
+    # The only sizing token this tier uses is one an existing tier already uses.
+    existing_sizings = {
+        candidate.sizing for candidate in rule.tiers if candidate.id != _LADDER_TIER_ID
+    }
+    assert tier.sizing in existing_sizings
+    # No quantity/percentage key is declared on the tier at all.
+    assert not [
+        key
+        for key in tier.conditions
+        if any(token in key for token in ("quantity", "position_pct", "notional"))
+    ]
+
+
+def _ladder_mutant(mutate) -> dict:
+    raw = _raw()
+    rule = raw["decision_rules"]["sell.trim_preplace"]
+    mutate(rule)
+    return raw
+
+
+def _mutate_drop_exclusion(rule) -> None:
+    rule["exclusions"].remove("no_resistance_reference")
+
+
+def _mutate_move_ladder_ahead_of_resistance_tiers(rule) -> None:
+    ladder = rule["tiers"].pop()
+    rule["tiers"].insert(2, ladder)
+
+
+def _mutate_allow_any_resistance_count(rule) -> None:
+    rule["tiers"][-1]["conditions"]["fresh_named_resistance_count_eq"] = 1
+
+
+def _mutate_add_resistance_proximity_condition(rule) -> None:
+    rule["tiers"][-1]["conditions"]["resistance_near_pct_max"] = 6
+
+
+def _mutate_invent_new_sizing(rule) -> None:
+    rule["tiers"][-1]["sizing"] = "breakeven_extension_third_position"
+
+
+def _mutate_snap_down(rule) -> None:
+    rule["tiers"][-1]["conditions"]["tick_snap_direction"] = "floor"
+
+
+def _mutate_rung_below_average_cost(rule) -> None:
+    rule["tiers"][-1]["conditions"]["anchor_average_cost_multiples"] = [
+        0.99,
+        1.05,
+        1.10,
+    ]
+
+
+def _mutate_unordered_rungs(rule) -> None:
+    rule["tiers"][-1]["conditions"]["anchor_average_cost_multiples"] = [
+        1.05,
+        1.01,
+        1.10,
+    ]
+
+
+def _mutate_rung_count_mismatch(rule) -> None:
+    rule["tiers"][-1]["conditions"]["rungs_max"] = 2
+
+
+def _mutate_detach_from_loss_guard_key(rule) -> None:
+    rule["tiers"][-1]["conditions"]["anchor_lowest_rung_policy_key"] = (
+        "sell.breakeven_near_pct"
+    )
+
+
+def _mutate_stale_tier_priority(rule) -> None:
+    rule["tie_breaks"]["tier_priority"] = rule["tie_breaks"]["tier_priority"].replace(
+        " > breakeven_extension_ladder", ""
+    )
+
+
+def _mutate_drop_fallback_only_flag(rule) -> None:
+    rule["tiers"][-1]["conditions"]["resistance_tier_fallback_only"] = False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _mutate_drop_exclusion,
+        _mutate_move_ladder_ahead_of_resistance_tiers,
+        _mutate_allow_any_resistance_count,
+        _mutate_add_resistance_proximity_condition,
+        _mutate_invent_new_sizing,
+        _mutate_snap_down,
+        _mutate_rung_below_average_cost,
+        _mutate_unordered_rungs,
+        _mutate_rung_count_mismatch,
+        _mutate_detach_from_loss_guard_key,
+        _mutate_stale_tier_priority,
+        _mutate_drop_fallback_only_flag,
+    ],
+    ids=[
+        "exclusion_removed",
+        "ladder_before_resistance_tiers",
+        "matches_when_resistance_exists",
+        "carries_resistance_proximity_condition",
+        "invents_new_sizing_rule",
+        "snaps_rungs_down",
+        "rung_below_average_cost",
+        "rungs_not_ascending",
+        "rung_count_mismatch",
+        "detached_from_loss_guard_key",
+        "stale_tier_priority",
+        "fallback_only_flag_dropped",
+    ],
+)
+def test_breakeven_extension_ladder_mutants_are_rejected(mutate):
+    with pytest.raises(ValidationError):
+        TradingPolicyDocument.model_validate(_ladder_mutant(mutate))
+
+
+def test_rob_1298_leaves_loss_guard_d7_and_auto_approve_gates_untouched():
+    """AC5 / GATES_UNTOUCHED — asserted against the ROB-1289 baseline document."""
+
+    baseline = yaml.safe_load(_ROB1289_BASELINE.read_text(encoding="utf-8"))
+    current = _raw()
+
+    # Loss guard and D7 minimum-benefit thresholds: byte-identical blocks.
+    for key in (
+        "sell.loss_guard_min_multiple",
+        "sell.loss_cut_max_slip",
+        "sell.breakeven_near_pct",
+        "sell.trim_min_expected_net_realized_gain_krw",
+    ):
+        assert current["thresholds"][key] == baseline["thresholds"][key]
+
+    # Auto-approve gate: only the four §106차 cap deltas already enumerated by
+    # ROB-1292 differ; every other auto-approve key is unchanged by ROB-1298.
+    current_auto = deepcopy(current["order_proposals"]["auto_approve"])
+    baseline_auto = deepcopy(baseline["order_proposals"]["auto_approve"])
+    for path, baseline_value, _current_value in _ROB1292_ALLOWED_POLICY_DELTAS:
+        suffix = path.removeprefix("order_proposals.auto_approve.")
+        _policy_path_set(current_auto, suffix, baseline_value)
+    assert current_auto == baseline_auto
+
+    # The de_minimis (D7) watch tier itself is unchanged.
+    baseline_trim = baseline["decision_rules"]["sell.trim_preplace"]
+    current_trim = current["decision_rules"]["sell.trim_preplace"]
+    assert current_trim["tiers"][0] == baseline_trim["tiers"][0]
+    assert current_trim["tiers"][1] == baseline_trim["tiers"][1]
