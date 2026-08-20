@@ -310,3 +310,109 @@ async def test_no_shortfall_resolves_without_route_or_delivery() -> None:
     assert result["reason"] == "no_candidate_shortfall"
     assert repository.advisory is None
     assert repository.delivery_inserts == 0
+
+
+@pytest.mark.asyncio
+async def test_cash_short_candidate_is_deferred_with_condition_not_rejected() -> None:
+    instance, _repository, _session = service(external_rows=[external_cash_view()])
+
+    result = await instance.evaluate_candidate_event(event(), now=NOW)
+
+    jit = result["jit_funding"]
+    assert jit["disposition"] == "deferred_with_condition"
+    assert jit["rejected_for_insufficient_cash"] is False
+    assert jit["next_step"] == "operator_deposit_then_reevaluate"
+    assert jit["condition"]["declared_cover"] == "sufficient"
+    assert result["state"] == "active"
+    assert result["safety"]["creates_proposal"] is False
+
+
+@pytest.mark.asyncio
+async def test_deferred_condition_amount_is_shortfall_not_declared_total() -> None:
+    """640,000 declared against a 60,000 shortfall still asks for 60,000."""
+
+    instance, _repository, _session = service(external_rows=[external_cash_view()])
+
+    result = await instance.evaluate_candidate_event(event(), now=NOW)
+
+    condition = result["jit_funding"]["condition"]
+    assert condition["deposit_amount"] == result["need"]["shortfall"] == "60000"
+    assert condition["deposit_amount_basis"] == "candidate_shortfall"
+    assert condition["declared_total_disclosure_only"] == "640000"
+    assert condition["operational_gap_amount"] == "90000"
+    assert condition["currency"] == "KRW"
+
+
+@pytest.mark.asyncio
+async def test_deferred_condition_holds_when_no_declaration_covers_it() -> None:
+    instance, _repository, _session = service()
+
+    result = await instance.evaluate_candidate_event(event(), now=NOW)
+
+    jit = result["jit_funding"]
+    assert jit["disposition"] == "deferred_with_condition"
+    assert jit["condition"]["deposit_amount"] == "60000"
+    assert jit["condition"]["declared_cover"] == "none"
+    assert jit["condition"]["declared_total_disclosure_only"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_declared_cash_does_not_change_the_jit_deposit_amount() -> None:
+    without_declaration, _repo_a, _session_a = service()
+    with_declaration, _repo_b, _session_b = service(
+        external_rows=[external_cash_view()]
+    )
+
+    baseline = await without_declaration.evaluate_candidate_event(event(), now=NOW)
+    declared = await with_declaration.evaluate_candidate_event(event(), now=NOW)
+
+    assert declared["need"] == baseline["need"]
+    assert (
+        declared["jit_funding"]["condition"]["deposit_amount"]
+        == baseline["jit_funding"]["condition"]["deposit_amount"]
+        == "60000"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reevaluation_after_deposit_hands_off_to_proposal_path() -> None:
+    """Deposit lands -> broker buying power rises -> candidate becomes fundable.
+
+    The advisory resolves and points at the existing create/approval path. It
+    never creates a proposal and never submits an order itself.
+    """
+
+    instance, repository, _session = service(external_rows=[external_cash_view()])
+    deferred = await instance.evaluate_candidate_event(event(), now=NOW)
+    assert deferred["jit_funding"]["disposition"] == "deferred_with_condition"
+    deposit = Decimal(deferred["jit_funding"]["condition"]["deposit_amount"])
+
+    funded = await instance.evaluate_candidate_event(
+        event(available=str(Decimal("40000") + deposit)),
+        now=NOW + timedelta(minutes=5),
+    )
+
+    assert funded["status"] == "not_triggered"
+    assert funded["reason"] == "no_candidate_shortfall"
+    jit = funded["jit_funding"]
+    assert jit["disposition"] == "fundable_now"
+    assert jit["condition"] is None
+    assert jit["next_step"] == "existing_proposal_creation_and_approval_path"
+    assert jit["creates_proposal"] is False
+    assert jit["executes_money_movement"] is False
+    assert repository.advisory.state == "resolved"
+    assert repository.delivery_inserts == 1
+
+
+@pytest.mark.asyncio
+async def test_detail_and_list_projections_carry_the_same_disposition() -> None:
+    instance, _repository, _session = service(external_rows=[external_cash_view()])
+    created = await instance.evaluate_candidate_event(event(), now=NOW)
+
+    detail = await instance.get_detail(
+        advisory_id=UUID(created["advisory_id"]), owner_user_id=11
+    )
+    listed = await instance.list_details(owner_user_id=11)
+
+    assert detail["jit_funding"] == created["jit_funding"]
+    assert listed[0]["jit_funding"] == created["jit_funding"]

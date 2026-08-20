@@ -103,3 +103,67 @@ def test_provenance_table_has_no_classification_or_sizing_columns() -> None:
     assert "quantity" not in link_model
     assert "notional" not in link_model
     assert "eligibility" not in link_model
+
+
+JIT_VOCABULARY = (
+    "jit_funding",
+    "deferred_with_condition",
+    "declared_total",
+    "build_jit_funding",
+)
+
+
+def test_jit_vocabulary_is_absent_from_order_decision_surfaces() -> None:
+    """The JIT disposition is a notification, never a buying-power input."""
+
+    for path in PROTECTED_ORDER_FILES:
+        text = path.read_text(encoding="utf-8")
+        for token in JIT_VOCABULARY:
+            assert token not in text, (path, token)
+
+
+def test_jit_module_is_pure_and_has_no_persistence_or_mutation() -> None:
+    path = ROOT / "app/services/funding_advisory/jit.py"
+    text = path.read_text(encoding="utf-8")
+    imported = imported_modules(path)
+
+    assert not any(
+        module.startswith(
+            (
+                "app.services.order_proposals",
+                "app.services.brokers",
+                "app.mcp_server",
+                "app.models",
+                "app.core.db",
+                "sqlalchemy",
+            )
+        )
+        for module in imported
+    ), imported
+    for forbidden in ("session", "commit(", "insert", "update", "await "):
+        assert forbidden not in text, forbidden
+
+
+def test_declared_total_never_reaches_the_shortfall_expression() -> None:
+    """``shortfall`` is required_cash - target_buying_power and nothing else."""
+
+    service_text = (ROOT / "app/services/funding_advisory/service.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'shortfall = max(required - target, Decimal("0"))' in service_text, (
+        "shortfall formula changed; re-verify the no-auto-add contract"
+    )
+    assert (
+        "operational_gap = max(\n"
+        "            required\n"
+        "            + assessment.other_pending_required\n"
+        "            + assessment.reserved_cash\n"
+        "            - target,\n"
+        '            Decimal("0"),\n'
+        "        )" in service_text
+    ), "operational gap formula changed; re-verify the no-auto-add contract"
+    for line in service_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("shortfall =", "operational_gap =", "required =")):
+            assert "declared" not in stripped, stripped

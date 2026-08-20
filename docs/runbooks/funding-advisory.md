@@ -95,3 +95,50 @@ Telegram과 `/invest/funding`의 두 매도 경로는 다음 고정 문구를 �
 
 카드 버튼은 읽기 전용 URL뿐이며 callback이나 proposal create 동작이 없다. 외부현금
 폼의 submit은 append-only 선언만 만들며 돈을 이동시키지 않는다.
+
+## JIT 조달 — 조건부 보류와 알림 (§107차)
+
+운영자 원칙은 **사전 입금 금지**다. 정말 필요한 현금만, 체결(주문 확정) 시점에
+입금한다. 그래서 비-자금 gate를 전부 통과한 매수 후보가 broker 현금이 모자라다는
+이유만으로 **기각되지 않는다**. 후보는 조건과 함께 열려 있고, 조건은 카드로
+알린다.
+
+평가 결과에는 `jit_funding` 블록이 붙는다. 이 블록은 **파생 표시값**이다. 새 proposal
+상태, 새 테이블, 새 컬럼, 새 상태 전이가 없다. `funding_advisories.state`는 그대로
+`active` / `resolved` / `superseded` 셋뿐이며, `deferred_with_condition`은 저장되는
+값이 아니라 매 평가마다 계산되는 라벨이다.
+
+| shortfall | disposition | 다음 단계 |
+|---|---|---|
+| `> 0` | `deferred_with_condition` | `operator_deposit_then_reevaluate` |
+| `<= 0` | `fundable_now` | `existing_proposal_creation_and_approval_path` |
+
+### 입금 금액 X
+
+카드 문구는 `입금 X {통화} 시 실행 가능` 이고, **X는 이 후보의 shortfall**
+(`required_cash - target_buying_power`)이다. **선언 총액이 아니다.** 640,000원을
+선언해 두었어도 60,000원이 모자란 후보는 60,000원만 요구한다. 같은 계좌의 다른
+pending 매수와 reserved를 포함한 운영상 gap은 별도 줄로 항상 함께 공개한다.
+
+`declared_cover`(`sufficient` / `partial` / `none`)는 선언액이 X를 어디까지 덮는지를
+보여주는 **표시 분류**일 뿐이다. `none`이어도 후보는 여전히
+`deferred_with_condition`이다 — 급여처럼 아직 선언되지 않은 자금이 조건을 채울 수
+있기 때문이다.
+
+### 선언액은 여전히 매수력이 아니다
+
+`app/services/funding_advisory/jit.py`는 순수 모듈(stdlib + Decimal)이며 DB·broker·
+order 표면을 import하지 않는다. 선언액은 `deposit_amount`에 더해지지도 빼지지도
+않고, available / required / shortfall / sizing / cap / eligibility 어디에도 들어가지
+않는다. 이 계약은 뮤턴트로 재확인한다 — 선언액을 `target_buying_power`에 가산하거나
+`deposit_amount`를 `shortfall - declared_total` 또는 `declared_total`로 바꾸면
+`tests/services/funding_advisory/`가 RED가 된다.
+
+### 입금 확인 뒤
+
+입금은 선언 갱신으로 확인되지 않는다. 선언 갱신은 돈을 옮기지 않는다. 조달 완료는
+**target broker buying power 재관측**으로만 판정한다(`satisfied_by`). 상류가 새
+`FundingCandidateEvent`(갱신된 `target_buying_power`)로 재평가하면 shortfall이 0이
+되어 advisory가 `resolved`가 되고 `fundable_now`로 바뀐다. 그 뒤는 **기존 proposal
+create + 승인 경로 그대로**다. advisory는 어떤 경우에도 proposal을 만들지 않고
+주문을 내지 않는다(`creates_proposal: false`).
