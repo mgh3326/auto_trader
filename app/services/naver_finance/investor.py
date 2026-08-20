@@ -343,9 +343,10 @@ async def fetch_investment_opinions(
         code: 6-digit Korean stock code
         limit: Maximum number of opinions to return
         window_months: ROB-486 컨센서스 recency 윈도우(개월). 윈도우 밖 date 의
-            행은 집계 제외(rows_excluded_stale), undated 행은 fail-open 으로
-            유지(rows_undated 카운트, ROB-488)되며, opinions 리스트 자체는
-            윈도우 밖 행도 포함한다.
+            행은 집계 제외(rows_excluded_stale). 한 건이라도 윈도우 밖이면
+            목표가/upside 집계는 null 이다(ROB-1300 — 잔여 행으로 조용히
+            갱신하지 않음). undated 행은 fail-open 으로 유지(rows_undated
+            카운트, ROB-488)되며, opinions 리스트 자체는 윈도우 밖 행도 포함한다.
 
     Returns:
         Investment opinions with normalized ratings and consensus statistics:

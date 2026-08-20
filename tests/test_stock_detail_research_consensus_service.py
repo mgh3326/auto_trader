@@ -411,8 +411,10 @@ async def test_stock_detail_consensus_applies_recency_window_like_tool():
     assert response.consensus is not None
     assert response.consensus.totalCount == 1
     assert response.consensus.buyCount == 1
-    assert response.consensus.avgTargetPrice == 3000
-    assert response.consensus.upsidePct == pytest.approx(56.74, abs=0.01)
+    # ROB-1300: remaining-window 3,000 is not a silent refresh of mixed stale.
+    assert response.consensus.avgTargetPrice is None
+    assert response.consensus.upsidePct is None
+    assert "analyst_consensus_stale_window_inputs" in response.warnings
 
 
 @pytest.mark.asyncio
@@ -505,9 +507,45 @@ def test_build_consensus_model_applies_recency_and_outlier_guards():
     model = _build_consensus_model(payload, warnings)
 
     assert model is not None
-    assert model.totalCount == 1  # stale opinion excluded
-    assert model.avgTargetPrice == 17_000  # garbage target not averaged in
+    assert model.totalCount == 1  # stale opinion excluded from counts
+    # ROB-1300: mixed stale inputs stop target aggregates; leftover 17,000
+    # is not emitted as a silent refresh.
+    assert model.avgTargetPrice is None
     assert model.currentPrice == 15_380  # embedded fallback survived
+    assert model.upsidePct is None
+
+
+@pytest.mark.unit
+def test_build_consensus_model_masks_in_window_outlier_only():
+    """ROB-488 still masks in-window outliers when no row is window-stale."""
+    from app.services.invest_view_model.stock_detail_research_consensus_service import (
+        _build_consensus_model,
+    )
+
+    today = datetime.now(UTC).date()
+    payload = {
+        "source": "naver",
+        "consensus": {"current_price": 15_380},
+        "opinions": [
+            {
+                "rating": "매수",
+                "target_price": 2_700,
+                "date": (today - timedelta(days=10)).isoformat(),
+            },
+            {
+                "rating": "매수",
+                "target_price": 17_000,
+                "date": (today - timedelta(days=10)).isoformat(),
+            },
+        ],
+    }
+
+    warnings: list[str] = []
+    model = _build_consensus_model(payload, warnings)
+
+    assert model is not None
+    assert model.totalCount == 2
+    assert model.avgTargetPrice == 17_000
     assert model.upsidePct == pytest.approx(10.53, abs=0.01)
 
 

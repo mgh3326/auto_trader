@@ -36,6 +36,28 @@ _STALE_ONLY_WINDOWED_CONSENSUS = {
 
 
 @pytest.mark.unit
+def test_screen_enrichment_payload_does_not_copy_mixed_stale_leftover():
+    """ROB-1300 mutant: leftover avg/upside from remaining-window rows is dropped."""
+
+    payload = _build_screen_enrichment_payload(
+        sector="화학",
+        consensus={
+            "buy_count": 8,
+            "hold_count": 0,
+            "sell_count": 0,
+            "avg_target_price": 200_000,
+            "upside_pct": 135.49,
+            "rows_excluded_stale": 2,
+            "target_price_honest": False,
+        },
+    )
+
+    assert payload["analyst_buy"] == 8
+    assert payload["avg_target"] is None
+    assert payload["upside_pct"] is None
+
+
+@pytest.mark.unit
 def test_screen_enrichment_payload_none_safe_with_stale_only_consensus():
     payload = _build_screen_enrichment_payload(
         sector="반도체", consensus=_STALE_ONLY_WINDOWED_CONSENSUS

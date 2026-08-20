@@ -269,6 +269,36 @@ async def test_honest_upside_and_support_distance_stay_fail_closed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_consensus_inputs_do_not_silently_pass_upside() -> None:
+    """ROB-1300 mutant: leftover avg from 8/10 window survivors is not a pass."""
+
+    gates = fanout._FanoutGates.from_policy(fanout.load_trading_policy())
+    candidate = {"matched_sources": ["rsi"]}
+    stale_injected = {
+        **_fresh_row(target=200),
+        "consensus": {
+            "avg_target_price": 200,
+            "upside_pct": 100.0,
+            "rows_total": 10,
+            "rows_used": 8,
+            "rows_excluded_stale": 2,
+            "stale_opinion_count": 2,
+            "target_price_honest": False,
+            "newest_opinion_date": "2026-04-30",
+        },
+    }
+
+    result = fanout._evaluate_funnel(candidate, stale_injected, gates)
+    upside = result["funnel"]["upside"]
+    assert upside["status"] == "fail"
+    assert upside["reason"] == "honest_upside_stale_inputs"
+    assert upside["calculation_suppressed"] is True
+    assert upside["rows_excluded_stale"] == 2
+    assert "honest_upside_pct" not in upside
+    assert result["funnel"]["rsi"]["status"] == "not_evaluated"
+
+
+@pytest.mark.asyncio
 async def test_fresh_revalidation_requires_fresh_data_and_clear_restrictions() -> None:
     gates = fanout._FanoutGates.from_policy(fanout.load_trading_policy())
     candidate = {"matched_sources": ["snapshot_support_flow:support_proximity"]}

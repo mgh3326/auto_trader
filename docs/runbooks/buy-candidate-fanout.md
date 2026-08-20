@@ -64,8 +64,31 @@ authorized consumer would need to redo tick-floor and all execution gates.
 The literal policy gates remain unchanged and are runtime-pinned: RSI 45;
 moderate, two-family support within 8%; honest upside of at least 40%; support
 discount 5–10%; final anchor distance -15% to -5%; and the 90% / 50% budget
-caps. Because this tool cannot inspect account or broker evidence, a reached
-`budget` stage is always `deferred` and `actionable_count` is always zero.
+caps. The upside stage is fail-closed on ROB-486 window metadata
+(`rows_excluded_stale` / `stale_opinion_count` > 0): leftover
+`avg_target_price` from remaining in-window rows is not a pass
+(`honest_upside_stale_inputs`). Because this tool cannot inspect account or
+broker evidence, a reached `budget` stage is always `deferred` and
+`actionable_count` is always zero.
+
+## Consensus-window scope and limits
+
+This is a window-membership gate, not a maximum-age guarantee. It fails only
+when existing ROB-486 metadata says a **dated** opinion fell outside the
+configured opinion window. An all-in-window set can still be near that window's
+cutoff, and ROB-488 keeps undated rows fail-open while exposing
+`rows_undated`; neither condition is reclassified as fresh by this runbook.
+`limit` and `opinion_window_months` change the observed opinion set for the
+general `get_investment_opinions` surface, so consumers must not retry with a
+smaller limit or wider window to manufacture a numeric upside. This fanout's
+own fresh revalidation uses its fixed provider call and reports the metadata it
+received. The gate does not cover TVScreener-provided KR `avg_target`/
+`upside_pct` fields, which do not carry ROB-486 opinion-window metadata.
+`target_price_honest` reports target-price exclusions only, not whole-opinion
+freshness: it can be `true` while every target statistic and `upside_pct` is
+null when a dated window-external opinion has no positive target price; consult
+`rows_excluded_stale`/`stale_opinion_count` before treating that combination as
+usable consensus.
 
 ## KR regular-session missing-freshness contract
 

@@ -226,3 +226,26 @@ async def test_cached_opinion_provider_fail_open_when_price_missing():
     c = payload["consensus"]
     assert c.get("upside_pct") is None
     assert c.get("current_price") is None
+
+
+def test_recompute_upside_does_not_revive_mixed_stale_leftover():
+    """ROB-1300 mutant: cached leftover avg must not become a live upside."""
+
+    revived = cache._recompute_upside(
+        {
+            "avg_target_price": 200_000,
+            "median_target_price": 200_000,
+            "min_target_price": 180_000,
+            "max_target_price": 210_000,
+            "rows_excluded_stale": 2,
+            "target_price_honest": False,
+        },
+        83_900,
+    )
+
+    assert revived["avg_target_price"] is None
+    assert revived["median_target_price"] is None
+    assert revived["min_target_price"] is None
+    assert revived["max_target_price"] is None
+    assert revived.get("upside_pct") is None
+    assert revived["current_price"] == 83_900

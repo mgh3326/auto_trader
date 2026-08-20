@@ -7,6 +7,8 @@ import logging
 import math
 from typing import Any
 
+from app.services.analyst_normalizer import consensus_has_stale_window_inputs
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,6 +84,10 @@ def _build_screen_enrichment_payload(
         consensus_map.get("avg_target_price")
     )
     payload["upside_pct"] = _coerce_optional_number(consensus_map.get("upside_pct"))
+    if consensus_has_stale_window_inputs(consensus_map):
+        # ROB-1300: do not copy a remaining-window leftover as live upside.
+        payload["avg_target"] = None
+        payload["upside_pct"] = None
     return payload
 
 

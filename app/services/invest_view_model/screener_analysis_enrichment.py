@@ -18,6 +18,7 @@ from app.schemas.invest_screener import (
     ScreenerAnalysisConsensus,
     ScreenerAnalysisContext,
 )
+from app.services.analyst_normalizer import consensus_has_stale_window_inputs
 from app.services.us_sector_korean_map import korean_sector_label
 
 OpinionProvider = Callable[..., Any]
@@ -69,6 +70,7 @@ def normalize_consensus_payload(
     if total is None or total <= 0:
         return None, ["analyst_consensus_missing"]
 
+    stale_window_inputs = consensus_has_stale_window_inputs(raw)
     consensus = ScreenerAnalysisConsensus(
         source=payload.get("source") or payload.get("provider"),
         buyCount=_to_int(raw.get("buy_count") or raw.get("buyCount")),
@@ -78,23 +80,39 @@ def normalize_consensus_payload(
             raw.get("strong_buy_count") or raw.get("strongBuyCount")
         ),
         totalCount=total,
-        avgTargetPrice=_to_float(
-            raw.get("avg_target_price") or raw.get("avgTargetPrice")
+        avgTargetPrice=(
+            None
+            if stale_window_inputs
+            else _to_float(raw.get("avg_target_price") or raw.get("avgTargetPrice"))
         ),
-        medianTargetPrice=_to_float(
-            raw.get("median_target_price") or raw.get("medianTargetPrice")
+        medianTargetPrice=(
+            None
+            if stale_window_inputs
+            else _to_float(
+                raw.get("median_target_price") or raw.get("medianTargetPrice")
+            )
         ),
-        minTargetPrice=_to_float(
-            raw.get("min_target_price") or raw.get("minTargetPrice")
+        minTargetPrice=(
+            None
+            if stale_window_inputs
+            else _to_float(raw.get("min_target_price") or raw.get("minTargetPrice"))
         ),
-        maxTargetPrice=_to_float(
-            raw.get("max_target_price") or raw.get("maxTargetPrice")
+        maxTargetPrice=(
+            None
+            if stale_window_inputs
+            else _to_float(raw.get("max_target_price") or raw.get("maxTargetPrice"))
         ),
-        upsidePct=_to_float(raw.get("upside_pct") or raw.get("upsidePct")),
+        upsidePct=(
+            None
+            if stale_window_inputs
+            else _to_float(raw.get("upside_pct") or raw.get("upsidePct"))
+        ),
         currentPrice=_to_float(raw.get("current_price") or raw.get("currentPrice")),
     )
 
     warnings: list[str] = []
+    if stale_window_inputs:
+        warnings.append("consensus_stale_window_inputs")
     if (
         consensus.avgTargetPrice is not None
         and consensus.currentPrice is not None

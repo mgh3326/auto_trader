@@ -87,6 +87,37 @@ def test_normalize_consensus_payload_rejects_malformed_consensus():
 
 
 @pytest.mark.unit
+def test_normalize_consensus_payload_suppresses_mixed_stale_targets():
+    """ROB-1300 mutant: leftover +135% from 8/10 window survivors is not copied."""
+
+    payload: dict[str, Any] = {
+        "source": "naver",
+        "consensus": {
+            "buy_count": 8,
+            "hold_count": 0,
+            "sell_count": 0,
+            "strong_buy_count": 0,
+            "total_count": 8,
+            "avg_target_price": 200_000,
+            "upside_pct": 135.49,
+            "current_price": 83_900,
+            "rows_excluded_stale": 2,
+            "target_price_honest": False,
+            "newest_opinion_date": "2026-04-30",
+        },
+    }
+
+    consensus, warnings = normalize_consensus_payload(payload)
+
+    assert consensus is not None
+    assert consensus.buyCount == 8
+    assert consensus.avgTargetPrice is None
+    assert consensus.upsidePct is None
+    assert "consensus_stale_window_inputs" in warnings
+    assert build_analyst_label(consensus, warnings=warnings) == "컨센 확인필요"
+
+
+@pytest.mark.unit
 def test_build_analyst_label_uses_counts_and_upside():
     payload: dict[str, Any] = {
         "source": "naver",

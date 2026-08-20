@@ -9,9 +9,11 @@ import pytest
 
 from app.services.analyst_normalizer import (
     build_consensus,
+    consensus_has_stale_window_inputs,
     is_strong_buy,
     normalize_rating_label,
     rating_to_bucket,
+    stale_window_input_count,
 )
 
 # ROB-486: 모든 build_consensus 테스트는 now 를 주입해 시한폭탄을 차단한다.
@@ -280,7 +282,8 @@ class TestBuildConsensus:
         assert consensus["total_count"] == 1
         assert consensus["raw_count"] == 2
         assert consensus["stale_opinion_count"] == 1
-        assert consensus["avg_target_price"] == 100_000
+        assert consensus["avg_target_price"] is None
+        assert consensus["upside_pct"] is None
         assert consensus["target_price_honest"] is False
 
     def test_masks_target_price_outliers_but_keeps_fresh_rating_counts(self) -> None:
@@ -411,10 +414,10 @@ class TestBuildConsensusRecencyWindow:
         ]
         consensus = build_consensus(opinions, 1914, now=_NOW)
 
-        # 무필터였다면 avg 20,200 / median 27,000 (버그 리포트 실측치)였을 입력.
-        assert consensus["avg_target_price"] == 3000
-        assert consensus["median_target_price"] == 3000
-        assert consensus["upside_pct"] == pytest.approx(56.74, abs=0.01)
+        # ROB-1300: remaining-window 3,000 is not emitted as a silent refresh.
+        assert consensus["avg_target_price"] is None
+        assert consensus["median_target_price"] is None
+        assert consensus["upside_pct"] is None
         assert consensus["buy_count"] == 1
         assert consensus["hold_count"] == 1
         assert consensus["total_count"] == 2
@@ -423,6 +426,7 @@ class TestBuildConsensusRecencyWindow:
         assert consensus["rows_excluded_stale"] == 7
         assert consensus["rows_undated"] == 0
         assert consensus["newest_opinion_date"] == "2026-05-18"
+        assert consensus["target_price_honest"] is False
 
     def test_undated_rows_kept_fail_open_and_counted(self) -> None:
         """ROB-486+ROB-488 통합: undated 행은 fail-open으로 유지(ROB-488)하되
@@ -465,7 +469,8 @@ class TestBuildConsensusRecencyWindow:
         consensus = build_consensus(opinions, 90, now=_NOW)
 
         assert consensus["rows_used"] == 1
-        assert consensus["avg_target_price"] == 100
+        assert consensus["avg_target_price"] is None
+        assert consensus["upside_pct"] is None
         assert consensus["rows_excluded_stale"] == 1
 
     def test_window_months_override(self) -> None:
@@ -501,3 +506,68 @@ class TestBuildConsensusRecencyWindow:
         assert consensus["rows_undated"] == 0
         assert consensus["newest_opinion_date"] is None
         assert consensus["window_months"] == 12
+
+
+class TestRob1300StaleInputFailClosed:
+    """대한유화 mutant: mixed stale inputs must not emit a passing upside."""
+
+    _AS_OF = datetime(2026, 8, 20, 9, 5, tzinfo=UTC)
+    _CURRENT_PRICE = 83_900
+
+    def _daehan_emul_opinions(self) -> list[dict[str, Any]]:
+        recent = [
+            {"rating": "Buy", "target_price": 200_000, "date": "2026-04-30"}
+            for _ in range(8)
+        ]
+        stale = [
+            {"rating": "Buy", "target_price": 180_000, "date": "2025-04-30"}
+            for _ in range(2)
+        ]
+        return recent + stale
+
+    def test_mixed_stale_does_not_silently_emit_upside(self) -> None:
+        opinions = self._daehan_emul_opinions()
+        consensus = build_consensus(opinions, self._CURRENT_PRICE, now=self._AS_OF)
+
+        assert consensus["rows_total"] == 10
+        assert consensus["rows_excluded_stale"] == 2
+        assert consensus["rows_used"] == 8
+        assert consensus["newest_opinion_date"] == "2026-04-30"
+        assert consensus["target_price_honest"] is False
+        assert consensus["avg_target_price"] is None
+        assert consensus["median_target_price"] is None
+        assert consensus["min_target_price"] is None
+        assert consensus["max_target_price"] is None
+        assert consensus["upside_pct"] is None
+        assert consensus_has_stale_window_inputs(consensus) is True
+        assert stale_window_input_count(consensus) == 2
+
+        remaining_avg = 200_000
+        silent_upside = (
+            (remaining_avg - self._CURRENT_PRICE) / self._CURRENT_PRICE * 100
+        )
+        assert silent_upside >= 40
+
+    def test_all_in_window_still_emits_honest_upside(self) -> None:
+        opinions = [
+            {"rating": "Buy", "target_price": 200_000, "date": "2026-04-30"}
+            for _ in range(10)
+        ]
+        consensus = build_consensus(opinions, self._CURRENT_PRICE, now=self._AS_OF)
+
+        assert consensus["rows_excluded_stale"] == 0
+        assert consensus["target_price_honest"] is True
+        assert consensus["avg_target_price"] == 200_000
+        assert consensus["upside_pct"] == pytest.approx(138.38, abs=0.01)
+        assert consensus_has_stale_window_inputs(consensus) is False
+
+    def test_stale_alias_cannot_be_hidden_by_zero_legacy_alias(self) -> None:
+        """Mutant: a stale input still blocks when only one alias reports it."""
+
+        consensus = {
+            "rows_excluded_stale": 0,
+            "stale_opinion_count": 2,
+        }
+
+        assert stale_window_input_count(consensus) == 2
+        assert consensus_has_stale_window_inputs(consensus) is True

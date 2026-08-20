@@ -26,7 +26,10 @@ from app.schemas.research_reports import (
     ResearchReportCitation,
     ResearchReportsReadinessResponse,
 )
-from app.services.analyst_normalizer import build_consensus
+from app.services.analyst_normalizer import (
+    build_consensus,
+    consensus_has_stale_window_inputs,
+)
 from app.services.invest_view_model.stock_detail_symbol_resolver import (
     ResolvedSymbol,
     resolve_symbol,
@@ -250,6 +253,8 @@ def _build_consensus_model(
     )
     normalized_opinions = [_normalize_opinion(row) for row in raw_opinions]
     consensus = build_consensus(normalized_opinions, current_price=current_price)
+    if consensus_has_stale_window_inputs(consensus):
+        warnings.append("analyst_consensus_stale_window_inputs")
     return StockDetailAnalystConsensus(
         source=payload.get("source") or payload.get("provider"),
         buyCount=consensus["buy_count"],
