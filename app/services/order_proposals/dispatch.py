@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import AsyncSessionLocal
+from app.services.fill_notification import resolve_display_name_db
 from app.services.order_proposals.approval_message import (
     ApprovalDispatchMessages,
     build_approval_dispatch_messages,
@@ -203,6 +204,24 @@ def _mirror_decimal_text(value: Any) -> str:
     except Exception:  # noqa: BLE001 - display degradation must not raise
         return str(value)
     return normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
+
+
+async def _resolve_card_display_name(group: Any) -> str | None:
+    """Reuse the notification name resolver; rendering remains fail-open to code."""
+    symbol = str(getattr(group, "symbol", "") or "").strip()
+    market = {"equity_kr": "kr", "equity_us": "us"}.get(
+        str(getattr(group, "market", "") or ""),
+        str(getattr(group, "market", "") or ""),
+    )
+    if not symbol:
+        return None
+    try:
+        name = await resolve_display_name_db(market, symbol)
+    except Exception:  # noqa: BLE001 - alerts must still reach the operator
+        logger.debug("order proposal display-name resolution failed", exc_info=True)
+        return None
+    normalized = " ".join(str(name or "").split())
+    return normalized or None
 
 
 async def _mirror_auto_veto_card(
@@ -449,10 +468,16 @@ async def _register_and_publish_batch_summary(
             await session.commit()
             return
 
+    display_names = {
+        str(group.proposal_id): name
+        for group, _rungs in proposals
+        if (name := await _resolve_card_display_name(group)) is not None
+    }
     text, keyboard = build_batch_approval_message(
         batch=batch,
         proposals=proposals,
         binding=registration.binding,
+        display_names=display_names,
     )
     messages = ApprovalDispatchMessages(
         context_messages=(),
@@ -630,6 +655,7 @@ async def send_proposal_for_approval(
         messages = build_approval_dispatch_messages(
             group=group,
             rungs=rungs,
+            display_name=await _resolve_card_display_name(group),
             suffix_blocks=(
                 (rejection_block,)
                 if (
@@ -988,6 +1014,7 @@ async def dispatch_proposal(
                     rungs=rungs,
                     nonce=veto_nonce,
                     policy_version=limits.policy_version,
+                    display_name=await _resolve_card_display_name(group),
                     binding=binding,
                 )
                 messages = ApprovalDispatchMessages(

@@ -87,7 +87,10 @@ from app.services.order_proposals.broker_gateway import (
     cancel_target_order,
     fetch_target_order,
 )
-from app.services.order_proposals.dispatch import publish_approval_messages
+from app.services.order_proposals.dispatch import (
+    _resolve_card_display_name,
+    publish_approval_messages,
+)
 from app.services.order_proposals.dispatch_contract import (
     ApprovalCardKind,
     ApprovalPublication,
@@ -919,6 +922,7 @@ async def _handle_approve(
             rungs=rungs,
             diff=reconfirm_outcomes[0].detail,
             suffix_blocks=suffix_blocks,
+            display_name=await _resolve_card_display_name(group),
             binding=binding,
         )
         send_window = await _evaluate_bound_window(
@@ -1548,7 +1552,11 @@ async def _handle_loss_cut_first_click(
         current_membership_revision=group.approval_dispatch_membership_revision,
     )
     text, keyboard = build_loss_cut_confirmation_message(
-        group=group, rungs=rungs, evidence=evidence, binding=binding
+        group=group,
+        rungs=rungs,
+        evidence=evidence,
+        display_name=await _resolve_card_display_name(group),
+        binding=binding,
     )
     publish_window = await _evaluate_bound_window(
         group,
