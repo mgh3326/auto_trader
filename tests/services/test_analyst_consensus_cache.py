@@ -68,16 +68,61 @@ async def test_set_then_get_round_trips_stable_fields_only():
 
 
 @pytest.mark.asyncio
-async def test_set_is_noop_for_degraded_or_us_or_no_redis():
+async def test_set_is_noop_for_degraded_or_uncached_market_or_no_redis():
     redis = _FakeRedis()
-    # total_count 0 → degraded, never cached
+    # total_count 0 → degraded, never cached (KR)
     await cache.set_cached_consensus(redis, "kr", "000660", {"total_count": 0})
     assert await cache.get_cached_consensus(redis, "kr", "000660") is None
-    # US never cached
-    await cache.set_cached_consensus(redis, "us", "AAPL", {"total_count": 5})
-    assert redis.store == {}
+    # total_count 0 → degraded, never cached (US)
+    await cache.set_cached_consensus(redis, "us", "MSFT", {"total_count": 0})
+    assert await cache.get_cached_consensus(redis, "us", "MSFT") is None
+    # a market outside _PROVIDER_BY_MARKET (e.g. crypto) is never cached
+    await cache.set_cached_consensus(redis, "crypto", "BTC", {"total_count": 5})
+    assert await cache.get_cached_consensus(redis, "crypto", "BTC") is None
     # redis None → no-op, no raise
     await cache.set_cached_consensus(None, "kr", "005930", {"total_count": 3})
+
+
+@pytest.mark.asyncio
+async def test_us_consensus_is_cached_and_survives_round_trip():
+    """ROB-1309: US analyst consensus now uses the same Redis cache-aside as
+    KR (yfinance provider bucket) — cache hits must not re-fetch."""
+    redis = _FakeRedis()
+    payload = {
+        "total_count": 12,
+        "buy_count": 8,
+        "hold_count": 3,
+        "sell_count": 1,
+        "avg_target_price": 250.0,
+        # volatile fields must be stripped before caching
+        "current_price": 200.0,
+        "upside_pct": 25.0,
+    }
+    await cache.set_cached_consensus(redis, "us", "AAPL", payload)
+    cached = await cache.get_cached_consensus(redis, "us", "AAPL")
+    assert cached is not None
+    assert cached["total_count"] == 12
+    assert cached["buy_count"] == 8
+    # volatile fields stripped
+    assert "current_price" not in cached
+    assert "upside_pct" not in cached
+
+
+@pytest.mark.asyncio
+async def test_us_resolve_consensus_cache_hit_skips_provider():
+    redis = _FakeRedis()
+    await cache.set_cached_consensus(
+        redis, "us", "AAPL", {"total_count": 7, "buy_count": 4}
+    )
+
+    async def _boom_fetcher(**kwargs):
+        raise AssertionError(f"provider must not be called on US cache hit: {kwargs}")
+
+    result = await cache.resolve_consensus(
+        symbol="AAPL", market="us", redis_client=redis, opinion_fetcher=_boom_fetcher
+    )
+    assert result is not None
+    assert result["total_count"] == 7
 
 
 @pytest.mark.asyncio
