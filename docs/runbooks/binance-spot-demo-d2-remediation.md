@@ -91,21 +91,30 @@ revision, which meant the mode that sends real orders could also be the mode
 that skipped the only broker-side proof that the sealed filters still describe
 the market.
 
-## 5. Execution — structurally unreachable today
+## 5. Execution — refused, at runtime, on every registered payload
 
 `--confirm` is the only mode that reaches `submit_order(..., confirm=True)`.
-It is not merely "not authorized by this document" — it cannot run, and that is
-enforced at runtime rather than documented:
+For a caller entering through this module's functions, it is refused — not by
+convention but by checks that run, each named with where it lives:
 
-| Gate | Where | Current state |
+| Gate | Enforced at | Current state |
 |---|---|---|
-| Registered payload digest | `D2_KNOWN_SEALED_PAYLOADS` | one entry, `dispatch_authorized=false` |
+| Payload bytes hashed before parsing; unknown digest refused | `load_sealed_authority` | one registered digest |
+| Every registered digest is `dispatch_authorized=false`, and import fails if not | `_assert_closed_order_set` | holds |
 | `operator_authorization` non-null | `SealedAuthority.dispatch_block_reasons` | `null` |
-| `expiry` present and future | same | absent |
-| `mutation_authorized` on all three rows | same | `false` on all three |
-| Sealed credential fingerprint = signed J2A registry | `load_sealed_authority` | matches |
-| Live client credential fingerprint = sealed | writer constructor | checked per run |
+| `expiry` present and not past, read from the real clock | `SealedAuthority.dispatch_block_reasons`, `D2RemediationSingleWriter.dispatch_block_reasons` | absent |
+| `mutation_authorized` on all three rows | `SealedAuthority.dispatch_block_reasons` | `false` on all three |
+| Sealed credential fingerprint = signed J2A registry | `load_sealed_authority`, `assert_registry_credential_fingerprint` | matches |
+| Live client credential fingerprint = sealed | `D2RemediationSingleWriter._assert_client_account` | checked per run |
 | Account-wide writer freeze | `assert_writer_freeze` | in force |
+| Both env gates read only `os.environ` | `d2_remediation_enabled` | both off by default |
+| Claim committed before any send, then read back | `D2RemediationSingleWriter._dispatch_one`, `BinanceDemoLedgerService.commit_planned_claim` | enforced |
+| Broker identity / price / time-in-force echo | `D2RemediationSingleWriter._assert_echo`, `broker_identifier_problem` | enforced |
+
+Symbol names rather than line numbers on purpose: a line citation is a claim
+that goes stale on the next edit without anyone noticing, and
+`test_the_runbook_gate_table_names_symbols_that_exist` checks every name in the
+"Enforced at" column against the live modules.
 
 `--dry-run` prints the whole blocker list; `--confirm` refuses on it *before*
 opening a client, a lease, or a database session. Both env gates being armed
@@ -195,18 +204,21 @@ only one of them is safe to act on.
   account without contending for it. That is why the writer also re-attests per
   submit and reads the *account-wide* open-order book before dispatching and in
   both proof epochs — and why none of those closes the hole, only narrows it.
-* 🔴 **What these gates do and do not cover.** They stop accidental misuse, a
-  wrong parameter, a doctored payload file, a drifted account, a lying broker
-  response, and a re-send after a crash. They do **not** stop deliberate forgery
-  by code running inside the same process. A caller already executing in this
-  process can read `_AUTHORITY_TOKEN` and build a `SealedAuthority` that never
-  saw a file, can construct a real `PostgresAdvisoryKeysetLease` over a
-  fabricated lock authority, can subclass `BinanceDemoLedgerService`, and can
-  mutate `os.environ` or any module constant. No writer-level gate closes that
-  in Python — such a caller can simply call the broker client directly and skip
-  this module altogether. The threat-model question of whether that matters is
-  with the operator; this runbook states the limit rather than claiming a
-  guarantee that does not exist.
+* 🔴 **Threat model — confirmed by the operator, not pending.** These gates
+  cover **accidental misuse**: a wrong parameter, a doctored or unregistered
+  payload file, an account that has drifted from the seal, a malformed or
+  foreign broker response, and a re-send after a crash. They do **not** cover
+  **deliberate forgery by code running in the same process**, and that is
+  accepted as a documented limit rather than treated as a gap to close.
+
+  Concretely, an in-process caller can import `_AUTHORITY_TOKEN` and build a
+  `SealedAuthority` that never saw a file, construct a real
+  `PostgresAdvisoryKeysetLease` over a fabricated lock authority, subclass
+  `BinanceDemoLedgerService`, and rebind `os.environ` or any module constant.
+  It can also skip this module entirely and call
+  `BinanceSpotDemoExecutionClient` directly. No writer-level check closes any
+  of that in Python, and none in this repository claims to — the source
+  docstrings state the same limit.
 * **Balance drift is checked by exact equality**, so any movement on the three
   sealed assets since the snapshot stops the run. That is deliberate — the seal
   either describes the account or it does not — but it means a stale seal fails

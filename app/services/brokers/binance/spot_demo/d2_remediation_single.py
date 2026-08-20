@@ -24,15 +24,18 @@ script would have created an *unreviewed* execution surface.  A reviewed,
 narrower one is the correct answer, so this module exists and both CLIs name
 each other.
 
-**This module creates no execution authority.**  That is a structural claim,
-not a promise: :data:`D2_KNOWN_SEALED_PAYLOADS` is the complete set of sealed
-payload digests this writer will even parse, every entry in it today carries
-``dispatch_authorized=False``, and an unknown digest is refused outright.  With
-both env gates armed and a live lease in hand, ``--confirm`` still cannot
-dispatch, because no digest in this repository permits it.  Granting dispatch
-requires a reviewed change that adds the re-signed payload's digest — the
-operator's re-sign is what produces those bytes, and their hash is what this
-file would have to be taught.
+**No sealed payload in this repository authorizes a dispatch.**
+:data:`D2_KNOWN_SEALED_PAYLOADS` is the complete set of digests
+:func:`load_sealed_authority` will parse; every entry carries
+``dispatch_authorized=False``, and :func:`_assert_closed_order_set` refuses to
+import if one does not.  So a caller entering through these functions — both env
+gates armed, live lease in hand — reaches ``--confirm`` and is refused, because
+there is nothing here to act under.  Granting dispatch takes the operator's
+re-sign (which produces different bytes, hence a different digest) plus a
+reviewed change that registers it.
+
+That is a statement about this module's entry points, not about the process.
+See the threat model below.
 
 Every ROB-298 safety boundary is inherited unchanged and none is widened:
 
@@ -56,10 +59,13 @@ What this module adds on top of those inherited gates:
    ``mutation_authorized=true``, and the sealed credential fingerprint must
    match the signed J2A registry.  Each failure is reported by name; none is
    waived.
-2. **A J3A lease as an unforgeable capability.**  The writer requires a real
+2. **A typed J3A lease, re-proved per submit.**  The writer requires a real
    :class:`PostgresAdvisoryKeysetLease` — a duck-typed stand-in is rejected by
    ``isinstance`` before anything else runs — and re-proves ownership
-   immediately before each submit rather than trusting acquisition time.
+   immediately before each submit rather than trusting acquisition time.  The
+   ``isinstance`` check catches a wrong object, not a determined one: an
+   in-process caller can construct the real class over a fabricated lock
+   authority.  See the threat model below.
 3. **A durable, deterministic replay fence.**  The ``client_order_id`` is
    derived from the seal and the order, not from a UUID, so the same bound
    order has the same id in every process.  Before any submit the ledger is
@@ -76,6 +82,17 @@ What this module adds on top of those inherited gates:
    **timeInForce** are compared by closed equality against the seal; a response
    that cannot prove the sealed price is a failure, not a success.
 7. **Two fresh proof epochs**, collected while the lease is still held.
+
+**Threat model (operator-confirmed).**  These gates cover accidental misuse: a
+wrong parameter, a doctored or unregistered payload file, an account that has
+drifted from the seal, a malformed or foreign broker response, and a re-send
+after a crash.  They do **not** cover deliberate forgery by code running in this
+same process.  A caller already executing here can read the module-private
+authority token, construct a real :class:`PostgresAdvisoryKeysetLease` over a
+fabricated lock authority, subclass the ledger service, or rebind any constant
+in this module — and, more simply, can call
+:class:`BinanceSpotDemoExecutionClient` directly and never enter this file at
+all.  No writer-level check closes that, and none here claims to.
 
 Deliberate absences: no scheduler registration, no retry queue, no MARKET
 path, no cancel path, no quantity/price arithmetic (the sealed floor values are
@@ -191,7 +208,8 @@ _CLIENT_ORDER_ID_DOMAIN: Final[bytes] = b"auto-trader:d2-remediation-single:v1\x
 #: therefore never picked up as orders.
 _SEALED_ACTIONABLE_DISPOSITION: Final[str] = "REVIEWED_SCOPE_LIMIT_CANDIDATE"
 
-#: Only :func:`load_sealed_authority` may mint a :class:`SealedAuthority`.
+#: Module-private token gating :class:`SealedAuthority` construction. Private
+#: by convention, which is all Python offers — see the threat model at the top.
 _AUTHORITY_TOKEN: Final[object] = object()
 
 
@@ -639,6 +657,43 @@ def _sealed_order(symbol: str, entry: Mapping[str, Any]) -> D2BoundOrder | None:
     )
 
 
+#: Spellings that a JSON serialiser, a client library, or an ``str()`` call
+#: produces when the underlying value was absent. None of them is an
+#: identifier, and treating any of them as one is how a malformed broker
+#: response becomes "evidence".
+_PSEUDO_NULL_TOKENS: Final[frozenset[str]] = frozenset(
+    {"", "none", "null", "nil", "nan", "undefined", "<none>", "n/a", "-"}
+)
+
+
+def broker_identifier_problem(value: Any, *, field: str) -> str | None:
+    """Return why ``value`` cannot serve as a broker identifier, or ``None``.
+
+    Reads the **raw** response value, never a stringified DTO field. That
+    distinction is the whole point: ``str(None)`` is ``'None'``, which is
+    non-empty, non-blank, and passes every naive presence check — so a null
+    ``orderId`` laundered through ``str()`` used to look like proof that an
+    order exists.
+
+    Booleans are rejected before the integer branch because ``bool`` is a
+    subclass of ``int`` and ``True`` would otherwise read as id ``1``.
+    """
+
+    if value is None:
+        return f"{field} is null"
+    if isinstance(value, bool):
+        return f"{field} is a boolean ({value!r}), not an identifier"
+    if isinstance(value, int):
+        # Binance order ids are positive int64 values; 0 and negatives are
+        # sentinels, not orders.
+        return None if value > 0 else f"{field} is {value!r}, not a positive id"
+    if not isinstance(value, str):
+        return f"{field} has non-identifier type {type(value).__name__}"
+    if value.strip().lower() in _PSEUDO_NULL_TOKENS:
+        return f"{field} is {value!r}, which is a spelling of absent"
+    return None
+
+
 def _describe(orders: Sequence[D2BoundOrder]) -> str:
     return (
         "["
@@ -761,11 +816,12 @@ def _parse_expiry(raw: Any) -> dt.datetime | None:
 class SealedAuthority:
     """A sealed payload whose *bytes* were verified, plus what it authorizes.
 
-    Only :func:`load_sealed_authority` can mint one: the constructor demands a
-    module-private token, so an in-process caller cannot hand the writer a
-    hand-built authority object and skip the digest check. The writer accepts
-    nothing else, which is what keeps "orders come from the seal" true against
-    argument injection as well as against a doctored file.
+    The constructor demands a module-private token, so the ordinary ways of
+    producing one — a dict, a look-alike object, a hand-built instance — fail,
+    and :func:`load_sealed_authority` is the only route that ends in a usable
+    authority. That stops a caller from *accidentally* bypassing the digest
+    check; it does not stop one that imports the token deliberately, and it is
+    not offered as doing so.
 
     Binding and *authorization* are kept apart on purpose. A payload can bind
     perfectly — right hash, right three orders, right account — and still
@@ -1171,12 +1227,13 @@ class D2RemediationSingleWriter:
             )
         if not isinstance(lease, PostgresAdvisoryKeysetLease):
             # A duck-typed stand-in with `.released` and `.assert_owned` would
-            # otherwise satisfy every later check while proving nothing about
-            # the account.
+            # otherwise satisfy every later check. This rejects the wrong
+            # *type*; it is not a provenance check, and the class can still be
+            # constructed over a fabricated lock authority in-process.
             raise D2LeaseNotHeld(
                 D2ReasonCode.LEASE_NOT_A_CAPABILITY,
                 "lease must be a real PostgresAdvisoryKeysetLease; a duck-typed "
-                f"{type(lease).__name__} cannot prove account coordination",
+                f"{type(lease).__name__} is not one",
             )
         if not isinstance(ledger, BinanceDemoLedgerService):
             raise D2LedgerRequired(
@@ -1628,12 +1685,16 @@ class D2RemediationSingleWriter:
     def _echo_from_status(
         self, op: D2PlannedOperation, status_body: Mapping[str, Any]
     ) -> SpotDemoOrderSubmitResult:
-        # No default for clientOrderId. Substituting the id we asked about would
-        # manufacture the very evidence the echo check is supposed to demand.
+        # No default for clientOrderId, and no ``str()`` around a possibly-null
+        # orderId. Substituting the id we asked about, or turning ``None`` into
+        # the four-character string ``'None'``, manufactures the very evidence
+        # the echo check exists to demand. Absent stays absent here; the check
+        # below is what decides.
         raw_cid = status_body.get("clientOrderId")
+        raw_oid = status_body.get("orderId")
         return SpotDemoOrderSubmitResult(
             client_order_id="" if raw_cid is None else str(raw_cid),
-            broker_order_id=str(status_body.get("orderId", "")),
+            broker_order_id="" if raw_oid is None else str(raw_oid),
             symbol=str(status_body.get("symbol", "")),
             side=str(status_body.get("side", "")),
             order_type=str(status_body.get("type", "")),
@@ -1666,6 +1727,13 @@ class D2RemediationSingleWriter:
         ``clientOrderId`` must equal the deterministic id we sent, and a broker
         order id must be present. Without both, this response might describe
         someone else's order and we would be booking it as ours.
+
+        Both identifiers are read from the **raw** body through
+        :func:`broker_identifier_problem`, not from the stringified DTO fields.
+        A null ``orderId`` that has been through ``str()`` arrives as the
+        four-character string ``'None'`` and passes any "is it non-empty"
+        test; the same goes for ``'null'``, ``''``, whitespace, and ``0``.
+        Those are spellings of absent, and absent is a failure.
         """
 
         order = op.order
@@ -1675,18 +1743,23 @@ class D2RemediationSingleWriter:
             mismatches.append(
                 f"clientOrderId {result.client_order_id!r} != {op.client_order_id!r}"
             )
-        echoed_cid = raw.get("clientOrderId")
-        if echoed_cid is None:
+        cid_problem = broker_identifier_problem(
+            raw.get("clientOrderId"), field="clientOrderId"
+        )
+        if cid_problem is not None:
             mismatches.append(
-                "broker response carries no clientOrderId — this response is "
-                "not proven to be about our order"
+                f"{cid_problem} — this response is not proven to be about our order"
             )
-        elif str(echoed_cid) != op.client_order_id:
+        elif str(raw.get("clientOrderId")) != op.client_order_id:
             mismatches.append(
-                f"raw clientOrderId {echoed_cid!r} != {op.client_order_id!r}"
+                f"raw clientOrderId {raw.get('clientOrderId')!r} != "
+                f"{op.client_order_id!r}"
             )
-        if not str(result.broker_order_id or "").strip():
-            mismatches.append("broker response carries no orderId")
+        oid_problem = broker_identifier_problem(raw.get("orderId"), field="orderId")
+        if oid_problem is not None:
+            mismatches.append(
+                f"{oid_problem} — a fill has no evidence without a broker order id"
+            )
         if result.symbol != order.symbol:
             mismatches.append(f"symbol {result.symbol!r} != {order.symbol!r}")
         if result.side != order.side:
@@ -1909,6 +1982,7 @@ __all__ = [
     "assert_registry_credential_fingerprint",
     "assert_writer_freeze",
     "bind_sealed_orders",
+    "broker_identifier_problem",
     "d2_advisory_keyset",
     "d2_physical_account_id",
     "d2_physical_account_scope",

@@ -1860,8 +1860,8 @@ async def test_b3_effect_a_no_op_ledger_subclass_is_refused_before_any_send(
     ("override", "needle"),
     [
         ({"clientOrderId": "someone-elses-order"}, "clientOrderId"),
-        ({"clientOrderId": None}, "carries no clientOrderId"),
-        ({"orderId": ""}, "carries no orderId"),
+        ({"clientOrderId": None}, "clientOrderId is null"),
+        ({"orderId": ""}, "orderId is '', which is a spelling of absent"),
     ],
 )
 async def test_b5_identity_a_response_about_another_order_is_refused(
@@ -1940,3 +1940,189 @@ def test_the_lease_release_is_not_skipped_when_the_client_close_raises() -> None
     # after an unguarded await.
     assert close_at < guard_at < release_at, finally_block[:600]
     assert "execution_client_close_error" in source
+
+
+# --------------------------------------------------------------------------
+# Round 4 — a null orderId must not be laundered into evidence
+# --------------------------------------------------------------------------
+
+
+#: Every spelling of "absent" a broker, a serialiser, or an ``str()`` call can
+#: produce. Round 3 checked only that the *stringified* DTO field was non-blank,
+#: so ``None`` arrived as the four-character string ``'None'`` and passed.
+_ABSENT_ORDER_ID_SPELLINGS: list[Any] = [
+    None,
+    "None",
+    "none",
+    "null",
+    "NULL",
+    "nil",
+    "undefined",
+    "<none>",
+    "n/a",
+    "-",
+    "",
+    "   ",
+    "\t",
+    0,
+    -1,
+    True,
+    [],
+]
+
+
+@pytest.mark.parametrize("spelling", _ABSENT_ORDER_ID_SPELLINGS)
+def test_b5_every_spelling_of_an_absent_order_id_is_rejected(spelling: Any) -> None:
+    problem = d2.broker_identifier_problem(spelling, field="orderId")
+    assert problem is not None, f"{spelling!r} was accepted as an order id"
+    assert "orderId" in problem
+
+
+@pytest.mark.parametrize("value", ["12345", 12345, "  12345  ", "abc-123"])
+def test_b5_real_order_ids_are_still_accepted(value: Any) -> None:
+    """Control: the guard discriminates rather than refusing everything."""
+
+    assert d2.broker_identifier_problem(value, field="orderId") is None
+
+
+def test_b5_str_of_none_is_exactly_the_laundering_that_used_to_pass() -> None:
+    """The specific defect, named.
+
+    ``str(None)`` is ``'None'``: non-empty, non-blank, and indistinguishable
+    from an identifier to any presence check that runs after the coercion. The
+    fix is to read the raw value, not to add another string to a denylist —
+    though the denylist covers the serialiser-produced spellings too.
+    """
+
+    laundered = str(None)
+    assert laundered == "None"
+    assert bool(laundered.strip())  # the round-3 check saw this as present
+    assert d2.broker_identifier_problem(laundered, field="orderId") is not None
+    assert d2.broker_identifier_problem(None, field="orderId") is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spelling", [None, "None", "null", "", "   ", 0])
+async def test_b5_a_null_order_id_stops_the_submit_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: Any
+) -> None:
+    client = FakeExecutionClient(echo_overrides={"orderId": spelling})
+    writer = build_writer(tmp_path, monkeypatch, client=client, authorized=True)
+    with pytest.raises(D2RemediationError) as exc:
+        await writer.execute(confirm=True)
+    assert exc.value.reason_code is D2ReasonCode.BROKER_ECHO_MISMATCH
+    assert "orderId" in str(exc.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spelling", [None, "None", "null", "", 0])
+async def test_b5_a_null_order_id_stops_the_readback_path_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: Any
+) -> None:
+    """The readback converter used to ``str()`` the raw value on its way into
+    the DTO, so this path laundered the null before the check ever saw it."""
+
+    client = FakeExecutionClient(
+        submit_error=TimeoutError("reset"),
+        echo_overrides={"orderId": spelling},
+    )
+    writer = build_writer(tmp_path, monkeypatch, client=client, authorized=True)
+    with pytest.raises(D2RemediationError) as exc:
+        await writer.execute(confirm=True)
+    assert exc.value.reason_code is D2ReasonCode.BROKER_ECHO_MISMATCH
+    assert "orderId" in str(exc.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spelling", [None, "None", "null", "", 0])
+async def test_b5_a_null_client_order_id_is_rejected_the_same_way(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spelling: Any
+) -> None:
+    client = FakeExecutionClient(echo_overrides={"clientOrderId": spelling})
+    writer = build_writer(tmp_path, monkeypatch, client=client, authorized=True)
+    with pytest.raises(D2RemediationError) as exc:
+        await writer.execute(confirm=True)
+    assert exc.value.reason_code is D2ReasonCode.BROKER_ECHO_MISMATCH
+    assert "clientOrderId" in str(exc.value)
+
+
+def test_b5_the_readback_converter_no_longer_stringifies_a_null_order_id() -> None:
+    """Read at the source, not through a denylist: the converter must not
+    create the string in the first place."""
+
+    source = inspect.getsource(D2RemediationSingleWriter._echo_from_status)
+    assert 'str(status_body.get("orderId"' not in source
+    assert 'raw_oid = status_body.get("orderId")' in source
+
+
+def test_the_runbook_gate_table_names_symbols_that_exist() -> None:
+    """Every gate the runbook claims is enforced must resolve to real code.
+
+    A runbook that names a gate which no longer exists is worse than one that
+    names none: it reads as a verified guarantee. This walks the "Enforced at"
+    column and resolves each dotted name against the live modules.
+    """
+
+    runbook = Path("docs/runbooks/binance-spot-demo-d2-remediation.md").read_text(
+        encoding="utf-8"
+    )
+    table = runbook.split("| Gate | Enforced at | Current state |", 1)[1]
+    table = table.split("\n\n", 1)[0]
+
+    named: set[str] = set()
+    for row in table.splitlines():
+        cells = [c.strip() for c in row.split("|")]
+        if len(cells) < 4 or cells[2].startswith("---"):
+            continue
+        named.update(re.findall(r"`([A-Za-z_][A-Za-z0-9_.]*)`", cells[2]))
+    assert len(named) >= 10, named
+
+    from app.services.brokers.binance.demo.ledger.service import (
+        BinanceDemoLedgerService as _Ledger,
+    )
+
+    roots: dict[str, Any] = {
+        "BinanceDemoLedgerService": _Ledger,
+        "D2RemediationSingleWriter": D2RemediationSingleWriter,
+        "SealedAuthority": d2.SealedAuthority,
+    }
+    for dotted in sorted(named):
+        head, _, tail = dotted.partition(".")
+        owner = roots.get(head, d2) if head in roots else d2
+        if head in roots:
+            assert tail and hasattr(owner, tail), dotted
+        else:
+            assert hasattr(d2, head), dotted
+
+
+def test_the_source_does_not_claim_guarantees_it_does_not_provide() -> None:
+    """Anti-regression on wording, not on behaviour.
+
+    The operator-confirmed threat model is that these gates cover accidental
+    misuse and not deliberate same-process forgery. A docstring that calls
+    something "unforgeable" or "impossible" contradicts that, and a reader who
+    trusts it makes a worse decision than one who reads nothing.
+    """
+
+    banned = ("unforgeable", "impossible to", "cannot be forged", "tamper-proof")
+    for path in (
+        Path("app/services/brokers/binance/spot_demo/d2_remediation_single.py"),
+        Path("scripts/binance_spot_demo_d2_remediation.py"),
+        Path("docs/runbooks/binance-spot-demo-d2-remediation.md"),
+    ):
+        text = path.read_text(encoding="utf-8").lower()
+        for phrase in banned:
+            assert phrase not in text, f"{path}: overclaims with {phrase!r}"
+
+    # ...and the limit is stated where a reader will meet it.
+    module = Path(
+        "app/services/brokers/binance/spot_demo/d2_remediation_single.py"
+    ).read_text(encoding="utf-8")
+    assert "Threat model (operator-confirmed)" in module
+    assert "do **not** cover" in module
+
+    runbook = Path("docs/runbooks/binance-spot-demo-d2-remediation.md").read_text(
+        encoding="utf-8"
+    )
+    assert "confirmed by the operator, not pending" in runbook
+    assert "deliberate forgery by code running in the same process" in runbook
