@@ -71,6 +71,35 @@ def _strip_volatile(consensus: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in consensus.items() if k in _STABLE_CONSENSUS_FIELDS}
 
 
+_COUNT_FIELDS = (
+    "buy_count",
+    "hold_count",
+    "sell_count",
+    "strong_buy_count",
+    "total_count",
+)
+_TARGET_FIELDS = (
+    "avg_target_price",
+    "median_target_price",
+    "max_target_price",
+    "min_target_price",
+    "upside_pct",
+)
+
+
+def _is_meaningful_consensus(consensus: dict[str, Any]) -> bool:
+    """Mirrors the offline snapshot builder's gate
+    (app/services/analyst_consensus_snapshots/builder.py::_payload_from_consensus)
+    — checkpoint fix (ROB-1309): a row carrying only current_price is a
+    quote, not a consensus, but a row carrying target-price fields WITHOUT
+    recommendation counts (Yahoo's common "target-only" shape) IS meaningful
+    and must not be discarded/treated as "unavailable" just because
+    total_count is None. The old `isinstance(total_count, int)` gate here
+    was stricter than the codebase's own established precedent and would
+    silently regress target-only US consensus to unavailable/uncached."""
+    return any(consensus.get(f) is not None for f in (*_COUNT_FIELDS, *_TARGET_FIELDS))
+
+
 async def get_cached_consensus(
     redis_client: Any, market: str, symbol: str
 ) -> dict[str, Any] | None:
@@ -100,9 +129,8 @@ async def set_cached_consensus(
     market_norm = (market or "").strip().lower()
     if redis_client is None or market_norm not in _PROVIDER_BY_MARKET:
         return
-    total = consensus.get("total_count")
-    if not isinstance(total, int) or total <= 0:
-        return  # never cache a degraded/empty consensus
+    if not _is_meaningful_consensus(consensus):
+        return  # never cache a degraded/empty (quote-only) consensus
     try:
         now = now_kst()
         provider = _PROVIDER_BY_MARKET[market_norm]
@@ -156,9 +184,7 @@ async def resolve_consensus(
         consensus = (
             (payload or {}).get("consensus") if isinstance(payload, dict) else None
         )
-        if isinstance(consensus, dict) and isinstance(
-            consensus.get("total_count"), int
-        ):
+        if isinstance(consensus, dict) and _is_meaningful_consensus(consensus):
             if cacheable:
                 await set_cached_consensus(redis_client, market_norm, symbol, consensus)
                 stable = _strip_volatile(consensus)

@@ -42,12 +42,25 @@ logger = logging.getLogger(__name__)
 
 _KEY_PREFIX = "screener_enrich_negcache"
 
-# TTL for a negative result. Deliberately short relative to the analyst
-# consensus cache's daily TTL: an enrichment failure is more likely to be a
-# transient blip (timeout, rate limit) than the KR analyst consensus itself
-# (which genuinely is daily-stable). 30 minutes bounds retry storms without
+# Retry-suppression window: how long should_skip() actually blocks a retry
+# after a failure. Deliberately short relative to the analyst consensus
+# cache's daily TTL: an enrichment failure is more likely to be a transient
+# blip (timeout, rate limit) than the KR analyst consensus itself (which
+# genuinely is daily-stable). 30 minutes bounds retry storms without
 # permanently hiding a symbol that recovers later in the day.
 NEGATIVE_CACHE_TTL_SECONDS = 30 * 60
+
+# History-retention TTL for the Redis KEY itself — deliberately much longer
+# than NEGATIVE_CACHE_TTL_SECONDS. Without this split, consecutive_failures
+# could never exceed 1: the block window and the Redis key TTL were the same
+# value, so the moment a retry was finally allowed again (block window
+# elapsed), the key had ALSO just expired, prior=None, and the count reset to
+# 1 on every single retry — making _CHRONIC_FAILURE_THRESHOLD unreachable in
+# any real operating condition. This key TTL is refreshed (slides forward) on
+# every record_failure, so a symbol that keeps failing every ~30min is
+# remembered continuously; one that goes quiet for HISTORY_TTL_SECONDS is
+# treated as recovered/forgotten (never permanently hidden).
+NEGATIVE_CACHE_HISTORY_TTL_SECONDS = 24 * 60 * 60
 
 # A symbol is surfaced as a "chronic failure candidate" (operator-actionable,
 # NOT auto-removed) once it has failed this many consecutive times across
@@ -89,9 +102,18 @@ class NegativeCacheEntry:
     first_seen_epoch: float
     last_seen_epoch: float
     consecutive_failures: int
+    # Retry suppression ends at this epoch — separate from the Redis key's
+    # own (longer) TTL, which governs how long the failure *history* (the
+    # consecutive_failures count) is remembered. Defaults to last_seen_epoch
+    # for backward compatibility with any pre-fix serialized entry (treated
+    # as "not blocked" — fail-open toward allowing a retry).
+    blocked_until_epoch: float = 0.0
 
     def is_chronic(self) -> bool:
         return self.consecutive_failures >= _CHRONIC_FAILURE_THRESHOLD
+
+    def is_blocked(self, now: float | None = None) -> bool:
+        return self.blocked_until_epoch > (now if now is not None else time.time())
 
 
 def _key(kind: str, market: str, symbol: str) -> str:
@@ -121,8 +143,16 @@ async def get_entry(
 async def should_skip(
     redis_client: Any, *, kind: str, market: str, symbol: str
 ) -> NegativeCacheEntry | None:
-    """Alias for get_entry — a non-None return means "skip the network call"."""
-    return await get_entry(redis_client, kind=kind, market=market, symbol=symbol)
+    """A non-None return means "skip the network call" — i.e. an entry
+    exists AND its retry-suppression window hasn't elapsed yet. An entry
+    that exists but is past its block window returns None here (retry is
+    allowed) even though its failure-history is still retained server-side
+    for the next record_failure's prior-count lookup (see
+    NEGATIVE_CACHE_HISTORY_TTL_SECONDS)."""
+    entry = await get_entry(redis_client, kind=kind, market=market, symbol=symbol)
+    if entry is None or not entry.is_blocked():
+        return None
+    return entry
 
 
 async def record_failure(
@@ -146,13 +176,14 @@ async def record_failure(
         first_seen_epoch=prior.first_seen_epoch if prior else now,
         last_seen_epoch=now,
         consecutive_failures=(prior.consecutive_failures if prior else 0) + 1,
+        blocked_until_epoch=now + NEGATIVE_CACHE_TTL_SECONDS,
     )
     if redis_client is not None:
         try:
             await redis_client.set(
                 _key(kind, market, symbol),
                 json.dumps(asdict(entry)),
-                ex=NEGATIVE_CACHE_TTL_SECONDS,
+                ex=NEGATIVE_CACHE_HISTORY_TTL_SECONDS,
             )
         except Exception as write_exc:  # noqa: BLE001 — fail-open
             logger.debug(

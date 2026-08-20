@@ -19,16 +19,26 @@ This tool is the explicit, opt-in home for that live enrichment. It:
 3. Always enriches the final returned page (sector label lazy-fill +
    analyst consensus + RSI) via `screener_analysis_enrichment.enrich_snapshot_page`
    — same as the old inline `screen_stocks_snapshot` behavior.
-4. Wraps the sector-fetch and consensus-fetch provider callables with a
-   bounded, TTL'd negative cache (`enrichment_negative_cache.py`) so a
-   symbol that just failed (delisted, renamed, parse-miss, rate-limited)
-   is not re-fetched — and re-failed — on every subsequent call within the
-   TTL window. Every skip/failure is reported under
-   `meta.enrichment_excluded` (never a silent drop): the row itself always
-   stays in `results`, only its sector/consensus enrichment is missing.
-   Chronic failures (>=3 consecutive) are additionally surfaced under
-   `meta.chronic_failure_candidates` as *advisory* universe-cleanup
-   candidates — this tool never mutates `kr_symbol_universe` /
+4. Wraps EVERY provider-fetch call this tool makes — sector fetch, the
+   per-page consensus fetch used by `enrich_snapshot_page`, AND the
+   consensus-COUNT resolver used by `min_analyst_count`/`min_analyst_buy_count`
+   filtering (`resolve_consensus_counts`, step 2 above) — with a bounded,
+   TTL'd negative cache (`enrichment_negative_cache.py`) so a symbol that
+   just failed (delisted, renamed, parse-miss, rate-limited) — INCLUDING a
+   "no data" non-exception return like `(None, None)` from the sector
+   fetchers, not just a raised exception — is not re-fetched, and re-failed,
+   on every subsequent call within the retry-suppression window. Every
+   skip/failure is reported under `meta.enrichment_excluded` (never a
+   silent drop of the ROW: `results` never has a row vanish without a
+   corresponding report). Symbols with >=3 consecutive failures (tracked
+   across retry windows via a longer-lived history TTL — see
+   `enrichment_negative_cache.NEGATIVE_CACHE_HISTORY_TTL_SECONDS`) ARE
+   additionally excluded from `results` on THIS call — the
+   `meta.halted_suspect_excluded`-style pattern the ROB-1309 ticket named
+   explicitly: per-call candidate-pool cleanup + non-silent reporting under
+   `meta.chronic_failure_candidates`, not a permanent hide (the exclusion
+   self-heals the moment the fetch succeeds again — `record_success` clears
+   the entry). This tool never mutates `kr_symbol_universe` /
    `us_symbol_universe` / `symbol_sectors` itself beyond the pre-existing
    `symbol_sectors_service` lazy-fill write path (ROB-512), and it makes
    zero writes to `invest_screener_snapshots` (the only writer of that
@@ -100,6 +110,30 @@ def _sector_fetcher_with_negative_cache(
                 }
             )
             raise
+        # ROB-1309 checkpoint fix: _fetch_kr_sector/_fetch_us_sector return
+        # (None, None) — NOT an exception — for "no sector data found" (the
+        # exact delisted/unrecognized-symbol case this cache exists for).
+        # Treating that as success would mean a permanently-no-data symbol
+        # is retried forever; it must be recorded as a failure instead.
+        if result == (None, None):
+            recorded = await negcache.record_failure(
+                redis_client,
+                kind=kind,
+                market=market,
+                symbol=symbol,
+                exc=RuntimeError("sector data not found"),
+            )
+            excluded.append(
+                {
+                    "symbol": symbol,
+                    "market": market,
+                    "kind": kind,
+                    "reason": "no_data",
+                    "errorClass": recorded.error_class,
+                    "consecutiveFailures": recorded.consecutive_failures,
+                }
+            )
+            return result
         await negcache.record_success(
             redis_client, kind=kind, market=market, symbol=symbol
         )
@@ -167,6 +201,83 @@ def _opinion_provider_with_negative_cache(
     return _wrapped
 
 
+def _raw_opinion_fetcher_with_negative_cache(
+    *,
+    market: str,
+    redis_client: Any,
+    excluded: list[dict[str, Any]],
+) -> Any:
+    """Negative-cache-aware wrapper for the RAW (uncached-by-itself)
+    opinion_fetcher signature `resolve_consensus`/`resolve_consensus_counts`
+    expect — checkpoint fix (ROB-1309 addendum): the min_analyst_count/
+    min_analyst_buy_count path called `resolve_consensus_counts` with the
+    default (unwrapped) `handle_get_investment_opinions`, so a symbol that
+    just failed there was never recorded and got retried on every single
+    call, unlike the per-page sector/consensus fetchers used by
+    `enrich_snapshot_page`. This wraps the SAME kind="consensus" negative
+    cache bucket as `_opinion_provider_with_negative_cache` — a failure
+    recorded by one path is honored by the other."""
+    kind = "consensus"
+
+    async def _wrapped(*, symbol: str, market: str, limit: int = 10) -> dict[str, Any]:
+        entry = await negcache.should_skip(
+            redis_client, kind=kind, market=market, symbol=symbol
+        )
+        if entry is not None:
+            excluded.append(
+                {
+                    "symbol": symbol,
+                    "market": market,
+                    "kind": kind,
+                    "reason": "negative_cache_hit",
+                    "errorClass": entry.error_class,
+                    "consecutiveFailures": entry.consecutive_failures,
+                }
+            )
+            return {"error": "analyst_consensus_unavailable"}
+
+        from app.mcp_server.tooling.fundamentals._valuation import (
+            handle_get_investment_opinions,
+        )
+
+        result = await handle_get_investment_opinions(
+            symbol=symbol, market=market, limit=limit
+        )
+        consensus = (
+            (result or {}).get("consensus") if isinstance(result, dict) else None
+        )
+        if not (
+            isinstance(consensus, dict)
+            and analyst_consensus_cache._is_meaningful_consensus(consensus)
+        ):
+            recorded = await negcache.record_failure(
+                redis_client,
+                kind=kind,
+                market=market,
+                symbol=symbol,
+                exc=RuntimeError(
+                    str((result or {}).get("error") or "analyst_consensus_unavailable")
+                ),
+            )
+            excluded.append(
+                {
+                    "symbol": symbol,
+                    "market": market,
+                    "kind": kind,
+                    "reason": "fetch_failed",
+                    "errorClass": recorded.error_class,
+                    "consecutiveFailures": recorded.consecutive_failures,
+                }
+            )
+        else:
+            await negcache.record_success(
+                redis_client, kind=kind, market=market, symbol=symbol
+            )
+        return result
+
+    return _wrapped
+
+
 async def screen_stocks_enrich_impl(
     *,
     preset: str | None = None,
@@ -190,9 +301,12 @@ async def screen_stocks_enrich_impl(
     Runs the identical preset/filter/discovery/pagination pipeline as
     `screen_stocks_snapshot`, then makes external calls: sector lazy-fill
     (KR Naver / US yfinance, persisted via the pre-existing
-    `symbol_sectors_service`), analyst-consensus fetch (KR Redis
-    cache-aside, US live), and — only for the final returned page — a fresh
-    current-price fetch for target-upside recomputation.
+    `symbol_sectors_service`), analyst-consensus fetch (KR AND US both via
+    the Redis cache-aside in `analyst_consensus_cache.py` — a cache hit
+    skips the provider on either market), a live KIS holdings lookup for
+    `isHeld`/`exclude_held` (the one call `screen_stocks_snapshot` no
+    longer makes), and — only for the final returned page — a fresh
+    lightweight current-price fetch for target-upside recomputation.
 
     min_analyst_count / min_analyst_buy_count: filters on consensus COUNTS,
     resolved BEFORE pagination (bounded to `_MAX_ANALYST_ENRICHMENT_ROWS`
@@ -206,6 +320,9 @@ async def screen_stocks_enrich_impl(
     `kr_symbol_universe`/`us_symbol_universe`/`symbol_sectors` beyond the
     pre-existing lazy-fill write path.
     """
+    held_symbols, holdings_meta = await _snapshot_tool._collect_holdings_for_market(
+        market
+    )
     built = await _snapshot_tool._build_snapshot_page(
         preset=preset,
         presets=presets,
@@ -220,6 +337,8 @@ async def screen_stocks_enrich_impl(
         sort=sort,
         limit=limit,
         offset=offset,
+        held_symbols=held_symbols,
+        holdings_meta=holdings_meta,
     )
     if built.get("error") is not None:
         return built["error"]
@@ -266,6 +385,9 @@ async def screen_stocks_enrich_impl(
             market=market,
             redis_client=redis_client,
             memo=memo,
+            opinion_fetcher=_raw_opinion_fetcher_with_negative_cache(
+                market=market, redis_client=redis_client, excluded=enrichment_excluded
+            ),
         )
 
         def _passes(row: dict[str, Any]) -> bool:
@@ -328,13 +450,41 @@ async def screen_stocks_enrich_impl(
         fetch_kr_sector=fetch_kr_sector,
         fetch_us_sector=fetch_us_sector,
     )
-    payload["results"] = enrichment["results"]
-    payload["analysisEnrichment"] = enrichment["summary"]
+    enriched_results = enrichment["results"]
 
+    # ROB-1309 checkpoint fix ("negative cache + universe cleanup", read as
+    # the same per-call candidate-pool-cleanup pattern the ticket named
+    # explicitly via meta.halted_suspect_excluded — not a DB mutation, see
+    # module docstring): a symbol with >= chronic threshold consecutive
+    # failures is removed from THIS call's results, non-silently, via
+    # meta.chronic_failure_candidates. It is never permanently hidden — the
+    # very next successful fetch (record_success) clears the negative-cache
+    # entry and the symbol is included again on the next call.
     chronic = [e for e in enrichment_excluded if e.get("consecutiveFailures", 0) >= 3]
+    chronic_symbols = {(e["market"], e["symbol"].upper()) for e in chronic}
+    if chronic_symbols:
+        kept_results = [
+            row
+            for row in enriched_results
+            if (
+                (str(row.get("market") or market).strip().lower()),
+                str(row.get("symbol") or "").strip().upper(),
+            )
+            not in chronic_symbols
+        ]
+    else:
+        kept_results = enriched_results
+    chronic_excluded_count = len(enriched_results) - len(kept_results)
+
+    payload["results"] = kept_results
+    payload["analysisEnrichment"] = enrichment["summary"]
+    if payload.get("pagination") is not None and chronic_excluded_count:
+        payload["pagination"]["returned_count"] = len(kept_results)
+
     payload["meta"] = {
         "enrichment_excluded": enrichment_excluded,
         "chronic_failure_candidates": chronic,
+        "chronic_excluded_count": chronic_excluded_count,
     }
     payload["enrichment"] = {
         "applied": True,

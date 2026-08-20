@@ -17,11 +17,14 @@ lazy-fill, analyst-consensus fetching, and any other provider network calls
 were moved out to the explicit `screen_stocks_enrich` MCP tool
 (`app/mcp_server/tooling/screener_enrich_tool.py`) — see that module's
 docstring and the root `CLAUDE.md` "screen_stocks_snapshot / screen_stocks_enrich
-MCP 도구 분리 (ROB-1309)" section for the full before/after contract. This
-tool's only network-adjacent call is the KIS-live
-holdings lookup used for `isHeld` marking (`_collect_kis_positions`), which
-predates ROB-1309, is bounded (one call, not a per-row fan-out), and is
-explicitly out of this issue's scope (W2 — holdings/portfolio code).
+MCP 도구 분리 (ROB-1309)" section for the full before/after contract. The
+KIS-live holdings lookup used for `isHeld` marking
+(`_collect_holdings_for_market` / `_collect_kis_positions`) predates
+ROB-1309, but ROB-1309's "zero external HTTP for every option combination"
+requirement means `screen_stocks_snapshot_impl` never calls it — `isHeld`
+is always False and `exclude_held=True` is rejected fail-closed (same
+redirect pattern as `min_analyst_count`). Only `screen_stocks_enrich_impl`
+makes that call now.
 """
 
 from __future__ import annotations
@@ -204,6 +207,63 @@ _MAX_PRESET_SWEEP_COUNT = 5
 _MAX_ANALYST_ENRICHMENT_ROWS = 200
 
 
+async def _collect_holdings_for_market(
+    market: str,
+) -> tuple[set[tuple[str, str]], dict[str, Any]]:
+    """The one bounded, live KIS broker call in this module: fetches current
+    positions for ``isHeld``/``exclude_held`` marking.
+
+    ROB-1309 hard requirement: ``screen_stocks_snapshot`` (the DB-only tool)
+    must make ZERO external HTTP calls for ANY option combination — so this
+    is called ONLY from ``screen_stocks_enrich_impl`` now, never from
+    ``screen_stocks_snapshot_impl``/``_build_snapshot_page``'s default path.
+    """
+    from app.mcp_server.tooling.portfolio_holdings import _collect_kis_positions
+
+    held_symbols: set[tuple[str, str]] = set()
+    holdings_meta: dict[str, Any] = {
+        "source": "kis_live",
+        "status": "ok",
+        "held_count": 0,
+    }
+    holdings_market_filter = _holding_market_filter(market)
+    if holdings_market_filter is None:
+        holdings_meta["status"] = "not_applicable"
+        return held_symbols, holdings_meta
+
+    try:
+        # MCP always runs live (is_mock=False)
+        pos, holdings_warnings = await _collect_kis_positions(
+            holdings_market_filter, is_mock=False
+        )
+        if holdings_warnings:
+            holdings_meta["status"] = "error" if not pos else "partial"
+            holdings_meta["warning_count"] = len(holdings_warnings)
+            logger.warning(
+                "screener_snapshot: kis holdings returned warnings: %s",
+                holdings_warnings,
+            )
+        else:
+            holdings_meta["warning_count"] = 0
+
+        held_symbols = {
+            (
+                str(p.get("market") or market).strip().lower(),
+                _normalize_symbol_key(p.get("symbol")),
+            )
+            for p in pos
+            if p.get("symbol")
+        }
+        holdings_meta["held_count"] = len(held_symbols)
+    except Exception as exc:  # noqa: BLE001
+        holdings_meta["status"] = "error"
+        holdings_meta["warning_count"] = 1
+        # surface as a non-fatal warning so results still return
+        # (build_screener_results takes resolver as non-optional, so fall back to noop)
+        logger.warning("screener_snapshot: kis holdings failed: %s", exc)
+    return held_symbols, holdings_meta
+
+
 async def _build_snapshot_page(
     *,
     preset: str | None,
@@ -219,14 +279,22 @@ async def _build_snapshot_page(
     sort: Literal["matched_presets_desc"] | None,
     limit: int,
     offset: int,
+    held_symbols: set[tuple[str, str]] | None = None,
+    holdings_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build + filter + paginate a snapshot page — the DB-only core shared by
     ``screen_stocks_snapshot_impl`` (no enrichment) and ``screen_stocks_enrich_impl``
     (enrichment layered on top of this function's ``page``/``all_results``).
 
-    Makes ZERO external HTTP calls: DB reads (invest_screener_snapshots via
-    build_screener_results) plus one bounded KIS-live holdings lookup for
-    isHeld marking (pre-existing, out of ROB-1309 scope — see module docstring).
+    Makes ZERO external HTTP calls by itself: DB reads only
+    (invest_screener_snapshots/invest_crypto_screener_snapshots via
+    build_screener_results). ``held_symbols``/``holdings_meta`` are an
+    INJECTED, already-resolved result — this function never fetches
+    holdings itself (see ``_collect_holdings_for_market``, called only by
+    ``screen_stocks_enrich_impl``). Omitting both (the default —
+    ``screen_stocks_snapshot_impl`` always omits them) means isHeld marking
+    is skipped entirely: every row resolves to "none" and
+    ``holdings_meta.status == "skipped"``.
 
     Returns a dict with keys: ``payload`` (the response dict sans results/
     pagination/enrichment), ``page`` (the paginated row slice), ``all_results``
@@ -235,7 +303,6 @@ async def _build_snapshot_page(
     ``total_available``, ``error`` (short-circuit dict to return verbatim, or
     None).
     """
-    from app.mcp_server.tooling.portfolio_holdings import _collect_kis_positions
     from app.services.invest_view_model.screener_filters import (
         ScreenerFilterCondition,
         ScreenerFilterError,
@@ -263,42 +330,21 @@ async def _build_snapshot_page(
             }
         }
 
-    # ROB-515: mark 'held' rows in screener results via KIS live positions.
-    # (Watchlist personalization is still omitted for discovery MCP).
-    held_symbols: set[tuple[str, str]] = set()
-    holdings_meta = {"source": "kis_live", "status": "ok", "held_count": 0}
-    holdings_market_filter = _holding_market_filter(market)
-    if holdings_market_filter is not None:
-        try:
-            # MCP always runs live (is_mock=False)
-            pos, holdings_warnings = await _collect_kis_positions(
-                holdings_market_filter, is_mock=False
-            )
-            if holdings_warnings:
-                holdings_meta["status"] = "error" if not pos else "partial"
-                holdings_meta["warning_count"] = len(holdings_warnings)
-                logger.warning(
-                    "screener_snapshot: kis holdings returned warnings: %s",
-                    holdings_warnings,
-                )
-            else:
-                holdings_meta["warning_count"] = 0
-
-            held_symbols = {
-                (
-                    str(p.get("market") or market).strip().lower(),
-                    _normalize_symbol_key(p.get("symbol")),
-                )
-                for p in pos
-                if p.get("symbol")
-            }
-            holdings_meta["held_count"] = len(held_symbols)
-        except Exception as exc:  # noqa: BLE001
-            holdings_meta["status"] = "error"
-            holdings_meta["warning_count"] = 1
-            # surface as a non-fatal warning so results still return
-            # (build_screener_results takes resolver as non-optional, so fall back to noop)
-            logger.warning("screener_snapshot: kis holdings failed: %s", exc)
+    # ROB-1309: held_symbols/holdings_meta are injected (see docstring) — this
+    # function never makes the live KIS call itself.
+    if held_symbols is None:
+        held_symbols = set()
+    if holdings_meta is None:
+        holdings_meta = {
+            "source": "kis_live",
+            "status": "skipped",
+            "held_count": 0,
+            "reason": (
+                "screen_stocks_snapshot is DB-only (ROB-1309) and does not "
+                "fetch live holdings; call screen_stocks_enrich for isHeld "
+                "marking / exclude_held."
+            ),
+        }
 
     # Use the first preset for adjustable filter catalog metadata
     main_preset_id = preset_ids[0]
@@ -447,7 +493,7 @@ async def _build_snapshot_page(
             "sort": sort,
         },
     }
-    if holdings_meta["status"] != "ok":
+    if holdings_meta["status"] in ("error", "partial"):
         combined_warnings.append(
             "KIS live 보유종목 확인 실패 — 보유 여부가 표시되지 않을 수 있습니다."
         )
@@ -518,7 +564,11 @@ async def screen_stocks_snapshot_impl(
     on top of the preset's starting set (adjust same field, add new). Returns the
     screener payload plus availableFilters (the adjustable catalog) and appliedFilters.
 
-    exclude_watched/held: ROB-515 discovery workflow — hide already-processed symbols.
+    exclude_watched: ROB-515 discovery workflow — hide already-processed symbols
+    (soft no-op: no watchlist context wired for MCP; warns rather than filters).
+    exclude_held: NOT supported here (ROB-1309) — same fail-closed redirect as
+    min_analyst_count/min_analyst_buy_count, because honoring it correctly
+    requires a live KIS holdings call, which this DB-only tool never makes.
     exclude_symbols: explicit symbols to remove after dedupe.
     min_market_cap: raw numeric marketCapValue threshold (KRW for KR, USD for US).
     min/max_market_cap_eok: ROB-515 size filter — unit is 1억원 (KRW).
@@ -541,6 +591,20 @@ async def screen_stocks_snapshot_impl(
                 "screen_stocks_snapshot (ROB-1309: DB-only, zero external HTTP "
                 "by default). Call screen_stocks_enrich with the same filters "
                 "instead."
+            ),
+            "redirectTool": "screen_stocks_enrich",
+            "preset": preset,
+            "presets": presets,
+            "results": [],
+        }
+    if exclude_held:
+        return {
+            "error": (
+                "exclude_held requires a live KIS holdings lookup and is no "
+                "longer supported by screen_stocks_snapshot (ROB-1309: "
+                "DB-only, zero external HTTP for every option combination, "
+                "including this one). Call screen_stocks_enrich with the "
+                "same filters instead."
             ),
             "redirectTool": "screen_stocks_enrich",
             "preset": preset,
