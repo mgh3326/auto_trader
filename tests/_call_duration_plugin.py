@@ -1,11 +1,21 @@
 """Call-phase-only pytest duration telemetry (ROB-1295).
 
-pytest-split's own shard-balancing timing (``--store-durations`` /
+pytest-split's own storage timing (``--store-durations`` /
 ``--durations-path .test_durations``) measures the whole per-test protocol —
 setup + call + teardown — so shared fixture/session bootstrap cost gets
 folded into whichever test happens to trigger it. That pollutes any signal
-derived from ``.test_durations`` beyond its intended purpose (shard
-balancing, which stays unchanged and out of scope here).
+derived from ``.test_durations`` beyond its intended purpose.
+
+That purpose changed shape in ROB-1312: ``.test_durations`` is still
+produced weekly by the same ``--store-durations``/``--durations-path``
+mechanism this plugin sits alongside, but it no longer drives *runtime*
+shard selection in the required ``test`` job — the four core shards run
+fixed, committed ``ci_shards/shard-{1..4}.txt`` file manifests
+(``scripts/ci/file_shard_plan.py``) instead of a ``pytest-split
+--splits/--group`` selection. ``.test_durations`` remains a plain telemetry
+record (and, separately, the weight source those manifests are built from
+is ``.call_durations.json``, produced by this plugin + ``scripts/call_durations.py``,
+not ``.test_durations`` itself).
 
 This plugin instead records only the ``call`` phase per node id, so
 downstream freshness telemetry (``scripts/call_durations.py``) reflects
@@ -14,8 +24,9 @@ actual test-body cost. It is strictly additive:
 * opt-in only, loaded explicitly via ``-p tests._call_duration_plugin``
   together with ``--call-durations-out=PATH``; never active in the required
   ``test`` job or any other pytest invocation that does not pass both flags;
-* never reads or writes ``.test_durations`` — the pytest-split consumer of
-  that file is untouched.
+* never reads or writes ``.test_durations`` — this plugin and pytest-split's
+  own duration storage are independent, parallel measurements of the same
+  test run.
 
 ROB-1295 R1: a node whose ``setup`` phase itself skips (``@pytest.mark.skip``,
 ``skipif``, a fixture raising ``Skipped``/``unittest.SkipTest``, ...) never

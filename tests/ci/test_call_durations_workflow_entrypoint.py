@@ -1,9 +1,13 @@
 """ROB-1308 — module-safe entrypoint contract for `scripts/call_durations.py`.
 
 `scripts/call_durations.py` does ``from scripts.merge_test_durations import
-_load_collected_nodes`` at import time. That only resolves when ``scripts``
-is importable as a package, which requires the invoking process to have the
-repo root on ``sys.path`` (e.g. ``python -m scripts.call_durations``).
+...`` at import time (as of ROB-1312: ``load_node_manifest``,
+``validate_disjoint_shard_collections``, and
+``_check_shard_measured_matches_collected`` -- the disjoint-shard-collection
+/ independent-authoritative-collection contract those functions implement).
+That only resolves when ``scripts`` is importable as a package, which
+requires the invoking process to have the repo root on ``sys.path`` (e.g.
+``python -m scripts.call_durations``).
 Direct-script invocation (``python scripts/call_durations.py ...``) puts the
 script's own directory on ``sys.path[0]`` instead, so the import raises
 ``ModuleNotFoundError: No module named 'scripts'`` — this is exactly what
