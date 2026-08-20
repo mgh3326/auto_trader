@@ -11,6 +11,7 @@ from scripts.call_durations import (
     load_artifact,
     merge_call_duration_shards,
     serialize_artifact,
+    validate_artifact_provenance,
     validate_freshness,
 )
 
@@ -601,3 +602,98 @@ def test_build_artifact_node_count_equals_durations_plus_not_called(
         artifact["not_called"]
     )
     assert artifact["node_count"] == len(collected_nodes)
+
+
+# --- validate_artifact_provenance ---------------------------------------
+#
+# ROB-1312 R1 (verifier BLOCKER): planner `generate` reused
+# validate_artifact_structure but that function never checked
+# source_commit_sha/collection_hash at all, so a malformed or hand-tampered
+# .call_durations.json (blank source, a collection_hash that does not
+# actually describe its own durations/not_called) silently produced
+# manifests. These tests exercise validate_artifact_provenance directly, the
+# same function scripts/ci/file_shard_plan.py's `generate` now calls.
+
+
+def _provenance_artifact(**overrides: object) -> dict[str, object]:
+    durations = {_NODE_A: 1.0}
+    return {
+        "schema_version": 2,
+        "source_commit_sha": "a" * 40,
+        "collection_hash": compute_collection_hash({_NODE_A}),
+        "node_count": 1,
+        "durations": durations,
+        "not_called": [],
+        **overrides,
+    }
+
+
+def test_validate_artifact_provenance_accepts_well_formed_self_consistent() -> None:
+    artifact = _provenance_artifact()
+    validate_artifact_provenance(artifact, durations={_NODE_A: 1.0}, not_called=set())
+
+
+@pytest.mark.parametrize(
+    "source_commit_sha",
+    ["", "   ", True, False, 123, None],
+    ids=["empty", "whitespace", "true", "false", "int", "none"],
+)
+def test_validate_artifact_provenance_rejects_malformed_source_commit_sha(
+    source_commit_sha: object,
+) -> None:
+    artifact = _provenance_artifact(source_commit_sha=source_commit_sha)
+    with pytest.raises(ValueError, match="source_commit_sha"):
+        validate_artifact_provenance(
+            artifact, durations={_NODE_A: 1.0}, not_called=set()
+        )
+
+
+@pytest.mark.parametrize(
+    "collection_hash",
+    ["", "   ", True, False, 123, None, "not-a-real-hash"],
+    ids=["empty", "whitespace", "true", "false", "int", "none", "syntactically-bogus"],
+)
+def test_validate_artifact_provenance_rejects_malformed_collection_hash(
+    collection_hash: object,
+) -> None:
+    artifact = _provenance_artifact(collection_hash=collection_hash)
+    with pytest.raises(ValueError, match="collection_hash"):
+        validate_artifact_provenance(
+            artifact, durations={_NODE_A: 1.0}, not_called=set()
+        )
+
+
+def test_validate_artifact_provenance_rejects_hash_of_a_different_node_set() -> None:
+    # A syntactically valid sha256 hex digest, but of the WRONG node set --
+    # this must be distinguishable from "malformed" and still fail closed.
+    artifact = _provenance_artifact(
+        collection_hash=compute_collection_hash({_NODE_A, _NODE_B})
+    )
+    with pytest.raises(ValueError, match="does not match this artifact's own"):
+        validate_artifact_provenance(
+            artifact, durations={_NODE_A: 1.0}, not_called=set()
+        )
+
+
+def test_validate_artifact_provenance_accepts_not_called_in_own_node_set() -> None:
+    artifact = _provenance_artifact(
+        durations={_NODE_A: 1.0},
+        collection_hash=compute_collection_hash({_NODE_A, _NODE_B}),
+        node_count=2,
+    )
+    validate_artifact_provenance(
+        artifact, durations={_NODE_A: 1.0}, not_called={_NODE_B}
+    )
+
+
+def test_validate_artifact_provenance_tolerates_staleness_vs_a_reference_it_never_sees() -> (
+    None
+):
+    # This function has no "today" to compare against -- it only checks
+    # self-consistency. An artifact describing only {_NODE_A}, correctly
+    # self-consistent, must pass even though (unknown to this function) a
+    # brand-new _NODE_B exists somewhere else today. Staleness tolerance is
+    # the caller's (the planner's) job via fallback weighting, not this
+    # function's.
+    artifact = _provenance_artifact()
+    validate_artifact_provenance(artifact, durations={_NODE_A: 1.0}, not_called=set())

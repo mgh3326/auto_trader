@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.call_durations import compute_collection_hash
 from scripts.ci.file_shard_plan import (
     ShardPlanError,
     assign_files_to_shards,
@@ -288,10 +289,14 @@ def test_validate_exact_cover_reports_all_violations_together() -> None:
 def _call_durations_artifact(
     durations: dict[str, float], not_called: list[str]
 ) -> dict:
+    # ROB-1312 R1: source_commit_sha/collection_hash must now be well-formed
+    # and self-consistent (validate_artifact_provenance) even for fixtures
+    # that don't care about provenance for their own test's purpose --
+    # otherwise every caller of this helper would need its own boilerplate.
     return {
         "schema_version": 2,
-        "source_commit_sha": "deadbeef",
-        "collection_hash": "irrelevant-for-planner",
+        "source_commit_sha": "deadbeef" * 5,
+        "collection_hash": compute_collection_hash(set(durations) | set(not_called)),
         "node_count": len(durations) + len(not_called),
         "durations": durations,
         "not_called": not_called,
@@ -543,3 +548,126 @@ def test_collected_files_from_nodes_projects_unique_files() -> None:
         ["tests/a.py::test_1", "tests/a.py::test_2", "tests/b.py::test_1"]
     )
     assert files == {"tests/a.py", "tests/b.py"}
+
+
+# --- generate provenance gating (ROB-1312 R1, verifier BLOCKER) -----------
+#
+# validate_artifact_structure alone never checked source_commit_sha or
+# collection_hash at all, so `generate` exited 0 for a .call_durations.json
+# with a blank source_commit_sha or a collection_hash that did not describe
+# its own recorded durations/not_called. These prove `generate` itself (not
+# just validate_artifact_provenance in isolation, see
+# scripts/call_durations_test.py) is wired to reject that at the CLI layer.
+
+
+def _run_generate(
+    tmp_path: Path, *, call_durations: dict, collected_nodes: list[str]
+) -> int:
+    call_durations_path = tmp_path / "call_durations.json"
+    call_durations_path.write_text(json.dumps(call_durations), encoding="utf-8")
+    collected_path = _write_nodes(tmp_path / "collected.txt", *collected_nodes)
+    return main(
+        [
+            "generate",
+            "--call-durations",
+            str(call_durations_path),
+            "--collected",
+            str(collected_path),
+            "--manifest-dir",
+            str(tmp_path / "ci_shards"),
+            "--shard-count",
+            "1",
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "source_commit_sha",
+    ["", "   ", True, 123, None],
+    ids=["empty", "ws", "bool", "int", "none"],
+)
+def test_cli_generate_fails_closed_on_malformed_source_commit_sha(
+    tmp_path: Path, source_commit_sha: object
+) -> None:
+    node = "tests/a.py::test_1"
+    artifact = {
+        "schema_version": 2,
+        "source_commit_sha": source_commit_sha,
+        "collection_hash": compute_collection_hash({node}),
+        "node_count": 1,
+        "durations": {node: 1.0},
+        "not_called": [],
+    }
+    exit_code = _run_generate(tmp_path, call_durations=artifact, collected_nodes=[node])
+    assert exit_code != 0
+
+
+@pytest.mark.parametrize(
+    "collection_hash",
+    ["", "   ", True, 123, None, "not-a-real-hash"],
+    ids=["empty", "ws", "bool", "int", "none", "bogus"],
+)
+def test_cli_generate_fails_closed_on_malformed_collection_hash(
+    tmp_path: Path, collection_hash: object
+) -> None:
+    node = "tests/a.py::test_1"
+    artifact = {
+        "schema_version": 2,
+        "source_commit_sha": "a" * 40,
+        "collection_hash": collection_hash,
+        "node_count": 1,
+        "durations": {node: 1.0},
+        "not_called": [],
+    }
+    exit_code = _run_generate(tmp_path, call_durations=artifact, collected_nodes=[node])
+    assert exit_code != 0
+
+
+def test_cli_generate_fails_closed_on_hash_of_a_different_node_set(
+    tmp_path: Path,
+) -> None:
+    # A syntactically valid sha256 hex digest, but not of THIS artifact's
+    # own recorded durations/not_called -- must still fail closed.
+    node = "tests/a.py::test_1"
+    other_node = "tests/other.py::test_x"
+    artifact = {
+        "schema_version": 2,
+        "source_commit_sha": "a" * 40,
+        "collection_hash": compute_collection_hash({other_node}),
+        "node_count": 1,
+        "durations": {node: 1.0},
+        "not_called": [],
+    }
+    exit_code = _run_generate(tmp_path, call_durations=artifact, collected_nodes=[node])
+    assert exit_code != 0
+
+
+def test_cli_generate_tolerates_stale_but_self_consistent_artifact(
+    tmp_path: Path,
+) -> None:
+    # Positive control (brief requirement 3): the file-shard planner must
+    # NOT require the artifact's own node set/hash to equal today's fresh
+    # authoritative collection -- a stale-but-internally-consistent artifact
+    # (well-formed source_commit_sha, collection_hash that correctly
+    # describes ITS OWN durations/not_called, just not today's tree) is
+    # valid input, and a brand-new node absent from the artifact is covered
+    # by deterministic fallback weight rather than rejected.
+    old_node = "tests/a.py::test_1"
+    new_node = "tests/b_new.py::test_1"
+    artifact = {
+        "schema_version": 2,
+        "source_commit_sha": "old" + "0" * 37,  # a real-looking but stale sha
+        "collection_hash": compute_collection_hash({old_node}),  # self-consistent
+        "node_count": 1,
+        "durations": {old_node: 1.0},
+        "not_called": [],
+    }
+    exit_code = _run_generate(
+        tmp_path,
+        call_durations=artifact,
+        collected_nodes=[old_node, new_node],  # today's tree has a new node
+    )
+    assert exit_code == 0
+    manifest = (tmp_path / "ci_shards" / "shard-1.txt").read_text()
+    assert "tests/a.py" in manifest
+    assert "tests/b_new.py" in manifest

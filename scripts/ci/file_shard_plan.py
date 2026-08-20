@@ -62,7 +62,10 @@ from pathlib import Path
 from typing import Any
 
 from scripts.call_durations import load_artifact as load_call_durations_artifact
-from scripts.call_durations import validate_artifact_structure
+from scripts.call_durations import (
+    validate_artifact_provenance,
+    validate_artifact_structure,
+)
 
 #: Nodes recorded in the call-duration artifact's ``not_called`` list never
 #: reach the ``call`` phase (their ``setup`` skipped first) -- there is no
@@ -412,6 +415,18 @@ def _cmd_generate(args: argparse.Namespace) -> int:
     call_durations_artifact = load_call_durations_artifact(args.call_durations)
     durations, not_called = validate_artifact_structure(
         call_durations_artifact, source=str(args.call_durations)
+    )
+    # Provenance/self-consistency (ROB-1312 R1): garbage source_commit_sha or
+    # a collection_hash that does not actually describe this artifact's own
+    # durations/not_called must never silently produce a manifest. This is
+    # deliberately NOT a freshness check against today's tree -- a stale but
+    # internally-consistent artifact is valid input (see §3 below and the
+    # module docstring's fallback-weight design).
+    validate_artifact_provenance(
+        call_durations_artifact,
+        durations=durations,
+        not_called=not_called,
+        source=str(args.call_durations),
     )
 
     collected_node_ids = load_collected_node_manifest(args.collected)

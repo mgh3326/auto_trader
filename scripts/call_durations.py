@@ -318,6 +318,64 @@ def validate_artifact_structure(
     return durations, not_called
 
 
+def validate_artifact_provenance(
+    artifact: dict[str, Any],
+    *,
+    durations: dict[str, float],
+    not_called: set[str],
+    source: str = "call-duration artifact",
+) -> None:
+    """Fail closed unless the artifact's own provenance fields are
+    well-formed and self-consistent with its own ``durations``/``not_called``
+    content (ROB-1312).
+
+    Deliberately **not** a freshness check against today's tree -- that is
+    ``validate_freshness``'s job, which compares against a caller-supplied
+    ``expected_source_commit_sha``/``collected_nodes`` and is stricter for
+    its own purpose. This function has no "today" to compare against: it
+    only asks whether the artifact is internally coherent, which is exactly
+    the guarantee a caller that explicitly tolerates staleness (the
+    file-shard planner, which must accept an artifact predating a just-added
+    test file and cover it via deterministic fallback weight) still needs --
+    a corrupted/hand-tampered artifact (blank source commit, a
+    ``collection_hash`` that does not actually describe its own recorded
+    nodes) must never silently produce a manifest.
+    """
+    source_commit_sha = artifact.get("source_commit_sha")
+    if (
+        isinstance(source_commit_sha, bool)
+        or not isinstance(source_commit_sha, str)
+        or not source_commit_sha.strip()
+    ):
+        raise ValueError(
+            f"{source}: 'source_commit_sha' must be a non-empty, non-whitespace "
+            f"string, got {source_commit_sha!r}"
+        )
+
+    collection_hash = artifact.get("collection_hash")
+    if (
+        isinstance(collection_hash, bool)
+        or not isinstance(collection_hash, str)
+        or not collection_hash.strip()
+    ):
+        raise ValueError(
+            f"{source}: 'collection_hash' must be a non-empty, non-whitespace "
+            f"string, got {collection_hash!r}"
+        )
+
+    own_nodes = set(durations) | not_called
+    expected_own_hash = compute_collection_hash(own_nodes)
+    if collection_hash != expected_own_hash:
+        raise ValueError(
+            f"{source}: 'collection_hash' does not match this artifact's own "
+            f"recorded 'durations'/'not_called' node set: "
+            f"artifact={collection_hash!r} expected={expected_own_hash!r} "
+            "(self-consistency check, not a freshness check against today's "
+            "tree -- the artifact's own recorded content does not hash to "
+            "its own declared collection_hash)"
+        )
+
+
 def validate_freshness(
     artifact: dict[str, Any],
     *,
