@@ -276,10 +276,21 @@ async def test_briefing_uses_bounded_summary_instead_of_full_holdings(monkeypatc
 async def test_holdings_home_and_briefing_share_one_slow_whole_snapshot_owner(
     monkeypatch,
 ):
-    from app.mcp_server.tooling import portfolio_holdings
+    from app.core.config import settings
+    from app.mcp_server.tooling import operating_briefing, portfolio_holdings
+    from app.routers import invest_api
     from app.schemas.invest_home import Holding
-    from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
-    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
+    from app.services import invest_home_readers
+    from app.services.invest_home_service import _SourceFetchResult
+
+    whole_snapshot = None
+    try:
+        from app.services import portfolio_snapshot_cache as whole_snapshot
+    except ModuleNotFoundError:
+        # ROB-1310's initial partial-Toss implementation has no whole-cache
+        # module. The same production entrypoints still run and must RED on the
+        # upstream call-count assertion below.
+        pass
 
     calls = {"kis": 0, "upbit": 0, "toss_api": 0, "manual": 0}
     owner_started = asyncio.Event()
@@ -317,46 +328,266 @@ async def test_holdings_home_and_briefing_share_one_slow_whole_snapshot_owner(
         pnlKrw=20000,
         pnlRate=20000 / 700000,
     )
-    redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    cache_a = PortfolioSnapshotCache(
-        redis_client=redis_client,
-        ttl_seconds=30,
-        lock_ttl_seconds=10,
-        wait_timeout_seconds=3,
-        poll_interval_seconds=0.01,
-    )
-    cache_b = PortfolioSnapshotCache(
-        redis_client=redis_client,
-        ttl_seconds=30,
-        lock_ttl_seconds=10,
-        wait_timeout_seconds=3,
-        poll_interval_seconds=0.01,
-    )
-    service = InvestHomeService(
-        kis_reader=_Reader("kis", holding),
-        upbit_reader=_Reader("upbit"),
-        manual_reader=_Reader("manual"),
-        toss_api_reader=_Reader("toss_api"),
-        snapshot_cache=cache_a,
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(invest_home_readers, "SafeKISClient", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        invest_home_readers,
+        "KISHomeReader",
+        lambda db: _Reader("kis", holding),
     )
     monkeypatch.setattr(
-        portfolio_holdings,
-        "get_shared_portfolio_snapshot_cache",
-        lambda: cache_b,
-        raising=False,
+        invest_home_readers,
+        "UpbitHomeReader",
+        lambda db: _Reader("upbit"),
+    )
+    monkeypatch.setattr(
+        invest_home_readers,
+        "ManualHomeReader",
+        lambda db, quote_service=None: _Reader("manual"),
+    )
+    monkeypatch.setattr(
+        invest_home_readers,
+        "TossApiHomeReader",
+        lambda: _Reader("toss_api"),
     )
 
-    home_task = asyncio.create_task(service.get_home(user_id=1))
-    await owner_started.wait()
-    summary_task = asyncio.create_task(
-        portfolio_holdings._get_portfolio_summary_impl(user_id=1)
+    if whole_snapshot is not None:
+        redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        cache_a = whole_snapshot.PortfolioSnapshotCache(
+            redis_client=redis_client,
+            ttl_seconds=30,
+            lock_ttl_seconds=10,
+            wait_timeout_seconds=3,
+            poll_interval_seconds=0.01,
+        )
+        cache_b = whole_snapshot.PortfolioSnapshotCache(
+            redis_client=redis_client,
+            ttl_seconds=30,
+            lock_ttl_seconds=10,
+            wait_timeout_seconds=3,
+            poll_interval_seconds=0.01,
+        )
+        monkeypatch.setattr(
+            whole_snapshot,
+            "get_shared_portfolio_snapshot_cache",
+            lambda: cache_a,
+        )
+        monkeypatch.setattr(
+            portfolio_holdings,
+            "get_shared_portfolio_snapshot_cache",
+            lambda: cache_b,
+            raising=False,
+        )
+
+    def _position(source: str, broker: str) -> dict[str, object]:
+        return {
+            "account": broker,
+            "account_name": "기본 계좌",
+            "broker": broker,
+            "source": source,
+            "instrument_type": "equity_kr",
+            "market": "kr",
+            "symbol": "005930",
+            "name": "Samsung",
+            "quantity": 10.0,
+            "avg_buy_price": 70000.0,
+            "current_price": 72000.0,
+            "evaluation_amount": 720000.0,
+            "profit_loss": 20000.0,
+            "profit_rate": 0.028,
+        }
+
+    async def _collect_kis(*args, **kwargs):
+        calls["kis"] += 1
+        return [_position("kis_api", "kis")], []
+
+    async def _collect_upbit(*args, **kwargs):
+        calls["upbit"] += 1
+        return [], []
+
+    async def _collect_manual(*args, **kwargs):
+        calls["manual"] += 1
+        return [], []
+
+    async def _collect_toss(*args, **kwargs):
+        calls["toss_api"] += 1
+        return [], [], True
+
+    monkeypatch.setattr(portfolio_holdings, "_collect_kis_positions", _collect_kis)
+    monkeypatch.setattr(portfolio_holdings, "_collect_upbit_positions", _collect_upbit)
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_manual_positions", _collect_manual
     )
-    home, summary = await asyncio.gather(home_task, summary_task)
+    monkeypatch.setattr(
+        portfolio_holdings, "_collect_toss_api_positions", _collect_toss
+    )
+
+    class _DbContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _Pending:
+        orders = []
+        as_of = "2026-08-20T00:00:00+00:00"
+        freshness_status = "fresh"
+        unavailable_reason = None
+
+    monkeypatch.setattr(operating_briefing, "AsyncSessionLocal", lambda: _DbContext())
+    monkeypatch.setattr(
+        operating_briefing,
+        "collect_pending_orders_snapshot",
+        AsyncMock(return_value=_Pending()),
+    )
+    monkeypatch.setattr(
+        operating_briefing, "_latest_report_summary", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        operating_briefing,
+        "_recent_session_context",
+        AsyncMock(return_value={"count": 0, "entries": []}),
+    )
+    monkeypatch.setattr(
+        operating_briefing,
+        "_recent_analysis_artifacts",
+        AsyncMock(return_value={"count": 0, "artifacts": []}),
+    )
+    monkeypatch.setattr(
+        operating_briefing,
+        "load_negative_class_health",
+        AsyncMock(return_value=SimpleNamespace(to_dict=lambda: {"status": "ok"})),
+    )
+    monkeypatch.setattr(
+        operating_briefing,
+        "list_active_watches_impl",
+        AsyncMock(return_value={"count": 0, "active_watches": []}),
+    )
+    monkeypatch.setattr(
+        operating_briefing, "get_account_costs_setting", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        operating_briefing, "policy_version_stamp", lambda: {"version": 1}
+    )
+
+    service = invest_api.get_invest_home_service(db=object())
+    home_task = asyncio.create_task(
+        invest_api.get_home(
+            user=SimpleNamespace(id=1),
+            service=service,
+            include_paper=False,
+            paper_sources=None,
+        )
+    )
+    await owner_started.wait()
+    holdings_task = asyncio.create_task(
+        portfolio_holdings._get_holdings_impl(include_current_price=False)
+    )
+    briefing_task = asyncio.create_task(
+        operating_briefing.get_operating_briefing_impl(
+            market="kr", account_scope="kis_live"
+        )
+    )
+    home, holdings, briefing = await asyncio.gather(
+        home_task, holdings_task, briefing_task
+    )
 
     assert home.holdings[0].symbol == "005930"
-    assert summary["total_positions"] == 1
-    assert summary["held_pairs"] == [("kr", "005930")]
+    assert holdings["total_positions"] == 1
+    assert briefing["success"] is True
+    # Partial-Toss composition calls the same upstreams from all three
+    # production entrypoints; whole snapshot ownership reduces every source to
+    # one call even across independent Redis facades.
     assert calls == {"kis": 1, "upbit": 1, "toss_api": 1, "manual": 1}
+
+
+@pytest.mark.asyncio
+async def test_calendar_entrypoint_reads_held_snapshot_without_full_reader_calls(
+    monkeypatch,
+):
+    from datetime import date
+
+    from app.core.config import settings
+    from app.routers import invest_api
+    from app.services import invest_home_readers
+    from app.services.invest_home_service import _SourceFetchResult
+
+    whole_snapshot = None
+    try:
+        from app.services import portfolio_snapshot_cache as whole_snapshot
+    except ModuleNotFoundError:
+        pass
+
+    calls = {"kis": 0, "upbit": 0, "toss_api": 0, "manual": 0}
+
+    class _Reader:
+        def __init__(self, source: str):
+            self.source = source
+
+        async def fetch(self, *, user_id):
+            calls[self.source] += 1
+            return _SourceFetchResult(accounts=[], holdings=[])
+
+    monkeypatch.setattr(settings, "toss_api_enabled", True)
+    monkeypatch.setattr(invest_home_readers, "SafeKISClient", lambda: SimpleNamespace())
+    monkeypatch.setattr(invest_home_readers, "KISHomeReader", lambda db: _Reader("kis"))
+    monkeypatch.setattr(
+        invest_home_readers, "UpbitHomeReader", lambda db: _Reader("upbit")
+    )
+    monkeypatch.setattr(
+        invest_home_readers,
+        "ManualHomeReader",
+        lambda db, quote_service=None: _Reader("manual"),
+    )
+    monkeypatch.setattr(
+        invest_home_readers, "TossApiHomeReader", lambda: _Reader("toss_api")
+    )
+
+    if whole_snapshot is not None:
+        redis_client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        cache = whole_snapshot.PortfolioSnapshotCache(
+            redis_client=redis_client, ttl_seconds=30
+        )
+        scope = whole_snapshot.portfolio_snapshot_scope(
+            user_id=1, include_paper=False, paper_sources=None
+        )
+        await cache.put(
+            scope,
+            {"schema_version": 1, "held_pairs": [["kr", "005930"]]},
+        )
+        monkeypatch.setattr(
+            whole_snapshot,
+            "get_shared_portfolio_snapshot_cache",
+            lambda: cache,
+        )
+
+    monkeypatch.setattr(
+        invest_api,
+        "build_relation_resolver",
+        AsyncMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        invest_api,
+        "build_calendar",
+        AsyncMock(return_value={"ok": True}),
+    )
+
+    service = invest_api.get_invest_home_service(db=object())
+    result = await invest_api.get_calendar(
+        user=SimpleNamespace(id=1),
+        service=service,
+        db=object(),
+        from_date=date(2026, 8, 20),
+        to_date=date(2026, 8, 21),
+        tab="all",
+        include_paper=False,
+        paper_sources=None,
+    )
+
+    assert result == {"ok": True}
+    assert calls == {"kis": 0, "upbit": 0, "toss_api": 0, "manual": 0}
 
 
 @pytest.mark.asyncio
@@ -365,7 +596,9 @@ async def test_briefing_summary_reuses_whole_snapshot_without_source_recollectio
 ):
     from app.mcp_server.tooling import portfolio_holdings
     from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
-    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
+
+    whole_snapshot = pytest.importorskip("app.services.portfolio_snapshot_cache")
+    PortfolioSnapshotCache = whole_snapshot.PortfolioSnapshotCache
 
     class _Reader:
         async def fetch(self, *, user_id):

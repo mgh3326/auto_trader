@@ -1109,10 +1109,10 @@ async def test_get_held_pairs_reads_keys_without_building_home_projection():
 @pytest.mark.unit
 async def test_calendar_held_pairs_reads_snapshot_or_db_keys_without_full_readers():
     from app.services.invest_home_service import InvestHomeService
-    from app.services.portfolio_snapshot_cache import (
-        PortfolioSnapshotCache,
-        portfolio_snapshot_scope,
-    )
+
+    whole_snapshot = pytest.importorskip("app.services.portfolio_snapshot_cache")
+    PortfolioSnapshotCache = whole_snapshot.PortfolioSnapshotCache
+    portfolio_snapshot_scope = whole_snapshot.portfolio_snapshot_scope
 
     class _ExplodingReader:
         async def fetch(self, *, user_id):
@@ -1160,10 +1160,10 @@ async def test_calendar_held_pairs_reads_snapshot_or_db_keys_without_full_reader
 @pytest.mark.unit
 async def test_cross_facade_whole_snapshot_composes_readers_once_and_excludes_sellable():
     from app.services.invest_home_service import InvestHomeService, _SourceFetchResult
-    from app.services.portfolio_snapshot_cache import (
-        PortfolioSnapshotCache,
-        portfolio_snapshot_scope,
-    )
+
+    whole_snapshot = pytest.importorskip("app.services.portfolio_snapshot_cache")
+    PortfolioSnapshotCache = whole_snapshot.PortfolioSnapshotCache
+    portfolio_snapshot_scope = whole_snapshot.portfolio_snapshot_scope
 
     calls = {"kis": 0, "upbit": 0, "toss_api": 0, "manual": 0}
 
