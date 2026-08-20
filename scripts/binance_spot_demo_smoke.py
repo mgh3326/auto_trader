@@ -23,8 +23,23 @@ Hard invariants:
     routed for the ``--confirm`` mode.
   * Secret hygiene: api_key / api_secret never appear in any printed
     line; only fingerprints and redacted broker payloads are emitted.
-  * No scheduler activation; this CLI is the only Spot Demo entry point
-    that places real Demo orders.
+  * No scheduler activation.  Every caller that can place a real Spot Demo
+    order is named by a distinct operator authority, and the enumeration is
+    pinned by ``tests/services/brokers/binance/spot_demo/
+    test_spot_demo_submit_callers.py``:
+
+      - this CLI (ROB-298) — the BUY + close round-trip smoke;
+      - ``scripts/b0x/crypto/sidecar.py`` — ``b0x-adapter-orders-20260808``,
+        surface ``binance_spot_demo_sidecar_buy_side_only``;
+      - ``scripts/binance_spot_demo_d2_remediation.py`` —
+        ``binance-demo-remediation-20260820``, writer
+        ``d2_remediation_single``, three sealed SELL LIMIT orders only.
+
+    An unlisted caller of ``BinanceSpotDemoExecutionClient.submit_order`` is
+    an unreviewed execution surface and fails that test.  Its allowlist is
+    slightly wider than the three CLIs above: it also carries the D2 writer
+    module itself and the ROB-1270 J6B composition, whose call site exists but
+    is structurally unreachable.
 
 Exit codes:
   0 — clean run (or default-disabled exit, or reconciled-clean confirm).

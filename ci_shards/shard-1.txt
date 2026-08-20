@@ -119,6 +119,7 @@ tests/services/brokers/binance/futures_demo/test_signing.py
 tests/services/brokers/binance/paper/test_binance_adapter.py
 tests/services/brokers/binance/spot_demo/test_audit_no_live_host.py
 tests/services/brokers/binance/spot_demo/test_config_env.py
+tests/services/brokers/binance/spot_demo/test_d2_remediation_single.py
 tests/services/brokers/binance/spot_demo/test_execution_client_fail_closed.py
 tests/services/brokers/binance/spot_demo/test_execution_client_submit_cancel.py
 tests/services/brokers/binance/spot_demo/test_mock_auto_limit.py

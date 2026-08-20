@@ -65,6 +65,7 @@ tests/scripts/b0x/test_cancel.py
 tests/scripts/b0x/test_envelope_and_locks.py
 tests/scripts/b0x/test_kill_switch_and_touch_rule.py
 tests/scripts/b0x/test_labels.py
+tests/scripts/test_binance_spot_demo_d2_remediation_cli.py
 tests/scripts/test_haproxy_render.py
 tests/scripts/test_haproxy_switch.py
 tests/scripts/test_kiwoom_mock_smoke_contract.py
