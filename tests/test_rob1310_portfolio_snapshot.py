@@ -998,3 +998,66 @@ async def test_calendar_cold_snapshot_fails_closed_without_live_reader_fanout():
 
     assert calls == {"kis": 0, "upbit": 0, "toss_api": 0}
     assert manual_reader.held_key_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_calendar_cold_snapshot_surfaces_explicit_503_metadata(monkeypatch):
+    from datetime import date
+
+    from fastapi import HTTPException
+
+    from app.routers import invest_api
+    from app.services.invest_home_service import InvestHomeService
+    from app.services.portfolio_snapshot_cache import PortfolioSnapshotCache
+
+    class _ExplodingLiveReader:
+        async def fetch(self, *, user_id):
+            raise AssertionError("calendar must not run full live home readers")
+
+    class _ManualKeyReader:
+        async def fetch(self, *, user_id):
+            raise AssertionError("calendar must use the DB held-key projection")
+
+        async def fetch_held_pairs(self, *, user_id):
+            return [("kr", "005930")]
+
+    service = InvestHomeService(
+        kis_reader=_ExplodingLiveReader(),
+        upbit_reader=_ExplodingLiveReader(),
+        manual_reader=_ManualKeyReader(),
+        toss_api_reader=_ExplodingLiveReader(),
+        snapshot_cache=PortfolioSnapshotCache(
+            redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+            ttl_seconds=5,
+        ),
+    )
+    monkeypatch.setattr(
+        invest_api,
+        "build_relation_resolver",
+        AsyncMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        invest_api,
+        "build_calendar",
+        AsyncMock(return_value={"ok": True}),
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        await invest_api.get_calendar(
+            user=SimpleNamespace(id=1),
+            service=service,
+            db=object(),
+            from_date=date(2026, 8, 20),
+            to_date=date(2026, 8, 21),
+            tab="all",
+            include_paper=False,
+            paper_sources=None,
+        )
+
+    assert caught.value.status_code == 503
+    assert caught.value.detail == {
+        "error_code": "portfolio_snapshot_unavailable",
+        "source": "portfolio_snapshot",
+        "unavailable_reason": "held_key_projection_missing_or_invalid",
+        "manual_pairs_available": True,
+    }
