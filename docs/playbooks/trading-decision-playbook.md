@@ -434,6 +434,51 @@ lanes:
 
 ---
 
+### 3.2 ROB-1301 buy-gate A/B shadow (observation only)
+
+KR(우선)·US 매수 스크리닝은 **variant A(현행, strong 지지 필수)를 그대로
+집행**한다. 같은 후보 스냅샷·같은 `evaluation_as_of`로 **variant B
+(moderate 이상 지지) 판정을 병기**한다. 다른 게이트(RSI /
+`screen.support_within_pct` / honest upside / liquid mid-cap / concentration /
+overhang)는 전부 동일하다. 지지 품질만 다르다.
+
+B만 통과하는 후보는 `evaluate_buy_gate_ab_shadow`가 돌려준
+`shadow_buy` `forecast_save` kwargs 로만 기록한다 (entry=판정 시점가 박제,
+가정 사이징=현행 cap×0.5, 창=5거래일/20거래일). 4주 수집이 끝나기 전에는
+중간 수익률을 정책 변경 논거로 쓰지 않는다. 채점 공식·단일 `scoring_as_of`·
+민감도 분리는 런북
+[`docs/runbooks/buy-gate-ab-shadow.md`](../runbooks/buy-gate-ab-shadow.md).
+
+금지 (이슈 정본, 변경 없음):
+
+* shadow가 제안·주문·워치로 승격 금지(순수 기록)
+* 라이브 게이트 문언 무접촉
+* 채점 전 중간값으로 정책 변경 논거 삼지 않기(사전 등록 원칙)
+
+이 블록은 **lane sequence가 아니다.** `lanes.buy` / `lanes.discovery` 의
+집행 순서는 그대로다. mock 계좌도 쓰지 않는다 (1계좌=1전략).
+
+```yaml
+# playbook-machine-readable: ROB-1301 buy-gate A/B shadow (observation only)
+# NOT a lane sequence — live buy/discovery lanes are unchanged.
+shadow_experiments:
+  rob-1301-buy-gate-ab:
+    live_gate: variant_a_unchanged
+    promote: false
+    steps:
+      - tool: evaluate_buy_gate_ab_shadow
+        note: >-
+          same candidate snapshot, same evaluation_as_of; only support
+          quality differs (A=strong required, B=moderate+)
+      - tool: forecast_save
+        when: variant_b_only
+        note: >-
+          shadow_buy tagging; never order_proposal_create / place_order /
+          watch create
+```
+
+---
+
 ## 4) Recording / retrospective — current state and gaps
 
 - **Current:** `session_context_append` (decision journal, free text) +
@@ -587,4 +632,6 @@ policy_keys:
 - [ROB-626](https://linear.app/mgh3326/issue/ROB-626) / ROB-640 — intraday
   investor-flow freshness + confirmed multi-day foreign-flow embed.
 - **ROB-646** — trading policy YAML (single source for the `policy_keys` above).
+- **ROB-1301** — buy-gate A/B shadow (variant B moderate+ support). Playbook
+  §3.2 is observation-only; live gates stay variant A.
 - **ROB-649** — `route_request` (consumes the `lanes:` blocks above).

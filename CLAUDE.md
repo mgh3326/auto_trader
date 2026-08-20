@@ -456,6 +456,21 @@ set-difference upsert하고 DB 상태로 응답한다 (excluded만 제외, pendi
   100행 스크린이 KIS 라이브 100회를 때리는 것 방지). 감수하는 구멍 = 거래량 있는
   0-변동 구간. analyze/정책표는 이력을 무조건 읽으므로 그쪽에서 잡힌다.
 
+### 매수 게이트 A/B shadow (ROB-1301)
+
+KR/US 매수 스크리닝의 **variant B(moderate+ 지지)** 는 계좌 불사용 shadow
+실험이다. Variant A(strong 지지 필수)가 라이브 게이트이며 문언·집행은 불변.
+
+- **패키지**: `app/services/buy_gate_ab_shadow/` — 사전등록 스펙·A/B 대칭
+  평가·`shadow_buy` forecast 태깅·4주 채점 공식. DB/브로커/제안/워치 import 없음.
+- **MCP**: `evaluate_buy_gate_ab_shadow` — observation-only. B-only 후보는
+  `forecast_save` kwargs만 반환하고 도구 자체는 쓰지 않는다.
+- **금지**: shadow → 제안·주문·워치 승격 0. 채점 전 중간값으로 정책 변경 0.
+  승격·자동화 트리거 0. 스케줄러 등록 0.
+- **런북**: `docs/runbooks/buy-gate-ab-shadow.md`
+- **플레이북**: `docs/playbooks/trading-decision-playbook.md` §3.2 (lane
+  sequence 아님)
+
 ### 데이터베이스 정규화 구조
 
 **주식 정보와 분석 결과 분리:**

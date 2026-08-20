@@ -98,6 +98,8 @@ def test_buckets_are_disjoint():
     assert KIWOOM_MOCK_US_MUTATION_TOOL_NAMES <= MUTATION_TOOLS
     assert "discover_buy_candidates_fanout" in READ_ONLY_ADVISORY_TOOLS
     assert "discover_buy_candidates_fanout" not in MUTATION_TOOLS
+    assert "evaluate_buy_gate_ab_shadow" in READ_ONLY_ADVISORY_TOOLS
+    assert "evaluate_buy_gate_ab_shadow" not in MUTATION_TOOLS
 
 
 def test_mutation_action_taxonomy_is_disjoint_and_total():
