@@ -42,7 +42,7 @@ async def test_briefing_includes_policy_version(monkeypatch):
     async def fake_recent_analysis(db, *, market):
         return {"count": 0, "artifacts": []}
 
-    monkeypatch.setattr(ob, "_get_holdings_impl", fake_holdings)
+    monkeypatch.setattr(ob, "_get_portfolio_summary_impl", fake_holdings)
     monkeypatch.setattr(ob, "collect_pending_orders_snapshot", fake_pending)
     monkeypatch.setattr(ob, "list_active_watches_impl", fake_active_watches)
     monkeypatch.setattr(ob, "_latest_report_summary", fake_latest_report)
