@@ -130,11 +130,16 @@ class TestRegistrarRegistersOnlyKrTools:
 
 
 class TestWholeProfileClosedWorld:
-    def test_base_inventory_includes_shadow_evaluator_and_is_exactly_120_tools(
+    def test_base_inventory_includes_readonly_advisors_and_is_exactly_121_tools(
         self,
     ) -> None:
+        # Closed world: the count moves only with a reviewed addition. ROB-1303
+        # added get_spike_attribution (read-only attribution reader), which the
+        # KIWOOM <-> KIWOOM_KR shared-surface contract requires here — see
+        # TestKiwoomKrProfile::test_keeps_kr_order_surface_intact.
         assert "evaluate_buy_gate_ab_shadow" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
-        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 120
+        assert "get_spike_attribution" in KIWOOM_KR_BASE_PROFILE_TOOL_NAMES
+        assert len(KIWOOM_KR_BASE_PROFILE_TOOL_NAMES) == 121
 
     def test_current_profile_matches_active_exact_set(self) -> None:
         mcp = DummyMCP()
