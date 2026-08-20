@@ -58,7 +58,71 @@ _SENSITIVE_KEYWORDS = (
     "passwd",
     "api_key",
     "apikey",
+    "appkey",
+    "app_key",
+    "access_key",
+    "accesskey",
+    "client_secret",
+    "bot_token",
+    "webhook",
+    "credential",
+    "signature",
 )
+
+# ROB-1305: value-shape scrubbing for secrets embedded inside strings (URLs,
+# span descriptions) that key-name filtering above cannot reach because the
+# secret is not itself a dict key — e.g. a Telegram bot token in a URL path,
+# or a KIS/broker API key in a query string captured by the httpx integration.
+_TELEGRAM_BOT_URL_RE = re.compile(
+    r"(?P<prefix>https?://api\.telegram\.org/bot)[^/\s\"']+",
+    flags=re.IGNORECASE,
+)
+# ROB-1305 follow-up: match by credential *shape* (digits:token), not by
+# enumerating known Telegram method names — a relative (no-host) bot path
+# using an unlisted method must not defeat redaction.
+_TELEGRAM_BOT_PATH_RE = re.compile(
+    r"(?P<prefix>/bot)\d+:[A-Za-z0-9_-]+",
+    flags=re.IGNORECASE,
+)
+_BEARER_TOKEN_RE = re.compile(r"(?P<prefix>\bBearer\s+)\S+", flags=re.IGNORECASE)
+_URL_BASIC_AUTH_RE = re.compile(
+    r"(?P<prefix>https?://)[^\s/@\"']+:[^\s/@\"']+@", flags=re.IGNORECASE
+)
+# ROB-1305 follow-up: both the query-string and JSON-field value-shape
+# matchers below are built from the same _SENSITIVE_KEYWORDS list the
+# dict-key sanitizer (_is_sensitive_key) uses, and match a keyword as a
+# *substring* of the key (not only an exact key), matching that sanitizer's
+# semantics — this closes the earlier drift where e.g. "client_secret" or
+# "signature"-shaped query/JSON keys were only caught for dict keys, not for
+# the same keyword embedded in a serialized query string or JSON blob.
+_SENSITIVE_KEY_SUBSTRING_RE = "|".join(
+    re.escape(keyword) for keyword in _SENSITIVE_KEYWORDS
+)
+_SECRET_QUERY_PARAM_RE = re.compile(
+    r"(?P<prefix>(?:^|[?&])[A-Za-z0-9_-]*(?:"
+    + _SENSITIVE_KEY_SUBSTRING_RE
+    + r")[A-Za-z0-9_-]*=)[^&\s\"']+",
+    flags=re.IGNORECASE,
+)
+# Matches a secret-named field inside a serialized JSON string, e.g. the JSON
+# text captured in an MCP span's `mcp.tool.result.content` data.
+_JSON_SECRET_FIELD_RE = re.compile(
+    r'(?P<prefix>"[A-Za-z0-9_-]*(?:'
+    + _SENSITIVE_KEY_SUBSTRING_RE
+    + r')[A-Za-z0-9_-]*"\s*:\s*")[^"]*(?P<suffix>")',
+    flags=re.IGNORECASE,
+)
+
+
+def _scrub_secret_shapes_in_string(value: str) -> str:
+    """Redact secret-bearing substrings without deleting the surrounding text."""
+    scrubbed = _TELEGRAM_BOT_URL_RE.sub(r"\g<prefix>[REDACTED]", value)
+    scrubbed = _TELEGRAM_BOT_PATH_RE.sub(r"\g<prefix>[REDACTED]", scrubbed)
+    scrubbed = _BEARER_TOKEN_RE.sub(r"\g<prefix>[REDACTED]", scrubbed)
+    scrubbed = _URL_BASIC_AUTH_RE.sub(r"\g<prefix>[REDACTED]@", scrubbed)
+    scrubbed = _SECRET_QUERY_PARAM_RE.sub(r"\g<prefix>[REDACTED]", scrubbed)
+    scrubbed = _JSON_SECRET_FIELD_RE.sub(r"\g<prefix>[Filtered]\g<suffix>", scrubbed)
+    return scrubbed
 
 
 def _is_healthcheck_access_log(logger_name: str | None, message: str | None) -> bool:
@@ -275,6 +339,9 @@ def _sanitize_in_place(value: Any, parent_key: str | None = None) -> Any:
     if isinstance(value, tuple):
         return tuple(_sanitize_in_place(item, parent_key) for item in value)
 
+    if isinstance(value, str):
+        return _scrub_secret_shapes_in_string(value)
+
     return value
 
 
@@ -325,6 +392,18 @@ def _before_send_transaction(event: Event, hint: Hint) -> Event | None:
     if not isinstance(transaction_name, str):
         return event
     is_mcp_transport_transaction = "/mcp" in transaction_name
+
+    # ROB-1305: one coherent whole-event sanitization boundary, reused by
+    # error events (_before_send), logs (_before_send_log), breadcrumbs
+    # (_before_breadcrumb), and transaction events here. It walks every
+    # nested mapping/sequence on the event — request, contexts, extra, and
+    # every span's description/data alike — filtering by key name and by
+    # secret-value shape (URLs, query strings, JSON-embedded fields).
+    # Structural fields (span/trace ids, timestamps, ops, statuses) are
+    # numeric or hex and never match the secret-shape patterns, so they pass
+    # through unchanged; span descriptions/data for spans of every op (not
+    # just mcp.server) are covered by the same pass.
+    event = _sanitize_in_place(event)
 
     spans = event.get("spans", [])
     if not isinstance(spans, list):
