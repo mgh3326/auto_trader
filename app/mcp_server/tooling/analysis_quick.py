@@ -756,7 +756,14 @@ async def load_quick_projection_batch(
                 session, symbols, account_mode=decision_history_account_mode
             )
         except Exception as exc:
-            logger.warning("quick decision_history batch injection skipped: %s", exc)
+            # Log only a fixed message + the exception CLASS NAME — never the
+            # exception's own str()/args/traceback, which can carry row
+            # values, connection details, or other content the caller never
+            # intended to expose.
+            logger.warning(
+                "quick decision_history batch injection skipped: %s",
+                type(exc).__name__,
+            )
             decision_history = {}
         try:
             earnings = await _load_earnings_batch(session, symbols)
