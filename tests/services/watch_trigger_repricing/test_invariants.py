@@ -336,8 +336,8 @@ def test_prefect_is_not_imported_anywhere_in_the_package() -> None:
 # ---------------------------------------------------------------------------
 # Scope
 # ---------------------------------------------------------------------------
-def test_market_scope_stays_kr() -> None:
-    """US/crypto expansion is explicitly a separate issue."""
+def test_market_scope_includes_all_supported_watch_markets() -> None:
+    """ROB-1304: each market is selected only by its explicit lane."""
     import asyncio
 
     from app.services.watch_trigger_repricing.claims import InMemoryClaimStore
@@ -345,20 +345,25 @@ def test_market_scope_stays_kr() -> None:
 
     from .conftest import INCIDENT_TICK, make_event
 
-    result = asyncio.run(
-        select_candidates(
-            [
-                make_event(event_uuid="evt-us", symbol="AAPL", market="us"),
-                make_event(event_uuid="evt-crypto", symbol="KRW-BTC", market="crypto"),
-                make_event(event_uuid="evt-kr", symbol="005930", market="kr"),
-            ],
-            store=InMemoryClaimStore(),
-            now=INCIDENT_TICK,
+    events = [
+        make_event(event_uuid="evt-us", symbol="AAPL", market="us"),
+        make_event(event_uuid="evt-crypto", symbol="KRW-BTC", market="crypto"),
+        make_event(event_uuid="evt-kr", symbol="005930", market="kr"),
+    ]
+    for market, expected in (
+        ("kr", "evt-kr"),
+        ("us", "evt-us"),
+        ("crypto", "evt-crypto"),
+    ):
+        result = asyncio.run(
+            select_candidates(
+                events,
+                store=InMemoryClaimStore(),
+                now=INCIDENT_TICK,
+                market=market,
+            )
         )
-    )
-
-    assert [e.event_uuid for e in result.selected] == ["evt-kr"]
-    assert {s.reason for s in result.skipped} == {"market_out_of_scope"}
+        assert [e.event_uuid for e in result.selected] == [expected]
 
 
 def test_settings_gate_defaults_off() -> None:

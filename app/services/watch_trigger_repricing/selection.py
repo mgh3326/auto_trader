@@ -28,7 +28,7 @@ fix.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.services.watch_trigger_repricing.claims import (
@@ -79,6 +79,7 @@ class CandidateEvent:
     outcome: str
     delivery_status: str
     delivered_at: datetime | None
+    trigger_evidence: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

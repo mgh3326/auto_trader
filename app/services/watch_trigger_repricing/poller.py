@@ -27,7 +27,9 @@ unhandled fire is the one that has been waiting longest.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
 
 from app.services.watch_trigger_repricing.event_source import (
     WatchEventRow,
@@ -56,7 +58,49 @@ def to_candidate_event(row: WatchEventRow) -> CandidateEvent:
         outcome=row.outcome,
         delivery_status=row.delivery_status,
         delivered_at=row.delivered_at,
+        trigger_evidence=_trigger_evidence(row),
     )
+
+
+def _json_value(value: Any) -> str | float | int | None:
+    """Keep durable evidence JSON-safe without rounding price values."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (str, float, int)):
+        return value
+    return str(value)
+
+
+def _timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        # ORM timestamps are timezone-aware. Do not invent a zone if a
+        # fixture or an unexpected source violates that contract.
+        return None
+    return value.astimezone(UTC).isoformat()
+
+
+def _trigger_evidence(row: WatchEventRow) -> dict[str, object]:
+    """The durable counterpart to a compact operator notification.
+
+    The operator repo may render one line, but it must retain this snapshot
+    (and the source event does too): condition, observed value, and fire time
+    are not presentation-only fields.
+    """
+    return {
+        "market": row.market,
+        "symbol": row.symbol,
+        "metric": row.metric,
+        "operator": row.operator,
+        "threshold": _json_value(row.threshold),
+        "thresholdHigh": _json_value(row.threshold_high),
+        "thresholdKey": row.threshold_key,
+        "currentValue": _json_value(row.current_value),
+        "firedAt": _timestamp(row.delivered_at or row.created_at),
+    }
 
 
 def dedupe_candidates(

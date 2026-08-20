@@ -139,6 +139,8 @@ class SpawnRequest:
     market: str
     kst_date: str
     label: str
+    market_date: str = ""
+    trigger_evidence: dict[str, object] = field(default_factory=dict)
     spawn_key: str = ""
     execution_boundary: str = EXECUTION_BOUNDARY
     capability_profile: CapabilityProfile = PROPOSAL_ONLY_PROFILE
